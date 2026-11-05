@@ -2,8 +2,12 @@
 //! falling, `interactAt` equipment swaps by clicked height, the two-hit break
 //! of `hurtServer` (creative breaks at once), and `ArmorStandRenderer` with
 //! the default pose, the hit wobble and humanoid armor layers.
+use super::entity::Entity;
 use super::{Game, InteractTarget};
 use horizon_client::{
+    Result,
+    cit::{Hand, Kind, Rule},
+    cit_armor,
     entities::ArmorStand,
     items::ItemStack,
     mesher::Vertex,
@@ -12,10 +16,53 @@ use horizon_client::{
 };
 use horizon_core::{
     geometry::{Aabb, Vec3},
+    position::BlockPos,
     random::RandomSource,
 };
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
+/// Velocity `AbstractMinecart.push` adds: the cart, and a quarter on the stand.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CartShove {
+    cart_x: f64,
+    cart_z: f64,
+    stand_x: f64,
+    stand_z: f64,
+}
+/// `ArmorStand.pushEntities` for one cart. `None` when the cart is not the
+/// plain rideable kind, the boxes miss, `distanceToSqr` is past 0.2, the
+/// stand is a passenger of the cart, or the horizontal gap is under
+/// `1.0E-4F` (where `AbstractMinecart.push` does nothing).
+fn armor_stand_cart_shove(
+    stand_pos: Vec3,
+    stand_box: Aabb,
+    cart_pos: Vec3,
+    cart_box: Aabb,
+    kind: super::minecarts::CartKind,
+    cart_carries_stand: bool,
+) -> Option<CartShove> {
+    if kind != super::minecarts::CartKind::Rideable
+        || cart_carries_stand
+        || !stand_box.intersects(cart_box)
+    {
+        return None;
+    }
+    let (dx, dy, dz) = (
+        stand_pos.x - cart_pos.x,
+        stand_pos.y - cart_pos.y,
+        stand_pos.z - cart_pos.z,
+    );
+    if dx * dx + dy * dy + dz * dz > 0.2 {
+        return None;
+    }
+    let (xa, za) = super::minecarts::cart_push_from(stand_pos, cart_pos)?;
+    Some(CartShove {
+        cart_x: -xa,
+        cart_z: -za,
+        stand_x: xa / 4.0,
+        stand_z: za / 4.0,
+    })
+}
 /// `EquipmentLayerRenderer.getColorForLayer`: a dyeable layer (one with a
 /// colour when undyed) takes the stack's `minecraft:dyed_color`, else that
 /// colour; any other layer stays white, dyed or not. The result is in the
@@ -33,10 +80,11 @@ fn layer_color(undyed: Option<u32>, stack: Option<&ItemStack>) -> u32 {
 
 /// Armor stand models and the humanoid layers of every equipment asset.
 pub(super) struct ArmorStandAssets {
-    pub main: Option<Part>,
-    pub small: Option<Part>,
+    /// Shared (`Arc`) so the GPU path (`mobs::skin`) keeps one stored copy of each.
+    pub main: Option<Arc<Part>>,
+    pub small: Option<Arc<Part>>,
     /// (slot model suffix, small) -> model.
-    pub layers: HashMap<(&'static str, bool), Part>,
+    pub layers: HashMap<(&'static str, bool), Arc<Part>>,
     /// The player's armour models by slot (helmet, chestplate, leggings, boots).
     pub player: HashMap<&'static str, Part>,
     /// asset id -> layer kind (humanoid / humanoid_leggings) -> each layer's (texture, undyed colour), in order.
@@ -61,7 +109,7 @@ impl ArmorStandAssets {
             }
             for (small, model) in [(false, "armor_stand"), (true, "armor_stand_small")] {
                 if let Some(part) = load(&format!("minecraft:{model}#{slot}")) {
-                    layers.insert((slot, small), part);
+                    layers.insert((slot, small), Arc::new(part));
                 }
             }
         }
@@ -125,8 +173,8 @@ impl ArmorStandAssets {
             }
         }
         Self {
-            main: load("minecraft:armor_stand#main"),
-            small: load("minecraft:armor_stand_small#main"),
+            main: load("minecraft:armor_stand#main").map(Arc::new),
+            small: load("minecraft:armor_stand_small#main").map(Arc::new),
             layers,
             player,
             equipment,
@@ -154,6 +202,27 @@ impl ArmorStandAssets {
     }
 }
 impl Game<'_> {
+    /// OptiFine CIT: the winning armour or elytra rule (`kind`) of the worn `stack`. No lookup
+    /// without CIT rules.
+    pub(super) fn cit_worn_rule(&self, kind: Kind, stack: &ItemStack) -> Option<&Rule> {
+        let rules = &self.pack.item_renderer.cit.as_ref()?.rules;
+        let item_max = self.items().get(&stack.item).map_or(0, |i| i.max_damage);
+        horizon_client::item_render::cit::worn_rule(rules, kind, stack, item_max)
+            .and_then(|i| rules.rules.get(i))
+    }
+    /// The atlas rect of an armour layer `texture` of equipment asset `asset`, or of the one CIT
+    /// armour rule `cit` puts there when the atlas has it.
+    fn armor_layer_rect(
+        &self,
+        cit: Option<&Rule>,
+        asset: &str,
+        kind: &str,
+        texture: &str,
+    ) -> Option<[f32; 4]> {
+        let sprites = &self.gui.atlas.sprites;
+        let r = cit_armor::worn_layer(cit, asset, kind, texture, |s| sprites.get(s))?;
+        Some([r.u0, r.v0, r.u1, r.v1])
+    }
     /// `HumanoidArmorLayer` for the player: (model, texture rect, colour,
     /// overlay) of each worn piece, head to feet.
     pub(super) fn player_armor_layers(&self) -> Vec<(&Part, [f32; 4], u32, u32, bool)> {
@@ -185,7 +254,7 @@ impl Game<'_> {
         )
     }
     /// The layers of the armour items `worn` (with their stacks when known,
-    /// for trims), head to feet.
+    /// for trims and CIT armour rules), head to feet.
     fn armor_layers(
         &self,
         worn: [Option<(&str, Option<&ItemStack>)>; 4],
@@ -240,18 +309,13 @@ impl Game<'_> {
             };
             // Every layer of the asset, the leather overlay too, then the
             // trim layer over the armour.
+            let cit = stack.and_then(|s| self.cit_worn_rule(Kind::Armor, s));
             for (i, (texture, undyed)) in layers.iter().enumerate() {
-                let Some(r) = self.gui.atlas.sprites.get(texture.as_str()) else {
+                let Some(uv) = self.armor_layer_rect(cit, &asset, kind, texture) else {
                     continue;
                 };
                 let color = layer_color(*undyed, stack);
-                out.push((
-                    part,
-                    [r.u0, r.v0, r.u1, r.v1],
-                    color,
-                    if i == 0 { overlay } else { 0 },
-                    false,
-                ));
+                out.push((part, uv, color, if i == 0 { overlay } else { 0 }, false));
                 // The layer's OptiFine emissive overlay, full bright without the glint.
                 if let Some(g) = emissive
                     .overlay(texture)
@@ -432,10 +496,18 @@ impl Game<'_> {
         if &*stack.item != "minecraft:armor_stand" {
             return false;
         }
-        let Some((pos, stand)) = self.armor_stand_spawn(hit, stack) else {
+        let Some((pos, mut stand)) = self.armor_stand_spawn(hit, stack) else {
             return false;
         };
+        // EntityType.create(.., tryMoveDown, movedUp): the new stand falls onto what is under it,
+        // up to two blocks (a bottom slab, the block under replaced grass).
+        let drop = self.drop_offset_from(0.5, 1.975, (pos[0], pos[1], pos[2]), true);
+        stand.position.y = f64::from(pos[1]) + drop;
+        stand.previous = stand.position;
         let foot = stand.position;
+        // EntityType.create's spawn yaw, `level.getRandom().nextFloat() * 360`, before
+        // ArmorStandItem.useOn turns the stand to face the player.
+        self.world.random.next_float();
         self.next_entity += 1;
         self.audio.play(
             "minecraft:entity.armor_stand.place",
@@ -443,11 +515,16 @@ impl Game<'_> {
             0.75,
             0.8,
         );
+        // ArmorStandItem.useOn: the stand's ENTITY_PLACE, by the player.
+        let ctx = self.player_context(None);
+        self.post_game_event("minecraft:entity_place", [foot.x, foot.y, foot.z], ctx);
         self.world.modified.insert((pos[0] >> 4, pos[2] >> 4));
         self.armor_stands.push(stand);
         if !self.creative {
             self.consume_held();
         }
+        // ItemStack.useOn counts the use.
+        self.award_stat("used", &stack.item, 1);
         // ArmorStandItem.useOn returns SUCCESS: the hand swings.
         self.swing_arm();
         true
@@ -526,11 +603,27 @@ impl Game<'_> {
             return false;
         }
         let held = self.held().cloned();
-        if held
-            .as_ref()
-            .is_some_and(|h| &*h.item == "minecraft:name_tag")
-        {
-            return false;
+        if let Some(stack) = held.as_ref().filter(|h| &*h.item == "minecraft:name_tag") {
+            let stand = &mut self.armor_stands[i];
+            let alive = stand.health > 0.0;
+            if !stand.name_with_tag(stack) {
+                return false;
+            }
+            let id = stand.id;
+            let name = stand.custom_name.as_ref().map(|name| name.plain());
+            if alive {
+                // NameTagItem shrinks the stack even with infinite materials.
+                let mut rest = stack.clone();
+                rest.count -= 1;
+                *self.held_mut() = (rest.count > 0).then_some(rest);
+                if let (Some(player), Some(player_name), Some(name)) =
+                    (self.lan_acting_uuid, self.lan_acting_name.clone(), name)
+                {
+                    self.native_player_name_entity(player, &player_name, id, &name);
+                }
+            }
+            self.swing_arm();
+            return true;
         }
         let a = &self.armor_stands[i];
         let slot = match &held {
@@ -582,6 +675,23 @@ impl Game<'_> {
         if held.is_none() && current.is_none() {
             return false;
         }
+        // A server's mods hear the swap before it happens, and may stop it.
+        // A stack of several on an occupied slot goes nowhere (below).
+        let moves = held
+            .as_ref()
+            .is_none_or(|h| h.count <= 1 || current.is_none());
+        if moves
+            && target.is_some()
+            && let (Some(player), Some(name)) = (self.lan_acting_uuid, self.lan_acting_name.clone())
+        {
+            let stand = self.armor_stands[i].id as i32;
+            let slot_name = ["mainhand", "offhand", "feet", "legs", "chest", "head"][slot];
+            let mut cancel = false;
+            self.native_armor_stand_manipulate(player, &name, stand, slot_name, &mut cancel);
+            if cancel {
+                return true;
+            }
+        }
         // ArmorStand.swapItem.
         match held {
             // A player with infinite materials puts a copy of one on an empty
@@ -622,11 +732,12 @@ impl Game<'_> {
         if !self.before_block(d) || self.mob_hit().is_some_and(|m| m.1 < d) {
             return false;
         }
-        let (_, _, _, magic) = self.melee_damage("minecraft:armor_stand", true);
+        let (_, _, crit, magic) = self.melee_damage("minecraft:armor_stand", true);
         let hurt = self.hit_armor_stand(i, |g, area, id| {
             g.attack_effects(
                 area,
                 Some(id as i32),
+                crit,
                 super::mace::Spared::Stand(id),
                 magic.then_some(id as i32),
             );
@@ -691,7 +802,7 @@ impl Game<'_> {
         let spread = [width / 4.0, height / 4.0, width / 4.0];
         self.particles
             .send_particles(&options, centre, spread, 0.05, 10);
-        self.lan_level_particles(&options, centre, spread, 0.05, 10, Some(state));
+        self.lan_level_particles(None, &options, centre, spread, 0.05, 10, Some(state));
     }
     /// `ArmorStand.hurtServer` for a player's attack (also a sweep's): a
     /// creative player breaks it, otherwise the first hit wobbles it and a
@@ -743,7 +854,7 @@ impl Game<'_> {
             .insert(((at[0].floor() as i32) >> 4, (at[2].floor() as i32) >> 4));
         true
     }
-    pub(super) fn tick_armor_stands(&mut self) {
+    pub(super) fn tick_armor_stands(&mut self) -> Result<()> {
         let mut dead = Vec::new();
         // ServerLevel.tick: only entities in entity-ticking chunks tick.
         let ticking = self.entity_ticking_area();
@@ -758,7 +869,13 @@ impl Game<'_> {
             let a = &mut self.armor_stands[i];
             a.previous = a.position;
             a.previous_yaw = a.yaw;
-            let in_water = a.update_fluids(&self.world, &self.res.motion().fluids);
+            // aiStep's freezing step (removeFrost) makes the speed instance.
+            a.speed_instance = true;
+            let (water_height, lava_height) =
+                a.push_by_fluid(&self.world, &self.res.motion().fluids);
+            let in_water = water_height > 0.0;
+            let medium =
+                horizon_client::entities::StandMedium::from_heights(water_height, lava_height);
             let (world, registry, facts, collision) = (
                 &self.world,
                 self.pack.assets.registry,
@@ -770,11 +887,24 @@ impl Game<'_> {
                 binding: collision,
                 subject: None,
             };
-            a.tick(&mut scene, facts, in_water, &mut |bounds, velocity| {
-                horizon_client::motion::bubble_column_push(
-                    world, registry, facts, collision, bounds, velocity,
-                );
-            });
+            let mut tops: Vec<BlockPos> = Vec::new();
+            if let Some(step) = a.tick_move(
+                &mut scene,
+                facts,
+                &self.res.motion().climbing,
+                in_water,
+                Some(self.border.geometry()),
+            ) {
+                // LivingEntity.aiStep: `travel` first, then the blocks' push.
+                a.tick_settle(medium, step);
+                a.push_by_bubble_column_over(world, registry, facts, collision, |pos| {
+                    tops.push(pos)
+                });
+            }
+            for pos in tops {
+                self.bubble_column_particles(pos);
+            }
+            let a = &mut self.armor_stands[i];
             if in_water {
                 a.enchantment_fall_distance = 0.0;
             } else {
@@ -784,16 +914,123 @@ impl Game<'_> {
             if a.on_ground {
                 a.enchantment_fall_distance = 0.0;
             }
-            if !a.environment_tick(&self.world, self.res.facts(), self.pack.assets.registry) {
-                dead.push(i);
-            }
+            // LivingEntity.checkFallDamage: onChangedBlock before the block's
+            // fallOn, then aiStep's applyEffectsFromBlocks (stepOn, then the
+            // blocks it is inside).
             if landed {
                 self.armor_stand_location_effects(i, true);
+            }
+            self.armor_stand_turtle_eggs(i, landed)?;
+            if landed {
+                let stand = &self.armor_stands[i];
+                let (position, bounds) = (stand.position, stand.bounds());
+                self.post_landing_event(position, bounds, true);
+            }
+            self.armor_stands[i].apply_honey_slide(&self.world, self.res.facts());
+            let a = &self.armor_stands[i];
+            if !a.marker && !a.no_gravity {
+                self.entity_powder_snow_particles(
+                    a.previous,
+                    a.position,
+                    a.bounds(),
+                    a.velocity,
+                    true,
+                );
+            }
+            // LivingEntity.aiStep calls pushEntities after travel. The stand's
+            // own doPush is empty; only this shove runs.
+            self.push_rideable_minecarts(i);
+            let a = &mut self.armor_stands[i];
+            if !a.environment_tick(&self.world, self.res.facts(), self.pack.assets.registry) {
+                dead.push(i);
             }
         }
         for i in dead.into_iter().rev() {
             self.break_armor_stand_by_anything(i);
         }
+        Ok(())
+    }
+    /// `ArmorStand.pushEntities`: a plain minecart (`RIDABLE_MINECARTS`,
+    /// `AbstractMinecart.isRideable`) whose box meets the stand's is shoved
+    /// when `distanceToSqr` is at most 0.2. `AbstractMinecart.push` of a
+    /// non-cart adds the push to the cart and a quarter of it to the stand
+    /// (`Entity.push(double)` does not consult `isPushable`). A stand with no
+    /// physics (`Marker` or `NoGravity`, `ArmorStand.hasPhysics` / `noPhysics`)
+    /// or one riding that cart does not shove it.
+    fn push_rideable_minecarts(&mut self, i: usize) {
+        let stand = &self.armor_stands[i];
+        if stand.marker || stand.no_gravity {
+            return;
+        }
+        let stand_pos = stand.position;
+        let stand_box = stand.bounds();
+        let vehicle = stand.vehicle;
+        let mut applied = Vec::new();
+        for (j, cart) in self.carts.iter().enumerate() {
+            let Some(shove) = armor_stand_cart_shove(
+                stand_pos,
+                stand_box,
+                cart.position,
+                cart.bounds(),
+                cart.kind,
+                vehicle == Some(cart.id),
+            ) else {
+                continue;
+            };
+            applied.push((j, shove));
+        }
+        let mut stand_x = 0.0;
+        let mut stand_z = 0.0;
+        for (j, shove) in applied {
+            let cart = &mut self.carts[j];
+            cart.velocity.x += shove.cart_x;
+            cart.velocity.z += shove.cart_z;
+            stand_x += shove.stand_x;
+            stand_z += shove.stand_z;
+        }
+        if stand_x != 0.0 || stand_z != 0.0 {
+            let stand = &mut self.armor_stands[i];
+            stand.velocity.x += stand_x;
+            stand.velocity.z += stand_z;
+        }
+    }
+    /// An armor stand is a `LivingEntity`, so the egg under it
+    /// (`getOnPosLegacy`) cracks like under a mob: `TurtleEggBlock.fallOn` one
+    /// landing in 3 (`Entity.move`'s `checkFallDamage`), then `stepOn` one tick
+    /// in 100 while it is on the ground (`LivingEntity.aiStep`'s
+    /// `applyEffectsFromBlocks`, after `travel`, so a marker that has landed
+    /// still steps). `canDestroyEgg` wants mob griefing before the level's roll.
+    fn armor_stand_turtle_eggs(&mut self, i: usize, landed: bool) -> Result<()> {
+        let stand = &self.armor_stands[i];
+        if !stand.on_ground || self.remote.is_some() || self.options.execution_role.is_client() {
+            return Ok(());
+        }
+        let p = stand.on_pos_legacy(|p| {
+            let name = &self.res.facts().get(self.world.block(p.x, p.y, p.z)).name;
+            let tags = &self.res.items().block_tags;
+            [
+                "minecraft:fences",
+                "minecraft:walls",
+                "minecraft:fence_gates",
+            ]
+            .iter()
+            .any(|t| tags.get(*t).is_some_and(|s| s.contains(&**name)))
+        });
+        for chance in [landed.then_some(3), Some(100)].into_iter().flatten() {
+            let egg = self
+                .pack
+                .assets
+                .registry
+                .state(self.world.block(p.x, p.y, p.z))
+                .is_some_and(|s| s.name == "minecraft:turtle_egg");
+            if egg
+                && self.ui.rules.bool("mob_griefing")
+                && self.world.random.next_int_bound(chance).unwrap_or(1) == 0
+            {
+                self.crack_turtle_egg([p.x, p.y, p.z])?;
+            }
+        }
+        Ok(())
     }
     /// `ArmorStand.brokenByAnything`, then `kill`, as burning out or a blast
     /// breaks a stand: its equipment pops above its block, the stand item does
@@ -816,8 +1053,9 @@ impl Game<'_> {
         alpha: f64,
         out: &mut Vec<Vertex>,
     ) {
+        // The stands' models posed on the GPU path (`mobs::skin`), when it runs this frame.
+        let skinning = self.skinning();
         for a in &self.armor_stands {
-            let entity_start = out.len();
             // ArmorStand.shouldRenderAtSqrDistance: 256 times the box's mean
             // edge (4 for a marker's empty box), whatever the entity distance.
             // LivingEntityRenderer grows the culling box by 0.5 for a dragon head.
@@ -847,6 +1085,11 @@ impl Game<'_> {
             ) {
                 continue;
             }
+            let culling = self.entity_cull_decision(a, alpha);
+            if culling.hides_entity() {
+                continue;
+            }
+            let entity_start = out.len();
             // EntityRenderer: drawn between last tick's position and this one's.
             let at = a.render_position(alpha);
             let p = super::entity_culling::at(at) - camera;
@@ -869,23 +1112,49 @@ impl Game<'_> {
                 at.z.floor() as i32,
             );
             let packed = (u32::from(light >> 4) * 16) | ((u32::from(light & 15) * 16) << 8);
-            self.armor_stand_vertices(a, base, packed, out);
-            self.cull_entity_vertices(out, entity_start);
+            let skinned = if skinning {
+                let mut models = self.skin_models.borrow_mut();
+                let mut frame = self.skin_frame.borrow_mut();
+                let mark = frame.mark();
+                let mut skin = horizon_client::mobs::skin::Skin::new(&mut models, &mut frame);
+                self.armor_stand_vertices(a, base, packed, Some(&mut skin), out);
+                Some((mark, skin.bounds))
+            } else {
+                self.armor_stand_vertices(a, base, packed, None, out);
+                None
+            };
+            if !self.entity_glowing(a.id) {
+                self.cull_skinned(out, entity_start, skinned);
+            }
         }
     }
     /// `ArmorStandRenderer.submit` for stand `a` under `base` (its
     /// `setupRotations`): the body, the hand and head items, the armour and
-    /// the wings, at packed light `packed`.
+    /// the wings, at packed light `packed`. With `skin`, the stand's own models
+    /// (body and armour) are posed on the GPU; items and wings stay here.
     fn armor_stand_vertices(
         &self,
         a: &ArmorStand,
         base: glam::Mat4,
         packed: u32,
+        mut skin: Option<&mut horizon_client::mobs::skin::Skin>,
         out: &mut Vec<Vertex>,
     ) {
+        use horizon_client::mobs::render::put;
         let assets = &self.armor_stand_assets;
         let sprites = &self.gui.atlas.sprites;
         let uv_of = |name: &str| sprites.get(name).map(|r| [r.u0, r.v0, r.u1, r.v1]);
+        // A texture's OptiFine emissive overlay. The lock is read per lookup and let go:
+        // `wings_geometry` below reads it too.
+        let glow_of = |texture: &str| {
+            let emissive = self
+                .res
+                .mob_data()
+                .emissive
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            emissive.overlay(texture).and_then(uv_of)
+        };
         let Some(wood) = uv_of("entity/armorstand/armorstand") else {
             return;
         };
@@ -915,19 +1184,38 @@ impl Game<'_> {
         // LivingEntityRenderer.submit: an invisible stand has no body render type, but its
         // layers (held items, custom head, armour) are submitted all the same.
         if !a.invisible {
-            horizon_client::mobs::render::draw(
+            put(
+                &mut skin,
                 model,
                 base,
                 &poses,
                 wood,
+                0.0,
                 0xFFFF_FFFF,
                 packed,
                 0,
                 out,
             );
+            if let Some(glow) = glow_of("entity/armorstand/armorstand") {
+                let full = horizon_client::mobs::render::FULL_BRIGHT;
+                put(
+                    &mut skin,
+                    model,
+                    base,
+                    &poses,
+                    glow,
+                    0.0,
+                    0xFFFF_FFFF,
+                    full,
+                    0,
+                    out,
+                );
+            }
         }
-        self.armor_stand_items(a, model, base, &posed, packed, out);
-        // HumanoidArmorLayer: head, chest, legs, feet.
+        self.armor_stand_items(a, model, base, &posed, packed, skin.as_deref_mut(), out);
+        // HumanoidArmorLayer: head, chest, legs, feet. One pose map for every layer
+        // (`reset` keeps its capacity).
+        let mut layer_poses = Poses::default();
         for (slot, layer) in [
             (5usize, "helmet"),
             (4, "chestplate"),
@@ -971,36 +1259,56 @@ impl Game<'_> {
                 0
             };
             // ArmorStandArmorModel.setupAnim: the same pose as the stand.
-            let mut layer_poses = Poses::new(part);
+            layer_poses.reset(part);
             apply_pose(&mut layer_poses, &a.pose);
             // EquipmentLayerRenderer: every layer of the asset, the leather overlay
             // too; the shader glint goes on the first layer only (renderShaderGlint).
+            let cit = self.cit_worn_rule(Kind::Armor, stack);
             for (i, (texture, undyed)) in layers.iter().enumerate() {
-                let Some(uv) = uv_of(texture) else {
+                let Some(uv) = self.armor_layer_rect(cit, &asset, kind, texture) else {
                     continue;
                 };
                 let color = layer_color(*undyed, Some(stack));
-                horizon_client::mobs::render::draw(
+                put(
+                    &mut skin,
                     part,
                     base,
                     &layer_poses,
                     uv,
+                    0.0,
                     color,
                     packed,
                     if i == 0 { overlay } else { 0 },
                     out,
                 );
+                // The layer's OptiFine emissive overlay, full bright without the glint.
+                if let Some(glow) = glow_of(texture) {
+                    put(
+                        &mut skin,
+                        part,
+                        base,
+                        &layer_poses,
+                        glow,
+                        0.0,
+                        color,
+                        horizon_client::mobs::render::FULL_BRIGHT,
+                        0,
+                        out,
+                    );
+                }
             }
             // EquipmentLayerRenderer: the trim layer over the armour.
             if let Some(trim) = assets
                 .trim_texture(&asset, kind, stack)
                 .and_then(|t| uv_of(&t.sprite()))
             {
-                horizon_client::mobs::render::draw(
+                put(
+                    &mut skin,
                     part,
                     base,
                     &layer_poses,
                     trim,
+                    0.0,
                     0xFFFF_FFFF,
                     packed,
                     overlay,
@@ -1012,6 +1320,7 @@ impl Game<'_> {
         // never crouches or glides, so its wings rest folded.
         self.wings_geometry(
             a.equipment[4].as_ref().map(|s| &*s.item),
+            a.equipment[4].as_ref(),
             None,
             a.small,
             base,
@@ -1049,7 +1358,7 @@ impl Game<'_> {
             * glam::Mat4::from_scale(glam::Vec3::new(-1.0, -1.0, 1.0))
             * glam::Mat4::from_translation(glam::Vec3::new(0.0, -1.501, 0.0));
         let mut verts = Vec::new();
-        self.armor_stand_vertices(&stand, base, 240 | 240 << 8, &mut verts);
+        self.armor_stand_vertices(&stand, base, 240 | 240 << 8, None, &mut verts);
         // ARMOR_STAND_ANGLE: rotationXYZ(0.43633232, 0, PI).
         let gui =
             glam::Mat4::from_translation(glam::Vec3::new((x0 + x1) / 2.0, (y0 + y1) / 2.0, 0.0))
@@ -1187,6 +1496,10 @@ impl Game<'_> {
         }) {
             return true;
         }
+        // Counted on the server only, before the swap.
+        if self.remote.is_none() {
+            self.award_stat("used", &stack.item, 1);
+        }
         let swap = swap_with_equipment_slot(stack, current, self.creative);
         self.armor[index] = Some(swap.worn.clone());
         // Player.setItemSlot: onEquipItem plays the equip sound.
@@ -1216,7 +1529,9 @@ impl Game<'_> {
 impl Game<'_> {
     /// `ItemInHandLayer` and `CustomHeadLayer` of an armour stand: the hand
     /// items in the third-person contexts, and a non-armour head item on the
-    /// head (`translateToHead`: down a quarter, turned, 0.625 scale).
+    /// head (`translateToHead`: down a quarter, turned, 0.625 scale). With
+    /// `skin`, items that can are posed on the GPU with the stand.
+    #[allow(clippy::too_many_arguments)]
     fn armor_stand_items(
         &self,
         a: &ArmorStand,
@@ -1224,8 +1539,21 @@ impl Game<'_> {
         base: glam::Mat4,
         poses: &Poses,
         light: u32,
+        mut skin: Option<&mut horizon_client::mobs::skin::Skin>,
         out: &mut Vec<Vertex>,
     ) {
+        let lights =
+            horizon_client::block_entity_render::diffuse_lights(self.dim == super::Dim::Nether);
+        let mut submit = |state: &horizon_client::item_render::ItemRenderState,
+                          pose: glam::Mat4,
+                          out: &mut Vec<Vertex>| {
+            let on_gpu = skin
+                .as_deref_mut()
+                .is_some_and(|skin| self.skin_item(state, pose, light, lights, skin));
+            if !on_gpu {
+                self.submit_item_world(state, pose, light, out);
+            }
+        };
         use horizon_assets::item_model::DisplayContext;
         use horizon_client::mobs::render::part_matrix;
         let owner = super::item_draw::owner_at(
@@ -1259,8 +1587,13 @@ impl Game<'_> {
                     oz / 16.0,
                 ));
             let seed = a.id as i32 + if left { 1 } else { 2 };
-            let state = self.resolve_item(stack, context, Some(&owner), seed);
-            self.submit_item_world(&state, pose, light, out);
+            // OptiFine CIT `hand=off` rules: slot 1 is the off hand.
+            let state = if left {
+                self.resolve_item_in_hand(stack, context, Some(&owner), seed, Hand::Off)
+            } else {
+                self.resolve_item(stack, context, Some(&owner), seed)
+            };
+            submit(&state, pose, out);
         }
         // `CustomHeadLayer`: a worn skull draws the skull model.
         if let Some(stack) = &a.equipment[5]
@@ -1321,7 +1654,7 @@ impl Game<'_> {
             // `updateForLiving`: seeded by the entity id plus HEAD's ordinal.
             let state =
                 self.resolve_item(stack, DisplayContext::Head, Some(&owner), a.id as i32 + 5);
-            self.submit_item_world(&state, pose, light, out);
+            submit(&state, pose, out);
         }
     }
 }
@@ -1462,6 +1795,84 @@ mod burn_drop_tests {
         let (pos, drops) = broken_armor_stand_equipment(stand);
         assert_eq!(pos, [-1, 5, 0]);
         assert_eq!(drops, vec![kept]);
+    }
+}
+#[cfg(test)]
+mod push_tests {
+    use super::super::minecarts::{CartKind, Minecart};
+    use super::*;
+
+    fn boxes(kind: CartKind, cart_at: Vec3) -> (Aabb, Aabb) {
+        let stand = ArmorStand::new(1, Vec3::ZERO, 0.0);
+        let cart = Minecart::new(2, kind, cart_at);
+        (stand.bounds(), cart.bounds())
+    }
+
+    #[test]
+    fn a_rideable_minecart_inside_the_0_2_gate_is_shoved() {
+        // 0.25² is inside the 0.2 gate; 0.5² is not. The function's Some/None is the check.
+        let near = Vec3::new(0.25, 0.0, 0.0);
+        let far = Vec3::new(0.5, 0.0, 0.0);
+        let (stand_box, cart_box) = boxes(CartKind::Rideable, near);
+        let shove = armor_stand_cart_shove(
+            Vec3::ZERO,
+            stand_box,
+            near,
+            cart_box,
+            CartKind::Rideable,
+            false,
+        )
+        .expect("a rideable cart 0.25 away is shoved");
+        // AbstractMinecart.push: gap 0.25, length 0.25, pow capped at 1, then 0.1F * 0.5.
+        // The cart moves east, away from the stand; the stand takes a quarter west.
+        let scale = f64::from(0.1_f32) * 0.5;
+        assert_eq!(shove.cart_x, scale);
+        assert_eq!(shove.cart_z, 0.0);
+        assert_eq!(shove.stand_x, -scale / 4.0);
+        assert_eq!(shove.stand_z, 0.0);
+
+        let (stand_box, cart_box) = boxes(CartKind::Rideable, far);
+        assert!(
+            armor_stand_cart_shove(
+                Vec3::ZERO,
+                stand_box,
+                far,
+                cart_box,
+                CartKind::Rideable,
+                false
+            )
+            .is_none(),
+            "past 0.2 the cart stays"
+        );
+        for kind in [
+            CartKind::Chest,
+            CartKind::Hopper,
+            CartKind::Furnace,
+            CartKind::Tnt,
+            CartKind::CommandBlock,
+            CartKind::Spawner,
+        ] {
+            let (stand_box, cart_box) = boxes(kind, near);
+            assert!(
+                armor_stand_cart_shove(Vec3::ZERO, stand_box, near, cart_box, kind, false)
+                    .is_none(),
+                "{} is not a rideable minecart",
+                kind.id()
+            );
+        }
+        let (stand_box, cart_box) = boxes(CartKind::Rideable, near);
+        assert!(
+            armor_stand_cart_shove(
+                Vec3::ZERO,
+                stand_box,
+                near,
+                cart_box,
+                CartKind::Rideable,
+                true
+            )
+            .is_none(),
+            "a cart does not shove the stand riding it"
+        );
     }
 }
 #[cfg(test)]

@@ -180,6 +180,16 @@ pub fn list_textures(root: &Path) -> Vec<String> {
     for ns in namespaces.flatten() {
         let namespace = ns.file_name().to_string_lossy().into_owned();
         let base = ns.path().join("textures");
+        // A prepared root's: from its data file, without listing the disk.
+        if let Some(files) = horizon_core::prepared_files::files_under(&base) {
+            out.extend(
+                files
+                    .iter()
+                    .filter_map(|file| file.strip_suffix(".png"))
+                    .map(|rel| format!("{namespace}:{rel}")),
+            );
+            continue;
+        }
         let mut stack = vec![base.clone()];
         while let Some(dir) = stack.pop() {
             let Ok(entries) = fs::read_dir(&dir) else {
@@ -369,14 +379,17 @@ pub fn generate(
             let (_, _, key) = load(palette_key, "textures/palettes")?;
             let (_, _, target) = load(palette, "textures/palettes")?;
             let mut mapped = argb(&pixels);
-            apply_palette(&mut mapped, &argb(&key), &argb(&target))?;
-            let out = mapped
+            let key = argb(&key);
+            let target = argb(&target);
+            apply_palette(&mut mapped, &key, &target)?;
+            let out: Vec<u8> = mapped
                 .iter()
                 .flat_map(|p| {
                     let [a, r, g, b] = p.to_be_bytes();
                     [r, g, b, a]
                 })
                 .collect();
+            drop(mapped);
             Some((w, h, out))
         }
     }

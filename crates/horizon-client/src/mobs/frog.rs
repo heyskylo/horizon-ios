@@ -162,6 +162,18 @@ pub fn tick(m: &mut Mob) {
     let still = m.fluids.in_water && m.limb_speed <= 1.0e-5;
     m.anim.states[SWIM_IDLE].animate_when(still, age);
 }
+/// `Frog.travelInWater`: `moveRelative(getSpeed(), input)`, the move, then
+/// the motion scaled by 0.9. `getSpeed` is the speed the move control stored.
+/// Out of water the usual travel runs.
+pub fn travel(m: &mut Mob, w: &MobWorld, input: Vec3, events: &mut Vec<MobEvent>) -> bool {
+    if !m.fluids.in_water {
+        return false;
+    }
+    m.move_relative(m.ai.speed, input);
+    m.do_move(w, events);
+    m.velocity = m.velocity.scale(0.9);
+    true
+}
 
 /// `Frog.canEat`: a slime or magma cube of size 1.
 /// `Frog.updateWalkAnimation`: the frog's short steps walk the legs 25 times
@@ -386,9 +398,10 @@ impl LaySpawn {
                 if let Some(state) = cx.w.registry.default_state("minecraft:frogspawn") {
                     cx.events.push(MobEvent::SetBlock { pos: spawn, state });
                 }
-                cx.events.push(MobEvent::Sound(
+                cx.events.push(MobEvent::entity_sound(
+                    m,
                     "entity.frog.lay_spawn",
-                    [m.position.x, m.position.y, m.position.z],
+                    6,
                     1.0,
                     1.0,
                 ));
@@ -542,12 +555,11 @@ impl Goal for ShootTongue {
         m.look_at([t.position.x, t.eye_y, t.position.z]);
         m.extra.frog.tongue_target = Some(id);
         m.extra.frog.time += 1;
-        let here = [m.position.x, m.position.y, m.position.z];
         match m.extra.frog.phase {
             Phase::MoveToTarget => {
                 if pos.distance_squared(m.position) < EATING_DISTANCE * EATING_DISTANCE {
                     cx.events
-                        .push(MobEvent::Sound("entity.frog.tongue", here, 2.0, 1.0));
+                        .push(MobEvent::entity_sound(m, "entity.frog.tongue", 6, 2.0, 1.0));
                     set_pose(m, sync::USING_TONGUE);
                     // `target.setDeltaMovement(vectorTo(frog).normalize().scale(0.75))`: the
                     // target's own motion is replaced, and it is drawn in.
@@ -573,7 +585,7 @@ impl Goal for ShootTongue {
                     f.phase = Phase::EatAnimation;
                     // eatEntity.
                     cx.events
-                        .push(MobEvent::Sound("entity.frog.eat", here, 2.0, 1.0));
+                        .push(MobEvent::entity_sound(m, "entity.frog.eat", 6, 2.0, 1.0));
                     super::ai::do_hurt_target(m, Who::Mob(id), cx);
                     // `if (!target.isAlive()) target.remove(KILLED)`: no death animation.
                     cx.events.push(MobEvent::RemoveKilled { target: id });
@@ -791,13 +803,13 @@ impl LongJump {
                 // multiply(0.1F, 1.0, 0.1F): the float widened.
                 let slow = f64::from(0.1_f32);
                 m.velocity = m.velocity.multiply(Vec3::new(slow, 1.0, slow));
-                let at = [m.position.x, m.position.y, m.position.z];
                 let landing = if m.species() == Species::Goat {
                     "entity.goat.step"
                 } else {
                     "entity.frog.step"
                 };
-                cx.events.push(MobEvent::Sound(landing, at, 2.0, 1.0));
+                cx.events
+                    .push(MobEvent::entity_sound(m, landing, 6, 2.0, 1.0));
             }
             set_jump_pose(m, cx.w, sync::STANDING);
             sample_cooldown(m, cx.lr, 1);
@@ -962,8 +974,8 @@ impl Goal for LongJump {
             .map_or(0.0, |e| f64::from(0.1_f32 * (e.2 + 1) as f32));
         m.velocity = jump.scale((len + boost) / len);
         self.mid_jump = true;
-        let at = [m.position.x, m.position.y, m.position.z];
-        cx.events.push(MobEvent::Sound(jump_sound(m), at, 1.0, 1.0));
+        cx.events
+            .push(MobEvent::entity_sound(m, jump_sound(m), 6, 1.0, 1.0));
     }
 }
 
@@ -978,6 +990,40 @@ mod tests {
         k.id = "minecraft:frog".into();
         k.species = Species::Frog;
         Mob::new(1, kind, Vec3::new(0.5, 0.0, 0.5), 0.0)
+    }
+
+    /// `Frog.travelInWater`: the move uses `getSpeed` (the speed the move
+    /// control stored, here 0.25, not the movement attribute 1.0 and not the
+    /// turtle's 0.1), then the whole motion is scaled by 0.9. Out of water
+    /// this path does not run.
+    #[test]
+    fn water_travel_uses_get_speed_and_scales_by_nine_tenths() {
+        let ran = crate::mobs::world::with_test_world(&[], |w, _| {
+            let mut m = frog();
+            m.attrs.speed = 1.0;
+            m.ai.speed = 0.25;
+            m.yaw = 0.0;
+            m.velocity = Vec3::new(1.0, -0.5, 0.125);
+            let kept = m.velocity;
+            assert!(!travel(
+                &mut m,
+                w,
+                Vec3::new(0.0, 0.0, 1.0),
+                &mut Vec::new()
+            ));
+            assert_eq!(m.velocity, kept);
+
+            m.fluids.in_water = true;
+            m.position = Vec3::new(0.5, 80.0, 0.5);
+            m.travel(w, Vec3::new(0.0, 0.0, 1.0), &mut Vec::new());
+            // (1, -0.5, 0.125) + (0, 0, getSpeed 0.25) = (1, -0.5, 0.375),
+            // then * 0.9 = (0.9, -0.45, 0.3375).
+            assert!((m.velocity.x - 0.9).abs() < 1.0e-9, "{}", m.velocity.x);
+            assert!((m.velocity.y - -0.45).abs() < 1.0e-9, "{}", m.velocity.y);
+            assert!((m.velocity.z - 0.3375).abs() < 1.0e-9, "{}", m.velocity.z);
+        });
+        // Without a test world the closure does not run; there is nothing else to check.
+        let _ = ran;
     }
 
     /// `Frog.updateWalkAnimation`: target `min(distance * 25, 1)`, 0 while

@@ -113,42 +113,55 @@ impl PartialEq for Vec3 {
 }
 impl Vec3 {
     pub const ZERO: Self = Self::new(0.0, 0.0, 0.0);
+    #[inline]
     pub const fn new(x: f64, y: f64, z: f64) -> Self {
         Self { x, y, z }
     }
+    #[inline]
     pub const fn components(self) -> [f64; 3] {
         [self.x, self.y, self.z]
     }
+    #[inline]
     pub fn component(self, axis: Axis) -> f64 {
         self.components()[axis as usize]
     }
+    #[inline]
     pub fn from_block(pos: BlockPos) -> Self {
         Self::new(pos.x as f64, pos.y as f64, pos.z as f64)
     }
+    #[inline]
     pub fn add_vector(self, other: Self) -> Self {
         Self::new(self.x + other.x, self.y + other.y, self.z + other.z)
     }
+    #[inline]
     pub fn subtract(self, other: Self) -> Self {
         self.add_vector(Self::new(-other.x, -other.y, -other.z))
     }
+    #[inline]
     pub fn vector_to(self, other: Self) -> Self {
         Self::new(other.x - self.x, other.y - self.y, other.z - self.z)
     }
+    #[inline]
     pub fn multiply(self, other: Self) -> Self {
         Self::new(self.x * other.x, self.y * other.y, self.z * other.z)
     }
+    #[inline]
     pub fn scale(self, scale: f64) -> Self {
         self.multiply(Self::new(scale, scale, scale))
     }
+    #[inline]
     pub fn reverse(self) -> Self {
         self.scale(-1.0)
     }
+    #[inline]
     pub fn horizontal(self) -> Self {
         Self::new(self.x, 0.0, self.z)
     }
+    #[inline]
     pub fn dot(self, other: Self) -> f64 {
         self.x * other.x + self.y * other.y + self.z * other.z
     }
+    #[inline]
     pub fn cross(self, other: Self) -> Self {
         Self::new(
             self.y * other.z - self.z * other.y,
@@ -156,24 +169,30 @@ impl Vec3 {
             self.x * other.y - self.y * other.x,
         )
     }
+    #[inline]
     pub fn length_squared(self) -> f64 {
         self.x * self.x + self.y * self.y + self.z * self.z
     }
+    #[inline]
     pub fn length(self) -> f64 {
         self.length_squared().sqrt()
     }
+    #[inline]
     pub fn horizontal_distance_squared(self) -> f64 {
         self.x * self.x + self.z * self.z
     }
+    #[inline]
     pub fn horizontal_distance(self) -> f64 {
         self.horizontal_distance_squared().sqrt()
     }
+    #[inline]
     pub fn distance_squared(self, other: Self) -> f64 {
         let x = self.x - other.x;
         let y = self.y - other.y;
         let z = self.z - other.z;
         x * x + y * y + z * z
     }
+    #[inline]
     pub fn distance(self, other: Self) -> f64 {
         self.distance_squared(other).sqrt()
     }
@@ -201,12 +220,15 @@ impl Vec3 {
                 .scale(1.0 / other.length_squared())
         }
     }
+    #[inline]
     pub fn closer_than(self, other: Self, distance: f64) -> bool {
         self.distance_squared(other) < distance * distance
     }
+    #[inline]
     pub fn is_finite(self) -> bool {
         self.x.is_finite() && self.y.is_finite() && self.z.is_finite()
     }
+    #[inline]
     pub fn with_component(self, axis: Axis, value: f64) -> Self {
         let mut coordinates = self.components();
         coordinates[axis as usize] = value;
@@ -280,6 +302,7 @@ pub struct BlockHit {
 }
 
 impl Aabb {
+    #[inline]
     pub fn new(min: Vec3, max: Vec3) -> Self {
         Self {
             min: Vec3::new(
@@ -294,9 +317,11 @@ impl Aabb {
             ),
         }
     }
+    #[inline]
     pub fn block(pos: BlockPos) -> Self {
         Self::new(Vec3::from_block(pos), Vec3::from_block(pos.offset(1, 1, 1)))
     }
+    #[inline]
     pub fn unit_cube(lower: Vec3) -> Self {
         Self::new(lower, lower.add_vector(Vec3::new(1.0, 1.0, 1.0)))
     }
@@ -324,28 +349,35 @@ impl Aabb {
             )),
         )
     }
+    #[inline]
     pub const fn min_position(self) -> Vec3 {
         self.min
     }
+    #[inline]
     pub const fn max_position(self) -> Vec3 {
         self.max
     }
+    #[inline]
     pub fn min(self, axis: Axis) -> f64 {
         self.min.component(axis)
     }
+    #[inline]
     pub fn max(self, axis: Axis) -> f64 {
         self.max.component(axis)
     }
+    #[inline]
     pub fn with_min(self, axis: Axis, value: f64) -> Self {
         let mut a = self.min.components();
         a[axis as usize] = value;
         Self::new(Vec3::new(a[0], a[1], a[2]), self.max)
     }
+    #[inline]
     pub fn with_max(self, axis: Axis, value: f64) -> Self {
         let mut a = self.max.components();
         a[axis as usize] = value;
         Self::new(self.min, Vec3::new(a[0], a[1], a[2]))
     }
+    #[inline]
     pub fn size(self) -> Vec3 {
         self.min.vector_to(self.max)
     }
@@ -353,16 +385,20 @@ impl Aabb {
         let v = self.size();
         (v.x + v.y + v.z) / 3.0
     }
+    #[inline]
     pub fn center(self) -> Vec3 {
         self.min.lerp(self.max, 0.5)
     }
+    #[inline]
     pub fn bottom_center(self) -> Vec3 {
         let v = self.center();
         Vec3::new(v.x, self.min.y, v.z)
     }
+    #[inline]
     pub fn move_by(self, offset: Vec3) -> Self {
         Self::new(self.min.add_vector(offset), self.max.add_vector(offset))
     }
+    #[inline]
     pub fn inflate(self, amount: Vec3) -> Self {
         Self::new(
             Vec3::new(
@@ -373,15 +409,19 @@ impl Aabb {
             self.max.add_vector(amount),
         )
     }
+    #[inline]
     pub fn deflate(self, amount: Vec3) -> Self {
         self.inflate(amount.reverse())
     }
+    #[inline]
     pub fn expand_towards(self, amount: Vec3) -> Self {
         self.change_extent(amount, false)
     }
+    #[inline]
     pub fn contract(self, amount: Vec3) -> Self {
         self.change_extent(amount, true)
     }
+    #[inline]
     fn change_extent(self, amount: Vec3, contract: bool) -> Self {
         let mut min = self.min.components();
         let mut max = self.max.components();
@@ -397,6 +437,7 @@ impl Aabb {
             Vec3::new(max[0], max[1], max[2]),
         )
     }
+    #[inline]
     pub fn intersect(self, other: Self) -> Self {
         Self::new(
             Vec3::new(
@@ -411,6 +452,7 @@ impl Aabb {
             ),
         )
     }
+    #[inline]
     pub fn union_bounds(self, other: Self) -> Self {
         Self::new(
             Vec3::new(
@@ -427,6 +469,7 @@ impl Aabb {
     }
     /// `AABB.intersects(minX, minY, minZ, maxX, maxY, maxZ)`: `intersects`
     /// with a box given by its corners, `min` below `max` on every axis.
+    #[inline]
     pub fn intersects_corners(self, min: Vec3, max: Vec3) -> bool {
         self.min.x < max.x
             && self.max.x > min.x
@@ -435,6 +478,7 @@ impl Aabb {
             && self.min.z < max.z
             && self.max.z > min.z
     }
+    #[inline]
     pub fn intersects(self, other: Self) -> bool {
         self.min.x < other.max.x
             && self.max.x > other.min.x
@@ -443,6 +487,7 @@ impl Aabb {
             && self.min.z < other.max.z
             && self.max.z > other.min.z
     }
+    #[inline]
     pub fn contains(self, point: Vec3) -> bool {
         point.x >= self.min.x
             && point.x < self.max.x
@@ -451,6 +496,7 @@ impl Aabb {
             && point.z >= self.min.z
             && point.z < self.max.z
     }
+    #[inline]
     pub fn has_nan(self) -> bool {
         self.min
             .components()
@@ -458,6 +504,7 @@ impl Aabb {
             .chain(self.max.components())
             .any(f64::is_nan)
     }
+    #[inline]
     pub fn distance_squared_to_point(self, point: Vec3) -> f64 {
         let distances = Axis::ALL.map(|a| {
             java_max(
@@ -569,6 +616,7 @@ impl Aabb {
     }
 }
 
+#[inline]
 pub(crate) fn java_min(a: f64, b: f64) -> f64 {
     if a.is_nan() {
         a
@@ -582,6 +630,7 @@ pub(crate) fn java_min(a: f64, b: f64) -> f64 {
         b
     }
 }
+#[inline]
 pub(crate) fn java_max(a: f64, b: f64) -> f64 {
     if a.is_nan() {
         a
@@ -595,6 +644,7 @@ pub(crate) fn java_max(a: f64, b: f64) -> f64 {
         b
     }
 }
+#[inline]
 pub(crate) fn clamp(value: f64, min: f64, max: f64) -> f64 {
     if value < min {
         min

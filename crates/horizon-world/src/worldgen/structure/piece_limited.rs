@@ -690,7 +690,7 @@ struct Assembler<'a> {
 /// Where a child goes: the parent's jigsaw and what it needs.
 struct Slot<'s> {
     source: usize,
-    jigsaw: &'s super::jigsaw::Jigsaw,
+    jigsaw: &'s super::jigsaw::Jigsaw<'s>,
     target_pos: [i32; 3],
     free: Rc<RefCell<Free>>,
     depth: i32,

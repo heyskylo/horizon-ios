@@ -96,6 +96,7 @@ impl ExactSizeIterator for BlockBoxIter {}
 impl std::iter::FusedIterator for BlockBoxIter {}
 
 impl BlockPos {
+    #[inline]
     pub fn containing(point: Vec3) -> Self {
         Self::new(floor_i32(point.x), floor_i32(point.y), floor_i32(point.z))
     }

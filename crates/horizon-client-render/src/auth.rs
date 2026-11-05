@@ -49,6 +49,10 @@ impl AuthSession {
             access_token: access_token.to_owned(),
         }
     }
+
+    pub fn access_token(&self) -> &str {
+        &self.access_token
+    }
     /// The session file's JSON: {"name", "uuid", "access_token", "user_type": "msa", "xuid"}.
     pub fn parse(text: &str) -> Result<Self, String> {
         let v: serde_json::Value =
@@ -100,6 +104,22 @@ impl AuthSession {
         let text = std::fs::read_to_string(path);
         let _ = std::fs::remove_file(path);
         Self::parse(&text.map_err(|e| format!("{}: {e}", path.display()))?)
+    }
+    /// The access token's expiry (its JWT `exp`) has passed, or is a minute away: the session
+    /// service would refuse it. A token that doesn't read as a JWT counts as good: the server
+    /// says.
+    pub fn expired(&self) -> bool {
+        let exp = self
+            .access_token
+            .split('.')
+            .nth(1)
+            .and_then(|p| crate::skins::base64_decode(&p.replace('-', "+").replace('_', "/")))
+            .and_then(|json| serde_json::from_slice::<serde_json::Value>(&json).ok())
+            .and_then(|v| v.get("exp")?.as_u64());
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        exp.is_some_and(|exp| exp <= now + 60)
     }
 }
 
@@ -187,6 +207,7 @@ pub(crate) fn discovery() -> Result<Arc<serde_json::Value>, JoinError> {
     let doc: serde_json::Value = agent()
         .get(&discovery_url())
         .call()
+        .inspect_err(|e| log::warn!("The services discovery document: {e}"))
         .ok()
         .and_then(|r| r.into_string().ok())
         .and_then(|t| serde_json::from_str(&t).ok())
@@ -253,9 +274,33 @@ pub fn join_request(session: &AuthSession, server_hash: &str) -> String {
     .to_string()
 }
 
+/// A join that got no answer is worth one more try, as leaving and joining
+/// again would be: `join` is safe to repeat, it only records the server's
+/// hash. Any other answer is the service's own and stands.
+fn with_one_retry(
+    mut join: impl FnMut() -> Result<(), JoinError>,
+    pause: Duration,
+) -> Result<(), JoinError> {
+    match join() {
+        Err(JoinError::Unavailable) => {
+            std::thread::sleep(pause);
+            join()
+        }
+        result => result,
+    }
+}
+
 /// MinecraftServicesSessionService.joinServer: tell the session service this
-/// account is joining the server whose hash is `server_hash`.
+/// account is joining the server whose hash is `server_hash`. Horizon tries
+/// twice when the service doesn't answer; vanilla asks the player to.
 pub fn join_server(session: &AuthSession, server_hash: &str) -> Result<(), JoinError> {
+    with_one_retry(
+        || join_server_once(session, server_hash),
+        Duration::from_millis(500),
+    )
+}
+
+fn join_server_once(session: &AuthSession, server_hash: &str) -> Result<(), JoinError> {
     let doc = discovery()?;
     let url = endpoint(&doc, "session", "join").ok_or(JoinError::Unavailable)?;
     match agent()
@@ -264,11 +309,19 @@ pub fn join_server(session: &AuthSession, server_hash: &str) -> Result<(), JoinE
         .send_string(&join_request(session, server_hash))
     {
         Ok(_) => Ok(()),
-        Err(ureq::Error::Status(status, response)) => Err(JoinError::from_response(
-            status,
-            &response.into_string().unwrap_or_default(),
-        )),
-        Err(ureq::Error::Transport(_)) => Err(JoinError::Unavailable),
+        Err(ureq::Error::Status(status, response)) => {
+            if status >= 500 {
+                log::warn!("The session service's join answered {status}");
+            }
+            Err(JoinError::from_response(
+                status,
+                &response.into_string().unwrap_or_default(),
+            ))
+        }
+        Err(ureq::Error::Transport(e)) => {
+            log::warn!("The session service's join: {e}");
+            Err(JoinError::Unavailable)
+        }
     }
 }
 
@@ -403,11 +456,8 @@ struct ChatKeys {
     fetching: bool,
     next_try: Option<std::time::Instant>,
 }
-static CHAT_KEYS: Mutex<ChatKeys> = Mutex::new(ChatKeys {
-    current: None,
-    fetching: false,
-    next_try: None,
-});
+static CHAT_KEYS: std::sync::LazyLock<Mutex<std::collections::HashMap<u128, ChatKeys>>> =
+    std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
 
 /// prepareKeyPair (`now`: on a join) or, from a tick, shouldRefreshKeyPair
 /// then prepareKeyPair: start fetching when there is no key pair or it is
@@ -416,7 +466,14 @@ pub fn prepare_chat_keys(now: bool) {
     let Some(session) = current() else {
         return;
     };
-    let mut keys = CHAT_KEYS.lock().unwrap();
+    prepare_chat_keys_for(session, now);
+}
+
+/// Prepare keys for this player, independently of the other local accounts.
+pub fn prepare_chat_keys_for(session: Arc<AuthSession>, now: bool) {
+    let uuid = session.uuid;
+    let mut accounts = CHAT_KEYS.lock().unwrap();
+    let keys = accounts.entry(uuid).or_default();
     let instant = std::time::Instant::now();
     if keys.fetching || !now && keys.next_try.is_some_and(|t| instant < t) {
         return;
@@ -430,12 +487,13 @@ pub fn prepare_chat_keys(now: bool) {
         return;
     }
     keys.fetching = true;
-    drop(keys);
+    drop(accounts);
     let spawned = std::thread::Builder::new()
         .name("Profile key fetch".into())
         .spawn(move || {
             let result = fetch_chat_keys(&session);
-            let mut keys = CHAT_KEYS.lock().unwrap();
+            let mut accounts = CHAT_KEYS.lock().unwrap();
+            let keys = accounts.entry(uuid).or_default();
             keys.fetching = false;
             match result {
                 Ok(pair) => keys.current = Some(Arc::new(pair)),
@@ -443,19 +501,24 @@ pub fn prepare_chat_keys(now: bool) {
             }
         });
     if spawned.is_err() {
-        CHAT_KEYS.lock().unwrap().fetching = false;
+        CHAT_KEYS.lock().unwrap().entry(uuid).or_default().fetching = false;
     }
 }
 
 /// The chat key pair fetched so far, unless it has expired.
 pub fn chat_keys() -> Option<Arc<ChatKeyPair>> {
-    let now = now_millis();
+    chat_keys_for(current()?.uuid)
+}
+
+/// This account's key pair; another local player's keys can never be returned.
+pub fn chat_keys_for(uuid: u128) -> Option<Arc<ChatKeyPair>> {
     CHAT_KEYS
         .lock()
         .unwrap()
+        .get(&uuid)?
         .current
         .clone()
-        .filter(|k| !k.public.has_expired(now))
+        .filter(|k| !k.public.has_expired(now_millis()))
 }
 
 const MINECRAFT_PROFILE: &str = "https://api.minecraftservices.com/minecraft/profile";
@@ -563,6 +626,77 @@ mod tests {
     use super::*;
 
     const UUID: u128 = 0x069a79f444e94726a5befca90e38aaf5;
+
+    /// Runs `with_one_retry` over these answers, in order: the result and how
+    /// many it asked for.
+    fn joined(answers: &[Result<(), JoinError>]) -> (Result<(), JoinError>, usize) {
+        let mut asked = 0;
+        let result = with_one_retry(
+            || {
+                asked += 1;
+                answers[asked - 1].clone()
+            },
+            Duration::ZERO,
+        );
+        (result, asked)
+    }
+
+    #[test]
+    fn a_join_with_no_answer_is_tried_once_more() {
+        let none = Err(JoinError::Unavailable);
+        assert_eq!(joined(&[none.clone(), Ok(())]), (Ok(()), 2));
+        // Twice without an answer: the message the player knows.
+        assert_eq!(joined(&[none.clone(), none.clone()]), (none, 2));
+    }
+
+    #[test]
+    fn a_join_the_service_answered_is_not_tried_again() {
+        assert_eq!(joined(&[Ok(())]), (Ok(()), 1));
+        for refused in [
+            JoinError::InvalidSession,
+            JoinError::Banned,
+            JoinError::InsufficientPrivileges,
+            JoinError::Other("Status: 429".into()),
+        ] {
+            assert_eq!(joined(&[Err(refused.clone())]), (Err(refused), 1));
+        }
+    }
+
+    /// base64url without padding, as a JWT's parts are.
+    fn base64url(bytes: &[u8]) -> String {
+        const ALPHABET: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        let mut out = String::new();
+        for chunk in bytes.chunks(3) {
+            let n =
+                chunk.iter().fold(0u32, |n, &b| n << 8 | u32::from(b)) << (8 * (3 - chunk.len()));
+            for k in 0..=chunk.len() {
+                out.push(char::from(ALPHABET[(n >> (18 - 6 * k) & 63) as usize]));
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn a_token_past_its_exp_is_expired() {
+        // header.payload.signature, the payload base64url without padding.
+        let token = |exp: u64| {
+            let json = format!(r#"{{"exp":{exp}}}"#);
+            let payload = base64url(json.as_bytes());
+            AuthSession::new("Ann", UUID, &format!("e30.{payload}.sig"))
+        };
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert!(token(now - 10).expired());
+        assert!(
+            token(now + 30).expired(),
+            "a minute from its end: as good as gone"
+        );
+        assert!(!token(now + 3600).expired());
+        assert!(!AuthSession::new("Ann", UUID, "not-a-jwt").expired());
+    }
 
     fn write(dir: &Path, text: &str, mode: u32) -> std::path::PathBuf {
         let path = dir.join("session.json");
@@ -725,6 +859,37 @@ mod tests {
             "refreshedAfter": "2022-07-30T15:05:24.548227Z",
         })
         .to_string()
+    }
+
+    #[test]
+    fn local_accounts_use_their_own_chat_keys() {
+        let pair = |signature: &[u8]| {
+            let mut keys = parse_certificates(&certificates(PRIVATE_B64, PUBLIC_B64)).unwrap();
+            keys.public.expires_at = i64::MAX;
+            keys.refreshed_after = i64::MAX;
+            keys.public.signature = signature.to_vec();
+            Arc::new(keys)
+        };
+        let ann = pair(b"ann");
+        let bea = pair(b"bea");
+        {
+            let mut accounts = CHAT_KEYS.lock().unwrap();
+            for (uuid, keys) in [(101, ann.clone()), (102, bea.clone())] {
+                accounts.insert(
+                    uuid,
+                    ChatKeys {
+                        current: Some(keys),
+                        ..Default::default()
+                    },
+                );
+            }
+        }
+        prepare_chat_keys_for(Arc::new(AuthSession::new("Ann", 101, "unused")), true);
+        assert!(Arc::ptr_eq(&chat_keys_for(101).unwrap(), &ann));
+        assert!(Arc::ptr_eq(&chat_keys_for(102).unwrap(), &bea));
+        assert!(chat_keys_for(103).is_none());
+        CHAT_KEYS.lock().unwrap().remove(&101);
+        CHAT_KEYS.lock().unwrap().remove(&102);
     }
 
     #[test]

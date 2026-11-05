@@ -92,7 +92,7 @@ Owner: [ludovic111](https://github.com/ludovic111) · Tracking: [#3914](https://
 
 <details><summary>Technical</summary>
 
-Since [#1514](https://github.com/horizon-rust/horizon/issues/1514) single player runs on the server thread (`game/integrated.rs`) and the window joins it as a client; `--in-frame` keeps the old path. The open `[server-thread]` issues list the gaps. In review: breeding's advancement and statistic ([#3873](https://github.com/horizon-rust/horizon/issues/3873)), the client's menu when the server replaces the player ([#3841](https://github.com/horizon-rust/horizon/issues/3841)), splashes when falling in water ([#3621](https://github.com/horizon-rust/horizon/issues/3621)). [docs/server-levels.md](docs/server-levels.md).
+Since [#1514](https://github.com/horizon-rust/horizon/issues/1514) single player runs on the server thread (`game/integrated.rs`) and the window joins it as a client. The open `[server-thread]` issues list the gaps. In review: breeding's advancement and statistic ([#3873](https://github.com/horizon-rust/horizon/issues/3873)), the client's menu when the server replaces the player ([#3841](https://github.com/horizon-rust/horizon/issues/3841)), splashes when falling in water ([#3621](https://github.com/horizon-rust/horizon/issues/3621)). [docs/server-levels.md](docs/server-levels.md).
 
 </details>
 
@@ -206,7 +206,7 @@ Manage a server from a console, ban and pardon players, and drive it from other 
 
 <details><summary>Technical</summary>
 
-`horizon-server console` (a text interface), `ban`, `pardon`, `ban-ip` and `mcp` over stdio. Admin API additions: the player list, kick, ban, op and whitelist, an SSE stream of logs and events, a text metrics endpoint, config GET and PATCH, backup delete and download. The panel's later features (bans, worlds, server.properties import, logs and crash reports, modpacks) and vanilla's management protocol (the JSON-RPC over WebSocket that the `management-server-*` keys configure), so vanilla's tools can manage a Horizon server. [docs/server.md](docs/server.md), [docs/api/server.md](docs/api/server.md).
+`horizon-server console` (a text interface), `ban`, `pardon`, `ban-ip` and `mcp` over stdio. Admin API additions: the player list, kick, ban, op and whitelist, an SSE stream of logs and events, a text metrics endpoint, config GET and PATCH, backup delete and download. The last pieces merged: bans edited while the server is stopped ([#9767](https://github.com/horizon-rust/horizon/issues/9767)) and the MCP tools' contracts pinned by a test ([#9748](https://github.com/horizon-rust/horizon/issues/9748)). The panel's later features and vanilla's management protocol are their own item (server-panel-management). [docs/server.md](docs/server.md), [docs/api/server.md](docs/api/server.md).
 
 </details>
 
@@ -234,11 +234,11 @@ Client-of-a-server fixes in `game/remote*.rs` and `horizon-protocol`: mobs' aggr
 
 #### One single-player path: remove the in-frame world
 
-Single player will have one way to run, the server thread, so every fix works everywhere and there are fewer bugs. The older in-frame mode goes once everything passes without it.
+Single player has one way to run, the server thread, so every fix works everywhere and there are fewer bugs. The older in-frame mode is removed.
 
 <details><summary>Technical</summary>
 
-`--in-frame` (also `--no-server-thread` and `HORIZON_SERVER_THREAD=0`) still ticks the world inside the window's `Game`, and most harnesses test that path. Delete it once `lan_e2e --server-thread` and the parity harnesses pass on the server thread, which also halves the bug surface. See also 'Single player as a server' and [docs/server-levels.md](docs/server-levels.md).
+`--in-frame` (also `--no-server-thread` and `HORIZON_SERVER_THREAD=0`) ticked the world inside the window's `Game`. [#6473](https://github.com/horizon-rust/horizon/issues/6473) removes it with the code only it reached (the window's world loader and player tick, its portal travel and loading screen, the in-frame LAN host); the harnesses run on the server thread. See also 'Single player as a server' and [docs/server-levels.md](docs/server-levels.md).
 
 </details>
 
@@ -395,6 +395,16 @@ A Datapacks tab beside Mods and Resource packs: install into a chosen world's da
 </details>
 
 ### Servers and multiplayer
+
+#### Server panel extras and vanilla's management protocol
+
+More of a server managed from its web panel (bans, worlds, logs and crash reports, modpacks), and vanilla's own server-management tools working with a Horizon server.
+
+<details><summary>Technical</summary>
+
+The panel's later features (bans, worlds, server.properties import, logs and crash reports, modpacks) and vanilla's management protocol (the JSON-RPC over WebSocket that the `management-server-*` keys configure), so vanilla's tools can manage a Horizon server. Split from server-admin. [docs/server.md](docs/server.md), [docs/api/server.md](docs/api/server.md).
+
+</details>
 
 #### Ely.by and other sign-in providers
 
@@ -600,16 +610,6 @@ An output device list in Music & Sounds, falling back to the system default. [#1
 
 </details>
 
-#### Play in your language
-
-Item names, container titles and server messages follow the language you pick, as in vanilla. Today parts of the game stay in English.
-
-<details><summary>Technical</summary>
-
-Translatable components resolved through the selected language for items, containers and server text ([#1806](https://github.com/horizon-rust/horizon/issues/1806)), on top of the bundled languages the prepared resources carry ([#1594](https://github.com/horizon-rust/horizon/issues/1594)). Left: the client's own screens ([#1672](https://github.com/horizon-rust/horizon/issues/1672)) and the main menu with zh_cn.
-
-</details>
-
 ### Rendering
 
 #### A light default shader pack
@@ -631,16 +631,6 @@ An optional ray-tracing mode for graphics cards that support it (RTX and recent 
 <details><summary>Technical</summary>
 
 A spike with ray-traced sun shadows, off by default, is a draft ([#1180](https://github.com/horizon-rust/horizon/issues/1180)). Reflections, global illumination, Apple M3 and newer if it is cheap, and a performance report per card come after.
-
-</details>
-
-#### HDR monitors
-
-Output for HDR monitors: brighter highlights and richer colour where your screen supports it.
-
-<details><summary>Technical</summary>
-
-Issue [#1441](https://github.com/horizon-rust/horizon/issues/1441). Needs a surface format and a tone-mapping path per backend, and tests on real HDR screens on Windows, macOS and Linux.
 
 </details>
 
@@ -870,30 +860,11 @@ More: [https://playhorizon.dev/docs/performance](https://playhorizon.dev/docs/pe
 
 </details>
 
-### Gameplay parity
-
-#### End city banners keep their pattern
-
-Banners in End cities show as plain magenta instead of with their pattern.
-
-<details><summary>Technical</summary>
-
-Compare the banner block entities the End city templates place with vanilla's (`EndCityPieces`, the templates' block entity NBT, `BannerBlockEntity`'s patterns), in `crates/horizon-world/src/worldgen/structure/`. Issue [#1438](https://github.com/horizon-rust/horizon/issues/1438); possibly related: [#526](https://github.com/horizon-rust/horizon/issues/526).
-
-</details>
-
-#### Enchanted loot in End cities
-
-Armour and tools in End city chests should come enchanted, as in vanilla.
-
-<details><summary>Technical</summary>
-
-`loot.rs` implements `enchant_with_levels`: find why the End city chest table's rolls come out bare, and compare them with vanilla's for a few seeds. Issues [#1437](https://github.com/horizon-rust/horizon/issues/1437), [#1660](https://github.com/horizon-rust/horizon/issues/1660).
-
-</details>
-
 ## Recently shipped
 
+- **Enchanted loot in End cities** (v0.2.73): Armour and tools in End city chests should come enchanted, as in vanilla. [#1437](https://github.com/horizon-rust/horizon/issues/1437) · [#1660](https://github.com/horizon-rust/horizon/issues/1660) · [#1911](https://github.com/horizon-rust/horizon/issues/1911) · [#2037](https://github.com/horizon-rust/horizon/issues/2037)
+- **End city banners keep their pattern** (v0.2.67): Banners in End cities show as plain magenta instead of with their pattern. [#1438](https://github.com/horizon-rust/horizon/issues/1438) · [#526](https://github.com/horizon-rust/horizon/issues/526) · [#1928](https://github.com/horizon-rust/horizon/issues/1928)
+- **Play in your language** (v0.2.65): Item names, container titles and server messages follow the language you pick, as in vanilla. Today parts of the game stay in English. [#1806](https://github.com/horizon-rust/horizon/issues/1806) · [#1594](https://github.com/horizon-rust/horizon/issues/1594) · [#1672](https://github.com/horizon-rust/horizon/issues/1672)
 - **Chickens flap while they fall** (v0.2.67): Chickens should flap their wings while they fall, not stand still in the air. [#1706](https://github.com/horizon-rust/horizon/issues/1706) · [#1892](https://github.com/horizon-rust/horizon/issues/1892)
 - **Ctrl+Backspace and scroll bars in menus** (v0.2.67): Ctrl+Backspace should delete a whole word in the creative search, and every list's scroll bar should be draggable. [#1764](https://github.com/horizon-rust/horizon/issues/1764) · [#1782](https://github.com/horizon-rust/horizon/issues/1782) · [#1884](https://github.com/horizon-rust/horizon/issues/1884) · [#1931](https://github.com/horizon-rust/horizon/issues/1931)
 - **A pointing hand over buttons** (v0.2.67): The mouse pointer should turn into a pointing hand over menu buttons, as in vanilla 26.3. [#1347](https://github.com/horizon-rust/horizon/issues/1347) · [#1897](https://github.com/horizon-rust/horizon/issues/1897)
@@ -904,6 +875,7 @@ Armour and tools in End city chests should come enchanted, as in vanilla.
 - **Discord Rich Presence** (v0.2.58): Your Discord profile can show that you are playing Horizon, with a switch to turn it off. [#1787](https://github.com/horizon-rust/horizon/issues/1787) · [#1788](https://github.com/horizon-rust/horizon/issues/1788)
 - **Server dialogs and login screens** (v0.2.67): Servers that show dialogs, such as the register and login screens of AuthMe, will work in Horizon. [#1720](https://github.com/horizon-rust/horizon/issues/1720) · [#1734](https://github.com/horizon-rust/horizon/issues/1734) · [#1735](https://github.com/horizon-rust/horizon/issues/1735)
 - **Microsoft sign-in** (launcher@0.2.17): Sign in with your Microsoft account in the launcher to play on online-mode servers. [docs/microsoft-account.md](docs/microsoft-account.md) · [#2879](https://github.com/horizon-rust/horizon/issues/2879)
+- **HDR monitors** (v0.2.74): Output for HDR monitors: brighter highlights and richer colour where your screen supports it. [#1441](https://github.com/horizon-rust/horizon/issues/1441) · [#2021](https://github.com/horizon-rust/horizon/issues/2021) · [#2292](https://github.com/horizon-rust/horizon/issues/2292)
 - **OpenGL for old computers** (v0.2.63): Horizon now starts on old PCs whose graphics card has no Vulkan or DirectX 12 driver: it switches to OpenGL by itself, and Options > Graphics can pick OpenGL by hand. [#1917](https://github.com/horizon-rust/horizon/issues/1917) · [#1920](https://github.com/horizon-rust/horizon/issues/1920) · [#1936](https://github.com/horizon-rust/horizon/issues/1936)
 - **Server resource packs** (v0.2.48): Servers can send you their resource pack: Horizon asks, downloads it and applies it, like vanilla. [#1562](https://github.com/horizon-rust/horizon/issues/1562) · [#1569](https://github.com/horizon-rust/horizon/issues/1569) · [#1570](https://github.com/horizon-rust/horizon/issues/1570)
 - **Single player on its own server thread** (v0.2.39): Single player runs on a server thread, as vanilla does, so the world keeps ticking smoothly while the window draws. [#1514](https://github.com/horizon-rust/horizon/issues/1514) · [docs/server-levels.md](docs/server-levels.md)

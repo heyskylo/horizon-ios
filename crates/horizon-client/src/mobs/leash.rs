@@ -201,6 +201,16 @@ pub fn elastic_pull(
     } else {
         (&OWN, &THEIRS)
     };
+    // Vec3.yRot takes a float angle and widens Mth's float lookup results.
+    // Bound the repair to quad attachment physics; retain the single spring.
+    let rotate = |v: [f64; 3], angle: f64| {
+        if quad {
+            let v = Vec3::new(v[0], v[1], v[2]).rotate_y(angle as f32);
+            [v.x, v.y, v.z]
+        } else {
+            rot_y(v, angle)
+        }
+    };
     let (w, h) = size;
     let own_yaw = f64::from(yaw.to_radians());
     let holder_yaw = f64::from(holder.yaw.to_radians());
@@ -208,13 +218,13 @@ pub fn elastic_pull(
     let mut torque = 0.0;
     let mut any = false;
     for (mine, other) in own.iter().zip(theirs) {
-        let lever = rot_y([mine[0] * w, mine[1] * h, mine[2] * w], -own_yaw);
+        let lever = rotate([mine[0] * w, mine[1] * h, mine[2] * w], -own_yaw);
         let object = [
             position.x + lever[0],
             position.y + lever[1],
             position.z + lever[2],
         ];
-        let arm = rot_y(
+        let arm = rotate(
             [
                 other[0] * holder.width,
                 other[1] * holder.height,
@@ -295,6 +305,10 @@ pub fn can_be_leashed(m: &Mob) -> bool {
         // (`isMobControlled`), which a mob alone cannot see.
         // shortcut: isMobControlled, when a mob can ride a zombie nautilus.
         S::Nautilus | S::ZombieNautilus => !super::nautilus::aggravated(m),
+        // SulfurCube.canBeLeashed: `hasBodyItem()`, so only a cube with a
+        // block in its body takes a lead. Its category is a monster's, which
+        // `Mob.canBeLeashed`'s `!(this instanceof Enemy)` rule would refuse.
+        S::SulfurCube => super::sulfur_cube::has_body(m),
         _ => !m.hostile() && !m.removed,
     }
 }
@@ -313,7 +327,13 @@ pub fn tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         });
         return;
     }
-    let Some(state) = holder_state(w, holder) else {
+    let state = holder_state(w, holder).filter(|_| {
+        holder != Holder::Player
+            || m.extra
+                .leash_player
+                .is_none_or(|u| w.player.as_ref().is_some_and(|p| p.uuid == u))
+    });
+    let Some(state) = state else {
         // The holder is gone: the lead drops.
         if !matches!(holder, Holder::Player) {
             events.push(MobEvent::LeashBreak {
@@ -365,13 +385,20 @@ pub fn tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         return;
     }
     let stretched = distance > ELASTIC - state.width - f64::from(m.width());
+    // Leashable.checkElasticInteractions: both ends must support the shared
+    // quad attachment points. The live holder was resolved and checked above;
+    // these physics points are independent of the rendered rope offsets.
+    let quad = supports_quad_leash(m.species())
+        && matches!(holder, Holder::Mob(id) if w.seen(id).is_some_and(|s|
+            matches!(s.species, Species::Ghast | Species::HappyGhast)));
     let pulled = stretched
-        && spring(
+        && elastic_pull(
             m.position,
             m.yaw,
             (f64::from(m.width()), f64::from(m.height())),
             &state,
             m.velocity,
+            quad,
         )
         .is_some_and(|(force, torque)| {
             m.extra.leash_spin += 10.0 * torque;
@@ -392,7 +419,12 @@ pub fn tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     if !pulled {
         close_range(m, w, &state);
     }
-    m.yaw -= m.extra.leash_spin as f32;
+    // tickLeash widens the float yaw before subtracting double momentum.
+    if quad {
+        m.yaw = (f64::from(m.yaw) - m.extra.leash_spin) as f32;
+    } else {
+        m.yaw -= m.extra.leash_spin as f32;
+    }
     let friction = if m.on_ground {
         0.6 * 0.91
     } else if m.is_in_liquid() {
@@ -400,13 +432,26 @@ pub fn tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     } else {
         0.91
     };
-    m.extra.leash_spin *= friction;
+    if quad {
+        // angularFriction returns a float, including the ground product.
+        let friction = if m.on_ground {
+            let [x, y, z] = m.on_pos(0.500_001);
+            w.facts.get(w.world.block(x, y, z)).friction * 0.91_f32
+        } else if m.is_in_liquid() {
+            0.8_f32
+        } else {
+            0.91_f32
+        };
+        m.extra.leash_spin *= f64::from(friction);
+    } else {
+        m.extra.leash_spin *= friction;
+    }
 }
 /// The lead comes off (`Mob.onLeashRemoved`): no more home.
 pub fn remove(m: &mut Mob) -> Option<Holder> {
     let was = m.extra.leash.take();
     if was.is_some() {
-        m.ai.home = None;
+        m.ai.clear_home();
     }
     was
 }
@@ -467,6 +512,52 @@ pub fn leash_offset(m: &Mob) -> [f64; 3] {
     } else if m.species() == super::Species::Bee {
         // Bee.getLeashOffset: half the eye height, a fifth of the width ahead.
         [0.0, 0.5 * m.eye_height(), f64::from(m.width() * 0.2)]
+    } else if m.species() == super::Species::IronGolem {
+        // IronGolem.getLeashOffset: 0.875 of the eye height.
+        [
+            0.0,
+            f64::from(0.875_f32 * m.eye_height() as f32),
+            f64::from(m.width() * 0.4),
+        ]
+    } else if m.species() == super::Species::SnowGolem {
+        // SnowGolem.getLeashOffset: 0.75 of the eye height.
+        [
+            0.0,
+            f64::from(0.75_f32 * m.eye_height() as f32),
+            f64::from(m.width() * 0.4),
+        ]
+    } else if m.species() == super::Species::CopperGolem {
+        // CopperGolem.getLeashOffset: 0.75 of the eye height, on the centre
+        // rather than the default `bbWidth / 2` in front.
+        [0.0, f64::from(0.75_f32 * m.eye_height() as f32), 0.0]
+    } else if m.species() == super::Species::SulfurCube {
+        // SulfurCube.getLeashOffset: half of `getBbHeight`, on the centre
+        // rather than the default `bbWidth / 2` in front.
+        [0.0, f64::from(m.height() / 2.0), 0.0]
+    } else if m.species() == super::Species::Fox {
+        // Fox.getLeashOffset: 0.55 of the eye height.
+        [
+            0.0,
+            f64::from(0.55_f32 * m.eye_height() as f32),
+            f64::from(m.width() * 0.4),
+        ]
+    } else if let Some(factor) = match m.species() {
+        // Pig.getLeashOffset, Rabbit.getLeashOffset and
+        // Strider.getLeashOffset: 0.6 of the eye height; Parrot.getLeashOffset
+        // and Ocelot.getLeashOffset: half of it.
+        super::Species::Pig | super::Species::Rabbit | super::Species::Strider => Some(0.6_f32),
+        super::Species::Parrot | super::Species::Ocelot => Some(0.5_f32),
+        _ => None,
+    } {
+        [
+            0.0,
+            f64::from(factor * m.eye_height() as f32),
+            f64::from(m.width() * 0.4),
+        ]
+    } else if m.species() == super::Species::HappyGhast {
+        // HappyGhast.getLeashOffset: the origin, so the rope hangs at the
+        // ghast's feet rather than an eye height up.
+        [0.0, 0.0, 0.0]
     } else {
         [0.0, m.eye_height(), f64::from(m.width() * 0.4)]
     }
@@ -564,6 +655,98 @@ mod tests {
     use super::*;
 
     #[test]
+    fn mob_tick_selects_quad_only_when_both_live_ends_support_it() {
+        let ran = crate::mobs::world::with_test_world(&[], |world, types| {
+            for (kind, holder_kind, quad) in [
+                ("horse", "happy_ghast", true),
+                ("horse", "ghast", true),
+                ("horse", "cow", false),
+                ("llama", "happy_ghast", false),
+            ] {
+                let new = |id, kind: &str, position, yaw| {
+                    Mob::new(
+                        id,
+                        std::sync::Arc::new(types.types[&format!("minecraft:{kind}")].clone()),
+                        position,
+                        yaw,
+                    )
+                };
+                let mut mob = new(1, kind, Vec3::new(-7.5, 100.0, -4.5), 90.0);
+                let holder = new(2, holder_kind, Vec3::new(0.5, 104.0, 0.5), 30.0);
+                let others = [holder.seen(None)];
+                let mut w = world.clone();
+                w.others = &others;
+                mob.extra.leash = Some(Holder::Mob(holder.id));
+                let state = holder_state(&w, Holder::Mob(holder.id)).unwrap();
+                let (force, torque) = elastic_pull(
+                    mob.position,
+                    mob.yaw,
+                    (f64::from(mob.width()), f64::from(mob.height())),
+                    &state,
+                    Vec3::ZERO,
+                    quad,
+                )
+                .unwrap();
+                let mut events = Vec::new();
+                tick(&mut mob, &w, &mut events);
+                assert_eq!(
+                    mob.velocity,
+                    Vec3::new(force[0] * 0.8, force[1] * 0.2, force[2] * 0.8),
+                    "{kind} held by {holder_kind}"
+                );
+                let yaw = if quad {
+                    (90.0 - 10.0 * torque) as f32
+                } else {
+                    90.0 - (10.0 * torque) as f32
+                };
+                assert_eq!(mob.yaw, yaw);
+                assert!(
+                    !events
+                        .iter()
+                        .any(|e| matches!(e, MobEvent::LeashBreak { .. }))
+                );
+            }
+        });
+        if !ran {
+            eprintln!("quad-leash mob fixture skipped: prepare vanilla entity/movement test data");
+        }
+    }
+
+    #[test]
+    fn a_players_leash_does_not_pull_toward_a_different_player() {
+        crate::mobs::world::with_test_world(&[], |world, types| {
+            let mut w = world.clone();
+            let mut cow = Mob::new(
+                1,
+                std::sync::Arc::new(types.types["minecraft:cow"].clone()),
+                Vec3::new(0.5, 64.0, 0.5),
+                0.0,
+            );
+            let owner = [1, 2, 3, 4];
+            cow.extra.leash = Some(Holder::Player);
+            cow.extra.leash_player = Some(owner);
+            let mut nearby = crate::mobs::world::test_player(Vec3::new(8.5, 64.0, 0.5));
+            nearby.uuid = [5, 6, 7, 8];
+            w.player = Some(nearby);
+            let mut events = Vec::new();
+            tick(&mut cow, &w, &mut events);
+            assert_eq!(
+                cow.velocity,
+                Vec3::ZERO,
+                "absent holder must not use another player"
+            );
+            assert!(events.is_empty());
+            // The same distance does pull once the real holder is the player view.
+            w.player.as_mut().unwrap().uuid = owner;
+            tick(&mut cow, &w, &mut events);
+            assert!(
+                cow.velocity.x > 0.0,
+                "the actual holder must still pull the cow"
+            );
+        });
+    }
+
+    #[test]
     fn quad_leash_points_are_vanillas() {
         // Leashable.createQuadLeashOffsets for a horse (1.3964844 x 1.6).
         let p = create_quad_leash_offsets(1.5, 1.6, 0.04, 0.52, 0.23, 0.87);
@@ -578,6 +761,68 @@ mod tests {
         assert!(near(p[1], [-lr, y, -fb + f]));
         assert!(near(p[2], [lr, y, -fb + f]));
         assert!(near(p[3], [lr, y, fb + f]));
+    }
+    /// `IronGolem`, `SnowGolem`, `CopperGolem` and `Fox.getLeashOffset`: the
+    /// rope hangs at a share of the eye height, and the copper golem's on the
+    /// centre instead of the default `bbWidth / 2` in front.
+    #[test]
+    fn a_golem_or_a_fox_hangs_its_lead_where_vanilla_does() {
+        let _ = crate::mobs::world::with_test_world(&[], |_, types| {
+            for (kind, factor, forwards) in [
+                ("minecraft:iron_golem", 0.875, 0.4),
+                ("minecraft:snow_golem", 0.75, 0.4),
+                ("minecraft:copper_golem", 0.75, 0.0),
+                ("minecraft:fox", 0.55, 0.4),
+            ] {
+                let m = Mob::new(
+                    1,
+                    std::sync::Arc::new(types.types[kind].clone()),
+                    Vec3::ZERO,
+                    0.0,
+                );
+                let o = leash_offset(&m);
+                let h = f64::from(factor * m.eye_height() as f32);
+                let z = f64::from(m.width() * forwards as f32);
+                assert!((o[1] - h).abs() < 1e-9, "{kind}: height {} vs {h}", o[1]);
+                assert!((o[2] - z).abs() < 1e-9, "{kind}: forward {} vs {z}", o[2]);
+                assert_eq!(o[0], 0.0, "{kind}: centred");
+            }
+        });
+    }
+    /// `Pig`, `Rabbit`, `Strider`, `Parrot`, `Ocelot` and
+    /// `HappyGhast.getLeashOffset`: 0.6 or half of the eye height, and the
+    /// happy ghast's rope at the origin, against the default eye-height
+    /// height the fallthrough gave them.
+    #[test]
+    fn a_pig_a_rabbit_a_parrot_an_ocelot_and_a_ghast_hang_their_lead_where_vanilla_does() {
+        let _ = crate::mobs::world::with_test_world(&[], |_, types| {
+            for (kind, factor) in [
+                ("minecraft:pig", 0.6),
+                ("minecraft:rabbit", 0.6),
+                ("minecraft:strider", 0.6),
+                ("minecraft:parrot", 0.5),
+                ("minecraft:ocelot", 0.5),
+                // `Vec3.ZERO`: no eye-height part and no forward shift.
+                ("minecraft:happy_ghast", 0.0),
+            ] {
+                let m = Mob::new(
+                    1,
+                    std::sync::Arc::new(types.types[kind].clone()),
+                    Vec3::ZERO,
+                    0.0,
+                );
+                let o = leash_offset(&m);
+                let h = f64::from(factor * m.eye_height() as f32);
+                let z = f64::from(m.width() * 0.4);
+                assert!((o[1] - h).abs() < 1e-9, "{kind}: height {} vs {h}", o[1]);
+                assert!(
+                    (o[2] - if factor == 0.0 { 0.0 } else { z }).abs() < 1e-9,
+                    "{kind}: forward {} vs {z}",
+                    o[2]
+                );
+                assert_eq!(o[0], 0.0, "{kind}: centred");
+            }
+        });
     }
     /// `Nautilus.canBeLeashed` and `ZombieNautilus.canBeLeashed`: an
     /// aggravated nautilus, one holding an `ANGRY_AT` or an `ATTACK_TARGET`
@@ -732,5 +977,39 @@ mod tests {
         assert_eq!(k.position.x, 10.5);
         assert_eq!(k.position.y, 64.375);
         assert_eq!(k.center.y, 64.625);
+    }
+    /// `SulfurCube.canBeLeashed` is `hasBodyItem()`: only a cube with a block
+    /// in its body takes a lead. `SulfurCube.getLeashOffset` hangs the rope at
+    /// half of `getBbHeight`, on the cube's centre rather than the default
+    /// `bbWidth / 2` in front.
+    #[test]
+    fn a_sulfur_cube_is_leashed_by_its_block_and_hangs_at_its_middle() {
+        // `with_test_world` answers false when the prepared data is absent, and
+        // the edits are inside the closure, so a skip needs no early return.
+        let _ = crate::mobs::world::with_test_world(&[], |_, types| {
+            let new = || {
+                Mob::new(
+                    1,
+                    std::sync::Arc::new(types.types["minecraft:sulfur_cube"].clone()),
+                    horizon_core::geometry::Vec3::ZERO,
+                    0.0,
+                )
+            };
+            let empty = new();
+            let mut full = new();
+            full.extra.body = Some("minecraft:stone".into());
+            for m in [&empty, &full] {
+                let o = leash_offset(m);
+                let h = f64::from(m.height() / 2.0);
+                assert!(
+                    (o[1] - h).abs() < 1e-9,
+                    "half the box height: {} vs {h}",
+                    o[1]
+                );
+                assert_eq!((o[0], o[2]), (0.0, 0.0), "hangs on the centre");
+            }
+            assert!(!can_be_leashed(&empty), "a cube with no block in it");
+            assert!(can_be_leashed(&full), "a cube holding a block");
+        });
     }
 }

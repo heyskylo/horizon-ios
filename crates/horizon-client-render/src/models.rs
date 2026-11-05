@@ -99,9 +99,14 @@ pub(crate) fn prepare_with_models(
         .filter(|name| registry.default_state(name).is_some())
         .map(|name| name.strip_prefix("minecraft:").unwrap_or(name))
         .collect();
-    let mut catalog =
-        StateModels::from_facts_with_models(root, registry, &blocks, sprites, &facts, models)?;
-    catalog.bake_standalone(root, sprites, models, standalone())?;
+    let mut catalog = {
+        let _step = crate::spans::startup::step("core.bake_states");
+        StateModels::from_facts_with_models(root, registry, &blocks, sprites, &facts, models)?
+    };
+    {
+        let _step = crate::spans::startup::step("core.bake_standalone");
+        catalog.bake_standalone(root, sprites, models, standalone())?;
+    }
     let mut placements = Vec::new();
     let mut states = Vec::new();
     for (index, (name, properties)) in GALLERY.iter().enumerate() {
@@ -110,7 +115,16 @@ pub(crate) fn prepare_with_models(
             .state(state)
             .ok_or("missing gallery registry state")?;
         let position = BlockPos::new((index % 4) as i32 * 4 - 7, 4, (index / 4) as i32 * 4 + 14);
-        let selected = catalog.collect(state, position)?;
+        // A state no definition binds (a pack's partial blockstate file
+        // without vanilla's below it) is left out, as the mesher skips it,
+        // instead of failing the whole pack.
+        let selected = match catalog.collect(state, position) {
+            Ok(selected) => selected,
+            Err(e) => {
+                log::warn!("Horizon: gallery block {name} has no model: {e}");
+                continue;
+            }
+        };
         states.push(json!({"block":actual.name,"properties":actual.properties,"state_id":state.0,
             "position":[position.x,position.y,position.z],
             "models":selected.iter().map(|(v,_)| json!({"model":v.model,"rotations":v.rotations,"uv_lock":v.uv_lock})).collect::<Vec<_>>()}));

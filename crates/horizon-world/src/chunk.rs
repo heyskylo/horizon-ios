@@ -379,6 +379,20 @@ pub struct BlockSection<'r> {
     extra: Compound,
 }
 impl<'r> BlockSection<'r> {
+    /// The section's heap bytes: its packed storage, and its palette, counts
+    /// and free list (`horizon-ctl memory`; extra NBT not counted).
+    pub fn heap_bytes(&self) -> [usize; 2] {
+        [
+            self.storage.as_ref().map_or(0, PackedStorage::heap_bytes),
+            self.palette.capacity() * std::mem::size_of::<BlockStateId>()
+                + self.counts.capacity() * std::mem::size_of::<u16>()
+                + self.free.capacity() * std::mem::size_of::<u32>(),
+        ]
+    }
+    /// Bits per block of its packed storage, 0 for a single-state section.
+    pub fn storage_bits(&self) -> u8 {
+        self.storage.as_ref().map_or(0, PackedStorage::bits)
+    }
     pub fn registry(&self) -> &'r BlockRegistry {
         self.registry
     }
@@ -452,6 +466,12 @@ impl<'r> BlockSection<'r> {
         debug_assert!(index < 4096);
         let id = self.storage.as_ref().map_or(0, |s| s.read(index));
         self.palette[id as usize]
+    }
+    /// The state of every block, when the section stores only one (no
+    /// word array).
+    #[inline]
+    pub(crate) fn uniform_state(&self) -> Option<BlockStateId> {
+        self.storage.is_none().then(|| self.palette[0])
     }
     pub fn set(&mut self, index: usize, state: BlockStateId) -> io::Result<BlockStateId> {
         if index >= 4096 {

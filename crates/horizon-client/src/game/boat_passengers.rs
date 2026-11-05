@@ -18,6 +18,12 @@ pub(super) const BOARDING_COOLDOWN: i32 = 60;
 /// feet are.
 const PLAYER_RIDING_OFFSET: f64 = 0.6;
 
+/// `Entity.canRide` for a mob species: `Warden` and `WitherBoss` override it
+/// to return false, so no vehicle ever takes them aboard.
+pub(super) fn species_can_ride(species: Species) -> bool {
+    !matches!(species, Species::Warden | Species::Wither)
+}
+
 /// `Entity.isVehicle`: a player or a mob rides it.
 fn carries(m: &Mob) -> bool {
     m.rider.is_some() || m.extra.rider.is_some()
@@ -199,7 +205,7 @@ impl Game<'_> {
         let room = !self.boats[i].under_water();
         // (mob, touched by the boat's sweep, its own pushEntities reaches the boat)
         let teams = self.mob_teams();
-        let mobs: Vec<(usize, bool, bool)> = (0..self.mobs.len())
+        let mobs: Vec<(u32, bool, bool)> = (0..self.mobs.len())
             .filter_map(|j| {
                 let m = &self.mobs[j];
                 if !pushable(m) || m.extra.mount.is_some() && self.mob_root_vehicle(j) == Some(id) {
@@ -212,7 +218,7 @@ impl Game<'_> {
                 let pushes = m.species() != Species::Bat
                     && mb.intersects(bb)
                     && pushable_by(team, None, true);
-                (touched || pushes).then_some((j, touched, pushes))
+                (touched || pushes).then_some((m.id, touched, pushes))
             })
             .collect();
         let player_team = teams.of(Who::Player);
@@ -230,7 +236,12 @@ impl Game<'_> {
             })
             .collect();
         drop(teams);
-        for (j, touched, pushes) in mobs {
+        for (mob, touched, pushes) in mobs {
+            // By id: a mod's mount hook may have removed mobs since the list
+            // was made, which moves the others' indices.
+            let Some(j) = self.mobs.iter().position(|m| m.id == mob) else {
+                continue;
+            };
             if touched {
                 let m = &self.mobs[j];
                 let boards = pick_up
@@ -244,16 +255,21 @@ impl Game<'_> {
                 if boards {
                     // startRiding fails quietly (no push) while the mob's
                     // boarding cooldown runs (Entity.canRide) or the boat
-                    // is under water.
-                    if room && m.extra.boarding_cooldown <= 0 {
-                        let m = &mut self.mobs[j];
+                    // is under water, or when a mod cancels it
+                    // (EntityMountEvent).
+                    let ready = m.extra.boarding_cooldown <= 0 && species_can_ride(m.species());
+                    if room
+                        && ready
+                        && self.native_mob_may_ride(mob, id, true)
+                        && let Some(m) = self.mobs.iter_mut().find(|m| m.id == mob)
+                    {
                         m.extra.mount = Some(id);
                         m.extra.passenger = true;
                         m.ai.nav.stop();
-                        let mob = m.id;
                         count += 1;
                         // Mob.startRiding drops its lead.
                         self.break_leash(mob, true, false);
+                        self.note_started_riding(id);
                     }
                     continue;
                 }
@@ -357,7 +373,8 @@ impl Game<'_> {
                     let m = &self.mobs[j];
                     let animal = is_animal(m.species());
                     // Another player's too, on a server's client.
-                    let offset = riders::vehicle_attachment(m);
+                    // AbstractBoat's box is 1.375 wide.
+                    let offset = riders::vehicle_attachment(m, 1.375);
                     let index = players + n;
                     // calculatePassengerBodyYRot.
                     let turn = match (animal && full, m.id.is_multiple_of(2)) {
@@ -435,6 +452,13 @@ mod tests {
         assert!((v.x - f64::from(0.05_f32)).abs() < 1e-12 && v.z == 0.0);
         // Almost on the same spot: no push.
         assert!(push_impulse(Vec3::ZERO, Vec3::new(0.005, 0.0, 0.0)).is_none());
+    }
+
+    #[test]
+    fn warden_and_wither_never_board() {
+        assert!(!species_can_ride(Species::Warden));
+        assert!(!species_can_ride(Species::Wither));
+        assert!(species_can_ride(Species::Cow));
     }
 
     #[test]

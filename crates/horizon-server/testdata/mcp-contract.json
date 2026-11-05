@@ -1,0 +1,46 @@
+{
+  "calls": [
+    {"arguments": {}, "isError": true, "name": "status", "text": "{\n  \"error\": \"no server is running in mcp-golden-no-server (the start tool starts it)\"\n}"},
+    {"arguments": {}, "isError": true, "name": "stop", "text": "{\n  \"error\": \"stop needs confirm: true\"\n}"},
+    {"arguments": {"confirm": false, "name": "backup"}, "isError": true, "name": "restore", "text": "{\n  \"error\": \"restore needs confirm: true\"\n}"},
+    {"arguments": {"confirm": true, "name": "bad&name"}, "isError": true, "name": "delete_backup", "text": "{\n  \"error\": \"a backup's file name has letters, digits, -, _ and . only\"\n}"},
+    {"arguments": {"types": "chat&since=0"}, "isError": true, "name": "events", "text": "{\n  \"error\": \"types are words like chat,death, separated by commas\"\n}"},
+    {"arguments": {"action": "clear"}, "isError": true, "name": "whitelist", "text": "{\n  \"error\": \"whitelist's action is add, remove, on or off, not \\\"clear\\\"\"\n}"}
+  ],
+  "initialize": {
+    "capabilities": {"tools": {}},
+    "instructions": "Run and moderate a Horizon (Minecraft Java Edition 26.3) server. Start with status and players. Moderation tools (kick, ban, pardon, ban_ip, op, whitelist...) run vanilla's console commands and answer `changed` and the console's lines; events and logs read what happened since a number they return. Destructive tools that can't be undone need confirm: true.",
+    "protocolVersion": "2025-06-18",
+    "serverInfo": {"name": "horizon-server", "version": "0.1.0"}
+  },
+  "tools_list": {
+    "resultType": "complete",
+    "tool_count": 22,
+    "tools": [
+      {"annotations": {"destructiveHint": false, "readOnlyHint": true}, "description": "How the server does: phase, uptime, crashes, TPS, MSPT, players, RAM, CPU, updates", "name": "status", "properties": {}, "required": []},
+      {"annotations": {"destructiveHint": false, "readOnlyHint": true}, "description": "Who is online (address, ping, position, op level), the operators, the whitelist and the bans", "name": "players", "properties": {}, "required": []},
+      {"annotations": {"destructiveHint": true, "readOnlyHint": false}, "description": "Run a console command (as vanilla's server console) and return what it logged", "name": "run_command", "properties": {"command": "string"}, "required": ["command"]},
+      {"annotations": {"destructiveHint": false, "readOnlyHint": true}, "description": "The log lines after the since-th (the last 2000 are kept); returns next to ask from", "name": "logs", "properties": {"since": "integer"}, "required": []},
+      {"annotations": {"destructiveHint": false, "readOnlyHint": true}, "description": "What happened after event number since: joins, leaves, kicks, chat, deaths, log lines, phase changes; returns next", "name": "events", "properties": {"since": "integer", "types": "string"}, "required": []},
+      {"annotations": {"destructiveHint": true, "readOnlyHint": false}, "description": "Kick an online player", "name": "kick", "properties": {"name": "string", "reason": "string"}, "required": ["name"]},
+      {"annotations": {"destructiveHint": true, "readOnlyHint": false}, "description": "Ban a player (kicked if online)", "name": "ban", "properties": {"name": "string", "reason": "string"}, "required": ["name"]},
+      {"annotations": {"destructiveHint": false, "readOnlyHint": false}, "description": "Lift a player's ban", "name": "pardon", "properties": {"name": "string"}, "required": ["name"]},
+      {"annotations": {"destructiveHint": true, "readOnlyHint": false}, "description": "Ban an address, or the address an online player plays from (its players are kicked)", "name": "ban_ip", "properties": {"ip": "string", "name": "string", "reason": "string"}, "required": []},
+      {"annotations": {"destructiveHint": false, "readOnlyHint": false}, "description": "Lift an address's ban", "name": "pardon_ip", "properties": {"ip": "string"}, "required": ["ip"]},
+      {"annotations": {"destructiveHint": false, "readOnlyHint": false}, "description": "Make a player an operator", "name": "op", "properties": {"name": "string"}, "required": ["name"]},
+      {"annotations": {"destructiveHint": true, "readOnlyHint": false}, "description": "Make a player no longer an operator", "name": "deop", "properties": {"name": "string"}, "required": ["name"]},
+      {"annotations": {"destructiveHint": false, "readOnlyHint": false}, "description": "Change the whitelist: add or remove a player, or turn it on or off", "name": "whitelist", "properties": {"action": "string", "name": "string"}, "required": ["action"]},
+      {"annotations": {"destructiveHint": false, "readOnlyHint": true}, "description": "The backups, newest first", "name": "list_backups", "properties": {}, "required": []},
+      {"annotations": {"destructiveHint": false, "readOnlyHint": false}, "description": "Back up the world and settings now (a running server saves first and stays up)", "name": "backup", "properties": {"name": "string"}, "required": []},
+      {"annotations": {"destructiveHint": true, "readOnlyHint": false}, "description": "Delete a backup", "name": "delete_backup", "properties": {"confirm": "boolean", "name": "string"}, "required": ["name", "confirm"]},
+      {"annotations": {"destructiveHint": true, "readOnlyHint": false}, "description": "Restart the server with a backup's world, or with one dimension of it (what it replaces is kept in backups/)", "name": "restore", "properties": {"confirm": "boolean", "dimension": "string", "name": "string"}, "required": ["name", "confirm"]},
+      {"annotations": {"destructiveHint": false, "readOnlyHint": true}, "description": "The settings in server.toml", "name": "get_config", "properties": {}, "required": []},
+      {"annotations": {"destructiveHint": false, "readOnlyHint": false}, "description": "Change settings, e.g. {\"world.difficulty\": \"hard\"}; says which apply now and which at the next start", "name": "set_config", "properties": {"changes": "object"}, "required": ["changes"]},
+      {"annotations": {"destructiveHint": false, "readOnlyHint": false}, "description": "Start the server in the background and wait until the game is up", "name": "start", "properties": {}, "required": []},
+      {"annotations": {"destructiveHint": true, "readOnlyHint": false}, "description": "Restart the game (players are disconnected for a moment)", "name": "restart", "properties": {}, "required": []},
+      {"annotations": {"destructiveHint": true, "readOnlyHint": false}, "description": "Stop the game and horizon-server", "name": "stop", "properties": {"confirm": "boolean"}, "required": ["confirm"]}
+    ]
+  },
+  "unknown_method": {"code": -32601, "message": "Method not found: ping"},
+  "unknown_tool": {"code": -32602, "message": "Unknown tool nope"}
+}

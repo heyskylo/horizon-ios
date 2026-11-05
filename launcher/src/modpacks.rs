@@ -12,7 +12,7 @@ use horizon_port_pack::{
     fetch::{Fetched, How},
     import::Pack,
     pipeline::{self, Log},
-    report::{Row, Status},
+    report::{self, Row, Status},
     resourcepacks::{self, Report as ResourceReport, State},
 };
 use std::fs;
@@ -93,6 +93,44 @@ impl Imported {
         ));
         parts.join("  ·  ")
     }
+    /// The plain headline above the numbers, in the launcher's language: how much of the pack
+    /// comes over and what does not. The same lines as `horizon_port_pack::report::Summary::lines`
+    /// (a test keeps the English equal); none for a pack with no mod to port.
+    pub fn headline(&self) -> Vec<String> {
+        use crate::i18n::{tr, trf};
+        let s = report::summary(&self.rows);
+        let n = |count: usize| count.to_string();
+        let mut lines = Vec::new();
+        if s.needing == 0 {
+            return lines;
+        }
+        lines.push(trf(
+            "{carried} of {total} mods that need porting come over as content (blocks, items and \
+             structures); their own code does not run.",
+            &[("carried", &n(s.carried)), ("total", &n(s.needing))],
+        ));
+        if s.ready + s.blocked + s.later > 0 {
+            lines.push(trf(
+                "Not yet: {ready} are content mods Port can carry over, {blocked} need mod support \
+                 Horizon does not have yet (machines, menus, behaviour, mobs, dimensions, client \
+                 features), {later} are not sorted yet (not identified, or waiting on other mods or \
+                 other work).",
+                &[
+                    ("ready", &n(s.ready)),
+                    ("blocked", &n(s.blocked)),
+                    ("later", &n(s.later)),
+                ],
+            ));
+        }
+        if s.partial > 0 {
+            lines.push(
+                tr("Partial means part of a mod came over, but something is left out, differs from \
+                    the original or has not been checked yet.")
+                .to_string(),
+            );
+        }
+        lines
+    }
     /// What getting the jars did, in one line, or None before it ran.
     pub fn jars(&self) -> Option<String> {
         if self.fetched.files.is_empty() {
@@ -121,6 +159,46 @@ impl Imported {
             &[("summary", &parts.join(", "))],
         ))
     }
+}
+
+/// A row's plain explanation in the launcher's language. Unknown sentences from older or
+/// newer reports keep their text; technical details remain untouched.
+pub fn row_plain(row: &Row) -> String {
+    use crate::i18n::{tr, trf};
+    let plain = match row.plain.as_str() {
+        "Its blocks and items came over and passed Horizon's checks; the mod's own code is not run." => tr("Its blocks and items came over and passed Horizon's checks; the mod's own code is not run."),
+        "Part of it came over, but something is left out, differs from the original or has not been checked yet; the technical detail says what." => tr("Part of it came over, but something is left out, differs from the original or has not been checked yet; the technical detail says what."),
+        "It does not come over yet." => tr("It does not come over yet."),
+        "Nothing to port: Horizon has it built in or does not need it." => tr("Nothing to port: Horizon has it built in or does not need it."),
+        "Horizon cannot tell yet what this mod does (it needs its jar or a reviewed entry), so it cannot say whether it will come over." => tr("Horizon cannot tell yet what this mod does (it needs its jar or a reviewed entry), so it cannot say whether it will come over."),
+        "It joins other mods together, so it waits until those are ported." => tr("It joins other mods together, so it waits until those are ported."),
+        "Content only (blocks, items, structures). Its jar is here, but it has not been carried over yet." => tr("Content only (blocks, items, structures). Its jar is here, but it has not been carried over yet."),
+        "Content only (blocks, items, structures). It can come over once its jar is here." => tr("Content only (blocks, items, structures). It can come over once its jar is here."),
+        "Needs what blocks and items do when used, placed, broken or ticked, which Horizon's mod API cannot run from a mod yet, so it does not come over." => tr("Needs what blocks and items do when used, placed, broken or ticked, which Horizon's mod API cannot run from a mod yet, so it does not come over."),
+        "Needs machine-style features (block entities, menus, item, fluid and energy handling, networking) that Horizon's mod API does not have yet, so it does not come over." => tr("Needs machine-style features (block entities, menus, item, fluid and energy handling, networking) that Horizon's mod API does not have yet, so it does not come over."),
+        "Needs mobs, custom rendering and models, dimensions or new game hooks that Horizon's mod API does not have yet, so it does not come over." => tr("Needs mobs, custom rendering and models, dimensions or new game hooks that Horizon's mod API does not have yet, so it does not come over."),
+        "Needs the game's client interfaces (keys, targeting, inventory reading, interface, rendering), so it does not come over yet." => tr("Needs the game's client interfaces (keys, targeting, inventory reading, interface, rendering), so it does not come over yet."),
+        "Horizon has not worked out what this mod needs yet." => tr("Horizon has not worked out what this mod needs yet."),
+        "A library other mods build on. Horizon's mod API and SDK take its place, so there is nothing to port." => tr("A library other mods build on. Horizon's mod API and SDK take its place, so there is nothing to port."),
+        "It makes the game faster. Horizon's own engine does that, so there is nothing to port." => tr("It makes the game faster. Horizon's own engine does that, so there is nothing to port."),
+        "Pack tooling or a game feature that Horizon already has, so there is nothing to port." => tr("Pack tooling or a game feature that Horizon already has, so there is nothing to port."),
+        "Built into Horizon already, so there is nothing to port." => tr("Built into Horizon already, so there is nothing to port."),
+        "Nothing to port." => tr("Nothing to port."),
+        "Shader packs are not converted yet." => tr("Shader packs are not converted yet."),
+        "Copied as a resource pack; Horizon has not checked how it renders. Turn it on in the game's Resource Packs screen." => tr("Copied as a resource pack; Horizon has not checked how it renders. Turn it on in the game's Resource Packs screen."),
+        "Not downloaded yet; Port gets it." => tr("Not downloaded yet; Port gets it."),
+        "Horizon could not use this resource pack yet; the technical detail says why." => tr("Horizon could not use this resource pack yet; the technical detail says why."),
+        other => other,
+    };
+    let waiting = match row.waiting {
+        0 => return plain.to_owned(),
+        1 => tr("It also waits for 1 mod it depends on that is not ported yet.").to_owned(),
+        n => trf(
+            "It also waits for {count} mods it depends on that are not ported yet.",
+            &[("count", &n.to_string())],
+        ),
+    };
+    format!("{plain} {waiting}")
 }
 
 /// Reads the pack in `work`.

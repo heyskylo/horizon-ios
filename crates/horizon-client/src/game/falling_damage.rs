@@ -1,6 +1,6 @@
 //! Landing impacts for falling blocks, before their placement/drop decision.
 use super::{FallingBlock, Game, Landing};
-use horizon_client::{falling_block, items::ItemStack};
+use horizon_client::falling_block;
 use horizon_core::{geometry::Vec3, position::BlockPos, random::RandomSource};
 use horizon_world::level::LevelEvent;
 
@@ -78,24 +78,23 @@ impl Game<'_> {
         }
     }
 
+    /// `FallingBlockEntity.tick`: finish a landing, including the placed block
+    /// entity and the carried `TileEntityData` applied through loadWithComponents.
     pub(super) fn finish_falling_block(&mut self, block: FallingBlock, pos: [i32; 3]) {
         let name = self.res.facts().get(block.state).name.clone();
         let anvil = name.ends_with("anvil");
+        // Fallable.onBrokenAfterFall: the anvil's, the pointed dripstone's and
+        // the sulfur spike's level event.
         let sound_event = match &*name {
             "minecraft:pointed_dripstone" => Some(1045),
             "minecraft:sulfur_spike" => Some(1052),
+            _ if anvil => Some(1029),
             _ => None,
         };
         if block.damage.cancel_drop {
             if let Some(id) = sound_event {
                 self.level_events.push(LevelEvent::LevelEvent {
                     id,
-                    pos: BlockPos::new(pos[0], pos[1], pos[2]),
-                    data: 0,
-                });
-            } else if anvil {
-                self.level_events.push(LevelEvent::LevelEvent {
-                    id: 1029,
                     pos: BlockPos::new(pos[0], pos[1], pos[2]),
                     data: 0,
                 });
@@ -130,6 +129,27 @@ impl Game<'_> {
                 false,
             )
         });
+        if let Landing::Placed(state) = landing {
+            let name = self.res.facts().get(state).name.clone();
+            // LevelChunk.setBlockState creates the new block entity even when
+            // the falling entity has no supplied data.
+            if let Some(entity) = self.new_block_entity(&name) {
+                let key = (pos[0], pos[1], pos[2]);
+                let mut tag = horizon_client::save::encode_block_entity(key, &entity, &name);
+                self.world.block_entities.insert(key, entity);
+                // FallingBlockEntity.tick copies each supplied field over the
+                // new block entity's saved defaults before loadWithComponents.
+                if let Some(horizon_world::nbt::Tag::Compound(carried)) = block
+                    .saved
+                    .as_ref()
+                    .and_then(|saved| saved.1.get("TileEntityData"))
+                    && let horizon_world::nbt::Tag::Compound(fields) = &mut tag
+                {
+                    fields.extend(carried.clone());
+                    self.load_block_entity_nbt(pos, &horizon_client::snbt::to_snbt(&tag));
+                }
+            }
+        }
         // FallingBlockEntity.tick: the players tracking the entity are told to
         // show the block for a moment, after the block update.
         if let Landing::Placed(state) = landing
@@ -157,18 +177,9 @@ impl Game<'_> {
                     data: 0,
                 });
             }
-            let item = self.res.facts().get(block.state).item.clone();
-            if &*item != "minecraft:air" {
-                self.pop_resource(
-                    pos,
-                    ItemStack {
-                        item,
-                        count: 1,
-                        damage: 0,
-                        extra: None,
-                    },
-                );
-            }
+            // FallingBlockEntity.tick: spawnAtLocation, from where the entity
+            // came to rest (on top of a turtle egg, not inside its cell).
+            self.drop_falling_block(block.state, block.position);
         }
     }
     fn falling_hurt_player(&mut self, position: Vec3, amount: f32, kind: &str) {
@@ -180,15 +191,36 @@ impl Game<'_> {
         }) {
             return;
         }
+        let original = amount;
         let amount = if self.armor[0].is_some() {
             amount * 0.75
         } else {
             amount
         };
-        if let Some(p) = self.player.as_mut()
-            && let Some(id) = self.motion.health.damage.id(kind)
-        {
-            let _ = p.hurt(&self.motion.health, self.world.health_rules, id, amount);
+        let hurt = match (self.player.as_mut(), self.health_resources.damage.id(kind)) {
+            (Some(p), Some(id)) => p
+                .hurt(&self.health_resources, self.world.health_rules, id, amount)
+                .unwrap_or(false),
+            _ => false,
+        };
+        if hurt {
+            // LivingEntity.hurtServer: ENTITY_HURT_PLAYER, the falling block
+            // (`DamageSources.fallingBlock(this)` and the like) being both the
+            // causing and the direct entity.
+            let block = horizon_client::advancements::EntityView {
+                kind: "minecraft:falling_block".into(),
+                position: [position.x, position.y, position.z],
+                ..Default::default()
+            };
+            self.trigger_entity_hurt_player(&horizon_client::advancements::DamageView {
+                kind: kind.to_owned(),
+                direct: Some(block.clone()),
+                is_direct: true,
+                source: Some(block),
+                original,
+                actual: amount,
+                blocked: false,
+            });
         }
     }
 }

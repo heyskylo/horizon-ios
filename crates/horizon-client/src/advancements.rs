@@ -40,6 +40,7 @@ pub struct Rewards {
     pub recipes: Vec<String>,
     pub experience: i32,
     pub loot: Vec<String>,
+    pub function: Option<String>,
 }
 #[derive(Clone, Debug)]
 pub struct Advancement {
@@ -61,6 +62,81 @@ pub struct Tree {
     /// those naming none in `recipes_any`.
     by_recipe: HashMap<String, Vec<(usize, usize)>>,
     recipes_any: Vec<(usize, usize)>,
+    /// The triggers with a criterion that may test what the player looks at
+    /// (`index_looking_at`).
+    looking_at_triggers: BTreeSet<String>,
+    /// The triggers with a criterion that may test an entity's `nbt`
+    /// (`index_nbt`).
+    nbt_triggers: BTreeSet<String>,
+    /// What the criteria of each trigger may ask of the player's level,
+    /// statistics, advancements and recipes (`index_player_facts`).
+    player_fact_triggers: HashMap<String, FactsAsked>,
+}
+/// Which of `PlayerPredicate`'s level, `stats`, `advancements` and `recipes`
+/// a trigger's criteria may test: only those are filled in its player view.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FactsAsked {
+    pub level: bool,
+    pub stats: bool,
+    pub advancements: bool,
+    pub recipes: bool,
+}
+impl FactsAsked {
+    pub const ALL: Self = Self {
+        level: true,
+        stats: true,
+        advancements: true,
+        recipes: true,
+    };
+    /// Asked by either.
+    pub fn or(self, other: Self) -> Self {
+        Self {
+            level: self.level || other.level,
+            stats: self.stats || other.stats,
+            advancements: self.advancements || other.advancements,
+            recipes: self.recipes || other.recipes,
+        }
+    }
+}
+/// What `v` (a predicate, a list of conditions or an item modifier) may ask
+/// of the player's level, statistics, advancements and recipes: the fields
+/// of its player predicates, and all four for a `minecraft:reference` to a
+/// predicate file. Walked without reading anything else, for the commands
+/// that test a predicate on the player.
+pub fn facts_asked_in(v: &Value) -> FactsAsked {
+    let mut asked = FactsAsked::default();
+    let mut todo = vec![v];
+    while let Some(v) = todo.pop() {
+        match v {
+            Value::Array(list) => todo.extend(list),
+            Value::Object(o) => {
+                // A predicate file, or (`function`) an item modifier file.
+                let kind =
+                    (o.get("condition").or_else(|| o.get("type"))).or_else(|| o.get("function"));
+                if kind
+                    .and_then(Value::as_str)
+                    .is_some_and(|k| full(k) == "minecraft:reference")
+                {
+                    return FactsAsked::ALL;
+                }
+                for (key, value) in o {
+                    if full(key) == "minecraft:type_specific/player"
+                        && let Some(p) = value.as_object()
+                    {
+                        asked = asked.or(FactsAsked {
+                            level: p.contains_key("level"),
+                            stats: p.contains_key("stats"),
+                            advancements: p.contains_key("advancements"),
+                            recipes: p.contains_key("recipes"),
+                        });
+                    }
+                    todo.push(value);
+                }
+            }
+            _ => {}
+        }
+    }
+    asked
 }
 fn frame(v: &Value) -> Frame {
     match v.as_str() {
@@ -104,22 +180,20 @@ impl Tree {
         let Ok(namespaces) = std::fs::read_dir(data) else {
             return tree;
         };
-        let mut files = Vec::new();
-        for ns in namespaces.flatten() {
-            let root = ns.path().join("advancement");
-            collect(&root, &root, &ns.file_name().to_string_lossy(), &mut files);
-        }
-        // One JSON per id, the packs' over the game's own.
+        // One JSON per id, the packs' over the game's own. Through `json_folder`: from
+        // the prepared data file, and read once while a load holds the folder.
         let mut json: BTreeMap<String, Value> = BTreeMap::new();
-        files.sort();
-        for (id, path) in files {
-            let Ok(text) = std::fs::read_to_string(&path) else {
+        for ns in namespaces.flatten() {
+            let Ok(folder) = horizon_world::json_folder::read(&ns.path().join("advancement"))
+            else {
                 continue;
             };
-            let Ok(v) = serde_json::from_str::<Value>(&text) else {
-                continue;
-            };
-            json.insert(id, v);
+            let ns = ns.file_name().to_string_lossy().into_owned();
+            for file in &folder.files {
+                if let Ok(v) = serde_json::from_slice::<Value>(file.bytes().unwrap_or_default()) {
+                    json.insert(format!("{ns}:{}", file.name), v);
+                }
+            }
         }
         for (id, files) in overlay.kind("advancement") {
             match serde_json::from_slice::<Value>(horizon_world::loot::PackOverlay::top(files)) {
@@ -143,6 +217,9 @@ impl Tree {
             }
         }
         tree.index_recipes();
+        tree.index_looking_at();
+        tree.index_nbt();
+        tree.index_player_facts();
         tree
     }
     /// Index the `recipe_unlocked` criteria by recipe: a grant that unlocks
@@ -161,12 +238,92 @@ impl Tree {
             match self.list[ai].criteria[ci].conditions.read()["recipes"].as_str() {
                 Some(r) => self
                     .by_recipe
-                    .entry(r.to_owned())
+                    .entry(full(r).into_owned())
                     .or_default()
                     .push((ai, ci)),
                 None => self.recipes_any.push((ai, ci)),
             }
         }
+    }
+    /// Index the triggers whose criteria name `looking_at`, or a
+    /// `minecraft:reference` to a predicate file that might: the text is
+    /// searched, nothing is read.
+    pub fn index_looking_at(&mut self) {
+        let reference = ["\"minecraft:reference\"", "\"reference\""];
+        self.looking_at_triggers = (self.list.iter().flat_map(|a| &a.criteria))
+            .filter(|c| {
+                let json = c.conditions.json();
+                json.contains("\"looking_at\"") || reference.iter().any(|r| json.contains(r))
+            })
+            .map(|c| c.trigger.clone())
+            .collect();
+    }
+    /// Whether a criterion of `trigger` may test what the player looks at.
+    pub fn may_look(&self, trigger: &str) -> bool {
+        self.looking_at_triggers.contains(trigger)
+    }
+    /// Index the triggers whose criteria name `nbt`, or a
+    /// `minecraft:reference` to a predicate file that might: the text is
+    /// searched, nothing is read.
+    pub fn index_nbt(&mut self) {
+        let keys = [
+            "\"nbt\"",
+            "\"minecraft:nbt\"",
+            "\"minecraft:reference\"",
+            "\"reference\"",
+        ];
+        self.nbt_triggers = (self.list.iter().flat_map(|a| &a.criteria))
+            .filter(|c| {
+                let json = c.conditions.json();
+                keys.iter().any(|k| json.contains(k))
+            })
+            .map(|c| c.trigger.clone())
+            .collect();
+    }
+    /// Whether a criterion of `trigger` may test an entity's `nbt`.
+    pub fn may_test_nbt(&self, trigger: &str) -> bool {
+        self.nbt_triggers.contains(trigger)
+    }
+    /// Whether any criterion may test an entity's `nbt`.
+    pub fn tests_nbt(&self) -> bool {
+        !self.nbt_triggers.is_empty()
+    }
+    /// Index what each trigger's criteria may ask of the player's level,
+    /// statistics, advancements and recipes: a player predicate naming the
+    /// field, or a `minecraft:reference` to a predicate file that might (all
+    /// four). The text is searched, nothing is read.
+    pub fn index_player_facts(&mut self) {
+        let reference = ["\"minecraft:reference\"", "\"reference\""];
+        let mut out: HashMap<String, FactsAsked> = HashMap::new();
+        for c in self.list.iter().flat_map(|a| &a.criteria) {
+            let json = c.conditions.json();
+            let asked = if reference.iter().any(|r| json.contains(r)) {
+                FactsAsked::ALL
+            } else if json.contains("type_specific/player") {
+                FactsAsked {
+                    level: json.contains("\"level\""),
+                    stats: json.contains("\"stats\""),
+                    advancements: json.contains("\"advancements\""),
+                    recipes: json.contains("\"recipes\""),
+                }
+            } else {
+                continue;
+            };
+            if asked == FactsAsked::default() {
+                continue;
+            }
+            let e = out.entry(c.trigger.clone()).or_default();
+            *e = e.or(asked);
+        }
+        self.player_fact_triggers = out;
+    }
+    /// What a criterion of `trigger` may ask of the player's level,
+    /// statistics, advancements and recipes.
+    pub fn player_facts_asked(&self, trigger: &str) -> FactsAsked {
+        self.player_fact_triggers
+            .get(trigger)
+            .copied()
+            .unwrap_or_default()
     }
     /// The `recipe_unlocked` criteria that could pass for `recipe`, in tree
     /// order (the others name another recipe).
@@ -200,8 +357,8 @@ impl InventoryIndex {
         fn ids<'t>(v: &Value, tag: &impl Fn(&str) -> Vec<&'t str>, out: &mut Vec<String>) {
             match v {
                 Value::String(s) => match s.strip_prefix('#') {
-                    Some(t) => out.extend(tag(t).into_iter().map(str::to_owned)),
-                    None => out.push(s.clone()),
+                    Some(t) => out.extend(tag(&full(t)).into_iter().map(str::to_owned)),
+                    None => out.push(full(s).into_owned()),
                 },
                 Value::Array(a) => a.iter().for_each(|x| ids(x, tag, out)),
                 _ => {}
@@ -249,28 +406,15 @@ impl InventoryIndex {
         out
     }
 }
-fn collect(root: &Path, dir: &Path, ns: &str, out: &mut Vec<(String, std::path::PathBuf)>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for e in entries.flatten() {
-        let p = e.path();
-        if p.is_dir() {
-            collect(root, &p, ns, out);
-        } else if p.extension().is_some_and(|x| x == "json") {
-            let rel = p.strip_prefix(root).unwrap_or(&p).with_extension("");
-            let rel = rel.to_string_lossy().replace('\\', "/");
-            out.push((format!("{ns}:{rel}"), p));
-        }
-    }
-}
 fn parse(id: &str, v: &Value) -> Option<Advancement> {
     let criteria: Vec<Criterion> = v["criteria"]
         .as_object()?
         .iter()
         .map(|(name, c)| Criterion {
             name: name.clone(),
-            trigger: c["trigger"].as_str().unwrap_or("").to_owned(),
+            trigger: c["trigger"]
+                .as_str()
+                .map_or(String::new(), |t| full(t).into_owned()),
             conditions: LazyJson::new(&c["conditions"]),
         })
         .collect();
@@ -321,6 +465,7 @@ fn parse(id: &str, v: &Value) -> Option<Advancement> {
             recipes: strings(&r["recipes"]),
             experience: r["experience"].as_i64().unwrap_or(0) as i32,
             loot: strings(&r["loot"]),
+            function: r["function"].as_str().map(|id| full(id).into_owned()),
         },
     })
 }
@@ -449,6 +594,8 @@ impl Progress {
 /// What predicates may ask about the world.
 pub trait World {
     fn dimension(&self) -> &str;
+    /// Effective rain/thunder booleans, including the level's dimension rules.
+    fn weather(&self) -> (bool, bool);
     fn biome(&self, pos: [i32; 3]) -> String;
     fn structures(&self, pos: [i32; 3]) -> Vec<String>;
     /// Block name and properties.
@@ -458,6 +605,10 @@ pub trait World {
     fn light(&self, pos: [i32; 3]) -> i32;
     fn smokey(&self, pos: [i32; 3]) -> bool;
     fn in_tag(&self, registry: &str, tag: &str, id: &str) -> bool;
+    /// The block entity's `saveWithFullMetadata` at `pos`, `None` without one.
+    fn block_entity_nbt(&self, _pos: [i32; 3]) -> Option<horizon_world::nbt::Tag> {
+        None
+    }
 }
 /// An item stack as predicates see it.
 #[derive(Clone, Debug, Default)]
@@ -494,6 +645,9 @@ pub struct EntityView {
     /// Player: the sneak input is held (`Input.shift`, what `input.sneak`
     /// asks; not the sneaking pose).
     pub input_sneak: bool,
+    /// Player: its level, statistics, advancements and recipes, as far as
+    /// they were filled.
+    pub player_facts: PlayerFacts,
     /// Lightning: entities it struck.
     pub struck: Vec<EntityView>,
     /// Lightning: blocks it set on fire (`LightningBolt.blocksSetOnFire`).
@@ -502,6 +656,40 @@ pub struct EntityView {
     pub variant: Option<String>,
     /// The data components the entity reports (`Entity.get`): id and value.
     pub components: Vec<(String, String)>,
+    /// The entity as saved (`NbtPredicate.getEntityTagToCompare`), for
+    /// `minecraft:nbt`; built only when a criterion may ask (`Tree::tests_nbt`).
+    pub nbt: Option<horizon_world::nbt::Tag>,
+    /// `Entity.getTeam().getName()` (a tamed pet answers its owner's team);
+    /// `None` without a team or where the identity is not bound.
+    pub team: Option<String>,
+}
+/// What `PlayerPredicate` reads of a player beyond its entity. Each part is
+/// filled only when a criterion may ask for it (`Tree::player_facts_asked`);
+/// a predicate that asks for a part left `None` fails.
+#[derive(Clone, Default)]
+pub struct PlayerFacts {
+    /// `Player.experienceLevel`.
+    pub level: Option<i32>,
+    /// `ServerStatsCounter`: stat type -> stat id -> value, both namespaced.
+    pub stats: Option<BTreeMap<String, BTreeMap<String, i32>>>,
+    /// `PlayerAdvancements`: the loaded advancements and the player's
+    /// progress in them.
+    pub advancements: Option<(Arc<Tree>, Progress)>,
+    /// `ServerRecipeBook`: the known recipe ids.
+    pub recipes: Option<BTreeSet<String>>,
+}
+impl std::fmt::Debug for PlayerFacts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PlayerFacts")
+            .field("level", &self.level)
+            .field("stats", &self.stats)
+            .field(
+                "advancements",
+                &self.advancements.as_ref().map(|(_, p)| p.criteria.len()),
+            )
+            .field("recipes", &self.recipes.as_ref().map(BTreeSet::len))
+            .finish()
+    }
 }
 fn range_f(v: &Value, x: f64) -> bool {
     match v {
@@ -517,13 +705,29 @@ fn range_f(v: &Value, x: f64) -> bool {
 pub fn range_i(v: &Value, x: i64) -> bool {
     range_f(v, x as f64)
 }
+/// `Identifier.parse`: an id written without a namespace is a `minecraft:` one.
+pub fn full(id: &str) -> std::borrow::Cow<'_, str> {
+    if id.contains(':') {
+        id.into()
+    } else {
+        format!("minecraft:{id}").into()
+    }
+}
+/// The entry of a map keyed by registry ids (`Identifier.parse` on the key),
+/// such as an item predicate's `components` or `predicates`.
+fn keyed<'a>(map: &'a Value, id: &str) -> Option<&'a Value> {
+    map.as_object()?
+        .iter()
+        .find(|(k, _)| full(k) == id)
+        .map(|(_, v)| v)
+}
 /// A registry id, `#tag`, or list matched against one id.
 pub fn id_matches(v: &Value, registry: &str, id: &str, w: &dyn World) -> bool {
     match v {
         Value::Null => true,
         Value::String(s) => match s.strip_prefix('#') {
-            Some(tag) => w.in_tag(registry, tag, id),
-            None => s == id,
+            Some(tag) => w.in_tag(registry, &full(tag), id),
+            None => full(s) == id,
         },
         Value::Array(a) => a.iter().any(|x| id_matches(x, registry, id, w)),
         _ => false,
@@ -555,12 +759,14 @@ pub fn potions(v: &Value, potion: Option<&str>, w: &dyn World) -> bool {
     // `MobEffectsPredicate.test`: the one listed effect, amplifier and duration.
     let test = |pred: &Value, e: &(String, i32, i32)| {
         pred.as_object().is_some_and(|m| {
-            m.get(&e.0).is_some_and(|want| {
-                range_i(&want["amplifier"], i64::from(e.1))
-                    && range_i(&want["duration"], i64::from(e.2))
-                    && want["ambient"].as_bool().is_none_or(|b| !b)
-                    && want["visible"].as_bool().is_none_or(|b| b)
-            })
+            m.iter()
+                .find(|(k, _)| full(k) == e.0)
+                .is_some_and(|(_, want)| {
+                    range_i(&want["amplifier"], i64::from(e.1))
+                        && range_i(&want["duration"], i64::from(e.2))
+                        && want["ambient"].as_bool().is_none_or(|b| !b)
+                        && want["visible"].as_bool().is_none_or(|b| b)
+                })
         })
     };
     c["contains"]
@@ -587,18 +793,18 @@ pub fn item(v: &Value, it: &ItemView, w: &dyn World) -> bool {
     }
     // Data components: exact matches on the few the data uses.
     let comps = &v["components"];
-    if let Some(p) = comps["minecraft:potion_contents"].as_str()
-        && it.potion.as_deref() != Some(p)
+    if let Some(p) = keyed(comps, "minecraft:potion_contents").and_then(Value::as_str)
+        && !it.potion.as_deref().is_some_and(|h| full(h) == full(p))
     {
         return false;
     }
-    if let Some(d) = comps["minecraft:damage"].as_u64()
+    if let Some(d) = keyed(comps, "minecraft:damage").and_then(Value::as_u64)
         && u64::from(it.damage) != d
     {
         return false;
     }
     let preds = &v["predicates"];
-    if let Some(list) = preds["minecraft:enchantments"].as_array() {
+    if let Some(list) = keyed(preds, "minecraft:enchantments").and_then(Value::as_array) {
         for e in list {
             let ok = it.enchantments.iter().any(|(id, lvl)| {
                 id_matches(&e["enchantments"], "enchantment", id, w)
@@ -609,7 +815,7 @@ pub fn item(v: &Value, it: &ItemView, w: &dyn World) -> bool {
             }
         }
     }
-    if let Some(d) = preds["minecraft:damage"].as_object() {
+    if let Some(d) = keyed(preds, "minecraft:damage").and_then(Value::as_object) {
         let damage = Value::Object(d.clone());
         if !range_i(&damage["damage"], i64::from(it.damage)) {
             return false;
@@ -654,6 +860,16 @@ pub fn block(v: &Value, pos: [i32; 3], w: &dyn World) -> bool {
             }
         }
     }
+    // `matchesBlockEntity`: the block entity's data holds the pattern
+    // (`NbtPredicate.matches`, `NbtUtils.compareNbt`); no block entity fails.
+    if let Some(nbt) = v["nbt"].as_str() {
+        let Ok((pattern, _)) = horizon_world::nbt::parse_snbt(nbt) else {
+            return false;
+        };
+        if !crate::nbt_path::compare_nbt(&pattern, w.block_entity_nbt(pos).as_ref()) {
+            return false;
+        }
+    }
     true
 }
 /// `LocationPredicate`.
@@ -671,7 +887,7 @@ pub fn location(v: &Value, p: [f64; 3], w: &dyn World) -> bool {
         return false;
     }
     if let Some(d) = v["dimension"].as_str()
-        && d != w.dimension()
+        && full(d) != w.dimension()
     {
         return false;
     }
@@ -716,13 +932,6 @@ pub fn location(v: &Value, p: [f64; 3], w: &dyn World) -> bool {
 /// `DataComponentExactPredicate.test` on an entity: every expected
 /// component equals what the entity reports (absent ones never match).
 fn components(expected: &Value, have: &[(String, String)]) -> bool {
-    let full = |id: &str| {
-        if id.contains(':') {
-            id.to_owned()
-        } else {
-            format!("minecraft:{id}")
-        }
-    };
     expected.as_object().is_some_and(|o| {
         o.iter().all(|(id, want)| {
             let id = full(id);
@@ -754,14 +963,15 @@ pub fn entity(v: &Value, e: &EntityView, w: &dyn World, origin: [f64; 3]) -> boo
         return false;
     };
     for (key, p) in o {
-        let ok = match key.as_str() {
-            "minecraft:entity_type" | "type" => id_matches(p, "entity_type", &e.kind, w),
-            "minecraft:location" | "location" => location(p, e.position, w),
+        // `EntityPredicate.CODEC`: the keys are sub-predicate type ids.
+        let ok = match &*full(key) {
+            "minecraft:entity_type" => id_matches(p, "entity_type", &e.kind, w),
+            "minecraft:location" => location(p, e.position, w),
             "minecraft:stepping_on" => {
                 location(p, [e.position[0], e.position[1] - 0.5, e.position[2]], w)
             }
-            "minecraft:distance" | "distance" => distance(p, e.position, origin),
-            "minecraft:flags" | "flags" => {
+            "minecraft:distance" => distance(p, e.position, origin),
+            "minecraft:flags" => {
                 let f = |k: &str, have: bool| p[k].as_bool().is_none_or(|want| want == have);
                 f("is_on_fire", e.on_fire)
                     && f("is_sneaking", e.sneaking)
@@ -771,7 +981,7 @@ pub fn entity(v: &Value, e: &EntityView, w: &dyn World, origin: [f64; 3]) -> boo
                     && f("is_baby", e.baby)
                     && f("is_on_ground", e.on_ground)
             }
-            "minecraft:equipment" | "equipment" => {
+            "minecraft:equipment" => {
                 let slots = [
                     "mainhand", "offhand", "head", "chest", "legs", "feet", "body",
                 ];
@@ -782,22 +992,29 @@ pub fn entity(v: &Value, e: &EntityView, w: &dyn World, origin: [f64; 3]) -> boo
                             .is_some_and(|it| item(&p[*s], it, w))
                 })
             }
-            "minecraft:vehicle" | "vehicle" => e
+            "minecraft:vehicle" => e
                 .vehicle
                 .as_ref()
                 .is_some_and(|veh| entity(p, veh, w, origin)),
             // PassengerPredicate.matches: any passenger matches the nested predicate.
-            "minecraft:passenger" | "passenger" => e
+            "minecraft:passenger" => e
                 .passengers
                 .iter()
                 .any(|passenger| entity(p, passenger, w, origin)),
-            "minecraft:effects" | "effects" => p.as_object().is_some_and(|m| {
+            "minecraft:effects" => p.as_object().is_some_and(|m| {
                 m.iter().all(|(id, want)| {
                     e.effects.iter().any(|(eid, amp, dur)| {
-                        eid == id
+                        *eid == full(id)
                             && range_i(&want["amplifier"], i64::from(*amp))
                             && range_i(&want["duration"], i64::from(*dur))
                     })
+                })
+            }),
+            // `EntityNbtPredicate.matches`: the entity's compound holds the
+            // pattern (`NbtUtils.compareNbt`); no compound known fails.
+            "minecraft:nbt" => p.as_str().is_some_and(|s| {
+                horizon_world::nbt::parse_snbt(s).is_ok_and(|(pattern, _)| {
+                    crate::nbt_path::compare_nbt(&pattern, e.nbt.as_ref())
                 })
             }),
             "minecraft:type_specific/player" => {
@@ -814,6 +1031,7 @@ pub fn entity(v: &Value, e: &EntityView, w: &dyn World, origin: [f64; 3]) -> boo
                             .as_ref()
                             .is_some_and(|t| entity(&p["looking_at"], t, w, origin)))
                     && (p["input"].is_null() || input(&p["input"], e))
+                    && player_facts(p, &e.player_facts)
             }
             "minecraft:type_specific/lightning" => {
                 range_i(&p["blocks_set_on_fire"], i64::from(e.blocks_set_on_fire))
@@ -826,9 +1044,97 @@ pub fn entity(v: &Value, e: &EntityView, w: &dyn World, origin: [f64; 3]) -> boo
                 .as_bool()
                 .is_none_or(|want| e.fishing_open_water == Some(want)),
             "minecraft:components" => components(p, &e.components),
+            // `TeamPredicate.matches`: a non-null effective team whose name
+            // equals the string exactly.
+            "minecraft:team" => {
+                matches!((p.as_str(), &e.team), (Some(want), Some(have)) if want == have)
+            }
             "minecraft:predicates" => true,
             _ => false,
         };
+        if !ok {
+            return false;
+        }
+    }
+    true
+}
+/// The rest of `PlayerPredicate.matches` (expected from it): the experience
+/// level in the `level` bounds; each `stats` entry's value (0 when never
+/// counted) in its bounds; each listed recipe known or not as asked; each
+/// listed advancement loaded, and done or not, or each named criterion of it
+/// granted or not. A field asked of facts that weren't filled fails.
+fn player_facts(p: &Value, f: &PlayerFacts) -> bool {
+    let level = &p["level"];
+    if !level.is_null() && !f.level.is_some_and(|l| range_i(level, i64::from(l))) {
+        return false;
+    }
+    let stats = &p["stats"];
+    if !stats.is_null() {
+        let Some(list) = stats.as_array() else {
+            return false;
+        };
+        // `StatMatcher.matches`: the counter's value for the type's stat.
+        let ok = list.is_empty()
+            || f.stats.as_ref().is_some_and(|counts| {
+                list.iter().all(|m| {
+                    let (Some(ty), Some(stat)) = (m["type"].as_str(), m["stat"].as_str()) else {
+                        return false;
+                    };
+                    let value = counts
+                        .get(&*full(ty))
+                        .and_then(|of| of.get(&*full(stat)))
+                        .copied()
+                        .unwrap_or(0);
+                    range_i(&m["value"], i64::from(value))
+                })
+            });
+        if !ok {
+            return false;
+        }
+    }
+    let recipes = &p["recipes"];
+    if !recipes.is_null() {
+        let Some(map) = recipes.as_object() else {
+            return false;
+        };
+        let ok = map.is_empty()
+            || f.recipes.as_ref().is_some_and(|known| {
+                map.iter().all(|(id, want)| {
+                    want.as_bool()
+                        .is_some_and(|want| known.contains(&*full(id)) == want)
+                })
+            });
+        if !ok {
+            return false;
+        }
+    }
+    let advancements = &p["advancements"];
+    if !advancements.is_null() {
+        let Some(map) = advancements.as_object() else {
+            return false;
+        };
+        let ok = map.is_empty()
+            || f.advancements.as_ref().is_some_and(|(tree, progress)| {
+                map.iter().all(|(id, want)| {
+                    // An advancement that isn't loaded matches nothing.
+                    let Some(a) = tree.get(&full(id)) else {
+                        return false;
+                    };
+                    match want {
+                        // `AdvancementDonePredicate`.
+                        Value::Bool(want) => progress.done(a) == *want,
+                        // `AdvancementCriterionsPredicate`: a criterion the
+                        // advancement doesn't have matches nothing.
+                        Value::Object(criteria) => criteria.iter().all(|(name, want)| {
+                            want.as_bool().is_some_and(|want| {
+                                a.criteria.iter().any(|c| c.name == *name)
+                                    && progress.has(&a.id, name) == want
+                            })
+                        }),
+                        _ => false,
+                    }
+                })
+            });
         if !ok {
             return false;
         }
@@ -878,6 +1184,56 @@ pub fn killed_by_arrow(
     let kinds: BTreeSet<&str> = victims.iter().map(|e| e.kind.as_str()).collect();
     range_i(&c["unique_entity_types"], kinds.len() as i64)
 }
+/// `KilledTrigger.TriggerInstance.matches`: the player, the other entity
+/// (the one killed, or the killer for `entity_killed_player`) and the
+/// killing blow (none: any `killing_blow` fails).
+pub fn killed(
+    c: &Value,
+    me: &EntityView,
+    target: &EntityView,
+    blow: Option<&DamageView>,
+    w: &dyn World,
+) -> bool {
+    let pctx = Entities {
+        this: Some(me),
+        origin: me.position,
+        tool: None,
+        block_pos: None,
+    };
+    let ectx = Entities {
+        this: Some(target),
+        ..pctx
+    };
+    let blow_ok = c["killing_blow"].is_null()
+        || blow.is_some_and(|d| damage_source(&c["killing_blow"], d, w, me.position));
+    conditions(&c["player"], &pctx, w) && conditions(&c["entity"], &ectx, w) && blow_ok
+}
+/// A blow recorded by its damage type and causing entity, as `killing_blow`
+/// sees it: the projectile those types name is the direct entity, at `at`;
+/// otherwise the causing entity dealt it itself (`DamageSource.isDirect`).
+pub fn recorded_blow(kind: String, source: Option<EntityView>, at: [f64; 3]) -> DamageView {
+    let projectile = match kind.as_str() {
+        "minecraft:arrow" => Some("minecraft:arrow"),
+        "minecraft:fireball" | "minecraft:small_fireball" => Some("minecraft:fireball"),
+        "minecraft:wither_skull" => Some("minecraft:wither_skull"),
+        "minecraft:fireworks" => Some("minecraft:firework_rocket"),
+        _ => None,
+    };
+    DamageView {
+        kind,
+        is_direct: projectile.is_none(),
+        direct: match projectile {
+            Some(kind) => Some(EntityView {
+                kind: kind.into(),
+                position: at,
+                ..Default::default()
+            }),
+            None => source.clone(),
+        },
+        source,
+        ..Default::default()
+    }
+}
 /// A damage event as `DamagePredicate` sees it.
 #[derive(Clone, Debug, Default)]
 pub struct DamageView {
@@ -916,9 +1272,8 @@ pub fn damage_source(ty: &Value, d: &DamageView, w: &dyn World, origin: [f64; 3]
         return true;
     }
     let tags_ok = ty["tags"].as_array().into_iter().flatten().all(|t| {
-        let tag = t["id"].as_str().unwrap_or("");
-        let tag = tag.strip_prefix('#').unwrap_or(tag);
-        w.in_tag("damage_type", tag, &d.kind) == t["expected"].as_bool().unwrap_or(true)
+        // `TagPredicate`: a `HolderSet`, like `id_matches`.
+        id_matches(&t["id"], "damage_type", &d.kind, w) == t["expected"].as_bool().unwrap_or(true)
     });
     let direct_ok = ty["direct_entity"].is_null()
         || d.direct
@@ -987,7 +1342,7 @@ pub fn conditions(v: &Value, ctx: &Entities, w: &dyn World) -> bool {
                 .or_else(|| o.get("type"))
                 .and_then(Value::as_str)
                 .unwrap_or("");
-            match ty {
+            match &*full(ty) {
                 "minecraft:entity_properties" => ctx
                     .this
                     .is_some_and(|e| entity(&v["predicate"], e, w, ctx.origin)),
@@ -1020,6 +1375,12 @@ pub fn conditions(v: &Value, ctx: &Entities, w: &dyn World) -> bool {
                     block(&Value::Object(pred), b, w)
                 }),
                 "minecraft:match_tool" => ctx.tool.is_some_and(|t| item(&v["predicate"], t, w)),
+                "minecraft:weather_check" => {
+                    // WeatherCheck.test: absent fields impose no constraint.
+                    let (rain, thunder) = w.weather();
+                    v["raining"].as_bool().is_none_or(|r| r == rain)
+                        && v["thundering"].as_bool().is_none_or(|t| t == thunder)
+                }
                 "minecraft:inverted" => !conditions(&v["term"], ctx, w),
                 "minecraft:all_of" => v["terms"]
                     .as_array()
@@ -1338,6 +1699,32 @@ impl Tree {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn advancement_reward_function_is_optional_and_namespaced() {
+        for (raw, expected) in [
+            ("parity:reward", "parity:reward"),
+            ("reward", "minecraft:reward"),
+        ] {
+            let input = serde_json::json!({
+                "criteria": {"never": {"trigger": "minecraft:impossible"}},
+                "rewards": {"function": raw, "experience": 7, "recipes": ["minecraft:bread"]}
+            });
+            let advancement = parse("parity:test", &input).unwrap();
+            assert_eq!(advancement.rewards.function.as_deref(), Some(expected));
+            assert_eq!(advancement.rewards.experience, 7);
+            assert_eq!(advancement.rewards.recipes, ["minecraft:bread"]);
+        }
+        let without = parse(
+            "parity:empty",
+            &serde_json::json!({
+                "criteria": {"never": {"trigger": "minecraft:impossible"}}
+            }),
+        )
+        .unwrap();
+        assert!(without.rewards.function.is_none());
+    }
 
     /// The criteria an inventory change and a recipe unlock test, on vanilla's tree:
     /// `cargo test -p horizon-client --lib -- --ignored --nocapture index_on_vanilla_tree`
@@ -1414,6 +1801,9 @@ mod tests {
         fn dimension(&self) -> &str {
             "minecraft:overworld"
         }
+        fn weather(&self) -> (bool, bool) {
+            (false, false)
+        }
         fn biome(&self, _: [i32; 3]) -> String {
             "minecraft:plains".into()
         }
@@ -1442,6 +1832,131 @@ mod tests {
                     && matches!(id, "minecraft:fireball" | "minecraft:arrow"))
         }
     }
+    /// `BlockPredicate.matchesBlockEntity`: an `nbt` test needs a block
+    /// entity whose `saveWithFullMetadata` contains the pattern
+    /// (`NbtPredicate.matches`), so it never matches a plain block.
+    #[test]
+    fn a_block_predicates_nbt_needs_the_block_entitys_data() {
+        let w = Flat;
+        let stone = serde_json::json!({"blocks": "minecraft:stone", "nbt": "{}"});
+        assert!(!block(&stone, [0, 0, 0], &w), "stone has no block entity");
+        assert!(block(
+            &serde_json::json!({"blocks": "minecraft:stone"}),
+            [0, 0, 0],
+            &w
+        ));
+        /// An unpowered beacon: its saved data has `Levels:0`.
+        struct Beacon;
+        impl World for Beacon {
+            fn dimension(&self) -> &str {
+                Flat.dimension()
+            }
+            fn weather(&self) -> (bool, bool) {
+                Flat.weather()
+            }
+            fn biome(&self, p: [i32; 3]) -> String {
+                Flat.biome(p)
+            }
+            fn structures(&self, p: [i32; 3]) -> Vec<String> {
+                Flat.structures(p)
+            }
+            fn block(&self, _: [i32; 3]) -> (String, BTreeMap<String, String>) {
+                ("minecraft:beacon".into(), BTreeMap::new())
+            }
+            fn fluid(&self, _: [i32; 3]) -> Option<String> {
+                None
+            }
+            fn can_see_sky(&self, _: [i32; 3]) -> bool {
+                true
+            }
+            fn light(&self, _: [i32; 3]) -> i32 {
+                15
+            }
+            fn smokey(&self, _: [i32; 3]) -> bool {
+                false
+            }
+            fn in_tag(&self, _: &str, _: &str, _: &str) -> bool {
+                false
+            }
+            fn block_entity_nbt(&self, _: [i32; 3]) -> Option<horizon_world::nbt::Tag> {
+                horizon_world::nbt::parse_snbt(r#"{id:"minecraft:beacon",x:0,y:0,z:0,Levels:0}"#)
+                    .ok()
+                    .map(|(t, _)| t)
+            }
+        }
+        let beacon = |nbt: &str| serde_json::json!({"blocks": "minecraft:beacon", "nbt": nbt});
+        assert!(block(&beacon("{Levels:0}"), [0, 0, 0], &Beacon));
+        assert!(block(&beacon("{}"), [0, 0, 0], &Beacon));
+        assert!(!block(&beacon("{Levels:4}"), [0, 0, 0], &Beacon));
+        assert!(
+            !block(&beacon("{Levels:0b}"), [0, 0, 0], &Beacon),
+            "an int, not a byte"
+        );
+    }
+    #[test]
+    fn weather_conditions_leave_absent_fields_unconstrained_and_compose() {
+        let ctx = Entities {
+            this: None,
+            origin: [0.0; 3],
+            tool: None,
+            block_pos: None,
+        };
+        for (mut predicate, expected) in [
+            (serde_json::json!({}), true),
+            (serde_json::json!({"raining": false}), true),
+            (serde_json::json!({"raining": true}), false),
+            (serde_json::json!({"thundering": false}), true),
+            (serde_json::json!({"thundering": true}), false),
+            (
+                serde_json::json!({"raining": false, "thundering": false}),
+                true,
+            ),
+            (
+                serde_json::json!({"raining": false, "thundering": true}),
+                false,
+            ),
+        ] {
+            predicate["type"] = "minecraft:weather_check".into();
+            assert_eq!(conditions(&predicate, &ctx, &Flat), expected, "{predicate}");
+        }
+        let dry = serde_json::json!({"type": "minecraft:weather_check", "raining": false});
+        let wet = serde_json::json!({"type": "minecraft:inverted", "term": dry});
+        assert!(!conditions(&wet, &ctx, &Flat));
+        assert!(conditions(
+            &serde_json::json!({"type": "minecraft:all_of", "terms": [dry]}),
+            &ctx,
+            &Flat
+        ));
+        assert!(!conditions(
+            &serde_json::json!({"type": "minecraft:any_of", "terms": [wet]}),
+            &ctx,
+            &Flat
+        ));
+    }
+
+    /// A `recipe_crafted` criterion names `minecraft:x`; the craft hands
+    /// the recipe book and the trigger the same whole id (`award_crafted`
+    /// qualifies). The bare name the crafting copy uses never matched —
+    /// the second half of #7186.
+    #[test]
+    fn a_recipe_crafted_criterion_matches_the_whole_id_only() {
+        let w = Flat;
+        let criterion = serde_json::json!({"recipes": "minecraft:folder_recipe"});
+        assert!(
+            !id_matches(&criterion["recipes"], "recipe", "folder_recipe", &w),
+            "the crafting copy's bare name never matched the criterion"
+        );
+        assert!(
+            id_matches(
+                &criterion["recipes"],
+                "recipe",
+                &crate::crafting::qualified("folder_recipe"),
+                &w
+            ),
+            "the whole id award_crafted passes matches"
+        );
+    }
+
     /// `LockCode.canUnlock` for a chest with
     /// `lock:{items:"minecraft:gold_ingot"}`: a gold ingot opens it, an empty
     /// hand or another item does not, and a spectator always does.
@@ -1468,6 +1983,58 @@ mod tests {
         let none = serde_json::json!({});
         assert!(can_unlock(&none, false, None, &Flat));
     }
+    /// `ItemPredicate`'s `components` and `predicates` are keyed by registry
+    /// ids, so a key without a namespace is a `minecraft:` one. An unread key
+    /// used to be skipped, which let every stack pass.
+    #[test]
+    fn item_predicate_reads_bare_component_keys() {
+        let potion = ItemView {
+            id: "minecraft:potion".into(),
+            count: 1,
+            potion: Some("minecraft:swiftness".into()),
+            ..Default::default()
+        };
+        let sword = ItemView {
+            id: "minecraft:iron_sword".into(),
+            count: 1,
+            damage: 3,
+            enchantments: vec![("minecraft:sharpness".into(), 2)],
+            ..Default::default()
+        };
+        let cases = [
+            (
+                serde_json::json!({"components": {"potion_contents": "minecraft:swiftness"}}),
+                serde_json::json!({"components": {"potion_contents": "minecraft:healing"}}),
+                &potion,
+            ),
+            (
+                serde_json::json!({"components": {"damage": 3}}),
+                serde_json::json!({"components": {"damage": 4}}),
+                &sword,
+            ),
+            (
+                serde_json::json!({"predicates": {"enchantments": [
+                    {"enchantments": "sharpness", "levels": 2}
+                ]}}),
+                serde_json::json!({"predicates": {"enchantments": [
+                    {"enchantments": "sharpness", "levels": {"min": 3}}
+                ]}}),
+                &sword,
+            ),
+            (
+                serde_json::json!({"predicates": {"damage": {"damage": {"max": 3}}}}),
+                serde_json::json!({"predicates": {"damage": {"damage": {"min": 4}}}}),
+                &sword,
+            ),
+        ];
+        for (yes, no, stack) in cases {
+            assert!(item(&yes, stack, &Flat), "{yes} should match");
+            assert!(!item(&no, stack, &Flat), "{no} should not match");
+        }
+        // The potion is a registry id too.
+        let bare = serde_json::json!({"components": {"minecraft:potion_contents": "swiftness"}});
+        assert!(item(&bare, &potion, &Flat));
+    }
     /// `PassengerPredicate.matches`: ride_a_boat_with_a_goat's vehicle holds a goat.
     #[test]
     fn passenger_predicate_needs_a_matching_passenger() {
@@ -1485,6 +2052,72 @@ mod tests {
         assert!(!super::entity(&want, &boat, &Flat, [0.0; 3]));
         boat.passengers.push(entity("minecraft:goat"));
         assert!(super::entity(&want, &boat, &Flat, [0.0; 3]));
+    }
+    /// `EntityNbtPredicate.matches`: the entity's saved compound holds the
+    /// pattern (`NbtUtils.compareNbt(…, true)`); without one it fails.
+    #[test]
+    fn an_entity_predicates_nbt_tests_the_saved_compound() {
+        let snbt = |s: &str| horizon_world::nbt::parse_snbt(s).unwrap().0;
+        let view = |kind: &str, nbt: &str| EntityView {
+            kind: kind.into(),
+            nbt: Some(snbt(nbt)),
+            ..Default::default()
+        };
+        let check = |v: serde_json::Value, e: &EntityView| super::entity(&v, e, &Flat, [0.0; 3]);
+        let nbt = |s: &str| serde_json::json!({"minecraft:nbt": s});
+        let axolotl = view("minecraft:axolotl", "{Variant:1,FromBucket:1b}");
+        assert!(check(nbt("{Variant:1}"), &axolotl));
+        assert!(check(nbt("{}"), &axolotl));
+        assert!(!check(nbt("{Variant:0}"), &axolotl));
+        assert!(
+            !check(nbt("{FromBucket:1}"), &axolotl),
+            "a byte, not an int"
+        );
+        let pig = serde_json::json!({"minecraft:entity_type": "minecraft:pig",
+            "minecraft:nbt": "{Variant:1}"});
+        assert!(
+            !check(pig, &axolotl),
+            "the other sub-predicates still apply"
+        );
+        let villager = view(
+            "minecraft:villager",
+            r#"{VillagerData:{level:2,profession:"minecraft:farmer",type:"minecraft:taiga"}}"#,
+        );
+        assert!(check(
+            nbt(r#"{VillagerData:{profession:"minecraft:farmer"}}"#),
+            &villager
+        ));
+        assert!(!check(
+            nbt(r#"{VillagerData:{profession:"minecraft:librarian"}}"#),
+            &villager
+        ));
+        let player = view(
+            "minecraft:player",
+            r#"{Inventory:[{Slot:0b,id:"minecraft:spyglass",count:1},{Slot:3b,id:"minecraft:stick",count:2}],SelectedItem:{id:"minecraft:spyglass",count:1}}"#,
+        );
+        assert!(check(
+            nbt(r#"{Inventory:[{id:"minecraft:stick"}]}"#),
+            &player
+        ));
+        assert!(!check(
+            nbt(r#"{Inventory:[{id:"minecraft:stick",count:3}]}"#),
+            &player
+        ));
+        assert!(
+            !check(nbt("{Inventory:[]}"), &player),
+            "an empty list wants an empty one"
+        );
+        assert!(check(
+            nbt(r#"{SelectedItem:{id:"minecraft:spyglass"}}"#),
+            &player
+        ));
+        let bare = EntityView {
+            kind: "minecraft:axolotl".into(),
+            ..Default::default()
+        };
+        assert!(!check(nbt("{}"), &bare), "no compound known");
+        assert!(!check(nbt("{Variant:"), &axolotl), "unparsable");
+        assert!(!check(serde_json::json!({"minecraft:nbt": 3}), &axolotl));
     }
     /// Return to Sender's `killing_blow`: only the ghast's own fireball, as a
     /// projectile, kills it for the advancement; a sword or an arrow does not.
@@ -1522,6 +2155,104 @@ mod tests {
         };
         assert!(!damage_source(&blow, &arrow, &Flat, [0.0; 3]));
         assert!(damage_source(&Value::Null, &sword, &Flat, [0.0; 3]));
+    }
+    fn mob(kind: &str) -> EntityView {
+        EntityView {
+            kind: kind.into(),
+            ..Default::default()
+        }
+    }
+    /// `TeamPredicate.matches`: the effective team's name, exactly.
+    #[test]
+    fn team_predicate_needs_the_exact_team_name() {
+        let team = |v: &str| serde_json::json!({ v: "audit_team" });
+        let member = EntityView {
+            team: Some("audit_team".into()),
+            ..mob("minecraft:zombie")
+        };
+        for key in ["team", "minecraft:team"] {
+            assert!(entity(&team(key), &member, &Flat, [0.0; 3]));
+        }
+        let other = EntityView {
+            team: Some("Audit_Team".into()),
+            ..mob("minecraft:zombie")
+        };
+        assert!(!entity(&team("team"), &other, &Flat, [0.0; 3]));
+        assert!(!entity(
+            &team("team"),
+            &mob("minecraft:zombie"),
+            &Flat,
+            [0.0; 3]
+        ));
+    }
+    /// `entity_killed_player` by a mob's melee hit: the mob is the killer and
+    /// the blow's causing and direct entity.
+    #[test]
+    fn entity_killed_player_by_a_mob_names_the_mob() {
+        let c = serde_json::json!({
+            "entity": {"minecraft:entity_type": "minecraft:polar_bear"},
+            "killing_blow": {"source_entity": {"minecraft:entity_type": "minecraft:polar_bear"}}
+        });
+        let me = mob("minecraft:player");
+        let bear = mob("minecraft:polar_bear");
+        let blow = recorded_blow("minecraft:mob_attack".into(), Some(bear.clone()), [0.0; 3]);
+        assert!(blow.is_direct);
+        assert_eq!(
+            blow.direct.as_ref().map(|e| e.kind.as_str()),
+            Some("minecraft:polar_bear")
+        );
+        assert!(killed(&c, &me, &bear, Some(&blow), &Flat));
+        let panda = mob("minecraft:panda");
+        let blow = recorded_blow("minecraft:mob_attack".into(), Some(panda.clone()), [0.0; 3]);
+        assert!(!killed(&c, &me, &panda, Some(&blow), &Flat));
+    }
+    /// `entity_killed_player` by a skeleton's arrow: the shooter is the
+    /// killer and the blow's causing entity, the arrow its direct one.
+    #[test]
+    fn entity_killed_player_by_an_arrow_names_the_shooter() {
+        let c = serde_json::json!({
+            "entity": {"minecraft:entity_type": "minecraft:skeleton"},
+            "killing_blow": {
+                "direct_entity": {"minecraft:entity_type": "minecraft:arrow"},
+                "source_entity": {"minecraft:entity_type": "minecraft:skeleton"},
+                "is_direct": false
+            }
+        });
+        let me = mob("minecraft:player");
+        let skeleton = mob("minecraft:skeleton");
+        let blow = recorded_blow(
+            "minecraft:arrow".into(),
+            Some(skeleton.clone()),
+            [1.0, 2.0, 3.0],
+        );
+        assert!(!blow.is_direct);
+        assert_eq!(
+            blow.direct.as_ref().map(|e| e.position),
+            Some([1.0, 2.0, 3.0])
+        );
+        assert!(killed(&c, &me, &skeleton, Some(&blow), &Flat));
+        // Shot point-blank, not with an arrow: the direct entity is the skeleton.
+        let melee = recorded_blow(
+            "minecraft:mob_attack".into(),
+            Some(skeleton.clone()),
+            [0.0; 3],
+        );
+        assert!(!killed(&c, &me, &skeleton, Some(&melee), &Flat));
+    }
+    /// A blow with no causing entity fails a `source_entity` test, and with
+    /// no blow at all any `killing_blow` fails.
+    #[test]
+    fn a_blow_with_no_killer_fails_its_entity_tests() {
+        let c = serde_json::json!({
+            "killing_blow": {"source_entity": {"minecraft:entity_type": "minecraft:zombie"}}
+        });
+        let me = mob("minecraft:player");
+        let zombie = mob("minecraft:zombie");
+        let fall = recorded_blow("minecraft:fall".into(), None, [0.0; 3]);
+        assert!(fall.direct.is_none() && fall.source.is_none());
+        assert!(!killed(&c, &me, &zombie, Some(&fall), &Flat));
+        assert!(!killed(&c, &me, &zombie, None, &Flat));
+        assert!(killed(&serde_json::json!({}), &me, &zombie, None, &Flat));
     }
     #[test]
     fn uh_oh_accepts_either_tnt_event_only_for_adult_sulfur_cubes() {
@@ -1696,6 +2427,170 @@ mod tests {
         };
         assert!(!conditions(&stone, &absent, &Flat));
     }
+    /// Data pack ids, tags and registry keys written without a namespace are
+    /// `minecraft:` ones (`Identifier.parse`), wherever a predicate reads one.
+    #[test]
+    fn bare_ids_and_tags_mean_minecraft() {
+        let w = Flat;
+        let player = EntityView {
+            kind: "minecraft:player".into(),
+            position: [0.5, 64.0, 0.5],
+            effects: vec![("minecraft:speed".into(), 0, 100)],
+            ..Default::default()
+        };
+        let stone = ItemView {
+            id: "minecraft:cobblestone".into(),
+            count: 1,
+            ..Default::default()
+        };
+        let ctx = Entities {
+            this: Some(&player),
+            origin: player.position,
+            tool: None,
+            block_pos: None,
+        };
+        let arrow = DamageView {
+            kind: "minecraft:arrow".into(),
+            ..Default::default()
+        };
+        let o = [0.0; 3];
+        let j = |s: &str| serde_json::from_str::<Value>(s).unwrap();
+        let cases = [
+            (
+                "item id",
+                id_matches(&j(r#""cobblestone""#), "item", &stone.id, &w),
+            ),
+            (
+                "item tag",
+                id_matches(&j(r##""#stone_tool_materials""##), "item", &stone.id, &w),
+            ),
+            (
+                "item list",
+                id_matches(&j(r#"["dirt", "cobblestone"]"#), "item", &stone.id, &w),
+            ),
+            (
+                "item predicate",
+                item(&j(r#"{"items": "cobblestone"}"#), &stone, &w),
+            ),
+            (
+                "dimension",
+                location(&j(r#"{"dimension": "overworld"}"#), player.position, &w),
+            ),
+            (
+                "biome",
+                location(&j(r#"{"biomes": "plains"}"#), player.position, &w),
+            ),
+            (
+                "entity type",
+                entity(&j(r#"{"minecraft:entity_type": "player"}"#), &player, &w, o),
+            ),
+            (
+                "sub-predicate key",
+                entity(&j(r#"{"entity_type": "minecraft:player"}"#), &player, &w, o),
+            ),
+            (
+                "effect key",
+                entity(
+                    &j(r#"{"minecraft:effects": {"speed": {}}}"#),
+                    &player,
+                    &w,
+                    o,
+                ),
+            ),
+            (
+                "damage tag",
+                damage_source(
+                    &j(r##"{"tags": [{"id": "#is_projectile", "expected": true}]}"##),
+                    &arrow,
+                    &w,
+                    o,
+                ),
+            ),
+            (
+                "condition type",
+                conditions(
+                    &j(r#"{"type": "entity_properties", "entity": "this",
+                        "predicate": {"minecraft:entity_type": "minecraft:player"}}"#),
+                    &ctx,
+                    &w,
+                ),
+            ),
+            // `TagPredicate.id` is a holder set: one damage type is that type.
+            (
+                "damage type",
+                damage_source(&j(r#"{"tags": [{"id": "arrow"}]}"#), &arrow, &w, o),
+            ),
+            // Near misses stay misses.
+            (
+                "other item",
+                !id_matches(&j(r#"["dirt", "stone"]"#), "item", &stone.id, &w),
+            ),
+            (
+                "other dimension",
+                !location(&j(r#"{"dimension": "the_nether"}"#), player.position, &w),
+            ),
+            (
+                "other effect",
+                !entity(&j(r#"{"effects": {"slowness": {}}}"#), &player, &w, o),
+            ),
+            (
+                "other damage type",
+                !damage_source(&j(r#"{"tags": [{"id": "fireball"}]}"#), &arrow, &w, o),
+            ),
+            (
+                "the type key is no sub-predicate",
+                !entity(&j(r#"{"type": "player"}"#), &player, &w, o),
+            ),
+        ];
+        let failed: Vec<&str> = cases.iter().filter(|c| !c.1).map(|c| c.0).collect();
+        assert!(
+            failed.is_empty(),
+            "bare ids not read as minecraft: {failed:?}"
+        );
+    }
+    /// A bare trigger, item or recipe id reaches the indexes as `minecraft:`.
+    #[test]
+    fn bare_ids_reach_the_trigger_and_item_indexes() {
+        let a = parse(
+            "test:a",
+            &serde_json::json!({"criteria": {
+                "items": {"trigger": "inventory_changed",
+                    "conditions": {"items": [{"items": ["cobblestone", "#planks"]}]}},
+                "recipe": {"trigger": "recipe_unlocked", "conditions": {"recipes": "stick"}}
+            }}),
+        )
+        .unwrap();
+        let mut tree = Tree::default();
+        for (ci, c) in a.criteria.iter().enumerate() {
+            tree.by_trigger
+                .entry(c.trigger.clone())
+                .or_default()
+                .push((0, ci));
+        }
+        tree.list.push(a);
+        tree.index_recipes();
+        let index = InventoryIndex::build(&tree, |tag| match tag {
+            "minecraft:planks" => vec!["minecraft:oak_planks"],
+            _ => Vec::new(),
+        });
+        let mut failed = Vec::new();
+        if !tree.by_trigger.contains_key("minecraft:inventory_changed") {
+            failed.push("trigger");
+        }
+        if index.candidates(["minecraft:cobblestone"]).is_empty() {
+            failed.push("item index id");
+        }
+        if index.candidates(["minecraft:oak_planks"]).is_empty() {
+            failed.push("item index tag");
+        }
+        if tree.recipe_criteria("minecraft:stick").is_empty() {
+            failed.push("recipe index");
+        }
+        assert!(
+            failed.is_empty(),
+            "bare ids not read as minecraft: {failed:?}"
+        );
+    }
     #[test]
     fn predicates_match_tags_ranges_and_locations() {
         let w = Flat;
@@ -1784,6 +2679,345 @@ mod tests {
         assert_eq!(l[3], Some((2, 1.0)));
         assert_eq!(l[4], Some((1, 2.0)));
         assert_eq!(l[1], Some((2, 2.0)));
+    }
+    /// A tree of the given advancements, indexed as `load_with` does.
+    fn tree_of(list: &[(&str, Value)]) -> Tree {
+        let mut tree = Tree::default();
+        for (id, v) in list {
+            let a = parse(id, v).expect("an advancement");
+            for (ci, c) in a.criteria.iter().enumerate() {
+                (tree.by_trigger.entry(c.trigger.clone()).or_default()).push((tree.list.len(), ci));
+            }
+            tree.by_id.insert((*id).into(), tree.list.len());
+            tree.list.push(a);
+        }
+        tree.index_player_facts();
+        tree
+    }
+    /// Whether the player `facts` match `{"type_specific/player": p}`.
+    fn player_matches(p: Value, facts: &PlayerFacts) -> bool {
+        let me = EntityView {
+            kind: "minecraft:player".into(),
+            player_facts: facts.clone(),
+            ..EntityView::default()
+        };
+        entity(&json!({"type_specific/player": p}), &me, &Flat, [0.0; 3])
+    }
+    #[test]
+    fn player_level_is_tested_in_its_bounds() {
+        let five = PlayerFacts {
+            level: Some(5),
+            ..PlayerFacts::default()
+        };
+        for (level, expected) in [
+            (json!({"min": 5}), true),
+            (json!({"min": 6}), false),
+            (json!({"max": 4}), false),
+            (json!({"min": 1, "max": 5}), true),
+            (json!(5), true),
+            (json!(6), false),
+        ] {
+            assert_eq!(
+                player_matches(json!({"level": level}), &five),
+                expected,
+                "{level}"
+            );
+        }
+        // Not filled: a level asked fails, none asked passes.
+        assert!(!player_matches(
+            json!({"level": {"min": 0}}),
+            &PlayerFacts::default()
+        ));
+        assert!(player_matches(json!({}), &PlayerFacts::default()));
+    }
+    #[test]
+    fn player_stats_match_each_counter_by_type_and_id() {
+        let mut counts: BTreeMap<String, BTreeMap<String, i32>> = BTreeMap::new();
+        (counts.entry("minecraft:custom".into()).or_default())
+            .insert("minecraft:walk_one_cm".into(), 1000);
+        (counts.entry("minecraft:mined".into()).or_default()).insert("minecraft:stone".into(), 3);
+        let facts = PlayerFacts {
+            stats: Some(counts),
+            ..PlayerFacts::default()
+        };
+        let stat =
+            |ty: &str, id: &str, value: Value| json!({"type": ty, "stat": id, "value": value});
+        for (stats, expected) in [
+            (
+                vec![stat(
+                    "minecraft:custom",
+                    "minecraft:walk_one_cm",
+                    json!({"min": 1000}),
+                )],
+                true,
+            ),
+            (
+                vec![stat(
+                    "minecraft:custom",
+                    "minecraft:walk_one_cm",
+                    json!({"min": 1001}),
+                )],
+                false,
+            ),
+            (
+                vec![stat(
+                    "minecraft:custom",
+                    "minecraft:walk_one_cm",
+                    json!({"max": 999}),
+                )],
+                false,
+            ),
+            // Bare ids are `minecraft:` ones.
+            (
+                vec![stat("custom", "walk_one_cm", json!({"min": 1000}))],
+                true,
+            ),
+            // The same id under another type is another counter: never counted, 0.
+            (
+                vec![stat(
+                    "minecraft:mined",
+                    "minecraft:walk_one_cm",
+                    json!({"min": 1}),
+                )],
+                false,
+            ),
+            (
+                vec![stat(
+                    "minecraft:mined",
+                    "minecraft:walk_one_cm",
+                    json!({"max": 0}),
+                )],
+                true,
+            ),
+            (
+                vec![stat("minecraft:killed", "minecraft:zombie", json!(0))],
+                true,
+            ),
+            // Every entry must match.
+            (
+                vec![
+                    stat("minecraft:mined", "minecraft:stone", json!({"min": 3})),
+                    stat(
+                        "minecraft:custom",
+                        "minecraft:walk_one_cm",
+                        json!({"min": 5000}),
+                    ),
+                ],
+                false,
+            ),
+            (
+                vec![
+                    stat("minecraft:mined", "minecraft:stone", json!({"min": 3})),
+                    stat(
+                        "minecraft:custom",
+                        "minecraft:walk_one_cm",
+                        json!({"min": 500}),
+                    ),
+                ],
+                true,
+            ),
+        ] {
+            let p = json!({"stats": stats});
+            assert_eq!(player_matches(p.clone(), &facts), expected, "{p}");
+        }
+        let walked = json!({"stats": [stat("custom", "walk_one_cm", json!({"min": 0}))]});
+        assert!(!player_matches(walked, &PlayerFacts::default()));
+    }
+    #[test]
+    fn player_recipes_are_known_or_not_as_asked() {
+        let facts = PlayerFacts {
+            recipes: Some(["minecraft:iron_pickaxe".to_owned()].into()),
+            ..PlayerFacts::default()
+        };
+        for (recipes, expected) in [
+            (json!({"minecraft:iron_pickaxe": true}), true),
+            (json!({"iron_pickaxe": true}), true),
+            (json!({"minecraft:iron_pickaxe": false}), false),
+            (json!({"minecraft:diamond_pickaxe": false}), true),
+            (json!({"minecraft:diamond_pickaxe": true}), false),
+            (
+                json!({"minecraft:iron_pickaxe": true, "minecraft:diamond_pickaxe": true}),
+                false,
+            ),
+        ] {
+            assert_eq!(
+                player_matches(json!({"recipes": recipes}), &facts),
+                expected,
+                "{recipes}"
+            );
+        }
+        let unknown = json!({"recipes": {"minecraft:diamond_pickaxe": false}});
+        assert!(!player_matches(unknown, &PlayerFacts::default()));
+    }
+    #[test]
+    fn player_advancements_are_done_or_have_their_criteria_as_asked() {
+        let tick = json!({"trigger": "minecraft:tick"});
+        let tree = Arc::new(tree_of(&[(
+            "pack:a",
+            json!({"criteria": {"x": tick, "y": tick}}),
+        )]));
+        let mut progress = Progress::default();
+        progress.grant("pack:a", "x", "2026-11-04 12:00:00 +0000");
+        let half = PlayerFacts {
+            advancements: Some((tree.clone(), progress.clone())),
+            ..PlayerFacts::default()
+        };
+        for (advancements, expected) in [
+            (json!({"pack:a": true}), false),
+            (json!({"pack:a": false}), true),
+            (json!({"pack:a": {"x": true}}), true),
+            (json!({"pack:a": {"x": false}}), false),
+            (json!({"pack:a": {"y": true}}), false),
+            (json!({"pack:a": {"y": false}}), true),
+            (json!({"pack:a": {"x": true, "y": true}}), false),
+            // A criterion the advancement doesn't have, or an advancement
+            // that isn't loaded, matches nothing.
+            (json!({"pack:a": {"z": false}}), false),
+            (json!({"pack:missing": false}), false),
+        ] {
+            assert_eq!(
+                player_matches(json!({"advancements": advancements}), &half),
+                expected,
+                "{advancements}"
+            );
+        }
+        progress.grant("pack:a", "y", "2026-11-04 12:00:01 +0000");
+        let done = PlayerFacts {
+            advancements: Some((tree, progress)),
+            ..PlayerFacts::default()
+        };
+        assert!(player_matches(
+            json!({"advancements": {"pack:a": true}}),
+            &done
+        ));
+        assert!(!player_matches(
+            json!({"advancements": {"pack:a": false}}),
+            &done
+        ));
+        let asked = json!({"advancements": {"pack:a": false}});
+        assert!(!player_matches(asked, &PlayerFacts::default()));
+    }
+    #[test]
+    fn player_facts_are_asked_by_the_triggers_that_name_them() {
+        let player = |p: Value| {
+            json!({"player": [{"condition": "minecraft:entity_properties", "entity": "this",
+                "predicate": {"minecraft:type_specific/player": p}}]})
+        };
+        let tree = tree_of(&[
+            (
+                "pack:walk",
+                json!({"criteria": {"c": {"trigger": "minecraft:tick",
+                    "conditions": player(json!({"stats": [{"type": "minecraft:custom",
+                        "stat": "minecraft:walk_one_cm", "value": {"min": 1}}]}))}}}),
+            ),
+            (
+                "pack:milestone",
+                json!({"criteria": {"c": {"trigger": "minecraft:location",
+                    "conditions": player(json!({"advancements": {"pack:walk": true},
+                        "level": {"min": 30}}))}}}),
+            ),
+            (
+                "pack:ref",
+                json!({"criteria": {"c": {"trigger": "minecraft:inventory_changed",
+                    "conditions": {"player": [{"condition": "minecraft:reference",
+                        "name": "pack:p"}]}}}}),
+            ),
+            (
+                "pack:recipe",
+                json!({"criteria": {"c": {"trigger": "minecraft:recipe_unlocked",
+                    "conditions": {"recipe": "minecraft:iron_pickaxe"}},
+                    "d": {"trigger": "minecraft:using_item",
+                    "conditions": player(json!({"gamemode": ["survival"]}))}}}),
+            ),
+        ]);
+        let none = FactsAsked::default();
+        assert_eq!(
+            tree.player_facts_asked("minecraft:tick"),
+            FactsAsked {
+                stats: true,
+                ..none
+            }
+        );
+        assert_eq!(
+            tree.player_facts_asked("minecraft:location"),
+            FactsAsked {
+                advancements: true,
+                level: true,
+                ..none
+            }
+        );
+        assert_eq!(
+            tree.player_facts_asked("minecraft:inventory_changed"),
+            FactsAsked::ALL
+        );
+        assert_eq!(tree.player_facts_asked("minecraft:recipe_unlocked"), none);
+        assert_eq!(tree.player_facts_asked("minecraft:using_item"), none);
+    }
+    #[test]
+    fn a_command_predicate_asks_only_the_player_facts_it_names() {
+        let player = |p: Value| {
+            json!({"condition": "minecraft:entity_properties", "entity": "this",
+                "predicate": {"type_specific/player": p}})
+        };
+        let none = FactsAsked::default();
+        for (v, expected) in [
+            // Nothing of the player's records: nothing copied.
+            (
+                json!({"condition": "minecraft:entity_properties", "entity": "this",
+                "predicate": {"flags": {"is_sneaking": true}}}),
+                none,
+            ),
+            (player(json!({"gamemode": ["survival"]})), none),
+            (
+                json!({"condition": "minecraft:random_chance", "chance": 0.5}),
+                none,
+            ),
+            // A field named elsewhere than in a player predicate.
+            (
+                json!({"function": "minecraft:enchant_with_levels", "levels": 30,
+                "conditions": [{"condition": "minecraft:inverted",
+                "term": {"condition": "minecraft:entity_properties", "entity": "this",
+                "predicate": {"minecraft:effects": {"minecraft:speed": {}}}}}]}),
+                none,
+            ),
+            (
+                player(json!({"level": {"min": 3}})),
+                FactsAsked {
+                    level: true,
+                    ..none
+                },
+            ),
+            // Nested in a list, under `inverted`, in an item modifier.
+            (
+                json!([{"function": "minecraft:set_count", "count": 2, "conditions": [
+                    {"condition": "minecraft:inverted", "term": player(json!({
+                        "stats": [], "recipes": {"minecraft:bread": true}}))}]}]),
+                FactsAsked {
+                    stats: true,
+                    recipes: true,
+                    ..none
+                },
+            ),
+            (
+                json!({"condition": "minecraft:all_of", "terms": [player(json!(
+                    {"advancements": {"minecraft:story/root": true}}))]}),
+                FactsAsked {
+                    advancements: true,
+                    ..none
+                },
+            ),
+            // A predicate file could ask anything.
+            (
+                json!({"condition": "reference", "name": "pack:p"}),
+                FactsAsked::ALL,
+            ),
+            (
+                json!([{"function": "minecraft:reference", "name": "pack:m"}]),
+                FactsAsked::ALL,
+            ),
+        ] {
+            assert_eq!(facts_asked_in(&v), expected, "{v}");
+        }
     }
     #[test]
     fn saved_dates_read_back_to_their_instant() {

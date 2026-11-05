@@ -1,6 +1,6 @@
 //! The player's `CombatTracker`: the damage taken lately, who dealt it and
 //! where the player fell from, turned into the vanilla death message.
-use super::{Game, chat::PLAYER_NAME, commands::Target};
+use super::{Game, commands::Target};
 use horizon_client::{
     health::HealthEvent,
     mobs::{Mob, Species},
@@ -158,9 +158,31 @@ pub(super) struct CombatTracker {
     fall_before: f64,
 }
 impl CombatTracker {
+    /// The last blow taken: its damage type and the causing entity's id (0
+    /// for none), for `LivingDeathEvent`.
+    pub(super) fn last_blow(&self) -> Option<(&str, u32)> {
+        let e = self.entries.last()?;
+        Some((&e.damage_type, e.attacker.as_ref().map_or(0, |a| a.0)))
+    }
     fn mark(&mut self) {
         let marks = (self.pending.len(), self.pending_direct.len());
         self.noted_since.get_or_insert(marks);
+    }
+    /// `CombatTracker.getKiller`'s credited attacker: the entity that last
+    /// hurt the body, within a hundred ticks of the hurt.
+    pub(super) fn kill_credit(&self, now: i64) -> Option<u32> {
+        let ((id, _), at) = self.last_hurt_by.as_ref()?;
+        (now - at <= 100).then_some(*id)
+    }
+    /// `LivingEntity.getLastDamageSource` for an advancement's
+    /// `killing_blow`: the newest combat entry's type and causing entity.
+    pub(super) fn killing_blow(&self) -> Option<(String, Option<u32>)> {
+        self.entries.last().map(|e| {
+            (
+                e.damage_type.clone(),
+                e.attacker.as_ref().map(|(id, _)| *id),
+            )
+        })
     }
     /// The player's hurt is over: when a native mod canceled it, the
     /// attackers noted for it go, as no combat entry takes them and the next
@@ -254,12 +276,6 @@ impl Game<'_> {
             .pending_direct
             .push((damage_type.to_owned(), name));
     }
-    /// `LivingEntity.handleDamageEvent` for the player: the hurt sound of the
-    /// source's `DamageEffects` (`Player.getHurtSound`).
-    pub(super) fn player_hurt_sound(&mut self, sound: &str, at: [f64; 3]) {
-        // Player.getVoicePitch: always 1.0.
-        self.audio.play(sound, Some(at), 1.0, 1.0);
-    }
     /// `CombatTracker.recordDamage` for the motion events of this tick.
     pub(super) fn record_combat(&mut self, events: &[MotionEvent]) {
         self.recheck_combat();
@@ -271,15 +287,15 @@ impl Game<'_> {
                 // hit), in tenths.
                 MotionEvent::Health(HealthEvent::Statistic { name, amount }) => {
                     match *name {
-                        "resisted" => self.stats.custom("damage_resisted", *amount),
-                        "absorbed" => self.stats.custom("damage_absorbed", *amount),
-                        "blocked" => self.stats.custom("damage_blocked_by_shield", *amount),
+                        "resisted" => self.award_custom_stat("damage_resisted", *amount),
+                        "absorbed" => self.award_custom_stat("damage_absorbed", *amount),
+                        "blocked" => self.award_custom_stat("damage_blocked_by_shield", *amount),
                         _ => {}
                     }
                     continue;
                 }
                 MotionEvent::Health(HealthEvent::RecordedDamage { source, amount }) => {
-                    let Some(d) = self.motion.health.damage.definition(*source) else {
+                    let Some(d) = self.health_resources.damage.definition(*source) else {
                         continue;
                     };
                     (d.name.clone(), *amount)
@@ -314,8 +330,7 @@ impl Game<'_> {
                 }
             }
             // Player.actuallyHurt: damage_taken in tenths.
-            self.stats
-                .custom("damage_taken", (amount * 10.0).round() as i32);
+            self.award_custom_stat("damage_taken", (amount * 10.0).round() as i32);
             self.combat.entries.push(Entry {
                 damage_type: name,
                 damage: amount,
@@ -379,61 +394,10 @@ impl Game<'_> {
         }
     }
     fn damage_in_tag(&self, name: &str, tag: &str) -> bool {
-        let damage = &self.motion.health.damage;
+        let damage = &self.health_resources.damage;
         damage.id(name).is_some_and(|id| {
             damage.in_tag(id, tag) || damage.in_tag(id, &format!("minecraft:{tag}"))
         })
-    }
-    /// The killing blow as advancement predicates see it (`DamageSource` of the
-    /// last combat entry): its type and the causing entity. The projectile
-    /// damage types have the projectile as direct entity, not the shooter.
-    pub(super) fn combat_killing_blow(&self) -> Option<horizon_client::advancements::DamageView> {
-        use horizon_client::advancements::{DamageView, EntityView};
-        let e = self.combat.entries.last()?;
-        let source = e.attacker.as_ref().and_then(|(id, _)| {
-            self.mobs
-                .iter()
-                .find(|m| m.id == *id)
-                .map(|m| self.mob_entity(m))
-        });
-        let projectile = match e.damage_type.as_str() {
-            // The rocket is the direct entity of its `fireworks` damage.
-            "minecraft:fireworks" => Some("minecraft:firework_rocket"),
-            t @ ("minecraft:arrow"
-            | "minecraft:trident"
-            | "minecraft:mob_projectile"
-            | "minecraft:fireball"
-            | "minecraft:unattributed_fireball"
-            | "minecraft:wither_skull"
-            | "minecraft:wind_charge"
-            | "minecraft:thrown"
-            | "minecraft:spit") => Some(t),
-            _ => None,
-        };
-        let direct = match projectile {
-            Some(kind) => Some(EntityView {
-                kind: kind.to_owned(),
-                ..Default::default()
-            }),
-            None => source.clone(),
-        };
-        Some(DamageView {
-            kind: e.damage_type.clone(),
-            direct,
-            source,
-            is_direct: projectile.is_none(),
-            original: e.damage,
-            actual: e.damage,
-            blocked: false,
-        })
-    }
-    /// The type of the mob that dealt the killing blow (`killed_by`).
-    pub(super) fn combat_killer_kind(&self) -> Option<String> {
-        let (id, _) = self.combat.entries.last()?.attacker.clone()?;
-        self.mobs
-            .iter()
-            .find(|m| m.id == id)
-            .map(|m| m.kind.id.clone())
     }
     /// `CombatTracker.getMostSignificantFall`.
     fn most_significant_fall(&self) -> Option<usize> {
@@ -498,10 +462,6 @@ impl Game<'_> {
             .clone()
             .or_else(|| self.mob_main_hand_name(e.attacker.as_ref()?.0))
     }
-    /// `CombatTracker.getDeathMessage`.
-    pub(super) fn combat_death_message(&mut self) -> Text {
-        self.combat_death_message_for(Text::literal(PLAYER_NAME))
-    }
     /// `CombatTracker.getDeathMessage` for a player whose display name is
     /// `me`: a server's guest is not `PLAYER_NAME`.
     pub(super) fn combat_death_message_for(&mut self, me: Text) -> Text {
@@ -512,11 +472,10 @@ impl Game<'_> {
             return Text::translate("death.attack.generic", &[me]);
         };
         let def = self
-            .motion
-            .health
+            .health_resources
             .damage
             .id(&killing.damage_type)
-            .and_then(|id| self.motion.health.damage.definition(id))
+            .and_then(|id| self.health_resources.damage.definition(id))
             .map(|d| (d.message_id.clone(), d.death_message_type.clone()))
             .unwrap_or_else(|| ("generic".into(), "default".into()));
         self.combat.entries = entries;

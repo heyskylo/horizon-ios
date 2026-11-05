@@ -1,14 +1,11 @@
-"""bench/bench.py: the parsers, the report table and the per-server setup (no server is started)."""
+"""tools/bench.py: the parsers, the report table and the per-server setup (no server is started)."""
 
-import importlib.util
 from pathlib import Path
 import tempfile
 import types
 import unittest
 
-SPEC = importlib.util.spec_from_file_location('bench', Path(__file__).resolve().parent.parent / 'bench/bench.py')
-bench = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(bench)
+from tools import bench
 
 
 def args(**kw):

@@ -129,6 +129,8 @@ fn scene(
     let mut mesher = Mesher {
         nether_shading: row["nether"].as_bool().unwrap_or(false),
         shader_pack_lighting: false,
+        separate_ao: false,
+        shader_pack: false,
         assets,
         render,
         tables,

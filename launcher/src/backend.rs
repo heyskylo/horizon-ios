@@ -36,6 +36,8 @@ pub struct Release {
     pub name: String,
     pub body: String,
     pub date: String,
+    /// When it was published, `HH:MM` UTC (empty if GitHub didn't say).
+    pub time: String,
     pub asset: Option<(String, u64)>,
     /// Listed and installed by hand, never as an update: a GitHub pre-release of the old Alpha
     /// channel (v0.2.1 on), or a Nightly older than the current one.
@@ -46,10 +48,10 @@ pub struct Release {
     pub nightly: Option<String>,
 }
 
-/// The release assets of each system Horizon ships for: (`std::env::consts::OS`, `ARCH`, the game,
-/// the launcher). game-build.yml builds the game's, nightly-build.yml signs and publishes them, and
-/// launcher.yml builds the launcher's (`platform_assets_are_published`).
-pub const PLATFORMS: [(&str, &str, &str, &str); 4] = [
+/// The release assets of each system Horizon ships for: (OS, architecture, the game, the launcher).
+/// game-build.yml builds the game's, nightly-build.yml signs and publishes them, and launcher.yml
+/// builds the launcher's (`platform_assets_are_published`).
+pub const PLATFORMS: [(&str, &str, &str, &str); 5] = [
     (
         "linux",
         "x86_64",
@@ -74,6 +76,12 @@ pub const PLATFORMS: [(&str, &str, &str, &str); 4] = [
         "x86_64",
         "horizon-windows-x64.zip",
         "horizon-launcher-windows-x64.zip",
+    ),
+    (
+        "windows",
+        "aarch64",
+        "horizon-windows-arm64.zip",
+        "horizon-launcher-windows-arm64.zip",
     ),
 ];
 
@@ -106,6 +114,10 @@ const fn platform_assets(os: &str, arch: &str) -> Option<(&'static str, &'static
     None
 }
 
+/// Both follow this launcher's own architecture. An x64 launcher on a Windows ARM64 PC (under
+/// emulation) keeps updating itself, installing games and building native mods as x64, so a player
+/// whose emulated setup works is never moved to an ARM64 build by an update. The ARM64 launcher is
+/// what `horizon-launcher-setup-arm64.exe` installs.
 const OWN_ASSETS: Option<(&str, &str)> =
     platform_assets(std::env::consts::OS, std::env::consts::ARCH);
 /// The game build this launcher installs, None where Horizon has none.
@@ -118,6 +130,346 @@ pub const LAUNCHER_ASSET: Option<&str> = match OWN_ASSETS {
     Some((_, launcher)) => Some(launcher),
     None => None,
 };
+/// The game build the ARM64 Windows launcher installs from a release that has no ARM64 one (every
+/// release before it, or a Nightly whose ARM64 job failed): the x64 build, which Windows runs under
+/// emulation.
+const GAME_FALLBACK: Option<&str> = game_fallback_for(std::env::consts::OS, std::env::consts::ARCH);
+
+/// The game architecture selected in Settings. Auto preserves the launcher's existing behavior:
+/// it follows the process architecture, even when an x64 launcher runs on Windows ARM.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GameArchitecture {
+    #[default]
+    Auto,
+    X64,
+    Arm64,
+}
+
+impl GameArchitecture {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::X64 => "x64",
+            Self::Arm64 => "arm64",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "auto" | "default" => Some(Self::Auto),
+            "x64" | "x86_64" | "amd64" => Some(Self::X64),
+            "arm64" | "aarch64" => Some(Self::Arm64),
+            _ => None,
+        }
+    }
+}
+
+const GAME_BUILD_ARCHITECTURE: &str = ".horizon-game-architecture.json";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct InstalledGameArchitecture {
+    /// The architecture requested when this version was installed.
+    requested: GameArchitecture,
+    /// The archive's actual architecture (x64 may be the safe ARM64 fallback).
+    binary: GameArchitecture,
+}
+
+fn architecture_for_platform(architecture: &str) -> Option<GameArchitecture> {
+    match architecture {
+        "x86_64" => Some(GameArchitecture::X64),
+        "aarch64" => Some(GameArchitecture::Arm64),
+        _ => None,
+    }
+}
+
+fn architecture_for_asset(asset: &str) -> Option<GameArchitecture> {
+    match asset.rsplit('/').next()? {
+        "horizon-windows-x64.zip" => Some(GameArchitecture::X64),
+        "horizon-windows-arm64.zip" => Some(GameArchitecture::Arm64),
+        _ => None,
+    }
+}
+
+/// Detect the native Windows machine even if this launcher process is running under emulation.
+#[cfg(windows)]
+fn native_windows_architecture() -> Option<&'static str> {
+    #[repr(C)]
+    struct SystemInfo {
+        processor_architecture: u16,
+        _reserved: u16,
+        _page_size: u32,
+        _minimum_application_address: *mut std::ffi::c_void,
+        _maximum_application_address: *mut std::ffi::c_void,
+        _active_processor_mask: usize,
+        _number_of_processors: u32,
+        _processor_type: u32,
+        _allocation_granularity: u32,
+        _processor_level: u16,
+        _processor_revision: u16,
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetCurrentProcess() -> *mut std::ffi::c_void;
+        fn GetModuleHandleA(module_name: *const std::ffi::c_char) -> *mut std::ffi::c_void;
+        fn GetProcAddress(
+            module: *mut std::ffi::c_void,
+            name: *const std::ffi::c_char,
+        ) -> Option<unsafe extern "system" fn()>;
+        fn GetNativeSystemInfo(info: *mut SystemInfo);
+    }
+
+    type IsWow64Process2 =
+        unsafe extern "system" fn(*mut std::ffi::c_void, *mut u16, *mut u16) -> i32;
+
+    // IsWow64Process2 reports the ARM64 host for x64 emulation; GetNativeSystemInfo reports the
+    // emulated processor for compatibility. Resolve it dynamically for older Windows versions.
+    let kernel32 = unsafe { GetModuleHandleA(c"kernel32.dll".as_ptr()) };
+    let is_wow64_process2 = if kernel32.is_null() {
+        None
+    } else {
+        unsafe { GetProcAddress(kernel32, c"IsWow64Process2".as_ptr()) }
+    };
+    if let Some(function) = is_wow64_process2 {
+        // SAFETY: GetProcAddress resolved this exact Kernel32 API, whose signature is declared
+        // above with the documented system calling convention.
+        let is_wow64_process2: IsWow64Process2 = unsafe { std::mem::transmute(function) };
+        let (mut process_machine, mut native_machine) = (0u16, 0u16);
+        // SAFETY: GetCurrentProcess returns a pseudo-handle accepted by IsWow64Process2, and both
+        // output pointers refer to live USHORTs.
+        if unsafe {
+            is_wow64_process2(
+                GetCurrentProcess(),
+                &mut process_machine,
+                &mut native_machine,
+            )
+        } != 0
+        {
+            return match native_machine {
+                0x8664 => Some("x86_64"),  // IMAGE_FILE_MACHINE_AMD64
+                0xaa64 => Some("aarch64"), // IMAGE_FILE_MACHINE_ARM64
+                _ => None,
+            };
+        }
+    }
+
+    // SAFETY: GetNativeSystemInfo writes the documented SYSTEM_INFO layout into this repr(C)
+    // buffer and has no failure return value. This fallback preserves existing behavior on older
+    // Windows versions without IsWow64Process2.
+    let mut info: SystemInfo = unsafe { std::mem::zeroed() };
+    unsafe { GetNativeSystemInfo(&mut info) };
+    match info.processor_architecture {
+        9 => Some("x86_64"),   // PROCESSOR_ARCHITECTURE_AMD64
+        12 => Some("aarch64"), // PROCESSOR_ARCHITECTURE_ARM64
+        _ => None,
+    }
+}
+
+#[cfg(not(windows))]
+fn native_windows_architecture() -> Option<&'static str> {
+    None
+}
+
+fn supports_game_architecture_choice(os: &str, native: Option<&str>) -> bool {
+    os == "windows" && native == Some("aarch64")
+}
+
+/// Resolves the game's asset and fallback. Auto follows the process architecture, preserving
+/// existing x64, Linux and macOS behavior. Manual choices are honored on native Windows ARM.
+fn game_assets_for(
+    os: &str,
+    native: Option<&str>,
+    process: &str,
+    choice: GameArchitecture,
+) -> Option<(&'static str, Option<&'static str>)> {
+    let arch = if supports_game_architecture_choice(os, native) {
+        match choice {
+            GameArchitecture::Auto => process,
+            GameArchitecture::X64 => "x86_64",
+            GameArchitecture::Arm64 => "aarch64",
+        }
+    } else {
+        process
+    };
+    let (asset, _) = platform_assets(os, arch)?;
+    Some((asset, game_fallback_for(os, arch)))
+}
+
+fn selected_game_architecture(settings: &Settings) -> Option<GameArchitecture> {
+    if std::env::consts::OS != "windows" {
+        return None;
+    }
+    let arch = if supports_game_architecture_choice("windows", native_windows_architecture()) {
+        match settings.game_architecture {
+            GameArchitecture::Auto => std::env::consts::ARCH,
+            GameArchitecture::X64 => "x86_64",
+            GameArchitecture::Arm64 => "aarch64",
+        }
+    } else {
+        std::env::consts::ARCH
+    };
+    architecture_for_platform(arch)
+}
+
+/// True for both native ARM64 launchers and x64 launchers under ARM64 emulation.
+pub fn can_choose_game_architecture() -> bool {
+    supports_game_architecture_choice("windows", native_windows_architecture())
+}
+
+/// A downloaded version records its requested and actual architectures. Old installs and imports
+/// have no marker; their PE machine type is used for both.
+fn installed_game_architecture(tag: &str) -> Option<InstalledGameArchitecture> {
+    let dir = version_dir(tag);
+    serde_json::from_slice(&fs::read(dir.join(GAME_BUILD_ARCHITECTURE)).ok()?)
+        .ok()
+        .or_else(|| {
+            let binary = pe_architecture_file(&dir.join(CLIENT))?;
+            Some(InstalledGameArchitecture {
+                requested: binary,
+                binary,
+            })
+        })
+}
+
+fn pe_architecture_file(path: &Path) -> Option<GameArchitecture> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut file = fs::File::open(path).ok()?;
+    let mut dos = [0u8; 0x40];
+    file.read_exact(&mut dos).ok()?;
+    if &dos[..2] != b"MZ" {
+        return None;
+    }
+    let pe = u32::from_le_bytes(dos[0x3c..0x40].try_into().ok()?);
+    file.seek(SeekFrom::Start(u64::from(pe))).ok()?;
+    let mut header = [0u8; 6];
+    file.read_exact(&mut header).ok()?;
+    (&header[..4] == b"PE\x00\x00")
+        .then(|| architecture_for_pe_machine(u16::from_le_bytes([header[4], header[5]])))
+        .flatten()
+}
+
+fn architecture_for_pe_machine(machine: u16) -> Option<GameArchitecture> {
+    match machine {
+        0x8664 => Some(GameArchitecture::X64),
+        0xaa64 => Some(GameArchitecture::Arm64),
+        _ => None,
+    }
+}
+
+fn installation_matches_game_architecture(tag: &str, settings: &Settings) -> bool {
+    if !can_choose_game_architecture() {
+        return true;
+    }
+    let Some(target) = selected_game_architecture(settings) else {
+        return true;
+    };
+    installed_game_architecture(tag)
+        .is_some_and(|installed| installed_architecture_matches(target, installed))
+}
+
+fn installed_architecture_matches(
+    target: GameArchitecture,
+    installed: InstalledGameArchitecture,
+) -> bool {
+    installed.requested == target || installed.binary == target
+}
+
+fn game_architecture_install_needed(
+    target: GameArchitecture,
+    expected: GameArchitecture,
+    installed: Option<InstalledGameArchitecture>,
+) -> bool {
+    installed.is_none_or(|installed| {
+        (installed.requested != target && installed.binary != target)
+            || installed.binary != expected
+    })
+}
+
+/// Whether an installed version needs the selected architecture downloaded. This also refreshes
+/// old installs with a same-version install when needed to record an ARM64 fallback choice.
+pub fn needs_game_architecture_install(tag: &str, release: &Release) -> bool {
+    if !can_choose_game_architecture() {
+        return false;
+    }
+    let Some(expected) = release
+        .asset
+        .as_ref()
+        .and_then(|(url, _)| architecture_for_asset(url))
+    else {
+        return false;
+    };
+    let settings = Settings::load();
+    let Some(target) = selected_game_architecture(&settings) else {
+        return false;
+    };
+    game_architecture_install_needed(target, expected, installed_game_architecture(tag))
+}
+
+fn native_mod_architecture_message(
+    process: GameArchitecture,
+    selected: GameArchitecture,
+) -> Option<&'static str> {
+    (process != selected).then_some(if process == GameArchitecture::X64 {
+        "Native mods cannot build for the selected ARM64 game yet. The available compiler builds x64 only."
+    } else {
+        "Native mods cannot build for the selected x64 game yet. This ARM64 launcher has no matching compiler."
+    })
+}
+
+pub(crate) fn native_mod_architecture_error() -> Option<String> {
+    if !can_choose_game_architecture() {
+        return None;
+    }
+    let process = architecture_for_platform(std::env::consts::ARCH)?;
+    let selected = selected_game_architecture(&Settings::load())?;
+    native_mod_architecture_message(process, selected)
+        .map(|message| crate::i18n::tr(message).to_string())
+}
+
+/// Refuse to launch an explicit game architecture until this version has been installed for it.
+pub fn game_architecture_launch_error(tag: &str) -> Option<String> {
+    if !can_choose_game_architecture() {
+        return None;
+    }
+    let settings = Settings::load();
+    if settings.game_architecture == GameArchitecture::Auto
+        || installation_matches_game_architecture(tag, &settings)
+    {
+        return None;
+    }
+    let target = selected_game_architecture(&settings)?;
+    let installed = installed_game_architecture(tag).map(|a| a.binary);
+    let label = |arch| match arch {
+        GameArchitecture::X64 => "x64".to_owned(),
+        GameArchitecture::Arm64 => "ARM64".to_owned(),
+        GameArchitecture::Auto => crate::i18n::tr("Automatic").to_string(),
+    };
+    let installed = installed
+        .map(label)
+        .unwrap_or_else(|| crate::i18n::tr("Unknown").to_string());
+    let selected = label(target);
+    Some(crate::i18n::trf(
+        "This version has a {installed} game build, but Settings selects {selected}. Install the selected build from Versions before launching.",
+        &[
+            ("installed", &installed),
+            ("selected", &selected),
+        ],
+    ))
+}
+
+/// The asset a platform's launcher falls back to when a release has no build of its own.
+const fn game_fallback_for(os: &str, arch: &str) -> Option<&'static str> {
+    if same(os, "windows") && same(arch, "aarch64") {
+        match platform_assets("windows", "x86_64") {
+            Some((game, _)) => Some(game),
+            None => None,
+        }
+    } else {
+        None
+    }
+}
 
 /// The launcher as an AppImage (`packaging/linux/appimage.sh`): the program and its libraries in
 /// one file. A launcher running from one updates by replacing that file ([`appimage_path`]), so it
@@ -352,6 +704,11 @@ pub(crate) fn parse_releases(
                 .chars()
                 .take(10)
                 .collect(),
+            time: r["published_at"]
+                .as_str()
+                .and_then(|d| d.get(11..16))
+                .unwrap_or_default()
+                .into(),
             asset: found,
             prerelease: r["prerelease"].as_bool().unwrap_or(false),
             nightly: None,
@@ -375,9 +732,36 @@ pub fn releases() -> Result<Vec<Release>, String> {
 /// The game's builds in `list`, newest first. A Nightly is listed under the version it installs as
 /// ([`crate::nightly::version_of`]); only the current one (`nightly`) is an update.
 pub(crate) fn game_releases(list: &serde_json::Value) -> Vec<Release> {
-    let mut out = parse_releases(list, ASSET, |tag| {
-        is_game_tag(tag) || horizon_release_sign::is_nightly(tag)
+    let settings = Settings::load();
+    let assets = game_assets_for(
+        std::env::consts::OS,
+        native_windows_architecture(),
+        std::env::consts::ARCH,
+        settings.game_architecture,
+    );
+    let (asset, fallback) = assets.map_or((ASSET, GAME_FALLBACK), |(asset, fallback)| {
+        (Some(asset), fallback)
     });
+    game_releases_with(list, asset, fallback)
+}
+
+/// [`game_releases`] for one platform's asset, and the one it installs from a release that has
+/// none of its own ([`GAME_FALLBACK`]).
+fn game_releases_with(
+    list: &serde_json::Value,
+    asset: Option<&str>,
+    fallback: Option<&str>,
+) -> Vec<Release> {
+    let keep = |tag: &str| is_game_tag(tag) || horizon_release_sign::is_nightly(tag);
+    let mut out = parse_releases(list, asset, keep);
+    if fallback.is_some() {
+        // The same releases in the same order: only the asset looked for differs.
+        for (r, other) in out.iter_mut().zip(parse_releases(list, fallback, keep)) {
+            if r.asset.is_none() && r.tag == other.tag {
+                r.asset = other.asset;
+            }
+        }
+    }
     for r in &mut out {
         if horizon_release_sign::is_nightly(&r.tag) {
             let version = crate::nightly::version_of(r);
@@ -537,6 +921,11 @@ pub fn data_dir() -> PathBuf {
     if let Some(home) = std::env::var_os("HORIZON_LAUNCHER_HOME").filter(|h| !h.is_empty()) {
         return PathBuf::from(home);
     }
+    // A location that does not open stands in as the default folders, as
+    // `data_location::startup` makes it for the window: never a panic here.
+    if let Ok(Some(roots)) = crate::data_location::configured_roots() {
+        return roots.launcher;
+    }
     dirs::data_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join("horizon-launcher")
@@ -558,15 +947,29 @@ fn ascii(path: &Path) -> bool {
     path.as_os_str().to_str().is_some_and(str::is_ascii)
 }
 
+/// `path` as Windows' MinGW-w64 tools can take it: [`ascii`], and on Windows without a space.
+/// `windres` hands its include folders to the preprocessor unquoted, so a user name with a space
+/// in %APPDATA% splits there ("cc1.exe: fatal error: v\: No such file or directory").
+fn tool_safe(path: &Path) -> bool {
+    ascii(path) && !(cfg!(windows) && path.as_os_str().to_str().is_some_and(|p| p.contains(' ')))
+}
+
 /// Where builds happen — the Rust toolchain, its Cargo home and `native_mods::root` — as a
 /// path every build tool can read: `data_dir()` resolved, so the tools are never handed a
 /// link (horizon-mixins refuses one, and macOS's /tmp is one). On Windows, when the resolved
-/// path isn't [`ascii`], [`windows_build_dir`] names the same folder a way MinGW-w64 can open.
+/// path isn't [`tool_safe`], [`windows_build_dir`] names the same folder a way MinGW-w64 can open.
 pub fn build_dir() -> PathBuf {
+    if std::env::var_os("HORIZON_LAUNCHER_HOME").is_none_or(|p| p.is_empty()) {
+        // A location that does not open stands in as the default folders, as
+        // `data_location::startup` makes it for the window: never a panic here.
+        if let Ok(Some(roots)) = crate::data_location::configured_roots() {
+            return roots.build;
+        }
+    }
     let data = data_dir();
     let _ = fs::create_dir_all(&data);
     let real = data.canonicalize().map(plain).unwrap_or(data);
-    if ascii(&real) {
+    if tool_safe(&real) {
         return real;
     }
     #[cfg(windows)]
@@ -575,7 +978,7 @@ pub fn build_dir() -> PathBuf {
     real
 }
 
-/// [`build_dir`] when `real` isn't [`ascii`]: [`ascii_build_dir`], a real folder of
+/// [`build_dir`] when `real` isn't [`tool_safe`]: [`ascii_build_dir`], a real folder of
 /// ProgramData's. Only when it can't be created, the data folder's short (8.3) name.
 ///
 /// The short name came first until #6009, and wasn't enough: it is only another spelling of the
@@ -589,7 +992,7 @@ fn windows_build_dir(real: &Path) -> PathBuf {
     if fs::create_dir_all(&dir).is_ok() {
         return dir;
     }
-    short_path(real).filter(|p| ascii(p)).unwrap_or(dir)
+    short_path(real).filter(|p| tool_safe(p)).unwrap_or(dir)
 }
 
 /// The build folder for a data folder `real` whose path isn't [`ascii`]: in `program_data`
@@ -599,7 +1002,7 @@ fn windows_build_dir(real: &Path) -> PathBuf {
 fn ascii_build_dir(real: &Path, program_data: Option<PathBuf>) -> PathBuf {
     use sha2::{Digest, Sha256};
     let public = program_data
-        .filter(|p| p.is_absolute() && ascii(p))
+        .filter(|p| p.is_absolute() && tool_safe(p))
         .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"));
     let key = Sha256::digest(real.as_os_str().as_encoded_bytes());
     let key: String = key[..4].iter().map(|b| format!("{b:02x}")).collect();
@@ -726,7 +1129,39 @@ pub(crate) fn download(
             .unwrap_or(0),
         n => n,
     };
-    let mut reader = response.into_reader();
+    let name = url.rsplit('/').next().unwrap_or(url);
+    save_checked(response.into_reader(), size, name, sha256, to, progress)
+}
+
+/// Saves `reader` as `to` once all of it has arrived and its SHA-256 is `sha256`: until then it
+/// has a temporary name beside `to`, so `to` is never a partial or unchecked file.
+fn save_checked(
+    reader: impl Read,
+    size: u64,
+    name: &str,
+    sha256: &str,
+    to: &Path,
+    progress: &impl Fn(f32),
+) -> Result<(), String> {
+    let mut temp = to.as_os_str().to_owned();
+    temp.push(format!(".part-{}", std::process::id()));
+    let temp = PathBuf::from(temp);
+    let saved = write_checked(reader, size, name, sha256, &temp, progress)
+        .and_then(|()| fs::rename(&temp, to).map_err(|e| e.to_string()));
+    if saved.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    saved
+}
+
+fn write_checked(
+    mut reader: impl Read,
+    size: u64,
+    name: &str,
+    sha256: &str,
+    to: &Path,
+    progress: &impl Fn(f32),
+) -> Result<(), String> {
     let mut file = fs::File::create(to).map_err(|e| e.to_string())?;
     let mut hash = horizon_release_sign::Sha256::default();
     let (mut done, mut buf) = (0u64, vec![0u8; 1 << 16]);
@@ -742,10 +1177,7 @@ pub(crate) fn download(
         done += n as u64;
         progress((done as f32 / size.max(1) as f32).min(1.0) * 0.9);
     }
-    let name = url.rsplit('/').next().unwrap_or(url);
-    horizon_release_sign::check(name, sha256, &hash.hex()).inspect_err(|_| {
-        let _ = fs::remove_file(to);
-    })
+    horizon_release_sign::check(name, sha256, &hash.hex())
 }
 
 fn unpack(archive: &Path, url: &str, to: &Path) -> Result<(), String> {
@@ -765,18 +1197,75 @@ fn unpack(archive: &Path, url: &str, to: &Path) -> Result<(), String> {
 /// the fraction done.
 pub fn install(release: &Release, progress: impl Fn(f32)) -> Result<(), String> {
     let tag = release.tag.as_str();
+    let settings = Settings::load();
+    let assets = game_assets_for(
+        std::env::consts::OS,
+        native_windows_architecture(),
+        std::env::consts::ARCH,
+        settings.game_architecture,
+    );
+    let (asset, fallback) = assets.map_or((ASSET, GAME_FALLBACK), |(asset, fallback)| {
+        (Some(asset), fallback)
+    });
+    let asset = asset_installed(release, asset, fallback).ok_or_else(|| {
+        crate::i18n::trf(
+            "{tag} has no build for the selected game architecture.",
+            &[("tag", tag)],
+        )
+        .to_string()
+    })?;
     let sha256 = match &release.nightly {
-        // Signed for the Nightly channel, served under its own GitHub tag.
-        Some(published) => crate::signed::nightly_digest(
-            published,
-            ASSET.unwrap_or_default(),
-            &horizon_release_sign::trusted_keys(),
-            fetch_small,
-        )?,
-        None if is_game_tag(tag) => signed_digest(tag, ASSET.unwrap_or_default())?,
+        // Signed for its own version (SHA256SUMS.v2.sig), which its title names and it installs as;
+        // served under its own GitHub tag. A title that doesn't parse strictly is refused: nothing
+        // signs GitHub's publication time.
+        Some(github_tag) => {
+            let version = horizon_release_sign::nightly_title_version(&release.name)
+                .filter(|v| *v == release.tag)
+                .ok_or_else(|| {
+                    crate::i18n::trf(
+                        "This Nightly's title ({title}) doesn't name its date and commit as Horizon \
+                         signs them, so it can't be checked: it was not installed.",
+                        &[("title", &format!("{:?}", release.name))],
+                    )
+                })?;
+            crate::signed::nightly_digest(
+                github_tag,
+                &version,
+                asset,
+                &horizon_release_sign::trusted_keys(),
+                fetch_small,
+            )?
+        }
+        None if is_game_tag(tag) => signed_digest(tag, asset)?,
         None => return Err(format!("{tag} is not a Horizon release.")),
     };
-    install_as(release, tag, &sha256, progress)
+    install_as(
+        release,
+        tag,
+        &sha256,
+        selected_game_architecture(&settings),
+        progress,
+    )
+}
+
+/// The asset `release` installs from: the fallback when [`game_releases_with`] took it (its file
+/// name ends the download address), so the signed checksum checked is that file's.
+fn asset_installed<'a>(
+    release: &Release,
+    asset: Option<&'a str>,
+    fallback: Option<&'a str>,
+) -> Option<&'a str> {
+    let file = release
+        .asset
+        .as_ref()
+        .and_then(|(url, _)| url.rsplit('/').next());
+    if fallback.is_some_and(|name| file == Some(name)) {
+        fallback
+    } else if asset.is_some_and(|name| file == Some(name)) {
+        asset
+    } else {
+        None
+    }
 }
 
 /// Downloads `release`'s archive for this platform, checks it against `sha256` (its signed
@@ -785,6 +1274,7 @@ pub(crate) fn install_as(
     release: &Release,
     tag: &str,
     sha256: &str,
+    requested_architecture: Option<GameArchitecture>,
     progress: impl Fn(f32),
 ) -> Result<(), String> {
     let (url, size) = release
@@ -817,19 +1307,32 @@ pub(crate) fn install_as(
         use std::os::unix::fs::PermissionsExt;
         let _ = fs::set_permissions(top.join(CLIENT), fs::Permissions::from_mode(0o755));
     }
+    if let (Some(requested), Some(binary)) = (requested_architecture, architecture_for_asset(&url))
+    {
+        fs::write(
+            top.join(GAME_BUILD_ARCHITECTURE),
+            serde_json::to_vec(&InstalledGameArchitecture { requested, binary })
+                .map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+    }
     let target = version_dir(tag);
     let _ = fs::remove_dir_all(&target);
     fs::rename(&top, &target).map_err(|e| e.to_string())?;
     fs::write(target.join(COMPLETE), "").map_err(|e| e.to_string())?;
     let _ = fs::remove_dir_all(&partial);
-    reuse_prepared(&root, tag);
-    complete_assets(tag);
+    reuse_prepared_for(tag);
     progress(1.0);
     Ok(())
 }
 
 pub fn remove(tag: &str) -> Result<(), String> {
     let dir = version_dir(tag);
+    remove_in(&dir)
+}
+
+fn remove_in(dir: &Path) -> Result<(), String> {
+    let installed = dir.join(COMPLETE).is_file();
     // The marker goes first: a version counted as installed until its folder is gone comes back
     // into `installed` when an overlapping removal re-reads the list mid-delete.
     let _ = fs::remove_file(dir.join(COMPLETE));
@@ -837,10 +1340,18 @@ pub fn remove(tag: &str) -> Result<(), String> {
     // go of it, and remove_dir_all stops at the first one. Retry for a second; a folder that is
     // already gone is removed.
     for attempt in 1.. {
-        match fs::remove_dir_all(&dir) {
+        match fs::remove_dir_all(dir) {
             Ok(()) => break,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
-            Err(e) if attempt == 5 => return Err(e.to_string()),
+            Err(e) if attempt == 5 => {
+                // A failed removal must remain discoverable and retryable. Files may
+                // already have gone, so this is recovery metadata, not a rollback.
+                if installed && dir.is_dir() {
+                    fs::write(dir.join(COMPLETE), "")
+                        .map_err(|restore| format!("{e}; {restore}"))?;
+                }
+                return Err(e.to_string());
+            }
             Err(_) => std::thread::sleep(std::time::Duration::from_millis(250)),
         }
     }
@@ -1104,12 +1615,19 @@ fn files_under(dir: &Path, relative: &Path) -> Vec<PathBuf> {
 }
 
 pub(crate) fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
+    copy_dir_except(from, to, None)
+}
+
+/// Copy a folder, leaving out one directory when given.
+pub(crate) fn copy_dir_except(from: &Path, to: &Path, skip: Option<&Path>) -> std::io::Result<()> {
     fs::create_dir_all(to)?;
     for entry in fs::read_dir(from)? {
         let entry = entry?;
         let target = to.join(entry.file_name());
         if entry.file_type()?.is_dir() {
-            copy_dir(&entry.path(), &target)?;
+            if Some(entry.path().as_path()) != skip {
+                copy_dir_except(&entry.path(), &target, skip)?;
+            }
         } else {
             horizon_prepare::clone_or_copy(&entry.path(), &target)?;
         }
@@ -1161,6 +1679,13 @@ fn reuse_prepared(versions: &Path, tag: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// What an install does once its folder is in place (an imported build's too, `build_import`):
+/// another installed version's resources if it has none, and whatever its resources lack.
+pub(crate) fn reuse_prepared_for(tag: &str) {
+    reuse_prepared(&versions_dir(), tag);
+    complete_assets(tag);
 }
 
 /// `reuse_prepared` for every installed version that is not prepared, oldest first, so a
@@ -1463,7 +1988,9 @@ fn download_for_owner(
         account::store(),
         &mut accounts,
     );
-    let _ = accounts.save();
+    if let Err(e) = accounts.save() {
+        log(format!("Horizon: the accounts are not saved: {e}"));
+    }
     download_for(pins, dir, pass, !accounts.accounts.is_empty(), fetch, log)
 }
 
@@ -1524,21 +2051,15 @@ pub fn java_game(
         download_version_for_owner(&version.id, &version.sha1, log)?;
         fs::write(&marker, "").map_err(|e| format!("{}: {e}", marker.display()))?;
     }
-    let mut start = game.minecraft.clone();
-    if let Some(loader) = &game.loader {
-        start = loader.kind.profile_id(&loader.version, &game.minecraft);
-        let marker = downloaded(&start)?;
-        if !marker.is_file() {
-            start = crate::loaders::install(loader, &game.minecraft, &minecraft, &get_bytes, log)?;
-            fs::write(downloaded(&start)?, "").map_err(|e| e.to_string())?;
-        }
-    }
-    let file = minecraft
-        .join("versions")
-        .join(mojang::relative(&start)?)
-        .join(format!("{start}.json"));
-    let version = crate::java_launch::resolve(crate::java_launch::read(&file)?, &minecraft)?;
-    let need = crate::java::Need::of(&version);
+    // The Java the game needs, which also runs a loader's installer.
+    let file = |id: &str| -> Result<PathBuf, String> {
+        Ok(minecraft
+            .join("versions")
+            .join(mojang::relative(id)?)
+            .join(format!("{id}.json")))
+    };
+    let vanilla = crate::java_launch::read(&file(&game.minecraft)?)?;
+    let need = crate::java::Need::of(&crate::java_launch::resolve(vanilla, &minecraft)?);
     let found = crate::java::pick(
         &need,
         game.home.as_deref(),
@@ -1552,6 +2073,24 @@ pub fn java_game(
             crate::java::install(&need, log)?
         }
     };
+    let mut start = game.minecraft.clone();
+    if let Some(loader) = &game.loader {
+        start = loader.kind.profile_id(&loader.version, &game.minecraft);
+        let marker = downloaded(&start)?;
+        if !marker.is_file() {
+            start = crate::loaders::install(
+                loader,
+                &game.minecraft,
+                &minecraft,
+                &runtime.java(),
+                &get_bytes,
+                log,
+            )?;
+            fs::write(downloaded(&start)?, "").map_err(|e| e.to_string())?;
+        }
+    }
+    let version =
+        crate::java_launch::resolve(crate::java_launch::read(&file(&start)?)?, &minecraft)?;
     let jvm_args: Vec<String> = game.jvm_args.split_whitespace().map(String::from).collect();
     fs::create_dir_all(&instance.home).map_err(|e| format!("{}: {e}", instance.home.display()))?;
     crate::java_launch::command(
@@ -1984,6 +2523,11 @@ pub fn game_home() -> PathBuf {
     if let Some(home) = std::env::var_os("HORIZON_HOME").filter(|h| !h.is_empty()) {
         return PathBuf::from(home);
     }
+    // A location that does not open stands in as the default folders, as
+    // `data_location::startup` makes it for the window: never a panic here.
+    if let Ok(Some(roots)) = crate::data_location::configured_roots() {
+        return roots.game;
+    }
     dirs::data_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join("horizon")
@@ -2089,9 +2633,21 @@ pub fn vulkan_start_crashed<S: AsRef<str>>(lines: impl IntoIterator<Item = S>) -
 /// The game's graphics settings file in its home (the game's `graphics.rs`).
 const GRAPHICS_FILE: &str = "horizon-graphics.txt";
 
-/// Sets `graphicsApi:dx12` in `home`'s graphics settings when it is unset or `auto`, keeping
-/// every other line. True when it changed; a player's own `vulkan` or `dx12` stays.
-pub fn switch_to_dx12(home: &Path) -> Result<bool, String> {
+/// The graphics API (the game's setting name, and its label) Auto switches to after a native
+/// crash at the Vulkan renderer's start: DirectX 12 on Windows (#746), OpenGL on Linux, where
+/// Auto also runs Mesa's hasvk on Ivy Bridge and Haswell, which Mesa itself calls incomplete
+/// there (#4293). `None` where the game has no other API (macOS: Metal only).
+pub fn vulkan_crash_fallback(os: &str) -> Option<(&'static str, &'static str)> {
+    match os {
+        "windows" => Some(("dx12", "DirectX 12")),
+        "macos" => None,
+        _ => Some(("opengl", "OpenGL")),
+    }
+}
+
+/// Sets `graphicsApi:<api>` in `home`'s graphics settings when it is unset or `auto`, keeping
+/// every other line. True when it changed; a player's own choice stays.
+pub fn switch_from_auto(home: &Path, api: &str) -> Result<bool, String> {
     let path = home.join(GRAPHICS_FILE);
     let text = match fs::read_to_string(&path) {
         Ok(text) => text,
@@ -2107,13 +2663,13 @@ pub fn switch_to_dx12(home: &Path) -> Result<bool, String> {
                     return Ok(false);
                 }
                 found = true;
-                lines.push("graphicsApi:dx12".to_owned());
+                lines.push(format!("graphicsApi:{api}"));
             }
             _ => lines.push(line.to_owned()),
         }
     }
     if !found {
-        lines.push("graphicsApi:dx12".to_owned());
+        lines.push(format!("graphicsApi:{api}"));
     }
     fs::create_dir_all(home).map_err(|e| format!("{}: {e}", home.display()))?;
     fs::write(&path, lines.join("\n") + "\n").map_err(|e| format!("{}: {e}", path.display()))?;
@@ -2210,11 +2766,35 @@ pub fn append_game_args(cmd: &mut Command) {
     cmd.args(game_args());
 }
 
+/// Renderer workarounds a player may have exported to start the launcher itself (a transparent
+/// window on old Mesa drivers): they belong to the launcher's own webview and must not reach the
+/// game, which picks its own backend. Inherited, they left the client on CPU rendering at 2-3 FPS
+/// (#7832).
+pub const LAUNCHER_RENDER_ENV: [&str; 4] = [
+    "LIBGL_ALWAYS_SOFTWARE",
+    "GALLIUM_DRIVER",
+    "WEBKIT_DISABLE_DMABUF_RENDERER",
+    "WEBKIT_DISABLE_COMPOSITING_MODE",
+];
+
+fn strip_launcher_render_env(cmd: &mut Command) {
+    for key in LAUNCHER_RENDER_ENV {
+        cmd.env_remove(key);
+    }
+}
+
 pub fn client_command(tag: &str) -> Command {
     let home = game_home();
     let _ = fs::create_dir_all(&home);
     let mut cmd = Command::new(client_program(tag));
-    cmd.current_dir(home).arg("--resources").arg(resources(tag));
+    #[cfg(windows)]
+    crate::windows_runtime::mark(&mut cmd, &version_dir(tag));
+    strip_launcher_render_env(&mut cmd);
+    cmd.current_dir(&home)
+        .env("HORIZON_HOME", &home)
+        .env_remove("HORIZON_ACCOUNT_SESSIONS")
+        .arg("--resources")
+        .arg(resources(tag));
     // How the game asks for a renewed session (`account session`) while it runs.
     if let Ok(exe) = std::env::current_exe() {
         cmd.env("HORIZON_LAUNCHER_EXE", exe);
@@ -2279,7 +2859,17 @@ pub fn resolve_version(requested: Option<&str>) -> Result<String, String> {
     let selected = Settings::load().selected.filter(|s| installed.contains(s));
     selected
         .or_else(|| installed.first().cloned())
-        .ok_or_else(|| "No version is installed yet.".into())
+        .ok_or_else(no_version_installed)
+}
+
+/// What a command that needs an installed version says when there is none: the way to get one.
+pub fn no_version_installed() -> String {
+    use crate::i18n::tr;
+    format!(
+        "{} {}",
+        tr("No version is installed yet."),
+        tr("Run `horizon-launcher install latest` to get one.")
+    )
 }
 
 /// Removes an installed version, unless a program runs from it, and moves the selection to the
@@ -2295,7 +2885,7 @@ pub fn remove_version(tag: &str) -> Result<(), String> {
     let mut settings = Settings::load();
     if settings.selected.as_deref() == Some(tag) {
         settings.selected = installed().first().cloned();
-        settings.save();
+        settings.save()?;
     }
     Ok(())
 }
@@ -2320,7 +2910,7 @@ fn stale_versions(installed: &[String], keep: usize, protected: &[String]) -> Ve
 /// their program and `--resources` from it. Windows refuses to delete a running program's files,
 /// so there the delete itself fails. With no answer from `ps` the version counts as running.
 #[cfg(unix)]
-fn in_use(tag: &str) -> bool {
+pub(crate) fn in_use(tag: &str) -> bool {
     let dir = format!("{}/", version_dir(tag).display());
     Command::new("ps")
         .args(["-A", "-ww", "-o", "args="])
@@ -2329,8 +2919,13 @@ fn in_use(tag: &str) -> bool {
         .is_none_or(|out| String::from_utf8_lossy(&out.stdout).contains(&dir))
 }
 
-#[cfg(not(unix))]
-fn in_use(_tag: &str) -> bool {
+#[cfg(windows)]
+pub(crate) fn in_use(tag: &str) -> bool {
+    crate::windows_runtime::in_use(&version_dir(tag))
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn in_use(_tag: &str) -> bool {
     false
 }
 
@@ -2404,21 +2999,31 @@ pub fn client(tag: &str) -> Result<Command, String> {
     client_as(tag, None)
 }
 
+/// What the command line adds to a refusal to play for want of an account.
+pub const SIGN_IN_HINT: &str = "Sign in with `horizon-launcher account sign-in`.";
+
 /// [`client`], playing as `who` for this launch only (`play --account`).
 pub fn client_as(tag: &str, who: Option<&account::Player>) -> Result<Command, String> {
-    let (session, offline) = match who {
+    if let Some(error) = game_architecture_launch_error(tag) {
+        return Err(error);
+    }
+    let session = match who {
         None => account::session_for_game(&game_home(), false).map_err(|e| e.to_string()),
         Some(who) => account::session_for_game_as(&game_home(), who),
     }
-    .map_err(|refused| format!("{refused} Sign in with `horizon-launcher account sign-in`."))?;
-    need_prepared(tag)?;
+    .map_err(|refused| format!("{refused} {}", crate::i18n::tr(SIGN_IN_HINT)))?;
+    if let Err(e) = need_prepared(tag) {
+        account::discard_unread_sessions();
+        return Err(e);
+    }
     complete_assets(tag);
     crate::browser::horizon::before_play(&game_home());
     let mut cmd = client_command(tag);
-    if let Some(file) = session {
+    if let Some(file) = session.file {
         cmd.arg("--session-file").arg(file);
     }
-    if let Some(e) = offline {
+    cmd.envs(session.env);
+    if let Some(e) = session.offline {
         eprintln!("Playing offline: {e}");
     }
     if let Some(e) = account::take_unsaved() {
@@ -2439,6 +3044,9 @@ pub fn join_friend(cmd: &mut Command, code: &str) -> Result<(), String> {
 
 /// The dedicated server's command in `folder`, once prepared and the EULA is agreed to.
 pub fn server(tag: &str, folder: &Path, accept_eula: bool) -> Result<Command, String> {
+    if let Some(error) = game_architecture_launch_error(tag) {
+        return Err(error);
+    }
     need_prepared(tag)?;
     if accept_eula {
         agree_eula(folder)?;
@@ -2591,12 +3199,32 @@ fn releases_and_updates_with(
         }
     };
     let releases = game_releases(&list);
-    let horizon = horizon_update(&installable_updates(&releases), &installed());
+    let installed_versions = installed();
+    let horizon = horizon_update(&installable_updates(&releases), &installed_versions)
+        .or_else(|| architecture_update(&releases, &installed_versions));
     on_releases(Ok(releases));
     Ok(Updates {
         horizon,
         launcher: launcher_update(&launchers(&list)),
     })
+}
+
+/// If the selected installed game has the wrong architecture, offer the same release again so
+/// the preference also applies when there is no newer game version.
+fn architecture_update(releases: &[Release], installed: &[String]) -> Option<Release> {
+    if !can_choose_game_architecture() {
+        return None;
+    }
+    let settings = Settings::load();
+    let tag = settings
+        .selected
+        .filter(|tag| installed.contains(tag))
+        .or_else(|| installed.iter().find(|tag| is_game_tag(tag)).cloned())?;
+    if !is_game_tag(&tag) {
+        return None;
+    }
+    let release = releases.iter().find(|release| release.tag == tag)?;
+    needs_game_architecture_install(&tag, release).then(|| release.clone())
 }
 
 /// A fresh release-list request for both kinds of update (plus older-launcher fallback if needed).
@@ -2607,11 +3235,13 @@ pub fn check_updates() -> Result<Updates, String> {
 /// Whether a version installed as an update becomes the selected one: when the player had none,
 /// was on a Nightly, or on the newest installed release (so a player of the release channel moves
 /// to the Nightly at the first check, docs/release-flow.md). An older release picked by hand
-/// stays; an instance pinned to a version keeps it either way.
+/// stays, and so does an imported build (`build_import`); an instance pinned to a version keeps it
+/// either way.
 pub fn select_after_update(selected: Option<&str>, installed_before: &[String]) -> bool {
     match selected {
         None => true,
         Some(s) if crate::nightly::date_of(s).is_some() => true,
+        Some(s) if crate::build_import::is_imported(s) => false,
         Some(s) => installed_before
             .iter()
             .find(|t| is_game_tag(t))
@@ -2638,17 +3268,42 @@ pub fn install_tag(tag: &str, as_update: bool, progress: impl Fn(f32)) -> Result
         return Err(format!("{} has no build for this platform.", release.tag));
     }
     let before = installed();
+    let downgrade = nightly_downgrade(release, &before);
+    if let Some(warning) = &downgrade {
+        eprintln!("{warning}");
+    }
     install(release, progress)?;
     let mut settings = Settings::load();
-    if !as_update || select_after_update(settings.selected.as_deref(), &before) {
+    // An older Nightly is a deliberate rollback: installed, but an update never moves the selection back.
+    let select = !as_update
+        || (downgrade.is_none() && select_after_update(settings.selected.as_deref(), &before));
+    if select {
         settings.selected = Some(release.tag.clone());
-        settings.save();
+        settings.save()?;
     }
     if as_update && release.nightly.is_some() {
         crate::nightly::after_update(&release.tag);
     }
     prune_old_versions();
     Ok(release.tag.clone())
+}
+
+/// A warning when `release` is a Nightly older than a Nightly already installed: a rollback, which is
+/// allowed, but never what an update should do silently (an older build served as the current one
+/// shows its own date, since that date is signed). None otherwise.
+pub fn nightly_downgrade(release: &Release, installed: &[String]) -> Option<String> {
+    release.nightly.as_ref()?;
+    let newest = installed
+        .iter()
+        .filter(|v| crate::nightly::date_of(v).is_some())
+        .max_by(|a, b| compare_versions(a, b))?;
+    compare_versions(&release.tag, newest).is_lt().then(|| {
+        crate::i18n::trf(
+            "{tag} is older than {newest}, which is installed: installing it as a rollback. The selection \
+             only moves to it when you pick it.",
+            &[("tag", &release.tag), ("newest", newest)],
+        )
+    })
 }
 
 /// The launcher's own path, read once at start: after a self-update the running file is gone.
@@ -2721,7 +3376,7 @@ fn parse_version_output(out: &str) -> Option<&str> {
 
 /// The version of the launcher binary now at `path`, which is not this process's once another
 /// update (the command line, another window) has replaced the file.
-fn installed_launcher_version(path: &Path) -> Option<String> {
+pub(crate) fn installed_launcher_version(path: &Path) -> Option<String> {
     let mut cmd = crate::process::command(path);
     cmd.arg("--version")
         .stdin(Stdio::null())
@@ -2876,10 +3531,240 @@ fn replace_bundle(_new: &Path, _app: &Path) -> Result<(), String> {
     Err("App bundles are a macOS thing.".into())
 }
 
+/// A launcher release downloaded and checked against its signed SHA256SUMS, waiting to take this
+/// launcher's place: the new AppImage, `.app` bundle or binary, in a stage folder of its own inside
+/// [`update_work_dir`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Staged {
+    pub tag: String,
+    pub payload: PathBuf,
+    /// The signed SHA-256 of the archive beside it, checked again just before it goes in
+    /// ([`place_checked`]).
+    pub sha256: String,
+}
+
+/// Where launcher updates are downloaded and unpacked before one takes this launcher's place. Each
+/// has its own folder in here, `<pid>-<nonce>`, named after the process that made it, because a
+/// stage waits there until its window closes and other launchers stage updates meanwhile.
+pub fn update_work_dir() -> PathBuf {
+    data_dir().join(".launcher-update")
+}
+
+/// How long a stage whose process has gone is kept: the installer may still be working from it.
+/// The window marks it when it hands it over ([`mark_handed_over`]), so this counts from there.
+const STAGE_GRACE: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+const HANDED_OVER: &str = "handed-over";
+const UNPACKED: &str = "unpacked";
+/// The archive's name in a stage says how to open it, in the installer too.
+static ARCHIVE_ENDINGS: [&str; 3] = [".tar.gz", ".AppImage", ".zip"];
+
+fn archive_name(url: &str) -> String {
+    let ending = ARCHIVE_ENDINGS
+        .iter()
+        .find(|ending| url.ends_with(**ending))
+        .unwrap_or(&".zip");
+    format!("download{ending}")
+}
+
+/// The process that made the stage folder called `name`; None for any other name.
+fn stage_owner(name: &str) -> Option<u32> {
+    let (pid, nonce) = name.split_once('-')?;
+    if nonce.len() != 32 || !nonce.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    pid.parse().ok()
+}
+
+pub(crate) fn new_stage_folder(work: &Path) -> Result<PathBuf, String> {
+    let mut random = [0u8; 16];
+    getrandom::fill(&mut random).map_err(|e| e.to_string())?;
+    let nonce: String = random.iter().map(|b| format!("{b:02x}")).collect();
+    let stage = work.join(format!("{}-{nonce}", std::process::id()));
+    fs::create_dir_all(work).map_err(|e| e.to_string())?;
+    fs::create_dir(&stage).map_err(|e| e.to_string())?;
+    Ok(stage)
+}
+
+/// The stage folder directly under `work` that holds `payload`. None for a path anywhere else,
+/// which is not an update a launcher staged, and which nothing may delete or install.
+pub fn stage_folder(work: &Path, payload: &Path) -> Option<PathBuf> {
+    use std::path::Component;
+    let mut inside = payload.strip_prefix(work).ok()?.components();
+    let Component::Normal(name) = inside.next()? else {
+        return None;
+    };
+    stage_owner(name.to_str()?)?;
+    let rest: Vec<_> = inside.collect();
+    (!rest.is_empty() && rest.iter().all(|c| matches!(c, Component::Normal(_))))
+        .then(|| work.join(name))
+}
+
+/// Removes the stage holding `payload`, and only that one.
+pub fn remove_stage(work: &Path, payload: &Path) {
+    if let Some(stage) = stage_folder(work, payload) {
+        let _ = fs::remove_dir_all(stage);
+    }
+}
+
+/// The window is about to start the installer for `staged`: from here its folder is in use by a
+/// process no other launcher can tell from its name.
+pub fn mark_handed_over(staged: &Staged) {
+    if let Some(stage) = stage_folder(&update_work_dir(), &staged.payload) {
+        let _ = fs::write(stage.join(HANDED_OVER), b"");
+    }
+}
+
+/// Removes what a crash or a killed window left behind: stages whose process has gone and that
+/// nothing touched for [`STAGE_GRACE`], and the files launchers before stage folders kept directly
+/// in `work`. A stage whose process is alive stays however old it is; when its number has been
+/// reused, it only stays longer.
+fn remove_abandoned_stages(work: &Path, now: std::time::SystemTime, alive: impl Fn(u32) -> bool) {
+    let Ok(entries) = fs::read_dir(work) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry
+            .file_name()
+            .to_str()
+            .and_then(stage_owner)
+            .is_some_and(&alive)
+        {
+            continue;
+        }
+        let path = entry.path();
+        let touched = [path.clone(), path.join(HANDED_OVER)]
+            .iter()
+            .filter_map(|p| fs::metadata(p).and_then(|m| m.modified()).ok())
+            .max();
+        let abandoned =
+            touched.is_some_and(|t| now.duration_since(t).is_ok_and(|age| age >= STAGE_GRACE));
+        if abandoned {
+            let _ = match entry.file_type() {
+                Ok(kind) if kind.is_dir() => fs::remove_dir_all(&path),
+                _ => fs::remove_file(&path),
+            };
+        }
+    }
+}
+
+/// Whether process `pid` is running. One this user may not look at counts as running.
+#[cfg(unix)]
+fn process_alive(pid: u32) -> bool {
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return false;
+    };
+    // SAFETY: signal 0 sends nothing, it only asks whether the process is there.
+    pid > 0
+        && (unsafe { libc::kill(pid, 0) } == 0
+            || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM))
+}
+
+/// Whether process `pid` is running. One this user may not look at counts as running.
+#[cfg(windows)]
+fn process_alive(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, GetLastError, ERROR_ACCESS_DENIED, STILL_ACTIVE,
+    };
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    // SAFETY: the handle is checked before use and closed once; `code` outlives the call.
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return GetLastError() == ERROR_ACCESS_DENIED;
+        }
+        let mut code = 0u32;
+        // An exited process stays openable while something holds a handle to it.
+        let running = GetExitCodeProcess(handle, &mut code) != 0 && code as i32 == STILL_ACTIVE;
+        CloseHandle(handle);
+        running
+    }
+}
+
+fn file_sha256(path: &Path) -> Result<String, String> {
+    let mut file = fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut hash = horizon_release_sign::Sha256::default();
+    let mut buf = vec![0u8; 1 << 16];
+    loop {
+        let n = file.read(&mut buf).map_err(|e| e.to_string())?;
+        if n == 0 {
+            return Ok(hash.hex());
+        }
+        hash.update(&buf[..n]);
+    }
+}
+
+/// Checks the stage's archive against the signed SHA-256 again, then hands `place` the launcher
+/// from those same bytes: an AppImage is the archive, anything else is unpacked afresh, whatever
+/// has happened to the stage since it was downloaded. Nothing is placed when the bytes differ.
+pub fn place_checked(
+    work: &Path,
+    staged: &Staged,
+    place: impl FnOnce(&Staged) -> Result<(), String>,
+) -> Result<(), String> {
+    let not_staged = || {
+        format!(
+            "{} is not a launcher update this launcher downloaded.",
+            staged.payload.display()
+        )
+    };
+    let stage = stage_folder(work, &staged.payload).ok_or_else(not_staged)?;
+    let archive = ARCHIVE_ENDINGS
+        .iter()
+        .map(|ending| stage.join(format!("download{ending}")))
+        .find(|path| path.is_file())
+        .ok_or_else(not_staged)?;
+    horizon_release_sign::check(&staged.tag, &staged.sha256, &file_sha256(&archive)?)?;
+    let payload = if staged.payload == archive {
+        archive
+    } else {
+        let inside = staged
+            .payload
+            .strip_prefix(stage.join(UNPACKED))
+            .map_err(|_| not_staged())?;
+        let fresh = stage.join("checked");
+        let _ = fs::remove_dir_all(&fresh);
+        unpack(&archive, &archive.to_string_lossy(), &fresh)?;
+        let payload = fresh.join(inside);
+        if !payload.exists() {
+            return Err("The download has no launcher binary.".into());
+        }
+        payload
+    };
+    place(&Staged {
+        payload,
+        ..staged.clone()
+    })
+}
+
+/// Whether `installed`, the launcher in place, is already the release `tag` or a newer one.
+pub(crate) fn already_in_place(installed: Option<&str>, tag: &str) -> bool {
+    match (installed, launcher_version(tag)) {
+        (Some(installed), Some(target)) => compare_versions(installed, target).is_ge(),
+        _ => false,
+    }
+}
+
 /// Downloads a launcher release and puts it in place of this one. The running process keeps
 /// working; `restart` starts the new one. When the file there already is that release or
 /// a newer one (updated from the command line or another window), there is nothing to do.
 pub fn self_update(release: &Release, progress: impl Fn(f32)) -> Result<(), String> {
+    if let Some(staged) = stage_update(release, &progress)? {
+        let work = update_work_dir();
+        let placed = place_checked(&work, &staged, place_staged);
+        remove_stage(&work, &staged.payload);
+        placed?;
+    }
+    progress(1.0);
+    Ok(())
+}
+
+/// Downloads and unpacks a launcher release next to this one without putting it in place yet
+/// ([`place_checked`] does, in this process or in the installer `update_handoff` starts), in a new
+/// stage folder that no other launcher writes to. None when the file there already is that release
+/// or a newer one.
+pub fn stage_update(release: &Release, progress: impl Fn(f32)) -> Result<Option<Staged>, String> {
     let (url, size) = release
         .asset
         .clone()
@@ -2888,59 +3773,136 @@ pub fn self_update(release: &Release, progress: impl Fn(f32)) -> Result<(), Stri
     if installed_launcher_version(&update_target())
         .is_some_and(|v| v != VERSION && compare_versions(&v, target).is_ge())
     {
-        progress(1.0);
-        return Ok(());
+        return Ok(None);
     }
     let sha256 = signed_digest(&release.tag, launcher_asset().unwrap_or_default())?;
-    let work = data_dir().join(".launcher-update");
-    let _ = fs::remove_dir_all(&work);
-    fs::create_dir_all(&work).map_err(|e| e.to_string())?;
-    let archive = work.join("download");
-    download(&url, size, &sha256, &archive, &progress)?;
+    let work = update_work_dir();
+    remove_abandoned_stages(&work, std::time::SystemTime::now(), process_alive);
+    let stage = new_stage_folder(&work)?;
+    let staged = fill_stage(&stage, &release.tag, &url, size, &sha256, &progress);
+    if staged.is_err() {
+        let _ = fs::remove_dir_all(&stage);
+    }
+    staged.map(Some)
+}
+
+fn fill_stage(
+    stage: &Path,
+    tag: &str,
+    url: &str,
+    size: u64,
+    sha256: &str,
+    progress: &impl Fn(f32),
+) -> Result<Staged, String> {
+    let archive = stage.join(archive_name(url));
+    download(url, size, sha256, &archive, progress)?;
+    let staged = |payload| {
+        Ok(Staged {
+            tag: tag.to_owned(),
+            payload,
+            sha256: sha256.to_owned(),
+        })
+    };
     // An AppImage is the whole program: the new one takes the place of the file `$APPIMAGE` names
     // (the running mount keeps its copy until `restart` starts it). Its archive is not a `.tar.gz`
     // to unpack, so this comes before the unpacking below.
-    if let Some(appimage) = appimage_path() {
+    if appimage_path().is_some() {
         if !url.ends_with(".AppImage") {
             return Err(format!(
-                "{} is not an AppImage, and this launcher runs from one. Install it from its release page instead.",
-                release.tag
+                "{tag} is not an AppImage, and this launcher runs from one. Install it from its release page instead."
             ));
         }
-        replace_binary(&archive, &appimage).map_err(|e| {
+        return staged(archive);
+    }
+    let unpacked = stage.join(UNPACKED);
+    unpack(&archive, url, &unpacked)?;
+    // A launcher inside Horizon.app replaces the whole bundle (its Info.plist, icon and
+    // signature belong with the binary); a bare binary, as older launchers are, only the binary,
+    // which the macOS archive also holds (Horizon.app/Contents/MacOS/horizon-launcher).
+    if app_bundle(exe_path()).is_some() {
+        if let Some(new) = find_app(&unpacked) {
+            return staged(new);
+        }
+    }
+    let binary =
+        find_file(&unpacked, LAUNCHER_BINARY).ok_or("The download has no launcher binary.")?;
+    staged(binary)
+}
+
+/// Puts a [`stage_update`]d launcher where this one runs from: the AppImage, the `.app` bundle
+/// or the binary. [`place_checked`] calls this with the bytes it has just checked.
+pub fn place_staged(staged: &Staged) -> Result<(), String> {
+    let new = &staged.payload;
+    if let Some(appimage) = appimage_path() {
+        replace_binary(new, &appimage).map_err(|e| {
             format!(
                 "Could not replace the AppImage at {}: {e}",
                 appimage.display()
             )
         })?;
-        let _ = fs::remove_dir_all(&work);
-        progress(1.0);
         return Ok(());
     }
-    let unpacked = work.join("unpacked");
-    unpack(&archive, &url, &unpacked)?;
-    // A launcher inside Horizon.app replaces the whole bundle (its Info.plist, icon and
-    // signature belong with the binary); a bare binary, as older launchers are, only the binary,
-    // which the macOS archive also holds (Horizon.app/Contents/MacOS/horizon-launcher).
-    if let Some(app) = app_bundle(exe_path()) {
-        if let Some(new) = find_app(&unpacked) {
-            replace_bundle(&new, app)?;
-            let _ = fs::remove_dir_all(&work);
-            progress(1.0);
-            return Ok(());
-        }
+    match app_bundle(exe_path()) {
+        Some(app) if new.extension().is_some_and(|e| e == "app") => replace_bundle(new, app)?,
+        _ => replace_binary(new, exe_path()).map_err(|e| {
+            format!(
+                "Could not replace the launcher at {}: {e}",
+                exe_path().display()
+            )
+        })?,
     }
-    let binary =
-        find_file(&unpacked, LAUNCHER_BINARY).ok_or("The download has no launcher binary.")?;
-    replace_binary(&binary, exe_path()).map_err(|e| {
-        format!(
-            "Could not replace the launcher at {}: {e}",
-            exe_path().display()
-        )
-    })?;
-    let _ = fs::remove_dir_all(&work);
-    progress(1.0);
+    // An installed launcher's Uninstall entry names the new version (installer.rs).
+    #[cfg(windows)]
+    crate::installer::after_update(launcher_version(&staged.tag).unwrap_or(VERSION));
     Ok(())
+}
+
+/// The website's install page, where a launcher that can't update itself sends the player.
+pub fn download_page(website: &str) -> String {
+    format!("{}/docs/install", website.trim_end_matches('/'))
+}
+
+/// Whether this copy of the launcher can't put a new one in its place: its folder is read-only (a
+/// disk image, or the read-only copy macOS runs a downloaded app from until it is moved, its "App
+/// Translocation"), or on Windows it runs from the temporary folder, where Explorer and archive
+/// tools run a program opened inside a `.zip` (and delete it later). Such a copy is told to download
+/// the launcher again (#9287). Elsewhere a launcher unpacked in /tmp replaces itself fine.
+pub fn cannot_replace_itself() -> bool {
+    let target = update_target();
+    let place = app_bundle(&target).unwrap_or(&target);
+    place.parent().is_none_or(|dir| {
+        !writable(dir) || (cfg!(windows) && in_temp_folder(dir, &std::env::temp_dir()))
+    })
+}
+
+/// Whether a package manager owns this launcher: the update target is classified, rather than
+/// the executable inside an AppImage's mount. Asked while the sidebar is drawn, and the launcher
+/// doesn't move while it runs, so the path is resolved once.
+pub fn package_managed_launcher() -> bool {
+    static MANAGED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *MANAGED.get_or_init(|| {
+        let target = update_target();
+        let target = target.canonicalize().unwrap_or(target);
+        crate::update_recovery::package_managed(&target)
+    })
+}
+
+fn writable(dir: &Path) -> bool {
+    let probe = dir.join(format!(".horizon-write-check-{}", std::process::id()));
+    let made = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+        .is_ok();
+    let _ = fs::remove_file(&probe);
+    made
+}
+
+/// `dir` is the temporary folder or inside it, however either is spelled: %TEMP% can use an
+/// account's short name (`C:\Users\USERNA~1\...`) while the launcher's own path has the long one.
+fn in_temp_folder(dir: &Path, temp: &Path) -> bool {
+    let resolved = |path: &Path| plain(path.canonicalize().unwrap_or_else(|_| path.to_path_buf()));
+    resolved(dir).starts_with(resolved(temp))
 }
 
 fn find_file(dir: &Path, name: &str) -> Option<PathBuf> {
@@ -3070,7 +4032,7 @@ pub enum Msg {
     /// Boxed: two releases, the largest message by far.
     Updates(Result<Box<Updates>, String>),
     LauncherProgress(f32),
-    LauncherUpdated(Result<(), String>),
+    LauncherUpdated(Result<Option<Staged>, String>),
     /// `reuse_prepared_everywhere` prepared these versions.
     Reused(Vec<(String, String)>),
     /// None when secrets are kept in the OS keychain, else what to say: they last only until
@@ -3085,7 +4047,7 @@ pub enum Msg {
     AccountRemoved(String, u64, Result<bool, String>),
     /// The owner gate's answer for the game about to start: the selected account's session
     /// file (none = offline) and why it plays offline, if it does.
-    Session(Result<(Option<PathBuf>, Option<String>), crate::account::NoOwner>),
+    Session(Result<crate::account::GameSession, crate::account::NoOwner>),
     /// A modpack step's line (`modpacks`).
     PackLine(String),
     /// A modpack step ended: the pack as it now is.
@@ -3099,6 +4061,8 @@ pub enum Msg {
     NativeProgress(String),
     /// The native-mods build ended: the version built, or why not.
     Native(Result<String, String>),
+    /// An imported game build is installed (`build_import::import`): its version, or why not.
+    Imported(Result<String, String>),
     /// A Java instance's game is ready to start (`java_game`, wrapped): the instance's id and
     /// game folder, and the command or why not.
     /// A Java instance's game ready to start, and its variables for the post-exit command.
@@ -3127,7 +4091,32 @@ impl Running {
     }
 }
 
-pub fn spawn(job: Job, mut cmd: Command, tx: Sender<Msg>) -> Result<Running, String> {
+/// Prepare a command's Windows runtime and keep its guard alive through process exit.
+pub struct RuntimeGuard {
+    pub(crate) _slot: fs::File,
+    pub(crate) _source: fs::File,
+}
+
+pub fn prepare_command(cmd: Command) -> Result<(Command, Option<RuntimeGuard>), String> {
+    #[cfg(windows)]
+    let cmd = crate::windows_runtime::redirect(cmd);
+    #[cfg(windows)]
+    let guard = crate::windows_runtime::prepare(&cmd).map_err(|e| {
+        crate::i18n::trf(
+            "Could not run {program}: {error}",
+            &[
+                ("program", &cmd.get_program().to_string_lossy()),
+                ("error", &e.to_string()),
+            ],
+        )
+    })?;
+    #[cfg(not(windows))]
+    let guard = None;
+    Ok((cmd, guard))
+}
+
+pub fn spawn(job: Job, cmd: Command, tx: Sender<Msg>) -> Result<Running, String> {
+    let (mut cmd, runtime) = prepare_command(cmd)?;
     crate::process::hide_console(&mut cmd);
     let mut child = cmd
         .stdin(Stdio::piped())
@@ -3170,6 +4159,7 @@ pub fn spawn(job: Job, mut cmd: Command, tx: Sender<Msg>) -> Result<Running, Str
             Ok(s) => Err(format!("Exited with {s}")),
             Err(e) => Err(e.to_string()),
         };
+        drop(runtime);
         let _ = tx.send(Msg::Exit(job, result));
     });
     Ok(Running { child, stdin })
@@ -3234,6 +4224,9 @@ impl WhilePlaying {
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 pub struct Settings {
     pub selected: Option<String>,
+    /// Game asset architecture. Auto preserves the launcher's process-architecture behavior.
+    #[serde(default)]
+    pub game_architecture: GameArchitecture,
     /// The instance Play starts (`instances`), by id. Unset means Horizon, the game's home.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instance: Option<String>,
@@ -3289,6 +4282,22 @@ pub struct Settings {
     /// The accent colour on top of the appearance (`themes::Accent`). Horizon's violet by default.
     #[serde(default)]
     pub accent: crate::themes::Accent,
+    /// How much white the glass look's plates take, in percent (the mockup's Glass, 0 to 16).
+    /// Unset is the mockup's 6.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub glass: Option<f32>,
+    /// How much the glass look's plates blur the scene behind them, in px (0 to 48). Unset is
+    /// the mockup's 24.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blur: Option<f32>,
+    /// The launcher theme (`themes::theme`): its sky behind the light appearance. Unset is
+    /// Horizon's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
+    /// The cheaper scene for older computers (a lower-resolution sky, a box blur, the scene
+    /// following the mouse less often and resizes baked in the background). Unset is off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub performance: Option<bool>,
     /// Home's background: a picture the player picked, kept in the data folder under this name
     /// (`themes::keep_background`). Unset shows Horizon's landscape.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3296,12 +4305,23 @@ pub struct Settings {
     /// The window's language. Unset follows the system's (`i18n::Language::system`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<crate::i18n::Language>,
+    /// Whether what the browser installed from Horizon's registry updates by itself, at start
+    /// and before Play (`browser::horizon::auto`). Unset is on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mods_auto_update: Option<bool>,
     /// The player has read the notice before the first native mod (`native_status::NOTICE`).
     /// Native mods are always on: an older file's `native_mods` switch is ignored.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub native_mods_noticed: bool,
-    /// Native builds compile with the release profile (`native_mods::Profile`) instead of `fast`:
-    /// slower to build, slightly faster game.
+    /// The profile native builds compile with (`native_mods::Profile::chosen`); none is the
+    /// default, or the release's own while `native_release` is on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_profile: Option<crate::native_mods::Profile>,
+    /// Combined fast/release compilation cache limit in GiB. Unset is 30; zero disables
+    /// automatic cleanup. Installed native versions and player data are not this cache.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_cache_gib: Option<u64>,
+    /// An older file's switch for the release profile, read when `native_profile` is unset.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub native_release: bool,
     /// Developer options (hidden: seven clicks on the sidebar's launcher version reveal them):
@@ -3334,10 +4354,22 @@ impl Settings {
             {
                 fields.remove("while_playing");
             }
+            if fields
+                .get("game_architecture")
+                .is_some_and(|a| serde_json::from_value::<GameArchitecture>(a.clone()).is_err())
+            {
+                fields.remove("game_architecture");
+            }
             if fields.get("accent").is_some_and(|a| {
                 serde_json::from_value::<crate::themes::Accent>(a.clone()).is_err()
             }) {
                 fields.remove("accent");
+            }
+            // A glass or blur that isn't a number is the default, not a reason to lose the rest.
+            for key in ["glass", "blur"] {
+                if fields.get(key).is_some_and(|v| !v.is_number()) {
+                    fields.remove(key);
+                }
             }
             // A language this launcher doesn't have yet follows the system's.
             if fields.get("language").is_some_and(|l| {
@@ -3364,16 +4396,49 @@ impl Settings {
     pub fn auto_prune(&self) -> bool {
         self.prune_old_versions.unwrap_or(true)
     }
+    /// The plates' white as a fraction (0 to 0.16): [`glass`](Self::glass) in percent.
+    pub fn glass_tint(&self) -> f32 {
+        self.glass
+            .filter(|v| v.is_finite())
+            .map_or(horizon_theme::glass::TINT, |v| v.clamp(0., 16.) / 100.)
+    }
+    /// The plates' blur in px (0 to 48).
+    pub fn glass_blur(&self) -> f32 {
+        self.blur
+            .filter(|v| v.is_finite())
+            .map_or(horizon_theme::glass::BLUR, |v| v.clamp(0., 48.))
+    }
+    /// Whether the cheaper scene is on ([`performance`](Self::performance)).
+    pub fn performance(&self) -> bool {
+        self.performance.unwrap_or(false)
+    }
+    /// Registry mods update by themselves ([`Settings::mods_auto_update`]): on unless turned off.
+    pub fn auto_updates_mods(&self) -> bool {
+        self.mods_auto_update.unwrap_or(true)
+    }
     /// How many of the newest release versions pruning keeps: at least the newest.
     pub fn keep_newest(&self) -> usize {
         self.keep_versions.unwrap_or(KEEP_NEWEST).max(1)
     }
-    pub fn save(&self) {
-        let _ = fs::create_dir_all(data_dir());
-        let _ = fs::write(
-            data_dir().join("settings.json"),
-            serde_json::to_string_pretty(self).unwrap(),
-        );
+    pub fn save(&self) -> Result<(), String> {
+        // The window and background jobs share the process's temporary file.
+        static SAVE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = SAVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // A write that stops halfway leaves settings.json unreadable, and `load` answers
+        // defaults for it: the file is replaced only once it is whole.
+        let dir = data_dir();
+        let path = dir.join("settings.json");
+        let tmp = dir.join(format!("settings.{}.tmp", std::process::id()));
+        let json =
+            serde_json::to_vec_pretty(self).map_err(|e| format!("{}: {e}", path.display()))?;
+        let written = fs::create_dir_all(&dir)
+            .and_then(|()| fs::write(&tmp, json))
+            .and_then(|()| fs::rename(&tmp, &path));
+        if let Err(e) = written {
+            let _ = fs::remove_file(&tmp);
+            return Err(format!("{}: {e}", path.display()));
+        }
+        Ok(())
     }
 }
 
@@ -3389,6 +4454,48 @@ mod java_tests;
 mod tests {
     use super::*;
     use std::cmp::Ordering::*;
+    use std::ffi::OsStr;
+
+    fn pe_architecture(bytes: &[u8]) -> Option<GameArchitecture> {
+        if bytes.get(..2)? != b"MZ" {
+            return None;
+        }
+        let pe = u32::from_le_bytes(bytes.get(0x3c..0x40)?.try_into().ok()?) as usize;
+        if bytes.get(pe..pe.checked_add(4)?)? != b"PE\x00\x00" {
+            return None;
+        }
+        architecture_for_pe_machine(u16::from_le_bytes(
+            bytes
+                .get(pe.checked_add(4)?..pe.checked_add(6)?)?
+                .try_into()
+                .ok()?,
+        ))
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn failed_removal_stays_listed_and_can_be_retried() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let versions =
+            std::env::temp_dir().join(format!("horizon-remove-locked-{}", std::process::id()));
+        let dir = versions.join("v0.2.0");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(COMPLETE), "").unwrap();
+        fs::write(dir.join(CLIENT), "locked executable").unwrap();
+        // Refuse delete sharing, as a running Windows executable does.
+        let running = fs::File::options()
+            .read(true)
+            .share_mode(1)
+            .open(dir.join(CLIENT))
+            .unwrap();
+        assert!(remove_in(&dir).is_err());
+        assert_eq!(installed_in(&versions), ["v0.2.0"]);
+        drop(running);
+        remove_in(&dir).unwrap();
+        assert!(installed_in(&versions).is_empty());
+        assert!(!dir.exists());
+        fs::remove_dir_all(versions).unwrap();
+    }
 
     /// A canonical path loses Windows' verbatim prefix on a drive (horizon-mixins' output
     /// check stats `\\?\C:`, the volume itself, which Windows refuses, os error 1), and keeps
@@ -3423,6 +4530,10 @@ mod tests {
             r"C:\Users\Кириченко Павло\AppData\Roaming\horizon-launcher"
         )));
         assert!(!ascii(Path::new("/høme/me/horizon-launcher")));
+        // A space splits windres' include folders, which matters on Windows only.
+        let spaced = Path::new(r"C:\Users\Jane Doe\AppData\Roaming\horizon-launcher");
+        assert!(ascii(spaced));
+        assert_eq!(tool_safe(spaced), !cfg!(windows));
         let built = build_dir();
         assert!(ascii(&built) || cfg!(windows), "{}", built.display());
         // Resolved: the build never sees a link in the path (where the answer is the data
@@ -3706,8 +4817,18 @@ pub fn {f}("
             Some(("horizon-macos-x64.zip", "horizon-launcher-macos-x64.zip"))
         );
         assert_eq!(
-            platform_assets("windows", "x86_64").map(|(game, _)| game),
-            Some("horizon-windows-x64.zip")
+            platform_assets("windows", "x86_64"),
+            Some((
+                "horizon-windows-x64.zip",
+                "horizon-launcher-windows-x64.zip"
+            ))
+        );
+        assert_eq!(
+            platform_assets("windows", "aarch64"),
+            Some((
+                "horizon-windows-arm64.zip",
+                "horizon-launcher-windows-arm64.zip"
+            ))
         );
         assert_eq!(platform_assets("linux", "aarch64"), None);
         assert_eq!(platform_assets("macos", "x86"), None);
@@ -3715,6 +4836,291 @@ pub fn {f}("
             ASSET,
             platform_assets(std::env::consts::OS, std::env::consts::ARCH).map(|(game, _)| game)
         );
+        assert_eq!(
+            game_fallback_for("windows", "aarch64"),
+            Some("horizon-windows-x64.zip")
+        );
+        assert_eq!(game_fallback_for("windows", "x86_64"), None);
+        assert_eq!(game_fallback_for("macos", "aarch64"), None);
+    }
+
+    /// The ARM64 Windows launcher installs the ARM64 build where a release has one, and the x64
+    /// build (under emulation) from the releases that have only that, checked against that file's
+    /// signed checksum.
+    #[test]
+    fn an_arm64_windows_launcher_falls_back_to_the_x64_game() {
+        let (arm, x64) = ("horizon-windows-arm64.zip", "horizon-windows-x64.zip");
+        let asset = |name: &str, url: &str| serde_json::json!({"name": name, "browser_download_url": url, "size": 1});
+        let list = serde_json::json!([
+            {"tag_name": "v2026.11.05", "assets": [
+                asset(x64, "https://example.test/v2026.11.05/horizon-windows-x64.zip"),
+                asset(arm, "https://example.test/v2026.11.05/horizon-windows-arm64.zip")]},
+            {"tag_name": "v2026.11.04", "assets": [
+                asset(x64, "https://example.test/v2026.11.04/horizon-windows-x64.zip")]},
+            {"tag_name": "v2026.11.03", "assets": []},
+        ]);
+        let releases = game_releases_with(&list, Some(arm), Some(x64));
+        let urls: Vec<_> = releases
+            .iter()
+            .map(|r| {
+                r.asset
+                    .as_ref()
+                    .map(|(url, _)| url.rsplit('/').next().unwrap())
+            })
+            .collect();
+        assert_eq!(urls, [Some(arm), Some(x64), None]);
+        let installs: Vec<_> = releases
+            .iter()
+            .map(|r| asset_installed(r, Some(arm), Some(x64)))
+            .collect();
+        assert_eq!(installs, [Some(arm), Some(x64), None]);
+
+        // An x64 launcher, on any Windows, never looks at the ARM64 build.
+        let x64_only = game_releases_with(&list, Some(x64), None);
+        assert!(x64_only[..2]
+            .iter()
+            .all(|r| r.asset.as_ref().unwrap().0.ends_with(x64)));
+    }
+
+    #[test]
+    fn a_game_architecture_choice_is_independent_of_the_launcher_process() {
+        let (arm, x64) = ("horizon-windows-arm64.zip", "horizon-windows-x64.zip");
+        // GetNativeSystemInfo reports ARM64 even when std::env::consts::ARCH is x86_64.
+        assert!(supports_game_architecture_choice(
+            "windows",
+            Some("aarch64")
+        ));
+        assert!(!supports_game_architecture_choice(
+            "windows",
+            Some("x86_64")
+        ));
+        assert!(!supports_game_architecture_choice("linux", Some("aarch64")));
+
+        // An x64 launcher keeps the legacy x64 default, but can opt into ARM64.
+        assert_eq!(
+            game_assets_for("windows", Some("aarch64"), "x86_64", GameArchitecture::Auto),
+            Some((x64, None))
+        );
+        assert_eq!(
+            game_assets_for(
+                "windows",
+                Some("aarch64"),
+                "x86_64",
+                GameArchitecture::Arm64
+            ),
+            Some((arm, Some(x64)))
+        );
+
+        // The ARM64 launcher defaults to ARM64 and can choose x64 for compatibility.
+        assert_eq!(
+            game_assets_for(
+                "windows",
+                Some("aarch64"),
+                "aarch64",
+                GameArchitecture::Auto
+            ),
+            Some((arm, Some(x64)))
+        );
+        assert_eq!(
+            game_assets_for("windows", Some("aarch64"), "aarch64", GameArchitecture::X64),
+            Some((x64, None))
+        );
+
+        // Native x64 Windows and the other platforms keep their old process-based selection.
+        assert_eq!(
+            game_assets_for("windows", Some("x86_64"), "x86_64", GameArchitecture::Arm64),
+            Some((x64, None))
+        );
+        assert_eq!(
+            game_assets_for("linux", None, "x86_64", GameArchitecture::Arm64),
+            Some(("horizon-linux-x86_64.tar.gz", None))
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_native_architecture_detection_sees_the_host_under_emulation() {
+        let native = native_windows_architecture().expect("supported Windows machine");
+        assert!(matches!(native, "x86_64" | "aarch64"));
+        if std::env::var_os("HORIZON_TEST_EXPECT_NATIVE_ARM64").is_some() {
+            assert_eq!(std::env::consts::ARCH, "x86_64");
+            assert_eq!(native, "aarch64");
+        }
+        if native == "aarch64" {
+            assert!(supports_game_architecture_choice("windows", Some(native)));
+            let (asset, fallback) = game_assets_for(
+                "windows",
+                Some(native),
+                std::env::consts::ARCH,
+                GameArchitecture::Auto,
+            )
+            .unwrap();
+            if std::env::consts::ARCH == "x86_64" {
+                assert_eq!((asset, fallback), ("horizon-windows-x64.zip", None));
+            } else {
+                assert_eq!(
+                    (asset, fallback),
+                    ("horizon-windows-arm64.zip", Some("horizon-windows-x64.zip"))
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn selected_architecture_uses_available_assets_and_only_the_safe_fallback() {
+        let arm = "horizon-windows-arm64.zip";
+        let x64 = "horizon-windows-x64.zip";
+        let asset = |name: &str| serde_json::json!({"name": name, "browser_download_url": format!("https://example.test/{name}"), "size": 1});
+        let list = serde_json::json!([
+            {"tag_name": "v2026.11.05", "assets": [asset(x64), asset(arm)]},
+            {"tag_name": "v2026.11.04", "assets": [asset(x64)]},
+            {"tag_name": "v2026.11.03", "assets": []}
+        ]);
+
+        let arm_choice = game_releases_with(&list, Some(arm), Some(x64));
+        assert_eq!(
+            arm_choice
+                .iter()
+                .map(|release| release
+                    .asset
+                    .as_ref()
+                    .and_then(|(url, _)| url.rsplit('/').next()))
+                .collect::<Vec<_>>(),
+            [Some(arm), Some(x64), None]
+        );
+        assert_eq!(
+            asset_installed(&arm_choice[0], Some(arm), Some(x64)),
+            Some(arm)
+        );
+        assert_eq!(
+            asset_installed(&arm_choice[1], Some(arm), Some(x64)),
+            Some(x64)
+        );
+        assert_eq!(asset_installed(&arm_choice[2], Some(arm), Some(x64)), None);
+
+        let x64_choice = game_releases_with(&list, Some(x64), None);
+        assert!(x64_choice.iter().take(2).all(|release| release
+            .asset
+            .as_ref()
+            .unwrap()
+            .0
+            .ends_with(x64)));
+        assert_eq!(
+            asset_installed(&arm_choice[0], Some(x64), None),
+            None,
+            "a stale ARM64 release selection must not install under an x64 choice"
+        );
+    }
+
+    #[test]
+    fn selected_game_build_and_safe_fallback_satisfy_the_saved_choice() {
+        let fallback = InstalledGameArchitecture {
+            requested: GameArchitecture::Arm64,
+            binary: GameArchitecture::X64,
+        };
+        assert!(installed_architecture_matches(
+            GameArchitecture::Arm64,
+            fallback
+        ));
+        assert!(installed_architecture_matches(
+            GameArchitecture::X64,
+            fallback
+        ));
+        assert!(!installed_architecture_matches(
+            GameArchitecture::Arm64,
+            InstalledGameArchitecture {
+                requested: GameArchitecture::X64,
+                binary: GameArchitecture::X64,
+            }
+        ));
+    }
+
+    #[test]
+    fn updates_reinstall_only_when_the_selected_game_architecture_needs_a_new_build() {
+        let arm_fallback = InstalledGameArchitecture {
+            requested: GameArchitecture::Arm64,
+            binary: GameArchitecture::X64,
+        };
+        let old_x64 = InstalledGameArchitecture {
+            requested: GameArchitecture::X64,
+            binary: GameArchitecture::X64,
+        };
+        let arm = InstalledGameArchitecture {
+            requested: GameArchitecture::Arm64,
+            binary: GameArchitecture::Arm64,
+        };
+
+        assert!(!game_architecture_install_needed(
+            GameArchitecture::Arm64,
+            GameArchitecture::X64,
+            Some(arm_fallback),
+        ));
+        assert!(game_architecture_install_needed(
+            GameArchitecture::Arm64,
+            GameArchitecture::X64,
+            Some(old_x64),
+        ));
+        assert!(game_architecture_install_needed(
+            GameArchitecture::Arm64,
+            GameArchitecture::Arm64,
+            Some(arm_fallback),
+        ));
+        assert!(!game_architecture_install_needed(
+            GameArchitecture::Arm64,
+            GameArchitecture::Arm64,
+            Some(arm),
+        ));
+    }
+
+    #[test]
+    fn native_mod_builds_report_when_the_selected_game_has_no_matching_compiler() {
+        assert_eq!(
+            native_mod_architecture_message(GameArchitecture::X64, GameArchitecture::Arm64),
+            Some("Native mods cannot build for the selected ARM64 game yet. The available compiler builds x64 only.")
+        );
+        assert_eq!(
+            native_mod_architecture_message(GameArchitecture::Arm64, GameArchitecture::X64),
+            Some("Native mods cannot build for the selected x64 game yet. This ARM64 launcher has no matching compiler.")
+        );
+        assert_eq!(
+            native_mod_architecture_message(GameArchitecture::Arm64, GameArchitecture::Arm64),
+            None
+        );
+    }
+
+    #[test]
+    fn windows_pe_machine_types_identify_the_installed_game_architecture() {
+        let pe = |machine: u16| {
+            let mut bytes = vec![0; 0x86];
+            bytes[..2].copy_from_slice(b"MZ");
+            bytes[0x3c..0x40].copy_from_slice(&0x80u32.to_le_bytes());
+            bytes[0x80..0x84].copy_from_slice(b"PE\x00\x00");
+            bytes[0x84..0x86].copy_from_slice(&machine.to_le_bytes());
+            bytes
+        };
+        assert_eq!(pe_architecture(&pe(0x8664)), Some(GameArchitecture::X64));
+        assert_eq!(pe_architecture(&pe(0xaa64)), Some(GameArchitecture::Arm64));
+        assert_eq!(pe_architecture(b"not a PE executable"), None);
+    }
+
+    /// launcher.yml publishes a release even when its ARM64 build failed. An ARM64 launcher then
+    /// stays on its version until a release has its own zip: it never takes the x64 one.
+    #[test]
+    fn an_arm64_launcher_skips_a_release_without_its_zip() {
+        let (arm, x64) = (
+            "horizon-launcher-windows-arm64.zip",
+            "horizon-launcher-windows-x64.zip",
+        );
+        let asset = |name: &str| serde_json::json!({"name": name, "browser_download_url": format!("https://example.test/{name}"), "size": 1});
+        let list = serde_json::json!([
+            {"tag_name": "launcher@0.30.0", "assets": [asset(x64)]},
+            {"tag_name": "launcher@0.29.0", "assets": [asset(x64), asset(arm)]},
+        ]);
+        let releases = parse_releases(&list, Some(arm), is_launcher_tag);
+        assert!(launcher_update_from(&releases, "launcher@0.29.0").is_none());
+        let update = launcher_update_from(&releases, "launcher@0.28.0").unwrap();
+        assert_eq!(update.tag, "launcher@0.29.0");
+        assert!(update.asset.unwrap().0.ends_with(arm));
     }
 
     /// Every asset a launcher looks for is one the release workflows build, sign and publish.
@@ -3730,10 +5136,12 @@ pub fn {f}("
                 build.contains(&format!("asset: {game}")),
                 "game-build.yml builds no {game}"
             );
-            // Signed (SHA256SUMS), then published.
-            assert_eq!(
-                nightly.matches(&format!("dist/{game}")).count(),
-                2,
+            // Signed (SHA256SUMS), then published. Windows ARM64's build may fail without holding the
+            // Nightly, so both steps name it again where they check that it was built.
+            let named = nightly.matches(&format!("dist/{game}")).count();
+            let optional = (os, arch) == ("windows", "aarch64");
+            assert!(
+                named == 2 || (optional && named > 2),
                 "nightly-build.yml must sign and publish {game} ({os} {arch})"
             );
             assert!(
@@ -3784,26 +5192,47 @@ pub fn {f}("
         let home = std::env::temp_dir().join(format!("horizon-dx12-switch-{}", std::process::id()));
         let _ = fs::remove_dir_all(&home);
         // No settings file yet: one with the API alone.
-        assert_eq!(switch_to_dx12(&home), Ok(true));
+        assert_eq!(switch_from_auto(&home, "dx12"), Ok(true));
         assert_eq!(
             fs::read_to_string(home.join(GRAPHICS_FILE)).unwrap(),
             "graphicsApi:dx12\n"
         );
         // Already DirectX 12, or the player's own Vulkan: left alone.
-        assert_eq!(switch_to_dx12(&home), Ok(false));
+        assert_eq!(switch_from_auto(&home, "dx12"), Ok(false));
         fs::write(home.join(GRAPHICS_FILE), "sky:false\ngraphicsApi:vulkan\n").unwrap();
-        assert_eq!(switch_to_dx12(&home), Ok(false));
+        assert_eq!(switch_from_auto(&home, "dx12"), Ok(false));
         // Auto becomes DirectX 12 and the other settings stay.
         fs::write(
             home.join(GRAPHICS_FILE),
             "sky:false\ngraphicsApi:auto\nfog:true\n",
         )
         .unwrap();
-        assert_eq!(switch_to_dx12(&home), Ok(true));
+        assert_eq!(switch_from_auto(&home, "dx12"), Ok(true));
         assert_eq!(
             fs::read_to_string(home.join(GRAPHICS_FILE)).unwrap(),
             "sky:false\ngraphicsApi:dx12\nfog:true\n"
         );
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    /// #4293: an Ivy Bridge on Linux whose Vulkan driver (Mesa's hasvk) crashes at the renderer's
+    /// start plays on OpenGL next time; Windows keeps DirectX 12 (#746), macOS has nothing else.
+    #[test]
+    fn a_vulkan_start_crash_on_linux_switches_auto_to_opengl() {
+        assert_eq!(vulkan_crash_fallback("windows").unwrap().0, "dx12");
+        assert_eq!(vulkan_crash_fallback("macos"), None);
+        let (api, _) = vulkan_crash_fallback("linux").unwrap();
+        let home = std::env::temp_dir().join(format!("horizon-gl-switch-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&home).unwrap();
+        fs::write(home.join(GRAPHICS_FILE), "graphicsApi:auto\nvsync:true\n").unwrap();
+        assert_eq!(switch_from_auto(&home, api), Ok(true));
+        assert_eq!(
+            fs::read_to_string(home.join(GRAPHICS_FILE)).unwrap(),
+            "graphicsApi:opengl\nvsync:true\n"
+        );
+        // The next crash (OpenGL had no GPU either and Vulkan ran again) leaves it: no loop.
+        assert_eq!(switch_from_auto(&home, api), Ok(false));
         let _ = fs::remove_dir_all(&home);
     }
 
@@ -3959,15 +5388,58 @@ pub fn {f}("
     }
 
     #[test]
+    fn the_game_architecture_defaults_to_auto_and_persists_manual_choices() {
+        assert_eq!(
+            Settings::parse("{}").game_architecture,
+            GameArchitecture::Auto
+        );
+        let arm = Settings::parse(r#"{"game_architecture":"arm64","game_args":"--x"}"#);
+        assert_eq!(
+            (arm.game_architecture, arm.game_args.as_str()),
+            (GameArchitecture::Arm64, "--x")
+        );
+        let saved = serde_json::to_value(&arm).unwrap();
+        assert_eq!(saved["game_architecture"], "arm64");
+
+        let unknown = Settings::parse(r#"{"game_architecture":"future","game_args":"--x"}"#);
+        assert_eq!(
+            (unknown.game_architecture, unknown.game_args.as_str()),
+            (GameArchitecture::Auto, "--x")
+        );
+        assert_eq!(GameArchitecture::parse("X64"), Some(GameArchitecture::X64));
+        assert_eq!(GameArchitecture::parse("other"), None);
+    }
+
+    #[test]
     fn the_language_follows_the_system_unless_picked() {
         use crate::i18n::Language;
         assert_eq!(Settings::parse("{}").language, None);
         let fr = Settings::parse(r#"{"language": "fr"}"#);
         assert_eq!(fr.language(), Language::French);
-        let future = Settings::parse(r#"{"language": "eo", "game_args": "--x"}"#);
+        let future = Settings::parse(r#"{"language": "tlh", "game_args": "--x"}"#);
         assert_eq!((future.language, future.game_args.as_str()), (None, "--x"));
         let saved = serde_json::to_value(Settings::default()).unwrap();
         assert!(saved.get("language").is_none(), "unset is left out");
+    }
+
+    #[test]
+    fn glass_and_blur_default_to_the_mockups_and_stay_in_range() {
+        let unset = Settings::parse("{}");
+        assert_eq!((unset.glass_tint(), unset.glass_blur()), (0.06, 24.));
+        let set = Settings::parse(r#"{"glass": 12, "blur": 8.5}"#);
+        assert_eq!((set.glass_tint(), set.glass_blur()), (0.12, 8.5));
+        let wild = Settings::parse(r#"{"glass": 90, "blur": -3}"#);
+        assert_eq!((wild.glass_tint(), wild.glass_blur()), (0.16, 0.));
+        // Not a number: the default, and the other settings survive.
+        let wrong = Settings::parse(r#"{"glass": "frosty", "blur": null, "game_args": "--x"}"#);
+        assert_eq!(
+            (
+                wrong.glass_tint(),
+                wrong.glass_blur(),
+                wrong.game_args.as_str()
+            ),
+            (0.06, 24., "--x")
+        );
     }
 
     #[test]
@@ -4039,6 +5511,7 @@ pub fn {f}("
             name: String::new(),
             body: String::new(),
             date: String::new(),
+            time: String::new(),
             asset: Some(("u".into(), 1)),
             prerelease: false,
             nightly: None,
@@ -4049,6 +5522,39 @@ pub fn {f}("
             parse_version_output(&format!("horizon-launcher {VERSION}\n")),
             Some(VERSION)
         );
+    }
+
+    #[test]
+    fn an_older_nightly_installs_as_a_rollback_with_a_warning() {
+        let nightly = |tag: &str| Release {
+            tag: tag.into(),
+            name: String::new(),
+            body: String::new(),
+            date: String::new(),
+            time: String::new(),
+            asset: Some(("u".into(), 1)),
+            prerelease: false,
+            nightly: Some("nightly".into()),
+        };
+        let installed = [
+            "v0.2.81".to_owned(),
+            "nightly-2026-10-28-0c02067".to_owned(),
+        ];
+        let warning =
+            nightly_downgrade(&nightly("nightly-2026-10-21-aaaaaaa"), &installed).unwrap();
+        assert!(
+            warning.contains("older than nightly-2026-10-28-0c02067"),
+            "{warning}"
+        );
+        assert!(nightly_downgrade(&nightly("nightly-2026-10-29-bbbbbbb"), &installed).is_none());
+        assert!(nightly_downgrade(&nightly("nightly-2026-10-28-0c02067"), &installed).is_none());
+        // No Nightly installed, or a release: nothing to warn about.
+        assert!(
+            nightly_downgrade(&nightly("nightly-2026-10-21-aaaaaaa"), &installed[..1]).is_none()
+        );
+        let mut release = nightly("v0.2.80");
+        release.nightly = None;
+        assert!(nightly_downgrade(&release, &installed).is_none());
     }
 
     #[test]
@@ -4080,6 +5586,7 @@ pub fn {f}("
             name: String::new(),
             body: String::new(),
             date: String::new(),
+            time: String::new(),
             asset: Some(("u".into(), 1)),
             prerelease: false,
             nightly: None,
@@ -4130,6 +5637,181 @@ pub fn {f}("
             launcher_asset_running_from(true),
             Some("horizon-launcher-linux-x86_64.AppImage")
         );
+    }
+
+    /// A program opened inside a `.zip` runs from the temporary folder, under a name that depends on
+    /// the tool, and is deleted later: an update written there is lost, so such a copy is told to
+    /// download the launcher again (#9287). A folder of the same look elsewhere is a real install.
+    #[test]
+    fn a_launcher_run_from_the_temp_folder_is_a_temporary_copy() {
+        let temp = Path::new("/tmp/t");
+        let inside = |dir: &str| in_temp_folder(Path::new(dir), temp);
+        assert!(inside("/tmp/t"));
+        assert!(inside(
+            "/tmp/t/Temp12_horizon-launcher-windows-x64.zip/inner"
+        ));
+        assert!(inside("/tmp/t/7zO8A1B2C3D"));
+        assert!(!inside("/tmp/tools"));
+        assert!(!inside("/home/me/Temp1_horizon.zip"));
+    }
+
+    /// The same folder spelled two ways, as %TEMP% and the launcher's own path can be on an account
+    /// with a short name: `temp_dir()` as the system gives it against its resolved form, and a
+    /// spelling through `..`, which a literal comparison misses on every system.
+    #[test]
+    fn the_temp_folder_is_recognized_however_it_is_spelled() {
+        let root = scratch("temp-spelling");
+        let temp = root.join("temp");
+        let app = temp.join("Temp1_horizon.zip");
+        let outside = root.join("installed");
+        fs::create_dir_all(&app).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+
+        assert!(in_temp_folder(
+            &app,
+            &root.join("installed").join("..").join("temp")
+        ));
+        assert!(!in_temp_folder(&outside, &temp));
+
+        let system = std::env::temp_dir();
+        let long = system.canonicalize().unwrap();
+        let copy = long.join(format!("horizon-temp-copy-{}", std::process::id()));
+        fs::create_dir_all(&copy).unwrap();
+        let found = in_temp_folder(&copy, &system);
+        let _ = fs::remove_dir_all(&copy);
+        assert!(found);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// A fresh folder for one test, under the temporary folder.
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("horizon-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn stage_named(work: &Path, pid: u32) -> PathBuf {
+        let stage = work.join(format!("{pid}-0123456789abcdef0123456789abcdef"));
+        fs::create_dir_all(&stage).unwrap();
+        fs::write(stage.join("download.zip"), b"archive").unwrap();
+        stage
+    }
+
+    /// A crashed launcher's stage goes, and nothing another process may still use does: a live
+    /// process's however old, a recent one whose process has gone, and one handed to an installer
+    /// after sitting in a long-lived window, though its folder is old.
+    #[test]
+    fn only_abandoned_stages_are_cleaned_up() {
+        let work = scratch("stage-cleanup");
+        let live = stage_named(&work, 100);
+        let crashed = stage_named(&work, 200);
+        let handed_over = stage_named(&work, 300);
+        let old_launcher_file = work.join("download");
+        fs::write(&old_launcher_file, b"partial").unwrap();
+        let is_alive = |pid: u32| pid == 100;
+        let later = std::time::SystemTime::now() + 2 * STAGE_GRACE;
+        let marker = fs::File::create(handed_over.join(HANDED_OVER)).unwrap();
+        marker.set_modified(later).unwrap();
+        drop(marker);
+
+        remove_abandoned_stages(&work, std::time::SystemTime::now(), is_alive);
+        assert!(
+            crashed.exists(),
+            "gone only just now: its installer may be working"
+        );
+
+        remove_abandoned_stages(&work, later, is_alive);
+        assert_eq!(fs::read(live.join("download.zip")).unwrap(), b"archive");
+        assert!(handed_over.join("download.zip").exists());
+        assert!(!crashed.exists());
+        assert!(!old_launcher_file.exists());
+        let _ = fs::remove_dir_all(work);
+    }
+
+    /// Each stage is its own folder, and removing one leaves another process's as it was. Only a
+    /// path inside a stage folder removes anything.
+    #[test]
+    fn removing_a_stage_leaves_the_others_alone() {
+        let work = scratch("stage-remove");
+        let mine = new_stage_folder(&work).unwrap();
+        let theirs = new_stage_folder(&work).unwrap();
+        assert_ne!(mine, theirs);
+        fs::write(theirs.join("download.zip"), b"their download").unwrap();
+        fs::write(mine.join("download.zip"), b"mine").unwrap();
+
+        remove_stage(&work, &work.join("unpacked").join("horizon-launcher"));
+        remove_stage(&work, &mine.join("..").join("horizon-launcher"));
+        remove_stage(&work, &work);
+        assert!(mine.exists() && theirs.exists());
+
+        remove_stage(&work, &mine.join("download.zip"));
+        assert!(!mine.exists());
+        assert_eq!(
+            fs::read(theirs.join("download.zip")).unwrap(),
+            b"their download"
+        );
+        let _ = fs::remove_dir_all(work);
+    }
+
+    /// A download that doesn't match keeps nothing, not even a temporary file, and doesn't touch a
+    /// finished file already there. One that matches appears under its name only.
+    #[test]
+    fn a_download_takes_its_name_only_after_the_hash_check() {
+        let dir = scratch("save-checked");
+        let to = dir.join("download.zip");
+        let bytes: &[u8] = b"the launcher";
+        let right = horizon_release_sign::sha256_hex(bytes);
+        let wrong = horizon_release_sign::sha256_hex(b"something else");
+        fs::write(&to, b"finished earlier").unwrap();
+
+        assert!(save_checked(bytes, 0, "asset", &wrong, &to, &|_: f32| {}).is_err());
+        assert_eq!(fs::read(&to).unwrap(), b"finished earlier");
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+
+        save_checked(bytes, 0, "asset", &right, &to, &|_: f32| {}).unwrap();
+        assert_eq!(fs::read(&to).unwrap(), bytes);
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_process_that_has_exited_is_not_alive() {
+        assert!(process_alive(std::process::id()));
+        // The test binary itself, which exits at once on an option it doesn't know.
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        child.wait().unwrap();
+        drop(child);
+        assert!(!process_alive(pid));
+    }
+
+    /// A launcher whose folder takes no new file (a disk image, macOS's translocated copy of an
+    /// app it was not moved from) can't put the new one in place.
+    #[cfg(unix)]
+    #[test]
+    fn a_read_only_folder_takes_no_update() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("horizon-read-only-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        assert!(writable(&dir));
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
+        // root writes anywhere.
+        if unsafe { libc::geteuid() } != 0 {
+            assert!(!writable(&dir));
+        }
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(
+            fs::read_dir(&dir).unwrap().count(),
+            0,
+            "the probe is removed"
+        );
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     /// `$APPIMAGE` names the file the runtime mounted; a path that is not there (moved or deleted
@@ -4302,6 +5984,7 @@ pub fn {f}("
             name: String::new(),
             body: String::new(),
             date: String::new(),
+            time: String::new(),
             asset: Some(("u".into(), 1)),
             prerelease: false,
             nightly: None,
@@ -4319,6 +6002,10 @@ pub fn {f}("
         assert!(select_after_update(Some("v2026.10.12"), &installed));
         assert!(!select_after_update(Some("v2026.10.1"), &installed));
         assert!(select_after_update(None, &installed));
+        assert!(!select_after_update(
+            Some("imported-2026-11-01-abcdef0"),
+            &["imported-2026-11-01-abcdef0".to_string()]
+        ));
     }
 
     /// The Nightly is the only build Horizon ships (docs/release-flow.md): every launcher takes the
@@ -5088,6 +6775,26 @@ pub fn {f}("
         assert_eq!(
             text,
             "Title\n\nSome words and a link (https://x.y).\n\n- one\n- two\n"
+        );
+    }
+
+    #[test]
+    fn the_game_does_not_inherit_the_launchers_renderer_workarounds() {
+        let mut cmd = Command::new("true");
+        cmd.env("GALLIUM_DRIVER", "llvmpipe")
+            .env("LIBGL_ALWAYS_SOFTWARE", "1")
+            .env("WEBKIT_DISABLE_DMABUF_RENDERER", "1")
+            .env("WEBKIT_DISABLE_COMPOSITING_MODE", "1")
+            .env("PIPEWIRE_PROPS", "kept");
+        strip_launcher_render_env(&mut cmd);
+        let envs = cmd.get_envs().collect::<std::collections::HashMap<_, _>>();
+        for key in LAUNCHER_RENDER_ENV {
+            assert_eq!(envs.get(OsStr::new(key)), Some(&None), "{key} is removed");
+        }
+        // Only the launcher's own workarounds go: the rest of the environment still reaches the game.
+        assert_eq!(
+            envs.get(OsStr::new("PIPEWIRE_PROPS")),
+            Some(&Some(OsStr::new("kept")))
         );
     }
 }

@@ -315,6 +315,13 @@ impl Game<'_> {
             let x = x0 + tw * i as f32;
             let selected = self.stats_ui.tab == i;
             let active = self.stats_tab_active(i);
+            // Only one that can be chosen: the bumpers step from the selected tab by clicking.
+            if active {
+                horizon_client::widgets::target_as(
+                    [x, 0.0, tw, TAB_H],
+                    horizon_client::widgets::Kind::Tab(selected),
+                );
+            }
             let hover = ui::hovered(self.cursor, x, 0.0, tw, TAB_H);
             if hover && !active {
                 tab_tip = true;
@@ -326,20 +333,14 @@ impl Game<'_> {
                 (false, false) => "gui/sprites/widget/tab",
             };
             ui::nine_slice(batch, atlas, sprite, x, 0.0, tw, TAB_H, u32::MAX);
-            let label = Text::translate(key, &[]);
-            let lw = atlas.font.width_text(&label);
-            let color = if selected && active {
-                u32::MAX
-            } else {
-                0xFFA0_A0A0
-            };
-            batch.text_styled(
+            ui::menu_tab_label(
+                batch,
                 atlas,
-                &label,
-                (x + (tw - lw) / 2.0).floor(),
-                8.0,
-                color,
-                true,
+                &Text::translate(key, &[]),
+                (x, 0.0, tw, TAB_H),
+                selected,
+                active,
+                horizon_client::hud_overlays::now_ms(),
             );
             if selected {
                 batch.fill(atlas, x + 2.0, TAB_H - 3.0, tw - 4.0, 1.0, u32::MAX);
@@ -562,9 +563,10 @@ impl Game<'_> {
         let atlas = &self.gui.atlas;
         let (bx, by) = ((w / 2.0 - 100.0).floor(), h - FOOTER + 6.0);
         let hover = ui::hovered(self.cursor, bx, by, 200.0, 20.0);
-        ui::button(
+        ui::action_button(
             batch,
             atlas,
+            horizon_client::widgets::Action::Done,
             bx,
             by,
             200.0,

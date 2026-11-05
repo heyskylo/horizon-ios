@@ -44,6 +44,9 @@ pub struct ScreenQuad {
     pub blend: Blend,
     /// How the sprite is sampled: [`SAMPLE_BLUR`] and [`SAMPLE_CLAMP`].
     pub sampling: u32,
+    /// A tint of the whole view (the underwater overlay), not something in front of it: in HDR
+    /// output the world shines through it (`Renderer::draw_overlay`).
+    pub world_tint: bool,
 }
 
 /// What the camera sees this frame.
@@ -58,6 +61,9 @@ pub struct ScreenInputs<'a> {
     /// Eye in water: (lightmap brightness at the eye, yaw, pitch).
     pub water: Option<(f32, f32, f32)>,
     pub on_fire: bool,
+    /// How far the fire overlay moves down, in its own heights (PvP & HUD's lower fire; 0 is
+    /// vanilla's place).
+    pub fire_lower: f32,
     /// `Hud.extractCameraOverlays` draws: the full-screen blits become
     /// screen quads (the spyglass, its fills and the nausea swirl do not).
     pub gui_overlays: &'a [GuiDraw],
@@ -160,6 +166,7 @@ impl ScreenEffects {
             }),
             blend: Blend::Alpha,
             sampling,
+            world_tint: false,
         };
         let full = [[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]];
         // ScreenEffectRenderer.submitBlockSprite: u1/v1 at (-1, -1), colour 0xFF191919.
@@ -180,13 +187,16 @@ impl ScreenEffects {
         {
             let (u, v) = (-yaw / 64.0, pitch / 64.0);
             let uv = [[u + 4.0, v + 4.0], [u, v + 4.0], [u, v], [u + 4.0, v]];
-            out.push(hand_quad(
-                full,
-                uv,
-                rect,
-                [brightness, brightness, brightness, 0.1],
-                texture_sampling("misc/underwater"),
-            ));
+            out.push(ScreenQuad {
+                world_tint: true,
+                ..hand_quad(
+                    full,
+                    uv,
+                    rect,
+                    [brightness, brightness, brightness, 0.1],
+                    texture_sampling("misc/underwater"),
+                )
+            });
         }
         if input.on_fire
             && let Some(rect) = sprite("block/fire_1")
@@ -194,7 +204,7 @@ impl ScreenEffects {
             for (dx, angle) in [(0.24f32, -10.0f32), (-0.24, 10.0)] {
                 let (s, c) = angle.to_radians().sin_cos();
                 // rotateY about the quad then translate; z = -0.5 feeds into x.
-                let corner = |x: f32, y: f32| [x * c + -0.5 * s + dx, y - 0.3];
+                let corner = |x: f32, y: f32| [x * c + -0.5 * s + dx, y - 0.3 - input.fire_lower];
                 let corners = [
                     corner(-0.5, -0.5),
                     corner(0.5, -0.5),
@@ -224,6 +234,7 @@ impl ScreenEffects {
             }),
             blend,
             sampling,
+            world_tint: false,
         };
         let rgba = |c: u32| {
             let [a, r, g, b] = c.to_be_bytes();
@@ -339,6 +350,7 @@ mod tests {
             block_overlay: None,
             water: Some((1.0, 0.0, 0.0)),
             on_fire: false,
+            fire_lower: 0.0,
             gui_overlays: &[crate::hud_overlays::vignette(320, 240, 1.0, 0.0)],
         };
         let quads = e.build(&input);
@@ -393,10 +405,14 @@ mod tests {
             block_overlay: Some("block/stone".to_owned()),
             water: Some((1.0, 0.0, 0.0)),
             on_fire: false,
+            fire_lower: 0.0,
             gui_overlays: &[crate::hud_overlays::vignette(320, 240, 1.0, 0.0)],
         });
         let sampling: Vec<_> = quads.iter().map(|q| q.sampling).collect();
         assert_eq!(sampling, [0, SAMPLE_CLAMP, SAMPLE_BLUR]);
+        // Only the underwater overlay tints the world; the block in the way covers it.
+        let tints: Vec<_> = quads.iter().map(|q| q.world_tint).collect();
+        assert_eq!(tints, [false, true, false]);
     }
     #[test]
     fn mcmeta_texture_section() {

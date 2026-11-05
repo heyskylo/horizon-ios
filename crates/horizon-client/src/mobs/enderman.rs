@@ -84,6 +84,19 @@ pub fn teleport_to(
     if m.extra.passenger {
         return false;
     }
+    // LivingEntity.randomTeleport: WorldBorder.clampVec3ToBound keeps the
+    // target inside the border (Mth.clamp, 1.0E-5F inside the far edges).
+    let (x, z) = match w.border {
+        Some(border) => {
+            let [min_x, min_z, max_x, max_z] = border.bounds(0.0);
+            let clamp = |v: f64, low: f64, high: f64| if v < low { low } else { v.min(high) };
+            (
+                clamp(x, min_x, max_x - f64::from(1.0e-5_f32)),
+                clamp(z, min_z, max_z - f64::from(1.0e-5_f32)),
+            )
+        }
+        None => (x, z),
+    };
     let (bx, bz) = (x.floor() as i32, z.floor() as i32);
     if !w.world.loaded(bx, bz) {
         return false;
@@ -115,6 +128,13 @@ pub fn teleport_to(
     m.previous = m.position;
     m.velocity = Vec3::ZERO;
     m.ai.nav.stop();
+    // `LivingEntity.randomTeleport(..., true)` broadcasts entity event 46
+    // before the trail and the teleport sounds.
+    events.push(MobEvent::EntityEvent {
+        mob: m.id,
+        event: 46,
+        at: [m.position.x, m.position.y, m.position.z],
+    });
     if !m.silent {
         // Level event 2018: the portal trail, from the old block to the new
         // one, packed as `BlockUtil.clampedPackDifferenceInPosition` does.
@@ -440,26 +460,20 @@ impl Goal for LeaveBlock {
         let x = (m.position.x - 1.0 + m.random.next_double() * 2.0).floor() as i32;
         let y = (m.position.y + m.random.next_double() * 2.0).floor() as i32;
         let z = (m.position.z - 1.0 + m.random.next_double() * 2.0).floor() as i32;
-        let target = cx.w.world.block(x, y, z);
-        let below = cx.w.world.block(x, y - 1, z);
-        let bf = cx.w.facts.get(below);
-        let block = Aabb::new(
+        let area = Aabb::new(
             Vec3::new(f64::from(x), f64::from(y), f64::from(z)),
             Vec3::new(f64::from(x + 1), f64::from(y + 1), f64::from(z + 1)),
         );
-        let free = !cx.w.others_near(block).any(|s| s.bounds.intersects(block));
-        if cx.w.facts.is_air(target)
-            && !cx.w.facts.is_air(below)
-            && &*bf.name != "minecraft:bedrock"
-            && bf.full_collision
-            && free
-        {
-            cx.events.push(MobEvent::SetBlock {
-                pos: [x, y, z],
-                state: carried,
-            });
-            m.extra.carried = None;
-        }
+        // Keep the per-mob occupancy view: later mobs have not moved yet.
+        let occupants = cx.w.others_near(area).map(|s| s.bounds).collect();
+        // Game owns the mutable level, its scheduled ticks, RNG and shape hooks.
+        // Defer the complete attempt, including failed candidates' shape updates.
+        cx.events.push(MobEvent::EndermanPlaceBlock {
+            mob: m.id,
+            pos: [x, y, z],
+            carried,
+            occupants,
+        });
     }
 }
 
@@ -557,7 +571,12 @@ mod tests {
             let mut events = Vec::new();
             let mut free = enderman();
             assert!((0..64).any(|_| teleport_random(&mut free, w, &mut events)));
-            assert!(!events.is_empty());
+            assert!(
+                events
+                    .iter()
+                    .any(|e| matches!(e, MobEvent::EntityEvent { event: 46, .. })),
+                "entity event 46: {events:?}"
+            );
 
             let mut seated = enderman();
             seated.extra.passenger = true;
@@ -580,6 +599,53 @@ mod tests {
                 assert!(events.is_empty(), "{tries}");
                 assert_eq!(seated.random.next_int(), expected.next_int(), "{tries}");
             }
+        });
+    }
+
+    /// LivingEntity.randomTeleport clamps the target into the world border
+    /// (`WorldBorder.clampVec3ToBound`), so an enderman never lands outside
+    /// it (#7080). A border of size 10 around the origin ends at x = 5.
+    #[test]
+    fn an_enderman_teleports_inside_the_world_border() {
+        let build = |world: &mut crate::world::World, registry: &BlockRegistry| {
+            let stone = registry.default_state("minecraft:stone").unwrap();
+            for cx in -2..2 {
+                for cz in -2..2 {
+                    world
+                        .chunks
+                        .insert((cx, cz), Arc::new(crate::chunk::Chunk::empty(cx, cz)));
+                }
+            }
+            for x in -32..32 {
+                for z in -32..32 {
+                    world.set(x, -1, z, stone).unwrap();
+                }
+            }
+        };
+        let border =
+            horizon_core::geometry::border::BorderGeometry::new([0.0, 0.0], 10.0, 29_999_984)
+                .unwrap();
+        crate::mobs::world::with_built_test_world(&[], build, |w, _| {
+            let mut free = enderman();
+            assert!(teleport_to(&mut free, w, 20.5, 0.0, 0.5, &mut Vec::new()));
+            assert_eq!(free.position, Vec3::new(20.5, 0.0, 0.5), "no border");
+
+            let w = MobWorld {
+                border: Some(&border),
+                ..w.clone()
+            };
+            let mut bounded = enderman();
+            assert!(teleport_to(
+                &mut bounded,
+                &w,
+                20.5,
+                0.0,
+                -20.5,
+                &mut Vec::new()
+            ));
+            // Mth.clamp to [min, max - 1.0E-5F] on x and z.
+            let edge = 5.0 - f64::from(1.0e-5_f32);
+            assert_eq!(bounded.position, Vec3::new(edge, 0.0, -5.0));
         });
     }
 
@@ -619,7 +685,12 @@ mod tests {
         ] {
             let mut m = enderman();
             m.extra.carried = registry.default_state(block);
-            let (out, _) = drops::die(&mut m, &death(true), &mut sequences);
+            let (out, _) = drops::die(
+                &mut m,
+                &death(true),
+                &mut sequences,
+                &mut horizon_core::random::LegacyRandom::new(0),
+            );
             let dropped: Vec<String> = out
                 .into_iter()
                 .flat_map(|d| match d {
@@ -639,7 +710,12 @@ mod tests {
         // doMobLoot off: no dropCustomDeathLoot, so no block either.
         let mut m = enderman();
         m.extra.carried = registry.default_state("minecraft:grass_block");
-        let (out, _) = drops::die(&mut m, &death(false), &mut sequences);
+        let (out, _) = drops::die(
+            &mut m,
+            &death(false),
+            &mut sequences,
+            &mut horizon_core::random::LegacyRandom::new(0),
+        );
         assert!(
             !out.iter()
                 .any(|d| matches!(d, drops::Drop::CarriedBlock(_))),

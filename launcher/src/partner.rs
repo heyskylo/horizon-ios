@@ -76,6 +76,25 @@ pub fn banner(id: &'static str, width: f32, t: &Theme) -> Stateful<Div> {
     crate::keyboard(el, &t)
 }
 
+/// The banner alone, `width` logical pixels wide, for a card that says "Partner" itself (the
+/// glass Servers page). Hovering lifts it a little.
+pub fn banner_image(id: &'static str, width: f32, t: &Theme) -> Stateful<Div> {
+    let el = div()
+        .id(id)
+        .group(id)
+        .w(px(width))
+        .cursor_pointer()
+        .child(
+            div().relative().group_hover(id, |s| s.top(px(-2.))).child(
+                img(BANNER.clone())
+                    .w(px(width))
+                    .h(px(width * HEIGHT / WIDTH)),
+            ),
+        )
+        .on_click(|_: &ClickEvent, _, cx| cx.open_url(URL));
+    crate::keyboard(el, t)
+}
+
 /// Sculk's characters (Steve, Alex and the wolf) cropped from its banner at 2x the card's width.
 /// Above `ART_TOP` (in the card's 228 logical pixels) the picture is transparent but for their heads
 /// and the pickaxe, which stand out of the card; its foot and right edge fade into `CARD`.
@@ -184,10 +203,8 @@ pub fn card(id: &'static str, width: f32, compact: bool, t: &Theme) -> Stateful<
         .flex_none()
         .w(px(width))
         .bg(rgb(CARD))
-        .border_1()
-        .border_color(rgba(CYAN, 0.22))
         .rounded(px(10.))
-        .group_hover(id, |s| s.top(px(-2.)).border_color(rgba(CYAN, 0.5)));
+        .group_hover(id, |s| s.top(px(-2.)));
     let logo = |height: f32| {
         img(LOGO.clone())
             .flex_none()

@@ -13,13 +13,7 @@ use crate::{
 };
 use horizon_core::geometry::{Aabb, Direction, ShapeOp, Vec3, VoxelShape};
 use serde_json::Value;
-use std::{
-    collections::HashMap,
-    fs::{self, File},
-    io,
-    path::Path,
-    sync::Arc,
-};
+use std::{collections::HashMap, fs, io, path::Path, sync::Arc};
 #[path = "data/cache.rs"]
 mod cache;
 pub(super) use cache::set_dir as set_cache_dir;
@@ -625,9 +619,21 @@ fn set_type(value: &Value, cache: &mut HashMap<String, Arc<str>>) -> Option<SetT
 }
 
 /// Build the block-state registry from the resources' `facts.json` (the
-/// same source the native client uses), streamed.
+/// same source the native client uses): the cache folder's snapshot when it
+/// matches the file and this build, the streamed JSON otherwise.
 pub fn load_registry(root: &Path) -> io::Result<BlockRegistry> {
-    BlockRegistry::from_facts_json(File::open(root.join("facts.json"))?)
+    Ok(load_registry_with_flags(root)?.0)
+}
+
+/// [`load_registry`] with each state's `(air, fluid)` columns.
+pub fn load_registry_with_flags(root: &Path) -> io::Result<(BlockRegistry, Vec<(bool, bool)>)> {
+    if let Some(cached) = cache::load_registry(root) {
+        return Ok(cached);
+    }
+    // Read whole, then parsed from the slice: see `BlockRegistry::from_facts_json_bytes`.
+    let loaded = BlockRegistry::from_facts_json_bytes(&fs::read(root.join("facts.json"))?)?;
+    cache::store_registry(root, &loaded.0, &loaded.1);
+    Ok(loaded)
 }
 
 pub(super) fn load(registry: &BlockRegistry, root: &Path) -> io::Result<Behaviours> {

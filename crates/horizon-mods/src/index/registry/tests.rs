@@ -32,6 +32,7 @@ owners = ["ludovic111"]
 license = "MIT"
 source = "https://github.com/horizon-rust/horizon/tree/main/crates/horizon-mod-sdk/examples/coords-hud"
 icon = "icons/coords_hud.png"
+categories = ["utility"]
 key = "RWTVtuGb/GRXcBf3Re5hzM07EzoStr2sLTJjghJia0xX15ULoZRFFZDb"
 
 [[versions]]
@@ -49,6 +50,9 @@ const COZY: &str = r#"id = "cozy"
 kind = "modpack"
 name = "Cozy"
 summary = "Coordinates and a calm render distance."
+description = "Coordinates HUD with a calm render distance, played together as one profile."
+categories = ["lightweight"]
+icon = "icons/cozy.png"
 authors = ["Horizon"]
 owners = ["ludovic111"]
 license = "MIT"
@@ -66,6 +70,9 @@ const GLOW: &str = r#"id = "glow"
 kind = "shader"
 name = "Soft Glow"
 summary = "A post-processing pass over the world."
+description = "A soft bloom drawn over the world after it renders, in Horizon's own shader format."
+categories = ["bloom"]
+icon = "icons/glow.png"
 authors = ["Horizon"]
 owners = ["ludovic111"]
 license = "MIT"
@@ -86,6 +93,15 @@ reason = "Sent chat messages it didn't declare."
 date = "2026-10-24"
 "#;
 
+/// The header of a PNG of `w`×`h` pixels: what the registry reads of an image.
+fn png(w: u32, h: u32) -> Vec<u8> {
+    let mut b = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+    b.extend(w.to_be_bytes());
+    b.extend(h.to_be_bytes());
+    b.extend([8, 6, 0, 0, 0]);
+    b
+}
+
 /// A registry checkout and its downloaded files, in a scratch folder.
 struct Scratch(PathBuf);
 
@@ -102,7 +118,9 @@ impl Scratch {
         s.write("mods/cozy.toml", COZY);
         s.write("mods/glow.toml", GLOW);
         s.write("revoked.toml", REVOKED_TOML);
-        s.write("icons/coords_hud.png", "png");
+        for icon in ["coords_hud", "cozy", "glow"] {
+            s.write_bytes(&format!("icons/{icon}.png"), &png(128, 128));
+        }
         for (name, hash) in [
             ("coords_hud-0.1.0.hmod", HMOD),
             ("cozy-1.0.0.hpack", HPACK),
@@ -115,6 +133,12 @@ impl Scratch {
 
     fn write(&self, path: &str, text: &str) {
         std::fs::write(self.0.join("repo").join(path), text).unwrap();
+    }
+
+    fn write_bytes(&self, path: &str, bytes: &[u8]) {
+        let path = self.0.join("repo").join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, bytes).unwrap();
     }
 
     fn build(&self) -> Result<Index, Vec<String>> {
@@ -186,7 +210,17 @@ fn lists_every_problem_of_a_registry() {
         has("other 0.1.0: the file's id is \"coords_hud\""),
         "{errors:?}"
     );
-    assert_eq!(errors.len(), 4, "{errors:?}");
+    // The modpack's category, on what is now a shader.
+    assert!(
+        has("\"lightweight\" is not a category of a shader"),
+        "{errors:?}"
+    );
+    assert!(has("glow: its icon \"icons/cozy.png\""), "{errors:?}");
+    assert!(
+        has("other: its icon \"icons/coords_hud.png\""),
+        "{errors:?}"
+    );
+    assert_eq!(errors.len(), 7, "{errors:?}");
 }
 
 #[test]
@@ -208,6 +242,53 @@ fn an_entry_written_reads_back() {
     let text = entry.to_toml().unwrap();
     assert_eq!(toml::from_str::<Entry>(&text).unwrap(), entry);
     assert!(text.contains("[[versions]]"), "{text}");
+}
+
+#[test]
+fn owners_and_owner_ids_must_name_the_same_accounts() {
+    let entry = |extra: &str| -> Entry {
+        toml::from_str(&hud_entry().replacen("owners = [\"ludovic111\"]", extra, 1)).unwrap()
+    };
+    let mismatch = |e: &Entry| e.check_fields().iter().any(|m| m.contains("owner_ids"));
+    // No IDs yet (older entries), or one ID per login: fine.
+    assert!(!mismatch(&entry(r#"owners = ["ludovic111"]"#)));
+    assert!(!mismatch(&entry(
+        "owner_ids = [136255825, 583231]\nowners = [\"ludovic111\", \"someone\"]"
+    )));
+    // A co-owner added to `owners` alone would silently not be an owner: refused when it's made.
+    assert!(mismatch(&entry(
+        "owner_ids = [136255825]\nowners = [\"ludovic111\", \"someone\"]"
+    )));
+    assert!(mismatch(&entry(
+        "owner_ids = [136255825, 583231]\nowners = [\"ludovic111\"]"
+    )));
+}
+
+#[test]
+fn owner_ids_are_optional_and_kept() {
+    // Entries from before IDs were recorded still read, and write no `owner_ids`.
+    let old: Entry = toml::from_str(&hud_entry()).unwrap();
+    assert!(old.owner_ids.is_empty());
+    assert!(!old.to_toml().unwrap().contains("owner_ids"));
+    let text = hud_entry().replacen("owners = ", "owner_ids = [583231]\nowners = ", 1);
+    let new: Entry = toml::from_str(&text).unwrap();
+    assert_eq!(new.owner_ids, [583231]);
+    assert_eq!(
+        toml::from_str::<Entry>(&new.to_toml().unwrap()).unwrap(),
+        new
+    );
+    // A change of IDs is pointed out to reviewers.
+    let r = review(
+        std::slice::from_ref(&old),
+        std::slice::from_ref(&new),
+        "ludovic111",
+    );
+    assert!(
+        r.notes
+            .iter()
+            .any(|n| n.contains("owner IDs (none) -> 583231")),
+        "{r:?}"
+    );
 }
 
 #[test]
@@ -244,6 +325,34 @@ fn a_review_protects_published_files() {
 }
 
 #[test]
+fn a_review_refuses_following_a_repository() {
+    let pinned: Entry = toml::from_str(COZY).unwrap();
+    let follows: Entry = toml::from_str(COZY_REPO).unwrap();
+    // A new entry that follows a repository, and a pinned entry turned into one.
+    for base in [vec![], vec![pinned.clone()]] {
+        let r = review(&base, std::slice::from_ref(&follows), "acme");
+        assert!(
+            r.errors
+                .iter()
+                .any(|e| e.contains("doesn't follow repositories")),
+            "{r:?}"
+        );
+    }
+    // An entry from before keeps its repository until it is pinned, and may drop it.
+    let r = review(
+        std::slice::from_ref(&follows),
+        std::slice::from_ref(&follows),
+        "acme",
+    );
+    assert!(r.errors.is_empty(), "{r:?}");
+    let r = review(&[follows], &[pinned], "acme");
+    assert!(
+        !r.errors.iter().any(|e| e.contains("repositories")),
+        "{r:?}"
+    );
+}
+
+#[test]
 fn a_mod_may_turn_native_once() {
     let base: Entry = toml::from_str(&hud_entry()).unwrap();
     let mut native = base.clone();
@@ -259,9 +368,27 @@ fn a_mod_may_turn_native_once() {
     );
     assert!(r.errors.is_empty(), "{r:?}");
     assert!(r.notes.iter().any(|n| n.contains("turns native")), "{r:?}");
-    // Its .hmod versions are a WebAssembly mod's files; the new ones native.
-    assert_eq!(file_kind(&native, &native.versions[1]), Kind::Mod);
-    assert_eq!(file_kind(&native, &native.versions[0]), Kind::NativeMod);
+    // Its content-only .hmod versions are from before; the new ones native, and a .hmod
+    // holding native code is native too.
+    let none = Path::new("no-such-file");
+    assert_eq!(file_kind(&native, &native.versions[1], none), Kind::Mod);
+    assert_eq!(
+        file_kind(&native, &native.versions[0], none),
+        Kind::NativeMod
+    );
+    let unified = std::env::temp_dir().join(format!("unified-{}.hmod", std::process::id()));
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(&unified).unwrap());
+    zip.start_file(
+        super::super::native::MANIFEST,
+        zip::write::SimpleFileOptions::default(),
+    )
+    .unwrap();
+    zip.finish().unwrap();
+    assert_eq!(
+        file_kind(&native, &native.versions[1], &unified),
+        Kind::NativeMod
+    );
+    std::fs::remove_file(unified).unwrap();
     // And never back.
     let r = review(&[native], &[base], "ludovic111");
     assert!(
@@ -271,9 +398,51 @@ fn a_mod_may_turn_native_once() {
 }
 
 #[test]
+fn page_fields_and_screenshots_reach_the_index() {
+    let s = Scratch::new("page");
+    let page = "tags = [\"hud\", \"coordinates\"]\n\
+                screenshots = [\"screenshots/coords_hud/1.png\"]\n";
+    s.write("mods/coords_hud.toml", &format!("{page}{}", hud_entry()));
+    s.write_bytes("screenshots/coords_hud/1.png", &png(1280, 720));
+    let built = s.build().unwrap();
+    let p = built.project("coords_hud").unwrap();
+    assert_eq!(p.categories, ["utility"]);
+    assert_eq!(p.tags, ["hud", "coordinates"]);
+    assert_eq!(
+        p.screenshots,
+        ["https://horizon-rust.github.io/horizon-mods/screenshots/coords_hud/1.png"]
+    );
+    Index::parse(&serde_json::to_string(&built).unwrap()).unwrap();
+
+    // A category of another kind, a screenshot too small, one in another project's folder, one on
+    // another host, and an icon that isn't square.
+    let bad = "screenshots = [\"screenshots/coords_hud/1.png\", \"screenshots/other/2.png\", \
+               \"https://x.test/3.jpg\"]\n";
+    let entry = hud_entry().replace("[\"utility\"]", "[\"bloom\"]");
+    s.write("mods/coords_hud.toml", &format!("{bad}{entry}"));
+    s.write_bytes("screenshots/coords_hud/1.png", &png(100, 100));
+    s.write_bytes("icons/coords_hud.png", &png(128, 64));
+    let errors = s.build().unwrap_err();
+    let has = |part: &str| errors.iter().any(|e| e.contains(part));
+    assert!(has("\"bloom\" is not a category of a mod"), "{errors:?}");
+    assert!(has("1.png: 100×100 pixels"), "{errors:?}");
+    assert!(
+        has("\"screenshots/other/2.png\" is neither screenshots/coords_hud/"),
+        "{errors:?}"
+    );
+    assert!(has("the icon is 128×64"), "{errors:?}");
+    assert!(
+        has("\"https://x.test/3.jpg\" must be kept in the registry"),
+        "{errors:?}"
+    );
+    assert_eq!(errors.len(), 5, "{errors:?}");
+}
+
+#[test]
 fn only_open_kinds_are_taken() {
     assert!(open(&Kind::Mod).is_ok() && open(&Kind::ResourcePack).is_ok());
-    assert!(open(&Kind::Shader).is_ok());
+    assert!(open(&Kind::Shader).is_ok() && open(&Kind::ShaderPack).is_ok());
+    assert!(open(&Kind::DataPack).is_ok());
     assert!(open(&Kind::Other("world".into())).is_err());
     let mut submit: Entry = toml::from_str(COZY).unwrap();
     submit.id = "submit".into();
@@ -294,6 +463,9 @@ const COZY_REPO: &str = r#"id = "cozy"
 kind = "modpack"
 repo = "acme/cozy-pack"
 owners = ["acme"]
+description = "Coordinates HUD with a calm render distance, played together as one profile."
+categories = ["lightweight"]
+icon = "icons/cozy.png"
 "#;
 
 #[test]

@@ -116,9 +116,9 @@ pub fn start_sleeping(m: &mut Mob, p: [i32; 3], w: &MobWorld, events: &mut Vec<M
     );
     true
 }
-/// `LivingEntity.stopSleeping` with `BedBlock.findStandUpPosition`: the bed
-/// is no longer `occupied`, and the sleeper stands beside it where there is
-/// room, else on top of it.
+/// `LivingEntity.stopSleeping`: the bed is no longer `occupied`, and the
+/// sleeper stands at `AbstractBedBlock.findStandUpPosition` for its yaw,
+/// else 0.1 above the block over the bed.
 pub fn stop_sleeping(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     m.extra.ints[1] = 0;
     let bed = m
@@ -134,29 +134,40 @@ pub fn stop_sleeping(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         pos: p,
         occupied: false,
     });
-    for (dx, dz) in [
-        (1, 0),
-        (-1, 0),
-        (0, 1),
-        (0, -1),
-        (1, 1),
-        (-1, -1),
-        (1, -1),
-        (-1, 1),
-    ] {
-        let (x, y, z) = (p[0] + dx, p[1], p[2] + dz);
-        let free = |y| w.data.state(w.world.block(x, y, z)).top <= 0.0;
-        if free(y) && free(y + 1) && w.solid(x, y - 1, z) {
-            m.position = horizon_core::geometry::Vec3::new(
-                f64::from(x) + 0.5,
-                f64::from(y),
-                f64::from(z) + 0.5,
-            );
-            return;
-        }
+    let level = crate::stand_up::StandUpLevel {
+        world: w.world,
+        registry: w.registry,
+        facts: w.facts,
+        collision: w.collision,
+        block_tags: w.block_tags,
+        border: w.border,
+    };
+    let forward = crate::stand_up::bed_forward(w.prop(p[0], p[1], p[2], "facing"));
+    let stand = level
+        .bed_stand_up(crate::stand_up::StandUpType::VILLAGER, p, forward, m.yaw)
+        .unwrap_or_else(|| crate::stand_up::stand_up_fallback(p));
+    set_wake_pose(m, p, stand);
+}
+/// Rotation part of `LivingEntity.stopSleeping`, after choosing where to stand.
+fn set_wake_pose(m: &mut Mob, bed: [i32; 3], stand: horizon_core::geometry::Vec3) {
+    use horizon_core::geometry::{Vec3, trig};
+    let d = Vec3::new(
+        f64::from(bed[0]) + 0.5,
+        f64::from(bed[1]),
+        f64::from(bed[2]) + 0.5,
+    )
+    .subtract(stand)
+    .normalize();
+    let mut yaw = (trig::atan2(d.z, d.x) * f64::from(trig::RAD_TO_DEG) - 90.0) % 360.0;
+    if yaw >= 180.0 {
+        yaw -= 360.0;
     }
-    // The bed's top (getSleepHeight) and 0.125 above it.
-    m.position.y = f64::from(p[1]) + 0.5625 + 0.125;
+    if yaw < -180.0 {
+        yaw += 360.0;
+    }
+    m.position = stand;
+    m.yaw = yaw as f32;
+    m.head_pitch = 0.0;
 }
 /// `LivingEntity.getSleepingPos`: the bed head a sleeper lies in.
 pub fn sleeping_pos(m: &Mob) -> Option<[i32; 3]> {
@@ -182,10 +193,10 @@ pub fn sleep_pose(m: &Mob) -> Option<(f32, [f32; 2])> {
         _ => return None,
     })
 }
-/// `Villager.tick`: the unhappy counter and the gossip decay; a sleeper
-/// hurt or without its bed wakes up (`LivingEntity.hurtServer`,
-/// `LivingEntity.checkBedExists`), and lies the way its bed faces
-/// (`getBedOrientation`). The brain does the rest.
+/// `Villager.tick`: the unhappy counter and the gossip decay; a hurt
+/// sleeper wakes up (`LivingEntity.hurtServer`; the `checkBedExists` wake
+/// runs earlier in `LivingEntity.tick`, for AI-less mobs too), and lies the
+/// way its bed faces (`getBedOrientation`). The brain does the rest.
 pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     if m.extra.ints[0] > 0 {
         m.extra.ints[0] -= 1;
@@ -198,7 +209,7 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         if let Some(p) = bed {
             m.extra.ints[1] = bed_facing_code(w.prop(p[0], p[1], p[2], "facing"));
         }
-        if m.hurt_time > 0 || bed.is_none() {
+        if m.hurt_time > 0 {
             stop_sleeping(m, w, events);
             super::villager_brain::woken(m, w.game_time);
         }
@@ -212,12 +223,8 @@ pub fn set_unhappy(m: &mut Mob, events: &mut Vec<MobEvent>) {
     } else {
         "entity.villager.no"
     };
-    events.push(MobEvent::Sound(
-        sound,
-        [m.position.x, m.position.y, m.position.z],
-        1.0,
-        1.0,
-    ));
+    // Mob.makeSound: the sound volume and the voice pitch (babies ~1.5).
+    m.voice(sound, events);
 }
 /// `VillagerModel.setupAnim`.
 pub fn anim(m: &Mob, s: &State, p: &mut Poses) {
@@ -345,25 +352,28 @@ pub fn work_sound(profession: u8) -> Option<&'static str> {
 }
 /// A `CropBlock` at `p`.
 pub fn crop(w: &MobWorld, p: [i32; 3]) -> bool {
-    matches!(
-        w.block_name(p[0], p[1], p[2]),
-        "minecraft:wheat"
-            | "minecraft:carrots"
-            | "minecraft:potatoes"
-            | "minecraft:beetroots"
-            | "minecraft:torchflower_crop"
-    )
+    w.facts
+        .get(w.world.block(p[0], p[1], p[2]))
+        .has_class("CropBlock")
 }
 /// `CropBlock.isMaxAge` for the block at `p`.
 pub fn ripe_crop(w: &MobWorld, p: [i32; 3]) -> bool {
-    let max = match w.block_name(p[0], p[1], p[2]) {
-        "minecraft:wheat" | "minecraft:carrots" | "minecraft:potatoes" => "7",
-        "minecraft:beetroots" => "3",
-        // TorchflowerCropBlock.getMaxAge is 2, past its age property (0-1):
-        // the crop is never at max age (age 2 is the torchflower itself).
-        _ => return false,
+    let facts = w.facts.get(w.world.block(p[0], p[1], p[2]));
+    if !facts.has_class("CropBlock") {
+        return false;
+    }
+    // The class chain survives content registration, including the two
+    // getMaxAge overrides. PitcherCropBlock is not a CropBlock.
+    let max = if facts.has_class("BeetrootBlock") {
+        3
+    } else if facts.has_class("TorchflowerCropBlock") {
+        2
+    } else {
+        7
     };
-    w.prop(p[0], p[1], p[2], "age") == Some(max)
+    w.prop(p[0], p[1], p[2], "age")
+        .and_then(|age| age.parse::<i32>().ok())
+        .is_some_and(|age| age >= max)
 }
 
 /// The gift loot table of a villager (`GiveGiftToHero.getLootTableToThrow`).
@@ -381,12 +391,16 @@ pub fn gift_table(m: &Mob) -> String {
 // ---- Gossip, food, breeding and golems.
 
 /// `VillagerFood` nutrition (`DataComponents.VILLAGER_FOOD`).
+///
+/// The item registry's value: a data pack's or a mod's item with the component
+/// counts, as one with vanilla's four does. Until a registry is loaded (tests)
+/// those four.
 pub fn food_points(item: &str) -> i32 {
-    match item {
+    horizon_items::items::villager_food(item).unwrap_or(match item {
         "minecraft:bread" => 4,
         "minecraft:potato" | "minecraft:carrot" | "minecraft:beetroot" => 1,
         _ => 0,
-    }
+    })
 }
 /// The farmer's `requestedItems` (`VillagerProfession.FARMER`). Food is picked
 /// up and traded separately, through its villager food value.
@@ -806,6 +820,9 @@ pub fn write_nbt(m: &Mob, map: &mut horizon_world::nbt::Compound) {
     use horizon_world::nbt::Tag;
     if let Some(p) = sleeping_pos(m) {
         map.insert("sleeping_pos".into(), Tag::IntArray(p.to_vec()));
+    } else {
+        // LivingEntity.addAdditionalSaveData omits an absent modeled position.
+        map.remove(&"sleeping_pos".into());
     }
     let Some(e) = ext(m) else { return };
     map.insert(
@@ -878,7 +895,7 @@ mod tests {
 
     fn villager() -> Mob {
         use crate::mobs::{Anim, Brain, Flags, MobType, Part, Species};
-        use std::{collections::HashMap, sync::Arc};
+        use std::sync::Arc;
         let kind = Arc::new(MobType {
             id: "minecraft:villager".into(),
             species: Species::Villager,
@@ -898,6 +915,7 @@ mod tests {
             knockback_resistance: 0.0,
             jump_strength: 0.42,
             attributes: Arc::default(),
+            item_stack_limits: Default::default(),
             gravity: 0.08,
             safe_fall_distance: 3.0,
             fall_damage_multiplier: 1.0,
@@ -911,7 +929,7 @@ mod tests {
             ambient_interval: 80,
             flags: Flags::default(),
             model: Arc::new(Part::parse("root", &serde_json::json!({}))),
-            layers: HashMap::new(),
+            layers: Default::default(),
             texture: String::new(),
             brain: Brain::Passive,
             anim: Anim::Villager,
@@ -921,6 +939,18 @@ mod tests {
             tempt: Arc::default(),
         });
         Mob::new(1, kind, horizon_core::geometry::Vec3::ZERO, 0.0)
+    }
+    #[test]
+    fn waking_faces_the_bed_and_resets_pitch_without_moving_the_chosen_position() {
+        let mut m = villager();
+        m.yaw = -25.0;
+        m.head_pitch = 23.0;
+        let stand = horizon_core::geometry::Vec3::new(3.5, 200.0, 6.5);
+        set_wake_pose(&mut m, [2, 200, 6], stand);
+        // Fresh official 26.3 occupied-bed interaction.
+        assert_eq!(m.yaw, 89.99999);
+        assert_eq!(m.head_pitch, 0.0);
+        assert_eq!(m.position, stand);
     }
     /// A sleeper's box is 0.2 high, but `LivingEntityRenderer` moves it
     /// toward the foot of the bed by its standing eye height, so its head
@@ -952,6 +982,47 @@ mod tests {
         assert!(!map.contains_key(&"sleeping_pos".into()));
         read_nbt(&mut awake, &horizon_world::nbt::Tag::Compound(map));
         assert!(!sleeping(&awake));
+    }
+    #[test]
+    fn saved_sleeping_position_follows_live_state_over_stale_input() {
+        use horizon_world::nbt::Tag;
+        for asleep in [false, true] {
+            let mut m = villager();
+            if asleep {
+                m.extra.ints[1] = bed_facing_code(Some("north"));
+                ext_mut(&mut m).sleeping_pos = Some([3, 64, -7]);
+            }
+            let expected = asleep.then_some(Tag::IntArray(vec![3, 64, -7]));
+            for stale in [false, true] {
+                let mut map = horizon_world::nbt::Compound::new();
+                map.insert("h232_control".into(), Tag::Int(42));
+                if stale {
+                    map.insert("sleeping_pos".into(), Tag::IntArray(vec![9, 90, 9]));
+                }
+                write_nbt(&m, &mut map);
+                assert_eq!(map.get(&"sleeping_pos".into()), expected.as_ref());
+                assert_eq!(map.get(&"h232_control".into()), Some(&Tag::Int(42)));
+            }
+            let saved = crate::entity_nbt::mob_to_nbt(&m, [0; 4], None, None);
+            assert_eq!(saved.get("sleeping_pos"), expected.as_ref());
+        }
+    }
+    /// `Villager.setUnhappy` -> `Mob.makeSound(VILLAGER_NO)` plays with
+    /// `LivingEntity.getVoicePitch`: a baby is pitched about 1.5, an adult 1.0.
+    #[test]
+    fn the_unhappy_sound_uses_the_voice_pitch() {
+        let sound_pitch = |age: i32| {
+            let mut m = villager();
+            m.extra.age = age;
+            let mut events = Vec::new();
+            set_unhappy(&mut m, &mut events);
+            match events[0] {
+                MobEvent::Sound(_, _, _, pitch) => pitch,
+                _ => panic!("expected a sound"),
+            }
+        };
+        assert!((0.8..=1.2).contains(&sound_pitch(0)));
+        assert!((1.3..=1.7).contains(&sound_pitch(-24000)));
     }
     #[test]
     fn a_new_profession_rolls_new_offers() {

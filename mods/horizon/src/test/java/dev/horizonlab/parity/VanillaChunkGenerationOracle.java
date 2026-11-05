@@ -231,7 +231,7 @@ public final class VanillaChunkGenerationOracle {
         staticTags.forEach(Registry.PendingTags::apply);
         components.forEach(net.minecraft.core.component.DataComponentInitializers.PendingComponents::apply);
         RegistryAccess access = loaded.layers().compositeAccess();
-        var settings = world.lookupOrThrow(Registries.NOISE_SETTINGS).getOrThrow(switch (dimension) {
+        net.minecraft.core.Holder<NoiseGeneratorSettings> settings = world.lookupOrThrow(Registries.NOISE_SETTINGS).getOrThrow(switch (dimension) {
             case "the_nether" -> NoiseGeneratorSettings.NETHER;
             case "the_end" -> NoiseGeneratorSettings.END;
             default -> NoiseGeneratorSettings.OVERWORLD;
@@ -242,13 +242,34 @@ public final class VanillaChunkGenerationOracle {
             case "the_end" -> TheEndBiomeSource.create(world.lookupOrThrow(Registries.BIOME));
             default -> MultiNoiseBiomeSource.createFromPreset(presets.getOrThrow(MultiNoiseBiomeSourceParameterLists.OVERWORLD));
         };
+        // A pack's level stem (dimension/<id>.json) stands in for the preset's, as when a world is
+        // created with the pack: its generator's biome source and noise settings.
+        if (datapacks != null) {
+            var dimensionLookups = TagLoader.buildUpdatedLookups(layers.replaceFrom(RegistryLayer.WORLD, world).getAccessForLoading(RegistryLayer.DIMENSIONS), staticTags);
+            var dimensions = RegistryDataLoader.load(resources, dimensionLookups, RegistryDataLoader.DIMENSION_REGISTRIES, Runnable::run).join();
+            var stemKey = ResourceKey.create(Registries.LEVEL_STEM, net.minecraft.resources.Identifier.withDefaultNamespace(dimension));
+            var stem = dimensions.lookupOrThrow(Registries.LEVEL_STEM).get(stemKey);
+            if (stem.isPresent() && stem.get().value().generator() instanceof NoiseBasedChunkGenerator noise) {
+                biomeSource = noise.getBiomeSource();
+                settings = noise.generatorSettings();
+            }
+        }
         ResourceKey<Level> levelKey = switch (dimension) {
             case "the_nether" -> Level.NETHER;
             case "the_end" -> Level.END;
             default -> Level.OVERWORLD;
         };
-        var randomState = RandomState.create(world.lookupOrThrow(Registries.NOISE), seed, settings.value());
-        var generator = new NoiseBasedChunkGenerator(biomeSource, settings);
+        // HORIZON_FLAT: a flat_level_generator_preset id. The overworld is then that superflat world
+        // (FlatLevelSource), with the random state ChunkMap makes for a generator without noise.
+        String flatPreset = System.getenv("HORIZON_FLAT");
+        var flat = flatPreset == null ? null : world.lookupOrThrow(Registries.FLAT_LEVEL_GENERATOR_PRESET)
+            .getOrThrow(ResourceKey.create(Registries.FLAT_LEVEL_GENERATOR_PRESET, net.minecraft.resources.Identifier.parse(flatPreset)))
+            .value().settings();
+        var randomState = flat == null ? RandomState.create(world.lookupOrThrow(Registries.NOISE), seed, settings.value())
+            : RandomState.create(world.lookupOrThrow(Registries.NOISE), seed, false, net.minecraft.world.level.block.Blocks.STONE.defaultBlockState(), 63, NoiseRouterData.none());
+        ChunkGenerator generator = flat == null ? new NoiseBasedChunkGenerator(biomeSource, settings)
+            : new FlatLevelSource(flat);
+        if (flat != null) biomeSource = generator.getBiomeSource();
         String phase = System.getenv().getOrDefault("HORIZON_PHASE", "full");
         if (phase.equals("structures")) {
             // Structure pieces only: every biome keeps its carvers but loses its placed features.
@@ -261,7 +282,9 @@ public final class VanillaChunkGenerationOracle {
             field.setAccessible(true);
             field.set(generator, noFeatures);
         }
-        var state = ChunkGeneratorStructureState.createForNormal(randomState, seed, new ChunkPos(0, 0), biomeSource, world.lookupOrThrow(Registries.STRUCTURE_SET));
+        // FlatLevelSource.createState: createForFlat, the structure sets of its overrides.
+        var state = flat != null ? generator.createState(world.lookupOrThrow(Registries.STRUCTURE_SET), randomState, seed)
+            : ChunkGeneratorStructureState.createForNormal(randomState, seed, new ChunkPos(0, 0), biomeSource, world.lookupOrThrow(Registries.STRUCTURE_SET));
         Path tmp = Files.createTempDirectory("horizon-chunks");
         var storage = LevelStorageSource.createDefault(tmp).createAccess("oracle");
         var templates = new StructureTemplateManager(resources, storage, DataFixers.getDataFixer(), BuiltInRegistries.BLOCK);

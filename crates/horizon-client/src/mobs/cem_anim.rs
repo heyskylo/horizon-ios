@@ -169,6 +169,8 @@ struct Step {
 pub struct Animation {
     steps: Vec<Step>,
     parts: Vec<Bound>,
+    /// The model's random-model rules, whose matching number feeds `rule_index`.
+    rules: Vec<super::cem::Rule>,
     /// The `var.*` and `varb.*` slots, kept per entity.
     vars: Vec<u32>,
     /// The `global_var.*` and `global_varb.*` slots and their index in `GLOBALS`.
@@ -284,6 +286,8 @@ struct Layout<'a, 'n> {
     vars: Vec<(String, u32)>,
     globals: Vec<(String, u32)>,
     render: Vec<(String, u32)>,
+    /// The slot every name that is nothing reads, handed out once.
+    zero: Option<u32>,
 }
 
 /// The slot of `name` in `list`, the next free one on first sight.
@@ -324,17 +328,29 @@ impl Layout<'_, '_> {
             }
         })
     }
+
+    /// The slot a name that is nothing reads: always zero, as EMF treats a variable it
+    /// doesn't know ("will treat the variable as zero") rather than losing the whole line.
+    fn zero(&mut self) -> u32 {
+        *self.zero.get_or_insert_with(|| {
+            let slot = self.next;
+            self.next += 1;
+            slot
+        })
+    }
 }
 
 /// The most expressions one model's animations may have; the rest are left out.
 const MAX_EXPRESSIONS: usize = 4096;
 
 /// Builds an animation from `entries`: each model entry's `this` and `part` names and its
-/// (target, expression) pairs. An expression that doesn't compile is left out, with a warning.
+/// (target, expression) pairs, under the model's random-model `rules`. An expression that
+/// doesn't compile is left out, with a warning.
 pub(super) fn compile_animation(
     file: &str,
     names: &Names,
     entries: &[(String, String, &[(String, String)])],
+    rules: &[super::cem::Rule],
 ) -> Option<Animation> {
     let mut layout = Layout {
         names,
@@ -343,9 +359,11 @@ pub(super) fn compile_animation(
         vars: Vec::new(),
         globals: Vec::new(),
         render: Vec::new(),
+        zero: None,
     };
     let mut steps = Vec::new();
     let mut count = 0;
+    let mut unknown = std::collections::HashSet::new();
     'entries: for (this, part, pairs) in entries {
         for (target, src) in pairs.iter() {
             count += 1;
@@ -360,7 +378,18 @@ pub(super) fn compile_animation(
                 log::warn!("Horizon: custom entity model {file}: unknown target {target}");
                 continue;
             };
-            let compiled = compile(src, &mut |name: &str| layout.slot(name, this, part));
+            // A name that is nothing reads 0, once named in a warning: the line keeps its
+            // place, as EMF keeps it ("will treat the variable as zero").
+            let compiled = compile(src, &mut |name: &str| {
+                layout.slot(name, this, part).or_else(|| {
+                    if unknown.insert(name.to_owned()) {
+                        log::warn!(
+                            "Horizon: custom entity model {file}: unknown name {name} reads 0"
+                        );
+                    }
+                    Some(layout.zero())
+                })
+            });
             match compiled {
                 Ok(expr) => steps.push(Step { slot, expr }),
                 Err(e) => log::warn!("Horizon: custom entity model {file}: {target}: {e}"),
@@ -374,6 +403,7 @@ pub(super) fn compile_animation(
         steps,
         slots: layout.next as usize,
         parts: layout.parts,
+        rules: rules.to_vec(),
         vars: layout.vars.into_iter().map(|(_, slot)| slot).collect(),
         globals: layout
             .globals
@@ -403,10 +433,12 @@ impl Animation {
 
     /// `run` in `frame`.
     fn run_in(&self, frame: &Frame, m: &Mob, s: &State, poses: &mut Poses) {
+        // The matching random-model rule's number: a grazing cow reads 2.
+        let rule_index = super::cem::rule_index(&self.rules, m);
         self.run_with(
             m.id,
             frame.frame_counter,
-            |slots| params(m, s, frame, slots),
+            |slots| params(m, s, frame, rule_index, slots),
             poses,
         );
     }
@@ -530,7 +562,7 @@ impl Saved {
     }
 }
 
-fn params(m: &Mob, s: &State, frame: &Frame, slots: &mut [f32]) {
+fn params(m: &Mob, s: &State, frame: &Frame, rule_index: f32, slots: &mut [f32]) {
     let max_health = super::finalize::max_health(m);
     let (dx, dy, dz) = (
         m.position.x - frame.player[0],
@@ -549,6 +581,24 @@ fn params(m: &Mob, s: &State, frame: &Frame, slots: &mut [f32]) {
             ((vx * fx + vz * fz) / len, (vx * -fz + vz * fx) / len)
         }
     };
+    // `Entity.isVisuallySwimming` (`Pose.SWIMMING`, id 3): a player's or mannequin's pose comes
+    // in `avatar_pose`, another mob's in `pose`. A drowned has no such pose, only the shared
+    // swimming flag (`extra.flag`).
+    let swim_pose = match &*m.kind.id {
+        "minecraft:player" | "minecraft:mannequin" => {
+            m.extra.avatar_pose == crate::pose::Pose::Swimming
+        }
+        _ => m.extra.pose == 3 || (m.species() == super::Species::Drowned && m.extra.flag),
+    };
+    // The arm the current swing moves: the main arm unless the swing named its hand.
+    let swinging = m.ai.swinging || m.extra.swing_right_arm.is_some();
+    let swing_right = m.extra.swing_right_arm.unwrap_or(!m.main_arm_left());
+    // `HumanoidArm`'s items: the main hand is on the main arm.
+    let (right_hand, left_hand) = if m.main_arm_left() {
+        (&m.extra.off_hand, &m.extra.main_hand)
+    } else {
+        (&m.extra.main_hand, &m.extra.off_hand)
+    };
     for (i, (_, p)) in PARAMS.iter().enumerate() {
         use Param::*;
         slots[i] = match p {
@@ -560,8 +610,10 @@ fn params(m: &Mob, s: &State, frame: &Frame, slots: &mut [f32]) {
             SwingProgress => s.swing,
             Health => m.health,
             MaxHealth => max_health,
-            HurtTime => m.hurt_time.max(0) as f32 - if m.hurt_time > 0 { s.partial } else { 0.0 },
-            DeathTime => m.death_time as f32 + if m.death_time > 0 { s.partial } else { 0.0 },
+            // Whole ticks, as vanilla's `hurtTime` and `deathTime` are ints and EMF reads
+            // them so: an expression comparing exact values stays exact.
+            HurtTime => m.hurt_time.max(0) as f32,
+            DeathTime => m.death_time.max(0) as f32,
             PosX => m.position.x as f32,
             PosY => m.position.y as f32,
             PosZ => m.position.z as f32,
@@ -580,8 +632,11 @@ fn params(m: &Mob, s: &State, frame: &Frame, slots: &mut [f32]) {
             PlayerZ => frame.player[2] as f32,
             PlayerRotX => frame.player_rot[0],
             PlayerRotY => frame.player_rot[1],
-            // Random models' rule (a later change); the model's own rule is 0 until then.
-            RuleIndex => 0.0,
+            // The model's matching random-model rule (`optifine/cem/<name>.properties`),
+            // whose number the animations read: a grazing cow reads 2.
+            RuleIndex => rule_index,
+            // A client knows only a wolf's anger end time (as a remaining time taken when it
+            // was synced, which doesn't count down) and never the start: 0 for now.
             AngerTime | AngerTimeStart => 0.0,
             Distance => (dx * dx + dy * dy + dz * dz).sqrt() as f32,
             MoveForward => forward,
@@ -589,6 +644,8 @@ fn params(m: &Mob, s: &State, frame: &Frame, slots: &mut [f32]) {
             // How deep the entity is in its fluid, which is what `fluid_depth_down` measures
             // once it touches the bottom.
             FluidDepth | FluidDepthDown => m.fluids.water.max(m.fluids.lava) as f32,
+            // Both need the blocks around the mob (the ground below, the fluid's surface
+            // above), which the draw doesn't have: 0 for now.
             HeightAboveGround | FluidDepthUp => 0.0,
             // The synced `Mob.isAggressive`, which a client's mobs have too.
             Aggressive => flag(m.ai.aggressive),
@@ -599,10 +656,14 @@ fn params(m: &Mob, s: &State, frame: &Frame, slots: &mut [f32]) {
             Hurt => flag(m.hurt_time > 0),
             InWater => flag(m.fluids.in_water),
             InLava => flag(m.fluids.in_lava),
+            // `isInWaterOrRain` without the rain: whether rain reaches the mob needs the
+            // weather and the sky above it, which the draw doesn't have.
             Wet => flag(m.fluids.in_water),
             Invisible => flag(m.invisible),
             OnGround => flag(m.on_ground),
             Riding => flag(m.extra.passenger),
+            // `Entity.isVehicle`: SetPassengers names its first rider.
+            Ridden => flag(m.extra.rider.is_some() || m.rider.is_some()),
             Climbing => flag(m.climbing),
             Jumping => flag(!m.on_ground && m.velocity.y > 0.0),
             Paused => flag(frame.paused),
@@ -611,14 +672,32 @@ fn params(m: &Mob, s: &State, frame: &Frame, slots: &mut [f32]) {
             ThirdPerson => flag(!frame.first_person && !frame.third_person_reversed),
             ThirdPersonReversed => flag(frame.third_person_reversed),
             RightHanded => flag(!m.main_arm_left()),
-            Sitting => flag(m.extra.sitting),
+            // The tamed animals' DATA_FLAGS_ID, and the species that keep their own.
+            Sitting => flag(match m.species() {
+                super::Species::Fox => super::fox::flag(m, super::fox::SITTING),
+                super::Species::Panda => super::panda::is_sitting(m),
+                super::Species::Camel | super::Species::CamelHusk => super::camel::sitting(m),
+                _ => m.extra.sitting,
+            }),
             Tamed => flag(m.extra.tame),
             Sprinting => flag(m.extra.sprinting),
             Sneaking => flag(m.extra.crouching),
-            // Not known to the draw yet: 0 until something reads them.
-            InHand | InItemFrame | InGround | OnHead | OnShoulder | Ridden | Blocking
-            | Crawling | Swimming | SwingingRight | SwingingLeft | FirstPersonHand | UsingItem
-            | HoldingRight | HoldingLeft | Hovered => 0.0,
+            // A player's `isBlocking`: the item in use blocks attacks.
+            Blocking => flag(m.extra.blocking),
+            // `isVisuallyCrawling`: the swimming pose out of water.
+            Crawling => flag(swim_pose && !m.fluids.in_water),
+            Swimming => flag(swim_pose),
+            // DATA_LIVING_ENTITY_FLAGS' using bit (the client counts the ticks).
+            UsingItem => flag(m.extra.using_item > 0),
+            SwingingRight => flag(swinging && swing_right),
+            SwingingLeft => flag(swinging && !swing_right),
+            HoldingRight => flag(right_hand.is_some()),
+            HoldingLeft => flag(left_hand.is_some()),
+            // Where the model is drawn (a held, framed or worn item, a shoulder): the draw
+            // doesn't pass it yet, so 0 until something reads them.
+            InHand | InItemFrame | InGround | OnHead | OnShoulder | FirstPersonHand | Hovered => {
+                0.0
+            }
         };
     }
 }
@@ -687,7 +766,7 @@ mod tests {
             ),
             ("cem#0".to_owned(), "real_head".to_owned(), hat.as_slice()),
         ];
-        let animation = compile_animation("test.jem", &names, &entries).unwrap();
+        let animation = compile_animation("test.jem", &names, &entries, &[]).unwrap();
         let frame = |id: u32, counter: u32, poses: &mut Poses| {
             animation.run_with(
                 id,
@@ -701,7 +780,7 @@ mod tests {
         assert_eq!(poses.get("real_head")[..4], [1.0, 20.0, 3.0, 0.5]);
         assert_eq!(poses.get("cem#1")[2], 1.0);
         assert!((poses.get("cem#0")[4] - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
-        // The expression with an unknown name is left out: the scale stays.
+        // The expression with an unknown name reads 0: nope + 1 sets the scale to 1.
         assert_eq!(poses.get("real_head")[6], 1.0);
         assert!(!poses.is_hidden(&bone("cem#1", vec![])));
         // The next frame starts from the vanilla pose again, with this entity's counter.
@@ -726,7 +805,34 @@ mod tests {
         };
         let bad = pairs(&[("missing.rx", "1"), ("root.rx", "1 +")]);
         let entries = [("root".to_owned(), "root".to_owned(), bad.as_slice())];
-        assert!(compile_animation("test.jem", &names, &entries).is_none());
+        assert!(compile_animation("test.jem", &names, &entries, &[]).is_none());
+    }
+
+    #[test]
+    fn the_matching_random_model_rule_reaches_rule_index() {
+        let model = bone("root", vec![]);
+        let ids = HashMap::new();
+        let names = Names {
+            model: &model,
+            vanilla: &|p| p.to_owned(),
+            ids: &ids,
+        };
+        let list = pairs(&[("root.tx", "rule_index")]);
+        let entries = [("root".to_owned(), "root".to_owned(), list.as_slice())];
+        // Fresh Animations' cow: rule 2 grazes on grass, wheat or hay.
+        let rules =
+            super::super::cem::parse_rules("models.2=1\nblocks.2=grass_block wheat hay_block");
+        let animation = compile_animation("test.jem", &names, &entries, &rules).unwrap();
+        let mut m = mob();
+        m.standing_on = Some("minecraft:grass_block".into());
+        let mut poses = Poses::new(&model);
+        animation.run_in(&Frame::default(), &m, &still(), &mut poses);
+        assert_eq!(poses.get("root")[0], 2.0);
+        // Off the grass: the unconditional base 0.
+        m.standing_on = Some("minecraft:stone".into());
+        let mut poses = Poses::new(&model);
+        animation.run_in(&Frame::default(), &m, &still(), &mut poses);
+        assert_eq!(poses.get("root")[0], 0.0);
     }
 
     /// The animation `list` over a model whose parts keep their own names.
@@ -739,7 +845,7 @@ mod tests {
         };
         let list = pairs(list);
         let entries = [("root".to_owned(), "root".to_owned(), list.as_slice())];
-        compile_animation("test.jem", &names, &entries).unwrap()
+        compile_animation("test.jem", &names, &entries, &[]).unwrap()
     }
 
     #[test]
@@ -845,7 +951,9 @@ mod tests {
         };
         let mut poses = Poses::new(&model);
         animation.run_in(&frame, &m, &s, &mut poses);
-        assert_eq!(poses.get("root")[..6], [4.75, 1.5, 30.0, 7.0, 5.0, 2.0]);
+        // `hurt_time` reads the whole 5 ticks, not the partial-tick 4.75: vanilla's
+        // `hurtTime` is an int and EMF reads it so.
+        assert_eq!(poses.get("root")[..6], [5.0, 1.5, 30.0, 7.0, 5.0, 2.0]);
     }
 
     /// A mob at the origin of the test species.
@@ -882,18 +990,68 @@ mod tests {
         m.extra.crouching = true;
         // The player's main hand option set to left.
         m.extra.main_hand_left = true;
+        m.extra.blocking = true;
+        // The swimming pose out of water: crawling.
+        m.extra.pose = 3;
+        m.extra.using_item = 3;
+        // Only the main hand holds something, and it is the left one.
+        m.extra.set_main_hand(Some("minecraft:stick".into()));
+        // A swing that names no hand moves the main arm: the left.
+        m.ai.swinging = true;
+        m.extra.rider = Some(7);
         let model = bone("root", vec![]);
         let animation = animate(
             &model,
             &[(
                 "root.tx",
                 "is_aggressive + is_sitting * 2 + is_tamed * 4 + is_sprinting * 8 \
-                 + is_sneaking * 16 + is_right_handed * 32",
+                 + is_sneaking * 16 + is_right_handed * 32 + is_blocking * 64 \
+                 + is_crawling * 128 + is_swimming * 256 + is_using_item * 512 \
+                 + is_holding_item_right * 1024 + is_holding_item_left * 2048 \
+                 + is_swinging_right_arm * 4096 + is_swinging_left_arm * 8192 \
+                 + is_ridden * 16384",
             )],
         );
         let mut poses = Poses::new(&model);
         animation.run_in(&Frame::default(), &m, &still(), &mut poses);
-        assert_eq!(poses.get("root")[0], 31.0);
+        assert_eq!(
+            poses.get("root")[0],
+            (31 + 64 + 128 + 256 + 512 + 2048 + 8192 + 16384) as f32
+        );
+    }
+
+    #[test]
+    fn the_swimming_pose_in_water_swims_without_crawling() {
+        let mut m = mob();
+        m.extra.pose = 3;
+        let model = bone("root", vec![]);
+        let animation = animate(&model, &[("root.tx", "is_swimming + is_crawling * 2")]);
+        let mut read = |in_water: bool| {
+            m.fluids.in_water = in_water;
+            let mut poses = Poses::new(&model);
+            animation.run_in(&Frame::default(), &m, &still(), &mut poses);
+            poses.get("root")[0]
+        };
+        assert_eq!([read(true), read(false)], [1.0, 3.0]);
+    }
+
+    #[test]
+    fn a_fox_sits_by_its_own_flags() {
+        let mut m = mob();
+        m.kind = std::sync::Arc::new(crate::mobs::MobType {
+            species: crate::mobs::Species::Fox,
+            ..(*m.kind).clone()
+        });
+        let model = bone("root", vec![]);
+        let animation = animate(&model, &[("root.tx", "is_sitting")]);
+        let mut sitting = |flags: i32| {
+            m.extra.ints[0] = flags;
+            let mut poses = Poses::new(&model);
+            animation.run_in(&Frame::default(), &m, &still(), &mut poses);
+            poses.get("root")[0]
+        };
+        assert_eq!(sitting(crate::mobs::fox::SITTING), 1.0);
+        assert_eq!(sitting(crate::mobs::fox::CROUCHING), 0.0);
     }
 
     #[test]

@@ -21,7 +21,7 @@ use horizon_world::registry::{BlockRegistry, BlockStateId};
 use serde_json::{Value, json};
 use std::{
     cell::RefCell,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     io::{BufWriter, Write},
     path::{Path, PathBuf},
@@ -364,6 +364,8 @@ pub fn main() -> Result<()> {
             world: &world,
             sprites: &sprites,
             emissive: &Default::default(),
+            translucent_sprites: &HashSet::new(),
+            atlas_revision: 1,
             nether: false,
             lid: &|_| open,
             sign: &|_| sign.as_ref(),
@@ -371,6 +373,7 @@ pub fn main() -> Result<()> {
             skull: &|_| None,
             glyph: &|c| atlas.glyph_cell(c),
             glyphs: atlas.font.epoch(),
+            dynamic_visible: None,
         };
         let mut verts = Vec::new();
         renderer.render_block(&scene, pos, state, Mat4::IDENTITY, packed, &mut verts);

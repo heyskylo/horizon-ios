@@ -18,8 +18,12 @@ horizon-client-core = { path = "../horizon-client-core" }
 horizon-client-input = { path = "../horizon-client-input" }
 horizon-client-render = { path = "../horizon-client-render" }
 horizon-command = { path = "../horizon-command" }
+# Emotes pose the player model (`Mob::emote`, `mobs::anim::setup`).
+horizon-cosmetics = { path = "../horizon-cosmetics" }
 horizon-items = { path = "../horizon-items" }
 horizon-core = { path = "../horizon-core" }
+# `horizon-ctl mcp`: the Model Context Protocol, shared with the launcher and the server.
+horizon-mcp = { path = "../horizon-mcp" }
 # The server thread ahead of the workers (MinecraftServer.spin's Thread.setPriority).
 horizon-optifine = { path = "../horizon-optifine" }
 horizon-threads = { path = "../horizon-threads" }
@@ -28,6 +32,8 @@ horizon-world = { path = "../horizon-world" }
 horizon-protocol = { path = "../horizon-protocol" }
 # server.properties, eula.txt and the user lists, shared with horizon-server.
 horizon-server-files = { path = "../horizon-server-files" }
+# The control endpoint's token (control.rs), as horizon-server's and the relay's.
+getrandom = "0.3"
 # The dedicated server's anticheat, off unless server.toml's [anticheat] turns it on (docs/anticheat.md).
 horizon-anticheat = { path = "../horizon-anticheat" }
 # The dedicated server's chat filter: [chat_filter], the slur list, mutes (docs/chat-filter.md).
@@ -61,6 +67,10 @@ ab_glyph = "0.2.32"
 log = "0.4"
 chrono = { version = "0.4.42", default-features = false, features = ["clock", "std"] }
 flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs", "runtime_detection"] }
+# The network threads of a server's players: epoll, kqueue or Windows' AFD (lan/io_pool.rs).
+mio = { version = "1.2.4", features = ["os-poll", "net"] }
+# Shared chunk frames are found by one keyed 128-bit hash of their body (lan/conn.rs SharedFrames).
+xxhash-rust = { version = "0.8.19", features = ["xxh3"] }
 horizon-theme = { path = "../horizon-theme" }
 # Opt-in data collection: the game keeps, the launcher sends (docs/telemetry.md); `live` is
 # the anonymous "I'm playing" ping the game sends itself (`heartbeat.rs`).
@@ -131,6 +141,10 @@ path = "../horizon-client/src/bin/horizon-ctl/main.rs"
 [[example]]
 name = "chunk_load_bench"
 path = "../horizon-client/examples/chunk_load_bench.rs"
+
+[[example]]
+name = "gen_light_bench"
+path = "../horizon-client/examples/gen_light_bench.rs"
 
 [[example]]
 name = "gameplay_decode_profile"
@@ -219,3 +233,7 @@ path = "../horizon-client/tests/tall_column.rs"
 [[test]]
 name = "wide_states"
 path = "../horizon-client/tests/wide_states.rs"
+
+[[example]]
+name = "chunk_encoding_bench"
+path = "../horizon-client/examples/chunk_encoding_bench.rs"

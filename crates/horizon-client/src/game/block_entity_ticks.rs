@@ -43,7 +43,8 @@ impl Game<'_> {
         for slot in self.world.block_entity_tickers().iter().copied() {
             let pos = slot.0;
             // Ticks before this one can remove it (`TickingBlockEntity.isRemoved`).
-            if !self.world.block_entities.is_live(slot)
+            if self.world.block_entities.is_asleep(&pos)
+                || !self.world.block_entities.is_live(slot)
                 || !ticking(pos.0, pos.2)
                 || !self.border.contains(f64::from(pos.0), f64::from(pos.2))
             {
@@ -215,14 +216,59 @@ impl Game<'_> {
     /// `AbstractFurnaceBlockEntity.serverTick` of the furnace at `pos`, and
     /// its block's `lit` following it.
     fn tick_furnace(&mut self, pos: Pos) -> Result<()> {
-        let Some(BlockEntity::Furnace(f)) = self.world.block_entities.get_mut(&pos) else {
-            return Ok(());
+        // What the hooks need from before the tick, without cloning stacks: the
+        // fuel's id only while the furnace is out (it can light this tick), the
+        // input's id (a last item is gone after it smelts) and the result count.
+        let before = match self.world.block_entities.get(&pos) {
+            Some(BlockEntity::Furnace(f)) => (
+                f.cooking_timer,
+                (f.lit_remaining == 0)
+                    .then(|| f.items[1].as_ref().map(|s| s.item.clone()))
+                    .flatten(),
+                f.items[0].as_ref().map(|s| s.item.clone()),
+                f.items[2].as_ref().map_or(0, |s| s.count),
+            ),
+            _ => return Ok(()),
         };
-        let Some(lit) = f.tick(
-            world_recipes!(self),
-            world_items!(self),
-            self.res.providers(),
-        ) else {
+        let mut drops = Vec::new();
+        let (lit, burning, smelted, smelting) = {
+            let Some(BlockEntity::Furnace(f)) = self.world.block_entities.get_mut(&pos) else {
+                return Ok(());
+            };
+            let lit = f.tick(
+                world_recipes!(self),
+                world_items!(self),
+                self.res.providers(),
+                &mut drops,
+            );
+            let burning = before.1.filter(|_| f.lit_remaining > 0);
+            let smelted = f.items[2]
+                .as_ref()
+                .filter(|after| after.count > before.3)
+                .map(|after| (before.2.clone(), after.item.clone()));
+            let started = before.0 == 0 && f.cooking_timer > 0;
+            let smelting = started
+                .then(|| f.items[0].as_ref().map(|item| item.item.clone()))
+                .flatten();
+            (lit, burning, smelted, smelting)
+        };
+        if let Some(item) = smelting {
+            self.native_furnace_start_smelt([pos.0, pos.1, pos.2], &item);
+        }
+        if let Some(fuel) = burning {
+            self.native_furnace_burn([pos.0, pos.1, pos.2], &fuel);
+        }
+        if let Some((Some(item), result)) = smelted {
+            self.native_furnace_smelt([pos.0, pos.1, pos.2], &item, &result);
+        }
+        for stack in drops {
+            self.campfire_drop(pos, stack);
+        }
+        let Some(lit) = lit else {
+            if matches!(self.world.block_entities.get(&pos), Some(BlockEntity::Furnace(f)) if f.idle())
+            {
+                self.world.block_entities.sleep(pos);
+            }
             return Ok(());
         };
         let state = self.world.block(pos.0, pos.1, pos.2);

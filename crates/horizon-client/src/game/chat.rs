@@ -63,8 +63,7 @@ impl Game<'_> {
     ) -> horizon_client::command::Dispatcher {
         let mut names = Vec::new();
         self.native_commands(&mut names);
-        // The window answers this one itself, as it does a client mod's.
-        names.push(horizon_client::ram_limit::COMMAND);
+        names.push("studio");
         let base = match base {
             Some(tree) => tree,
             None => horizon_client::command::vanilla::game_dispatcher(),
@@ -152,6 +151,9 @@ pub struct UiState {
     pub registries: Registries,
     pub rules: GameRules,
     pub clock: WorldClock,
+    /// Command state for registered clocks other than Overworld. Overworld's
+    /// canonical ticks stay in World.day_time and its state stays in clock.
+    pub command_clocks: BTreeMap<String, (i64, WorldClock)>,
     /// Time markers and timelines of the overworld clock.
     pub markers: BTreeMap<String, TimeMarker>,
     pub timelines: BTreeMap<String, Option<i64>>,
@@ -194,11 +196,74 @@ impl UiState {
 /// instead of at every world opening (thousands of files).
 struct ResourceIds {
     recipes: Vec<String>,
-    damage_types: Vec<String>,
     loot_tables: Vec<String>,
     templates: Vec<String>,
+    /// `entity-types.json`'s keys, sorted (empty when the file is missing).
+    entity_types: Vec<String>,
+    enchantments: Vec<String>,
+    structures: Vec<String>,
+    biomes: Vec<String>,
+    clocks: Vec<String>,
+    /// The overworld clock's timelines, their periods and time markers.
+    timelines: Vec<(String, Option<i64>)>,
+    markers: Vec<(String, TimeMarker)>,
 }
 static RESOURCE_IDS: Mutex<Vec<(PathBuf, Arc<ResourceIds>)>> = Mutex::new(Vec::new());
+
+/// The `minecraft:` ids of the `.json` files directly in `dir`, sorted.
+fn json_ids_in(dir: &Path) -> Vec<String> {
+    let mut out: Vec<String> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            e.file_name()
+                .to_str()?
+                .strip_suffix(".json")
+                .map(|n| format!("minecraft:{n}"))
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// The overworld clock's timelines (with their periods) and their time
+/// markers, read from `data/minecraft/timeline`.
+fn overworld_timelines(root: &Path) -> (Vec<(String, Option<i64>)>, Vec<(String, TimeMarker)>) {
+    let dir = root.join("data/minecraft/timeline");
+    let (mut timelines, mut markers) = (Vec::new(), Vec::new());
+    for name in json_ids_in(&dir) {
+        let path = dir.join(format!("{}.json", name.trim_start_matches("minecraft:")));
+        let Ok(v) =
+            serde_json::from_slice::<serde_json::Value>(&std::fs::read(path).unwrap_or_default())
+        else {
+            continue;
+        };
+        if v["clock"].as_str() != Some("minecraft:overworld") {
+            continue;
+        }
+        let period = v["period_ticks"].as_i64();
+        timelines.push((name.clone(), period));
+        for (marker, def) in v["time_markers"].as_object().into_iter().flatten() {
+            let (ticks, show) = match def {
+                serde_json::Value::Number(n) => (n.as_i64().unwrap_or(0), false),
+                other => (
+                    other["ticks"].as_i64().unwrap_or(0),
+                    other["show_in_commands"].as_bool().unwrap_or(false),
+                ),
+            };
+            markers.push((
+                marker.clone(),
+                TimeMarker {
+                    ticks,
+                    period,
+                    show,
+                },
+            ));
+        }
+    }
+    (timelines, markers)
+}
 
 fn resource_ids(root: &Path) -> Arc<ResourceIds> {
     let mut cache = RESOURCE_IDS.lock().unwrap_or_else(|e| e.into_inner());
@@ -206,11 +271,32 @@ fn resource_ids(root: &Path) -> Arc<ResourceIds> {
         return ids.clone();
     }
     let data = root.join("data/minecraft");
+    let mut entity_types: Vec<String> = serde_json::from_slice::<serde_json::Value>(
+        &std::fs::read(root.join("entity-types.json")).unwrap_or_default(),
+    )
+    .ok()
+    .and_then(|v| {
+        v.as_object().map(|o| {
+            o.keys()
+                .map(|k| horizon_client::command::args::normalize(k))
+                .collect()
+        })
+    })
+    .unwrap_or_default();
+    entity_types.sort();
+    let (timelines, markers) = overworld_timelines(root);
     let ids = Arc::new(ResourceIds {
         recipes: ids_under(&data.join("recipe"), "json"),
-        damage_types: ids_under(&data.join("damage_type"), "json"),
-        loot_tables: ids_under(&data.join("loot_table"), "json"),
+        // `/loot ... loot <id>` must find a content mod's tables too.
+        loot_tables: json_ids_of_every_namespace(root, "loot_table"),
         templates: templates_under(&root.join("worldgen/structure")),
+        entity_types,
+        enchantments: json_ids_in(&data.join("enchantment")),
+        structures: json_ids_in(&data.join("worldgen/structure")),
+        biomes: json_ids_in(&data.join("worldgen/biome")),
+        clocks: json_ids_in(&data.join("world_clock")),
+        timelines,
+        markers,
     });
     cache.push((root.to_owned(), ids.clone()));
     ids
@@ -279,6 +365,33 @@ fn ids_under(root: &Path, extension: &str) -> Vec<String> {
     ids_in(root, extension, "minecraft")
 }
 
+/// The ids of the `.json` files in `data/<namespace>/<kind>` of every
+/// namespace of `root` (vanilla's and the content mods'), sorted.
+fn json_ids_of_every_namespace(root: &Path, kind: &str) -> Vec<String> {
+    let data = root.join("data");
+    let mut namespaces: std::collections::BTreeSet<String> = std::fs::read_dir(&data)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    // A prepared root's namespaces live in its data file, not on the disk.
+    if let Some(files) = horizon_core::prepared_files::files_under(&data) {
+        namespaces.extend(
+            files
+                .iter()
+                .filter_map(|f| Some(f.split_once('/')?.0.to_owned())),
+        );
+    }
+    let mut out: Vec<String> = namespaces
+        .iter()
+        .flat_map(|ns| ids_in(&data.join(ns).join(kind), "json", ns))
+        .collect();
+    out.sort();
+    out
+}
+
 /// The templates of every namespace folder under `root` (vanilla's and the
 /// content mods'), as `namespace:path`, sorted.
 fn templates_under(root: &Path) -> Vec<String> {
@@ -296,6 +409,18 @@ fn templates_under(root: &Path) -> Vec<String> {
 
 /// The `namespace:` ids of the `extension` files under `root`, sorted.
 fn ids_in(root: &Path, extension: &str, namespace: &str) -> Vec<String> {
+    let suffix = format!(".{extension}");
+    // A prepared root's folder: from its data file, without listing the disk.
+    if let Some(files) = horizon_core::prepared_files::files_under(root) {
+        let mut out: Vec<String> = files
+            .iter()
+            .filter_map(|file| file.strip_suffix(&suffix))
+            .filter(|path| !path.is_empty() && !path.ends_with('/'))
+            .map(|path| format!("{namespace}:{path}"))
+            .collect();
+        out.sort();
+        return out;
+    }
     let mut out = Vec::new();
     let mut stack = vec![root.to_owned()];
     while let Some(dir) = stack.pop() {
@@ -325,7 +450,80 @@ fn ids_in(root: &Path, extension: &str, namespace: &str) -> Vec<String> {
     out
 }
 
+/// `SuggestionProviders.SUMMONABLE_ENTITIES`: Entity types available for
+/// `/summon` autocomplete, filtering out types that cannot be summoned.
+pub(super) fn summonable_entities(
+    entity_types: &[String],
+    mob_types: impl IntoIterator<Item = impl AsRef<str>>,
+) -> Vec<String> {
+    let mut summonable: Vec<String> = if !entity_types.is_empty() {
+        entity_types
+            .iter()
+            .filter(|id| !matches!(id.as_str(), "minecraft:player" | "minecraft:fishing_bobber"))
+            .cloned()
+            .collect()
+    } else {
+        let mut list: Vec<String> = mob_types
+            .into_iter()
+            .map(|k| horizon_client::command::args::normalize(k.as_ref()))
+            .filter(|id| !matches!(id.as_str(), "minecraft:player" | "minecraft:fishing_bobber"))
+            .collect();
+        list.extend(
+            [
+                "minecraft:item",
+                "minecraft:experience_orb",
+                "minecraft:falling_block",
+                "minecraft:arrow",
+                "minecraft:lightning_bolt",
+                "minecraft:minecart",
+                "minecraft:chest_minecart",
+                "minecraft:hopper_minecart",
+                "minecraft:furnace_minecart",
+                "minecraft:tnt_minecart",
+                "minecraft:wind_charge",
+                "minecraft:breeze_wind_charge",
+            ]
+            .map(String::from),
+        );
+        list
+    };
+    // content mods' thrown types.
+    let thrown = horizon_client::projectiles::thrown_types().iter();
+    summonable.extend(thrown.map(|t| t.id.to_owned()));
+    summonable.sort();
+    summonable.dedup();
+    summonable
+}
+
 impl Game<'_> {
+    /// The caches `build_registries` and `join_server` read (`resource_ids`,
+    /// `block_properties`, `command_export`, `builtin_registries`), filled on a helper
+    /// thread while the title screen is up: the first world opened or server joined
+    /// built them in its frame (20 ms of the Join click on an M4 Pro). Whoever needs one
+    /// before it is done waits for it, as before.
+    pub(super) fn preload_registries(&self) {
+        if self.options.dedicated.is_some() {
+            return;
+        }
+        let dirs = [self.options.resources.clone(), self.ui.vanilla_root.clone()];
+        let registry = self.pack.assets.registry;
+        let spawned = std::thread::Builder::new()
+            .name("Registries preload".into())
+            .spawn(move || {
+                horizon_threads::behind_server();
+                super::remote::builtin_registries(&dirs[0]);
+                resource_ids(&dirs[0]);
+                block_properties(registry);
+                for dir in &dirs {
+                    if command_export(dir, true).is_some() {
+                        break;
+                    }
+                }
+            });
+        if let Err(e) = spawned {
+            log::warn!("Horizon: registries preload: {e}");
+        }
+    }
     /// `PlayerList.isOp` for the single-player owner: the world's Allow Commands.
     pub(super) fn allow_commands(&self) -> bool {
         self.level.allow_commands == Some(true)
@@ -350,7 +548,12 @@ impl Game<'_> {
         reg.permission = permission;
         let ids = resource_ids(&self.options.resources);
         self.ui.registries.recipes = ids.recipes.clone();
-        self.ui.registries.damage_types = ids.damage_types.clone();
+        self.ui.registries.damage_types = self
+            .health_resources
+            .damage
+            .entries()
+            .map(|(_, d)| d.name.clone())
+            .collect();
         self.ui.registries.loot_tables = ids.loot_tables.clone();
         self.ui.registries.templates = ids.templates.clone();
         self.ui.registries.sounds = self.audio.event_names();
@@ -419,77 +622,24 @@ impl Game<'_> {
             .collect();
         reg.block_tags.sort();
         reg.blocks = BlockProperties::clone(&block_properties(self.pack.assets.registry));
-        let mut summonable: Vec<String> = self
-            .res
-            .mob_types()
-            .keys()
-            .map(|k| horizon_client::command::args::normalize(k))
-            .collect();
-        summonable.extend(
-            [
-                "minecraft:item",
-                "minecraft:experience_orb",
-                "minecraft:falling_block",
-                "minecraft:arrow",
-                "minecraft:lightning_bolt",
-                "minecraft:minecart",
-                "minecraft:chest_minecart",
-                "minecraft:hopper_minecart",
-                "minecraft:furnace_minecart",
-                "minecraft:tnt_minecart",
-            ]
-            .map(String::from),
-        );
-        // content mods' thrown types.
-        let thrown = horizon_client::projectiles::thrown_types().iter();
-        summonable.extend(thrown.map(|t| t.id.to_owned()));
-        summonable.sort();
-        summonable.dedup();
-        reg.summonable = summonable;
-        let root = self.options.resources.clone();
-        let mut types: Vec<String> = serde_json::from_slice::<serde_json::Value>(
-            &std::fs::read(root.join("entity-types.json")).unwrap_or_default(),
-        )
-        .ok()
-        .and_then(|v| {
-            v.as_object().map(|o| {
-                o.keys()
-                    .map(|k| horizon_client::command::args::normalize(k))
-                    .collect()
-            })
-        })
-        .unwrap_or_default();
+        reg.summonable = summonable_entities(&ids.entity_types, self.res.mob_types().keys());
+        let mut types = ids.entity_types.clone();
         if types.is_empty() {
             types = reg.summonable.clone();
             types.push("minecraft:player".into());
+            types.sort();
         }
-        types.sort();
         reg.entity_types = types;
-        let list = |dir: &str| -> Vec<String> {
-            let mut out: Vec<String> = std::fs::read_dir(root.join(dir))
-                .into_iter()
-                .flatten()
-                .flatten()
-                .filter_map(|e| {
-                    e.file_name()
-                        .to_str()?
-                        .strip_suffix(".json")
-                        .map(|n| format!("minecraft:{n}"))
-                })
-                .collect();
-            out.sort();
-            out
-        };
         // The mob effect registry: every effect `/effect` and the
         // `mob_effect` resource arguments accept.
         reg.effects = horizon_client::brewing::all_effects()
             .map(|e| horizon_client::brewing::namespaced(e.id).to_owned())
             .collect();
         reg.effects.sort();
-        reg.enchantments = list("data/minecraft/enchantment");
-        reg.structures = list("data/minecraft/worldgen/structure");
-        reg.biomes = list("data/minecraft/worldgen/biome");
-        reg.clocks = list("data/minecraft/world_clock");
+        reg.enchantments = ids.enchantments.clone();
+        reg.structures = ids.structures.clone();
+        reg.biomes = ids.biomes.clone();
+        reg.clocks = ids.clocks.clone();
         reg.dimensions = vec![
             "minecraft:overworld".into(),
             "minecraft:the_nether".into(),
@@ -497,41 +647,8 @@ impl Game<'_> {
         ];
         reg.players = vec![PLAYER_NAME.into()];
         // Timelines of the overworld clock and their time markers.
-        self.ui.markers.clear();
-        self.ui.timelines.clear();
-        for name in list("data/minecraft/timeline") {
-            let path = root.join(format!(
-                "data/minecraft/timeline/{}.json",
-                name.trim_start_matches("minecraft:")
-            ));
-            let Ok(v) = serde_json::from_slice::<serde_json::Value>(
-                &std::fs::read(path).unwrap_or_default(),
-            ) else {
-                continue;
-            };
-            if v["clock"].as_str() != Some("minecraft:overworld") {
-                continue;
-            }
-            let period = v["period_ticks"].as_i64();
-            self.ui.timelines.insert(name.clone(), period);
-            for (marker, def) in v["time_markers"].as_object().into_iter().flatten() {
-                let (ticks, show) = match def {
-                    serde_json::Value::Number(n) => (n.as_i64().unwrap_or(0), false),
-                    other => (
-                        other["ticks"].as_i64().unwrap_or(0),
-                        other["show_in_commands"].as_bool().unwrap_or(false),
-                    ),
-                };
-                self.ui.markers.insert(
-                    marker.clone(),
-                    TimeMarker {
-                        ticks,
-                        period,
-                        show,
-                    },
-                );
-            }
-        }
+        self.ui.timelines = ids.timelines.iter().cloned().collect();
+        self.ui.markers = ids.markers.iter().cloned().collect();
         // Vanilla's built-in registries (mob effects, components, dialogs...).
         for dir in [&self.options.resources, &self.ui.vanilla_root] {
             if let Some(export) = command_export(dir, self.options.dedicated.is_none()) {
@@ -574,6 +691,8 @@ impl Game<'_> {
     /// last time, when this method can restore it (a command draft only for
     /// /), else with its prefix.
     pub(super) fn open_chat_method(&mut self, prefix: &str) {
+        // handleKeybinds: the number keys select before key.chat and key.command.
+        self.select_queued_hotbar();
         let command = prefix == "/";
         let draft = self
             .ui
@@ -644,6 +763,16 @@ impl Game<'_> {
     /// sent); blank text discards the draft. A draft still shown unchanged
     /// stays as it is.
     fn keep_chat_draft(&mut self, text: &str, reason: ChatExit) {
+        // During PvP & HUD's chat search the box holds the query: the draft is the text the
+        // search put aside, whichever way the chat closed.
+        let aside;
+        let text = if self.pvp.chat_search {
+            self.pvp.chat_search = false;
+            aside = std::mem::take(&mut self.pvp.chat_search_aside);
+            aside.as_str()
+        } else {
+            text
+        };
         let unchanged =
             self.ui.chat_draft_shown && self.ui.chat_draft.as_ref().is_some_and(|d| d.text == text);
         if should_discard_draft(reason, self.settings.file.bool("saveChatDrafts"))
@@ -699,6 +828,40 @@ impl Game<'_> {
     fn leave_bed_button(width: f32, height: f32) -> (i32, i32, i32, i32) {
         (width as i32 / 2 - 100, height as i32 - 40, 200, 20)
     }
+    /// The Leave Bed button's draws. It registers as a button
+    /// (`widgets::record`), so the pad's and the keyboard's focus reach it (the
+    /// pad's starts on it) and `horizon-ctl click-button` finds it.
+    fn leave_bed_draws(
+        m: &Measure,
+        mouse: (i32, i32),
+        width: f32,
+        height: f32,
+    ) -> Vec<horizon_client::screen_draw::Draw> {
+        let (x, y, w, h) = Self::leave_bed_button(width, height);
+        let label = Text::literal(horizon_client::lang::get_or(
+            "multiplayer.stopSleeping",
+            "Leave Bed",
+        ));
+        horizon_client::widgets::record(
+            &label.plain(),
+            [x as f32, y as f32, w as f32, h as f32],
+            true,
+        );
+        let mut button = Vec::new();
+        horizon_client::screen_draw::button(
+            &mut button,
+            m,
+            &label,
+            x,
+            y,
+            w,
+            h,
+            true,
+            horizon_client::screen_draw::inside(mouse, x, y, w, h),
+            horizon_client::hud_overlays::now_ms(),
+        );
+        button
+    }
     /// `Minecraft.computeChatAbilities` from the Chat option.
     pub(super) fn chat_abilities(&self) -> ChatAbilities {
         ChatAbilities::new(ChatVisibility::from_option(self.settings.chat_visibility))
@@ -718,8 +881,8 @@ impl Game<'_> {
         // The Chat option's Hidden level takes the server's messages too.
         self.local_chat_line(text, Some(SYSTEM_INDICATOR), ChatSource::Server);
     }
-    /// A player's chat line on the window's own chat: a LAN guest's message
-    /// while the host runs in-frame (`HostEvent::Chat`). `ChatListener`
+    /// A player's chat line on the window's own chat: a guest's message on
+    /// the server's own chat (`HostEvent::Chat`). `ChatListener`
     /// checks `canReceivePlayerMessages` for these, so Commands Only and
     /// Hidden drop them; command feedback (`/list`, `/tp`) is a system
     /// message and takes the system-message permission instead.
@@ -746,7 +909,7 @@ impl Game<'_> {
             text,
             indicator,
             source,
-            self.ticks,
+            self.visual_ticks(),
             focused,
         );
     }
@@ -770,15 +933,22 @@ impl Game<'_> {
     }
     /// A key (and the text it typed) while the chat screen is open.
     pub(super) fn chat_key_code(&mut self, key: KeyCode, typed_text: Option<&str>) {
-        // InputQuirks.EDIT_SHORTCUT_KEY_MODIFIER: Cmd on macOS, Ctrl elsewhere.
-        let (left, right) = if cfg!(target_os = "macos") {
-            (KeyCode::SuperLeft, KeyCode::SuperRight)
-        } else {
-            (KeyCode::ControlLeft, KeyCode::ControlRight)
-        };
-        let ctrl = self.keys.contains(&left) || self.keys.contains(&right);
-        let shift =
-            self.keys.contains(&KeyCode::ShiftLeft) || self.keys.contains(&KeyCode::ShiftRight);
+        // The live modifiers, not `self.keys`: every ModifiersChanged runs
+        // sync_toggle, which drops ShiftLeft and ControlLeft from `self.keys`
+        // while a screen is open.
+        let ctrl = self.has_control_down_with_quirk();
+        let shift = self.has_shift_down();
+        // PvP & HUD's chat search: Ctrl+F starts and stops it, Enter stops it (sends nothing).
+        if self.settings.extras.pvp.chat.search
+            && match key {
+                KeyCode::KeyF => ctrl,
+                KeyCode::Enter | KeyCode::NumpadEnter => self.pvp.chat_search,
+                _ => false,
+            }
+        {
+            self.toggle_chat_search();
+            return;
+        }
         match key {
             // ChatScreen.keyPressed: the chat scrolls a page.
             KeyCode::PageUp | KeyCode::PageDown
@@ -806,7 +976,8 @@ impl Game<'_> {
         };
         match screen.key(&m, &c, &self.ui.chat.recent, key, shift, ctrl) {
             ChatAction::Close => {
-                // Escape: the box still holds its text, which close_chat keeps as the draft.
+                // Escape: the box still holds its text, which close_chat keeps as the draft
+                // (a search's query gives way to the text it put aside: keep_chat_draft).
                 self.ui.chat_screen = Some(screen);
                 self.close_chat(ChatExit::Intentional);
             }
@@ -903,10 +1074,9 @@ impl Game<'_> {
                 line,
                 None,
                 ChatSource::Player,
-                self.ticks,
+                self.visual_ticks(),
                 focused,
             );
-            self.lan_host_chat(&message);
         }
     }
     pub(super) fn chat_scroll(&mut self, amount: f32) {
@@ -953,12 +1123,29 @@ impl Game<'_> {
         } else {
             return;
         }
-        let Some(style) = self.ui.chat.style_at(
+        let style = self.ui.chat.style_at(
             &self.gui.atlas.font,
             height as i32,
             cursor.0 as f64,
             cursor.1 as f64,
-        ) else {
+        );
+        // PvP & HUD's copy on click: a message where the click has nothing else to do.
+        if self.settings.extras.pvp.chat.copy
+            && !self.has_shift_down()
+            && style.as_ref().is_none_or(|s| s.click.is_none())
+            && let Some(message) =
+                self.ui
+                    .chat
+                    .message_at(height as i32, cursor.0 as f64, cursor.1 as f64)
+        {
+            use horizon_client::clipboard::Clipboard;
+            self.clipboard.set(message);
+            let copied =
+                Text::translate_with_fallback("horizon.chat.copied", "Message copied", &[]);
+            self.titles.set_overlay(copied, false);
+            return;
+        }
+        let Some(style) = style else {
             return;
         };
         // ChatScreen.handleComponentClicked: with Shift held only an
@@ -989,6 +1176,12 @@ impl Game<'_> {
             // Screen.defaultHandleGameClickEvent: the dialog opens over the
             // screen, and closes back to it.
             Some(ClickEvent::ShowDialog(dialog)) => self.show_dialog_ref(&dialog),
+            // Screen.defaultHandleGameClickEvent: custom actions retain chat.
+            Some(ClickEvent::Custom { id, payload }) => {
+                if let Some(remote) = &self.remote {
+                    remote.session.send_custom_click(&id, payload);
+                }
+            }
             // Screen.defaultHandleClickEvent: a page link means nothing in chat.
             Some(ClickEvent::ChangePage(_)) | None => {}
         }
@@ -1047,8 +1240,9 @@ impl Game<'_> {
             Text::translate("chat.copy", &[]),
             Text::translate("gui.no", &[]),
         ];
-        self.link_prompt_layout(url, (w, h))
-            .draw(batch, atlas, self.cursor, &labels);
+        let layout = self.link_prompt_layout(url, (w, h));
+        layout.declare_no(2);
+        layout.draw(batch, atlas, self.cursor, &labels);
     }
     /// The prompt's answer: the link opens on yes; either way the chat is back.
     pub(super) fn answer_link_prompt(&mut self, yes: bool) {
@@ -1090,9 +1284,47 @@ impl Game<'_> {
             self.run_command(command);
         }
     }
+    /// PvP & HUD's chat search on or off. The box holds the query: what was typed is put aside
+    /// when the search starts and comes back when it stops.
+    fn toggle_chat_search(&mut self) {
+        let typed = self.ui.chat_screen.as_ref().map(|s| s.value().to_owned());
+        let next = if self.pvp.chat_search {
+            std::mem::take(&mut self.pvp.chat_search_aside)
+        } else {
+            self.pvp.chat_search_aside = typed.unwrap_or_default();
+            String::new()
+        };
+        self.pvp.chat_search = !self.pvp.chat_search;
+        let m = Measure(&self.gui.atlas.font);
+        let c = Commands {
+            dispatcher: chat_tree(&self.remote),
+            registries: &self.ui.registries,
+        };
+        if let Some(screen) = self.ui.chat_screen.as_mut() {
+            screen.suggest_command(&m, &c, &next);
+        }
+    }
     /// Chat lines over the HUD (focused while the chat screen is open).
     pub(super) fn draw_chat(&mut self, batch: &mut HudBatch) {
         let focused = self.screen == Screen::Chat;
+        let options = self.settings.extras.pvp.chat;
+        self.ui.chat.set_qol(&self.gui.atlas, options.qol());
+        // A search ends with its option; a chat closed some other way ends it in keep_chat_draft.
+        if self.pvp.chat_search && self.ui.chat_screen.is_none() {
+            // The chat went without closing (leaving the world): nothing to give back.
+            self.pvp.chat_search = false;
+            self.pvp.chat_search_aside.clear();
+        } else if self.pvp.chat_search && !options.search {
+            self.toggle_chat_search();
+        }
+        let query = self
+            .ui
+            .chat_screen
+            .as_ref()
+            .filter(|_| focused && self.pvp.chat_search)
+            .map(|s| s.value());
+        self.ui.chat.set_search(&self.gui.atlas, query);
+        self.ui.chat.search_prompt = focused && self.pvp.chat_search;
         if self.ui.hide_gui && !focused {
             return;
         }
@@ -1100,7 +1332,7 @@ impl Game<'_> {
         self.ui.chat.hide_indicator = !self.settings.extras.chat_indicator;
         // The fractional tick makes the smooth chat extra's slide move every
         // frame; vanilla's fade reads it too.
-        let now = self.ticks as f32 + self.clock.fraction() as f32;
+        let now = self.visual_ticks() as f32 + self.clock.fraction() as f32;
         self.ui.chat.draw(batch, &self.gui.atlas, now, focused);
     }
     /// `HoverEvent.EntityTooltipInfo.getTooltipLines`: the name when the
@@ -1174,24 +1406,7 @@ impl Game<'_> {
         horizon_client::screen_draw::paint(batch, &self.gui.atlas, &draws);
         self.ui.chat_screen = Some(screen);
         if in_bed {
-            let (x, y, w, h) = Self::leave_bed_button(batch.width, batch.height);
-            let label = Text::literal(horizon_client::lang::get_or(
-                "multiplayer.stopSleeping",
-                "Leave Bed",
-            ));
-            let mut button = Vec::new();
-            horizon_client::screen_draw::button(
-                &mut button,
-                &m,
-                &label,
-                x,
-                y,
-                w,
-                h,
-                true,
-                horizon_client::screen_draw::inside(mouse, x, y, w, h),
-                horizon_client::hud_overlays::now_ms(),
-            );
+            let button = Self::leave_bed_draws(&m, mouse, batch.width, batch.height);
             horizon_client::screen_draw::paint(batch, &self.gui.atlas, &button);
         }
         // The hovered message part's tooltip (`renderComponentHoverEffect`),
@@ -1303,10 +1518,13 @@ impl Game<'_> {
             _ => Difficulty::Normal,
         };
     }
-    /// Load per-world command state when a world opens.
+    /// `ServerClockManager.ServerClockInstance.loadFrom`: restore the existing
+    /// Overworld state when a world opens; clear the other command-state cache.
     pub(super) fn load_world_state(&mut self) {
-        self.ui.rules = GameRules::load(&self.world_root);
+        self.ui.rules =
+            GameRules::load_with_features(&self.world_root, &self.level.enabled_features);
         self.ui.clock = WorldClock::default();
+        self.ui.command_clocks.clear();
         // PrimaryLevelData: the difficulty comes back from level.dat's difficulty_settings.
         self.ui.difficulty = self.level.difficulty_id();
         if let Ok(bytes) = std::fs::read(self.world_root.join("data/minecraft/world_clocks.dat"))
@@ -1384,45 +1602,6 @@ impl Game<'_> {
             log::warn!("the world clocks were not written: {e}");
         }
     }
-    /// Death message in chat (CombatTracker.getDeathMessage, as far as the
-    /// cause is known to the client).
-    pub(super) fn death_message(&mut self) {
-        let cause = self.ui.death_cause.take();
-        let player = self.native_acting_id();
-        self.native_player_died(player, cause.as_deref());
-        self.ui.died_at = Some(std::time::Instant::now());
-        self.ui.death_text = None;
-        self.ui.death_confirm = None;
-        if !self.ui.rules.bool("show_death_messages") {
-            return;
-        }
-        let Some(p) = self.player.as_ref() else {
-            return;
-        };
-        let below_world = p.position.y < f64::from(self.world.bottom_y() - 64);
-        let name = self.player_display_text();
-        let message = match cause {
-            Some(key) => Text::translate(&key, &[name]),
-            None if below_world => Text::translate("death.attack.outOfWorld", &[name]),
-            None => self.combat_death_message(),
-        };
-        self.ui.death_text = Some(message.clone());
-        // ServerPlayer.die: the team's death message visibility decides who
-        // hears it, the dying player's own chat included (the death screen
-        // still shows it).
-        let board = &self.score.board;
-        if let Some(host) = &self.lan {
-            host.hub.system_message_to(
-                horizon_client::lan::data::component_nbt(&message.component()),
-                |other| {
-                    horizon_client::scoreboard::death_message_reaches(board, PLAYER_NAME, other)
-                },
-            );
-        }
-        if horizon_client::scoreboard::death_message_reaches(board, PLAYER_NAME, PLAYER_NAME) {
-            self.system_message(message);
-        }
-    }
     /// F1 hides the HUD (see `hud`); the screenshot key still works.
     pub(super) fn toggle_hide_gui(&mut self) {
         self.ui.hide_gui = !self.ui.hide_gui;
@@ -1449,11 +1628,18 @@ impl Game<'_> {
     /// `key.screenshot` mapping (F2 by default) takes the picture before a
     /// screen or a text box sees the key, and the debug modifier suppresses it.
     pub(super) fn screenshot_shortcut(&mut self, key: KeyCode, repeat: bool) -> bool {
-        if repeat || self.debug_keys.modifier_down {
+        if repeat
+            || horizon_client::keybinds::key_name(key)
+                != Some(self.settings.keys.get("key.screenshot"))
+        {
             return false;
         }
-        if horizon_client::keybinds::key_name(key) != Some(self.settings.keys.get("key.screenshot"))
-        {
+        self.screenshot_action()
+    }
+    /// key.screenshot from any device: not while F3 is down, where F3+F2 is a
+    /// debug key.
+    pub(super) fn screenshot_action(&mut self) -> bool {
+        if self.debug_keys.modifier_down {
             return false;
         }
         self.take_screenshot();
@@ -1486,7 +1672,7 @@ impl Game<'_> {
             message,
             None,
             ChatSource::Client,
-            self.ticks,
+            self.visual_ticks(),
             focused,
         );
     }
@@ -1549,6 +1735,64 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// A content mod's loot tables are listed with vanilla's, so `/loot`
+    /// finds them.
+    #[test]
+    fn loot_tables_of_every_namespace_are_listed() {
+        let root = std::env::temp_dir().join(format!("horizon-loot-ids-{}", std::process::id()));
+        for dir in [
+            "data/minecraft/loot_table/chests",
+            "data/mymod/loot_table/rooms",
+        ] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        std::fs::write(root.join("data/minecraft/loot_table/chests/a.json"), "{}").unwrap();
+        std::fs::write(root.join("data/mymod/loot_table/rooms/b.json"), "{}").unwrap();
+        std::fs::write(root.join("data/mymod/loot_table/notes.txt"), "").unwrap();
+        assert_eq!(
+            resource_ids(&root).loot_tables,
+            ["minecraft:chests/a", "mymod:rooms/b"]
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Only the overworld clock's timelines count; a marker is a bare tick
+    /// count (hidden from commands) or an object that may show itself.
+    #[test]
+    fn overworld_timelines_and_markers() {
+        let root = std::env::temp_dir().join(format!("horizon-timelines-{}", std::process::id()));
+        let dir = root.join("data/minecraft/timeline");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("day.json"),
+            r#"{"clock":"minecraft:overworld","period_ticks":24000,
+                "time_markers":{"minecraft:noon":6000,
+                "minecraft:night":{"ticks":13000,"show_in_commands":true}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("other.json"),
+            r#"{"clock":"minecraft:the_end","time_markers":{"minecraft:x":1}}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.join("broken.json"), "{").unwrap();
+        let (timelines, markers) = overworld_timelines(&root);
+        assert_eq!(timelines, [("minecraft:day".to_owned(), Some(24000))]);
+        let mut markers: Vec<_> = markers
+            .iter()
+            .map(|(name, m)| (name.as_str(), m.ticks, m.period, m.show))
+            .collect();
+        markers.sort();
+        assert_eq!(
+            markers,
+            [
+                ("minecraft:night", 13000, Some(24000), true),
+                ("minecraft:noon", 6000, Some(24000), false),
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// The export is read once per folder; a folder without one stays without.
     #[test]
     fn command_exports_are_read_once_per_folder() {
@@ -1572,17 +1816,6 @@ mod tests {
         assert_eq!(once.effects, ["b"]);
         assert!(!Arc::ptr_eq(&once, &command_export(&other, false).unwrap()));
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn the_ram_limit_command_is_known_to_the_chat_box() {
-        let reg = Registries::default();
-        let vanilla = horizon_client::command::vanilla::game_dispatcher();
-        assert!(vanilla.find(horizon_client::ram_limit::COMMAND).is_none());
-        let tree = with_native_commands(vanilla, &[horizon_client::ram_limit::COMMAND]);
-        for typed in ["ramlimit", "ramlimit 2048", "ramlimit off"] {
-            assert!(tree.parse(typed, &reg).executable().is_ok(), "{typed}");
-        }
     }
 
     /// A native mod's command is in the tree the chat box uses (#456): known
@@ -1619,5 +1852,217 @@ mod tests {
             vanilla.parse("help", &reg).executable().map(|e| e.1)
         );
         assert_eq!(shared.nodes.len(), vanilla.nodes.len());
+    }
+
+    /// When `entity_types` is empty (no `entity-types.json`), fallback includes
+    /// standard mobs, non-mob entities, and `wind_charge` / `breeze_wind_charge`.
+    #[test]
+    fn summonable_entities_empty_fallback_includes_mobs_and_non_mobs() {
+        let mobs = ["cow", "zombie", "skeleton"];
+        let summonable = summonable_entities(&[], mobs);
+        assert!(summonable.contains(&"minecraft:cow".to_string()));
+        assert!(summonable.contains(&"minecraft:zombie".to_string()));
+        assert!(summonable.contains(&"minecraft:skeleton".to_string()));
+        assert!(summonable.contains(&"minecraft:item".to_string()));
+        assert!(summonable.contains(&"minecraft:arrow".to_string()));
+        assert!(summonable.contains(&"minecraft:lightning_bolt".to_string()));
+        assert!(summonable.contains(&"minecraft:minecart".to_string()));
+        assert!(summonable.contains(&"minecraft:wind_charge".to_string()));
+        assert!(summonable.contains(&"minecraft:breeze_wind_charge".to_string()));
+    }
+
+    /// Non-summonables `minecraft:player` and `minecraft:fishing_bobber` are
+    /// never included in `reg.summonable`.
+    #[test]
+    fn summonable_entities_never_includes_player_or_fishing_bobber() {
+        let all_types = vec![
+            "minecraft:cow".to_string(),
+            "minecraft:player".to_string(),
+            "minecraft:fishing_bobber".to_string(),
+            "minecraft:wind_charge".to_string(),
+        ];
+        let summonable = summonable_entities(&all_types, &[] as &[&str]);
+        assert!(!summonable.contains(&"minecraft:player".to_string()));
+        assert!(!summonable.contains(&"minecraft:fishing_bobber".to_string()));
+        assert!(summonable.contains(&"minecraft:cow".to_string()));
+        assert!(summonable.contains(&"minecraft:wind_charge".to_string()));
+
+        let fallback = summonable_entities(&[], ["player", "fishing_bobber", "zombie"]);
+        assert!(!fallback.contains(&"minecraft:player".to_string()));
+        assert!(!fallback.contains(&"minecraft:fishing_bobber".to_string()));
+        assert!(fallback.contains(&"minecraft:zombie".to_string()));
+    }
+
+    /// `minecraft:wind_charge` and `minecraft:breeze_wind_charge` are in
+    /// `reg.summonable`, and `/summon wind` or `/summon minecraft:wind_charg`
+    /// suggest them via `Suggests::SummonableEntities` / `resource_matches`.
+    #[test]
+    fn summonable_entities_suggests_wind_charge_variants() {
+        let all_types = vec![
+            "minecraft:wind_charge".to_string(),
+            "minecraft:breeze_wind_charge".to_string(),
+            "minecraft:zombie".to_string(),
+        ];
+        let summonable = summonable_entities(&all_types, &[] as &[&str]);
+        assert!(summonable.contains(&"minecraft:wind_charge".to_string()));
+        assert!(summonable.contains(&"minecraft:breeze_wind_charge".to_string()));
+
+        assert!(horizon_client::command::args::resource_matches(
+            "wind",
+            "minecraft:wind_charge"
+        ));
+        assert!(horizon_client::command::args::resource_matches(
+            "wind",
+            "minecraft:breeze_wind_charge"
+        ));
+        assert!(horizon_client::command::args::resource_matches(
+            "minecraft:wind_charg",
+            "minecraft:wind_charge"
+        ));
+        assert!(!horizon_client::command::args::resource_matches(
+            "minecraft:wind_charg",
+            "minecraft:breeze_wind_charge"
+        ));
+
+        let reg = Registries {
+            permission: 2,
+            summonable,
+            ..Default::default()
+        };
+        let vanilla = horizon_client::command::vanilla::game_dispatcher();
+
+        let parse = vanilla.parse("summon wind", &reg);
+        let (_range, suggestions) = vanilla.client_suggestions(&parse, "summon wind".len(), &reg);
+        let texts: Vec<String> = suggestions.into_iter().map(|s| s.text).collect();
+        assert!(texts.contains(&"minecraft:wind_charge".to_string()));
+        assert!(texts.contains(&"minecraft:breeze_wind_charge".to_string()));
+
+        let parse = vanilla.parse("summon minecraft:wind_charg", &reg);
+        let (_range, suggestions) =
+            vanilla.client_suggestions(&parse, "summon minecraft:wind_charg".len(), &reg);
+        let texts: Vec<String> = suggestions.into_iter().map(|s| s.text).collect();
+        assert_eq!(texts, vec!["minecraft:wind_charge".to_string()]);
+    }
+
+    /// `Registries::fill_from_export` and `fill_from_exported` populate
+    /// `self.summonable` and `self.entity_types` when present in export JSON,
+    /// and sort/dedup properly.
+    #[test]
+    fn export_propagation_populates_and_dedups_summonable_and_entity_types() {
+        let export_json = serde_json::json!({
+            "summonable": [
+                "minecraft:zombie",
+                "minecraft:arrow",
+                "minecraft:zombie",
+                "minecraft:wind_charge"
+            ],
+            "entity_types": [
+                "minecraft:zombie",
+                "minecraft:player",
+                "minecraft:arrow",
+                "minecraft:zombie"
+            ]
+        });
+        let mut reg = Registries::default();
+        reg.fill_from_export(&export_json);
+        assert_eq!(
+            reg.summonable,
+            vec![
+                "minecraft:arrow".to_string(),
+                "minecraft:wind_charge".to_string(),
+                "minecraft:zombie".to_string(),
+            ]
+        );
+        assert_eq!(
+            reg.entity_types,
+            vec![
+                "minecraft:arrow".to_string(),
+                "minecraft:player".to_string(),
+                "minecraft:zombie".to_string(),
+            ]
+        );
+
+        let mut dest = Registries::default();
+        dest.fill_from_exported(&reg);
+        assert_eq!(dest.summonable, reg.summonable);
+        assert_eq!(dest.entity_types, reg.entity_types);
+
+        let mut prefilled = Registries {
+            summonable: vec!["minecraft:pig".to_string()],
+            entity_types: vec!["minecraft:pig".to_string()],
+            ..Default::default()
+        };
+        prefilled.fill_from_exported(&reg);
+        assert_eq!(prefilled.summonable, vec!["minecraft:pig".to_string()]);
+        assert_eq!(prefilled.entity_types, vec!["minecraft:pig".to_string()]);
+    }
+
+    /// The sleeper's chat: Leave Bed is a button target for the pad and the
+    /// keyboard, right above the chat box, and the D-pad steps between the
+    /// two.
+    #[test]
+    fn leave_bed_is_a_focus_target_above_the_chat_box() {
+        use super::super::key_focus;
+        use horizon_client::{
+            font::Font,
+            gamepad::{Button, focus_step_strict},
+            widgets::Kind,
+        };
+        use std::collections::HashMap;
+        // The missing-glyph metrics measure without game assets.
+        let font = Font::load(
+            Path::new("/nonexistent-horizon-chat-test-resources"),
+            &HashMap::new(),
+            &[],
+            (1, 1),
+            (0, 0),
+            horizon_client::hud::Rect {
+                u0: 0.0,
+                v0: 0.0,
+                u1: 1.0,
+                v1: 1.0,
+                w: 1,
+                h: 1,
+            },
+        );
+        let m = Measure(&font);
+        let registries = Registries::default();
+        let c = Commands {
+            dispatcher: horizon_client::command::vanilla::game_dispatcher(),
+            registries: &registries,
+        };
+        let (width, height) = (427.0, 240.0);
+        let mut screen = ChatScreen::new(
+            &m,
+            &c,
+            "",
+            0,
+            width as i32,
+            height as i32,
+            ChatAbilities::new(ChatVisibility::Full),
+        );
+        screen.draw(&m, (0, 0), 0, 0);
+        Game::leave_bed_draws(&m, (0, 0), width, height);
+        horizon_client::widgets::end_frame(u64::MAX);
+
+        let targets = key_focus::drawn_targets();
+        let (x, y, w, h) = Game::leave_bed_button(width, height);
+        let bed = targets
+            .iter()
+            .copied()
+            .find(|t| t.rect == [x as f32, y as f32, w as f32, h as f32])
+            .expect("Leave Bed is a focus target");
+        assert_eq!(bed.kind, Kind::Button);
+        assert!(key_focus::keyboard_targets(targets.clone(), false).contains(&bed));
+        let field = targets
+            .iter()
+            .copied()
+            .find(|t| t.kind == Kind::Field)
+            .expect("the chat box is a focus target");
+        let rects: Vec<_> = targets.iter().map(|t| t.rect).collect();
+        let step =
+            |from: [f32; 4], button| focus_step_strict(from, button, &rects).map(|i| targets[i]);
+        assert_eq!(step(field.rect, Button::DPadUp), Some(bed));
+        assert_eq!(step(bed.rect, Button::DPadDown), Some(field));
     }
 }

@@ -12,6 +12,7 @@
 //! and tells the server of a riding jump (`START_RIDING_JUMP`). A minecart
 //! moves on the server with the rider's input, and the rider sits in it.
 use super::{Game, Keys, ray_box};
+use crate::Result;
 use horizon_client::mobs::{Mob, equine, happy_ghast};
 use horizon_core::geometry::{Aabb, Vec3};
 use horizon_protocol::packets::play::{self, Serverbound as S};
@@ -26,8 +27,39 @@ pub(super) struct ObjectHit {
 }
 
 impl Game<'_> {
+    /// BlockAttachedEntity.isPickable: the nearest fence knot's box the view meets, with its id,
+    /// distance and position. Its box is wider than the post inside it, so the crosshair meets it
+    /// first and LeashFenceKnotEntity.interact takes the click. The fence block behind only ties
+    /// the player's own mobs (LeadItem.useOn), it never takes one back.
+    fn remote_knot_hit(&self) -> Option<(i32, f64, [f64; 3])> {
+        let (eye, dir) = self.aim()?;
+        self.remote_knots
+            .iter()
+            .filter_map(|(&id, &block)| {
+                let knot = horizon_client::mobs::leash::knot_state(block);
+                let p = knot.position;
+                let half = knot.width / 2.0;
+                let bounds = Aabb::new(
+                    Vec3::new(p.x - half, p.y, p.z - half),
+                    Vec3::new(p.x + half, p.y + knot.height, p.z + half),
+                );
+                ray_box(eye, dir, self.entity_reach, bounds)
+                    .map(|d| (id as i32, d, [p.x, p.y, p.z]))
+            })
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+    }
+
+    /// Whether a use starts on an entity: the crosshair's `EntityHitResult`, or a fence knot.
+    /// Only a use: Horizon's attacks still go to the fence behind a knot.
+    pub(super) fn remote_use_targets_entity(&self) -> bool {
+        self.entity_targeted()
+            || self
+                .remote_knot_hit()
+                .is_some_and(|(_, d, _)| self.before_block(d))
+    }
+
     /// The nearest boat, minecart, item frame, armor stand or painting the
-    /// view hits within reach; also End crystals when attacking.
+    /// view hits within reach; also End crystals when attacking, and fence knots when using.
     pub(super) fn remote_object_hit(&self, attacking: bool) -> Option<ObjectHit> {
         let (eye, dir) = self.aim()?;
         let at = |d: f64| {
@@ -79,6 +111,9 @@ impl Game<'_> {
                 let p = i.position;
                 hits.push((id, d, [p.x, p.y, p.z]));
             }
+        }
+        if !attacking && let Some((id, d, p)) = self.remote_knot_hit() {
+            hits.push((id, d, p));
         }
         if attacking {
             // EndCrystal.isPickable: its 2 x 2 box, with the server's entity
@@ -158,10 +193,14 @@ impl Game<'_> {
             && let Some(r) = self.remote.as_mut()
         {
             r.first_passenger = passengers.first() == Some(&me);
+            r.passenger_index = passengers.iter().position(|&p| p == me).unwrap_or(0);
         }
         if passengers.contains(&me) {
             if self.riding != Some(vehicle_id) {
                 self.riding = Some(vehicle_id);
+                if let Some(c) = self.carts.iter_mut().find(|c| c.id == vehicle_id) {
+                    c.passenger_yaw_delta = 0.0;
+                }
                 if let Some(p) = self.player.as_mut() {
                     p.velocity = Vec3::ZERO;
                     p.fall_distance = 0.0;
@@ -170,7 +209,7 @@ impl Game<'_> {
         } else if self.riding == Some(vehicle_id) {
             // The server takes the player out, then teleports it.
             self.riding = None;
-            if let Some(m) = self.mobs.iter_mut().find(|m| m.id == vehicle_id) {
+            if let Some(m) = self.mob_index.get_mut(&mut self.mobs, vehicle_id) {
                 m.rider = None;
             }
             // HappyGhast.removePassenger: a still timeout of 10 (the server's
@@ -187,12 +226,36 @@ impl Game<'_> {
         }
     }
 
+    /// Camera.alignWithEntity's NewMinecartBehavior branch: sample the
+    /// vehicle's curved path at this frame, then apply the player's seat
+    /// attachment. Camera's own eye-height interpolation still runs afterwards.
+    pub(super) fn remote_minecart_rider_position(&self, partial: f32) -> Option<[f64; 3]> {
+        if !self.minecart_improvements() {
+            return None;
+        }
+        let id = self.riding?;
+        self.carts
+            .iter()
+            .find(|c| c.id == id && c.kind == super::minecarts::CartKind::Rideable)?;
+        let (mut position, _, _) = self.remote_minecart_lerp(id, partial)?;
+        position[1] += super::minecarts::SEAT;
+        Some(position)
+    }
+
     /// The local player's tick in its vehicle, in place of its own movement:
     /// false when it rides nothing.
-    pub(super) fn remote_ride(&mut self, keys: Keys) -> bool {
+    pub(super) fn remote_ride(&mut self, keys: Keys, sprint_window: i32) -> Result<bool> {
         let Some(id) = self.riding else {
-            return false;
+            return Ok(false);
         };
+        // LocalPlayer.aiStep runs its sprint decisions in a vehicle too: `canSprint` and
+        // this client's authority stand in for food (`isSprintingPossible`).
+        let (can_sprint, local) = self
+            .driven_mount()
+            .map_or((false, false), |m| (equine::can_sprint(m.species()), true));
+        if let Some(p) = self.player.as_mut() {
+            p.sprint_input_tick_riding(keys, sprint_window, can_sprint, local)?;
+        }
         if let Some(i) = self.mobs.iter().position(|m| m.id == id) {
             // LocalPlayer.aiStep: the jump bar charges while jump is held.
             let jump = self.charge_mount_jump(i, keys);
@@ -202,7 +265,7 @@ impl Game<'_> {
             // Another animal moves on the server with the rider's input
             // (PlayerInput); the rider sits where `positionRider` puts it.
             self.position_rider();
-            return true;
+            return Ok(true);
         }
         let seat = if let Some(c) = self.cushions.iter().find(|c| c.id == id) {
             // The seat does not move; the rider sits on the cushion.
@@ -222,6 +285,17 @@ impl Game<'_> {
             // In front of a mob that shares the boat.
             Some(self.player_boat_seat(i))
         } else {
+            // Minecart.positionRider runs on the client after the cart tick.
+            // The offset belongs to the cart, so switching vehicles cannot
+            // transfer the previous vehicle's pending turn.
+            let rotate =
+                self.minecart_improvements() && self.settings.file.bool("rotateWithMinecart");
+            if let Some(c) = self.carts.iter_mut().find(|c| c.id == id) {
+                c.passenger_yaw_delta = 0.0;
+                if rotate && c.kind == super::minecarts::CartKind::Rideable {
+                    c.rotate_passenger(&mut self.yaw);
+                }
+            }
             // A minecart: the server moves it, the rider sits in it.
             let cart = self.carts.iter().find(|c| c.id == id).map(|c| {
                 c.position
@@ -232,19 +306,27 @@ impl Game<'_> {
                 // riding it. Nothing with the id is in the level any more (it
                 // died, or the world it rode in was left), so the seat goes.
                 self.riding = None;
-                return false;
+                return Ok(false);
             }
             cart
         };
         if let Some(p) = self.player.as_mut() {
-            self.previous_position = p.position;
+            // The tick a rider takes its seat is a teleport (`Entity.moveTo`,
+            // which sets the old position too): the camera must not sweep from
+            // where the player stood to the cushion, boat or cart. The ticks
+            // after it move with the vehicle and interpolate as usual.
+            let first = self.posed_rider != self.riding;
+            self.posed_rider = self.riding;
             if let Some(v) = seat {
+                self.previous_position = if first { v } else { p.position };
                 p.position = v;
+            } else {
+                self.previous_position = p.position;
             }
             p.velocity = Vec3::ZERO;
             p.fall_distance = 0.0;
         }
-        true
+        Ok(true)
     }
 
     /// `LocalPlayer.tick` for a passenger: the boat it controls goes to the
@@ -278,7 +360,7 @@ impl Game<'_> {
     pub(super) fn remote_move_vehicle(&mut self, position: [f64; 3], yaw: f32) {
         let at = Vec3::new(position[0], position[1], position[2]);
         if let Some(id) = self.driven_mount().map(|m| m.id)
-            && let Some(m) = self.mobs.iter_mut().find(|m| m.id == id)
+            && let Some(m) = self.mob_index.get_mut(&mut self.mobs, id)
         {
             m.previous = at;
             m.position = at;
@@ -378,6 +460,10 @@ impl Game<'_> {
         }
         // playerJumpPendingScale waits for the ground.
         let pending = m.rider.map_or(0.0, |r| r.jump);
+        // The rider's sprint state, not the key: Camel.getRiddenSpeed reads
+        // `controller.isSprinting()`, which keeps the double-tapped sprint
+        // after the key is let go (`shouldStopRunSprinting` decides the end).
+        let sprinting = self.player.as_ref().is_some_and(|p| p.sprinting);
         m.rider = Some(equine::Rider {
             strafe,
             forward,
@@ -385,7 +471,7 @@ impl Game<'_> {
             pitch: self.pitch,
             jump: if jump > 0.0 { jump } else { pending },
             steer: false,
-            sprint: keys.sprint,
+            sprint: sprinting,
             jumping: keys.jump,
             client: false,
         });
@@ -489,7 +575,7 @@ mod tests {
             return;
         };
         assert!(!client_moves(&m, true), "ghast without a harness");
-        m.extra.head = Some("minecraft:white_happy_ghast_harness".into());
+        m.extra.body = Some("minecraft:white_happy_ghast_harness".into());
         assert!(client_moves(&m, true), "harnessed adult");
         assert!(!client_moves(&m, false), "behind another rider");
         m.extra.age = -1;

@@ -1,11 +1,10 @@
 //! BlockGetter.forEachBlockIntersectedBetween's ordered movement-path visits.
 use super::{Aabb, TraversalError, Vec3, clamp, floor_i32};
-use crate::position::BlockPos;
-use std::collections::HashSet;
+use crate::{fast_hash::FxHashSet, position::BlockPos};
 
 struct Sweep<'v, V> {
     visitor: &'v mut V,
-    visited: HashSet<i64>,
+    visited: FxHashSet<i64>,
     work: usize,
     limit: usize,
 }
@@ -81,7 +80,9 @@ pub fn sweep_intersected_blocks(
     }
     let mut sweep = Sweep {
         visitor: &mut visitor,
-        visited: HashSet::new(),
+        // Only asked whether it holds a position: the fast hash, sized for a
+        // short move's boxes.
+        visited: FxHashSet::with_capacity_and_hasher(32, Default::default()),
         work: 0,
         limit: max_work,
     };

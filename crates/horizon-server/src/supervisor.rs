@@ -75,6 +75,67 @@ pub(crate) fn retried<T>(mut attempt: impl FnMut() -> Result<T, String>) -> Resu
     result
 }
 
+/// `[prune_chunks]` (prune.rs): a dry run in the background while the game starts, a delete before it
+/// starts. `mode` goes back to "off" first, so a crash halfway never repeats it unasked.
+fn prune_chunks(shared: &Arc<Shared>, dir: &Path, config: &Config) {
+    use crate::prune;
+    let settings = config.prune_chunks.clone();
+    if let Err(e) = config::update(
+        dir,
+        "prune_chunks",
+        "mode",
+        toml::Value::String("off".into()),
+    ) {
+        return note(
+            shared,
+            "WARN",
+            &format!(
+                "Chunk prune not run: server.toml's prune_chunks.mode can't be set back to \"off\" ({e})"
+            ),
+        );
+    }
+    let world = dir.join(&config.world.name);
+    let threads = thread::available_parallelism().map_or(2, |n| n.get());
+    let finish = |shared: &Shared, dir: &Path, result: Result<prune::Outcome, String>| match result
+    {
+        Ok(outcome) => {
+            let at = match prune::write_report(dir, &outcome) {
+                Ok(path) => path.display().to_string(),
+                Err(e) => format!("not written: {e}"),
+            };
+            note(
+                shared,
+                "INFO",
+                &format!("Chunk prune: {} (report: {at})", outcome.summary),
+            );
+        }
+        Err(e) => note(
+            shared,
+            "ERROR",
+            &format!("Chunk prune stopped before deleting anything: {e}"),
+        ),
+    };
+    if settings.mode == prune::Mode::Delete {
+        note(
+            shared,
+            "INFO",
+            "Chunk prune: deleting barely visited chunks before the game starts (server.toml [prune_chunks])",
+        );
+        finish(shared, dir, prune::run(&world, &settings, true, threads));
+    } else {
+        note(
+            shared,
+            "INFO",
+            "Chunk prune: dry run in the background, nothing is deleted (server.toml [prune_chunks])",
+        );
+        let (shared, dir) = (shared.clone(), dir.to_owned());
+        thread::spawn(move || {
+            let result = prune::run(&world, &settings, false, (threads / 2).max(1));
+            finish(&shared, &dir, result);
+        });
+    }
+}
+
 enum Exit {
     /// Asked to stop, or the game ended by itself without an error (`stop` typed in its console, the EULA
     /// not agreed, the port taken): not restarted.
@@ -160,6 +221,9 @@ pub fn run(dir: &Path) -> Result<(), String> {
         let written = config
             .write_properties(dir)
             .map_err(|e| format!("server.properties: {e}"))?;
+        if config.prune_chunks.mode != crate::prune::Mode::Off {
+            prune_chunks(&shared, dir, &config);
+        }
         note(
             &shared,
             "INFO",
@@ -170,8 +234,15 @@ pub fn run(dir: &Path) -> Result<(), String> {
             ),
         );
         shared.set_phase(Phase::Starting);
-        let mut child = engine::spawn(&program, &resources, dir, config.engine.low_memory)
-            .map_err(|e| format!("{}: {e}", program.display()))?;
+        let transfers = config.transfer.engine_arg();
+        let mut child = engine::spawn(
+            &program,
+            &resources,
+            dir,
+            config.engine.low_memory,
+            transfers.as_deref(),
+        )
+        .map_err(|e| format!("{}: {e}", program.display()))?;
         {
             let mut state = shared.state.lock().unwrap();
             state.engine_pid = Some(child.id());
@@ -212,20 +283,35 @@ pub fn run(dir: &Path) -> Result<(), String> {
                 Exit::Restart => "the game was restarted before it was up".into(),
             };
             roll_back(&shared, dir, &config, &w, &reason);
-            if matches!(exit, Exit::Stopped)
-                && shared.state.lock().unwrap().phase == Phase::Stopping
-            {
+            if matches!(exit, Exit::Stopped) && shared.shutdown.load(Ordering::SeqCst) {
                 return Ok(());
             }
             continue;
         }
         let status = match exit {
-            Exit::Stopped => return Ok(()),
+            Exit::Stopped => {
+                if shared.shutdown.load(Ordering::SeqCst) {
+                    return Ok(());
+                }
+                shared.set_phase(Phase::Stopped);
+                if wait_stopped(&shared, &console) {
+                    continue;
+                }
+                return Ok(());
+            }
             Exit::NotUp => continue,
             Exit::Restart => {
                 let restore = shared.restore.lock().unwrap().take();
-                if let Some(name) = restore {
-                    match backup::restore(dir, &config, &name) {
+                if let Some((name, dimension)) = restore {
+                    let done = match &dimension {
+                        Some(d) => backup::restore_dimension(dir, &config, &name, d),
+                        None => backup::restore(dir, &config, &name),
+                    };
+                    let name = match &dimension {
+                        Some(d) => format!("{name} ({d})"),
+                        None => name,
+                    };
+                    match done {
                         Ok(Some(old)) => note(
                             &shared,
                             "INFO",
@@ -498,7 +584,11 @@ fn pump(shared: &Arc<Shared>, from: impl Read + Send + 'static, to_stderr: bool)
                         };
                         if up {
                             shared.emit("phase", serde_json::json!({ "phase": "running" }));
+                            crate::management::started(&shared);
                         }
+                    } else if line.contains("/INFO]: Stopping server") {
+                        // The game's own `stop` (a command in the game, not the supervisor's).
+                        crate::management::stopping(&shared);
                     }
                 }
                 shared.log_line(line);
@@ -645,9 +735,16 @@ fn supervise(
         }
         while let Ok(line) = console.try_recv() {
             let command = line.trim().trim_start_matches('/');
+            // `stop` on the supervisor's own stdin (`run` in a terminal, a hosting panel's console) ends the
+            // supervisor too, as before: such hosts wait for the process to exit. A `stop` that reaches the game
+            // another way (in game, RCON, `horizon-server cmd`) leaves the supervisor and its API up.
+            if command == "stop" {
+                shared.shutdown.store(true, Ordering::SeqCst);
+            }
             if command == "stop" && stopping.is_none() {
                 stopping = Some(Instant::now());
                 shared.set_phase(Phase::Stopping);
+                crate::management::stopping(shared);
             }
             if let Some(input) = stdin.as_mut()
                 && writeln!(input, "{line}")
@@ -658,13 +755,18 @@ fn supervise(
             }
         }
         let requests = signals::requests();
-        let asked = requests > handled || shared.stop.swap(false, Ordering::SeqCst);
+        let signal = requests > handled;
+        let asked = signal || shared.stop.swap(false, Ordering::SeqCst);
         handled = requests;
+        if signal {
+            shared.shutdown.store(true, Ordering::SeqCst);
+        }
         if shared.restart.swap(false, Ordering::SeqCst) && stopping.is_none() {
             restart = true;
             note(shared, "INFO", "Restarting the server");
             stopping = Some(Instant::now());
             shared.set_phase(Phase::Restarting);
+            crate::management::stopping(shared);
             send_stop(&mut stdin);
         }
         if asked {
@@ -673,6 +775,7 @@ fn supervise(
                 note(shared, "INFO", "Stopping the server");
                 stopping = Some(Instant::now());
                 shared.set_phase(Phase::Stopping);
+                crate::management::stopping(shared);
                 send_stop(&mut stdin);
             } else {
                 note(shared, "WARN", "Stopping the game at once, without saving");
@@ -702,6 +805,35 @@ fn supervise(
                 return Exit::Stopped;
             }
         }
+    }
+}
+
+/// Keeps the supervisor and its API alive after the game stops, until a start/restart or shutdown arrives.
+/// The supervisor's stdin still answers: `stop` ends it, `start` starts the game again.
+fn wait_stopped(shared: &Arc<Shared>, console: &mpsc::Receiver<String>) -> bool {
+    loop {
+        while let Ok(line) = console.try_recv() {
+            match line.trim().trim_start_matches('/') {
+                "stop" => shared.shutdown.store(true, Ordering::SeqCst),
+                "start" => shared.restart.store(true, Ordering::SeqCst),
+                _ => note(
+                    shared,
+                    "INFO",
+                    "The game is stopped: type `start` to start it, `stop` to end the server",
+                ),
+            }
+        }
+        if shared.shutdown.load(Ordering::SeqCst) {
+            return false;
+        }
+        if signals::requests() > 0 {
+            shared.shutdown.store(true, Ordering::SeqCst);
+            return false;
+        }
+        if shared.restart.swap(false, Ordering::SeqCst) {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(50));
     }
 }
 
@@ -878,6 +1010,74 @@ mod tests {
             json!({ "pid": 8, "game": { "tps": 20.0 } }),
         );
         assert!(up(&shared));
+    }
+
+    /// A stand-in for the game: a shell script, its stdin and output piped as the engine's are.
+    #[cfg(unix)]
+    fn game(script: &str) -> Child {
+        use std::process::{Command, Stdio};
+        Command::new("sh")
+            .args(["-c", script])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap()
+    }
+
+    #[cfg(unix)]
+    /// What the supervisor does once the game has stopped, on another thread: `false` when it ends, `true`
+    /// when it starts the game again; nothing comes while it waits.
+    fn after_stop(shared: &Arc<Shared>) -> mpsc::Receiver<bool> {
+        let (console, lines) = mpsc::channel::<String>();
+        let (done, ended) = mpsc::channel();
+        let shared = shared.clone();
+        thread::spawn(move || {
+            let _console = console;
+            let _ = done.send(wait_stopped(&shared, &lines));
+        });
+        ended
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_management_stop_ends_the_supervisor_and_a_stop_in_game_keeps_it() {
+        let dir = std::env::temp_dir().join(format!("horizon-server-stop-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (_console, console) = mpsc::channel();
+        let stop = |shared: &Shared| {
+            let answer =
+                crate::management_methods::call(shared, 1, "server/stop", &serde_json::Value::Null);
+            assert_eq!(answer.ok(), Some(json!(true)));
+        };
+
+        // vanilla's `server/stop`: the game saves and stops, then the process exits.
+        let shared = Shared::with_install(&dir, None);
+        let mut child = game("read line && [ \"$line\" = stop ]");
+        let asked = {
+            let shared = shared.clone();
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(100));
+                stop(&shared);
+            })
+        };
+        let exit = supervise(&shared, &mut child, &console, &mut None);
+        asked.join().unwrap();
+        assert!(matches!(exit, Exit::Stopped));
+        let ended = after_stop(&shared);
+        assert_eq!(ended.recv_timeout(Duration::from_secs(5)), Ok(false));
+
+        // A game that stopped by itself (`stop` in game, through RCON) leaves the supervisor and its API up
+        // (#8245) until a stop or a start comes.
+        let shared = Shared::with_install(&dir, None);
+        let mut child = game("exit 0");
+        let exit = supervise(&shared, &mut child, &console, &mut None);
+        assert!(matches!(exit, Exit::Stopped));
+        let ended = after_stop(&shared);
+        assert!(ended.recv_timeout(Duration::from_millis(300)).is_err());
+        stop(&shared);
+        assert_eq!(ended.recv_timeout(Duration::from_secs(5)), Ok(false));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

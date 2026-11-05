@@ -1,25 +1,65 @@
-//! Horizon's graphics settings screens, Simple, Advanced and HDR: which settings
-//! they show, in what groups, with what description and cost, and their
-//! input. How they look comes from `graphics_style`.
+//! Horizon's graphics settings screen: every video setting, vanilla's and
+//! Horizon's, on one list of pages (General, Quality, Performance, Shaders,
+//! Advanced, HDR) with a page list beside it, a search field over it and a description
+//! of the hovered setting with its cost. Which settings it shows, in what
+//! pages, with what description and cost, and its input live here; how it
+//! looks comes from `graphics_style`.
 use crate::{
     graphics::{
         EntityCullingMode, FarDetail, FrameGeneration, GraphicsApi, LeafCullingMode, Overlay,
-        Pacing, PresentMode, Preset, Upscaling,
+        Pacing, ParticleCullingMode, PresentMode, Preset, Upscaling,
     },
-    graphics_style::{Cost, STYLE},
+    graphics_style::{self as style, Cost},
     hud::{HudAtlas, HudBatch},
     lang,
     settings::{Opt, Settings},
+    settings_shell::{self as shell, Columns},
     text::Text,
     ui,
 };
 
+/// The screen's pages, in its order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Level {
-    Simple,
+pub enum Page {
+    General,
+    Quality,
+    Performance,
+    /// Shader packs, either kind (`shader_pack_list`), and what they cost.
+    Shaders,
     Advanced,
-    /// HDR output's own settings, opened from Advanced while HDR is on.
+    /// HDR output's own settings.
     Hdr,
+}
+impl Page {
+    pub const ALL: [Page; 6] = [
+        Page::General,
+        Page::Quality,
+        Page::Performance,
+        Page::Shaders,
+        Page::Advanced,
+        Page::Hdr,
+    ];
+    pub fn name(self) -> &'static str {
+        match self {
+            Page::General => "General",
+            Page::Quality => "Quality",
+            Page::Performance => "Performance",
+            Page::Shaders => "Shaders",
+            Page::Advanced => "Advanced",
+            Page::Hdr => "HDR",
+        }
+    }
+    /// What the page holds, in the strip while no setting is pointed at.
+    pub fn about(self) -> &'static str {
+        match self {
+            Page::General => "How far you see, the window and the HUD.",
+            Page::Quality => "The sky and weather, lighting, textures and the image.",
+            Page::Performance => "Chunk loading, culling and power use.",
+            Page::Shaders => "Shader packs, Horizon's and shaders/ folder ones, and their options.",
+            Page::Advanced => "How frames reach the screen, and the performance overlay.",
+            Page::Hdr => "Brighter-than-white output on an HDR display.",
+        }
+    }
 }
 
 /// Horizon's own settings (`graphics::Graphics`).
@@ -28,9 +68,21 @@ pub enum H {
     Preset,
     LodDistance,
     FarDetail,
+    BlueMapAutoDetect,
+    BlueMapRadius,
     CaveCulling,
+    GpuCulling,
     EntityCulling,
+    EntityCullingPrecheck,
+    ParticleCulling,
     LeafCulling,
+    CacheShulkerBoxes,
+    CacheSigns,
+    CacheDecoratedPots,
+    CacheBells,
+    CacheChests,
+    CacheBanners,
+    CacheCopperGolemStatues,
     ChunkUpdates,
     UploadBudget,
     Sky,
@@ -48,8 +100,6 @@ pub enum H {
     ScreenshotQuality,
     FrameGeneration,
     Hdr,
-    /// Opens `Level::Hdr`.
-    HdrSettings,
     HdrBlackLevel,
     /// Binds `Graphics::hdr_key`.
     HdrKey,
@@ -58,327 +108,536 @@ pub enum H {
     HdrPeak,
     HdrPaperWhite,
     HdrUiBrightness,
+    HdrLighting,
     BatteryMode,
     ShadowCache,
+    /// Opens the shader pack list (`options_ui::Page::ShaderPacks`).
+    ShaderPacks,
     GraphicsApi,
+    TranslucentBatching,
+    HdrSmoothGradients,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Item {
     Vanilla(Opt),
     Horizon(H),
+    /// A Horizon extra that changes the picture (`extras::Item`, kept in `horizon-extras.txt`).
+    Extra(crate::extras::Item),
 }
 
+#[derive(Clone, Copy)]
 pub struct Setting {
     pub item: Item,
     pub cost: Cost,
     pub text: &'static str,
 }
-pub enum Row {
-    Header(&'static str),
-    Setting(Setting),
-}
-fn v(opt: Opt, cost: Cost, text: &'static str) -> Row {
-    Row::Setting(Setting {
+fn v(opt: Opt, cost: Cost, text: &'static str) -> Setting {
+    Setting {
         item: Item::Vanilla(opt),
         cost,
         text,
-    })
+    }
 }
-fn h(opt: H, cost: Cost, text: &'static str) -> Row {
-    Row::Setting(Setting {
+fn h(opt: H, cost: Cost, text: &'static str) -> Setting {
+    Setting {
         item: Item::Horizon(opt),
         cost,
         text,
-    })
-}
-
-/// The settings of a level, grouped under headers (Simple has no headers).
-pub fn rows(level: Level) -> Vec<Row> {
-    use Cost::*;
-    let render = v(
-        Opt::RenderDistance,
-        High,
-        "Full-detail terrain range. LOD Distance can extend local worlds farther.",
-    );
-    let lod = h(
-        H::LodDistance,
-        Medium,
-        "Coarse distant terrain in local worlds. Integrated GPUs stop at 128 chunks.",
-    );
-    // Suggested, never switched on, where far terrain costs the GPU most.
-    let far = h(
-        H::FarDetail,
-        Medium,
-        if crate::graphics::reduced_far_detail_suggested() {
-            "Reduced draws far terrain coarser: faster on this integrated GPU."
-        } else {
-            "Reduced draws far terrain coarser, for GPUs it slows down."
-        },
-    );
-    let fov = v(
-        Opt::Fov,
-        Low,
-        "Field of view. Wider shows more terrain at once.",
-    );
-    let fps = v(
-        Opt::MaxFps,
-        None,
-        "Caps frames per second; a cap saves power and heat.",
-    );
-    let vsync = v(
-        Opt::Vsync,
-        None,
-        "Waits for the display's refresh: no tearing, a little latency.",
-    );
-    let gui = v(Opt::GuiScale, None, "Size of menus and the HUD.");
-    let preset = h(
-        H::Preset,
-        None,
-        "Sets the options below together. Changing one makes it Custom.",
-    );
-    let mut rows = match level {
-        Level::Simple => vec![preset, render, lod, far, fov, fps, vsync, gui],
-        Level::Hdr => vec![
-            Row::Header("HDR"),
-            h(
-                H::Hdr,
-                None,
-                "Lava, fire and sunlight shine brighter than white. Needs an HDR display.",
-            ),
-            h(
-                H::HdrCalibrate,
-                None,
-                "Sets the three below full screen, one test picture at a time.",
-            ),
-            h(
-                H::HdrBlackLevel,
-                None,
-                "Your display's darkest black. 0 for OLED; LCDs glow a little.",
-            ),
-            h(
-                H::HdrPeak,
-                None,
-                "How bright highlights get. Auto: the peak your system reports.",
-            ),
-            h(
-                H::HdrPaperWhite,
-                None,
-                "How bright white paper and menus look. Auto: your desktop's white.",
-            ),
-            h(
-                H::HdrUiBrightness,
-                None,
-                "How bright the HUD and menus are, against paper white.",
-            ),
-            h(
-                H::HdrKey,
-                None,
-                "A key that opens this screen from the game. Not bound at first.",
-            ),
-        ],
-        Level::Advanced => vec![
-            Row::Header("Rendering"),
-            render,
-            lod,
-            far,
-            v(
-                Opt::SimulationDistance,
-                Medium,
-                "How far mobs, crops and machines keep working. CPU time.",
-            ),
-            v(
-                Opt::EntityDistance,
-                Medium,
-                "How far away mobs and items are drawn, as a share of normal.",
-            ),
-            h(
-                H::ChunkUpdates,
-                Low,
-                "Meshed sections uploaded per frame. Lower is smoother while loading.",
-            ),
-            Row::Header("Culling"),
-            h(
-                H::CaveCulling,
-                Saves,
-                "Skips terrain hidden behind closed sections. Off costs a lot.",
-            ),
-            h(
-                H::EntityCulling,
-                None,
-                "Hides models behind opaque blocks. Async checks off-thread; entities tick.",
-            ),
-            h(
-                H::LeafCulling,
-                Saves,
-                "Draws or drops leaf faces inside canopies. Off keeps vanilla's fancy leaves.",
-            ),
-            Row::Header("Quality"),
-            v(
-                Opt::SmoothLighting,
-                Low,
-                "Soft shadows in corners. Costs chunk building time only.",
-            ),
-            v(
-                Opt::Mipmaps,
-                None,
-                "Smaller copies of block textures for distant terrain: less shimmer.",
-            ),
-            v(
-                Opt::BiomeBlend,
-                Low,
-                "Blends grass and water colours across biomes when building chunks.",
-            ),
-            v(
-                Opt::Clouds,
-                Low,
-                "Cloud layer: off, flat (fast) or 3D (fancy).",
-            ),
-            v(Opt::CloudRange, Low, "How far clouds reach, in chunks."),
-            h(H::Sky, Low, "Draws the sky, sun, moon and stars."),
-            h(
-                H::Fog,
-                None,
-                "Distance fog. Off shows the edge of the loaded world.",
-            ),
-            h(H::Weather, High, "Draws rain and snow."),
-            v(
-                Opt::WeatherRadius,
-                Medium,
-                "How far rain and snow fall around you.",
-            ),
-            v(Opt::Particles, Medium, "How many particles effects spawn."),
-            v(
-                Opt::EntityShadows,
-                Low,
-                "Round shadows under mobs and items.",
-            ),
-            v(
-                Opt::CutoutLeaves,
-                Medium,
-                "Leaves with see-through gaps. Off draws them solid.",
-            ),
-            v(
-                Opt::ImprovedTransparency,
-                Medium,
-                "Sorts water and glass more exactly behind each other.",
-            ),
-            v(
-                Opt::ChunkBuilder,
-                Low,
-                "Which chunk rebuilds wait for the frame: none, nearby or yours.",
-            ),
-            h(
-                H::AnimatedTextures,
-                Low,
-                "Animates water, lava, fire and other moving textures.",
-            ),
-            h(
-                H::DitherCutoutMips,
-                Low,
-                "Keeps fine plants in high-res packs from fading far away.",
-            ),
-            Row::Header("Display"),
-            fov,
-            fps,
-            vsync,
-            h(
-                H::ResolutionScale,
-                High,
-                "World pixels per screen pixel. Below 100% is faster on the GPU.",
-            ),
-            h(
-                H::Antialiasing,
-                Medium,
-                "Smooths jagged edges. FXAA: softer. TAA: smoothest, moving things may trail.",
-            ),
-            h(
-                H::Upscaling,
-                High,
-                "Renders the world smaller and rebuilds it with TAA. Faster, softer.",
-            ),
-            h(
-                H::ScreenshotQuality,
-                None,
-                "F2 screenshots at this many times the game's resolution. Higher takes longer.",
-            ),
-            h(
-                H::FrameGeneration,
-                Medium,
-                "Shows a made-up frame between each two real ones: smoother, a little more lag.",
-            ),
-            h(
-                H::HdrSettings,
-                None,
-                "HDR output on an HDR display: lava, fire and sunlight shine brighter.",
-            ),
-            h(
-                H::PresentMode,
-                None,
-                "How frames reach the screen while VSync is off.",
-            ),
-            h(
-                H::Pacing,
-                None,
-                "Efficient sleeps until the next frame; Precise spins, like vanilla.",
-            ),
-            v(Opt::Fullscreen, None, "Fills the screen (borderless)."),
-            gui,
-            v(Opt::Gamma, None, "Brightens dark places."),
-            v(
-                Opt::InactivityFps,
-                None,
-                "Lowers the frame rate when minimised, or idle too.",
-            ),
-            Row::Header("Preferences"),
-            v(Opt::ViewBobbing, None, "Sways the view while walking."),
-            v(Opt::ChunkFade, None, "Fades newly loaded chunks in."),
-            v(Opt::Vignette, None, "Darkens the screen's edges."),
-            v(Opt::Autosave, None, "Shows when the world saves."),
-            v(Opt::AttackIndicator, None, "Shows attack cooldown."),
-            Row::Header("Performance"),
-            h(
-                H::BatteryMode,
-                None,
-                "60 FPS cap (30 in menus or unfocused), half the workers: less power.",
-            ),
-            h(
-                H::ShadowCache,
-                Saves,
-                "Reuses the pack shadow map when sun, view and world match. Off by default.",
-            ),
-            h(
-                H::Workers,
-                None,
-                "Threads that generate, light and mesh chunks. Next start.",
-            ),
-            h(
-                H::GraphicsApi,
-                None,
-                "Vulkan, then DirectX 12 (Windows) or OpenGL (Linux) where it fails. Next start.",
-            ),
-            h(
-                H::UploadBudget,
-                Low,
-                "Mesh data sent to the GPU per frame. Lower is smoother while loading.",
-            ),
-            Row::Header("Overlay"),
-            h(
-                H::Overlay,
-                None,
-                "Frame rate and frame times over the game, with a graph.",
-            ),
-        ],
-    };
-    // Only Windows and Linux have more than one graphics API.
-    if cfg!(target_os = "macos") {
-        rows.retain(
-            |row| !matches!(row, Row::Setting(s) if s.item == Item::Horizon(H::GraphicsApi)),
-        );
     }
-    rows
+}
+/// An extra's row: its description is its own language key.
+fn e(item: crate::extras::Item, cost: Cost) -> Setting {
+    Setting {
+        item: Item::Extra(item),
+        cost,
+        text: item.description_key(),
+    }
 }
 
+/// Every page's settings, in named groups of related rows.
+pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
+    use Cost::*;
+    // Suggested, never switched on, where far terrain costs the GPU most.
+    let far = if crate::graphics::reduced_far_detail_suggested() {
+        "Reduced draws far terrain coarser: faster on this integrated GPU."
+    } else {
+        "Reduced draws far terrain coarser, for GPUs it slows down."
+    };
+    let mut pages = vec![
+        (
+            Page::General,
+            vec![
+                (
+                    "Preset",
+                    vec![
+                        h(
+                            H::Preset,
+                            None,
+                            "Sets the options below together. Changing one makes it Custom.",
+                        ),
+                        v(
+                            Opt::Preset,
+                            None,
+                            "Vanilla's own preset: sets only vanilla's options, as Minecraft does.",
+                        ),
+                    ],
+                ),
+                (
+                    "Distance",
+                    vec![
+                        v(
+                            Opt::RenderDistance,
+                            High,
+                            "Full-detail terrain range. LOD Distance can extend local worlds farther.",
+                        ),
+                        h(
+                            H::LodDistance,
+                            Medium,
+                            "Coarse distant terrain in local worlds. Integrated GPUs stop at 128 chunks.",
+                        ),
+                        h(H::FarDetail, Medium, far),
+                        h(
+                            H::BlueMapAutoDetect,
+                            None,
+                            "On servers, finds their BlueMap web map for far terrain. Next join.",
+                        ),
+                        h(
+                            H::BlueMapRadius,
+                            None,
+                            "How far around you BlueMap tiles are downloaded. Next join.",
+                        ),
+                        v(
+                            Opt::SimulationDistance,
+                            Medium,
+                            "How far mobs, crops and machines keep working. CPU time.",
+                        ),
+                        v(Opt::Gamma, None, "Brightens dark places."),
+                    ],
+                ),
+                (
+                    "Display",
+                    vec![
+                        v(Opt::GuiScale, None, "Size of menus and the HUD."),
+                        v(Opt::Fullscreen, None, "Fills the screen (borderless)."),
+                        v(
+                            Opt::ExclusiveFullscreen,
+                            None,
+                            "Fullscreen takes the display over, at the mode below.",
+                        ),
+                        v(
+                            Opt::ExclusiveMode,
+                            None,
+                            "The display mode exclusive fullscreen uses. Applies when you leave.",
+                        ),
+                        v(
+                            Opt::Vsync,
+                            None,
+                            "Waits for the display's refresh: no tearing, a little latency.",
+                        ),
+                        v(
+                            Opt::MaxFps,
+                            None,
+                            "Caps frames per second; a cap saves power and heat.",
+                        ),
+                        v(
+                            Opt::InactivityFps,
+                            None,
+                            "Lowers the frame rate when minimised, or idle too.",
+                        ),
+                    ],
+                ),
+                (
+                    "Interface",
+                    vec![
+                        v(Opt::MenuBlur, Low, "Blurs the world behind menus."),
+                        v(Opt::AttackIndicator, None, "Shows attack cooldown."),
+                        v(Opt::Autosave, None, "Shows when the world saves."),
+                    ],
+                ),
+            ],
+        ),
+        (
+            Page::Quality,
+            vec![
+                (
+                    "Sky and weather",
+                    vec![
+                        v(
+                            Opt::Clouds,
+                            Low,
+                            "Cloud layer: off, flat (fast) or 3D (fancy).",
+                        ),
+                        v(Opt::CloudRange, Low, "How far clouds reach, in chunks."),
+                        h(H::Sky, Low, "Draws the sky, sun, moon and stars."),
+                        h(
+                            H::Fog,
+                            None,
+                            "Distance fog. Off shows the edge of the loaded world.",
+                        ),
+                        h(H::Weather, High, "Draws rain and snow."),
+                        v(
+                            Opt::WeatherRadius,
+                            Medium,
+                            "How far rain and snow fall around you.",
+                        ),
+                        v(Opt::Particles, Medium, "How many particles effects spawn."),
+                        e(crate::extras::Item::HideBlockParticles, None),
+                    ],
+                ),
+                (
+                    "Lighting and entities",
+                    vec![
+                        v(
+                            Opt::SmoothLighting,
+                            Low,
+                            "Soft shadows in corners. Costs chunk building time only.",
+                        ),
+                        v(
+                            Opt::BiomeBlend,
+                            Low,
+                            "Blends grass and water colours across biomes when building chunks.",
+                        ),
+                        v(
+                            Opt::EntityDistance,
+                            Medium,
+                            "How far away mobs and items are drawn, as a share of normal.",
+                        ),
+                        v(
+                            Opt::EntityShadows,
+                            Low,
+                            "Round shadows under mobs and items.",
+                        ),
+                        v(Opt::Vignette, None, "Darkens the screen's edges."),
+                        v(Opt::ChunkFade, None, "Fades newly loaded chunks in."),
+                        e(crate::extras::Item::DynamicLights, Low),
+                        e(crate::extras::Item::Fullbright, None),
+                    ],
+                ),
+                (
+                    "Textures",
+                    vec![
+                        v(
+                            Opt::Mipmaps,
+                            None,
+                            "Smaller copies of block textures for distant terrain: less shimmer.",
+                        ),
+                        v(
+                            Opt::TextureFiltering,
+                            Low,
+                            "How textures are sampled: sharper at a slant with Anisotropic.",
+                        ),
+                        v(
+                            Opt::MaxAnisotropy,
+                            Low,
+                            "How far Anisotropic filtering goes. Higher is sharper at a slant.",
+                        ),
+                        v(
+                            Opt::CutoutLeaves,
+                            Medium,
+                            "Leaves with see-through gaps. Off draws them solid.",
+                        ),
+                        v(
+                            Opt::ImprovedTransparency,
+                            Medium,
+                            "Sorts water and glass more exactly behind each other.",
+                        ),
+                        h(
+                            H::AnimatedTextures,
+                            Low,
+                            "Animates water, lava, fire and other moving textures.",
+                        ),
+                        h(
+                            H::DitherCutoutMips,
+                            Low,
+                            "Keeps fine plants in high-res packs from fading far away.",
+                        ),
+                    ],
+                ),
+                (
+                    "Image",
+                    vec![
+                        h(
+                            H::ResolutionScale,
+                            High,
+                            "World pixels per screen pixel. Below 100% is faster on the GPU.",
+                        ),
+                        h(
+                            H::Antialiasing,
+                            Medium,
+                            "Smooths jagged edges. FXAA: softer. TAA: smoothest, moving things may trail.",
+                        ),
+                        h(
+                            H::Upscaling,
+                            High,
+                            "Renders the world smaller and rebuilds it with TAA. Faster, softer.",
+                        ),
+                        h(
+                            H::ScreenshotQuality,
+                            None,
+                            "F2 screenshots at this many times the game's resolution. Higher takes longer.",
+                        ),
+                        h(
+                            H::FrameGeneration,
+                            Medium,
+                            "Shows a made-up frame between each two real ones: smoother, a little more lag.",
+                        ),
+                    ],
+                ),
+            ],
+        ),
+        (
+            Page::Performance,
+            vec![
+                (
+                    "Chunk loading",
+                    vec![
+                        v(
+                            Opt::ChunkBuilder,
+                            Low,
+                            "Which chunk rebuilds wait for the frame: none, nearby or yours.",
+                        ),
+                        h(
+                            H::ChunkUpdates,
+                            Low,
+                            "Meshed sections uploaded per frame. Lower is smoother while loading.",
+                        ),
+                        h(
+                            H::UploadBudget,
+                            Low,
+                            "Mesh data sent to the GPU per frame. Lower is smoother while loading.",
+                        ),
+                        h(
+                            H::Workers,
+                            None,
+                            "Threads that generate, light and mesh chunks. Next start.",
+                        ),
+                    ],
+                ),
+                (
+                    "Culling",
+                    vec![
+                        h(
+                            H::CaveCulling,
+                            Saves,
+                            "Skips terrain hidden behind closed sections. Off costs a lot.",
+                        ),
+                        h(
+                            H::GpuCulling,
+                            Saves,
+                            "Culls nearby terrain on the GPU: less CPU at high render distance, more GPU.",
+                        ),
+                        h(
+                            H::EntityCulling,
+                            None,
+                            "Hides entities behind opaque blocks.",
+                        ),
+                        h(
+                            H::ParticleCulling,
+                            Saves,
+                            "Skips particles outside the view, below one pixel or behind terrain.",
+                        ),
+                        h(
+                            H::EntityCullingPrecheck,
+                            Saves,
+                            "Runs the mob AABB precheck after this many loaded mobs. Zero disables it.",
+                        ),
+                        h(
+                            H::LeafCulling,
+                            Saves,
+                            "Draws or drops leaf faces inside canopies. Off keeps vanilla's fancy leaves.",
+                        ),
+                    ],
+                ),
+                (
+                    "Block Entities",
+                    vec![
+                        h(
+                            H::CacheShulkerBoxes,
+                            Saves,
+                            "Reuses settled boxes; lid movement stays animated.",
+                        ),
+                        h(
+                            H::CacheSigns,
+                            Saves,
+                            "Reuses sign text until text, light, or font changes.",
+                        ),
+                        h(
+                            H::CacheDecoratedPots,
+                            Saves,
+                            "Reuses still pots; break wobble and sherd changes redraw.",
+                        ),
+                        h(
+                            H::CacheBells,
+                            Saves,
+                            "Reuses still bells; ringing stays animated.",
+                        ),
+                        h(
+                            H::CacheChests,
+                            Saves,
+                            "Reuses closed chests; moving lids stay animated.",
+                        ),
+                        h(
+                            H::CacheBanners,
+                            Saves,
+                            "Reuses poles; flags and pattern layers still update.",
+                        ),
+                        h(
+                            H::CacheCopperGolemStatues,
+                            Saves,
+                            "Reuses statue geometry until its block state changes.",
+                        ),
+                    ],
+                ),
+                (
+                    "Power",
+                    vec![h(
+                        H::BatteryMode,
+                        None,
+                        "60 FPS cap (30 in menus or unfocused), half the workers: less power.",
+                    )],
+                ),
+            ],
+        ),
+        (
+            Page::Shaders,
+            vec![(
+                "Shader packs",
+                vec![
+                    h(
+                        H::ShaderPacks,
+                        High,
+                        "Picks a shader pack, Horizon's or a shaders/ folder one, and sets its options.",
+                    ),
+                    h(
+                        H::ShadowCache,
+                        Saves,
+                        "Reuses the pack shadow map when sun, view and world match. Off by default.",
+                    ),
+                ],
+            )],
+        ),
+        (
+            Page::Advanced,
+            vec![
+                (
+                    "Frames",
+                    vec![
+                        h(
+                            H::PresentMode,
+                            None,
+                            "How frames reach the screen while VSync is off.",
+                        ),
+                        h(
+                            H::Pacing,
+                            None,
+                            "Efficient sleeps until the next frame; Precise spins, like vanilla.",
+                        ),
+                        h(
+                            H::GraphicsApi,
+                            None,
+                            "Vulkan, then DirectX 12 (Windows) or OpenGL (Linux) where it fails. Next start.",
+                        ),
+                        h(
+                            H::TranslucentBatching,
+                            Saves,
+                            "Water and glass in one buffer: fewer draw calls, a bit more VRAM. Next start.",
+                        ),
+                    ],
+                ),
+                (
+                    "Overlay",
+                    vec![h(
+                        H::Overlay,
+                        None,
+                        "Frame rate and frame times over the game, with a graph.",
+                    )],
+                ),
+            ],
+        ),
+        (
+            Page::Hdr,
+            vec![
+                (
+                    "Output",
+                    vec![
+                        h(
+                            H::Hdr,
+                            None,
+                            "Lava, fire and sunlight shine brighter than white. Needs an HDR display.",
+                        ),
+                        h(
+                            H::HdrSmoothGradients,
+                            Low,
+                            "16-bit frame: dark skies and shadows don't band. A bit more VRAM. Next start.",
+                        ),
+                        h(
+                            H::HdrCalibrate,
+                            None,
+                            "Sets the three below full screen, one test picture at a time.",
+                        ),
+                    ],
+                ),
+                (
+                    "Brightness",
+                    vec![
+                        h(
+                            H::HdrBlackLevel,
+                            None,
+                            "Your display's darkest black. 0 for OLED; LCDs glow a little.",
+                        ),
+                        h(
+                            H::HdrPeak,
+                            None,
+                            "How bright highlights get. Auto: the peak your system reports.",
+                        ),
+                        h(
+                            H::HdrPaperWhite,
+                            None,
+                            "How bright white paper and menus look. Auto: your desktop's white.",
+                        ),
+                        h(
+                            H::HdrUiBrightness,
+                            None,
+                            "How bright the HUD and menus are, against paper white.",
+                        ),
+                        h(
+                            H::HdrLighting,
+                            None,
+                            "Light sources, the sun and sunlight shine past white. Off: just as SDR.",
+                        ),
+                    ],
+                ),
+                (
+                    "Shortcut",
+                    vec![h(
+                        H::HdrKey,
+                        None,
+                        "A key that opens this screen from the game. Not bound at first.",
+                    )],
+                ),
+            ],
+        ),
+    ];
+    // Only Windows and Linux have more than one graphics API, translucent batching (Metal
+    // draws flat) and GPU culling (Metal draws no count the GPU wrote).
+    if cfg!(target_os = "macos") {
+        for (_, groups) in &mut pages {
+            for (_, rows) in groups {
+                rows.retain(|r| {
+                    !matches!(
+                        r.item,
+                        Item::Horizon(H::GraphicsApi | H::TranslucentBatching | H::GpuCulling)
+                    )
+                });
+            }
+        }
+    }
+    pages
+}
+
+/// BlueMap download radii, in chunks.
+const BLUE_MAP_RADII: [u32; 5] = [16, 32, 64, 128, 256];
 const UPLOAD_STEPS: [u32; 8] = [0, 256, 512, 1024, 2048, 4096, 8192, 16384];
 /// What the LOD Distance slider stops at, in chunks: off, then each doubling
 /// up to the whole world.
@@ -402,28 +661,6 @@ const LOD_STEPS: [u32; 18] = [
     2097152,
     crate::lod::MAX_CHUNKS,
 ];
-
-/// Horizon's graphics screens supplement the vanilla options on Video Settings.
-/// Upscaling is only there while TAA is, which does it.
-fn extra_rows(level: Level, settings: &Settings) -> Vec<Row> {
-    let mut rows = rows(level);
-    rows.retain(|row| !matches!(row, Row::Setting(s) if matches!(s.item, Item::Vanilla(_))));
-    if !settings.horizon.taa {
-        rows.retain(|row| !matches!(row, Row::Setting(s) if s.item == Item::Horizon(H::Upscaling)));
-    }
-    // Drop headings whose settings were all on the parent screens.
-    let mut has_setting = false;
-    rows.reverse();
-    rows.retain(|row| match row {
-        Row::Setting(_) => {
-            has_setting = true;
-            true
-        }
-        Row::Header(_) => std::mem::take(&mut has_setting),
-    });
-    rows.reverse();
-    rows
-}
 
 /// Whether the system set HDR up for the display, and whether the player kept it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -462,8 +699,16 @@ fn description(item: Item, s: &Settings, text: &'static str) -> &'static str {
         (Item::Horizon(H::HdrPeak | H::HdrPaperWhite), Setup::Automatic | Setup::Changed) => {
             "Set up for your display. Leave on Auto unless it looks wrong."
         }
+        (Item::Horizon(H::EntityCulling), _) => match s.horizon.entity_culling {
+            EntityCullingMode::Off => "No entity occlusion culling.",
+            EntityCullingMode::Synchronous => "CPU occlusion test runs this frame.",
+            EntityCullingMode::Asynchronous => "Occlusion checks run on a worker thread.",
+        },
         (Item::Horizon(H::LeafCulling), _) => match s.horizon.leaf_culling {
             LeafCullingMode::Off => "Every leaf face. Vanilla's fancy leaves.",
+            LeafCullingMode::Hidden => {
+                "Drops leaf faces behind two leaf layers: faster, same crowns."
+            }
             LeafCullingMode::Solid => {
                 "Leaves fully inside a canopy draw solid: fewer see-through layers."
             }
@@ -471,6 +716,15 @@ fn description(item: Item, s: &Settings, text: &'static str) -> &'static str {
                 "Leaves with one open side draw solid too: faster, chunkier edges."
             }
             LeafCullingMode::Hollow => "Drops faces between leaves: faster, but gaps look through.",
+        },
+        (Item::Horizon(H::ParticleCulling), _) => match s.horizon.particle_culling {
+            ParticleCullingMode::Off => "Draws every particle.",
+            ParticleCullingMode::Synchronous => {
+                "Skips offscreen, subpixel and terrain-hidden particles."
+            }
+            ParticleCullingMode::Asynchronous => {
+                "Skips offscreen, subpixel and terrain-hidden particles with less render-thread work."
+            }
         },
         _ => text,
     }
@@ -480,9 +734,25 @@ fn on_off(on: bool) -> String {
 }
 /// A control's caption and its value, both through the language table: Horizon's captions are
 /// English sentences, and some of the values ("Off", "12 chunks") are words too.
+/// "Caption: value" (`options.generic_value`), both looked up in the language table.
 fn labelled(caption: &str, value: impl std::fmt::Display) -> Text {
     let value = value.to_string();
-    Text::literal(format!("{}: {}", lang::get(caption), lang::get(&value)))
+    Text::option_name_value(
+        Text::literal(lang::get(caption)),
+        Text::literal(lang::get(&value)),
+    )
+}
+/// "Caption: 50%" (`options.percent_value`, Options.percentValueLabel): French and German put a
+/// space before the `%`.
+fn labelled_percent(caption: &str, percent: u32) -> Text {
+    Text::translate_with_fallback(
+        "options.percent_value",
+        "%s: %s%%",
+        &[
+            Text::literal(lang::get(caption)),
+            Text::literal(percent.to_string()),
+        ],
+    )
 }
 
 impl H {
@@ -490,6 +760,7 @@ impl H {
         let g = &s.horizon;
         match self {
             H::ChunkUpdates => Some(g.chunk_updates as f32 / 64.0),
+            H::EntityCullingPrecheck => Some(g.entity_culling_precheck as f32 / 512.0),
             H::UploadBudget => {
                 let i = UPLOAD_STEPS
                     .iter()
@@ -521,6 +792,7 @@ impl H {
     pub fn slider_steps(self) -> Option<u32> {
         match self {
             H::ChunkUpdates => Some(64),
+            H::EntityCullingPrecheck => Some(32),
             H::UploadBudget => Some((UPLOAD_STEPS.len() - 1) as u32),
             H::Workers => Some(max_workers()),
             H::ResolutionScale => Some(30),
@@ -540,9 +812,38 @@ impl H {
                 n => labelled("LOD Distance", lang::tr("%s chunks", &[&n])),
             },
             H::FarDetail => labelled("Far Detail", g.far_detail.label()),
+            H::BlueMapAutoDetect => labelled("Find BlueMap", on_off(g.blue_map.auto_detect)),
+            H::BlueMapRadius => labelled(
+                "BlueMap Radius",
+                lang::tr("%s chunks", &[&g.blue_map.radius_chunks()]),
+            ),
             H::CaveCulling => labelled("Cave Culling", on_off(g.cave_culling)),
+            // Greyed out where it isn't offered (`Item::blocked`): Off, as it is there, while
+            // the saved value waits.
+            H::GpuCulling => labelled(
+                "GPU Culling",
+                on_off(g.gpu_culling && crate::graphics::gpu_culling_offer().reason().is_none()),
+            ),
             H::EntityCulling => labelled("Entity Culling", g.entity_culling.label()),
+            H::EntityCullingPrecheck => labelled(
+                "Entity Culling Precheck",
+                if g.entity_culling_precheck == 0 {
+                    "Off".to_string()
+                } else {
+                    lang::tr("%s mobs", &[&g.entity_culling_precheck])
+                },
+            ),
+            H::ParticleCulling => labelled("Particle Culling", g.particle_culling.label()),
             H::LeafCulling => labelled("Leaf Culling", g.leaf_culling.label()),
+            H::CacheShulkerBoxes => labelled("Shulker Boxes", on_off(g.cache_shulker_boxes)),
+            H::CacheSigns => labelled("Signs", on_off(g.cache_signs)),
+            H::CacheDecoratedPots => labelled("Decorated Pots", on_off(g.cache_decorated_pots)),
+            H::CacheBells => labelled("Bells", on_off(g.cache_bells)),
+            H::CacheChests => labelled("Chests", on_off(g.cache_chests)),
+            H::CacheBanners => labelled("Banners", on_off(g.cache_banners)),
+            H::CacheCopperGolemStatues => {
+                labelled("Copper Golem Statues", on_off(g.cache_copper_golem_statues))
+            }
             H::ChunkUpdates => match g.chunk_updates {
                 0 => labelled("Chunk Updates", "Unlimited"),
                 n => labelled("Chunk Updates", lang::tr("%s per frame", &[&n])),
@@ -574,7 +875,7 @@ impl H {
                 ),
                 n => labelled("Worker Threads", n),
             },
-            H::ResolutionScale => labelled("Resolution Scale", format!("{}%", g.resolution_scale)),
+            H::ResolutionScale => labelled_percent("Resolution Scale", g.resolution_scale),
             H::Antialiasing => labelled(
                 "Anti-aliasing",
                 match (g.fxaa, g.taa) {
@@ -589,7 +890,6 @@ impl H {
             }
             H::FrameGeneration => labelled("Frame Generation", g.frame_generation.label()),
             H::Hdr => labelled("HDR", on_off(g.hdr)),
-            H::HdrSettings => Text::literal(lang::get("HDR Settings...")),
             H::HdrCalibrate => Text::literal(lang::get(match setup(s) {
                 Setup::Unknown => "Calibrate...",
                 Setup::Automatic => "Calibrate Anyway...",
@@ -598,31 +898,41 @@ impl H {
             H::HdrPaperWhite => match g.hdr_paper_white {
                 0 => labelled(
                     "Paper White",
-                    lang::tr("Auto (%s nits)", &[&g.paper_white_nits()]),
+                    lang::tr("Auto (%s)", &[&g.paper_white_nits()]),
                 ),
-                n => labelled("Paper White", lang::tr("%s nits", &[&n])),
+                n => labelled("Paper White", n.to_string()),
             },
             H::HdrPeak => match g.hdr_peak {
-                0 => labelled(
-                    "Peak Brightness",
-                    lang::tr("Auto (%s nits)", &[&g.peak_nits()]),
-                ),
-                n => labelled("Peak Brightness", lang::tr("%s nits", &[&n])),
+                0 => labelled("Peak Brightness", lang::tr("Auto (%s)", &[&g.peak_nits()])),
+                n => labelled("Peak Brightness", n.to_string()),
             },
-            H::HdrBlackLevel => labelled(
-                "Black Level",
-                lang::tr(
-                    "%s nits",
-                    &[&format!("{:.2}", g.hdr_black_level as f32 / 100.0)],
+            H::HdrBlackLevel => match g.hdr_black_level {
+                0 => labelled(
+                    "Black Level",
+                    lang::tr("Auto (%s)", &[&format!("{:.2}", g.black_level_nits())]),
                 ),
-            ),
-            H::HdrUiBrightness => labelled("UI Brightness", format!("{}%", g.hdr_ui_brightness)),
+                n => labelled("Black Level", format!("{:.2}", n as f32 / 100.0)),
+            },
+            H::HdrUiBrightness => labelled_percent("UI Brightness", g.hdr_ui_brightness),
+            H::HdrLighting => labelled("HDR Lighting", on_off(g.hdr_lighting)),
             H::HdrKey => {
                 Text::translate("Shortcut: %s", &[crate::keybinds::display_name(&g.hdr_key)])
             }
             H::BatteryMode => labelled("Battery Mode", on_off(g.battery)),
             H::ShadowCache => labelled("Shadow Cache", on_off(g.shadow_cache)),
+            // A press across the row, as Calibrate...: the list it opens shows the pick.
+            H::ShaderPacks => Text::literal(lang::get("Shader Packs...")),
             H::GraphicsApi => labelled("Graphics API", g.api.label()),
+            // These two are greyed out where the device can't (`Item::blocked`): Off, as
+            // they are there, while the saved value waits for a device that can.
+            H::TranslucentBatching => labelled(
+                "Translucent Batching",
+                on_off(g.translucent_batching && crate::graphics::translucent_batching_offered()),
+            ),
+            H::HdrSmoothGradients => labelled(
+                "Smooth Gradients",
+                on_off(g.hdr_smooth_gradients && crate::graphics::smooth_gradients_offered()),
+            ),
             H::Overlay => labelled(
                 "Performance Overlay",
                 match g.overlay {
@@ -637,6 +947,7 @@ impl H {
         let g = &mut s.horizon;
         match self {
             H::ChunkUpdates => g.chunk_updates = (v * 64.0).round() as u32,
+            H::EntityCullingPrecheck => g.entity_culling_precheck = (v * 512.0).round() as u32,
             H::UploadBudget => {
                 g.upload_budget_kib =
                     UPLOAD_STEPS[(v * (UPLOAD_STEPS.len() - 1) as f32).round() as usize]
@@ -675,12 +986,29 @@ impl H {
             H::FarDetail => {
                 g.far_detail = step(&[FarDetail::Full, FarDetail::Reduced], g.far_detail, back)
             }
+            H::BlueMapAutoDetect => g.blue_map.auto_detect = !g.blue_map.auto_detect,
+            H::BlueMapRadius => {
+                g.blue_map.radius = step(&BLUE_MAP_RADII, g.blue_map.radius_chunks(), back)
+            }
             H::CaveCulling => g.cave_culling = !g.cave_culling,
+            H::GpuCulling => g.gpu_culling = !g.gpu_culling,
             H::EntityCulling => {
                 g.entity_culling = step(&EntityCullingMode::ALL, g.entity_culling, back)
             }
+            H::ParticleCulling => {
+                g.particle_culling = step(&ParticleCullingMode::ALL, g.particle_culling, back)
+            }
             H::LeafCulling => {
                 g.leaf_culling = step(&LeafCullingMode::ALL, g.leaf_culling, back);
+            }
+            H::CacheShulkerBoxes => g.cache_shulker_boxes = !g.cache_shulker_boxes,
+            H::CacheSigns => g.cache_signs = !g.cache_signs,
+            H::CacheDecoratedPots => g.cache_decorated_pots = !g.cache_decorated_pots,
+            H::CacheBells => g.cache_bells = !g.cache_bells,
+            H::CacheChests => g.cache_chests = !g.cache_chests,
+            H::CacheBanners => g.cache_banners = !g.cache_banners,
+            H::CacheCopperGolemStatues => {
+                g.cache_copper_golem_statues = !g.cache_copper_golem_statues
             }
             H::Sky => g.sky = !g.sky,
             H::Fog => g.fog = !g.fog,
@@ -715,9 +1043,12 @@ impl H {
                 g.frame_generation = step(&FrameGeneration::ALL, g.frame_generation, back)
             }
             H::Hdr => g.hdr = !g.hdr,
+            H::HdrLighting => g.hdr_lighting = !g.hdr_lighting,
             H::BatteryMode => g.battery = !g.battery,
             H::ShadowCache => g.shadow_cache = !g.shadow_cache,
             H::GraphicsApi => g.api = step(GraphicsApi::choices(), g.api, back),
+            H::TranslucentBatching => g.translucent_batching = !g.translucent_batching,
+            H::HdrSmoothGradients => g.hdr_smooth_gradients = !g.hdr_smooth_gradients,
             H::Pacing => {
                 g.pacing = match g.pacing {
                     Pacing::Efficient => Pacing::Precise,
@@ -744,45 +1075,107 @@ impl Item {
     fn available(self) -> bool {
         !matches!(self, Item::Vanilla(o) if !o.available())
     }
-    /// Why a control can't be used now, when it can't: HDR's screen opens only where
+    /// Why a control can't be used now, when it can't: HDR's page works only where
     /// the display offers HDR output, whatever `horizon-graphics.txt` says (a copied game
     /// folder, a display swapped for an SDR one: the renderer leaves HDR off there, and
     /// the saved values wait for an HDR display), and its sliders do something only
-    /// while it is on.
+    /// while it is on; Translucent Batching switches only where the device can batch
+    /// (`graphics::translucent_batching_offered`), its saved value waiting for one that can,
+    /// Smooth Gradients only where it can draw the 16-bit frame, the same way, and GPU Culling
+    /// only where it is offered (`graphics::gpu_culling_offer`), with the reason it isn't.
     fn blocked(self, s: &Settings) -> Option<&'static str> {
         if !self.available() {
             return Some("This feature is not yet available in Horizon.");
         }
         match self {
-            Item::Horizon(H::HdrSettings | H::Hdr) if !crate::graphics::hdr_offered() => {
+            Item::Horizon(
+                H::Hdr
+                | H::HdrCalibrate
+                | H::HdrBlackLevel
+                | H::HdrPeak
+                | H::HdrPaperWhite
+                | H::HdrUiBrightness
+                | H::HdrLighting
+                | H::HdrSmoothGradients,
+            ) if !crate::graphics::hdr_offered() => {
                 Some("Your display or system doesn't offer HDR output.")
+            }
+            Item::Horizon(H::HdrSmoothGradients)
+                if !crate::graphics::smooth_gradients_offered() =>
+            {
+                Some("Your GPU or graphics API doesn't support it.")
             }
             Item::Horizon(
                 H::HdrCalibrate
                 | H::HdrBlackLevel
                 | H::HdrPeak
                 | H::HdrPaperWhite
-                | H::HdrUiBrightness,
+                | H::HdrUiBrightness
+                | H::HdrLighting
+                | H::HdrSmoothGradients,
             ) if !s.horizon.hdr => Some("Turn HDR on to use it."),
+            Item::Horizon(H::TranslucentBatching)
+                if !crate::graphics::translucent_batching_offered() =>
+            {
+                Some("Your GPU or graphics API doesn't support it.")
+            }
+            Item::Horizon(H::EntityCullingPrecheck)
+                if s.horizon.entity_culling != EntityCullingMode::Asynchronous =>
+            {
+                Some("Only applies to asynchronous entity culling.")
+            }
+            Item::Horizon(H::GpuCulling) => crate::graphics::gpu_culling_offer().reason(),
+            // VideoSettingsScreen.tick: Max Anisotropy only works with Anisotropic filtering.
+            Item::Vanilla(Opt::MaxAnisotropy) if s.file.int("textureFiltering") != 2 => {
+                Some("Only with Anisotropic texture filtering.")
+            }
             _ => None,
         }
+    }
+    /// A value stepped between `<` `>`: not a tick box, a slider or a press.
+    fn steps(self, s: &Settings) -> bool {
+        self.switch(s).is_none()
+            && self.slider(s).is_none()
+            && !matches!(
+                self,
+                Item::Horizon(H::HdrKey | H::HdrCalibrate | H::ShaderPacks)
+            )
     }
     /// On/off settings and their value.
     pub fn switch(self, s: &Settings) -> Option<bool> {
         let g = &s.horizon;
         Some(match self {
+            Item::Horizon(H::BlueMapAutoDetect) => g.blue_map.auto_detect,
             Item::Horizon(H::CaveCulling) => g.cave_culling,
+            Item::Horizon(H::GpuCulling) => {
+                g.gpu_culling && crate::graphics::gpu_culling_offer().reason().is_none()
+            }
+            Item::Horizon(H::CacheShulkerBoxes) => g.cache_shulker_boxes,
+            Item::Horizon(H::CacheSigns) => g.cache_signs,
+            Item::Horizon(H::CacheDecoratedPots) => g.cache_decorated_pots,
+            Item::Horizon(H::CacheBells) => g.cache_bells,
+            Item::Horizon(H::CacheChests) => g.cache_chests,
+            Item::Horizon(H::CacheBanners) => g.cache_banners,
+            Item::Horizon(H::CacheCopperGolemStatues) => g.cache_copper_golem_statues,
             Item::Horizon(H::Sky) => g.sky,
             Item::Horizon(H::Fog) => g.fog,
             Item::Horizon(H::Weather) => g.weather,
             Item::Horizon(H::AnimatedTextures) => g.animated_textures,
             Item::Horizon(H::DitherCutoutMips) => g.dither_cutout_mips,
             Item::Horizon(H::Hdr) => g.hdr,
+            Item::Horizon(H::HdrLighting) => g.hdr_lighting,
             Item::Horizon(H::BatteryMode) => g.battery,
             Item::Horizon(H::ShadowCache) => g.shadow_cache,
-            Item::Vanilla(Opt::ViewBobbing) => s.view_bobbing,
+            Item::Horizon(H::TranslucentBatching) => {
+                g.translucent_batching && crate::graphics::translucent_batching_offered()
+            }
+            Item::Horizon(H::HdrSmoothGradients) => {
+                g.hdr_smooth_gradients && crate::graphics::smooth_gradients_offered()
+            }
             Item::Vanilla(Opt::Vsync) => s.vsync,
+            Item::Extra(e) => return e.switch(&s.extras),
             Item::Vanilla(Opt::Fullscreen) => s.fullscreen,
+            Item::Vanilla(Opt::ExclusiveFullscreen) => s.file.bool("exclusiveFullscreen"),
             Item::Vanilla(Opt::SmoothLighting) => s.smooth_lighting,
             Item::Vanilla(Opt::EntityShadows) => s.entity_shadows,
             Item::Vanilla(Opt::Vignette) => s.vignette,
@@ -796,6 +1189,7 @@ impl Item {
         match self {
             Item::Vanilla(o) => o.slider_position(s),
             Item::Horizon(h) => h.slider(s),
+            Item::Extra(_) => None,
         }
     }
     pub fn label(self, s: &Settings) -> Text {
@@ -806,15 +1200,21 @@ impl Item {
             ),
             Item::Vanilla(o) => o.label(s),
             Item::Horizon(h) => h.label(s),
+            Item::Extra(e) => Text::option_name_value(
+                Text::literal(e.caption_text()),
+                Text::literal(e.value(&s.extras)),
+            ),
         }
     }
     pub fn set_slider(self, s: &mut Settings, v: f32) {
-        if !self.available() {
+        if !self.available() || self.blocked(s).is_some() {
             return;
         }
         match self {
-            Item::Vanilla(o) => o.set_slider(s, v),
+            // Options.applyGraphicsPreset, as Video Settings' slider does it.
+            Item::Vanilla(o) => crate::options_ui::set_slider(o, s, v),
             Item::Horizon(h) => h.set_slider(s, v),
+            Item::Extra(_) => {}
         }
         self.touched(s);
     }
@@ -825,6 +1225,7 @@ impl Item {
         match self {
             Item::Vanilla(o) => o.cycle(s, back, framebuffer),
             Item::Horizon(h) => h.cycle(s, back),
+            Item::Extra(e) => e.cycle(&mut s.extras, back),
         }
         self.touched(s);
     }
@@ -832,31 +1233,39 @@ impl Item {
     fn touched(self, s: &mut Settings) {
         let presetless = matches!(
             self,
-            Item::Horizon(
-                H::Preset
-                    | H::Overlay
-                    | H::ScreenshotQuality
-                    | H::Pacing
-                    | H::PresentMode
-                    | H::Workers
-                    | H::FrameGeneration
-                    | H::BatteryMode
-                    | H::ShadowCache
-                    | H::GraphicsApi
-            ) | Item::Vanilla(
-                Opt::GuiScale
-                    | Opt::Fullscreen
-                    | Opt::Vsync
-                    | Opt::MaxFps
-                    | Opt::Fov
-                    | Opt::Gamma
-                    | Opt::InactivityFps
-                    | Opt::ViewBobbing
-                    | Opt::ChunkFade
-                    | Opt::Vignette
-                    | Opt::Autosave
-                    | Opt::AttackIndicator
-            )
+            Item::Extra(_)
+                | Item::Horizon(
+                    H::Preset
+                        | H::BlueMapAutoDetect
+                        | H::BlueMapRadius
+                        | H::Overlay
+                        | H::ScreenshotQuality
+                        | H::Pacing
+                        | H::PresentMode
+                        | H::Workers
+                        | H::FrameGeneration
+                        | H::BatteryMode
+                        | H::ShadowCache
+                        | H::GraphicsApi
+                        | H::TranslucentBatching
+                        | H::HdrSmoothGradients
+                        | H::GpuCulling
+                )
+                | Item::Vanilla(
+                    Opt::GuiScale
+                        | Opt::Fullscreen
+                        | Opt::ExclusiveFullscreen
+                        | Opt::ExclusiveMode
+                        | Opt::Vsync
+                        | Opt::MaxFps
+                        | Opt::Gamma
+                        | Opt::InactivityFps
+                        | Opt::MenuBlur
+                        | Opt::ChunkFade
+                        | Opt::Vignette
+                        | Opt::Autosave
+                        | Opt::AttackIndicator
+                )
         );
         if !presetless {
             s.horizon.preset = Preset::Custom;
@@ -866,6 +1275,7 @@ impl Item {
         match self {
             Item::Vanilla(o) => o.slider_steps(),
             Item::Horizon(h) => h.slider_steps(),
+            Item::Extra(_) => None,
         }
     }
     pub fn step_slider(self, s: &mut Settings, forward: bool, width: f32) {
@@ -875,59 +1285,55 @@ impl Item {
         let Some(pos) = self.slider(s) else {
             return;
         };
-        let next_pos = if let Some(steps) = self.slider_steps() {
-            let steps = steps as f32;
-            let current = (pos * steps).round();
-            let next = if forward {
-                current + 1.0
-            } else {
-                current - 1.0
-            };
-            (next / steps).clamp(0.0, 1.0)
-        } else {
-            let delta = 1.0 / (width - 8.0).max(1.0);
-            if forward {
-                (pos + delta).min(1.0)
-            } else {
-                (pos - delta).max(0.0)
-            }
-        };
+        let next_pos = shell::slider_step(pos, self.slider_steps(), width, forward);
         self.set_slider(s, next_pos);
         self.touched(s);
     }
 }
 
-/// What the options screens must do after an interaction here.
+/// What the options screen must do after an interaction here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
     ButtonClick,
     Changed,
     SliderDrag,
-    OpenAdvanced,
-    OpenSimple,
-    OpenHdr,
     /// Wait for a key or mouse button to bind to this name.
     BindKey(&'static str),
     /// Start HDR calibration.
     Calibrate,
+    /// Open the shader pack list.
+    ShaderPacks,
     Done,
 }
 
+/// What the keyboard or a controller can focus.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Target {
     Item(Item),
-    Button(Action),
-}
-struct Widget {
-    x: f32,
-    y: f32,
-    w: f32,
-    target: Target,
-    /// In the scrolling list (clipped to it).
-    list: bool,
+    Page(Page),
+    Search,
+    Undo,
+    Done,
 }
 
-#[derive(Default)]
+type Line = shell::Line<Page, Setting>;
+
+/// Whether a setting is on the screen now: Upscaling only while TAA is, which does it.
+fn shown(item: Item, s: &Settings) -> bool {
+    item != Item::Horizon(H::Upscaling) || s.horizon.taa
+}
+/// A control's label as its name and its value ("Render Distance" and "12 chunks").
+fn parts(item: Item, s: &Settings, binding: bool) -> (String, Option<String>) {
+    // The shortcut's label is one translated "Shortcut: %s"; the row shows its key apart,
+    // as KeyBindsScreen does, "> key <" while it waits.
+    if item == Item::Horizon(H::HdrKey) {
+        let key = crate::keybinds::display_name(&s.horizon.hdr_key).plain();
+        let key = if binding { format!("> {key} <") } else { key };
+        return (lang::get("Shortcut"), Some(key));
+    }
+    shell::name_and_value(&item.label(s).plain())
+}
+
 pub struct GraphicsUi {
     /// The list's scroll amount and its held scrollbar (`AbstractScrollArea`).
     scroll: ui::Scroll,
@@ -936,250 +1342,392 @@ pub struct GraphicsUi {
     pub can_change_value: bool,
     /// The key binding the options screen is waiting on (`Action::BindKey`).
     pub binding: Option<&'static str>,
+    pub search: ui::EditBox,
+    /// The page the plate shows, alone, while nothing is searched.
+    page: Page,
+    /// While searching, the page last picked in the page list: current until the list scrolls.
+    picked: Option<Page>,
+    /// The settings as the screen found them, for Undo, and whether they changed since.
+    before: Option<Box<Settings>>,
+    pub changed: bool,
+}
+impl Default for GraphicsUi {
+    fn default() -> Self {
+        let mut search = ui::EditBox::new(0.0, 0.0, 0.0, 8.0);
+        search.bordered = false;
+        search.focused = false;
+        search.message = lang::get("Search options");
+        Self {
+            scroll: ui::Scroll::default(),
+            dragging: None,
+            focus: None,
+            can_change_value: false,
+            binding: None,
+            search,
+            page: Page::General,
+            picked: None,
+            before: None,
+            changed: false,
+        }
+    }
 }
 
 impl GraphicsUi {
-    pub fn reset(&mut self) {
-        self.scroll = ui::Scroll::default();
-        self.dragging = None;
-        self.focus = None;
-        self.can_change_value = false;
+    /// How far the list is scrolled (the options screen's tests).
+    #[cfg(test)]
+    pub(crate) fn scroll_amount(&self) -> f32 {
+        self.scroll.amount
     }
-    /// The scrollbar's column: right of the descriptions.
-    fn scrollbar_x(w: f32) -> f32 {
-        STYLE.row_x(w) + STYLE.control_width + STYLE.gap + STYLE.text_width(w) + 6.0
+    /// The page the plate shows while nothing is searched.
+    pub fn page(&self) -> Page {
+        self.page
     }
-    fn bounds(h: f32) -> (f32, f32) {
-        (STYLE.band, h - STYLE.band)
+    /// The screen opens, at `page`.
+    pub fn open(&mut self, page: Page) {
+        *self = Self {
+            page,
+            ..Self::default()
+        };
     }
-    fn content_height(level: Level, s: &Settings) -> f32 {
-        extra_rows(level, s).iter().fold(4.0, |height, row| {
-            height
-                + match row {
-                    Row::Header(_) => STYLE.header_height,
-                    Row::Setting(_) => STYLE.row_height,
-                }
-        })
+    fn query(&self) -> String {
+        self.search.value.trim().to_lowercase()
     }
-    /// Widgets and the list's content height, using a bounded offset.
-    fn layout(
-        &mut self,
-        level: Level,
-        s: &Settings,
-        w: f32,
-        h: f32,
-    ) -> (Vec<Widget>, Vec<(f32, &'static str)>, f32) {
-        let content = Self::content_height(level, s);
-        self.clamp_scroll(h, content);
-        let (top, _) = Self::bounds(h);
-        let x = STYLE.row_x(w);
-        let mut y = top + 4.0 - self.scroll.amount;
-        let mut widgets = Vec::new();
-        let mut headers = Vec::new();
-        for row in extra_rows(level, s) {
-            match row {
-                Row::Header(name) => {
-                    headers.push((y, name));
-                    y += STYLE.header_height;
-                }
-                Row::Setting(s) => {
-                    widgets.push(Widget {
-                        x,
-                        y,
-                        w: STYLE.control_width,
-                        target: Target::Item(s.item),
-                        list: true,
-                    });
-                    y += STYLE.row_height;
-                }
+    /// The list's lines and its content height: the open page's settings in
+    /// their groups or, while searching, the settings of every page whose name
+    /// or description has the search in it, under their pages' names. Not
+    /// their values (nor the descriptions that follow them), and the row being
+    /// changed stays whatever it reads now: a change mustn't take its row away
+    /// under the pointer.
+    fn lines(&self, s: &Settings) -> (Vec<Line>, f32) {
+        let query = self.query();
+        let mut lines = shell::Lines::new();
+        for (page, groups) in rows() {
+            if query.is_empty() && page != self.page {
+                continue;
+            }
+            let groups: Vec<(&'static str, Vec<Setting>)> = groups
+                .into_iter()
+                .map(|(name, rows)| {
+                    let rows = rows
+                        .into_iter()
+                        .filter(|r| shown(r.item, s))
+                        .filter(|r| {
+                            query.is_empty()
+                                || self.focus == Some(Target::Item(r.item))
+                                || self.dragging == Some(r.item)
+                                || parts(r.item, s, false).0.to_lowercase().contains(&query)
+                                || lang::get(r.text).to_lowercase().contains(&query)
+                        })
+                        .collect::<Vec<_>>();
+                    (name, rows)
+                })
+                .filter(|(_, rows)| !rows.is_empty())
+                .collect();
+            if groups.is_empty() {
+                continue;
+            }
+            if !query.is_empty() {
+                lines.page(page);
+            }
+            for (name, rows) in groups {
+                lines.group(page, name, rows);
             }
         }
-        let cx = (w / 2.0).floor();
-        let by = h - 27.0;
-        let other = match level {
-            Level::Simple => Action::OpenAdvanced,
-            Level::Advanced => Action::OpenSimple,
-            // One Done, back to Advanced.
-            Level::Hdr => {
-                widgets.push(Widget {
-                    x: cx - 100.0,
-                    y: by,
-                    w: 200.0,
-                    target: Target::Button(Action::Done),
-                    list: false,
-                });
-                return (widgets, headers, content);
-            }
+        lines.finish()
+    }
+    /// The columns and the list, with the scroll kept within it.
+    fn layout(&mut self, s: &Settings, w: f32, h: f32) -> (Columns, Vec<Line>, f32) {
+        let cols = Columns::of(w, h);
+        let (lines, content) = self.lines(s);
+        self.scroll.clamp(cols.top, cols.bottom, content);
+        (cols, lines, content)
+    }
+    /// Pick `page`: the plate shows it alone or, while searching, scrolls to its matches.
+    fn pick(&mut self, page: Page, lines: &[Line], cols: &Columns, content: f32) {
+        self.page = page;
+        self.scroll.amount = 0.0;
+        if self.query().is_empty() {
+            return;
+        }
+        if let Some(line) = lines.iter().find(|l| l.page == page) {
+            self.scroll.amount = line.y;
+            self.scroll.clamp(cols.top, cols.bottom, content);
+            self.picked = Some(page);
+        }
+    }
+    /// Whether the page list's `page` has anything to show.
+    fn has(&self, page: Page, lines: &[Line]) -> bool {
+        self.query().is_empty() || lines.iter().any(|l| l.page == page)
+    }
+    /// The page the plate shows: the open one or, while searching, the one
+    /// picked, else the topmost line's.
+    fn current(&self, lines: &[Line]) -> Option<Page> {
+        if self.query().is_empty() {
+            return Some(self.page);
+        }
+        self.picked.or_else(|| {
+            lines
+                .iter()
+                .find(|l| l.y + l.h() > self.scroll.amount)
+                .map(|l| l.page)
+        })
+    }
+    fn row_y(&self, cols: &Columns, line: &Line) -> f32 {
+        cols.top + line.y - self.scroll.amount
+    }
+    /// Remember the settings before the first change, for Undo.
+    fn keep(&mut self, s: &Settings) {
+        if self.before.is_none() {
+            self.before = Some(Box::new(s.clone()));
+        }
+    }
+    fn mark(&mut self, actions: &[Action]) {
+        if actions.iter().any(|a| {
+            matches!(
+                a,
+                Action::Changed | Action::SliderDrag | Action::BindKey(_) | Action::Calibrate
+            )
+        }) {
+            self.changed = true;
+        }
+    }
+    /// Undo: what this screen edits back to what it was when the screen
+    /// opened: Horizon's graphics settings and the vanilla options on its rows.
+    /// Not the other options (the narrator, or one `horizon-ctl options-set`
+    /// changed meanwhile), nor fullscreen, which F11 and the window manager change.
+    fn undo(&mut self, s: &mut Settings) {
+        let Some(b) = self.before.as_deref() else {
+            return;
         };
-        widgets.push(Widget {
-            x: cx - 155.0,
-            y: by,
-            w: 150.0,
-            target: Target::Button(other),
-            list: false,
-        });
-        widgets.push(Widget {
-            x: cx + 5.0,
-            y: by,
-            w: 150.0,
-            target: Target::Button(Action::Done),
-            list: false,
-        });
-        (widgets, headers, content)
+        s.horizon = b.horizon.clone();
+        s.render_distance = b.render_distance;
+        s.simulation_distance = b.simulation_distance;
+        s.gamma = b.gamma;
+        s.gui_scale = b.gui_scale;
+        s.vsync = b.vsync;
+        s.max_fps = b.max_fps;
+        s.inactivity_fps_limit = b.inactivity_fps_limit.clone();
+        s.menu_blur = b.menu_blur;
+        s.extras.fullbright = b.extras.fullbright;
+        s.extras.dynamic_lights = b.extras.dynamic_lights;
+        s.extras.hide_block_particles = b.extras.hide_block_particles;
+        s.attack_indicator = b.attack_indicator;
+        s.autosave_indicator = b.autosave_indicator;
+        s.clouds = b.clouds.clone();
+        s.cloud_range = b.cloud_range;
+        s.weather_radius = b.weather_radius;
+        s.particles = b.particles;
+        s.smooth_lighting = b.smooth_lighting;
+        s.biome_blend = b.biome_blend;
+        s.entity_distance = b.entity_distance;
+        s.entity_shadows = b.entity_shadows;
+        s.vignette = b.vignette;
+        s.chunk_fade = b.chunk_fade;
+        s.mipmap_levels = b.mipmap_levels;
+        s.cutout_leaves = b.cutout_leaves;
+        s.improved_transparency = b.improved_transparency;
+        s.prioritize_chunk_updates = b.prioritize_chunk_updates;
+        // Presets set it beside the options above.
+        s.graphics_preset = b.graphics_preset.clone();
+        // The vanilla rows options.txt keeps as it read them.
+        for key in [
+            "exclusiveFullscreen",
+            "textureFiltering",
+            "maxAnisotropyBit",
+        ] {
+            if let Some(value) = b.file.get(key) {
+                s.file.set(key, value.clone());
+            }
+        }
+        s.file.fullscreen_resolution = b.file.fullscreen_resolution.clone();
+        self.changed = false;
     }
-    fn clamp_scroll(&mut self, h: f32, content: f32) {
-        let (top, bottom) = Self::bounds(h);
-        self.scroll.clamp(top, bottom, content);
-    }
+
     pub fn draw(
         &mut self,
-        level: Level,
         s: &Settings,
         batch: &mut HudBatch,
         atlas: &HudAtlas,
         cursor: (f32, f32),
         in_world: bool,
     ) {
+        self.keep(s);
         let (w, h) = (batch.width, batch.height);
-        let (widgets, headers, content) = self.layout(level, s, w, h);
-        let (top, bottom) = Self::bounds(h);
-        STYLE.background(batch, atlas, top, bottom, in_world);
-        let shown = |y: f32, height: f32| y >= top && y + height <= bottom;
-        let x = STYLE.row_x(w);
-        for (y, name) in headers {
-            if shown(y, STYLE.header_height) {
-                STYLE.header(batch, atlas, &Text::literal(lang::get(name)), x, y);
-            }
-        }
-        let descriptions: Vec<(Cost, &'static str)> = extra_rows(level, s)
-            .into_iter()
-            .filter_map(|r| match r {
-                Row::Setting(s) => Some((s.cost, s.text)),
-                Row::Header(_) => None,
-            })
-            .collect();
-        let mut index = 0;
-        let mut tooltip = None;
-        for wd in &widgets {
-            let is_focused = self.focus == Some(wd.target);
-            let hover = (ui::hovered(cursor, wd.x, wd.y, wd.w, 20.0)
-                && (!wd.list || (cursor.1 >= top && cursor.1 < bottom)))
-                || is_focused;
-            match wd.target {
-                Target::Item(item) => {
-                    let (cost, text) = descriptions[index];
-                    index += 1;
-                    if !shown(wd.y, 20.0) {
-                        continue;
-                    }
-                    let mut label = item.label(s);
-                    if item == Item::Horizon(H::HdrKey) && self.binding.is_some() {
-                        // KeyBindsScreen: "> key <" while it waits.
-                        label = Text::translate(
-                            "Shortcut: %s",
-                            &[Text::literal("> ")
-                                .append(crate::keybinds::display_name(&s.horizon.hdr_key))
-                                .append(" <")],
-                        );
-                    }
-                    let blocked = item.blocked(s);
-                    let live = blocked.is_none();
-                    if hover && let Some(why) = blocked {
-                        tooltip = Some(atlas.font.split(&Text::literal(lang::get(why)), 170.0));
-                    }
-                    match item.slider(s) {
-                        Some(value) => STYLE.slider_ext(
-                            batch,
-                            atlas,
-                            (wd.x, wd.y, wd.w),
-                            &label,
-                            value,
-                            hover || self.dragging == Some(item),
-                            is_focused,
-                            self.can_change_value && is_focused,
-                            live,
-                            self.dragging == Some(item),
-                        ),
-                        None => STYLE.button(
-                            batch,
-                            atlas,
-                            (wd.x, wd.y, wd.w),
-                            &label,
-                            hover && live,
-                            live,
-                        ),
-                    }
-                    STYLE.description(
-                        batch,
-                        atlas,
-                        wd.x + wd.w + STYLE.gap,
-                        wd.y + 1.0,
-                        cost,
-                        description(item, s, text),
-                    );
-                }
-                Target::Button(action) => {
-                    let label = match action {
-                        Action::OpenAdvanced => "Advanced...",
-                        Action::OpenSimple => "Simple...",
-                        _ => "Done",
-                    };
-                    STYLE.button(
-                        batch,
-                        atlas,
-                        (wd.x, wd.y, wd.w),
-                        &Text::literal(lang::get(label)),
-                        hover,
-                        true,
-                    );
-                }
-            }
-        }
-        STYLE.frame(batch, atlas, top, bottom, in_world);
-        ui::scrollbar(
+        let (cols, lines, content) = self.layout(s, w, h);
+        shell::backdrop(batch, atlas, in_world);
+        let current = self.current(&lines);
+        self.draw_side(batch, atlas, &cols, &lines, current, cursor);
+        let focused = self.focus == Some(Target::Search);
+        shell::search_field(&mut self.search, batch, atlas, &cols, cursor, focused);
+
+        let query = self.search.value.trim();
+        let heading = if query.is_empty() {
+            lang::get(current.unwrap_or(self.page).name())
+        } else {
+            lang::get("Results for \"%s\"").replace("%s", query)
+        };
+        shell::plate(batch, atlas, &cols, &heading);
+
+        let over_list = cursor.1 >= cols.top && cursor.1 < cols.bottom;
+        let mut described = None;
+        shell::list(
             batch,
             atlas,
-            Self::scrollbar_x(w),
-            top,
-            bottom,
-            content,
+            &cols,
+            &lines,
             self.scroll.amount,
+            Page::name,
+            |batch, setting: Setting, y| {
+                let item = setting.item;
+                let rect = cols.row(y);
+                let hover = over_list && ui::hovered(cursor, rect[0], rect[1], rect[2], rect[3]);
+                let focused = self.focus == Some(Target::Item(item));
+                // The pointer's row wins over the keyboard's.
+                if hover || self.dragging == Some(item) || (focused && described.is_none()) {
+                    described = Some(setting);
+                }
+                self.draw_row(batch, atlas, s, &cols, item, y, hover, focused);
+            },
         );
-        let title = match level {
-            Level::Simple => "Graphics",
-            Level::Advanced => "Graphics: Advanced",
-            Level::Hdr => "Graphics: HDR",
-        };
-        STYLE.title(batch, atlas, &Text::literal(lang::get(title)));
-        if let Some(lines) = tooltip {
-            ui::tooltip(batch, atlas, &lines, cursor);
+        shell::scroller(batch, atlas, &cols, content, self.scroll.amount);
+        self.draw_dock(batch, atlas, s, &cols, described, current);
+
+        let mut foot = vec![(cols.button(0), "Done", Target::Done)];
+        // Undo only once there is something to undo.
+        if self.changed {
+            foot.push((cols.button(1), "Undo", Target::Undo));
+        }
+        for (rect, label, target) in foot {
+            let label = Text::literal(lang::get(label));
+            let focused = self.focus == Some(target);
+            let primary = target == Target::Done;
+            let declared = if primary {
+                crate::widgets::Action::Done
+            } else {
+                crate::widgets::Action::Apply
+            };
+            crate::widgets::declare_action(declared, rect, true);
+            shell::foot_button(batch, atlas, rect, &label, cursor, (focused, primary));
         }
     }
+    /// The mark over the search field, and the page list: the open page on a
+    /// plate with the accent's bar beside it, the others bare text.
+    fn draw_side(
+        &self,
+        batch: &mut HudBatch,
+        atlas: &HudAtlas,
+        cols: &Columns,
+        lines: &[Line],
+        current: Option<Page>,
+        cursor: (f32, f32),
+    ) {
+        shell::mark(batch, atlas, cols, &lang::get("Graphics"));
+        for (i, page) in Page::ALL.into_iter().enumerate() {
+            let has = self.has(page, lines);
+            let open = current == Some(page);
+            let focused = self.focus == Some(Target::Page(page));
+            let name = lang::get(page.name());
+            let flags = (has, open, focused);
+            shell::page_tab(batch, atlas, cols.page(i), &name, flags, cursor);
+        }
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn draw_row(
+        &self,
+        batch: &mut HudBatch,
+        atlas: &HudAtlas,
+        s: &Settings,
+        cols: &Columns,
+        item: Item,
+        y: f32,
+        hover: bool,
+        focused: bool,
+    ) {
+        let label = item.label(s).plain();
+        let (name, value) = parts(item, s, self.binding.is_some());
+        let view = shell::RowView {
+            label: &label,
+            name: &name,
+            value: value.as_deref(),
+            switch: item.switch(s),
+            slider: item.slider(s),
+            live: item.blocked(s).is_none(),
+            hover,
+            focused,
+            held: self.dragging == Some(item),
+        };
+        shell::row(batch, atlas, cols, y, &view);
+    }
+    /// The strip under the plate: the hovered or focused setting's name and
+    /// cost, then what it does (or why it can't be used now); with none, what
+    /// the open page holds.
+    fn draw_dock(
+        &self,
+        batch: &mut HudBatch,
+        atlas: &HudAtlas,
+        s: &Settings,
+        cols: &Columns,
+        setting: Option<Setting>,
+        current: Option<Page>,
+    ) {
+        let [x, y, w, _] = cols.dock;
+        style::panel(batch, atlas, cols.dock);
+        let left = x + 12.0;
+        let (text, color) = match setting {
+            Some(setting) => {
+                let (name, _) = parts(setting.item, s, false);
+                let cost = lang::get(setting.cost.label());
+                let line = style::fit(atlas, &format!("{name} · {cost}"), w - 32.0);
+                let line = Text::literal(line).with_color(setting.cost.rgb());
+                let square = [left, y + 10.0, 4.0, 4.0];
+                style::fill(batch, atlas, square, style::cost_color(setting.cost));
+                batch.text_styled(atlas, &line, left + 8.0, y + 8.0, style::WHITE, true);
+                match setting.item.blocked(s) {
+                    Some(why) => (lang::get(why), style::MUTED),
+                    None => (
+                        lang::get(description(setting.item, s, setting.text)),
+                        style::GREY,
+                    ),
+                }
+            }
+            None => {
+                let Some(page) = current else { return };
+                let name = Text::literal(lang::get(page.name()));
+                batch.text_styled(atlas, &name, left, y + 8.0, style::WHITE, true);
+                (lang::get(page.about()), style::GREY)
+            }
+        };
+        shell::dock_note(batch, atlas, cols, text, color);
+    }
+
     /// A press (or a drag with `drag`) at `(x, y)`.
+    #[allow(clippy::too_many_arguments)]
     pub fn click(
         &mut self,
-        level: Level,
         s: &mut Settings,
         (x, y): (f32, f32),
         (w, h): (f32, f32),
         framebuffer: [i32; 2],
         drag: bool,
         right: bool,
+        shift: bool,
     ) -> Vec<Action> {
-        let (widgets, _, content) = self.layout(level, s, w, h);
-        let (top, bottom) = Self::bounds(h);
+        self.keep(s);
+        let (cols, lines, content) = self.layout(s, w, h);
+        let at = |[rx, ry, rw, rh]: [f32; 4]| ui::hovered((x, y), rx, ry, rw, rh);
         if drag {
             // AbstractScrollArea.mouseDragged: the held scrollbar follows the pointer.
+            if self.scroll.held() && !cols.scrolls() {
+                self.scroll.release();
+            }
             if self.scroll.held() {
-                self.scroll.drag(y, top, bottom, content);
+                self.picked = None;
+                self.scroll.drag(y, cols.top, cols.bottom, content);
                 return Vec::new();
             }
-            if let Some(item) = self.dragging
-                && let Some(wd) = widgets
-                    .iter()
-                    .find(|wd| matches!(wd.target, Target::Item(i) if i == item))
-            {
-                item.set_slider(s, ui::slider_value(wd.x, wd.w, x));
+            if let Some(item) = self.dragging {
+                item.set_slider(s, cols.slider_at(x));
+                self.changed = true;
                 return vec![Action::SliderDrag];
             }
             return Vec::new();
@@ -1187,457 +1735,695 @@ impl GraphicsUi {
         if right {
             return Vec::new();
         }
-        // AbstractScrollArea.updateScrolling: a press on the scrollbar holds it, silently.
-        if self
-            .scroll
-            .press((x, y), Self::scrollbar_x(w), top, bottom, content)
+        if cols.scrolls()
+            && self
+                .scroll
+                .press((x, y), cols.bar_x(), cols.top, cols.bottom, content)
         {
             return Vec::new();
         }
-        for wd in widgets {
-            if !ui::hovered((x, y), wd.x, wd.y, wd.w, 20.0) {
-                continue;
+        if at(cols.search()) {
+            if !self.search.value.is_empty() && at(cols.clear()) {
+                self.search.set_value("");
+                self.searched();
+                return vec![Action::ButtonClick];
             }
-            if wd.list && (y < top || y >= bottom || wd.y < top || wd.y + 20.0 > bottom) {
-                continue;
-            }
-            self.focus = Some(wd.target);
-            return match wd.target {
-                Target::Button(action) => {
-                    self.can_change_value = false;
-                    vec![Action::ButtonClick, action]
-                }
-                // A disabled control does nothing: no sound, no preset change.
-                Target::Item(item) if item.blocked(s).is_some() => Vec::new(),
-                Target::Item(Item::Horizon(H::HdrSettings)) => {
-                    self.can_change_value = false;
-                    vec![Action::ButtonClick, Action::OpenHdr]
-                }
-                Target::Item(Item::Horizon(H::HdrCalibrate)) if setup(s) == Setup::Changed => {
-                    s.horizon.hdr_peak = 0;
-                    s.horizon.hdr_paper_white = 0;
-                    vec![Action::ButtonClick, Action::Changed]
-                }
-                Target::Item(Item::Horizon(H::HdrCalibrate)) => {
-                    vec![Action::ButtonClick, Action::Calibrate]
-                }
-                Target::Item(Item::Horizon(H::HdrKey)) => {
-                    vec![
-                        Action::ButtonClick,
-                        Action::BindKey(crate::graphics::HDR_KEY),
-                    ]
-                }
-                Target::Item(item) => {
-                    if item.slider(s).is_some() {
-                        self.can_change_value = true;
-                        self.dragging = Some(item);
-                        item.set_slider(s, ui::slider_value(wd.x, wd.w, x));
-                        vec![Action::SliderDrag]
-                    } else {
-                        self.can_change_value = false;
-                        item.cycle(s, right, framebuffer);
-                        vec![Action::ButtonClick, Action::Changed]
-                    }
-                }
-            };
+            self.focus = Some(Target::Search);
+            self.search.reset_blink();
+            self.search.move_cursor_to_end(false);
+            return Vec::new();
         }
-        Vec::new()
+        if self.focus == Some(Target::Search) {
+            self.focus = None;
+        }
+        if at(cols.button(0)) {
+            self.focus = Some(Target::Done);
+            return vec![Action::ButtonClick, Action::Done];
+        }
+        if self.changed && at(cols.button(1)) {
+            // Undo goes away with the change it undid.
+            self.focus = None;
+            self.undo(s);
+            return vec![Action::ButtonClick, Action::Changed];
+        }
+        for (i, page) in Page::ALL.into_iter().enumerate() {
+            if at(cols.page(i)) && self.has(page, &lines) {
+                self.focus = Some(Target::Page(page));
+                self.pick(page, &lines, &cols, content);
+                return vec![Action::ButtonClick];
+            }
+        }
+        if y < cols.top || y >= cols.bottom {
+            return Vec::new();
+        }
+        let Some(item) = lines.iter().find_map(|line| {
+            let ry = self.row_y(&cols, line);
+            let setting = line.setting?;
+            at([cols.list_x, ry, cols.list_w, style::ROW]).then_some(setting.item)
+        }) else {
+            return Vec::new();
+        };
+        // A disabled control does nothing: no sound, no preset change.
+        if item.blocked(s).is_some() {
+            return Vec::new();
+        }
+        self.focus = Some(Target::Item(item));
+        let actions = self.activate(s, item, shift, framebuffer, Some((x, &cols)));
+        self.mark(&actions);
+        actions
+    }
+    /// Press `item`: `at` is where on its row and its slider's track (`None`
+    /// from the keyboard).
+    fn activate(
+        &mut self,
+        s: &mut Settings,
+        item: Item,
+        back: bool,
+        framebuffer: [i32; 2],
+        at: Option<(f32, &Columns)>,
+    ) -> Vec<Action> {
+        match item {
+            Item::Horizon(H::HdrCalibrate) if setup(s) == Setup::Changed => {
+                s.horizon.hdr_peak = 0;
+                s.horizon.hdr_paper_white = 0;
+                vec![Action::ButtonClick, Action::Changed]
+            }
+            Item::Horizon(H::HdrCalibrate) => vec![Action::ButtonClick, Action::Calibrate],
+            Item::Horizon(H::ShaderPacks) => vec![Action::ButtonClick, Action::ShaderPacks],
+            Item::Horizon(H::HdrKey) => {
+                vec![
+                    Action::ButtonClick,
+                    Action::BindKey(crate::graphics::HDR_KEY),
+                ]
+            }
+            _ if item.slider(s).is_some() => {
+                self.can_change_value = true;
+                // A press on the track sets the value there; on the name, only focuses.
+                match at {
+                    Some((x, cols)) if x >= cols.track().0 => {
+                        self.dragging = Some(item);
+                        item.set_slider(s, cols.slider_at(x));
+                        vec![Action::SliderDrag]
+                    }
+                    _ => Vec::new(),
+                }
+            }
+            _ => {
+                self.can_change_value = false;
+                item.cycle(s, back, framebuffer);
+                vec![Action::ButtonClick, Action::Changed]
+            }
+        }
     }
     /// Lets go of a slider (true: it plays its click) or the scrollbar.
     pub fn release(&mut self) -> bool {
         self.scroll.release();
         self.dragging.take().is_some()
     }
-    pub fn scroll(&mut self, level: Level, s: &Settings, h: f32, amount: f32) {
-        let content = Self::content_height(level, s);
-        let (top, bottom) = Self::bounds(h);
-        self.scroll.clamp(top, bottom, content);
-        self.scroll.wheel(amount, 18.0, top, bottom, content);
-    }
-
-    /// Mouse wheel over a control cycles it (cycle button). Sliders and disabled
-    /// rows fall through to scroll the page, matching Vanilla list behavior.
-    /// **Horizon improvement (diverges from Vanilla 26.3):** when a slider or
-    /// cycle item is keyboard-focused (`self.focus`), the wheel steps/cycles it
-    /// regardless of cursor position.  Vanilla 26.3 does not intercept the
-    /// wheel for sliders at all.
+    /// The mouse wheel at the cursor. It scrolls the list, except that a hovered value
+    /// stepped by `<` `>` takes the step (`CycleButton.mouseScrolled`: up goes back)
+    /// while the "Scroll wheel changes settings" extra is on. A slider, a tick box and a
+    /// focused row don't take it, wherever the focus came from: the keyboard and a
+    /// controller step them with Left and Right.
     pub fn wheel(
         &mut self,
-        level: Level,
         s: &mut Settings,
-        cursor: (f32, f32),
         (w, h): (f32, f32),
+        (x, y): (f32, f32),
         framebuffer: [i32; 2],
         amount: f32,
     ) -> Vec<Action> {
-        // Horizon improvement: focused slider/cycle intercepts wheel first.
-        if amount != 0.0
-            && self.can_change_value
-            && let Some(Target::Item(item)) = self.focus
-            && item.available()
-            && item.blocked(s).is_none()
-        {
-            if item.slider(s).is_some() {
-                item.step_slider(s, amount > 0.0, w);
-                return vec![Action::SliderDrag, Action::Changed];
-            } else if !matches!(item, Item::Horizon(H::HdrSettings)) {
+        if amount != 0.0 && s.extras.wheel_cycles_settings {
+            let (cols, lines, _) = self.layout(s, w, h);
+            let hovered = (y >= cols.top && y < cols.bottom)
+                .then(|| {
+                    lines.iter().find_map(|line| {
+                        let setting = line.setting?;
+                        let ry = self.row_y(&cols, line);
+                        ui::hovered((x, y), cols.list_x, ry, cols.list_w, style::ROW)
+                            .then_some(setting.item)
+                    })
+                })
+                .flatten();
+            if let Some(item) = hovered
+                && item.steps(s)
+                && item.blocked(s).is_none()
+            {
                 item.cycle(s, amount > 0.0, framebuffer);
+                self.changed = true;
                 return vec![Action::ButtonClick, Action::Changed];
             }
         }
-        let (widgets, _, _) = self.layout(level, s, w, h);
-        let (top, bottom) = Self::bounds(h);
-        let hovered = widgets.iter().find(|wd| {
-            ui::hovered(cursor, wd.x, wd.y, wd.w, 20.0)
-                && (!wd.list
-                    || (cursor.1 >= top
-                        && cursor.1 < bottom
-                        && wd.y >= top
-                        && wd.y + 20.0 <= bottom))
-        });
-        if let Some(wd) = hovered
-            && let Target::Item(item) = wd.target
-            && item.available()
-            && item.blocked(s).is_none()
-            && item.slider(s).is_none()
-            && !matches!(item, Item::Horizon(H::HdrSettings))
-        {
-            if amount != 0.0 {
-                item.cycle(s, amount > 0.0, framebuffer);
-                return vec![Action::ButtonClick, Action::Changed];
-            }
-            return Vec::new();
-        }
-        self.scroll(level, s, h, amount);
+        self.scroll(s, (w, h), amount);
         Vec::new()
     }
+    /// The mouse wheel scrolls the list.
+    pub fn scroll(&mut self, s: &Settings, (w, h): (f32, f32), amount: f32) {
+        let (cols, _, content) = self.layout(s, w, h);
+        self.picked = None;
+        self.scroll
+            .wheel(amount, 18.0, cols.top, cols.bottom, content);
+    }
+    /// What Tab steps through, in order, with where each is on screen (`shell::reach`).
+    fn focusables(
+        &self,
+        s: &Settings,
+        cols: &Columns,
+        lines: &[Line],
+        near: bool,
+    ) -> Vec<(Target, [f32; 4])> {
+        let mut out = vec![(Target::Search, cols.search())];
+        for (i, page) in Page::ALL.into_iter().enumerate() {
+            if self.has(page, lines) {
+                out.push((Target::Page(page), cols.page(i)));
+            }
+        }
+        // Every setting row, and whether it can take the focus.
+        let rows: Vec<(Item, f32, bool)> = lines
+            .iter()
+            .filter_map(|line| {
+                let setting = line.setting?;
+                let live = setting.item.blocked(s).is_none();
+                Some((setting.item, self.row_y(cols, line), live))
+            })
+            .collect();
+        let reach = shell::reach(&rows, cols, near);
+        for &(item, y, live) in &rows[reach] {
+            if !live {
+                continue;
+            }
+            out.push((
+                Target::Item(item),
+                [cols.list_x, y, cols.list_w, style::ROW],
+            ));
+        }
+        if self.changed {
+            out.push((Target::Undo, cols.button(1)));
+        }
+        out.push((Target::Done, cols.button(0)));
+        out
+    }
+    /// Focus `target`, scrolling its row into the list's view.
+    fn focus_on(
+        &mut self,
+        s: &Settings,
+        target: Target,
+        rect: [f32; 4],
+        cols: &Columns,
+        content: f32,
+    ) {
+        self.focus = Some(target);
+        self.can_change_value =
+            matches!(target, Target::Item(i) if i.slider(s).is_some() && i.blocked(s).is_none());
+        if let Target::Item(_) = target {
+            shell::scroll_into_view(&mut self.scroll, rect, cols, content);
+            self.picked = None;
+        }
+    }
 
-    /// Keyboard navigation and value adjustments.
+    /// Keys: typing in the search field, Tab and the arrows between controls,
+    /// Left and Right on a slider, Enter or Space to press. False: the screen
+    /// handles it (Escape closes it, as `Screen.keyPressed` does first).
+    #[allow(clippy::too_many_arguments)]
     pub fn key_modifiers(
         &mut self,
-        level: Level,
         s: &mut Settings,
         key: winit::keyboard::KeyCode,
+        text: Option<&str>,
         shift: bool,
         (w, h): (f32, f32),
         framebuffer: [i32; 2],
     ) -> (Vec<Action>, bool) {
         use winit::keyboard::KeyCode as K;
-        let (widgets, _, content) = self.layout(level, s, w, h);
-        let (top, bottom) = Self::bounds(h);
-        let focusables: Vec<(Target, [f32; 4], bool)> = widgets
-            .iter()
-            .filter_map(|wd| match wd.target {
-                Target::Item(item) if item.available() && item.blocked(s).is_none() => {
-                    Some((wd.target, [wd.x, wd.y, wd.w, 20.0], wd.list))
-                }
-                Target::Button(_) => Some((wd.target, [wd.x, wd.y, wd.w, 20.0], wd.list)),
-                _ => None,
-            })
-            .collect();
-
-        if focusables.is_empty() {
-            return (Vec::new(), false);
-        }
-
-        // 1. Tab / Shift+Tab navigation
-        if key == K::Tab {
-            let cur = self
-                .focus
-                .and_then(|f| focusables.iter().position(|&(t, ..)| t == f));
-            let next_idx = match cur {
-                Some(i) => {
-                    if shift {
-                        if i == 0 { focusables.len() - 1 } else { i - 1 }
-                    } else {
-                        (i + 1) % focusables.len()
-                    }
-                }
-                None => {
-                    if shift {
-                        focusables.len() - 1
-                    } else {
-                        0
-                    }
-                }
-            };
-            let (target, [_, wy, _, wh], is_list) = focusables[next_idx];
-            self.focus = Some(target);
-            let is_slider = matches!(target, Target::Item(item) if item.slider(s).is_some());
-            self.can_change_value = is_slider;
-            if is_list {
-                if wy < top + 4.0 {
-                    self.scroll.amount -= top + 4.0 - wy;
-                } else if wy + wh > bottom - 4.0 {
-                    self.scroll.amount += wy + wh - (bottom - 4.0);
-                }
-                self.clamp_scroll(h, content);
-            }
-            return (Vec::new(), true);
-        }
-
-        // 2. Left / Right Arrow keys
-        if matches!(key, K::ArrowLeft | K::ArrowRight) {
-            let forward = key == K::ArrowRight;
-            if let Some(Target::Item(item)) = self.focus
-                && item.slider(s).is_some()
-                && self.can_change_value
-            {
-                let width = widgets
-                    .iter()
-                    .find(|wd| wd.target == Target::Item(item))
-                    .map_or(STYLE.control_width, |wd| wd.w);
-                item.step_slider(s, forward, width);
-                return (vec![Action::SliderDrag], true);
-            }
-            if let Some(cur_target) = self.focus
-                && let Some(cur_pos) = focusables.iter().position(|&(t, ..)| t == cur_target)
-            {
-                let from = focusables[cur_pos].1;
-                let rects: Vec<[f32; 4]> = focusables.iter().map(|f| f.1).collect();
-                let dir = if forward {
-                    crate::gamepad::Button::DPadRight
-                } else {
-                    crate::gamepad::Button::DPadLeft
-                };
-                if let Some(next_idx) = crate::gamepad::focus_step_rect(from, dir, &rects) {
-                    let (target, [_, wy, _, wh], is_list) = focusables[next_idx];
-                    self.focus = Some(target);
-                    self.can_change_value = false;
-                    if is_list {
-                        if wy < top + 4.0 {
-                            self.scroll.amount -= top + 4.0 - wy;
-                        } else if wy + wh > bottom - 4.0 {
-                            self.scroll.amount += wy + wh - (bottom - 4.0);
-                        }
-                        self.clamp_scroll(h, content);
-                    }
-                    return (Vec::new(), true);
-                }
-            }
-            return (Vec::new(), false);
-        }
-
-        // 3. Up / Down Arrow keys
-        if matches!(key, K::ArrowUp | K::ArrowDown) {
-            let down = key == K::ArrowDown;
-            if let Some(cur_target) = self.focus
-                && let Some(cur_pos) = focusables.iter().position(|&(t, ..)| t == cur_target)
-            {
-                let from = focusables[cur_pos].1;
-                let rects: Vec<[f32; 4]> = focusables.iter().map(|f| f.1).collect();
-                let dir = if down {
-                    crate::gamepad::Button::DPadDown
-                } else {
-                    crate::gamepad::Button::DPadUp
-                };
-                if let Some(next_idx) = crate::gamepad::focus_step_rect(from, dir, &rects) {
-                    let (target, [_, wy, _, wh], is_list) = focusables[next_idx];
-                    self.focus = Some(target);
-                    self.can_change_value = false;
-                    if is_list {
-                        if wy < top + 4.0 {
-                            self.scroll.amount -= top + 4.0 - wy;
-                        } else if wy + wh > bottom - 4.0 {
-                            self.scroll.amount += wy + wh - (bottom - 4.0);
-                        }
-                        self.clamp_scroll(h, content);
-                    }
-                    return (Vec::new(), true);
-                }
-            } else if !focusables.is_empty() {
-                let first = if down { 0 } else { focusables.len() - 1 };
-                let (target, [_, wy, _, wh], is_list) = focusables[first];
-                self.focus = Some(target);
-                self.can_change_value = false;
-                if is_list {
-                    if wy < top + 4.0 {
-                        self.scroll.amount -= top + 4.0 - wy;
-                    } else if wy + wh > bottom - 4.0 {
-                        self.scroll.amount += wy + wh - (bottom - 4.0);
-                    }
-                    self.clamp_scroll(h, content);
-                }
-                return (Vec::new(), true);
-            }
-            return (Vec::new(), false);
-        }
-
-        // 4. Space / Enter / NumpadEnter
-        if matches!(key, K::Space | K::Enter | K::NumpadEnter)
-            && let Some(target) = self.focus
-        {
-            match target {
-                Target::Item(item) => {
-                    if item.slider(s).is_some() {
-                        self.can_change_value = !self.can_change_value;
-                        return (Vec::new(), true);
-                    } else if item == Item::Horizon(H::HdrSettings) {
-                        return (vec![Action::ButtonClick, Action::OpenHdr], true);
-                    } else {
-                        item.cycle(s, shift, framebuffer);
-                        return (vec![Action::ButtonClick, Action::Changed], true);
-                    }
-                }
-                Target::Button(action) => {
-                    return (vec![Action::ButtonClick, action], true);
-                }
-            }
-        }
-
-        // 5. Escape: the screen closes on the first press, as `Screen.keyPressed` handles it
-        // before the focused slider.
+        self.keep(s);
         if key == K::Escape {
             self.can_change_value = false;
             return (Vec::new(), false);
         }
-
+        if self.focus == Some(Target::Search)
+            && !matches!(key, K::Tab | K::ArrowDown | K::Enter | K::NumpadEnter)
+        {
+            let before = self.search.value.clone();
+            if !self.search.key(key, false, shift)
+                && let Some(t) = text
+            {
+                let typed: String = t.chars().filter(|c| !c.is_control()).collect();
+                self.type_text(&typed);
+            }
+            if self.search.value != before {
+                self.searched();
+            }
+            return (Vec::new(), true);
+        }
+        let (cols, lines, content) = self.layout(s, w, h);
+        let near = key != K::Tab;
+        let focusables = self.focusables(s, &cols, &lines, near);
+        let current = self
+            .focus
+            .and_then(|f| focusables.iter().position(|&(t, _)| t == f));
+        if key == K::Tab {
+            let next = shell::tab_step(focusables.len(), current, shift);
+            let (target, rect) = focusables[next];
+            self.focus_on(s, target, rect, &cols, content);
+            return (Vec::new(), true);
+        }
+        if matches!(key, K::ArrowLeft | K::ArrowRight)
+            && self.can_change_value
+            && let Some(Target::Item(item)) = self.focus
+            && item.slider(s).is_some()
+            && item.blocked(s).is_none()
+        {
+            item.step_slider(s, key == K::ArrowRight, cols.track().1 + 8.0);
+            self.changed = true;
+            return (vec![Action::SliderDrag], true);
+        }
+        if matches!(
+            key,
+            K::ArrowUp | K::ArrowDown | K::ArrowLeft | K::ArrowRight
+        ) {
+            let is_row = |t: Target| matches!(t, Target::Item(_));
+            let next = shell::arrow_step(&focusables, current, key, &cols, is_row);
+            let Some(next) = next else {
+                return (Vec::new(), false);
+            };
+            let (target, rect) = focusables[next];
+            self.focus_on(s, target, rect, &cols, content);
+            self.can_change_value = false;
+            return (Vec::new(), true);
+        }
+        if matches!(key, K::Space | K::Enter | K::NumpadEnter)
+            && let Some(target) = self.focus
+        {
+            let actions = match target {
+                Target::Search => Vec::new(),
+                Target::Page(page) => {
+                    self.pick(page, &lines, &cols, content);
+                    vec![Action::ButtonClick]
+                }
+                // A row greyed out while focused does nothing, as a click on it doesn't.
+                Target::Item(item) if item.blocked(s).is_some() => Vec::new(),
+                Target::Item(item) if item.slider(s).is_some() => {
+                    self.can_change_value = !self.can_change_value;
+                    Vec::new()
+                }
+                Target::Item(item) => self.activate(s, item, shift, framebuffer, None),
+                Target::Undo => {
+                    self.undo(s);
+                    // Undo goes away with the change it undid.
+                    self.focus = Some(Target::Done);
+                    return (vec![Action::ButtonClick, Action::Changed], true);
+                }
+                Target::Done => vec![Action::ButtonClick, Action::Done],
+            };
+            self.mark(&actions);
+            return (actions, true);
+        }
         (Vec::new(), false)
+    }
+    /// Whether the search field takes the keys.
+    pub fn typing(&self) -> bool {
+        self.focus == Some(Target::Search)
+    }
+    /// Text typed into the search field (the keyboard, a controller's on-screen keyboard).
+    pub fn type_text(&mut self, text: &str) {
+        if !text.is_empty() {
+            self.search.insert_text(text);
+            self.searched();
+        }
+    }
+    /// Ctrl+A/C/V/X in the search field.
+    pub fn shortcut(
+        &mut self,
+        shortcut: crate::clipboard::EditShortcut,
+        clipboard: &mut dyn crate::clipboard::Clipboard,
+    ) -> bool {
+        if !self.typing() {
+            return false;
+        }
+        let before = self.search.value.clone();
+        self.search.shortcut(shortcut, clipboard);
+        if self.search.value != before {
+            self.searched();
+        }
+        // Whatever it did: the key is the field's, not something to type.
+        true
+    }
+    /// The search changed: the list starts over at its top.
+    fn searched(&mut self) {
+        self.scroll.amount = 0.0;
+        self.picked = None;
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use winit::keyboard::KeyCode as K;
+
+    const SIZE: (f32, f32) = (640.0, 360.0);
+    const FB: [i32; 2] = [1920, 1080];
+    /// Held by the tests that set `offer_hdr`, which is global.
+    static HDR_OFFER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn items() -> Vec<(Page, Item)> {
+        rows()
+            .into_iter()
+            .flat_map(|(page, groups)| {
+                groups
+                    .into_iter()
+                    .flat_map(|(_, rows)| rows)
+                    .map(move |r| (page, r.item))
+            })
+            .collect()
+    }
+    /// Where `item`'s row is on screen now (its page open and the list scrolled to it first).
+    fn row(ui: &mut GraphicsUi, s: &Settings, item: Item) -> [f32; 4] {
+        if ui.query().is_empty() {
+            ui.page = items().into_iter().find(|(_, i)| *i == item).unwrap().0;
+        }
+        let (cols, lines, content) = ui.layout(s, SIZE.0, SIZE.1);
+        let line = lines
+            .iter()
+            .find(|l| l.setting.is_some_and(|r| r.item == item))
+            .copied()
+            .unwrap();
+        let rect = [cols.list_x, ui.row_y(&cols, &line), cols.list_w, style::ROW];
+        ui.focus_on(s, Target::Item(item), rect, &cols, content);
+        ui.focus = None;
+        ui.can_change_value = false;
+        [cols.list_x, ui.row_y(&cols, &line), cols.list_w, style::ROW]
+    }
+    fn press(ui: &mut GraphicsUi, s: &mut Settings, (x, y): (f32, f32)) -> Vec<Action> {
+        ui.click(s, (x, y), SIZE, FB, false, false, false)
+    }
+    fn press_shift(
+        ui: &mut GraphicsUi,
+        s: &mut Settings,
+        (x, y): (f32, f32),
+        shift: bool,
+    ) -> Vec<Action> {
+        ui.click(s, (x, y), SIZE, FB, false, false, shift)
+    }
 
     #[test]
-    fn hdr_settings_open_where_hdr_is_offered() {
-        let mut s = Settings::default();
-        let mut ui = GraphicsUi::default();
-        let size = (480.0, 2000.0);
-        let at = |ui: &mut GraphicsUi, s: &Settings, level, item| {
-            let (widgets, _, _) = ui.layout(level, s, size.0, size.1);
-            let w = widgets
-                .iter()
-                .find(|w| matches!(w.target, Target::Item(i) if i == item))
-                .unwrap();
-            (w.x + 1.0, w.y + 1.0)
-        };
-        let button = at(&mut ui, &s, Level::Advanced, Item::Horizon(H::HdrSettings));
-        let click = |ui: &mut GraphicsUi, s: &mut Settings, level, point| {
-            ui.click(level, s, point, size, [480, 2000], false, false)
-        };
-        crate::graphics::offer_hdr(false);
-        assert!(click(&mut ui, &mut s, Level::Advanced, button).is_empty());
-        // Not even with HDR saved on, from another computer.
-        s.horizon.hdr = true;
-        assert!(click(&mut ui, &mut s, Level::Advanced, button).is_empty());
-        s.horizon.hdr = false;
-        crate::graphics::offer_hdr(true);
-        assert_eq!(
-            click(&mut ui, &mut s, Level::Advanced, button),
-            [Action::ButtonClick, Action::OpenHdr]
-        );
-        // On HDR's screen, the sliders wait for the switch above them.
-        let peak = at(&mut ui, &s, Level::Hdr, Item::Horizon(H::HdrPeak));
-        assert!(click(&mut ui, &mut s, Level::Hdr, peak).is_empty());
-        s.horizon.hdr = true;
-        assert_eq!(
-            click(&mut ui, &mut s, Level::Hdr, peak),
-            [Action::SliderDrag]
-        );
-        let on = |level, item| {
-            extra_rows(level, &s)
-                .iter()
-                .any(|r| matches!(r, Row::Setting(x) if x.item == Item::Horizon(item)))
-        };
-        assert!(on(Level::Hdr, H::Hdr) && !on(Level::Advanced, H::Hdr));
-        assert!(on(Level::Hdr, H::HdrPeak) && !on(Level::Advanced, H::HdrPeak));
-        for item in [H::HdrBlackLevel, H::HdrPaperWhite, H::HdrUiBrightness] {
-            assert!(on(Level::Hdr, item) && !on(Level::Advanced, item));
+    fn one_screen_holds_every_video_setting_once_with_a_short_description() {
+        let all = items();
+        for (i, (_, item)) in all.iter().enumerate() {
+            assert!(!all[..i].iter().any(|(_, x)| x == item), "{item:?} twice");
+        }
+        // Vanilla's Video Settings options are here beside Horizon's.
+        for opt in [
+            Opt::RenderDistance,
+            Opt::Vsync,
+            Opt::GuiScale,
+            Opt::Clouds,
+            Opt::Mipmaps,
+        ] {
+            assert!(all.iter().any(|(_, i)| *i == Item::Vanilla(opt)), "{opt:?}");
+        }
+        for page in Page::ALL {
+            assert!(all.iter().any(|(p, _)| *p == page), "{page:?} is empty");
+        }
+        for (_, groups) in rows() {
+            for r in groups.into_iter().flat_map(|(_, rows)| rows) {
+                assert!(!r.text.is_empty() && r.text.len() < 80, "{:?}", r.item);
+            }
         }
     }
+
     #[test]
-    fn graphics_buttons_sound_on_press_and_sliders_on_release() {
+    fn a_picked_page_shows_alone_in_its_groups_from_the_top() {
         let mut s = Settings::default();
         let mut ui = GraphicsUi::default();
-        let size = (480.0, 320.0);
-        let (widgets, _, _) = ui.layout(Level::Advanced, &s, size.0, size.1);
-        let button = widgets
-            .iter()
-            .find(|w| matches!(w.target, Target::Button(_)))
-            .unwrap();
-        let point = (button.x + 1.0, button.y + 1.0);
-        assert!(
-            ui.click(
-                Level::Advanced,
-                &mut s,
-                point,
-                size,
-                [854, 480],
-                false,
-                true
-            )
-            .is_empty()
-        );
+        let settings = |ui: &mut GraphicsUi, s: &Settings| {
+            let (_, lines, _) = ui.layout(s, SIZE.0, SIZE.1);
+            assert!(
+                lines[0].group.is_some(),
+                "the list starts at a group's name"
+            );
+            lines
+                .iter()
+                .filter_map(|l| l.setting.map(|r| (l.page, r.item)))
+                .collect::<Vec<_>>()
+        };
+        // Upscaling shows only with TAA, off by default.
+        let on = |page| -> Vec<(Page, Item)> {
+            items()
+                .into_iter()
+                .filter(|(p, i)| *p == page && *i != Item::Horizon(H::Upscaling))
+                .collect()
+        };
+        assert_eq!(settings(&mut ui, &s), on(Page::General));
+        ui.scroll(&s, SIZE, -3.0);
+        assert!(ui.scroll.amount > 0.0);
+        let [x, y, w, h] = Columns::of(SIZE.0, SIZE.1).page(1);
         assert_eq!(
-            ui.click(
-                Level::Advanced,
-                &mut s,
-                point,
-                size,
-                [854, 480],
-                false,
-                false
-            )[0],
-            Action::ButtonClick
+            press(&mut ui, &mut s, (x + w / 2.0, y + h / 2.0)),
+            [Action::ButtonClick]
         );
+        assert_eq!(settings(&mut ui, &s), on(Page::Quality));
+        assert_eq!(ui.scroll.amount, 0.0);
+        // Groups sit apart: each name follows the gap under the panel before it.
+        let (_, lines, _) = ui.layout(&s, SIZE.0, SIZE.1);
+        assert_eq!(ui.current(&lines), Some(Page::Quality));
+        let names: Vec<&Line> = lines.iter().filter(|l| l.group.is_some()).collect();
+        assert!(names.len() > 1);
+        for pair in names.windows(2) {
+            let (_, panel) = pair[0].group.unwrap();
+            assert_eq!(
+                pair[1].y,
+                pair[0].y + style::GROUP_ROW + panel + style::GROUP_GAP
+            );
+        }
+        // Opened at a page (Advanced..., the HDR key), it shows that page.
+        let mut ui = GraphicsUi::default();
+        ui.open(Page::Hdr);
+        assert_eq!(settings(&mut ui, &s), on(Page::Hdr));
+    }
+
+    #[test]
+    fn a_720p_window_keeps_the_page_list_the_buttons_and_five_rows() {
+        // 1280x720 at GUI scale 3.
+        let size = (427.0, 240.0);
+        let mut s = Settings::default();
+        let mut ui = GraphicsUi::default();
+        let cols = Columns::of(size.0, size.1);
+        assert!((cols.bottom - cols.top) / style::ROW >= 5.0);
+        let [x, y, w, h] = cols.page(Page::ALL.len() - 1);
+        assert!(y >= 0.0 && x + w <= size.0);
+        // Undo, over Done, stays clear of the page list.
+        assert!(cols.button(1)[1] >= y + h);
+        ui.click(
+            &mut s,
+            (x + w / 2.0, y + h / 2.0),
+            size,
+            FB,
+            false,
+            false,
+            false,
+        );
+        let (_, lines, _) = ui.layout(&s, size.0, size.1);
+        assert_eq!(ui.current(&lines), Some(Page::Hdr));
+    }
+
+    #[test]
+    fn growing_the_window_keeps_the_scroll_within_the_list() {
+        let s = Settings::default();
+        let mut ui = GraphicsUi::default();
+        ui.scroll(&s, SIZE, -1000.0);
+        assert!(ui.scroll.amount > 0.0);
+        let (cols, lines, _) = ui.layout(&s, 640.0, 4000.0);
+        assert_eq!(ui.scroll.amount, 0.0);
+        assert_eq!(ui.row_y(&cols, &lines[0]), cols.top);
+    }
+
+    #[test]
+    fn the_search_filters_as_you_type_and_drops_pages_left_empty() {
+        let mut s = Settings::default();
+        let mut ui = GraphicsUi::default();
+        let (cols, all, _) = ui.layout(&s, SIZE.0, SIZE.1);
+        assert!(all.iter().all(|l| l.page == Page::General));
+        let [x, y, ..] = cols.search();
+        press(&mut ui, &mut s, (x + 4.0, y + 4.0));
+        assert!(ui.typing());
+        for c in ["c", "l", "o", "u", "d"] {
+            ui.key_modifiers(&mut s, K::KeyA, Some(c), false, SIZE, FB);
+        }
+        let (_, lines, _) = ui.layout(&s, SIZE.0, SIZE.1);
+        let found: Vec<Item> = lines
+            .iter()
+            .filter_map(|l| l.setting.map(|r| r.item))
+            .collect();
+        assert_eq!(
+            found,
+            [Item::Vanilla(Opt::Clouds), Item::Vanilla(Opt::CloudRange)]
+        );
+        assert!(lines.iter().all(|l| l.page == Page::Quality));
+        // Words of a description find it too.
+        ui.search.set_value("tearing");
+        let (_, lines, _) = ui.layout(&s, SIZE.0, SIZE.1);
+        assert!(lines.iter().any(|l| {
+            l.setting
+                .is_some_and(|r| r.item == Item::Vanilla(Opt::Vsync))
+        }));
+        ui.search.set_value("hdr");
+        let [x, y, w, h] = cols.page(Page::ALL.len() - 1);
+        press(&mut ui, &mut s, (x + w / 2.0, y + h / 2.0));
+        assert_eq!(ui.current(&ui.lines(&s).0), Some(Page::Hdr));
+        let [x, y, ..] = cols.clear();
+        assert_eq!(
+            press(&mut ui, &mut s, (x + 2.0, y + 2.0)),
+            [Action::ButtonClick]
+        );
+        // The clear button leaves the page picked meanwhile open, alone, from the top.
+        let (lines, _) = ui.lines(&s);
+        assert!(lines.len() < all.len() && lines.iter().all(|l| l.page == Page::Hdr));
+        assert_eq!(ui.scroll.amount, 0.0);
+        assert_eq!(ui.current(&lines), Some(Page::Hdr));
+    }
+
+    #[test]
+    fn undo_appears_after_changes_and_puts_back_what_the_screen_opened_with() {
+        let mut s = Settings::default();
+        let mut ui = GraphicsUi::default();
+        let (cols, ..) = ui.layout(&s, SIZE.0, SIZE.1);
+        let undo = cols.button(1);
+        let at = |[x, y, ..]: [f32; 4]| (x + 2.0, y + 2.0);
+        // Nothing changed: Undo does nothing.
+        assert!(press(&mut ui, &mut s, at(undo)).is_empty());
+        let fog = row(&mut ui, &s, Item::Horizon(H::Fog));
+        assert_eq!(
+            press(&mut ui, &mut s, at(fog)),
+            [Action::ButtonClick, Action::Changed]
+        );
+        let sky = row(&mut ui, &s, Item::Horizon(H::Sky));
+        press(&mut ui, &mut s, at(sky));
+        assert!(!s.horizon.fog && !s.horizon.sky && ui.changed);
+        // F11 and another option meanwhile: Undo leaves them as they are.
+        s.fullscreen = true;
+        s.chat_opacity = 0.25;
+        assert_eq!(
+            press(&mut ui, &mut s, at(undo)),
+            [Action::ButtonClick, Action::Changed]
+        );
+        assert!(s.horizon.fog && s.horizon.sky && !ui.changed);
+        assert!(s.fullscreen);
+        assert_eq!(s.chat_opacity, 0.25);
+        // From the keyboard: Undo puts it back and goes away.
+        let fog = row(&mut ui, &s, Item::Horizon(H::Fog));
+        press(&mut ui, &mut s, at(fog));
+        ui.focus = Some(Target::Undo);
+        let (actions, _) = ui.key_modifiers(&mut s, K::Enter, None, false, SIZE, FB);
+        assert_eq!(actions, [Action::ButtonClick, Action::Changed]);
+        assert!(s.horizon.fog && !ui.changed);
+        assert_eq!(ui.focus, Some(Target::Done));
+    }
+
+    #[test]
+    fn a_slider_takes_a_press_on_its_track_and_its_click_plays_on_release() {
+        let mut s = Settings::default();
+        let mut ui = GraphicsUi::default();
+        s.horizon.chunk_updates = 16;
+        let r = row(&mut ui, &s, Item::Horizon(H::ChunkUpdates));
+        let (tx, tw) = Columns::of(SIZE.0, SIZE.1).track();
+        // On its name: focused, unchanged.
+        assert!(press(&mut ui, &mut s, (r[0] + 4.0, r[1] + 4.0)).is_empty());
+        assert_eq!(s.horizon.chunk_updates, 16);
+        assert!(ui.can_change_value);
         assert!(!ui.release());
-        let slider = widgets
-            .iter()
-            .find(|w| matches!(w.target, Target::Item(i) if i.slider(&s).is_some()))
-            .unwrap();
+        // At the track's end: the most, then dragged to its start.
         assert_eq!(
-            ui.click(
-                Level::Advanced,
-                &mut s,
-                (slider.x + 1.0, slider.y + 1.0),
-                size,
-                [854, 480],
-                false,
-                false
-            ),
-            vec![Action::SliderDrag]
+            press(&mut ui, &mut s, (tx + tw, r[1] + 4.0)),
+            [Action::SliderDrag]
         );
+        assert_eq!(H::ChunkUpdates.slider(&s), Some(1.0));
         assert_eq!(
-            ui.click(
-                Level::Advanced,
-                &mut s,
-                (-100.0, -100.0),
-                size,
-                [854, 480],
-                true,
-                false
-            ),
-            vec![Action::SliderDrag]
+            ui.click(&mut s, (-100.0, -100.0), SIZE, FB, true, false, false),
+            [Action::SliderDrag]
         );
+        assert_eq!(H::ChunkUpdates.slider(&s), Some(0.0));
         assert!(ui.release());
         assert!(!ui.release());
     }
 
     #[test]
-    fn scrolling_stops_at_both_limits_before_layout() {
-        let s = Settings::default();
-        for level in [Level::Simple, Level::Advanced] {
-            let mut ui = GraphicsUi::default();
-            let h = 2.0 * STYLE.band + 10.0;
-            let (top, bottom) = GraphicsUi::bounds(h);
-            let max = GraphicsUi::content_height(level, &s) - (bottom - top);
-            assert!(max > 4.5);
-            for _ in 0..3 {
-                ui.scroll(level, &s, h, 1000.0);
-                assert_eq!(ui.scroll.amount, 0.0);
-            }
-            for _ in 0..3 {
-                ui.scroll(level, &s, h, -1000.0);
-                assert_eq!(ui.scroll.amount, max);
-            }
-            ui.scroll(level, &s, h, 0.25);
-            assert_eq!(ui.scroll.amount, max - 4.5);
-            ui.scroll(level, &s, h, 1000.0);
-            ui.scroll(level, &s, h, -0.25);
-            assert_eq!(ui.scroll.amount, 4.5);
+    fn smooth_gradients_wait_for_a_device_that_draws_the_16_bit_frame() {
+        let _offer = HDR_OFFER.lock().unwrap_or_else(|e| e.into_inner());
+        crate::graphics::offer_hdr(true);
+        let mut s = Settings::default();
+        s.horizon.hdr = true;
+        let item = Item::Horizon(H::HdrSmoothGradients);
+        // Where the device can't, the saved On reads Off.
+        crate::graphics::offer_smooth_gradients(false);
+        assert_eq!(
+            item.blocked(&s),
+            Some("Your GPU or graphics API doesn't support it.")
+        );
+        assert_eq!(item.label(&s).plain(), "Smooth Gradients: Off");
+        assert_eq!(item.switch(&s), Some(false));
+        assert!(s.horizon.hdr_smooth_gradients);
+        // Where it can, it waits only for HDR, like the rest of the page.
+        crate::graphics::offer_smooth_gradients(true);
+        assert_eq!(item.blocked(&s), None);
+        assert_eq!(item.label(&s).plain(), "Smooth Gradients: On");
+        assert_eq!(item.switch(&s), Some(true));
+        s.horizon.hdr = false;
+        assert_eq!(item.blocked(&s), Some("Turn HDR on to use it."));
+    }
+
+    #[test]
+    fn hdr_waits_for_a_display_that_offers_it_and_its_sliders_for_the_switch() {
+        let _offer = HDR_OFFER.lock().unwrap_or_else(|e| e.into_inner());
+        let mut s = Settings::default();
+        let mut ui = GraphicsUi::default();
+        let at = |[x, y, ..]: [f32; 4]| (x + 8.0, y + 4.0);
+        crate::graphics::offer_hdr(false);
+        // A 720p window opened at HDR shows only its greyed rows: Down still reaches the shortcut.
+        let short = (427.0, 240.0);
+        let mut at_hdr = GraphicsUi::default();
+        at_hdr.open(Page::Hdr);
+        at_hdr.key_modifiers(&mut s, K::ArrowDown, None, false, short, FB);
+        assert_eq!(at_hdr.focus, Some(Target::Item(Item::Horizon(H::HdrKey))));
+        let hdr = row(&mut ui, &s, Item::Horizon(H::Hdr));
+        assert!(press(&mut ui, &mut s, at(hdr)).is_empty());
+        // Not even with HDR saved on, from another computer: nor its sliders and calibration.
+        s.horizon.hdr = true;
+        for h in [H::Hdr, H::HdrCalibrate, H::HdrPeak, H::HdrPaperWhite] {
+            assert!(Item::Horizon(h).blocked(&s).is_some(), "{h:?}");
         }
+        s.horizon.hdr = false;
+        crate::graphics::offer_hdr(true);
+        let (tx, _) = Columns::of(SIZE.0, SIZE.1).track();
+        let peak = row(&mut ui, &s, Item::Horizon(H::HdrPeak));
+        assert!(press(&mut ui, &mut s, (tx + 2.0, peak[1] + 4.0)).is_empty());
+        // The switch turns it on, and the sliders below it work.
+        let hdr = row(&mut ui, &s, Item::Horizon(H::Hdr));
+        assert_eq!(
+            press(&mut ui, &mut s, at(hdr)),
+            [Action::ButtonClick, Action::Changed]
+        );
+        assert!(s.horizon.hdr);
+        let peak = row(&mut ui, &s, Item::Horizon(H::HdrPeak));
+        assert_eq!(
+            press(&mut ui, &mut s, (tx + 2.0, peak[1] + 4.0)),
+            [Action::SliderDrag]
+        );
+        ui.release();
+        // Calibrate starts the calibration; the shortcut row waits for a key.
+        let calibrate = row(&mut ui, &s, Item::Horizon(H::HdrCalibrate));
+        assert_eq!(
+            press(&mut ui, &mut s, at(calibrate)),
+            [Action::ButtonClick, Action::Calibrate]
+        );
+        let key = row(&mut ui, &s, Item::Horizon(H::HdrKey));
+        assert_eq!(
+            press(&mut ui, &mut s, at(key)),
+            [
+                Action::ButtonClick,
+                Action::BindKey(crate::graphics::HDR_KEY)
+            ]
+        );
+        assert!(ui.changed);
     }
 
     #[test]
@@ -1645,79 +2431,205 @@ mod tests {
         // #3552: AbstractScrollArea.updateScrolling holds the scrollbar on a press over its
         // column, mouseDragged moves the list with the pointer, onRelease lets go.
         let mut s = Settings::default();
-        let size = (480.0, 2.0 * STYLE.band + 60.0);
-        let (top, bottom) = GraphicsUi::bounds(size.1);
-        // On the scrollbar column, as `draw` paints it.
-        let x =
-            STYLE.row_x(size.0) + STYLE.control_width + STYLE.gap + STYLE.text_width(size.0) + 8.0;
-        let first_row = |ui: &mut GraphicsUi| {
-            ui.layout(Level::Advanced, &Settings::default(), size.0, size.1)
-                .0[0]
-                .y
-        };
         let mut ui = GraphicsUi::default();
-        let start = first_row(&mut ui);
-        let at = |y| (x, y);
-        let press = |ui: &mut GraphicsUi, s: &mut Settings, y, drag| {
-            ui.click(Level::Advanced, s, at(y), size, [854, 480], drag, false)
+        let (cols, _, content) = ui.layout(&s, SIZE.0, SIZE.1);
+        let x = cols.bar_x() + 2.0;
+        let drag = |ui: &mut GraphicsUi, s: &mut Settings, y, drag| {
+            ui.click(s, (x, y), SIZE, FB, drag, false, false)
         };
-        // The press itself makes no sound and changes nothing.
-        assert!(press(&mut ui, &mut s, top + 5.0, false).is_empty());
-        assert!(press(&mut ui, &mut s, top + 15.0, true).is_empty());
-        let moved = first_row(&mut ui);
-        assert!(moved < start, "dragging down scrolls the list down");
-        // Past the bottom of the list: the last row.
-        press(&mut ui, &mut s, bottom + 50.0, true);
-        let content = GraphicsUi::content_height(Level::Advanced, &s);
-        assert_eq!(first_row(&mut ui), start - (content - (bottom - top)));
-        // Above the list: the first row again.
-        press(&mut ui, &mut s, top - 50.0, true);
-        assert_eq!(first_row(&mut ui), start);
-        // Released: drags no longer scroll, and no slider click plays.
+        assert!(drag(&mut ui, &mut s, cols.top + 5.0, false).is_empty());
+        drag(&mut ui, &mut s, cols.top + 15.0, true);
+        assert!(ui.scroll.amount > 0.0);
+        drag(&mut ui, &mut s, cols.bottom + 50.0, true);
+        assert_eq!(ui.scroll.amount, content - (cols.bottom - cols.top));
+        drag(&mut ui, &mut s, cols.top - 50.0, true);
+        assert_eq!(ui.scroll.amount, 0.0);
         assert!(!ui.release());
-        press(&mut ui, &mut s, bottom + 50.0, true);
-        assert_eq!(first_row(&mut ui), start);
+        drag(&mut ui, &mut s, cols.bottom + 50.0, true);
+        assert_eq!(ui.scroll.amount, 0.0);
     }
 
     #[test]
-    fn resizing_clamps_before_positioning_graphics_rows() {
+    fn a_held_scroller_lets_go_when_the_window_gets_too_short_for_it() {
+        let mut s = Settings::default();
+        let mut ui = GraphicsUi::default();
+        let (cols, ..) = ui.layout(&s, SIZE.0, SIZE.1);
+        let x = cols.bar_x() + 2.0;
+        ui.click(&mut s, (x, cols.top + 5.0), SIZE, FB, false, false, false);
+        assert!(ui.scroll.held());
+        // A 130-high GUI leaves the list under the 40 px the scroller's thumb needs.
+        let short = (SIZE.0, 130.0);
+        assert!(!Columns::of(short.0, short.1).scrolls());
+        assert!(
+            ui.click(&mut s, (x, 80.0), short, FB, true, false, false)
+                .is_empty()
+        );
+        assert!(!ui.scroll.held());
+    }
+
+    /// The rows only vanilla's Video Settings had work here as they do there: its preset
+    /// applies its distances (`Options.applyGraphicsPreset`), Max Anisotropy waits for
+    /// Anisotropic filtering, Exclusive Fullscreen is a tick box of `options.txt`.
+    #[test]
+    fn vanilla_video_rows_work_on_the_graphics_screen() {
+        let mut s = Settings::default();
+        let preset = Item::Vanilla(Opt::Preset);
+        preset.set_slider(&mut s, 0.0);
+        assert_eq!(
+            (s.graphics_preset.as_str(), s.render_distance, s.cloud_range),
+            ("fast", 8, 32)
+        );
+        preset.set_slider(&mut s, 2.0 / 3.0);
+        assert_eq!(
+            (s.graphics_preset.as_str(), s.render_distance, s.cloud_range),
+            ("fabulous", 32, 128)
+        );
+        let anisotropy = Item::Vanilla(Opt::MaxAnisotropy);
+        let filtering = Item::Vanilla(Opt::TextureFiltering);
+        while s.file.int("textureFiltering") == 2 {
+            filtering.cycle(&mut s, false, FB);
+        }
+        assert!(anisotropy.blocked(&s).is_some());
+        while s.file.int("textureFiltering") != 2 {
+            filtering.cycle(&mut s, false, FB);
+        }
+        assert!(anisotropy.blocked(&s).is_none());
+        let exclusive = Item::Vanilla(Opt::ExclusiveFullscreen);
+        assert_eq!(exclusive.switch(&s), Some(false));
+        exclusive.cycle(&mut s, false, FB);
+        assert_eq!(exclusive.switch(&s), Some(true));
+        assert!(s.file.bool("exclusiveFullscreen"));
+        // The graphics extras switch their own setting.
+        let lights = Item::Extra(crate::extras::Item::DynamicLights);
+        lights.cycle(&mut s, false, FB);
+        assert!(s.extras.dynamic_lights);
+        assert_eq!(lights.switch(&s), Some(true));
+    }
+
+    #[test]
+    fn the_wheel_scrolls_and_stops_at_both_ends_without_changing_values() {
+        let mut s = Settings::default();
+        let mut ui = GraphicsUi::default();
+        s.gamma = 0.25;
+        let gamma = row(&mut ui, &s, Item::Vanilla(Opt::Gamma));
+        // A slider being changed doesn't take the wheel either: a controller scrolls with it.
+        press(&mut ui, &mut s, (gamma[0] + 4.0, gamma[1] + 4.0));
+        assert!(ui.can_change_value);
+        let before = ui.scroll.amount;
+        ui.scroll(&s, SIZE, -1.0);
+        assert_eq!(ui.scroll.amount, before + 18.0);
+        assert_eq!(s.gamma, 0.25);
+        let (cols, _, content) = ui.layout(&s, SIZE.0, SIZE.1);
+        ui.scroll(&s, SIZE, -1000.0);
+        assert_eq!(ui.scroll.amount, content - (cols.bottom - cols.top));
+        ui.scroll(&s, SIZE, 1000.0);
+        assert_eq!(ui.scroll.amount, 0.0);
+    }
+
+    #[test]
+    fn the_arrows_move_between_rows_in_view_and_over_to_the_page_list() {
+        let mut s = Settings::default();
+        let mut ui = GraphicsUi::default();
+        let in_view = |ui: &mut GraphicsUi, s: &Settings, item| {
+            let (cols, lines, _) = ui.layout(s, SIZE.0, SIZE.1);
+            let line = lines
+                .iter()
+                .find(|l| l.setting.is_some_and(|r| r.item == item))
+                .unwrap();
+            let y = ui.row_y(&cols, line);
+            y >= cols.top && y + style::ROW <= cols.bottom
+        };
+        // General's last row, against the bottom of the view, then Up: the row over it.
+        let last = Item::Vanilla(Opt::Autosave);
+        row(&mut ui, &s, last);
+        ui.focus = Some(Target::Item(last));
+        ui.key_modifiers(&mut s, K::ArrowUp, None, false, SIZE, FB);
+        let indicator = Item::Vanilla(Opt::AttackIndicator);
+        assert_eq!(ui.focus, Some(Target::Item(indicator)));
+        assert!(in_view(&mut ui, &s, indicator));
+        // Left leaves the plate.
+        ui.key_modifiers(&mut s, K::ArrowLeft, None, false, SIZE, FB);
+        assert!(!matches!(ui.focus, Some(Target::Item(_))), "{:?}", ui.focus);
+        // Up from Done: the page list's last page.
+        ui.focus = Some(Target::Done);
+        ui.key_modifiers(&mut s, K::ArrowUp, None, false, SIZE, FB);
+        assert_eq!(ui.focus, Some(Target::Page(Page::Hdr)));
+        // Its row wheeled far out of view: Down takes the first row in view, as it is.
+        ui.focus = Some(Target::Item(Item::Horizon(H::Preset)));
+        ui.scroll(&s, SIZE, -1000.0);
+        let before = ui.scroll.amount;
+        assert!(before > 0.0);
+        ui.key_modifiers(&mut s, K::ArrowDown, None, false, SIZE, FB);
+        let Some(Target::Item(item)) = ui.focus else {
+            panic!("{:?}", ui.focus)
+        };
+        assert!(in_view(&mut ui, &s, item), "{item:?}");
+        assert_eq!(ui.scroll.amount, before);
+    }
+
+    #[test]
+    fn the_keyboard_tabs_through_settings_and_steps_sliders() {
+        let mut s = Settings::default();
+        let mut ui = GraphicsUi::default();
+        s.horizon.chunk_updates = 10;
+        let tab_to = |ui: &mut GraphicsUi, s: &mut Settings, target| {
+            (0..40).any(|_| {
+                ui.key_modifiers(s, K::Tab, None, false, SIZE, FB);
+                ui.focus == Some(target)
+            })
+        };
+        // Tab reaches the page list; Enter opens Performance and Tab goes on into it.
+        assert!(tab_to(&mut ui, &mut s, Target::Page(Page::Performance)));
+        let (actions, _) = ui.key_modifiers(&mut s, K::Enter, None, false, SIZE, FB);
+        assert_eq!(actions, [Action::ButtonClick]);
+        let chunk_updates = Target::Item(Item::Horizon(H::ChunkUpdates));
+        assert!(tab_to(&mut ui, &mut s, chunk_updates) && ui.can_change_value);
+        // Tab scrolled its row into view.
+        let r = {
+            let (cols, lines, _) = ui.layout(&s, SIZE.0, SIZE.1);
+            let line = lines
+                .iter()
+                .find(|l| {
+                    l.setting
+                        .is_some_and(|r| r.item == Item::Horizon(H::ChunkUpdates))
+                })
+                .copied()
+                .unwrap();
+            ui.row_y(&cols, &line)
+        };
+        let cols = Columns::of(SIZE.0, SIZE.1);
+        assert!(r >= cols.top && r + style::ROW <= cols.bottom);
+        let (actions, handled) = ui.key_modifiers(&mut s, K::ArrowRight, None, false, SIZE, FB);
+        assert!(handled && actions == [Action::SliderDrag]);
+        assert_eq!(s.horizon.chunk_updates, 11);
+        ui.key_modifiers(&mut s, K::ArrowLeft, None, false, SIZE, FB);
+        assert_eq!(s.horizon.chunk_updates, 10);
+        // Space lets go of the value: the arrows move the focus again.
+        ui.key_modifiers(&mut s, K::Space, None, false, SIZE, FB);
+        assert!(!ui.can_change_value);
+        ui.key_modifiers(&mut s, K::ArrowDown, None, false, SIZE, FB);
+        assert_eq!(ui.focus, Some(Target::Item(Item::Horizon(H::UploadBudget))));
+        // Enter presses a switch; Escape is left to the screen, which closes.
+        ui.focus = Some(Target::Item(Item::Horizon(H::Fog)));
+        let (actions, _) = ui.key_modifiers(&mut s, K::Enter, None, false, SIZE, FB);
+        assert_eq!(actions, [Action::ButtonClick, Action::Changed]);
+        assert!(!s.horizon.fog);
+        assert_eq!(
+            ui.key_modifiers(&mut s, K::Escape, None, false, SIZE, FB),
+            (Vec::new(), false)
+        );
+    }
+
+    #[test]
+    fn rows_split_vanilla_labels_into_name_and_value() {
         let s = Settings::default();
-        for level in [Level::Simple, Level::Advanced] {
-            let mut ui = GraphicsUi::default();
-            ui.scroll(level, &s, 2.0 * STYLE.band + 10.0, -1000.0);
-            assert!(ui.scroll.amount > 0.0);
-            let (widgets, headers, _) = ui.layout(level, &s, 480.0, 4000.0);
-            assert_eq!(ui.scroll.amount, 0.0);
-            if let Some((y, _)) = headers.first() {
-                assert_eq!(*y, STYLE.band + 4.0);
-            }
-            let (expected, _, _) = GraphicsUi::default().layout(level, &s, 480.0, 4000.0);
-            assert_eq!(
-                widgets.iter().map(|w| w.y).collect::<Vec<_>>(),
-                expected.iter().map(|w| w.y).collect::<Vec<_>>()
-            );
-            ui.scroll(level, &s, 4000.0, -1000.0);
-            assert_eq!(ui.scroll.amount, 0.0);
-        }
-    }
-
-    #[test]
-    fn classic_submenus_only_add_horizon_settings_without_empty_groups() {
-        for level in [Level::Simple, Level::Advanced] {
-            let rows = extra_rows(level, &Settings::default());
-            assert!(rows.iter().any(|row| matches!(row, Row::Setting(_))));
-            for (i, row) in rows.iter().enumerate() {
-                match row {
-                    Row::Setting(s) => assert!(matches!(s.item, Item::Horizon(_))),
-                    Row::Header(_) => assert!(matches!(rows.get(i + 1), Some(Row::Setting(_)))),
-                }
-            }
-            assert!(
-                super::rows(level).iter().any(
-                    |row| matches!(row, Row::Setting(s) if matches!(s.item, Item::Vanilla(_)))
-                )
-            );
-        }
+        let (name, value) = parts(Item::Horizon(H::LodDistance), &s, false);
+        assert_eq!(
+            (name.as_str(), value.as_deref()),
+            ("LOD Distance", Some("Off"))
+        );
+        let (name, value) = parts(Item::Horizon(H::HdrCalibrate), &s, false);
+        assert!(!name.is_empty() && value.is_none());
     }
 
     #[test]
@@ -1731,38 +2643,18 @@ mod tests {
     }
 
     #[test]
-    fn every_advanced_setting_has_a_description() {
-        for level in [Level::Simple, Level::Advanced, Level::Hdr] {
-            for row in rows(level) {
-                if let Row::Setting(s) = row {
-                    assert!(!s.text.is_empty(), "{:?}", s.item);
-                    assert!(s.text.len() < 80, "one line: {:?}", s.item);
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn lod_distance_slides_in_both_levels_without_changing_near_distance() {
+    fn lod_distance_slides_after_render_distance_without_changing_it() {
         let mut s = Settings::default();
         let item = Item::Horizon(H::LodDistance);
         let near = s.render_distance;
         assert_eq!(item.label(&s).plain(), "LOD Distance: Off");
         assert_eq!(item.slider(&s), Some(0.0));
-        for level in [Level::Simple, Level::Advanced] {
-            let items: Vec<_> = rows(level)
-                .into_iter()
-                .filter_map(|row| match row {
-                    Row::Setting(setting) => Some(setting.item),
-                    Row::Header(_) => None,
-                })
-                .collect();
-            let render = items
-                .iter()
-                .position(|i| *i == Item::Vanilla(Opt::RenderDistance))
-                .unwrap();
-            assert_eq!(items[render + 1], item);
-        }
+        let items: Vec<_> = items().into_iter().map(|(_, i)| i).collect();
+        let render = items
+            .iter()
+            .position(|i| *i == Item::Vanilla(Opt::RenderDistance))
+            .unwrap();
+        assert_eq!(items[render + 1], item);
         // Every stop is reachable and reads back as the same position.
         for (i, &distance) in LOD_STEPS.iter().enumerate() {
             let at = i as f32 / (LOD_STEPS.len() - 1) as f32;
@@ -1790,6 +2682,34 @@ mod tests {
             Item::Vanilla(Opt::RenderDistance).label(&s).plain(),
             format!("Full Detail Distance: {near} chunks")
         );
+    }
+
+    #[test]
+    fn blue_map_settings_sit_with_far_terrain() {
+        let mut s = Settings::default();
+        let find = Item::Horizon(H::BlueMapAutoDetect);
+        let radius = Item::Horizon(H::BlueMapRadius);
+        let distance: Vec<Item> = rows()
+            .into_iter()
+            .flat_map(|(_, groups)| groups)
+            .find(|(name, _)| *name == "Distance")
+            .unwrap()
+            .1
+            .iter()
+            .map(|r| r.item)
+            .collect();
+        assert!(distance.contains(&find) && distance.contains(&radius));
+        assert!(distance.contains(&Item::Horizon(H::FarDetail)));
+        assert_eq!(find.switch(&s), Some(false), "off by default");
+        assert_eq!(radius.label(&s).plain(), "BlueMap Radius: 64 chunks");
+        find.cycle(&mut s, false, FB);
+        assert!(s.horizon.blue_map.auto_detect);
+        radius.cycle(&mut s, false, FB);
+        assert_eq!(s.horizon.blue_map.radius, 128);
+        radius.cycle(&mut s, true, FB);
+        radius.cycle(&mut s, true, FB);
+        assert_eq!(radius.label(&s).plain(), "BlueMap Radius: 32 chunks");
+        assert_eq!(s.horizon.preset, Preset::Custom);
     }
 
     #[test]
@@ -1854,94 +2774,13 @@ mod tests {
         assert_eq!(s.horizon.upscaling, Upscaling::Native);
 
         // The Upscaling row is only on the screen while TAA is on.
-        let shown = |s: &Settings| {
-            extra_rows(Level::Advanced, s)
-                .iter()
-                .any(|row| matches!(row, Row::Setting(r) if r.item == upscaling))
-        };
-        assert!(!shown(&s));
+        assert!(!shown(upscaling, &s));
         s.horizon.taa = true;
-        assert!(shown(&s));
+        assert!(shown(upscaling, &s));
     }
 
     #[test]
-    fn leaf_culling_cycles_modes_in_the_advanced_culling_group() {
-        let mut s = Settings::default();
-        let item = Item::Horizon(H::LeafCulling);
-        assert_eq!(item.switch(&s), None);
-        assert_eq!(item.label(&s).plain(), "Leaf Culling: Off");
-        for label in ["Solid", "Solid Aggressive", "Hollow", "Off"] {
-            item.cycle(&mut s, false, [854, 480]);
-            assert_eq!(item.label(&s).plain(), format!("Leaf Culling: {label}"));
-            assert_eq!(
-                crate::graphics::Graphics::parse(&s.horizon.serialize()).leaf_culling,
-                s.horizon.leaf_culling
-            );
-        }
-        item.cycle(&mut s, true, [854, 480]);
-        assert_eq!(s.horizon.leaf_culling, LeafCullingMode::Hollow);
-
-        // The three culling settings share one group, below Rendering's chunk
-        // updates and above Quality.
-        let rows = rows(Level::Advanced);
-        let culling = rows
-            .iter()
-            .position(|row| matches!(row, Row::Header("Culling")))
-            .unwrap();
-        assert!(matches!(
-            rows.get(culling + 1),
-            Some(Row::Setting(setting)) if setting.item == Item::Horizon(H::CaveCulling)
-        ));
-        assert!(matches!(
-            rows.get(culling + 2),
-            Some(Row::Setting(setting)) if setting.item == Item::Horizon(H::EntityCulling)
-        ));
-        assert!(matches!(
-            rows.get(culling + 3),
-            Some(Row::Setting(setting)) if setting.item == item
-        ));
-        assert!(matches!(
-            rows.get(culling + 4),
-            Some(Row::Header("Quality"))
-        ));
-
-        // The description names what the picked mode does.
-        for mode in LeafCullingMode::ALL {
-            s.horizon.leaf_culling = mode;
-            let text = description(item, &s, "fallback");
-            assert_ne!(text, "fallback", "{mode:?}");
-            assert!(text.len() < 80, "{mode:?}: {text}");
-        }
-
-        // A click cycles it and leaves the preset, as the other quality
-        // settings do.
-        let mut ui = GraphicsUi::default();
-        let size = (480.0, 4000.0);
-        let (widgets, _, _) = ui.layout(Level::Advanced, &s, size.0, size.1);
-        let control = widgets
-            .iter()
-            .find(|w| matches!(w.target, Target::Item(i) if i == item))
-            .unwrap();
-        s.horizon.preset = Preset::Balanced;
-        s.horizon.leaf_culling = LeafCullingMode::Off;
-        assert_eq!(
-            ui.click(
-                Level::Advanced,
-                &mut s,
-                (control.x + 1.0, control.y + 1.0),
-                size,
-                [854, 480],
-                false,
-                false
-            ),
-            vec![Action::ButtonClick, Action::Changed]
-        );
-        assert_eq!(s.horizon.leaf_culling, LeafCullingMode::Solid);
-        assert_eq!(s.horizon.preset, Preset::Custom);
-    }
-
-    #[test]
-    fn entity_culling_modes_are_opt_in_and_cycle_from_advanced_graphics() {
+    fn entity_culling_modes_are_opt_in_and_cycle_from_its_row() {
         let mut s = Settings::default();
         let item = Item::Horizon(H::EntityCulling);
         assert_eq!(s.horizon.entity_culling, EntityCullingMode::Off);
@@ -1953,32 +2792,17 @@ mod tests {
                 assert_eq!(s.horizon.entity_culling, mode);
             }
         }
-
+        s.horizon.entity_culling = EntityCullingMode::Off;
         let mut ui = GraphicsUi::default();
-        let size = (480.0, 4000.0);
-        let (widgets, _, _) = ui.layout(Level::Advanced, &s, size.0, size.1);
-        let switch = widgets
-            .iter()
-            .find(|w| matches!(w.target, Target::Item(i) if i == item))
-            .unwrap();
-        let point = (switch.x + 1.0, switch.y + 1.0);
+        let r = row(&mut ui, &s, item);
         for mode in [
-            EntityCullingMode::Off,
             EntityCullingMode::Synchronous,
             EntityCullingMode::Asynchronous,
         ] {
             s.horizon.preset = Preset::Balanced;
             assert_eq!(
-                ui.click(
-                    Level::Advanced,
-                    &mut s,
-                    point,
-                    size,
-                    [854, 480],
-                    false,
-                    false
-                ),
-                vec![Action::ButtonClick, Action::Changed]
+                press(&mut ui, &mut s, (r[0] + 4.0, r[1] + 4.0)),
+                [Action::ButtonClick, Action::Changed]
             );
             assert_eq!(s.horizon.entity_culling, mode);
             assert_eq!(s.horizon.preset, Preset::Custom);
@@ -1987,110 +2811,374 @@ mod tests {
     }
 
     #[test]
-    fn graphics_slider_keyboard_navigation_and_selection_toggle_parity() {
-        use winit::keyboard::KeyCode as K;
+    fn particle_culling_modes_are_opt_in_and_cycle_from_its_row() {
         let mut s = Settings::default();
+        let item = Item::Horizon(H::ParticleCulling);
+        assert_eq!(s.horizon.particle_culling, ParticleCullingMode::Off);
+        assert_eq!(item.label(&s).plain(), "Particle Culling: Off");
+        for mode in ParticleCullingMode::ALL {
+            s.horizon.particle_culling = mode;
+            for preset in Preset::ALL {
+                crate::graphics::apply_preset(preset, &mut s);
+                assert_eq!(s.horizon.particle_culling, mode);
+            }
+            assert_eq!(
+                crate::graphics::Graphics::parse(&s.horizon.serialize()).particle_culling,
+                mode
+            );
+        }
+        s.horizon.particle_culling = ParticleCullingMode::Off;
         let mut ui = GraphicsUi::default();
-        let size = (480.0, 600.0);
-        let fb = [854, 480];
-
-        s.horizon.chunk_updates = 10;
-        s.horizon.resolution_scale = 100;
-
-        // 1. Tab navigates down to Chunk Updates slider (in Level::Advanced)
-        let mut found_chunk_updates = false;
-        for _ in 0..15 {
-            ui.key_modifiers(Level::Advanced, &mut s, K::Tab, false, size, fb);
-            if ui.focus == Some(Target::Item(Item::Horizon(H::ChunkUpdates))) {
-                found_chunk_updates = true;
-                break;
-            }
+        let r = row(&mut ui, &s, item);
+        for (mode, label) in [
+            (ParticleCullingMode::Synchronous, "Synchronous"),
+            (ParticleCullingMode::Asynchronous, "Asynchronous"),
+            (ParticleCullingMode::Off, "Off"),
+        ] {
+            s.horizon.preset = Preset::Balanced;
+            assert_eq!(
+                press(&mut ui, &mut s, (r[0] + 4.0, r[1] + 4.0)),
+                [Action::ButtonClick, Action::Changed]
+            );
+            assert_eq!(s.horizon.particle_culling, mode);
+            assert_eq!(s.horizon.preset, Preset::Custom);
+            assert_eq!(item.label(&s).plain(), format!("Particle Culling: {label}"));
         }
-        assert!(found_chunk_updates);
-        assert!(
-            ui.can_change_value,
-            "Tab onto slider activates can_change_value"
-        );
-
-        // 2. Right Arrow steps chunk updates from 10 to 11
-        let (actions, handled) =
-            ui.key_modifiers(Level::Advanced, &mut s, K::ArrowRight, false, size, fb);
-        assert!(handled);
-        assert_eq!(actions, vec![Action::SliderDrag]);
-        assert_eq!(s.horizon.chunk_updates, 11);
-
-        // 3. Left Arrow steps back to 10
-        ui.key_modifiers(Level::Advanced, &mut s, K::ArrowLeft, false, size, fb);
-        assert_eq!(s.horizon.chunk_updates, 10);
-
-        // 4. Space toggles can_change_value to false
-        ui.key_modifiers(Level::Advanced, &mut s, K::Space, false, size, fb);
-        assert!(!ui.can_change_value);
-
-        // 5. Space toggles can_change_value back to true
-        ui.key_modifiers(Level::Advanced, &mut s, K::Enter, false, size, fb);
-        assert!(ui.can_change_value);
-
-        // 6. Escape is left to the screen, which closes, even while a slider changes values
-        let (actions, handled) =
-            ui.key_modifiers(Level::Advanced, &mut s, K::Escape, false, size, fb);
-        assert!(!handled);
-        assert!(actions.is_empty());
-        assert!(!ui.can_change_value);
-
-        // 8. Tab to ResolutionScale (steps by 5%)
-        let mut found_res = false;
-        for _ in 0..20 {
-            ui.key_modifiers(Level::Advanced, &mut s, K::Tab, false, size, fb);
-            if ui.focus == Some(Target::Item(Item::Horizon(H::ResolutionScale))) {
-                found_res = true;
-                break;
-            }
-        }
-        assert!(found_res);
-        assert!(ui.can_change_value);
-        ui.key_modifiers(Level::Advanced, &mut s, K::ArrowRight, false, size, fb);
-        assert_eq!(s.horizon.resolution_scale, 105);
-        ui.key_modifiers(Level::Advanced, &mut s, K::ArrowLeft, false, size, fb);
-        assert_eq!(s.horizon.resolution_scale, 100);
     }
 
     #[test]
-    fn graphics_cycle_wheel_cycles_and_slider_falls_through_to_scroll() {
+    fn graphics_cycle_button_cycles_forward_and_shift_click_cycles_backward_with_wrapping() {
         let mut s = Settings::default();
+        let item = Item::Horizon(H::EntityCulling);
         let mut ui = GraphicsUi::default();
-        let size = (480.0, 300.0);
-        let fb = [854, 480];
+        let r = row(&mut ui, &s, item);
+        let at = (r[0] + 4.0, r[1] + 4.0);
 
-        // 1. Wheel on a Cycle button: Far Detail cycles mode
-        let (widgets, _, _) = ui.layout(Level::Advanced, &s, size.0, size.1);
-        let far = widgets
-            .iter()
-            .find(|w| matches!(w.target, Target::Item(Item::Horizon(H::FarDetail))))
-            .unwrap();
-        let cursor = (far.x + 5.0, far.y + 5.0);
-        s.horizon.far_detail = FarDetail::Full;
-        let actions = ui.wheel(Level::Advanced, &mut s, cursor, size, fb, 1.0);
-        assert_eq!(actions, vec![Action::ButtonClick, Action::Changed]);
-        assert_eq!(s.horizon.far_detail, FarDetail::Reduced);
+        // 1. Feature without shift (normal click): cycles forward (+1)
+        assert_eq!(s.horizon.entity_culling, EntityCullingMode::Off);
+        assert_eq!(
+            press_shift(&mut ui, &mut s, at, false),
+            [Action::ButtonClick, Action::Changed]
+        );
+        assert_eq!(s.horizon.entity_culling, EntityCullingMode::Synchronous);
 
-        // 2. Wheel over a slider: Chunk Updates scrolls the page, doesn't change slider value
-        s.horizon.chunk_updates = 16;
-        let (widgets, _, _) = ui.layout(Level::Advanced, &s, size.0, size.1);
-        let cu = widgets
-            .iter()
-            .find(|w| matches!(w.target, Target::Item(Item::Horizon(H::ChunkUpdates))))
+        assert_eq!(
+            press_shift(&mut ui, &mut s, at, false),
+            [Action::ButtonClick, Action::Changed]
+        );
+        assert_eq!(s.horizon.entity_culling, EntityCullingMode::Asynchronous);
+
+        // 3. Wrap-around forward (at max value, normal click wraps to min / 0)
+        assert_eq!(
+            press_shift(&mut ui, &mut s, at, false),
+            [Action::ButtonClick, Action::Changed]
+        );
+        assert_eq!(s.horizon.entity_culling, EntityCullingMode::Off);
+
+        // 4. Wrap-around backward (at min / 0, shift-click wraps to max)
+        assert_eq!(
+            press_shift(&mut ui, &mut s, at, true),
+            [Action::ButtonClick, Action::Changed]
+        );
+        assert_eq!(s.horizon.entity_culling, EntityCullingMode::Asynchronous);
+
+        // 2. Feature with shift: cycles backward (-1)
+        assert_eq!(
+            press_shift(&mut ui, &mut s, at, true),
+            [Action::ButtonClick, Action::Changed]
+        );
+        assert_eq!(s.horizon.entity_culling, EntityCullingMode::Synchronous);
+
+        assert_eq!(
+            press_shift(&mut ui, &mut s, at, true),
+            [Action::ButtonClick, Action::Changed]
+        );
+        assert_eq!(s.horizon.entity_culling, EntityCullingMode::Off);
+    }
+
+    #[test]
+    fn entity_culling_precheck_slider_is_only_live_for_async() {
+        let item = Item::Horizon(H::EntityCullingPrecheck);
+        let mut s = Settings::default();
+        let initial = s.horizon.entity_culling_precheck;
+
+        for mode in [EntityCullingMode::Off, EntityCullingMode::Synchronous] {
+            s.horizon.entity_culling = mode;
+            assert_eq!(
+                item.blocked(&s),
+                Some("Only applies to asynchronous entity culling.")
+            );
+
+            let mut ui = GraphicsUi::default();
+            let row_rect = row(&mut ui, &s, item);
+            assert!(press(&mut ui, &mut s, (row_rect[0] + 4.0, row_rect[1] + 4.0)).is_empty());
+            item.set_slider(&mut s, 1.0);
+            assert_eq!(s.horizon.entity_culling_precheck, initial);
+
+            let (cols, lines, content) = ui.layout(&s, SIZE.0, SIZE.1);
+            assert!(
+                !ui.focusables(&s, &cols, &lines, false)
+                    .iter()
+                    .any(|(target, _)| *target == Target::Item(item))
+            );
+            ui.focus_on(&s, Target::Item(item), row_rect, &cols, content);
+            assert!(!ui.can_change_value);
+        }
+
+        for (code, expected) in [
+            ("en_us", "Only applies to asynchronous entity culling."),
+            ("de_de", "Nur für asynchrones Objekt-Culling."),
+            (
+                "es_es",
+                "Solo se aplica a la oclusión asíncrona de entidades.",
+            ),
+            (
+                "fr_fr",
+                "S'applique uniquement à l'occlusion asynchrone des entités.",
+            ),
+            ("pl_pl", "Dotyczy tylko asynchronicznego pomijania bytów."),
+            (
+                "ru_ru",
+                "Применяется только при асинхронном отсечении сущностей.",
+            ),
+            ("tr_tr", "Yalnızca eşzamansız varlık elemesine uygulanır."),
+            (
+                "uk_ua",
+                "Застосовується лише для асинхронного відсікання сутностей.",
+            ),
+            ("zh_cn", "仅适用于异步实体剔除。"),
+        ] {
+            let (shown, missed) = lang::scoped(lang::Language::load(&[], code), || {
+                lang::get(item.blocked(&s).unwrap())
+            });
+            assert_eq!(shown, expected, "{code}");
+            assert!(missed.is_empty(), "{code}: {missed:?}");
+        }
+
+        s.horizon.entity_culling = EntityCullingMode::Asynchronous;
+        assert_eq!(item.blocked(&s), None);
+        let mut ui = GraphicsUi::default();
+        let row_rect = row(&mut ui, &s, item);
+        let (cols, _, _) = ui.layout(&s, SIZE.0, SIZE.1);
+        let (track_x, track_w) = cols.track();
+        assert_eq!(
+            press(
+                &mut ui,
+                &mut s,
+                (track_x + track_w - 4.0, row_rect[1] + 4.0)
+            ),
+            [Action::SliderDrag]
+        );
+        assert_eq!(s.horizon.entity_culling_precheck, 512);
+    }
+
+    /// Translucent Batching: a switch on the Advanced page, on by default, no part of a
+    /// preset, and greyed out, reading Off, where the device can't batch.
+    #[test]
+    fn translucent_batching_is_an_advanced_switch_where_the_device_can() {
+        let item = Item::Horizon(H::TranslucentBatching);
+        let page = items()
+            .into_iter()
+            .find(|(_, i)| *i == item)
+            .map(|(p, _)| p);
+        if cfg!(target_os = "macos") {
+            // Metal draws flat: never offered, so not shown.
+            assert_eq!(page, None);
+            return;
+        }
+        assert_eq!(page, Some(Page::Advanced));
+        let mut s = Settings::default();
+        s.horizon.preset = Preset::Balanced;
+        let mut ui = GraphicsUi::default();
+        // Where the device can't, the saved On reads Off, and neither a click nor Enter
+        // after it does anything: no sound, no change, no save.
+        crate::graphics::offer_translucent_batching(false);
+        assert!(item.blocked(&s).is_some());
+        assert_eq!(item.label(&s).plain(), "Translucent Batching: Off");
+        assert_eq!(item.switch(&s), Some(false));
+        let r = row(&mut ui, &s, item);
+        let point = (r[0] + 4.0, r[1] + 4.0);
+        assert!(press(&mut ui, &mut s, point).is_empty());
+        ui.focus = Some(Target::Item(item));
+        let enter = ui.key_modifiers(&mut s, K::Enter, None, false, SIZE, FB);
+        assert!(enter.0.is_empty());
+        assert!(s.horizon.translucent_batching);
+        // Where it can, a click switches it and keeps the preset.
+        crate::graphics::offer_translucent_batching(true);
+        assert_eq!(item.label(&s).plain(), "Translucent Batching: On");
+        assert_eq!(item.switch(&s), Some(true));
+        assert_eq!(
+            press(&mut ui, &mut s, point),
+            [Action::ButtonClick, Action::Changed]
+        );
+        assert!(!s.horizon.translucent_batching);
+        assert_eq!(item.label(&s).plain(), "Translucent Batching: Off");
+        assert_eq!(s.horizon.preset, Preset::Balanced);
+        // No preset sets it.
+        for on in [false, true] {
+            s.horizon.translucent_batching = on;
+            for preset in Preset::ALL {
+                crate::graphics::apply_preset(preset, &mut s);
+                assert_eq!(s.horizon.translucent_batching, on, "{preset:?}");
+            }
+        }
+    }
+
+    /// GPU Culling: a switch right after Cave Culling, off by default, no part of a preset,
+    /// and greyed out with its reason, reading Off, wherever it isn't offered.
+    #[test]
+    fn gpu_culling_is_a_culling_switch_where_it_is_offered() {
+        use crate::graphics::GpuCullingOffer;
+        let item = Item::Horizon(H::GpuCulling);
+        let at = |item| items().into_iter().position(|(_, i)| i == item);
+        if cfg!(target_os = "macos") {
+            // Metal draws no count the GPU wrote: never offered, so not shown.
+            assert_eq!(at(item), None);
+            return;
+        }
+        let i = at(item).unwrap();
+        assert_eq!(items()[i].0, Page::Performance);
+        assert_eq!(at(Item::Horizon(H::CaveCulling)), Some(i - 1));
+        let mut s = Settings::default();
+        assert_eq!(item.switch(&s), Some(false));
+        s.horizon.preset = Preset::Balanced;
+        s.horizon.gpu_culling = true;
+        // Where it isn't offered, the saved On reads Off, and neither a click nor Enter after
+        // it does anything.
+        for offer in [
+            GpuCullingOffer::Unsupported,
+            GpuCullingOffer::Software,
+            GpuCullingOffer::OutOfMemory,
+            GpuCullingOffer::Dx12,
+            GpuCullingOffer::DeviceLost,
+        ] {
+            crate::graphics::offer_gpu_culling(offer);
+            assert!(offer.reason().is_some());
+            assert_eq!(item.blocked(&s), offer.reason());
+            assert_eq!(item.label(&s).plain(), "GPU Culling: Off");
+            // The box, the narrator and the widget tree read the switch.
+            assert_eq!(item.switch(&s), Some(false), "{offer:?}");
+            let mut ui = GraphicsUi::default();
+            let r = row(&mut ui, &s, item);
+            assert!(press(&mut ui, &mut s, (r[0] + 4.0, r[1] + 4.0)).is_empty());
+            ui.focus = Some(Target::Item(item));
+            let enter = ui.key_modifiers(&mut s, K::Enter, None, false, SIZE, FB);
+            assert!(enter.0.is_empty());
+            assert!(s.horizon.gpu_culling, "{offer:?}");
+        }
+        // Where it is, a click switches it and keeps the preset.
+        crate::graphics::offer_gpu_culling(GpuCullingOffer::Offered);
+        assert_eq!(item.blocked(&s), None);
+        assert_eq!(item.label(&s).plain(), "GPU Culling: On");
+        assert_eq!(item.switch(&s), Some(true));
+        let mut ui = GraphicsUi::default();
+        let r = row(&mut ui, &s, item);
+        assert_eq!(
+            press(&mut ui, &mut s, (r[0] + 4.0, r[1] + 4.0)),
+            [Action::ButtonClick, Action::Changed]
+        );
+        assert!(!s.horizon.gpu_culling);
+        assert_eq!(s.horizon.preset, Preset::Balanced);
+        // No preset sets it.
+        for on in [false, true] {
+            s.horizon.gpu_culling = on;
+            for preset in Preset::ALL {
+                crate::graphics::apply_preset(preset, &mut s);
+                assert_eq!(s.horizon.gpu_culling, on, "{preset:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn leaf_culling_cycles_modes_beside_the_other_culling() {
+        let mut s = Settings::default();
+        let item = Item::Horizon(H::LeafCulling);
+        assert_eq!(item.switch(&s), None);
+        assert_eq!(item.label(&s).plain(), "Leaf Culling: Off");
+        for label in ["Hidden Faces", "Solid", "Solid Aggressive", "Hollow", "Off"] {
+            item.cycle(&mut s, false, FB);
+            assert_eq!(item.label(&s).plain(), format!("Leaf Culling: {label}"));
+            assert_eq!(
+                crate::graphics::Graphics::parse(&s.horizon.serialize()).leaf_culling,
+                s.horizon.leaf_culling
+            );
+        }
+        item.cycle(&mut s, true, FB);
+        assert_eq!(s.horizon.leaf_culling, LeafCullingMode::Hollow);
+
+        // The three culling settings share one group of the Performance page.
+        let culling = rows()
+            .into_iter()
+            .flat_map(|(page, groups)| groups.into_iter().map(move |(_, b)| (page, b)))
+            .find(|(_, b)| b.iter().any(|r| r.item == item))
             .unwrap();
-        let cursor = (cu.x + 5.0, cu.y + 5.0);
-        let scroll_before = ui.scroll.amount;
-        let actions = ui.wheel(Level::Advanced, &mut s, cursor, size, fb, -1.0);
-        assert!(actions.is_empty());
-        assert_eq!(s.horizon.chunk_updates, 16);
-        assert!(ui.scroll.amount > scroll_before);
+        assert_eq!(culling.0, Page::Performance);
+        let block: Vec<Item> = culling.1.iter().map(|r| r.item).collect();
+        for h in [
+            H::CaveCulling,
+            H::EntityCulling,
+            H::ParticleCulling,
+            H::LeafCulling,
+        ] {
+            assert!(block.contains(&Item::Horizon(h)), "{h:?}");
+        }
+        // The block-entity caches are the group after it, in this order.
+        let groups: Vec<(&str, Vec<Item>)> = rows()
+            .into_iter()
+            .find(|(page, _)| *page == Page::Performance)
+            .unwrap()
+            .1
+            .into_iter()
+            .map(|(name, rows)| (name, rows.iter().map(|r| r.item).collect()))
+            .collect();
+        let at = groups
+            .iter()
+            .position(|(name, _)| *name == "Culling")
+            .unwrap();
+        assert_eq!(
+            groups[at + 1],
+            (
+                "Block Entities",
+                [
+                    H::CacheShulkerBoxes,
+                    H::CacheSigns,
+                    H::CacheDecoratedPots,
+                    H::CacheBells,
+                    H::CacheChests,
+                    H::CacheBanners,
+                    H::CacheCopperGolemStatues,
+                ]
+                .map(Item::Horizon)
+                .to_vec()
+            )
+        );
+
+        // The description names what the picked mode does.
+        for mode in LeafCullingMode::ALL {
+            s.horizon.leaf_culling = mode;
+            let text = description(item, &s, "fallback");
+            assert_ne!(text, "fallback", "{mode:?}");
+            assert!(text.len() < 80, "{mode:?}: {text}");
+        }
+
+        // A click cycles it and leaves the preset, as the other quality settings do.
+        let mut ui = GraphicsUi::default();
+        s.horizon.preset = Preset::Balanced;
+        s.horizon.leaf_culling = LeafCullingMode::Off;
+        let r = row(&mut ui, &s, item);
+        assert_eq!(
+            press(&mut ui, &mut s, (r[0] + 4.0, r[1] + 4.0)),
+            [Action::ButtonClick, Action::Changed]
+        );
+        assert_eq!(s.horizon.leaf_culling, LeafCullingMode::Hidden);
+        assert_eq!(s.horizon.preset, Preset::Custom);
     }
 
     #[test]
     fn graphics_step_slider_matches_set_slider_for_all_options() {
+        // HDR's sliders step only where the display offers HDR.
+        let _offer = HDR_OFFER.lock().unwrap_or_else(|e| e.into_inner());
+        crate::graphics::offer_hdr(true);
         let options = [
             H::ChunkUpdates,
             H::UploadBudget,
@@ -2138,6 +3226,190 @@ mod tests {
                     "{h:?} step backward from {i}"
                 );
             }
+        }
+    }
+    /// Horizon's graphics captions are English sentences that the language table keys by
+    /// themselves, so a caption, description or value that is not in `en_us.json` shows in
+    /// English in every language. Every text the screen shows, with each setting cycled
+    /// through its values (#1927).
+    #[test]
+    fn every_graphics_text_is_in_the_language_table() {
+        let (_, missed) = lang::scoped(lang::Language::load(&[], "de_de"), || {
+            for hdr in [false, true] {
+                let mut s = Settings::default();
+                s.horizon.hdr = hdr;
+                s.horizon.taa = true;
+                for _ in 0..8 {
+                    for (page, groups) in rows() {
+                        lang::get(page.name());
+                        lang::get(page.about());
+                        for (group, rows) in groups {
+                            lang::get(group);
+                            for row in rows {
+                                // Vanilla's captions are vanilla's keys, not loaded here.
+                                if let Item::Horizon(_) = row.item {
+                                    row.item.label(&s);
+                                }
+                                let text = description(row.item, &s, row.text);
+                                lang::get(text);
+                                lang::get(row.cost.label());
+                                if let Some(why) = row.item.blocked(&s) {
+                                    lang::get(why);
+                                }
+                                if let Item::Horizon(h) = row.item {
+                                    h.cycle(&mut s, false);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            for text in [
+                "Search options",
+                "Results for \"%s\"",
+                "No settings match.",
+                "Undo",
+                "Done",
+            ] {
+                lang::get(text);
+            }
+            // Every reason GPU Culling's switch can give, whatever this device offers.
+            use crate::graphics::GpuCullingOffer as O;
+            for offer in [
+                O::Unsupported,
+                O::Software,
+                O::OutOfMemory,
+                O::Dx12,
+                O::DeviceLost,
+            ] {
+                lang::get(offer.reason().unwrap());
+            }
+        });
+        // `labelled` also looks up values that are already words in the language ("An") or
+        // numbers with a unit ("12 chunks", "Auto (8)"); those are not keys, and "FSR 3.1" is
+        // a name.
+        let missed: Vec<_> = missed
+            .into_iter()
+            .filter(|m| !m.starts_with(|c: char| c.is_ascii_digit()) && !m.starts_with("Auto ("))
+            .filter(|m| !["An", "Aus", "FSR 3.1", "key.keyboard.unknown"].contains(&m.as_str()))
+            .collect();
+        assert_eq!(missed, Vec::<String>::new());
+    }
+    /// Horizon's captions join label and value with the language's `options.generic_value` and
+    /// `options.percent_value`, as vanilla's beside them on the same page do (#6072). The
+    /// templates are 26.3's.
+    #[test]
+    fn horizon_captions_use_the_languages_separator() {
+        struct Vanilla;
+        impl lang::ResourceSource for Vanilla {
+            fn read(&self, path: &str) -> Option<Vec<u8>> {
+                let (generic, percent) = match path {
+                    "assets/minecraft/lang/en_us.json" => ("%s: %s", "%s: %s%%"),
+                    "assets/minecraft/lang/fr_fr.json" => ("%s : %s", "%s : %s %%"),
+                    "assets/minecraft/lang/zh_cn.json" => ("%s：%s", "%s：%s%%"),
+                    "assets/minecraft/lang/en_ud.json" => ("%2$s :%1$s", "%s: %s%%"),
+                    _ => return None,
+                };
+                serde_json::to_vec(&serde_json::json!({
+                    "options.generic_value": generic,
+                    "options.percent_value": percent,
+                }))
+                .ok()
+            }
+        }
+        let mut s = Settings::default();
+        s.horizon.leaf_culling = LeafCullingMode::Hollow;
+        s.horizon.resolution_scale = 75;
+        for (code, leaf, scale) in [
+            ("en_us", "Leaf Culling: Hollow", "Resolution Scale: 75%"),
+            (
+                "fr_fr",
+                "Occlusion feuillage : Creux",
+                "Échelle de résolution : 75 %",
+            ),
+            ("zh_cn", "树叶剔除：镂空", "渲染比例：75%"),
+            // Value first.
+            ("en_ud", "Hollow :Leaf Culling", "Resolution Scale: 75%"),
+        ] {
+            let (shown, _) = lang::scoped(lang::Language::load(&[&Vanilla], code), || {
+                (
+                    Item::Horizon(H::LeafCulling).label(&s).plain(),
+                    Item::Horizon(H::ResolutionScale).label(&s).plain(),
+                )
+            });
+            assert_eq!(shown, (leaf.into(), scale.into()), "{code}");
+        }
+    }
+    /// Leaf Culling, Frame Generation and Shadow Cache came with English captions only (#1927).
+    #[test]
+    fn newer_graphics_settings_are_translated() {
+        let mut s = Settings::default();
+        s.horizon.leaf_culling = LeafCullingMode::Hollow;
+        s.horizon.entity_culling = EntityCullingMode::Asynchronous;
+        s.horizon.particle_culling = ParticleCullingMode::Asynchronous;
+        for (code, leaf, entity, leaf_text, particle, particle_text) in [
+            (
+                "de_de",
+                "Laub-Culling: Hohl",
+                "Objekt-Culling: Asynchron",
+                "Lässt Flächen zwischen Blättern weg: schneller, aber Lücken sind durchsichtig.",
+                "Partikel-Culling: Asynchron",
+                "Überspringt Partikel außerhalb des Bildes, unterhalb eines Pixels oder hinter Terrain und entlastet den Render-Thread.",
+            ),
+            (
+                "pl_pl",
+                "Pomijanie liści: Puste",
+                "Pomijanie bytów: Asynchroniczne",
+                "Pomija ściany między liśćmi: szybciej, ale luki są przezroczyste.",
+                "Pomijanie cząsteczek: Asynchroniczne",
+                "Pomija cząsteczki poza ekranem, mniejsze niż piksel i zasłonięte przez teren, odciążając wątek renderowania.",
+            ),
+            (
+                "uk_ua",
+                "Відсікання листя: Порожнє",
+                "Відсік. сутностей: Асинхронно",
+                "Прибирає грані між листям: швидше, але прогалини прозорі.",
+                "Відсікання частинок: Асинхронно",
+                "Пропускає частинки поза екраном, менші за піксель і закриті місцевістю, зменшуючи роботу потоку рендерингу.",
+            ),
+            (
+                "zh_cn",
+                "树叶剔除: 镂空",
+                "实体剔除: 异步",
+                "省略树叶之间的面：更快，但缝隙会透视。",
+                "粒子剔除: 异步",
+                "跳过屏幕外、小于一个像素和被地形遮挡的粒子，减少渲染线程的工作量。",
+            ),
+            (
+                "fr_fr",
+                "Occlusion feuillage: Creux",
+                "Occlusion des entités: Asynchrone",
+                "Supprime les faces entre feuilles : plus rapide, mais on voit à travers les trous.",
+                "Occlusion des particules: Asynchrone",
+                "Ignore les particules hors écran, trop petites ou masquées par le terrain avec moins de travail sur le thread de rendu.",
+            ),
+        ] {
+            let (shown, _) = lang::scoped(lang::Language::load(&[], code), || {
+                let item = |h| Item::Horizon(h);
+                (
+                    item(H::LeafCulling).label(&s).plain(),
+                    item(H::EntityCulling).label(&s).plain(),
+                    lang::get(description(item(H::LeafCulling), &s, "")),
+                    item(H::ParticleCulling).label(&s).plain(),
+                    lang::get(description(item(H::ParticleCulling), &s, "")),
+                )
+            });
+            assert_eq!(
+                shown,
+                (
+                    leaf.into(),
+                    entity.into(),
+                    leaf_text.into(),
+                    particle.into(),
+                    particle_text.into(),
+                ),
+                "{code}"
+            );
         }
     }
 }

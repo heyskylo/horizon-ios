@@ -12,7 +12,12 @@ use horizon_client::{
     particles::{ParticleOptions, ParticleType},
     sculk::{self, Context, Info, SculkEntity, SculkKind, WardenSpawnTracker},
 };
-use horizon_core::{geometry::Direction, position::BlockPos, random::RandomSource};
+use horizon_core::{
+    geometry::{Aabb, Direction, Vec3},
+    position::BlockPos,
+    random::RandomSource,
+};
+use horizon_protocol::entity_data::PositionSource;
 use horizon_world::registry::BlockStateId;
 use std::collections::HashSet;
 use winit::keyboard::KeyCode;
@@ -87,6 +92,8 @@ pub(super) struct SculkState {
     pub known_revision: Option<u64>,
     // Keyed by mob ids the server gives out: the fast hasher is safe.
     steps: FxHashMap<Who, Steps>,
+    /// Items that have fallen since last touching the ground or water.
+    falling_items: HashSet<u32>,
     /// The vehicle each rider had last tick and where it stood.
     mounts: FxHashMap<Who, (u32, [f64; 3])>,
     damaged: FxHashMap<u32, i64>,
@@ -127,17 +134,59 @@ impl SculkState {
 struct Index {
     order: Vec<(i32, i32, i32)>,
     set: HashSet<(i32, i32, i32)>,
+    /// The positions by 32-block cell, each with its rank: ranks only grow,
+    /// so sorting by them gives `order`'s order. Every mob's step posts a
+    /// game event, and the listeners near it are read from at most eight
+    /// cells instead of the whole level's.
+    cells: FxHashMap<(i32, i32, i32), Vec<(u64, (i32, i32, i32))>>,
+    next: u64,
+}
+fn index_cell(key: (i32, i32, i32)) -> (i32, i32, i32) {
+    (key.0 >> 5, key.1 >> 5, key.2 >> 5)
 }
 impl Index {
     fn insert(&mut self, key: (i32, i32, i32)) {
         if self.set.insert(key) {
             self.order.push(key);
+            self.cells
+                .entry(index_cell(key))
+                .or_default()
+                .push((self.next, key));
+            self.next += 1;
         }
     }
     fn remove(&mut self, key: &(i32, i32, i32)) {
         if self.set.remove(key) {
             self.order.retain(|k| k != key);
+            let cell = index_cell(*key);
+            if let Some(list) = self.cells.get_mut(&cell) {
+                list.retain(|(_, k)| k != key);
+                if list.is_empty() {
+                    self.cells.remove(&cell);
+                }
+            }
         }
+    }
+    /// The positions whose `dist_sqr` to `at` is at most `radius` squared,
+    /// in `order`'s order: what filtering `iter` gives.
+    fn within(&self, at: [i32; 3], radius: i32) -> Vec<(i32, i32, i32)> {
+        let limit = i64::from(radius * radius);
+        let span = |v: i32| {
+            let cell = |w: i64| (w >> 5).clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+            cell(i64::from(v) - i64::from(radius))..=cell(i64::from(v) + i64::from(radius))
+        };
+        let mut found: Vec<(u64, (i32, i32, i32))> = Vec::new();
+        for x in span(at[0]) {
+            for y in span(at[1]) {
+                for z in span(at[2]) {
+                    if let Some(list) = self.cells.get(&(x, y, z)) {
+                        found.extend(list.iter().filter(|(_, k)| dist_sqr(at, *k) <= limit));
+                    }
+                }
+            }
+        }
+        found.sort_unstable_by_key(|(rank, _)| *rank);
+        found.into_iter().map(|(_, k)| k).collect()
     }
     fn contains(&self, key: &(i32, i32, i32)) -> bool {
         self.set.contains(key)
@@ -148,6 +197,10 @@ impl Index {
     fn retain(&mut self, mut keep: impl FnMut(&(i32, i32, i32)) -> bool) {
         self.order.retain(|k| keep(k));
         self.set.retain(|k| keep(k));
+        self.cells.retain(|_, list| {
+            list.retain(|(_, k)| keep(k));
+            !list.is_empty()
+        });
     }
 }
 const KIND_SENSOR: u8 = 1;
@@ -528,6 +581,7 @@ impl Game<'_> {
 
     /// `Level.gameEvent`: tell the listeners within reach.
     pub(super) fn post_game_event(&mut self, event: &'static str, pos: [f64; 3], ctx: Context) {
+        self.native_game_event(event, pos);
         super::dispense_fixture::record(|| {
             format!(
                 "G {},{},{} {event}",
@@ -541,13 +595,7 @@ impl Game<'_> {
         }
         let at = block_of(pos);
         let radius = sculk::notification_radius(event).min(16);
-        let near: Vec<(i32, i32, i32)> = self
-            .sculk
-            .index
-            .iter()
-            .copied()
-            .filter(|p| dist_sqr(at, *p) <= i64::from(radius * radius))
-            .collect();
+        let near = self.sculk.index.within(at, radius);
         for key in near {
             self.sculk_listen(key, event, pos, &ctx);
         }
@@ -849,7 +897,8 @@ impl Game<'_> {
                     .vibration
                     .tick(time, adjacent, true, |d| d.floor() as i32);
                 if let Some((info, travel)) = tick.started {
-                    self.vibration_particle(info.pos, center(key), travel);
+                    let source = PositionSource::Block([key.0, key.1, key.2]);
+                    self.vibration_particle(source, info.pos, center(key), travel);
                 }
                 if let Some(info) = tick.received {
                     self.sculk_receive(key, info)?;
@@ -869,6 +918,23 @@ impl Game<'_> {
         let (kind, radius) = (entity.kind, entity.listener_radius());
         let origin = block_of(info.pos);
         let distance = (dist_sqr(origin, key) as f64).sqrt() as f32;
+        let block = match kind {
+            SculkKind::Sensor => "minecraft:sculk_sensor",
+            SculkKind::Calibrated => "minecraft:calibrated_sculk_sensor",
+            SculkKind::Shrieker => "minecraft:sculk_shrieker",
+            SculkKind::Catalyst => "minecraft:sculk_catalyst",
+        };
+        let mut cancel = false;
+        self.native_block_receive_game(
+            self.dim.id(),
+            [key.0, key.1, key.2],
+            block,
+            info.event,
+            &mut cancel,
+        );
+        if cancel {
+            return Ok(());
+        }
         match kind {
             SculkKind::Sensor | SculkKind::Calibrated => {
                 let state = self.world.block(key.0, key.1, key.2);
@@ -1231,8 +1297,9 @@ impl Game<'_> {
     pub(super) fn darkness_lighting(&self, partial: f32) -> (f32, f32) {
         let scale = self.settings.file.double("darknessEffectScale") as f32;
         let modifier = self.darkness_blend(partial) * scale;
-        let pulse =
-            ((self.ticks as f32 - partial) * std::f32::consts::PI * 0.025).cos() * 0.45 * modifier;
+        let pulse = ((self.visual_ticks() as f32 - partial) * std::f32::consts::PI * 0.025).cos()
+            * 0.45
+            * modifier;
         (modifier, pulse.max(0.0) * scale)
     }
 
@@ -1341,6 +1408,7 @@ impl Game<'_> {
     fn catalyst_bloom(&mut self, key: (i32, i32, i32)) {
         let pos = BlockPos::new(key.0, key.1, key.2);
         self.with_level(|b, level, ticks| b.sculk_catalyst_bloom(level, ticks, pos));
+        self.native_sculk_bloom(self.dim.id(), [key.0, key.1, key.2]);
         let _ = self.process_level_events();
         let c = center(key);
         let options = ParticleOptions::simple(ParticleType::SculkSoul);
@@ -1493,12 +1561,41 @@ impl Game<'_> {
         }
     }
 
-    fn vibration_particle(&mut self, from: [f64; 3], to: [f64; 3], ticks: i32) {
-        self.particles.vibration(from, to, ticks);
+    /// `ServerLevel.sendParticles(new VibrationParticleOption(...), origin,
+    /// 1, 0, 0, 0, 0)` from `VibrationSystem.Ticker.trySelectAndScheduleVibration`:
+    /// the window draws it when it is a client, and every player within 32
+    /// blocks is sent it.
+    fn vibration_particle(
+        &mut self,
+        source: PositionSource,
+        from: [f64; 3],
+        to: [f64; 3],
+        ticks: i32,
+    ) {
+        let options = ParticleOptions::vibration(source, to, ticks);
+        if self.options.execution_role.is_client() {
+            self.particles.vibration(from, to, ticks);
+        }
+        self.lan_send_particles(super::lan_particles::QueuedParticle {
+            dimension: self.dim.id(),
+            options,
+            state: None,
+            at: from,
+            spread: [0.0; 3],
+            speed: [0.0; 3],
+            count: 1,
+            randomization: 0,
+        });
     }
     /// A vibration travelling to a warden (`MobEvent::Vibration`).
-    pub(super) fn mob_vibration_particle(&mut self, from: [f64; 3], to: [f64; 3], ticks: i32) {
-        self.vibration_particle(from, to, ticks);
+    pub(super) fn mob_vibration_particle(
+        &mut self,
+        source: PositionSource,
+        from: [f64; 3],
+        to: [f64; 3],
+        ticks: i32,
+    ) {
+        self.vibration_particle(source, from, to, ticks);
     }
     /// `Warden.clientDiggingParticles`: thirty crumbs of the block underfoot.
     pub(super) fn warden_dig_particles(&mut self, at: [f64; 3]) {
@@ -1562,6 +1659,10 @@ impl Game<'_> {
     fn tick_entity_events(&mut self) {
         self.tick_player_sculk_events();
         self.tick_mob_sculk_events();
+        if !self.sculk.falling_items.is_empty() {
+            let present: HashSet<u32> = self.dropped.iter().map(|item| item.id).collect();
+            self.sculk.falling_items.retain(|id| present.contains(id));
+        }
         // Dropped items are entities too: Entity.applyEffectsFromBlocks.
         let items: Vec<[f64; 3]> = self
             .dropped
@@ -1572,6 +1673,57 @@ impl Game<'_> {
         for at in items {
             self.step_on_redstone_ore(at, false, false);
         }
+    }
+
+    /// `Entity.checkFallDamage` for item movement: retain a fall across an
+    /// exact-height contact, without changing the saved fall-distance getter.
+    pub(super) fn item_landing_event(
+        &mut self,
+        id: u32,
+        previous: Vec3,
+        position: Vec3,
+        on_ground: bool,
+    ) {
+        let at = [position.x, position.y, position.z];
+        if self.in_water_at(at) {
+            self.sculk.falling_items.remove(&id);
+            return;
+        }
+        if position.y < previous.y {
+            self.sculk.falling_items.insert(id);
+        }
+        if on_ground && self.sculk.falling_items.remove(&id) {
+            // EntityType.ITEM: 0.25 by 0.25.
+            let bounds = Aabb::new(
+                Vec3::new(position.x - 0.125, position.y, position.z - 0.125),
+                Vec3::new(position.x + 0.125, position.y + 0.25, position.z + 0.125),
+            );
+            self.post_landing_event(position, bounds, false);
+        }
+    }
+
+    /// `Entity.checkFallDamage` emits HIT_GROUND after the block's fallOn.
+    pub(super) fn post_landing_event(&mut self, position: Vec3, bounds: Aabb, living: bool) {
+        if self.remote.is_some() || self.options.execution_role.is_client() {
+            return;
+        }
+        self.sculk_prepare();
+        // mainSupportingBlockPos, or the block's state at getOnPosLegacy.
+        let state = match self.supporting_block(position, bounds) {
+            Some(support) => self.world.block(support.x, support.y, support.z),
+            None => self.world.block(
+                position.x.floor() as i32,
+                (position.y - 0.2).floor() as i32,
+                position.z.floor() as i32,
+            ),
+        };
+        let mut context = self.who_context(None, Some(state));
+        context.living = living;
+        self.post_game_event(
+            "minecraft:hit_ground",
+            [position.x, position.y, position.z],
+            context,
+        );
     }
 
     /// Entity.move emits on the authoritative server too, for each ServerPlayer.
@@ -1836,6 +1988,39 @@ impl Game<'_> {
         self.res.facts().get(self.world.block(x, y, z)).fluid
             == horizon_client::blocks::Fluid::Water
     }
+    /// `Entity.checkSupportingBlock`: the block under this box closest to the
+    /// entity. Everything but the player works it out when it asks.
+    fn supporting_block(&self, position: Vec3, bounds: Aabb) -> Option<BlockPos> {
+        let (min, max) = (bounds.min_position(), bounds.max_position());
+        let foot = Aabb::new(
+            Vec3::new(min.x, min.y - 1.0e-6, min.z),
+            Vec3::new(max.x, min.y, max.z),
+        );
+        let mut scene = horizon_client::collisions::SceneCollisions {
+            world: &self.world,
+            binding: self.collision,
+            subject: None,
+        };
+        horizon_world::ground_support::find_supporting_block(
+            &mut scene,
+            horizon_world::collision_context::CollisionContext::position(position.y),
+            position,
+            foot,
+            1_000_000,
+        )
+        .ok()
+        .flatten()
+    }
+    /// `Entity.mainSupportingBlockPos` of a player or mob on the ground.
+    fn main_support(&self, who: Who) -> Option<BlockPos> {
+        match who {
+            Who::Player => self.player.as_ref()?.ground.supporting_block,
+            Who::Mob(id) => {
+                let mob = self.mobs.iter().find(|m| m.id == id)?;
+                self.supporting_block(mob.position, mob.bounds())
+            }
+        }
+    }
     /// `Entity.move`'s emission: footsteps, swimming, landing and splashes.
     fn entity_motion_events(
         &mut self,
@@ -1864,9 +2049,19 @@ impl Game<'_> {
             at[1] - previous.last[1],
             at[2] - previous.last[2],
         );
-        // Entity.checkFallDamage: touching down after falling.
+        // Entity.checkFallDamage: touching down after falling, with the state
+        // of mainSupportingBlockPos (the block's state at getOnPosLegacy without one).
         if on_ground && (!previous.on_ground || dy < -1.0e-6) && dy < 0.0 && !in_water {
-            self.post_entity_event("minecraft:hit_ground", who);
+            let state = match self.main_support(who) {
+                Some(support) => self.world.block(support.x, support.y, support.z),
+                None => self.world.block(
+                    at[0].floor() as i32,
+                    (at[1] - 0.2).floor() as i32,
+                    at[2].floor() as i32,
+                ),
+            };
+            let ctx = self.who_context(Some(who), Some(state));
+            self.post_game_event("minecraft:hit_ground", at, ctx);
         }
         // Entity.updateInWaterStateAndDoFluidPushing: entering water splashes.
         if in_water && !previous.in_water {
@@ -1877,14 +2072,14 @@ impl Game<'_> {
             return;
         }
         let horizontal = ((dx * dx + dz * dz).sqrt() * f64::from(0.6f32)) as f32;
-        let block = (
+        // Entity.getOnPos without a supporting block. Finding a mob's support
+        // waits for a step that is due: this runs for every mob on every tick.
+        let unsupported = self.world.block(
             at[0].floor() as i32,
-            (at[1] - 0.2).floor() as i32,
+            (at[1] - 1.0e-5).floor() as i32,
             at[2].floor() as i32,
         );
-        let state = self.world.block(block.0, block.1, block.2);
-        let air = self.res.facts().is_air(state);
-        let climbable = self.state_is(&self.sculk.tables.climbable, state);
+        let climbable = self.state_is(&self.sculk.tables.climbable, unsupported);
         let travelled = if climbable {
             ((dx * dx + dy * dy + dz * dz).sqrt() * f64::from(0.6f32)) as f32
         } else {
@@ -1894,9 +2089,22 @@ impl Game<'_> {
             return;
         };
         entry.move_dist += travelled;
-        if entry.move_dist > entry.next_step && !air {
+        let move_dist = entry.move_dist;
+        if move_dist <= entry.next_step {
+            return;
+        }
+        // Entity.applyMovementEmissionAndPlaySound: the state at getOnPos, so a
+        // carpet and not the block under it.
+        let state = match on_ground.then(|| self.main_support(who)).flatten() {
+            Some(support) => self.world.block(support.x, support.y, support.z),
+            None => unsupported,
+        };
+        let air = self.res.facts().is_air(state);
+        let Some(entry) = self.sculk.steps.get_mut(&who) else {
+            return;
+        };
+        if !air {
             let steps_on_block = on_ground || climbable;
-            let move_dist = entry.move_dist;
             if steps_on_block {
                 entry.next_step = if warden {
                     // Warden.nextStep
@@ -1959,9 +2167,8 @@ pub(super) fn darkness_blend_added(e: &EffectInstance, blend: bool) -> (f32, f32
     (factor, factor)
 }
 
-/// `Entity.processFlappingMovement`'s per-tick gate, before its air-below
-/// test: `Bee.isFlapping` (flying, every other tick) and `Bat.isFlapping`
-/// (awake, every tenth tick).
+/// `Bee.isFlapping` (flying, every other tick) and `Bat.isFlapping`
+/// (awake, every tenth tick). Bird distance thresholds run in mob movement.
 fn flaps(species: Species, resting: bool, on_ground: bool, age: u32) -> bool {
     match species {
         Species::Bee => !on_ground && age.is_multiple_of(2),
@@ -1987,6 +2194,50 @@ mod tests {
         assert_eq!(index.set.len(), 2);
         index.insert((41, 4, 0));
         assert_eq!(index.iter().last(), Some(&(41, 4, 0)));
+    }
+
+    /// The listeners near a point come out as filtering the whole index in
+    /// order would give them, through inserts, removals and retains.
+    #[test]
+    fn listeners_within_a_radius_are_the_filtered_index_in_order() {
+        let mut index = Index::default();
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move |n: i32| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % (2 * n as u64 + 1)) as i32 - n
+        };
+        for step in 0..3000 {
+            let key = (next(70), next(40), next(70));
+            match step % 7 {
+                0..=3 => index.insert(key),
+                4..=5 => {
+                    let picked = index
+                        .order
+                        .get(next(1000).unsigned_abs() as usize % index.order.len().max(1))
+                        .copied();
+                    if let Some(k) = picked {
+                        index.remove(&k);
+                    }
+                }
+                _ if step % 500 == 6 => index.retain(|p| (p.0 ^ p.2) & 3 != 0),
+                _ => {}
+            }
+            let at = [next(80), next(50), next(80)];
+            let radius = next(16).abs();
+            let expected: Vec<_> = index
+                .iter()
+                .copied()
+                .filter(|p| dist_sqr(at, *p) <= i64::from(radius * radius))
+                .collect();
+            assert_eq!(
+                index.within(at, radius),
+                expected,
+                "step {step} at {at:?} r {radius}"
+            );
+        }
+        assert!(index.cells.values().map(Vec::len).sum::<usize>() == index.order.len());
     }
 
     /// A bat flaps every tenth tick while it is not resting, whether it is on

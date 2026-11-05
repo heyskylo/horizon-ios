@@ -37,6 +37,7 @@ impl Launcher {
             what.push(format!(
                 "Horizon {}",
                 horizon_launcher::nightly::label(tag)
+                    .or_else(|| horizon_launcher::build_import::label(tag))
                     .unwrap_or_else(|| tag.trim_start_matches('v').to_string())
             ));
         }
@@ -66,7 +67,13 @@ impl Launcher {
                 .id("official-players")
                 .cursor_pointer()
                 .hover(move |s| s.text_color(ink))
-                .child(format!("· {} on the official SMP", thousands(count)))
+                .child(format!(
+                    "· {}",
+                    trf(
+                        "{count} on the official SMP",
+                        &[("count", &thousands(count))]
+                    )
+                ))
                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                     this.go(Page::Servers);
                     cx.notify();
@@ -182,7 +189,7 @@ impl Launcher {
                             .child(tr("Got it"))
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                 this.settings.ping_notice_seen = true;
-                                this.settings.save();
+                                this.save_settings();
                                 cx.notify();
                             })),
                     ),
@@ -276,7 +283,7 @@ impl Launcher {
                     .child(label(tr("Folder").to_string()))
                     .on_click(move |_, _, cx| {
                         let _ = std::fs::create_dir_all(&home);
-                        cx.open_with_system(&home);
+                        crate::glass_toast::open(cx, &home);
                     })
             }))
     }
@@ -317,6 +324,7 @@ impl Launcher {
                         .font_weight(FontWeight::BOLD)
                         .child(
                             horizon_launcher::nightly::label(tag)
+                                .or_else(|| horizon_launcher::build_import::label(tag))
                                 .unwrap_or_else(|| tag.trim_start_matches('v').to_string()),
                         ),
                 )

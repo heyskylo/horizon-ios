@@ -178,7 +178,7 @@ using the "Shape" column. What a content pack needs:
 | Accessory slots (what Curios does) | — | Curios users (6 require it, more use it optionally) | **0.4** | built-in slots API |
 | Mod networking between its client and server halves | — | machines and up | **0.4** | `net` interface |
 | Custom recipe types: machine recipes with their own JSON | — | machines and up | **0.4** | recipe-type registry: the mod declares its JSON schema and a display layout for the recipe viewer |
-| Entities: types, attributes, AI goals and brains, spawning | — | deep (87) | 0.5 | `entity` interface, AI in the mod with vanilla goals reusable; thrown item projectiles are already data in 0.2 ([mods.md](mods.md)) |
+| Entities: types, attributes, AI goals and brains, spawning | — | deep (87) | 0.5 | `entity` interface, AI in the mod with vanilla goals reusable; thrown item projectiles, and mobs of a zombie's, a villager's or a wandering trader's class with their own attributes, are already data in 0.2 ([mods.md](mods.md)); a native mod gives a type its own goals with `register_goals` ([native-mods.md](native-mods.md#mob-goals)) |
 | Custom renderers and animated models (block-entity, entity, item; GeckoLib's format) | — | deep | 0.5 | data models (Bedrock geometry + animations), plus a budgeted draw-list interface for the rest |
 | Dimensions: dimension types, levels, chunk generators | — | about 10 (Twilight Forest, Aether, Ad Astra, Undergarden, ...) | 0.5 | JSON part with worldgen; custom generators as mod code |
 | New hooks into vanilla behaviour (what Mixins do) | — | deep | as asked | each becomes a named hook, added for everyone |
@@ -389,8 +389,8 @@ classes come from the reviewed table, Modrinth categories and sides; with jars, 
 only): content 54, library 33, client-ui 26, performance 25, other 14, unknown 2, server-only 1;
 40 rows matched the reviewed ATM10 table; three dependency layers (93 / 57 / 5).
 
-`carry` copies a jar's `assets/<id>/`, `data/<id>/`, `data/minecraft/tags/` and `data/c/tags/`
-into `mods/<id>/carry/`, a folder content mod (API 0.2) the game loads with `--dev-mod`, and
+`carry` copies a jar's `assets/<id>/`, `data/<id>/`, `data/minecraft/tags/`, `data/c/tags/` and the
+sources it adds to vanilla's atlases (`assets/minecraft/atlases/`) into `mods/<id>/carry/`, a folder content mod (API 0.2) the game loads with `--dev-mod`, and
 keeps what a content mod may not hold (other namespaces, vanilla data) in `outside/`. Files of
 the mod's own content that the game's content loader would refuse whole also go to `outside/`,
 listed with the reason in the report's `unreadable`: paths vanilla does not read (upper case),
@@ -436,7 +436,7 @@ refused as walls: their blockstates did not load).
 |---|---|---|
 | Modrinth `.mrpack` | `modrinth.index.json`: `dependencies` (minecraft, neoforge / fabric-loader / forge / quilt-loader), `files[]` with path, sha1/sha512, `env` (client/server), download URLs; `overrides/`, `client-overrides/`, `server-overrides/` | downloaded from the listed Modrinth URLs, hash-checked |
 | CurseForge zip | `manifest.json`: `minecraft.version`, `modLoaders[]`, `files[]` (`projectID`, `fileID`, `required`), `overrides`. When the overrides hold Crash Assistant's `config/crash_assistant/modlist.json` (All the Mods 10 does), its jar names, mod ids and SHA-1s replace the bare ids | the user's installed instance (CurseForge app `minecraftinstance.json` + `mods/`), or the same file on Modrinth by SHA-1. CurseForge's API needs a key, so we take what the user already downloaded |
-| Prism / MultiMC instance | `mmc-pack.json` components (`net.minecraft`, `net.neoforged`, `net.fabricmc.fabric-loader`), `instance.cfg`, `.minecraft/mods/*.jar`, packwiz `.pw.toml` files if present | the instance folder |
+| Prism / MultiMC instance | `mmc-pack.json` components (`net.minecraft`, `net.neoforged`, `net.fabricmc.fabric-loader`); for a CurseForge app instance without one, `minecraftinstance.json` (`gameVersion`, `baseModLoader.name`), else its `manifest.json`; `instance.cfg`, `.minecraft/mods/*.jar`, packwiz `.pw.toml` files if present | the instance folder |
 | packwiz | `pack.toml`, `index.toml`, `mods/*.pw.toml` | as listed |
 | Crash Assistant `modlist.json` | jar name → mod id, name, version, Modrinth SHA-1; the loader entry (NeoForge `21.1.x` is Minecraft 1.21.1). Packs such as ATM10 publish it in their repository | metadata only; jars put in `<work>/jars/` |
 
@@ -879,6 +879,15 @@ their extra code); **partial** with the failing checks, the blocks left out and 
 templates miss; **not yet** with the API tier it waits for, or the dependency; **not needed**
 for libraries, performance mods, pack tooling and what Horizon has built in. Unclassified mods
 (the 20 CurseForge-only rows the reviewed table only guesses) count as not yet.
+
+Both files open with a plain headline for players, counted from the rows' own status, class and
+tier: how many of the mods that need porting came over (ported or partial, as content: blocks,
+items and structures, never the mod's own code), how many of the rest `port` can still carry
+over, how many need mod API the game doesn't have yet, and how many aren't sorted yet. Resource
+packs and shader packs aren't counted as mods. Each row also has its reason in plain words
+(`plain` in `coverage.json`, the last column of `coverage.md`, above the technical line on the
+Modpacks page), next to the unchanged technical `reason` for modders. The launcher words the
+headline through its translations; the sentences per row are English, like the reasons.
 
 **ATM10, measured** (`import` of ATM10's `modlist.json` from its repository on 2026-10-16, 496
 files; `inventory`; `carry` and the harness on the eight mods we downloaded; `report`):

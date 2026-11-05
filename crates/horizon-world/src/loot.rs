@@ -73,7 +73,7 @@ pub fn native_loot_function(
     ctx: &NativeLootContext<'_>,
     stack: &mut LootStack,
 ) {
-    let _ = (kind, data, ctx, stack);
+    crate::native_load_hooks::loot_function(kind, data, ctx, stack);
 }
 
 /// A loot condition of a mod's own kind: the entry named a `type` in a
@@ -87,7 +87,7 @@ pub fn native_loot_condition(
     ctx: &NativeLootContext<'_>,
     holds: &mut bool,
 ) {
-    let _ = (kind, data, ctx, holds);
+    crate::native_load_hooks::loot_condition(kind, data, ctx, holds);
 }
 
 /// The tool a loot context names: its item id and enchantments.
@@ -127,7 +127,7 @@ pub struct NativeLootContext<'a> {
     /// Where the roll happens: the origin, the block entity and the level,
     /// when the game rolled the table at a place (a broken block's drops,
     /// a mob's death loot); None for the other rolls. Either engine fills it.
-    /// API @API:loot_context_place@.
+    /// API 156.
     pub place: Option<Rc<NativeLootPlace>>,
 }
 
@@ -135,7 +135,7 @@ pub struct NativeLootContext<'a> {
 /// `LootContextParams.ORIGIN`, `LootContextParams.BLOCK_ENTITY`, and what
 /// vanilla's own conditions read of `LootContext.getLevel` (`TimeCheck`:
 /// the time; `WeatherCheck`: the rain and the thunder). The game sets it
-/// around a roll with [`with_native_loot_place`]. API @API:loot_context_place@.
+/// around a roll with [`with_native_loot_place`]. API 156.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct NativeLootPlace {
     /// `ORIGIN`: a broken block's centre, a dead mob's position.
@@ -171,7 +171,7 @@ thread_local! {
 /// Runs `roll` with `place` as where its loot rolls happen: every
 /// [`NativeLootContext`] made inside it, by either engine, carries it. The
 /// place before is back when `roll` returns, so these nest.
-/// API @API:loot_context_place@.
+/// API 156.
 pub fn with_native_loot_place<T>(place: NativeLootPlace, roll: impl FnOnce() -> T) -> T {
     struct Restore(Option<Rc<NativeLootPlace>>);
     impl Drop for Restore {
@@ -587,7 +587,7 @@ pub fn shared_tables(root: &Path, overlay: &PackOverlay) -> io::Result<Arc<LootT
 /// 75.
 #[inline(never)]
 pub fn native_loot_table_load(id: &str, table: &mut Value) {
-    let _ = (id, table);
+    crate::native_load_hooks::loot_table_load(id, table);
 }
 
 fn load_kind(data: &Path, kind: &str, out: &mut HashMap<String, Value>) -> io::Result<()> {
@@ -635,20 +635,15 @@ fn load_dir(
     prefix: &str,
     out: &mut HashMap<String, Value>,
 ) -> io::Result<()> {
-    let Ok(entries) = fs::read_dir(dir) else {
+    // Through `json_folder`: a load holding the folder (the recipes, read by
+    // the item tables, the recipe book and the server's sync too) shares one
+    // read of it.
+    let Ok(folder) = crate::json_folder::read(dir) else {
         return Ok(());
     };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
-            continue;
-        };
-        if path.is_dir() {
-            load_dir(&path, namespace, &format!("{prefix}{stem}/"), out)?;
-        } else if path.extension().is_some_and(|e| e == "json") {
-            let value = serde_json::from_slice(&fs::read(&path)?)?;
-            out.insert(format!("{namespace}:{prefix}{stem}"), value);
-        }
+    for file in &folder.files {
+        let value = serde_json::from_slice(file.bytes()?)?;
+        out.insert(format!("{namespace}:{prefix}{}", file.name), value);
     }
     Ok(())
 }
@@ -674,7 +669,7 @@ impl LootData {
         let mut predicates = HashMap::new();
         load_kind(&all, "predicate", &mut predicates)?;
         overlay_map(overlay, "predicate", &mut predicates);
-        let raw = crate::item_defaults::read(root)?;
+        let raw = crate::item_defaults::shared(root)?;
         let items = raw
             .iter()
             .map(|(name, c)| {
@@ -730,6 +725,8 @@ impl LootData {
             "instrument",
             "entity_type",
             "damage_type",
+            // What `location_check`'s `biomes` names.
+            "worldgen/biome",
         ] {
             let mut raw = HashMap::new();
             load_kind(&all, &format!("tags/{registry}"), &mut raw)?;
@@ -907,10 +904,10 @@ impl LootData {
 
     /// LootTable.getRandomItems with the given random (its state is
     /// advanced), luck and, for fishing, whether the hook is in open water.
-    pub fn roll(
+    pub fn roll<R: RandomSource + Clone>(
         &self,
         table: &str,
-        random: &mut LegacyRandom,
+        random: &mut R,
         luck: f32,
         biome: Option<&str>,
         open_water: Option<bool>,
@@ -928,7 +925,7 @@ impl LootData {
             entity: None,
         };
         let mut items = Vec::new();
-        c.table_raw(table, json, &mut |_, stack| items.push(stack));
+        c.table_raw(table, json, &mut |c, stack| c.data.split(stack, &mut items));
         *random = c.random;
         items
     }
@@ -1373,15 +1370,15 @@ impl<R: RandomSource> Context<'_, R> {
                     let Some(biome) = self.biome else {
                         return false;
                     };
+                    // `LocationPredicate.biomes`: a HolderSet, so a `#tag`
+                    // (the loot data's biome tags, packs included), an id or
+                    // a list of ids.
                     match &c["predicate"]["biomes"] {
                         Value::Null => true,
-                        Value::String(s) => match s.strip_prefix('#') {
-                            // Biome tags are not loaded here.
-                            Some(_) => false,
-                            None => s == biome,
-                        },
-                        Value::Array(a) => a.iter().any(|b| b.as_str() == Some(biome)),
-                        _ => false,
+                        set => data
+                            .holder_set("worldgen/biome", set)
+                            .iter()
+                            .any(|b| b == biome),
                     }
                 }
                 // A mod's own kind: the hook answers; a bare type name is
@@ -2136,6 +2133,40 @@ mod native_kinds_tests {
         data
     }
 
+    #[test]
+    fn fishing_roll_can_advance_a_persistent_xoroshiro_sequence() {
+        let data = table(
+            "fishing_sequence",
+            r#"{"pools":[{"rolls":{"type":"minecraft:uniform","min":1,"max":5},"entries":[{"type":"minecraft:item","name":"minecraft:cod"}]}]}"#,
+        );
+        let mut sequence = horizon_core::random::XoroshiroRandom::from_state(123, 456);
+        let mut expected = sequence.clone();
+        for _ in 0..2 {
+            let count = 1 + expected.next_int_bound(5).unwrap();
+            assert_eq!(
+                data.roll("minecraft:test", &mut sequence, 0.0, None, Some(true))
+                    .len(),
+                count as usize
+            );
+        }
+        assert_eq!(sequence.next_long(), expected.next_long());
+    }
+
+    #[test]
+    fn fishing_roll_splits_oversized_stacks() {
+        let data = table(
+            "fishing_split",
+            r#"{"pools":[{"rolls":1,"entries":[{"type":"minecraft:item","name":"minecraft:cod","modifier":[{"type":"minecraft:set_count","count":130}]}]}]}"#,
+        );
+        let mut random = LegacyRandom::new(1);
+        let counts: Vec<_> = data
+            .roll("minecraft:test", &mut random, 0.0, None, Some(true))
+            .iter()
+            .map(|stack| stack.count)
+            .collect();
+        assert_eq!(counts, [64, 64, 2]);
+    }
+
     /// An unclaimed condition fails (the pool drops nothing) and an
     /// unclaimed function leaves the stack's count as it was.
     #[test]
@@ -2299,5 +2330,100 @@ mod recipe_result_tests {
         assert_eq!(id(r#"{"id": 7}"#), None);
         assert_eq!(id("null"), None);
         assert_eq!(id("[]"), None);
+    }
+}
+
+#[cfg(test)]
+mod location_check_biome_tests {
+    use super::*;
+
+    /// A table that drops one stone where `biomes` matches, read with a
+    /// jungle biome tag of the game's own and `packs` over it.
+    fn table(name: &str, biomes: &str, packs: &[(String, Vec<Vec<u8>>)]) -> LootData {
+        let root = std::env::temp_dir().join(format!("loot-biomes-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let dir = root.join("data/minecraft/loot_table");
+        fs::create_dir_all(&dir).unwrap();
+        let json = format!(
+            r#"{{"pools":[{{"rolls":1,"entries":[{{"type":"minecraft:item","name":"minecraft:stone",
+                "condition":{{"type":"minecraft:location_check","predicate":{{"biomes":{biomes}}}}}}}]}}]}}"#
+        );
+        fs::write(dir.join("test.json"), json).unwrap();
+        let tags = root.join("data/minecraft/tags/worldgen/biome");
+        fs::create_dir_all(&tags).unwrap();
+        fs::write(
+            tags.join("is_jungle.json"),
+            r#"{"values": ["minecraft:jungle", "minecraft:bamboo_jungle"]}"#,
+        )
+        .unwrap();
+        fs::write(root.join("items.json"), "{}").unwrap();
+        let data = LootData::load(&root, &PackOverlay { files: packs }).unwrap();
+        let _ = fs::remove_dir_all(&root);
+        data
+    }
+
+    fn drops(data: &LootData, biome: Option<&str>) -> bool {
+        !data
+            .roll(
+                "minecraft:test",
+                &mut LegacyRandom::new(1),
+                0.0,
+                biome,
+                None,
+            )
+            .is_empty()
+    }
+
+    /// `LocationPredicate.biomes` is a HolderSet: a `#tag` names the biomes
+    /// of the tag, which used to fail everywhere.
+    #[test]
+    fn a_biome_tag_matches_its_biomes() {
+        let data = table("tag", r##""#minecraft:is_jungle""##, &[]);
+        assert!(drops(&data, Some("minecraft:jungle")));
+        assert!(drops(&data, Some("minecraft:bamboo_jungle")));
+        assert!(!drops(&data, Some("minecraft:desert")));
+        // `LocationCheck.test`: no origin, no match.
+        assert!(!drops(&data, None));
+        // An unknown tag is empty.
+        let data = table("unknown", r##""#minecraft:is_nothing""##, &[]);
+        assert!(!drops(&data, Some("minecraft:jungle")));
+    }
+
+    /// A single id and a list of ids keep matching as before.
+    #[test]
+    fn an_id_and_a_list_of_ids_still_match() {
+        let data = table("id", r#""minecraft:desert""#, &[]);
+        assert!(drops(&data, Some("minecraft:desert")));
+        assert!(!drops(&data, Some("minecraft:jungle")));
+        let data = table(
+            "list",
+            r#"["minecraft:jungle", "minecraft:sparse_jungle"]"#,
+            &[],
+        );
+        assert!(drops(&data, Some("minecraft:sparse_jungle")));
+        assert!(!drops(&data, Some("minecraft:bamboo_jungle")));
+    }
+
+    /// The world's packs' biome tags join the game's own, as
+    /// `TagLoader.loadTagsForExistingRegistries` binds them.
+    #[test]
+    fn a_pack_biome_tag_counts() {
+        let packs = vec![
+            (
+                "tags/minecraft:worldgen/biome/is_jungle".to_owned(),
+                vec![br#"{"values":["minecraft:plains"]}"#.to_vec()],
+            ),
+            (
+                "tags/mypack:worldgen/biome/warm".to_owned(),
+                vec![br##"{"values":["#minecraft:is_jungle","minecraft:desert"]}"##.to_vec()],
+            ),
+        ];
+        let data = table("pack", r##""#minecraft:is_jungle""##, &packs);
+        assert!(drops(&data, Some("minecraft:plains")));
+        assert!(drops(&data, Some("minecraft:jungle")));
+        let data = table("packown", r##""#mypack:warm""##, &packs);
+        assert!(drops(&data, Some("minecraft:bamboo_jungle")));
+        assert!(drops(&data, Some("minecraft:desert")));
+        assert!(!drops(&data, Some("minecraft:savanna")));
     }
 }

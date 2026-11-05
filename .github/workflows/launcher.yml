@@ -1,5 +1,5 @@
 name: launcher
-# Builds the launcher on Linux, macOS and Windows, and releases it by itself (docs/release-flow.md): after a
+# Builds the launcher on Linux, macOS, Windows x64 and ARM64, and releases it by itself (docs/release-flow.md): after a
 # push to main that changes the launcher or a crate it builds in (the paths below),
 # every 10 minutes (a release waiting for merges to settle goes out) and by hand, tools/release_train.py decides as
 # for the game.
@@ -15,6 +15,9 @@ name: launcher
 # under Rosetta 2 (#1161). With the repository variable MACOS_SIGN_IDENTITY set, Horizon.app and the .dmg are signed with
 # Developer ID, notarized and stapled, from the runner's signing keychain (packaging/macos/README.md);
 # unset (forks), they are signed ad hoc.
+# Windows ships each architecture's launcher in its ZIP (what a launcher updates itself from) and as
+# horizon-launcher-setup.exe or horizon-launcher-setup-arm64.exe, which opens the per-user installer instead of Home
+# (launcher/src/installer.rs).
 #   gh workflow run launcher --ref <branch>                    # dry run: builds everything, publishes nothing
 #   gh workflow run launcher --ref main -f dry_run=false -f force=true
 
@@ -26,6 +29,7 @@ on:
       - 'launcher/**'
       - 'crates/horizon-bench/**'
       - 'crates/horizon-friends/**'
+      - 'crates/horizon-mcp/**'
       - 'crates/horizon-mods/**'
       - 'crates/horizon-port-pack/**'
       - 'crates/horizon-prepare/**'
@@ -70,7 +74,7 @@ jobs:
       version: ${{ steps.decide.outputs.version }}
       dry_run: ${{ steps.mode.outputs.dry_run }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - id: mode
@@ -99,6 +103,10 @@ jobs:
     needs: decide
     if: needs.decide.outputs.release == 'true'
     name: build ${{ matrix.name }}
+    # Windows ARM64 is new: its failure never holds the other platforms' release (the signing job
+    # needs this job, and a failed entry of it would fail it). The release steps leave the missing
+    # ARM64 files out with a warning.
+    continue-on-error: ${{ matrix.name == 'windows-arm64' }}
     strategy:
       fail-fast: false
       matrix:
@@ -122,8 +130,19 @@ jobs:
             os: windows-latest
             asset: horizon-launcher-windows-x64.zip
             binary: horizon-launcher.exe
+            pe_arch: x64
+            setup_asset: horizon-launcher-setup.exe
             # The C runtime linked in: without it the launcher asks for VCRUNTIME140.dll,
             # which only the Visual C++ redistributable installs.
+            rustflags: -C target-feature=+crt-static
+          - name: windows-arm64
+            os: windows-11-vs2026-arm
+            target: aarch64-pc-windows-msvc
+            asset: horizon-launcher-windows-arm64.zip
+            binary: horizon-launcher.exe
+            pe_arch: arm64
+            setup_asset: horizon-launcher-setup-arm64.exe
+            # The C runtime linked in, so the standalone ARM64 launcher needs no redistributable.
             rustflags: -C target-feature=+crt-static
     runs-on: ${{ matrix.mac && (vars.MAC_RUNNER || 'ludovics-mac-mini') || matrix.os }}
     # Notarizing the app and then the .dmg can take a few minutes each.
@@ -147,7 +166,7 @@ jobs:
         working-directory: launcher
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.decide.outputs.head }}
           persist-credentials: false
@@ -174,11 +193,14 @@ jobs:
         run: |
           if ! xcrun metal --version > /dev/null 2>&1; then
             echo "::notice::No Metal toolchain on this runner: GPUI compiles its shaders at run time"
-            echo "LAUNCHER_FEATURES=gpui/runtime_shaders" >> "$GITHUB_ENV"
+            echo "LAUNCHER_FEATURES=gpui_platform/runtime_shaders" >> "$GITHUB_ENV"
           fi
       # Every test target (the library, the binary, tests/), on each system the launcher ships for.
       - run: cargo test --release --locked ${{ matrix.target && format('--target {0}', matrix.target) || '' }} ${LAUNCHER_FEATURES:+--features "$LAUNCHER_FEATURES"}
       - run: cargo build --release --locked ${{ matrix.target && format('--target {0}', matrix.target) || '' }} ${LAUNCHER_FEATURES:+--features "$LAUNCHER_FEATURES"}
+      - name: Verify Windows executable architecture
+        if: runner.os == 'Windows'
+        run: python ../tools/check_pe_arch.py "${{ matrix.pe_arch }}" "$BIN/${{ matrix.binary }}"
       - name: The version is the release's
         run: |
           out=$("$BIN/${{ matrix.binary }}" --version)
@@ -209,7 +231,8 @@ jobs:
           "$launcher" links --json
           # The Intel Mac launcher can come out before any game build has its asset (#1161): then there is nothing
           # to install yet. Only that entry skips, and only on a version list that parsed and had no build here
-          # (exit 3); a launcher or a script that fails still fails the step.
+          # (exit 3); a launcher or a script that fails still fails the step. The Windows ARM64 launcher always has
+          # one: it installs the x64 build where a release has no ARM64 one (backend.rs, GAME_FALLBACK).
           if [[ "${{ matrix.name }}" == macos-x64 ]]; then
             versions=$(retry "$launcher" --json versions)
             no_build='import json, sys; sys.exit(3 if not any(r["available_here"] for r in json.load(sys.stdin)) else 0)'
@@ -233,6 +256,11 @@ jobs:
           # release linked to a Nix store is a warning here, not a broken launcher.
           soft() { if [[ "$RUNNER_OS" == "Linux" ]]; then "$@" || echo "::warning::$* failed"; else "$@"; fi; }
           if [[ "$RUNNER_OS" == "Windows" ]]; then
+            if ! python ../tools/check_pe_arch.py "${{ matrix.pe_arch }}" "$client"; then
+              # A Nightly without an ARM64 build: the ARM64 launcher installs the x64 one (backend.rs, GAME_FALLBACK).
+              [[ "${{ matrix.pe_arch }}" == arm64 ]] && python ../tools/check_pe_arch.py x64 "$client" || exit 1
+              echo "::warning::the latest game has no ARM64 build: the launcher installed the x64 one"
+            fi
             python ../tools/check_imports.py "$client"
           elif [[ "$RUNNER_OS" == "Linux" ]]; then
             soft python3 ../tools/check_imports.py "$client"
@@ -240,6 +268,18 @@ jobs:
           # The client starts: --help prints before any window or GPU is needed.
           help() { "$client" --help > "$RUNNER_TEMP/help.txt" 2>&1 && head -3 "$RUNNER_TEMP/help.txt" && grep -q -- '--resources' "$RUNNER_TEMP/help.txt"; }
           soft help
+          # The per-user Windows setup: the same binary under the setup's name installs into a scratch
+          # folder, and the copy it installs uninstalls itself. HKCU of the runner only.
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            setup="$RUNNER_TEMP/setup-smoke"
+            cp "$launcher" "$RUNNER_TEMP/horizon-launcher-setup.exe"
+            "$RUNNER_TEMP/horizon-launcher-setup.exe" setup --quiet --dir "$setup"
+            installed="$setup/Horizon Launcher/horizon-launcher.exe"
+            [[ -f "$installed" ]] || { echo "::error::the setup copied no launcher"; exit 1; }
+            "$installed" uninstall --quiet
+            [[ ! -f "$installed" ]] || { echo "::error::uninstall left the launcher"; exit 1; }
+            rm -rf "$setup"
+          fi
           rm -rf "$HORIZON_LAUNCHER_HOME"
       - name: The signing keychain, unlocked
         if: runner.os == 'macOS' && vars.MACOS_SIGN_IDENTITY != ''
@@ -275,7 +315,13 @@ jobs:
             fi
           fi
           ls -l out
-      - uses: actions/upload-artifact@v4
+      - name: Setup exe (Windows)
+        # The launcher's binary under another name: started with no arguments it shows the per-user
+        # installer instead of Home (launcher/src/installer.rs). Its name is what makes it the setup,
+        # so the ZIP's copy stays the launcher. Both go into the release's signed SHA256SUMS.
+        if: runner.os == 'Windows'
+        run: cp "$BIN/${{ matrix.binary }}" "out/${{ matrix.setup_asset }}"
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.asset }}
           path: launcher/out/*
@@ -293,12 +339,12 @@ jobs:
     # tools/ci/sign_release.sh, which calls only the runner's sha256sum and OpenSSL (docs/release-flow.md).
     environment: ${{ needs.decide.outputs.dry_run != 'true' && 'release' || '' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           sparse-checkout: tools/ci/sign_release.sh
           sparse-checkout-cone-mode: false
           persist-credentials: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           pattern: horizon-launcher-*
@@ -310,13 +356,13 @@ jobs:
           EPHEMERAL: ${{ needs.decide.outputs.dry_run == 'true' && 'yes' || '' }}
           TAG: ${{ needs.decide.outputs.tag }}
         run: bash tools/ci/sign_release.sh "$TAG" dist/horizon-launcher-*
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: signature
           path: dist/SHA256SUMS*
           if-no-files-found: error
           retention-days: 3
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: needs.decide.outputs.dry_run == 'true'
         with:
           name: ephemeral.pub
@@ -330,7 +376,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Notes
@@ -340,7 +386,7 @@ jobs:
           python3 tools/release_train.py notes --kind launcher --tag "${{ needs.decide.outputs.tag }}" \
             --head "${{ needs.decide.outputs.head }}" --out notes > /dev/null
           { echo "## $(cat notes/title.txt)"; echo; cat notes/body.md; } >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
@@ -352,6 +398,13 @@ jobs:
           key=(); [[ -n "$EPHEMERAL" ]] && key=(--key "$(cat dist/ephemeral.pub)")
           cargo run --locked --quiet -p horizon-release-sign -- verify --tag "$TAG" --publishing "${key[@]}" dist
       # Never marked latest: Horizon's own releases stay the repository's latest.
+      - name: The Windows ARM64 launcher, if it built
+        # Its build may fail without holding the release (continue-on-error): the release then has no ARM64
+        # files, and ARM64 launchers stay on their version until one has (backend::launcher_update_from).
+        run: |
+          for file in horizon-launcher-windows-arm64.zip horizon-launcher-setup-arm64.exe; do
+            [[ -f "dist/$file" ]] || echo "::warning::$file is missing: this release goes out without it"
+          done
       - name: Publish ${{ needs.decide.outputs.tag }}
         if: needs.decide.outputs.dry_run != 'true'
         env:
@@ -366,7 +419,7 @@ jobs:
         run: |
           echo "Would publish ${{ needs.decide.outputs.tag }} at ${{ needs.decide.outputs.head }}: $(cat notes/title.txt)"
           ls -l dist
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: launcher-release-notes
           path: notes/

@@ -68,12 +68,7 @@ pub fn mob_shadow_radius(m: &Mob) -> f32 {
         S::Pufferfish => return 0.1 + 0.1 * m.extra.size as f32,
         _ => {}
     }
-    let scale = if m.extra.model_scale > 0.0 {
-        m.extra.model_scale
-    } else {
-        1.0
-    };
-    let radius = shadow_params(&m.kind.id).0 * scale;
+    let radius = shadow_params(&m.kind.id).0 * m.model_scale();
     if matches!(&*m.kind.id, "minecraft:player" | "minecraft:mannequin") || !m.is_baby() {
         return radius;
     }
@@ -169,6 +164,11 @@ pub fn shadow(
                 let state = world.block(x, y - 1, z);
                 let below = facts.get(state);
                 if below.render_shape == crate::blocks::RenderShape::Invisible {
+                    continue;
+                }
+                // extractShadowPiece: only a block whose collision shape is a full
+                // block takes a shadow (hoppers, cauldrons, slabs, farmland... take none).
+                if !below.full_collision {
                     continue;
                 }
                 let Some(bounds) = collision_bounds(state) else {
@@ -296,33 +296,47 @@ mod tests {
             (v1 - v0).cross(v2 - v0).y > 0.0,
             "shadow quad winds upward (+Y) so back-face culling hides it from below"
         );
-        let farmland = registry.default_state("minecraft:farmland").unwrap();
-        world.set(8, 63, 8, farmland).unwrap();
-        out.clear();
-        let pos = DVec3::new(8.5, 63.9375, 8.5);
-        shadow(
-            &world,
-            &facts,
-            &|state| {
-                (state == farmland).then(|| {
-                    horizon_core::geometry::Aabb::new(
+        // Blocks whose collision top is not a flat full block take no shadow
+        // (vanilla's isCollisionShapeFullBlock gate), even when their collision
+        // bounds reach y=1 like a hopper's rim.
+        for name in [
+            "minecraft:hopper",
+            "minecraft:cauldron",
+            "minecraft:composter",
+            "minecraft:farmland",
+            "minecraft:oak_slab",
+            "minecraft:soul_sand",
+            "minecraft:snow",
+            "minecraft:chest",
+            "minecraft:oak_fence",
+            "minecraft:oak_stairs",
+        ] {
+            let state = registry.default_state(name).unwrap();
+            assert!(!facts.get(state).full_collision, "{name}");
+            world.set(8, 63, 8, state).unwrap();
+            out.clear();
+            shadow(
+                &world,
+                &facts,
+                &|_| {
+                    Some(horizon_core::geometry::Aabb::new(
                         horizon_core::geometry::Vec3::ZERO,
-                        horizon_core::geometry::Vec3::new(1.0, 0.9375, 1.0),
-                    )
-                })
-            },
-            sprite,
-            camera,
-            pos,
-            0.3,
-            1.0,
-            0.0,
-            0,
-            &mut out,
-        );
-        assert_eq!(out.len(), 4);
-        assert!(out.iter().all(|v| v.pos[1] == (pos.y - camera.y) as f32));
+                        horizon_core::geometry::Vec3::new(1.0, 1.0, 1.0),
+                    ))
+                },
+                sprite,
+                camera,
+                DVec3::new(8.5, 64.0, 8.5),
+                0.3,
+                1.0,
+                0.0,
+                0,
+                &mut out,
+            );
+            assert!(out.is_empty(), "{name} took a shadow");
+        }
     }
+
     #[test]
     fn invisible_mobs_cast_no_shadow() {
         use horizon_core::geometry::Vec3;
@@ -370,6 +384,14 @@ mod tests {
         goat.extra.age = -24000;
         // Goat.getAgeScale: 0.55.
         assert_eq!(mob_shadow_radius(&goat), 0.7 * 0.55);
+        let mut strider = mob("minecraft:strider", S::Strider);
+        strider.extra.age = -24000;
+        // StriderRenderer halves AgeableMobRenderer's 0.5 * 0.5 again.
+        assert_eq!(mob_shadow_radius(&strider), 0.125);
+        let mut turtle = mob("minecraft:turtle", S::Turtle);
+        turtle.extra.age = -24000;
+        // TurtleRenderer takes 0.83 of the 0.7 * 0.3 age-scaled radius.
+        assert!((mob_shadow_radius(&turtle) - 0.7 * 0.3 * 0.83).abs() < 1e-6);
     }
     #[test]
     fn scaled_players_cast_a_scaled_shadow() {

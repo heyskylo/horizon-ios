@@ -35,6 +35,18 @@ pub struct Entry {
     pub dir: PathBuf,
 }
 
+/// The game mode a server's `server.toml` sets (`[world] game_mode`), read from the file
+/// without asking `horizon-server`: the Servers page's list says it for each stopped server.
+pub fn game_mode(dir: &Path) -> Option<String> {
+    let text = fs::read_to_string(dir.join("server.toml")).ok()?;
+    let config: toml::Value = toml::from_str(&text).ok()?;
+    config
+        .get("world")?
+        .get("game_mode")?
+        .as_str()
+        .map(str::to_string)
+}
+
 fn list_file() -> PathBuf {
     backend::data_dir().join("servers.json")
 }
@@ -540,8 +552,14 @@ impl Default for NewServer {
 
 /// A port nobody listens on, from `from` up, and not one of `taken`.
 pub fn free_port(from: u16, taken: &[u16]) -> u16 {
+    let bind = if cfg!(test) || std::env::var_os("HORIZON_TEST_LOOPBACK").is_some_and(|v| v == "1")
+    {
+        "127.0.0.1"
+    } else {
+        "0.0.0.0"
+    };
     (from..u16::MAX)
-        .find(|p| !taken.contains(p) && std::net::TcpListener::bind(("0.0.0.0", *p)).is_ok())
+        .find(|p| !taken.contains(p) && std::net::TcpListener::bind((bind, *p)).is_ok())
         .unwrap_or(from)
 }
 

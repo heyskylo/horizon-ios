@@ -9,11 +9,13 @@ use horizon_assets::item_model::{
 };
 use horizon_client::{
     block_entity_render::{diffuse_lights, vertex_light},
+    cit::{Hand as CitHand, Kind as CitKind},
     hud::{HudBatch, Rect},
     item_render::{self, ItemRenderState, SpecialHost, WorldSink},
     items::ItemStack,
     mesher::Vertex,
 };
+use horizon_core::geometry::{Aabb, Vec3};
 use serde_json::Value;
 use std::{cell::RefCell, collections::HashMap};
 
@@ -22,6 +24,15 @@ pub(super) struct Env<'a, 'g> {
     game: &'a Game<'g>,
 }
 impl ItemEnv for Env<'_, '_> {
+    fn item_model_property(&self, property: &str, stack: &StackView) -> bool {
+        if horizon_client::mod_api::mods().is_empty() {
+            return false;
+        }
+        let mut value = false;
+        self.game
+            .native_item_model_property(property, stack, &mut value);
+        value
+    }
     fn enchantment_in_tag(&self, enchantment: &str, tag: &str) -> bool {
         self.game.stations().enchantments.in_tag(tag, enchantment)
     }
@@ -68,6 +79,12 @@ impl ItemEnv for Env<'_, '_> {
         local_time(pattern)
     }
     fn random_float(&self) -> f32 {
+        if self.game.clock.still() {
+            // The same draw for a frame of the same world tick.
+            let mixed =
+                (self.game.visual_ticks() ^ 0x9e37_79b9).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+            return (mixed >> 40) as f32 / (1u64 << 24) as f32;
+        }
         let nanos = self.game.started.elapsed().subsec_nanos();
         (nanos % 1_000_000) as f32 / 1_000_000.0
     }
@@ -293,15 +310,71 @@ impl Game<'_> {
         owner: Option<&OwnerState>,
         seed: i32,
     ) -> ItemRenderState {
+        self.resolve_item_in_hand(stack, display, owner, seed, CitHand::Main)
+    }
+    /// `ItemStack.hasFoil`, with the item's default glint.
+    fn has_foil(&self, stack: &ItemStack) -> bool {
+        let item_glint = self
+            .res
+            .items()
+            .enchantments
+            .props
+            .get(&*stack.item)
+            .is_some_and(|p| p.glint);
+        stack.has_foil(item_glint)
+    }
+    /// [`Self::resolve_item`] of a stack held in `hand`, which OptiFine CIT rules can test
+    /// (GUI items count as the main hand).
+    pub(super) fn resolve_item_in_hand(
+        &self,
+        stack: &ItemStack,
+        display: DisplayContext,
+        owner: Option<&OwnerState>,
+        seed: i32,
+        hand: CitHand,
+    ) -> ItemRenderState {
         let level = self.item_level();
-        let mut state = self.pack.item_renderer.resolve(
+        let renderer = &self.pack.item_renderer;
+        let (rule, glint) = renderer.cit.as_ref().map_or((None, None), |cit| {
+            let item_max = self
+                .res
+                .items()
+                .get(&stack.item)
+                .map_or(0, |i| i.max_damage);
+            let max_damage = item_render::cit::stack_max_damage(stack, item_max);
+            (
+                cit.rules.select(CitKind::Item, stack, hand, max_damage),
+                cit.rules
+                    .glint(stack, hand, max_damage, self.has_foil(stack)),
+            )
+        });
+        let mut state = renderer.resolve_with_rule(
             &item_render::stack_view(stack),
             display,
             owner,
             Some(&level),
             seed,
             &self.item_env(),
+            rule,
         );
+        if let Some(glint) = glint {
+            // The pack's enchantment rules replace vanilla's glint unless one keeps it, so far
+            // only in the GUI, where their own layers draw: held, dropped and framed items keep
+            // vanilla's until theirs do. The pack's `useGlint=false` removes it everywhere.
+            let gui = display == DisplayContext::Gui;
+            let pack_keeps = renderer
+                .cit
+                .as_ref()
+                .is_none_or(|c| c.rules.global.use_glint);
+            if !glint.vanilla && (gui || !pack_keeps) {
+                for layer in &mut state.layers {
+                    layer.foil = horizon_assets::item_model::FoilType::None;
+                }
+            }
+            if gui && !glint.is_empty() {
+                state.cit_glint = Some(glint);
+            }
+        }
         state.hdr_tier = self.luminance().hdr_tier(&stack.item);
         if state.hdr_tier > 0 && self.renderer.as_ref().is_some_and(|r| r.hdr_on()) {
             state.hdr_light = self.luminance().of(&stack.item);
@@ -329,7 +402,11 @@ impl Game<'_> {
     /// frame, not per item (`GameRenderer.extractOptions`).
     pub(super) fn capture_glint_frame(&self) -> item_render::GlintFrame {
         item_render::GlintFrame {
-            millis: self.started.elapsed().as_secs_f32() * 1000.0,
+            millis: if self.clock.still() {
+                self.visual_millis() as f32
+            } else {
+                self.started.elapsed().as_secs_f32() * 1000.0
+            },
             speed: self.settings.file.double("glintSpeed") as f32,
             alpha: self.settings.file.double("glintStrength") as f32,
             sprite: self
@@ -403,6 +480,73 @@ impl Game<'_> {
             &mut sink,
         );
     }
+    /// [`Self::submit_item_lit`] of `state` under each of `poses` on the GPU path: the mark
+    /// before its draws and their bounds, or `None` (nothing drawn) when the state cannot
+    /// take it.
+    pub(super) fn submit_item_skinned(
+        &self,
+        state: &ItemRenderState,
+        poses: &[glam::Mat4],
+        light: u32,
+        lights: (glam::Vec3, glam::Vec3),
+    ) -> Option<((usize, usize, u32), Option<(glam::Vec3, glam::Vec3)>)> {
+        let mut models = self.skin_models.borrow_mut();
+        let mut frame = self.skin_frame.borrow_mut();
+        let mark = frame.mark();
+        let mut skin = horizon_client::mobs::skin::Skin::new(&mut models, &mut frame);
+        for &pose in poses {
+            if !self.skin_item(state, pose, light, lights, &mut skin) {
+                // Decided before any draw, the same for every pose.
+                return None;
+            }
+        }
+        Some((mark, skin.bounds))
+    }
+    /// One pose of [`Self::submit_item_skinned`] into an entity's open
+    /// `skin` (its bounds grow by the item's): false, with nothing drawn,
+    /// when the item cannot take the GPU path.
+    pub(super) fn skin_item(
+        &self,
+        state: &ItemRenderState,
+        pose: glam::Mat4,
+        light: u32,
+        lights: (glam::Vec3, glam::Vec3),
+        skin: &mut horizon_client::mobs::skin::Skin,
+    ) -> bool {
+        let sink = (
+            item_hdr_light(state, light),
+            (state.hdr_light == 0).then_some(lights),
+            state.hdr_tier,
+        );
+        let renderer = &self.pack.item_renderer;
+        state.submit_skinned(renderer, &self.gui.atlas.sprites, pose, sink, skin)
+    }
+    /// [`Self::submit_item_world`] of `state` under `pose` on the GPU path, its draws counted
+    /// with an entity's (`skinned`: its mark and bounds, `cull_skinned`'s); false, with
+    /// nothing drawn, when the state cannot take it.
+    pub(super) fn skin_item_into(
+        &self,
+        state: &ItemRenderState,
+        pose: glam::Mat4,
+        light: u32,
+        skinned: &mut super::creatures::Skinned,
+    ) -> bool {
+        let lights = diffuse_lights(self.dim == Dim::Nether);
+        let Some((mark, bounds)) = self.submit_item_skinned(state, &[pose], light, lights) else {
+            return false;
+        };
+        *skinned = Some(match skinned.take() {
+            Some((first, before)) => (
+                first,
+                match (before, bounds) {
+                    (Some((a, b)), Some((c, d))) => Some((a.min(c), b.max(d))),
+                    (one, other) => one.or(other),
+                },
+            ),
+            None => (mark, bounds),
+        });
+        true
+    }
     /// `ItemEntityRenderer.submit` for every dropped item.
     pub(super) fn dropped_item_geometry(
         &self,
@@ -426,12 +570,24 @@ impl Game<'_> {
             }
             _ => None,
         });
+        // Entity.shouldRenderAtSqrDistance for the item's 0.25 box: 16 blocks
+        // times the view scale (32 at render distance 16), from its current
+        // position. A pickup particle is not an entity and keeps 64 blocks.
+        let range =
+            super::entity_culling::default_range(glam::DVec3::splat(0.25), self.view_scale());
+        let skinning = self.skinning();
+        let lights = diffuse_lights(self.dim == Dim::Nether);
         for (item, at, partial, entity) in live.chain(taken) {
             let entity_start = out.len();
             self.mark_motion(entity_start, (2 << 32) | u64::from(item.id));
             let q = item.position;
             let pos = glam::DVec3::from_array(at) - camera;
-            if pos.length_squared() > 64.0 * 64.0 {
+            let far = if entity {
+                (glam::DVec3::new(q.x, q.y, q.z) - camera).length_squared() >= range * range
+            } else {
+                pos.length_squared() > 64.0 * 64.0
+            };
+            if far {
                 continue;
             }
             // EntityRenderer.shouldRender: the item's 0.25 box, grown by 0.5,
@@ -471,19 +627,60 @@ impl Game<'_> {
             );
             let seed = i64::from(self.pack.item_renderer.item_id(&item.stack.item))
                 + i64::from(item.stack.damage);
-            for copy in item_render::cluster_poses(
+            let copies = item_render::cluster_poses(
                 &state,
                 pose,
                 item_render::rendered_amount(item.stack.count),
                 seed,
-            ) {
-                self.submit_item_world(&state, copy, vertex_light(packed), out);
+            );
+            // Use the same animated, spun, clustered transforms as the draw.
+            // ItemEntity's collision box is only 0.25 blocks and cannot prove
+            // that this larger rendered model stays behind an occluder.
+            let culling = entity.then(|| {
+                state
+                    .posed_bounds(&copies)
+                    .map(|(lo, hi)| {
+                        self.entity_cull_decision_in_bounds(
+                            item,
+                            Aabb::new(
+                                Vec3::new(
+                                    camera.x + f64::from(lo.x),
+                                    camera.y + f64::from(lo.y),
+                                    camera.z + f64::from(lo.z),
+                                ),
+                                Vec3::new(
+                                    camera.x + f64::from(hi.x),
+                                    camera.y + f64::from(hi.y),
+                                    camera.z + f64::from(hi.z),
+                                ),
+                            ),
+                        )
+                    })
+                    .unwrap_or_else(|| self.entity_cull_decision(item, f64::from(partial)))
+            });
+            if culling.is_some_and(|decision| decision.hides_entity()) {
+                continue;
             }
-            if self.entity_glowing(item.id) {
-                let rgb = super::glowing::team_color(self.mob_team(item.id));
+            let outline = self.thing_outline(item.id, "minecraft:item");
+            // Posed on the GPU when every layer can be, its silhouette too when it glows.
+            let skinned = skinning
+                .then(|| self.submit_item_skinned(&state, &copies, vertex_light(packed), lights))
+                .flatten();
+            if skinned.is_none() {
+                for &copy in &copies {
+                    self.submit_item_world(&state, copy, vertex_light(packed), out);
+                }
+            }
+            if let Some(rgb) = outline {
                 self.mark_outline(&out[entity_start..], rgb);
+                if let Some(((first, _, _), _)) = skinned {
+                    let color = horizon_client::mobs::render::abgr(rgb);
+                    self.skin_frame.borrow_mut().outline_since(first, color);
+                }
+            } else if let Some(culling) = culling {
+                self.finish_entity_occlusion(culling, item, out, entity_start);
             } else {
-                self.cull_entity_vertices(out, entity_start);
+                self.cull_skinned(out, entity_start, skinned);
             }
         }
     }

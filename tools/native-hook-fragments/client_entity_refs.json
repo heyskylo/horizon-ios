@@ -1,0 +1,18 @@
+{
+  "hooks": [],
+  "helpers": [
+    {
+      "name": "menu_stacks",
+      "target": "horizon_client::game::native_menu_stacks::Game<'_>::native_menu_stacks"
+    }
+  ],
+  "rust_summary": "entity handles on a client (`native_entity` and the `entity_*` and `living_*` reads over the entities the server shows the window, armor stands' custom names and equipment included) and the stacks of a server-opened menu by slot (`native_menu_stacks`).",
+  "doc_summary": "on a client, `host.entity(id)` and the `entity_*` and `living_*` reads work against the entities the server shows the window (what a client knows: position, rotation, type, UUID, custom name, equipment; no saved data or tags; writes refused), and `host.menu_stacks()` gives the open server-opened menu's stacks, with their components, by slot. Bundles need \"hooks\": @API:client_entity_refs@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_entity_refs.rs",
+    "crates/horizon-client/src/game/native_entity_data.rs",
+    "crates/horizon-client/src/game/native_entity_motion.rs",
+    "crates/horizon-client/src/game/native_living_refs.rs",
+    "crates/horizon-client/src/game/native_menu_stacks.rs"
+  ]
+}

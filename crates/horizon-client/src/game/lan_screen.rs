@@ -112,6 +112,10 @@ fn labelled(key: &str, value: Text) -> Text {
 }
 
 impl WorldOptions {
+    /// No button keeps the focus a click gave it.
+    pub(super) fn clear_click_focus(&mut self) {
+        self.focused_button = None;
+    }
     /// Vanilla 26.3 WorldOptionsScreen.generalOptions: guests see difficulty,
     /// game rules and restrictions; game modes, commands and LAN are host-only.
     fn visible_buttons(&self, w: f32) -> Vec<(Button, f32, f32, f32)> {
@@ -561,7 +565,17 @@ impl Game<'_> {
         else {
             return;
         };
-        let mut rules = horizon_client::gamerules::GameRules::default();
+        // The response itself lists the server's available rules; the client
+        // may not own this world's level.dat (including on the server thread).
+        let features = if entries.iter().any(|e| {
+            horizon_client::gamerules::rule(&e.name)
+                .is_some_and(|r| r.name == horizon_client::gamerules::MAX_MINECART_SPEED.name)
+        }) {
+            vec![horizon_client::gamerules::MINECART_IMPROVEMENTS.to_owned()]
+        } else {
+            Vec::new()
+        };
+        let mut rules = horizon_client::gamerules::GameRules::with_features(&features);
         for entry in entries {
             rules.set_string(&entry.name, &entry.value);
         }
@@ -804,7 +818,18 @@ impl Game<'_> {
         });
         let hover = ui::hovered(self.cursor, dx, dy, 200.0, 20.0) || is_focused;
         let label = Text::translate("gui.done", &[]);
-        ui::button(batch, atlas, dx, dy, 200.0, 20.0, &label, true, hover);
+        ui::action_button(
+            batch,
+            atlas,
+            horizon_client::widgets::Action::Done,
+            dx,
+            dy,
+            200.0,
+            20.0,
+            &label,
+            true,
+            hover,
+        );
     }
 
     fn draw_options_view(&self, o: &mut WorldOptions, batch: &mut HudBatch, cursor: (f32, f32)) {
@@ -873,6 +898,10 @@ impl Game<'_> {
             }
             if b == Button::Lock {
                 widgets::narratable(|| o.narration(b, [bx, by, 20.0, 20.0], tr).hovered(hover));
+                // An icon, but a button: the D-pad and Tab stop on it as on the others.
+                if active {
+                    widgets::target([bx, by, 20.0, 20.0]);
+                }
                 let lock = if o.locked { "locked" } else { "unlocked" };
                 let state = match (active, hover) {
                     (false, _) => "_disabled",
@@ -957,17 +986,33 @@ impl Game<'_> {
             let active = o.active(b);
             let is_focused = o.focused_button == Some(b);
             let hover = active && (ui::hovered(cursor, bx, by, bw, 20.0) || is_focused);
-            ui::button(batch, atlas, bx, by, bw, 20.0, &o.label(b), active, hover);
+            let action = match b {
+                Button::Apply => horizon_client::widgets::Action::Apply,
+                _ => horizon_client::widgets::Action::Cancel,
+            };
+            ui::action_button(
+                batch,
+                atlas,
+                action,
+                bx,
+                by,
+                bw,
+                20.0,
+                &o.label(b),
+                active,
+                hover,
+            );
         }
     }
 
     /// The mouse wheel over the screen (ScrollableLayout, 10 pixels a step).
     pub(super) fn world_options_scroll(&mut self, delta: f32) {
         let (w, h) = self.gui_size();
+        let stick_scroll = self.pad_stick_scroll();
         match self.world_options.as_mut() {
             Some(o) if o.view == View::Options => {
                 let hit_btn = o.hit(self.cursor, (w, h)).or(o.focused_button);
-                if let Some(btn) = hit_btn {
+                if let Some(btn) = hit_btn.filter(|_| !stick_scroll) {
                     let step = if delta > 0.0 { -1 } else { 1 };
                     match btn {
                         Button::DefaultMode => {

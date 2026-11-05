@@ -83,17 +83,34 @@ const SHARED: [&str; 9] = [
     "servers.dat",
     "optionsshaders.txt",
 ];
-/// What is never copied from an instance's own game folder: logs, and the CurseForge app's own
-/// files.
-const SKIPPED: [&str; 4] = [
+/// What is never copied from an instance's own game folder: logs, the CurseForge app's own
+/// files, and the BlueMap web maps the game asks for tiles around the player
+/// (`horizon_client_render::bluemap::SERVERS_FILE`): only the player names those, never a pack
+/// the other launcher installed.
+const SKIPPED: [&str; 7] = [
     "logs",
     "crash-reports",
     "minecraftinstance.json",
     ".curseclient",
+    "horizon-bluemap.txt",
+    // Far terrain's copies of what servers sent, and of their web maps.
+    "server-terrain",
+    // The browser's list of what it installed (and may delete): only this launcher writes it.
+    "mod-browser.json",
 ];
 const CURSEFORGE: &str = "the CurseForge app";
 const MODRINTH_APP: &str = "the Modrinth App";
 const ATLAUNCHER: &str = "ATLauncher";
+
+fn loader_of_name(name: &str) -> Option<&'static str> {
+    match name.to_ascii_lowercase().as_str() {
+        "fabric" => Some("fabric"),
+        "quilt" => Some("quilt"),
+        "neoforge" => Some("neoforge"),
+        "forge" => Some("forge"),
+        _ => None,
+    }
+}
 
 fn loader_of_uid(uid: &str) -> Option<&'static str> {
     match uid {
@@ -288,6 +305,25 @@ fn game_folders(dir: &Path, launcher: &'static str) -> Vec<Found> {
 /// The CurseForge app's instances: in its modding folder's `Instances/`.
 pub fn curseforge_instances(root: &Path) -> Vec<Found> {
     game_folders(&root.join("Instances"), CURSEFORGE)
+        .into_iter()
+        .map(with_curseforge_target)
+        .collect()
+}
+
+/// `found` with the Minecraft version and loader its CurseForge instance records
+/// (`minecraftinstance.json`, else `manifest.json`). An instance that records neither, or a
+/// loader Horizon doesn't name, keeps none.
+fn with_curseforge_target(mut found: Found) -> Found {
+    let Some((minecraft, loader, version)) =
+        horizon_port_pack::import::curseforge_instance_target(&found.game)
+    else {
+        return found;
+    };
+    found.minecraft = Some(minecraft);
+    found.loader = loader_of_name(&loader)
+        .filter(|_| !version.is_empty())
+        .map(|name| Loader { name, version });
+    found
 }
 
 /// The Modrinth App's instances: in its folder's `profiles/`.
@@ -378,6 +414,7 @@ pub fn in_folder(dir: &Path, launcher: Option<&'static str>) -> Vec<Found> {
         return game_folders(parent, CURSEFORGE)
             .into_iter()
             .filter(|f| f.game.file_name() == name)
+            .map(with_curseforge_target)
             .collect();
     }
     if dir.join("instance.json").is_file() {
@@ -473,7 +510,7 @@ pub fn copy_game(found: &Found, to: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// The loader `found` runs, when Horizon installs it (Fabric, Quilt): at the same version.
+/// The loader `found` runs, at the same version, when Horizon installs it ([`loaders::Kind`]).
 pub fn loader(found: &Found) -> Option<loaders::Loader> {
     let l = found.loader.as_ref()?;
     Some(loaders::Loader {

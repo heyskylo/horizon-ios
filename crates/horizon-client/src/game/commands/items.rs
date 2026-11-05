@@ -3,11 +3,16 @@
 use super::{Arg, Context, Game, R, Target, err};
 use horizon_client::{
     command::{CommandError, args::ItemInput},
+    containers::BlockEntity,
+    furnace::FurnaceCooking,
     items::ItemStack,
     scoreboard_cmd::{Holder, Tracker},
     text::Text,
 };
 use horizon_world::nbt::Tag;
+
+mod contents;
+use contents::Component;
 
 /// One addressable slot.
 #[derive(Clone, Debug, PartialEq)]
@@ -31,6 +36,14 @@ pub(in crate::game) enum Slot {
     Block([i32; 3], usize),
     /// A slot of another player (`for_player`): reached with their state in place.
     Guest(u32, Box<Slot>),
+    /// A component collection for writes, or an indexed component item for reads.
+    Contents(Box<Slot>, Component),
+    ContentItem(Box<Slot>, Component, usize),
+}
+struct SlotCandidate {
+    slot: Slot,
+    filters: Vec<serde_json::Value>,
+    limit: usize,
 }
 /// Whose slots a command addresses.
 #[derive(Clone, Debug, PartialEq)]
@@ -94,10 +107,7 @@ impl Game<'_> {
         let mut add = |s: Slot| out.push(s);
         match owner {
             Owner::Block(p) => {
-                let size = match self.world.block_entities.get(&(p[0], p[1], p[2])) {
-                    Some(horizon_client::containers::BlockEntity::Chest(items)) => items.len(),
-                    _ => 0,
-                };
+                let size = self.block_container_size(*p).unwrap_or(0);
                 for i in 0..size {
                     if matches_name(name, &format!("container.{i}")) {
                         add(Slot::Block(*p, i));
@@ -187,8 +197,186 @@ impl Game<'_> {
         }
         out
     }
+    /// `ItemCommands.getSlotsFromProvider`: evaluate inline sources against
+    /// the accessor's live owner. Named ranges retain their existing adapter.
+    fn command_slots(&mut self, owner: &Owner, raw: &str) -> Vec<Slot> {
+        if raw.starts_with('{') || raw.starts_with('[') {
+            let Ok((tag, _)) = horizon_world::nbt::parse_snbt(raw) else {
+                return Vec::new();
+            };
+            self.inline_slots(owner, &horizon_client::scoreboard::tag_to_json(&tag))
+        } else {
+            self.slots_named(owner, raw)
+        }
+    }
+    /// `SlotCollection.itemCopies` / `size`: transforms apply to the
+    /// collection, before a command's item predicate or item modifier.
+    fn inline_slots(&mut self, owner: &Owner, source: &serde_json::Value) -> Vec<Slot> {
+        if let Some(terms) = source.as_array() {
+            return terms
+                .iter()
+                .flat_map(|s| self.inline_slots(owner, s))
+                .collect();
+        }
+        match source["type"]
+            .as_str()
+            .unwrap_or_default()
+            .trim_start_matches("minecraft:")
+        {
+            "group" => source["terms"].as_array().map_or_else(Vec::new, |terms| {
+                terms
+                    .iter()
+                    .flat_map(|s| self.inline_slots(owner, s))
+                    .collect()
+            }),
+            "slot_range" => self.slots_named(owner, source["slots"].as_str().unwrap_or_default()),
+            "contents" => {
+                let Some(component) = source["component"].as_str().and_then(Component::named)
+                else {
+                    return Vec::new();
+                };
+                let parents = self.inline_slots(owner, &source["slot_source"]);
+                parents
+                    .into_iter()
+                    .flat_map(|p| self.contents_slots(p, component))
+                    .collect()
+            }
+            "limit_slots" => {
+                let mut slots = self.inline_slots(owner, &source["slot_source"]);
+                slots.truncate(source["limit"].as_u64().unwrap_or(0) as usize);
+                slots
+            }
+            "filtered" => {
+                let slots = self.inline_slots(owner, &source["slot_source"]);
+                slots
+                    .into_iter()
+                    .filter(|slot| self.slot_filter(slot, &source["item_filter"]))
+                    .collect()
+            }
+            _ => Vec::new(),
+        }
+    }
+    fn slot_filter(&mut self, slot: &Slot, filter: &serde_json::Value) -> bool {
+        let stack = self
+            .slot_get(slot)
+            .unwrap_or_else(|| ItemStack::new("minecraft:air", 0));
+        self.loot_item_filter(filter, &stack)
+    }
+    /// `SlotCollection.modifySlots` / `replaceSlotItems`: filters inspect the
+    /// live stack when visited. Limits share the command's TrackingSelector
+    /// count across owners and group terms, and count selected empty slots
+    /// only for replacement (not modification).
+    fn command_slot_candidates(&mut self, owner: &Owner, raw: &str) -> Vec<SlotCandidate> {
+        let source = horizon_world::nbt::parse_snbt(raw)
+            .ok()
+            .map(|(tag, _)| horizon_client::scoreboard::tag_to_json(&tag));
+        if raw.starts_with('{') || raw.starts_with('[') {
+            let mut out = Vec::new();
+            if let Some(source) = source {
+                self.slot_candidates(owner, &source, &[], usize::MAX, &mut out);
+            }
+            out
+        } else {
+            self.slots_named(owner, raw)
+                .into_iter()
+                .map(|slot| SlotCandidate {
+                    slot,
+                    filters: Vec::new(),
+                    limit: usize::MAX,
+                })
+                .collect()
+        }
+    }
+    /// `CompositeSlotSource.provide` and `TransformedSlotSource.provide`:
+    /// carry each leaf's filters and selection bound into live writes.
+    fn slot_candidates(
+        &mut self,
+        owner: &Owner,
+        source: &serde_json::Value,
+        filters: &[serde_json::Value],
+        limit: usize,
+        out: &mut Vec<SlotCandidate>,
+    ) {
+        if let Some(terms) = source.as_array() {
+            for term in terms {
+                self.slot_candidates(owner, term, filters, limit, out);
+            }
+            return;
+        }
+        match source["type"]
+            .as_str()
+            .unwrap_or_default()
+            .trim_start_matches("minecraft:")
+        {
+            "group" => {
+                if let Some(terms) = source["terms"].as_array() {
+                    for term in terms {
+                        self.slot_candidates(owner, term, filters, limit, out);
+                    }
+                }
+            }
+            "slot_range" => {
+                for slot in self.slots_named(owner, source["slots"].as_str().unwrap_or_default()) {
+                    out.push(SlotCandidate {
+                        slot,
+                        filters: filters.to_vec(),
+                        limit,
+                    });
+                }
+            }
+            "contents" => {
+                if let Some(component) = source["component"].as_str().and_then(Component::named) {
+                    for parent in self.inline_slots(owner, &source["slot_source"]) {
+                        out.push(SlotCandidate {
+                            slot: Slot::Contents(Box::new(parent), component),
+                            filters: filters.to_vec(),
+                            limit,
+                        });
+                    }
+                }
+            }
+            "filtered" => {
+                let mut filters = filters.to_vec();
+                filters.push(source["item_filter"].clone());
+                self.slot_candidates(owner, &source["slot_source"], &filters, limit, out);
+            }
+            "limit_slots" => self.slot_candidates(
+                owner,
+                &source["slot_source"],
+                filters,
+                limit.min(source["limit"].as_u64().unwrap_or(0) as usize),
+                out,
+            ),
+            _ => {}
+        }
+    }
+    /// `SlotSelector.TrackingSelector.trySelectSlot`: count only slots that
+    /// pass the predicate, before attempting the setter.
+    fn select_slot(
+        &mut self,
+        candidate: &SlotCandidate,
+        selected: &mut usize,
+        nonempty: bool,
+    ) -> bool {
+        if *selected >= candidate.limit
+            || (nonempty && self.slot_get(&candidate.slot).is_none())
+            || !candidate
+                .filters
+                .iter()
+                .all(|f| self.slot_filter(&candidate.slot, f))
+        {
+            return false;
+        }
+        *selected += 1;
+        true
+    }
     pub(in crate::game) fn slot_get(&mut self, s: &Slot) -> Option<ItemStack> {
         match s {
+            Slot::Contents(..) => None,
+            Slot::ContentItem(parent, component, index) => {
+                let stack = self.slot_get(parent)?;
+                component.items(&stack).get(*index).cloned().flatten()
+            }
             Slot::Guest(conn, slot) => self
                 .for_player(Target::Guest(*conn), |g| g.slot_get(slot))
                 .flatten(),
@@ -202,7 +390,8 @@ impl Game<'_> {
                 let item = match *key {
                     "mainhand" => &m.extra.main_hand,
                     "offhand" => &m.extra.off_hand,
-                    "head" | "body" => &m.extra.head,
+                    "head" => &m.extra.head,
+                    "body" => &m.extra.body,
                     "chest" => &m.extra.chest,
                     "legs" => &m.extra.legs,
                     "feet" => &m.extra.feet,
@@ -225,17 +414,114 @@ impl Game<'_> {
                 .flatten(),
             Slot::Frame(id) => self.item_frames.iter().find(|f| f.id == *id)?.item.clone(),
             Slot::Cart(id, i) => self.cart_slots(*id)?.get(*i).cloned().flatten(),
-            Slot::Block(p, i) => match self.world.block_entities.get(&(p[0], p[1], p[2])) {
-                Some(horizon_client::containers::BlockEntity::Chest(items)) => {
-                    items.get(*i).cloned().flatten()
-                }
-                _ => None,
-            },
+            Slot::Block(p, i) => self
+                .world
+                .block_entities
+                .get(&(p[0], p[1], p[2]))?
+                .slots()
+                .get(*i)
+                .cloned()
+                .flatten(),
         }
+    }
+    pub(in crate::game) fn slot_accepts(&self, s: &Slot, stack: Option<&ItemStack>) -> bool {
+        let Slot::Block(p, i) = s else {
+            return true;
+        };
+        let air = ItemStack {
+            item: "minecraft:air".into(),
+            count: 0,
+            damage: 0,
+            extra: None,
+        };
+        self.block_can_place(*p, *i, stack.unwrap_or(&air))
+    }
+    fn block_container_size(&self, p: [i32; 3]) -> Option<usize> {
+        let size = match self.world.block_entities.get(&(p[0], p[1], p[2]))? {
+            BlockEntity::Mod(m) if m.id.is_empty() => 0,
+            BlockEntity::Mod(_) => self
+                .world
+                .block_entities
+                .mod_container(self.world.block(p[0], p[1], p[2]).0)
+                .map_or(0, |c| c.slots),
+            entity => entity.slots().len(),
+        };
+        (size > 0).then_some(size)
+    }
+    fn block_slot_set(&mut self, p: [i32; 3], i: usize, stack: Option<ItemStack>) -> bool {
+        let key = (p[0], p[1], p[2]);
+        let Some(size) = self.block_container_size(p).filter(|&size| i < size) else {
+            return false;
+        };
+        let book = stack.as_ref().is_none_or(|s| {
+            self.items()
+                .item_tags
+                .get("minecraft:bookshelf_books")
+                .is_some_and(|m| m.contains(&*s.item))
+        });
+        let recipes = world_recipes!(self);
+        match self.world.block_entities.get_mut(&key) {
+            Some(BlockEntity::Furnace(f)) if i == 0 => f.set_input(recipes, stack),
+            Some(BlockEntity::Furnace(f)) => {
+                f.items[i] = stack;
+                self.world.modified.insert((p[0] >> 4, p[2] >> 4));
+                return true;
+            }
+            Some(BlockEntity::ChiseledBookshelf(_)) if !book => return true,
+            Some(BlockEntity::Jukebox(_)) => {
+                self.jukebox_set_item(p, stack);
+                return true;
+            }
+            Some(BlockEntity::Crafter(c)) => {
+                c.disabled[i] = false;
+                c.items[i] = stack;
+            }
+            Some(BlockEntity::Mod(m)) => {
+                if m.items.len() < size {
+                    m.items.resize(size, None);
+                }
+                m.items[i] = stack;
+            }
+            Some(entity) => entity.slots_mut()[i] = stack,
+            None => return false,
+        }
+        self.container_changed(key);
+        true
+    }
+    /// `LivingEntity.createEquipmentSlotAccess`: every slot but head, mainhand
+    /// and offhand takes only an empty stack or one whose
+    /// `getEquipmentSlotForItem` is that slot (a non-equippable item is mainhand).
+    fn equipment_slot_accepts(&self, s: &Slot, stack: Option<&ItemStack>) -> bool {
+        let name = match s {
+            Slot::Guest(_, inner) => return self.equipment_slot_accepts(inner, stack),
+            Slot::Armor(i @ 1..=3) => ["head", "chest", "legs", "feet"][*i],
+            Slot::Mob(_, key) if matches!(*key, "chest" | "legs" | "feet") => key,
+            _ => return true,
+        };
+        // ItemStack.isEmpty: air or a count of 0.
+        let Some(stack) = stack.filter(|s| &*s.item != "minecraft:air" && s.count > 0) else {
+            return true;
+        };
+        self.items()
+            .get(&stack.item)
+            .is_some_and(|info| info.equip_slot.as_deref() == Some(name))
     }
     /// Put a stack (or nothing) in a slot; false when the slot cannot take it.
     pub(in crate::game) fn slot_set(&mut self, s: &Slot, stack: Option<ItemStack>) -> bool {
         match s {
+            Slot::Contents(..) => false,
+            Slot::ContentItem(parent, component, index) => {
+                let Some(mut outer) = self.slot_get(parent) else {
+                    return false;
+                };
+                let mut slots = component.items(&outer);
+                let Some(slot) = slots.get_mut(*index) else {
+                    return false;
+                };
+                *slot = stack;
+                component.store(&mut outer, slots);
+                self.slot_set(parent, Some(outer))
+            }
             Slot::Guest(conn, slot) => self
                 .for_player(Target::Guest(*conn), |g| g.slot_set(slot, stack))
                 .unwrap_or(false),
@@ -282,10 +568,23 @@ impl Game<'_> {
                     return false;
                 };
                 let item = stack.as_ref().map(|s| s.item.clone());
+                // The worn armour stack goes with the id: a kept stack of the
+                // previous piece would otherwise still be what the mob wears.
+                let worn = match *key {
+                    "head" => Some(0),
+                    "chest" => Some(1),
+                    "legs" => Some(2),
+                    "feet" => Some(3),
+                    _ => None,
+                };
+                if let Some(i) = worn {
+                    m.extra.armor[i] = stack.clone();
+                }
                 match *key {
                     "mainhand" => m.extra.set_main_hand_stack(stack),
                     "offhand" => m.extra.off_hand = item,
-                    "head" | "body" => m.extra.head = item,
+                    "head" => m.extra.head = item,
+                    "body" => m.extra.body = item,
                     "chest" => m.extra.chest = item,
                     "legs" => m.extra.legs = item,
                     "feet" => m.extra.feet = item,
@@ -319,18 +618,7 @@ impl Game<'_> {
                 }
                 None => false,
             },
-            Slot::Block(p, i) => match self.world.block_entities.get_mut(&(p[0], p[1], p[2])) {
-                Some(horizon_client::containers::BlockEntity::Chest(items)) => {
-                    match items.get_mut(*i) {
-                        Some(slot) => {
-                            *slot = stack;
-                            true
-                        }
-                        None => false,
-                    }
-                }
-                _ => false,
-            },
+            Slot::Block(p, i) => self.block_slot_set(*p, *i, stack),
         }
     }
     fn owner_holder(&self, o: &Owner) -> Holder {
@@ -695,7 +983,7 @@ impl Game<'_> {
         };
         let modifier = self.item_modifier_arg(ctx, "modifier")?;
         let source = self.command_source.unwrap_or_else(|| self.player_source());
-        let view = source.entity.map(|t| self.entity_view_of(t));
+        let view = source.entity.map(|t| self.entity_view_asked(t, &modifier));
         let seed = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos() as i64);
@@ -703,10 +991,10 @@ impl Game<'_> {
         let mut tracker = Tracker::default();
         let mut selected = 0;
         for o in &targets {
-            let slots = self.slots_named(o, &slot_name);
+            let slots = self.command_slot_candidates(o, &slot_name);
             if slots.is_empty() {
                 if let Owner::Block(p) = o
-                    && !self.world.block_entities.contains_key(&(p[0], p[1], p[2]))
+                    && self.block_container_size(*p).is_none()
                 {
                     return Err(err(
                         "commands.item.target.not_a_container",
@@ -716,12 +1004,38 @@ impl Game<'_> {
                 continue;
             }
             let mut changed = 0;
-            for slot in &slots {
+            for candidate in &slots {
+                if let Slot::Contents(parent, component) = &candidate.slot {
+                    changed += self.modify_contents(
+                        parent,
+                        *component,
+                        candidate,
+                        &mut selected,
+                        |g, current| {
+                            g.apply_item_modifier(
+                                &modifier,
+                                Some(current),
+                                &mut rng,
+                                view.as_ref(),
+                                source.pos,
+                                0,
+                            )
+                            .map(|mut s| {
+                                s.count = s.count.min(g.stack_max_size(&s));
+                                s
+                            })
+                        },
+                    );
+                    continue;
+                }
+                if !self.select_slot(candidate, &mut selected, true) {
+                    continue;
+                }
+                let slot = &candidate.slot;
                 // SlotSelector.NON_EMPTY_SLOTS
                 let Some(current) = self.slot_get(slot) else {
                     continue;
                 };
-                selected += 1;
                 let new = self.apply_item_modifier(
                     &modifier,
                     Some(current.clone()),
@@ -737,7 +1051,7 @@ impl Game<'_> {
                     s.count = s.count.min(max);
                     s
                 });
-                if self.slot_set(slot, new) {
+                if self.equipment_slot_accepts(slot, new.as_ref()) && self.slot_set(slot, new) {
                     changed += 1;
                 }
             }
@@ -745,7 +1059,13 @@ impl Game<'_> {
             tracker.track(&h, changed);
         }
         if selected == 0 {
-            return Err(err("commands.item.target.no_such_slot", &[&slot_name]));
+            return Err(
+                if slot_name.starts_with('{') || slot_name.starts_with('[') {
+                    err("commands.item.target.no_such_slot.unnamed", &[])
+                } else {
+                    err("commands.item.target.no_such_slot", &[&slot_name])
+                },
+            );
         }
         let pos = match targets.first() {
             Some(Owner::Block(p)) => Some(*p),
@@ -805,16 +1125,21 @@ impl Game<'_> {
             };
             let mut found = Vec::new();
             for o in &sources {
-                for s in self.slots_named(o, &source_slots) {
+                for s in self.command_slots(o, &source_slots) {
                     found.push(self.slot_get(&s));
                 }
             }
             if found.is_empty() {
                 return Err(match &sources[..] {
-                    [Owner::Block(p)] => err(
+                    // ItemCommands.getContainer: a block entity that is no Container
+                    // (a sign, a lectern, a beacon) is no source either.
+                    [Owner::Block(p)] if self.block_container_size(*p).is_none() => err(
                         "commands.item.source.not_a_container",
                         &[&p[0], &p[1], &p[2]],
                     ),
+                    _ if source_slots.starts_with('{') || source_slots.starts_with('[') => {
+                        err("commands.item.source.no_such_slot.unnamed", &[])
+                    }
                     _ => err("commands.item.source.no_such_slot", &[&source_slots]),
                 });
             }
@@ -822,7 +1147,7 @@ impl Game<'_> {
             if ctx.get("modifier").is_some() {
                 let modifier = self.item_modifier_arg(ctx, "modifier")?;
                 let source = self.command_source.unwrap_or_else(|| self.player_source());
-                let view = source.entity.map(|t| self.entity_view_of(t));
+                let view = source.entity.map(|t| self.entity_view_asked(t, &modifier));
                 let mut rng = horizon_core::random::LegacyRandom::new(0);
                 found = found
                     .into_iter()
@@ -846,10 +1171,10 @@ impl Game<'_> {
         let mut tracker = Tracker::default();
         let mut selected = 0;
         for o in &targets {
-            let slots = self.slots_named(o, &slot_name);
+            let slots = self.command_slot_candidates(o, &slot_name);
             if slots.is_empty() {
                 if let Owner::Block(p) = o
-                    && !self.world.block_entities.contains_key(&(p[0], p[1], p[2]))
+                    && self.block_container_size(*p).is_none()
                 {
                     return Err(err(
                         "commands.item.target.not_a_container",
@@ -858,9 +1183,23 @@ impl Game<'_> {
                 }
                 continue;
             }
-            selected += slots.len();
             let mut changed = 0;
-            for (i, slot) in slots.iter().enumerate() {
+            let mut i = 0;
+            for candidate in &slots {
+                if let Slot::Contents(parent, component) = &candidate.slot {
+                    changed += self.replace_contents(
+                        parent,
+                        *component,
+                        candidate,
+                        &mut selected,
+                        &mut contents::Provider::new(&items, &mut i, &mode),
+                    );
+                    continue;
+                }
+                if !self.select_slot(candidate, &mut selected, false) {
+                    continue;
+                }
+                let slot = &candidate.slot;
                 // `fill` cycles through the items; `replace` stops when they
                 // run out; `override` empties the rest.
                 let item = match mode.as_str() {
@@ -871,10 +1210,11 @@ impl Game<'_> {
                         None => break,
                     },
                 };
+                i += 1;
                 // ItemStack.isEmpty: air (or a count of 0) is an empty slot.
                 // SlotAccess.set counts every slot it sets, the same item too.
                 let item = item.filter(|s| &*s.item != "minecraft:air" && s.count > 0);
-                if self.slot_set(slot, item) {
+                if self.equipment_slot_accepts(slot, item.as_ref()) && self.slot_set(slot, item) {
                     changed += 1;
                 }
             }
@@ -882,7 +1222,13 @@ impl Game<'_> {
             tracker.track(&h, changed);
         }
         if selected == 0 {
-            return Err(err("commands.item.target.no_such_slot", &[&slot_name]));
+            return Err(
+                if slot_name.starts_with('{') || slot_name.starts_with('[') {
+                    err("commands.item.target.no_such_slot.unnamed", &[])
+                } else {
+                    err("commands.item.target.no_such_slot", &[&slot_name])
+                },
+            );
         }
         let block = matches!(targets.first(), Some(Owner::Block(_)));
         let pos = match targets.first() {
@@ -892,7 +1238,8 @@ impl Game<'_> {
         let zero = match &known {
             Some(k) => err(
                 "commands.item.target.failed.known_item",
-                &[&k.item.to_string()],
+                // The ItemStack itself is the argument: ItemStack.toString.
+                &[&format!("{} {}", k.count, k.item)],
             ),
             None => err("commands.item.target.failed", &[]),
         };
@@ -958,7 +1305,15 @@ impl Game<'_> {
         };
         let mut count = 0;
         for o in owners {
-            let slots = self.slots_named(&o, &slot_name);
+            if let Owner::Block(p) = o
+                && self.block_container_size(p).is_none()
+            {
+                return Err(err(
+                    "commands.item.source.not_a_container",
+                    &[&p[0], &p[1], &p[2]],
+                ));
+            }
+            let slots = self.command_slots(&o, &slot_name);
             if predicate.is_none() {
                 count += slots.len() as i32;
                 continue;

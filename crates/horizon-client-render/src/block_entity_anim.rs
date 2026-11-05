@@ -383,7 +383,7 @@ impl Shulker {
         out
     }
     /// `ShulkerBoxBlock.canOpen`: a closed box only opens when its lid has room
-    /// (`level.noCollision` of the half-block lid box, deflated by 1e-6).
+    /// (`level.noCollision` of the lid box at half progress, deflated by 1e-6).
     pub fn lid_box(pos: [i32; 3], facing: u8) -> [f64; 6] {
         let bottom = [
             f64::from(pos[0]) + 0.5,
@@ -939,6 +939,14 @@ impl BlockEntityAnims {
     /// Drops the state of block entities that are gone or changed kind:
     /// `present` holds the loaded block entities' tickers, sorted by position.
     pub fn retain_present(&mut self, present: &[([i32; 3], Ticker)]) {
+        self.retain_animations(present, false);
+    }
+    /// An integrated server owns bell state independently of renderer visibility.
+    /// Its world ticker removes bells when their actual block changes.
+    pub fn retain_present_preserving_bells(&mut self, present: &[([i32; 3], Ticker)]) {
+        self.retain_animations(present, true);
+    }
+    fn retain_animations(&mut self, present: &[([i32; 3], Ticker)], keep_bells: bool) {
         let is = |p: &[i32; 3], f: fn(&Ticker) -> bool| {
             present
                 .binary_search_by_key(p, |(q, _)| *q)
@@ -948,7 +956,9 @@ impl BlockEntityAnims {
         self.books.retain(|p, _| is(p, |t| *t == Ticker::Book));
         self.shulkers
             .retain(|p, _| is(p, |t| matches!(t, Ticker::Shulker { .. })));
-        self.bells.retain(|p, _| is(p, |t| *t == Ticker::Bell));
+        if !keep_bells {
+            self.bells.retain(|p, _| is(p, |t| *t == Ticker::Bell));
+        }
         self.conduits
             .retain(|p, _| is(p, |t| *t == Ticker::Conduit));
         self.skulls

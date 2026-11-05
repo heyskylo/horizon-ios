@@ -173,6 +173,16 @@ impl Registries {
         fill(&mut self.templates, "templates");
         fill(&mut self.persistent_components, "persistent_components");
         fill(&mut self.learnable_recipes, "learnable_recipes");
+        if self.summonable.is_empty() {
+            self.summonable = strings(&r["summonable"]);
+            self.summonable.sort();
+            self.summonable.dedup();
+        }
+        if self.entity_types.is_empty() {
+            self.entity_types = strings(&r["entity_types"]);
+            self.entity_types.sort();
+            self.entity_types.dedup();
+        }
         const RELOADED: [&str; 5] = [
             "minecraft:advancement",
             "minecraft:recipe",
@@ -236,6 +246,16 @@ impl Registries {
         fill(&mut self.templates, &e.templates);
         fill(&mut self.persistent_components, &e.persistent_components);
         fill(&mut self.learnable_recipes, &e.learnable_recipes);
+        if self.summonable.is_empty() {
+            self.summonable.clone_from(&e.summonable);
+            self.summonable.sort();
+            self.summonable.dedup();
+        }
+        if self.entity_types.is_empty() {
+            self.entity_types.clone_from(&e.entity_types);
+            self.entity_types.sort();
+            self.entity_types.dedup();
+        }
         for (name, ids) in &e.by_registry {
             if !self.by_registry.contains_key(name) {
                 self.by_registry.insert(name.clone(), ids.clone());

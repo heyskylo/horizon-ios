@@ -2,7 +2,7 @@
 //! arithmetic, the sounds of `Breeze.tick` and `BreezeModel`'s layers. The
 //! brain (`BreezeAi` and its behaviours) is in `monster_brain`.
 use super::{
-    Mob, MobEvent, MobWorld, Species,
+    Damage, Mob, MobEvent, MobWorld, Species, Who,
     anim::{Poses, State},
     keyframes::Animation,
 };
@@ -28,6 +28,10 @@ const ALLOWED_ANGLES: [i32; 5] = [40, 55, 60, 75, 80];
 pub fn register(m: &mut Mob) {
     m.set_malus(super::path::PathType::OnTopOfTrapdoor, -1.0);
     m.set_malus(super::path::PathType::Fire, -1.0);
+}
+/// `Breeze.isInvulnerableTo`: another breeze (or itself).
+pub fn accepts_damage(m: &Mob, source: &Damage) -> bool {
+    !(source.attacker == Some(Who::Mob(m.id)) || source.attacker_species == Some(Species::Breeze))
 }
 pub fn pose(m: &Mob) -> u8 {
     m.extra.variant3
@@ -212,13 +216,12 @@ pub(super) fn optimal_jump_vector(m: &mut Mob, target: Vec3) -> Option<Vec3> {
 pub fn discards_friction(m: &Mob) -> bool {
     m.species() == Species::Breeze && pose(m) == LONG_JUMPING
 }
-/// The random draws of `Breeze.tick` before `super.tick()`: the ground
-/// particle count (standing, shooting or inhaling) and the whirl sound clock
-/// (`playWhirlSound` is a local sound, heard on the client only).
-pub fn tick(m: &mut Mob, events: &mut Vec<MobEvent>) {
-    if matches!(pose(m), SHOOTING | INHALING | STANDING) {
-        // emitGroundParticles(1 + random.nextInt(1))
-        let _ = m.random.next_int_bound(1);
+/// `Breeze.tick` before `super.tick()`: the ground particles the pose asks
+/// for, then the whirl sound clock (`playWhirlSound` is a local sound, heard on
+/// the client only).
+pub fn tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
+    if let Some(count) = ground_particle_count(m) {
+        emit_ground_particles(m, w, count, events);
     }
     if m.extra.vector[2] == 0.0 {
         m.extra.vector[2] = f64::from(m.random.next_int_between_inclusive(1, 80).unwrap_or(1));
@@ -235,6 +238,46 @@ pub fn tick(m: &mut Mob, events: &mut Vec<MobEvent>) {
             pitch,
         ));
     }
+}
+/// The crumbs `Breeze.tick`'s pose arm asks `emitGroundParticles` for:
+/// shooting, inhaling and standing `1 + random.nextInt(1)`, sliding twenty, and
+/// none for the long jump (which draws its own trail). The draw is made even
+/// when there is no block to crumble, so it is part of the tick's random.
+pub fn ground_particle_count(m: &mut Mob) -> Option<u32> {
+    match pose(m) {
+        SHOOTING | INHALING | STANDING => Some(1 + m.random.next_int_bound(1).unwrap_or(0) as u32),
+        SLIDING => Some(20),
+        _ => None,
+    }
+}
+/// `Breeze.emitGroundParticles(count)`: `count` crumbs of the block the breeze
+/// stands in (else the one it stands on), drawn at rest at the centre of its
+/// box and the height of its feet.
+pub fn emit_ground_particles(m: &Mob, w: &MobWorld, count: u32, events: &mut Vec<MobEvent>) {
+    if m.extra.passenger {
+        return;
+    }
+    let p = m.position;
+    // `getInBlockState`, else `getBlockStateOn`.
+    let cell = [p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32];
+    let in_block = w.world.block(cell[0], cell[1], cell[2]);
+    let state = if w.facts.is_air(in_block) {
+        let on = m.block_on_legacy(w);
+        w.world.block(on[0], on[1], on[2])
+    } else {
+        in_block
+    };
+    if w.facts.get(state).render_shape == crate::blocks::RenderShape::Invisible {
+        return;
+    }
+    events.push(MobEvent::LandingDust {
+        state,
+        // `getBoundingBox().getCenter()` on x and z, `position().y` for it.
+        at: [p.x, p.y, p.z],
+        count: count as i32,
+        // `addParticle(..., 0.0, 0.0, 0.0)`: no speed to the crumbs.
+        speed: 0.0,
+    });
 }
 /// The client's pose-driven animation states (`onSyncedDataUpdated` and
 /// `Breeze.tick`).
@@ -306,5 +349,318 @@ mod tests {
         let a = 60.0_f64.to_radians();
         let v0sq = r * r * g / (r * (2.0 * a).sin() - 2.0 * y * a.cos().powi(2));
         assert!(v0sq.sqrt() < 1.4);
+    }
+}
+#[cfg(test)]
+mod ground_particle_tests {
+    use super::*;
+    use crate::mobs::sensor_scan_tests::kind;
+
+    fn breeze(at: Vec3) -> Mob {
+        let mut kind = kind();
+        let k = std::sync::Arc::make_mut(&mut kind);
+        k.id = "minecraft:breeze".into();
+        k.species = Species::Breeze;
+        Mob::new(1, kind, at, 0.0)
+    }
+
+    /// `Breeze.tick`'s pose arm: sliding asks for twenty crumbs and makes no
+    /// draw, shooting, inhaling and standing ask for `1 + nextInt(1)` and make
+    /// one, and the long jump asks for none.
+    #[test]
+    fn the_pose_asks_for_its_crumb_count_and_draws_once_or_never() {
+        // The mob's random, advanced the way the pose's arm does it.
+        let advance = |m: &Mob, draw: bool| {
+            let mut probe = m.random.clone();
+            if draw {
+                let _ = probe.next_int_bound(1);
+            }
+            probe.next_int_bound(1_000_000).unwrap_or(0)
+        };
+        for (pose, count, draw) in [
+            (SLIDING, 20, false),
+            (STANDING, 1, true),
+            (SHOOTING, 1, true),
+            (INHALING, 1, true),
+        ] {
+            let mut m = breeze(Vec3::new(0.5, 64.0, 0.5));
+            set_pose(&mut m, pose);
+            let want = advance(&m, draw);
+            assert_eq!(ground_particle_count(&mut m), Some(count), "pose {pose}");
+            assert_eq!(
+                m.random.next_int_bound(1_000_000).unwrap_or(0),
+                want,
+                "pose {pose}: {} draw(s)",
+                u8::from(draw)
+            );
+        }
+        // The long jump takes the trail arm: no count and no draw.
+        let mut m = breeze(Vec3::new(0.5, 64.0, 0.5));
+        set_pose(&mut m, LONG_JUMPING);
+        let want = advance(&m, false);
+        assert_eq!(ground_particle_count(&mut m), None);
+        assert_eq!(m.random.next_int_bound(1_000_000).unwrap_or(0), want);
+    }
+
+    /// `Breeze.emitGroundParticles`: one `BlockParticleOption(BLOCK, state)` at
+    /// a time, at rest, at the centre of the breeze's box and the height of its
+    /// feet, of the block it stands in or else the one it stands on; none as a
+    /// passenger or over a block that draws nothing (air).
+    #[test]
+    fn a_breeze_crumbles_the_block_under_its_feet() {
+        use crate::mobs::world::with_built_test_world;
+        let ran = with_built_test_world(
+            &[],
+            |world, registry| {
+                world.chunks.insert(
+                    (0, 0),
+                    std::sync::Arc::new(crate::chunk::Chunk::empty(0, 0)),
+                );
+                let stone = registry.default_state("minecraft:stone").unwrap();
+                for x in 0..16 {
+                    for z in 0..16 {
+                        world.set(x, 63, z, stone).unwrap();
+                    }
+                }
+            },
+            |w, _| {
+                let stone = w.registry.default_state("minecraft:stone").unwrap();
+                let dust = |m: &Mob| {
+                    let mut events = Vec::new();
+                    emit_ground_particles(m, w, 1, &mut events);
+                    events
+                        .into_iter()
+                        .map(|e| match e {
+                            MobEvent::LandingDust {
+                                state,
+                                at,
+                                count,
+                                speed,
+                            } => (state, at, count, speed),
+                            other => panic!("not block crumbs: {other:?}"),
+                        })
+                        .collect::<Vec<_>>()
+                };
+                // Feet at 64.0 over stone at y = 63: the block it stands on.
+                let on_stone = breeze(Vec3::new(4.5, 64.0, 2.5));
+                let crumbs = dust(&on_stone);
+                assert_eq!(crumbs.len(), 1, "one event of crumbs, {crumbs:?}");
+                let (state, at, count, speed) = crumbs[0];
+                assert_eq!(state, stone);
+                // `getBoundingBox().getCenter()` on x and z, `position().y`.
+                assert_eq!(at, [4.5, 64.0, 2.5]);
+                assert_eq!(count, 1);
+                assert_eq!(speed, 0.0, "`addParticle(..., 0, 0, 0)`: at rest");
+                // Twenty a tick while sliding, all at that one spot.
+                let mut sliding = breeze(Vec3::new(4.5, 64.0, 2.5));
+                set_pose(&mut sliding, SLIDING);
+                let mut events = Vec::new();
+                let count = ground_particle_count(&mut sliding).unwrap();
+                emit_ground_particles(&sliding, w, count, &mut events);
+                assert!(
+                    matches!(
+                        events.as_slice(),
+                        [MobEvent::LandingDust {
+                            state: s,
+                            at: [4.5, 64.0, 2.5],
+                            count: 20,
+                            speed: 0.0,
+                        }] if *s == stone
+                    ),
+                    "{events:?}"
+                );
+                // A passenger crumbles nothing.
+                let mut riding = breeze(Vec3::new(4.5, 64.0, 2.5));
+                riding.extra.passenger = true;
+                assert!(dust(&riding).is_empty());
+                // Over air the state is air, whose render shape draws nothing.
+                let flying = breeze(Vec3::new(4.5, 100.0, 2.5));
+                assert!(dust(&flying).is_empty());
+            },
+        );
+        // Without the vanilla data under .local/horizon-client there is no world
+        // to crumble: the test has nothing to check.
+        let _ = ran;
+    }
+}
+
+#[cfg(test)]
+mod invulnerability_tests {
+    use super::*;
+    use crate::mobs::{DamageKind, sensor_scan_tests::kind};
+
+    fn test_breeze(id: u32) -> Mob {
+        let mut kind = kind();
+        let k = std::sync::Arc::make_mut(&mut kind);
+        k.id = "minecraft:breeze".into();
+        k.species = Species::Breeze;
+        Mob::new(id, kind, Vec3::ZERO, 0.0)
+    }
+
+    /// Scenario 1: Default/legacy behavior preserved:
+    /// Breeze takes normal damage from player, generic damage, fall damage.
+    #[test]
+    fn breeze_takes_normal_damage_from_player_fall_and_generic() {
+        let mut b = test_breeze(1);
+        let initial_health = b.health;
+        assert!(initial_health > 0.0);
+
+        // Player attack
+        let player_hit = Damage::player([0.0, 0.0, 0.0]);
+        assert!(
+            b.damage(2.0, player_hit),
+            "player attack should hurt breeze"
+        );
+        assert_eq!(b.health, initial_health - 2.0);
+
+        // Fall damage
+        b.invulnerable = 0;
+        let health_before_fall = b.health;
+        assert!(
+            b.damage(3.0, Damage::fall()),
+            "fall damage should hurt breeze"
+        );
+        assert_eq!(b.health, health_before_fall - 3.0);
+
+        // Generic damage
+        b.invulnerable = 0;
+        let health_before_generic = b.health;
+        assert!(
+            b.damage(1.0, Damage::of(DamageKind::Generic)),
+            "generic damage should hurt breeze"
+        );
+        assert_eq!(b.health, health_before_generic - 1.0);
+    }
+
+    /// Scenario 2: Blocking/rejection of disallowed actions:
+    /// Breeze rejects damage when attacker is another Breeze (`source.attacker_species == Some(Species::Breeze)`),
+    /// returning `false` from `m.damage(...)` and taking no damage.
+    #[test]
+    fn breeze_rejects_damage_from_another_breeze() {
+        let mut b = test_breeze(1);
+        let initial_health = b.health;
+
+        // Direct mob attack from another breeze
+        let other_breeze_mob = Damage::mob(2, [0.0, 0.0, 0.0]).with_species(Species::Breeze);
+        assert!(
+            !b.damage(5.0, other_breeze_mob),
+            "breeze should reject damage from another breeze"
+        );
+        assert_eq!(b.health, initial_health, "health must not change");
+
+        // Thrown wind charge or projectile from another breeze
+        let other_breeze_proj = Damage {
+            kind: DamageKind::Thrown,
+            attacker: Some(Who::Mob(2)),
+            from: Some([1.0, 0.0, 0.0]),
+            attacker_species: Some(Species::Breeze),
+        };
+        assert!(
+            !b.damage(3.0, other_breeze_proj),
+            "breeze should reject projectile damage from another breeze"
+        );
+        assert_eq!(b.health, initial_health, "health must remain intact");
+
+        // Directly verify breeze::accepts_damage
+        assert!(!accepts_damage(&b, &other_breeze_mob));
+        assert!(!accepts_damage(&b, &other_breeze_proj));
+    }
+
+    /// Scenario 3: Successful execution when requirements are met:
+    /// Breeze accepts damage from other mob species (e.g. Zombie, Skeleton) when `source.attacker_species` is Zombie/Skeleton.
+    #[test]
+    fn breeze_accepts_damage_from_other_mob_species() {
+        let mut b = test_breeze(1);
+        let initial_health = b.health;
+
+        // Attack from Zombie
+        let zombie_hit = Damage::mob(5, [0.0, 0.0, 0.0]).with_species(Species::Zombie);
+        assert!(
+            accepts_damage(&b, &zombie_hit),
+            "breeze accepts damage from zombie"
+        );
+        assert!(
+            b.damage(4.0, zombie_hit),
+            "breeze must take damage from zombie"
+        );
+        assert_eq!(b.health, initial_health - 4.0);
+
+        // Attack from Skeleton
+        b.invulnerable = 0;
+        let skeleton_hit = Damage::mob(6, [0.0, 0.0, 0.0]).with_species(Species::Skeleton);
+        assert!(
+            accepts_damage(&b, &skeleton_hit),
+            "breeze accepts damage from skeleton"
+        );
+        assert!(
+            b.damage(2.0, skeleton_hit),
+            "breeze must take damage from skeleton"
+        );
+        assert_eq!(b.health, initial_health - 6.0);
+    }
+
+    /// Scenario 4: Special / edge cases:
+    /// Breeze rejects self-inflicted damage (`source.attacker == Some(Who::Mob(m.id))`),
+    /// and verify bypasses_invulnerability behavior if applicable.
+    #[test]
+    fn breeze_rejects_self_damage_and_respects_invulnerability_flags() {
+        let mut b = test_breeze(1);
+        let initial_health = b.health;
+
+        // Self-inflicted damage with no species tag
+        let self_hit_no_species = Damage::mob(b.id, [0.0, 0.0, 0.0]);
+        assert!(
+            !accepts_damage(&b, &self_hit_no_species),
+            "breeze rejects self-hit even without species"
+        );
+        assert!(
+            !b.damage(5.0, self_hit_no_species),
+            "breeze takes no damage from itself"
+        );
+        assert_eq!(b.health, initial_health);
+
+        // Self-inflicted damage with species tag
+        let self_hit_with_species =
+            Damage::mob(b.id, [0.0, 0.0, 0.0]).with_species(Species::Breeze);
+        assert!(
+            !accepts_damage(&b, &self_hit_with_species),
+            "breeze rejects self-hit with species"
+        );
+        assert!(
+            !b.damage(5.0, self_hit_with_species),
+            "breeze takes no damage from itself"
+        );
+        assert_eq!(b.health, initial_health);
+
+        // Invulnerable flag on Mob:
+        b.invulnerable_flag = true;
+        // Normal damage does not bypass invulnerability flag
+        let normal_player = Damage::player([0.0, 0.0, 0.0]);
+        assert!(
+            !b.damage(5.0, normal_player),
+            "invulnerable_flag blocks normal player damage"
+        );
+        assert_eq!(b.health, initial_health);
+
+        // GenericKill bypasses invulnerability flag
+        let kill_damage = Damage::of(DamageKind::GenericKill);
+        assert!(kill_damage.kind.bypasses_invulnerability());
+        assert!(
+            b.damage(1.0, kill_damage),
+            "GenericKill bypasses invulnerability flag"
+        );
+        assert_eq!(b.health, initial_health - 1.0);
+
+        // But another Breeze with GenericKill is still rejected by Breeze.isInvulnerableTo
+        b.invulnerable = 0;
+        let breeze_kill = Damage::of(DamageKind::GenericKill).with_species(Species::Breeze);
+        assert!(
+            !accepts_damage(&b, &breeze_kill),
+            "Breeze.isInvulnerableTo rejects breeze attacker even for GenericKill"
+        );
+        assert!(
+            !b.damage(1.0, breeze_kill),
+            "breeze takes no damage from breeze GenericKill"
+        );
     }
 }

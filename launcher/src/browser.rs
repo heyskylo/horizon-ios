@@ -18,9 +18,9 @@ pub mod modrinth;
 
 use serde::{Deserialize, Serialize};
 
-/// The Minecraft version Horizon plays. A version port updates it with the other `"26.3"` sites
-/// (docs/version-ports.md).
-pub const GAME: &str = "26.3";
+/// The Minecraft version Horizon plays: the pinned version, so a port's regenerated
+/// `crates/horizon-core/src/version.rs` moves it with everything else (docs/version-ports.md).
+pub const GAME: &str = horizon_core::version::VERSION_ID;
 
 /// What a project is, as far as Horizon is concerned.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -83,6 +83,16 @@ impl SourceId {
             SourceId::Modrinth => "Modrinth",
             SourceId::CurseForge => "CurseForge",
             SourceId::Horizon => "Horizon",
+        }
+    }
+
+    /// The source a list names after the author ("from {source}") for project `id`: Modrinth and
+    /// CurseForge always, Horizon's registry only for Horizon's own projects
+    /// ([`horizon::official`]), so a contributor's project reads "by <author>" alone.
+    pub fn shown_for(self, id: &str) -> Option<&'static str> {
+        match self {
+            SourceId::Horizon if !horizon::is_official(id) => None,
+            _ => Some(self.label()),
         }
     }
 }

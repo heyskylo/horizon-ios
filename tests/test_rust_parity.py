@@ -21,6 +21,30 @@ class ParityRunnerTests(unittest.TestCase):
                 source.write_text("after")
                 with self.assertRaisesRegex(RuntimeError, "source.rs"):
                     parity.ensure_sources_unchanged([source], before)
+    def test_sources_under_a_linked_local_folder_are_named_within_the_repository(self):
+        # A worktree whose `.local` links to another checkout's: the harness's inputs live under
+        # that link, and resolving them would leave the repository.
+        with tempfile.TemporaryDirectory() as temp:
+            root, elsewhere = Path(temp).resolve() / "worktree", Path(temp).resolve() / "shared"
+            root.mkdir()
+            (elsewhere / "rust-x-parity").mkdir(parents=True)
+            try:
+                (root / ".local").symlink_to(elsewhere, target_is_directory=True)
+            except OSError as e:
+                # Windows lets anyone make a junction, which is what a worktree there uses.
+                try:
+                    import _winapi
+                    _winapi.CreateJunction(str(elsewhere), str(root / ".local"))
+                except (ImportError, OSError):
+                    self.skipTest(f"no directory links here: {e}")
+            inputs = root / ".local" / "rust-x-parity" / "inputs.txt"
+            inputs.write_text("1 2 3\n")
+            with mock.patch.object(parity.lab, "ROOT", root):
+                hashes = parity.source_hashes([inputs])
+            self.assertEqual(list(hashes), [str(Path(".local", "rust-x-parity", "inputs.txt"))])
+            with mock.patch.object(parity.lab, "ROOT", root), self.assertRaisesRegex(ValueError, "outside"):
+                parity.source_hashes([Path(temp) / "stray.txt"])
+
     def test_comparison_rejects_changed_missing_extra_and_empty_results(self):
         for reference, candidate in [("rng 0 1\n", "rng 0 2\n"),
                                      ("rng 0 1\n", ""),

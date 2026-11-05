@@ -94,3 +94,9 @@ aquifers, surface rules, biome/feature/structure placement and complete chunk
 generation still require implementation and integration evidence. Gaussian
 sampling remains absent from the RNG API pending exact logarithm behavior.
 No generated-world or full gameplay parity claim follows from this suite.
+
+## Related docs
+
+- [World generation](world-generation.md)
+- [Density functions](density-functions.md)
+- [Terrain filling](terrain-filling.md)

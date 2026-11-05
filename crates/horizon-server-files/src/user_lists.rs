@@ -101,11 +101,24 @@ pub fn parse_date(s: &str) -> Option<i64> {
     }
     let offset =
         sign * (digits[..2].parse::<i64>().ok()? * 60 + digits[2..].parse::<i64>().ok()?);
-    // Lenient month and day arithmetic.
-    let months = y * 12 + (mo - 1);
+    // Lenient month and day arithmetic, checked: the file is edited by hand, and a value past what
+    // milliseconds since 1970 hold is no date (None, as an unparsable one) rather than a wrapped one.
+    let months = y.checked_mul(12)?.checked_add(mo.checked_sub(1)?)?;
     let (year, month) = (months.div_euclid(12), months.rem_euclid(12) + 1);
-    let days = days_from_civil(year, month as u32, 1) + da - 1;
-    Some(((days * 86_400 + h * 3600 + mi * 60 + se) - offset * 60) * 1000)
+    // Far beyond any i64 of milliseconds, and small enough for days_from_civil's own arithmetic.
+    if !(-300_000_000..=300_000_000).contains(&year) {
+        return None;
+    }
+    let days = days_from_civil(year, month as u32, 1)
+        .checked_add(da)?
+        .checked_sub(1)?;
+    let seconds = days
+        .checked_mul(86_400)?
+        .checked_add(h.checked_mul(3600)?)?
+        .checked_add(mi.checked_mul(60)?)?
+        .checked_add(se)?
+        .checked_sub(offset * 60)?;
+    seconds.checked_mul(1000)
 }
 
 /// One list entry kind.
@@ -312,16 +325,39 @@ fn json_bool(v: &Json) -> bool {
     }
 }
 
+/// What happened to a list, for the one that watches it: what vanilla's `StoredUserList` tells its
+/// `NotificationService` (`playerOped`/`playerDeoped`, `playerAddedToAllowlist`/`playerRemovedFromAllowlist`,
+/// `playerBanned`/`playerUnbanned`, `ipBanned`/`ipUnbanned`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Change<E> {
+    /// An entry was added (or replaced by a different one).
+    Added(E),
+    /// An entry was removed; a `clear` says it once for each entry, in the map's order, before it empties.
+    Removed(E),
+}
+
 /// StoredUserList.
 pub struct UserList<E: Entry> {
     pub file: PathBuf,
     map: JavaHashMap<JKey, E>,
+    watcher: Option<Box<dyn Fn(Change<E>) + Send>>,
 }
 impl<E: Entry> UserList<E> {
     pub fn new(file: impl Into<PathBuf>) -> Self {
         Self {
             file: file.into(),
             map: JavaHashMap::default(),
+            watcher: None,
+        }
+    }
+    /// Has `watcher` told of every change from now on (`add`, `remove` and `clear`, not a `load`, and not the
+    /// expired entries `get` drops, as vanilla's don't).
+    pub fn watch(&mut self, watcher: impl Fn(Change<E>) + Send + 'static) {
+        self.watcher = Some(Box::new(watcher));
+    }
+    fn told(&self, change: Change<E>) {
+        if let Some(watcher) = &self.watcher {
+            watcher(change);
         }
     }
     /// The entries in the map's iteration order.
@@ -354,23 +390,29 @@ impl<E: Entry> UserList<E> {
         if self.map.get(&key).is_some_and(|old| entry.same(old)) {
             return false;
         }
-        self.map.put(key, entry);
+        self.map.put(key, entry.clone());
         if let Err(e) = self.save() {
             log::warn!("Could not save the list after adding a user. {e}");
         }
+        self.told(Change::Added(entry));
         true
     }
     pub fn remove(&mut self, user: &E::User) -> bool {
-        if self.map.remove(&JKey(E::key(user))).is_none() {
+        let Some(entry) = self.map.remove(&JKey(E::key(user))) else {
             return false;
-        }
+        };
         if let Err(e) = self.save() {
             log::warn!("Could not save the list after removing a user. {e}");
         }
+        self.told(Change::Removed(entry));
         true
     }
     /// StoredUserList.clear: no entry left; saves.
     pub fn clear(&mut self) {
+        let entries: Vec<E> = self.map.entries().map(|(_, e)| e.clone()).collect();
+        for entry in entries {
+            self.told(Change::Removed(entry));
+        }
         self.map.clear();
         if let Err(e) = self.save() {
             log::warn!("Could not save the list after removing a user. {e}");
@@ -446,6 +488,72 @@ mod tests {
             "2026-10-12 08:00:00 +0000"
         );
         assert_eq!(parse_date("forever"), None);
+    }
+
+    #[test]
+    fn dates_too_far_out_are_none_not_wrapped() {
+        // Lenient overflow still works within range: month 13 is January of the next year.
+        assert_eq!(
+            parse_date("2026-13-01 00:00:00 +0000"),
+            parse_date("2027-01-01 00:00:00 +0000")
+        );
+        for text in [
+            "9223372036854775807-01-01 00:00:00 +0000",
+            "2026-9223372036854775807-01 00:00:00 +0000",
+            "2026-01-9223372036854775807 00:00:00 +0000",
+            "2026-01-01 9223372036854775807:00:00 +0000",
+            "2026-01-01 00:00:9223372036854775807 +0000",
+            "-9223372036854775808-01-01 00:00:00 +0000",
+            "300000001-01-01 00:00:00 +0000",
+            "2026--9223372036854775808-01 00:00:00 +0000",
+        ] {
+            assert_eq!(parse_date(text), None, "{text}");
+        }
+        // The far end of what milliseconds hold still parses (year 292 million).
+        assert!(parse_date("292000000-01-01 00:00:00 +0000").is_some());
+    }
+
+    #[test]
+    fn a_watcher_hears_what_vanillas_notification_service_does() {
+        use std::sync::{Arc, Mutex};
+        let dir = std::env::temp_dir().join(format!("horizon-lists-watch-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let heard = Arc::new(Mutex::new(Vec::new()));
+        let mut ops = OpList::new(dir.join("ops.json"));
+        let sink = heard.clone();
+        ops.watch(move |change| sink.lock().unwrap().push(change));
+        let op = |name: &str, level| OpEntry {
+            user: NameAndId::offline(name),
+            level,
+            bypasses_player_limit: false,
+        };
+        assert!(ops.add(op("Kim", 4)));
+        assert!(ops.add(op("Lee", 2)));
+        // A removal that finds nothing says nothing; one that finds an entry says which.
+        assert!(!ops.remove(&NameAndId::offline("Nobody")));
+        assert!(ops.remove(&NameAndId::offline("Kim")));
+        // A clear says it for each entry that is left, and the list is empty after.
+        ops.clear();
+        assert!(ops.is_empty());
+        assert_eq!(
+            *heard.lock().unwrap(),
+            [
+                Change::Added(op("Kim", 4)),
+                Change::Added(op("Lee", 2)),
+                Change::Removed(op("Kim", 4)),
+                Change::Removed(op("Lee", 2)),
+            ]
+        );
+        // A ban equal to the stored one is not added again, so nothing is said.
+        let mut bans = BanList::new(dir.join("banned-players.json"));
+        let said = Arc::new(Mutex::new(0));
+        let counter = said.clone();
+        bans.watch(move |_| *counter.lock().unwrap() += 1);
+        let ban = BanEntry::new(NameAndId::offline("Kim"), None, None, None);
+        assert!(bans.add(ban.clone()));
+        assert!(!bans.add(ban));
+        assert_eq!(*said.lock().unwrap(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -2,7 +2,7 @@
 //! variant choice (or the stack's `painting/variant`), `HangingEntity.survives`
 //! checks every 100 ticks, breaking by attack (`dropItem`), saving, and
 //! `PaintingRenderer` quads.
-use super::{Game, Hit};
+use super::{Game, Hit, entity_culling::default_range};
 use horizon_client::{entities::Painting, items::ItemStack, mesher::Vertex};
 use horizon_core::{
     geometry::{Aabb, Vec3},
@@ -31,16 +31,12 @@ impl PaintingVariants {
     pub fn load(root: &std::path::Path) -> Self {
         let data = root.join("data/minecraft");
         let mut all = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(data.join("painting_variant")) {
-            for e in entries.flatten() {
-                let path = e.path();
-                let Some(name) = path.file_stem().and_then(|s| s.to_str()) else {
-                    continue;
-                };
-                let Ok(bytes) = std::fs::read(&path) else {
-                    continue;
-                };
-                let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        if let Ok(folder) = horizon_world::json_folder::read(&data.join("painting_variant")) {
+            for file in &folder.files {
+                let name = file.name.as_str();
+                let Ok(v) =
+                    serde_json::from_slice::<serde_json::Value>(file.bytes().unwrap_or_default())
+                else {
                     continue;
                 };
                 all.push(Variant {
@@ -57,14 +53,15 @@ impl PaintingVariants {
                 });
             }
         }
-        let placeable = std::fs::read(data.join("tags/painting_variant/placeable.json"))
-            .ok()
-            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
-            .and_then(|v| v["values"].as_array().cloned())
-            .unwrap_or_default()
-            .iter()
-            .filter_map(|v| v.as_str().map(Arc::from))
-            .collect();
+        let placeable =
+            horizon_core::prepared_files::read(&data.join("tags/painting_variant/placeable.json"))
+                .ok()
+                .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+                .and_then(|v| v["values"].as_array().cloned())
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|v| v.as_str().map(Arc::from))
+                .collect();
         Self { all, placeable }
     }
     pub fn get(&self, id: &str) -> Option<&Variant> {
@@ -93,6 +90,13 @@ fn painting_facing(face: [i32; 3]) -> Option<u8> {
         _ => 3,
     })
 }
+/// Whether the camera, at the origin of `corners`' space, is on the side of the quad
+/// that `normal` points to.
+fn faces_camera(corners: &[glam::DVec3; 4], normal: glam::DVec3) -> bool {
+    let centre = (corners[0] + corners[1] + corners[2] + corners[3]) / 4.0;
+    normal.dot(-centre) > 0.0
+}
+
 impl Game<'_> {
     /// `HangingEntity.survives`: no block collision in the box, solid blocks
     /// (or diodes) behind it and no other painting overlapping it.
@@ -181,8 +185,10 @@ impl Game<'_> {
         if &*stack.item != "minecraft:painting" {
             return false;
         }
+        // HangingEntityItem.mayPlace: never on a top or bottom face (FAIL).
         let Some(facing) = painting_facing(hit.face) else {
-            return false;
+            self.use_failed = true;
+            return true;
         };
         let pos = [
             hit.pos[0] + hit.face[0],
@@ -210,13 +216,14 @@ impl Game<'_> {
                 fitting.push(v);
             }
         }
+        // Nothing fits: CONSUME, which ItemStack.useOn still counts as a use.
         let Some(largest) = fitting.iter().map(|v| v.width * v.height).max() else {
-            return false;
+            self.award_stat("used", &stack.item, 1);
+            return true;
         };
         fitting.retain(|v| v.width * v.height >= largest);
-        let pick = self
-            .world
-            .random
+        // Util.getRandomSafe(variants, candidate.random): the painting's own random.
+        let pick = super::dispenser::entity_random()
             .next_int_bound(fitting.len() as i32)
             .unwrap_or(0) as usize;
         let v = &fitting[pick];
@@ -227,8 +234,12 @@ impl Game<'_> {
         if let Some(v) = self.painting_variants.of_stack(stack).cloned() {
             (candidate.variant, candidate.width, candidate.height) = (v.id, v.width, v.height);
             if !self.painting_survives(&candidate) {
-                return false;
+                self.award_stat("used", &stack.item, 1);
+                return true;
             }
+        }
+        if self.hanging_place_cancelled("minecraft:painting", pos) {
+            return true;
         }
         let (lo, hi) = candidate.bounds();
         let at = [
@@ -238,11 +249,16 @@ impl Game<'_> {
         ];
         self.audio
             .play("minecraft:entity.painting.place", Some(at), 1.0, 1.0);
+        // HangingEntityItem.useOn: ENTITY_PLACE at the painting, by the player, before it is
+        // added; ItemStack.useOn then counts the use.
+        let ctx = self.player_context(None);
+        self.post_game_event("minecraft:entity_place", at, ctx);
         self.paintings.push(candidate);
         self.world.modified.insert((pos[0] >> 4, pos[2] >> 4));
         if !self.creative {
             self.consume_held();
         }
+        self.award_stat("used", &stack.item, 1);
         // HangingEntityItem.useOn returns SUCCESS: the hand swings.
         self.swing_arm();
         true
@@ -274,8 +290,13 @@ impl Game<'_> {
         }
         best
     }
-    /// `Painting.hurtServer` -> kill and `dropItem`.
-    pub(super) fn break_painting(&mut self, index: usize, by_player: bool) {
+    /// `Painting.hurtServer` -> kill and `dropItem`. False when a mod kept it
+    /// (`native_hanging_break`): it stays at `index`.
+    pub(super) fn break_painting(&mut self, index: usize, by_player: bool) -> bool {
+        let pos = self.paintings[index].pos;
+        if self.hanging_break_cancelled("minecraft:painting", pos, by_player) {
+            return false;
+        }
         let p = self.paintings.remove(index);
         let (lo, hi) = p.bounds();
         let at = [
@@ -285,12 +306,12 @@ impl Game<'_> {
         ];
         self.world.modified.insert((p.pos[0] >> 4, p.pos[2] >> 4));
         if !self.ui.rules.bool("entity_drops") {
-            return;
+            return true;
         }
         self.audio
             .play("minecraft:entity.painting.break", Some(at), 1.0, 1.0);
         if by_player && self.creative {
-            return;
+            return true;
         }
         // HangingEntity.spawnAtLocation: 0.15 out from the wall.
         let s = p.step().map(f64::from);
@@ -306,6 +327,7 @@ impl Game<'_> {
             [0.0; 3],
             10,
         );
+        true
     }
     /// BlockAttachedEntity.tick: check survival every 100 ticks.
     pub(super) fn tick_paintings(&mut self) {
@@ -323,8 +345,7 @@ impl Game<'_> {
             if self.paintings[i].check_interval >= 100 {
                 self.paintings[i].check_interval = 0;
                 let p = self.paintings[i].clone();
-                if !self.painting_survives(&p) {
-                    self.break_painting(i, false);
+                if !self.painting_survives(&p) && self.break_painting(i, false) {
                     continue;
                 }
             }
@@ -339,13 +360,16 @@ impl Game<'_> {
             return;
         };
         for p in &self.paintings {
-            let entity_start = out.len();
             // EntityRenderer.shouldRender: the default range and its box,
             // measured from the box's centre (HangingEntity's position).
             let (lo, hi) = p.bounds();
             let (lo, hi) = (glam::DVec3::from(lo), glam::DVec3::from(hi));
-            let range = super::entity_culling::default_range(hi - lo, self.view_scale());
+            let range = default_range(hi - lo, self.view_scale());
             if !self.entity_in_view(camera, (lo + hi) / 2.0, range, lo, hi) {
+                continue;
+            }
+            let culling = self.entity_cull_decision(p, 1.0);
+            if culling.hides_entity() {
                 continue;
             }
             let Some(v) = self.painting_variants.get(&p.variant) else {
@@ -371,24 +395,31 @@ impl Game<'_> {
                 f64::from(p.height) / 2.0,
                 1.0 / 32.0,
             );
+            let entity_start = out.len();
             let light = self.world.light(p.pos[0], p.pos[1], p.pos[2]);
             let packed = (u32::from(light >> 4) * 16) | ((u32::from(light & 15) * 16) << 8);
-            let mut quad = |corners: [glam::DVec3; 4], uv: [[f32; 2]; 4], shade: f32| {
-                let k = (255.0 * shade) as u32;
-                let color = 0xFF00_0000 | k << 16 | k << 8 | k;
-                for (p, uv) in corners.iter().zip(uv) {
-                    out.push(Vertex {
-                        normal: [0; 4],
-                        pos: p.as_vec3().to_array(),
-                        uv,
-                        layer: 0,
-                        color,
-                        light: packed,
+            let mut quad =
+                |corners: [glam::DVec3; 4], normal: glam::DVec3, uv: [[f32; 2]; 4], shade: f32| {
+                    // Back faces are culled, as the entity pipeline culls them: inside the
+                    // painting's box nothing of it shows. `corners` are relative to the camera.
+                    if !faces_camera(&corners, normal) {
+                        return;
+                    }
+                    let k = (255.0 * shade) as u32;
+                    let color = 0xFF00_0000 | k << 16 | k << 8 | k;
+                    for (p, uv) in corners.iter().zip(uv) {
+                        out.push(Vertex {
+                            normal: [0; 4],
+                            pos: p.as_vec3().to_array(),
+                            uv,
+                            layer: 0,
+                            color,
+                            light: packed,
 
-                        glint_uv: [0.0, 0.0],
-                    });
-                }
-            };
+                            glint_uv: [0.0, 0.0],
+                        });
+                    }
+                };
             let full = |r: horizon_client::hud::Rect| {
                 [[r.u0, r.v1], [r.u1, r.v1], [r.u1, r.v0], [r.u0, r.v0]]
             };
@@ -400,6 +431,7 @@ impl Game<'_> {
                     f + right * hw + up * hh,
                     f - right * hw + up * hh,
                 ],
+                out_dir,
                 full(front),
                 1.0,
             );
@@ -411,6 +443,7 @@ impl Game<'_> {
                     b - right * hw + up * hh,
                     b + right * hw + up * hh,
                 ],
+                -out_dir,
                 full(back),
                 0.8,
             );
@@ -429,6 +462,7 @@ impl Game<'_> {
                     f + t - right * hw,
                     f + t + right * hw,
                 ],
+                up,
                 strip,
                 1.0,
             );
@@ -439,6 +473,7 @@ impl Game<'_> {
                     b + bt - right * hw,
                     b + bt + right * hw,
                 ],
+                -up,
                 strip,
                 0.5,
             );
@@ -449,6 +484,7 @@ impl Game<'_> {
                     f - right * hw + up * hh,
                     b - right * hw + up * hh,
                 ],
+                -right,
                 strip,
                 0.6,
             );
@@ -459,10 +495,11 @@ impl Game<'_> {
                     b + right * hw + up * hh,
                     f + right * hw + up * hh,
                 ],
+                right,
                 strip,
                 0.6,
             );
-            self.cull_entity_vertices(out, entity_start);
+            self.finish_entity_occlusion(culling, p, out, entity_start);
         }
     }
 }
@@ -487,5 +524,30 @@ mod tests {
         assert!(!painting_use_on_swings([0, 1, 0], true));
         assert!(!painting_use_on_swings([0, -1, 0], true));
         assert!(!painting_use_on_swings([0, 0, 1], false));
+    }
+}
+
+#[cfg(test)]
+mod face_tests {
+    use super::faces_camera;
+    use glam::DVec3;
+
+    /// A quad at z = 2 facing -z (towards a camera at the origin) shows; seen from behind
+    /// (the camera on the other side, the quad now at z = -2) it does not.
+    #[test]
+    fn a_quad_shows_only_to_the_side_it_faces() {
+        let at = |z: f64| {
+            [
+                DVec3::new(-1.0, -1.0, z),
+                DVec3::new(1.0, -1.0, z),
+                DVec3::new(1.0, 1.0, z),
+                DVec3::new(-1.0, 1.0, z),
+            ]
+        };
+        let normal = DVec3::new(0.0, 0.0, -1.0);
+        assert!(faces_camera(&at(2.0), normal));
+        assert!(!faces_camera(&at(-2.0), normal));
+        // Edge on: nothing to draw.
+        assert!(!faces_camera(&at(0.0), normal));
     }
 }

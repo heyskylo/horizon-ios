@@ -219,15 +219,18 @@ pub fn calculate_flapping(m: &mut Mob) {
     }
 }
 
-/// `Parrot.isFlapping` and `onFlap` (from `Entity.processFlappingMovement`,
-/// when a move ends in the air): a wing beat each half `flapSpeed` flown.
-pub fn process_flapping(m: &mut Mob, events: &mut Vec<MobEvent>) {
+/// `Parrot.isFlapping` and `Parrot.onFlap`: a wing beat each half
+/// `flapSpeed` flown. The caller emits the movement game event on a flap.
+pub fn process_flapping(m: &mut Mob, events: &mut Vec<MobEvent>) -> bool {
     if m.ai.steps.fly_dist > m.ai.steps.next_flap {
         if !m.silent {
             let at = [m.position.x, m.position.y, m.position.z];
             events.push(MobEvent::Sound("entity.parrot.fly", at, 0.15, 1.0));
         }
         m.ai.steps.next_flap = m.ai.steps.fly_dist + m.anim.flap_speed / 2.0;
+        true
+    } else {
+        false
     }
 }
 
@@ -311,6 +314,34 @@ mod tests {
         assert!(m.ai.goals.has("ParrotWander"));
     }
 
+    /// `Parrot.getVoicePitch` is `getPitch(random)`, the plain 1.0 ± 0.2, and
+    /// `getPitch` takes no age into account: a baby parrot does not get the
+    /// 1.5 that `LivingEntity.getVoicePitch` raises every other baby's voice
+    /// by. A baby chicken is the control.
+    #[test]
+    fn a_baby_parrot_keeps_the_plain_voice_pitch() {
+        let mut parrot = parrot();
+        parrot.extra.age = -24_000;
+        assert!(parrot.is_baby());
+        let mut baby = parrot.clone();
+        let pitches: Vec<f32> = (0..64).map(|_| baby.voice_pitch()).collect();
+        assert!(
+            pitches.iter().all(|p| (0.8..=1.2).contains(p)),
+            "{pitches:?}"
+        );
+        // It is not a constant: the two draws move it around 1.0.
+        assert!(pitches.iter().any(|&p| p != pitches[0]));
+        assert!((pitches.iter().sum::<f32>() / pitches.len() as f32 - 1.0).abs() < 0.1);
+
+        let mut k = (*kind()).clone();
+        k.id = "minecraft:chicken".into();
+        k.species = Species::Chicken;
+        let mut chicken = Mob::new(1, Arc::new(k), Vec3::ZERO, 0.0);
+        chicken.extra.age = -24_000;
+        let raised: Vec<f32> = (0..64).map(|_| chicken.voice_pitch()).collect();
+        assert!(raised.iter().all(|p| (1.3..=1.7).contains(p)), "{raised:?}");
+    }
+
     /// `Parrot.calculateFlapping`: in the air the wings beat and a fall is
     /// slowed to 0.6; on the ground or a shoulder they fold.
     #[test]
@@ -349,15 +380,27 @@ mod tests {
         m.anim.flap_speed = 1.0;
         let mut events = Vec::new();
         m.ai.steps.fly_dist = 0.5;
-        process_flapping(&mut m, &mut events);
+        assert!(!process_flapping(&mut m, &mut events));
         assert!(events.is_empty(), "nextFlap starts at 1");
+        m.ai.steps.fly_dist = 1.0;
+        assert!(!process_flapping(&mut m, &mut events), "strict threshold");
         m.ai.steps.fly_dist = 1.2;
-        process_flapping(&mut m, &mut events);
+        assert!(process_flapping(&mut m, &mut events));
         assert!(matches!(
             events.as_slice(),
             [MobEvent::Sound("entity.parrot.fly", _, v, _)] if *v == 0.15
         ));
         assert!((m.ai.steps.next_flap - 1.7).abs() < 1.0e-6);
+        events.clear();
+        assert!(
+            !process_flapping(&mut m, &mut events),
+            "no second flap without moving"
+        );
+        m.silent = true;
+        m.ai.steps.fly_dist = 1.8;
+        assert!(process_flapping(&mut m, &mut events), "silent still flaps");
+        assert!(events.is_empty());
+        assert!((m.ai.steps.next_flap - 2.3).abs() < 1.0e-6);
     }
 
     /// `ServerPlayer.playShoulderEntityAmbientSound`: with a mob to imitate

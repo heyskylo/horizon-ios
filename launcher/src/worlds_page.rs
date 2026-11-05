@@ -9,18 +9,22 @@ use std::path::{Path, PathBuf};
 pub(super) struct Worlds {
     /// The game folder the list is of, and the list as last read: kept on screen while it is
     /// read again, so the page doesn't jump.
-    home: Option<PathBuf>,
-    list: Vec<World>,
+    pub(super) home: Option<PathBuf>,
+    pub(super) list: Vec<World>,
     fresh: bool,
     reading: bool,
     /// The world being backed up, copied or deleted now.
-    busy: Option<String>,
+    pub(super) busy: Option<String>,
     confirm_delete: Option<String>,
     /// What the last action did (a backup's zip), or why it failed.
-    done: Option<Result<(String, Option<PathBuf>), String>>,
+    pub(super) done: Option<Result<(String, Option<PathBuf>), String>>,
 }
 
 impl Worlds {
+    pub(super) fn location_busy(&self) -> bool {
+        self.busy.is_some()
+    }
+
     /// Read again on the next frame: the game may have saved, or an action changed the list.
     pub(super) fn stale(&mut self) {
         self.fresh = false;
@@ -39,7 +43,7 @@ pub(super) fn ago(when: std::time::SystemTime) -> String {
     }
 }
 
-enum Action {
+pub(super) enum Action {
     Backup,
     Copy,
     Delete,
@@ -48,7 +52,7 @@ enum Action {
 impl Launcher {
     /// Reads the worlds of `home` in the background when the list is missing or of another
     /// instance.
-    fn load_worlds(&mut self, home: PathBuf, cx: &mut Context<Self>) {
+    pub(super) fn load_worlds(&mut self, home: PathBuf, cx: &mut Context<Self>) {
         if self.worlds.home.as_ref() != Some(&home) {
             self.worlds = Worlds {
                 home: Some(home.clone()),
@@ -78,7 +82,7 @@ impl Launcher {
         .detach();
     }
 
-    fn world_action(&mut self, action: Action, world: World, cx: &mut Context<Self>) {
+    pub(super) fn world_action(&mut self, action: Action, world: World, cx: &mut Context<Self>) {
         let Some(home) = self.worlds.home.clone() else {
             return;
         };
@@ -143,7 +147,7 @@ impl Launcher {
                     let dir = zip.parent().map(Path::to_path_buf).unwrap_or(zip);
                     line = line.child(
                         button("world-backups", "Open backups", Kind::Ghost, &t)
-                            .on_click(move |_, _, cx| cx.open_with_system(&dir)),
+                            .on_click(move |_, _, cx| crate::glass_toast::open(cx, &dir)),
                     );
                 }
                 section = section.child(line);
@@ -168,7 +172,7 @@ impl Launcher {
                             button("worlds-folder", "Open folder", Kind::Ghost, &t).on_click(
                                 move |_, _, cx| {
                                     let _ = std::fs::create_dir_all(&saves);
-                                    cx.open_with_system(&saves);
+                                    crate::glass_toast::open(cx, &saves);
                                 },
                             ),
                         ),
@@ -209,7 +213,7 @@ impl Launcher {
                 .child(blocks::icon("image", 22., t.muted))
                 .into_any_element(),
         };
-        let mut facts = vec![w.mode.to_string()];
+        let mut facts = vec![tr(w.mode).to_string()];
         facts.extend(w.version.clone());
         facts.push(ago(w.last_played));
         facts.push(megabytes(w.size));
@@ -306,7 +310,7 @@ impl Launcher {
                 })
                 .child(
                     act("world-folder", "Open folder", Kind::Ghost)
-                        .on_click(move |_, _, cx| cx.open_with_system(&folder)),
+                        .on_click(move |_, _, cx| crate::glass_toast::open(cx, &folder)),
                 );
         }
         plate(&t)

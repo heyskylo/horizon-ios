@@ -80,6 +80,9 @@ def game_env(base=None, **extra):
     env.update({key: str(value) for key, value in extra.items()})
     env["HORIZON_NO_AUDIO"] = "1"
     env["HORIZON_LAUNCHER_NO_SELF_UPDATE"] = "1"
+    # Local fixtures use real TCP, but need no inbound access from other machines.
+    # Network/discovery suites can explicitly set HORIZON_TEST_LOOPBACK=0.
+    env.setdefault("HORIZON_TEST_LOOPBACK", "1")
     # Never a real Discord's Rich Presence; tools/discord_presence_e2e.py points the game at a fake one.
     if not env.get("HORIZON_DISCORD_IPC_DIR"):
         env["HORIZON_NO_DISCORD"] = "1"
@@ -113,11 +116,36 @@ def digest(path, algorithm):
         return hashlib.file_digest(stream, algorithm).hexdigest()
 
 
+_PORT_LOCKS = []  # open lock files, held until this process exits
+
+
 def free_port():
-    """A free local TCP port, for a server a harness starts."""
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    """A free local TCP port, for a server a harness starts.
+
+    The OS hands out a port when we bind to 0, but we close it before the server binds it, and a harness running
+    beside this one (another worktree, the parallel job queue) can be handed the same number in that gap. So each port
+    is also claimed with a lock file in the temp dir, held until this process exits; a port another harness has
+    claimed is skipped. Windows has no flock (nor os.getuid): there the port is the OS's answer alone, as before."""
+    if sys.platform == "win32":
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            return s.getsockname()[1]
+    import fcntl
+    locks = Path(tempfile.gettempdir()) / f"horizon-harness-ports-{os.getuid()}"
+    locks.mkdir(exist_ok=True)
+    for _ in range(100):
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        handle = open(locks / str(port), "w")
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            handle.close()
+            continue
+        _PORT_LOCKS.append(handle)
+        return port
+    raise RuntimeError("no free port: every port tried was claimed by another harness")
 
 
 def offline_uuid(name):

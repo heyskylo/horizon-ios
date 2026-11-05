@@ -417,6 +417,18 @@ impl Station {
     }
 }
 
+/// `at` is on one of a list's `rows`, with no row further that way.
+fn off_visible_rows(rows: &[[f32; 4]], at: (f32, f32), up: bool) -> bool {
+    let inside =
+        |r: &[f32; 4]| at.0 >= r[0] && at.0 < r[0] + r[2] && at.1 >= r[1] && at.1 < r[1] + r[3];
+    let Some(on) = rows.iter().find(|r| inside(r)) else {
+        return false;
+    };
+    !rows
+        .iter()
+        .any(|r| r[0] == on[0] && if up { r[1] < on[1] } else { r[1] > on[1] })
+}
+
 /// `StonecutterScreen.getOffscreenRows`: the recipe rows below the 4x3 grid.
 fn stonecutter_offscreen_rows(recipes: usize) -> i32 {
     recipes.div_ceil(4) as i32 - 3
@@ -562,7 +574,7 @@ impl Game<'_> {
             _ => "",
         };
         if !stat.is_empty() {
-            self.stats.custom(stat, 1);
+            self.award_custom_stat(stat, 1);
         }
         true
     }
@@ -932,13 +944,16 @@ impl Game<'_> {
             match &*name {
                 "minecraft:anvil" => {
                     let _ = self.set_state_named(pos, "minecraft:chipped_anvil", &["facing"]);
+                    self.native_anvil_damaged(self.dim.id(), pos, &name, "minecraft:chipped_anvil");
                 }
                 "minecraft:chipped_anvil" => {
                     let _ = self.set_state_named(pos, "minecraft:damaged_anvil", &["facing"]);
+                    self.native_anvil_damaged(self.dim.id(), pos, &name, "minecraft:damaged_anvil");
                 }
                 _ => {
                     let _ = self.world.set(pos[0], pos[1], pos[2], self.world.air);
                     self.world.modified.insert((pos[0] >> 4, pos[2] >> 4));
+                    self.native_anvil_damaged(self.dim.id(), pos, &name, "minecraft:air");
                     self.level_event_at(1029, pos, 0);
                     return true;
                 }
@@ -976,12 +991,27 @@ impl Game<'_> {
     }
     /// `Player.giveExperienceLevels`.
     pub(super) fn give_levels(&mut self, levels: i32) {
+        let old_level = self.experience.level;
         let xp = &mut self.experience;
         xp.level = xp.level.saturating_add(levels);
         if xp.level < 0 {
             xp.level = 0;
             xp.progress = 0.0;
             xp.total = 0;
+        }
+        let level = xp.level;
+        self.play_level_up(levels, level);
+        self.native_player_level_changed(old_level);
+    }
+    /// `Player.giveExperienceLevels`: all players near its feet hear the sound.
+    pub(super) fn play_level_up(&mut self, amount: i32, level: i32) {
+        if let Some(volume) = self.level_up_sound.give_levels(amount, level) {
+            let at = self
+                .player
+                .as_ref()
+                .map(|p| [p.position.x, p.position.y, p.position.z]);
+            self.audio
+                .play("minecraft:entity.player.levelup", at, volume, 1.0);
         }
     }
     /// Whether the result slot may be taken (`mayPickup`).
@@ -1048,7 +1078,7 @@ impl Game<'_> {
             }
         }
         let pitch = self.world.random.next_float() * 0.1 + 0.9;
-        self.stats.custom("enchant_item", 1);
+        self.award_custom_stat("enchant_item", 1);
         self.trigger_enchanted_item(&enchanted_item, lapis_needed as i32);
         self.play_at("minecraft:block.enchantment_table.use", pos, 1.0, pitch);
         self.station_changed();
@@ -1206,6 +1236,28 @@ impl Game<'_> {
             }
         }
         false
+    }
+    /// A D-pad step off the visible rows of a station's list, from the row
+    /// under the cursor: the list scrolls a row, if it can, and the cursor
+    /// stays. False leaves the step to go on to whatever is that way.
+    pub(super) fn station_list_step(&mut self, up: bool) -> bool {
+        let Some(batch) = self.gui_scale() else {
+            return false;
+        };
+        let (ox, oy) = self.inventory_origin(&batch);
+        let local = (self.cursor.0 - ox, self.cursor.1 - oy);
+        if !off_visible_rows(&self.station_targets(), local, up) {
+            return false;
+        }
+        let shown = |g: &Self| {
+            g.station.as_ref().map(|s| {
+                let merchant = s.merchant.as_ref().map(|m| m.scroll);
+                (s.start, s.loom.start_row, merchant)
+            })
+        };
+        let before = shown(self);
+        self.station_scroll(if up { 1.0 } else { -1.0 });
+        shown(self) != before
     }
     /// `StonecutterScreen.mouseScrolled`.
     pub(super) fn station_scroll(&mut self, d: f32) {
@@ -1392,15 +1444,7 @@ impl Game<'_> {
                 }
                 let (col, row) = (code % 16, code / 16);
                 let (cx, cy) = (px + col * cell, py + row * cell);
-                let mut used = 0;
-                for dx in (0..cell).rev() {
-                    if (0..cell).any(|dy| {
-                        atlas.pixels[(((cy + dy) * atlas.width + cx + dx) * 4 + 3) as usize] != 0
-                    }) {
-                        used = dx + 1;
-                        break;
-                    }
-                }
+                let used = u32::from(atlas.galactic_widths[code as usize]);
                 let advance = (used as f32 * 8.0 / cell as f32 + 0.5).floor() + 1.0;
                 if cursor + advance - x > max {
                     break;
@@ -1444,7 +1488,7 @@ impl Game<'_> {
             return false;
         }
         // `SmithingScreen.containerTick`: the icons of the empty slots follow the template.
-        let (now, partial) = (self.ticks, self.clock.camera_fraction() as f32);
+        let (now, partial) = (self.visual_ticks(), self.clock.camera_fraction() as f32);
         if let Some(s) = self.station.as_mut().filter(|s| s.kind == Kind::Smithing) {
             let template = s.inputs[0].as_ref().map(|t| t.item.clone());
             let (base, base_len, additions, additions_len) =
@@ -1723,7 +1767,7 @@ impl Game<'_> {
                         if inside(local, bx, by, bw, 17.0)
                             && let Some((id, l)) = &offers.clues[i]
                         {
-                            let e = &self.stations().enchantments;
+                            let e = self.enchantments();
                             let (name, _) = e.full_name(id, *l);
                             let clue = self
                                 .translate("container.enchant.clue", "%s . . . ?")
@@ -2124,7 +2168,7 @@ impl Game<'_> {
         nested: bool,
         creative: bool,
     ) -> Vec<(horizon_client::text::Text, u32)> {
-        let e: &Enchantments = &self.stations().enchantments;
+        let e: &Enchantments = self.enchantments();
         let color = self.rarity_color(stack);
         let advanced = !nested && self.options_advanced_tooltips();
         let display = horizon_client::item_tooltip::TooltipDisplay::for_stack(stack);
@@ -2144,6 +2188,10 @@ impl Game<'_> {
         // before the components.
         for (text, c) in horizon_client::item_tooltip::smithing_template_lines(stack, &translate) {
             push(&mut lines, text, c);
+        }
+        // DiscFragmentItem.appendHoverText.
+        if let Some(text) = horizon_client::item_tooltip::disc_fragment_line(stack, &translate) {
+            push(&mut lines, text, gray);
         }
         // HangingEntityItem.appendHoverText: a painting's variant, its title,
         // author and size, or in a creative tab "Random variant".
@@ -2568,7 +2616,7 @@ impl Game<'_> {
         let atlas = &self.gui.atlas;
         let (x, y, w, h) =
             Self::tooltip_geometry(atlas, &lines, (x, y), (batch.width, batch.height), [0.0; 2]);
-        Self::tooltip_box(batch, atlas, x, y, w, h);
+        self.tooltip_box(batch, None, x, y, w, h);
         Self::tooltip_text(batch, atlas, &lines, x, y);
     }
     /// A tooltip's lines with their legacy codes resolved and their colours.
@@ -2608,47 +2656,43 @@ impl Game<'_> {
     }
     /// The box and its frame sprites.
     pub(super) fn tooltip_box(
+        &self,
         batch: &mut HudBatch,
-        atlas: &horizon_client::hud::HudAtlas,
+        stack: Option<&ItemStack>,
         x: f32,
         y: f32,
         w: f32,
         h: f32,
     ) {
-        batch.fill(atlas, x - 3.0, y - 4.0, w + 6.0, 1.0, rgba(16, 0, 16, 240));
-        batch.fill(
-            atlas,
-            x - 3.0,
-            y + h + 3.0,
-            w + 6.0,
-            1.0,
-            rgba(16, 0, 16, 240),
+        let (mut background, mut border_top, mut border_bottom) =
+            (0xf0100010, 0x505000ff, 0x5028007f);
+        self.native_tooltip_color(stack, &mut background, &mut border_top, &mut border_bottom);
+        let convert = |color: u32| {
+            let [a, r, g, b] = color.to_be_bytes();
+            rgba(r, g, b, a)
+        };
+        let (background, border_top, border_bottom) = (
+            convert(background),
+            convert(border_top),
+            convert(border_bottom),
         );
-        batch.fill(
+        let atlas = &self.gui.atlas;
+        batch.fill(atlas, x - 3.0, y - 4.0, w + 6.0, 1.0, background);
+        batch.fill(atlas, x - 3.0, y + h + 3.0, w + 6.0, 1.0, background);
+        batch.fill(atlas, x - 4.0, y - 3.0, w + 8.0, h + 6.0, background);
+        batch.fill(atlas, x - 3.0, y - 3.0, w + 6.0, 1.0, border_top);
+        batch.fill(atlas, x - 3.0, y + h + 2.0, w + 6.0, 1.0, border_bottom);
+        batch.fill_gradient(
             atlas,
-            x - 4.0,
-            y - 3.0,
-            w + 8.0,
-            h + 6.0,
-            rgba(16, 0, 16, 240),
+            (x - 3.0, y - 2.0, 1.0, h + 4.0),
+            border_top,
+            border_bottom,
         );
-        batch.fill(atlas, x - 3.0, y - 3.0, w + 6.0, 1.0, rgba(80, 0, 255, 80));
-        batch.fill(
+        batch.fill_gradient(
             atlas,
-            x - 3.0,
-            y + h + 2.0,
-            w + 6.0,
-            1.0,
-            rgba(40, 0, 127, 80),
-        );
-        batch.fill(atlas, x - 3.0, y - 2.0, 1.0, h + 4.0, rgba(60, 0, 190, 80));
-        batch.fill(
-            atlas,
-            x + w + 2.0,
-            y - 2.0,
-            1.0,
-            h + 4.0,
-            rgba(60, 0, 190, 80),
+            (x + w + 2.0, y - 2.0, 1.0, h + 4.0),
+            border_top,
+            border_bottom,
         );
     }
     pub(super) fn tooltip_text(
@@ -2696,7 +2740,8 @@ impl Game<'_> {
         let lines = Self::resolved(&lines);
         // The component's height does not depend on where it is drawn, so a
         // probe at the origin gives the box its extra height.
-        let probe = horizon_client::bundle::tooltip_layout(self.items(), stack, 0.0, 0.0, 96.0);
+        let probe =
+            horizon_client::item_tooltip::bundle_tooltip(self.items(), stack, 0.0, 0.0, 96.0);
         let bundle_extra = probe.as_ref().map_or(0.0, |l| l.height + 2.0);
         let mut component = None;
         self.native_tooltip_component(stack, &mut component);
@@ -2712,12 +2757,16 @@ impl Game<'_> {
             (batch.width, batch.height),
             [min_width, extra],
         );
-        Self::tooltip_box(batch, atlas, x, y, w, h);
+        self.tooltip_box(batch, Some(stack), x, y, w, h);
         let text_h = h - extra;
         Self::tooltip_text(batch, atlas, &lines, x, y);
-        if let Some(layout) =
-            horizon_client::bundle::tooltip_layout(self.items(), stack, x, y + text_h + 2.0, w)
-        {
+        if let Some(layout) = horizon_client::item_tooltip::bundle_tooltip(
+            self.items(),
+            stack,
+            x,
+            y + text_h + 2.0,
+            w,
+        ) {
             self.draw_bundle_tooltip(batch, &layout);
             self.draw_bundle_selected_name(batch, &layout, x, y + text_h + 2.0, w);
         }
@@ -2759,7 +2808,7 @@ impl Game<'_> {
         if py + 8.0 + 3.0 > batch.height {
             py = batch.height - 8.0 - 3.0;
         }
-        Self::tooltip_box(batch, atlas, px, py, tw, 8.0);
+        self.tooltip_box(batch, Some(stack), px, py, tw, 8.0);
         Self::tooltip_text(batch, atlas, &lines, px, py);
     }
     /// `ClientBundleTooltip.extractImage`: the slots, the count past them and
@@ -2910,15 +2959,32 @@ impl Game<'_> {
         let Some(BlockEntity::Brewing(b)) = self.world.block_entities.get_mut(&pos) else {
             return Ok(());
         };
+        let was_idle = b.brew_time <= 0;
+        let was_unfueled = b.fuel <= 0;
+        let fuel_item = was_unfueled
+            .then(|| b.items[4].as_ref().map(|s| s.item.clone()))
+            .flatten();
         let out = b.tick(
             &world_stations!(self).brewing,
             world_items!(self),
             self.res.providers(),
         );
+        let consumed_fuel = was_unfueled && b.fuel > 0;
+        let started = was_idle && b.brew_time > 0;
+        let ingredient = started.then(|| b.ingredient.clone()).flatten();
+        if consumed_fuel && let Some(item) = fuel_item {
+            let (x, y, z) = pos;
+            self.native_brewing_fuel([x, y, z], &item);
+        }
+        if let Some(ingredient) = ingredient {
+            let (x, y, z) = pos;
+            self.native_brewing_start([x, y, z], &ingredient);
+        }
         if out != brewing::BrewTick::default() {
             let (x, y, z) = pos;
             self.world.modified.insert((x >> 4, z >> 4));
             if out.brewed {
+                self.native_brewing_complete([x, y, z]);
                 self.play_at("minecraft:block.brewing_stand.brew", [x, y, z], 1.0, 1.0);
             }
             for d in out.drops {
@@ -2942,6 +3008,10 @@ impl Game<'_> {
                     }
                 }
             }
+        }
+        if matches!(self.world.block_entities.get(&pos), Some(BlockEntity::Brewing(b)) if b.idle())
+        {
+            self.world.block_entities.sleep(pos);
         }
         Ok(())
     }
@@ -3031,6 +3101,16 @@ mod tests {
         assert_ne!(book.flip_t, target);
         let (open, _) = book.at(0.5);
         assert!(open < 1e-6);
+    }
+
+    #[test]
+    fn a_step_leaves_the_visible_rows_only_from_the_end_one() {
+        let rows = [[10.0, 0.0, 10.0, 10.0], [10.0, 10.0, 10.0, 10.0]];
+        assert!(off_visible_rows(&rows, (15.0, 15.0), false));
+        assert!(!off_visible_rows(&rows, (15.0, 15.0), true));
+        assert!(off_visible_rows(&rows, (15.0, 5.0), true));
+        assert!(!off_visible_rows(&rows, (15.0, 5.0), false));
+        assert!(!off_visible_rows(&rows, (50.0, 5.0), false));
     }
 
     #[test]

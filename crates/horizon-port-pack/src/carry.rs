@@ -467,6 +467,124 @@ fn upgrade_condition(c: &mut Value) {
     {
         *c = json!(named);
     }
+    match c["type"].as_str() {
+        Some("minecraft:entity_properties") => {
+            if let Some(p) = c.get_mut("predicate") {
+                upgrade_entity_predicate(p);
+            }
+        }
+        Some("minecraft:damage_source_properties") => {
+            for key in ["direct_entity", "source_entity"] {
+                if let Some(p) = c["predicate"].get_mut(key) {
+                    upgrade_entity_predicate(p);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The fields of a 1.21 entity predicate that are, in 26.3, sub-predicates
+/// keyed by their registry name (`minecraft:<field>`), as 26.3's own data
+/// writes them (`"minecraft:flags": {"is_on_fire": true}`).
+const ENTITY_FIELDS: [&str; 15] = [
+    "distance",
+    "movement",
+    "location",
+    "stepping_on",
+    "movement_affected_by",
+    "effects",
+    "nbt",
+    "flags",
+    "equipment",
+    "periodic_tick",
+    "team",
+    "slots",
+    "components",
+    "predicates",
+    "type_specific",
+];
+
+/// Entity predicates nested in an entity predicate (1.21 field names).
+const ENTITY_NESTED: [&str; 3] = ["vehicle", "passenger", "targeted_entity"];
+
+/// Kinds of 1.21's `type_specific` whose `variant` 26.3 matches as a component
+/// (`"minecraft:components": {"minecraft:cat/variant": ...}`).
+const VARIANT_KINDS: [&str; 14] = [
+    "axolotl",
+    "cat",
+    "chicken",
+    "cow",
+    "fox",
+    "frog",
+    "horse",
+    "llama",
+    "mooshroom",
+    "painting",
+    "parrot",
+    "pig",
+    "rabbit",
+    "wolf",
+];
+
+/// A 1.21 entity predicate in 26.3's shape, in place: `type` is
+/// `minecraft:entity_type`, every other field `minecraft:<field>`, `vehicle`,
+/// `passenger` and `targeted_entity` recursively; `type_specific {"type": k,
+/// ...}` is `minecraft:type_specific/<k>` (`slime` is `cube_mob`), a variant
+/// kind's `variant` and a sheep's `color` go to `minecraft:components`. The
+/// game's loot code reads only these keys, so an old-shaped predicate never
+/// matched. A predicate already in 26.3's shape stays as it is.
+pub(crate) fn upgrade_entity_predicate(p: &mut Value) {
+    let Some(o) = p.as_object_mut() else {
+        return;
+    };
+    let key = |f: &str| format!("minecraft:{f}");
+    if let Some(t) = o.remove("type") {
+        o.insert(key("entity_type"), t);
+    }
+    for f in ENTITY_NESTED {
+        if let Some(mut inner) = o.remove(f) {
+            upgrade_entity_predicate(&mut inner);
+            o.insert(key(f), inner);
+        }
+    }
+    for f in ENTITY_FIELDS {
+        if let Some(v) = o.remove(f) {
+            o.insert(key(f), v);
+        }
+    }
+    let Some(Value::Object(mut ts)) = o.remove("minecraft:type_specific") else {
+        return;
+    };
+    let kind = ts.remove("type");
+    let kind = kind.as_ref().and_then(Value::as_str).unwrap_or("any");
+    let kind = match kind.trim_start_matches("minecraft:") {
+        "slime" => "cube_mob",
+        k => k,
+    };
+    let component = match kind {
+        k if VARIANT_KINDS.contains(&k) => {
+            ts.remove("variant").map(|v| (format!("{k}/variant"), v))
+        }
+        "sheep" => ts.remove("color").map(|v| ("sheep/color".to_owned(), v)),
+        _ => None,
+    };
+    if let Some((name, v)) = component {
+        let components = o.entry(key("components")).or_insert_with(|| json!({}));
+        if let Some(c) = components.as_object_mut() {
+            c.insert(key(&name), v);
+        }
+    }
+    // A player's `looking_at`, a lightning bolt's `entity_struck`.
+    for f in ["looking_at", "entity_struck"] {
+        if let Some(v) = ts.get_mut(f) {
+            upgrade_entity_predicate(v);
+        }
+    }
+    // A variant kind with nothing else to match is the component alone.
+    if !ts.is_empty() || !(kind == "any" || VARIANT_KINDS.contains(&kind)) {
+        o.insert(key(&format!("type_specific/{kind}")), Value::Object(ts));
+    }
 }
 
 /// 26.3's named tool conditions for the 1.21.1 predicates they replace.
@@ -507,12 +625,17 @@ fn shared_tag(root: &str, ns: &str, rest: &str) -> bool {
     root == "data" && (ns == "minecraft" || ns == "c") && rest.starts_with("tags/")
 }
 
+/// Sources a mod adds to vanilla's atlases, which the game appends to vanilla's as a reload does.
+fn shared_atlas(root: &str, ns: &str, rest: &str) -> bool {
+    root == "assets" && ns == "minecraft" && rest.starts_with("atlases/") && rest.ends_with(".json")
+}
+
 /// Where a jar entry goes: `Some(true)` inside the content mod (its own
-/// namespaces, additions to vanilla and convention tags), `Some(false)`
-/// to `outside/`, `None` not carried (code, metadata).
+/// namespaces, additions to vanilla and convention tags and to vanilla's
+/// atlases), `Some(false)` to `outside/`, `None` not carried (code, metadata).
 fn place(name: &str, owned: &[&str]) -> Option<bool> {
     let (root, ns, rest) = split(name)?;
-    Some(owned.contains(&ns) || shared_tag(root, ns, rest))
+    Some(owned.contains(&ns) || shared_tag(root, ns, rest) || shared_atlas(root, ns, rest))
 }
 
 /// Namespaces no carried mod claims: vanilla's, the convention tags', the
@@ -732,6 +855,13 @@ pub fn carry(
     }
     let file = fs::File::open(jar).map_err(|e| format!("{}: {e}", jar.display()))?;
     let mut zip = zip::ZipArchive::new(file).map_err(|e| format!("{}: {e}", jar.display()))?;
+    // The previous harness verdict describes the content we are about to replace.
+    let verdict = out.join("harness/result.json");
+    if let Err(e) = fs::remove_file(&verdict)
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        return Err(format!("{}: {e}", verdict.display()));
+    }
     let (inside, outside) = (out.join("carry"), out.join("outside"));
     let _ = fs::remove_dir_all(&inside);
     let _ = fs::remove_dir_all(&outside);
@@ -1315,6 +1445,112 @@ mod tests {
     use super::*;
     use std::io::Write;
 
+    #[test]
+    fn recarry_invalidates_the_verdict_before_replacing_content() {
+        use crate::{
+            inventory::Record,
+            report::{self, Status},
+        };
+
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("horizon-recarry-{}-{nonce}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let jar = dir.join("example.jar");
+        let payload = br#"{"variants":{"":{"model":"example:block/stone"}}}"#;
+        let mut zip = zip::ZipWriter::new(fs::File::create(&jar).unwrap());
+        zip.start_file(
+            "assets/example/blockstates/stone.json",
+            zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored),
+        )
+        .unwrap();
+        zip.write_all(payload).unwrap();
+        zip.finish().unwrap();
+        let work = dir.join("work");
+        let out = work.join("mods/example");
+        let verdict = out.join("harness/result.json");
+        let info = crate::jar::JarInfo {
+            mod_id: "example".into(),
+            ..Default::default()
+        };
+        let run = |source: &Path| {
+            carry(
+                source,
+                &info,
+                &out,
+                None,
+                &|_| true,
+                &Pack {
+                    loaded: &|_| true,
+                    mods: &|_| false,
+                },
+                &BTreeMap::new(),
+            )
+        };
+        let records = [Record {
+            key: "example".into(),
+            class: "content".into(),
+            tier: "data".into(),
+            ..Default::default()
+        }];
+        let row = || report::build(&records, &work).pop().unwrap();
+        run(&jar).unwrap();
+        fs::create_dir_all(verdict.parent().unwrap()).unwrap();
+        let green = br#"{"checks":{"blocks":{"passed":1,"failed":0}}}"#;
+        let untouched = work.join("mods/untouched/harness/result.json");
+        fs::create_dir_all(untouched.parent().unwrap()).unwrap();
+        fs::write(&untouched, green).unwrap();
+        for aggregate in [false, true] {
+            let result = if aggregate {
+                br#"{"passed":true,"checks":{"blocks":{"passed":1,"failed":0}}}"#.as_slice()
+            } else {
+                green.as_slice()
+            };
+            fs::write(&verdict, result).unwrap();
+            assert_eq!(row().status, Status::Ported);
+            run(&jar).unwrap();
+            assert_eq!(row().status, Status::Partial);
+            assert!(row().reason.contains("harness not run"));
+            assert!(!verdict.exists());
+            assert_eq!(fs::read(&untouched).unwrap(), green);
+        }
+        fs::write(&verdict, green).unwrap();
+        // An invalid archive has not changed the old content, so its evidence stays valid.
+        let bad = dir.join("invalid.jar");
+        fs::write(&bad, b"not a zip").unwrap();
+        assert!(run(&bad).is_err());
+        assert_eq!(row().status, Status::Ported);
+        assert_eq!(fs::read(&verdict).unwrap(), green);
+
+        // Opening this ZIP succeeds, but reading its payload fails the CRC after mutation starts.
+        let mut corrupt = fs::read(&jar).unwrap();
+        let offset = corrupt
+            .windows(payload.len())
+            .position(|w| w == payload)
+            .unwrap();
+        corrupt[offset] ^= 1;
+        fs::write(&bad, corrupt).unwrap();
+        assert!(run(&bad).is_err());
+        assert_eq!(row().status, Status::Partial);
+        assert!(!verdict.exists());
+        run(&jar).unwrap();
+        fs::write(&verdict, green).unwrap();
+        assert_eq!(row().status, Status::Ported);
+
+        // An invalidation error must leave the carried content alone.
+        fs::remove_file(&verdict).unwrap();
+        fs::create_dir(&verdict).unwrap();
+        let sentinel = out.join("carry/keep.txt");
+        fs::write(&sentinel, b"keep").unwrap();
+        assert!(run(&jar).is_err());
+        assert_eq!(fs::read(&sentinel).unwrap(), b"keep");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// YUNG's pools carry comments, which Minecraft's lenient reader skips;
     /// the carry holds them as plain JSON. A comment marker inside a string
     /// stays, and text that is not JSON without its comments is refused.
@@ -1422,6 +1658,59 @@ mod tests {
         let mut new = glass.clone();
         upgrade_loot(&mut new);
         assert_eq!(new, glass);
+    }
+
+    /// Entity predicates in 26.3's keys, as its own tables write them; the
+    /// 1.21 shape never matched in the game's loot code.
+    #[test]
+    fn entity_predicates_get_26_3_keys() {
+        let mut t = json!({"pools": [{"rolls": 1, "entries": [{"type": "minecraft:item", "name": "m:hide",
+        "functions": [{"function": "minecraft:furnace_smelt", "conditions": [{
+            "condition": "minecraft:entity_properties", "entity": "this",
+            "predicate": {"flags": {"is_on_fire": true}}}]}],
+        "conditions": [
+            {"condition": "minecraft:entity_properties", "entity": "this",
+                "predicate": {"type": "minecraft:cow", "vehicle": {"type": "#minecraft:boats"},
+                    "type_specific": {"type": "minecraft:frog", "variant": "minecraft:warm"}}},
+            {"condition": "minecraft:damage_source_properties", "predicate": {
+                "source_entity": {"type": "minecraft:player", "equipment": {"mainhand": {"items": "minecraft:shears"}}},
+                "is_direct": true}},
+            {"condition": "minecraft:entity_properties", "entity": "attacker",
+                "predicate": {"type_specific": {"type": "minecraft:slime", "size": {"min": 2}}}},
+            {"condition": "minecraft:entity_properties", "entity": "this",
+                "predicate": {"type_specific": {"type": "sheep", "sheared": false, "color": "black"}}}
+        ]}]}]});
+        upgrade_loot(&mut t);
+        let e = &t["pools"][0]["entries"][0];
+        assert_eq!(
+            e["modifier"][0]["condition"]["predicate"],
+            json!({"minecraft:flags": {"is_on_fire": true}})
+        );
+        let c = &e["condition"]["terms"];
+        assert_eq!(
+            c[0]["predicate"],
+            json!({"minecraft:entity_type": "minecraft:cow",
+                "minecraft:vehicle": {"minecraft:entity_type": "#minecraft:boats"},
+                "minecraft:components": {"minecraft:frog/variant": "minecraft:warm"}})
+        );
+        assert_eq!(
+            c[1]["predicate"],
+            json!({"source_entity": {"minecraft:entity_type": "minecraft:player",
+                "minecraft:equipment": {"mainhand": {"items": "minecraft:shears"}}}, "is_direct": true})
+        );
+        assert_eq!(
+            c[2]["predicate"],
+            json!({"minecraft:type_specific/cube_mob": {"size": {"min": 2}}})
+        );
+        assert_eq!(
+            c[3]["predicate"],
+            json!({"minecraft:type_specific/sheep": {"sheared": false},
+                "minecraft:components": {"minecraft:sheep/color": "black"}})
+        );
+        // Already 26.3's shape: unchanged.
+        let again = t.clone();
+        upgrade_loot(&mut t);
+        assert_eq!(t, again);
     }
 
     #[test]

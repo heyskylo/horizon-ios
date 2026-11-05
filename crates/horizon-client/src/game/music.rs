@@ -4,6 +4,7 @@ use super::Game;
 use horizon_client::{
     blocks::Fluid,
     music::{BackgroundMusic, Music, MusicFrequency, Situation},
+    options_ui::MusicGroup,
     sound_engine::{SoundEngine, SoundInstance, Sounds, TickContext},
 };
 
@@ -25,6 +26,14 @@ impl Game<'_> {
         if frequency != self.music.frequency {
             self.music.set_frequency(frequency, music.as_ref());
         }
+        // The Music page's off tracks leave every pool they play in (the
+        // extra off: nothing is filtered, vanilla's pools play as they are).
+        let off = if self.settings.extras.music_page {
+            &self.settings.extras.music_off[..]
+        } else {
+            &[][..]
+        };
+        self.music.set_off(off);
         // LevelLoadingScreen: no new track before the player is in the world.
         let loading = self.title.is_none() && self.player.is_none() && self.win.is_none();
         self.music
@@ -38,6 +47,10 @@ impl Game<'_> {
         // MusicManager's showNowPlayingToast and hideNowPlayingToast calls.
         let multiplier = f64::from(self.settings.notification_display_time);
         for show in std::mem::take(&mut self.music.toast_requests) {
+            // Each showing is a new toast to mods (`ToastAddEvent`).
+            if show && self.now_playing.is_some() && !self.toast_allowed("now_playing", "") {
+                continue;
+            }
             if let Some(toast) = &mut self.now_playing {
                 if show {
                     toast.show(multiplier);
@@ -46,6 +59,15 @@ impl Game<'_> {
                 }
             }
         }
+    }
+    /// The Music page's groups: every track the loaded `sounds.json` can play,
+    /// by situation (see `music::track_groups`).
+    pub(super) fn music_groups(&self) -> Vec<MusicGroup> {
+        horizon_client::music::track_groups(&self.audio.engine.registry)
+    }
+    /// A Music page row: play this track of `event` now.
+    pub(super) fn play_music_track(&mut self, event: &str, track: &str) {
+        self.music.play_track(event, track, &mut self.audio);
     }
     /// `Options.getFinalSoundSourceVolume(SoundSource.MUSIC)`.
     fn final_music_volume(&self) -> f32 {
@@ -59,7 +81,10 @@ impl Game<'_> {
             0 => None,
             _ => {
                 let mut toast = horizon_client::toasts::NowPlayingToast::default();
-                if state == 2 && self.final_music_volume() > 0.0 {
+                if state == 2
+                    && self.final_music_volume() > 0.0
+                    && self.toast_allowed("now_playing", "")
+                {
                     toast.show(f64::from(self.settings.notification_display_time));
                 }
                 Some(toast)
@@ -130,6 +155,10 @@ impl Game<'_> {
     /// `pauseAllExcept(MUSIC, UI)` when the game pauses and `resume` when it
     /// carries on.
     pub(super) fn tick_sound_engine(&mut self) {
+        update_bound_entities(self.audio.engine.bound_entities(), |id| {
+            self.sound_entity_state(id)
+        });
+
         if self.pause != self.sound_paused {
             if self.pause {
                 self.audio.pause();
@@ -306,5 +335,81 @@ impl Game<'_> {
             bubble_column,
         };
         self.ambience.tick(&ctx, &mut self.audio);
+    }
+}
+
+/// Resolve each live entity once per sound tick, even when several sounds name it.
+fn update_bound_entities(
+    entities: Vec<horizon_client::sound_engine::SoundEntity>,
+    mut resolve: impl FnMut(u32) -> Option<horizon_client::sound_engine::SoundEntityState>,
+) {
+    use horizon_client::sound_engine::SoundEntityState;
+    let mut states = std::collections::HashMap::new();
+    for entity in entities {
+        let previous = entity.state();
+        if previous.removed {
+            continue;
+        }
+        let state = *states
+            .entry(entity.id)
+            .or_insert_with(|| resolve(entity.id));
+        entity.update(state.unwrap_or(SoundEntityState {
+            removed: true,
+            ..previous
+        }));
+    }
+}
+
+#[cfg(test)]
+mod bound_lookup_tests {
+    use super::update_bound_entities;
+    use horizon_client::sound_engine::{SoundEntity, SoundEntityState};
+
+    #[test]
+    fn simultaneous_sounds_share_a_lookup_but_follow_each_new_tick() {
+        let a = SoundEntity::new(7, [0.0; 3], false);
+        let b = SoundEntity::new(7, [1.0; 3], false);
+        let mut calls = Vec::new();
+        for position in [[24.0, 80.0, -16.0], [25.5, 81.0, -18.0]] {
+            update_bound_entities(vec![a.clone(), b.clone()], |id| {
+                calls.push(id);
+                Some(SoundEntityState {
+                    position,
+                    silent: true,
+                    removed: false,
+                })
+            });
+            assert_eq!(a.state().position, position);
+            assert_eq!(b.state().position, position);
+            assert!(a.state().silent && b.state().silent);
+        }
+        assert_eq!(calls, vec![7, 7]);
+    }
+
+    #[test]
+    fn missing_entities_stop_all_their_sounds_without_reviving_reused_ids() {
+        let a = SoundEntity::new(7, [1.0; 3], false);
+        let b = SoundEntity::new(7, [2.0; 3], false);
+        let mut calls = 0;
+        update_bound_entities(vec![a.clone(), b.clone()], |_| {
+            calls += 1;
+            None
+        });
+        assert_eq!(calls, 1);
+        assert!(a.state().removed && b.state().removed);
+        let replacement = SoundEntity::new(7, [3.0; 3], false);
+        update_bound_entities(vec![a.clone(), replacement.clone(), b.clone()], |_| {
+            calls += 1;
+            Some(SoundEntityState {
+                position: [4.0; 3],
+                silent: false,
+                removed: false,
+            })
+        });
+        assert_eq!(calls, 2);
+        assert!(a.state().removed && b.state().removed);
+        assert_eq!(a.state().position, [1.0; 3]);
+        assert_eq!(replacement.state().position, [4.0; 3]);
+        assert!(!replacement.state().removed);
     }
 }

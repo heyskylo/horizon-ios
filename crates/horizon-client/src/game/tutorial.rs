@@ -32,6 +32,21 @@ pub(super) enum Hint {
     PunchTree,
     OpenInventory,
     CraftPlanks,
+    SocialInteractions,
+}
+impl Hint {
+    /// The hint's name, as in its `tutorial.<name>.title` key.
+    fn name(self) -> &'static str {
+        match self {
+            Hint::Move => "move",
+            Hint::Look => "look",
+            Hint::FindTree => "find_tree",
+            Hint::PunchTree => "punch_tree",
+            Hint::OpenInventory => "open_inventory",
+            Hint::CraftPlanks => "craft_planks",
+            Hint::SocialInteractions => "socialInteractions",
+        }
+    }
 }
 
 /// The observations needed on the first tick of each step.
@@ -204,9 +219,8 @@ impl super::Game<'_> {
     }
 
     pub(super) fn tutorial_get_item(&mut self, stack: Option<&horizon_client::items::ItemStack>) {
-        // The server thread's settings are a stale copy of the window's, and an
-        // in-frame host acting for a guest is not its own player: a guest's
-        // tutorial is their own client's to record.
+        // The server thread's settings are a stale copy of the window's: a
+        // guest's tutorial is their own client's to record.
         if self.options.dedicated.is_some()
             || self.serving.is_some()
             || self.lan_acting.is_some()
@@ -230,9 +244,8 @@ impl super::Game<'_> {
         state: horizon_world::registry::BlockStateId,
         progress: f32,
     ) {
-        // The server thread's settings are a stale copy of the window's, and an
-        // in-frame host acting for a guest is not its own player: a guest's
-        // tutorial is their own client's to record.
+        // The server thread's settings are a stale copy of the window's: a
+        // guest's tutorial is their own client's to record.
         if self.options.dedicated.is_some()
             || self.serving.is_some()
             || self.lan_acting.is_some()
@@ -256,6 +269,23 @@ impl super::Game<'_> {
             || self.serving.is_some()
         {
             return;
+        }
+        // Minecraft.tick: also show this in a single-player world once it is
+        // published to LAN, but not merely because its client uses memory networking.
+        if !self.settings.file.bool("joinedFirstServer")
+            && (!self.has_singleplayer_server() || self.is_published())
+        {
+            // ToastManager.addToast: a mod may cancel it; the hint is still
+            // spent (`joinedFirstServer`), as vanilla sets it either way.
+            if self.toast_allowed("tutorial", Hint::SocialInteractions.name()) {
+                let toast = self.tutorial_toast(Hint::SocialInteractions, Some(0.0));
+                self.tutorial_toasts.push(toast);
+            }
+            self.settings.file.set(
+                "joinedFirstServer",
+                horizon_client::options_file::V::Bool(true),
+            );
+            self.settings.save(&Self::options_path());
         }
         if self.screen == super::Screen::Playing
             && ([
@@ -340,9 +370,20 @@ pub(super) struct HintToast {
     slot: Option<usize>,
     slots: usize,
     slide: horizon_client::toasts::Slide,
+    /// A mod cancelled it (`ToastAddEvent`): it never takes a slot, and
+    /// stays only so the hint isn't offered again while it lasts.
+    cancelled: bool,
 }
 
 impl super::Game<'_> {
+    pub(super) fn hide_social_tutorial(&mut self) {
+        for toast in &mut self.tutorial_toasts {
+            if toast.hint == Hint::SocialInteractions {
+                toast.wanted = false;
+            }
+        }
+    }
+
     pub(super) fn tutorial_toast_slots(&self) -> u32 {
         self.tutorial_toasts
             .iter()
@@ -394,6 +435,13 @@ impl super::Game<'_> {
                 "Press %1$s",
                 vec![],
             ),
+            Hint::SocialInteractions => (
+                "tutorial.socialInteractions.title",
+                "Social Interactions",
+                "tutorial.socialInteractions.description",
+                "Press %1$s to open social interactions",
+                vec![],
+            ),
             Hint::CraftPlanks => (
                 "tutorial.craft_planks.title",
                 "Craft wooden planks",
@@ -414,6 +462,7 @@ impl super::Game<'_> {
             Hint::Move => vec![key("key.jump")],
             Hint::PunchTree => vec![key("key.attack")],
             Hint::OpenInventory => vec![key("key.inventory")],
+            Hint::SocialInteractions => vec![key("key.socialInteractions")],
             _ => vec![],
         };
         let description = substitute(self.translate(description_key, description), &desc_args);
@@ -434,6 +483,7 @@ impl super::Game<'_> {
             slot: None,
             slots,
             slide: Default::default(),
+            cancelled: false,
         }
     }
 
@@ -444,6 +494,9 @@ impl super::Game<'_> {
     ) {
         let wanted = self.tutorial.hint();
         for t in &mut self.tutorial_toasts {
+            if t.hint == Hint::SocialInteractions {
+                continue;
+            }
             t.wanted = wanted.is_some_and(|(hint, _)| hint == t.hint);
             if t.wanted {
                 t.progress = wanted.and_then(|(_, progress)| progress);
@@ -455,12 +508,13 @@ impl super::Game<'_> {
                 .iter()
                 .any(|t| t.wanted && t.hint == hint)
         {
+            let cancelled = !self.toast_allowed("tutorial", hint.name());
             let toast = self.tutorial_toast(hint, progress);
-            self.tutorial_toasts.push(toast);
+            self.tutorial_toasts.push(HintToast { cancelled, ..toast });
         }
         let mut used = self.toast_slots_used();
         for t in &mut self.tutorial_toasts {
-            if t.slot.is_none() && t.wanted && t.slots <= Self::TOAST_SLOTS {
+            if t.slot.is_none() && t.wanted && !t.cancelled && t.slots <= Self::TOAST_SLOTS {
                 let mask = (1u32 << t.slots) - 1;
                 if let Some(slot) =
                     (0..=Self::TOAST_SLOTS - t.slots).find(|s| used & (mask << s) == 0)
@@ -482,7 +536,9 @@ impl super::Game<'_> {
                 }
                 continue;
             }
-            let (sound, finished) = t.slide.update_now(|_| t.wanted);
+            let (sound, finished) = t.slide.update_now(|fully| {
+                t.wanted && (t.hint != Hint::SocialInteractions || social_hint_progress(fully).0)
+            });
             if let Some(show) = sound {
                 let event = if show { "ui.toast.in" } else { "ui.toast.out" };
                 self.audio
@@ -492,7 +548,11 @@ impl super::Game<'_> {
                 self.tutorial_toasts.remove(i);
                 continue;
             }
-            if let Some(progress) = t.progress {
+            if t.hint == Hint::SocialInteractions {
+                let (_, progress) = social_hint_progress(t.slide.fully_for);
+                t.progress = Some(progress);
+                t.smooth = progress;
+            } else if let Some(progress) = t.progress {
                 let delta = ((t.slide.fully_for - t.last_smooth) as f32 / 100.0).clamp(0.0, 1.0);
                 t.smooth += (progress - t.smooth) * delta;
                 t.last_smooth = t.slide.fully_for;
@@ -517,6 +577,7 @@ impl super::Game<'_> {
                     Hint::FindTree | Hint::PunchTree => "tree",
                     Hint::OpenInventory => "recipe_book",
                     Hint::CraftPlanks => "wooden_planks",
+                    Hint::SocialInteractions => "social_interactions",
                 };
                 batch.sprite_scaled(
                     atlas,
@@ -561,5 +622,73 @@ impl super::Game<'_> {
             }
             i += 1;
         }
+    }
+}
+
+/// TutorialToast.update uses the time fully visible (not the slide-in time),
+/// and hides only after 8000 ms. Its timed bar does not use progress smoothing.
+fn social_hint_progress(fully_visible_ms: i64) -> (bool, f32) {
+    (
+        fully_visible_ms <= 8000,
+        (fully_visible_ms as f32 / 8000.0).min(1.0),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn social_hint_fills_for_eight_seconds_before_hiding() {
+        assert_eq!(social_hint_progress(0), (true, 0.0));
+        assert_eq!(social_hint_progress(4000), (true, 0.5));
+        assert_eq!(social_hint_progress(8000), (true, 1.0));
+        assert_eq!(social_hint_progress(8001), (false, 1.0));
+    }
+
+    #[test]
+    fn social_hint_counts_from_full_visibility_and_finishes_sliding_out() {
+        let mut slide = horizon_client::toasts::Slide::default();
+        for (now, visible) in [(0, true), (600, true), (8600, true), (8601, false)] {
+            let (_, finished) = slide.update(now, |fully| social_hint_progress(fully).0);
+            assert!(!finished);
+            assert_eq!(social_hint_progress(slide.fully_for).0, visible);
+        }
+        let (_, finished) = slide.update(9202, |fully| social_hint_progress(fully).0);
+        assert!(finished);
+    }
+
+    #[test]
+    fn craft_planks_hint_toast_appears_after_delay_and_clears_on_planks() {
+        let mut tutorial = Tutorial::new(Step::CraftPlanks);
+        tutorial.waiting = 1199;
+        assert_eq!(tutorial.hint(), None);
+
+        tutorial.waiting = 1200;
+        assert_eq!(tutorial.hint(), Some((Hint::CraftPlanks, None)));
+
+        // Receiving an unrelated item (e.g. log or stick) does not complete the step
+        let changed = tutorial.get_item(false, true, false);
+        assert!(!changed);
+        assert_eq!(tutorial.step, Step::CraftPlanks);
+        assert_eq!(tutorial.hint(), Some((Hint::CraftPlanks, None)));
+
+        // Receiving planks completes the tutorial step and dismisses the hint toast
+        let changed = tutorial.get_item(false, false, true);
+        assert!(changed);
+        assert_eq!(tutorial.step, Step::None);
+        assert_eq!(tutorial.hint(), None);
+    }
+
+    #[test]
+    fn initial_tick_with_planks_clears_craft_planks_step() {
+        let mut tutorial = Tutorial::new(Step::CraftPlanks);
+        let previous = Previous {
+            plank: true,
+            ..Default::default()
+        };
+        assert!(tutorial.tick(true, &previous));
+        assert_eq!(tutorial.step, Step::None);
+        assert_eq!(tutorial.hint(), None);
     }
 }

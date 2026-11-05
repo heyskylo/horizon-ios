@@ -120,7 +120,7 @@ pub struct Environment {
     tracks: HashMap<String, Track>,
     base: HashMap<String, [f32; 4]>,
 }
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Sky {
     pub sky_color: [f32; 3],
     pub fog_color: [f32; 3],

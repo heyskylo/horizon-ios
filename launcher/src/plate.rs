@@ -13,6 +13,10 @@ pub fn alpha(c: u32, a: f32) -> Rgba {
 /// A plate: `card` at its opacity, each corner cut in two [`night::PIXEL_CORNER`] steps, with its
 /// 1 px `stroke` along the edge. Its content goes in as children, as on any div.
 pub fn plate(n: &Night) -> Div {
+    // The glass look has no stepped corners: a glass plate round at 16.
+    if crate::glass_ui::on() {
+        return crate::glass::plate(horizon_theme::glass::radius::POPOVER);
+    }
     cut(
         night::PIXEL_CORNER,
         2,

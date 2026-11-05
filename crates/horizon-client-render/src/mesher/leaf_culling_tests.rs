@@ -72,6 +72,8 @@ fn mesh(
     let mut mesher = Mesher {
         nether_shading: false,
         shader_pack_lighting: false,
+        separate_ao: false,
+        shader_pack: false,
         assets: &f.assets,
         render: &f.render,
         tables: &f.tables,
