@@ -6,7 +6,7 @@ use super::Game;
 use horizon_client::mobs::render::{PROFESSIONS, VILLAGER_TYPES};
 use horizon_client::mobs::{
     Mob, Species, Who, armadillo, bat, bee, camel, creaking, drops, equine, finalize, illusioner,
-    panda, phantom, sniffer, sync, tame, zombie_villager,
+    panda, phantom, raider, sniffer, sync, tame, zombie_villager,
 };
 use horizon_client::particles::{ParticleOptions, ParticleType};
 use horizon_protocol::entity_data::{Particle, ParticleData, Value};
@@ -321,6 +321,10 @@ fn apply(m: &mut Mob, values: &[(u8, i32, Value)], builtin: &Builtin, local_enti
             // entities the side heads turn toward in `wither::client_tick`.
             (Species::Wither, 17, Value::Int(id)) => m.extra.ints[0] = *id,
             (Species::Wither, 18, Value::Int(id)) => m.extra.ints[1] = *id,
+            // Raider.IS_CELEBRATING: shared by all six raider types.
+            (species, 16, Value::Bool(celebrating)) if raider::is_raider(species) => {
+                raider::state_mut(m).celebrating = *celebrating;
+            }
             // Pillager.IS_CHARGING_CROSSBOW: the charge pose (Raider's
             // IS_CELEBRATING takes 16).
             (Species::Pillager, 17, Value::Bool(charging)) => m.extra.flag = *charging,
@@ -525,7 +529,7 @@ mod tests {
     use super::*;
     use horizon_protocol::entity_data::serializer as s;
 
-    fn air_mob(kind: &str) -> Mob {
+    fn fixture_mob(kind: &str) -> Mob {
         use horizon_client::mobs::{Anim, Brain, Flags, MobType, Part};
         use std::sync::Arc;
         let species = match kind {
@@ -533,6 +537,13 @@ mod tests {
             "minecraft:axolotl" => Species::Axolotl,
             "minecraft:dolphin" => Species::Dolphin,
             "minecraft:cod" => Species::Cod,
+            "minecraft:pillager" => Species::Pillager,
+            "minecraft:vindicator" => Species::Vindicator,
+            "minecraft:evoker" => Species::Evoker,
+            "minecraft:illusioner" => Species::Illusioner,
+            "minecraft:witch" => Species::Witch,
+            "minecraft:ravager" => Species::Ravager,
+            "minecraft:zombie" => Species::Zombie,
             _ => panic!("unknown fixture species"),
         };
         // Metadata needs no AI or model. Avoid the resource loader, which also
@@ -590,7 +601,7 @@ mod tests {
     #[test]
     fn air_and_frozen_metadata_reach_the_client() {
         for kind in ["cow", "cod", "dolphin", "axolotl"] {
-            let mut mob = air_mob(&format!("minecraft:{kind}"));
+            let mut mob = fixture_mob(&format!("minecraft:{kind}"));
             super::client_defaults(&mut mob);
             let max = match kind {
                 "axolotl" => 6000,
@@ -617,8 +628,8 @@ mod tests {
         use horizon_client::lan::entity::{Entities, EntityState, Riding, Tracker, Viewer};
         use horizon_protocol::{buf::Reader, packets::play::Clientbound};
         let name = format!("minecraft:{kind}");
-        let mut server = air_mob(&name);
-        let mut client = air_mob(&name);
+        let mut server = fixture_mob(&name);
+        let mut client = fixture_mob(&name);
         super::client_defaults(&mut client);
         let mut level = Entities::default();
         let mut tracker = Tracker::default();
@@ -733,6 +744,177 @@ mod tests {
                 })
                 .collect();
             writeln!(output, "{}", air_trace(kind, &sequence).join(" ")).unwrap();
+        }
+    }
+
+    #[test]
+    fn raider_celebration_follows_metadata_and_clears() {
+        use horizon_client::mobs::raider;
+        for kind in [
+            "pillager",
+            "vindicator",
+            "evoker",
+            "illusioner",
+            "witch",
+            "ravager",
+        ] {
+            let mut m = fixture_mob(&format!("minecraft:{kind}"));
+            for on in [true, false, true, false] {
+                super::apply(
+                    &mut m,
+                    &[(16, s::BOOLEAN, Value::Bool(on))],
+                    &Builtin::default(),
+                    99,
+                );
+                assert_eq!(
+                    raider::state(&m).is_some_and(|state| state.celebrating),
+                    on,
+                    "{kind}"
+                );
+            }
+        }
+        for kind in ["zombie", "cow"] {
+            let mut m = fixture_mob(&format!("minecraft:{kind}"));
+            super::apply(
+                &mut m,
+                &[(16, s::BOOLEAN, Value::Bool(true))],
+                &Builtin::default(),
+                99,
+            );
+            assert!(raider::state(&m).is_none(), "{kind} is not a raider");
+        }
+    }
+
+    fn celebration_trace(kind: &str, sequence: &[bool]) -> Vec<(Vec<bool>, bool)> {
+        use horizon_client::{
+            lan::entity::{Entities, EntityState, Riding, Tracker, Viewer},
+            mobs::raider,
+        };
+        use horizon_protocol::{buf::Reader, packets::play::Clientbound};
+        let name = format!("minecraft:{kind}");
+        let mut server = fixture_mob(&name);
+        let mut client = fixture_mob(&name);
+        let mut level = Entities::default();
+        let mut tracker = Tracker::default();
+        let chunks = [(0, 0)].into_iter().collect();
+        let mut state = EntityState {
+            id: 1,
+            uuid: 1,
+            kind: name,
+            needs_sync: true,
+            ..Default::default()
+        };
+        let mut trace = Vec::new();
+        for &on in sequence {
+            raider::state_mut(&mut server).celebrating = on;
+            state.meta.clear();
+            state.defaults.clear();
+            super::super::lan::mob_raider_meta(&server, &mut state.meta, &mut state.defaults);
+            let mut packets = Vec::new();
+            level.tick(
+                &[&state],
+                &Riding::default(),
+                &mut [Viewer {
+                    entity_id: 99,
+                    spectator: false,
+                    permission: 0,
+                    moved: true,
+                    position: [0.0; 3],
+                    view_distance: 10,
+                    chunks: &chunks,
+                    tracker: &mut tracker,
+                    out: &mut packets,
+                    gone: None,
+                }],
+                |_| Some(100),
+            );
+            let mut sent = Vec::new();
+            for body in packets {
+                let mut reader = Reader::new(&body);
+                let id = reader.varint().unwrap();
+                if let Ok(Clientbound::SetEntityData(data)) = Clientbound::decode(id, reader.rest())
+                {
+                    for (index, serializer, value) in &data.values {
+                        if *index == 16 {
+                            assert_eq!(*serializer, s::BOOLEAN);
+                            let Value::Bool(on) = value else {
+                                panic!("boolean metadata");
+                            };
+                            sent.push(*on);
+                        }
+                    }
+                    super::apply(&mut client, &data.values, &Builtin::default(), 99);
+                }
+            }
+            trace.push((
+                sent,
+                raider::state(&client).is_some_and(|state| state.celebrating),
+            ));
+        }
+        trace
+    }
+
+    #[test]
+    fn celebration_crosses_the_tracker_and_wire_without_sticking_or_repeating() {
+        let sequence = [false, true, true, false, false, true, false];
+        let expected = vec![
+            (vec![], false),
+            (vec![true], true),
+            (vec![], true),
+            (vec![false], false),
+            (vec![], false),
+            (vec![true], true),
+            (vec![false], false),
+        ];
+        for kind in [
+            "pillager",
+            "vindicator",
+            "evoker",
+            "illusioner",
+            "witch",
+            "ravager",
+        ] {
+            assert_eq!(celebration_trace(kind, &sequence), expected, "{kind}");
+            assert_eq!(
+                celebration_trace(kind, &[true]),
+                vec![(vec![true], true)],
+                "joining mid-celebration: {kind}"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "run by tools/test_raider_celebration_parity.py"]
+    fn raider_celebration_parity_fixture() {
+        use std::io::Write;
+        let input =
+            std::fs::read_to_string(std::env::var("HORIZON_RAIDER_SYNC_INPUT").unwrap()).unwrap();
+        let mut output =
+            std::fs::File::create(std::env::var("HORIZON_RAIDER_SYNC_OUTPUT").unwrap()).unwrap();
+        for line in input.lines() {
+            let mut fields = line.split_whitespace();
+            let kind = fields.next().unwrap();
+            let sequence: Vec<_> = fields
+                .map(|value| match value {
+                    "0" => false,
+                    "1" => true,
+                    _ => panic!("invalid celebration flag"),
+                })
+                .collect();
+            let trace = celebration_trace(kind, &sequence);
+            let mut parts = Vec::new();
+            for (sent, state) in trace {
+                let sent = if sent.is_empty() {
+                    "-".into()
+                } else {
+                    sent.into_iter()
+                        .map(|on| i32::from(on).to_string())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                };
+                parts.push(format!("{sent}:{}", i32::from(state)));
+            }
+            writeln!(output, "{}", parts.join(" ")).unwrap();
         }
     }
 

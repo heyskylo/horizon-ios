@@ -209,6 +209,12 @@ impl Levels {
     pub fn random_tick_bounds(&self) -> Option<(i32, i32, i32, i32)> {
         self.1
     }
+    /// The loading track has `FullChunkStatus.ENTITY_TICKING`, independently
+    /// of whether the simulation tracker also permits entities to tick.
+    pub fn loaded_entity_ticking(&self, x: i32, z: i32) -> bool {
+        self.get(x, z)
+            .is_none_or(|(loading, _)| loading <= ENTITY_TICKING)
+    }
     /// `ChunkHolder.getFullStatus` is block ticking or more: the chunk's
     /// ticking future can complete (its saved ticks unpack then).
     pub fn loaded_ticking(&self, x: i32, z: i32) -> bool {
@@ -475,6 +481,9 @@ mod tests {
         assert!(l.random_ticking(-4, 4) && !l.random_ticking(0, 5));
         assert!(l.block_ticking(5, 5) && !l.block_ticking(6, 0));
         assert!(l.loaded_ticking(9, 9) && !l.loaded_ticking(10, 0));
+        // A command asks the loading status, not the smaller simulation area.
+        assert!(l.loaded_entity_ticking(8, 8));
+        assert!(!l.loaded_entity_ticking(9, 0));
     }
 
     #[test]
@@ -486,6 +495,8 @@ mod tests {
         assert!(l.entity_ticking(4, 0) && !l.entity_ticking(5, 0));
         assert!(l.random_ticking(5, 0) && !l.random_ticking(6, 0));
         assert!(l.block_ticking(5, 5) && !l.block_ticking(6, 0));
+        assert!(l.loaded_entity_ticking(4, 0));
+        assert!(!l.loaded_entity_ticking(5, 0));
     }
 
     #[test]

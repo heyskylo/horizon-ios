@@ -243,6 +243,12 @@ impl Game<'_> {
         let setting = entry.as_ref().and_then(|e| e.accept_textures);
         state.address = entry.map(|e| e.ip);
         state.packs.connect(Prompt::for_server(setting));
+        // GetServerDetailsTask.scheduleResourcePackDownload: the Realm's own pack, which the
+        // player agreed to before connecting (`allowServerPacks`, then `pushPack`).
+        if let Some(pack) = horizon_client::realms::take_pending_pack(address) {
+            state.packs.allow();
+            state.packs.push(pack.id, &pack.url, parse_sha1(&pack.hash));
+        }
     }
     /// `Minecraft.clearDownloadedResourcePacks`: every server pack goes at once.
     pub(super) fn server_packs_disconnect(&mut self) {

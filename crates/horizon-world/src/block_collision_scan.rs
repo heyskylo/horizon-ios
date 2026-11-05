@@ -48,6 +48,23 @@ pub trait BlockCollisionWorld {
     fn may_reach_out(&mut self, _chunk: Self::Chunk, _section_y: i32) -> Result<bool, Self::Error> {
         Ok(true)
     }
+    /// Whether every block of the chunk's section `section_y` has an empty collision shape under
+    /// every context (all air): true lets the scan pass that section's cells without reading
+    /// them. False, the default, reads every cell.
+    fn section_is_empty(
+        &mut self,
+        _chunk: Self::Chunk,
+        _section_y: i32,
+    ) -> Result<bool, Self::Error> {
+        Ok(false)
+    }
+    /// Whether a chunk `collision_chunk` reports missing stays missing for the whole scan, and
+    /// asking again has no effect: true lets the scan pass the rest of a row in that chunk
+    /// without asking. False, the default, asks at every cell of a missing chunk, as vanilla's
+    /// `BlockCollisions` does.
+    fn missing_chunks_stay_missing(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Debug)]
@@ -147,6 +164,11 @@ pub struct BlockCollisionScan<'w, 'c, W: BlockCollisionWorld> {
     /// at each crossing.
     reach: [Option<(ChunkPos, i32, bool)>; REACH_SECTIONS],
     reach_next: usize,
+    /// `section_is_empty` of the last sections the scan entered, kept as `reach` is.
+    empty: [Option<(ChunkPos, i32, bool)>; REACH_SECTIONS],
+    empty_next: usize,
+    /// `missing_chunks_stay_missing`, asked once.
+    missing_stays: bool,
     failed: bool,
 }
 impl<'w, 'c, W: BlockCollisionWorld> BlockCollisionScan<'w, 'c, W> {
@@ -164,6 +186,7 @@ impl<'w, 'c, W: BlockCollisionWorld> BlockCollisionScan<'w, 'c, W> {
             CellError::InvalidBounds => CollisionScanError::InvalidBounds,
             CellError::TooLarge => CollisionScanError::TooLarge,
         })?;
+        let missing_stays = world.missing_chunks_stay_missing();
         Ok(Self {
             world,
             context,
@@ -179,8 +202,43 @@ impl<'w, 'c, W: BlockCollisionWorld> BlockCollisionScan<'w, 'c, W> {
             chunk: None,
             reach: [None; REACH_SECTIONS],
             reach_next: 0,
+            empty: [None; REACH_SECTIONS],
+            empty_next: 0,
+            missing_stays,
             failed: false,
         })
+    }
+
+    /// The cells after the current one (cell `x` of its row, block x `block_x`) that are in the
+    /// same row and chunk, never more than the budget has left: what can be passed at once.
+    fn rest_in_chunk(&self, x: usize, block_x: i32) -> usize {
+        (self.sizes[0] - 1 - x)
+            .min(15 - (block_x & 15) as usize)
+            .min(self.budget.saturating_sub(self.index))
+    }
+
+    /// `section_is_empty`, asked once per section the scan enters.
+    fn section_is_empty(
+        &mut self,
+        at: ChunkPos,
+        chunk: W::Chunk,
+        section_y: i32,
+    ) -> Result<bool, CollisionScanError<W::Error>> {
+        if let Some(&(_, _, empty)) = self
+            .empty
+            .iter()
+            .flatten()
+            .find(|(c, y, _)| *c == at && *y == section_y)
+        {
+            return Ok(empty);
+        }
+        let empty = self
+            .world
+            .section_is_empty(chunk, section_y)
+            .map_err(CollisionScanError::World)?;
+        self.empty[self.empty_next] = Some((at, section_y, empty));
+        self.empty_next = (self.empty_next + 1) % REACH_SECTIONS;
+        Ok(empty)
     }
 
     /// Move the cursor `n` cells further along its row; `n` must not pass
@@ -243,8 +301,23 @@ impl<'w, 'c, W: BlockCollisionWorld> BlockCollisionScan<'w, 'c, W> {
                 }
             };
             let Some(chunk) = chunk else {
+                // A chunk that stays missing has nothing in the rest of the row's cells in it:
+                // they are passed at once, as a section without blocks is below.
+                if self.missing_stays {
+                    let rest = self.rest_in_chunk(relative[0], p.x);
+                    self.skip(rest);
+                }
                 continue;
             };
+            // A section whose blocks have no collision shape gives nothing for any cell in it,
+            // inner or outer: the rest of the row in it is passed at once (never beyond the
+            // budget, which still ends the scan where it would have). A far move's sweep is
+            // mostly sky and chunks not loaded.
+            if self.section_is_empty(chunk_position, chunk, p.y >> 4)? {
+                let rest = self.rest_in_chunk(relative[0], p.x);
+                self.skip(rest);
+                continue;
+            }
             // An outer cell only counts for a block reaching out of its own
             // cell: most sections hold none, so their outer cells go unread
             // (the result is the same, with a fifth of the block reads for a
@@ -278,9 +351,7 @@ impl<'w, 'c, W: BlockCollisionWorld> BlockCollisionScan<'w, 'c, W> {
                         || relative[2] == 0
                         || relative[2] == depth - 1
                     {
-                        let rest = (width - 1 - relative[0])
-                            .min(15 - (p.x & 15) as usize)
-                            .min(self.budget.saturating_sub(self.index));
+                        let rest = self.rest_in_chunk(relative[0], p.x);
                         self.skip(rest);
                     }
                     continue;

@@ -638,7 +638,7 @@ impl Game<'_> {
         }
         if short {
             self.audio.play(
-                "minecraft:block.conduit.ambient_short",
+                "minecraft:block.conduit.ambient.short",
                 Some(centre),
                 1.0,
                 1.0,

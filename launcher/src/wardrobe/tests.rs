@@ -22,6 +22,10 @@ struct Mock {
     visible: bool,
     /// The file every `?hash=` request answers, whatever its path says.
     item: Option<Value>,
+    /// Paddle doesn't sell where the player is: the service grants the set from the Wardrobe.
+    no_paddle: bool,
+    /// The account claimed the founder set.
+    claimed: bool,
 }
 
 fn me(claim: &str, owned: Value, equipped: Value) -> Value {
@@ -29,6 +33,20 @@ fn me(claim: &str, owned: Value, equipped: Value) -> Value {
         "uuid": UUID, "name": "Notch", "owned": owned, "equipped": equipped, "visible": true,
         "claim": {"state": claim, "items": ["hat", "owl"], "starts_at": 100, "ends_at": 200, "claimed": owned != json!([])},
     })
+}
+
+/// `/v1/me`'s answer as the founder claim stands: the set owned once claimed, `one_click` where
+/// Paddle doesn't sell.
+fn founder(m: &Mock) -> Value {
+    let owned = if m.claimed {
+        json!(["hat", "owl"])
+    } else {
+        json!([])
+    };
+    let mut me = me(m.claim, owned, json!({}));
+    me["claim"]["open"] = json!(m.claim == "open");
+    me["claim"]["one_click"] = json!(m.no_paddle);
+    me
 }
 
 fn route(m: &mut Mock, method: &str, path: &str, auth: &str, body: &str) -> (u16, Value) {
@@ -57,7 +75,7 @@ fn route(m: &mut Mock, method: &str, path: &str, auth: &str, body: &str) -> (u16
                 json!({"session": "svc-session", "uuid": UUID, "name": v["name"], "expires_in": m.expires_in}),
             )
         }
-        (_, "/v1/me" | "/v1/equipped" | "/v1/visible") if !signed_in => {
+        (_, "/v1/me" | "/v1/equipped" | "/v1/visible" | "/v1/claim") if !signed_in => {
             (401, json!({"error": "no_session"}))
         }
         ("PUT", "/v1/equipped" | "/v1/visible") if m.down => (503, json!({"error": "down"})),
@@ -68,7 +86,13 @@ fn route(m: &mut Mock, method: &str, path: &str, auth: &str, body: &str) -> (u16
             me["visible"] = json!(m.visible);
             (200, me)
         }
-        ("GET", "/v1/me") => (200, me(m.claim, json!([]), json!({}))),
+        ("GET", "/v1/me") => (200, founder(m)),
+        ("POST", "/v1/claim") if !m.no_paddle => (403, json!({"error": "use_checkout"})),
+        ("POST", "/v1/claim") if m.claimed => (409, json!({"error": "claimed"})),
+        ("POST", "/v1/claim") => {
+            m.claimed = true;
+            (200, founder(m))
+        }
         ("PUT", "/v1/equipped") => {
             let v: Value = serde_json::from_str(body).unwrap();
             match v["item"].as_str() {
@@ -449,4 +473,29 @@ fn the_history_keeps_its_orders_and_an_old_answer_still_reads() {
     }))
     .unwrap();
     assert!(old.purchases.is_empty());
+}
+
+#[test]
+fn the_free_claim_is_offered_only_where_the_service_says_and_grants_once() {
+    // Where Paddle sells: nothing offered, and the service refuses a claim anyway.
+    let (m, service) = serve(|_| {});
+    let session = sign_in(&m, &service);
+    assert!(!service.me(&session).unwrap().claim.here());
+    assert_eq!(service.claim(&session).unwrap_err(), Error::Service(403));
+    // Where it doesn't: offered, then the set is the account's and the offer is gone.
+    let (m, service) = serve(|m| m.no_paddle = true);
+    let session = sign_in(&m, &service);
+    assert!(service.me(&session).unwrap().claim.here());
+    let me = service.claim(&session).unwrap();
+    assert_eq!(me.owned, ["hat", "owl"]);
+    assert!(!me.claim.here());
+    // Claimed already (another launcher, a double click): the account's answer, no failure.
+    assert_eq!(service.claim(&session).unwrap().owned, ["hat", "owl"]);
+    // A closed window offers nothing, whatever the country.
+    let (m, service) = serve(|m| {
+        m.no_paddle = true;
+        m.claim = "closed";
+    });
+    let session = sign_in(&m, &service);
+    assert!(!service.me(&session).unwrap().claim.here());
 }

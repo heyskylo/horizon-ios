@@ -179,6 +179,11 @@ impl Pads {
     pub(super) fn player_replaced(&mut self) {
         self.health.forget();
     }
+
+    /// The active pad is a Nintendo one going by its letters.
+    fn by_letter(&self, settings: &gamepad::PadSettings) -> bool {
+        self.style == GlyphStyle::Nintendo && settings.nintendo_letters
+    }
 }
 
 impl Game<'_> {
@@ -216,6 +221,13 @@ impl Game<'_> {
             Some(state) => state,
             None => self.pad.read(),
         };
+        // A Nintendo pad going by its letters is read that way: its own, or the one
+        // splitscreen's router feeds this player.
+        let hardware = if self.pad.by_letter(&self.settings.controller) {
+            hardware.by_letter()
+        } else {
+            hardware
+        };
         // A person's pad, for `input-log` and the repro recording; the virtual
         // pad is an agent's `pad` line and is recorded as that.
         let hardware_edges = self.pad.hardware_edges(hardware);
@@ -228,7 +240,11 @@ impl Game<'_> {
                 },
             );
         }
-        self.ui.options.pad_style = self.settings.controller.glyphs.resolve(self.pad.style);
+        let style = self.settings.controller.glyphs.resolve(self.pad.style);
+        self.ui.options.pad_style = style;
+        // Nintendo glyphs on a pad going by its letters name the button playing each part.
+        self.ui.options.pad_by_letter =
+            style == GlyphStyle::Nintendo && self.pad.by_letter(&self.settings.controller);
         let mut state = hardware.merge(&self.pad.injected);
         let activity = self.pad.activity.observe(&state, &self.settings.controller);
         for (i, (stick, deadzone)) in [

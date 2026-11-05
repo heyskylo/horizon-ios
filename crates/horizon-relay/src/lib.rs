@@ -84,6 +84,9 @@ impl Config {
         if let Some(v) = var("RELAY_MAX_HOSTS") {
             c.max_hosts = v;
         }
+        if let Some(v) = var("RELAY_MAX_HOSTS_PER_ADDRESS") {
+            c.rates.hosts_per_address = v;
+        }
         if let Some(v) = var("RELAY_MAX_BRIDGES") {
             c.max_bridges = v;
         }
@@ -384,6 +387,15 @@ fn http(state: &State, stream: &mut TcpStream, line: &[u8], peer: SocketAddr) ->
     stream.write_all(response.as_bytes())
 }
 
+/// One of an address's open hosts, given back when the host's connection
+/// ends, however it ends.
+struct HostSlot<'a>(&'a State, std::net::IpAddr);
+impl Drop for HostSlot<'_> {
+    fn drop(&mut self) {
+        locked(&self.0.limiter).close_host(self.1);
+    }
+}
+
 fn host(
     state: &Arc<State>,
     mut stream: TcpStream,
@@ -396,6 +408,11 @@ fn host(
         state.rate_limited.fetch_add(1, Ordering::Relaxed);
         return refuse(&mut stream, ErrorCode::RateLimited);
     }
+    // One client holding its connections open must not take every host slot.
+    if !locked(&state.limiter).open_host(peer.ip()) {
+        return refuse(&mut stream, ErrorCode::Full);
+    }
+    let _slot = HostSlot(state, peer.ip());
     let (tx, rx) = channel();
     let token = random_token();
     let nameplate = {

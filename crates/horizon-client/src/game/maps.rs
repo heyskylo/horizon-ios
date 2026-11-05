@@ -1143,12 +1143,12 @@ impl Game<'_> {
         if let (Some(player), Some(name)) = (self.lan_acting_uuid, self.lan_acting_name.clone()) {
             self.native_player_map_filled(player, &name, id);
         }
-        let at = [p.x, p.y, p.z];
-        self.audio.play(
+        self.play_player_bound_sound(
             "minecraft:ui.cartography_table.take_result",
-            Some(at),
+            7,
             1.0,
             1.0,
+            false,
         );
         self.swing_arm();
         true
