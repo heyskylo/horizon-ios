@@ -78,6 +78,12 @@ impl ItemEnv for Env<'_, '_> {
         local_time(pattern)
     }
     fn random_float(&self) -> f32 {
+        if self.game.clock.still() {
+            // The same draw for a frame of the same world tick.
+            let mixed =
+                (self.game.visual_ticks() ^ 0x9e37_79b9).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+            return (mixed >> 40) as f32 / (1u64 << 24) as f32;
+        }
         let nanos = self.game.started.elapsed().subsec_nanos();
         (nanos % 1_000_000) as f32 / 1_000_000.0
     }
@@ -395,7 +401,11 @@ impl Game<'_> {
     /// frame, not per item (`GameRenderer.extractOptions`).
     pub(super) fn capture_glint_frame(&self) -> item_render::GlintFrame {
         item_render::GlintFrame {
-            millis: self.started.elapsed().as_secs_f32() * 1000.0,
+            millis: if self.clock.still() {
+                self.visual_millis() as f32
+            } else {
+                self.started.elapsed().as_secs_f32() * 1000.0
+            },
             speed: self.settings.file.double("glintSpeed") as f32,
             alpha: self.settings.file.double("glintStrength") as f32,
             sprite: self
@@ -622,7 +632,7 @@ impl Game<'_> {
                 item_render::rendered_amount(item.stack.count),
                 seed,
             );
-            let glowing = self.entity_glowing(item.id);
+            let outline = self.thing_outline(item.id, "minecraft:item");
             // Posed on the GPU when every layer can be, its silhouette too when it glows.
             let skinned = skinning
                 .then(|| self.submit_item_skinned(&state, &copies, vertex_light(packed), lights))
@@ -632,8 +642,7 @@ impl Game<'_> {
                     self.submit_item_world(&state, copy, vertex_light(packed), out);
                 }
             }
-            if glowing {
-                let rgb = super::glowing::team_color(self.mob_team(item.id));
+            if let Some(rgb) = outline {
                 self.mark_outline(&out[entity_start..], rgb);
                 if let Some(((first, _, _), _)) = skinned {
                     let color = horizon_client::mobs::render::abgr(rgb);

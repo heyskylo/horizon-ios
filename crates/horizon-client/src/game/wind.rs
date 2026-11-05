@@ -156,10 +156,16 @@ impl Game<'_> {
                     kind: DamageKind::Thrown,
                     attacker: p.owner,
                     from: Some([p.previous.x, p.previous.y, p.previous.z]),
+                    attacker_species: owner_breeze.then_some(Species::Breeze),
                 };
                 if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
                     // Breeze.isInvulnerableTo: its own kind's charges.
                     if owner_breeze && m.species() == Species::Breeze {
+                        return;
+                    }
+                    // Refused before the hurt, so the kill is not credited
+                    // either; the burst of `wind_charge_hit` still goes off.
+                    if horizon_client::mobs::wither::armor_refuses(m, &p.kind) {
                         return;
                     }
                     m.damage(1.0, source);

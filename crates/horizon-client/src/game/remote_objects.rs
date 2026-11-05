@@ -112,6 +112,7 @@ impl Game<'_> {
                 fixed: false,
                 invisible: false,
                 check_interval: 0,
+                custom_name: None,
             });
         } else if kind == "minecraft:cushion" {
             // BlockAttachedEntity.pos: `BlockPos.containing` of the spawn.
@@ -269,6 +270,17 @@ impl Game<'_> {
                     (8, Value::Int(v)) => c.hurt_time = *v,
                     (9, Value::Int(v)) => c.hurt_dir = *v,
                     (10, Value::Float(v)) => c.damage = *v,
+                    // AbstractMinecart.DATA_ID_CUSTOM_DISPLAY_BLOCK (0, air,
+                    // for none) and DATA_ID_DISPLAY_OFFSET.
+                    (11, Value::Id(state)) => {
+                        c.custom_display = (*state > 0).then(|| {
+                            horizon_client::entity_nbt::state_to_nbt(
+                                self.pack.assets.registry,
+                                horizon_world::registry::BlockStateId(*state as u32),
+                            )
+                        });
+                    }
+                    (12, Value::Int(offset)) => c.custom_offset = Some(*offset),
                     (13, Value::Bool(lit)) if c.kind == super::minecarts::CartKind::Furnace => {
                         c.fuel = i32::from(*lit);
                     }

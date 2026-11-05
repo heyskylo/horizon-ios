@@ -1262,7 +1262,7 @@ impl Goal for AttackTurtleEgg {
             }
             // The break sound's pitch draws from the level random.
             cx.events.push(MobEvent::Sound(
-                "block.turtle_egg.break",
+                "entity.turtle.egg_break",
                 [
                     f64::from(eat[0]) + 0.5,
                     f64::from(eat[1]) + 0.5,

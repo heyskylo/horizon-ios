@@ -3,7 +3,7 @@
 use super::{
     Game,
     commands::{
-        R, err,
+        R, Target, err,
         execute::{ExecState, Source},
     },
 };
@@ -119,7 +119,7 @@ pub(super) fn overlay_files(
     for (path, bytes) in contributed {
         // One bad file would fail its whole table and drop the world's pack
         // content with it, so it is skipped alone: every kind is JSON.
-        if let Err(e) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+        if let Err(e) = serde_json::from_slice::<Box<serde_json::value::RawValue>>(&bytes) {
             log::warn!("Horizon: a native mod's data pack file {path} is not JSON, skipped: {e}");
             continue;
         }
@@ -400,6 +400,41 @@ impl Game<'_> {
                     e.message.plain()
                 );
             }
+        }
+    }
+
+    /// The function branch of advancement rewards: resolve the optional function
+    /// and execute it as the rewarded player, with suppressed output and GAMEMASTER permission.
+    pub(super) fn run_advancement_reward_function(&mut self, id: &str) {
+        self.ensure_datapacks();
+        let Some(function) = self.fns.store.functions.get(id).cloned() else {
+            return;
+        };
+        let Some(pos) = self.target_position(Target::Player) else {
+            return;
+        };
+        // createCommandSourceStack belongs to the player, not an enclosing
+        // execute's position, rotation, output sink or store callback.
+        let source = Source {
+            pos,
+            rot: self.target_rotation(Target::Player),
+            silent: true,
+            ..self.player_source()
+        };
+        // The existing runner applies this level to nested function calls too.
+        let permission = self
+            .fns
+            .permission
+            .replace(horizon_client::command::vanilla::GAMEMASTERS);
+        let callback = self.exec.callback.take();
+        let result = self.run_function(&function, None, source);
+        self.exec.callback = callback;
+        self.fns.permission = permission;
+        if let Err(error) = result {
+            log::warn!(
+                "Horizon: failed to run advancement reward function {id}: {}",
+                error.message.plain()
+            );
         }
     }
 
@@ -964,7 +999,7 @@ impl Game<'_> {
                 .ok_or_else(|| err("argument.predicate.unknown", &[&id]))?
         };
         let source = self.command_source.unwrap_or_else(|| self.player_source());
-        let view = source.entity.map(|t| self.entity_view_of(t));
+        let view = source.entity.map(|t| self.entity_view_asked(t, &json));
         Ok(self.conditions_hold(&json, view.as_ref(), source.pos))
     }
 }

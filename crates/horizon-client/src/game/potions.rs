@@ -108,7 +108,7 @@ pub(super) const LINGERING_WAIT: i32 = 10;
 const REAPPLICATION_DELAY: i32 = 20;
 /// An entity a cloud has affected (`AreaEffectCloud.victims`).
 #[derive(Clone, Copy, PartialEq)]
-enum Victim {
+pub(super) enum Victim {
     Mob(u32),
     Player(FightWho),
 }
@@ -208,6 +208,24 @@ pub(super) fn mob_can_be_affected(
     } else {
         !in_tag("minecraft:ignores_poison_and_regen")
             || (effect != "regeneration" && effect != "poison")
+    }
+}
+impl Game<'_> {
+    /// The dragon's breath (`AreaEffectCloud` with instant damage at
+    /// `amplifier`) on a mob: what a cloud puts on it, `indirectMagic(cloud,
+    /// dragon)` with no owner to credit (the dragon is not a mob here).
+    pub(super) fn breath_affect_mob(&mut self, mob: u32, amplifier: i32, at: [f64; 3]) {
+        let source = Text::translate("entity.minecraft.area_effect_cloud", &[]);
+        let effect = [("instant_damage", 1, amplifier)];
+        // DragonFireball.onHit and the flame phase: `setPotionDurationScale(0.25)`.
+        self.cloud_affect(
+            Victim::Mob(mob),
+            &effect,
+            (&[], &[], 0.25),
+            at,
+            &source,
+            (None, None),
+        );
     }
 }
 /// `ThrownSplashPotion.onHitAsPotion`: the squared distance from the potion's
@@ -403,7 +421,7 @@ impl Game<'_> {
 #[derive(Default)]
 pub(super) struct BodyPotions {
     applied: Vec<(&'static str, &'static str, f64, &'static str)>,
-    protection_for: Option<Vec<Option<ItemStack>>>,
+    protection_for: Option<(u64, Vec<Option<ItemStack>>)>,
     enchant_modifiers: Vec<(String, String, f64, String)>,
 }
 /// Effects, thrown potions and the attribute modifiers last applied.
@@ -415,7 +433,7 @@ pub(super) struct PotionState {
     pub(super) clouds: Vec<super::remote_projectiles::RemoteCloud>,
     applied: Vec<(&'static str, &'static str, f64, &'static str)>,
     /// Armor the protection table was computed for.
-    protection_for: Option<Vec<Option<ItemStack>>>,
+    protection_for: Option<(u64, Vec<Option<ItemStack>>)>,
 
     /// Enchantment attribute modifiers on the player: (attribute, id, amount, operation).
     pub(super) enchant_modifiers: Vec<(String, String, f64, String)>,
@@ -911,8 +929,8 @@ impl Game<'_> {
             EffectAction::Hurt(source, amount) => {
                 let mut canceled = false;
                 if !creative
-                    && let Some(id) = self.motion.health.damage.id(source)
-                    && let Ok(o) = p.hurt_blocking(&self.motion.health, rules, id, amount, None)
+                    && let Some(id) = self.health_resources.damage.id(source)
+                    && let Ok(o) = p.hurt_blocking(&self.health_resources, rules, id, amount, None)
                 {
                     canceled = o.canceled;
                 }
@@ -921,9 +939,9 @@ impl Game<'_> {
             EffectAction::Poison => {
                 if !creative
                     && p.health.health() > 1.0
-                    && let Some(id) = self.motion.health.damage.id("minecraft:magic")
+                    && let Some(id) = self.health_resources.damage.id("minecraft:magic")
                 {
-                    let _ = p.hurt(&self.motion.health, rules, id, 1.0);
+                    let _ = p.hurt(&self.health_resources, rules, id, 1.0);
                 }
             }
             EffectAction::Exhaust(amount) => {
@@ -1111,11 +1129,18 @@ impl Game<'_> {
         }
         // EnchantmentHelper.getDamageProtection per damage type, recomputed on armor change.
         let armor: Vec<Option<ItemStack>> = self.armor.to_vec();
-        if self.potions.protection_for.as_ref() != Some(&armor) {
+        if !self
+            .potions
+            .protection_for
+            .as_ref()
+            .is_some_and(|(generation, cached)| {
+                *generation == self.damage_tag_generation && cached == &armor
+            })
+        {
             let mut table = Vec::new();
             let e = &self.stations().enchantments;
             let mut random = horizon_core::random::LegacyRandom::new(0);
-            for (_, def) in self.motion.health.damage.entries() {
+            for (_, def) in self.health_resources.damage.entries() {
                 let ctx = horizon_client::enchant::EffectContext {
                     items: Some(self.items()),
                     damage_type: Some(&def.name),
@@ -1139,7 +1164,7 @@ impl Game<'_> {
                     table.push((def.name.clone(), total));
                 }
             }
-            self.potions.protection_for = Some(armor);
+            self.potions.protection_for = Some((self.damage_tag_generation, armor));
             if let Some(p) = self.player.as_mut() {
                 p.status.protection = table;
             }

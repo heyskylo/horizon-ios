@@ -137,7 +137,7 @@ EnchantCommand.register	port	crates/horizon-command/src/vanilla.rs::registered	e
 net/minecraft/server/commands/ExecuteCommand#wrapStores	port	crates/horizon-command/src/tree_execute.rs::store	execute store syntax
 net/minecraft/server/commands/ExecuteCommand#storeValue	port	crates/horizon-client/src/game/commands/execute.rs::Game::store_value	score and bossbar store targets
 net/minecraft/server/commands/ExecuteCommand#storeData	port	crates/horizon-client/src/game/commands/execute.rs::Game::store_value	data target store with int, float, short, long, double tags
-net/minecraft/server/commands/ExecuteCommand#isChunkLoaded	port	crates/horizon-client/src/game/commands/execute.rs::Game::condition_matches	gap: the loaded arm tests a chunk present with light (streaming.is_lit) and has no entity check, where vanilla wants the chunk at ENTITY_TICKING and level.areEntitiesLoaded
+net/minecraft/server/commands/ExecuteCommand#isChunkLoaded	port	crates/horizon-client/src/game/commands/execute.rs::Game::command_chunk_loaded	ENTITY_TICKING loading status, resident light-ready column and completed saved-entity application
 net/minecraft/server/commands/ExecuteCommand#countItems	port	crates/horizon-client/src/game/commands/items.rs::Game::condition_items	item count predicate
 net/minecraft/server/commands/ExecuteCommand#checkScore	port	crates/horizon-client/src/game/commands/execute.rs::Game::condition_score	score comparison, both score holders
 net/minecraft/server/commands/ExecuteCommand#checkStopwatch	port	crates/horizon-client/src/game/commands/execute.rs::Game::condition_stopwatch	stopwatch range check

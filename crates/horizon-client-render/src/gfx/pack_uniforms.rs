@@ -66,6 +66,10 @@ pub struct PackInputs {
     /// The player's cave mood, 0..1 (`BiomeAmbientSoundsHandler`'s moodiness):
     /// `playerMood` and `constantMood`.
     pub mood: f32,
+    /// Under `HORIZON_STILL`, the world's ticks: the pack's clock (`frameTimeCounter`,
+    /// `frameCounter`) instead of the wall clock and the frames drawn, and smoothed values
+    /// (`wetness`, `eyeBrightnessSmooth`, `centerDepthSmooth`) at their targets.
+    pub still_ticks: Option<u64>,
 }
 
 /// The `cloudHeight` uniform. Vanilla reads `visual/cloud_height` only while the cloud color
@@ -299,6 +303,8 @@ pub struct FrameUniforms {
     start: std::time::Instant,
     last: Option<std::time::Instant>,
     frame: u32,
+    /// The last frame's `PackInputs::still_ticks`, for `eval_custom`.
+    still_ticks: Option<u64>,
     previous: Option<(glam::DVec3, Mat4, Mat4)>,
     wetness: f32,
     eye_smooth: [f32; 2],
@@ -317,6 +323,7 @@ impl Default for FrameUniforms {
             start: std::time::Instant::now(),
             last: None,
             frame: 0,
+            still_ticks: None,
             previous: None,
             wetness: 0.0,
             eye_smooth: [0.0; 2],
@@ -422,8 +429,11 @@ impl FrameUniforms {
     /// This frame's values for a render size of `size` pixels.
     pub fn update(&mut self, frame: &Frame, inputs: &PackInputs, size: [u32; 2]) {
         let now = std::time::Instant::now();
-        let dt = self.last.map_or(0.0, |l| (now - l).as_secs_f32());
+        let measured = self.last.map_or(0.0, |l| (now - l).as_secs_f32());
         self.last = Some(now);
+        self.still_ticks = inputs.still_ticks;
+        // Smoothing over an endless step lands on its target.
+        let dt = inputs.still_ticks.map_or(measured, |_| f32::INFINITY);
         let aspect = size[0] as f32 / size[1].max(1) as f32;
         // Packs take gbufferProjection for a plain perspective (they invert only its perspective
         // terms): the view bob and the nausea spin belong to the model-view, as GL drew them.
@@ -502,7 +512,18 @@ impl FrameUniforms {
         let (shadow_view, shadow_projection) = shadow_camera(light, frame.camera, &self.shadow);
         let day_time = inputs.day_time.rem_euclid(24000) as i32;
         let world_day = inputs.day_time.div_euclid(24000);
-        let seconds = (now - self.start).as_secs_f32() % 3600.0;
+        let (seconds, frame_time, frame_counter) = match inputs.still_ticks {
+            Some(ticks) => (
+                (ticks as f32 / 20.0) % 3600.0,
+                0.05,
+                (ticks % 720_720) as i32,
+            ),
+            None => (
+                (now - self.start).as_secs_f32() % 3600.0,
+                measured,
+                self.frame as i32,
+            ),
+        };
 
         let value = |name: &str| -> Value {
             let v3 = |v: Vec3| Value::f(&v.to_array());
@@ -538,13 +559,13 @@ impl FrameUniforms {
                 "worldTime" => Value::i(&[day_time]),
                 "worldDay" => Value::i(&[world_day as i32]),
                 "moonPhase" => Value::i(&[world_day.rem_euclid(8) as i32]),
-                "frameCounter" => Value::i(&[self.frame as i32]),
+                "frameCounter" => Value::i(&[frame_counter]),
                 "shadowModelView" => m4(shadow_view),
                 "shadowModelViewInverse" => m4(shadow_view.inverse()),
                 "shadowProjection" => m4(shadow_projection),
                 "shadowProjectionInverse" => m4(shadow_projection.inverse()),
                 "atlasSize" => Value::i(&[self.atlas[0] as i32, self.atlas[1] as i32]),
-                "frameTime" => Value::f(&[dt]),
+                "frameTime" => Value::f(&[frame_time]),
                 "frameTimeCounter" => Value::f(&[seconds]),
                 "viewWidth" => Value::f(&[size[0] as f32]),
                 "viewHeight" => Value::f(&[size[1] as f32]),
@@ -631,6 +652,9 @@ impl FrameUniforms {
     /// Evaluates the pack's custom uniforms with this frame's values and puts them after
     /// `NAMES`' values, in `custom.uniforms()` order.
     pub fn eval_custom(&mut self, custom: &mut horizon_shaders::Custom) {
+        if let Some(tick) = self.still_ticks {
+            custom.restart_at(tick);
+        }
         self.values.truncate(NAMES.len());
         let values = &self.values;
         let builtin = |name: &str| {
@@ -1396,6 +1420,42 @@ mod initial_history_tests {
         assert!((float(&u, "wetness")[0] - 0.25).abs() < 1e-3);
     }
 
+    /// Under `HORIZON_STILL` the pack's clock is the world's ticks, whenever and however often
+    /// the frame is drawn, and smoothed values are at their targets.
+    #[test]
+    fn a_still_frame_takes_the_world_ticks_as_its_clock() {
+        let hud = HudBatch::new([800, 450]);
+        let f = frame(&hud);
+        let mut u = FrameUniforms::default();
+        let mut input = PackInputs {
+            eye_light: [0, 15],
+            still_ticks: Some(47_811),
+            ..Default::default()
+        };
+        u.center_depth_raw = Some(1.0);
+        u.update(&f, &input, [800, 450]);
+        input.eye_light = [0, 0];
+        input.rain = 1.0;
+        u.center_depth_raw = Some(0.0);
+        u.last = Some(std::time::Instant::now() - std::time::Duration::from_secs(3));
+        u.update(&f, &input, [800, 450]);
+        assert_eq!(
+            float(&u, "frameTimeCounter")[0],
+            (47_811.0f32 / 20.0) % 3600.0
+        );
+        assert_eq!(float(&u, "frameTime")[0], 0.05);
+        match u.values[index("frameCounter").unwrap()] {
+            Value::I(v) => assert_eq!(v[0], 47_811),
+            _ => panic!("integer uniform expected"),
+        }
+        match u.values[index("eyeBrightnessSmooth").unwrap()] {
+            Value::I(v) => assert_eq!(v[1], 0),
+            _ => panic!("integer uniform expected"),
+        }
+        assert_eq!(float(&u, "wetness")[0], 1.0);
+        assert_eq!(float(&u, "centerDepthSmooth")[0], 0.0);
+    }
+
     /// Iris 1.11.7 (probe pack): `ambientLight` is the dimension type's (0.1 in the Nether,
     /// 0.25 in the End), and `playerMood` and `constantMood` both the cave mood.
     #[test]
@@ -1447,6 +1507,7 @@ mod initial_history_tests {
             outline: Vec::new(),
             outline_after_terrain: false,
             outline_high_contrast: false,
+            pvp: Default::default(),
             debug_lines: &[],
             debug_lines_on_top: &[],
             debug_crosshair: &[],
@@ -1470,6 +1531,7 @@ mod initial_history_tests {
             lightning: Default::default(),
             additive: &[],
             see_through: &[],
+            world_primitives: Default::default(),
             celestial: &[],
             stars: None,
             hand: &[],

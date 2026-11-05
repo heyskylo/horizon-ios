@@ -18,7 +18,10 @@ ureq = { version = "2", features = ["json", "tls"], default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Validate trait injection bindings before passing them to the shared generator.
-syn = { version = "2", features = ["full"] }
+syn = { version = "2", features = ["full", "visit"] }
+# Match generated helpers to the compiler's byte spans, without depending on formatting.
+proc-macro2 = { version = "1", features = ["span-locations"] }
+quote = "1"
 # Checks the client jar and the version file found in other launchers' folders (sources.rs).
 sha1 = "0.10"
 # The mod browser checks Modrinth's SHA-512 before a pack reaches the game folder (browser/download.rs).
@@ -86,9 +89,9 @@ objc2-app-kit = { version = "0.3", default-features = false, features = ["NSAcce
 raw-window-handle = "0.6"
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }
-# The computer's memory, the end of the Launch panel's memory slider; the uninstaller's running
-# copy hidden and deleted at restart (installer::step_aside). Already in the lockfile.
-windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_System_SystemInformation"] }
+# Java's heap slider reads the computer's memory; the uninstaller hides its running copy; an
+# abandoned launcher update is one whose process has gone. Already in the lockfile.
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_SystemInformation", "Win32_System_Threading"] }
 # Shortcuts written by the shell itself (shortcut::write_windows_link): the hand-laid Shell Link has
 # no target ID list, so Explorer shows an empty target and starts nothing.
 windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_UI_Shell"] }
@@ -101,7 +104,6 @@ winresource = "0.1"
 
 [dev-dependencies]
 # Tokenize source strings for the translation completeness test, including multiline calls.
-proc-macro2 = "1"
 syn = "2"
 
 [profile.release]

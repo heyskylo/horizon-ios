@@ -192,14 +192,15 @@ impl Game<'_> {
                 self.hit_special(id, amount, by_player, kind, Some(&p.kind));
             }
             Some(Who::Mob(id)) => {
+                let owner_species = owner
+                    .and_then(|o| self.mobs.iter().find(|m| m.id == o))
+                    .map(|m| m.species());
                 let source = Damage {
                     kind,
                     attacker: live_owner,
                     from: skull.from,
+                    attacker_species: owner_species,
                 };
-                let owner_species = owner
-                    .and_then(|o| self.mobs.iter().find(|m| m.id == o))
-                    .map(|m| m.species());
                 let killed = match self.mobs.iter_mut().find(|m| m.id == id) {
                     // `WitherBoss.hurtServer`: nothing from a wither friend.
                     Some(m)

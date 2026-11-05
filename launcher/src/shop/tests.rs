@@ -11,6 +11,7 @@ fn claim(state: ClaimState, open: bool, starts_at: Option<i64>, ends_at: Option<
         claimed: None,
         open,
         preview: false,
+        one_click: false,
     }
 }
 

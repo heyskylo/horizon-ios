@@ -15,19 +15,25 @@ pub use crate::extras::Corner;
 pub use crate::extras_hud::Corners;
 pub use crate::first_person::Hand;
 pub use crate::fog::{FogData, FogType};
+pub use crate::game::NativeFluidTank;
 pub use crate::game::native_block_entity_draw::{BlockEntityDraw, CubeFace};
+pub use crate::game::native_client_services::{
+    NativeClientEntity, NativeClientHead, NativeClientProfile, NativeClientState,
+};
 pub use crate::game::{
-    ItemEnergyBuffer, NativeBlockEdit, NativeBlockRun, NativeClock, NativeColumnBlocks,
-    NativeConfig, NativeConfigFile, NativeConfigKind, NativeDataMapType, NativeExperienceOrb,
-    NativeFalling, NativeHeightmap, NativeHeldItem, NativeHit, NativeMapDecoration, NativeMapInfo,
-    NativeMobRender, NativeModEvent, NativePlayerRender, NativeReloadListener, NativeShake,
+    ItemEnergyBuffer, NativeBlockEdit, NativeBlockReadError, NativeBlockRun, NativeClock,
+    NativeColumnBlocks, NativeComponentError, NativeConfig, NativeConfigFile, NativeConfigKind,
+    NativeCriterion, NativeDataMapType, NativeExperienceOrb, NativeFalling, NativeHeightmap,
+    NativeHeldItem, NativeHit, NativeItemEntity, NativeMapDecoration, NativeMapInfo,
+    NativeMobRender, NativeModEvent, NativePlayer, NativePlayerRender, NativeReloadListener,
+    NativeShake, NativeWorldDraw,
 };
 pub use crate::gfx::native_render::{
     BlockSpriteArrays, RenderHooks, RenderNeeds, RenderNeedsEvent, WorldDrawn, WorldDrawnEvent,
     wgpu,
 };
 pub use crate::hud::HudBatch;
-pub use crate::hud_layout::{GuiDraw, HealthInputs};
+pub use crate::hud_layout::{GuiDraw, HealthHud, HealthInputs};
 pub use crate::items::ItemStack;
 pub use crate::merchant::MerchantOffer;
 pub use crate::mesher::TintSource;
@@ -35,6 +41,7 @@ pub use crate::music::{Music, MusicLayer};
 pub use crate::particles::{ParticleOptions, ParticleType};
 pub use crate::recipe_book::RecipeBookCategory;
 pub use crate::text::Text;
+pub use crate::world_primitives::{PrimitiveShape, WorldPrimitive, WorldPrimitives};
 pub use horizon_assets::item_model::{DisplayContext, StackView};
 pub use horizon_core::{
     geometry::Direction,
@@ -85,6 +92,38 @@ pub struct NativeCamera {
 /// level event to play, `CLICK` (1000), `FAIL` (1001) or 0 for none.
 pub type NativeDispensed = (Option<ItemStack>, i32);
 
+/// What a mod's fake player uses its item on (`Host::use_as_player`), as a
+/// player's click would.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum NativeUseTarget {
+    /// `ServerPlayerGameMode.useItemOn`: the block at `pos`, clicked on its
+    /// `face` at `point` (world coordinates on that face).
+    Block {
+        pos: [i32; 3],
+        face: Direction,
+        point: [f64; 3],
+    },
+    /// `ServerPlayerGameMode.useItem`: the item alone, in the air.
+    Item,
+    /// `Player.interactOn`: the entity with this id, clicked at `location`
+    /// (from the entity's position), as an interact packet names one.
+    Entity { id: i32, location: [f64; 3] },
+}
+
+/// What a mod's fake player did (`Host::use_as_player`).
+#[derive(Clone, Debug, Default, PartialEq)]
+#[non_exhaustive]
+pub struct NativeFakeUse {
+    /// Whether the use did something (`InteractionResult.consumesAction`).
+    pub consumed: bool,
+    /// What its hand holds afterwards: what is left of the stack, or what the
+    /// item became (a filled bucket).
+    pub held: Option<ItemStack>,
+    /// What else ended up in its inventory (a bowl of stew from a stack of
+    /// bowls, a bottle), for the mod to keep or drop.
+    pub other: Vec<ItemStack>,
+}
+
 /// Context for a player tuning a note block.
 #[derive(Clone, Copy, Debug)]
 pub struct NativeNoteBlockChange<'a> {
@@ -134,7 +173,7 @@ pub struct NativeLootDrops<'a> {
     /// the player's id and `minecraft:player`, `player` them, `table` empty,
     /// `origin` where the items leave, `used` false); `drops` empty means
     /// the mod took the whole inventory. Not heard with keepInventory. API
-    /// @API:player_death_drops@.
+    /// 405.
     pub used: bool,
 }
 
@@ -213,6 +252,28 @@ pub struct NativeMinimap {
     pub blocks_per_pixel: f32,
     pub rotate: bool,
     pub round: bool,
+}
+
+/// One block of a scene a mod draws in a screen (`Host::draw_scene`): its
+/// place in the scene, its state, and the block entity drawn with it, if any
+/// (a mod's, through `native_block_entity_submit` as in the world).
+#[derive(Clone, Copy, Debug)]
+pub struct NativeSceneBlock<'a> {
+    pub pos: [i32; 3],
+    pub state: BlockStateId,
+    pub entity: Option<&'a ModBlockEntity>,
+}
+
+/// How a scene in a screen is seen (`Host::draw_scene`): the point at the
+/// middle of the screen's box, in blocks; the turn about the scene's vertical
+/// axis and the tilt of its top towards the viewer, in degrees; and how many
+/// GUI pixels a block is across.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NativeSceneView {
+    pub center: [f32; 3],
+    pub yaw: f32,
+    pub pitch: f32,
+    pub scale: f32,
 }
 
 /// A mod block's screen over its menu (`native_screen`): its size, where
@@ -328,7 +389,7 @@ pub struct NativeServerPlayer {
     /// API 398.
     pub entity_id: i32,
     /// The IP address the player connects from (behind a Velocity proxy: the address the proxy forwards);
-    /// empty when not known. API @API:server_player_address@.
+    /// empty when not known. API 407.
     pub address: String,
 }
 
@@ -547,15 +608,29 @@ pub fn name_mods(ids: &'static [&'static str]) {
 
 /// `mods` in order, each marked as running `hook` until the next one is (or the loop ends), so a
 /// panic in it names the mod. The generated dispatch loops over it.
+/// A part of [`mods`] (one mod, dispatched on its own) keeps its entries' places in it.
 fn entered<'a>(mods: &'a [Box<dyn Hooks>], hook: &'static str) -> Entered<'a> {
     Entered {
+        first: place_in(self::mods(), mods),
         mods: mods.iter().enumerate(),
         hook,
         guard: None,
     }
 }
 
+/// Where `part` starts in `all`, 0 when it is not a part of it.
+fn place_in<T>(all: &[T], part: &[T]) -> usize {
+    let range = all.as_ptr_range();
+    if range.contains(&part.as_ptr()) {
+        (part.as_ptr().addr() - range.start.addr()) / size_of::<T>().max(1)
+    } else {
+        0
+    }
+}
+
 struct Entered<'a> {
+    /// Where `mods` starts in [`mods`].
+    first: usize,
     mods: std::iter::Enumerate<std::slice::Iter<'a, Box<dyn Hooks>>>,
     hook: &'static str,
     guard: Option<crate::crash::NativeModGuard>,
@@ -568,6 +643,7 @@ impl<'a> Iterator for Entered<'a> {
         // The last mod's mark goes first, so the next one's puts back what was there before.
         drop(self.guard.take());
         let (index, hooks) = self.mods.next()?;
+        let index = self.first + index;
         self.guard = Some(crate::crash::enter_native_mod(
             crate::crash::NativeModCall {
                 id: MOD_IDS.get().and_then(|ids| ids.get(index)).copied(),
@@ -683,6 +759,14 @@ mod tests {
 
     struct Quiet;
     impl Hooks for Quiet {}
+
+    #[test]
+    fn one_mod_dispatched_alone_keeps_its_place() {
+        let all = [10, 11, 12, 13];
+        assert_eq!(place_in(&all, &all[2..=2]), 2);
+        assert_eq!(place_in(&all, &all), 0);
+        assert_eq!(place_in(&all, &[12]), 0);
+    }
 
     struct Broken;
     impl Hooks for Broken {

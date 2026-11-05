@@ -92,9 +92,8 @@ impl Game<'_> {
             return Ok(());
         };
         let grid: Vec<Option<ItemStack>> = crafter.items.to_vec();
-        // RecipeCache.get: the first crafting recipe that matches, assembled.
+        // RecipeCache.get: query the active world recipe manager, then assemble its first match.
         let found = self
-            .res
             .recipes()
             .find(&grid, 3)
             .map(|(name, result)| (name.to_owned(), result))
@@ -182,8 +181,8 @@ impl Game<'_> {
             (0..3).all(|i| (e[i] - c[i]).abs() <= 8.5 + 1.0)
         });
         if near {
-            let id = format!("minecraft:{recipe}");
-            let me = self.player_entity();
+            let id = horizon_client::crafting::qualified(recipe);
+            let me = self.player_entity_for("minecraft:crafter_recipe_crafted");
             self.trigger("minecraft:crafter_recipe_crafted", move |c, w| {
                 let ctx = adv::Entities {
                     this: Some(&me),
