@@ -227,9 +227,10 @@ impl Game<'_> {
         );
         let (bx, by) = back_button(w, h);
         let hover = ui::hovered(self.cursor, bx, by, 200.0, 20.0);
-        ui::button(
+        ui::action_button(
             batch,
             atlas,
+            horizon_client::widgets::Action::Back,
             bx,
             by,
             200.0,
@@ -336,6 +337,14 @@ impl Game<'_> {
             batch.text_styled(atlas, line, *x, *y, u32::MAX, true);
         }
         let labels = confirm_link_labels(self.links_ui.trusted);
+        // Its third button answers no, as Escape does.
+        if let Some(&(x, y)) = layout.buttons.get(2) {
+            horizon_client::widgets::declare_action(
+                horizon_client::widgets::Action::Cancel,
+                [x, y, 100.0, 20.0],
+                true,
+            );
+        }
         for ((x, y), key) in layout.buttons.iter().zip(labels) {
             let hover = ui::hovered(self.cursor, *x, *y, 100.0, 20.0);
             ui::button(
@@ -397,6 +406,13 @@ impl Game<'_> {
         };
         for ((x, y), key) in layout.buttons.into_iter().zip([quit, "gui.back"]) {
             let hover = ui::hovered(self.cursor, x, y, 150.0, 20.0);
+            if key == "gui.back" {
+                horizon_client::widgets::declare_action(
+                    horizon_client::widgets::Action::Back,
+                    [x, y, 150.0, 20.0],
+                    true,
+                );
+            }
             ui::button(
                 batch,
                 atlas,

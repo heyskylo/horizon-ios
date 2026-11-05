@@ -354,7 +354,9 @@ fn heightmap(column: &Column, mut fluid: impl FnMut(&Span) -> bool) -> Column {
     if !fluid(top) {
         spans.push(ground(top));
     } else if let Some(under) = below.iter().rev().find(|&span| !fluid(span)) {
-        // Shaded water is a span per light level; the bed is under all of it.
+        // The bed is under all of the water, however many spans the water
+        // takes: a chunk's own columns shade it a span a light level, a
+        // previewed far column one span for the run.
         spans.push(ground(under));
         spans.push(Span {
             min: under.max,

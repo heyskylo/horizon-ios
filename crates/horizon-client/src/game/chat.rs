@@ -908,7 +908,7 @@ impl Game<'_> {
             text,
             indicator,
             source,
-            self.ticks,
+            self.visual_ticks(),
             focused,
         );
     }
@@ -1073,7 +1073,7 @@ impl Game<'_> {
                 line,
                 None,
                 ChatSource::Player,
-                self.ticks,
+                self.visual_ticks(),
                 focused,
             );
         }
@@ -1239,8 +1239,9 @@ impl Game<'_> {
             Text::translate("chat.copy", &[]),
             Text::translate("gui.no", &[]),
         ];
-        self.link_prompt_layout(url, (w, h))
-            .draw(batch, atlas, self.cursor, &labels);
+        let layout = self.link_prompt_layout(url, (w, h));
+        layout.declare_no(2);
+        layout.draw(batch, atlas, self.cursor, &labels);
     }
     /// The prompt's answer: the link opens on yes; either way the chat is back.
     pub(super) fn answer_link_prompt(&mut self, yes: bool) {
@@ -1330,7 +1331,7 @@ impl Game<'_> {
         self.ui.chat.hide_indicator = !self.settings.extras.chat_indicator;
         // The fractional tick makes the smooth chat extra's slide move every
         // frame; vanilla's fade reads it too.
-        let now = self.ticks as f32 + self.clock.fraction() as f32;
+        let now = self.visual_ticks() as f32 + self.clock.fraction() as f32;
         self.ui.chat.draw(batch, &self.gui.atlas, now, focused);
     }
     /// `HoverEvent.EntityTooltipInfo.getTooltipLines`: the name when the
@@ -1670,7 +1671,7 @@ impl Game<'_> {
             message,
             None,
             ChatSource::Client,
-            self.ticks,
+            self.visual_ticks(),
             focused,
         );
     }
