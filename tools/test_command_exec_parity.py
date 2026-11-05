@@ -86,6 +86,8 @@ def main():
     parser.add_argument('--work-dir', type=Path, help='isolated scratch output directory')
     parser.add_argument('--loaded-fixture', action='store_true', help='pin actual view/simulation2 and use real player tickets')
     parser.add_argument('--loaded-block-diagnostic', action='store_true', help='retain separate FULL block-access observations')
+    parser.add_argument('--mob-quad-fixture', action='store_true', help='guarded live mob quad-leash scene')
+    parser.add_argument('--mob-quad-raw-diagnostic', action='store_true', help='retain full-precision leash diagnostic')
     args = parser.parse_args()
     build = args.work_dir.resolve() if args.work_dir else lab.LOCAL / 'command-exec-parity'
     build.mkdir(parents=True, exist_ok=True)
@@ -124,6 +126,12 @@ def main():
     if args.sulfur_power_load_diagnostic:
         groups = [('setup', corpus_module.group_setup()),
                   ('sulfur powered-load diagnostic', corpus_module.sulfur_cube_fuse_ticks(True))]
+    if args.mob_quad_fixture:
+        try:
+            from .mob_quad_leash_corpus import mob_quad_leash
+        except ImportError:
+            from mob_quad_leash_corpus import mob_quad_leash
+        groups = [('setup', corpus_module.group_setup()), ('mob quad leash dispatch', mob_quad_leash(args.mob_quad_raw_diagnostic))]
     if args.only:
         groups = [g for g in groups if args.only in g[0] or g[0] == 'setup']
     if args.slot_codec_diagnostic:
