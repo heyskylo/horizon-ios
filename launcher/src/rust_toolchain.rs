@@ -219,6 +219,10 @@ impl Toolchain {
                 exe("llvm-ar"),
                 exe("llvm-ranlib"),
                 exe("llvm-dlltool"),
+                // winresource defaults to an unprefixed x64 `windres` on a native ARM64 host.
+                // Give it the target-specific resource compiler and archive tool too.
+                exe("aarch64-w64-mingw32-ar"),
+                exe("aarch64-w64-mingw32-windres"),
             ]
             .iter()
             .all(|program| self.mingw_bin().join(program).is_file()),
@@ -267,10 +271,14 @@ impl Toolchain {
             let cxx = bin.join(exe("aarch64-w64-mingw32-clang++"));
             let ar = bin.join(exe("llvm-ar"));
             let ranlib = bin.join(exe("llvm-ranlib"));
+            let resource_ar = bin.join(exe("aarch64-w64-mingw32-ar"));
+            let windres = bin.join(exe("aarch64-w64-mingw32-windres"));
             cmd.env("CC_aarch64_pc_windows_gnullvm", &cc)
                 .env("CXX_aarch64_pc_windows_gnullvm", &cxx)
                 .env("AR_aarch64_pc_windows_gnullvm", &ar)
                 .env("RANLIB_aarch64_pc_windows_gnullvm", &ranlib)
+                .env("AR", resource_ar)
+                .env("WINDRES", windres)
                 .env("CARGO_TARGET_AARCH64_PC_WINDOWS_GNULLVM_LINKER", cc);
         }
         cmd
@@ -1156,6 +1164,8 @@ mod tests {
             "llvm-ar",
             "llvm-ranlib",
             "llvm-dlltool",
+            "aarch64-w64-mingw32-ar",
+            "aarch64-w64-mingw32-windres",
         ] {
             assert!(!toolchain.compiler_available(), "missing {name}");
             fs::write(bin.join(exe(name)), "tool").unwrap();
@@ -1185,6 +1195,9 @@ mod tests {
             .unwrap();
         let first: Vec<PathBuf> = std::env::split_paths(path).take(2).collect();
         assert_eq!(first, [dir.join("bin"), toolchain.mingw_bin()]);
+        assert!(!cmd
+            .get_envs()
+            .any(|(key, _)| matches!(key.to_string_lossy().as_ref(), "AR" | "WINDRES")));
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -1244,6 +1257,26 @@ mod tests {
                 toolchain
                     .mingw_bin()
                     .join(exe("aarch64-w64-mingw32-clang"))
+                    .to_str()
+                    .unwrap()
+            )
+        );
+        assert_eq!(
+            value("AR"),
+            Some(
+                toolchain
+                    .mingw_bin()
+                    .join(exe("aarch64-w64-mingw32-ar"))
+                    .to_str()
+                    .unwrap()
+            )
+        );
+        assert_eq!(
+            value("WINDRES"),
+            Some(
+                toolchain
+                    .mingw_bin()
+                    .join(exe("aarch64-w64-mingw32-windres"))
                     .to_str()
                     .unwrap()
             )
@@ -1347,8 +1380,6 @@ mod tests {
                 "--locked",
                 "--profile",
                 "fast",
-                "--features",
-                "horizon-client/mods",
                 "-p",
                 "horizon-client",
                 "--bin",

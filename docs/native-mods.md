@@ -1744,7 +1744,9 @@ trusting native code is the player's decision, never an agent's.
    bring its own C compiler and linker for dependencies such as `ring` and `hidapi` and for Windows imports. The
    selected ARM64 game's source is rebuilt in full for `aarch64-pc-windows-gnullvm`; the existing MSVC executable
    is replaced, never linked into the output. The resulting Rust and C code use one Windows ARM64 calling
-   convention, and the executable's PE machine is checked before installation. LLVM-MinGW is not an MSVC
+   convention, and the executable's PE machine is checked before installation. The launcher also selects LLVM-MinGW's
+   ARM64 `windres` and archive tools for Windows icon resources; its generic resource compiler can emit x64 objects on
+   an ARM64 host. LLVM-MinGW is not an MSVC
    object-library toolchain: prebuilt MSVC static libraries in a native mod are not compatible. The output uses
    UCRT, which is included with Windows 10 and later.
 
