@@ -239,6 +239,23 @@ fn worn_of(
     client.frame().worn(uuid()?)
 }
 
+/// The UUID the service knows the player's own model by. On a server, the profile it gave
+/// (`profile`). In single player the window's own server (`solo`) names the player by their
+/// offline profile, which the service doesn't know: the signed-in account's (`account`) then, only
+/// with *Cosmetics in single player* on (`shown`); off, nothing is asked or drawn.
+fn own_uuid(
+    profile: Option<u128>,
+    solo: bool,
+    shown: bool,
+    account: impl FnOnce() -> Option<u128>,
+) -> Option<u128> {
+    match solo {
+        false => profile,
+        true if shown && profile.is_some() => account(),
+        true => None,
+    }
+}
+
 /// The game's model of an item's part.
 fn part(p: &horizon_cosmetics::Part) -> Part {
     Part {
@@ -446,7 +463,12 @@ impl Game<'_> {
     /// The UUID the service knows `m` by: a player's, or a mannequin's id with local items.
     fn cosmetics_uuid(&self, m: &Mob, own: bool) -> Option<u128> {
         if own {
-            self.remote.as_ref().map(|r| r.profile())
+            own_uuid(
+                self.remote.as_ref().map(|r| r.profile()),
+                self.integrated.is_some(),
+                self.settings.extras.cosmetics_solo,
+                || horizon_client::auth::current().map(|s| s.uuid),
+            )
         } else if &*m.kind.id == "minecraft:player" {
             self.remote_player_uuid(m.id)
         } else if self.cosmetics.local && &*m.kind.id == "minecraft:mannequin" {
@@ -662,5 +684,50 @@ mod tests {
         };
         let (worn, asked) = other_player(&hid, short);
         assert!(worn.is_none() && asked.is_empty());
+    }
+
+    #[test]
+    fn single_player_shows_my_cosmetics_only_with_its_setting_and_asks_by_my_account() {
+        // The window's own server names the player by their offline profile.
+        const OFFLINE: u128 = 0x0ff1;
+        const ACCOUNT: u128 = 0xacc0;
+        let mine = |solo: bool, shown: bool, patience: Duration| {
+            let service = Service::default();
+            let client = horizon_cosmetics::Cosmetics::new(service.clone(), None);
+            let extras = Extras {
+                cosmetics_solo: shown,
+                ..Extras::default()
+            };
+            let uuid = || own_uuid(Some(OFFLINE), solo, extras.cosmetics_solo, || Some(ACCOUNT));
+            let deadline = Instant::now() + patience;
+            let worn = loop {
+                let worn = worn_of(&client, &extras, true, uuid);
+                if worn.is_some() || Instant::now() >= deadline {
+                    break worn;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            };
+            let asked = service.0.lock().unwrap().clone();
+            (worn.is_some(), asked)
+        };
+        let (short, long) = (Duration::from_millis(300), Duration::from_secs(10));
+        // Off by default: nothing drawn, nothing asked.
+        assert_eq!(mine(true, false, short), (false, vec![]));
+        // On: asked by the signed-in account, never by the offline profile.
+        let (shown, asked) = mine(true, true, long);
+        assert!(shown);
+        assert_eq!(
+            asked[0],
+            format!("POST /v1/worn {{\"players\":[\"{ACCOUNT:032x}\"]}}")
+        );
+        // On a server the setting changes nothing: the server's profile.
+        let (shown, asked) = mine(false, false, long);
+        assert!(shown);
+        assert_eq!(
+            asked[0],
+            format!("POST /v1/worn {{\"players\":[\"{OFFLINE:032x}\"]}}")
+        );
+        // An offline account in single player: nothing to ask about.
+        assert_eq!(own_uuid(Some(OFFLINE), true, true, || None), None);
     }
 }
