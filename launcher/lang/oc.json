@@ -1174,5 +1174,9 @@
   "At start and before you play, what you installed from Horizon's registry moves to its newest version for this game. Never inside a modpack, and an update that would remove blocks or items waits for you.": "At start and before you play, what you installed from Horizon's registry moves to its newest version for this game. Never inside a modpack, and an update that would remove blocks or items waits for you.",
   "Updated automatically: {list}.": "Updated automatically: {list}.",
   "{title} wasn't updated: {error}": "{title} wasn't updated: {error}",
-  "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready."
+  "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.",
+  "No Minecraft: Java Edition account has that name.": "Cap de compte Minecraft: Java Edition a pas aquel nom.",
+  "That account already owns everything in the basket.": "Aquel compte a ja tot çò qu'es dins lo panièr.",
+  "The shop isn't selling right now. Nothing was charged.": "La botiga vend pas pel moment. Res es pas estat debitat.",
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle a pas pogut dobrir lo pagament. Res es pas estat debitat."
 }

@@ -1174,5 +1174,9 @@
   "At start and before you play, what you installed from Horizon's registry moves to its newest version for this game. Never inside a modpack, and an update that would remove blocks or items waits for you.": "At start and before you play, what you installed from Horizon's registry moves to its newest version for this game. Never inside a modpack, and an update that would remove blocks or items waits for you.",
   "Updated automatically: {list}.": "Updated automatically: {list}.",
   "{title} wasn't updated: {error}": "{title} wasn't updated: {error}",
-  "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready."
+  "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.",
+  "No Minecraft: Java Edition account has that name.": "Noben račun Minecraft: Java Edition nima tega imena.",
+  "That account already owns everything in the basket.": "Ta račun že ima vse, kar je v košarici.",
+  "The shop isn't selling right now. Nothing was charged.": "Trgovina trenutno ne prodaja. Nič ni bilo zaračunano.",
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle ni mogel začeti plačila. Nič ni bilo zaračunano."
 }

@@ -1174,5 +1174,9 @@
   "At start and before you play, what you installed from Horizon's registry moves to its newest version for this game. Never inside a modpack, and an update that would remove blocks or items waits for you.": "At start and before you play, what you installed from Horizon's registry moves to its newest version for this game. Never inside a modpack, and an update that would remove blocks or items waits for you.",
   "Updated automatically: {list}.": "Updated automatically: {list}.",
   "{title} wasn't updated: {error}": "{title} wasn't updated: {error}",
-  "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready."
+  "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.",
+  "No Minecraft: Java Edition account has that name.": "그 이름의 Minecraft: Java Edition 계정이 없습니다.",
+  "That account already owns everything in the basket.": "그 계정은 장바구니에 있는 것을 이미 모두 가지고 있습니다.",
+  "The shop isn't selling right now. Nothing was charged.": "상점이 지금은 판매하지 않습니다. 결제된 금액은 없습니다.",
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle이 결제를 시작하지 못했습니다. 결제된 금액은 없습니다."
 }

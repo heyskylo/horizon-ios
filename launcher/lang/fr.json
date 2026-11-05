@@ -1174,5 +1174,9 @@
   "At start and before you play, what you installed from Horizon's registry moves to its newest version for this game. Never inside a modpack, and an update that would remove blocks or items waits for you.": "Au démarrage et avant de jouer, ce que vous avez installé depuis le registre d'Horizon passe à sa version la plus récente pour ce jeu. Jamais dans un modpack, et une mise à jour qui retirerait des blocs ou des objets vous attend.",
   "Updated automatically: {list}.": "Mis à jour automatiquement : {list}.",
   "{title} wasn't updated: {error}": "{title} n'a pas été mis à jour : {error}",
-  "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} vous attend : il n'a plus {ids}, que vos mondes utilisent peut-être. Mettez-le à jour depuis la page Mods quand vous serez prêt."
+  "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} vous attend : il n'a plus {ids}, que vos mondes utilisent peut-être. Mettez-le à jour depuis la page Mods quand vous serez prêt.",
+  "No Minecraft: Java Edition account has that name.": "Aucun compte Minecraft: Java Edition ne porte ce nom.",
+  "That account already owns everything in the basket.": "Ce compte possède déjà tout ce qui est dans le panier.",
+  "The shop isn't selling right now. Nothing was charged.": "La boutique ne vend rien pour le moment. Rien n'a été débité.",
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle n'a pas pu ouvrir le paiement. Rien n'a été débité."
 }

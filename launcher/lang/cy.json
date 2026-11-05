@@ -1174,5 +1174,9 @@
   "At start and before you play, what you installed from Horizon's registry moves to its newest version for this game. Never inside a modpack, and an update that would remove blocks or items waits for you.": "At start and before you play, what you installed from Horizon's registry moves to its newest version for this game. Never inside a modpack, and an update that would remove blocks or items waits for you.",
   "Updated automatically: {list}.": "Updated automatically: {list}.",
   "{title} wasn't updated: {error}": "{title} wasn't updated: {error}",
-  "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready."
+  "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.",
+  "No Minecraft: Java Edition account has that name.": "Does dim cyfrif Minecraft: Java Edition gyda'r enw hwnnw.",
+  "That account already owns everything in the basket.": "Mae'r cyfrif hwnnw eisoes yn berchen ar bopeth yn y fasged.",
+  "The shop isn't selling right now. Nothing was charged.": "Dydy'r siop ddim yn gwerthu ar hyn o bryd. Ni chodwyd dim.",
+  "Paddle couldn't start the checkout. Nothing was charged.": "Methodd Paddle â dechrau'r talu. Ni chodwyd dim."
 }

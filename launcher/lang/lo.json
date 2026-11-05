@@ -1174,5 +1174,9 @@
   "At start and before you play, what you installed from Horizon's registry moves to its newest version for this game. Never inside a modpack, and an update that would remove blocks or items waits for you.": "At start and before you play, what you installed from Horizon's registry moves to its newest version for this game. Never inside a modpack, and an update that would remove blocks or items waits for you.",
   "Updated automatically: {list}.": "Updated automatically: {list}.",
   "{title} wasn't updated: {error}": "{title} wasn't updated: {error}",
-  "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready."
+  "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.",
+  "No Minecraft: Java Edition account has that name.": "ບໍ່ມີບັນຊີ Minecraft: Java Edition ທີ່ມີຊື່ນັ້ນ.",
+  "That account already owns everything in the basket.": "ບັນຊີນັ້ນມີທຸກຢ່າງໃນກະຕ່າແລ້ວ.",
+  "The shop isn't selling right now. Nothing was charged.": "ຮ້ານບໍ່ໄດ້ຂາຍໃນຕອນນີ້. ບໍ່ໄດ້ເກັບເງິນຫຍັງ.",
+  "Paddle couldn't start the checkout. Nothing was charged.": "Paddle ບໍ່ສາມາດເລີ່ມການຊຳລະເງິນໄດ້. ບໍ່ໄດ້ເກັບເງິນຫຍັງ."
 }
