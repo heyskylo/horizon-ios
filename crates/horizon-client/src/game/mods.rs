@@ -452,23 +452,24 @@ impl Game<'_> {
         if applied == wanted {
             return;
         }
-        let packages: Vec<horizon_mods::Package> = horizon_mods::find(
-            &Self::game_dir().join(mod_list::DIR),
-        )
-        .iter()
-        .filter_map(|path| {
-            let package = horizon_mods::Package::read(path).ok()?;
-            let content =
-                horizon_mods::Content::read(path, &package.manifest).ok()?;
-            match horizon_client::mod_content::live_switch(&content) {
-                Ok(()) => None,
-                Err(why) => {
-                    log::info!("Horizon: mod {} needs a restart to switch: {why}", package.manifest.id);
-                    Some(package)
-                }
-            }
-        })
-        .collect();
+        let packages: Vec<horizon_mods::Package> =
+            horizon_mods::find(&Self::game_dir().join(mod_list::DIR))
+                .iter()
+                .filter_map(|path| {
+                    let package = horizon_mods::Package::read(path).ok()?;
+                    let content = horizon_mods::Content::read(path, &package.manifest).ok()?;
+                    match horizon_client::mod_content::live_switch(&content) {
+                        Ok(()) => None,
+                        Err(why) => {
+                            log::info!(
+                                "Horizon: mod {} needs a restart to switch: {why}",
+                                package.manifest.id
+                            );
+                            Some(package)
+                        }
+                    }
+                })
+                .collect();
         let waits = |id: &String| packages.iter().any(|p| &p.manifest.id == id);
         let mut next = applied.clone();
         let mut waiting = Vec::new();
@@ -481,13 +482,16 @@ impl Game<'_> {
                 next.remove(id);
             }
         }
-        self.ui.options.mods_note = (!waiting.is_empty()).then(|| {
-            lang::tr("horizon.mods.switch.restart", &[&waiting.join(", ")])
-        });
+        self.ui.options.mods_note = (!waiting.is_empty())
+            .then(|| lang::tr("horizon.mods.switch.restart", &[&waiting.join(", ")]));
         if next == applied {
             return;
         }
-        log::info!("Horizon: content mods switched live: {:?} -> {:?}", applied, next);
+        log::info!(
+            "Horizon: content mods switched live: {:?} -> {:?}",
+            applied,
+            next
+        );
         self.mods.applied = Some(next);
         self.mods.live = Some(std::time::Instant::now());
         self.reload_packs();

@@ -2759,7 +2759,10 @@ fn prune_roots(roots: &Path, current: &Path, keep: std::time::Duration) {
         }
         let name = entry.file_name();
         let is_root = name.len() == ROOT_NAME
-            && name.to_string_lossy().bytes().all(|b| b.is_ascii_hexdigit())
+            && name
+                .to_string_lossy()
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit())
             && path.is_dir();
         let stale = match is_root {
             true => fs::metadata(path.join(STAMP))
@@ -2778,7 +2781,10 @@ fn prune_roots(roots: &Path, current: &Path, keep: std::time::Duration) {
             false => fs::remove_file(&path),
         };
         if let Err(e) = removed {
-            log::warn!("Horizon: an old mod content root stays: {}: {e}", path.display());
+            log::warn!(
+                "Horizon: an old mod content root stays: {}: {e}",
+                path.display()
+            );
         }
     }
 }
@@ -2803,8 +2809,7 @@ pub fn live_switch(content: &Content) -> std::result::Result<(), &'static str> {
             && parts.nth(1).is_some_and(|folder| {
                 matches!(folder, "worldgen" | "dimension" | "dimension_type")
                     || folder == "tags" && file.contains("/tags/worldgen/")
-                    || matches!(folder, "neoforge" | "forge")
-                        && file.contains("/biome_modifier/")
+                    || matches!(folder, "neoforge" | "forge") && file.contains("/biome_modifier/")
             })
     };
     if content.files.iter().any(|f| worldgen(&f)) {

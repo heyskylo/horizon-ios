@@ -4399,7 +4399,10 @@ fn glint_mod(dir: &Path) -> ContentMod {
                 "data/c/tags/item/gems/glint.json",
                 r#"{"values": ["minecraft:diamond"]}"#,
             ),
-            ("assets/glint/lang/en_us.json", r#"{"glint.hello": "Hello"}"#),
+            (
+                "assets/glint/lang/en_us.json",
+                r#"{"glint.hello": "Hello"}"#,
+            ),
         ],
     )
 }
@@ -4408,7 +4411,10 @@ fn glint_mod(dir: &Path) -> ContentMod {
 fn only_assets_and_data_switch_live() {
     let scratch = std::env::temp_dir().join(format!("horizon-mod-live-{}", std::process::id()));
     let _ = fs::remove_dir_all(&scratch);
-    assert_eq!(live_switch(&glint_mod(&scratch.join("glint")).content), Ok(()));
+    assert_eq!(
+        live_switch(&glint_mod(&scratch.join("glint")).content),
+        Ok(())
+    );
     let ruby = ruby_mod(&scratch.join("ruby"));
     assert_eq!(
         live_switch(&ruby.content),
@@ -4476,12 +4482,16 @@ fn a_data_mod_loads_unloads_and_loads_again() {
     // What a world reads from a root: the item tags and the recipes.
     let tables = |root: &Path| {
         let assets = Assets::load(root).unwrap();
-        let facts = BlockFacts::load(root, &assets.registry).unwrap();
-        let items = Items::load(root, &assets.registry, &facts, &PackOverlay::NONE).unwrap();
+        let facts = BlockFacts::load(root, assets.registry).unwrap();
+        let items = Items::load(root, assets.registry, &facts, &PackOverlay::NONE).unwrap();
         let recipes = crate::crafting::Recipes::load(root, &items, &PackOverlay::NONE).unwrap();
         let crafted = recipes.find(&grid, 2).map(|(_, out)| out.item.to_string());
         let tagged = items.item_tag_order.get("c:gems/glint").cloned();
-        (crafted, tagged, root.join("assets/glint/lang/en_us.json").is_file())
+        (
+            crafted,
+            tagged,
+            root.join("assets/glint/lang/en_us.json").is_file(),
+        )
     };
     let loaded = (
         Some("minecraft:diamond".to_owned()),
@@ -4506,7 +4516,10 @@ fn a_data_mod_loads_unloads_and_loads_again() {
     fs::write(&sentinel, b"").unwrap();
     let started = std::time::Instant::now();
     let again = resource_root(&base, std::slice::from_ref(&glint), &cache).unwrap();
-    eprintln!("content root reused in {} ms", started.elapsed().as_millis());
+    eprintln!(
+        "content root reused in {} ms",
+        started.elapsed().as_millis()
+    );
     assert_eq!(again, on);
     assert!(sentinel.exists());
     assert_eq!(tables(&again), loaded);
