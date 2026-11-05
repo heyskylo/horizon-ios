@@ -478,8 +478,8 @@
   "horizon.extras.cosmetics_mine.tooltip": "פאַרבאָרגן: יעדער Horizon שפּילער זעט איר אָן דיין קאָסמעטיקס, איר אַרייַנגערעכנט. דער זעלביקער באַשטימען ווי די גאַרדעראָב פון די לאָנטשער.",
   "horizon.extras.cosmetics_others": "קאָסמעטיקס פון אנדערע פּלייַערס",
   "horizon.extras.cosmetics_others.tooltip": "וואָס אנדערע Horizon פּלייַערס טראָגן: אַלץ, בלויז זייער נאָמען קוויטל סטיילז, אָדער גאָרנישט. פאַרבאָרגן, די שפּיל קיינמאָל פרעגט וואָס זיי טראָגן.",
-  "horizon.extras.cosmetics_auras": "אנדערע 'אַוראַס און טריילז",
-  "horizon.extras.cosmetics_auras.tooltip": "אַוראַס און טריילז וואָס אנדערע פּלייַערס טראָגן. אַוועק דורך פעליקייַט.",
+  "horizon.extras.cosmetics_hide_fx": "באַהאַלטן די שפּורן און אָראַס פֿון אַנדערע שפּילער",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "די שפּורן און אָראַס פֿון אַנדערע שפּילער בלײַבן באַהאַלטן; זייער אַנדערע קאָסמעטיק ווײַזט זיך נאָך. אויסגעלאָשן ווי געוויינטלעך.",
   "horizon.extras.cosmetics.shown": "געוויזן",
   "horizon.extras.cosmetics.hidden": "פאַרבאָרגן",
   "horizon.extras.cosmetics.name_tags": "בלויז נאָמען טאַגס"

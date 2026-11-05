@@ -463,8 +463,8 @@
   "horizon.extras.cosmetics_mine.tooltip": "Gizli: hər Horizon oyunçu sizi kosmetikanız olmadan görür. Başlatma şkafı ilə eyni açar.",
   "horizon.extras.cosmetics_others": "Digər oyunçuların kosmetikası",
   "horizon.extras.cosmetics_others.tooltip": "Digər Horizon oyunçular nə geyinirlər: hər şey, yalnız ad etiketi üslubları və ya heç nə. Gizli, oyun heç vaxt nə geyindiklərini soruşmur.",
-  "horizon.extras.cosmetics_auras": "Başqalarının auraları və izləri",
-  "horizon.extras.cosmetics_auras.tooltip": "Digər oyunçuların geydiyi auralar və izlər. Defolt olaraq söndürülür.",
+  "horizon.extras.cosmetics_hide_fx": "Digər oyunçuların izlərini və auralarını gizlət",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "Digər oyunçuların izləri və auraları gizli qalır; digər kosmetikaları görünməyə davam edir. Defolt olaraq söndürülüb.",
   "horizon.extras.cosmetics.shown": "Göstərildi",
   "horizon.extras.cosmetics.hidden": "Gizli",
   "horizon.extras.cosmetics.name_tags": "Yalnız ad etiketləri"

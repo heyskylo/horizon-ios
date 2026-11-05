@@ -488,8 +488,8 @@
   "horizon.extras.cosmetics_mine.tooltip": "Skriveno: svaki Horizon igrač vas vidi bez kozmetike, uključujući i vas. Isti prekidač kao Garderoba u pokretaču.",
   "horizon.extras.cosmetics_others": "Kozmetika drugih igrača",
   "horizon.extras.cosmetics_others.tooltip": "Šta nose drugi Horizon igrači: sve, samo stilove oznaka imena ili ništa. Kada je skriveno, igra nikada ne pita šta nose.",
-  "horizon.extras.cosmetics_auras": "Aure i tragovi drugih",
-  "horizon.extras.cosmetics_auras.tooltip": "Aure i staze koje drugi igrači nose. Podrazumevano isključeno.",
+  "horizon.extras.cosmetics_hide_fx": "Sakrij tragove i aure drugih igrača",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "Tragovi i aure drugih igrača ostaju skriveni; njihova ostala kozmetika se i dalje vidi. Isključeno po zadanom.",
   "horizon.extras.cosmetics.shown": "Pokazano",
   "horizon.extras.cosmetics.hidden": "Skriveno",
   "horizon.extras.cosmetics.name_tags": "Samo oznake sa imenom"

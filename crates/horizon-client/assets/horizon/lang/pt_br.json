@@ -484,8 +484,8 @@
   "horizon.extras.cosmetics_mine.tooltip": "Oculto: todo jogador do Horizon vê você sem seus cosméticos, inclusive você. A mesma opção do guarda-roupa do lançador.",
   "horizon.extras.cosmetics_others": "Cosméticos de outros jogadores",
   "horizon.extras.cosmetics_others.tooltip": "O que os outros jogadores do Horizon usam: tudo, apenas os estilos dos crachás ou nada. Escondido, o jogo nunca pergunta o que eles vestem.",
-  "horizon.extras.cosmetics_auras": "Auras e trilhas de outros",
-  "horizon.extras.cosmetics_auras.tooltip": "Auras e trilhas que outros jogadores usam. Desativado por padrão.",
+  "horizon.extras.cosmetics_hide_fx": "Ocultar rastros e auras de outros jogadores",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "Os rastros e auras de outros jogadores ficam ocultos; os demais cosméticos deles continuam visíveis. Desativado por padrão.",
   "horizon.extras.cosmetics.shown": "Mostrado",
   "horizon.extras.cosmetics.hidden": "Oculto",
   "horizon.extras.cosmetics.name_tags": "Somente tags de nome"

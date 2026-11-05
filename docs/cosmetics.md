@@ -297,7 +297,8 @@ same cached `/v1/worn` answers as what they wear (no request of its own, nothing
     answer that says owns shows others' at once, without a restart. Only one of the sign-ins (this,
     *My cosmetics*, *Show me as Horizon*) runs at a time (Mojang keeps one joined server id per
     account). `HORIZON_COSMETICS_LOCAL` counts as owning.
-  - *Others' auras and trails*, off by default (no item of that kind exists yet).
+  - *Hide other players' trails and auras*, off by default (`cosmeticsHideFx`): their trails
+    and auras stay hidden, their other cosmetics (companions included) still show.
   - *In single player*, off by default, the game's only (`cosmeticsSolo`). The
     window's own server names the player by their offline profile, which the service doesn't
     know, so in single player (open to LAN too) the game draws and asks nothing for the player's
@@ -400,9 +401,9 @@ page stays hidden.
   is the founder set's free *Claim for free* where Paddle doesn't sell (`Claim::here`): the site
   sends those players to the Wardrobe, since only the launcher can prove the account with Mojang. **Your purchases** lists the account's orders (date, item, price, state, order number).
 - **Three switches**: *Show my cosmetics* (the account's, on the service: off, everyone sees you
-  without them), *Hide other players' cosmetics* and *Show other players' auras and trails* (off by
+  without them), *Hide other players' cosmetics* and *Hide other players' trails and auras* (off by
   default). The last two are lines of the game's `horizon-extras.txt` (`horizon_cosmetics::prefs`:
-  `cosmeticsOthers` = `shown`, `name_tags` or `hidden`, `cosmeticsAuras`), the same ones the
+  `cosmeticsOthers` = `shown`, `name_tags` or `hidden`, `cosmeticsHideFx`), the same ones the
   game's settings change. With no `cosmeticsOthers` line, *Hide other players' cosmetics* shows
   what the game does: on unless the account owns something. Each answer of the service also
   notes the account's ownership in the game's `cosmetics-owned.txt`.

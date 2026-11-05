@@ -984,7 +984,7 @@
   "Off: everyone sees you without them.": "გამორთულია: ყველა გხედავს მათ გარეშე.",
   "Hide other players' cosmetics": "დამალეთ სხვა მოთამაშეების კოსმეტიკა",
   "Others look like plain players to you. Also in the game's Horizon settings.": "სხვები შენთვის უბრალო მოთამაშეებად გამოიყურებიან. ასევე თამაშის Horizon პარამეტრებში.",
-  "Show other players' auras and trails": "აჩვენეთ სხვა მოთამაშეების აურა და ბილიკები",
+  "Hide other players' trails and auras": "სხვა მოთამაშეების კვალისა და აურების დამალვა",
   "Off by default. Also in the game's Horizon settings.": "ნაგულისხმევად გამორთულია. ასევე თამაშის Horizon პარამეტრებში.",
   "Friend": "მეგობარი",
   "Friends on the same Wi-Fi: Multiplayer, Add server, paste.": "მეგობრები იმავე Wi-Fi-ზე: Multiplayer, სერვერის დამატება, ჩასმა.",

@@ -485,8 +485,8 @@
   "horizon.extras.cosmetics_mine.tooltip": "Пытарнӑ: кашни Horizon вылякан сире косметикӑсӑр курать, эсир те ҫав шутра. Пуҫкаҫӑн гардеробӗнчи пекех переключатель.",
   "horizon.extras.cosmetics_others": "Ытти вылякансен косметики",
   "horizon.extras.cosmetics_others.tooltip": "Ытти Horizon вылякансем мӗн тӑхӑнаҫҫӗ: пурте, вӗсен ячӗсен стилӗсем ҫеҫ, е нимӗн те мар. Вӑрттӑн, вӑйӑ нихҫан та вӗсем мӗн тӑхӑннине ыйтмасть.",
-  "horizon.extras.cosmetics_auras": "Ыттисен аурисем тата йӗрӗсем",
-  "horizon.extras.cosmetics_auras.tooltip": "Ытти вылякансем тӑхӑнакан аурӑсемпе йӗрсем. Выключен по умолчанию.",
+  "horizon.extras.cosmetics_hide_fx": "Ытти вӑййисен йӗрӗсене тата аурисене пытар",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "Ытти вӑййисен йӗрӗсем тата аурисем пытарӑнса юлаҫҫӗ; вӗсен ытти косметики курӑнать. Йӑлана кура сӳнтернӗ.",
   "horizon.extras.cosmetics.shown": "Кӑтартнӑ",
   "horizon.extras.cosmetics.hidden": "Пытарнӑ",
   "horizon.extras.cosmetics.name_tags": "Ят паллисем кӑна"

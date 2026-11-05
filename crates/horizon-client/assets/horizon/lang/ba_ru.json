@@ -489,8 +489,8 @@
   "horizon.extras.cosmetics_mine.tooltip": "Йәшерен: һәр Horizon уйынсы һеҙҙең косметикаһыҙ күрә, һеҙ ҙә индерелгән. Шул уҡ переключатель стартер&#8217;s Гардероб.",
   "horizon.extras.cosmetics_others": "Башҡа уйынсыларҙың косметикаһы",
   "horizon.extras.cosmetics_others.tooltip": "Башҡа ниндәй Horizon уйынсылар кейә: барыһы ла, тик уларҙы исем биркаһы стилдәре, йәки бер нәмә лә. Йәшерен, уйын бер ҡасан да һорамай, улар нимә кейә.",
-  "horizon.extras.cosmetics_auras": "Башҡаларҙың ауралары һәм эҙҙәре",
-  "horizon.extras.cosmetics_auras.tooltip": "Аура һәм эҙҙәр башҡа уйынсылар кейә. Һүндерелгән по умолчанию.",
+  "horizon.extras.cosmetics_hide_fx": "Башҡа уйынсыларҙың эҙҙәрен һәм ауралары йәшереү",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "Башҡа уйынсыларҙың эҙҙәре һәм ауралары йәшерен ҡала; уларҙың башҡа косметикаһы күренә. Ғәҙәттә һүндерелгән.",
   "horizon.extras.cosmetics.shown": "Күрһәтелгән",
   "horizon.extras.cosmetics.hidden": "Йәшерен",
   "horizon.extras.cosmetics.name_tags": "Исем билдәләре генә"

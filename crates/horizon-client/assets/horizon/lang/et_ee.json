@@ -464,8 +464,8 @@
   "horizon.extras.cosmetics_mine.tooltip": "Varjatud: iga Horizoni mängija näeb teid ilma teie kosmeetikata, kaasa arvatud. Sama lüliti, mis käivitaja riidekapil.",
   "horizon.extras.cosmetics_others": "Teiste mängijate kosmeetika",
   "horizon.extras.cosmetics_others.tooltip": "Mida teised Horizoni mängijad kannavad: kõike, ainult nende nimesiltide stiile või mitte midagi. Varjatud, mäng ei küsi kunagi, mida nad kannavad.",
-  "horizon.extras.cosmetics_auras": "Teiste aurad ja jäljed",
-  "horizon.extras.cosmetics_auras.tooltip": "Aurad ja jäljed, mida teised mängijad kannavad. Vaikimisi väljas.",
+  "horizon.extras.cosmetics_hide_fx": "Peida teiste mängijate jäljed ja aurad",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "Teiste mängijate jäljed ja aurad jäävad peidetuks; nende muu kosmeetika on endiselt näha. Vaikimisi väljas.",
   "horizon.extras.cosmetics.shown": "Näidatud",
   "horizon.extras.cosmetics.hidden": "Peidetud",
   "horizon.extras.cosmetics.name_tags": "Ainult nimesildid"

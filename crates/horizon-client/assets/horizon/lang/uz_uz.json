@@ -463,8 +463,8 @@
   "horizon.extras.cosmetics_mine.tooltip": "Yashirin: har bir Horizon o'yinchi sizni kosmetikangizsiz ko'radi, shu jumladan. Launcherning shkafi bilan bir xil kalit.",
   "horizon.extras.cosmetics_others": "Boshqa o'yinchilarning kosmetikasi",
   "horizon.extras.cosmetics_others.tooltip": "Boshqa Horizon o'yinchilar nima kiyishadi: hamma narsa, faqat ism yorlig'i uslublari yoki hech narsa. Yashirin, o'yin hech qachon ular nima kiyishlarini so'ramaydi.",
-  "horizon.extras.cosmetics_auras": "Boshqalarning auralari va izlari",
-  "horizon.extras.cosmetics_auras.tooltip": "Boshqa o'yinchilar kiygan auralar va izlar. Sukut boʻyicha oʻchirilgan.",
+  "horizon.extras.cosmetics_hide_fx": "Boshqa o‘yinchilarning izlari va auralarini yashirish",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "Boshqa o‘yinchilarning izlari va auralari yashirin qoladi; ularning boshqa kosmetikasi ko‘rinib turadi. Standart bo‘yicha o‘chiq.",
   "horizon.extras.cosmetics.shown": "Ko'rsatilgan",
   "horizon.extras.cosmetics.hidden": "Yashirin",
   "horizon.extras.cosmetics.name_tags": "Faqat nom teglari"

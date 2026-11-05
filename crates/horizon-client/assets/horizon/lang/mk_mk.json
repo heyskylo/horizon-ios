@@ -480,8 +480,8 @@
   "horizon.extras.cosmetics_mine.tooltip": "Скриено: секој играч Horizon ве гледа без вашата козметика, вклучително и вие. Истиот прекинувач како и гардеробата на фрлачот.",
   "horizon.extras.cosmetics_others": "Козметика за други играчи",
   "horizon.extras.cosmetics_others.tooltip": "Што носат другите Horizon играчи: сè, само стилови на нивните ознаки или ништо. Скриено, играта никогаш не прашува што носат.",
-  "horizon.extras.cosmetics_auras": "Аури и патеки на другите",
-  "horizon.extras.cosmetics_auras.tooltip": "Аури и патеки што ги носат другите играчи. Исклучено стандардно.",
+  "horizon.extras.cosmetics_hide_fx": "Скриј ги трагите и аурите на другите играчи",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "Трагите и аурите на другите играчи остануваат скриени; нивната друга козметика и понатаму се гледа. Стандардно исклучено.",
   "horizon.extras.cosmetics.shown": "Прикажани",
   "horizon.extras.cosmetics.hidden": "Скриени",
   "horizon.extras.cosmetics.name_tags": "Само ознаки со имиња"
