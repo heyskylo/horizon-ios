@@ -2920,7 +2920,7 @@ impl OptionsUi {
                 let picked = s
                     .shader_packs
                     .iter()
-                    .position(|p| p.file == s.horizon.shader_pack);
+                    .position(|p| p.key == s.horizon.shader_pack);
                 let options = picked.and_then(|i| {
                     let pack = &s.shader_packs[i];
                     let act = match pack.kind {
@@ -2942,7 +2942,7 @@ impl OptionsUi {
                         };
                         let label = Text::option_name_value(
                             Text::literal(format!("{}{kind}", pack.title)),
-                            on_off(s.horizon.shader_pack == pack.file),
+                            on_off(s.horizon.shader_pack == pack.key),
                         );
                         Row::Buttons(button(0.0, 0.0, 310.0, label, Act::PickShaderPack(i)), None)
                     }))
@@ -4304,10 +4304,10 @@ impl OptionsUi {
                         Act::AccessibilityHelp => events.push(Event::AccessibilityHelp),
                         Act::PickShaderPack(i) => {
                             if let Some(pack) = s.shader_packs.get(i) {
-                                s.horizon.shader_pack = if s.horizon.shader_pack == pack.file {
+                                s.horizon.shader_pack = if s.horizon.shader_pack == pack.key {
                                     String::new()
                                 } else {
-                                    pack.file.clone()
+                                    pack.key.clone()
                                 };
                                 events.push(Event::ShaderPack);
                             }
@@ -5266,10 +5266,10 @@ impl OptionsUi {
                         Act::AccessibilityHelp => events.push(Event::AccessibilityHelp),
                         Act::PickShaderPack(i) => {
                             if let Some(pack) = s.shader_packs.get(i) {
-                                s.horizon.shader_pack = if s.horizon.shader_pack == pack.file {
+                                s.horizon.shader_pack = if s.horizon.shader_pack == pack.key {
                                     String::new()
                                 } else {
-                                    pack.file.clone()
+                                    pack.key.clone()
                                 };
                                 events.push(Event::ShaderPack);
                             }
@@ -5677,9 +5677,10 @@ mod tests {
         let atlas = atlas();
         let size = (960.0, 540.0);
         let mut s = Settings::default();
-        s.horizon.shader_pack = "p".into();
+        s.horizon.shader_pack = "horizon:p".into();
         s.shader_packs = vec![crate::shader_pack_list::Entry {
-            file: "p".into(),
+            file: "renamed.hshader".into(),
+            key: "horizon:p".into(),
             title: "P".into(),
             kind: crate::shader_pack_list::Kind::Horizon,
             options: vec![horizon_shader_api::PackOption {
@@ -5744,6 +5745,13 @@ mod tests {
         assert_eq!(s.shader_packs[0].values, [1.0]);
         ui.back(&mut s);
         assert_eq!(ui.page(), Page::NativePackOptions(0, 0));
+        ui.show(Page::ShaderPacks);
+        let (x, y) = find(&mut ui, &s, &Act::PickShaderPack(0));
+        ui.click(&mut s, &atlas, x, y, size, [854, 480], false, false);
+        assert!(s.horizon.shader_pack.is_empty());
+        let (x, y) = find(&mut ui, &s, &Act::PickShaderPack(0));
+        ui.click(&mut s, &atlas, x, y, size, [854, 480], false, false);
+        assert_eq!(s.horizon.shader_pack, "horizon:p");
     }
 
     #[test]
@@ -5760,6 +5768,7 @@ mod tests {
         };
         let pack = crate::shader_pack_list::Entry {
             file: "p".into(),
+            key: "p".into(),
             title: "P".into(),
             kind: crate::shader_pack_list::Kind::Horizon,
             options: vec![

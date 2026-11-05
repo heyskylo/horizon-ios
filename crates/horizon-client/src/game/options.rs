@@ -426,6 +426,14 @@ impl Game<'_> {
                     super::packs::open_folder(&dir);
                 }
                 Event::ListShaderPacks => {
+                    let (key, _) = horizon_client::shader_pack_list::resolve(
+                        &Self::shader_packs_dir(),
+                        &self.settings.horizon.shader_pack,
+                    );
+                    if key != self.settings.horizon.shader_pack {
+                        self.settings.horizon.shader_pack = key;
+                        self.settings.save(&Self::options_path());
+                    }
                     self.settings.shader_packs =
                         horizon_client::shader_pack_list::scan(&Self::shader_packs_dir());
                 }
