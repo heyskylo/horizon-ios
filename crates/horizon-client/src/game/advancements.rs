@@ -230,6 +230,9 @@ impl adv::World for View<'_, '_> {
             "block" => items.block_in_tag(tag, id),
             "entity_type" => self.0.res.mob_data().entity_has(tag, id),
             "worldgen/biome" => self.0.res.mob_data().biome_has(tag, id),
+            "worldgen/structure" => vanilla_structure_tags(&self.0.options.resources)
+                .get(tag)
+                .is_some_and(|t| t.contains(id)),
             "damage_type" => self
                 .0
                 .health_resources
@@ -239,6 +242,21 @@ impl adv::World for View<'_, '_> {
             _ => false,
         }
     }
+}
+type Tags = std::collections::HashMap<String, std::collections::HashSet<String>>;
+/// The game's own `worldgen/structure` tags (a world without data packs has
+/// no `WorldTables` to hold them), loaded once for the resource root first
+/// asked for, as `StructureSpawns::shared`.
+fn vanilla_structure_tags(root: &std::path::Path) -> &'static Tags {
+    static TAGS: std::sync::OnceLock<Tags> = std::sync::OnceLock::new();
+    TAGS.get_or_init(|| {
+        horizon_client::items::load_tags(
+            root,
+            "worldgen/structure",
+            &horizon_world::loot::PackOverlay::NONE,
+        )
+        .unwrap_or_default()
+    })
 }
 fn now_text() -> String {
     let secs = std::time::SystemTime::now()
@@ -2726,5 +2744,98 @@ mod tests {
             finished.is_some_and(|t| (9600..=9620).contains(&t)),
             "{finished:?}"
         );
+    }
+}
+#[cfg(test)]
+mod structure_tag_tests {
+    use super::View;
+    use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+    use horizon_client::advancements::{World, id_matches};
+    use serde_json::json;
+
+    /// `LocationPredicate.structures` names a `#tag`: the game's own
+    /// `worldgen/structure` tags, and with a world's data packs theirs over
+    /// the game's.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn location_structure_tags_hold_their_structures() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        let set = |s: &str| json!(s);
+        let holds = |game: &Game, tag: &str, id: &str| {
+            id_matches(&set(tag), "worldgen/structure", id, &View(game))
+        };
+        // A world without packs: the game's own tags.
+        assert!(game.world_tables.is_none());
+        assert!(holds(
+            &game,
+            "#minecraft:village",
+            "minecraft:village_taiga"
+        ));
+        assert!(holds(&game, "#shipwreck", "minecraft:shipwreck_beached"));
+        assert!(!holds(&game, "#minecraft:village", "minecraft:shipwreck"));
+        assert!(!View(&game).in_tag("worldgen/structure", "mypack:village", "minecraft:igloo"));
+
+        // A pack's own tag (nesting the game's) and an addition to the game's.
+        let dir =
+            std::env::temp_dir().join(format!("horizon-structure-tags-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let pack = dir.join("datapacks").join("mypack");
+        let tags = pack.join("data/mypack/tags/worldgen/structure");
+        let game_tags = pack.join("data/minecraft/tags/worldgen/structure");
+        std::fs::create_dir_all(&tags).unwrap();
+        std::fs::create_dir_all(&game_tags).unwrap();
+        std::fs::write(pack.join("pack.mcmeta"), "{}").unwrap();
+        std::fs::write(
+            tags.join("village.json"),
+            r##"{"values": ["#minecraft:village", "minecraft:igloo"]}"##,
+        )
+        .unwrap();
+        std::fs::write(
+            game_tags.join("shipwreck.json"),
+            r#"{"values": ["minecraft:ocean_ruin_cold"]}"#,
+        )
+        .unwrap();
+        let settings = json!({"enabled": ["file/mypack"], "disabled": []});
+        std::fs::write(dir.join("datapacks.json"), settings.to_string()).unwrap();
+        game.world_root = dir.clone();
+        let (tables, _) = game.build_world_tables(false, &[]).unwrap();
+        game.world_tables = tables;
+        assert!(game.world_tables.is_some());
+        assert!(holds(&game, "#mypack:village", "minecraft:igloo"));
+        assert!(holds(&game, "#mypack:village", "minecraft:village_plains"));
+        assert!(!holds(&game, "#mypack:village", "minecraft:shipwreck"));
+        assert!(holds(
+            &game,
+            "#minecraft:shipwreck",
+            "minecraft:ocean_ruin_cold"
+        ));
+        assert!(holds(&game, "#minecraft:shipwreck", "minecraft:shipwreck"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

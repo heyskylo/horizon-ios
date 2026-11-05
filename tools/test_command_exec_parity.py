@@ -302,6 +302,12 @@ def main():
     predicates = corpus_module.predicate_selector_fixtures([name for name, _ in groups])
     functions = corpus_module.function_return_fixtures([name for name, _ in groups])
     recipes = corpus_module.crafting_priority_recipes([name for name, _ in groups])
+    if any(name == 'transmute result patches' for name, _ in groups):
+        try:
+            from .transmute_patch_corpus import fixture_recipes
+        except ImportError:
+            from transmute_patch_corpus import fixture_recipes
+        recipes.update(fixture_recipes())
     advancements = corpus_module.advancement_reward_fixtures([name for name, _ in groups])
     loot_advancements, loot_tables = corpus_module.advancement_loot_fixtures([name for name, _ in groups])
     advancements.update(loot_advancements)

@@ -462,6 +462,7 @@
   "Copying…": "Wird kopiert…",
   "Filters": "Filter",
   "{count} followers": "{count} Follower",
+  "{count} stars on GitHub": "{count} Sterne auf GitHub",
   "Connect an AI agent": "Connect an AI agent",
   "Each switch is off unless you turn it on. What it sends is below it; the privacy page on playhorizon.dev says how long it is kept.": "Each switch is off unless you turn it on. What it sends is below it; the privacy page on playhorizon.dev says how long it is kept.",
   "Players": "Spieler",
@@ -646,6 +647,7 @@
   "Default skin": "Standard-Skin",
   "A link to a repository (its latest release), a release, a branch or tag, or a commit. The launcher installs one exact release file or commit, never a branch that moves.": "Ein Link zu einem Repository (dessen neuestem Release), einem Release, einem Branch oder Tag oder einem Commit. Der Launcher installiert eine genaue Release-Datei oder einen genauen Commit, niemals einen beweglichen Branch.",
   "Sign in with GitHub to rate": "Mit GitHub anmelden, um zu bewerten",
+  "Star on GitHub": "Auf GitHub mit Stern markieren",
   "Up to date: {instance} plays these mods.": "Auf dem neuesten Stand: {instance} spielt mit diesen Mods.",
   "On this computer": "Auf diesem Computer",
   "Needs preparing": "Vorbereitung erforderlich",
@@ -1144,7 +1146,7 @@
   "Move…": "Verschieben…",
   "Move and restart": "Verschieben und neu starten",
   "Could not open the data folder: {error}": "Could not open the data folder: {error}",
-  "Open the shop": "Shop öffnen",
+  "Get more cosmetics on playhorizon.dev": "Mehr Kosmetik auf playhorizon.dev",
   "You don't own any cosmetics yet.": "Du besitzt noch keine Kosmetik.",
   "Automatic follows this launcher's architecture. On Windows ARM, choose x64 or ARM64. Releases without ARM64 use the signed x64 build.": "Automatisch übernimmt die Architektur dieses Launchers. Unter Windows ARM können Sie x64 oder ARM64 wählen. Versionen ohne ARM64 verwenden den signierten x64-Build.",
   "Game architecture": "Spielarchitektur",
@@ -1178,5 +1180,7 @@
   "Needs native hook points v{needs}, the Horizon you play has v{has}: update Horizon first": "Braucht native Hook-Punkte v{needs}, dein Horizon hat v{has}: aktualisiere zuerst Horizon",
   "Made for Horizon {pin}, but {mods} pin another commit: the build will ask you to Build anyway and may not compile": "Für Horizon {pin} gemacht, aber {mods} sind an einen anderen Commit gebunden: der Build fragt nach „Trotzdem bauen“ und kompiliert vielleicht nicht",
   "Made for Horizon {pin}, you play {yours}: the launcher builds your game on {pin}": "Für Horizon {pin} gemacht, du spielst {yours}: der Launcher baut dein Spiel auf {pin}",
-  "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready."
+  "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.",
+  "Tags": "Tags",
+  "Windows' Smart App Control is blocking the build (os error 4551). It only lets signed programs run, and a native build runs programs no one has signed: the ones it compiles on this computer and some of the compiler's own. To build native mods, turn it off in Windows Security > App & browser control > Smart App Control settings, then build again. On some Windows versions it can't be turned back on without reinstalling Windows. Content mods (.hmod) need no build and work with it on.": "Die intelligente App-Steuerung (Smart App Control) von Windows blockiert den Build (os error 4551). Sie lässt nur signierte Programme laufen, und ein nativer Build führt Programme aus, die niemand signiert hat: die, die er auf diesem Computer kompiliert, und einige des Compilers selbst. Um native Mods zu bauen, schalte sie unter Windows-Sicherheit > App- & Browsersteuerung > Einstellungen für intelligente App-Steuerung aus und baue dann erneut. Auf manchen Windows-Versionen lässt sie sich ohne Neuinstallation von Windows nicht wieder einschalten. Inhalts-Mods (.hmod) brauchen keinen Build und funktionieren auch mit ihr."
 }
