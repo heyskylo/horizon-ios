@@ -408,6 +408,7 @@
   "Frame Generation": "Gjenerimi i kornizës",
   "Shows a made-up frame between each two real ones: smoother, a little more lag.": "Tregon një kornizë të krijuar midis secilës dy të vërteta: më e butë, pak më shumë vonesë.",
   "Shadow Cache": "Cache hije",
+  "Shader Packs...": "Paketat Shader...",
   "Reuses the pack shadow map when sun, view and world match. Off by default.": "Ripërdor hartën e hijes së paketës kur dielli, pamja dhe bota përputhen. Joaktiv si parazgjedhje.",
   "Find BlueMap": "Gjeni BlueMap",
   "On servers, finds their BlueMap web map for far terrain. Next join.": "Në serverë, gjen hartën e tyre të internetit BlueMap për terrene të largëta. Bashkohu tjetër.",

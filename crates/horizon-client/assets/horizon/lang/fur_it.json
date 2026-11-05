@@ -407,6 +407,7 @@
   "Frame Generation": "Gjenerazion di cuadri",
   "Shows a made-up frame between each two real ones: smoother, a little more lag.": "Al mostre un cuadri fat jenfri ognidun dai doi vêrs: plui lissîf, un pocje di plui di ritarts.",
   "Shadow Cache": "Cache ombre",
+  "Shader Packs...": "Pachetis ombrenadôrs...",
   "Reuses the pack shadow map when sun, view and world match. Off by default.": "Riutilizâ la mape ombre dal grup cuant che il soreli, la viste e il mont a corispuindin. Disactivât par automatic.",
   "Find BlueMap": "Cjatâ la mape blu",
   "On servers, finds their BlueMap web map for far terrain. Next join.": "Sui servidôrs, al cjate la lôr mape web BlueMap par terens lontans. Prossime unîsi.",

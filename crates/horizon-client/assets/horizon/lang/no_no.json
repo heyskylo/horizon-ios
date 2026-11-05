@@ -453,5 +453,6 @@
   "horizon.extras.cosmetics_auras.tooltip": "Auraer og stier andre spillere har på seg. Av som standard.",
   "horizon.extras.cosmetics.shown": "Vist",
   "horizon.extras.cosmetics.hidden": "Skjult",
-  "horizon.extras.cosmetics.name_tags": "Kun navnelapper"
+  "horizon.extras.cosmetics.name_tags": "Kun navnelapper",
+  "Shader Packs...": "Shader-pakker..."
 }

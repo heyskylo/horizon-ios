@@ -6,7 +6,7 @@ Horizon's graphics settings are one screen, opened from the top of **Video Setti
 
 The screen holds vanilla's video options and Horizon's own together, built from Minecraft's own screen patterns in the design system's Blocks palette (`docs/design-system.md`), on see-through panels so the world stays in view:
 
-- Down the left, under the Horizon mark: the search field, the pages (General, Quality, Performance, Advanced and HDR) as a column of names, and **Undo** and **Done** at the foot.
+- Down the left, under the Horizon mark: the search field, the pages (General, Quality, Performance, Shaders, Advanced and HDR) as a column of names, and **Undo** and **Done** at the foot.
 - On the right, a plate shows the open page alone, under its name: its settings in titled groups (Distance, Display, Culling...), each group on a panel of its own. A row has the setting's name on the left and its control on the right: a tick box for on and off, a value between arrows that a press steps through, a value whose slider (a thin track under the value) shows while the row is pointed at or focused. A setting that can't be used now is greyed.
 - The search field shows the settings of every page whose name or description has the words typed, under their page's name; picking a page then scrolls to its matches.
 - A strip under the plate holds the hovered or focused setting's name, its cost in frame time (no cost, low, medium, high, or saves time for culling that makes frames faster) and what it does; with none, what the open page holds.
@@ -26,7 +26,8 @@ Every setting applies at once, except worker threads, the graphics API and trans
 | Quality | clouds, cloud distance, weather radius, particles, smooth lighting, biome blend, entity distance, entity shadows, vignette, chunk fade, mipmap levels, cutout leaves, improved transparency | `options.txt` |
 | | sky, fog, weather, animated textures, distant plant dither (`ditherCutoutMips`, off by default: cutouts from 64 texels up), resolution scale, anti-aliasing (FXAA or TAA), TAA upscaling, screenshot quality, frame generation | `horizon-graphics.txt` |
 | Performance | chunk builder | `options.txt` |
-| | chunk updates and upload budget per frame, worker threads, cave culling, GPU culling, entity and particle culling modes, leaf culling, shadow cache, battery mode, and the block-entity caches (shulker boxes, signs, decorated pots, bells, chests, banners, copper golem statues) | `horizon-graphics.txt` |
+| | chunk updates and upload budget per frame, worker threads, cave culling, GPU culling, entity and particle culling modes, leaf culling, battery mode, and the block-entity caches (shulker boxes, signs, decorated pots, bells, chests, banners, copper golem statues) | `horizon-graphics.txt` |
+| Shaders | **Shader Packs...**: the list of shader packs, Horizon's `.hshader` ones and `shaders/` folder ones ([shaders.md](shaders.md)), and the picked pack's options; shadow cache | `horizon-graphics.txt`, the pack's own options file |
 | Advanced | present mode, frame pacing, graphics API, translucent batching, performance overlay (FPS, frame/CPU/GPU times, frame-time graph) | `horizon-graphics.txt` |
 | HDR | HDR, calibration, black level, peak brightness, paper white, UI brightness, a shortcut key to the page | `horizon-graphics.txt` |
 
