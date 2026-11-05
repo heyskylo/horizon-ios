@@ -38,6 +38,15 @@ pub fn set_pending(staged: Option<Staged>) {
     *PENDING.lock().unwrap_or_else(|e| e.into_inner()) = staged;
 }
 
+/// Drops a staged update without installing it, and its stage: the window quits for the data move,
+/// whose worker copies the data folder the stage is in. The launcher it restarts checks again.
+pub fn forget() {
+    let staged = PENDING.lock().unwrap_or_else(|e| e.into_inner()).take();
+    if let Some(staged) = staged {
+        backend::remove_stage(&backend::update_work_dir(), &staged.payload);
+    }
+}
+
 /// The window is closing: a staged update goes in once it has exited, and the next start is the
 /// new launcher.
 pub fn on_quit() {
@@ -166,13 +175,13 @@ pub fn run() -> Option<i32> {
     // are theirs.
     backend::remove_stage(&backend::update_work_dir(), &request.staged.payload);
     if let Err(e) = &result {
-        record_failure(e);
+        record_failure(&request.staged.tag, e);
     }
     if let Some(args) = request.restart {
         let mut cmd = crate::process::command(backend::update_target());
         cmd.args(args).env_remove(SHA256_ENV).stdin(Stdio::null());
         if let Err(e) = cmd.spawn() {
-            record_failure(&format!("{e}"));
+            record_failure(&request.staged.tag, &format!("{e}"));
         }
     }
     Some(i32::from(result.is_err()))
@@ -217,21 +226,57 @@ fn failure_file() -> PathBuf {
     backend::data_dir().join(".launcher-update-failed")
 }
 
-fn record_failure(error: &str) {
+/// The release that didn't go in on the first line, then why.
+fn record_failure(tag: &str, error: &str) {
     let _ = fs::create_dir_all(backend::data_dir());
-    let _ = fs::write(failure_file(), error);
+    let _ = fs::write(failure_file(), format!("{tag}\n{error}"));
 }
 
 /// Why the last update from the window didn't go in, once: the file is removed as it is read.
+/// Nothing once this launcher is that release or a newer one (another copy, the command line or
+/// the site put it in since), so a current launcher never says its update failed.
 pub fn take_failure() -> Option<String> {
-    let error = fs::read_to_string(failure_file()).ok()?;
+    let text = fs::read_to_string(failure_file()).ok()?;
     let _ = fs::remove_file(failure_file());
+    failure_to_show(&text, backend::VERSION)
+}
+
+/// What [`take_failure`] shows of the failure file's `text` to launcher `version`. A file from a
+/// launcher before the tag line is all error.
+fn failure_to_show(text: &str, version: &str) -> Option<String> {
+    let (tag, error) = match text.split_once('\n') {
+        Some((tag, error)) if backend::launcher_version(tag.trim()).is_some() => {
+            (Some(tag.trim()), error)
+        }
+        _ => (None, text),
+    };
+    if tag.is_some_and(|tag| backend::already_in_place(Some(version), tag)) {
+        return None;
+    }
     Some(error.trim().to_owned()).filter(|e| !e.is_empty())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A failure is shown to the launcher it failed to replace, and not to one already at that
+    /// release or past it; a file without the tag line, from an older installer, still shows.
+    #[test]
+    fn a_failure_is_not_shown_once_its_release_is_in() {
+        let file = "launcher@0.2.41\nCould not replace the launcher: denied";
+        assert_eq!(
+            failure_to_show(file, "0.2.40").as_deref(),
+            Some("Could not replace the launcher: denied")
+        );
+        assert_eq!(failure_to_show(file, "0.2.41"), None);
+        assert_eq!(failure_to_show(file, "0.3.0"), None);
+        assert_eq!(
+            failure_to_show("Could not start it\nsecond line", "9.9.9").as_deref(),
+            Some("Could not start it\nsecond line")
+        );
+        assert_eq!(failure_to_show("launcher@0.2.41\n  ", "0.2.40"), None);
+    }
 
     fn staged() -> Staged {
         Staged {
