@@ -4844,7 +4844,10 @@ def crafter_map_extension():
     ops += setup('/execute store success score identity_changed crafter_map run data modify storage h298:identity uuid set from entity @s UUID')
     ops += [cmd('/scoreboard players get identity_changed crafter_map', expect_result=0),
             cmd('/execute if entity @s[type=player,nbt={Pos:[8.5d,200d,8.5d],Health:20f}]', expect_result=1)]
-    return ops + setup('/setblock 4 200 5 air', '/scoreboard objectives remove crafter_map', '/forceload remove 0 0 15 15')
+    # Later groups build on the setup's empty, creative world: take the room, its floor and its chunk back.
+    return ops + setup('/setblock 4 200 3 air', '/setblock 4 200 4 air', '/setblock 4 200 5 air',
+                       '/fill 0 199 0 15 199 15 air', '/gamemode creative', '/clear @s',
+                       '/scoreboard objectives remove crafter_map', '/forceload remove 0 0 15 15')
 
 
 def advancement_loot_fixtures(group_names):
