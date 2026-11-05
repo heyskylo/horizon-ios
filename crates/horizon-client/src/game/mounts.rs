@@ -17,6 +17,19 @@ use horizon_core::{
     random::RandomSource,
 };
 
+/// `ItemStack.hurtAndConvertOnBreak`: the stack after `wear` more damage, or -
+/// when that wear breaks it - the copy it leaves behind
+/// (`transmuteCopyIgnoreEmpty`: the components carry over, and a damageable
+/// copy starts whole). None while it still holds, so the caller adds the wear.
+fn stick_on_break(stack: &ItemStack, wear: u32, max: u32) -> Option<ItemStack> {
+    if max == 0 || stack.damage + wear < max {
+        return None;
+    }
+    let mut rod = stack.transmute("minecraft:fishing_rod", 1);
+    rod.damage = 0;
+    Some(rod)
+}
+
 fn steering_item(species: Species, main: Option<&str>, offhand: Option<&str>) -> bool {
     let item = match species {
         Species::Pig => "minecraft:carrot_on_a_stick",
@@ -211,23 +224,30 @@ impl Game<'_> {
         if !self.creative
             && let Some(stack) = self.inventory[self.selected].clone()
         {
-            self.trigger_item_durability(&stack, stack.damage + wear);
-            if let Some(stack) = self.inventory[self.selected].as_mut() {
-                stack.damage += wear;
-                let max = self
-                    .res
-                    .items()
-                    .get(&stack.item)
-                    .map_or(25, |i| i.max_damage);
-                if stack.damage >= max {
-                    let broken = stack.clone();
-                    self.inventory[self.selected] =
-                        Some(ItemStack::new("minecraft:fishing_rod", 1));
-                    // ItemStack.hurtAndBreak: onEquippedItemBroken, then the replacement.
+            // `ItemStack.hurtAndBreak`: Unbreaking has its say first, and the
+            // durability trigger only hears the wear it leaves.
+            let wear = self.wear(&stack, wear);
+            let max = self
+                .res
+                .items()
+                .get(&stack.item)
+                .map_or(25, |i| i.max_damage);
+            match stick_on_break(&stack, wear, max) {
+                Some(rod) => {
+                    // `hurtAndConvertOnBreak`: the stick breaks (the broken
+                    // statistic and `onEquippedItemBroken`), then what is
+                    // left is the rod, not a fresh plain one.
+                    self.award_stat("broken", &stack.item, 1);
                     self.player_equipment_broke(
                         horizon_world::player_inventory::EquipmentSlot::MainHand,
-                        &broken,
+                        &stack,
                     );
+                    self.inventory[self.selected] = Some(rod);
+                }
+                None => {
+                    if let Some(stack) = self.inventory[self.selected].as_mut() {
+                        stack.damage += wear;
+                    }
                 }
             }
         }
