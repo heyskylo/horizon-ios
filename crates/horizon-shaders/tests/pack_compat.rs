@@ -163,6 +163,36 @@ fn a_matrix_built_from_one_vector_takes_its_components_column_by_column() {
 }
 
 #[test]
+fn a_texel_offset_a_function_gets_as_a_parameter_moves_the_coordinate() {
+    // Arc's FXAA: `textureLodOffset(tex, uv, 0.0, offset)` with `const in ivec2 offset`.
+    let module = assert_terrain_translates(
+        "#version 330\nuniform sampler2D colortex4;\n\
+         float lumaAt(const in vec2 uv, const in ivec2 offset) {\n\
+         return textureLodOffset(colortex4, uv, 0.0, offset).r + textureOffset(colortex4, uv, offset).g;\n}\n\
+         layout(location = 0) out vec4 color;\n\
+         void main() { color = vec4(lumaAt(vec2(0.5), ivec2(0, -1)), textureOffset(colortex4, vec2(0.5), ivec2(1, 0)).r, 0.0, 1.0); }\n",
+    );
+    // The constant offset in `main` stays an offset.
+    let offsets = module
+        .functions
+        .iter()
+        .map(|(_, f)| &f.expressions)
+        .chain(module.entry_points.iter().map(|e| &e.function.expressions))
+        .flat_map(|e| e.iter())
+        .filter(|(_, e)| {
+            matches!(
+                e,
+                naga::Expression::ImageSample {
+                    offset: Some(_),
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(offsets, 1);
+}
+
+#[test]
 fn integer_samplers_read_through_the_float_sampling_functions() {
     // Mello, Voyager, Exposa, Reverie: `uint mask = texture(colortex3, uv).r` on a usampler2D.
     let module = assert_terrain_translates(
