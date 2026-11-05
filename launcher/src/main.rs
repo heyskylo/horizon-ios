@@ -920,7 +920,10 @@ impl Launcher {
     /// When another launcher already put it there, this one only restarts.
     fn apply_launcher_update(&mut self, cx: &mut App) {
         match horizon_launcher::update_handoff::start_now() {
-            Ok(true) => shut_down(cx),
+            Ok(true) => {
+                servers_page::keep_running_through_update();
+                shut_down(cx)
+            }
             Ok(false) => self.self_update = SelfUpdate::Failed(backend::restart()),
             Err(e) => self.self_update = SelfUpdate::Failed(e),
         }
@@ -1152,8 +1155,10 @@ impl Launcher {
                             if e == account::NoOwner.to_string() {
                                 self.owner = Some(false);
                                 self.owner_screen_open = true;
+                                self.client_error = Some(account::NoOwner::in_window());
+                            } else {
+                                self.client_error = Some(e);
                             }
-                            self.client_error = Some(e);
                         }
                     }
                 }
@@ -1166,7 +1171,7 @@ impl Launcher {
                             Err(account::NoOwner) => {
                                 self.owner = Some(false);
                                 self.owner_screen_open = true;
-                                self.client_error = Some(format!("{}.", tr(account::NEEDS_OWNER)));
+                                self.client_error = Some(account::NoOwner::in_window());
                                 self.starting_pack = None;
                                 self.joining = None;
                                 self.quick_play = None;

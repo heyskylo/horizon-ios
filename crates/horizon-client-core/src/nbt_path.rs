@@ -194,6 +194,20 @@ impl NbtPath {
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty()
     }
+    /// Whether this selects a compound-field chain, including filtered or quoted fields.
+    /// Matching a root or child does not change that subtree's writer provenance.
+    pub fn is_field_path(&self, fields: &[&str]) -> bool {
+        let mut fields = fields.iter();
+        for node in &self.nodes {
+            match node {
+                Node::MatchRoot(_) => {}
+                Node::Child(name) | Node::MatchChild(name, _)
+                    if fields.next().copied() == Some(name.as_str()) => {}
+                _ => return false,
+            }
+        }
+        fields.next().is_none()
+    }
     fn not_found(&self, node: usize) -> PathError {
         let end = self.ends[node];
         PathError::new(
@@ -826,6 +840,25 @@ fn parse_compound(text: &str, i: usize) -> Result<(Tag, usize), PathError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn field_provenance_handles_quotes_and_filters_without_matching_lists() {
+        for text in [
+            "blockState.properties",
+            "\"blockState\".\"properties\"",
+            "{source:1b}.blockState.properties",
+            "blockState{id:\"minecraft:piston_head\"}.properties",
+        ] {
+            let path = NbtPath::parse(text).unwrap();
+            assert!(path.is_field_path(&["blockState", "properties"]));
+            assert!(!path.is_field_path(&["blockState"]));
+        }
+        assert!(NbtPath::parse("{source:1b}").unwrap().is_field_path(&[]));
+        assert!(
+            !NbtPath::parse("blockState[].properties")
+                .unwrap()
+                .is_field_path(&["blockState", "properties"])
+        );
+    }
 
     fn tag(s: &str) -> Tag {
         parse_snbt(s).unwrap().0

@@ -796,8 +796,8 @@ fn run(
         }
     };
     status(send, &tr(lang, "connect.joining"));
-    c.send(&cfg::Serverbound::ClientInformation(info).encode())
-        .map_err(e)?;
+    // ClientHandshakePacketListenerImpl.handleLoginFinished: the brand, then
+    // the client information.
     c.send(
         &cfg::Serverbound::CustomPayload(cfg::CustomPayload {
             channel: "minecraft:brand".into(),
@@ -806,6 +806,8 @@ fn run(
         .encode(),
     )
     .map_err(e)?;
+    c.send(&cfg::Serverbound::ClientInformation(info).encode())
+        .map_err(e)?;
     let (mut reader, writer) = c.split();
     *shared_writer.lock().unwrap() = Some(writer);
     let registries = configure(
@@ -1055,16 +1057,18 @@ fn configure(
                 receive_brand(&p, send);
             }
             cfg::Clientbound::Ping(p) => reply(cfg::Serverbound::Pong(p))?,
-            // Know no packs: the server then sends every registry entry in full.
-            cfg::Clientbound::SelectKnownPacks(_) => {
+            cfg::Clientbound::SelectKnownPacks(p) => {
                 reply(cfg::Serverbound::SelectKnownPacks(cfg::SelectKnownPacks {
-                    packs: vec![],
+                    packs: select_known_packs(p.packs),
                 }))?
             }
             cfg::Clientbound::UpdateEnabledFeatures(p) => {
                 let _ = send.send(Event::Features(p.features));
             }
-            cfg::Clientbound::RegistryData(r) => registries.add(r),
+            cfg::Clientbound::RegistryData(mut r) => {
+                fill_known_entries(&mut r, resources);
+                registries.add(r);
+            }
             cfg::Clientbound::UpdateTags(t) => registries.add_tags(&t),
             cfg::Clientbound::CodeOfConduct(c) => {
                 let _ = send.send(Event::CodeOfConduct(c.text));
@@ -1114,6 +1118,50 @@ fn configure(
                 return Ok(registries);
             }
             _ => {}
+        }
+    }
+}
+
+/// `KnownPacksManager.trySelectingPacks`: the packs of the server's list the
+/// client has too. Horizon carries vanilla's core pack (the prepared
+/// resources' `data/`), so it names that one when the server offers it, and
+/// the server leaves that pack's entries' data out (`fill_known_entries`).
+fn select_known_packs(offered: Vec<cfg::KnownPack>) -> Vec<cfg::KnownPack> {
+    let (namespace, id, version) = crate::lan::data::CORE_PACK;
+    offered
+        .into_iter()
+        .filter(|p| p.namespace == namespace && p.id == id && p.version == version)
+        .collect()
+}
+
+/// `RegistryDataCollector`: an entry of a pack both sides know comes without
+/// its data, which the client reads from its own copy of the pack
+/// (`data/<namespace>/<registry path>/<path>.json`, `Registries.elementsDirPath`).
+fn fill_known_entries(r: &mut cfg::RegistryData, resources: &Path) {
+    let (registry_ns, registry_path) = r
+        .registry
+        .split_once(':')
+        .unwrap_or(("minecraft", r.registry.as_str()));
+    let dir = if registry_ns == "minecraft" {
+        registry_path.to_owned()
+    } else {
+        format!("{registry_ns}/{registry_path}")
+    };
+    for entry in r.entries.iter_mut().filter(|e| e.data.is_none()) {
+        let (ns, path) = entry
+            .id
+            .split_once(':')
+            .unwrap_or(("minecraft", entry.id.as_str()));
+        let file = resources
+            .join("data")
+            .join(ns)
+            .join(&dir)
+            .join(format!("{path}.json"));
+        let json = std::fs::read(&file)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+        if let Some(json) = json {
+            entry.data = Some(crate::lan::data::json_to_nbt(&json));
         }
     }
 }
@@ -1324,6 +1372,79 @@ fn continues_after_failed_join(lan: bool, signed_in: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pack(namespace: &str, id: &str, version: &str) -> cfg::KnownPack {
+        cfg::KnownPack {
+            namespace: namespace.into(),
+            id: id.into(),
+            version: version.into(),
+        }
+    }
+
+    #[test]
+    fn the_client_knows_vanilla_core_pack_of_its_own_version_only() {
+        let core = pack("minecraft", "core", horizon_protocol::GAME_VERSION);
+        let offered = vec![
+            core.clone(),
+            pack(
+                "minecraft",
+                "trade_rebalance",
+                horizon_protocol::GAME_VERSION,
+            ),
+            pack("example", "server_pack", "1"),
+        ];
+        assert_eq!(select_known_packs(offered), vec![core]);
+        assert_eq!(
+            select_known_packs(vec![pack("minecraft", "core", "1.21.11")]),
+            vec![]
+        );
+        assert_eq!(select_known_packs(vec![]), vec![]);
+    }
+
+    #[test]
+    fn a_known_entry_takes_its_data_from_the_clients_pack() {
+        let root = std::env::temp_dir().join(format!("hz-known-entries-{}", std::process::id()));
+        let dir = root.join("data/minecraft/damage_type");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("in_fire.json"),
+            br#"{"message_id": "inFire", "exhaustion": 0.1, "scaling": "when_caused_by_living_non_player"}"#,
+        )
+        .unwrap();
+        let sent = Tag::compound(vec![(
+            "message_id",
+            Tag::String(JavaString::from("custom")),
+        )]);
+        let mut r = cfg::RegistryData {
+            registry: "minecraft:damage_type".into(),
+            entries: vec![
+                cfg::RegistryEntry {
+                    id: "minecraft:in_fire".into(),
+                    data: None,
+                },
+                cfg::RegistryEntry {
+                    id: "minecraft:custom".into(),
+                    data: Some(sent.clone()),
+                },
+                cfg::RegistryEntry {
+                    id: "minecraft:missing".into(),
+                    data: None,
+                },
+            ],
+        };
+        fill_known_entries(&mut r, &root);
+        std::fs::remove_dir_all(&root).unwrap();
+        let Some(Tag::Compound(filled)) = &r.entries[0].data else {
+            panic!("in_fire was not filled: {:?}", r.entries[0].data);
+        };
+        assert_eq!(
+            filled.get(&JavaString::from("message_id")),
+            Some(&Tag::String(JavaString::from("inFire")))
+        );
+        // Data the server sent stays; an entry the client has no file for stays empty.
+        assert_eq!(r.entries[1].data, Some(sent));
+        assert_eq!(r.entries[2].data, None);
+    }
 
     /// Launchers find the last server joined in `latest.log` by vanilla's line.
     #[test]
@@ -1557,11 +1678,7 @@ mod tests {
                 login::Serverbound::decode(id, &body).unwrap(),
                 login::Serverbound::LoginAcknowledged(_)
             ));
-            let (id, body) = server.recv().unwrap();
-            assert!(matches!(
-                cfg::Serverbound::decode(id, &body).unwrap(),
-                cfg::Serverbound::ClientInformation(_)
-            ));
+            // handleLoginFinished: the brand first, then the information.
             let (id, body) = server.recv().unwrap();
             assert_eq!(
                 cfg::Serverbound::decode(id, &body).unwrap(),
@@ -1570,6 +1687,11 @@ mod tests {
                     data: b"\x07vanilla".to_vec(),
                 })
             );
+            let (id, body) = server.recv().unwrap();
+            assert!(matches!(
+                cfg::Serverbound::decode(id, &body).unwrap(),
+                cfg::Serverbound::ClientInformation(_)
+            ));
             server
                 .send(
                     &cfg::Clientbound::CustomPayload(cfg::CustomPayload {

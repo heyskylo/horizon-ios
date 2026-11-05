@@ -341,6 +341,48 @@ impl Game<'_> {
                     out.push_str(&record.to_string());
                     out.push('\n');
                 }
+                "player_loop" => {
+                    let ticks = op["n"].as_u64().unwrap_or(1);
+                    let count = |g: &mut Self| {
+                        Ok(g.stats
+                            .values
+                            .get("minecraft:custom")
+                            .and_then(|m| m.get("minecraft:play_time"))
+                            .copied()
+                            .unwrap_or(0))
+                    };
+                    let before = self.harness_owner(count)?;
+                    self.chat_capture = Some(Vec::new());
+                    for _ in 0..ticks {
+                        self.tick_server(false)?;
+                    }
+                    let messages = self.chat_capture.take().unwrap_or_default();
+                    let delta = self.harness_owner(count)? - before;
+                    if delta != ticks as i32 {
+                        return Err(format!(
+                            "player loop did not advance play_time: {delta}/{ticks}"
+                        )
+                        .into());
+                    }
+                    let record = json!({"cmd": format!("#player_loop {}",op["label"].as_str().unwrap_or("")), "messages": messages.iter().map(spans).collect::<Vec<_>>(), "results": [[true,delta]]});
+                    out.push_str(&record.to_string());
+                    out.push('\n');
+                }
+                "player_state" => {
+                    let state = self.harness_owner(|g| {
+                        let p = g.player.as_ref().ok_or("player state: no actor")?;
+                        let mut loaded = Vec::new();
+                        let mut done = std::collections::BTreeMap::new();
+                        for a in g.adv.tree.list.iter().filter(|a| a.id.starts_with("h311:")) {
+                            loaded.push(a.id.clone()); done.insert(a.id.clone(),g.adv.progress.done(a));
+                        }
+                        loaded.sort();
+                        Ok(json!({"health":p.health.health(),"poison_ticks":g.potions.effects.list.iter().find(|e|e.id=="poison").map_or(0,|e|e.duration),"loaded":loaded,"done":done}))
+                    })?;
+                    let record = json!({"cmd":format!("#player_state {}",op["label"].as_str().unwrap_or("")),"messages":[],"results":[],"state":state});
+                    out.push_str(&record.to_string());
+                    out.push('\n');
+                }
                 "tick" => {
                     self.chat_capture = Some(Vec::new());
                     let paced_start = Instant::now();
@@ -390,6 +432,52 @@ impl Game<'_> {
                         std::thread::sleep(Duration::from_millis(2));
                     }
                     self.harness_owner(|g| g.harness_settle(deadline, op.get("required_chunks")))?;
+                }
+                "use_item" => {
+                    // Exercise the connected owner's normal server packet route.
+                    let sequence = op["sequence"].as_i64().unwrap_or(0) as i32;
+                    let yaw = op["yaw"].as_f64().unwrap_or(0.0) as f32;
+                    let pitch = op["pitch"].as_f64().unwrap_or(0.0) as f32;
+                    let owner = self
+                        .serving
+                        .as_ref()
+                        .ok_or("command harness: no server")?
+                        .owner;
+                    self.in_owner_level(|g| -> Result<()> {
+                        let conn = g
+                            .lan
+                            .as_ref()
+                            .and_then(|h| {
+                                h.hub
+                                    .guests
+                                    .iter()
+                                    .find(|guest| guest.uuid == owner && guest.placed)
+                                    .map(|guest| guest.conn)
+                            })
+                            .ok_or("command harness: owner is not connected")?;
+                        let mut host = g.lan.take().ok_or("command harness: no hub")?;
+                        g.lan_guest_packet(
+                            &mut host,
+                            conn,
+                            horizon_protocol::packets::play::Serverbound::UseItem(
+                                horizon_protocol::packets::play::UseItem {
+                                    hand: 0,
+                                    yaw,
+                                    pitch,
+                                    sequence,
+                                },
+                            ),
+                        );
+                        let ack = host
+                            .hub
+                            .guest(conn)
+                            .is_some_and(|g| g.ack_up_to.get() >= sequence);
+                        g.lan = Some(host);
+                        if !ack {
+                            return Err("command harness: UseItem was not acknowledged".into());
+                        }
+                        Ok(())
+                    })?;
                 }
                 "use_block" => {
                     // Exercise the connected owner's normal server packet route.

@@ -347,6 +347,7 @@
   "horizon.friends.stopped": "Stopped sharing the invite code.",
   "horizon.friends.short_code_changed": "Someone kept trying a wrong short code, so it changed.",
   "horizon.friends.wrong_code": "Someone tried a wrong code.",
+  "horizon.friends.relay_stopped": "Too many wrong short codes, so the relay is off until you share again. Friends can still join with the full code.",
   "horizon.friends.code_ready": "Your invite code is ready: Game Menu, Play with Friends. Copy it and send it to your friends.",
   "horizon.friends.share_failed": "Couldn't share the world: %s",
   "horizon.friends.finding_route": "Finding how friends can reach you…",

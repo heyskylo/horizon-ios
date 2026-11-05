@@ -3205,13 +3205,9 @@ impl Game<'_> {
                     false,
                     horizon_client::level_loading::Reason::Other,
                 );
-                let info = self
-                    .settings
-                    .client_information(client_view_distance(self.settings.render_distance));
-                if let Some(r) = self.remote.as_mut() {
-                    r.sent_info = info.clone();
-                }
-                self.send(S::ClientInformation(info));
+                // No ClientInformation here: the configuration phase sent it,
+                // and ClientPacketListener.broadcastClientInformation sends it
+                // again only when an option changes it.
                 self.remote_chat_login();
             }
             C::Respawn(p) => {
@@ -5929,7 +5925,7 @@ impl Game<'_> {
         self.tick_chat_session();
         // Minecraft.tick sends this even when the player cannot tick yet,
         // including while waiting for chunks. Keep it outside early returns.
-        if self.remote.as_ref().is_some_and(|r| r.joined) {
+        if self.remote.as_ref().is_some_and(Remote::has_level) {
             self.send(S::ClientTickEnd(Empty));
         }
         Ok(())
@@ -10638,6 +10634,13 @@ impl horizon_client::interaction_input::InteractionWorld for RemoteInputWorld<'_
 }
 
 impl Remote {
+    /// `Minecraft.level != null`: from `handleLogin` until the next
+    /// `handleConfigurationStart` (`clearClientLevel`). Minecraft.tick sends
+    /// CLIENT_TICK_END only then, so a client waiting for the server's Login
+    /// (a busy server takes seconds to place a new player) sends nothing.
+    pub(super) fn has_level(&self) -> bool {
+        client_has_level(self.logged_in, self.reconfiguring)
+    }
     /// The epoch of this client level's entity handles (`native_epoch`).
     pub(super) fn native_epoch(&self) -> Option<horizon_client::mod_api::NativeWorldEpoch> {
         self.native_epoch
@@ -10813,11 +10816,18 @@ fn hold_server_fire(fire_ticks: i32, server_on_fire: bool) -> i32 {
     }
 }
 
+/// [`Remote::has_level`]: logged in (a Login arrived) and no reconfiguration
+/// since (`reconfiguring` is set by StartConfiguration, cleared by the next
+/// Login).
+fn client_has_level(logged_in: bool, reconfiguring: Option<u64>) -> bool {
+    logged_in && reconfiguring.is_none()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        boat_interact_passes, hold_server_fire, item_frame_interact_passes, keep_client_state,
-        remote_object_swings, remote_use_swings, synced_local_use,
+        boat_interact_passes, client_has_level, hold_server_fire, item_frame_interact_passes,
+        keep_client_state, remote_object_swings, remote_use_swings, synced_local_use,
     };
     use horizon_client::{
         containers::{Beacon, BlockEntity},
@@ -10956,6 +10966,16 @@ mod tests {
         assert!(!remote_use_swings(&stack("minecraft:iron_spear"), false));
         // A consumable (food, a drink) starts its use without a swing.
         assert!(!remote_use_swings(&stack("minecraft:apple"), true));
+    }
+
+    /// Minecraft.tick: CLIENT_TICK_END only while a level exists. None before
+    /// the first Login (configuration has finished, the server has not placed
+    /// the player yet), and none from StartConfiguration until the next Login.
+    #[test]
+    fn tick_ends_need_the_level_the_login_makes() {
+        assert!(!client_has_level(false, None), "joined, waiting for Login");
+        assert!(client_has_level(true, None), "after Login");
+        assert!(!client_has_level(true, Some(40)), "reconfiguring");
     }
 
     /// The server's on-fire flag keeps the predicted countdown (which

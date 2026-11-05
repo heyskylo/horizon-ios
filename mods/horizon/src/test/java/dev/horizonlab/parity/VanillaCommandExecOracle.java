@@ -159,6 +159,34 @@ public final class VanillaCommandExecOracle {
 
         ServerPlayer player;
 
+        // Execute the actual private arithmetic method on unregistered orbs in
+        // this real server level. No world tick or live scene actor is added.
+        void writeOrbWaterReference() throws IOException {
+            String input = System.getProperty("horizon.orbWaterArithmetic");
+            if (input == null) return;
+            JsonArray result = new JsonArray();
+            try {
+                var method = net.minecraft.world.entity.ExperienceOrb.class.getDeclaredMethod("setUnderwaterMovement");
+                method.setAccessible(true);
+                for (var entry : JsonParser.parseString(Files.readString(Path.of(input))).getAsJsonArray()) {
+                    JsonArray p = entry.getAsJsonArray();
+                    var orb = new net.minecraft.world.entity.ExperienceOrb(net.minecraft.world.entity.EntityTypes.EXPERIENCE_ORB, player.level());
+                    orb.setDeltaMovement(p.get(0).getAsDouble(), p.get(1).getAsDouble(), p.get(2).getAsDouble());
+                    method.invoke(orb);
+                    var v = orb.getDeltaMovement();
+                    JsonObject row = new JsonObject(); row.add("input", p);
+                    JsonArray bits = new JsonArray(); JsonArray values = new JsonArray();
+                    for (double n : new double[] {v.x(), v.y(), v.z()}) {
+                        bits.add(Long.toHexString(Double.doubleToRawLongBits(n))); values.add(n);
+                    }
+                    row.add("bits", bits); row.add("motion", values); result.add(row);
+                }
+            } catch (ReflectiveOperationException error) {
+                throw new IOException("orb underwater reference failed", error);
+            }
+            Files.writeString(output.resolveSibling("orb-water-reference.json"), result.toString());
+        }
+
         void runScript() throws IOException {
             ServerLevel level = this.overworld();
             GameProfile profile = new GameProfile(UUIDUtil.createOfflinePlayerUUID("Player"), "Player");
@@ -199,6 +227,7 @@ public final class VanillaCommandExecOracle {
                 login.addProperty("client_loaded", player.connection.hasClientLoaded());
                 Files.writeString(output.resolveSibling("client_config.json"), login.toString());
             }
+            writeOrbWaterReference();
             StringBuilder out = new StringBuilder();
             Gson gson = new Gson();
             for (String line : Files.readAllLines(script, StandardCharsets.UTF_8)) {
@@ -284,6 +313,37 @@ public final class VanillaCommandExecOracle {
                         record.add("results", results);
                         out.append(gson.toJson(record)).append('\n');
                     }
+                    case "player_loop" -> {
+                        int n=op.get("n").getAsInt();
+                        int before=player.getStats().getValue(net.minecraft.stats.Stats.CUSTOM.get(net.minecraft.stats.Stats.PLAY_TIME));
+                        messages.clear();
+                        for (int i=0;i<n;i++) { tick(); player.connection.tick(); }
+                        int delta=player.getStats().getValue(net.minecraft.stats.Stats.CUSTOM.get(net.minecraft.stats.Stats.PLAY_TIME))-before;
+                        if (delta!=n) throw new IllegalStateException("player loop did not advance play_time: "+delta+"/"+n);
+                        JsonObject record=new JsonObject();record.addProperty("cmd","#player_loop "+op.get("label").getAsString());
+                        JsonArray captured=new JsonArray();messages.forEach(captured::add);
+                        record.add("messages",captured);record.add("results",gson.toJsonTree(new Object[][]{{true,delta}}));
+                        out.append(gson.toJson(record)).append('\n');
+                    }
+                    case "player_state" -> {
+                        try {
+                            var field=net.minecraft.server.PlayerAdvancements.class.getDeclaredField("progress");field.setAccessible(true);
+                            var progress=(java.util.Map<?,?>)field.get(player.getAdvancements());
+                            var loaded=new java.util.ArrayList<String>();var done=new java.util.TreeMap<String,Boolean>();
+                            for (var a:getAdvancements().getAllAdvancements()) {
+                                String id=a.id().toString();if (!id.startsWith("h311:")) continue;
+                                loaded.add(id);var value=(net.minecraft.advancements.AdvancementProgress)progress.get(a);
+                                done.put(id,value!=null && value.isDone());
+                            }
+                            java.util.Collections.sort(loaded);
+                            var poison=player.getEffect(net.minecraft.world.effect.MobEffects.POISON);
+                            JsonObject state=new JsonObject();state.addProperty("health",player.getHealth());
+                            state.addProperty("poison_ticks",poison==null?0:poison.getDuration());state.add("loaded",gson.toJsonTree(loaded));state.add("done",gson.toJsonTree(done));
+                            JsonObject record=new JsonObject();record.addProperty("cmd","#player_state "+op.get("label").getAsString());
+                            record.add("messages",new JsonArray());record.add("results",new JsonArray());record.add("state",state);
+                            out.append(gson.toJson(record)).append('\n');
+                        } catch (ReflectiveOperationException e) {throw new IllegalStateException(e);}
+                    }
                     case "tick" -> {
                         int n = op.has("n") ? op.get("n").getAsInt() : 1;
                         messages.clear();
@@ -341,6 +401,19 @@ public final class VanillaCommandExecOracle {
                                 tick();
                                 Thread.yield();
                             }
+                        }
+                    }
+                    case "use_item" -> {
+                        player.connection.handleUseItem(new net.minecraft.network.protocol.game.ServerboundUseItemPacket(
+                            net.minecraft.world.InteractionHand.MAIN_HAND, op.get("sequence").getAsInt(),
+                            op.get("yaw").getAsFloat(), op.get("pitch").getAsFloat()));
+                        try {
+                            var ack = net.minecraft.server.network.ServerGamePacketListenerImpl.class.getDeclaredField("ackBlockChangesUpTo");
+                            ack.setAccessible(true);
+                            if (ack.getInt(player.connection) < op.get("sequence").getAsInt())
+                                throw new IllegalStateException("UseItem was not acknowledged");
+                        } catch (ReflectiveOperationException e) {
+                            throw new IllegalStateException(e);
                         }
                     }
                     case "use_block" -> {

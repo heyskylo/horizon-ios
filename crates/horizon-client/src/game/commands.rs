@@ -2835,7 +2835,7 @@ impl Game<'_> {
             .take()
             .map(std::sync::Arc::unwrap_or_clone)
             .unwrap_or_default();
-        extras.rolled_loot.retain(|r| r.pos != key);
+        save::consume_container_loot(&mut extras, key);
         let taken = rolled.is_some();
         extras.rolled_loot.extend(rolled);
         chunk.saved = Some(std::sync::Arc::new(extras));

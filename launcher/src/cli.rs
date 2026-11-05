@@ -1342,7 +1342,7 @@ fn execute(command: Cmd, as_json: bool) -> Result<(), String> {
                     // The instance's version is never looked at here: the newest installed
                     // release or Nightly, or that one with `--update` (never a native build).
                     None => native_mods::base_for(None, &backend::installed(), update)
-                        .ok_or_else(|| tr("No version is installed yet."))?,
+                        .ok_or_else(backend::no_version_installed)?,
                 };
                 let built = native_mods::build_server(
                     &base,
@@ -1384,7 +1384,7 @@ fn execute(command: Cmd, as_json: bool) -> Result<(), String> {
                 None => {
                     let plays = target.resolve_version(None).ok();
                     native_mods::base_for(plays.as_deref(), &backend::installed(), update)
-                        .ok_or("No version is installed yet.")?
+                        .ok_or_else(backend::no_version_installed)?
                 }
             };
             let folder = match folder {
@@ -1952,7 +1952,7 @@ fn account_command(action: AccountCmd, as_json: bool) -> Result<(), String> {
                     );
                 }
                 if !accounts.has_owner(account::store()) {
-                    println!("{}.", account::NEEDS_OWNER);
+                    println!("{} {}", account::NoOwner, tr(backend::SIGN_IN_HINT));
                 }
             }
         }
@@ -3202,11 +3202,14 @@ fn instance(action: InstanceCmd, as_json: bool) -> Result<(), String> {
                     ))
                 }
             };
-            let made = other_launchers::import(
-                f,
-                new_name.as_deref().unwrap_or(&f.name),
-                minecraft.as_deref(),
-            )?;
+            let target = new_name.as_deref().unwrap_or(&f.name);
+            let made = other_launchers::import(f, target, minecraft.as_deref()).map_err(|e| {
+                if e == instances::name_taken(target.trim()) {
+                    instances::name_taken_with_flag(target.trim())
+                } else {
+                    e
+                }
+            })?;
             let unsupported = other_launchers::loader(f).is_none();
             if let Some(l) = f.loader.as_ref().filter(|_| unsupported && !as_json) {
                 println!(
