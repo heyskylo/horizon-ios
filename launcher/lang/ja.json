@@ -1174,5 +1174,9 @@
   "At start and before you play, what you installed from Horizon's registry moves to its newest version for this game. Never inside a modpack, and an update that would remove blocks or items waits for you.": "At start and before you play, what you installed from Horizon's registry moves to its newest version for this game. Never inside a modpack, and an update that would remove blocks or items waits for you.",
   "Updated automatically: {list}.": "Updated automatically: {list}.",
   "{title} wasn't updated: {error}": "{title} wasn't updated: {error}",
+  "Builds on the Horizon you play": "プレイ中の Horizon でビルドできます",
+  "Needs native hook points v{needs}, the Horizon you play has v{has}: update Horizon first": "ネイティブフックポイント v{needs} が必要ですが、プレイ中の Horizon は v{has} です：先に Horizon を更新してください",
+  "Made for Horizon {pin}, but {mods} pin another commit: the build will ask you to Build anyway and may not compile": "Horizon {pin} 向けですが、{mods} は別のコミットに固定されています：ビルド時に「それでもビルドする」を求められ、コンパイルに失敗する可能性があります",
+  "Made for Horizon {pin}, you play {yours}: the launcher builds your game on {pin}": "Horizon {pin} 向けで、プレイ中は {yours} です：ランチャーはゲームを {pin} でビルドします",
   "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready."
 }

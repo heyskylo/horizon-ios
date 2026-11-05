@@ -1174,5 +1174,9 @@
   "At start and before you play, what you installed from Horizon's registry moves to its newest version for this game. Never inside a modpack, and an update that would remove blocks or items waits for you.": "At start and before you play, what you installed from Horizon's registry moves to its newest version for this game. Never inside a modpack, and an update that would remove blocks or items waits for you.",
   "Updated automatically: {list}.": "Updated automatically: {list}.",
   "{title} wasn't updated: {error}": "{title} wasn't updated: {error}",
+  "Builds on the Horizon you play": "可在你正在玩的 Horizon 上构建",
+  "Needs native hook points v{needs}, the Horizon you play has v{has}: update Horizon first": "需要原生钩子点 v{needs}，你正在玩的 Horizon 只有 v{has}：请先更新 Horizon",
+  "Made for Horizon {pin}, but {mods} pin another commit: the build will ask you to Build anyway and may not compile": "为 Horizon {pin} 制作，但 {mods} 固定在另一个提交上：构建时会要求你选择“仍然构建”，并且可能无法编译",
+  "Made for Horizon {pin}, you play {yours}: the launcher builds your game on {pin}": "为 Horizon {pin} 制作，你正在玩 {yours}：启动器会在 {pin} 上构建你的游戏",
   "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready."
 }
