@@ -12,7 +12,7 @@ pub mod client;
 use crate::hud::{HudAtlas, HudBatch, rgba};
 use crate::text::Text;
 use client::{
-    InviteCode, PendingInviteDto, PlayerInfo, RealmAddress, RealmServer, RealmSlot,
+    Backup, InviteCode, PendingInviteDto, PlayerInfo, RealmAddress, RealmServer, RealmSlot,
     RealmWorldOptions, RealmsClient, RealmsError, RegionDataDto, Subscription,
 };
 use horizon_client_render::auth::{self, AuthSession};
@@ -487,6 +487,22 @@ pub enum SubScreen {
         job: Option<Job<Result<(), RealmsError>>>,
         error: Option<String>,
     },
+    /// `RealmsBackupScreen`: the Realm's automatic backups.
+    Backups {
+        server: RealmServer,
+        slot_id: i32,
+        backups: Option<Result<Vec<Backup>, RealmsError>>,
+        list_job: Option<Job<Result<Vec<Backup>, RealmsError>>>,
+        /// `RealmsClient.restoreWorld` on a worker.
+        restore_job: Option<Job<Result<(), RealmsError>>>,
+        error: Option<String>,
+    },
+    /// `RealmsBackupInfoScreen`: one backup's metadata.
+    BackupInfo {
+        server: RealmServer,
+        slot_id: i32,
+        backup: Backup,
+    },
     /// `RealmsInviteScreen`: a name to invite to the Realm.
     Invite {
         server: RealmServer,
@@ -636,6 +652,7 @@ impl Screen {
         let mut open_region_screen = false;
         let mut saved_code = false;
         let mut refetch_codes = false;
+        let mut refetch_backups = false;
         match &mut self.subscreen {
             SubScreen::JoinCode { error, job, .. } => {
                 if let Some(result) = job.as_ref().and_then(take) {
@@ -780,6 +797,26 @@ impl Screen {
                     }
                 }
             }
+            SubScreen::Backups {
+                backups,
+                list_job,
+                restore_job,
+                error,
+                ..
+            } => {
+                if let Some(result) = list_job.as_ref().and_then(take) {
+                    *list_job = None;
+                    *backups = Some(result);
+                }
+                if let Some(result) = restore_job.as_ref().and_then(take) {
+                    *restore_job = None;
+                    match result {
+                        // The restore is done: the list reads again.
+                        Ok(()) => refetch_backups = true,
+                        Err(e) => *error = Some(e.text()),
+                    }
+                }
+            }
             SubScreen::InviteCodes {
                 codes,
                 list_job,
@@ -815,6 +852,9 @@ impl Screen {
         }
         if refetch_codes {
             self.start_invite_codes();
+        }
+        if refetch_backups {
+            self.start_backups();
         }
         if saved_code {
             self.back_to_codes();
@@ -1287,6 +1327,51 @@ impl Screen {
         self.start_invite_codes();
     }
 
+    /// `RealmsBackupScreen.refresh`: the backup list reads again.
+    fn start_backups(&mut self) {
+        let SubScreen::Backups {
+            server, list_job, ..
+        } = &mut self.subscreen
+        else {
+            return;
+        };
+        if list_job.is_some() {
+            return;
+        }
+        if let Some(client) = client() {
+            let id = server.id;
+            *list_job = Some(spawn(move || client.backups_for(id)));
+        }
+    }
+
+    /// Back to the worlds tab from the backup screens.
+    fn back_to_worlds_tab(&mut self) {
+        let server = match &self.subscreen {
+            SubScreen::Backups { server, .. } | SubScreen::BackupInfo { server, .. } => {
+                server.clone()
+            }
+            _ => return,
+        };
+        self.subscreen = SubScreen::Configure {
+            server,
+            tab: ConfigureTab::Worlds,
+            subscription: None,
+            subscription_job: None,
+            detail: None,
+            detail_job: None,
+            deleting: None,
+            member_job: None,
+            settings: None,
+            regions: None,
+            regions_job: None,
+            saving: None,
+            error: None,
+            job: None,
+        };
+        self.start_configure_subscription();
+        self.start_configure_detail();
+    }
+
     /// Back to the players tab from the codes screens.
     fn back_to_players_tab(&mut self) {
         let server = match &self.subscreen {
@@ -1483,6 +1568,70 @@ impl Screen {
                         job: None,
                         error: None,
                     };
+                }
+                Outcome::None
+            }
+            // RealmsWorldsTab's Backup button: the backup list.
+            Some(93) => {
+                if let SubScreen::Configure {
+                    server,
+                    detail: Some(Ok(detail)),
+                    ..
+                } = &self.subscreen
+                    && let Some(client) = client()
+                {
+                    let (server, slot_id, id) = (server.clone(), detail.active_slot, server.id);
+                    self.subscreen = SubScreen::Backups {
+                        server,
+                        slot_id,
+                        backups: None,
+                        list_job: Some(spawn(move || client.backups_for(id))),
+                        restore_job: None,
+                        error: None,
+                    };
+                }
+                Outcome::None
+            }
+            // RealmsBackupScreen: a row's Restore (170+row) and Back (190).
+            Some(btn @ 170..=189) => {
+                if let SubScreen::Backups {
+                    server,
+                    backups,
+                    restore_job,
+                    ..
+                } = &mut self.subscreen
+                {
+                    let row = usize::from(btn - 170);
+                    if restore_job.is_none()
+                        && let Some(Ok(list)) = backups
+                        && let Some(backup) = list.get(row)
+                        && let Some(client) = client()
+                    {
+                        let (id, backup_id) = (server.id, backup.backup_id.clone());
+                        *restore_job = Some(spawn(move || client.restore_world(id, &backup_id)));
+                    }
+                }
+                Outcome::None
+            }
+            Some(190) => {
+                self.back_to_worlds_tab();
+                Outcome::None
+            }
+            Some(191) => {
+                if let SubScreen::BackupInfo {
+                    server, slot_id, ..
+                } = &self.subscreen
+                {
+                    let server = server.clone();
+                    self.subscreen = SubScreen::Backups {
+                        server,
+                        slot_id: *slot_id,
+                        backups: None,
+                        list_job: None,
+                        restore_job: None,
+                        error: None,
+                    };
+                    self.start_backups();
                 }
                 Outcome::None
             }
@@ -1885,6 +2034,33 @@ impl Screen {
                     }
                     return Outcome::None;
                 }
+                // RealmsBackupScreen: a row (not its Restore button) opens the backup's
+                // metadata.
+                if let SubScreen::Backups {
+                    server,
+                    slot_id,
+                    backups: Some(Ok(list)),
+                    ..
+                } = &self.subscreen
+                {
+                    let rx = ((w - ROW_WIDTH) / 2.0).floor();
+                    let row_y = |i: usize| 36.0 + 22.0 + 2.0 + i as f32 * ROW_HEIGHT;
+                    if (rx..rx + ROW_WIDTH).contains(&x) {
+                        for (i, backup) in list.iter().enumerate() {
+                            let y0 = row_y(i);
+                            if (y0..y0 + ROW_HEIGHT).contains(&y) {
+                                let (server, slot_id, backup) =
+                                    (server.clone(), *slot_id, backup.clone());
+                                self.subscreen = SubScreen::BackupInfo {
+                                    server,
+                                    slot_id,
+                                    backup,
+                                };
+                                return Outcome::None;
+                            }
+                        }
+                    }
+                }
                 // RealmsSettingsTab's two fields: the click moves the caret between them.
                 if let SubScreen::Configure {
                     tab: ConfigureTab::Settings,
@@ -2274,12 +2450,21 @@ impl Screen {
                     && !slot.options.empty
                 {
                     buttons.push((
-                        cx - 76.0,
+                        cx - 154.0,
                         h - 96.0,
                         152.0,
                         t("mco.configure.world.buttons.options"),
                         !server.expired,
                         94,
+                        None,
+                    ));
+                    buttons.push((
+                        cx + 2.0,
+                        h - 96.0,
+                        152.0,
+                        t("mco.configure.world.backup"),
+                        !server.expired,
+                        93,
                         None,
                     ));
                 }
@@ -2406,6 +2591,34 @@ impl Screen {
                     None,
                 ));
                 buttons.push((cx + 2.0, h - 36.0, 100.0, t("gui.cancel"), true, 99, None));
+            }
+            SubScreen::Backups {
+                backups,
+                restore_job,
+                ..
+            } => {
+                if let Some(Ok(list)) = backups {
+                    let rx = ((w - ROW_WIDTH) / 2.0).floor();
+                    for (i, _) in list.iter().enumerate().take(40) {
+                        let row_y = 36.0 + 22.0 + 2.0 + i as f32 * ROW_HEIGHT;
+                        if row_y + ROW_HEIGHT > h - 48.0 {
+                            break;
+                        }
+                        buttons.push((
+                            rx + ROW_WIDTH - 88.0,
+                            row_y + 8.0,
+                            84.0,
+                            t("mco.backup.button.restore"),
+                            restore_job.is_none(),
+                            170 + i as u8,
+                            None,
+                        ));
+                    }
+                }
+                buttons.push((cx - 100.0, h - 36.0, 200.0, t("gui.back"), true, 190, None));
+            }
+            SubScreen::BackupInfo { .. } => {
+                buttons.push((cx - 100.0, h - 36.0, 200.0, t("gui.back"), true, 191, None));
             }
             SubScreen::InviteCodes {
                 codes,
@@ -3194,6 +3407,88 @@ impl Screen {
                     for (i, line) in wrap_lines(e, atlas, w - 40.0).iter().enumerate() {
                         centered(batch, atlas, line, cx, h - 56.0 + i as f32 * 10.0, RED);
                     }
+                }
+            }
+            SubScreen::Backups { backups, error, .. } => {
+                // `RealmsBackupScreen`: a row per backup with its date.
+                centered(
+                    batch,
+                    atlas,
+                    &t("mco.configure.world.backup"),
+                    cx,
+                    14.0,
+                    u32::MAX,
+                );
+                match backups {
+                    Some(Ok(list)) if list.is_empty() => {
+                        centered(batch, atlas, &t("mco.backup.nobackups"), cx, 80.0, GREY);
+                    }
+                    Some(Ok(list)) => {
+                        let rx = ((w - ROW_WIDTH) / 2.0).floor();
+                        for (i, backup) in list.iter().enumerate() {
+                            let row_y = 36.0 + 22.0 + 2.0 + i as f32 * ROW_HEIGHT;
+                            if row_y + ROW_HEIGHT > h - 48.0 {
+                                break;
+                            }
+                            let label = crate::lang::tr(
+                                "mco.backup.entry",
+                                &[&start_date_text(backup.last_modified)
+                                    as &dyn std::fmt::Display],
+                            );
+                            batch.text(atlas, &label, rx + 4.0, row_y + 10.0, u32::MAX, true);
+                        }
+                    }
+                    Some(Err(e)) => {
+                        for (i, line) in wrap_lines(&e.text(), atlas, w - 40.0).iter().enumerate() {
+                            centered(batch, atlas, line, cx, 60.0 + i as f32 * 10.0, RED);
+                        }
+                    }
+                    None => centered(
+                        batch,
+                        atlas,
+                        &t("mco.configure.world.loading"),
+                        cx,
+                        60.0,
+                        u32::MAX,
+                    ),
+                }
+                if let Some(e) = error {
+                    for (i, line) in wrap_lines(e, atlas, w - 40.0).iter().enumerate() {
+                        centered(batch, atlas, line, cx, h - 56.0 + i as f32 * 10.0, RED);
+                    }
+                }
+            }
+            SubScreen::BackupInfo { backup, .. } => {
+                // `RealmsBackupInfoScreen`: the metadata's key/value rows.
+                centered(
+                    batch,
+                    atlas,
+                    &t("mco.backup.info.title"),
+                    cx,
+                    14.0,
+                    u32::MAX,
+                );
+                let left = cx - 150.0;
+                let mut y = 40.0;
+                for (key, value) in &backup.metadata {
+                    if y > h - 50.0 {
+                        break;
+                    }
+                    let value = match value {
+                        serde_json::Value::String(text) => text.clone(),
+                        other => other.to_string(),
+                    };
+                    let label = {
+                        let candidate = format!("mco.backup.entry.{key}");
+                        if crate::lang::has(&candidate) {
+                            crate::lang::get(&candidate)
+                        } else {
+                            key.clone()
+                        }
+                    };
+                    batch.text(atlas, &label, left, y, GREY, true);
+                    batch.text(atlas, &value, left + 110.0, y, u32::MAX, true);
+                    y += 12.0;
                 }
             }
             SubScreen::InviteCodes { codes, error, .. } => {

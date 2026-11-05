@@ -174,6 +174,29 @@ struct InviteCodeListResponse {
     invite_codes: Vec<InviteCode>,
 }
 
+/// `Backup`: one of the Realm's automatic backups.
+#[derive(Clone, Debug, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Backup {
+    #[serde(default, deserialize_with = "nullable")]
+    pub backup_id: String,
+    /// `Backup.lastModified`: epoch milliseconds.
+    #[serde(default, deserialize_with = "nullable")]
+    pub last_modified: i64,
+    #[serde(default, deserialize_with = "nullable")]
+    pub size: i64,
+    #[serde(default, deserialize_with = "nullable")]
+    pub metadata: std::collections::HashMap<String, serde_json::Value>,
+    #[serde(default, deserialize_with = "nullable")]
+    pub change_list: std::collections::HashMap<String, serde_json::Value>,
+}
+
+#[derive(Clone, Debug, Deserialize, Default)]
+struct BackupListResponse {
+    #[serde(default, deserialize_with = "nullable")]
+    backups: Vec<Backup>,
+}
+
 /// `RealmsWorldOptions`: a slot's options.
 #[derive(Clone, Debug, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -758,6 +781,28 @@ impl RealmsClient {
         )
         .map(drop)
     }
+
+    /// `RealmsClient.backupsFor`: `GET worlds/{id}/backups`.
+    pub fn backups_for(&self, realm_id: i64) -> Result<Vec<Backup>, RealmsError> {
+        let url = self.url(&format!("worlds/{realm_id}/backups"));
+        let json = Self::execute(self.request("GET", &url, READ_TIMEOUT), None)?;
+        serde_json::from_str::<BackupListResponse>(&json)
+            .map(|r| r.backups)
+            .map_err(|_| RealmsError::Parse)
+    }
+
+    /// `RealmsClient.restoreWorld`: `PUT worlds/{id}/backups?backupId={backupId}`, with
+    /// vanilla's long timeouts (`Request.put(url, "", 40000, 600000)`).
+    pub fn restore_world(&self, realm_id: i64, backup_id: &str) -> Result<(), RealmsError> {
+        let url = self.url(&format!("worlds/{realm_id}/backups"));
+        let query = format!("backupId={}", urlencoded(backup_id)?);
+        let full = format!("{url}?{query}");
+        Self::execute(
+            self.request("PUT", &full, Duration::from_secs(600)),
+            Some(""),
+        )
+        .map(drop)
+    }
 }
 
 /// An id or code that goes into a URL path: vanilla builds those URLs from the server's own
@@ -776,6 +821,23 @@ fn path_segment(s: &str) -> Result<&str, RealmsError> {
             message: Some(crate::lang::get("mco.selectServer.joinCode.invalid")),
         })
     }
+}
+
+/// A query value: percent-encoded the way `URI` encodes it, so a backup id cannot add a
+/// parameter or a fragment.
+fn urlencoded(value: &str) -> Result<String, RealmsError> {
+    let mut out = String::new();
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    if out.is_empty() {
+        return Err(RealmsError::Parse);
+    }
+    Ok(out)
 }
 
 /// `UndashedUuid.toString`: a player's UUID as 32 hex digits, the op/deop/uninvite path
@@ -797,6 +859,15 @@ mod tests {
 
     const TOKEN: &str = "eyJsecret.token.value";
     const UUID: u128 = 0x0123_4567_89ab_cdef_0123_4567_89ab_cdef;
+
+    /// `RealmsClient.restoreWorld` puts the backup id in the query: a `&` or `/` in it
+    /// must not add parameters or paths.
+    #[test]
+    fn a_backup_id_is_a_safe_query_value() {
+        assert_eq!(urlencoded("abc-123_x.y~z").unwrap(), "abc-123_x.y~z");
+        assert_eq!(urlencoded("a b&c=d/e").unwrap(), "a%20b%26c%3Dd%2Fe");
+        assert!(urlencoded("").is_err());
+    }
 
     /// One HTTP exchange on a local port: the request as the server read it.
     fn serve_once(answer: &'static str) -> (String, std::thread::JoinHandle<String>) {
