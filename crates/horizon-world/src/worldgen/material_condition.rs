@@ -23,7 +23,7 @@ use horizon_core::{
 pub use library::MaterialRuleLibrary;
 pub use noise::MaterialNoiseSources;
 use rule::CompiledRule;
-pub use rule::SurfaceVariants;
+pub use rule::{CompiledSurfaceRule, SurfaceVariants};
 pub use rule::{MaterialRule, MaterialRuleError};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -367,6 +367,56 @@ where
             kind: self.kind.clone(),
             revision: self.revision,
             result: self.result,
+        }
+    }
+}
+/// A chunk's possible biomes, by name and, where the surface numbers its
+/// biomes, as a bit per index (`Kind::BiomeIds`).
+struct PossibleBiomes<'a> {
+    names: &'a BTreeSet<String>,
+    ids: Vec<u64>,
+}
+impl<R: RandomSource> Compiled<R>
+where
+    R::Positional: Clone,
+{
+    /// This condition as `compile` makes it for a chunk with `possible`
+    /// biomes: a biome condition none of them, or all of them, meet is
+    /// constant.
+    fn fold_biomes(&self, possible: &PossibleBiomes) -> Self {
+        let decided = match &self.kind {
+            Kind::Biome(names) if names.is_disjoint(possible.names) => Some(false),
+            Kind::Biome(names) if possible.names.is_subset(names) => Some(true),
+            Kind::BiomeIds(bits) => {
+                let bit = |ids: &[u64], i: usize| ids.get(i).copied().unwrap_or(0);
+                let mut words = 0..possible.ids.len().max(bits.len());
+                if words
+                    .clone()
+                    .all(|i| bit(bits, i) & bit(&possible.ids, i) == 0)
+                {
+                    Some(false)
+                } else if words.all(|i| bit(&possible.ids, i) & !bit(bits, i) == 0) {
+                    Some(true)
+                } else {
+                    None
+                }
+            }
+            Kind::Not(child) => {
+                return Self {
+                    kind: Kind::Not(Box::new(child.fold_biomes(possible))),
+                    revision: self.revision,
+                    result: self.result,
+                };
+            }
+            _ => None,
+        };
+        match decided {
+            Some(value) => Self {
+                kind: Kind::Constant(value),
+                revision: self.revision,
+                result: self.result,
+            },
+            None => self.clone(),
         }
     }
 }

@@ -510,15 +510,24 @@ impl NativeFrame {
 
     /// Writes this frame's inputs, for a world of `size`.
     pub fn write(&mut self, queue: &wgpu::Queue, frame: &Frame, size: [u32; 2]) {
-        let seconds = self.start.elapsed().as_secs_f32() % 3600.0;
+        // Under `HORIZON_STILL` the world's ticks are the clock (`PackInputs::still_ticks`), and
+        // eased values sit at their targets.
+        let still = frame.pack.still_ticks;
+        let seconds = still.map_or_else(
+            || self.start.elapsed().as_secs_f32() % 3600.0,
+            |ticks| (ticks as f32 / 20.0) % 3600.0,
+        );
         let now = std::time::Instant::now();
-        let since = self.wetness.1.map_or(0.0, |t| (now - t).as_secs_f32());
+        let since = match still {
+            Some(_) => f32::INFINITY,
+            None => self.wetness.1.map_or(0.0, |t| (now - t).as_secs_f32()),
+        };
         self.wetness = (wetness(self.wetness.0, frame.pack.rain, since), Some(now));
         let mut inputs = frame_inputs(
             frame,
             size,
             seconds,
-            self.frames,
+            still.map_or(self.frames, |ticks| ticks as u32),
             self.shadow_camera.as_ref(),
         );
         inputs.wetness = self.wetness.0;
@@ -551,7 +560,13 @@ impl NativeFrame {
             (f32::from(u8::from(inputs.eye_in == 1)), 0.25),
             (f32::from(u8::from(inputs.eye_in == 2)), 0.25),
         ];
-        let dt = inputs.delta_time;
+        let dt = match still {
+            Some(_) => {
+                inputs.delta_time = 0.05;
+                f32::INFINITY
+            }
+            None => inputs.delta_time,
+        };
         for (value, (target, half_life)) in self.eye.iter_mut().zip(targets) {
             *value = eased(*value, target, half_life, dt);
         }

@@ -93,10 +93,9 @@ impl Game<'_> {
             return Ok(());
         };
         let grid: Vec<Option<ItemStack>> = crafter.items.to_vec();
-        // RecipeCache.get / MapExtendingRecipe.matches read this level's saved maps.
+        // Query active world recipes with this level's saved-map context.
         let maps = self.level_maps(grid.iter().flatten());
         let found = self
-            .res
             .recipes()
             .find_with(&grid, 3, &|id| maps.state(id).map(|(_, scale)| scale))
             .map(|(name, result)| (name.to_owned(), result))
@@ -188,7 +187,7 @@ impl Game<'_> {
             (0..3).all(|i| (e[i] - c[i]).abs() <= 8.5 + 1.0)
         });
         if near {
-            let id = format!("minecraft:{recipe}");
+            let id = horizon_client::crafting::qualified(recipe);
             let me = self.player_entity_for("minecraft:crafter_recipe_crafted");
             self.trigger("minecraft:crafter_recipe_crafted", move |c, w| {
                 let ctx = adv::Entities {

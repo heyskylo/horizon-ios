@@ -1441,7 +1441,7 @@ impl Game<'_> {
             return false;
         }
         // `SmithingScreen.containerTick`: the icons of the empty slots follow the template.
-        let (now, partial) = (self.ticks, self.clock.camera_fraction() as f32);
+        let (now, partial) = (self.visual_ticks(), self.clock.camera_fraction() as f32);
         if let Some(s) = self.station.as_mut().filter(|s| s.kind == Kind::Smithing) {
             let template = s.inputs[0].as_ref().map(|t| t.item.clone());
             let (base, base_len, additions, additions_len) =
@@ -1720,7 +1720,7 @@ impl Game<'_> {
                         if inside(local, bx, by, bw, 17.0)
                             && let Some((id, l)) = &offers.clues[i]
                         {
-                            let e = &self.stations().enchantments;
+                            let e = self.enchantments();
                             let (name, _) = e.full_name(id, *l);
                             let clue = self
                                 .translate("container.enchant.clue", "%s . . . ?")
@@ -2121,7 +2121,7 @@ impl Game<'_> {
         nested: bool,
         creative: bool,
     ) -> Vec<(horizon_client::text::Text, u32)> {
-        let e: &Enchantments = &self.stations().enchantments;
+        let e: &Enchantments = self.enchantments();
         let color = self.rarity_color(stack);
         let advanced = !nested && self.options_advanced_tooltips();
         let display = horizon_client::item_tooltip::TooltipDisplay::for_stack(stack);
