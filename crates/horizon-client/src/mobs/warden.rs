@@ -14,6 +14,7 @@ use horizon_core::{
     geometry::{Vec3, trig::Mth},
     random::{LegacyRandom, RandomSource},
 };
+use horizon_protocol::entity_data::PositionSource;
 use std::{collections::HashMap, f32::consts::PI};
 
 pub const EMERGE_DURATION: i64 = warden_brain::EMERGE_DURATION as i64;
@@ -665,6 +666,12 @@ pub fn pre_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
             from: info.pos,
             to: eye,
             ticks: travel,
+            // `Warden.VibrationUser`: `new EntityPositionSource(warden,
+            // warden.getEyeHeight())`.
+            source: PositionSource::Entity {
+                id: m.id as i32,
+                y_offset: m.kind.eye_height as f32,
+            },
         });
     }
     if let Some(info) = tick.received {

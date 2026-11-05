@@ -2669,6 +2669,14 @@ impl Game<'_> {
                 // `Level.setBlockAndUpdate`: neighbour and shape updates, so a crop
                 // above trampled farmland breaks and drops.
                 MobEvent::SetBlock { pos, state } => self.level_set(pos, state)?,
+                MobEvent::EndermanPlaceBlock {
+                    mob,
+                    pos,
+                    carried,
+                    occupants,
+                } => {
+                    self.enderman_place_block(mob, pos, carried, &occupants)?;
+                }
                 MobEvent::CropRaided {
                     pos,
                     state,
@@ -3003,9 +3011,12 @@ impl Game<'_> {
                         horizon_client::mobs::happy_ghast::notify_leash_holder(m);
                     }
                 }
-                MobEvent::Vibration { from, to, ticks } => {
-                    self.mob_vibration_particle(from, to, ticks)
-                }
+                MobEvent::Vibration {
+                    from,
+                    to,
+                    ticks,
+                    source,
+                } => self.mob_vibration_particle(source, from, to, ticks),
                 MobEvent::DigParticles { at } => self.warden_dig_particles(at),
                 MobEvent::BlockBreakEffect { pos, block } => {
                     // Turtle.aiStep broadcasts LevelEvent 2001, not the
@@ -5518,7 +5529,7 @@ impl Game<'_> {
     /// crosshair or on the one a guest's interact packet named: returns true
     /// when consumed.
     pub(super) fn interact_mob(&mut self, target: Option<InteractTarget>) -> Result<bool> {
-        let Some((index, distance)) = (match target {
+        let Some((index, distance, _)) = (match target {
             // The id the packet named, under the filters the crosshair pick
             // applies (`mob_hit`): a mob in its death animation is not clicked
             // by either path, so naming one in a packet must not reach the
@@ -5528,7 +5539,7 @@ impl Game<'_> {
                     let m = &self.mobs[i];
                     named_mob_pickable(m.alive(), m.id, self.riding, self.remote_camera_id())
                 })
-                .map(|i| (i, 0.0)),
+                .map(|i| (i, 0.0, [0.0; 3])),
             None => self.mob_hit(),
         }) else {
             return Ok(false);
@@ -5546,7 +5557,13 @@ impl Game<'_> {
                 return Ok(false);
             }
         }
+        // PlayerInteractTrigger: the name tag as it was before it named the mob.
+        let used = self.held().cloned();
         if self.name_mob(index) {
+            if let Some(stack) = &used {
+                let target = self.mob_entity(&self.mobs[index]);
+                self.trigger_item_entity("minecraft:player_interacted_with_entity", stack, &target);
+            }
             return Ok(true);
         }
         if self
@@ -5681,6 +5698,11 @@ impl Game<'_> {
         if !self.mobs[index].kind.food.contains(&item)
             && self.interact_sheep_dye(index, self.hand, false)
         {
+            // PlayerInteractTrigger: the dye as it was before it coloured the sheep.
+            if let Some(stack) = &held {
+                let target = self.mob_entity(&self.mobs[index]);
+                self.trigger_item_entity("minecraft:player_interacted_with_entity", stack, &target);
+            }
             self.swing_arm();
             return Ok(true);
         }
