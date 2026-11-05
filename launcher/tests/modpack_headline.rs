@@ -22,6 +22,7 @@ fn row(class: &str, tier: &str, status: Status) -> Row {
         status,
         reason: String::new(),
         plain: String::new(),
+        waiting: 0,
     }
 }
 
@@ -75,4 +76,48 @@ fn the_headline_says_what_coverage_md_says() {
         one[0].starts_with("1 of 1 mods that need porting come over"),
         "{one:?}"
     );
+}
+
+#[test]
+fn row_explanations_keep_the_coverage_reports_english_and_dependency_counts() {
+    use horizon_launcher::modpacks::row_plain;
+    use horizon_port_pack::inventory::Record;
+    i18n::set(Language::English);
+    let records: Vec<_> = [
+        ("base", "content", "machines", vec![]),
+        ("logic", "content", "logic", vec![]),
+        ("one", "integration", "logic", vec!["base"]),
+        ("two", "content", "deep", vec!["base", "logic"]),
+        ("unknown", "unknown", "none", vec![]),
+        ("data", "content", "data", vec![]),
+        ("client", "client-ui", "client", vec![]),
+        ("library", "library", "none", vec![]),
+        ("performance", "performance", "none", vec![]),
+        ("other", "other", "none", vec![]),
+    ]
+    .into_iter()
+    .map(|(key, class, tier, depends)| Record {
+        key: key.into(),
+        class: class.into(),
+        tier: tier.into(),
+        depends: depends.into_iter().map(str::to_owned).collect(),
+        ..Default::default()
+    })
+    .collect();
+    let missing = std::env::temp_dir().join(format!("horizon-row-english-{}", std::process::id()));
+    let rows = report::build(&records, &missing);
+    for row in &rows {
+        assert_eq!(row_plain(row), row.plain_text(), "{}", row.key);
+    }
+    assert!(row_plain(&rows[2]).ends_with("1 mod it depends on that is not ported yet."));
+    assert!(row_plain(&rows[3]).ends_with("2 mods it depends on that are not ported yet."));
+    // Reports from before the new count field, and future sentences, still show their text.
+    let old: Row = serde_json::from_str(
+        r#"{"key":"old","name":"","class":"content",
+        "tier":"logic","license":"MIT","license_kind":"permissive","status":"not-yet",
+        "reason":"detail","plain":"An explanation from another build."}"#,
+    )
+    .unwrap();
+    assert_eq!(row_plain(&old), "An explanation from another build.");
+    assert!(row_plain(&row("library", "none", Status::NotNeeded)).is_empty());
 }

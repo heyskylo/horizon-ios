@@ -178,7 +178,7 @@ using the "Shape" column. What a content pack needs:
 | Accessory slots (what Curios does) | — | Curios users (6 require it, more use it optionally) | **0.4** | built-in slots API |
 | Mod networking between its client and server halves | — | machines and up | **0.4** | `net` interface |
 | Custom recipe types: machine recipes with their own JSON | — | machines and up | **0.4** | recipe-type registry: the mod declares its JSON schema and a display layout for the recipe viewer |
-| Entities: types, attributes, AI goals and brains, spawning | — | deep (87) | 0.5 | `entity` interface, AI in the mod with vanilla goals reusable; thrown item projectiles, and mobs of a zombie's or a villager's class with their own attributes, are already data in 0.2 ([mods.md](mods.md)) |
+| Entities: types, attributes, AI goals and brains, spawning | — | deep (87) | 0.5 | `entity` interface, AI in the mod with vanilla goals reusable; thrown item projectiles, and mobs of a zombie's, a villager's or a wandering trader's class with their own attributes, are already data in 0.2 ([mods.md](mods.md)); a native mod gives a type its own goals with `register_goals` ([native-mods.md](native-mods.md#mob-goals)) |
 | Custom renderers and animated models (block-entity, entity, item; GeckoLib's format) | — | deep | 0.5 | data models (Bedrock geometry + animations), plus a budgeted draw-list interface for the rest |
 | Dimensions: dimension types, levels, chunk generators | — | about 10 (Twilight Forest, Aether, Ad Astra, Undergarden, ...) | 0.5 | JSON part with worldgen; custom generators as mod code |
 | New hooks into vanilla behaviour (what Mixins do) | — | deep | as asked | each becomes a named hook, added for everyone |

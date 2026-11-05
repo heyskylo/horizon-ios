@@ -120,6 +120,20 @@ struct PendingInvitesResponse {
     invites: Vec<PendingInviteDto>,
 }
 
+/// `Subscription`: the realm's own, as `RealmsClient.subscriptionFor` reads it.
+#[derive(Clone, Debug, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Subscription {
+    /// `Subscription.startDate`: epoch milliseconds.
+    #[serde(default, deserialize_with = "nullable")]
+    pub start_date: i64,
+    #[serde(default, deserialize_with = "nullable")]
+    pub days_left: i32,
+    /// `Subscription.SubscriptionType`: `NORMAL` or `RECURRING`.
+    #[serde(rename = "type", default, deserialize_with = "nullable")]
+    pub kind: String,
+}
+
 /// Why a Realms call failed (`RealmsServiceException` and its `RealmsError`). None of them
 /// holds a request header: the text a screen shows can't contain the token.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -398,6 +412,19 @@ impl RealmsClient {
     pub fn close_realm(&self, realm_id: i64) -> Result<(), RealmsError> {
         let url = self.url(&format!("worlds/{realm_id}/close"));
         Self::execute(self.request("PUT", &url, READ_TIMEOUT), Some("")).map(drop)
+    }
+
+    /// `RealmsClient.subscriptionFor`: the configuration screen's subscription tab.
+    pub fn subscription_for(&self, realm_id: i64) -> Result<Subscription, RealmsError> {
+        let url = self.url(&format!("worlds/{realm_id}/subscription"));
+        let json = Self::execute(self.request("GET", &url, READ_TIMEOUT), None)?;
+        serde_json::from_str(&json).map_err(|_| RealmsError::Parse)
+    }
+
+    /// `RealmsClient.deleteRealm` (`Request.delete`).
+    pub fn delete_realm(&self, realm_id: i64) -> Result<(), RealmsError> {
+        let url = self.url(&format!("worlds/{realm_id}"));
+        Self::execute(self.request("DELETE", &url, READ_TIMEOUT), None).map(drop)
     }
 
     /// `RealmsClient.redeemInviteCode`: the invite-code service, with the token in

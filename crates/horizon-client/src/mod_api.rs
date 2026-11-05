@@ -26,7 +26,7 @@ pub use crate::game::{
     NativeCriterion, NativeDataMapType, NativeExperienceOrb, NativeFalling, NativeHeightmap,
     NativeHeldItem, NativeHit, NativeItemEntity, NativeMapDecoration, NativeMapInfo,
     NativeMobRender, NativeModEvent, NativePlayer, NativePlayerRender, NativeReloadListener,
-    NativeShake, NativeWorldDraw,
+    NativeShake, NativeStructureBlock, NativeStructureTemplate, NativeWorldDraw,
 };
 pub use crate::gfx::native_render::{
     BlockSpriteArrays, RenderHooks, RenderNeeds, RenderNeedsEvent, WorldDrawn, WorldDrawnEvent,
@@ -37,6 +37,8 @@ pub use crate::hud_layout::{GuiDraw, HealthHud, HealthInputs};
 pub use crate::items::ItemStack;
 pub use crate::merchant::MerchantOffer;
 pub use crate::mesher::TintSource;
+pub use crate::mobs::goals::{Cx, Goal, GoalSelector};
+pub use crate::mobs::{Mob, MobWorld};
 pub use crate::music::{Music, MusicLayer};
 pub use crate::particles::{ParticleOptions, ParticleType};
 pub use crate::recipe_book::RecipeBookCategory;
@@ -63,6 +65,7 @@ pub use horizon_world::{
     loot::{LootStack, NativeLootContext},
     nbt::{Compound, Tag},
     registry::BlockStateId,
+    worldgen::structure::{Mirror, Rotation},
 };
 pub use serde_json;
 use serde_json::{Map, Value};
