@@ -1435,6 +1435,15 @@ impl Game<'_> {
         } else {
             return false;
         };
+        // `ContainerEntity.unpackChestVehicleLootTable`: a chest boat still
+        // holding a loot table rolls it on the first open.
+        if let Some(i) = self
+            .boats
+            .iter()
+            .position(|b| b.id as i32 == pos.2 && b.chest)
+        {
+            self.unpack_boat_loot(i);
+        }
         // `createMenu` (ChestMenu.threeRows or a HopperMenu), and
         // `MenuProvider.getDisplayName`, the vehicle's name key.
         let Some((menu, _)) = horizon_client::containers::vehicle_menu(&entity_type) else {
@@ -1461,6 +1470,57 @@ impl Game<'_> {
         host.hub
             .open_container(conn, menu, title, pos, slots, items, None);
         true
+    }
+
+    /// `ContainerEntity.unpackChestVehicleLootTable` for a chest boat: the table
+    /// its raw NBT still holds rolls into the slots on the first open (an empty
+    /// boat, as a command leaves one), and `player_generates_container_loot`
+    /// fires for the player who opened it.
+    fn unpack_boat_loot(&mut self, i: usize) {
+        use horizon_world::nbt::Tag;
+        let id = self.boats[i].id;
+        let (table, seed) = {
+            let Some(Tag::Compound(map)) = self.persist.raw.get_mut(&id) else {
+                return;
+            };
+            let Some(table) = crate::save::text(map.get(&"LootTable".into()))
+                .and_then(|id| horizon_client_core::identifier::normalize_id(&id))
+            else {
+                return;
+            };
+            let seed = match map.get(&"LootTableSeed".into()) {
+                Some(Tag::Long(seed)) => Some(*seed),
+                _ => None,
+            };
+            // The table is spent even when nothing can be rolled into it (the
+            // loot data is not loaded): vanilla clears it before filling.
+            map.remove(&"LootTable".into());
+            map.remove(&"LootTableSeed".into());
+            (table, seed)
+        };
+        // `LootTable.fill` sets the slots it rolls and leaves the rest; a boat
+        // that already holds something keeps it, so no table is applied over it.
+        if self.boats[i].items.iter().any(Option::is_some) {
+            return;
+        }
+        let loot = crate::structure_blocks::loot_data(&self.options.resources, &self.pack_files());
+        let b = &self.boats[i];
+        let at = Vec3::new(b.position.x, b.position.y, b.position.z);
+        let biome = self.biome_name_at(at).unwrap_or_default();
+        let pos = (
+            b.position.x.floor() as i32,
+            b.position.y.floor() as i32,
+            b.position.z.floor() as i32,
+        );
+        crate::structure_blocks::roll_container(
+            &mut self.boats[i].items,
+            loot.as_deref(),
+            table.clone(),
+            seed,
+            pos,
+            &biome,
+        );
+        self.trigger_loot_table(&table);
     }
 
     /// The guest's open container is closing (`AbstractContainerMenu.removed`):
