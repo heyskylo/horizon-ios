@@ -293,6 +293,8 @@ impl Game<'_> {
                 lure,
                 lerp: HookLerp::default(),
             });
+            // FishingRodItem.use counts a cast, not a reel-in.
+            self.award_stat("used", "minecraft:fishing_rod", 1);
         }
         self.swing_arm();
         true
