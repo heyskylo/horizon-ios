@@ -251,8 +251,10 @@ impl Game<'_> {
                 match &mut self.server_packs.load_fail {
                     Some(toast) => toast.reset(title, None),
                     None => {
-                        self.server_packs.load_fail =
-                            Some(horizon_client::toasts::SystemToast::new(title, None));
+                        if self.toast_allowed("system", "pack_load_failure") {
+                            self.server_packs.load_fail =
+                                Some(horizon_client::toasts::SystemToast::new(title, None));
+                        }
                     }
                 }
                 return;
