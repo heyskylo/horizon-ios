@@ -293,3 +293,56 @@ fn a_part_that_fails_to_build_takes_the_other_with_it() {
         assert!(notes.iter().any(|n| n.starts_with(note)), "{notes:?}");
     }
 }
+
+/// Iris 1.11.7 with our probe packs pe4u (only `gbuffers_terrain`) and pe4s (only
+/// `gbuffers_terrain_solid` and `gbuffers_terrain_cutout`), each writing one alpha per screen
+/// strip (#9307): solid terrain kept every fragment, alpha 0.0 included, and cutout terrain
+/// kept those above 0.5 (0.51 kept; 0.5, 0.49 and lower discarded), whichever program drew it.
+#[test]
+fn cutout_terrain_keeps_alphas_above_0_5_and_solid_terrain_keeps_all() {
+    for (alpha, cutout) in [(0.0, false), (0.49, false), (0.5, false), (0.51, true)] {
+        let Some(got) = strips(&[("gbuffers_terrain", RED, alpha)]) else {
+            return;
+        };
+        let want = [Some(RED), cutout.then_some(RED), Some(RED)];
+        assert_eq!(got, want, "gbuffers_terrain writing alpha {alpha}");
+        let programs = [
+            ("gbuffers_terrain_solid", GREEN, alpha),
+            ("gbuffers_terrain_cutout", BLUE, alpha),
+        ];
+        let Some(got) = strips(&programs) else { return };
+        let want = [Some(GREEN), cutout.then_some(BLUE), Some(GREEN)];
+        assert_eq!(got, want, "split programs writing alpha {alpha}");
+    }
+}
+
+/// `alphaTestRef` in the same probes: 0 for solid terrain and 0.5 for cutout terrain, through
+/// `gbuffers_terrain` alone or through the split programs.
+#[test]
+fn alpha_test_ref_is_0_for_solid_terrain_and_0_5_for_cutout() {
+    let program = |name: &str| {
+        [
+            (
+                format!("{name}.vsh"),
+                "#version 120\nvoid main(){gl_Position=vec4(gl_Vertex.xy,0.0,1.0);}".to_owned(),
+            ),
+            (
+                format!("{name}.fsh"),
+                "#version 120\nuniform float alphaTestRef;\n/* DRAWBUFFERS:0 */\n\
+                 void main(){gl_FragData[0]=vec4(1.0,alphaTestRef*2.0,0.0,1.0);}"
+                    .to_owned(),
+            ),
+        ]
+    };
+    const YELLOW: [u8; 3] = [255, 255, 0];
+    for names in [
+        &["gbuffers_terrain"][..],
+        &["gbuffers_terrain_solid", "gbuffers_terrain_cutout"],
+    ] {
+        let files = names.iter().flat_map(|n| program(n)).collect();
+        let Some((got, _)) = strips_of(files, [255; 4]) else {
+            return;
+        };
+        assert_eq!(got, [Some(RED), Some(YELLOW), Some(RED)], "{names:?}");
+    }
+}

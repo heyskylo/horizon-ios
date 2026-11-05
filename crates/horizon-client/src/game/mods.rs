@@ -232,14 +232,16 @@ fn register_mob_effects(mods: &[horizon_client::mod_content::ContentMod]) {
 }
 
 /// the mods' thrown entity types, as their mob effects: set once, from the
-/// startup root.
+/// startup root. Living types are mobs, loaded with vanilla's from the
+/// content root's `entity-types.json`.
 fn register_entity_types(mods: &[horizon_client::mod_content::ContentMod]) {
     use horizon_client::projectiles;
-    let types = horizon_client::mod_content::entity_types(mods);
+    let mut types = horizon_client::mod_content::entity_types(mods);
+    types.retain(|t| t.item.is_some());
     let set = projectiles::register_thrown_types(
         types
             .iter()
-            .map(|t| (t.id.clone(), t.item.clone(), t.damage)),
+            .filter_map(|t| Some((t.id.clone(), t.item.clone()?, t.damage))),
     );
     if !set
         && projectiles::thrown_types()
@@ -434,10 +436,110 @@ impl Game<'_> {
     }
 }
 
+/// Mob types loaded from a scratch root whose `entity-types.json` has a
+/// zombie, a villager, and the rows a content root writes for a mod's types
+/// (`mod_content`): `ruby:ghoul` (a zombie with 40 health), `ruby:settler` (a
+/// villager as it is) and `ruby:bolt` (a thrown snowball, not a mob).
+#[cfg(test)]
+pub(super) fn living_mod_types()
+-> std::collections::HashMap<String, std::sync::Arc<horizon_client::mobs::MobType>> {
+    let zombie =
+        r#""width":0.6,"height":1.95,"eye_height":1.74,"category":"monster","fire_immune":false"#;
+    let villager =
+        r#""width":0.6,"height":1.95,"eye_height":1.62,"category":"misc","fire_immune":false"#;
+    let table = format!(
+        r#"{{"minecraft:zombie":{{{zombie},"attributes":{{"minecraft:max_health":20.0,"minecraft:movement_speed":0.23000000417232513}}}},
+        "minecraft:villager":{{{villager},"attributes":{{"minecraft:max_health":20.0,"minecraft:movement_speed":0.5}}}},
+        "minecraft:snowball":{{"width":0.25,"height":0.25,"eye_height":0.0,"category":"misc","fire_immune":false}},
+        "ruby:ghoul":{{{zombie},"attributes":{{"minecraft:max_health":40.0,"minecraft:movement_speed":0.23000000417232513}},"template":"minecraft:zombie"}},
+        "ruby:settler":{{{villager},"attributes":{{"minecraft:max_health":20.0,"minecraft:movement_speed":0.5}},"template":"minecraft:villager"}},
+        "ruby:bolt":{{"width":0.25,"height":0.25,"eye_height":0.0,"category":"misc","fire_immune":false,"template":"minecraft:snowball"}}}}"#
+    );
+    // A folder per call: tests run in parallel in one process, and each removes its own.
+    static CALLS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let root = std::env::temp_dir().join(format!(
+        "horizon-living-mod-types-{}-{call}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("entity-types.json"), table).unwrap();
+    let types = horizon_client::mobs::MobTypes::load_for_server(&root).unwrap();
+    let _ = std::fs::remove_dir_all(&root);
+    types
+        .types
+        .into_iter()
+        .map(|(id, t)| (id, std::sync::Arc::new(t)))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write;
+
+    /// A content mod's living type is a mob of its template's species under
+    /// its own id, with its own attributes: it saves its id with every field
+    /// its template's class saves, loads back as itself, and rolls its own
+    /// loot table. A thrown type stays a projectile.
+    #[test]
+    fn a_mod_living_type_is_its_templates_mob_with_its_own_attributes() {
+        use horizon_client::mobs::{Mob, Species, drops::death_loot_table};
+        use horizon_core::geometry::Vec3;
+        let types = living_mod_types();
+        let (zombie, ghoul) = (&types["minecraft:zombie"], &types["ruby:ghoul"]);
+        assert_eq!(ghoul.species, Species::Zombie);
+        assert_eq!(ghoul.class_id(), "minecraft:zombie");
+        assert_eq!(types["ruby:settler"].species, Species::Villager);
+        assert!(!types.contains_key("ruby:bolt"), "a thrown type is no mob");
+        assert_eq!((zombie.max_health, ghoul.max_health), (20.0, 40.0));
+        assert_eq!(ghoul.speed.to_bits(), zombie.speed.to_bits());
+        assert_eq!(
+            (ghoul.sounds, ghoul.texture.as_str()),
+            (zombie.sounds, zombie.texture.as_str())
+        );
+
+        let at = Vec3::new(0.5, 64.0, 0.5);
+        let (zombie, ghoul) = (
+            Mob::new(1, zombie.clone(), at, 0.0),
+            Mob::new(2, ghoul.clone(), at, 0.0),
+        );
+        assert_eq!(ghoul.health, 40.0);
+        let saved = |m: &Mob| horizon_client::entity_nbt::mob_to_nbt(m, [0, 0, 0, 2], None, None);
+        let keys = |tag: &horizon_world::nbt::Tag| -> Vec<String> {
+            let horizon_world::nbt::Tag::Compound(map) = tag else {
+                panic!("a mob saves a compound");
+            };
+            map.keys().map(|k| k.to_string_lossy()).collect()
+        };
+        let (zombie_tag, ghoul_tag) = (saved(&zombie), saved(&ghoul));
+        let Some(horizon_world::nbt::Tag::String(id)) = ghoul_tag.get("id") else {
+            panic!("a saved mob has its id");
+        };
+        assert_eq!(id.to_string_lossy(), "ruby:ghoul");
+        assert_eq!(
+            keys(&ghoul_tag),
+            keys(&zombie_tag),
+            "it saves what a zombie saves"
+        );
+        for key in ["IsBaby", "CanBreakDoors", "DrownedConversionTime"] {
+            assert!(keys(&ghoul_tag).iter().any(|k| k == key), "{key}");
+        }
+        let loaded = horizon_client::entity_nbt::mob_from_nbt(&ghoul_tag, &types, 3, None)
+            .expect("it loads back");
+        assert_eq!(
+            (loaded.kind.id.as_str(), loaded.health),
+            ("ruby:ghoul", 40.0)
+        );
+        assert_eq!(
+            death_loot_table(&ghoul, true).as_deref(),
+            Some("ruby:entities/ghoul")
+        );
+        assert_eq!(
+            death_loot_table(&zombie, true).as_deref(),
+            Some("minecraft:entities/zombie")
+        );
+    }
 
     /// Only a build whose `native-mods.json` lists a mod counts as built with mods.
     #[test]
@@ -512,5 +614,91 @@ mod tests {
         // No folder: no rows.
         assert!(not_built(&dir.join("missing"), "", &[]).is_empty());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A trait mod's `register_goals` (`Mob.registerGoals`) gets every new
+    /// mob: the goals of its type replace its template's, its `Float` goal
+    /// floats the navigation as FloatGoal's constructor does, and the
+    /// template's other types keep their goals. The only test here that
+    /// installs the client library's hooks.
+    #[test]
+    fn a_mods_register_goals_replaces_its_types_goals() {
+        use horizon_client::mobs::{
+            Mob,
+            goals::{self, Cx, Goal},
+        };
+        use horizon_client::mod_api::{Hooks, RegisterGoalsEvent, dispatch_register_goals};
+        use horizon_client::native_client_hooks::{NativeClientHooks, install};
+        use horizon_core::geometry::Vec3;
+        // docs/native-mods.md's example.
+        #[derive(Clone, Debug)]
+        struct ToPost {
+            post: [f64; 3],
+        }
+        impl Goal for ToPost {
+            fn flags(&self) -> u8 {
+                goals::MOVE
+            }
+            fn can_use(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
+                let [x, y, z] = self.post;
+                let (dx, dy, dz) = (m.position.x - x, m.position.y - y, m.position.z - z);
+                dx * dx + dy * dy + dz * dz > 16.0
+            }
+            fn can_continue(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
+                !m.ai.nav.is_done()
+            }
+            fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
+                m.nav_move_to(cx.w, self.post, 1.0);
+            }
+            fn box_clone(&self) -> Box<dyn Goal> {
+                Box::new(self.clone())
+            }
+        }
+        struct Guards;
+        impl Hooks for Guards {
+            fn register_goals(&self, event: &mut RegisterGoalsEvent<'_>) {
+                if event.mob.kind.id == "ruby:guard" {
+                    let ai = &mut event.mob.ai;
+                    ai.goals.clear();
+                    ai.targets.clear();
+                    ai.goals.add(0, goals::Float);
+                    ai.goals.add(
+                        1,
+                        ToPost {
+                            post: [0.5, 64.0, 0.5],
+                        },
+                    );
+                }
+            }
+        }
+        static MODS: std::sync::LazyLock<Vec<Box<dyn Hooks>>> =
+            std::sync::LazyLock::new(|| vec![Box::new(Guards)]);
+        let installed = install(NativeClientHooks {
+            menu_slot_rules: |_, _, _, _, _| {},
+            living_heal: |_, _, _| {},
+            player_chat: |_, _, _, _, _| {},
+            living_breathe: |_, _, _, _, _| {},
+            living_drown: |_, _, _, _, _, _| {},
+            living_fall: |_, _, _, _, _| {},
+            living_jump: |_, _| {},
+            register_goals: |mob| dispatch_register_goals(&MODS, mob),
+            ingredient: |_, _, _| {},
+            ingredient_test: |_, _, _, _| {},
+        });
+        assert!(installed.is_ok());
+
+        let types = living_mod_types();
+        let mut guard = (*types["ruby:ghoul"]).clone();
+        guard.id = "ruby:guard".into();
+        let at = Vec3::new(0.5, 64.0, 0.5);
+        let guard = Mob::new(1, std::sync::Arc::new(guard), at, 0.0);
+        let ghoul = Mob::new(2, types["ruby:ghoul"].clone(), at, 0.0);
+        assert!(guard.ai.goals.has("Float") && guard.ai.goals.has("ToPost"));
+        assert!(!guard.ai.goals.has("RandomLookAround"));
+        assert!(!guard.ai.targets.has("NearestTarget"));
+        assert!(guard.ai.nav.can_float);
+        assert!(ghoul.ai.goals.has("RandomLookAround") && !ghoul.ai.goals.has("ToPost"));
+        assert!(ghoul.ai.targets.has("NearestTarget"));
+        assert!(!ghoul.ai.nav.can_float, "a zombie has no FloatGoal");
     }
 }

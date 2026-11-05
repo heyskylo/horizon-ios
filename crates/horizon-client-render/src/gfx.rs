@@ -4404,6 +4404,12 @@ impl Renderer {
             ),
             flat.is_some(),
         );
+        // Not again after the device was lost in one of its frames, until Horizon restarts.
+        let gpu_culling_offer = if crate::graphics::gpu_culling_lost() {
+            crate::graphics::GpuCullingOffer::DeviceLost
+        } else {
+            gpu_culling_offer
+        };
         crate::graphics::offer_gpu_culling(gpu_culling_offer);
         // A new renderer runs no shader pack: the game loads the picked one on its
         // first world frame (`shader_pack`: the picked pack draws flat, a `shaders/`
@@ -5016,15 +5022,24 @@ impl Renderer {
     /// it did not see and how many it drew, and the share of solid indices
     /// it hid.
     pub fn culled_sections(&self) -> Option<([usize; 2], f32)> {
+        if self.gpu_frame {
+            // GPU culling's own test, on Vulkan.
+            let gpu = self.gpu_culling.as_ref().filter(|_| self.cull_on);
+            return gpu.and_then(|g| g.hidden());
+        }
         self.cull
             .as_ref()
-            .filter(|_| self.cull_on && !self.gpu_frame)
+            .filter(|_| self.cull_on)
             .map(|c| c.hidden)
     }
     /// Whether the near solid sections are culled and drawn on the GPU where
     /// frames allow it (`gpu_culling`).
     pub fn gpu_culling(&self) -> bool {
         self.gpu_culling.is_some()
+    }
+    /// Whether the last frame GPU culling drew ran its occlusion test.
+    pub fn gpu_occluding(&self) -> bool {
+        self.gpu_frame && self.gpu_culling.as_ref().is_some_and(|g| g.occluding())
     }
     /// Whether the last frame drew them so.
     pub fn gpu_frame(&self) -> bool {
@@ -5058,7 +5073,12 @@ impl Renderer {
         if let Some(why) = self.gpu_culling_offer.reason() {
             return Err(why.into());
         }
-        let Some(mut gpu) = gpu_culling::GpuCulling::new(&self.device) else {
+        let test = self
+            .cull
+            .as_ref()
+            .filter(|c| c.early())
+            .map(|_| self.frame_format);
+        let Some(mut gpu) = gpu_culling::GpuCulling::new(&self.device, test) else {
             // Not offered from now on: its switch greys out.
             self.offer_gpu_culling(crate::graphics::GpuCullingOffer::Unsupported);
             return Err("GPU culling could not be set up on this device".into());
@@ -5201,6 +5221,16 @@ impl Renderer {
     /// and `render` takes it if it has finished.
     pub fn start_occlusion(&mut self, camera: DVec3, distance: f32) {
         self.occlusion.update(camera, (distance / 16.0) as i32 + 2);
+    }
+    /// Whether the camera's current section graph knows this section is
+    /// reachable. `None` means the graph cannot safely answer for this camera
+    /// or section, so callers should keep the geometry.
+    pub fn section_occlusion_visible(
+        &self,
+        key: SectionKey,
+        camera_section: SectionKey,
+    ) -> Option<bool> {
+        self.occlusion.visible_for_camera(key, camera_section)
     }
     pub fn upload(&mut self, key: SectionKey, mesh: &SectionMesh) {
         if let Some(copies) = &mut self.capture_copies {
@@ -7441,7 +7471,8 @@ impl Renderer {
             });
         }
         // A shader pack's shadow pass draws the sections in its camera's box, all of them (the
-        // occlusion graph follows the eye, not the light), within shadowDistanceRenderMul.
+        // occlusion graph follows the eye, not the light), within shadowDistanceRenderMul; for
+        // an Iris-format pack, only those whose shadow can fall into the camera's view.
         let shadow_view = self
             .pack_post
             .as_ref()
@@ -7521,6 +7552,8 @@ impl Renderer {
                 frustum: &view,
                 reach: self.occlusion.reach().filter(|_| culling),
                 eye,
+                view_proj: jittered,
+                occlude: self.cull_on,
             };
             let prepared = crate::spans::time("gpu culling", || {
                 gpu.prepare(
@@ -7596,8 +7629,11 @@ impl Renderer {
             let radius = v
                 .distance
                 .map_or(radius, |d| radius.min((d / 16.0).ceil() as i32));
-            let light = Frustum {
-                planes: frustum(v.cull),
+            let light = ShadowCull {
+                light: Frustum {
+                    planes: frustum(v.cull),
+                },
+                casters: v.view_casters.then(|| shadow_casters(cull_proj, v.light)),
             };
             crate::spans::time("shadow visibility", || {
                 // Within the unculled distance every section, then those in the light's box.
@@ -8774,7 +8810,6 @@ impl Renderer {
         let cpu = [listed - gpu_solid, section_draws, section_draw_calls];
         if gpu_frame && let Some(gpu) = &mut self.gpu_culling {
             gpu.dispatch(&mut encoder, self.own_timing.as_mut());
-            gpu.copy_stats(&mut encoder, serial, cpu);
         } else {
             self.show_stats(serial, cpu);
         }
@@ -9236,6 +9271,8 @@ impl Renderer {
         // A material stage's translucent pass reads a copy of the depth the solid terrain
         // left: it is stored across the pass that ends before the copy.
         let keep_depth = keep_depth || material.is_some();
+        // GPU culling's occlusion test splits the world pass as cull.rs's does.
+        let gpu_occluding = gpu_frame && self.gpu_culling.as_ref().is_some_and(|g| g.occluding());
         let pack_frame = |pass: &mut wgpu::RenderPass<'_>| {
             if let Some((_, group)) = material {
                 pass.set_bind_group(horizon_shader_api::stages::GROUP, group, &[]);
@@ -9292,8 +9329,9 @@ impl Renderer {
                     view: world_depth,
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Clear(0.0),
-                        // The visibility buffer's passes draw on after it.
-                        store: if cull.is_some() || keep_depth || vis_frame {
+                        // The visibility buffer's passes, and those after an occlusion test,
+                        // draw on after it.
+                        store: if cull.is_some() || gpu_occluding || keep_depth || vis_frame {
                             wgpu::StoreOp::Store
                         } else {
                             wgpu::StoreOp::Discard
@@ -9576,27 +9614,74 @@ impl Renderer {
                                 );
                             }
                         }
-                        // Without culling, phase 1 is all the solid draws.
+                        // Without culling, phase 1 is all the solid draws; GPU culling's
+                        // own test (`GpuCulling::occluding`) leaves the CPU's to phase 2.
                         None => {
+                            let gpu = self.gpu_culling.as_ref().filter(|_| gpu_frame);
+                            let occluding = gpu.is_some_and(|g| g.occluding());
+                            let page_group = |page: u32| {
+                                pulled
+                                    .then(|| self.flat.as_ref()?.page_group(page))
+                                    .flatten()
+                            };
                             for (pipeline, draws, _) in passes {
                                 pass.set_pipeline(pipeline);
                                 // GPU culling's draws first, all within the render distance.
-                                if gpu_frame && let Some(gpu) = &self.gpu_culling {
-                                    gpu.draw(&mut pass, &self.arena, |page| {
-                                        pulled
-                                            .then(|| self.flat.as_ref()?.page_group(page))
-                                            .flatten()
-                                    });
+                                if let Some(gpu) = gpu {
+                                    gpu.draw(&mut pass, &self.arena, page_group, 0);
                                     pass.set_vertex_buffer(1, self.instances.slice(..));
                                 }
-                                self.draw_sections_from(
-                                    &mut pass,
-                                    &self.indirect,
-                                    0,
-                                    draws.start,
-                                    draws.len() as u32,
-                                    pulled,
+                                if !occluding {
+                                    self.draw_sections_from(
+                                        &mut pass,
+                                        &self.indirect,
+                                        0,
+                                        draws.start,
+                                        draws.len() as u32,
+                                        pulled,
+                                    );
+                                }
+                            }
+                            // As cull.rs's arm: the boxes against phase 1's depth, then
+                            // phase 2 and the CPU's draws in a pass that loads both targets.
+                            if let Some(gpu) = gpu.filter(|_| occluding) {
+                                if surface.is_some() {
+                                    drop(pass);
+                                    pass = plain_pass(&mut encoder);
+                                }
+                                gpu.test(&mut pass);
+                                drop(pass);
+                                gpu.compact(&mut encoder, self.own_timing.as_mut());
+                                pass = match &surface {
+                                    Some(surface) => terrain_pass(&mut encoder, surface, false),
+                                    None => world_pass_after_culling(
+                                        &mut encoder,
+                                        world_view,
+                                        world_depth,
+                                        keep_depth,
+                                        self.own_timing.as_mut(),
+                                        "World after culling",
+                                    ),
+                                };
+                                pass.set_bind_group(0, &self.group, &[]);
+                                pack_frame(&mut pass);
+                                pass.set_index_buffer(
+                                    self.indices.slice(..),
+                                    wgpu::IndexFormat::Uint32,
                                 );
+                                for (pipeline, draws, _) in passes {
+                                    pass.set_pipeline(pipeline);
+                                    gpu.draw(&mut pass, &self.arena, page_group, 1);
+                                    pass.set_vertex_buffer(1, self.instances.slice(..));
+                                    self.draw_sections_from(
+                                        &mut pass,
+                                        &self.indirect,
+                                        0,
+                                        draws.start,
+                                        draws.len() as u32,
+                                        pulled,
+                                    );
+                                }
                             }
                         }
                     }
@@ -10407,6 +10492,10 @@ impl Renderer {
             self.draw_overlay(&mut encoder, frame, &view_target, &target_texture, &overlay);
         if culling && let Some(cull) = &mut self.cull {
             cull.end(&self.device, &mut encoder);
+        }
+        // GPU culling's counts once its world passes are done (phase 2's too).
+        if gpu_frame && let Some(gpu) = &mut self.gpu_culling {
+            gpu.copy_stats(&mut encoder, serial, cpu);
         }
         if let Some(timer) = &mut self.gpu_timer {
             timer.end(
@@ -11242,6 +11331,10 @@ pub struct Frusta(pub Frustum, pub Option<Frustum>);
 pub trait Cull {
     fn intersects(&self, min: Vec3, max: Vec3) -> bool;
     fn contains(&self, min: Vec3, max: Vec3) -> bool;
+    /// Whether a section is tested by the box around its geometry, not its whole 16 blocks.
+    fn tight(&self) -> bool {
+        true
+    }
 }
 impl Cull for Frustum {
     fn intersects(&self, min: Vec3, max: Vec3) -> bool {
@@ -11258,6 +11351,39 @@ impl Cull for Frusta {
     /// Entirely inside one of them is entirely inside the union.
     fn contains(&self, min: Vec3, max: Vec3) -> bool {
         self.0.contains(min, max) || self.1.is_some_and(|f| f.contains(min, max))
+    }
+}
+/// A shader pack's shadow camera's box, and with `casters` only what can shade the camera's view
+/// (`shadow_casters`): a box must meet all of them.
+#[derive(Clone, Copy, Debug)]
+pub struct ShadowCull {
+    pub light: Frustum,
+    pub casters: Option<[Frustum; 2]>,
+}
+/// How far past a section's 16 blocks the shadow pass looks for what can shade the view: our
+/// probes' Iris 1.11.7 maps keep the sections whose box, grown by this much on every side, meets
+/// `shadow_casters`' shape. The 31 edge columns of 8 noon scenes allow only a growth of 1.12 to
+/// 1.19 blocks (a fit, not Iris's code); with 1.15, 19 of our 20 scenes hold exactly Iris's
+/// columns. Without it the edges of the wedge lose a column of terrain.
+const SHADOW_CASTER_MARGIN: f32 = 1.15;
+impl Cull for ShadowCull {
+    fn intersects(&self, min: Vec3, max: Vec3) -> bool {
+        let (grown_min, grown_max) = (min - SHADOW_CASTER_MARGIN, max + SHADOW_CASTER_MARGIN);
+        self.light.intersects(min, max)
+            && self
+                .casters
+                .is_none_or(|c| c.iter().all(|f| f.intersects(grown_min, grown_max)))
+    }
+    fn contains(&self, min: Vec3, max: Vec3) -> bool {
+        let (grown_min, grown_max) = (min - SHADOW_CASTER_MARGIN, max + SHADOW_CASTER_MARGIN);
+        self.light.contains(min, max)
+            && self
+                .casters
+                .is_none_or(|c| c.iter().all(|f| f.contains(grown_min, grown_max)))
+    }
+    /// Our probe's Iris 1.11.7 maps fit testing the casters' whole sections (a guess that matched).
+    fn tight(&self) -> bool {
+        self.casters.is_none()
     }
 }
 /// Camera-relative clip planes (`Frustum`).
@@ -11417,6 +11543,68 @@ fn facing_runs_from(
         }
         None => sides.every(part, draw),
     }
+}
+/// The camera's view `view_proj` (wgpu depth, reversed or not) stretched without end toward
+/// `light` (a direction): the boxes whose shadow, cast away from the light, can fall into the
+/// view. Its planes are the view's faces turned toward the light, and through each edge between
+/// such a face and one turned away, the plane along the light; unused ones take in everything.
+fn shadow_casters(view_proj: Mat4, light: Vec3) -> [Frustum; 2] {
+    let faces = frustum(view_proj);
+    let toward = faces.map(|p| p.truncate().dot(light) >= 0.0);
+    let inverse = view_proj.inverse();
+    // Corner (x, y, z) of clip space's box; `frustum`'s faces at x -1 and 1 are 0 and 1, at
+    // y -1 and 1 are 2 and 3, at depth 0 and 1 are 4 and 5.
+    let corner = |c: [usize; 3]| {
+        inverse.project_point3(Vec3::new(
+            c[0] as f32 * 2.0 - 1.0,
+            c[1] as f32 * 2.0 - 1.0,
+            c[2] as f32,
+        ))
+    };
+    let corners: Vec<[usize; 3]> = (0..8).map(|i| [i & 1, (i >> 1) & 1, i >> 2]).collect();
+    let centre = corners.iter().map(|&c| corner(c)).sum::<Vec3>() / 8.0;
+    let mut planes = [Vec4::W; 12];
+    let mut n = 0;
+    for (k, &face) in faces.iter().enumerate() {
+        if toward[k] {
+            planes[n] = face;
+            n += 1;
+        }
+    }
+    for a in &corners {
+        for axis in 0..3 {
+            if a[axis] == 1 {
+                continue;
+            }
+            let mut b = *a;
+            b[axis] = 1;
+            // The edge from a to b lies on the faces of the two other axes.
+            let [f, g] = [(axis + 1) % 3, (axis + 2) % 3].map(|o| o * 2 + a[o]);
+            if toward[f] == toward[g] {
+                continue;
+            }
+            let (p, q) = (corner(*a), corner(b));
+            let normal = (q - p).cross(light);
+            if normal.length_squared() < 1e-12 {
+                continue;
+            }
+            let normal = normal.normalize();
+            let side = if normal.dot(centre - p) < 0.0 {
+                -1.0
+            } else {
+                1.0
+            };
+            // At most six such edges with at most four faces toward the light: 12 planes.
+            if let Some(plane) = planes.get_mut(n) {
+                *plane = (normal * side).extend(-normal.dot(p) * side);
+                n += 1;
+            }
+        }
+    }
+    let [a, b] = [0, 6].map(|i| Frustum {
+        planes: planes[i..i + 6].try_into().expect("six planes"),
+    });
+    [a, b]
 }
 fn frustum(m: Mat4) -> [Vec4; 6] {
     let r = |i| m.row(i);
@@ -12008,8 +12196,9 @@ mod tests {
         for path in files {
             let text = std::fs::read_to_string(&path).unwrap();
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if name == "oit.wgsl" {
-                // The shared maths: it needs the file it is appended to.
+            if name == "oit.wgsl" || name == "gpu_occlusion.wgsl" {
+                // The shared maths: it needs the file it is appended to. GPU culling's
+                // occlusion test is appended to gpu_culling.wgsl, on Vulkan alone.
                 continue;
             } else if name == "oit_world.wgsl" {
                 let base = include_str!("terrain.wgsl").to_owned() + include_str!("oit.wgsl");
@@ -13069,6 +13258,7 @@ mod shadow_face_tests {
             distance: None,
             unculled: None,
             every_face,
+            view_casters: true,
         }
     }
 
@@ -13081,5 +13271,125 @@ mod shadow_face_tests {
         assert_eq!(drawn(&view(true), origin), [0, 1, 2, 3, 4, 5]);
         // Horizon's own packs keep drawing only what can face the light: no bottom face.
         assert!(!drawn(&view(false), origin).contains(&3));
+    }
+}
+
+#[cfg(test)]
+mod shadow_caster_tests {
+    use super::*;
+
+    /// What the shadow pass keeps of a camera-relative section at `min`, the camera at the
+    /// origin looking along -X (yaw 90) with the scenes' 70 degree, 16:9 view, and the light in
+    /// direction `light`; the light's own box takes in everything.
+    fn kept(light: Vec3, min: [f32; 3]) -> bool {
+        kept_looking(Vec3::NEG_X, light, min)
+    }
+
+    /// `kept` with the camera looking along `forward`.
+    fn kept_looking(forward: Vec3, light: Vec3, min: [f32; 3]) -> bool {
+        let camera = world_projection(70.0, 16.0 / 9.0, 192.0)
+            * Mat4::look_to_rh(Vec3::ZERO, forward, Vec3::Y);
+        let cull = ShadowCull {
+            light: Frustum {
+                planes: [Vec4::W; 6],
+            },
+            casters: Some(shadow_casters(camera, light)),
+        };
+        let min = Vec3::from(min);
+        cull.intersects(min, min + 16.0)
+    }
+
+    /// Our probes' Iris 1.11.7 shadow maps fit keeping only the terrain whose shadow can fall
+    /// into the camera's view (#8464).
+    #[test]
+    fn the_shadow_pass_keeps_what_can_shade_the_view() {
+        // A noon sun: a treetop high above the ground ahead shades it, though the camera doesn't
+        // see it; behind the camera, or far off to the side, nothing does.
+        assert!(kept(Vec3::Y, [-48.0, 64.0, -8.0]));
+        assert!(!kept(Vec3::Y, [32.0, 0.0, -8.0]));
+        assert!(!kept(Vec3::Y, [-32.0, 0.0, 96.0]));
+        // Nor does what lies under the ground the camera looks along.
+        assert!(!kept(Vec3::Y, [-48.0, -96.0, -8.0]));
+        // A low sun ahead (west, -X) throws shadows toward the camera: what is behind it can't
+        // reach the view.
+        let west = Vec3::new(-1.0, 0.1, 0.0).normalize();
+        assert!(kept(west, [-48.0, 0.0, -8.0]));
+        assert!(!kept(west, [32.0, 0.0, -8.0]));
+        // The same sun behind the camera throws the terrain behind it forward, into the view.
+        let east = Vec3::new(1.0, 0.1, 0.0).normalize();
+        assert!(kept(east, [32.0, 0.0, -8.0]));
+        assert!(kept(east, [96.0, 0.0, -8.0]));
+        // Looking 20 degrees down under a noon sun, the view's sides lean out below the camera:
+        // a treetop above the ground ahead still shades it, one off to the side doesn't, though
+        // it lies inside each of the view's planes that faces the light.
+        let down = Vec3::new(-20f32.to_radians().cos(), -20f32.to_radians().sin(), 0.0);
+        assert!(kept_looking(down, Vec3::Y, [-48.0, 16.0, -8.0]));
+        assert!(!kept_looking(down, Vec3::Y, [-32.0, 16.0, -96.0]));
+    }
+
+    /// Our probes' Iris 1.11.7 maps keep the sections whose box, grown by a margin of 1.12 to
+    /// 1.19 blocks, meets the shape (#8464): a camera at (13.5, 69.62, -13.5) under a noon sun with the scenes' flying
+    /// field of view (77°).
+    #[test]
+    fn the_shadow_pass_keeps_a_margin_around_the_view() {
+        let kept = |yaw: f32, column: [f32; 2]| {
+            let camera =
+                world_projection(77.0, 16.0 / 9.0, 1024.0) * crate::camera::view_matrix(yaw, 0.0);
+            let cull = ShadowCull {
+                light: Frustum {
+                    planes: [Vec4::W; 6],
+                },
+                casters: Some(shadow_casters(camera, Vec3::Y)),
+            };
+            let min = Vec3::new(
+                column[0] * 16.0 - 13.5,
+                64.0 - 69.62,
+                column[1] * 16.0 + 13.5,
+            );
+            cull.intersects(min, min + 16.0)
+        };
+        // Looking west, the column at chunk (-2, -6) needs a margin of 0.9 blocks: Iris keeps it.
+        assert!(kept(90.0, [-2.0, -6.0]));
+        // Looking south (yaw 7.5), the one at (3, 0) needs a margin of 1.3 blocks: Iris drops it.
+        assert!(!kept(7.5, [3.0, 0.0]));
+    }
+
+    /// With the camera looking straight up under a noon sun, our probe's Iris 1.11.7 map holds
+    /// 7 columns there, which testing whole sections reproduces (a guess): the sections beside
+    /// the camera whose 16 blocks reach above it are kept, even where their terrain lies below
+    /// the camera.
+    #[test]
+    fn the_shadow_pass_tests_whole_sections() {
+        let camera = DVec3::new(8.0, 6.0, 8.0);
+        let up = world_projection(70.0, 16.0 / 9.0, 192.0)
+            * Mat4::look_to_rh(Vec3::ZERO, Vec3::Y, Vec3::Z);
+        let view = Frustum {
+            planes: frustum(up),
+        };
+        // The section east of the camera's, y 0..16, with ground only in its lowest 2 blocks.
+        let mut sections = resident::Resident::<()>::default();
+        let key = (1, -crate::chunk::MIN_Y / 16, 0);
+        sections.insert_with_bounds(key, (), Some([Vec3::ZERO, Vec3::new(16.0, 2.0, 16.0)]));
+        let drawn = |cull: &dyn Fn(&mut Vec<resident::Visible>)| {
+            let mut out = Vec::new();
+            cull(&mut out);
+            out.iter().map(|v| v.key).collect::<Vec<_>>()
+        };
+        let all = Frustum {
+            planes: [Vec4::W; 6],
+        };
+        let shadow = ShadowCull {
+            light: all,
+            casters: Some(shadow_casters(up, Vec3::Y)),
+        };
+        assert_eq!(
+            drawn(&|out| sections.visible(camera, 4, &shadow, |_| true, |_, _| false, out)),
+            [key]
+        );
+        // The camera's own view goes by the terrain's box, which lies below it.
+        assert!(
+            drawn(&|out| sections.visible(camera, 4, &view, |_| true, |_, _| false, out))
+                .is_empty()
+        );
     }
 }

@@ -68,10 +68,17 @@ class Game:
             seed(self.game_home)
         self.env = lab.game_env(**homes)
         self.socket = self.home / 'ctl.json'
-        launch = ['launch', '--game', args.game, '--offscreen', '--render-distance', 2, '--resources', args.resources]
+        self.launch = ['launch', '--game', args.game, '--offscreen', '--render-distance', 2,
+                       '--resources', args.resources]
         if world:
-            launch += ['--world', 'Menus', '--creative', '--no-pause', '--wait']
-        self.ctl(*launch, timeout=500)
+            self.launch += ['--world', 'Menus', '--creative', '--no-pause', '--wait']
+        self.ctl(*self.launch, timeout=500)
+
+    def restart(self):
+        """Quit and start again on the same files."""
+        self.ctl('quit')
+        time.sleep(3)
+        self.ctl(*self.launch, timeout=500)
 
     def ctl(self, *words, timeout=60):
         r = subprocess.run([str(self.args.ctl), '--socket', str(self.socket), *map(str, words)],
@@ -112,11 +119,26 @@ class Game:
             time.sleep(0.2)
         raise RuntimeError('the screen never drew a target')
 
+    def pad(self, button, action='tap'):
+        self.ctl('pad', button, action)
+        time.sleep(SETTLE)
+
+    def stick(self, y=-1):
+        """About one notch of the right stick; down scrolls towards the list's end."""
+        self.ctl('pad', 'stick', 'right', 0, y)
+        time.sleep(0.1)
+        self.ctl('pad', 'stick', 'right', 0, 0)
+        time.sleep(SETTLE)
+
     def widgets(self):
         return self.ctl('ui')['widgets']
 
     def rows(self):
         return [w for w in self.widgets() if w['kind'] == 'row']
+
+    def focused_label(self):
+        """What the focus is on, by what it says: a scrolled row moves."""
+        return next((w.get('label') for w in self.widgets() if tuple(w['bounds']) == self.focus()), None)
 
     def focus_on(self, wanted):
         """The D-pad, down (right along its row, or at the bottom) until the focus reaches this widget id."""
@@ -135,9 +157,17 @@ class Game:
                 self.pad('right')
         raise RuntimeError(f'the D-pad never reached {wanted}: focus on {self.focus()}')
 
-    def pad(self, button, action='tap'):
-        self.ctl('pad', button, action)
-        time.sleep(SETTLE)
+    def press_through(self, *presses, click=None):
+        """From the title, by the pad and then one click of a widget id, to a screen."""
+        self.wait_targets()
+        self.title_buttons()
+        for press in presses:
+            self.pad(press)
+        if click:
+            self.ctl('click', click)
+            self.pad('down')
+        self.wait_targets()
+
 
     def title_buttons(self):
         """Singleplayer (the widest, topmost button), and Options and Quit Game (the half-width pair)."""
@@ -670,12 +700,615 @@ def pause_y(args, name):
     return check.failures
 
 
+def seed_worlds(game_home):
+    """Enough worlds to scroll: a level.dat that doesn't read still lists its folder."""
+    for i in range(20):
+        (game_home / 'saves' / f'World{i:02}').mkdir(parents=True)
+        (game_home / 'saves' / f'World{i:02}' / 'level.dat').write_bytes(b'')
+
+
+def seed_servers(game_home):
+    """Enough servers to scroll, none answering, with the warning before the list accepted."""
+    def text(name, value):
+        return b'\x08' + struct.pack('>H', len(name)) + name.encode() + struct.pack('>H', len(value)) + value.encode()
+    rows = b''.join(text('name', f'Server{i:02}') + text('ip', '127.0.0.1:1') + b'\0' for i in range(20))
+    root = b'\x0a\0\0\x09\0\x07servers\x0a' + struct.pack('>i', 20) + rows + b'\0'
+    (game_home / 'servers.dat').write_bytes(root)
+    with (game_home / 'options.txt').open('a') as options:
+        options.write('skipMultiplayerWarning:true\n')
+
+
+def quick_tap(game, side):
+    """A trigger down and up, well inside the book's tap (`TRIGGER_TAP`)."""
+    game.ctl('pad', 'trigger', side, 1)
+    time.sleep(0.05)
+    game.ctl('pad', 'trigger', side, 0)
+    time.sleep(SETTLE)
+
+
+def selected_tab(game):
+    tabs = [tuple(t['rect']) for t in game.menu()['targets'] if str(t['kind']).startswith('tab')]
+    chosen = [tuple(t['rect']) for t in game.menu()['targets'] if t['kind'] == 'tab*']
+    return tabs.index(chosen[0]) if chosen else None, len(tabs)
+
+
+@title_case
+def tabs_create_world(game, check, single, options, quit_game):
+    open_create_world(game)
+    check(selected_tab(game) == (0, 3), f'starts on {selected_tab(game)}')
+    for want in (1, 2, 0):
+        game.pad('rb')
+        check(selected_tab(game) == (want, 3), f'RB to {want}: {selected_tab(game)}')
+    game.pad('lb')
+    check(selected_tab(game) == (2, 3), f'LB wraps: {selected_tab(game)}')
+
+
+@title_case
+def tab_release(game, check, single, options, quit_game):
+    open_create_world(game)
+    game.pad('rb')
+    game.pad('right')
+    game.pad('south', 'down')
+    check(selected_tab(game)[0] == 1, f'A down pressed the tab: {selected_tab(game)}')
+    game.pad('south', 'up')
+    check(selected_tab(game)[0] == 2, f'A up did not press the tab: {selected_tab(game)}')
+
+
+@title_case
+def tab_held_a(game, check, single, options, quit_game):
+    open_create_world(game)
+    game.pad('south', 'down')
+    game.pad('rb')
+    check(selected_tab(game)[0] == 0, f'RB with A held switched tab: {selected_tab(game)}')
+    game.ctl('pad', 'release')
+
+
+def tabs_world(args, name):
+    game = Game(args, name, world=True)
+    check = Check()
+
+    def steps(screen, count):
+        time.sleep(1.5)
+        game.pad('rb')
+        check(selected_tab(game) == (1, count), f'{screen} RB: {selected_tab(game)}')
+        game.pad('lb')
+        check(selected_tab(game) == (0, count), f'{screen} LB: {selected_tab(game)}')
+
+    try:
+        game.ctl('command', 'advancement grant @s everything')
+        game.ctl('command', 'give @s dirt 4')
+        time.sleep(1)
+        game.ctl('key', 'q', 'tap')
+        time.sleep(1)
+        game.ctl('key', 'escape', 'tap')
+        game.wait_targets()
+        game.ctl('click', 'statistics')
+        # No mob has been killed: Mobs can't be chosen.
+        steps('Statistics', 2)
+        game.ctl('key', 'escape', 'tap')
+        time.sleep(1)
+        game.wait_targets()
+        game.ctl('click', 'advancements')
+        steps('Advancements', 5)
+        game.ctl('key', 'escape', 'tap')
+        time.sleep(1)
+        game.ctl('key', 'escape', 'tap')
+        time.sleep(1)
+        game.ctl('key', 'p', 'tap')
+        steps('Player Social', 3)
+    finally:
+        game.quit()
+    return check.failures
+
+
+def recipe_book(args, name):
+    game = Game(args, name, world=True)
+    check = Check()
+
+    pull = lambda side: quick_tap(game, side)
+
+    def arrows():
+        # The page arrows: past the first page there's one to go back, to the left of the other.
+        return sorted(t[0] for t in game.ctl('screen')['recipe_book']['targets'] if t[2:] == [12.0, 17.0])
+
+    try:
+        game.ctl('command', 'gamemode survival')
+        game.ctl('command', 'recipe give @s *')
+        time.sleep(1)
+        game.ctl('key', 'e', 'tap')
+        time.sleep(SETTLE)
+        game.wait_targets()
+        x, y, _, _ = next(t for t in game.ctl('screen')['recipe_book']['targets'] if t[2:] == [20.0, 18.0])
+        game.ctl('click-at', x + 10, y + 9)
+        time.sleep(SETTLE)
+        category = selected_tab(game)
+        check(category[0] is not None, 'the book has no tabs')
+        first = arrows()
+        check(len(first) == 1, f'not on a first page of several: {first}')
+        forward = first[0]
+        game.pad('lb')
+        check(arrows() == first, f'LB on the first page moved it: {arrows()}')
+        game.pad('rb')
+        check(min(arrows()) < forward, f'RB did not turn the page: {arrows()}')
+        check(selected_tab(game) == category, 'RB changed the category')
+        pull('right')
+        check(selected_tab(game)[0] != category[0], 'RT did not change the category')
+        pull('left')
+        check(selected_tab(game) == category, 'LT did not come back')
+        check(arrows() == first, f'a new category kept the page: {arrows()}')
+        # To the last page, and no further.
+        for _ in range(30):
+            if forward not in arrows():
+                break
+            game.pad('rb')
+        last = arrows()
+        check(forward not in last, f'never reached the last page: {last}')
+        game.pad('rb')
+        check(arrows() == last, f'RB on the last page moved it: {arrows()}')
+    finally:
+        game.quit()
+    return check.failures
+
+
+def stick_lists(args, name):
+    check = Check()
+    for seed, presses in ((seed_worlds, ('south', 'south')), (seed_servers, ('south', 'down', 'south'))):
+        game = Game(args, name, seed=seed)
+        try:
+            game.press_through(*presses)
+            # A row that leaves hands the focus to the nearest one, not the first target.
+            game.focus_on(game.rows()[0]['id'])
+            first = game.focused_label()
+            for _ in range(6):
+                game.stick()
+            top = game.rows()[0]['label']
+            check(top != first, f'{first} is still in the list')
+            check(game.focused_label() == top, f'{first} left: focus on {game.focused_label()}, not the top row {top}')
+            # A row that stays keeps it, whichever way the list goes.
+            game.focus_on(game.rows()[1]['id'])
+            label, before = game.focused_label(), game.rows()
+            for y in (-1, -1, 1):
+                game.stick(y)
+                check(game.focused_label() == label, f'stick {y}: focus on {game.focused_label()}, not {label}')
+            check(game.rows() != before, f'{label}: the list did not scroll')
+            # With the focus, and the hidden pointer, outside the list.
+            # The D-pad went through every hidden row to get there, so the list is at its end.
+            game.focus_on('back')
+            back, before = game.focus(), game.rows()
+            game.stick()
+            check(game.rows() == before, f'{label}: the list scrolled past its end')
+            game.stick(1)
+            check(game.rows() != before, f'{label}: the stick did not scroll with the focus on Back')
+            check(game.focus() == back, f'{label}: focus went from Back to {game.focus()}')
+        finally:
+            game.quit()
+    return check.failures
+
+
+def stick_changes_no_value(args, name):
+    check = Check()
+    for presses, click, wanted in ((('south', 'south'), None, 'difficulty'), (('west',), 'chat-settings', 'chat')):
+        game = Game(args, name)
+        try:
+            game.press_through(*presses, click=click)
+            game.focus_on(wanted)
+            label = game.focused_label()
+            game.stick()
+            check(game.focused_label() == label, f'{label} is now {game.focused_label()}')
+            # The mouse wheel keeps vanilla's way: it cycles the button under it.
+            x, y, w, h = game.focus()
+            game.ctl('scroll-at', x + w / 2, y + h / 2, -1)
+            time.sleep(SETTLE)
+            check(game.focused_label() != label, f'the mouse wheel no longer cycles {label}')
+        finally:
+            game.quit()
+    return check.failures
+
+
+def dpad_edge_changes_no_value(args, name):
+    check = Check()
+    game = Game(args, name)
+    try:
+        game.press_through('west', click='chat-settings')
+        game.focus_on('chat')
+        label = game.focused_label()
+        game.pad('up')
+        check(game.focused_label() == label, f'{label} is now {game.focused_label()}')
+    finally:
+        game.quit()
+    # Past the top visible row, the step still scrolls the list it's in.
+    game = Game(args, name)
+    try:
+        game.press_through('west', click='accessibility-settings')
+        game.focus_on('menu-background-blur')
+        for _ in range(4):
+            game.stick()
+        moved = False
+        for _ in range(12):
+            before = {w['id']: w for w in game.widgets()}
+            game.pad('up')
+            after = {w['id']: w for w in game.widgets()}
+            both = before.keys() & after.keys()
+            moved = moved or any(before[i]['bounds'] != after[i]['bounds'] for i in both)
+            for i in both:
+                check(before[i].get('label') == after[i].get('label'), f"{before[i].get('label')} is now {after[i].get('label')}")
+        check(moved, 'the D-pad did not scroll the options list')
+    finally:
+        game.quit()
+    # A list the focus isn't in stays put.
+    game = Game(args, name, seed=seed_worlds)
+    try:
+        game.press_through('south', 'south')
+        game.focus_on('back')
+        back, before = game.focus(), game.rows()
+        game.pad('down')
+        check(game.rows() == before, 'the D-pad scrolled the list with the focus on Back')
+        check(game.focus() == back, f'focus went from Back to {game.focus()}')
+    finally:
+        game.quit()
+    return check.failures
+
+
+def crosshair_on_target(game):
+    x, y = game.menu()['pointer']
+    return any(abs(r[0] + r[2] / 2 - x) <= 0.5 and abs(r[1] + r[3] / 2 - y) <= 0.5 for r in game.rects())
+
+
+def crosshair_walk(game, x, y):
+    """The D-pad, towards a point, until the crosshair is on the target there."""
+    game.pad('down')
+    for _ in range(40):
+        at = game.menu()['pointer']
+        dx, dy = x - at[0], y - at[1]
+        if max(abs(dx), abs(dy)) <= 10:
+            return
+        game.pad(('right' if dx > 0 else 'left') if abs(dx) > abs(dy) else ('down' if dy > 0 else 'up'))
+    raise RuntimeError(f'the D-pad never reached {x}, {y}: on {at}')
+
+
+def crosshair_spreads(args, name):
+    game = Game(args, name, world=True)
+    check = Check()
+    try:
+        game.ctl('command', 'gamemode survival')
+        game.ctl('command', 'give @s dirt 16')
+        time.sleep(1)
+        game.ctl('key', 'e', 'tap')
+        time.sleep(SETTLE)
+        game.wait_targets()
+        for _ in range(12):
+            game.pad('down')
+        for _ in range(12):
+            game.pad('left')
+        game.pad('south')
+        check(game.ctl('inventory')['carried'], 'A did not pick up the stack in the hotbar')
+        game.pad('up')
+        was = game.menu()['pointer']
+        game.pad('south', 'down')
+        game.pad('right')
+        at = game.menu()['pointer']
+        check(at[0] - was[0] == 18 and at[1] == was[1], f'A + right went from {was} to {at}, not one slot')
+        game.pad('right')
+        game.pad('south', 'up')
+        filled = [s for s in game.ctl('inventory')['main'] if s and s.get('count')]
+        check(len(filled) == 3, f'the stack spread over {len(filled)} slots, not 3')
+    finally:
+        game.quit()
+    return check.failures
+
+
+def crosshair_recipe_book(args, name):
+    game = Game(args, name, world=True)
+    check = Check()
+    try:
+        game.ctl('command', 'gamemode survival')
+        game.ctl('key', 'e', 'tap')
+        time.sleep(SETTLE)
+        game.wait_targets()
+        x, y, w, h = next(t for t in game.ctl('screen')['recipe_book']['targets'] if t[2:] == [20.0, 18.0])
+        crosshair_walk(game, x + w / 2, y + h / 2)
+        was = game.menu()['pointer']
+        game.pad('south')
+        check(game.menu()['pointer'] != was, 'the recipe book did not move the crosshair with its button')
+        check(crosshair_on_target(game), f"the book opened: crosshair off every target, at {game.menu()['pointer']}")
+    finally:
+        game.quit()
+    return check.failures
+
+
+def crosshair_creative_tabs(args, name):
+    game = Game(args, name, world=True)
+    check = Check()
+    try:
+        game.ctl('key', 'e', 'tap')
+        time.sleep(SETTLE)
+        game.wait_targets()
+        game.pad('down')
+        game.pad('down')
+        for _ in range(14):
+            game.pad('rb')
+            check(crosshair_on_target(game), f"tab {selected_tab(game)}: crosshair off every target, at {game.menu()['pointer']}")
+    finally:
+        game.quit()
+    return check.failures
+
+
+def crosshair_station_rows(args, name):
+    game = Game(args, name, world=True)
+    check = Check()
+    try:
+        game.ctl('command', 'gamemode survival')
+        game.ctl('command', 'clear @s')
+        game.ctl('command', 'give @s minecraft:cobbled_deepslate 3')
+        x, y, z = (int(v // 1) for v in game.ctl('state')['player']['position'])
+        # Terrain can hide it from where the player stands.
+        game.ctl('command', f'fill {x - 1} {y} {z} {x + 1} {y + 2} {z + 3} minecraft:air')
+        game.ctl('command', f'setblock {x} {y} {z + 2} minecraft:stonecutter')
+        time.sleep(1)
+        game.ctl('interact', x, y, z + 2)
+        game.ctl('wait-for', 'screen', 'station', '--timeout', 10)
+        time.sleep(SETTLE)
+        hotbar = game.ctl('inventory')['hotbar']
+        slot = next(i for i, s in enumerate(hotbar) if s and 'deepslate' in s.get('item', ''))
+        game.ctl('click-slot', slot, 'shift')
+        time.sleep(SETTLE)
+        recipes = game.ctl('menu')['info']['recipes']
+        check(len(recipes) > 12, f'cobbled deepslate has {len(recipes)} recipes: nothing to scroll')
+        cell = next(t['rect'] for t in game.menu()['targets'] if t['rect'][2:] == [16.0, 18.0])
+        crosshair_walk(game, cell[0] + 8, cell[1] + 9)
+        # Down through the three visible rows and on through the hidden ones.
+        rows = (len(recipes) + 3) // 4
+        for _ in range(rows - 1):
+            game.pad('down')
+        check(game.menu()['pointer'][1] < cell[1] + 54, 'the crosshair left the list before its end')
+        game.pad('south')
+        picked = game.ctl('menu')['info']['selected']
+        check(picked == (rows - 1) * 4, f'A picked recipe {picked}, not the first of the last row, {(rows - 1) * 4}')
+        # The list's end: the next step leaves it.
+        game.pad('down')
+        check(game.menu()['pointer'][1] >= cell[1] + 54, 'the D-pad did not leave the list at its end')
+    finally:
+        game.quit()
+    return check.failures
+
+
+def options_case(button):
+    def wrap(body):
+        def case(args, name):
+            game = Game(args, name)
+            check = Check()
+            try:
+                game.press_through('west', click=button)
+                body(game, check)
+            finally:
+                game.quit()
+            return check.failures
+        return case
+    return wrap
+
+
+@options_case('accessibility-settings')
+def stick_keeps_option(game, check):
+    game.focus_on('menu-background-blur')
+    label, y = game.focused_label(), game.focus()[1]
+    game.stick()
+    check(game.focused_label() == label, f'focus on {game.focused_label()}, not {label}')
+    check(game.focus()[1] < y, 'the list did not scroll')
+
+
+@options_case('video-settings')
+def stick_under_keyboard(game, check):
+    game.pad('south')
+    check(game.menu()['keyboard'], 'A on the search field did not open the on-screen keyboard')
+    before = game.widgets()
+    game.stick()
+    check(game.widgets() == before, 'the list scrolled under the keyboard')
+
+
+@options_case('video-settings')
+def stick_leaves_sidebar(game, check):
+    game.ctl('click', 'horizon-graphics')
+    game.pad('down')
+    game.wait_targets()
+    game.focus_on('advanced')
+    label = game.focused_label()
+    game.stick()
+    check(game.focused_label() == label, f'focus went from {label} to {game.focused_label()}')
+
+
+def focused_is_row(game):
+    return any(tuple(w['bounds']) == game.focus() for w in game.rows())
+
+
+def flat_rows_select(args, name):
+    game = Game(args, name)
+    check = Check()
+    try:
+        game.press_through('south', 'south')
+        game.pad('rb')
+        for _ in range(6):
+            if 'Superflat' in next(w['label'] for w in game.widgets() if w['id'] == 'world-type'):
+                break
+            game.ctl('click', 'world-type')
+            time.sleep(SETTLE)
+        game.ctl('click', 'customize')
+        game.pad('down')
+        game.wait_targets()
+        remove = lambda: next(w for w in game.widgets() if w.get('label') == 'Remove Layer')
+        game.focus_on(game.rows()[0]['id'])
+        check(focused_is_row(game), f'the focus is not on a row: {game.focused_label()}')
+        check(remove().get('enabled', True), 'the focus on a layer did not select it')
+    finally:
+        game.quit()
+    return check.failures
+
+
+def walk_rows(game, check, name, rows):
+    """From the top row the D-pad goes through every row, past where the list shows them, out and back up."""
+    game.focus_on(game.rows()[0]['id'])
+    seen = [game.focused_label()]
+    for _ in range(rows * 3):
+        game.pad('down')
+        if not focused_is_row(game):
+            break
+        seen.append(game.focused_label())
+    check(len(set(seen)) >= rows, f'{name}: down went through {len(set(seen))} rows, not {rows}: {seen}')
+    check(not focused_is_row(game), f'{name}: down never left the list: {seen}')
+    outside = game.focused_label()
+    game.pad('up')
+    check(game.focused_label() == seen[-1], f'{name}: up from {outside} is on {game.focused_label()}, not {seen[-1]}')
+    for _ in range(rows * 3):
+        if game.focused_label() == seen[0]:
+            break
+        game.pad('up')
+    check(game.focused_label() == seen[0], f'{name}: up never got back to {seen[0]}: on {game.focused_label()}')
+
+
+def dpad_reaches_rows(args, name):
+    check = Check()
+    for list_name, seed, presses in (('worlds', seed_worlds, ('south', 'south')),
+                                     ('servers', seed_servers, ('south', 'down', 'south'))):
+        game = Game(args, name, seed=seed)
+        try:
+            game.press_through(*presses)
+            walk_rows(game, check, list_name, 20)
+        finally:
+            game.quit()
+    for list_name, world_type, presets, count in (('flat presets', 'Superflat', True, 9),
+                                                  ('single biome', 'Single Biome', False, 40)):
+        game = Game(args, name)
+        try:
+            game.press_through('south', 'south')
+            game.pad('rb')
+            for _ in range(6):
+                if world_type in next(w['label'] for w in game.widgets() if w['id'] == 'world-type'):
+                    break
+                game.ctl('click', 'world-type')
+                time.sleep(SETTLE)
+            for button in ('customize', 'presets') if presets else ('customize',):
+                game.ctl('click', button)
+                game.pad('down')
+                game.wait_targets()
+            rows = game.rows()
+            check(rows, f'{list_name}: no rows in {game.widgets()}')
+            if rows:
+                walk_rows(game, check, list_name, count)
+        finally:
+            game.quit()
+    return check.failures
+
+
+@options_case('accessibility-settings')
+def dpad_options_reach(game, check):
+    """The options list scrolls under the D-pad to its last row."""
+    seen = []
+    for _ in range(40):
+        seen.append(game.focused_label())
+        game.pad('down')
+        if game.focused_label() in seen:
+            break
+    check(any(label.startswith('High Contrast') for label in seen), f'never reached the last row: {seen}')
+    check(len(set(seen)) > 12, f'only {seen}: rows below the view were skipped')
+
+
+def stick_steps_once(args, name):
+    game = Game(args, name)
+    check = Check()
+    try:
+        game.wait_targets()
+        single, _, _ = game.title_buttons()
+        game.pad('south')
+        was = game.focus()
+        check(was == single, f'focus is {was}, not Singleplayer')
+        # Past the threshold, just under it, and past again, faster than a held step repeats.
+        for y in (-0.7, -0.45, -0.7, -0.45, -0.7):
+            game.ctl('pad', 'stick', 'left', 0, y)
+            time.sleep(0.03)
+        game.ctl('pad', 'stick', 'left', 0, 0)
+        time.sleep(SETTLE)
+        moved = game.focus()
+        check(moved != was, 'the stick did not step')
+        game.pad('up')
+        check(game.focus() == was, f'the stick stepped more than once: on {moved}')
+    finally:
+        game.quit()
+    return check.failures
+
+
+@options_case('video-settings')
+def gui_scale_keeps_focus(game, check):
+    # In the right column, beside Reduce fps.
+    game.focus_on('gui-scale')
+    label = game.focused_label() or ''
+    check(label.startswith('GUI Scale'), f'never reached GUI Scale: on {label}')
+    before = game.focus()
+    # A cycle button: A steps the scale, and every widget moves.
+    game.pad('south')
+    time.sleep(SETTLE)
+    check(game.focus() != before, f'the scale did not change: {label}, {before}')
+    now = game.focused_label() or ''
+    check(now.startswith('GUI Scale'), f'focus went from {label} to {now}')
+
+
+def held_dpad_stops_at_slots(args, name):
+    game = Game(args, name, world=True)
+    check = Check()
+    try:
+        game.ctl('command', 'gamemode survival')
+        game.ctl('key', 'e', 'tap')
+        time.sleep(SETTLE)
+        game.wait_targets()
+        game.pad('down')
+        for _ in range(4):
+            game.pad('down')
+        # A column with a gap above the inventory: nothing near over its top row.
+        game.pad('right')
+        game.pad('right')
+        game.ctl('pad', 'up', 'down')
+        time.sleep(1.5)
+        stopped = game.menu()['pointer']
+        time.sleep(0.5)
+        check(game.menu()['pointer'] == stopped, 'the held D-pad was still moving')
+        game.ctl('pad', 'up', 'up')
+        time.sleep(SETTLE)
+        slots = [t['rect'] for t in game.menu()['targets'] if t['kind'] == 'slot']
+        at = [r for r in slots if abs(r[0] + 8 - stopped[0]) <= 1 and abs(r[1] + 8 - stopped[1]) <= 1]
+        check(at, f'the held D-pad stopped off the slots, at {stopped}')
+        game.pad('up')
+        check(game.menu()['pointer'] != stopped, f'a fresh press did not cross from {stopped}')
+    finally:
+        game.quit()
+    return check.failures
+
+
+
 CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': release, 'move_cancels': move_cancels,
          'pad_release': pad_release, 'pause_y': pause_y, 'settings': settings, 'create_world': create_world,
          'world_options': world_options, 'key_row_b': key_row_b, 'lock_question': lock_question,
          'optimize_world': optimize_world, 'pointer_screens': pointer_screens, 'settings_pages': settings_pages,
          'split_setup': split_setup, 'actions_follow_screen': actions_follow_screen, 'glyphs_title': glyphs_title,
-         'glyph_on_field': glyph_on_field, 'settings_apply': settings_apply, 'long_label': long_label}
+         'glyph_on_field': glyph_on_field, 'settings_apply': settings_apply, 'long_label': long_label,
+         'tabs_create_world': tabs_create_world,
+         'tab_release': tab_release,
+         'tab_held_a': tab_held_a,
+         'tabs_world': tabs_world,
+         'recipe_book': recipe_book,
+         'stick_lists': stick_lists,
+         'stick_changes_no_value': stick_changes_no_value,
+         'dpad_edge_changes_no_value': dpad_edge_changes_no_value,
+         'stick_keeps_option': stick_keeps_option,
+         'crosshair_spreads': crosshair_spreads,
+         'crosshair_recipe_book': crosshair_recipe_book,
+         'crosshair_creative_tabs': crosshair_creative_tabs,
+         'crosshair_station_rows': crosshair_station_rows,
+         'stick_under_keyboard': stick_under_keyboard,
+         'stick_leaves_sidebar': stick_leaves_sidebar,
+         'dpad_reaches_rows': dpad_reaches_rows,
+         'dpad_options_reach': dpad_options_reach,
+         'stick_steps_once': stick_steps_once,
+         'gui_scale_keeps_focus': gui_scale_keeps_focus,
+         'held_dpad_stops_at_slots': held_dpad_stops_at_slots,
+         'flat_rows_select': flat_rows_select}
 
 
 def main():

@@ -428,6 +428,7 @@ pub fn register(m: &mut Mob) {
         Family::Panda => super::panda::register(m),
         Family::PolarBear => super::polar_bear::register(m),
     }
+    native_register_goals(m);
     // FloatGoal's constructor lets the navigation float, as do the
     // constructors of these brain-driven and flying mobs. A floater rises
     // 0.04 a tick in Mob.jumpInLiquid, the others 0.3 (the bounce of #542).
@@ -444,6 +445,21 @@ pub fn register(m: &mut Mob) {
     {
         m.ai.nav.can_float = true;
     }
+}
+/// A new mob's goals (`Mob.registerGoals`): `mob.ai.goals` (vanilla's
+/// `goalSelector`) and `mob.ai.targets` (`targetSelector`) hold the goals of
+/// its species, which for a mod's type is its template's. Clear them to
+/// replace them, as a class whose `registerGoals` skips `super`'s, or add
+/// yours with `GoalSelector::add(priority, goal)`. Each mob gets its own
+/// goals, so a goal's fields are that mob's state while it lives (for state
+/// that is saved, see attachments on `Holder::Entity(mob.id)`). Asked for
+/// every mob Horizon makes, a client's copies of a server's mobs included,
+/// before its saved data is read; goals tick only where the mob's AI runs.
+/// `goals::Float` keeps the navigation floating, as FloatGoal's
+/// constructor does. API @API:register_goals@.
+#[inline(never)]
+pub fn native_register_goals(mob: &mut Mob) {
+    crate::native_client_hooks::register_goals(mob);
 }
 /// Mob.tick additions that run before the entity tick (cube/creeper fuses, puffing).
 fn pre_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
@@ -688,6 +704,7 @@ pub fn tick(
             farm::chicken_egg_step(m, events);
         }
         if m.species() == Species::Allay {
+            super::allay::passive_heal(m);
             super::allay::update_duplication_cooldown(m);
         }
         if horse {
@@ -697,6 +714,10 @@ pub fn tick(
         // attack/stun/roar, including the stun-to-roar transition.
         if m.species() == Species::Ravager {
             super::ravager::ai_step(m, w, events);
+        }
+        if m.species() == Species::Pufferfish {
+            // Pufferfish.aiStep's mob contacts run even when serverAiStep is skipped.
+            aquatic::sting_touching_mobs(m, w, events);
         }
     } else {
         ai_step(m, w, level_random, events);
@@ -2453,11 +2474,26 @@ pub fn walk_target_value(m: &Mob, w: &MobWorld, p: [i32; 3]) -> f32 {
     }
     0.0
 }
+/// `Allay.hurtServer`'s liked-player guard for verified player sources.
+/// Other species and unresolved callers retain their existing filters.
+pub fn accepts_damage_from_player(
+    m: &mut Mob,
+    source: &Damage,
+    amount: f32,
+    uuid: [i32; 4],
+) -> bool {
+    if m.species() == Species::Allay {
+        !super::allay::is_liked_player(m, source.attacker, uuid)
+    } else {
+        accepts_damage(m, source, amount)
+    }
+}
 /// Species damage filters (LivingEntity.hurtServer overrides).
 pub fn accepts_damage(m: &mut Mob, source: &Damage, _amount: f32) -> bool {
     match m.species() {
         Species::Breeze => super::breeze::accepts_damage(m, source),
-        // Allay.hurtServer: its liked player cannot hurt it.
+        // Compatibility for unresolved player sources; verified UUID routes
+        // use accepts_damage_from_player instead (this is not UUID parity).
         Species::Allay if m.extra.tame && source.attacker == Some(Who::Player) => false,
         Species::Creaking => super::creaking::accepts_damage(m, source),
         Species::Wither => super::wither::accepts(m, source.kind, source.attacker, false),
@@ -4773,6 +4809,51 @@ mod iron_golem_push_tests {
         }
         for ((kind, hand, modifier), (base, hit)) in cases.iter().zip(got) {
             assert_eq!(hit, Some(base + modifier), "{kind} holding {hand:?}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod allay_healing_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn allays_heal_on_tenth_ticks_without_enabling_noai_work() {
+        let ran = crate::mobs::world::with_test_world(&[], |w, types| {
+            for no_ai in [true, false] {
+                for initial in [10.0_f32, 19.5, 20.0] {
+                    let kind = Arc::new(types.types["minecraft:allay"].clone());
+                    let mut mob = Mob::new(1, kind, Vec3::new(16.5, 101.0, 16.5), 0.0);
+                    mob.no_ai = no_ai;
+                    mob.no_gravity = true;
+                    mob.persistent = true;
+                    mob.health = initial;
+                    mob.extra.ints[2] = 37;
+                    mob.extra.ints[3] = 41;
+                    mob.extra.egg_time = 30;
+                    assert_eq!(mob.attrs.max_health, 20.0);
+                    assert_eq!(mob.age, 0);
+                    let mut random = LegacyRandom::new(0);
+                    let mut events = Vec::new();
+                    for elapsed in 1..=20 {
+                        assert!(tick(&mut mob, w, &mut random, &mut events));
+                        assert_eq!(mob.age, elapsed);
+                        assert_eq!(
+                            mob.health,
+                            (initial + (elapsed / 10) as f32).min(20.0),
+                            "NoAI={no_ai}, initial={initial}, tick={elapsed}"
+                        );
+                        assert_eq!(mob.extra.egg_time, 30 - elapsed as i32);
+                        let skipped = if no_ai { 0 } else { elapsed as i32 };
+                        assert_eq!(mob.extra.ints[2], 37 - skipped);
+                        assert_eq!(mob.extra.ints[3], 41 - skipped);
+                    }
+                }
+            }
+        });
+        if !ran {
+            eprintln!("Prepared mob data unavailable; Allay tick coverage did not run");
         }
     }
 }

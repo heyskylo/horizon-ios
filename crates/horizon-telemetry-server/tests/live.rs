@@ -22,6 +22,7 @@ fn quick() -> Config {
         live_per_hour: 100_000.0,
         live_window: Duration::from_secs(1),
         trust_proxy: true,
+        client_ip_header: Some("x-forwarded-for".into()),
         ..Config::default()
     }
 }
@@ -121,6 +122,7 @@ async fn an_address_is_rate_limited_on_its_own_bucket() {
     let app = app(Config {
         live_per_hour: 60.0,
         trust_proxy: true,
+        client_ip_header: Some("x-forwarded-for".into()),
         ..Config::default()
     });
     // A burst of a tenth of the hour's 60, then 429.

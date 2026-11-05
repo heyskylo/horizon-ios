@@ -1477,7 +1477,6 @@ impl Game<'_> {
             self.view_scale(),
         );
         for b in &self.boats {
-            let entity_start = out.len();
             // EntityRenderer.shouldRender.
             let (previous, position) = (at(b.previous), at(b.position));
             if !self.standing_entity_in_view(
@@ -1485,6 +1484,11 @@ impl Game<'_> {
             ) {
                 continue;
             }
+            let culling = self.entity_cull_decision(b, alpha);
+            if culling.hides_entity() {
+                continue;
+            }
+            let entity_start = out.len();
             let models = if b.chest {
                 &self.boat_models.chest_models
             } else {
@@ -1579,7 +1583,7 @@ impl Game<'_> {
                     out,
                 );
             }
-            self.cull_entity_vertices(out, entity_start);
+            self.finish_entity_occlusion(culling, b, out, entity_start);
         }
     }
 }

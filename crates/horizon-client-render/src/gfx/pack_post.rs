@@ -46,6 +46,9 @@ mod forced_flip_tests;
 #[cfg(test)]
 mod weather_depth_tests;
 
+#[cfg(test)]
+mod custom_type_tests;
+
 /// The texture behind a pack sampler name.
 #[derive(Clone, Copy, PartialEq)]
 enum Source {
@@ -1088,6 +1091,11 @@ pub(super) struct ShadowView {
     /// shadow map holds the faces turned away from the light too (#9033): under a hill at low sun
     /// a cave's ceiling, which faces away, is often all that shadows the cave.
     pub every_face: bool,
+    /// Only the sections whose shadow can fall into the camera's view: those the camera's
+    /// frustum, stretched toward the light, takes in (`shadow_casters`). Our probes' Iris 1.11.7
+    /// maps fit keeping only those with `shadow.culling` unset (#8464): under a noon sun, only
+    /// the terrain above the ground the camera sees; with a low sun ahead, none behind the camera.
+    pub view_casters: bool,
 }
 
 /// Set 3 of flat terrain, read by the vertex stage: the sprite layers' table (`mc_Entity`'s id
@@ -1512,6 +1520,22 @@ fn image_format(qualifier: &str) -> Option<wgpu::TextureFormat> {
     })
 }
 
+/// The value slot of the pack's custom uniform `name` for a program declaring it as GLSL type
+/// `ty`: after the frame's uniforms, in the order of `custom` (each with the type
+/// `shaders.properties` gives it). A `float`, `int`, `vec2`, `vec3` or `vec4` custom uniform
+/// declared as another of these types gets none, and reads 0: Iris 1.11.7 logs "Wrong uniform
+/// type ... Disabling that uniform" and our probes read 0 there (float as int, int as float,
+/// vec3 as vec2, vec2 as vec3; the vec4 cases were not probed). Other pairs (a `bool` on either
+/// side) keep the conversion `Value::write` makes: our probe read a float of 2.5 declared
+/// `bool` as true in both games.
+fn custom_index(custom: &[(String, String)], name: &str, ty: &str) -> Option<usize> {
+    const STRICT: [&str; 5] = ["float", "int", "vec2", "vec3", "vec4"];
+    let k = custom.iter().position(|(c, _)| c == name)?;
+    let declared = custom[k].1.as_str();
+    let disabled = declared != ty && STRICT.contains(&declared) && STRICT.contains(&ty);
+    (!disabled).then_some(pack_uniforms::NAMES.len() + k)
+}
+
 /// The pass of program `p`: a quad, or `geometry` drawn by the game. `None` (with a note) when
 /// wgpu refuses it or it writes nothing. `formats` are its buffers' (for a program of the shadow
 /// buffers, buffer n is shadowcolor n); `shadow` the shadowcolor formats when the shadow pass
@@ -1525,17 +1549,14 @@ fn build_pass(
     screen: wgpu::TextureFormat,
     notes: &mut Vec<String>,
     geometry: Option<&Geometry<'_>>,
-    custom: &[String],
+    custom: &[(String, String)],
     draws: &wgpu::BindGroupLayout,
     pack: &Resources<'_>,
 ) -> Option<Pass> {
     let features = device.features();
     // The frame's uniforms, then the pack's custom ones.
-    let index = |name: &str| {
-        pack_uniforms::index_in(name, geometry.is_some()).or_else(|| {
-            let k = custom.iter().position(|c| c == name)?;
-            Some(pack_uniforms::NAMES.len() + k)
-        })
+    let index = |name: &str, ty: &str| {
+        pack_uniforms::index_in(name, geometry.is_some()).or_else(|| custom_index(custom, name, ty))
     };
     let mask = |flips: &[(u32, bool)]| flips.iter().filter(|f| f.1).fold(0u16, |m, f| m | 1 << f.0);
     let mut p = p;
@@ -1727,7 +1748,7 @@ fn build_pass(
     let missing: Vec<&str> = interface
         .uniforms
         .iter()
-        .filter(|u| !u.name.starts_with("hz_") && index(&u.name).is_none())
+        .filter(|u| !u.name.starts_with("hz_") && index(&u.name, &u.ty).is_none())
         .map(|u| u.name.as_str())
         .collect();
     if !missing.is_empty() {
@@ -1749,7 +1770,7 @@ fn build_pass(
         uniforms: interface
             .uniforms
             .iter()
-            .map(|u| (index(&u.name), u.ty.clone(), u.offset))
+            .map(|u| (index(&u.name, &u.ty), u.ty.clone(), u.offset))
             .collect(),
         name: p.name,
         group: p.group,
@@ -1802,14 +1823,11 @@ fn build_compute(
     formats: &[wgpu::TextureFormat; BUFFERS],
     shadow: Option<&[wgpu::TextureFormat; SHADOW_COLORS]>,
     notes: &mut Vec<String>,
-    custom: &[String],
+    custom: &[(String, String)],
     pack: &Resources<'_>,
 ) -> Option<Pass> {
-    let index = |name: &str| {
-        pack_uniforms::index(name).or_else(|| {
-            let k = custom.iter().position(|c| c == name)?;
-            Some(pack_uniforms::NAMES.len() + k)
-        })
+    let index = |name: &str, ty: &str| {
+        pack_uniforms::index(name).or_else(|| custom_index(custom, name, ty))
     };
     let interface = &c.interface;
     let (entries, samplers, slots, reads, shadow_reads, images) = bindings(
@@ -1878,7 +1896,7 @@ fn build_compute(
         uniforms: interface
             .uniforms
             .iter()
-            .map(|u| (index(&u.name), u.ty.clone(), u.offset))
+            .map(|u| (index(&u.name, &u.ty), u.ty.clone(), u.offset))
             .collect(),
         name,
         group,
@@ -1974,7 +1992,9 @@ impl PackPost {
         // shadowcolor2 to 7 only for a pack that names `HIGHER_SHADOWCOLOR`.
         let shadow_colors = (1u16 << post.shadow_colors) - 1;
         let mut custom = post.custom;
-        let custom_names: Vec<String> = custom.uniforms().map(|u| u.0.to_owned()).collect();
+        let custom_names: Vec<(String, String)> = (custom.uniforms())
+            .map(|(name, ty)| (name.to_owned(), ty.to_owned()))
+            .collect();
         // A first run finds the names neither the frame nor the pack defines.
         custom.eval(0.0, &pack_uniforms::zero);
         // Its zeros are no start for `smooth`: the first frame's values are, as in Iris.
@@ -3905,6 +3925,7 @@ impl PackPost {
                 horizon_shaders::ShadowCulling::Reversed => Some(shadow.voxel_distance),
             },
             every_face: true,
+            view_casters: true,
         })
     }
 

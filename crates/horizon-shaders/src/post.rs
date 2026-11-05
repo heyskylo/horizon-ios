@@ -419,10 +419,10 @@ pub struct Post {
     /// What draws solid and cutout terrain, when the game asked for it and one loads; when
     /// terrain draws in two parts, solid terrain only.
     pub terrain: Option<PostProgram>,
-    /// What draws cutout terrain when the pack has `gbuffers_terrain_solid` or
-    /// `gbuffers_terrain_cutout` and the game draws terrain in two parts
-    /// (`GameInputs::terrain_parts`); `terrain` then draws the solid part. A pack with no
-    /// program for one part has only the other.
+    /// What draws cutout terrain when the game draws terrain in two parts
+    /// (`GameInputs::terrain_parts`); `terrain` then draws the solid part. A pack with
+    /// `gbuffers_terrain_solid` or `gbuffers_terrain_cutout` and no program for one part has
+    /// only the other.
     pub terrain_cutout: Option<PostProgram>,
     /// What draws translucent terrain (water, stained glass) after deferred.
     pub water: Option<PostProgram>,
@@ -613,8 +613,8 @@ pub struct GameInputs {
     pub lines: Option<GbuffersInputs>,
     /// The first-person hand and held items.
     pub hand: Option<GbuffersInputs>,
-    /// `terrain`, drawing only its solid quads, then only its cutout ones: given, a pack with
-    /// `gbuffers_terrain_solid` or `gbuffers_terrain_cutout` draws terrain in these two parts.
+    /// `terrain`, drawing only its solid quads, then only its cutout ones: given, every pack
+    /// draws terrain in these two parts.
     pub terrain_parts: Option<[GbuffersInputs; 2]>,
     /// Terrain read vertex by vertex, for a shadow program with a geometry stage.
     pub terrain_geometry: Option<crate::GeometryInputs>,
@@ -868,21 +868,26 @@ pub fn load_post(
             p
         });
     if let Some(terrain) = &inputs.terrain {
-        // Cutout terrain's alpha test, unless `alphaTest.*` says otherwise (3.2).
+        // Cutout terrain's alpha test, unless `alphaTest.*` says otherwise (3.2): alpha above
+        // 0.5, which `alphaTestRef` reads. Iris 1.11.7 with probe packs of ours (#9307), through
+        // gbuffers_terrain alone or gbuffers_terrain_cutout: cutout fragments written with alpha
+        // 0.5 and below were discarded, 0.51 and above kept, and alphaTestRef read 0.5. Vanilla's
+        // cutout terrain cuts at 0.5 too (`RenderPipelines.CUTOUT_TERRAIN`'s `ALPHA_CUTOUT`).
         let cutout = |inputs: &GbuffersInputs| {
             let mut cutout = inputs.clone();
             cutout.alpha_test = cutout.alpha_test.or(Some(crate::AlphaTest {
                 op: ">",
-                reference: 0.1,
+                reference: 0.5,
             }));
             cutout
         };
-        // A pack with Iris's gbuffers_terrain_solid or gbuffers_terrain_cutout draws solid and
-        // cutout terrain apart, each falling back to gbuffers_terrain's chain (Iris 1.11.7 with
-        // probe packs having both, or one of them). Solid terrain gets no default alpha test:
-        // in those probes Iris kept solid fragments written with alpha 0.05, through either
-        // program (lower alphas not probed).
-        // Otherwise solid and cutout terrain draw together, with the cutout test.
+        // Solid and cutout terrain draw apart. A pack with Iris's gbuffers_terrain_solid or
+        // gbuffers_terrain_cutout draws each with its own, falling back to gbuffers_terrain's
+        // chain (Iris 1.11.7 with probe packs having both, or one of them); any other pack draws
+        // both parts with gbuffers_terrain's chain, each with its own alpha test (#9307). Solid
+        // terrain gets no default alpha test, and alphaTestRef 0: in those probes Iris kept
+        // solid fragments written with alpha 0.05, through either program, and also 0.0
+        // through gbuffers_terrain alone or gbuffers_terrain_solid (#9307).
         let parts = inputs.terrain_parts.as_ref().filter(|_| split_terrain);
         let mut lone = None;
         let (solid, terrain_cutout) = match parts {
@@ -918,7 +923,18 @@ pub fn load_post(
                     None => (solid, cut),
                 }
             }
-            None => (gbuffers(&TERRAIN, Group::Gbuffers, &cutout(terrain)), None),
+            None => match &inputs.terrain_parts {
+                // One program draws both parts, so both load or neither does.
+                Some([solid, cut]) => match (
+                    gbuffers(&TERRAIN, Group::Gbuffers, solid),
+                    gbuffers(&TERRAIN, Group::Gbuffers, &cutout(cut)),
+                ) {
+                    (Some(solid), Some(cut)) => (Some(solid), Some(cut)),
+                    _ => (None, None),
+                },
+                // A game that draws terrain in one part: all of it with the cutout test.
+                None => (gbuffers(&TERRAIN, Group::Gbuffers, &cutout(terrain)), None),
+            },
         };
         // gbuffers_water falls back to gbuffers_terrain's chain (2.3).
         let water = gbuffers(&WATER, Group::Translucent, terrain);
@@ -2664,7 +2680,9 @@ blend.composite1.colortex3 = ONE ONE ONE ONE
     ];
 
     /// Iris 1.11.7 with our probe packs (#9137): `gbuffers_terrain_solid` draws solid terrain
-    /// and `gbuffers_terrain_cutout` cutout terrain, each falling back to `gbuffers_terrain`.
+    /// and `gbuffers_terrain_cutout` cutout terrain, each falling back to `gbuffers_terrain`;
+    /// a pack with only `gbuffers_terrain` draws both parts with it, each with its own alpha
+    /// test (#9307).
     #[test]
     fn terrain_solid_and_cutout_fall_back_to_terrain() {
         let names = |programs: &[&str], parts: bool| terrain_names(programs, "", parts);
@@ -2679,7 +2697,7 @@ blend.composite1.colortex3 = ONE ONE ONE ONE
             names(&[terrain, cutout], true),
             [some(terrain), some(cutout)]
         );
-        assert_eq!(names(&[terrain], true), [some(terrain), None]);
+        assert_eq!(names(&[terrain], true), [some(terrain), some(terrain)]);
         // Without the game's two parts, terrain draws whole.
         assert_eq!(
             names(&[terrain, solid, cutout], false),
@@ -2722,7 +2740,7 @@ blend.composite1.colortex3 = ONE ONE ONE ONE
         assert!(post.notes.iter().any(|n| n == note), "{:?}", post.notes);
     }
 
-    /// `program.<name>.enabled` turning off the only split program leaves terrain whole, through
+    /// `program.<name>.enabled` turning off the only split program leaves both parts to
     /// `gbuffers_terrain`, as for a pack without it: Iris 1.11.7 drew all terrain with
     /// `gbuffers_terrain` for our probe `tsc-disabled-false`.
     #[test]
@@ -2732,7 +2750,7 @@ blend.composite1.colortex3 = ONE ONE ONE ONE
         let some = |name: &str| Some(name.to_owned());
         assert_eq!(
             terrain_names(&[terrain, solid], off, true),
-            [some(terrain), None]
+            [some(terrain), some(terrain)]
         );
         let on = "program.gbuffers_terrain_solid.enabled = true\n";
         assert_eq!(

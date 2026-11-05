@@ -964,6 +964,10 @@ impl Scoreboard {
     pub fn tracked(&self) -> Vec<String> {
         self.holder_order.stream().map(str::to_owned).collect()
     }
+    /// Every holder on a team (`teamsByPlayer.keySet()`).
+    pub fn team_members(&self) -> impl Iterator<Item = &str> {
+        self.team_of.keys().map(String::as_str)
+    }
 
     // teams
     pub fn team(&self, name: &str) -> Option<&Team> {

@@ -1182,9 +1182,11 @@ impl Title {
             buffet::wheel(buffet, delta, cursor, size);
             return false;
         }
+        // CycleButton.mouseScrolled reads only the vertical wheel.
         if let Mode::Create {
             creative, options, ..
         } = &mut self.mode
+            && delta != 0.0
         {
             let (w, h) = size;
             let buttons = create_world::buttons(w, h, *creative, options);
@@ -1211,6 +1213,20 @@ impl Title {
         scroll.wheel(delta, ROW_HEIGHT / 2.0, top, bottom, content);
         self.scroll.set(scroll);
         false
+    }
+    /// The right stick's scroll: the open list moves wherever the hidden pointer
+    /// is, and Create World's buttons don't take the step.
+    pub fn stick_scroll(&mut self, delta: f32, cursor: (f32, f32), size: (f32, f32)) {
+        self.step_scroll(delta, crate::widgets::over_scroll_area(cursor), size);
+    }
+    /// A focus step past a list's edge: what the pointer is over scrolls, and
+    /// Create World's buttons don't take the step.
+    pub fn step_scroll(&mut self, delta: f32, cursor: (f32, f32), size: (f32, f32)) {
+        let open_rules = self.rules.get_mut().is_some();
+        if matches!(self.mode, Mode::Create { .. }) && !open_rules {
+            return;
+        }
+        self.scroll_worlds(delta, cursor, size);
     }
     pub fn failed(&mut self, error: impl std::fmt::Display) {
         let return_to = Box::new(self.mode.clone());
@@ -4346,12 +4362,26 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
             self.focused_button = Some(next_id);
         }
     }
-    /// The keyboard's focus landed on the world row at `point`
+    /// The focus moves the selection on this list, the controller's as well as the keyboard's:
+    /// the superflat and single-biome ones, where a selected row only sits there. On the world
+    /// list the controller leaves it to A.
+    pub fn focus_selects_row(&self) -> bool {
+        matches!(
+            self.mode,
+            Mode::CreateFlat { .. } | Mode::CreateBuffet { .. }
+        )
+    }
+    /// The focus landed on the list row at `point`
     /// (`AbstractSelectionList.setFocused`): it is selected, never joined,
     /// and the search box no longer has the keys. Whether a row was there.
     pub fn focus_world_row(&mut self, point: (f32, f32), size: (f32, f32)) -> bool {
         if self.rules.get_mut().is_some() {
             return false;
+        }
+        match &mut self.mode {
+            Mode::CreateFlat { flat, .. } => return flat::focus_row(flat, point, size),
+            Mode::CreateBuffet { buffet, .. } => return buffet::focus_row(buffet, point, size),
+            _ => {}
         }
         let Mode::Select { worlds, .. } = &self.mode else {
             return false;

@@ -6075,6 +6075,7 @@ impl Game<'_> {
         if running {
             self.tick_particles();
         }
+        self.tick_frame_visuals(running);
         // Under `HORIZON_STILL` they wait for the world too: endermen's and blazes' particles
         // draw on the particles' random, and effects count down, on every tick a frozen
         // client runs, as many as the run took to get there.
@@ -6994,6 +6995,7 @@ impl Game<'_> {
                     &mut next_float,
                     border,
                     &self.res.motion().fluids,
+                    &mut |_, _| {},
                 );
                 // `tick` set `previous` to the stepped position: keep the
                 // pre-step one, as `xo` is in vanilla.
@@ -9305,6 +9307,9 @@ impl Game<'_> {
             return;
         }
         if let Some(command) = message.strip_prefix('/') {
+            if self.studio_command(command) {
+                return;
+            }
             self.send_command(command);
         } else {
             self.send_signed_chat(message);

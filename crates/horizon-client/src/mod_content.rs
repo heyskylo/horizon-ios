@@ -865,8 +865,10 @@ fn read_json(path: &Path) -> Result<J> {
 impl Plan<'_> {
     /// `entity-types.json` with a row for each mod type: its template's, so its
     /// size, eyes and category are the template's (`execute anchored eyes`,
-    /// spawner checks and the commands' entity type list, `reg.entity_types`).
-    /// The rows are appended as text: parsed and written back, a float such as
+    /// spawner checks and the commands' entity type list, `reg.entity_types`),
+    /// with `template` naming it and a living type's own attribute bases
+    /// (`MobTypes` makes the mob from it). The rows are appended as text, each
+    /// value as the template has it: parsed and written back, a float such as
     /// a zombie's `movement_speed` can come back one ulp off.
     fn entity_types_json(&self, bytes: &[u8]) -> std::result::Result<Vec<u8>, String> {
         use serde_json::value::RawValue;
@@ -889,11 +891,47 @@ impl Plan<'_> {
             }
             out.extend(serde_json::to_vec(&t.id).map_err(|e| e.to_string())?);
             out.push(b':');
-            out.extend(row.get().as_bytes());
+            out.extend(mod_entity_row(row, t)?);
         }
         out.push(b'}');
         Ok(out)
     }
+}
+
+/// A mod entity type's row in `entity-types.json`: its template's `row` with
+/// `template` added and the type's attribute bases in place of the
+/// template's. The other values keep the template's text.
+fn mod_entity_row(
+    row: &serde_json::value::RawValue,
+    t: &EntityType,
+) -> std::result::Result<Vec<u8>, String> {
+    use serde_json::value::{RawValue, to_raw_value};
+    type Raw = BTreeMap<String, Box<RawValue>>;
+    let fail = |e: serde_json::Error| format!("{}: {e}", t.template);
+    let mut fields: Raw = serde_json::from_str(row.get()).map_err(fail)?;
+    if !t.attributes.is_empty() {
+        let mut attributes: Raw = match fields.get("attributes") {
+            Some(a) => serde_json::from_str(a.get()).map_err(fail)?,
+            None => Raw::new(),
+        };
+        for (id, value) in &t.attributes {
+            // Refused rather than added: the mob reads the attributes its
+            // template's class has, so an extra one would do nothing.
+            let Some(base) = attributes.get_mut(id) else {
+                return Err(format!(
+                    "{}: attribute {id} is not one of {}'s",
+                    t.id, t.template
+                ));
+            };
+            *base = to_raw_value(value).map_err(fail)?;
+        }
+        fields.insert(
+            "attributes".into(),
+            to_raw_value(&attributes).map_err(fail)?,
+        );
+    }
+    fields.insert("template".into(), to_raw_value(&t.template).map_err(fail)?);
+    serde_json::to_vec(&fields).map_err(fail)
 }
 
 impl<'a> Plan<'a> {
