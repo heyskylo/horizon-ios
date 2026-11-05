@@ -4733,8 +4733,10 @@ def piston_entity_tick_order():
 def groups():
     try:
         from .loaded_cloud_corpus import loaded_clouds
+        from .carpet_farm_corpus import carpet_farms
     except ImportError:
         from loaded_cloud_corpus import loaded_clouds
+        from carpet_farm_corpus import carpet_farms
     return [
         ('setup', group_setup()),
         ('bell server glow', bell_server_glow()),
@@ -4784,6 +4786,7 @@ def groups():
         ('wither spawn', wither_spawn()),
         ('riding teleport', riding_teleport()),
         ('piston entity tick order', piston_entity_tick_order()),
+        ('carpet farms', carpet_farms(cmd, setup)),
         ('mob riding', mob_riding()),
         ('trial spawner passengers', trial_spawner_passengers()),
         ('camel riders', camel_riders()),
