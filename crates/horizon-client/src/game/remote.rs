@@ -527,6 +527,8 @@ pub(super) struct Remote {
     /// `ClientLevel.serverSimulationDistance`: from the login or the last
     /// simulation-distance packet.
     pub(super) simulation_distance: i32,
+    /// `BlockStatePredictionHandler.currentSequenceNr`: the level's, so a new level (a login,
+    /// another dimension) counts from 0 again.
     sequence: i32,
     position_sender: horizon_client::player_sync::PositionSender,
     last_input: u8,
@@ -3230,6 +3232,8 @@ impl Game<'_> {
                 self.riding = None;
                 if let Some(r) = self.remote.as_mut() {
                     r.carried = Some(0);
+                    // handleLogin makes a new ClientLevel: its predictions count from 0.
+                    r.sequence = 0;
                     r.own_invisible = false;
                     r.own_on_fire = false;
                     r.online_mode = p.online_mode;
@@ -3298,6 +3302,13 @@ impl Game<'_> {
                 );
                 if dimension_changed {
                     horizon_client::spans::startup::arm("dimension.change");
+                }
+                // handleRespawn makes a new ClientLevel for another dimension
+                // key (a proxy's server switch too): its predictions count from 0.
+                if let Some(r) = self.remote.as_mut()
+                    && r.level != p.spawn.dimension
+                {
+                    r.sequence = 0;
                 }
                 self.enter_remote_dimension(&p.spawn, true, reason);
                 if dimension_changed {
@@ -5887,13 +5898,8 @@ impl Game<'_> {
         if let Some(id) = self.remote.as_mut().and_then(|r| r.ghast_dismount.take()) {
             self.place_ghast_under(id, position);
         }
-        if let Some(r) = self.remote.as_mut() {
-            // handleMovePlayer does not change LocalPlayer.sendPosition's
-            // baseline: the next tick must still report the corrected state.
-            r.destroying = None;
-            r.is_destroying = false;
-        }
-        self.mining = None;
+        // handleMovePlayer does not change LocalPlayer.sendPosition's baseline:
+        // the next tick must still report the corrected state.
         self.send(S::AcceptTeleportation(play::AcceptTeleportation {
             id: p.teleport,
             x: position.x,
@@ -5902,6 +5908,11 @@ impl Game<'_> {
             yaw,
             pitch,
         }));
+        // Then MultiPlayerGameMode.stopDestroyBlock: a dig the teleport (an
+        // anticheat's setback, a /tp) interrupts is aborted on the wire, and the
+        // attack strength starts again.
+        self.stop_remote_mining();
+        self.mining = None;
         Ok(())
     }
 
