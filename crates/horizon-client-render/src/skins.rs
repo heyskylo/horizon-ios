@@ -256,6 +256,7 @@ impl ProfileLookup {
 /// background threads.
 pub struct Resolver {
     entries: std::collections::HashMap<NameOrId, Entry>,
+    render_entries: std::collections::HashMap<NameOrId, RenderEntry>,
     done: std::sync::mpsc::Receiver<ProfileCompletion>,
     send: std::sync::mpsc::Sender<ProfileCompletion>,
     last_sweep: std::time::Instant,
@@ -268,9 +269,16 @@ struct Entry {
     touched: std::time::Instant,
     lookup: ProfileLookup,
 }
+struct RenderEntry {
+    touched: std::time::Instant,
+    lookup: ProfileLookup,
+}
 /// `ProfileResolver.Cached`'s cache bounds.
 const MAX_PROFILES: usize = 256;
 const PROFILE_TTL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+/// PlayerSkinRenderCache keeps rendering futures five minutes after access,
+/// independently of ProfileResolver's maximum of 256 service entries.
+const RENDER_PROFILE_TTL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
 /// `StringUtil.isValidPlayerName` (the check `fetchByName` makes first).
 fn valid_player_name(name: &str) -> bool {
@@ -326,6 +334,7 @@ impl Resolver {
         let (send, done) = std::sync::mpsc::channel();
         Self {
             entries: Default::default(),
+            render_entries: Default::default(),
             done,
             send,
             last_sweep: std::time::Instant::now(),
@@ -338,6 +347,8 @@ impl Resolver {
             return;
         }
         self.last_sweep = std::time::Instant::now();
+        self.render_entries
+            .retain(|_, e| e.touched.elapsed() < RENDER_PROFILE_TTL);
         self.entries
             .retain(|_, e| e.touched.elapsed() < PROFILE_TTL);
         while self.entries.len() > MAX_PROFILES
@@ -375,6 +386,29 @@ impl Resolver {
             .expect("lookup creates its entry")
             .lookup
             .clone()
+    }
+    /// A head or inline player object owns its rendering future independently
+    /// of the bounded service cache, like PlayerSkinRenderCache.lookup.
+    pub fn render_state(&mut self, key: &NameOrId) -> Resolve {
+        self.poll();
+        if let Some(entry) = self
+            .render_entries
+            .get_mut(key)
+            .filter(|entry| entry.touched.elapsed() < RENDER_PROFILE_TTL)
+        {
+            entry.touched = std::time::Instant::now();
+            return entry.lookup.state();
+        }
+        let lookup = self.lookup(key);
+        let state = lookup.state();
+        self.render_entries.insert(
+            key.clone(),
+            RenderEntry {
+                touched: std::time::Instant::now(),
+                lookup,
+            },
+        );
+        state
     }
     /// How the shared cache's resolution stands, starting it the first time.
     pub fn state(&mut self, key: &NameOrId) -> Resolve {
@@ -532,7 +566,7 @@ pub fn head_skin(
     let p = parse_profile(profile);
     let property = p.textures.or_else(|| {
         let key = p.dynamic.as_ref()?;
-        match resolver.state(key) {
+        match resolver.render_state(key) {
             Resolve::Done(Some(profile)) => profile.textures(),
             _ => None,
         }
