@@ -2910,8 +2910,10 @@ thread:
   - `debug_screen`: F3's debug screen is showing.
   - `world`, the world joined, for a mod's data per world: `NativeWorldId::Singleplayer(folder)` is the save's folder in
     `saves/` (its LAN host and splitscreen seats too), `Server(address)` the address as the player joined it
-    (`mc.example.com:25565`; a friend's world as players see it, never by its invite code). None before a world is
-    joined. A later Horizon may add kinds, so match it with a `_` arm.
+    (`mc.example.com:25565`). A friend's world is `friend:` and what its invite shows anyone, its host's addresses or
+    its relay nameplate, never the invite's secret; the host's code is new each time it shares, so this names that
+    sharing only, as a LAN world's port does. None before a world is joined. A later Horizon may add kinds, so match
+    it with a `_` arm.
   - `sleeping_pos`: the head of the bed the player sleeps in, as the server says (`LivingEntity.getSleepingPos`); None
     while awake. `native_block(pos)` names the bed.
 - `native_biome(pos)` is the biome at a block (`minecraft:plains`, a data pack's own), as `Level.getBiome` picks it

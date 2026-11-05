@@ -5,9 +5,11 @@ use horizon_client::{
     hud::{HudBatch, rgba},
     hud_layout::GuiDraw,
     mod_api::Text,
-    net::shown_address,
+    net::FRIEND,
 };
 use horizon_core::geometry::Vec3;
+use horizon_friends::invite::{self, Parsed};
+use std::net::SocketAddr;
 
 /// This window's state; unavailable on a server or before a window is attached.
 #[derive(Clone, Debug, Default)]
@@ -74,18 +76,39 @@ pub enum NativeWorldId {
     /// in `saves/`, not its shown name.
     Singleplayer(String),
     /// A server, a LAN world joined included: its address as the player
-    /// joined it (`mc.example.com:25565`). A friend's world is named as
-    /// players see it, never by its invite code.
+    /// joined it (`mc.example.com:25565`). A friend's world is `friend:` and
+    /// what its invite shows anyone (its host's addresses, else its relay
+    /// nameplate), never the invite's secret.
     Server(String),
 }
 
 impl NativeWorldId {
     /// `save` is set for single player's world joined through memory.
     fn of(save: Option<&str>, address: &str) -> Self {
-        match save {
-            Some(folder) => Self::Singleplayer(folder.to_owned()),
-            None => Self::Server(shown_address(address)),
+        match (save, address.strip_prefix(FRIEND)) {
+            (Some(folder), _) => Self::Singleplayer(folder.to_owned()),
+            (None, Some(code)) => Self::Server(format!("{FRIEND}{}", invite_public_part(code))),
+            (None, None) => Self::Server(address.to_owned()),
         }
+    }
+}
+
+/// The part of a friend's invite anyone may see. A host's code is fresh each
+/// time it shares, so a friend's world is known for that sharing only.
+fn invite_public_part(code: &str) -> String {
+    match invite::parse(code) {
+        Some(Parsed::Short(code)) => code.nameplate,
+        Some(Parsed::Long(invite)) if !invite.endpoints.is_empty() => invite
+            .endpoints
+            .iter()
+            .map(SocketAddr::to_string)
+            .collect::<Vec<_>>()
+            .join(","),
+        Some(Parsed::Long(invite)) => invite
+            .relay
+            .map(|r| format!("{}/{}", r.address, r.code.nameplate))
+            .unwrap_or_default(),
+        None => String::new(),
     }
 }
 
@@ -150,7 +173,7 @@ impl Game<'_> {
             menu_blur: self.settings.menu_blur as f32,
             screen: NativeScreenKind::of(
                 self.screen,
-                self.title.is_some() || self.screen_over_playing() || self.remote_loading(),
+                self.title.is_some() || self.screen_over_playing() || self.remote_screen_up(),
             ),
             debug_screen: self.debug,
             world: self
@@ -384,14 +407,35 @@ mod tests {
     }
 
     #[test]
-    fn a_friends_world_never_carries_its_invite_secret() {
-        // A relay's short code: a nameplate, then the session's secret.
-        let secret = "WXYZ";
-        let address = format!("{}ABCD-{secret}", horizon_client::net::FRIEND);
-        let NativeWorldId::Server(name) = NativeWorldId::of(None, &address) else {
-            panic!("a friend's world is a server");
+    fn friends_worlds_are_told_apart_by_their_hosts_never_by_their_secrets() {
+        const PORT: u16 = 50000;
+        let invite = |secret: u8, host: &str| {
+            let code = invite::Invite {
+                secret: [secret; invite::SECRET],
+                port: PORT,
+                endpoints: vec![format!("{host}:{PORT}").parse().unwrap()],
+                relay: None,
+            }
+            .encode();
+            NativeWorldId::of(None, &format!("{FRIEND}{code}"))
         };
-        assert!(!name.contains(secret), "{name}");
+        assert_ne!(
+            invite(1, "192.168.1.5"),
+            invite(1, "192.168.1.6"),
+            "two friends"
+        );
+        assert_eq!(
+            invite(1, "192.168.1.5"),
+            invite(2, "192.168.1.5"),
+            "the same host sharing again, with a fresh secret"
+        );
+        // A relay's short code: its nameplate, then the secret.
+        let short = |secret: &str| NativeWorldId::of(None, &format!("{FRIEND}ABCD-{secret}"));
+        assert_eq!(short("WXYZ"), short("QRST"));
+        assert_eq!(
+            short("WXYZ"),
+            NativeWorldId::Server(format!("{FRIEND}ABCD"))
+        );
     }
 
     #[test]
