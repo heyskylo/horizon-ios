@@ -2557,7 +2557,7 @@ impl PackPost {
                 },
                 &[
                     texture_entry(0, float),
-                    texture_entry(1, wgpu::TextureSampleType::Depth),
+                    texture_entry(1, wgpu::TextureSampleType::Float { filterable: false }),
                 ],
                 &blit_targets,
                 // GL's window depth, written for depthtex0 and the terrain's depth test.

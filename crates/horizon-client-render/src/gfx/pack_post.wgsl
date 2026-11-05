@@ -9,7 +9,9 @@ fn vs_full(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
 }
 
 @group(0) @binding(0) var source: texture_2d<f32>;
-@group(0) @binding(1) var world_depth: texture_depth_2d;
+// A depth view read as an unfilterable float: naga's GLSL backend cannot
+// `textureLoad` a depth texture, and the texel is the same either way.
+@group(0) @binding(1) var world_depth: texture_2d<f32>;
 
 struct World {
     @location(0) color: vec4<f32>,
@@ -24,7 +26,7 @@ fn fs_blit(@builtin(position) p: vec4<f32>) -> World {
     let at = vec2<i32>(i32(p.x), size.y - 1 - i32(p.y));
     var out: World;
     out.color = textureLoad(source, at, 0);
-    out.depth = 1.0 - textureLoad(world_depth, at, 0);
+    out.depth = 1.0 - textureLoad(world_depth, at, 0).r;
     return out;
 }
 
