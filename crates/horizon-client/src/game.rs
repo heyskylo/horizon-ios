@@ -15892,6 +15892,17 @@ impl Game<'_> {
             // (`take_parent_vehicle`); here it stays in the chunk saves.
             let mut host = host;
             for g in host.hub.guests.iter_mut().filter(|g| g.placed) {
+                // Read-only fixture input, correlated with the real save receipt.
+                // Keep this identical on the untouched/fixed selector builds.
+                if std::env::var_os("HORIZON_DEV_ADVANCEMENT_SELECTOR_AUDIT").is_some() {
+                    eprintln!(
+                        "advancement selector model raw: {}",
+                        serde_json::json!({"conn":g.conn,"name":g.name,
+                            "uuid":horizon_protocol::crypto::uuid_string(g.uuid),
+                            "game_time":self.world.game_time,
+                            "progress":g.advancements.to_json(&self.adv.tree, horizon_world::DATA_VERSION)})
+                    );
+                }
                 self.guest_attachments_into(g);
                 self.player_autosaves.enqueue(g, &self.world_root);
             }
