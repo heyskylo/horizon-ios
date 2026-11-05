@@ -33,6 +33,13 @@
           "view_distance": 10,
           "whitelist": true
         },
+        "transfer": {
+          "enabled": false,
+          "expect_seconds": 10,
+          "max_expect_seconds": 60,
+          "max_expected": 64,
+          "max_freeze_seconds": 30
+        },
         "updates": {"keep": 1},
         "world": {
           "difficulty": "easy",
