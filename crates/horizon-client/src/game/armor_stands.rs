@@ -924,6 +924,7 @@ impl Game<'_> {
             if landed {
                 self.post_landing_event(self.armor_stands[i].position, true);
             }
+            self.armor_stands[i].apply_honey_slide(&self.world, self.res.facts());
             let a = &self.armor_stands[i];
             if !a.marker && !a.no_gravity {
                 self.entity_powder_snow_particles(

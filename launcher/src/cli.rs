@@ -1212,7 +1212,8 @@ fn json(value: serde_json::Value) {
 }
 
 /// Runs a game process in this terminal and reports how it ended.
-fn attached(mut cmd: Command) -> Result<(), String> {
+fn attached(cmd: Command) -> Result<(), String> {
+    let (mut cmd, _runtime) = backend::prepare_command(cmd)?;
     let status = cmd
         .status()
         .map_err(|e| format!("Could not start {:?}: {e}", cmd.get_program()))?;
