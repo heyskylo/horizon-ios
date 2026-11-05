@@ -533,7 +533,9 @@ pub(super) struct Remote {
     position_sender: horizon_client::player_sync::PositionSender,
     last_input: u8,
     was_sprinting: bool,
-    carried: Option<usize>,
+    /// The slot the server last heard (`MultiPlayerGameMode.carriedIndex`): a cell, so `send` can
+    /// send a new one first (`ensureHasSentCarriedItem`).
+    carried: std::cell::Cell<Option<usize>>,
     /// The last ClientboundPlayerAbilitiesPacket. Vanilla's LocalPlayer
     /// holds its abilities from the login on; here the player is made at
     /// the first teleport, which takes them then.
@@ -1096,7 +1098,7 @@ impl Game<'_> {
             position_sender: Default::default(),
             last_input: 0,
             was_sprinting: false,
-            carried: None,
+            carried: std::cell::Cell::new(None),
             abilities: None,
             loaded_sent: false,
             heard_level: None,
@@ -1317,6 +1319,16 @@ impl Game<'_> {
 
     pub(super) fn send(&self, packet: S) {
         if let Some(r) = &self.remote {
+            // MultiPlayerGameMode's attack, interact, useItem, useItemOn, releaseUsingItem, dropItem and
+            // piercingAttack run ensureHasSentCarriedItem before their packet: a slot the number keys
+            // chose this tick goes out first. A miss, a dig's start or a swap waits for the next tick.
+            if let S::Attack(_) | S::Interact(_) | S::UseItem(_) | S::UseItemOn(_) = &packet {
+                self.remote_send_carried();
+            } else if let S::PlayerAction(a) = &packet
+                && matches!(a.action, 4 | 5 | 6 | 8)
+            {
+                self.remote_send_carried();
+            }
             r.session.send(packet);
         }
     }
@@ -3231,7 +3243,7 @@ impl Game<'_> {
                 self.potions.effects.clear();
                 self.riding = None;
                 if let Some(r) = self.remote.as_mut() {
-                    r.carried = Some(0);
+                    r.carried.set(Some(0));
                     // handleLogin makes a new ClientLevel: its predictions count from 0.
                     r.sequence = 0;
                     r.own_invisible = false;
@@ -7221,7 +7233,8 @@ impl Game<'_> {
     }
     /// The end of the player's tick: `AbstractBoat.tick`'s paddles (the vehicle ticks before its
     /// passenger's `sendChanges`), then `LocalPlayer.sendChanges`: the input, and a passenger's look,
-    /// vehicle and sprint, or `sendPosition`'s sprint and move.
+    /// vehicle and sprint, or `sendPosition`'s sprint and move. The held slot is not sent here:
+    /// `MultiPlayerGameMode.tick` sends it at the start of the next tick (`remote_handle_input`).
     fn remote_send_state(&mut self, input: u8) {
         let Some(p) = self.player.as_ref() else {
             return;
@@ -7232,7 +7245,7 @@ impl Game<'_> {
             p.collision.horizontal,
             p.sprinting,
         );
-        let (yaw, pitch, selected) = (self.yaw, self.pitch, self.selected);
+        let (yaw, pitch) = (self.yaw, self.pitch);
         let riding = self.riding.is_some();
         let controls_camera = self.controls_camera();
         let (paddles, vehicle): (Vec<S>, Vec<S>) = self
@@ -7243,12 +7256,6 @@ impl Game<'_> {
             return;
         };
         let mut out = paddles;
-        if r.carried != Some(selected) {
-            r.carried = Some(selected);
-            out.push(S::SetCarriedItem(play::SetCarriedItem {
-                slot: selected as i16,
-            }));
-        }
         if input != r.last_input {
             r.last_input = input;
             out.push(S::PlayerInput(play::PlayerInput { flags: input }));
@@ -8927,6 +8934,10 @@ impl Game<'_> {
             && self.screen == Screen::Playing
             && self.sleeping.is_none()
             && !self.dialog_open();
+        // MultiPlayerGameMode.tick, first in Minecraft.tick, screen or not: the slot
+        // chosen since the last tick (the wheel, the last tick's number keys, the
+        // server's SetHeldSlot) goes out before anything else of this tick.
+        self.remote_send_carried();
         if stop || !ready {
             self.stop_remote_mining();
         }
@@ -8935,13 +8946,8 @@ impl Game<'_> {
             self.hotbar_presses.clear();
             return;
         }
-        // MultiPlayerGameMode.tick syncs the carried slot before keybinds.
-        self.remote_send_carried();
         let (attack, use_item) = (self.left, self.right);
-        // A tick that clicks, attacks or uses acts with the slot its number
-        // keys select (`ensureHasSentCarriedItem` before the packets).
-        let acts = input.has_clicks() || attack || use_item;
-        input.tick(&mut RemoteInputWorld(self, acts), attack, use_item);
+        input.tick(&mut RemoteInputWorld(self), attack, use_item);
         self.remote_queued_keys();
         if let Some(r) = self.remote.as_mut() {
             r.input = input;
@@ -8950,17 +8956,12 @@ impl Game<'_> {
 
     /// `MultiPlayerGameMode.ensureHasSentCarriedItem`: the server hears of a
     /// new selected slot before anything the slot acts with.
-    fn remote_send_carried(&mut self) {
-        let carried_changed = self.remote.as_mut().is_some_and(|r| {
-            if r.carried == Some(self.selected) {
-                false
-            } else {
-                r.carried = Some(self.selected);
-                true
-            }
-        });
-        if carried_changed {
-            self.send(S::SetCarriedItem(play::SetCarriedItem {
+    fn remote_send_carried(&self) {
+        if let Some(r) = &self.remote
+            && r.carried.get() != Some(self.selected)
+        {
+            r.carried.set(Some(self.selected));
+            r.session.send(S::SetCarriedItem(play::SetCarriedItem {
                 slot: self.selected as i16,
             }));
         }
@@ -9190,6 +9191,10 @@ impl Game<'_> {
             } else {
                 self.native_interaction(0, Hand::Main)
             };
+            if canceled.is_none() && !air {
+                // MultiPlayerGameMode.continueDestroyBlock starts with ensureHasSentCarriedItem.
+                self.remote_send_carried();
+            }
             if let Some(swing) = canceled {
                 if swing {
                     self.swing_arm();
@@ -9304,9 +9309,7 @@ impl Game<'_> {
         // `KeyMapping.releaseAll` clears key.use; without this the button still
         // reads held and a use would start again on the first tick back.
         self.right = false;
-        horizon_client::interaction_input::release_on_screen_open(&mut RemoteInputWorld(
-            self, false,
-        ));
+        horizon_client::interaction_input::release_on_screen_open(&mut RemoteInputWorld(self));
     }
     /// `MultiPlayerGameMode.releaseUsingItem`: sends `RELEASE_USE_ITEM` and
     /// runs the client half of `Item.releaseUsing` (a Riptide launch moves the
@@ -10725,7 +10728,7 @@ fn synced_local_use(
 }
 
 /// The game as the tick's input sees it, and whether the tick acts.
-struct RemoteInputWorld<'g, 'a>(&'g mut Game<'a>, bool);
+struct RemoteInputWorld<'g, 'a>(&'g mut Game<'a>);
 
 struct RemoteUseWorld<'g, 'a>(&'g mut Game<'a>);
 
@@ -10744,12 +10747,6 @@ impl horizon_client::interaction_input::TargetUseWorld for RemoteUseWorld<'_, '_
 impl horizon_client::interaction_input::InteractionWorld for RemoteInputWorld<'_, '_> {
     fn pick_hit_result(&mut self) {
         self.0.pick_tick_targets();
-        // MultiPlayerGameMode.ensureHasSentCarriedItem: an action this tick
-        // sends the slot the number keys chose first; otherwise the next
-        // tick's MultiPlayerGameMode.tick does.
-        if self.1 {
-            self.0.remote_send_carried();
-        }
     }
     fn release_hit_result(&mut self) {
         self.0.release_tick_targets();
