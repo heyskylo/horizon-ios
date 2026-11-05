@@ -141,7 +141,7 @@ BlockStateDefinitions.definitionLocationToBlockStateMapper	skip:data		registry l
 BlockStateModelLoader.loadBlockStates	skip:data		blockstate JSON loading; Horizon's block models come from its data tables
 BlockStateModelLoader.loadBlockStateDefinitionStack	skip:data		blockstate JSON stacking
 ClientItemInfoLoader.scheduleLoad	skip:data		item model JSON loading
-EquipmentAssetManager.apply	port	crates/horizon-client/src/game/armor_stands.rs::ArmorStandAssets::reload_resources	replaces equipment/wing/trim metadata on resource reload while preserving prepared models; all client namespaces; seven native folder-pack records and texture pixels across enable/disable; currently humanoid, humanoid_leggings and wings
+EquipmentAssetManager.apply	port	crates/horizon-client/src/game/armor_stands.rs::ArmorStandAssets::apply_resources	replaces equipment/wing/trim metadata on resource reload while preserving prepared models; all client namespaces; seven native folder-pack records and texture pixels across enable/disable; currently humanoid, humanoid_leggings and wings
 EquipmentClientInfo.Builder.addHumanoidLayers	skip:java		builder
 EquipmentClientInfo.Builder.addMainHumanoidLayer	skip:java		builder
 EquipmentClientInfo.Builder.addLayers	skip:java		builder

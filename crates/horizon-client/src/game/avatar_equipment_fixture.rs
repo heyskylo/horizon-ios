@@ -296,10 +296,134 @@ impl Game<'_> {
                 }
             }
         }
+        let crouch = self.avatar_crouch_geometry_fixture(camera, &regions)?;
+        std::fs::write(
+            directory.join("crouch.json"),
+            serde_json::to_vec_pretty(&crouch)?,
+        )?;
         std::fs::write(
             directory.join("rust.json"),
             serde_json::to_vec_pretty(&output)?,
         )?;
         Ok(())
+    }
+    /// Native AvatarRenderer uses Entity.isCrouching (the pose) for mannequins,
+    /// independently of the sneak/name-tag flag. Compare real body geometry
+    /// with an otherwise identical, consistently flagged reference and the
+    /// actual Game wing wrapper with the native boolean passed explicitly.
+    fn avatar_crouch_geometry_fixture(
+        &mut self,
+        camera: glam::DVec3,
+        regions: &BTreeMap<&str, Rect>,
+    ) -> Result<serde_json::Value> {
+        let on = |uv: [f32; 2], rect: Rect| {
+            uv[0] >= rect.u0 - 1e-6
+                && uv[0] <= rect.u1 + 1e-6
+                && uv[1] >= rect.v0 - 1e-6
+                && uv[1] <= rect.v1 + 1e-6
+        };
+        let world_points = |vertices: &[Vertex], rect: Rect| -> Vec<[u32; 3]> {
+            vertices
+                .iter()
+                .filter(|v| on(v.uv, rect))
+                .map(|v| v.pos.map(f32::to_bits))
+                .collect()
+        };
+        let preview_points = |batch: &HudBatch, rect: Rect| -> Vec<[u32; 2]> {
+            batch
+                .vertices
+                .iter()
+                .filter(|v| on(v.uv, rect))
+                .map(|v| v.pos.map(f32::to_bits))
+                .collect()
+        };
+        let mut rows = Vec::new();
+        for (kind, pose, sneaking, expected) in [
+            ("minecraft:mannequin", 5, false, true),
+            ("minecraft:mannequin", 0, true, false),
+            ("minecraft:player", 0, false, false),
+            ("minecraft:player", 5, true, true),
+        ] {
+            let mob_type = if kind == "minecraft:player" {
+                self.res.player_type().clone()
+            } else {
+                self.res.mob_types().get(kind).cloned()
+            }
+            .ok_or("prepared avatar facts required")?;
+            let mut mob = Mob::new(4321, mob_type, Vec3::new(0.0, 100.0, 0.0), 0.0);
+            mob.skin = Some("fixture/body".into());
+            mob.elytra = Some("elytra/fixture".into());
+            mob.extra.armor[1] = Some(ItemStack::new("minecraft:elytra", 1));
+            mob.extra.chest = Some("minecraft:elytra".into());
+            super::remote::avatar_animation::apply(
+                &mut mob,
+                &[
+                    (
+                        0,
+                        0,
+                        horizon_protocol::entity_data::Value::Byte(if sneaking { 2 } else { 0 }),
+                    ),
+                    (6, 0, horizon_protocol::entity_data::Value::Id(pose)),
+                ],
+            );
+            // The real general metadata path also sets the dimensions' canonical pose.
+            mob.extra.avatar_pose = horizon_client::pose::Pose::from_id(pose);
+            super::remote::avatar_animation::tick(&mut mob, kind == "minecraft:player", true);
+            let mut reference = mob.clone();
+            reference.extra.crouching = expected;
+            self.mobs = vec![mob.clone()].into();
+            let mut body = Vec::new();
+            self.mob_geometry(camera, 0.5, &mut body);
+            self.mobs = vec![reference.clone()].into();
+            let mut reference_body = Vec::new();
+            self.mob_geometry(camera, 0.5, &mut reference_body);
+            let body = world_points(&body, regions["body"]);
+            let reference_body = world_points(&reference_body, regions["body"]);
+            let mut wings = Vec::new();
+            self.player_elytra_geometry(
+                &mob,
+                Some("minecraft:elytra"),
+                camera,
+                0.5,
+                240 | 240 << 8,
+                &mut wings,
+            );
+            let mut reference_wings = Vec::new();
+            self.wings_geometry(
+                Some("minecraft:elytra"),
+                mob.extra.armor[1].as_ref(),
+                Some("elytra/fixture"),
+                false,
+                horizon_client::mobs::render::base_transform(&mob, 0.5, camera),
+                mob.extra.elytra.angles(0.5),
+                expected,
+                240 | 240 << 8,
+                0,
+                &mut reference_wings,
+            );
+            let wings = world_points(&wings, regions["wings"]);
+            let reference_wings = world_points(&reference_wings, regions["wings"]);
+            self.cursor = (160.0, 120.0);
+            self.armor = mob.extra.armor.clone();
+            self.player_model = Some(mob);
+            let mut preview = HudBatch::new([320, 240]);
+            self.draw_player_preview(&mut preview, 0.0, 0.0, 320.0, 240.0, 40.0, 0.0);
+            self.player_model = Some(reference);
+            let mut preview_reference = HudBatch::new([320, 240]);
+            self.draw_player_preview(&mut preview_reference, 0.0, 0.0, 320.0, 240.0, 40.0, 0.0);
+            let preview_body = preview_points(&preview, regions["body"]);
+            let preview_wings = preview_points(&preview, regions["wings"]);
+            let preview_ref_body = preview_points(&preview_reference, regions["body"]);
+            let preview_ref_wings = preview_points(&preview_reference, regions["wings"]);
+            rows.push(json!({
+                "kind": kind, "pose": pose, "sneaking": sneaking, "expectedCrouching": expected,
+                "bodyVertices": body.len(), "referenceBodyVertices": reference_body.len(),
+                "wingVertices": wings.len(), "referenceWingVertices": reference_wings.len(),
+                "bodyMatches": body == reference_body, "wingMatches": wings == reference_wings,
+                "previewBodyVertices": preview_body.len(), "previewWingVertices": preview_wings.len(),
+                "previewMatches": preview_body == preview_ref_body && preview_wings == preview_ref_wings,
+            }));
+        }
+        Ok(json!(rows))
     }
 }

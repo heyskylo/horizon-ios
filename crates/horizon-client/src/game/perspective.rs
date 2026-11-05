@@ -781,7 +781,7 @@ impl Game<'_> {
         m.previous_head_yaw = m.head_yaw;
         m.head_pitch = -y_angle * 20.0;
         m.previous_head_pitch = m.head_pitch;
-        m.position.y += 0.125 * f64::from(u8::from(m.extra.crouching));
+        m.position.y += 0.125 * f64::from(u8::from(m.visual_crouching()));
         m.previous = m.position;
         let camera = glam::DVec3::new(m.position.x, m.position.y, m.position.z);
         let atlas = &self.gui.atlas;
@@ -833,7 +833,7 @@ impl Game<'_> {
         self.shoulder_parrots_geometry(&m, camera, 1.0, 240 | 240 << 8, &mut verts);
         self.held_item_geometry(&m, camera, 1.0, 240 | 240 << 8, false, None, &mut verts);
         self.head_item_geometry(&m, camera, 1.0, 240 | 240 << 8, false, &mut verts);
-        let height = if m.extra.crouching { 1.5 } else { 1.8 };
+        let height = if m.visual_crouching() { 1.5 } else { 1.8 };
         // PictureInPictureRenderer: the box centre, (size, size, -size);
         // then the translation and Rz(pi) * Rx(y_angle * 20 degrees).
         let gui = glam::Mat4::from_translation(glam::Vec3::new(cx, cy, 0.0))
@@ -939,7 +939,7 @@ impl Game<'_> {
             false,
             horizon_client::mobs::render::base_transform(m, partial, camera),
             m.extra.elytra.angles(partial),
-            m.extra.crouching,
+            m.visual_crouching(),
             light,
             self.wings_overlay(stack),
             out,

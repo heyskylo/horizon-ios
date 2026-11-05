@@ -2418,7 +2418,7 @@ fn cape_tilt(m: &Mob, alpha: f32) -> f32 {
     );
     let flap = (dy * 10.0).clamp(-6.0, 32.0) as f32;
     let lean = ((dx * f64::from(sin) - dz * f64::from(cos)) * 100.0).clamp(0.0, 150.0) as f32;
-    let crouch = if m.extra.crouching { 25.0 } else { 0.0 };
+    let crouch = if m.visual_crouching() { 25.0 } else { 0.0 };
     6.0 + lean / 2.0 + flap + crouch
 }
 fn lerp(t: f32, a: f32, b: f32) -> f32 {

@@ -290,7 +290,7 @@ fn equipment_assets_native_fixture() {
     let mut rows = Vec::new();
     for (phase, directory) in ["base", "merged", "base"].into_iter().enumerate() {
         if phase != 0 {
-            assets.reload_resources(&root.join(directory));
+            assets.apply_resources(ArmorStandAssets::load(&root.join(directory), None));
         }
         assert!(
             std::sync::Arc::ptr_eq(assets.main.as_ref().unwrap(), &prepared_model),
@@ -365,7 +365,7 @@ fn equipment_reload_replaces_pack_metadata_and_retains_prepared_geometry() {
     for (root, name, player, has_added) in
         [(&new.0, "new", true, true), (&old.0, "old", false, false)]
     {
-        assets.reload_resources(root);
+        assets.apply_resources(ArmorStandAssets::load(root, None));
         assert!(std::sync::Arc::ptr_eq(
             assets.main.as_ref().unwrap(),
             &prepared
@@ -381,6 +381,30 @@ fn equipment_reload_replaces_pack_metadata_and_retains_prepared_geometry() {
         );
         assert_eq!(assets.root, *root);
     }
+}
+
+#[test]
+fn equipment_commit_uses_the_prepared_snapshot_not_later_file_edits() {
+    let root = FixtureRoot::new();
+    let file = root.0.join("assets/minecraft/equipment/gear.json");
+    fs::create_dir_all(file.parent().unwrap()).unwrap();
+    fs::write(
+        &file,
+        br#"{"layers":{"wings":[{"texture":"minecraft:prepared","use_player_texture":true}]}}"#,
+    )
+    .unwrap();
+    let prepared = ArmorStandAssets::load(&root.0, None);
+    fs::write(&file, br#"{"layers":{"wings":[{"texture":"minecraft:edited_after_staging","use_player_texture":false}]}}"#).unwrap();
+    let expected = prepared.equipment.clone();
+    let expected_flags = prepared.wing_player_textures.clone();
+    let mut destination = ArmorStandAssets::load(&root.0.join("empty"), None);
+    // The render-thread operation consumes what the CPU worker prepared.
+    destination.apply_resources(prepared);
+    assert_eq!(
+        destination.equipment, expected,
+        "the committed metadata no longer matches the textures prepared on the worker"
+    );
+    assert_eq!(destination.wing_player_textures, expected_flags);
 }
 
 #[test]

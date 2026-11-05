@@ -19,6 +19,9 @@ use horizon_world::registry::BlockStateId;
 fn apply(m: &mut Mob, values: &[(u8, i32, Value)], builtin: &Builtin, local_entity: i32) {
     let species = m.species();
     let baby = super::lan::baby_index(species);
+    if matches!(&*m.kind.id, "minecraft:player" | "minecraft:mannequin") {
+        super::remote::avatar_animation::apply(m, values);
+    }
     if &*m.kind.id == "minecraft:player" {
         player_poses(m, values);
     }
@@ -427,8 +430,6 @@ fn apply_registry_data(
 fn player_poses(m: &mut Mob, values: &[(u8, i32, Value)]) {
     for (index, _, value) in values {
         match (*index, value) {
-            (0, Value::Byte(flags)) => m.extra.fall_flying = flags & -128 != 0,
-            (6, Value::Id(pose)) => m.extra.synced_pose = (*pose).clamp(0, 17) as u8,
             (8, Value::Byte(flags)) => m.extra.auto_spin_attack = flags & 4 != 0,
             // LivingEntity.DATA_ARROW_COUNT_ID and DATA_STINGER_COUNT_ID.
             (12, Value::Int(count)) => m.extra.arrow_count = *count,
@@ -1335,6 +1336,29 @@ mod tests {
         let mut e = mob("minecraft:evoker").unwrap();
         apply(&mut e, &[(17, s::BYTE, Value::Byte(2))]);
         assert_eq!(e.extra.variant2, 2);
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in .local/horizon-client/26.3"]
+    fn mannequin_shared_metadata_reaches_living_avatar_animation() {
+        let mut m = mob("minecraft:mannequin").expect("prepared mannequin facts and models");
+        apply(
+            &mut m,
+            &[(0, s::BYTE, Value::Byte(-128)), (6, s::POSE, Value::Id(1))],
+        );
+        assert!(m.extra.fall_flying);
+        assert_eq!(m.extra.synced_pose, 1);
+        super::super::remote::avatar_animation::tick(&mut m, false, true);
+        assert_eq!(m.extra.fall_fly_ticks, 1);
+        assert!(m.extra.elytra.angles[0] > 0.0);
+        apply(
+            &mut m,
+            &[(0, s::BYTE, Value::Byte(0)), (6, s::POSE, Value::Id(3))],
+        );
+        super::super::remote::avatar_animation::tick(&mut m, false, true);
+        assert_eq!(m.extra.fall_fly_ticks, 0);
+        assert_eq!(m.extra.swim.amount, 0.09);
+        assert_eq!(m.extra.shoulder_parrots, [None, None]);
     }
 
     #[test]

@@ -225,9 +225,9 @@ impl ArmorStandAssets {
             root: root.to_owned(),
         }
     }
-    /// Reload equipment and trim metadata while retaining prepared model geometry.
-    pub fn reload_resources(&mut self, root: &std::path::Path) {
-        let fresh = Self::load(root, None);
+    /// Publish CPU-prepared metadata without reading files on the frame thread.
+    /// Prepared entity model geometry belongs to the Game and stays intact.
+    pub fn apply_resources(&mut self, fresh: Self) {
         self.equipment = fresh.equipment;
         self.wing_player_textures = fresh.wing_player_textures;
         self.trim_overrides = fresh.trim_overrides;

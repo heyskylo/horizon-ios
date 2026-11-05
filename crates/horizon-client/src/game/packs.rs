@@ -366,6 +366,7 @@ impl Game<'_> {
             pack,
             textures,
             cem,
+            equipment,
             block_entity_shapes,
             sounds,
             ui_metadata,
@@ -412,7 +413,7 @@ impl Game<'_> {
         };
         // Everything loaded: switch over.
         self.waypoint_styles = horizon_client::locator_bar::WaypointStyles::load(&root);
-        self.armor_stand_assets.reload_resources(&root);
+        self.armor_stand_assets.apply_resources(equipment);
         self.random_tick_sections.clear();
         self.portals.sections.clear();
         self.options.resources = root.clone();
@@ -585,6 +586,9 @@ pub(super) fn stage_pack(
         res.mob_types(),
     ));
     let block_entity_shapes = res.block_entity_render().shapes_for(&root);
+    // Equipment and trim JSON must describe the same staged resource generation
+    // as the atlas, and must not be reopened during render-thread application.
+    let equipment = super::armor_stands::ArmorStandAssets::load(&root, None);
     progress.set(3);
     Ok(StagedPack {
         home_access: None,
@@ -593,6 +597,7 @@ pub(super) fn stage_pack(
         pack,
         textures,
         cem,
+        equipment,
         block_entity_shapes,
         sounds,
         ui_metadata,
@@ -611,6 +616,8 @@ pub(super) struct StagedPack {
     pub textures: PreparedTextures,
     /// The packs' custom entity models (OptiFine CEM).
     pub cem: Arc<horizon_client::mobs::cem::CemModels>,
+    /// Parsed on the CPU worker; application retains the Game's prepared models.
+    pub equipment: super::armor_stands::ArmorStandAssets,
     /// The block entities' models, the packs' custom entity models over vanilla's.
     pub block_entity_shapes: Arc<horizon_client::block_entity_render::BlockEntityShapes>,
     /// The root's sound events, GUI sprite metadata and current language.

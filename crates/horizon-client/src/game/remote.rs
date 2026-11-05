@@ -6,6 +6,8 @@
 //! clicks). The player still moves with the local physics, as the vanilla
 //! client predicts its own movement; the server stays authoritative for
 //! everything else.
+pub(super) mod avatar_animation;
+
 use super::remote_chunks::{ChunkDecoder, ChunkFormat, Next};
 use super::{Dim, Game, Mining, Screen};
 use horizon_client::first_person::{Hand, SwingAnimation};
@@ -7243,14 +7245,17 @@ impl Game<'_> {
             if player {
                 remote_player_head_turn(m);
                 // LivingEntity.tick: the glide count, wings and swim amount.
-                m.tick_avatar_pose(m.fluids.in_water);
+                avatar_animation::tick(m, true, running);
                 // LivingEntity.tick: a sleeper's xRot is 0.
                 if m.extra.ints[1] != 0 {
                     m.head_pitch = 0.0;
                     m.previous_head_pitch = 0.0;
                 }
-            } else if m.alive() {
-                m.body_rotation_tick();
+            } else {
+                if m.alive() {
+                    m.body_rotation_tick();
+                }
+                avatar_animation::tick(m, false, running);
             }
             // Squid.aiStep follows LivingEntity's interpolation and head turn.
             horizon_client::mobs::aquatic::squid_client_step(m, &mut mob_fx);

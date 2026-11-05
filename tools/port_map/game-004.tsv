@@ -97,4 +97,4 @@ Display.TransformationInterpolator.get	port	crates/horizon-client/src/text_displ
 DropChances.filterDefaultValues	port	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	only the chances that are not the default 0.085 are written; an all-default set is dropped from the tage and reload
 DropChances.toEnumMap	port	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	the saved drop_chances compound read back by slot name, missing slots keeping the default
 DropChances.withEquipmentChance	port	crates/horizon-client/src/mobs/finalize.rs::set_drop_chance	stored per slot in extra.drop_chances
-ElytraAnimationState.tick	port	crates/horizon-client/src/mobs.rs::ElytraAnimation::tick	
+ElytraAnimationState.tick	port	crates/horizon-client/src/mobs.rs::ElytraAnimation::tick	native rounded angle constants and Vec3.normalize small-vector threshold; standing/crouching/gliding history/interpolation raw bits checked by test_mannequin_avatar_motion_parity

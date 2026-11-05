@@ -66,6 +66,24 @@ def verify(rows):
                 assert materials['cape'] == 0, f'hidden preview cape drawn: {context}, {preview}'
 
 
+
+def verify_crouch(rows):
+    expected = {
+        ("minecraft:mannequin", 5, False, True),
+        ("minecraft:mannequin", 0, True, False),
+        ("minecraft:player", 0, False, False),
+        ("minecraft:player", 5, True, True),
+    }
+    assert len(rows) == 4, len(rows)
+    assert {(r["kind"], r["pose"], r["sneaking"], r["expectedCrouching"]) for r in rows} == expected
+    for row in rows:
+        for field in ("bodyVertices", "referenceBodyVertices", "wingVertices", "referenceWingVertices",
+                      "previewBodyVertices", "previewWingVertices"):
+            assert row[field] > 0, f"empty geometry cannot prove crouching: {row}"
+        assert row["bodyMatches"], f"body used sneak flag instead of visual pose: {row}"
+        assert row["wingMatches"], f"wing attachment used sneak flag instead of visual pose: {row}"
+        assert row["previewMatches"], f"preview used sneak flag instead of visual pose: {row}"
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', type=Path)
@@ -87,7 +105,9 @@ def main():
         print(f'Captured {len(rows)} actual Game geometry cases; this is not a regression pass')
     else:
         verify(rows)
-        print(f'{len(rows)} actual Game world/preview avatar equipment geometry cases passed')
+        crouch = json.loads((args.output / 'crouch.json').read_text())
+        verify_crouch(crouch)
+        print(f'{len(rows)} actual Game world/preview avatar equipment geometry cases and 4 visual-crouch cases passed')
 
 
 if __name__ == '__main__':

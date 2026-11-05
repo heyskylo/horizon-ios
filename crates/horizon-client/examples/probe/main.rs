@@ -63,6 +63,7 @@ mod lan_probe;
 mod late_entity_pair_fixture;
 mod light_parity;
 mod lore_tooltip_fixture;
+mod mannequin_avatar_fixture;
 mod marker_particles_probe;
 mod menu_fixture;
 mod mipmap_probe;
@@ -199,6 +200,7 @@ probes! {
     skin_image_fixture,
     equipment_color_fixture,
     player_skin_fixture,
+    mannequin_avatar_fixture,
     late_entity_pair_fixture,
     sheep_dye_fixture,
     allay_interaction_fixture,

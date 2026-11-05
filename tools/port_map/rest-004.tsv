@@ -83,7 +83,7 @@ net/minecraft/client/color/item/Potion#calculate	port	crates/horizon-assets/src/
 net/minecraft/client/color/item/TeamColor#calculate	port	crates/horizon-assets/src/item_model.rs::Resolve::tint	
 ClientAvatarState.moveCloak	port	crates/horizon-client-render/src/camera.rs::AvatarBob::tick	the cloak point eases a quarter of the way to the player each tick, or jumps to it from 10 blocks away; the cape layer leans from it
 ClientMannequin.registerOverrides	skip:other		client-side constructor override; Horizon creates mannequins from the species table
-ClientMannequin.tick	missing		minor: unsure: the mannequin avatar state (walk bob, cloak) is not ticked; skins come from skins.rs
+ClientMannequin.tick	port	crates/horizon-client/src/game/remote/avatar_animation.rs::tick	shared living pose/counter/wings/swim and post-base current-position cloak/history; no player updateBob; native 96-case motion harness; skin futures remain in remote.rs::mannequin_textures
 AbstractSelectionList.getRowLeft	port	crates/horizon-client-render/src/pack_screen.rs::List::row_left	
 CycleButton.setValue	skip:ui		widgets read the settings each frame; no separate value setter
 CreateFlatWorldScreen.DetailsList.LayerEntry.getNarration	skip:ui		screen-reader text

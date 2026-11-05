@@ -3185,6 +3185,15 @@ impl Mob {
     pub fn main_arm_left(&self) -> bool {
         self.extra.main_hand_left || self.extra.left_handed
     }
+    /// AvatarRenderer's visual crouching state is the mannequin's Entity pose.
+    /// Keep sneak intent/name-tag flags separate and other species' existing policy.
+    pub fn visual_crouching(&self) -> bool {
+        if self.species() == Species::Mannequin {
+            self.extra.avatar_pose == crate::pose::Pose::Crouching
+        } else {
+            self.extra.crouching
+        }
+    }
     /// The player hit this mob (melee): LivingEntity.hurt with knockback.
     pub fn hurt(
         &mut self,
@@ -4254,21 +4263,24 @@ impl ElytraAnimation {
         use std::f32::consts::PI;
         self.old = self.angles;
         let target = if flying {
-            let length =
-                (velocity.x * velocity.x + velocity.y * velocity.y + velocity.z * velocity.z)
-                    .sqrt();
-            let ratio = if velocity.y < 0.0 && length > 0.0 {
-                1.0 - horizon_core::jmath::pow(-velocity.y / length, 1.5) as f32
+            let ratio = if velocity.y < 0.0 {
+                // Vec3.normalize returns ZERO below vanilla's small-vector
+                // threshold; dividing by every nonzero length changes wings.
+                1.0 - horizon_core::jmath::pow(-velocity.normalize().y, 1.5) as f32
             } else {
                 1.0
             };
             [
-                PI / 12.0 + (PI / 9.0 - PI / 12.0) * ratio,
+                PI / 12.0 + ((std::f64::consts::PI / 9.0) as f32 - PI / 12.0) * ratio,
                 0.0,
                 -PI / 12.0 + (-PI / 2.0 + PI / 12.0) * ratio,
             ]
         } else if crouching {
-            [PI * 2.0 / 9.0, 0.08726646, -PI / 4.0]
+            [
+                (std::f64::consts::PI * 2.0 / 9.0) as f32,
+                0.08726646,
+                -PI / 4.0,
+            ]
         } else {
             Self::RESTING
         };
@@ -4311,12 +4323,11 @@ impl SwimAnimation {
 }
 
 impl Mob {
-    /// The part of `LivingEntity.tick` and `aiStep` that animates another
-    /// player from its synched pose and flags: the glide count, the wings
-    /// (`elytraAnimationState`) and the swim amount (`updateSwimAmount`).
-    pub fn tick_avatar_pose(&mut self, in_water: bool) {
-        let (p, v) = (self.previous, self.velocity);
-        let on_ground_alive = self.on_ground && self.alive();
+    /// The living-entity part shared by client players and mannequins:
+    /// glide count, wing easing and visually-swimming interpolation. This
+    /// is separate from ClientAvatarState's player-only bob policy.
+    pub fn tick_living_avatar_pose(&mut self, in_water: bool) {
+        let crouching = self.visual_crouching();
         let e = &mut self.extra;
         e.fall_fly_ticks = if e.fall_flying {
             e.fall_fly_ticks + 1
@@ -4326,8 +4337,16 @@ impl Mob {
         // LivingEntity.isVisuallySwimming: the swimming pose, or the gliding
         // pose after the glide ended.
         let visually = e.synced_pose == 3 || (!e.fall_flying && e.synced_pose == 1);
-        e.elytra.tick(e.fall_flying, e.crouching, self.velocity);
+        e.elytra.tick(e.fall_flying, crouching, self.velocity);
         e.swim.tick(visually, in_water);
+    }
+
+    /// The player-specific client avatar tick and RemotePlayer.aiStep bob.
+    pub fn tick_avatar_pose(&mut self, in_water: bool) {
+        self.tick_living_avatar_pose(in_water);
+        let (p, v) = (self.previous, self.velocity);
+        let on_ground_alive = self.on_ground && self.alive();
+        let e = &mut self.extra;
         // AbstractClientPlayer.tick's ClientAvatarState.tick (from where the
         // player was before this tick's move), RemotePlayer.aiStep's
         // updateBob and rideTick's resetBob.

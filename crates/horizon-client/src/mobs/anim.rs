@@ -862,7 +862,7 @@ pub fn setup(
             }
             h.zombie = Some(m.ai.aggressive);
             h.holding = m.extra.main_hand.is_some();
-            h.crouching = m.extra.crouching;
+            h.crouching = m.visual_crouching();
             h.passenger = m.extra.passenger;
             humanoid(p, s, &h);
             if m.kind.anim == Anim::Drowned {
@@ -942,7 +942,7 @@ pub fn setup(
                 h.fly_speed_scale =
                     (((v.x * v.x + v.y * v.y + v.z * v.z) as f32 / 0.2).powi(3)).max(1.0);
             }
-            h.crouching = m.extra.crouching;
+            h.crouching = m.visual_crouching();
             h.passenger = m.extra.passenger;
             h.swim = m.extra.swim.amount(s.partial);
             h.using_item = m.extra.using_item > 0;
