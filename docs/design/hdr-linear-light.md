@@ -127,11 +127,12 @@ The water mirror and `shadow_color` draw no blends, so they store linear in both
 
 **Cost and support.**
 
-- `Rgba16Float` is 8 bytes a pixel, as `Rgba16Unorm` is, so HDR on costs the same memory as today.
+- `Rgba16Float` is 8 bytes a pixel, as `Rgba16Unorm` is. HDR on keeps two targets at the frame's size, as today:
+  the frame, and the HUD's target in place of `keep_world`'s copy.
 - A 0.2 pack in SDR moves the frame from 4 to 8 bytes a pixel (about 15 MB more at 1440p), only while it runs. Its
   post chain already uses `Rgba16Float`.
 - WebGPU renders to, blends and filters `Rgba16Float` without optional features, unlike `Rgba16Unorm`
-  (`draws_wide_frame`), so the 8-bit HDR fallback goes. The GL backend is checked in the series.
+  (`draws_wide_frame`); the 8-bit fallback stays only for the HUD's target. The GL backend is checked in the series.
 - Up to 1, half float steps at least 8 times finer than 8-bit, and far finer in the darks, so Smooth Gradients'
   gain stays without its setting.
 
@@ -146,8 +147,8 @@ Each shader that marks the frame today writes the light instead:
 - **Where:** terrain and fluids (`terrain.wgsl`, `mesher/fluid.rs`, distant terrain in `lod/mesh.rs`, the visibility
   buffer), particles (`particles.rs`), the sun and moon (`fs_sky_celestial`), entities, dropped and held items
   (`entity.wgsl`, `dynamic_light.rs`) and lightning (`gfx/lightning.rs`).
-- **The hand** draws at gain 1, as it stays at the world's brightness today, and before `keep_world` (below), so it
-  needs no mark.
+- **The hand** draws at gain 1, as it stays at the world's brightness today, and before `keep_world` (see the HUD
+  below), so it needs no mark.
 
 The target look for HDR on without a pack is today's, within the offscreen checks' tolerance, at Auto (203 and 1000
 nits). Any change of look is a separate pull request, with screenshots.
@@ -158,24 +159,40 @@ likely 0.2 addition, not designed here.)
 
 ## The HUD and menus
 
-While HDR is on, after the tone curve has written the world's picture to the frame (with HDR off nothing here
-changes):
+The HUD always draws in gamma, with vanilla's blends, onto a picture clipped to white, as today:
+
+- **HDR off without a pack, and any 0.1 pack**: onto the frame, as today.
+- **A 0.2 pack in SDR**: the display pass writes the tone curve's result to the swapchain in gamma, and the camera
+  overlays and the HUD draw on it, as they draw after a pack's post chain today.
+- **HDR on**, with or without a 0.2 pack, as below.
+
+With HDR on:
 
 - **Camera overlays belong to the world.** `hud_overlays::camera_overlays` (the vignette, the pumpkin and powder-snow
-  overlays and the rest) draw onto the world's picture before `keep_world` (today just after it), so they darken or
-  cover light above white as they do the rest, the world border's red vignette included.
-- **`keep_world` becomes a pass** instead of a copy: it keeps the world's picture, light above white included, and
-  writes it clipped to white into the frame with alpha 0 (encoded, under `blend = "linear"`), as the backdrop the HUD
-  draws on.
-- **The HUD and menus draw on that backdrop with vanilla's blends**, so the crosshair and `GUI_INVERT` (which invert
-  what is under them, `BlendFunction.INVERT`), the text highlight (additive) and the menu blur read the same clipped
-  picture as today. Vanilla's GUI blend (`BlendFunction.TRANSLUCENT`, wgpu's `ALPHA_BLENDING`) leaves in alpha how much
-  the HUD covers each pixel; the menu blur writes its picture as covered.
-- **The display pass composites exactly.** Where alpha is 0 it shows the kept world. Elsewhere it shows the HUD's own
-  part, the frame less what of the backdrop still shows through (`frame - (1 - alpha) * backdrop`), at UI Brightness,
-  plus `1 - alpha` of the kept world. Chat's half-black background over a torch shows half the torch's light above
-  white; a pixel the HUD covers fully (the crosshair, a panel, a blurred menu) is the frame at UI Brightness, which
-  at the default 100% is today's picture.
+  overlays and the rest) and the hand draw onto the tone-mapped world before `keep_world` (today just after it),
+  converted as Horizon's own draws are under `blend = "linear"`, so they darken or cover light above white too, the
+  world border's red vignette included.
+- **`keep_world` becomes a pass** instead of a copy. The frame keeps the world, light above white included; the pass
+  writes it clipped to white, in gamma, with alpha 0, into the HUD's target in today's HDR frame format
+  (`Rgba16Unorm` where the device draws it, else 8-bit). That backdrop is what the HUD draws on, so it clips as today.
+- **The HUD and menus keep today's colour blends**, so the crosshair and `GUI_INVERT` (which invert what is under
+  them), the text highlight and the menu blur see what they see today. Only their alpha changes, and only with HDR
+  on: no HUD blend reads the destination's alpha (`hud.rs`), so alpha records coverage, how much of the backdrop is
+  hidden. Blends that lay a layer over what is under it (vanilla's translucent GUI blend, and the depth-tested one)
+  keep vanilla's alpha equation, which is that. Additive draws (the text highlight) leave alpha as it is, since they
+  hide nothing. The rest (the inversion, the End portal fill, CIT glint layers) count as covering what they draw:
+  `One, OneMinusSrcAlpha` on their texel's alpha.
+- **The display pass composites in gamma**, the space the HUD blends in. With `c` the coverage, `B` the backdrop and
+  `P` the HUD's target, the HUD's own part is `H = P - (1 - c) * B`, exact for the layering blends. The output is `H`
+  at UI Brightness (`H * ui^(1/2.2)`, so a fully covered pixel is today's covered pixel, scaled by UI Brightness in
+  linear light) plus `(1 - c)` of the kept world in gamma, decoded for the display. At the default 100%, wherever the
+  world is at or below white, that is `P`, today's picture. Behind see-through HUD the world keeps its light above
+  white, weighted as vanilla weights the HUD over it, and doesn't dim with UI Brightness. Inverted pixels count as
+  covered, so the crosshair's edges are exact where its texels are opaque.
+- **The menu blur keeps light above white.** It blurs the composite so far, instead of the clipped picture, writes the
+  result as the new kept world, and resets the HUD's target to it, clipped, with alpha 0. The menu's own darkening then
+  layers over it as any HUD does: a bright sun behind a paused game stays bright, dimmed with the rest, so pausing
+  doesn't change the picture's brightness.
 - `shows_world` and the hand's mark go.
 
 ## 0.1 packs: the shim
@@ -216,8 +233,8 @@ may need a tone-weighted resolve so bright pixels don't sparkle. Frame generatio
 3. **HDR on, HDR Lighting off, against SDR**: the offscreen HDR capture ([#8947](https://github.com/horizon-rust/horizon/pull/8947)),
    within one 8-bit step outside the spots vanilla clips.
 4. **HDR look against today**: the same captures within a tolerance, with screenshots in the pull request,
-   including the vignette and the world border's red warning over bright light, the crosshair, chat over a torch
-   and a blurred menu.
+   including the vignette and the world border's red warning over bright light, the crosshair, chat over a torch,
+   a blurred menu, and translucent black and coloured HUD at UI Brightness 50% and 100%.
 5. **Cost**: GPU time and memory, HDR on, against today at 1080p and 1440p, on a desktop GPU and an integrated one.
 6. **Linear blending**: a 0.2 test pack with `blend = "linear"` draws solid surfaces as with gamma, and glass over
    them as linear blending gives.
@@ -231,8 +248,9 @@ Behind `HORIZON_HDR_FRAME=float` until the last step, each a small pull request:
    served, the reference regenerated, Golden Hour's 0.2 port.
 3. The float frame with HDR on: the frame, the display pass decoding it, and light written instead of marked, one
    group of shaders a pull request (terrain and fluids, particles and the sky, entities and items, the rest).
-4. The tone curve, camera overlays before `keep_world`, `keep_world` as a pass, the display pass's HUD composite, the
-   rebuild when the frame's case changes, and the 0.1 path split off; marks no longer written outside it.
+4. The tone curve, camera overlays and the hand before `keep_world`, the HUD's target and coverage, the display
+   pass's composite, the blur, the rebuild when the frame's case changes, and the 0.1 path split off; marks no
+   longer written outside it.
 5. On by default and the switch removed. Today's HDR path (marks, the 16-bit unorm frame, Smooth Gradients) then serves
    only 0.1 packs, and goes when 0.1 does.
 
@@ -245,6 +263,5 @@ Later, each its own note or pull request: HDR's light-source lift as a built-in 
   and a committed digest?
 - **`[tonemap]` as its own stage**, or the last post pass with a flag?
 - **`paper_white` and `peak` in SDR**: 0, or a nominal 80 nits?
-- **A blurred menu's background**: UI at UI Brightness, as here, or the world's light above white blurred?
 - **`shaders/` packs in HDR today**: what the loader does with the frame's alpha, so the change above is stated
   against it.
