@@ -66,9 +66,9 @@ impl Launcher {
             .flex()
             .flex_col()
             .min_w_0()
-            .pt(px(64.))
+            .pt(px(64. - crate::glass::CONTENT_INSET))
             .child(self.edition_tabs(java.is_some(), cx))
-            .child(self.home_title())
+            .child(self.home_title(cx))
             .child(self.played_text(cx))
             .child(actions)
     }
@@ -77,11 +77,8 @@ impl Launcher {
     /// chosen when it is made, so the other tab goes to an instance of that edition
     /// ([`Self::switch_edition`]).
     fn edition_tabs(&mut self, java: bool, cx: &mut Context<Self>) -> Div {
-        let grass = self.vanilla_icon().and_then(|path| {
-            self.icon_image("mark:grass".into(), 18., false, move || {
-                std::fs::read(&path).ok()
-            })
-        });
+        let grass = self.grass_mark(18.);
+        let horizon = self.horizon_mark(18.);
         let tab = |label: &'static str, icon: AnyElement, open: bool| {
             let d = div()
                 .id(SharedString::from(format!("edition-{label}")))
@@ -123,11 +120,7 @@ impl Launcher {
             .flex()
             .items_center()
             .gap(px(4.))
-            .child(tab(
-                "Rust Edition",
-                ui::mark_tile(18., self.look.accent_soft).into_any_element(),
-                !java,
-            ))
+            .child(tab("Rust Edition", horizon, !java))
             .child(tab("Java Edition", java_icon, java))
     }
 
@@ -150,18 +143,29 @@ impl Launcher {
     }
 
     /// The instance's icon and its name in Bricolage, 64 px at this width
-    /// (`clamp(2.75rem, 5vw, 4rem)`).
-    fn home_title(&mut self) -> Div {
+    /// (`clamp(2.75rem, 5vw, 4rem)`). Clickable to open the edit dialog (fixes #8689).
+    fn home_title(&mut self, cx: &mut Context<Self>) -> Div {
         let Some(instance) = self.selected_instance().cloned() else {
             return div();
         };
+        let edit = instance.clone();
         div()
             .mt(px(20.))
             .flex()
             .items_center()
             .gap(px(16.))
             .min_w_0()
-            .child(self.glass_instance_icon(&instance, 56.))
+            .child(
+                div()
+                    .id("home-instance-icon")
+                    .cursor_pointer()
+                    .hover(|s| s.opacity(0.85))
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.open_instance_dialog(Some(edit.clone()));
+                        cx.notify();
+                    }))
+                    .child(self.glass_instance_icon(&instance, 56.)),
+            )
             .child(
                 div()
                     .min_w_0()
@@ -279,8 +283,17 @@ impl Launcher {
             _ => None,
         };
         let open = self.home_menu == HomeMenu::Play;
+        // What is drawn on the accent takes its own ink (white on the default violet), in the
+        // light look too, where `white` is the page's dark ink; Stop sits on a quiet fill.
+        let on_accent = ui::color(self.look.on_accent);
+        let glyph = if running && busy.is_none() {
+            white(ink::FULL)
+        } else {
+            on_accent
+        };
         let more = div()
             .id("play-more")
+            .occlude()
             .absolute()
             .right(px(8.))
             .flex()
@@ -291,8 +304,9 @@ impl Launcher {
             .cursor_pointer()
             .when(open, |d| d.bg(gpui::black().opacity(0.2)))
             .hover(|s| s.bg(gpui::black().opacity(0.2)))
-            .child(ui::icon("more-horizontal", 20., white(ink::FULL)))
+            .child(ui::icon("more-horizontal", 20., glyph))
             .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
+                cx.stop_propagation();
                 if !this.closed_by_this_press(event) {
                     this.home_menu = match this.home_menu {
                         HomeMenu::Play => HomeMenu::None,
@@ -326,7 +340,7 @@ impl Launcher {
                 .font_family(horizon_theme::glass::FONT)
                 .text_size(px(18.))
                 .font_weight(FontWeight::SEMIBOLD)
-                .child(ui::icon(icon, 20., white(ink::FULL)))
+                .child(ui::icon(icon, 20., glyph))
                 .child(label)
         };
         let group = match busy {
@@ -348,6 +362,7 @@ impl Launcher {
                         .flex_1()
                         .justify_center()
                         .pr(px(40.))
+                        .text_color(on_accent)
                         .font_family(horizon_theme::glass::FONT)
                         .text_size(px(16.))
                         .font_weight(FontWeight::SEMIBOLD)
@@ -397,7 +412,7 @@ impl Launcher {
                     (None, PlayPress::Nothing) => main.opacity(0.5).cursor_default(),
                 };
                 base.bg(accent)
-                    .text_color(ui::color(self.look.on_accent))
+                    .text_color(on_accent)
                     .hover(|s| s.opacity(0.92))
                     .child(main)
             }
@@ -748,6 +763,22 @@ impl Launcher {
                     }),
                 ));
             }
+            let edit = instance.clone();
+            let note = trf("Edit {name}", &[("name", &instance.name)]);
+            menu = menu.child(
+                ui::menu_item(
+                    "folder-edit-instance",
+                    tr("Edit instance").into(),
+                    note,
+                    false,
+                    &t,
+                )
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.home_menu = HomeMenu::None;
+                    this.open_instance_dialog(Some(edit.clone()));
+                    cx.notify();
+                })),
+            );
             wrap = wrap.child(
                 deferred(div().absolute().top(px(TALL + 8.)).left_0().child(menu)).with_priority(1),
             );
@@ -760,6 +791,8 @@ impl Launcher {
     fn glass_join_friend(&self, tag: &str, wide: bool, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
         let focused = self.friend_focused;
+        let join_label = tr("Join");
+        let pr = friend_code_padding_right(join_label);
         let field = div()
             .id("friend-code")
             .track_focus(&self.friend_focus)
@@ -767,7 +800,7 @@ impl Launcher {
             .items_center()
             .size_full()
             .pl(px(48.))
-            .pr(px(84.))
+            .pr(px(pr))
             .rounded(px(radius::LARGE))
             .bg(white(if focused { 0.09 } else { 0.06 }))
             .font_family(horizon_theme::glass::FONT)
@@ -804,7 +837,7 @@ impl Launcher {
         let field = line_edit::mouse(field, cx, |this| &mut this.friend_code);
         let valid = horizon_friends::invite::parse(self.friend_code.text()).is_some();
         let can = valid && (tag.is_empty() || self.can_start(tag));
-        let join = ui::quiet("join-friend", tr("Join"), 40., &t);
+        let join = ui::quiet("join-friend", join_label, 40., &t);
         let join = if can {
             join.on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                 this.join_friend();
@@ -813,9 +846,10 @@ impl Launcher {
         } else {
             join.opacity(0.4).cursor_default()
         };
+        let wide_w = 340. + (pr - 84.);
         div()
             .relative()
-            .when(wide, |d| d.flex_none().w(px(340.)))
+            .when(wide, |d| d.flex_none().w(px(wide_w)))
             .when(!wide, |d| d.flex_1().min_w(px(150.)))
             .h(px(TALL))
             .child(field)
@@ -828,6 +862,15 @@ impl Launcher {
             )
             .child(div().absolute().right(px(8.)).top(px(8.)).child(join))
     }
+}
+
+/// Right padding for the invite code text field. In English ("Join"), the button is ~58 px wide,
+/// so 84 px leaves a clean margin from the button placed at right: 8 px. In locales with longer
+/// labels (French "Rejoindre", German "Beitreten", Ukrainian "Приєднатися"), the button is wider;
+/// expand the field's padding so the button never overlaps the entered text or placeholder (#9507).
+fn friend_code_padding_right(join_label: &str) -> f32 {
+    let btn_width = 28. + (join_label.chars().count() as f32 * 8.5).max(30.);
+    (8. + btn_width + 12.).max(84.)
 }
 
 /// The instance of one edition (`java`) an edition tab goes to: of those the player can select,
@@ -953,5 +996,26 @@ mod tests {
         assert_eq!(since(m(20 * 60), 1, "2026-11-02"), "20 hours ago");
         assert_eq!(since(m(30 * 60), 1, "2026-11-02"), "yesterday");
         assert_eq!(since(m(3 * 24 * 60), 3, "2026-10-31"), "Oct 31");
+    }
+
+    #[test]
+    fn friend_code_padding_right_clears_localized_join_button() {
+        for label in [
+            "Join",
+            "Rejoindre",
+            "Beitreten",
+            "Приєднатися",
+            "Unirse",
+            "Dołącz",
+            "Reunir-se",
+        ] {
+            let pr = friend_code_padding_right(label);
+            let btn_width = 28. + label.chars().count() as f32 * 8.5;
+            let btn_right_extent = 8. + btn_width;
+            assert!(
+                pr >= btn_right_extent + 10.,
+                "padding {pr} must clear button right extent {btn_right_extent} for label '{label}'"
+            );
+        }
     }
 }

@@ -96,8 +96,8 @@ impl Launcher {
                         )
                         .with_animation(
                             ElementId::named_usize("toast", n as usize),
-                            Animation::new(theme::ENTER).with_easing(ease_out_quint()),
-                            |d, p| d.opacity(p).top(px(theme::RISE * (1. - p))),
+                            crate::motion::eased(crate::motion::POP),
+                            |d, p| d.opacity(p).top(px(crate::motion::POP_RISE * (1. - p))),
                         ),
                 ),
         )

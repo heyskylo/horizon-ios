@@ -5,10 +5,10 @@
 //! injects a virtual pad on top of the real one.
 use super::event_loop::EventLoopCtl;
 use super::{Game, Screen};
+use horizon_client::held::Source;
 use horizon_client::{
     Result,
-    gamepad::{self, Button, Edges, GlyphStyle, HealthWatch, PadState, Rumble},
-    keybinds::{KeyBinds, key_code, mouse_button},
+    gamepad::{self, Button, Edges, GlyphStyle, HealthWatch, PadState, Route, Rumble},
     keymapping::SNEAK,
 };
 use serde_json::{Value, json};
@@ -28,6 +28,8 @@ pub(super) const HELP: &[&str] = &[
 pub(super) struct Pads {
     /// Splitscreen: this player's pad, read by `PadRouter` for every game, instead of the pads.
     pub(super) feed: Option<PadState>,
+    /// The pad behind `feed`.
+    feed_source: Option<PadId>,
     /// The real controllers and the DualSense's output.
     #[cfg(feature = "controllers")]
     devices: hardware::Devices,
@@ -38,6 +40,11 @@ pub(super) struct Pads {
     /// Buttons a `pad ... tap` releases at the next poll.
     taps: Vec<Button>,
     edges: Edges,
+    activity: gamepad::Activity,
+    context: Option<Context>,
+    blocked_sticks: [bool; 2],
+    /// Releases use the action that received the press, even after a rebind.
+    actions: [Vec<&'static str>; 16],
     /// The game tick each button went down in, and releases held back until
     /// a tick has passed: vanilla samples keys once per tick, so a click
     /// shorter than that (a quick stick click for sprint) would be lost.
@@ -59,8 +66,20 @@ pub(super) struct Pads {
     health: HealthWatch,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Context {
+    screen: u64,
+    focus_navigation: bool,
+    focused: bool,
+    osk: bool,
+    dialog: bool,
+    enabled: bool,
+}
+
 #[cfg(feature = "controllers")]
 mod hardware;
+#[cfg(test)]
+mod parity_tests;
 pub(super) use hardware::{PadId, PadRouter};
 
 /// What a controller did since the last frame.
@@ -146,8 +165,18 @@ impl Pads {
     pub(super) fn inject_button(&mut self, button: Button, down: bool) {
         self.injected.set(button, down);
     }
+    /// Splitscreen: this player's pad state, from `source`. Another pad, or
+    /// none: the old one's A going away isn't a release.
+    pub(super) fn feed_from(&mut self, source: Option<PadId>, state: PadState) {
+        if self.feed_source != source {
+            self.feed_source = source;
+            self.menu.armed = None;
+        }
+        self.feed = Some(state);
+    }
     /// A replay ended: let go of everything it held.
     pub(super) fn clear_injected(&mut self) {
+        self.menu.armed = None;
         self.injected = PadState::default();
     }
 
@@ -163,20 +192,41 @@ impl Pads {
     pub(super) fn player_replaced(&mut self) {
         self.health.forget();
     }
+
+    /// The active pad is a Nintendo one going by its letters.
+    fn by_letter(&self, settings: &gamepad::PadSettings) -> bool {
+        self.style == GlyphStyle::Nintendo && settings.nintendo_letters
+    }
 }
 
 impl Game<'_> {
+    fn pad_context(&self) -> Context {
+        Context {
+            screen: self.key_screen(),
+            focus_navigation: self.pad_navigation_mode(),
+            focused: self.focused,
+            osk: self.pad.menu.osk.is_some(),
+            dialog: self.dialog_open() || self.code_of_conduct.is_some(),
+            enabled: self.settings.controller.enabled,
+        }
+    }
+
     /// Once per loop iteration: read the pads and act on button changes.
     pub(super) fn poll_pads(&mut self, event_loop: &dyn EventLoopCtl) {
-        let settings = &self.settings.controller;
-        if !settings.enabled {
-            self.pad_output_off();
-            if self.pad.state != PadState::default() {
-                self.pad.state = PadState::default();
-                for (button, down) in self.pad.edges.release_all() {
-                    self.pad_edge(event_loop, button, down);
-                }
+        self.pad.virtual_input = self.pad.injected != PadState::default();
+        let context = self.pad_context();
+        if let Some(old) = self.pad.context.filter(|old| *old != context) {
+            if old.screen != context.screen {
+                self.pad_remember_focus(old.screen);
             }
+            self.pad_cancel_inputs(event_loop);
+        }
+        self.pad.context = Some(context);
+        if !self.settings.controller.enabled {
+            self.pad_output_off();
+            self.pad_cancel_inputs(event_loop);
+            self.pad.state = PadState::default();
+            self.pad.in_use = false;
             // The keyboard's menu focus follows its widget all the same.
             self.pad_menu_frame(event_loop);
             return;
@@ -184,6 +234,13 @@ impl Game<'_> {
         let hardware = match self.pad.feed {
             Some(state) => state,
             None => self.pad.read(),
+        };
+        // A Nintendo pad going by its letters is read that way: its own, or the one
+        // splitscreen's router feeds this player.
+        let hardware = if self.pad.by_letter(&self.settings.controller) {
+            hardware.by_letter()
+        } else {
+            hardware
         };
         // A person's pad, for `input-log` and the repro recording; the virtual
         // pad is an agent's `pad` line and is recorded as that.
@@ -197,15 +254,33 @@ impl Game<'_> {
                 },
             );
         }
-        self.ui.options.pad_style = self.settings.controller.glyphs.resolve(self.pad.style);
-        let state = hardware.merge(&self.pad.injected);
-        self.pad.virtual_input = self.pad.injected != PadState::default();
+        let style = self.settings.controller.glyphs.resolve(self.pad.style);
+        self.ui.options.pad_style = style;
+        // Nintendo glyphs on a pad going by its letters name the button playing each part.
+        self.ui.options.pad_by_letter =
+            style == GlyphStyle::Nintendo && self.pad.by_letter(&self.settings.controller);
+        let mut state = hardware.merge(&self.pad.injected);
+        let activity = self.pad.activity.observe(&state, &self.settings.controller);
+        for (i, (stick, deadzone)) in [
+            (&mut state.left, self.settings.controller.move_deadzone),
+            (&mut state.right, self.settings.controller.look_deadzone),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if gamepad::radial(*stick, deadzone) == [0.0; 2] {
+                self.pad.blocked_sticks[i] = false;
+            }
+            if self.pad.blocked_sticks[i] || !self.pad_focused() {
+                *stick = [0.0; 2];
+            }
+        }
         for button in std::mem::take(&mut self.pad.taps) {
             self.pad.injected.set(button, false);
         }
         let threshold = self.settings.controller.trigger_threshold;
         let edges = self.pad.edges.update(&state, threshold);
-        if state.active(&self.settings.controller) {
+        if activity && self.pad_focused() {
             self.last_input = Instant::now();
             self.pad.in_use = true;
         }
@@ -231,6 +306,15 @@ impl Game<'_> {
         }
         for (button, down) in edges {
             self.pad_edge(event_loop, button, down);
+            let context = self.pad_context();
+            if let Some(old) = self.pad.context.filter(|old| *old != context) {
+                if old.screen != context.screen {
+                    self.pad_remember_focus(old.screen);
+                }
+                self.pad_cancel_inputs(event_loop);
+                self.pad.context = Some(context);
+                break;
+            }
         }
         self.pad_menu_frame(event_loop);
     }
@@ -249,6 +333,43 @@ impl Game<'_> {
             return;
         }
         self.pad_button_logged(event_loop, button, down);
+    }
+
+    /// End held actions and captures before another context receives input.
+    fn pad_cancel_inputs(&mut self, event_loop: &dyn EventLoopCtl) {
+        // Before the releases below: a cancelled press must not click.
+        self.pad.menu.armed = None;
+        let held_sticks = [
+            gamepad::radial(self.pad.state.left, self.settings.controller.move_deadzone)
+                != [0.0; 2],
+            gamepad::radial(self.pad.state.right, self.settings.controller.look_deadzone)
+                != [0.0; 2],
+        ];
+        for (blocked, held) in self.pad.blocked_sticks.iter_mut().zip(held_sticks) {
+            *blocked |= held;
+        }
+        self.pad.state.left = [0.0; 2];
+        self.pad.state.right = [0.0; 2];
+        self.pad.late_releases.clear();
+        for (button, down) in self.pad.edges.cancel() {
+            self.pad_button_logged(event_loop, button, down);
+        }
+        // A short tap may already be up in Edges but still await its simulation tick.
+        for button in Button::ALL {
+            for action in std::mem::take(&mut self.pad.actions[button as usize]) {
+                if let Err(e) = self.pad_action(action, false) {
+                    log::warn!("Horizon: releasing controller action {action}: {e}");
+                }
+            }
+        }
+        self.pad_cancel_menu(event_loop);
+    }
+
+    pub(super) fn pad_yield_input(&mut self, event_loop: &dyn EventLoopCtl) {
+        if self.pad.in_use {
+            self.pad.in_use = false;
+            self.pad_cancel_inputs(event_loop);
+        }
     }
 
     fn pad_button_logged(&mut self, event_loop: &dyn EventLoopCtl, button: Button, down: bool) {
@@ -287,7 +408,14 @@ impl Game<'_> {
         }
         // Releases always reach the mappings, so nothing stays held when a
         // screen opened in between.
-        for action in self.settings.controller.actions_of(button) {
+        let actions = if down {
+            let actions = self.settings.controller.actions_of(button);
+            self.pad.actions[button as usize] = actions.clone();
+            actions
+        } else {
+            std::mem::take(&mut self.pad.actions[button as usize])
+        };
+        for action in actions {
             self.pad_action(action, down)?;
         }
         Ok(())
@@ -296,15 +424,18 @@ impl Game<'_> {
     /// A bound action: a vanilla mapping acts as its default key or mouse
     /// button, like a rebound keyboard key.
     fn pad_action(&mut self, action: &str, down: bool) -> Result<()> {
-        match action {
-            gamepad::HOTBAR_PREVIOUS | gamepad::HOTBAR_NEXT => {
+        let Some(route) = gamepad::route(action) else {
+            log::warn!("Horizon: controller action {action} has no handler");
+            return Ok(());
+        };
+        match route {
+            Route::HotbarStep { next } => {
                 if down && self.screen == Screen::Playing {
-                    self.selected =
-                        gamepad::hotbar_step(self.selected, action == gamepad::HOTBAR_NEXT);
+                    self.selected = gamepad::hotbar_step(self.selected, next);
                 }
                 Ok(())
             }
-            "key.sneak"
+            Route::Sneak
                 if self.settings.controller.toggle_sneak && !self.settings.toggle_crouch =>
             {
                 // A stick click flips sneaking instead of holding it, as
@@ -314,23 +445,42 @@ impl Game<'_> {
                     return Ok(());
                 }
                 let screen_open = self.screen != Screen::Playing || self.title.is_some();
+                let was = self.keys.contains(&KeyCode::ShiftLeft);
                 self.toggles.pad_toggle(SNEAK, screen_open);
                 self.sync_toggle(SNEAK);
+                if !was && self.keys.contains(&KeyCode::ShiftLeft) {
+                    // The pad's latch: a keyboard handoff leaves it.
+                    self.keys.press(KeyCode::ShiftLeft, Source::Pad);
+                    self.keys.release(&KeyCode::ShiftLeft, Source::Keyboard);
+                }
                 self.key_pressed(KeyCode::ShiftLeft, KeyCode::ShiftLeft)
             }
-            _ => {
-                let default = KeyBinds::default_of(action);
-                if let Some(button) = mouse_button(default) {
-                    if self.title.is_none() && self.screen == Screen::Playing {
-                        self.play_mouse(button, down)?;
-                    }
-                    Ok(())
-                } else if let Some(key) = key_code(default) {
-                    self.mapped_key(key, down, false, key)
-                } else {
-                    Ok(())
+            Route::Sneak => self.mapped_key(
+                KeyCode::ShiftLeft,
+                down,
+                false,
+                KeyCode::ShiftLeft,
+                Source::Pad,
+            ),
+            Route::Screenshot => {
+                if down {
+                    self.screenshot_action();
                 }
+                Ok(())
             }
+            Route::SmoothCamera => {
+                if down {
+                    self.smooth_camera_action();
+                }
+                Ok(())
+            }
+            Route::Mouse(button) => {
+                if !down || (self.title.is_none() && self.screen == Screen::Playing) {
+                    self.play_mouse(button, down)?;
+                }
+                Ok(())
+            }
+            Route::Key(key) => self.mapped_key(key, down, false, key, Source::Pad),
         }
     }
 
@@ -382,7 +532,7 @@ impl Game<'_> {
         if yaw == 0.0 && pitch == 0.0 {
             return;
         }
-        self.turn_player(f64::from(yaw / 0.15), f64::from(pitch / 0.15));
+        self.look_turn(f64::from(yaw / 0.15), f64::from(pitch / 0.15));
     }
 
     /// Vibrate the active pad, when vibration is on and the pad is the one
@@ -444,6 +594,7 @@ impl Game<'_> {
                 Ok(status)
             }
             "release" => {
+                self.pad.menu.armed = None;
                 self.pad.injected = PadState::default();
                 self.pad.taps.clear();
                 Ok(json!({ "ok": true }))

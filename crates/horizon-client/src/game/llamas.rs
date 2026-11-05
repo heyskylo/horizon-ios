@@ -133,7 +133,7 @@ impl Game<'_> {
         }
         // doPlayerRide; mounting drops a lead.
         let id = self.mobs[index].id;
-        if !self.native_may_board(id) {
+        if !self.may_board() || !self.native_may_board(id) {
             return true;
         }
         self.break_leash(id, true, false);
@@ -141,9 +141,8 @@ impl Game<'_> {
         m.extra.flag = false;
         m.extra.counter = 0;
         self.yaw = m.yaw;
-        self.riding = Some(m.id);
         self.mount.reset_jump();
-        self.trigger_player("minecraft:started_riding");
+        self.start_riding(id);
         true
     }
     fn is_led_by_trader(&self, index: usize) -> bool {

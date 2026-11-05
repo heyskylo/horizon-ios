@@ -118,6 +118,7 @@ pub(super) fn list_box(id: &'static str, max: f32) -> Stateful<Div> {
         .flex_col()
         .max_h(px(max))
         .overflow_y_scroll()
+        .on_scroll(|_, _, cx| cx.stop_propagation())
         .p(px(6.))
         .rounded(px(radius::POPOVER))
         .bg(white(0.04))
@@ -287,14 +288,8 @@ impl Launcher {
     /// loader's logo.
     fn auto_mark(&mut self, kind: NewKind, loader: Loader, size: f32) -> AnyElement {
         let mark = match kind {
-            NewKind::Horizon => {
-                return ui::mark_tile(size, self.look.accent_soft).into_any_element()
-            }
-            NewKind::Vanilla => self.vanilla_icon().and_then(|grass| {
-                self.icon_image("mark:grass".into(), size, false, || {
-                    std::fs::read(grass).ok()
-                })
-            }),
+            NewKind::Horizon => return self.horizon_mark(size),
+            NewKind::Vanilla => self.grass_mark(size),
             NewKind::Modded => self.loader_logo(loader.id(), size),
         };
         match mark {
@@ -507,7 +502,17 @@ impl Launcher {
                     "New instance"
                 })),
             )
-            .child(div().mt(px(24.)).child(icon))
+            .child(
+                div()
+                    .id("aside-instance-icon")
+                    .mt(px(24.))
+                    .cursor_pointer()
+                    .hover(|s| s.opacity(0.85))
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.choose_instance_picture(cx);
+                    }))
+                    .child(icon),
+            )
             .child(
                 div()
                     .mt(px(20.))
@@ -858,7 +863,7 @@ impl Launcher {
             .map_or_else(|| "Horizon".into(), |i| i.name.clone());
         let icon = match &selected {
             Some(i) => self.glass_instance_icon(i, 36.),
-            None => ui::mark_tile(36., self.look.accent_soft).into_any_element(),
+            None => self.horizon_mark(36.),
         };
         let card = |on: bool, id: &'static str| {
             choice(id, on, &t)
@@ -909,14 +914,16 @@ impl Launcher {
         cx: &mut Context<Self>,
     ) -> Div {
         let t = self.theme;
-        let Some(d) = self.instances.dialog.as_ref() else {
-            return div();
+        let (icon, logo, d_picture) = {
+            let Some(d) = self.instances.dialog.as_ref() else {
+                return div();
+            };
+            (d.icon.clone(), d.logo, d.picture.clone())
         };
-        let (icon, logo) = (d.icon.clone(), d.logo);
-        let file_picture = matches!(d.picture, Some(Some(_))) && logo.is_none();
-        let own_picture = d.picture.is_none()
-            && editing.is_some_and(|i| i.home.join(instances::PICTURE).is_file());
-        let pictured = matches!(d.picture, Some(Some(_))) || own_picture;
+        let has_saved_picture = editing.is_some_and(|i| i.home.join(instances::PICTURE).is_file());
+        let file_picture = matches!(&d_picture, Some(Some(_))) && logo.is_none();
+        let own_picture = d_picture.is_none() && has_saved_picture;
+        let pictured = matches!(&d_picture, Some(Some(_))) || own_picture;
         let typed = self.servers.value(Field::InstanceName).trim().to_string();
         let name = if typed.is_empty() { "N".into() } else { typed };
         let pick = |icon: Option<Icon>| {
@@ -932,13 +939,41 @@ impl Launcher {
             )
         };
         let mut first: Vec<AnyElement> = Vec::new();
-        if file_picture || own_picture {
-            let image = self.draft_icon(editing, kind, &name, 40.);
-            first.push(
-                icon_choice("icon-picture", true, &t)
-                    .child(image)
-                    .into_any_element(),
-            );
+        if file_picture || has_saved_picture {
+            let picture_img = match &d_picture {
+                Some(Some(chosen)) => {
+                    use std::hash::{Hash, Hasher};
+                    let mut h = std::collections::hash_map::DefaultHasher::new();
+                    chosen.png.hash(&mut h);
+                    self.icon_image(format!("chosen:{:x}", h.finish()), 40., false, || {
+                        Some(chosen.png.clone())
+                    })
+                }
+                _ => editing.and_then(|i| self.instance_picture(i, 40.)),
+            };
+            let picture_active = (file_picture || own_picture) && icon.is_none();
+            if let Some(image) = picture_img {
+                first.push(
+                    icon_choice("icon-picture", picture_active, &t)
+                        .child(instance_icons::centred(image, 40., self.scale))
+                        .on_click(cx.listener(
+                            move |this: &mut Self, _: &ClickEvent, _, cx: &mut Context<Self>| {
+                                if picture_active {
+                                    this.choose_instance_picture(cx);
+                                } else if let Some(d) = &mut this.instances.dialog {
+                                    d.icon = None;
+                                    d.logo = None;
+                                    if has_saved_picture {
+                                        d.picture = None;
+                                    }
+                                    d.error = None;
+                                }
+                                cx.notify();
+                            },
+                        ))
+                        .into_any_element(),
+                );
+            }
         }
         let loader = self.draft_loader();
         let auto = self.auto_mark(kind, loader, 40.);
@@ -948,13 +983,9 @@ impl Launcher {
                 .on_click(pick(None))
                 .into_any_element(),
         );
-        // Minecraft's grass block from the player's own files, then the loaders' logos: each
-        // becomes the instance's picture.
-        let grass = self.vanilla_icon().and_then(|g| std::fs::read(g).ok());
-        let mut logos: Vec<(&'static str, Vec<u8>)> = Vec::new();
-        if let Some(g) = grass {
-            logos.push(("grass", g));
-        }
+        // Our grass block, then the loaders' logos: each becomes the instance's picture.
+        let mut logos: Vec<(&'static str, Vec<u8>)> =
+            vec![("grass", instance_icons::GRASS.to_vec())];
         for id in LOGO_ICONS {
             if let Some(png) = instance_icons::logo_png(id) {
                 logos.push((id, png.to_vec()));

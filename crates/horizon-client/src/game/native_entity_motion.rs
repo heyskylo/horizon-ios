@@ -2,7 +2,8 @@
 //! `EntityRef` (docs/native-mods.md, "Entity and level handles", #7387):
 //! velocity, ground, box, eyes and view. They read the entity a handle names
 //! as `native_entity_refs.rs` finds it, and return `None` (or `false`) for a
-//! stale handle or on a client.
+//! stale handle. On a client (API @API:client_entity_refs@) they read the
+//! entities the server shows the window, and nothing moves one.
 use super::entity::{Entity as _, EntityHandle, with_entity, with_entity_mut};
 use super::{Game, commands::Target};
 use horizon_client::mod_api::EntityRef;
@@ -19,6 +20,12 @@ impl Game<'_> {
         self.entity_handles()
             .find(|h| with_entity!(self, *h, e => e.id() == id))
     }
+    /// This window's own player, when a client's target names it.
+    fn native_client_player(&self, t: Target) -> Option<&horizon_client::motion::PlayerMotion> {
+        self.remote.as_ref()?;
+        (t == Target::Player).then_some(())?;
+        self.player.as_ref()
+    }
     /// The server's copy of the player a target names.
     fn native_target_guest(&self, t: Target) -> Option<&horizon_client::lan::guest::Guest> {
         match t {
@@ -30,9 +37,13 @@ impl Game<'_> {
     /// The entity's velocity in blocks a tick (`Entity.getDeltaMovement`). A
     /// player's is the move its client last reported (`getKnownMovement`); an
     /// entity Horizon doesn't simulate (a display, a painting) has none, so
-    /// zero. API @API:entity_motion@.
+    /// zero. On a client, another entity's is the motion the server last
+    /// sent it (`Entity.lerpMotion`). API 379.
     pub(super) fn native_entity_velocity(&self, entity: EntityRef) -> Option<[f64; 3]> {
         let t = self.native_entity_target(entity)?;
+        if let Some(p) = self.native_client_player(t) {
+            return Some([p.velocity.x, p.velocity.y, p.velocity.z]);
+        }
         if let Some(g) = self.native_target_guest(t) {
             return Some(std::array::from_fn(|i| {
                 g.position[i] - g.previous_position[i]
@@ -46,14 +57,17 @@ impl Game<'_> {
     }
     /// Sets the entity's velocity (`Entity.setDeltaMovement`); clients see it
     /// as they see the entity move. False for a player (its client moves
-    /// it), an entity Horizon doesn't simulate, or a value that isn't finite.
-    /// API @API:entity_motion@.
+    /// it), an entity Horizon doesn't simulate, a value that isn't finite,
+    /// or on a client. API 379.
     pub(super) fn native_entity_set_velocity(
         &mut self,
         entity: EntityRef,
         velocity: [f64; 3],
     ) -> bool {
-        if !velocity.iter().all(|v| v.is_finite()) || self.native_entity_target(entity).is_none() {
+        if self.remote.is_some()
+            || !velocity.iter().all(|v| v.is_finite())
+            || self.native_entity_target(entity).is_none()
+        {
             return false;
         }
         let Some(h) = self.native_walk_entity(entity.id()) else {
@@ -67,9 +81,12 @@ impl Game<'_> {
         true
     }
     /// Whether the entity stands on a block (`Entity.onGround`). API
-    /// @API:entity_motion@.
+    /// 379.
     pub(super) fn native_entity_on_ground(&self, entity: EntityRef) -> Option<bool> {
         let t = self.native_entity_target(entity)?;
+        if let Some(p) = self.native_client_player(t) {
+            return Some(p.ground.on_ground);
+        }
         if let Some(g) = self.native_target_guest(t) {
             return Some(g.on_ground);
         }
@@ -80,9 +97,12 @@ impl Game<'_> {
     }
     /// The entity's box (`Entity.getBoundingBox`): its lowest and highest
     /// corner. None for the kinds whose box Horizon doesn't keep (displays,
-    /// markers, End crystals, the dragon). API @API:entity_motion@.
+    /// markers, End crystals, the dragon). API 379.
     pub(super) fn native_entity_bounding_box(&self, entity: EntityRef) -> Option<[[f64; 3]; 2]> {
         let t = self.native_entity_target(entity)?;
+        if let Some(p) = self.native_client_player(t) {
+            return Some(corners(p.bounds()));
+        }
         if let Some(g) = self.native_target_guest(t) {
             return Some(corners(g.bounds()));
         }
@@ -97,25 +117,25 @@ impl Game<'_> {
         Some([lo, hi])
     }
     /// The height of the entity's eyes above its feet (`Entity.getEyeHeight`).
-    /// API @API:entity_motion@.
+    /// API 379.
     pub(super) fn native_entity_eye_height(&self, entity: EntityRef) -> Option<f64> {
         Some(self.target_eye_height(self.native_entity_target(entity)?))
     }
     /// Where the entity's eyes are (`Entity.getEyePosition`). API
-    /// @API:entity_motion@.
+    /// 379.
     pub(super) fn native_entity_eye_position(&self, entity: EntityRef) -> Option<[f64; 3]> {
         let [x, y, z] = self.native_entity_position(entity)?;
         Some([x, y + self.native_entity_eye_height(entity)?, z])
     }
     /// The unit vector the entity looks along (`Entity.getViewVector`, from
-    /// its pitch and yaw). API @API:entity_motion@.
+    /// its pitch and yaw). API 379.
     pub(super) fn native_entity_view_vector(&self, entity: EntityRef) -> Option<[f64; 3]> {
         let [yaw, pitch] = self.native_entity_rotation(entity)?;
         let v = horizon_world::view_direction::view_vector(pitch, yaw);
         Some([v.x, v.y, v.z])
     }
     /// The square of the distance from the entity's feet to `pos`
-    /// (`Entity.distanceToSqr`). API @API:entity_motion@.
+    /// (`Entity.distanceToSqr`). API 379.
     pub(super) fn native_entity_distance_to_sqr(
         &self,
         entity: EntityRef,

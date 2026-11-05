@@ -101,9 +101,29 @@ impl Game<'_> {
             .filter_map(|t| t.lines.last().map(|(t, _)| t.plain()))
             .collect()
     }
+    /// Vanilla name bounds for a native render snapshot; never re-enters name hooks.
+    pub(super) fn client_name_tag_widths(
+        &self,
+        camera: glam::DVec3,
+        alpha: f64,
+    ) -> std::collections::HashMap<[u64; 3], f32> {
+        self.name_tags_with_hooks(camera, alpha, false)
+            .into_iter()
+            .map(|tag| {
+                let width = tag
+                    .lines
+                    .iter()
+                    .map(|(text, _)| self.gui.atlas.font.width_text(text) * NAME_TAG_UNIT * 0.5)
+                    .fold(0.0, f32::max);
+                (tag.at.to_array().map(f64::to_bits), width)
+            })
+            .collect()
+    }
     /// Each name tag this frame.
     fn name_tags(&self, camera: glam::DVec3, alpha: f64) -> Vec<NameTag> {
-        let hooks = !mod_api::mods().is_empty();
+        self.name_tags_with_hooks(camera, alpha, !mod_api::mods().is_empty())
+    }
+    fn name_tags_with_hooks(&self, camera: glam::DVec3, alpha: f64, hooks: bool) -> Vec<NameTag> {
         let target = self.mob_hit().map(|(i, _)| self.mobs[i].id);
         let viewer = self.player_team();
         let mut tags = Vec::new();
@@ -622,7 +642,7 @@ impl Game<'_> {
 fn named_by_player_list(players: &[(&Mob, String)]) -> std::collections::HashSet<u32> {
     players.iter().map(|(player, _)| player.id).collect()
 }
-fn name_tag_at(m: &Mob, alpha: f64) -> glam::DVec3 {
+pub(super) fn name_tag_at(m: &Mob, alpha: f64) -> glam::DVec3 {
     glam::DVec3::new(
         m.previous.x + (m.position.x - m.previous.x) * alpha,
         m.previous.y + (m.position.y - m.previous.y) * alpha + f64::from(m.height()) + 0.5,
@@ -685,6 +705,7 @@ mod tests {
             knockback_resistance: 0.0,
             jump_strength: 0.42,
             attributes: Default::default(),
+            item_stack_limits: Default::default(),
             gravity: 0.08,
             safe_fall_distance: 3.0,
             fall_damage_multiplier: 1.0,

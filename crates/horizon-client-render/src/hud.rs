@@ -598,15 +598,16 @@ fn atlas_sprites(root: &Path, packed: &[PackedImage]) -> (Vec<PackedImage>, Vec<
                     let path = texture.split_once(':').map_or(texture.as_str(), |(_, p)| p);
                     let file = atlas_sources::texture_path(root, texture, "textures");
                     decode(&file).ok().map(|image| {
-                        // Animated strips keep their first frame and animate,
-                        // like the packed files.
-                        if path.starts_with("block/") || path.starts_with("item/") {
-                            let mcmeta = horizon_core::prepared_files::read_to_string(
-                                &file.with_extension("png.mcmeta"),
-                            )
-                            .ok();
-                            let animation = animation_of(mcmeta.as_deref());
-                            animated = animation.is_some();
+                        // Animated strips keep their first frame and animate, like the
+                        // packed files, under any folder: vanilla animates every sprite of
+                        // these atlases (a server pack's `wynn/...` as well as `item/...`).
+                        let mcmeta = horizon_core::prepared_files::read_to_string(
+                            &file.with_extension("png.mcmeta"),
+                        )
+                        .ok();
+                        let animation = animation_of(mcmeta.as_deref());
+                        animated = animation.is_some();
+                        if animated || path.starts_with("block/") || path.starts_with("item/") {
                             first_frame(image, animation.as_ref())
                         } else {
                             image
@@ -796,10 +797,10 @@ impl HudAtlas {
         let g = self.font.glyph(ch);
         g.rect.map(|rect| (rect, g.advance))
     }
-    /// A font glyph's atlas cell (none for blank glyphs such as the space) and advance.
-    pub fn glyph_cell(&self, ch: char) -> (Option<Rect>, f32) {
-        let g = self.font.glyph(ch);
-        (g.rect, g.advance)
+    /// A font glyph in the default font: its atlas cell (none for blank
+    /// glyphs such as the space), its box and advance.
+    pub fn glyph_cell(&self, ch: char) -> crate::font::Glyph {
+        self.font.glyph(ch)
     }
     pub fn build(root: &Path) -> Result<Self> {
         Self::build_over(root, root)
@@ -887,13 +888,39 @@ impl HudAtlas {
         ));
     }
     /// Only the font's metrics, for a game that draws nothing (the
-    /// integrated server): text measures as with the full atlas, without
-    /// holding its textures. The pixels are dropped once the glyph widths are
-    /// read, since nothing uploads them.
+    /// integrated or dedicated server): text measures as with the full atlas,
+    /// without packing textures or rasterizing glyphs.
     pub fn fonts(root: &Path) -> Result<Self> {
-        let mut atlas = Self::pack(root, root, &["font"], false, false)?;
-        atlas.pixels = Vec::new();
-        Ok(atlas)
+        let white = Rect {
+            u0: 0.0,
+            v0: 0.0,
+            u1: 1.0,
+            v1: 1.0,
+            w: 1,
+            h: 1,
+        };
+        Ok(Self {
+            revision: Self::next_revision(),
+            pixels: Vec::new(),
+            packed: None,
+            galactic_widths: [0; 128],
+            width: 1,
+            height: 1,
+            sprites: HashMap::new(),
+            object_skins: HashMap::new(),
+            translucent: HashSet::new(),
+            flags: HashMap::new(),
+            sprite_animations: Vec::new(),
+            font: crate::font::Font::metrics(root),
+            glint: (Vec::new(), 1, 1),
+            glint_armor: (Vec::new(), 1, 1),
+            text_shader: None,
+            lines_shader: None,
+            random_textures: Default::default(),
+            emissive: Arc::default(),
+            blinks: Default::default(),
+            white,
+        })
     }
     /// The boot screen's atlas, before any pack loads: the theme's run-time
     /// glyphs (`horizon/ui-text`), a white sprite and the glyph rows over
@@ -1089,7 +1116,7 @@ impl HudAtlas {
         }
         files.retain(|p| {
             let s = p.to_string_lossy();
-            !s.contains("title/background") && !s.contains("realms") && !s.contains("presets")
+            !s.contains("title/background") && !s.contains("presets")
         });
         // OptiFine random entity variants, under the names their scan gives them (those
         // outside `textures/` are `<ns>:optifine/random/...`).
@@ -1274,6 +1301,12 @@ impl HudAtlas {
             edition.3 = pixels;
         }
         images.push(("horizon/white".into(), 4, 4, vec![255; 64]));
+        images.push((
+            crate::pad_cursor::SPRITE.into(),
+            crate::pad_cursor::SIZE,
+            crate::pad_cursor::SIZE,
+            crate::pad_cursor::pixels(),
+        ));
         if full {
             Self::slots(&mut images, crate::trims::slot_size(root), mod_image);
             // MissingTextureAtlasSprite.generateMissingImage: 16x16, magenta
@@ -1483,6 +1516,8 @@ pub struct HudBatch {
     pub end_portal: EndPortalFill,
     /// `options.glintStrength` for the glint pass (`GlintAlpha`).
     pub glint_alpha: f32,
+    /// PvP & HUD's glint colour (`pvp::Tweaks::glint_texel`), 0 for vanilla's.
+    pub glint_colour: u32,
     /// A resource pack text shader's `GameTime`: the day's fraction
     /// (`gameTime % 24000` and the partial tick, over 24000).
     pub game_time: f32,
@@ -1543,6 +1578,7 @@ impl HudBatch {
             blends: Vec::new(),
             end_portal: EndPortalFill::default(),
             glint_alpha: 0.75,
+            glint_colour: 0,
             game_time: 0.0,
             blur_at: 0,
             inline_profiles: Vec::new(),
@@ -2223,13 +2259,19 @@ struct HudUniform {
     end_portal: [[f32; 4]; 3],
 }
 impl HudUniform {
-    fn new(size: [f32; 4], fill: EndPortalFill) -> Self {
+    fn new(size: [f32; 4], fill: EndPortalFill, glint_colour: u32) -> Self {
+        let [r, g, b, _] = glint_colour.to_le_bytes().map(|c| f32::from(c) / 255.0);
+        let tint = if glint_colour == 0 {
+            [-1.0, 0.0, 0.0]
+        } else {
+            [r, g, b]
+        };
         Self {
             size,
             end_portal: [
                 fill.sprites[0],
                 fill.sprites[1],
-                [fill.game_time, 0.0, 0.0, 0.0],
+                [fill.game_time, tint[0], tint[1], tint[2]],
             ],
         }
     }
@@ -2286,7 +2328,7 @@ impl HudRenderer {
         });
         let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("HUD size"),
-            contents: bytemuck::bytes_of(&HudUniform::new([1.0; 4], EndPortalFill::default())),
+            contents: bytemuck::bytes_of(&HudUniform::new([1.0; 4], EndPortalFill::default(), 0)),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -2659,6 +2701,7 @@ impl HudRenderer {
                     batch.glint_alpha,
                 ],
                 batch.end_portal,
+                batch.glint_colour,
             )),
         );
         if let Some(pack_text) = &self.pack_text {
@@ -3323,6 +3366,45 @@ mod tests {
             .find(|(r, _)| r.u0 == rect.u0 && r.v0 == rect.v0)
             .expect("the namespaced sprite animates");
         assert_eq!(animation.frame_count(), 2);
+    }
+    #[test]
+    fn an_animated_texture_outside_item_folders_packs_its_first_frame_and_animates() {
+        let root =
+            std::env::temp_dir().join(format!("horizon-atlas-dir-anim-{}", std::process::id()));
+        let atlases = root.join("assets/minecraft/atlases");
+        let custom = root.join("assets/minecraft/textures/custom");
+        fs::create_dir_all(&atlases).unwrap();
+        fs::create_dir_all(&custom).unwrap();
+        fs::write(
+            atlases.join("items.json"),
+            r#"{"sources": [{"type": "directory", "source": "custom", "prefix": "custom/"}]}"#,
+        )
+        .unwrap();
+        // A server pack's item under its own folder: two 16x16 frames, blue then yellow, and
+        // a still 16x32 texture beside it.
+        write_strip(
+            &custom.join("gem.png"),
+            16,
+            32,
+            &[[0, 0, 255, 255], [255, 255, 0, 255]],
+            Some(r#"{"animation": {"frametime": 20}}"#),
+        );
+        write_strip(&custom.join("banner.png"), 16, 32, &[[9, 9, 9, 255]], None);
+        let atlas = HudAtlas::build(&root).unwrap();
+        let _ = fs::remove_dir_all(&root);
+        let rect = atlas.sprites["custom/gem"];
+        // One frame, not the whole strip squeezed into a slot.
+        assert_eq!(rect.texels((atlas.width, atlas.height)), (16, 16));
+        assert_eq!(texel_at(&atlas, rect, 0, 15), [0, 0, 255, 255]);
+        let (_, animation) = atlas
+            .sprite_animations
+            .iter()
+            .find(|(r, _)| r.u0 == rect.u0 && r.v0 == rect.v0)
+            .expect("the sprite animates");
+        assert_eq!(animation.frame_count(), 2);
+        // A still texture there stays whole, as vanilla stitches it.
+        let banner = atlas.sprites["custom/banner"];
+        assert_eq!(banner.texels((atlas.width, atlas.height)), (16, 32));
     }
     /// A resource root with one plain item texture and these CIT files (relative path, contents).
     fn cit_root(name: &str, files: &[(&str, &str)]) -> PathBuf {
@@ -4099,6 +4181,7 @@ texture=wide",
                 blends: Vec::new(),
                 end_portal: EndPortalFill::default(),
                 glint_alpha: 0.75,
+                glint_colour: 0,
                 game_time: 0.0,
                 blur_at: 0,
                 inline_profiles: Vec::new(),

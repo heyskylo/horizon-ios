@@ -58,6 +58,27 @@
     </section>
   </div>
 
+  <div class="columns">
+    <section>
+      <h2>Banned players</h2>
+      <table>
+        <thead><tr><th>Name</th><th>Reason</th><th></th></tr></thead>
+        <tbody id="bans"></tbody>
+      </table>
+      <p id="no-bans" class="muted">Nobody is banned.</p>
+    </section>
+
+    <section>
+      <h2>Crash reports</h2>
+      <table>
+        <thead><tr><th>Report</th><th>Size</th><th></th></tr></thead>
+        <tbody id="crashes"></tbody>
+      </table>
+      <p id="no-crashes" class="muted">No crash reports.</p>
+      <pre id="crash-text" tabindex="0" hidden></pre>
+    </section>
+  </div>
+
   <section>
     <h2>Console</h2>
     <pre id="log" tabindex="0" aria-live="off"></pre>

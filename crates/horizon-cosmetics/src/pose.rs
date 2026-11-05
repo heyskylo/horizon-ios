@@ -252,4 +252,55 @@ pub(crate) mod tests {
         let hat_with_tag = hat(r##", "tag": {"line": "#ffffff"}"##);
         assert!(Item::parse(hat_with_tag.as_bytes()).is_err());
     }
+
+    /// A shirt: the body's box, and a sleeve that rides the right arm.
+    fn shirt(sleeve: &str) -> String {
+        format!(
+            r#"{{"format": 1, "id": "shirt", "slot": "torso", "bone": "body",
+              "texture": {{"png": "{}"}},
+              "parts": [{{"name": "chest", "cubes": [{{"origin": [-4, 0, -2], "size": [8, 12, 4], "uv": [0, 0]}}]}},
+                {{"name": "sleeve", {sleeve}
+                  "cubes": [{{"origin": [-3, -2, -2], "size": [4, 4, 4], "uv": [0, 16]}}]}}]}}"#,
+            png(32, 32)
+        )
+    }
+
+    #[test]
+    fn a_sleeve_rides_its_own_bone() {
+        let item = Item::parse(shirt(r#""bone": "right_arm","#).as_bytes()).unwrap();
+        assert_eq!((item.slot, item.bone), (Slot::Torso, Bone::Body));
+        assert_eq!(item.vertices, 2 * 6 * 4);
+        let roots: Vec<_> = item.roots().map(|(b, r)| (b, r.children.len())).collect();
+        assert_eq!(roots, [(Bone::Body, 1), (Bone::RightArm, 1)]);
+        // The sleeve's root sits at the arm's pivot with the item's attachment (none here): its
+        // down face's vertex 2 is the cube's (-3, -2, -2) corner, under whatever matrix the arm
+        // has.
+        let (_, limb) = &item.limbs[0];
+        let arm = Mat4::from_translation(Vec3::new(-5.0, 2.0, 0.0) / 16.0)
+            * Mat4::from_rotation_x(40f32.to_radians());
+        let v = limb.children[0].faces[0].vertices[2];
+        let at = arm * pose_matrix(limb.pose) * pose_matrix(limb.children[0].pose);
+        close(
+            at.transform_point3(Vec3::new(v[0], v[1], v[2]) / 16.0),
+            arm.transform_point3(Vec3::new(-3.0, -2.0, -2.0) / 16.0),
+        );
+        // On the item's own bone it stays with the chest.
+        let same = Item::parse(shirt(r#""bone": "body","#).as_bytes()).unwrap();
+        assert!(same.limbs.is_empty());
+        assert_eq!(same.root.children.len(), 2);
+    }
+
+    #[test]
+    fn only_a_top_level_part_rides_another_bone() {
+        let nested = hat("").replace(
+            r#""name": "crown","#,
+            r#""name": "crown", "bone": "left_arm","#,
+        );
+        assert!(matches!(
+            Item::parse(nested.as_bytes()),
+            Err(Error::Invalid(_))
+        ));
+        let named = shirt("").replace(r#""name": "sleeve""#, r#""name": "cosmetic_right_arm""#);
+        assert!(Item::parse(named.as_bytes()).is_err());
+    }
 }

@@ -88,6 +88,12 @@ advancements are built. A mod adds `(path, bytes)` pack files to the hook's out 
 load below the world's own data packs, so a pack's file for the same path still overrides them. A mod that
 adds nothing leaves the tables as they were.
 
+`add_server_reload_listeners` is `AddServerReloadListenersEvent` with a `SimpleJsonResourceReloadListener`:
+a mod names a folder under `data/<namespace>/`, and on each data load, before `server_data_loaded`,
+`server_reload_listener_apply` hands it the folder's JSON files (the top pack's for each id) as `apply`
+does. Only JSON folders: a mod parses the values itself, and a listener that merges every pack's file for one
+id is not here.
+
 ## Next hooks
 
 Hooks main does not have yet, with the vanilla method each would sit in (rule 2). The NeoForge names are

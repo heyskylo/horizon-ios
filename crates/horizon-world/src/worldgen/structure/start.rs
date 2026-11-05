@@ -3,7 +3,8 @@
 use super::{
     BoundingBox, StructureResources,
     jigsaw::{
-        JigsawConfig, JigsawContext, PlaceFeature, PoolPiece, Pools, Projection, assemble_drawing,
+        JigsawConfig, JigsawContext, PlaceFeature, PoolPiece, Pools, Projection, lay_out_children,
+        place_start,
     },
     legacy::{LegacyPiece, PieceContext},
 };
@@ -1018,7 +1019,53 @@ pub(crate) fn try_generate(
     chunk: ChunkPos,
     any_biome: bool,
 ) -> Option<StructureStart> {
+    match generate(
+        registry, resources, bindings, context, structure, chunk, any_biome, false,
+    )? {
+        Generated::Start(start) => Some(start),
+        Generated::Stub => None,
+    }
+}
+/// `StructureCheck.canCreateStructure`: whether `structure` may start in `chunk`, by
+/// `Structure.findValidGenerationPoint` alone. A jigsaw's start piece is placed and its biome
+/// checked; its children are not laid out. Other structures answer true: their starts are
+/// cheap to build. False only where [`try_generate`] can't start it, so a search may skip
+/// the chunk's full starts then (#8669).
+pub(crate) fn may_start(
+    registry: &StructureRegistry,
+    resources: &StructureResources,
+    bindings: &FeatureBlockBindings<'_>,
+    context: &mut impl StartContext,
+    structure: usize,
+    chunk: ChunkPos,
+) -> bool {
+    generate(
+        registry, resources, bindings, context, structure, chunk, false, true,
+    )
+    .is_some()
+}
+/// What [`generate`] made: the start, or with `stub_only` only that it may start.
+enum Generated {
+    Start(StructureStart),
+    Stub,
+}
+#[allow(clippy::too_many_arguments)]
+fn generate(
+    registry: &StructureRegistry,
+    resources: &StructureResources,
+    bindings: &FeatureBlockBindings<'_>,
+    context: &mut impl StartContext,
+    structure: usize,
+    chunk: ChunkPos,
+    any_biome: bool,
+    stub_only: bool,
+) -> Option<Generated> {
     let def = &registry.structures[structure];
+    let vanilla_jigsaw =
+        matches!(&def.kind, StructureKind::Jigsaw(jigsaw) if jigsaw.piece_limited.is_none());
+    if stub_only && !vanilla_jigsaw {
+        return Some(Generated::Stub);
+    }
     context.set_valid_biomes((!any_biome).then_some(&def.biomes));
     let seed = context.seed();
     let mut random = WorldgenRandom::new(LegacyRandom::new(0));
@@ -1061,16 +1108,38 @@ pub(crate) fn try_generate(
                     chunk,
                     start,
                 )?,
-                None => assemble_drawing(
-                    jigsaw.draws,
-                    &config,
-                    context,
-                    &registry.pools,
-                    resources,
-                    bindings,
-                    &mut random,
-                    start,
-                )?,
+                None => {
+                    let placed = place_start(
+                        jigsaw.draws,
+                        &config,
+                        context,
+                        &registry.pools,
+                        resources,
+                        bindings,
+                        &mut random,
+                        start,
+                    )?;
+                    // Structure.findValidGenerationPoint checks the stub's biome before its
+                    // GenerationStub lays the pieces out: a start in another biome costs its
+                    // start piece, not its whole layout (an ancient city's, a camp's).
+                    let quart = placed.position.map(|v| v >> 2);
+                    if !any_biome && !def.biomes.contains(&context.noise_biome(quart)) {
+                        return None;
+                    }
+                    if stub_only {
+                        return Some(Generated::Stub);
+                    }
+                    lay_out_children(
+                        jigsaw.draws,
+                        placed,
+                        &config,
+                        context,
+                        &registry.pools,
+                        resources,
+                        bindings,
+                        &mut random,
+                    )
+                }
             };
             // Vanilla's JigsawPlacement keeps no piece at size 0; the
             // piece-limited assembler keeps the start piece.
@@ -1331,7 +1400,9 @@ pub(crate) fn try_generate(
     if (!any_biome && !def.biomes.contains(&context.noise_biome(quart))) || pieces.is_empty() {
         return None;
     }
-    Some(StructureStart::new(structure, def, chunk, pieces))
+    Some(Generated::Start(StructureStart::new(
+        structure, def, chunk, pieces,
+    )))
 }
 impl StructureStart {
     /// A start of `def` (registry index `structure`) from its pieces, at

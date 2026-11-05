@@ -651,7 +651,9 @@ impl Settings {
     }
     pub fn save(&self, path: &Path) {
         self.describe_for_crashes();
-        let _ = fs::write(path, self.serialize());
+        if let Err(e) = fs::write(path, self.serialize()) {
+            log::warn!("Horizon: options.txt is not saved: {e}");
+        }
         if let Some(dir) = path.parent() {
             self.horizon.save(dir);
             self.controller.save(dir);
@@ -803,13 +805,16 @@ pub enum Opt {
     PadAdaptiveTriggers,
     PadLightbar,
     PadLookSensitivity,
+    PadPointerSpeed,
+    PadScrollSpeed,
+    PadRepeatDelay,
+    PadRepeatInterval,
     PadInvertX,
     PadInvertY,
     PadToggleSneak,
     PadMoveDeadzone,
     PadLookDeadzone,
     PadGlyphs,
-    PadMenuNav,
     PadKeyboard,
     /// `options.modelPart.*`: one skin layer (index into `options_file::MODEL_PARTS`).
     ModelPart(usize),

@@ -704,8 +704,9 @@ fn install_version(
     if let Some(old) = old
         .as_ref()
         .filter(|o| o.file != relative && !stays(native, &o.file))
+        .and_then(|o| o.path(home))
     {
-        let _ = fs::remove_file(home.join(&old.file));
+        let _ = fs::remove_file(old);
     }
     if project.kind == Kind::Mod {
         java::set_enabled(home, &p.id, true)?;

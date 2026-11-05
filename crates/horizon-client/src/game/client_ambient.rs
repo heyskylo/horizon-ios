@@ -48,8 +48,9 @@ impl Game<'_> {
     /// block under a sprinting player's feet streams back from them every
     /// tick, for the window's own player and for the other players it sees.
     fn sprint_dust(&mut self) {
-        // Each runner's feet, movement, supporting block and box width.
-        let mut runners: Vec<(Vec3, Vec3, Option<[i32; 3]>, f64)> = Vec::new();
+        // Each runner's feet, movement, supporting block, box width and index
+        // in `mobs` (none for the window's own player).
+        let mut runners: Vec<(Vec3, Vec3, Option<[i32; 3]>, f64, Option<usize>)> = Vec::new();
         // Entity.canSpawnSprintParticle.
         if let Some(p) = self.player.as_ref()
             && p.sprinting
@@ -62,12 +63,12 @@ impl Game<'_> {
             && p.fluid_height(LAVA) <= 0.0
         {
             let support = p.ground.supporting_block.map(|b| [b.x, b.y, b.z]);
-            runners.push((p.position, p.velocity, support, f64::from(0.6f32)));
+            runners.push((p.position, p.velocity, support, f64::from(0.6f32), None));
         }
         // IronGolem.canSpawnSprintParticle replaces the sprinting test: one
         // tick in five while it moves at all, in water or not, drawn from the
         // golem's own random as its client copy's Entity.baseTick does.
-        for m in self.mobs.iter_mut() {
+        for (i, m) in self.mobs.iter_mut().enumerate() {
             if &*m.kind.id != "minecraft:iron_golem" {
                 continue;
             }
@@ -75,10 +76,10 @@ impl Game<'_> {
             let moving =
                 movement.x * movement.x + movement.z * movement.z > f64::from(2.5000003E-7_f32);
             if moving && m.random.next_int_bound(5).unwrap_or(1) == 0 {
-                runners.push((m.position, movement, None, f64::from(m.width())));
+                runners.push((m.position, movement, None, f64::from(m.width()), Some(i)));
             }
         }
-        for m in self.mobs.iter() {
+        for (i, m) in self.mobs.iter().enumerate() {
             // Another player's fluids aren't known here: none where they stand.
             let feet = [
                 m.position.x.floor() as i32,
@@ -100,12 +101,18 @@ impl Game<'_> {
                     .fluid_level
                     == 0
             {
-                runners.push((m.position, movement, None, f64::from(0.6f32)));
+                runners.push((m.position, movement, None, f64::from(0.6f32), Some(i)));
             }
         }
-        for (position, movement, support, width) in runners {
+        for (position, movement, support, width, mob) in runners {
             self.sprint_particle(position, movement, support, width, |game| {
-                let r = game.particles.random();
+                // this.random: a mob's own, so one walking out of sight leaves
+                // the particles' random alone. The window's player has none of
+                // its own here; the particles' random stands in for it.
+                let r = match mob {
+                    Some(i) => &mut game.mobs.get_mut(i)?.random,
+                    None => game.particles.random(),
+                };
                 Some((r.next_double(), r.next_double()))
             });
         }
