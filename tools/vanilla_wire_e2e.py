@@ -53,10 +53,12 @@ def hold_login(seconds):
     record = net_capture.Session.record
 
     def delayed(self, direction, packet_id, payload):
-        name = self.name(direction, packet_id)
-        record(self, direction, packet_id, payload)
-        if direction == 'clientbound' and self.state['clientbound'] == 'play' and name == 'login':
+        # Hold, then record: the Login's line in the capture comes when the client receives it, so whatever
+        # the client sends while it waits is recorded before it, where rule_no_play_before_login looks.
+        if (direction == 'clientbound' and self.state['clientbound'] == 'play'
+                and self.name(direction, packet_id) == 'login'):
             time.sleep(seconds)
+        record(self, direction, packet_id, payload)
     net_capture.Session.record = delayed
 
 
