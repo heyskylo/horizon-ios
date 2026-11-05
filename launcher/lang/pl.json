@@ -1117,5 +1117,20 @@
   "Move and restart": "Przenieś i uruchom ponownie",
   "Could not open the data folder: {error}": "Could not open the data folder: {error}",
   "Open the shop": "Otwórz sklep",
-  "You don't own any cosmetics yet.": "Nie masz jeszcze żadnych kosmetyków."
+  "You don't own any cosmetics yet.": "Nie masz jeszcze żadnych kosmetyków.",
+  "Automatic follows this launcher's architecture. On Windows ARM, choose x64 or ARM64. Releases without ARM64 use the signed x64 build.": "Automatycznie używa architektury tego launchera. W systemie Windows ARM możesz wybrać x64 lub ARM64. Wydania bez ARM64 używają podpisanej kompilacji x64.",
+  "Game architecture": "Architektura gry",
+  "Install selected build": "Zainstaluj wybraną kompilację",
+  "Manual game architectures are available on Windows ARM only.": "Ręczny wybór architektury gry jest dostępny tylko w systemie Windows ARM.",
+  "Native mods are not supported by the Windows ARM64 launcher yet; its managed compiler is not available.": "Mody natywne nie są jeszcze obsługiwane przez launcher Windows ARM64; jego zarządzany kompilator jest niedostępny.",
+  "Native mods cannot build for the selected ARM64 game yet. The available compiler builds x64 only.": "Nie można jeszcze kompilować modów natywnych dla wybranej gry ARM64. Dostępny kompilator tworzy tylko kompilacje x64.",
+  "Native mods cannot build for the selected x64 game yet. This ARM64 launcher has no matching compiler.": "Nie można kompilować modów natywnych dla wybranej gry x64. Ten launcher ARM64 nie ma zgodnego kompilatora.",
+  "Say auto, x64 or arm64 for the game architecture.": "Podaj auto, x64 lub arm64 jako architekturę gry.",
+  "This version has a {installed} game build, but Settings selects {selected}. Install the selected build from Versions before launching.": "Ta wersja zawiera grę {installed}, ale w Ustawieniach wybrano {selected}. Przed uruchomieniem zainstaluj wybraną kompilację na stronie Wersje.",
+  "Automatic": "Automatycznie",
+  "{tag} has no build for the selected game architecture.": "Dla {tag} nie ma kompilacji dla wybranej architektury gry.",
+  "Unknown": "Nieznany",
+  "Claim for free": "Odbierz za darmo",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Operator płatności sklepu nie działa w Twoim kraju, więc Zestaw założyciela możesz odebrać tutaj za darmo.",
+  "The Founder Set is yours.": "Zestaw założyciela jest Twój."
 }

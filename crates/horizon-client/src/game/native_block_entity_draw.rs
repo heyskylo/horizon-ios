@@ -219,7 +219,10 @@ impl BlockEntityDraw {
     /// the game time and the partial tick. With `keep` it goes on turning
     /// with no call of `native_block_entity_submit` until what it was drawn
     /// with changes: send a new speed in the update tag and the block is
-    /// drawn again (Flywheel's rotating instances, done on the CPU). Until
+    /// drawn again (Flywheel's rotating instances, done on the CPU). The
+    /// angle is `game_time * degrees_per_tick + phase`, not a sum of turns:
+    /// with a new speed, pass the phase that keeps the part where it was
+    /// (`old_angle - game_time * new_speed`), or it jumps. Until
     /// `still` or the next `spin`. A block entity's frame only: a mob's
     /// (`native_mob_submit`) draws it at rest. API @API:spinning_geometry@.
     pub fn spin(&mut self, axis: [f32; 3], pivot: [f32; 3], degrees_per_tick: f32, phase: f32) {
@@ -302,6 +305,10 @@ struct KeptKey {
     dim: Dim,
     state: u32,
     light: u32,
+    /// `Font::epoch` when it was drawn: a cache reset moves glyphs in the
+    /// atlas, so text a mod kept (`native_draw_text`) is drawn again, as a
+    /// sign's kept text is.
+    glyphs: u64,
 }
 
 struct KeptEntry {
@@ -447,6 +454,7 @@ impl Game<'_> {
                 dim: self.dim,
                 state,
                 light,
+                glyphs: self.gui.atlas.font.epoch(),
             };
             if let Some(entry) = kept.get(pos, key, entity.revision(), now) {
                 if in_frustum(self.view_frustum.as_ref(), origin, entry.bounds) {
@@ -871,6 +879,7 @@ mod tests {
         dim: Dim::Overworld,
         state: 7,
         light: 0xF0F0,
+        glyphs: 0,
     };
 
     /// A part drawn after `spin` turns about its pivot by the game time and
@@ -959,6 +968,7 @@ mod tests {
                 dim: Dim::Nether,
                 ..KEY
             },
+            KeptKey { glyphs: 1, ..KEY },
         ] {
             assert!(kept.get(pos, changed, drawn, 1).is_none());
         }
