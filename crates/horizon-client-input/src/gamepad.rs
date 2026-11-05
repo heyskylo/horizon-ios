@@ -119,6 +119,19 @@ impl Button {
             ][face],
         }
     }
+    /// The face button that plays this one's part on a Nintendo pad going by its letters
+    /// (`PadSettings::nintendo_letters`): the A it prints on the right is South, which confirms
+    /// and jumps as A does on a Switch; B (bottom) is East, X (top) West, Y (left) North. It is
+    /// its own inverse, so it turns a part into the button playing it and back.
+    pub fn by_letter(self) -> Button {
+        match self {
+            Button::South => Button::East,
+            Button::East => Button::South,
+            Button::West => Button::North,
+            Button::North => Button::West,
+            other => other,
+        }
+    }
 }
 
 /// A pad's inputs at one moment. Sticks are `[x, y]` with right and up
@@ -141,6 +154,14 @@ impl PadState {
     }
     pub fn held(&self, button: Button) -> bool {
         self.buttons & button.bit() != 0
+    }
+    /// A Nintendo pad's buttons read by their letters (`Button::by_letter`).
+    pub fn by_letter(&self) -> PadState {
+        let mut state = *self;
+        for part in [Button::South, Button::East, Button::West, Button::North] {
+            state.set(part, self.held(part.by_letter()));
+        }
+        state
     }
     /// Two sources at once (a real pad and `horizon-ctl pad`): buttons held on
     /// either, sticks and triggers added.
@@ -179,12 +200,13 @@ impl PadState {
 #[derive(Clone, Debug, Default)]
 pub struct Edges {
     held: u32,
+    suppressed: u32,
 }
 impl Edges {
     pub fn update(&mut self, state: &PadState, threshold: f32) -> Vec<(Button, bool)> {
         let mut now = state.buttons;
         for (trigger, button) in [(0, Button::LeftTrigger), (1, Button::RightTrigger)] {
-            let was = self.held & button.bit() != 0;
+            let was = (self.held | self.suppressed) & button.bit() != 0;
             let value = state.triggers[trigger];
             let on = if was {
                 value >= (threshold - 0.1).max(0.05)
@@ -197,6 +219,8 @@ impl Edges {
                 now &= !button.bit();
             }
         }
+        self.suppressed &= now;
+        now &= !self.suppressed;
         let changed = now ^ self.held;
         self.held = now;
         Button::ALL
@@ -216,6 +240,50 @@ impl Edges {
     }
     pub fn is_held(&self, button: Button) -> bool {
         self.held & button.bit() != 0
+    }
+    /// Cancel a context without turning its still-held buttons into new presses.
+    pub fn cancel(&mut self) -> Vec<(Button, bool)> {
+        self.suppressed |= self.held;
+        self.release_all()
+    }
+}
+
+/// Intentional activity may take input ownership; an unchanged hold may not.
+#[derive(Default)]
+pub struct Activity {
+    buttons: u32,
+    sticks: [[f32; 2]; 2],
+}
+impl Activity {
+    pub fn observe(&mut self, state: &PadState, settings: &PadSettings) -> bool {
+        let mut buttons = state.buttons;
+        for (i, button) in [(0, Button::LeftTrigger), (1, Button::RightTrigger)] {
+            let threshold = if self.buttons & button.bit() != 0 {
+                (settings.trigger_threshold - 0.1).max(0.05)
+            } else {
+                settings.trigger_threshold
+            };
+            if state.triggers[i] >= threshold {
+                buttons |= button.bit();
+            }
+        }
+        let mut activity = buttons & !self.buttons != 0;
+        self.buttons = buttons;
+        for (i, (stick, deadzone)) in [
+            (state.left, settings.move_deadzone),
+            (state.right, settings.look_deadzone),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if length(stick) <= deadzone {
+                self.sticks[i] = [0.0; 2];
+            } else if length([stick[0] - self.sticks[i][0], stick[1] - self.sticks[i][1]]) > 0.08 {
+                activity = true;
+                self.sticks[i] = stick;
+            }
+        }
+        activity
     }
 }
 
@@ -247,6 +315,39 @@ pub const ACTIONS: &[(&str, Option<Button>)] = &[
     ("key.toggleGui", None),
     ("key.smoothCamera", None),
 ];
+
+/// How a bindable action reaches the game: one of its own handlers, shared
+/// with the keyboard where the keyboard has one, or else the vanilla default
+/// key or button of its mapping, as a rebound keyboard key would.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Route {
+    HotbarStep {
+        next: bool,
+    },
+    /// Held, or flipped when the pad's toggle sneak is on.
+    Sneak,
+    Screenshot,
+    SmoothCamera,
+    Key(winit::keyboard::KeyCode),
+    Mouse(winit::event::MouseButton),
+}
+
+/// The route of a bindable action; `None` for one the pad can't reach.
+pub fn route(action: &str) -> Option<Route> {
+    match action {
+        HOTBAR_PREVIOUS => Some(Route::HotbarStep { next: false }),
+        HOTBAR_NEXT => Some(Route::HotbarStep { next: true }),
+        "key.sneak" => Some(Route::Sneak),
+        "key.screenshot" => Some(Route::Screenshot),
+        "key.smoothCamera" => Some(Route::SmoothCamera),
+        _ => {
+            let default = crate::keybinds::KeyBinds::default_of(action);
+            crate::keybinds::mouse_button(default)
+                .map(Route::Mouse)
+                .or_else(|| crate::keybinds::key_code(default).map(Route::Key))
+        }
+    }
+}
 
 /// An action's name in the binds list: vanilla's translation key, or
 /// Horizon's own English for the pad-only actions.
@@ -313,31 +414,6 @@ impl GlyphStyle {
     }
 }
 
-/// How a controller drives menus (docs/controllers.md, "Menus and
-/// inventories").
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum MenuNav {
-    /// A console-style highlight moved between widgets and slots.
-    #[default]
-    Focus,
-    /// A virtual mouse pointer.
-    Pointer,
-}
-impl MenuNav {
-    pub fn name(self) -> &'static str {
-        match self {
-            MenuNav::Focus => "focus",
-            MenuNav::Pointer => "pointer",
-        }
-    }
-    pub fn parse(name: &str) -> Self {
-        match name {
-            "pointer" => MenuNav::Pointer,
-            _ => MenuNav::Focus,
-        }
-    }
-}
-
 /// The on-screen keyboard A opens on a text field in focus mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum TextKeyboard {
@@ -399,9 +475,16 @@ pub struct PadSettings {
     /// holding it, unless vanilla's toggle crouch is on already.
     pub toggle_sneak: bool,
     pub glyphs: GlyphStyle,
-    /// How the pad drives menus: a focus highlight or a virtual pointer.
-    pub menu_nav: MenuNav,
+    /// A Nintendo pad's face buttons go by their letters (A confirms and jumps, as on the
+    /// Switch's own menus and keyboard) instead of their places (B, at the bottom, does): on
+    /// by default on the Switch only.
+    pub nintendo_letters: bool,
     pub keyboard: TextKeyboard,
+    /// Menu pointer multiplier, scroll lines/second, and repeat times in seconds.
+    pub pointer_speed: f32,
+    pub scroll_speed: f32,
+    pub repeat_delay: f32,
+    pub repeat_interval: f32,
     /// Action name -> button, `None` for unbound; missing means the default.
     bindings: BTreeMap<&'static str, Option<Button>>,
 }
@@ -420,8 +503,12 @@ impl Default for PadSettings {
             trigger_threshold: 0.4,
             toggle_sneak: true,
             glyphs: GlyphStyle::Auto,
-            menu_nav: MenuNav::Focus,
+            nintendo_letters: cfg!(target_os = "horizon"),
             keyboard: TextKeyboard::Auto,
+            pointer_speed: 1.0,
+            scroll_speed: 12.0,
+            repeat_delay: 0.35,
+            repeat_interval: 0.09,
             bindings: BTreeMap::new(),
         }
     }
@@ -462,6 +549,13 @@ impl PadSettings {
                     .filter(|v| v.is_finite())
                     .map_or(d, |v| v.clamp(0.0, 1.0))
             };
+            let bounded = |default: f32, min: f32, max: f32| {
+                value
+                    .parse::<f32>()
+                    .ok()
+                    .filter(|v| v.is_finite())
+                    .map_or(default, |v| v.clamp(min, max))
+            };
             match key.trim() {
                 "enabled" => s.enabled = flag(s.enabled),
                 "vibration" => s.vibration = flag(s.vibration),
@@ -477,8 +571,12 @@ impl PadSettings {
                 }
                 "toggleSneak" => s.toggle_sneak = flag(s.toggle_sneak),
                 "glyphs" => s.glyphs = GlyphStyle::parse(value),
-                "menuNavigation" => s.menu_nav = MenuNav::parse(value),
+                "nintendoLetters" => s.nintendo_letters = flag(s.nintendo_letters),
                 "keyboard" => s.keyboard = TextKeyboard::parse(value),
+                "pointerSpeed" => s.pointer_speed = bounded(s.pointer_speed, 0.25, 3.0),
+                "scrollSpeed" => s.scroll_speed = bounded(s.scroll_speed, 1.0, 36.0),
+                "repeatDelay" => s.repeat_delay = bounded(s.repeat_delay, 0.1, 1.0),
+                "repeatInterval" => s.repeat_interval = bounded(s.repeat_interval, 0.03, 0.3),
                 other => {
                     if let Some(action) = other.strip_prefix("bind_") {
                         let button = if value == "none" {
@@ -497,7 +595,7 @@ impl PadSettings {
     }
     pub fn serialize(&self) -> String {
         let mut text = format!(
-            "enabled:{}\nvibration:{}\nadaptiveTriggers:{}\nlightbar:{}\nlookSensitivity:{}\ninvertX:{}\ninvertY:{}\nmoveDeadzone:{}\nlookDeadzone:{}\ntriggerThreshold:{}\ntoggleSneak:{}\nglyphs:{}\nmenuNavigation:{}\nkeyboard:{}\n",
+            "enabled:{}\nvibration:{}\nadaptiveTriggers:{}\nlightbar:{}\nlookSensitivity:{}\ninvertX:{}\ninvertY:{}\nmoveDeadzone:{}\nlookDeadzone:{}\ntriggerThreshold:{}\ntoggleSneak:{}\nglyphs:{}\nnintendoLetters:{}\nkeyboard:{}\n",
             bool_text(self.enabled),
             bool_text(self.vibration),
             bool_text(self.adaptive_triggers),
@@ -510,9 +608,13 @@ impl PadSettings {
             self.trigger_threshold,
             bool_text(self.toggle_sneak),
             self.glyphs.name(),
-            self.menu_nav.name(),
+            bool_text(self.nintendo_letters),
             self.keyboard.name(),
         );
+        text.push_str(&format!(
+            "pointerSpeed:{}\nscrollSpeed:{}\nrepeatDelay:{}\nrepeatInterval:{}\n",
+            self.pointer_speed, self.scroll_speed, self.repeat_delay, self.repeat_interval,
+        ));
         for (action, button) in &self.bindings {
             text.push_str(&format!(
                 "bind_{action}:{}\n",
@@ -1164,6 +1266,131 @@ mod tests {
     use super::*;
 
     #[test]
+    fn every_bindable_action_reaches_the_game() {
+        for (action, _) in ACTIONS {
+            assert!(route(action).is_some(), "{action} has nowhere to go");
+        }
+    }
+
+    #[test]
+    fn navigation_preferences_migrate_and_stay_with_each_player() {
+        let dir = std::env::temp_dir().join(format!(
+            "horizon-pad-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let p2 = dir.join("P2");
+        fs::create_dir_all(&p2).unwrap();
+        let fresh = PadSettings::load(&dir);
+        assert_eq!(fresh, PadSettings::default());
+        // An older file, with the removed menuNavigation key: bindings kept.
+        let legacy =
+            PadSettings::parse("menuNavigation:pointer\nbind_key.jump:east\nlookSensitivity:0.7\n");
+        assert_eq!(legacy.binding("key.jump"), Some(Button::East));
+        assert_eq!(legacy.look_sensitivity, 0.7);
+        fresh.save(&dir);
+        assert!(!dir.join(FILE).exists(), "defaults write no file");
+        let mut other = legacy;
+        other.pointer_speed = 2.5;
+        other.scroll_speed = 24.0;
+        other.repeat_delay = 0.6;
+        other.repeat_interval = 0.12;
+        other.save(&p2);
+        assert_eq!(PadSettings::load(&p2), other);
+        assert_eq!(PadSettings::load(&dir), fresh, "P2 did not write P1");
+        let invalid = PadSettings::parse(
+            "pointerSpeed:NaN\nscrollSpeed:inf\nrepeatDelay:-10\nrepeatInterval:20\n",
+        );
+        assert_eq!((invalid.pointer_speed, invalid.scroll_speed), (1.0, 12.0));
+        assert_eq!((invalid.repeat_delay, invalid.repeat_interval), (0.1, 0.3));
+        let bounded = PadSettings::parse(
+            "pointerSpeed:10\nscrollSpeed:-1\nrepeatDelay:NaN\nrepeatInterval:inf\n",
+        );
+        assert_eq!((bounded.pointer_speed, bounded.scroll_speed), (3.0, 1.0));
+        assert_eq!(
+            (bounded.repeat_delay, bounded.repeat_interval),
+            (0.35, 0.09)
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn ownership_requires_new_activity_and_ignores_drift() {
+        let settings = PadSettings::default();
+        let mut p1 = Activity::default();
+        let mut p2 = Activity::default();
+        let mut state = PadState {
+            left: [0.04, 0.03],
+            ..PadState::default()
+        };
+        assert!(!p1.observe(&state, &settings));
+        state.set(Button::South, true);
+        assert!(p1.observe(&state, &settings));
+        assert!(
+            !p1.observe(&state, &settings),
+            "held pad cannot reclaim mouse ownership"
+        );
+        assert!(
+            p2.observe(&state, &settings),
+            "another player's tracker is independent"
+        );
+        state.set(Button::South, false);
+        assert!(!p1.observe(&state, &settings));
+        state.left = [0.5, 0.0];
+        assert!(p1.observe(&state, &settings));
+        state.left = [0.52, 0.0];
+        assert!(!p1.observe(&state, &settings));
+        for x in [0.54, 0.56] {
+            state.left = [x, 0.0];
+            assert!(!p1.observe(&state, &settings));
+        }
+        state.left = [0.6, 0.0];
+        assert!(
+            p1.observe(&state, &settings),
+            "slow intentional movement accumulates"
+        );
+        state.left = [0.0; 2];
+        state.triggers[0] = 0.5;
+        assert!(p1.observe(&state, &settings));
+        state.triggers[0] = 0.35;
+        assert!(!p1.observe(&state, &settings));
+        state.triggers[0] = 0.45;
+        assert!(
+            !p1.observe(&state, &settings),
+            "trigger threshold noise is not new activity"
+        );
+    }
+
+    #[test]
+    fn cancelled_holds_stay_released_until_neutral_then_press_again() {
+        let mut edges = Edges::default();
+        let mut state = PadState::default();
+        state.set(Button::South, true);
+        state.triggers[1] = 0.8;
+        assert_eq!(
+            edges.update(&state, 0.4),
+            vec![(Button::South, true), (Button::RightTrigger, true)]
+        );
+        assert_eq!(
+            edges.cancel(),
+            vec![(Button::South, false), (Button::RightTrigger, false)]
+        );
+        assert!(edges.update(&state, 0.4).is_empty());
+        state.triggers[1] = 0.35;
+        assert!(edges.update(&state, 0.4).is_empty());
+        assert!(edges.update(&PadState::default(), 0.4).is_empty());
+        assert_eq!(edges.update(&state, 0.4), vec![(Button::South, true)]);
+        state.triggers[1] = 0.7;
+        assert_eq!(
+            edges.update(&state, 0.4),
+            vec![(Button::RightTrigger, true)]
+        );
+    }
+
+    #[test]
     fn defaults_follow_bedrock() {
         let s = PadSettings::default();
         assert_eq!(s.actions_of(Button::South), ["key.jump"]);
@@ -1192,7 +1419,9 @@ mod tests {
         s.invert_y = true;
         s.look_sensitivity = 0.75;
         s.glyphs = GlyphStyle::PlayStation;
+        s.nintendo_letters = !s.nintendo_letters;
         let text = s.serialize();
+        assert!(text.contains(&format!("nintendoLetters:{}\n", s.nintendo_letters)));
         assert!(text.contains("bind_key.jump:east\n"));
         assert!(text.contains("bind_key.drop:none\n"));
         assert!(!text.contains("key.sneak"));
@@ -1236,6 +1465,27 @@ mod tests {
             false,
         );
         assert_eq!(other, ([0.0, 0.0], [1.0, 0.0]));
+    }
+
+    #[test]
+    fn a_nintendo_pad_by_its_letters_confirms_with_a() {
+        // The pad's A sits on the right (East): going by letters it plays South, confirm and jump.
+        let mut pad = PadState::default();
+        pad.set(Button::East, true);
+        pad.set(Button::LeftBumper, true);
+        pad.left = [0.5, -0.25];
+        let parts = pad.by_letter();
+        assert!(parts.held(Button::South));
+        assert!(!parts.held(Button::East));
+        // Other buttons and the sticks stay; reading by letters again gives the pad back.
+        assert!(parts.held(Button::LeftBumper));
+        assert_eq!(parts.left, [0.5, -0.25]);
+        assert_eq!(parts.by_letter(), pad);
+        // A part's glyph is the letter of the button playing it.
+        assert_eq!(Button::South.by_letter().label(GlyphStyle::Nintendo), "A");
+        assert_eq!(Button::East.by_letter().label(GlyphStyle::Nintendo), "B");
+        assert_eq!(Button::West.by_letter().label(GlyphStyle::Nintendo), "X");
+        assert_eq!(Button::North.by_letter().label(GlyphStyle::Nintendo), "Y");
     }
 
     #[test]
@@ -1414,14 +1664,13 @@ mod tests {
         assert_eq!(stick_direction([0.9, 0.2], 0.5), Some(Button::DPadRight));
         assert_eq!(stick_direction([-0.2, -0.8], 0.5), Some(Button::DPadDown));
         assert_eq!(stick_direction([0.3, 0.3], 0.5), None);
-        let mut s = PadSettings::default();
-        assert_eq!(s.menu_nav, MenuNav::Focus);
-        s.menu_nav = MenuNav::Pointer;
-        s.keyboard = TextKeyboard::Horizon;
-        let back = PadSettings::parse(&s.serialize());
+        let s = PadSettings {
+            keyboard: TextKeyboard::Horizon,
+            ..PadSettings::default()
+        };
         assert_eq!(
-            (back.menu_nav, back.keyboard),
-            (MenuNav::Pointer, TextKeyboard::Horizon)
+            PadSettings::parse(&s.serialize()).keyboard,
+            TextKeyboard::Horizon
         );
         assert!(steam_keyboard(TextKeyboard::Steam) && !steam_keyboard(TextKeyboard::Horizon));
     }

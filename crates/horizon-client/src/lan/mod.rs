@@ -7,6 +7,7 @@
 //! network pays nothing.
 mod advancements;
 pub mod anticheat;
+pub mod arrivals;
 pub mod attributes;
 pub mod border;
 pub mod chunks;
@@ -30,6 +31,7 @@ pub mod playerdata;
 pub mod prediction;
 pub mod recipes;
 pub mod scoreboard;
+mod sound_order;
 pub mod tracking;
 pub mod waypoints;
 
@@ -79,6 +81,9 @@ pub struct Joined {
     /// Smoothed keep-alive round trip in milliseconds.
     pub latency: Arc<AtomicI32>,
     pub address: SocketAddr,
+    /// The login used up an expectation of a proxy's (`player-expect`) when it
+    /// started (`arrivals`).
+    pub expected: bool,
 }
 /// What a [`PlayerSender`] made for a test's channel gives it.
 pub enum Out {
@@ -181,6 +186,10 @@ pub struct NetConfig {
     /// Behind a Velocity proxy: the secret its forwarded player information is signed with. Only an offline
     /// server (the proxy authenticates) uses it; without it a login is the plain offline one.
     pub forwarding_secret: Option<Vec<u8>>,
+    /// `[transfer]` on: the players a proxy said would arrive
+    /// (`arrivals::Transfers`), shared with the hub. A login uses its
+    /// expectation up as it starts, once the bans and the whitelist let it in.
+    pub arrivals: Option<Arc<std::sync::Mutex<arrivals::Expectations>>>,
     pub log: Option<NetLog>,
     /// server.properties `resource-pack`: offered to every player during
     /// configuration (a dedicated server's; MinecraftServer.getServerResourcePack).
@@ -233,6 +242,7 @@ impl NetConfig {
             gate: None,
             online: None,
             forwarding_secret: None,
+            arrivals: None,
             log: None,
             resource_pack: None,
             code_of_conducts: Vec::new(),
@@ -339,6 +349,9 @@ pub struct Shared {
     max_players: AtomicUsize,
     hide_online_players: AtomicBool,
     enable_status: AtomicBool,
+    /// `DedicatedServer.setAcceptsTransfers`: whether a login by transfer from another server
+    /// is accepted (`accepts-transfers`), live.
+    accepts_transfers: AtomicBool,
     /// PlayerList.players in join order: profile id and name.
     online: Mutex<Vec<(u128, String)>>,
     next: AtomicU32,
@@ -432,6 +445,14 @@ impl Shared {
     }
     pub fn set_enable_status(&self, enable: bool) {
         self.enable_status.store(enable, Ordering::Relaxed);
+    }
+    pub fn accepts_transfers(&self) -> bool {
+        self.accepts_transfers.load(Ordering::Relaxed)
+    }
+    /// `DedicatedServer.setAcceptsTransfers`: the handshake of a transfer is accepted or turned
+    /// away from now on.
+    pub fn set_accepts_transfers(&self, accept: bool) {
+        self.accepts_transfers.store(accept, Ordering::Relaxed);
     }
     pub fn release(&self, uuid: u128) {
         self.online.lock().unwrap().retain(|(u, _)| *u != uuid);
@@ -572,6 +593,7 @@ impl Lan {
             max_players: AtomicUsize::new(config.max_players),
             hide_online_players: AtomicBool::new(hide_online_players),
             enable_status: AtomicBool::new(enable_status),
+            accepts_transfers: AtomicBool::new(config.accepts_transfers),
             online: Mutex::new(Vec::new()),
             next: AtomicU32::new(1),
             stop: AtomicBool::new(false),

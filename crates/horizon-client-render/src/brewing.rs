@@ -340,6 +340,17 @@ impl BrewingStand {
         }
         out
     }
+    pub fn idle(&self) -> bool {
+        let bottles = [
+            self.items[0].is_some(),
+            self.items[1].is_some(),
+            self.items[2].is_some(),
+        ];
+        self.brew_time <= 0
+            && self.items[3].is_none()
+            && (self.fuel > 0 || self.items[4].is_none())
+            && self.last_bottles == Some(bottles)
+    }
     fn brew(&mut self, brewing: &Brewing, items: &Items, out: &mut BrewTick) {
         let Some(ingredient) = self.items[3].clone() else {
             return;
@@ -453,6 +464,84 @@ mod tests {
         // No fuel left: nothing more brews.
         stand.tick(&brewing, &items, &providers);
         assert_eq!(stand.brew_time, 0);
+    }
+
+    #[test]
+    fn a_brewing_stand_is_idle_only_while_its_tick_changes_nothing() {
+        let mut stand = BrewingStand::new();
+        assert!(!stand.idle());
+        stand.last_bottles = Some([false; 3]);
+        assert!(stand.idle());
+        stand.items[0] = Some(ItemStack::new("minecraft:potion", 1));
+        assert!(!stand.idle());
+        stand.last_bottles = Some([true, false, false]);
+        assert!(stand.idle());
+        stand.items[4] = Some(ItemStack::new("minecraft:blaze_powder", 1));
+        assert!(!stand.idle());
+        stand.fuel = 3;
+        assert!(stand.idle());
+        stand.items[3] = Some(ItemStack::new("minecraft:nether_wart", 1));
+        assert!(!stand.idle());
+        stand.items[3] = None;
+        stand.brew_time = 5;
+        assert!(!stand.idle());
+    }
+
+    /// The stand sleeps while `idle`, so its tick must change nothing then: run the real
+    /// tick on idle stands and compare, and check a stand with fuel to take wakes.
+    #[test]
+    fn an_idle_brewing_stand_tick_changes_nothing() {
+        let items = Items::for_tests(std::collections::HashMap::new());
+        let brewing = Brewing {
+            reagents: ["minecraft:nether_wart".to_owned()].into_iter().collect(),
+            inputs: HashSet::new(),
+            recipes: vec![BrewingRecipe {
+                id: "awkward".into(),
+                input: PotionIngredient {
+                    items: ["minecraft:potion".to_owned()].into_iter().collect(),
+                    potions: Some(["minecraft:water".to_owned()].into_iter().collect()),
+                },
+                reagent: PotionIngredient {
+                    items: ["minecraft:nether_wart".to_owned()].into_iter().collect(),
+                    potions: None,
+                },
+                output: ItemStack::new("minecraft:potion", 1).with_potion("minecraft:awkward"),
+            }],
+        };
+        let providers = Providers::empty();
+        let water = || Some(ItemStack::new("minecraft:potion", 1).with_potion("minecraft:water"));
+        let stand = |bottle: bool, fuel: i32, powder: bool| {
+            let mut s = BrewingStand::new();
+            s.fuel = fuel;
+            if bottle {
+                s.items[1] = water();
+            }
+            if powder {
+                s.items[4] = Some(ItemStack::new("minecraft:blaze_powder", 1));
+            }
+            s.last_bottles = Some([false, bottle, false]);
+            s
+        };
+        for before in [
+            stand(false, 0, false),
+            stand(true, 0, false),
+            stand(true, 5, false),
+            stand(true, 5, true),
+        ] {
+            assert!(before.idle(), "{before:?}");
+            let mut after = before.clone();
+            assert_eq!(
+                after.tick(&brewing, &items, &providers),
+                BrewTick::default()
+            );
+            assert_eq!(format!("{after:?}"), format!("{before:?}"));
+        }
+        // A brewable ingredient starts the brew: not idle, and the tick changes it.
+        let mut brewing_now = stand(true, 5, false);
+        brewing_now.items[3] = Some(ItemStack::new("minecraft:nether_wart", 1));
+        assert!(!brewing_now.idle());
+        brewing_now.tick(&brewing, &items, &providers);
+        assert_eq!(brewing_now.brew_time, 400);
     }
 
     /// #3312: `PotionContents.getPotionDescription` names the effects with

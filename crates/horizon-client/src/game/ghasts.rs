@@ -90,7 +90,7 @@ impl Game<'_> {
         if harnessed && !sneaking {
             // doPlayerRide.
             let id = self.mobs[index].id;
-            if !self.native_may_board(id) {
+            if !self.may_board() || !self.native_may_board(id) {
                 return true;
             }
             self.break_leash(id, true, false);
@@ -99,13 +99,12 @@ impl Game<'_> {
             // timeout.
             self.mobs[index].extra.counter = 0;
             self.yaw = self.mobs[index].yaw;
-            self.riding = Some(id);
             self.mount.reset_jump();
             if was_empty {
                 let down = happy_ghast::goggles(true, &self.mobs[index]);
                 let _ = self.handle_mob_events(vec![down]);
             }
-            self.trigger_player("minecraft:started_riding");
+            self.start_riding(id);
             return true;
         }
         false
@@ -116,7 +115,7 @@ impl Game<'_> {
         // aboard the ghast forgets its home.
         if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
             m.extra.counter = 10;
-            m.ai.home = None;
+            m.ai.clear_home();
         }
         let Some(m) = self.mobs.iter().find(|m| m.id == id) else {
             return;
@@ -164,9 +163,18 @@ impl Game<'_> {
             m.yaw = yaw;
             m.body_yaw = yaw;
             m.head_yaw = yaw;
-            let at = m.center();
-            self.audio
-                .play("minecraft:entity.ghastling.spawn", Some(at), 1.0, 1.0);
+            self.audio.play_bound(
+                "minecraft:entity.ghastling.spawn",
+                4,
+                1.0,
+                1.0,
+                horizon_client::sound_engine::SoundEntity::new(
+                    m.id,
+                    [m.position.x, m.position.y, m.position.z],
+                    m.silent,
+                ),
+                None,
+            );
         }
     }
 }

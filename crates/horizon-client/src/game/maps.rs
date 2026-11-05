@@ -548,30 +548,40 @@ impl MapData {
             patch,
         })
     }
+    /// `MapItemSavedData.<clinit>`: the CODEC save arm omits optional defaults.
     fn to_nbt(&self) -> Tag {
-        let flag = |b: bool| Tag::Byte(i8::from(b));
+        let mut data = vec![
+            ("dimension", Tag::String(self.dimension.as_str().into())),
+            ("xCenter", Tag::Int(self.center[0])),
+            ("zCenter", Tag::Int(self.center[1])),
+            ("colors", Tag::ByteArray(self.colors.clone())),
+        ];
+        if self.scale != 0 {
+            data.push(("scale", Tag::Byte(self.scale as i8)));
+        }
+        for (key, value, default) in [
+            ("locked", self.locked, false),
+            ("trackingPosition", self.tracking, true),
+            ("unlimitedTracking", self.unlimited, false),
+        ] {
+            if value != default {
+                data.push((key, Tag::Byte(i8::from(value))));
+            }
+        }
+        if !self.banners.is_empty() {
+            data.push((
+                "banners",
+                Tag::List(self.banners.iter().map(MapBanner::to_nbt).collect()),
+            ));
+        }
+        if !self.frames.is_empty() {
+            data.push((
+                "frames",
+                Tag::List(self.frames.iter().copied().map(MapFrame::to_nbt).collect()),
+            ));
+        }
         Tag::compound([
-            (
-                "data",
-                Tag::compound([
-                    ("dimension", Tag::String(self.dimension.as_str().into())),
-                    ("xCenter", Tag::Int(self.center[0])),
-                    ("zCenter", Tag::Int(self.center[1])),
-                    ("scale", Tag::Byte(self.scale as i8)),
-                    ("locked", flag(self.locked)),
-                    ("trackingPosition", flag(self.tracking)),
-                    ("unlimitedTracking", flag(self.unlimited)),
-                    ("colors", Tag::ByteArray(self.colors.clone())),
-                    (
-                        "banners",
-                        Tag::List(self.banners.iter().map(MapBanner::to_nbt).collect()),
-                    ),
-                    (
-                        "frames",
-                        Tag::List(self.frames.iter().copied().map(MapFrame::to_nbt).collect()),
-                    ),
-                ]),
-            ),
+            ("data", Tag::compound(data)),
             ("DataVersion", Tag::Int(horizon_world::DATA_VERSION)),
         ])
     }
@@ -1133,12 +1143,12 @@ impl Game<'_> {
         if let (Some(player), Some(name)) = (self.lan_acting_uuid, self.lan_acting_name.clone()) {
             self.native_player_map_filled(player, &name, id);
         }
-        let at = [p.x, p.y, p.z];
-        self.audio.play(
+        self.play_player_bound_sound(
             "minecraft:ui.cartography_table.take_result",
-            Some(at),
+            7,
             1.0,
             1.0,
+            false,
         );
         self.swing_arm();
         true
@@ -1885,6 +1895,9 @@ impl Game<'_> {
         }
     }
 }
+
+#[cfg(test)]
+mod save_tests;
 
 #[cfg(test)]
 mod tests {

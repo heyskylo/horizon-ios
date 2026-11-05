@@ -46,7 +46,7 @@ impl Corner {
             Corner::BottomRight => "Bottom right",
         }
     }
-    fn parse(s: &str, default: Corner) -> Corner {
+    pub fn parse(s: &str, default: Corner) -> Corner {
         Self::ALL
             .into_iter()
             .find(|c| c.name() == s)
@@ -78,6 +78,13 @@ pub struct Extras {
     pub zoom_smooth: bool,
     /// Divide mouse turning by the zoom.
     pub zoom_sensitivity: bool,
+    /// Far terrain a zoom magnifies is planned finer, so a spyglass does not
+    /// show the coarse cells it was given for an unzoomed screen
+    /// (`lod::Aim`). Costs far tiles while the zoom is held and gives them
+    /// back after, and does nothing at all unless far terrain is on
+    /// (`lodDistance`) and the view is actually zoomed. Off by default until
+    /// a measurement shows the extra tiles land while the zoom is still held.
+    pub lod_zoom_detail: bool,
     /// The FPS counter and keystrokes extras are official mods now: their
     /// old settings stay here, kept as they were.
     pub fps: bool,
@@ -154,15 +161,20 @@ pub struct Extras {
     pub music_page: bool,
     /// Cosmetics (`horizon_cosmetics`, off unless enabled), the lines `horizon_cosmetics::prefs`
     /// shares with the launcher's Wardrobe: Show my cosmetics (the account's, sent to the service;
-    /// on by default), how much of other players' to show (all by default), and their auras and
-    /// trails (off by default).
+    /// on by default), how much of other players' to show (no line until chosen:
+    /// `effective_others`), and their auras and trails (off by default).
     pub cosmetics_mine: bool,
-    pub cosmetics_others: horizon_cosmetics::prefs::Others,
+    pub cosmetics_others: Option<horizon_cosmetics::prefs::Others>,
     pub cosmetics_auras: bool,
+    /// Whether the signed-in account owns a cosmetic, as the service said (never saved; the game
+    /// sets it): with no choice made, others' cosmetics show only then.
+    pub cosmetics_owner: bool,
     /// 3D skin layers (`threeDSkinLayers`, Options → Skin Customization): each
     /// painted texel of a player's outer layer drawn as a slab
     /// (`horizon_client::mobs::skin_layers`).
     pub three_d_skin_layers: bool,
+    /// The PvP & HUD page's options (`pvp`).
+    pub pvp: crate::pvp::Pvp,
 }
 impl Default for Extras {
     fn default() -> Self {
@@ -175,6 +187,7 @@ impl Default for Extras {
             zoom_level: 4,
             zoom_smooth: true,
             zoom_sensitivity: true,
+            lod_zoom_detail: false,
             fps: false,
             fps_corner: Corner::TopLeft,
             fps_lows: false,
@@ -210,9 +223,11 @@ impl Default for Extras {
             music_off: Vec::new(),
             music_page: false,
             cosmetics_mine: true,
-            cosmetics_others: horizon_cosmetics::prefs::Others::Shown,
+            cosmetics_others: None,
             cosmetics_auras: false,
+            cosmetics_owner: false,
             three_d_skin_layers: false,
+            pvp: Default::default(),
         }
     }
 }
@@ -220,6 +235,11 @@ fn bool_text(v: bool) -> &'static str {
     if v { "true" } else { "false" }
 }
 impl Extras {
+    /// How much of other players' cosmetics shows: the player's choice, else all of it for an
+    /// account that owns a cosmetic and none for any other (a vanilla game).
+    pub fn effective_others(&self) -> horizon_cosmetics::prefs::Others {
+        horizon_cosmetics::prefs::Others::effective(self.cosmetics_others, self.cosmetics_owner)
+    }
     pub fn load(dir: &Path) -> Self {
         fs::read_to_string(dir.join(FILE))
             .map(|t| Self::parse(&t))
@@ -250,6 +270,7 @@ impl Extras {
                 }
                 "zoomSmooth" => e.zoom_smooth = flag(e.zoom_smooth),
                 "zoomSensitivity" => e.zoom_sensitivity = flag(e.zoom_sensitivity),
+                "lodZoomDetail" => e.lod_zoom_detail = flag(e.lod_zoom_detail),
                 "fps" => e.fps = flag(e.fps),
                 "fpsCorner" => e.fps_corner = Corner::parse(value, e.fps_corner),
                 "fpsLows" => e.fps_lows = flag(e.fps_lows),
@@ -311,18 +332,20 @@ impl Extras {
                 "cosmeticsMine" => e.cosmetics_mine = flag(e.cosmetics_mine),
                 "cosmeticsOthers" => {
                     e.cosmetics_others =
-                        horizon_cosmetics::prefs::Others::parse(value).unwrap_or(e.cosmetics_others)
+                        horizon_cosmetics::prefs::Others::parse(value).or(e.cosmetics_others)
                 }
                 "cosmeticsAuras" => e.cosmetics_auras = flag(e.cosmetics_auras),
                 SKIN_LAYERS_KEY => e.three_d_skin_layers = flag(e.three_d_skin_layers),
-                _ => {}
+                key => {
+                    e.pvp.parse_line(key, value);
+                }
             }
         }
         e
     }
     pub fn serialize(&self) -> String {
-        format!(
-            "packBrowser:{}\nfullbright:{}\ndynamicLights:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nuiSoundReserve:{}\nownNameTag:{}\nhideBlockParticles:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\nchatAnimation:{}\nchatIndicator:{}\n{}:{}\nagentControl:{}\nreproKeys:{}\ndiscordPresence:{}\nsplitscreen:{}\nsplitscreenTwo:{}\nsplitscreenThree:{}\nsplitscreenNames:{}\nwheelCyclesSettings:{}\nmusicOff:{}\nmusicPage:{}\ncosmeticsMine:{}\ncosmeticsOthers:{}\ncosmeticsAuras:{}\n{}:{}\n",
+        let mut text = format!(
+            "packBrowser:{}\nfullbright:{}\ndynamicLights:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nlodZoomDetail:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nuiSoundReserve:{}\nownNameTag:{}\nhideBlockParticles:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\nchatAnimation:{}\nchatIndicator:{}\n{}:{}\nagentControl:{}\nreproKeys:{}\ndiscordPresence:{}\nsplitscreen:{}\nsplitscreenTwo:{}\nsplitscreenThree:{}\nsplitscreenNames:{}\nwheelCyclesSettings:{}\nmusicOff:{}\nmusicPage:{}\ncosmeticsMine:{}\n{}cosmeticsAuras:{}\n{}:{}\n",
             bool_text(self.pack_browser),
             bool_text(self.fullbright),
             bool_text(self.dynamic_lights),
@@ -331,6 +354,7 @@ impl Extras {
             self.zoom_level,
             bool_text(self.zoom_smooth),
             bool_text(self.zoom_sensitivity),
+            bool_text(self.lod_zoom_detail),
             bool_text(self.fps),
             self.fps_corner.name(),
             bool_text(self.fps_lows),
@@ -371,11 +395,15 @@ impl Extras {
             self.music_off.join(","),
             bool_text(self.music_page),
             bool_text(self.cosmetics_mine),
-            self.cosmetics_others.name(),
+            // Written once the player chose.
+            self.cosmetics_others
+                .map_or(String::new(), |o| format!("cosmeticsOthers:{}\n", o.name())),
             bool_text(self.cosmetics_auras),
             SKIN_LAYERS_KEY,
             bool_text(self.three_d_skin_layers),
-        )
+        );
+        self.pvp.serialize(&mut text);
+        text
     }
     /// Adopts the settings `options.txt` held before they moved here, while
     /// this file (`own`) has no line of its own: 3D skin layers was an
@@ -546,6 +574,8 @@ pub enum Item {
     CosmeticsMine,
     CosmeticsOthers,
     CosmeticsAuras,
+    /// On the PvP & HUD page (`pvp::rows`).
+    Pvp(crate::pvp::Opt),
 }
 /// The Extras page: headers (language keys) and items.
 pub fn rows() -> Vec<Result<Item, &'static str>> {
@@ -612,6 +642,7 @@ impl Item {
             Item::CosmeticsMine => "horizon.extras.cosmetics_mine",
             Item::CosmeticsOthers => "horizon.extras.cosmetics_others",
             Item::CosmeticsAuras => "horizon.extras.cosmetics_auras",
+            Item::Pvp(o) => o.caption_key(),
         }
     }
     /// The language key of the description shown as the row's tooltip.
@@ -640,6 +671,7 @@ impl Item {
             Item::CosmeticsMine => "horizon.extras.cosmetics_mine.tooltip",
             Item::CosmeticsOthers => "horizon.extras.cosmetics_others.tooltip",
             Item::CosmeticsAuras => "horizon.extras.cosmetics_auras.tooltip",
+            Item::Pvp(o) => o.description_key(),
         }
     }
     /// The caption in the current language (English when the key is missing).
@@ -677,6 +709,7 @@ impl Item {
             Item::CosmeticsMine => "My cosmetics",
             Item::CosmeticsOthers => "Other players' cosmetics",
             Item::CosmeticsAuras => "Others' auras and trails",
+            Item::Pvp(o) => o.caption(),
         }
     }
     /// The switch this setting belongs to: it does nothing while that is off.
@@ -687,6 +720,7 @@ impl Item {
             MouseTweaksWheel => MouseTweaks,
             SortKey => Sort,
             ChatIndicator => ChatAnimation,
+            Pvp(o) => return o.parent().map(Pvp),
             Fullbright | DynamicLights | OwnNameTag | HideBlockParticles | MouseTweaks | Sort
             | AutoReconnect | NoAi | AgentControl | ReproKeys | DiscordPresence | Splitscreen
             | ChatAnimation | WheelCyclesSettings | MusicPage | PackBrowser | CosmeticsMine
@@ -752,9 +786,10 @@ impl Item {
                 "Hidden: every Horizon player sees you without your cosmetics, you included. The same switch as the launcher's Wardrobe."
             }
             Item::CosmeticsOthers => {
-                "What other Horizon players wear: everything, only their name tag styles, or nothing. Hidden, the game never asks what they wear."
+                "What other Horizon players wear: everything, only their name tag styles, or nothing. Hidden unless you own cosmetics, until you choose. Hidden, the game never asks what they wear."
             }
             Item::CosmeticsAuras => "Auras and trails other players wear. Off by default.",
+            Item::Pvp(o) => o.description(),
             Item::WheelCyclesSettings => {
                 "The scroll wheel over a button in the settings changes its value, as in vanilla. Off, the wheel only scrolls the list."
             }
@@ -807,6 +842,7 @@ impl Item {
             Item::WheelCyclesSettings => e.wheel_cycles_settings,
             Item::PackBrowser => e.pack_browser,
             Item::CosmeticsAuras => e.cosmetics_auras,
+            Item::Pvp(o) => return o.switch(&e.pvp),
             _ => return None,
         })
     }
@@ -814,13 +850,14 @@ impl Item {
     pub fn value(self, e: &Extras) -> String {
         match self {
             Item::SortKey => crate::keybinds::display_name(&e.sort_key).plain(),
+            Item::Pvp(o) if o.switch(&e.pvp).is_none() => o.value(&e.pvp).unwrap_or_default(),
             Item::CosmeticsMine => match e.cosmetics_mine {
                 true => crate::lang::get_or("horizon.extras.cosmetics.shown", "Shown"),
                 false => crate::lang::get_or("horizon.extras.cosmetics.hidden", "Hidden"),
             },
             Item::CosmeticsOthers => {
                 use horizon_cosmetics::prefs::Others;
-                match e.cosmetics_others {
+                match e.effective_others() {
                     Others::Shown => crate::lang::get_or("horizon.extras.cosmetics.shown", "Shown"),
                     Others::NameTags => {
                         crate::lang::get_or("horizon.extras.cosmetics.name_tags", "Name tags only")
@@ -861,10 +898,12 @@ impl Item {
             Item::PackBrowser => e.pack_browser = !e.pack_browser,
             Item::CosmeticsMine => e.cosmetics_mine = !e.cosmetics_mine,
             Item::CosmeticsOthers => {
-                let o = e.cosmetics_others;
-                e.cosmetics_others = if back { o.next().next() } else { o.next() };
+                // From what the button shows; the result is the player's choice from now on.
+                let o = e.effective_others();
+                e.cosmetics_others = Some(if back { o.next().next() } else { o.next() });
             }
             Item::CosmeticsAuras => e.cosmetics_auras = !e.cosmetics_auras,
+            Item::Pvp(o) => o.cycle(&mut e.pvp, back),
             Item::SortKey => {}
         }
     }
@@ -884,29 +923,68 @@ mod tests {
     #[test]
     fn other_players_cosmetics_cycle_three_ways_and_read_the_old_switch() {
         use horizon_cosmetics::prefs::Others;
-        let mut e = Extras::default();
+        let mut e = Extras {
+            cosmetics_owner: true,
+            ..Extras::default()
+        };
         assert_eq!(
-            (e.cosmetics_others, e.cosmetics_auras, e.cosmetics_mine),
+            (e.effective_others(), e.cosmetics_auras, e.cosmetics_mine),
             (Others::Shown, false, true)
         );
         Item::CosmeticsOthers.cycle(&mut e, false);
-        assert_eq!(e.cosmetics_others, Others::NameTags);
+        assert_eq!(e.cosmetics_others, Some(Others::NameTags));
         Item::CosmeticsOthers.cycle(&mut e, false);
-        assert_eq!(e.cosmetics_others, Others::Hidden);
+        assert_eq!(e.cosmetics_others, Some(Others::Hidden));
         // The right button goes back.
         Item::CosmeticsOthers.cycle(&mut e, true);
-        assert_eq!(e.cosmetics_others, Others::NameTags);
-        assert_eq!(Extras::parse(&e.serialize()), e);
+        assert_eq!(e.cosmetics_others, Some(Others::NameTags));
+        // Ownership is the service's, never written.
+        assert_eq!(
+            Extras::parse(&e.serialize()),
+            Extras {
+                cosmetics_owner: false,
+                ..e.clone()
+            }
+        );
         // The launcher's Wardrobe writes the same lines.
         assert_eq!(
             horizon_cosmetics::prefs::Prefs::parse(&e.serialize()).others,
-            Others::NameTags
+            Some(Others::NameTags)
         );
         // Before this, the line was on or off.
         assert_eq!(
             Extras::parse("cosmeticsOthers:false").cosmetics_others,
-            Others::Hidden
+            Some(Others::Hidden)
         );
+    }
+
+    #[test]
+    fn others_cosmetics_are_off_for_a_player_who_owns_none_until_chosen() {
+        use horizon_cosmetics::prefs::Others;
+        let mut e = Extras::default();
+        // Nothing chosen, nothing owned: the button shows Hidden and no line is written.
+        assert_eq!(e.effective_others(), Others::Hidden);
+        assert_eq!(
+            Item::CosmeticsOthers.value(&e),
+            crate::lang::get_or("horizon.extras.cosmetics.hidden", "Hidden")
+        );
+        assert!(!e.serialize().contains("cosmeticsOthers"));
+        // The service says the account owns one: shown, still not a choice.
+        e.cosmetics_owner = true;
+        assert_eq!(e.effective_others(), Others::Shown);
+        assert!(!e.serialize().contains("cosmeticsOthers"));
+        // A non-owner pressing the button goes on from Hidden, and that choice is kept.
+        e.cosmetics_owner = false;
+        Item::CosmeticsOthers.cycle(&mut e, false);
+        assert_eq!(e.cosmetics_others, Some(Others::Shown));
+        let saved = Extras::parse(&e.serialize());
+        assert_eq!(saved.effective_others(), Others::Shown);
+        // An owner who chose Hidden keeps it.
+        let hidden = Extras {
+            cosmetics_owner: true,
+            ..Extras::parse("cosmeticsOthers:hidden\n")
+        };
+        assert_eq!(hidden.effective_others(), Others::Hidden);
     }
 
     #[test]

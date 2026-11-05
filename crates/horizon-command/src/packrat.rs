@@ -334,9 +334,19 @@ pub struct State<'g, V> {
     controls: Vec<bool>,
     errors: Vec<(Sugg, Reason)>,
     last_cursor: isize,
+    /// Current rule-recursion depth, bounded by `MAX_DEPTH` so a crafted
+    /// deeply nested value (SNBT compound/list or a JSON text component's
+    /// `extra` chain) fails to parse instead of overflowing the stack.
+    depth: usize,
     /// Context for the rules (e.g. the registries a lookup checks).
     pub ctx: Option<&'g dyn std::any::Any>,
 }
+/// The deepest rule nesting the parser accepts. A level of SNBT nesting costs
+/// about four rules: 256 takes 63 nested compounds, 36 levels of a text
+/// component's `extra` list, or 13 containers in an item in a container. It
+/// stays under the stack overflow of a 2 MiB thread (the server thread's,
+/// Rust's default) in a debug build, where frames are largest: 384 overflows.
+const MAX_DEPTH: usize = 256;
 const UNBOUND: usize = usize::MAX;
 impl<'g, V: Value> State<'g, V> {
     pub fn new(grammar: &'g Grammar<V>, input: &'g str, cursor: usize) -> Self {
@@ -349,6 +359,7 @@ impl<'g, V: Value> State<'g, V> {
             controls: Vec::new(),
             errors: Vec::new(),
             last_cursor: -1,
+            depth: 0,
             ctx: None,
         }
     }
@@ -417,6 +428,10 @@ impl<'g, V: Value> State<'g, V> {
                 }
             };
         }
+        if self.depth >= MAX_DEPTH {
+            return None;
+        }
+        self.depth += 1;
         let result = match self.grammar.rules[rule].as_ref() {
             Some(Rule::Term(term, action)) => {
                 let action = action.clone();
@@ -432,6 +447,7 @@ impl<'g, V: Value> State<'g, V> {
             }
             None => panic!("Unbound rule {}", self.grammar.names[rule]),
         };
+        self.depth -= 1;
         let entry = result.clone().map(|v| (v, self.cursor));
         self.cache.insert((mark, rule), entry);
         result

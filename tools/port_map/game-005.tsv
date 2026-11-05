@@ -8,7 +8,7 @@ Entity.equals	skip:java		entities are compared by id
 Entity.setRot	skip:other		plain setter; yaw and pitch are struct fields and the callers clamp pitch
 Entity.reapplyPosition	skip:other		bounding boxes are built from the position on demand (Mob::bounds_at), so there is no cached box to refresh
 Entity.commonTick	inline	crates/horizon-client/src/mobs/ai.rs::tick	previous position and rotations saved and age counted; invulnerable time counts down in base_tick; remote mobs do the same in tick_remote_entities
-Entity.computeSpeed	missing		minor: Entity.lastKnownSpeed is not tracked and getKnownSpeed has no port; FollowPlayerRiddenEntityGoal exists (mobs/dolphin.rs) and reads the vehicle's velocity instead
+Entity.computeSpeed	port	crates/horizon-client/src/mobs/ai.rs::tick	`Mob.known_speed` is the position minus the previous one; gap: minor: mobs only, the player keeps no lastKnownSpeed
 Entity.setSharedFlagOnFire	inline	crates/horizon-client/src/game/lan.rs::mob_meta	gap: minor: flag 0x01 is fire_ticks > 0, packed only when a mob goes to LAN guests; HasVisualFire is not read
 Entity.isSupportedBy	inline	crates/horizon-client/src/game/piston_push.rs::Game::push_body	supporting block equal to the piston's block decides whether the body rides it
 Entity.getBlockBounciness	port	crates/horizon-world/src/movement_restitution.rs::restitute_movement	mobs bind it too through crates/horizon-client/src/mobs/living.rs::MobRestitution::block_bounce_restitution, so a mob landing on a slime block or bed bounces
@@ -41,7 +41,7 @@ Entity.awardKillScore	inline	crates/horizon-client/src/game.rs::Game::tick	the p
 Entity.shouldRender	port	crates/horizon-client/src/game/entity_culling.rs::Game::entity_in_view	range from default_range (64 times the mean box edge times the view scale), then the frustum
 Entity.saveAsPassenger	port	crates/horizon-client/src/game/persist.rs::Game::mob_tree_nbt	a mob with its riders nested under Passengers; players and unsaved types are skipped
 Entity.getEncodeId	inline	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	the id written is the mob type's id
-Entity.dropAllLeashConnections	port	crates/horizon-client/src/game/dispenser.rs::Game::shear_off_leashes	gap: minor: only shears (dispenser) reach it; a firework used while gliding does not drop the player's leads
+Entity.dropAllLeashConnections	port	crates/horizon-client/src/game/leads.rs::Game::drop_all_leash_connections	FireworkRocketItem.use while gliding; dispenser shears still drop through Game::shear_off_leashes
 Entity.canCollideWith	inline	crates/horizon-client/src/game/ghasts.rs::Game::player_entity_collisions	gap: player: the entities a player cannot walk through are boats and happy ghasts only; a live shulker (canBeCollidedWith) is not solid, so the player walks through it
 Entity.getDefaultPassengerAttachmentPoint	inline	crates/horizon-client/src/mobs/riders.rs::passenger_attachment	one point per vehicle, so the passenger index is always 0; default is the top of the box
 Entity.ejectPassengers	port	crates/horizon-client/src/game/boat_passengers.rs::Game::eject_boat_mobs	gap: minor: boats place riders at the dismount spot; when a mob vehicle dies sync_riders only lets go and the rider stays where it was seated
@@ -137,7 +137,7 @@ EquipmentTable.createForAllSlots	skip:data		drop chances come from the loot and 
 ExperienceOrb.<init>	port	crates/horizon-client/src/game.rs::Game::add_orb	random yaw and motion from the orb's own random; gap: minor: no rough direction offset and no unstuck when the orb spawns inside a block
 ExperienceOrb.unstuckIfPossible	port	crates/horizon-client/src/entities.rs::ExperienceOrb::unstuck	an orb spawned with its box inside blocks moves to the nearest free position (find_free_position over the border), run by the spawn path
 ExperienceOrb.awardWithDirection	port	crates/horizon-client/src/game.rs::Game::spawn_orbs	gap: minor: the rough direction is never given, so xp bottle orbs do not fly away from the surface they hit
-ExperienceOrb.setUnderwaterMovement	port	crates/horizon-client/src/entities.rs::ExperienceOrb::tick	gap: minor: tests the block at the orb's feet, not its eyes
+ExperienceOrb.setUnderwaterMovement	port	crates/horizon-client/src/entities.rs::ExperienceOrb::set_underwater_movement	widened float arithmetic; gap: minor: caller still tests the block at the orb's feet, not its eyes
 ExperienceOrb.hurtServer	port	crates/horizon-client/src/entities.rs::ExperienceOrb::hurt	ticked in #3514; `ExperienceOrb.hurtServer` is cited at crates/horizon-client/src/entities.rs:538
 ExperienceOrb.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::orb_to_nbt	gap: minor: Health is always written as 5
 ExperienceOrb.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::orbs_from_nbt	gap: minor: Health is ignored

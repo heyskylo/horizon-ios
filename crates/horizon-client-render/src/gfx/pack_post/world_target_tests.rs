@@ -219,13 +219,15 @@ fn pack(
             lightmap: lightmap.clone(),
             terrain: None,
             block_ids: &[],
+            sprite_rects: &[],
             celestial: None,
             gui_size: [1, 1],
             clouds: None,
             weather: false,
             hand: false,
         },
-    );
+    )
+    .expect("the pack runs");
     assert!(post.notes.is_empty(), "{:?}", post.notes);
     post
 }
@@ -326,6 +328,7 @@ fn frame(hud: &HudBatch) -> Frame<'_> {
         outline: Vec::new(),
         outline_after_terrain: false,
         outline_high_contrast: false,
+        pvp: Default::default(),
         debug_lines: &[],
         debug_lines_on_top: &[],
         debug_crosshair: &[],
@@ -349,6 +352,7 @@ fn frame(hud: &HudBatch) -> Frame<'_> {
         lightning: Default::default(),
         additive: &[],
         see_through: &[],
+        world_primitives: Default::default(),
         celestial: &[],
         stars: None,
         hand: &[],

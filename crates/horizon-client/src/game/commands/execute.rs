@@ -134,12 +134,12 @@ impl Game<'_> {
                 .boats
                 .iter()
                 .find(|b| b.id == id)
-                .map_or([0.0; 2], |b| [b.yaw, 0.0]),
+                .map_or([0.0; 2], |b| [b.yaw, b.pitch]),
             Target::Cart(id) => self
                 .carts
                 .iter()
                 .find(|c| c.id == id)
-                .map_or([0.0; 2], |c| [c.yaw, 0.0]),
+                .map_or([0.0; 2], |c| [c.yaw, c.pitch]),
             Target::Fangs(id) => self
                 .fangs
                 .list
@@ -653,7 +653,7 @@ impl Game<'_> {
             _ => return Err(err("command.unknown.command", &[])),
         })
     }
-    /// The entities `on <relation>` reaches from the source entity.
+    /// `ExecuteCommand.createRelationOperations`: the entities `on <relation>` reaches.
     fn relation(&mut self, c: &Context, s: Source) -> Vec<Source> {
         let Some(entity) = s.entity else {
             return Vec::new();
@@ -685,13 +685,22 @@ impl Game<'_> {
                     .collect(),
                 _ => Vec::new(),
             },
-            // Leashable.getLeashHolder: a fence knot is not an entity here.
-            Some("leasher") => match entity {
-                Target::Mob(id) => self
-                    .mobs
-                    .iter()
-                    .find(|m| m.id == id)
-                    .and_then(|m| m.extra.leash.map(|holder| (holder, m.extra.leash_player)))
+            // Leashable.getLeashHolder: the server's resolved holder, not a
+            // saved UUID that is still waiting for tickLeash to restore it.
+            Some("leasher") => {
+                let leash =
+                    match entity {
+                        Target::Mob(id) => self.mobs.iter().find(|m| m.id == id).and_then(|m| {
+                            m.extra.leash.map(|holder| (holder, m.extra.leash_player))
+                        }),
+                        Target::Boat(id) => self
+                            .boats
+                            .iter()
+                            .find(|b| b.id == id)
+                            .and_then(|b| b.leash.map(|holder| (holder, b.leash_player))),
+                        _ => None,
+                    };
+                leash
                     .and_then(|(holder, player)| match holder {
                         // The player who tied it (the host's when unrecorded).
                         horizon_client::mobs::leash::Holder::Player => {
@@ -703,9 +712,8 @@ impl Game<'_> {
                         | horizon_client::mobs::leash::Holder::Knot(_) => None,
                     })
                     .into_iter()
-                    .collect(),
-                _ => Vec::new(),
-            },
+                    .collect()
+            }
             // TraceableEntity.getOwner: who shot a projectile, who threw an
             // item, who summoned a vex.
             Some("origin") => match entity {
@@ -714,18 +722,29 @@ impl Game<'_> {
                     .projectiles
                     .iter()
                     .find(|p| p.id == id)
-                    .and_then(|p| match (p.owner?, p.guest) {
-                        // A guest's shot: `Who::Player` is them.
-                        (horizon_client::mobs::Who::Player, Some(conn))
-                            if self.lan_acting == Some(conn) =>
-                        {
-                            Some(Target::Player)
+                    .and_then(|p| {
+                        // Projectile.getOwner resolves EntityReference<Entity>,
+                        // including loaded owners that cannot be a Who.
+                        let Some(owner) = p.owner else {
+                            return p.owner_uuid.and_then(|uuid| {
+                                self.target_by_uuid(horizon_client::lan::playerdata::ints_uuid(
+                                    uuid,
+                                ))
+                            });
+                        };
+                        match (owner, p.guest) {
+                            // A guest's shot: `Who::Player` is them.
+                            (horizon_client::mobs::Who::Player, Some(conn))
+                                if self.lan_acting == Some(conn) =>
+                            {
+                                Some(Target::Player)
+                            }
+                            (horizon_client::mobs::Who::Player, Some(conn)) => {
+                                Some(Target::Guest(conn))
+                            }
+                            (horizon_client::mobs::Who::Player, None) => Some(Target::Player),
+                            (horizon_client::mobs::Who::Mob(id), _) => Some(Target::Mob(id)),
                         }
-                        (horizon_client::mobs::Who::Player, Some(conn)) => {
-                            Some(Target::Guest(conn))
-                        }
-                        (horizon_client::mobs::Who::Player, None) => Some(Target::Player),
-                        (horizon_client::mobs::Who::Mob(id), _) => Some(Target::Mob(id)),
                     })
                     .into_iter()
                     .collect(),
@@ -938,6 +957,17 @@ impl Game<'_> {
         let keep = results.iter().any(|r| r.is_some_and(|v| (v != 0) == want));
         Ok((keep, 0))
     }
+    /// `ExecuteCommand.isChunkLoaded`: an entity-ticking loading status and
+    /// completed entity loading, rather than merely a retained lit column.
+    fn command_chunk_loaded(&self, x: i32, z: i32) -> bool {
+        self.tickets.levels().loaded_entity_ticking(x, z)
+            && self.world.chunks.contains_key(&(x, z))
+            && self.streaming.is_lit(x, z)
+            // Streaming queues the saved tags before making the column resident;
+            // spawn_loaded_entities applies them before this chunk's entities run.
+            && !self.world.loaded_entities.iter().any(|(key, _)| *key == (x, z))
+    }
+
     fn condition_matches(&mut self, c: &Context) -> R<(bool, i32)> {
         let flag = |b: bool| (b, i32::from(b));
         if c.has("data") {
@@ -965,12 +995,10 @@ impl Game<'_> {
                 .coords(c, "pos")
                 .map(|co| co.block(self.source_position(), self.source_rotation()));
             let dimension = self.command_source.map_or(self.dim, |s| s.dimension);
-            // ExecuteCommand.isChunkLoaded: ENTITY_TICKING, which is past lit.
-            let loaded = |p: [i32; 3]| {
-                let key = (p[0] >> 4, p[2] >> 4);
-                self.world.chunks.contains_key(&key) && self.streaming.is_lit(key.0, key.1)
-            };
-            return Ok(flag(dimension == self.dim && p.is_some_and(loaded)));
+            return Ok(flag(
+                dimension == self.dim
+                    && p.is_some_and(|p| self.command_chunk_loaded(p[0] >> 4, p[2] >> 4)),
+            ));
         }
         if c.has("dimension") {
             let dimension = self.command_source.map_or(self.dim, |s| s.dimension);

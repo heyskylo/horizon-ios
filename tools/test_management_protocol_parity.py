@@ -19,8 +19,8 @@ sent the same things over TLS, and every answer is compared exactly:
   message, difficulty, default and forced game mode read and changed (including saved properties), operator
   permission level read and changed (including saved properties and restart), autosave read and changed
   (including its reset after restart), spawn-protection radius read and changed (including invalid input,
-  saved properties and restart), allow-flight read and changed (including invalid input, saved properties and
-  restart), hidden online players read and changed (including invalid input, saved properties and restart),
+  saved properties and restart), accepts-transfers and allow-flight read and changed (including invalid input,
+  saved properties and restart), hidden online players read and changed (including invalid input, saved properties and restart),
   status replies read and changed (including invalid input, saved properties and restart), allowlist use and
   enforcement read and changed
   (including saved properties and restart), max players read and changed (including saved
@@ -29,7 +29,8 @@ sent the same things over TLS, and every answer is compared exactly:
   property and restart), the live view distance read and changed (including invalid input, saved
   properties and restart), the live simulation distance read and changed (including invalid input, saved
   properties and restart), the live entity broadcast range read and changed (including invalid input,
-  saved properties and restart), and `server/stop`;
+  saved properties and restart), and `server/stop`, after which each process ends as vanilla's does (how long
+  it took is recorded);
 - the TLS version each server agrees on.
 
 A parse error's `data` is Gson's message in vanilla and serde's in Horizon: left out. The notifications the
@@ -214,6 +215,14 @@ MESSAGES = [
     '{"jsonrpc":"2.0","id":146,"method":"minecraft:serversettings/allow_flight"}',
     '{"jsonrpc":"2.0","id":147,"method":"minecraft:serversettings/allow_flight/set","params":[true]}',
     '{"jsonrpc":"2.0","id":148,"method":"minecraft:serversettings/allow_flight"}',
+    '{"jsonrpc":"2.0","id":300,"method":"minecraft:serversettings/accept_transfers"}',
+    '{"jsonrpc":"2.0","id":301,"method":"minecraft:serversettings/accept_transfers/set","params":[true]}',
+    '{"jsonrpc":"2.0","id":302,"method":"minecraft:serversettings/accept_transfers"}',
+    '{"jsonrpc":"2.0","id":303,"method":"minecraft:serversettings/accept_transfers/set","params":["yes"]}',
+    '{"jsonrpc":"2.0","id":304,"method":"minecraft:serversettings/accept_transfers"}',
+    '{"jsonrpc":"2.0","id":305,"method":"minecraft:serversettings/accept_transfers/set","params":[false]}',
+    '{"jsonrpc":"2.0","id":306,"method":"minecraft:serversettings/accept_transfers"}',
+    '{"jsonrpc":"2.0","id":307,"method":"minecraft:serversettings/accept_transfers/set","params":[true]}',
     '{"jsonrpc":"2.0","id":190,"method":"minecraft:serversettings/hide_online_players"}',
     '{"jsonrpc":"2.0","id":191,"method":"minecraft:serversettings/hide_online_players/set","params":[true]}',
     '{"jsonrpc":"2.0","id":192,"method":"minecraft:serversettings/hide_online_players"}',
@@ -280,6 +289,16 @@ MESSAGES = [
     '{"jsonrpc":"2.0","id":206,"method":"minecraft:gamerules/update","params":[{"key":"minecraft:nope","value":true}]}',
     '{"jsonrpc":"2.0","id":207,"method":"minecraft:gamerules/update","params":[{"value":true}]}',
     '{"jsonrpc":"2.0","id":208,"method":"minecraft:gamerules"}',
+    '{"jsonrpc":"2.0","id":400,"method":"minecraft:serversettings/status_heartbeat_interval"}',
+    '{"jsonrpc":"2.0","id":401,"method":"minecraft:serversettings/status_heartbeat_interval/set","params":[30]}',
+    '{"jsonrpc":"2.0","id":402,"method":"minecraft:serversettings/status_heartbeat_interval"}',
+    '{"jsonrpc":"2.0","id":403,"method":"minecraft:serversettings/status_heartbeat_interval/set","params":["yes"]}',
+    '{"jsonrpc":"2.0","id":404,"method":"minecraft:serversettings/status_heartbeat_interval"}',
+    # -5 cancels the running 30 s heartbeat and schedules none; ManagementServer keeps the cancelled future,
+    # so the set to 30 that follows is refused (cancel(true) returns false) and -5 is what is saved.
+    '{"jsonrpc":"2.0","id":405,"method":"minecraft:serversettings/status_heartbeat_interval/set","params":[-5]}',
+    '{"jsonrpc":"2.0","id":406,"method":"minecraft:serversettings/status_heartbeat_interval"}',
+    '{"jsonrpc":"2.0","id":407,"method":"minecraft:serversettings/status_heartbeat_interval/set","params":[30]}',
     '{"jsonrpc":"2.0","id":120,"method":"minecraft:serversettings/player_idle_timeout"}',
     '{"jsonrpc":"2.0","id":121,"method":"minecraft:serversettings/player_idle_timeout/set","params":[10]}',
     '{"jsonrpc":"2.0","id":122,"method":"minecraft:serversettings/player_idle_timeout"}',
@@ -330,10 +349,22 @@ def management_properties(port, keystore):
     }
 
 
+def properties_value(value):
+    """A `server.properties` value as vanilla writes it: Java's parser reads a backslash as the start of an
+    escape, so a Windows path (the keystore) must have its own doubled."""
+    return value.replace('\\', '\\\\')
+
+
 def make_keystore(work):
     """A PKCS12 keystore with a self-signed certificate for 127.0.0.1, made with the JDK's keytool, and a TLS
     client context that trusts it."""
-    keytool = Path(shutil.which('java')).resolve().parent / f'keytool{EXE}'
+    keytool = shutil.which('keytool')
+    if keytool is None:
+        java_home = os.environ.get('JAVA_HOME')
+        candidate = Path(java_home) / 'bin' / f'keytool{EXE}' if java_home else None
+        if candidate is None or not candidate.is_file():
+            raise RuntimeError('keytool not found; add a JDK to PATH or set JAVA_HOME')
+        keytool = str(candidate)
     keystore, certificate = work / 'management.p12', work / 'management.pem'
     common = ['-storetype', 'PKCS12', '-keystore', str(keystore), '-storepass', KEYSTORE_PASSWORD]
     subprocess.run([keytool, '-genkeypair', '-alias', 'management', '-keyalg', 'RSA', '-keysize', '2048',
@@ -490,6 +521,23 @@ def session(port, context, log):
     return seen
 
 
+def wait_for_exit(server, side, timeout):
+    """The seconds the server's process took to end after `server/stop`, how long it was given.
+
+    Vanilla's exits: `net.minecraft.server.jsonrpc.methods.ServerStateService.stop` submits
+    `MinecraftServer.halt(false)`, `runServer` returns and `main` ends the process. A server still running is
+    the regression this harness exists to catch, so the failure names the side and the last lines it logged,
+    not only Python's `TimeoutExpired`."""
+    asked = time.time()
+    while time.time() - asked < timeout:
+        if server.process.poll() is not None:
+            return round(time.time() - asked, 1)
+        time.sleep(0.1)
+    raise AssertionError(
+        f'the {side} server was still running {timeout} s after server/stop, where vanilla\'s process '
+        f'exits:\n' + '\n'.join(server.since(0)[-10:]))
+
+
 def main():
     lock, jars, libraries = base.verify_artifacts()
     build = lab.LOCAL / NAME
@@ -512,7 +560,8 @@ def main():
                      'generate-structures': 'false', 'view-distance': '3', 'simulation-distance': '3',
                      **management_properties(management, keystore)}
             if side == 'vanilla':
-                (folder / 'server.properties').write_text(''.join(f'{k}={v}\n' for k, v in props.items()))
+                (folder / 'server.properties').write_text(''.join(f'{k}={properties_value(v)}\n'
+                                                                   for k, v in props.items()))
                 command = ['java', '-Xmx2g', '-Duser.timezone=UTC', f'-Dminecraft.api.discovery.host={NO_SERVICES}',
                            '-cp',
                            os.pathsep.join(map(str, [jars['server'], *libraries])), 'net.minecraft.server.Main',
@@ -532,7 +581,7 @@ def main():
                 server.wait_for(DONE, 600)
                 with (build / f'{side}-session.log').open('w') as log:
                     sides[side] = session(management, context, log)
-                server.process.wait(timeout=180)
+                sides[side]['stop_seconds'] = wait_for_exit(server, side, 180)
                 properties = (folder / 'server.properties').read_text()
                 sides[side]['saved_difficulty'] = next(
                     (line.partition('=')[2] for line in properties.splitlines()
@@ -555,6 +604,9 @@ def main():
                 sides[side]['saved_max_players'] = next(
                     (line.partition('=')[2] for line in properties.splitlines()
                      if line.startswith('max-players=')), None)
+                sides[side]['saved_status_heartbeat_interval'] = next(
+                    (line.partition('=')[2] for line in properties.splitlines()
+                     if line.startswith('status-heartbeat-interval=')), None)
                 sides[side]['saved_player_idle_timeout'] = next(
                     (line.partition('=')[2] for line in properties.splitlines()
                      if line.startswith('player-idle-timeout=')), None)
@@ -576,6 +628,9 @@ def main():
                 sides[side]['saved_allow_flight'] = next(
                     (line.partition('=')[2] for line in properties.splitlines()
                      if line.startswith('allow-flight=')), None)
+                sides[side]['saved_accepts_transfers'] = next(
+                    (line.partition('=')[2] for line in properties.splitlines()
+                     if line.startswith('accepts-transfers=')), None)
                 sides[side]['saved_hide_online_players'] = next(
                     (line.partition('=')[2] for line in properties.splitlines()
                      if line.startswith('hide-online-players=')), None)
@@ -609,6 +664,8 @@ def main():
                     sides[side]['saved_config_operator_user_permission_level'] = 'op-permission-level = 2' in (
                         folder / 'server.toml').read_text()
                     sides[side]['saved_config_allow_flight'] = 'allow-flight = true' in (
+                        folder / 'server.toml').read_text()
+                    sides[side]['saved_config_accepts_transfers'] = 'accepts-transfers = true' in (
                         folder / 'server.toml').read_text()
                     sides[side]['saved_config_hide_online_players'] = 'hide-online-players = true' in (
                         folder / 'server.toml').read_text()
@@ -657,6 +714,12 @@ def main():
                         if not isinstance(reply, dict) or 'method' not in reply or 'id' in reply:
                             break
                     sides[side]['restarted_max_players'] = reply
+                    ws.send('{"jsonrpc":"2.0","id":408,"method":"minecraft:serversettings/status_heartbeat_interval"}')
+                    while True:
+                        reply = normal(ws.receive(timeout=60))
+                        if not isinstance(reply, dict) or 'method' not in reply or 'id' in reply:
+                            break
+                    sides[side]['restarted_status_heartbeat_interval'] = reply
                     ws.send('{"jsonrpc":"2.0","id":133,"method":"minecraft:serversettings/player_idle_timeout"}')
                     while True:
                         reply = normal(ws.receive(timeout=60))
@@ -669,6 +732,12 @@ def main():
                         if not isinstance(reply, dict) or 'method' not in reply or 'id' in reply:
                             break
                     sides[side]['restarted_allow_flight'] = reply
+                    ws.send('{"jsonrpc":"2.0","id":308,"method":"minecraft:serversettings/accept_transfers"}')
+                    while True:
+                        reply = normal(ws.receive(timeout=60))
+                        if not isinstance(reply, dict) or 'method' not in reply or 'id' in reply:
+                            break
+                    sides[side]['restarted_accepts_transfers'] = reply
                     ws.send('{"jsonrpc":"2.0","id":189,"method":"minecraft:serversettings/entity_broadcast_range"}')
                     while True:
                         reply = normal(ws.receive(timeout=60))
@@ -774,6 +843,12 @@ def main():
         if vanilla['restarted_max_players'] != horizon['restarted_max_players'] or \
                 vanilla['restarted_max_players'] != {'jsonrpc': '2.0', 'id': 109, 'result': 30}:
             failures.append(f"restarted max players: vanilla {vanilla['restarted_max_players']!r}, Horizon {horizon['restarted_max_players']!r}")
+        if vanilla['saved_status_heartbeat_interval'] != horizon['saved_status_heartbeat_interval'] or \
+                vanilla['saved_status_heartbeat_interval'] != '-5':
+            failures.append(f"saved status heartbeat interval: vanilla {vanilla['saved_status_heartbeat_interval']!r}, Horizon {horizon['saved_status_heartbeat_interval']!r}")
+        if vanilla['restarted_status_heartbeat_interval'] != horizon['restarted_status_heartbeat_interval'] or \
+                vanilla['restarted_status_heartbeat_interval'] != {'jsonrpc': '2.0', 'id': 408, 'result': -5}:
+            failures.append(f"restarted status heartbeat interval: vanilla {vanilla['restarted_status_heartbeat_interval']!r}, Horizon {horizon['restarted_status_heartbeat_interval']!r}")
         if vanilla['saved_player_idle_timeout'] != horizon['saved_player_idle_timeout'] or \
                 vanilla['saved_player_idle_timeout'] != '30':
             failures.append(f"saved player idle timeout: vanilla {vanilla['saved_player_idle_timeout']!r}, Horizon {horizon['saved_player_idle_timeout']!r}")
@@ -827,6 +902,14 @@ def main():
         if vanilla['restarted_allow_flight'] != horizon['restarted_allow_flight'] or \
                 vanilla['restarted_allow_flight'] != {'jsonrpc': '2.0', 'id': 149, 'result': True}:
             failures.append(f"restarted allow-flight: vanilla {vanilla['restarted_allow_flight']!r}, Horizon {horizon['restarted_allow_flight']!r}")
+        if vanilla['saved_accepts_transfers'] != horizon['saved_accepts_transfers'] or \
+                vanilla['saved_accepts_transfers'] != 'true':
+            failures.append(f"saved accepts-transfers: vanilla {vanilla['saved_accepts_transfers']!r}, Horizon {horizon['saved_accepts_transfers']!r}")
+        if not horizon['saved_config_accepts_transfers']:
+            failures.append('Horizon did not save accepts-transfers in server.toml')
+        if vanilla['restarted_accepts_transfers'] != horizon['restarted_accepts_transfers'] or \
+                vanilla['restarted_accepts_transfers'] != {'jsonrpc': '2.0', 'id': 308, 'result': True}:
+            failures.append(f"restarted accepts-transfers: vanilla {vanilla['restarted_accepts_transfers']!r}, Horizon {horizon['restarted_accepts_transfers']!r}")
         if vanilla['saved_hide_online_players'] != horizon['saved_hide_online_players'] or \
                 vanilla['saved_hide_online_players'] != 'true':
             failures.append(f"saved hide-online-players: vanilla {vanilla['saved_hide_online_players']!r}, Horizon {horizon['saved_hide_online_players']!r}")

@@ -669,7 +669,7 @@ impl LootData {
         let mut predicates = HashMap::new();
         load_kind(&all, "predicate", &mut predicates)?;
         overlay_map(overlay, "predicate", &mut predicates);
-        let raw = crate::item_defaults::read(root)?;
+        let raw = crate::item_defaults::shared(root)?;
         let items = raw
             .iter()
             .map(|(name, c)| {
@@ -725,6 +725,8 @@ impl LootData {
             "instrument",
             "entity_type",
             "damage_type",
+            // What `location_check`'s `biomes` names.
+            "worldgen/biome",
         ] {
             let mut raw = HashMap::new();
             load_kind(&all, &format!("tags/{registry}"), &mut raw)?;
@@ -1368,15 +1370,15 @@ impl<R: RandomSource> Context<'_, R> {
                     let Some(biome) = self.biome else {
                         return false;
                     };
+                    // `LocationPredicate.biomes`: a HolderSet, so a `#tag`
+                    // (the loot data's biome tags, packs included), an id or
+                    // a list of ids.
                     match &c["predicate"]["biomes"] {
                         Value::Null => true,
-                        Value::String(s) => match s.strip_prefix('#') {
-                            // Biome tags are not loaded here.
-                            Some(_) => false,
-                            None => s == biome,
-                        },
-                        Value::Array(a) => a.iter().any(|b| b.as_str() == Some(biome)),
-                        _ => false,
+                        set => data
+                            .holder_set("worldgen/biome", set)
+                            .iter()
+                            .any(|b| b == biome),
                     }
                 }
                 // A mod's own kind: the hook answers; a bare type name is
@@ -2294,5 +2296,100 @@ mod recipe_result_tests {
         assert_eq!(id(r#"{"id": 7}"#), None);
         assert_eq!(id("null"), None);
         assert_eq!(id("[]"), None);
+    }
+}
+
+#[cfg(test)]
+mod location_check_biome_tests {
+    use super::*;
+
+    /// A table that drops one stone where `biomes` matches, read with a
+    /// jungle biome tag of the game's own and `packs` over it.
+    fn table(name: &str, biomes: &str, packs: &[(String, Vec<Vec<u8>>)]) -> LootData {
+        let root = std::env::temp_dir().join(format!("loot-biomes-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let dir = root.join("data/minecraft/loot_table");
+        fs::create_dir_all(&dir).unwrap();
+        let json = format!(
+            r#"{{"pools":[{{"rolls":1,"entries":[{{"type":"minecraft:item","name":"minecraft:stone",
+                "condition":{{"type":"minecraft:location_check","predicate":{{"biomes":{biomes}}}}}}}]}}]}}"#
+        );
+        fs::write(dir.join("test.json"), json).unwrap();
+        let tags = root.join("data/minecraft/tags/worldgen/biome");
+        fs::create_dir_all(&tags).unwrap();
+        fs::write(
+            tags.join("is_jungle.json"),
+            r#"{"values": ["minecraft:jungle", "minecraft:bamboo_jungle"]}"#,
+        )
+        .unwrap();
+        fs::write(root.join("items.json"), "{}").unwrap();
+        let data = LootData::load(&root, &PackOverlay { files: packs }).unwrap();
+        let _ = fs::remove_dir_all(&root);
+        data
+    }
+
+    fn drops(data: &LootData, biome: Option<&str>) -> bool {
+        !data
+            .roll(
+                "minecraft:test",
+                &mut LegacyRandom::new(1),
+                0.0,
+                biome,
+                None,
+            )
+            .is_empty()
+    }
+
+    /// `LocationPredicate.biomes` is a HolderSet: a `#tag` names the biomes
+    /// of the tag, which used to fail everywhere.
+    #[test]
+    fn a_biome_tag_matches_its_biomes() {
+        let data = table("tag", r##""#minecraft:is_jungle""##, &[]);
+        assert!(drops(&data, Some("minecraft:jungle")));
+        assert!(drops(&data, Some("minecraft:bamboo_jungle")));
+        assert!(!drops(&data, Some("minecraft:desert")));
+        // `LocationCheck.test`: no origin, no match.
+        assert!(!drops(&data, None));
+        // An unknown tag is empty.
+        let data = table("unknown", r##""#minecraft:is_nothing""##, &[]);
+        assert!(!drops(&data, Some("minecraft:jungle")));
+    }
+
+    /// A single id and a list of ids keep matching as before.
+    #[test]
+    fn an_id_and_a_list_of_ids_still_match() {
+        let data = table("id", r#""minecraft:desert""#, &[]);
+        assert!(drops(&data, Some("minecraft:desert")));
+        assert!(!drops(&data, Some("minecraft:jungle")));
+        let data = table(
+            "list",
+            r#"["minecraft:jungle", "minecraft:sparse_jungle"]"#,
+            &[],
+        );
+        assert!(drops(&data, Some("minecraft:sparse_jungle")));
+        assert!(!drops(&data, Some("minecraft:bamboo_jungle")));
+    }
+
+    /// The world's packs' biome tags join the game's own, as
+    /// `TagLoader.loadTagsForExistingRegistries` binds them.
+    #[test]
+    fn a_pack_biome_tag_counts() {
+        let packs = vec![
+            (
+                "tags/minecraft:worldgen/biome/is_jungle".to_owned(),
+                vec![br#"{"values":["minecraft:plains"]}"#.to_vec()],
+            ),
+            (
+                "tags/mypack:worldgen/biome/warm".to_owned(),
+                vec![br##"{"values":["#minecraft:is_jungle","minecraft:desert"]}"##.to_vec()],
+            ),
+        ];
+        let data = table("pack", r##""#minecraft:is_jungle""##, &packs);
+        assert!(drops(&data, Some("minecraft:plains")));
+        assert!(drops(&data, Some("minecraft:jungle")));
+        let data = table("packown", r##""#mypack:warm""##, &packs);
+        assert!(drops(&data, Some("minecraft:bamboo_jungle")));
+        assert!(drops(&data, Some("minecraft:desert")));
+        assert!(!drops(&data, Some("minecraft:savanna")));
     }
 }

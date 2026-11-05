@@ -12,6 +12,47 @@ in vanilla's Anvil format.
 in the README scores each subsystem against vanilla and lists what is still
 missing; [Rust rewrite status](rust-parity.md) has the details.
 
+## musl Linux: manual installation
+
+On x86-64 musl distributions, download `horizon-linux-musl-x86_64.tar.gz` from the
+[Nightly release](https://github.com/horizon-rust/horizon/releases/tag/nightly), when available. This optional
+build is omitted if its build fails. The launcher does not install or update it. Its desktop gameplay and
+vanilla parity are still unverified; see the [musl build limitations](release-flow.md#builds).
+
+You need a working X11 or Wayland desktop, musl, libgcc, ALSA and libudev. For Vulkan, install both the loader
+(`libvulkan.so.1`) and your GPU's driver. On Alpine, the common runtime packages are:
+
+```sh
+sudo apk add musl libgcc alsa-lib eudev-libs vulkan-loader
+```
+
+Install the appropriate Mesa/Vulkan driver and window-system libraries for your desktop separately; OpenGL
+also needs a working musl-compatible OpenGL/EGL stack. NVIDIA's proprietary userspace drivers require glibc
+and cannot be loaded by this build; see [Alpine's GPU requirements](https://wiki.alpinelinux.org/wiki/Requirements).
+
+Resource preparation needs a **musl-compatible system JDK 25** (including `java` and `javac`). Mojang's bundled
+Linux Java runtime needs glibc. Install JDK 25 from your distribution or another musl-compatible provider,
+set `JAVA_HOME` to that JDK, and check `"$JAVA_HOME/bin/java" -version`. You also need your own Minecraft Java
+Edition 26.3 installation and its server jar. Download the server jar yourself from the `downloads.server.url`
+in that version's launcher JSON. Horizon's preparer does not download it.
+
+Extract the archive and, inside its folder, run the following with your actual paths:
+
+```sh
+./horizon-prepare --prepare --minecraft-dir /path/to/minecraft --server-jar /path/to/server.jar
+./horizon-prepare sounds --minecraft-dir /path/to/minecraft
+./horizon-client --resources "$PWD/.local/horizon-client/26.3"
+```
+
+The sounds command copies the sounds from your Minecraft installation's asset store. If that store is
+incomplete, obtain the missing assets through your Minecraft launcher first. Preparation details and alternative
+layouts are described below.
+
+Updates are manual: download and extract the next musl archive, prepare its resources, and use that version's
+programs. Keep your saves in a separate `HORIZON_HOME` and point each version at it. Back up saves before
+updating. The bundled `horizon-server` also refuses automatic updates because the server update archives use
+glibc. An absent musl archive is not a reason to install the glibc archive on a musl system.
+
 ## Run from a checkout
 
 Use current stable Rust (1.90+) and JDK 25 (Python 3.10+ only for the development
@@ -242,39 +283,6 @@ constant speed and replies with the same summary as `bench` (avg/1%-low FPS and
 p50/p95/p99/max frame times), plus CPU and GPU time per frame; [the graphics
 benchmark](graphics.md#benchmark) is built on it. Frame times include waits for
 presentation, so `bench` reports what is on screen.
-
-### RAM limit
-
-`HORIZON_MEMORY_LIMIT_MB` (the launcher sets it when the player picks a value; there is none by default)
-and `/ramlimit`, `/ramlimit <MB>`, `/ramlimit off` limit the RAM the game holds; the command lasts until
-the game closes and works on any server, as the window answers it. Once a second the game compares what
-it holds in RAM with the limit and, past nine tenths of it, turns far terrain off and then lowers the
-render distance in use, never the saved option, until it fits; both come back when there is room. This
-is the same on Windows, Linux and macOS: nothing asks the system to page the game out to meet the limit.
-The game ends with a crash report only when it can't run under the limit: 20 seconds over it with nothing
-left to give up.
-
-**`HORIZON_MEMORY_HARD_MB` / `/ramlimit hard <MB>`** is the other contract, the one `-Xmx` gives
-Java: a budget for the memory the process commits, not only for the part that stays in RAM. Nothing is
-paged out to meet it. Once a second the game compares what the process committed with the budget and,
-over nine tenths of it, gives up far terrain and then render distance the way it does under a low RAM
-limit, until it fits; when there is room again, both come back. Below a budget the game can reach even
-at its lowest distance, it ends after twenty seconds with a crash report naming what it held and the
-budget, instead of sitting in the page file.
-
-The allocator holds the same line: it counts the bytes the game asks for, a free returns them at once,
-and a request past the ceiling fails rather than being served, so a sudden burst cannot pass the budget
-in the second before the next look. That failure ends the game with a message naming the ceiling.
-
-Set it at or below the RAM limit; alone it also becomes the RAM limit. What it counts is the whole
-process: on a clean launch this build commits 1.1 to 1.2 GB before a world is open (the renderer and
-the game's resources), so a budget under about 1.4 GB leaves too little to run, exactly as `-Xmx` too
-low throws `OutOfMemoryError`.
-
-What "committed" means depends on the system. On Windows it is the process's commit charge, the
-figure Task Manager shows, the graphics driver's pages included. On Linux and macOS there is no such
-figure: it is what the game's allocator (mimalloc) committed, so the driver's and the GPU's own memory
-are outside the budget there.
 
 ### Discord Rich Presence
 

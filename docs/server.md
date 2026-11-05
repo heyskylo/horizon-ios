@@ -144,6 +144,98 @@ every OS), the dedicated loop answers `server-status` with TPS, MSPT (average, P
 clock `/tick query` uses), players (name, UUID, address, ping, position), loaded chunks and uptime. It answers
 `console <line>` with the command's output.
 
+**A proxy moving a player between two servers** uses more requests on this endpoint (`lan/arrivals.rs`,
+`game/dedicated/transfer.rs`). They are a built-in module, **off by default**, that the owner turns on in
+`server.toml`:
+
+```toml
+[transfer]
+enabled = false              # true: take a proxy's player-* requests; needs Velocity forwarding (forwarding.secret)
+expect_seconds = 10          # how long a player the proxy announced is waited for, when it names no time
+max_expect_seconds = 60      # the longest the proxy may ask for
+max_expected = 64            # players waited for at once
+max_freeze_seconds = 30      # the longest a player stays frozen while it is handed over
+```
+
+The supervisor passes the section to the engine as `--transfers expect_seconds=10,...`, beside
+`--control-socket`, and not as a `server.properties` key: that file stays vanilla's. The section has nothing to do
+with vanilla's `accepts-transfers`, which is about the transfer packet a server sends a client. While it is off,
+every `player-*` request is answered `{"error": "transfers are off on this server"}`, the engine keeps no table
+and does nothing for transfers on a tick.
+
+With it on, the engine refuses to start unless Velocity forwarding is on (`forwarding.secret`,
+[velocity-forwarding.md](velocity-forwarding.md)). The proxy must be the only way in: a player who joined a
+source server directly would find there the older copy of itself that a hand-over left behind, and items would
+double.
+
+**Who can ask.** The requests do not widen who can reach the engine: they use the control endpoint, a Unix socket
+or TCP on 127.0.0.1 only (horizon-server starts it on TCP with a token). A proxy on another machine needs
+something local to each engine to relay for it. The token is all or nothing: whoever can move players can also
+run any console command.
+
+Answers are one JSON line, `{"ok": true, ...}` or `{"error": "..."}`, and a refused request changes nothing. A
+unique id is written as 32 hexadecimal digits with or without dashes in a request, and as lowercase text with
+dashes in an answer (`123e4567-e89b-12d3-a456-426614174000`). A hand-over id is 32 lowercase hexadecimal digits.
+
+`player-expect <uuid> [seconds]` tells the target server that the player is about to log in: within
+`expect_seconds` by default, `max_expect_seconds` at most (a longer time is cut to it), and at most
+`max_expected` players are expected at once. The reply is `{"ok": true, "renewed": false, "ttl_seconds": 10}`;
+asking again for the same player renews the time and says `"renewed": true`. It is refused for a missing or
+malformed id, a time that is not a whole number of seconds above zero, a player already connected, and a full
+table. The player's next login uses the expectation up as it starts, once the bans, the whitelist and the player
+limit let it in, so a login still in configuration when the time runs out (a resource pack prompt) keeps it. A
+login that then fails before it reaches play (its connection drops in configuration, or the client refuses a
+required pack) gives the expectation back with its own deadline, so the proxy's next attempt within that time is
+still expected. An expectation no login used is reported in the log when its time runs out. For now that is all an expectation does:
+the player still logs in as any other.
+
+`player-export <uuid> [freeze]` reads a connected player out of the source server. It first closes the player's open
+menu as vanilla does when a menu closes, in the player's own level (the cursor stack, a crafting table's grid and
+the inventory's own 2x2 grid go back into the inventory, a trade back to its villager; the client is told to close
+it and is sent its inventory), then answers:
+
+```json
+{"ok": true, "record": {
+  "version": 1,
+  "data_version": 5023,
+  "handover": "9f2c4be0a1d34e6b8c0f1e2d3c4b5a69",
+  "uuid": "123e4567-e89b-12d3-a456-426614174000",
+  "name": "Alex",
+  "dimension": "minecraft:overworld",
+  "position": [10.5, 70.0, -3.25],
+  "rotation": [90.0, 15.0],
+  "velocity": [0.0, 0.0, 0.0],
+  "game_mode": 0,
+  "player": "<base64>",
+  "advancements": { },
+  "stats": {"stats": { }, "DataVersion": 5023}
+}}
+```
+
+`player` is the base64 of the uncompressed named NBT (root name empty) of the player compound: what the server
+writes to `players/data/<uuid>.dat` before it gzips it, taken from the connected player at that moment, with the
+values mods attached to the player. `advancements` and `stats` are the JSON the server writes to
+`players/advancements/<uuid>.json` and `players/stats/<uuid>.json`, or null on a server that keeps none.
+`version` is the version of this record (1); `data_version` is the world data version of the server that made it
+(5023 for 26.3). The other fields are a few of the compound's values, for a proxy that does not read NBT. While the
+player is frozen, the reply also gives `"freeze_ticks_left"` beside the record: the ticks before the hand-over ends
+by itself, so that a proxy does not commit on the target too late for its release to come in time.
+
+How a server reads a record (the target's `player-import`):
+- A record of another `version`, or of another `data_version` than the server's own, is refused.
+- The NBT in `player` wins over the plain fields: they are copies of its values, for a proxy.
+- Fields the reader does not know are ignored, so a later version 1 record may carry more.
+
+**The hand-over.** `freeze` starts one: the record gets a `handover` id, which the later requests name, and the
+player's own inputs (moves, clicks, chat, commands) stop being acted on, while what answers the server (teleport
+confirmations, chunk batch acknowledgements, keep-alives, pings, tick ends, client information and chat
+acknowledgements, and the messages a chat packet says the client has seen, in the order they came) still is. A frozen player is not
+kicked for floating. Every later export of that player, with or without `freeze`, answers with the same record,
+byte for byte, and does not restart the freeze: a proxy that lost the reply asks again. The hand-over ends after
+`max_freeze_seconds` (counted in ticks, 600 by default) with a warning in the log, and the id is then forgotten.
+Without `freeze` the export is a read: `handover` is null and the player goes on. The request is refused for a
+player who is not connected, has not finished joining, is leaving, is riding, is asleep or is dead.
+
 **The headless engine** comes after perf-ticks-2's work lands: Resources split into shared and per-game, the
 game built in `Game::new`, the integrated server on its own thread. On that base:
 
@@ -300,7 +392,7 @@ keep = 1                     # other releases kept by updates, besides the one i
 ```
 
 This is the file `init` writes today, and it also writes `[panel]` (`bind = "127.0.0.1:8130"` and
-`allow_public = false`, section 6), `[api]` and `[discord]`. The defaults are vanilla 26.3's (a test checks
+`allow_public = false`, section 6), `[api]`, `[transfer]` (off; a proxy's hand-overs, section 2) and `[discord]`. The defaults are vanilla 26.3's (a test checks
 each one). Unknown keys are errors, as are a typed key set again under `[properties]` and values vanilla would
 refuse. There is no `backups.before_update` setting: an update always backs up the world first (section 7).
 

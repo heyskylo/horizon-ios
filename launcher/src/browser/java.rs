@@ -254,7 +254,9 @@ impl Job<'_> {
             let _ = fs::remove_dir_all(&part);
         })?;
         if let Some(old) = &old {
-            let _ = fs::remove_dir_all(home.join(&old.file));
+            if let Some(dir) = old.path(home) {
+                let _ = fs::remove_dir_all(dir);
+            }
             if old.file != relative {
                 let _ = set_enabled(home, old.file.trim_start_matches("horizon-mods/"), false);
             }
@@ -291,7 +293,7 @@ pub fn remove(home: &Path, entry: &Entry) -> Result<(), String> {
     let Some(id) = entry.file.strip_prefix("horizon-mods/") else {
         return Err(format!("{} isn't in {MODS_DIR}/.", entry.file));
     };
-    match fs::remove_dir_all(home.join(&entry.file)) {
+    match entry.path(home).map_or(Ok(()), fs::remove_dir_all) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(format!("{}: {e}", entry.file)),

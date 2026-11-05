@@ -220,6 +220,7 @@ impl Game<'_> {
                 yaw: g.yaw,
                 pitch: g.pitch,
                 entity_id: g.entity_id,
+                address: g.address.ip().to_string(),
             })
             .collect()
     }
@@ -455,6 +456,17 @@ impl Game<'_> {
             yaw: p.yaw,
             pitch: p.pitch,
             entity_id: self.native_acting_entity() as i32,
+            address: self
+                .lan
+                .as_ref()
+                .and_then(|host| {
+                    host.hub
+                        .guests
+                        .iter()
+                        .find(|g| Some(g.uuid) == self.lan_acting_uuid)
+                })
+                .map(|g| g.address.ip().to_string())
+                .unwrap_or_default(),
         })
     }
     /// Runs `line` (no slash) as the server's console does: permission
@@ -911,11 +923,23 @@ impl Game<'_> {
         }
         let mut commands = Vec::new();
         self.native_register_commands(&mut commands);
-        let (tree, levels, problems) =
+        // Horizon's own moderation commands go in the same tree, so operators' clients complete them
+        // instead of showing them as unknown; the game still runs them itself (`run_guest_command`).
+        let extras = super::tempban::moderation_commands(
+            host.hub.chat_filter_on(),
+            self.server_lists.is_some(),
+        );
+        commands.extend(extras.iter().cloned());
+        let (tree, mut levels, problems) =
             command_tree(&commands, |name| host.hub.vanilla_command(name));
         for p in problems {
             log::warn!("Horizon: a native mod's command was left out: {p}");
         }
+        levels.retain(|name, _| {
+            !extras
+                .iter()
+                .any(|c| c.usage.split(' ').next() == Some(name.as_str()))
+        });
         host.hub.set_mod_commands(0, tree);
         host.native_commands = Some(levels);
     }
@@ -993,6 +1017,7 @@ impl Game<'_> {
             yaw: g.yaw,
             pitch: g.pitch,
             entity_id: g.entity_id,
+            address: g.address.ip().to_string(),
         };
         let mut ran = false;
         self.native_perform_command(&player, line, &mut ran);

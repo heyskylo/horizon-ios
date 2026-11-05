@@ -156,10 +156,16 @@ impl Game<'_> {
                     kind: DamageKind::Thrown,
                     attacker: p.owner,
                     from: Some([p.previous.x, p.previous.y, p.previous.z]),
+                    attacker_species: owner_breeze.then_some(Species::Breeze),
                 };
                 if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
                     // Breeze.isInvulnerableTo: its own kind's charges.
                     if owner_breeze && m.species() == Species::Breeze {
+                        return;
+                    }
+                    // Refused before the hurt, so the kill is not credited
+                    // either; the burst of `wind_charge_hit` still goes off.
+                    if horizon_client::mobs::wither::armor_refuses(m, &p.kind) {
                         return;
                     }
                     m.damage(1.0, source);
@@ -648,6 +654,7 @@ mod tests {
         assert!(!push_waits_for_tick(false, 3, Some(7)), "ticks before it");
         assert!(!push_waits_for_tick(true, 3, None), "not a charge's burst");
         let tnt = crate::game::tnt::PrimedTnt {
+            rotation: [0.0, 0.0],
             id: 1,
             position: Vec3::ZERO,
             previous: Vec3::ZERO,
@@ -658,6 +665,7 @@ mod tests {
             guest: None,
             no_gravity: false,
             power: 4.0,
+            block_state: None,
             join: Default::default(),
         };
         assert!(Entity::ticks_after_projectiles(&tnt));

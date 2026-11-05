@@ -697,11 +697,13 @@ impl Game<'_> {
                 let block = Text::translate(&format!("block.{block}"), &[]);
                 Text::translate("entity.minecraft.falling_block_type", &[block])
             }
-            Target::Mob(id) => self
-                .mobs
-                .iter()
-                .find(|m| m.id == id)
-                .map_or_else(|| Text::translate("entity.", &[]), |m| m.command_name()),
+            Target::Mob(id) => self.mobs.iter().find(|m| m.id == id).map_or_else(
+                || Text::translate("entity.", &[]),
+                |m| match self.mob_team_of(m) {
+                    Some(team) => team.formatted_name(m.command_name()),
+                    None => m.command_name(),
+                },
+            ),
             other => {
                 // Entity.getDisplayName: the CustomName component, else the type.
                 let custom = match other {
@@ -1506,18 +1508,40 @@ impl Game<'_> {
         self.feedback(message);
         Ok(targets.len() as i32)
     }
-    fn teleport_to(&mut self, t: Target, pos: [f64; 3], rotation: Option<[f32; 2]>) {
+    fn teleport_to(
+        &mut self,
+        t: Target,
+        pos: [f64; 3],
+        rotation: Option<[f32; 2]>,
+        turn_riders: bool,
+    ) {
         // An entity in another level is teleported in the level that holds it.
-        let _ = self.in_target_level(t, |g| g.teleport_to_in_level(t, pos, rotation));
+        let _ = self.in_target_level(t, |g| g.teleport_to_in_level(t, pos, rotation, turn_riders));
     }
-    fn teleport_to_in_level(&mut self, t: Target, pos: [f64; 3], rotation: Option<[f32; 2]>) {
+    pub(super) fn teleport_to_in_level(
+        &mut self,
+        t: Target,
+        pos: [f64; 3],
+        rotation: Option<[f32; 2]>,
+        turn_riders: bool,
+    ) {
+        use super::entity::Entity;
         let from = self.target_position(t);
+        // Entity.calculatePassengerTransition compares a rider's angle with the
+        // vehicle's own, so the vehicle's angles are read before the teleport,
+        // beside its position.
+        let from_rotation = self.target_rotation(t);
         let v = Vec3::new(pos[0], pos[1], pos[2]);
+        // The riders turn from the unclamped angles (calculatePassengerTransition
+        // adds their offset to the transition's, each rider's own setXRot clamps).
+        let requested = rotation;
         // PositionMoveRotation.calculateAbsolute clamps pitch before setXRot.
         let rotation = rotation.map(|[yaw, pitch]| [yaw, pitch.clamp(-90.0, 90.0)]);
         match t {
             Target::Guest(_) => {
-                self.for_player(t, |g| g.teleport_to(Target::Player, pos, rotation));
+                self.for_player(t, |g| {
+                    g.teleport_to(Target::Player, pos, rotation, turn_riders)
+                });
             }
             Target::Player => {
                 // ServerPlayer.teleport: removeVehicle before placing the player.
@@ -1567,6 +1591,11 @@ impl Game<'_> {
                 }
             }
             Target::Mob(id) => {
+                // Entity.teleport: stopRiding() before the entity is placed,
+                // which a command's transition always does (a command's
+                // transition is never asPassenger). A rider moved without this
+                // is seated again by the next sync, so nothing moves.
+                self.dismount_mob(id);
                 if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
                     m.position = v;
                     m.previous = v;
@@ -1590,26 +1619,38 @@ impl Game<'_> {
                 if let Some(i) = self.dropped.iter_mut().find(|i| i.id == id) {
                     i.position = v;
                     i.previous = v;
+                    if let Some(r) = rotation {
+                        Entity::set_rotation(i, r);
+                    }
                 }
             }
             Target::Orb(id) => {
                 if let Some(o) = self.orbs.iter_mut().find(|o| o.id == id) {
                     o.position = v;
                     o.previous = v;
+                    if let Some(r) = rotation {
+                        Entity::set_rotation(o, r);
+                    }
                 }
             }
             Target::Projectile(id) => {
                 if let Some(a) = self.creatures.projectiles.iter_mut().find(|a| a.id == id) {
                     a.position = v;
                     a.previous = v;
+                    if let Some(r) = rotation {
+                        Entity::set_rotation(a, r);
+                    }
                 }
             }
             Target::Stand(id) => {
                 if let Some(a) = self.armor_stands.iter_mut().find(|a| a.id == id) {
                     a.position = v;
                     a.previous = v;
-                    if let Some([yaw, _]) = rotation.filter(|r| r[0].is_finite()) {
-                        a.yaw = yaw;
+                    // Entity.teleport's stopRiding(), as for a mob: a stand a
+                    // server seats on a vehicle (a name tag hologram) leaves it.
+                    a.vehicle = None;
+                    if let Some(r) = rotation {
+                        Entity::set_rotation(a, r);
                     }
                 }
             }
@@ -1617,8 +1658,8 @@ impl Game<'_> {
                 if let Some(b) = self.boats.iter_mut().find(|b| b.id == id) {
                     b.position = v;
                     b.previous = v;
-                    if let Some([yaw, _]) = rotation.filter(|r| r[0].is_finite()) {
-                        b.yaw = yaw;
+                    if let Some(r) = rotation {
+                        Entity::set_rotation(b, r);
                     }
                 }
             }
@@ -1626,8 +1667,8 @@ impl Game<'_> {
                 if let Some(c) = self.carts.iter_mut().find(|c| c.id == id) {
                     c.position = v;
                     c.previous = v;
-                    if let Some([yaw, _]) = rotation.filter(|r| r[0].is_finite()) {
-                        c.yaw = yaw;
+                    if let Some(r) = rotation {
+                        Entity::set_rotation(c, r);
                     }
                 }
             }
@@ -1667,24 +1708,36 @@ impl Game<'_> {
                 if let Some(t) = self.tnts.iter_mut().find(|t| t.id == id) {
                     t.position = v;
                     t.previous = v;
+                    if let Some(r) = rotation {
+                        Entity::set_rotation(t, r);
+                    }
                 }
             }
             Target::Falling(id) => {
                 if let Some(f) = self.falling.iter_mut().find(|f| f.id == id) {
                     f.position = v;
                     f.previous = v;
+                    if let Some(r) = rotation {
+                        Entity::set_rotation(f, r);
+                    }
                 }
             }
             Target::Rocket(id) => {
                 if let Some(r) = self.rockets.iter_mut().find(|r| r.id == id) {
                     r.position = v;
                     r.previous = v;
+                    if let Some(rot) = rotation {
+                        Entity::set_rotation(r, rot);
+                    }
                 }
             }
             Target::Trident(id) => {
                 if let Some(t) = self.tridents.iter_mut().find(|t| t.id == id) {
                     t.position = v;
                     t.previous = v;
+                    if let Some(r) = rotation {
+                        Entity::set_rotation(t, r);
+                    }
                 }
             }
             Target::Spawner(id) => {
@@ -1699,6 +1752,17 @@ impl Game<'_> {
             }
             // Wall-mounted entities do not move.
             Target::Frame(_) | Target::Painting(_) => {}
+        }
+        // Entity.teleportSameDimension: the riders go with their vehicle at
+        // once, by the offset it took and the turn it was given.
+        if let (Some(from), Some(to)) = (from, self.target_position(t)) {
+            let placed = requested.filter(|_| turn_riders).map(|after| {
+                super::vehicle_teleport::PlacedRotation {
+                    before: from_rotation,
+                    after,
+                }
+            });
+            self.teleport_passengers(t, from, to, placed);
         }
         if self.options.dedicated.is_some()
             && let (Some(entity), Some(from), Some(to)) =
@@ -1717,7 +1781,16 @@ impl Game<'_> {
         level: super::Dim,
         pos: [f64; 3],
         rotation: Option<[f32; 2]>,
-    ) -> bool {
+        turn_riders: bool,
+    ) -> R<bool> {
+        match self.teleport_vehicle_across(t, level, pos, rotation, turn_riders) {
+            Ok(true) => return Ok(true),
+            Ok(false) => {}
+            Err(error) => {
+                log::error!("entity teleport into {}: {error}", level.id());
+                return Err(err("commands.generic.exception", &[]));
+            }
+        }
         let conn = match t {
             Target::Player => self.lan_acting,
             Target::Guest(conn) => Some(conn),
@@ -1725,7 +1798,7 @@ impl Game<'_> {
         };
         let at = self.target_level(t);
         let Some(conn) = conn.filter(|_| at != level) else {
-            return false;
+            return Ok(false);
         };
         self.level_teleports
             .push(super::server_travel::LevelTeleport {
@@ -1733,8 +1806,9 @@ impl Game<'_> {
                 dim: level,
                 at: pos,
                 rotation,
+                vehicle: None,
             });
-        true
+        Ok(true)
     }
     /// `ServerPlayer.lookAt`: besides turning the player, tell their client
     /// with a `ClientboundPlayerLookAtPacket` (`from` anchor, the point, and
@@ -1792,28 +1866,36 @@ impl Game<'_> {
         };
         if id.ends_with("destination") {
             let dest = self.entities(ctx, "destination", false)?[0];
-            let pos = self.target_position(dest).unwrap_or(self.source_position());
-            // Into the destination's level.
-            let level = self.target_level(dest);
-            // TeleportCommand.teleportToEntity: the destination's rotation too.
-            let rotation = Some(self.target_rotation(dest).map(wrap_degrees));
+            let (pos, level, rotation, destination_name) = self
+                .in_target_level(dest, |game| {
+                    (
+                        game.target_position(dest).unwrap_or(game.source_position()),
+                        game.target_level(dest),
+                        Some(game.target_rotation(dest).map(wrap_degrees)),
+                        game.target_name(dest),
+                    )
+                })
+                .ok_or_else(|| err("argument.entity.notfound.entity", &[]))?;
+            let target_name = (targets.len() == 1).then(|| {
+                self.in_target_level(targets[0], |game| game.target_name(targets[0]))
+                    .unwrap_or_else(Text::empty)
+            });
             for &t in &targets {
-                if !self.teleport_across(t, level, pos, rotation) {
-                    self.teleport_to(t, pos, rotation);
+                if !self.teleport_across(t, level, pos, rotation, true)? {
+                    // TeleportCommand.teleportToEntity: the destination's angles,
+                    // which the riders turn to as well.
+                    self.teleport_to(t, pos, rotation, true);
                 }
             }
             let message = if targets.len() == 1 {
                 Text::translate(
                     "commands.teleport.success.entity.single",
-                    &[self.target_name(targets[0]), self.target_name(dest)],
+                    &[target_name.unwrap(), destination_name],
                 )
             } else {
                 Text::translate(
                     "commands.teleport.success.entity.multiple",
-                    &[
-                        Text::literal(targets.len().to_string()),
-                        self.target_name(dest),
-                    ],
+                    &[Text::literal(targets.len().to_string()), destination_name],
                 )
             };
             self.feedback(message);
@@ -1876,10 +1958,20 @@ impl Game<'_> {
             None if self.source_entity().is_none() => super::Dim::Overworld,
             None => self.dim,
         };
+        let target_name = (targets.len() == 1).then(|| {
+            self.in_target_level(targets[0], |game| game.target_name(targets[0]))
+                .unwrap_or_else(Text::empty)
+        });
         for &t in &targets {
-            let rotation = look_at(self, t).or_else(|| {
+            // `facing` teleports with the rotation unchanged (Relative.ROTATION,
+            // no turn for the riders), then LookAt.perform turns the target alone.
+            let looked = look_at(self, t);
+            let turn_riders = looked.is_none();
+            let rotation = looked.or_else(|| {
                 let (angles, relative) = rotation?;
-                let current = self.target_rotation(t);
+                let current = self
+                    .in_target_level(t, |game| game.target_rotation(t))
+                    .unwrap_or([0.0, 0.0]);
                 // performTeleport wraps relative deltas before calculateAbsolute
                 // adds them back; wrapping the resolved pitch changes its clamp.
                 Some(std::array::from_fn(|axis| {
@@ -1890,10 +1982,10 @@ impl Game<'_> {
                     }
                 }))
             });
-            if self.teleport_across(t, source_level, pos, rotation) {
+            if self.teleport_across(t, source_level, pos, rotation, turn_riders)? {
                 continue;
             }
-            self.teleport_to(t, pos, rotation);
+            self.teleport_to(t, pos, rotation, turn_riders);
             // LookAt.perform after a successful teleportTo.
             if let Some(f) = facing {
                 self.send_player_look_at(t, anchored_eyes, f, facing_entity);
@@ -1903,7 +1995,7 @@ impl Game<'_> {
         let message = if targets.len() == 1 {
             Text::translate(
                 "commands.teleport.success.location.single",
-                &[self.target_name(targets[0]), x, y, z],
+                &[target_name.unwrap(), x, y, z],
             )
         } else {
             Text::translate(
@@ -1914,6 +2006,40 @@ impl Game<'_> {
         self.feedback(message);
         Ok(targets.len() as i32)
     }
+    /// `ServerClockManager.getInstance`: commands address clock-keyed state.
+    /// Keep the existing Overworld clock tied to the world's canonical day time.
+    fn command_clock_time(&self, clock: &str) -> i64 {
+        if clock == "minecraft:overworld" {
+            self.world.day_time
+        } else {
+            self.ui.command_clocks.get(clock).map_or(0, |c| c.0)
+        }
+    }
+    fn set_command_clock_time(&mut self, clock: &str, total: i64) {
+        if clock == "minecraft:overworld" {
+            self.world.day_time = total;
+        } else {
+            self.ui
+                .command_clocks
+                .entry(clock.to_owned())
+                .or_default()
+                .0 = total;
+        }
+    }
+    fn command_clock_state(&mut self, clock: &str) -> &mut super::chat::WorldClock {
+        if clock == "minecraft:overworld" {
+            &mut self.ui.clock
+        } else {
+            &mut self
+                .ui
+                .command_clocks
+                .entry(clock.to_owned())
+                .or_default()
+                .1
+        }
+    }
+    /// `TimeCommand.getDefaultClock`: explicit registered clocks and dimension defaults are
+    /// separate; built-in timelines and markers belong only to Overworld.
     fn cmd_time(&mut self, id: &str, ctx: &Context) -> R<i32> {
         if id == "time.query.gametime" {
             let t = self.world.game_time;
@@ -1923,21 +2049,15 @@ impl Game<'_> {
         // `time of <clock>` names the clock; otherwise the dimension's default clock.
         let clock = match ctx.get("clock") {
             Some(Arg::Resource(c)) => c.clone(),
-            _ => {
-                if self.dim == Dim::Nether {
-                    return Err(err(
-                        "commands.time.no_default_clock",
-                        &[&"minecraft:the_nether"],
-                    ));
+            _ => match self.dim {
+                Dim::Overworld => "minecraft:overworld".to_owned(),
+                Dim::End => "minecraft:the_end".to_owned(),
+                Dim::Nether => {
+                    return Err(err("commands.time.no_default_clock", &[&self.dim.id()]));
                 }
-                "minecraft:overworld".to_owned()
-            }
+            },
         };
-        if clock != "minecraft:overworld" {
-            // Only the overworld clock runs in Horizon (no End yet).
-            return Err(err("commands.time.no_default_clock", &[&clock]));
-        }
-        let total = self.world.day_time;
+        let total = self.command_clock_time(&clock);
         match id {
             "time.set" => {
                 let t = i64::from(Self::int(ctx, "time").unwrap_or(0));
@@ -1947,8 +2067,8 @@ impl Game<'_> {
                 let mut cancel = false;
                 self.native_time_skip(self.dim.id(), total, t, "command", &mut cancel);
                 if !cancel {
-                    self.world.day_time = t;
-                    self.ui.clock.partial = 0.0;
+                    self.set_command_clock_time(&clock, t);
+                    self.command_clock_state(&clock).partial = 0.0;
                 }
                 self.feedback(Text::tr("commands.time.set.absolute", &[&clock, &t]));
                 Ok(t as i32)
@@ -1957,7 +2077,10 @@ impl Game<'_> {
                 let Some(Arg::Resource(marker)) = ctx.get("timemarker").cloned() else {
                     return Ok(0);
                 };
-                let Some(m) = self.ui.markers.get(&marker).copied() else {
+                let Some(m) = (clock == "minecraft:overworld")
+                    .then(|| self.ui.markers.get(&marker).copied())
+                    .flatten()
+                else {
                     return Err(err(
                         "commands.time.no_time_marker_found",
                         &[&marker, &clock],
@@ -1973,14 +2096,14 @@ impl Game<'_> {
                 let mut cancel = false;
                 self.native_time_skip(self.dim.id(), total, target, "command", &mut cancel);
                 if !cancel {
-                    self.world.day_time = target;
-                    self.ui.clock.partial = 0.0;
+                    self.set_command_clock_time(&clock, target);
+                    self.command_clock_state(&clock).partial = 0.0;
                 }
                 self.feedback(Text::tr(
                     "commands.time.set.time_marker",
                     &[&clock, &marker],
                 ));
-                Ok((self.world.day_time % i64::from(i32::MAX)) as i32)
+                Ok((self.command_clock_time(&clock) % i64::from(i32::MAX)) as i32)
             }
             "time.add" => {
                 let t = i64::from(Self::int(ctx, "time").unwrap_or(0));
@@ -1988,15 +2111,15 @@ impl Game<'_> {
                 let mut cancel = false;
                 self.native_time_skip(self.dim.id(), total, target, "command", &mut cancel);
                 if !cancel {
-                    self.world.day_time = target;
+                    self.set_command_clock_time(&clock, target);
                 }
-                let now = self.world.day_time;
+                let now = self.command_clock_time(&clock);
                 self.feedback(Text::tr("commands.time.set.absolute", &[&clock, &now]));
                 Ok((now % i64::from(i32::MAX)) as i32)
             }
             "time.pause" | "time.resume" => {
                 let pause = id == "time.pause";
-                if self.ui.clock.paused == pause {
+                if self.command_clock_state(&clock).paused == pause {
                     return Err(err(
                         if pause {
                             "commands.time.pause.already_paused"
@@ -2006,7 +2129,7 @@ impl Game<'_> {
                         &[&clock],
                     ));
                 }
-                self.ui.clock.paused = pause;
+                self.command_clock_state(&clock).paused = pause;
                 self.feedback(Text::tr(
                     if pause {
                         "commands.time.pause"
@@ -2022,13 +2145,13 @@ impl Game<'_> {
                     Some(Arg::Float(r)) => *r,
                     _ => 1.0,
                 };
-                if self.ui.clock.rate == rate {
+                if self.command_clock_state(&clock).rate == rate {
                     return Err(err(
                         "commands.time.rate.already_same",
                         &[&clock, &java_float(f64::from(rate))],
                     ));
                 }
-                self.ui.clock.rate = rate;
+                self.command_clock_state(&clock).rate = rate;
                 self.feedback(Text::tr(
                     "commands.time.rate",
                     &[&clock, &java_float(f64::from(rate))],
@@ -2043,10 +2166,13 @@ impl Game<'_> {
                 let Some(Arg::Resource(timeline)) = ctx.get("timeline").cloned() else {
                     return Ok(0);
                 };
-                let Some(period) = self.ui.timelines.get(&timeline).copied() else {
+                let Some(period) = (clock == "minecraft:overworld")
+                    .then(|| self.ui.timelines.get(&timeline).copied())
+                    .flatten()
+                else {
                     return Err(err(
                         "commands.time.wrong_timeline_for_clock",
-                        &[&clock, &timeline],
+                        &[&timeline, &clock],
                     ));
                 };
                 if id == "time.query.timeline" {
@@ -2303,6 +2429,7 @@ impl Game<'_> {
                     let at = self.unstuck_orb(pos);
                     self.next_entity += 1;
                     self.orbs.push(horizon_client::entities::ExperienceOrb {
+                        rotation: [0.0, 0.0],
                         join: Default::default(),
                         no_gravity: false,
                         id: self.next_entity,
@@ -2578,6 +2705,12 @@ impl Game<'_> {
     /// from the argument's tag; true when its saved data changed.
     pub(super) fn load_block_entity_nbt(&mut self, pos: [i32; 3], nbt: &str) -> bool {
         use horizon_world::nbt::Tag;
+        if self.pot_data(pos).is_some() {
+            let Ok((tag, _)) = horizon_world::nbt::parse_snbt(nbt) else {
+                return false;
+            };
+            return self.set_pot_data(pos, &tag).unwrap_or(false);
+        }
         let key = (pos[0], pos[1], pos[2]);
         let Some(e) = self.world.block_entities.get(&key) else {
             return false;
@@ -2652,7 +2785,7 @@ impl Game<'_> {
             .take()
             .map(std::sync::Arc::unwrap_or_clone)
             .unwrap_or_default();
-        extras.rolled_loot.retain(|r| r.pos != key);
+        horizon_client::save::consume_container_loot(&mut extras, key);
         chunk.saved = Some(std::sync::Arc::new(extras));
         self.world.modified.insert((key.0 >> 4, key.2 >> 4));
     }
@@ -2669,7 +2802,8 @@ impl Game<'_> {
         entity: &mut horizon_client::containers::BlockEntity,
     ) -> bool {
         use horizon_client::{containers::BlockEntity, save, structure_blocks};
-        let table = save::text(tag.get("LootTable"));
+        let table = save::text(tag.get("LootTable"))
+            .and_then(|id| horizon_client_core::identifier::normalize_id(&id));
         let rolled = match (table, entity) {
             (Some(table), BlockEntity::Chest(slots)) if slots.iter().all(Option::is_none) => {
                 let loot = structure_blocks::loot_data(&self.options.resources, &self.pack_files());
@@ -2703,7 +2837,7 @@ impl Game<'_> {
             .take()
             .map(std::sync::Arc::unwrap_or_clone)
             .unwrap_or_default();
-        extras.rolled_loot.retain(|r| r.pos != key);
+        save::consume_container_loot(&mut extras, key);
         let taken = rolled.is_some();
         extras.rolled_loot.extend(rolled);
         chunk.saved = Some(std::sync::Arc::new(extras));
@@ -4021,11 +4155,11 @@ mod teleport_pitch_tests {
         ] {
             game.yaw = 10.0;
             game.pitch = 20.0;
-            game.teleport_to_in_level(Target::Player, [0.0; 3], Some(rotation));
+            game.teleport_to_in_level(Target::Player, [0.0; 3], Some(rotation), true);
             assert_eq!([game.yaw, game.pitch], expected);
             game.mobs[0].yaw = 10.0;
             game.mobs[0].head_pitch = 20.0;
-            game.teleport_to_in_level(Target::Mob(42), [0.0; 3], Some(rotation));
+            game.teleport_to_in_level(Target::Mob(42), [0.0; 3], Some(rotation), true);
             assert_eq!([game.mobs[0].yaw, game.mobs[0].head_pitch], expected);
         }
         game.build_registries();
@@ -4176,5 +4310,97 @@ mod percent_f_tests {
         assert_eq!(percent_f(0.1234565, 6), "0.123457");
         assert_eq!(percent_f(-1.005, 2), "-1.01");
         assert_eq!(percent_f(3.0, 2), "3.00");
+    }
+}
+
+#[cfg(test)]
+mod teleport_rider_tests {
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_vehicle_carries_its_riders_and_a_rider_leaves_its_vehicle() {
+        use super::Target;
+        use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+        use horizon_core::geometry::Vec3;
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        let horse = game.res.mob_types().get("minecraft:horse").unwrap().clone();
+        let villager = game
+            .res
+            .mob_types()
+            .get("minecraft:villager")
+            .unwrap()
+            .clone();
+        // A villager riding a horse, 30 degrees off it.
+        game.mobs.push(horizon_client::mobs::Mob::new(
+            42,
+            horse,
+            Vec3::new(3.0, 64.0, 5.0),
+            0.0,
+        ));
+        let mut rider =
+            horizon_client::mobs::Mob::new(43, villager, Vec3::new(3.0, 64.5, 5.0), 30.0);
+        rider.extra.mount = Some(42);
+        game.mobs.push(rider);
+        // Entity.teleportPassengers: the rider keeps its offset from the
+        // vehicle and turns by what the vehicle turned.
+        game.teleport_to_in_level(Target::Mob(42), [10.0, 70.0, -4.0], Some([90.0, 0.0]), true);
+        let vehicle = game.mobs.iter().find(|m| m.id == 42).unwrap();
+        assert_eq!(vehicle.position, Vec3::new(10.0, 70.0, -4.0));
+        let rider = game.mobs.iter().find(|m| m.id == 43).unwrap();
+        assert_eq!(rider.position, Vec3::new(10.0, 70.5, -4.0));
+        assert_eq!(rider.yaw, 120.0, "the rider keeps its angle to the vehicle");
+        assert_eq!(
+            rider.extra.mount,
+            Some(42),
+            "a teleported vehicle keeps its riders"
+        );
+        // A relative yaw (`~90`) is the same turn: the transition carries the
+        // 90-degree delta and the rider adds it to its own angle.
+        game.teleport_to_in_level(
+            Target::Mob(42),
+            [10.0, 70.0, -4.0],
+            Some([180.0, 0.0]),
+            true,
+        );
+        let rider = game.mobs.iter().find(|m| m.id == 43).unwrap();
+        assert_eq!(rider.yaw, 210.0, "the rider turns by the vehicle's turn");
+        // `facing` keeps the transition's rotation: the vehicle looks, the rider does not turn.
+        game.teleport_to_in_level(Target::Mob(42), [10.0, 70.0, -4.0], Some([0.0, 0.0]), false);
+        let rider = game.mobs.iter().find(|m| m.id == 43).unwrap();
+        assert_eq!(
+            rider.yaw, 210.0,
+            "a vehicle turned by `facing` leaves its rider"
+        );
+        // Entity.teleport's stopRiding(): a target that is itself a passenger
+        // leaves its vehicle, or the next sync seats it where it was.
+        game.teleport_to_in_level(Target::Mob(43), [0.0, 64.0, 0.0], None, false);
+        let rider = game.mobs.iter().find(|m| m.id == 43).unwrap();
+        assert_eq!(rider.extra.mount, None, "the teleported rider dismounted");
+        assert_eq!(rider.position, Vec3::new(0.0, 64.0, 0.0));
     }
 }

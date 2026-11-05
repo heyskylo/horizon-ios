@@ -48,7 +48,7 @@ pub struct Route {
 }
 
 /// Every endpoint `start` and [`route`] answer; a test checks the two agree.
-pub const ROUTES: [Route; 30] = [
+pub const ROUTES: [Route; 32] = [
     Route {
         method: "GET",
         path: "/api/v1/status",
@@ -134,6 +134,20 @@ pub const ROUTES: [Route; 30] = [
         what: "Download a backup",
     },
     Route {
+        method: "GET",
+        path: "/api/v1/crash-reports",
+        takes: "",
+        answers: "`{\"reports\": [{\"name\", \"bytes\"}]}`, newest first (the `.txt` files in `crash-reports/`)",
+        what: "List the game's crash reports",
+    },
+    Route {
+        method: "GET",
+        path: "/api/v1/crash-reports/read",
+        takes: "`?name=<file>` (a name `crash-reports` lists)",
+        answers: "the report's text (`text/plain`)",
+        what: "Read one crash report",
+    },
+    Route {
         method: "POST",
         path: "/api/v1/restore",
         takes: "`{\"name\": \"<backup>\", \"dimension\": \"minecraft:the_nether\"}` (`dimension` optional)",
@@ -158,7 +172,7 @@ pub const ROUTES: [Route; 30] = [
         method: "GET",
         path: "/api/v1/players",
         takes: "",
-        answers: "`online` (name, uuid, address, ping_ms, position, op_level), `max_players`, `ops`, `whitelist` (`enabled`, `players`), `bans`, `ip_bans` (with reason, source, created, expires)",
+        answers: "`online` (name, uuid, address, ping_ms, dimension, position, op_level), `max_players`, `ops`, `whitelist` (`enabled`, `players`), `bans`, `ip_bans` (with reason, source, created, expires)",
         what: "Who is online, and vanilla's lists",
     },
     Route {
@@ -795,6 +809,31 @@ pub fn route(shared: &Arc<Shared>, request: &Request) -> Response {
             }
             Response::file(shared.dir.join(backup::DIR).join(name), name)
         }
+        ("GET", "/api/v1/crash-reports") => {
+            let list: Vec<Value> = crash_reports(&shared.dir)
+                .into_iter()
+                .map(|(name, bytes)| json!({ "name": name, "bytes": bytes }))
+                .collect();
+            Response::json(200, &json!({ "reports": list }))
+        }
+        ("GET", "/api/v1/crash-reports/read") => {
+            // Only a name the listing holds is read, so a path (`../`, `/`) matches nothing.
+            let name = request.param("name").unwrap_or_default();
+            if !crash_reports(&shared.dir).iter().any(|(n, _)| n == name) {
+                return Response::error(
+                    404,
+                    "no such crash report (`GET /api/v1/crash-reports` lists them)",
+                );
+            }
+            match std::fs::read(shared.dir.join(CRASH_DIR).join(name)) {
+                Ok(bytes) => Response::text(
+                    200,
+                    "text/plain; charset=utf-8",
+                    String::from_utf8_lossy(&bytes).into_owned(),
+                ),
+                Err(e) => Response::error(409, &e.to_string()),
+            }
+        }
         ("GET", "/api/v1/config") => match settings::shown(&shared.dir) {
             Ok(config) => Response::json(200, &json!({ "config": config })),
             Err(e) => Response::error(409, &e),
@@ -803,6 +842,25 @@ pub fn route(shared: &Arc<Shared>, request: &Request) -> Response {
         (_, path) if ROUTES.iter().any(|r| r.path == path) => Response::error(405, "wrong method"),
         _ => Response::error(404, "no such endpoint"),
     }
+}
+
+/// Where the game writes its crash reports, under the server folder.
+const CRASH_DIR: &str = "crash-reports";
+
+/// The crash reports (`*.txt` files directly in `crash-reports/`) with their sizes, newest name first.
+fn crash_reports(dir: &std::path::Path) -> Vec<(String, u64)> {
+    let mut out: Vec<(String, u64)> = std::fs::read_dir(dir.join(CRASH_DIR))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let meta = e.metadata().ok().filter(|m| m.is_file())?;
+            let name = e.file_name().to_string_lossy().into_owned();
+            name.ends_with(".txt").then_some((name, meta.len()))
+        })
+        .collect();
+    out.sort_by(|a, b| b.0.cmp(&a.0));
+    out
 }
 
 /// `PATCH /api/v1/config`: `config set` for a program, without the settings that change who can reach the
@@ -1063,6 +1121,129 @@ mod tests {
         drop(endpoint);
         std::fs::remove_dir_all(&dir).unwrap();
     }
+
+    fn observability_reply(mut response: Response, dynamic: &[&str]) -> Value {
+        assert!(response.stream.is_none());
+        let mut body = serde_json::from_str::<Value>(&response.body)
+            .unwrap_or_else(|_| Value::String(response.body.clone()));
+        for field in dynamic {
+            if let Some(value) = body.get_mut(*field) {
+                *value = json!("<dynamic>");
+            }
+        }
+        if let Some(text) = body.as_str() {
+            let text = text
+                .lines()
+                .map(|line| {
+                    if line.starts_with("horizon_supervisor_uptime_seconds ") {
+                        "horizon_supervisor_uptime_seconds <dynamic>"
+                    } else {
+                        line
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            body = Value::String(if response.body.ends_with('\n') {
+                format!("{text}\n")
+            } else {
+                text
+            });
+        }
+        json!({
+            "status": response.status,
+            "content_type": response.content_type,
+            "headers": std::mem::take(&mut response.headers),
+            "body": body,
+        })
+    }
+
+    #[test]
+    fn observability_replies_match_api_v1_goldens() {
+        let golden: Value =
+            serde_json::from_str(include_str!("../testdata/api-v1-observability.json")).unwrap();
+        let dir = std::env::temp_dir().join(format!(
+            "horizon-server-api-observability-goldens-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let shared = Shared::with_install(&dir, None);
+        shared.set_phase(Phase::Stopped);
+        {
+            let mut state = shared.state.lock().unwrap();
+            state.crashes = 2;
+            state.last_crash = Some("exit status: 1".into());
+            state.sample = json!({
+                "t": 200,
+                "rss_bytes": 536_870_912u64,
+                "cpu_percent": 12.5,
+                "game": {
+                    "tps": 19.9,
+                    "target_tps": 20.0,
+                    "mspt": { "average": 8.25, "p50": 7.0, "p95": 12.5, "p99": 18.0 },
+                    "players": [{ "name": "Alex" }, { "name": "Steve" }],
+                    "max_players": 20,
+                    "chunks": 321,
+                },
+            });
+        }
+        shared.record(json!({ "t": 100, "game": { "tps": 20.0 } }));
+        shared.record(shared.state.lock().unwrap().sample.clone());
+        shared.log.lock().unwrap().push("first line".into());
+        shared.log.lock().unwrap().push("second line".into());
+
+        let call = |path: &str, query: &str, dynamic: &[&str]| {
+            observability_reply(
+                route(
+                    &shared,
+                    &Request {
+                        method: "GET".into(),
+                        path: path.into(),
+                        query: query.into(),
+                        headers: Vec::new(),
+                        body: Vec::new(),
+                    },
+                ),
+                dynamic,
+            )
+        };
+        let cases = [
+            (
+                "status_stopped",
+                "/api/v1/status",
+                "",
+                &["pid", "uptime_seconds"][..],
+            ),
+            ("logs_all", "/api/v1/logs", "", &[][..]),
+            ("logs_since", "/api/v1/logs", "since=1", &[][..]),
+            ("logs_invalid_since", "/api/v1/logs", "since=nope", &[][..]),
+            ("metrics_all", "/api/v1/metrics", "", &[][..]),
+            ("metrics_since", "/api/v1/metrics", "since=100", &[][..]),
+            (
+                "metrics_invalid_since",
+                "/api/v1/metrics",
+                "since=nope",
+                &[][..],
+            ),
+            (
+                "prometheus_stopped",
+                "/api/v1/metrics/prometheus",
+                "",
+                &[][..],
+            ),
+        ];
+        for (case, path, query, dynamic) in cases {
+            assert_eq!(call(path, query, dynamic), golden[case], "{case}");
+        }
+        shared.set_phase(Phase::Running);
+        assert_eq!(
+            call("/api/v1/metrics/prometheus", "", &[]),
+            golden["prometheus_running"],
+            "prometheus_running"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     const LIFECYCLE_GOLDENS: &str = include_str!("../testdata/api-v1-lifecycle.json");
 
     fn golden_phase(name: &str) -> Phase {
@@ -1242,6 +1423,65 @@ mod tests {
         };
         assert_eq!((get(token), get("a-token-for-the-discord-bo")), (200, 401));
         drop(_endpoint);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn crash_reports_over_the_api() {
+        let dir =
+            std::env::temp_dir().join(format!("horizon-server-api-crash-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("crash-reports")).unwrap();
+        std::fs::write(dir.join("secret.txt"), "not a report").unwrap();
+        std::fs::write(
+            dir.join("crash-reports/crash-2026-11-01_10.00.00-server.txt"),
+            "old",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("crash-reports/crash-2026-11-02_10.00.00-server.txt"),
+            "---- Horizon Crash Report ----\nOutOfMemory",
+        )
+        .unwrap();
+        std::fs::write(dir.join("crash-reports/notes.log"), "skipped").unwrap();
+        let shared = Shared::with_install(&dir, None);
+        let get = |path: &str, query: &str| {
+            let r = route(
+                &shared,
+                &Request {
+                    method: "GET".into(),
+                    path: path.into(),
+                    query: query.into(),
+                    headers: Vec::new(),
+                    body: Vec::new(),
+                },
+            );
+            (r.status, r.body)
+        };
+        let (status, body) = get("/api/v1/crash-reports", "");
+        let list: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(status, 200);
+        assert_eq!(list["reports"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            list["reports"][0]["name"],
+            "crash-2026-11-02_10.00.00-server.txt"
+        );
+        let (status, text) = get(
+            "/api/v1/crash-reports/read",
+            "name=crash-2026-11-02_10.00.00-server.txt",
+        );
+        assert_eq!(status, 200);
+        assert!(text.contains("OutOfMemory"));
+        for name in [
+            "../secret.txt",
+            "..%2Fsecret.txt",
+            "/etc/passwd",
+            "notes.log",
+            "",
+        ] {
+            let (status, body) = get("/api/v1/crash-reports/read", &format!("name={name}"));
+            assert_eq!(status, 404, "{name}");
+            assert!(!body.contains("not a report"), "{name}");
+        }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -1512,6 +1752,98 @@ mod tests {
         let response = request("POST", "/api/v1/start", b"");
         assert_eq!(response.status, 200, "{}", response.body);
         assert!(shared.restart.load(Ordering::SeqCst));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn config_reply(response: Response) -> Value {
+        assert!(response.stream.is_none());
+        json!({
+            "status": response.status,
+            "content_type": response.content_type,
+            "headers": response.headers,
+            "body": serde_json::from_str::<Value>(&response.body).unwrap(),
+        })
+    }
+
+    #[test]
+    fn config_replies_match_api_v1_goldens() {
+        let golden: Value =
+            serde_json::from_str(include_str!("../testdata/api-v1-config.json")).unwrap();
+        let dir = std::env::temp_dir().join(format!(
+            "horizon-server-api-config-goldens-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let toml = crate::config::TEMPLATE
+            .replace("token = \"\"", "token = \"a-token-for-the-config-test\"")
+            .replace(
+                "webhook = \"\"",
+                "webhook = \"https://discord.com/api/webhooks/123/config-test\"",
+            );
+        std::fs::write(dir.join(crate::config::FILE), toml).unwrap();
+        let shared = Shared::with_install(&dir, None);
+        shared.set_phase(Phase::Stopped);
+        let call = |method: &str, body: &[u8]| {
+            config_reply(route(
+                &shared,
+                &Request {
+                    method: method.into(),
+                    path: "/api/v1/config".into(),
+                    query: String::new(),
+                    headers: Vec::new(),
+                    body: body.to_vec(),
+                },
+            ))
+        };
+        let check = |case: &str, method: &str, body: &[u8]| {
+            assert_eq!(call(method, body), golden[case], "{case}");
+        };
+
+        check("get", "GET", b"");
+        check("malformed", "PATCH", b"not json");
+        check(
+            "protected",
+            "PATCH",
+            br#"{"changes":{"api.token":"replacement"}}"#,
+        );
+        check(
+            "invalid_range",
+            "PATCH",
+            br#"{"changes":{"server.max_players":0}}"#,
+        );
+        check(
+            "invalid_shape",
+            "PATCH",
+            br#"{"changes":{"world.seed":[1,2]}}"#,
+        );
+        check(
+            "unknown",
+            "PATCH",
+            br#"{"changes":{"server.unknown":true}}"#,
+        );
+        check(
+            "patch_stopped",
+            "PATCH",
+            br#"{"changes":{"world.difficulty":"hard","server.max_players":50}}"#,
+        );
+
+        shared.set_phase(Phase::Running);
+        check(
+            "patch_running",
+            "PATCH",
+            br#"{"changes":{"server.port":25566,"backups.keep":7}}"#,
+        );
+        let saved = crate::config::Config::load(&dir).unwrap();
+        assert_eq!(
+            (
+                saved.world.difficulty.as_str(),
+                saved.server.max_players,
+                saved.server.port,
+                saved.backups.keep,
+            ),
+            ("hard", 50, 25566, 7)
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

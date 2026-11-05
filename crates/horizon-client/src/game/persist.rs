@@ -7,7 +7,8 @@ use horizon_client::{
     chunk::Chunk,
     entity_nbt,
     mobs::Who,
-    save::{ChunkExtras, random_uuid},
+    save::{ChunkExtras, random_uuid, text, uuid_text},
+    scoreboard::Scoreboard,
 };
 use horizon_core::{
     geometry::{Direction, Vec3},
@@ -286,7 +287,7 @@ impl Game<'_> {
         }
     }
     /// `PistonMovingBlockEntity.saveAdditional`.
-    fn moving_piston_to_nbt(&self, pos: BlockPos, piston: &MovingPiston) -> Tag {
+    pub(super) fn moving_piston_to_nbt(&self, pos: BlockPos, piston: &MovingPiston) -> Tag {
         let flag = |b: bool| Tag::Byte(i8::from(b));
         Tag::compound([
             ("id", Tag::String("minecraft:piston".into())),
@@ -419,6 +420,11 @@ impl Game<'_> {
         tag: Tag,
     ) -> std::result::Result<(), Tag> {
         match kind {
+            "minecraft:area_effect_cloud" => {
+                if let Some(id) = self.load_potion_cloud(&tag) {
+                    self.remember(id, uuid, tag);
+                }
+            }
             "minecraft:evoker_fangs" => {
                 if let Some(at) = entity_nbt::position(&tag) {
                     self.next_entity += 1;
@@ -558,6 +564,7 @@ impl Game<'_> {
             self.remember_uuid(self.next_entity, uuid, &tag);
             let uuid = self.uuid_for(self.next_entity);
             self.falling.push(FallingBlock {
+                rotation: [0.0, 0.0],
                 join: Default::default(),
                 id: self.next_entity,
                 state,
@@ -629,6 +636,7 @@ impl Game<'_> {
                 _ => 80,
             };
             self.tnts.push(super::tnt::PrimedTnt {
+                rotation: [0.0, 0.0],
                 join: Default::default(),
                 no_gravity: entity_nbt::flag(&tag, "NoGravity"),
                 id,
@@ -642,6 +650,9 @@ impl Game<'_> {
                 // PrimedTnt.readAdditionalSaveData: 4 by default,
                 // kept to 0..128.
                 power: entity_nbt::tnt_power(&tag),
+                block_state: tag
+                    .get("block_state")
+                    .and_then(|v| entity_nbt::state_from_nbt(self.pack.assets.registry, v)),
             });
             // `Entity.load`: the `PortalCooldown` of one that just came through.
             self.remember(id, uuid, tag);
@@ -661,6 +672,7 @@ impl Game<'_> {
             let (wood, chest) = super::boats::any_boat_wood(k).unwrap_or(("oak", false));
             let mut b = super::boats::Boat::new(id, std::sync::Arc::from(wood), position, yaw);
             b.no_gravity = entity_nbt::flag(&tag, "NoGravity");
+            b.pitch = entity_nbt::rotation(&tag)[1];
             if chest {
                 b = b.with_chest();
                 b.items =
@@ -960,7 +972,7 @@ impl Game<'_> {
         there.then_some(v)
     }
     /// The root vehicle `root` with its passengers (`Entity.save`).
-    fn vehicle_tree_nbt(&mut self, root: u32) -> Option<Tag> {
+    pub(super) fn vehicle_tree_nbt(&mut self, root: u32) -> Option<Tag> {
         if let Some(i) = self.mobs.iter().position(|m| m.id == root) {
             return Some(self.mob_tree_nbt(i));
         }
@@ -971,7 +983,7 @@ impl Game<'_> {
                 &b.entity_type(),
                 b.position,
                 b.velocity,
-                b.yaw,
+                [b.yaw, b.pitch],
                 uuid,
                 self.persist.raw.get(&root),
                 b.chest.then_some(&b.items[..]),
@@ -1170,7 +1182,7 @@ impl Game<'_> {
     /// A loaded chest minecart with a loot table and no items: the table
     /// rolled now, as generated containers are (Horizon does not unpack on
     /// first open), and kept to save it again while unchanged.
-    fn roll_cart_loot(&self, cart: &mut super::minecarts::Minecart, tag: &Tag) {
+    pub(in crate::game) fn roll_cart_loot(&self, cart: &mut super::minecarts::Minecart, tag: &Tag) {
         let Some(table) = horizon_client::save::text(tag.get("LootTable")) else {
             return;
         };
@@ -1229,9 +1241,13 @@ impl Game<'_> {
             self.remember_tags(id, tag);
         }
     }
-    fn remember(&mut self, id: u32, uuid: Option<[i32; 4]>, tag: Tag) {
+    fn remember(&mut self, id: u32, uuid: Option<[i32; 4]>, mut tag: Tag) {
         self.restore_portal_cooldown(id, &tag);
         self.remember_uuid(id, uuid, &tag);
+        // `Team` is read, never written: the team keeps its members itself.
+        if let Tag::Compound(c) = &mut tag {
+            c.remove(&"Team".into());
+        }
         self.persist.raw.insert(id, tag);
     }
     /// The UUID entity `id` was loaded with, and the attachments `tag` saved under it.
@@ -1239,6 +1255,13 @@ impl Game<'_> {
         if let Some(u) = uuid {
             self.persist.uuids.insert(id, u);
             read_attachments(tag, u, &mut self.entity_attachments);
+        }
+        self.join_saved_team(id, tag);
+    }
+    fn join_saved_team(&mut self, id: u32, tag: &Tag) {
+        if tag.get("Team").is_some() {
+            let name = uuid_text(self.uuid_for(id));
+            join_saved_team(&mut self.score.board, &name, tag);
         }
     }
     /// The mob that was loaded or saved with a UUID.
@@ -1282,15 +1305,21 @@ impl Game<'_> {
             let uuid = saved_uuid(&self.persist, d.id);
             out.entry(chunk_of(d.position))
                 .or_default()
-                .push(d.to_nbt(uuid, raw.as_ref()));
+                // The fields kept with it (`remember_tags`: Silent, Tags, a
+                // name...) once it has flown from where it was loaded.
+                .push(with_raw(
+                    d.to_nbt(uuid, raw.as_ref()),
+                    self.persist.raw.get(&d.id),
+                ));
         }
         for c in &self.crystals {
             if keys.contains(&chunk_of(c.position)) {
                 let raw = anon_raw(&self.persist, "minecraft:end_crystal", c.position);
                 let uuid = saved_uuid(&self.persist, c.id);
-                out.entry(chunk_of(c.position))
-                    .or_default()
-                    .push(c.to_nbt(uuid, raw.as_ref()));
+                out.entry(chunk_of(c.position)).or_default().push(with_raw(
+                    c.to_nbt(uuid, raw.as_ref()),
+                    self.persist.raw.get(&c.id),
+                ));
             }
         }
         for s in &self.ominous_spawners {
@@ -1677,6 +1706,7 @@ impl Game<'_> {
             f.drop_item,
             f.damage,
             f.fall_distance,
+            f.rotation,
             uuid,
         );
         let mut tag = with_raw(tag, raw.as_ref());
@@ -1725,6 +1755,8 @@ impl Game<'_> {
                 t.on_ground,
                 t.fuse,
                 t.power,
+                t.block_state_nbt(self.pack.assets.registry),
+                t.rotation,
                 uuid,
                 self.persist.raw.get(&id),
             );
@@ -1746,7 +1778,7 @@ impl Game<'_> {
             &b.entity_type(),
             b.position,
             b.velocity,
-            b.yaw,
+            [b.yaw, b.pitch],
             uuid,
             self.persist.raw.get(&id),
             b.chest.then_some(&b.items[..]),
@@ -1816,7 +1848,7 @@ fn strip_finalize(tag: &mut Tag) {
 }
 /// `riders` under `tag`'s `Passengers`, after the passengers it kept from
 /// loading (`Entity.saveWithoutId`).
-fn add_passengers(tag: &mut Tag, riders: Vec<Tag>) {
+pub(super) fn add_passengers(tag: &mut Tag, riders: Vec<Tag>) {
     if let Tag::Compound(c) = tag {
         let mut list = match c.get(&"Passengers".into()) {
             Some(Tag::List(l)) => l.clone(),
@@ -1862,7 +1894,7 @@ fn root_vehicle_tag(attach: [i32; 4], entity: Tag) -> Tag {
     ])
 }
 /// `Entity.getPassengersAndSelf` of `root`, from each rider's mount.
-fn vehicle_tree(root: u32, mounts: &[(u32, Option<u32>)]) -> Vec<u32> {
+pub(super) fn vehicle_tree(root: u32, mounts: &[(u32, Option<u32>)]) -> Vec<u32> {
     let mut tree = vec![root];
     let mut k = 0;
     while k < tree.len() {
@@ -1888,11 +1920,57 @@ fn drop_unleashable_leash(tag: &mut Tag, kind: &str, is_mob: bool) {
         c.remove(&"leash".into());
     }
 }
+/// `Entity.load`: a string `Team` adds the entity (`name`, its UUID) to that
+/// team when the scoreboard has it; else vanilla only logs a warning.
+fn join_saved_team(board: &mut Scoreboard, name: &str, tag: &Tag) -> bool {
+    let Some(team) = text(tag.get("Team")) else {
+        return false;
+    };
+    if board.team(&team).is_none() {
+        log::warn!("Unable to add mob to team \"{team}\" (that team probably doesn't exist)");
+        return false;
+    }
+    board.add_to_team(name, &team);
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const MOUNT: [i32; 4] = [1, 2, 3, 4];
+
+    #[test]
+    fn a_saved_team_is_joined_only_when_the_scoreboard_has_it() {
+        let mut board = Scoreboard::default();
+        board.add_team("red");
+        let with_team = |team: &str| {
+            let mut t = entity("minecraft:zombie");
+            if let Tag::Compound(c) = &mut t {
+                c.insert("Team".into(), Tag::String(team.into()));
+            }
+            t
+        };
+        let name = "00000001-0002-0003-0004-000000000005";
+        assert!(join_saved_team(&mut board, name, &with_team("red")));
+        assert_eq!(
+            board.players_team(name).map(|t| t.name.as_str()),
+            Some("red")
+        );
+        // A team the scoreboard doesn't have is ignored, and the entity
+        // stays on its team.
+        assert!(!join_saved_team(&mut board, name, &with_team("blue")));
+        assert_eq!(
+            board.players_team(name).map(|t| t.name.as_str()),
+            Some("red")
+        );
+        assert!(!join_saved_team(
+            &mut board,
+            "other",
+            &entity("minecraft:zombie")
+        ));
+        assert!(board.players_team("other").is_none());
+    }
 
     #[test]
     fn only_mobs_and_boats_keep_a_leash_tag() {

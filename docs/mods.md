@@ -336,8 +336,9 @@ mod's own screen (`native_screen`); without one it closes again. Clients join a 
 types, as with its blocks, and a client that isn't Horizon's is never sent one: the block opens nothing for it. Its
 clicks run on the server's vanilla menu engine (`menu::Kind::Mod`), shift-clicks routed as `ChestMenu`'s, and a native
 mod can decide what a slot takes in code with `native_menu_slot_rules` ([native-mods.md](native-mods.md#menu-slot-rules)).
-Not yet: declared per-slot rules beyond `results`, hooks for shift-click routing and `stillValid`, opening with extra
-data, and client prediction of its clicks.
+A native mod can hand the screen bytes of its own when the block opens it
+([native-mods.md](native-mods.md#menu-extra-data)). Not yet: declared per-slot rules beyond `results`, hooks for
+shift-click routing and `stillValid`, and client prediction of its clicks.
 
 #### Namespaces and limits
 
@@ -376,6 +377,16 @@ still add theirs, as a higher data pack does. Since the result depends on load o
 "mod towns replaces data/minecraft/tags/worldgen/biome/has_structure/village_plains.json: vanilla's entries and those
 of adds are left out, ...". Tags are the only `minecraft` files a mod may hold: its other content stays in its own
 namespaces.
+
+Damage types use vanilla files at `data/<namespace>/damage_type/<name>.json`,
+with required `message_id`, `scaling` and `exhaustion` fields, plus optional
+`effects` and `death_message_type`. Resource-root files and enabled world packs
+load when a world opens; an invalid definition refuses that load. Definitions
+remain frozen for that world session. `/reload` rebuilds
+`tags/damage_type/` against those definitions, so disabling a pack removes its
+tag additions but keeps its registered types until the world is reopened.
+Player damage, damage predicates and synchronized damage tags use that same
+world snapshot; local catalog indices and network registry IDs are separate.
 
 A mod adds to structure sets, template pools and processor lists that are not its own (vanilla's villages, another
 mod's houses) with a set, pool or processor list file in its own namespace holding `horizon:add_to`, a key vanilla data

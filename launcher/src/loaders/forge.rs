@@ -14,7 +14,7 @@ const NEOFORGE_MAVEN: &str = "https://maven.neoforged.net/releases";
 
 /// The Maven artifact a version lives under: `net.neoforged:forge` for NeoForge on 1.20.1, its
 /// only version before it took its own name.
-fn artifact(kind: Kind, minecraft: &str) -> (&'static str, &'static str, &'static str) {
+pub(super) fn artifact(kind: Kind, minecraft: &str) -> (&'static str, &'static str, &'static str) {
     match kind {
         Kind::NeoForge if minecraft != "1.20.1" => (NEOFORGE_MAVEN, "net/neoforged", "neoforge"),
         Kind::NeoForge => (NEOFORGE_MAVEN, "net/neoforged", "forge"),

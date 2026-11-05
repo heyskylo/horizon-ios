@@ -182,6 +182,7 @@ fn load_player_type(root: &Path) -> Option<Arc<MobType>> {
             knockback_resistance: 0.0,
             jump_strength: 0.42,
             attributes: Default::default(),
+            item_stack_limits: Default::default(),
             gravity: 0.08,
             safe_fall_distance: 3.0,
             fall_damage_multiplier: 1.0,
@@ -702,8 +703,13 @@ impl Game<'_> {
             self.mod_mob_layer_geometry(m, Some(who), alpha as f32, camera, packed, out);
         }
         // LivingEntity.isCurrentlyGlowing: the Glowing effect.
-        if self.potions.effects.get("glowing").is_some() {
-            let color = super::glowing::team_color(self.own_team());
+        let vanilla = self
+            .potions
+            .effects
+            .get("glowing")
+            .map(|_| super::glowing::team_color(self.own_team()));
+        let id = u32::try_from(self.own_entity_id()).unwrap_or(0);
+        if let Some(color) = self.entity_outline(id, "minecraft:player", vanilla) {
             // LivingEntityRenderer.getRenderType: an invisible glowing body
             // still draws its outline.
             if !body {
