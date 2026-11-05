@@ -358,7 +358,7 @@
   "horizon.moderation.remaining": "für weitere %s",
   "horizon.moderation.mutelist.entry": "%1$s wurde von %2$s %3$s stummgeschaltet",
   "horizon.moderation.invalid_duration": "%s ist keine Zeitdauer: 10m, 2h, 1d",
-  "horizon.moderation.usage.mute": "/mute <Spieler> [Grund]",
+  "horizon.moderation.usage.mute": "/mute <Spieler> [Dauer] [Grund]",
   "horizon.moderation.usage.tempmute": "/tempmute <Spieler> <Dauer> [Grund]",
   "horizon.moderation.usage.unmute": "/unmute <Spieler>",
   "horizon.moderation.usage.mutelist": "/mutelist",
@@ -369,5 +369,8 @@
   "horizon.tempban.usage": "/tempban <Spieler> <Dauer> [Grund]",
   "horizon.tempban.invalid_duration": "%s ist keine Zeitdauer: 30m, 12h, 7d",
   "horizon.tempban.dedicated_required": "Temporäre Sperren benötigen einen dedizierten Server",
-  "horizon.tempban.success": "%1$s für %2$s, bis %3$s"
+  "horizon.tempban.success": "%1$s für %2$s, bis %3$s",
+  "horizon.tempban.list.empty": "Es gibt keine befristeten Sperren",
+  "horizon.tempban.list.count": "Es gibt %s befristete Sperre(n):",
+  "horizon.tempban.list.entry": "%1$s wurde von %2$s gesperrt, %3$s (bis %4$s)"
 }

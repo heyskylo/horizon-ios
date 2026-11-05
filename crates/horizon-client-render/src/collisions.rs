@@ -120,6 +120,16 @@ impl<W: BlockCollisionWorld> BlockCollisionWorld for EntityCollisions<'_, W> {
     ) -> std::result::Result<bool, Self::Error> {
         self.blocks.may_reach_out(chunk, section_y)
     }
+    fn section_is_empty(
+        &mut self,
+        chunk: Self::Chunk,
+        section_y: i32,
+    ) -> std::result::Result<bool, Self::Error> {
+        self.blocks.section_is_empty(chunk, section_y)
+    }
+    fn missing_chunks_stay_missing(&self) -> bool {
+        self.blocks.missing_chunks_stay_missing()
+    }
     fn context_shape(
         &mut self,
         block: CollisionBlock,
@@ -424,6 +434,26 @@ impl<'w> BlockCollisionWorld for SceneCollisions<'w, '_> {
     fn may_reach_out(&mut self, chunk: Self::Chunk, section_y: i32) -> io::Result<bool> {
         Ok(self.section_reaches_out(chunk, section_y))
     }
+    /// From the section's palette: every block it can hold has an empty shape (air, plants).
+    /// A palette of the whole registry, or a section outside the column, is read cell by cell.
+    fn section_is_empty(&mut self, chunk: Self::Chunk, section_y: i32) -> io::Result<bool> {
+        let blocks = usize::try_from(section_y - (chunk.min_y() >> 4))
+            .ok()
+            .and_then(|s| chunk.sections.get(s))
+            .map(|section| &section.blocks);
+        Ok(blocks.is_some_and(|blocks| {
+            !blocks.is_global()
+                && !blocks.maybe_has(|v| {
+                    self.binding
+                        .collision_block(BlockStateId(v))
+                        .map_or(true, |block| !block.empty_shape)
+                })
+        }))
+    }
+    /// The resident columns do not change while a scan runs, and looking one up changes nothing.
+    fn missing_chunks_stay_missing(&self) -> bool {
+        true
+    }
     fn is_suffocating(
         &mut self,
         _: Self::Chunk,
@@ -554,6 +584,9 @@ impl BlockCollisionWorld for EmptyCollisions {
     type Chunk = ChunkPos;
     fn collision_chunk(&mut self, _: ChunkPos) -> io::Result<Option<ChunkPos>> {
         Ok(None)
+    }
+    fn missing_chunks_stay_missing(&self) -> bool {
+        true
     }
     fn collision_block(&mut self, _: ChunkPos, _: BlockPos) -> io::Result<CollisionBlock> {
         Err(io::Error::other("no chunk is resident"))

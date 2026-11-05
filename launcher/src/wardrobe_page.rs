@@ -2,7 +2,8 @@
 //! cosmetics service has a founder set to show (`horizon_launcher::shop`, `watch_shop`), or with
 //! `HORIZON_COSMETICS=1`: the signed-in Microsoft account's skin wearing its items, a
 //! row per slot, what the account owns for the chosen slot, the purchase history, a button to the
-//! website's shop (buying and the founder claim happen there, never here), and three switches:
+//! website's shop (buying and the founder claim happen there, except "Claim for free" where
+//! Paddle doesn't sell: `Claim::here`, decided by the service), and three switches:
 //! Show my cosmetics (the account's, on the service), Hide
 //! other players' cosmetics and Show other players' auras and trails (the game's
 //! `horizon-extras.txt`, `horizon_cosmetics::prefs`, also in its settings).
@@ -467,6 +468,56 @@ impl Launcher {
         self.wardrobe_wait(task, done, cx);
     }
 
+    /// "Claim for free" (only where `Claim::here`: the service says Paddle doesn't sell where the
+    /// player is): the founder set at once, through the session proved with Mojang.
+    fn wardrobe_claim(&mut self, cx: &mut Context<Self>) {
+        let Some(w) = self.wardrobe.as_mut() else {
+            return;
+        };
+        if w.busy {
+            return;
+        }
+        let Some(session) = w.session.clone().filter(|s| s.live()) else {
+            w.toast = Some((Error::SignedOut.message(), Instant::now()));
+            return;
+        };
+        w.busy = true;
+        let (uuid, mut saved) = (w.uuid.clone(), w.saved.clone());
+        let task = cx.background_executor().spawn(async move {
+            let result = Service::live().claim(&session).map(|mut me| {
+                for change in &saved.pending {
+                    me.apply(change);
+                }
+                saved.me = Some(me);
+            });
+            if let Err(e) = saved.save(&dir(), &uuid) {
+                eprintln!("Horizon: the outfit is not saved: {e}");
+            }
+            let said = match &result {
+                Ok(()) => tr("The Founder Set is yours.").to_string(),
+                Err(e) => e.message(),
+            };
+            let trip = Trip {
+                saved,
+                items: HashMap::new(),
+                session: None,
+                // The page itself still stands when the service refuses: say why instead.
+                result: result.or_else(|e| if e.retry_later() { Err(e) } else { Ok(()) }),
+            };
+            (trip, said)
+        });
+        cx.spawn(async move |this, cx| {
+            let (trip, said) = task.await;
+            let _ = this.update(cx, |this, cx| {
+                this.wardrobe_back(trip, Some(said));
+                cx.notify();
+            });
+            cx.background_executor().timer(TOAST).await;
+            let _ = this.update(cx, |_, cx| cx.notify());
+        })
+        .detach();
+    }
+
     fn wardrobe_wait(&mut self, task: gpui::Task<Trip>, done: String, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
             let trip = task.await;
@@ -484,7 +535,7 @@ impl Launcher {
     /// `HORIZON_LAUNCHER_PAGE=wardrobe` in a development build: the page for a made-up account
     /// that owns the items of `HORIZON_COSMETICS_LOCAL` and wears the first of each slot, for
     /// screenshots. Nothing is asked of Mojang or the service, and nothing is saved.
-    /// `HORIZON_WARDROBE_STATE=offline|failed|empty` shows that state instead.
+    /// `HORIZON_WARDROBE_STATE=offline|failed|empty|no_paddle` shows that state instead.
     pub(super) fn wardrobe_preview(&mut self) {
         use horizon_launcher::wardrobe::{Claim, Entry, Me, Purchase};
         let Some(dir) = std::env::var_os("HORIZON_COSMETICS_LOCAL") else {
@@ -524,11 +575,12 @@ impl Launcher {
             items: ids.clone(),
             starts_at: Some(1_793_000_000),
             ends_at: Some(1_795_000_000),
-            claimed: Some(state != "empty"),
+            claimed: Some(state != "empty" && state != "no_paddle"),
             open: true,
             preview: false,
+            one_click: state == "no_paddle",
         };
-        let empty = state == "empty";
+        let empty = state == "empty" || state == "no_paddle";
         // Orders as the service keeps them, newest first.
         let orders = vec![
             Purchase {
@@ -597,7 +649,8 @@ impl Launcher {
                 .into_iter()
                 .map(|i| (i.id.clone(), Arc::new(i)))
                 .collect(),
-            session: (!empty).then(|| Arc::new(Session::preview(&account.uuid, &account.name))),
+            session: (state != "empty")
+                .then(|| Arc::new(Session::preview(&account.uuid, &account.name))),
             skin: None,
             status: match state.as_str() {
                 "offline" => Status::Offline,
@@ -1040,8 +1093,28 @@ impl Launcher {
             Status::Account(e) => return Some(row(e.clone()).child(self.wardrobe_retry(cx))),
             Status::Loading | Status::Ready => {}
         }
-        // Nothing owned yet: the shop is on the website.
         let me = w.saved.me.as_ref()?;
+        // Paddle doesn't sell where the player is: the founder set is claimed here.
+        if me.claim.here() {
+            let claim = button("wardrobe-claim", "Claim for free", Kind::Primary, &t);
+            let claim = if w.busy {
+                disabled(claim)
+            } else {
+                claim.on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.wardrobe_claim(cx);
+                    cx.notify();
+                }))
+            };
+            return Some(
+                row(tr(
+                    "The shop's payment provider doesn't serve your country, so you can claim \
+                     the Founder Set here for free.",
+                )
+                .into())
+                .child(claim),
+            );
+        }
+        // Nothing owned yet: the shop is on the website.
         me.owned.is_empty().then(|| {
             row(tr("You don't own any cosmetics yet.").into()).child(open_shop(
                 "wardrobe-shop-empty",

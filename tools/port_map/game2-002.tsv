@@ -105,7 +105,7 @@ Phantom.PhantomBodyRotationControl.clientTick	inline	crates/horizon-client/src/m
 Phantom.PhantomMoveTargetGoal.touchingTarget	inline	crates/horizon-client/src/mobs/phantom.rs::CircleAroundAnchor::tick	the squared distance under 4 check near the move target
 Phantom.PhantomSweepAttackGoal.canContinueToUse	port	crates/horizon-client/src/mobs/phantom.rs::SweepAttack::can_continue	the cat hiss and scare check
 Ravager.registerGoals	port	crates/horizon-client/src/mobs/ravager.rs::register	
-Ravager.updateControlFlags	missing		the goal set has no control flags, so a mob driving a boat does not switch off the ravager's own move, jump and look goals
+Ravager.updateControlFlags	inline	crates/horizon-client/src/mobs/riders.rs::drive	raider controllers permit MOVE/JUMP/LOOK/TARGET; other mob controllers disable them; gap: minor: a ravager in a boat keeps its JUMP goals
 Ravager.createAttributes	skip:data		attribute defaults come from data tables
 Ravager.addAdditionalSaveData	inline	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	AttackTick, StunTick and RoarTick are written there
 Ravager.readAdditionalSaveData	inline	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	the same three tick values are read there

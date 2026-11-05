@@ -11,7 +11,7 @@ Leashable.setDelayedLeashHolderId	inline	crates/horizon-client/src/game/remote.r
 Leashable.readLeashData	port	crates/horizon-client/src/mobs/leash.rs::pending_from_nbt	holder UUID or fence knot block; kept pending until the holder exists
 Leashable.restoreLeashFromSave	port	crates/horizon-client/src/game/leads.rs::Game::tick_leads	holder found by UUID or knot block; a lead whose holder never shows up drops as an item after 100 ticks
 Leashable.angularFriction	inline	crates/horizon-client/src/mobs/leash.rs::tick	gap: minor: ground friction is a fixed 0.6 times 0.91, not the friction of the block under the mob (ice, slime)
-Leashable.checkElasticInteractions	port	crates/horizon-client/src/mobs/leash.rs::tick	gap: minor: one attachment pair only; no quad leash for a horse, llama or sniffer led by a happy ghast
+Leashable.checkElasticInteractions	port	crates/horizon-client/src/mobs/leash.rs::tick	live mob dispatch selects shared quad physics only when both holder and leashee support it; llama remains single
 Leashable.getHolderMovement	port	crates/horizon-client/src/mobs/leash.rs::holder_state	gap: minor: the holder's velocity is always used; a NoAI mob holder should count as standing still
 Leashable.computeElasticInteraction	port	crates/horizon-client/src/mobs/leash.rs::spring	gap: minor: single attachment pair (0, 0.5, 0.5 of the mob and 0, 0.5, 0 of the holder); the four-point version is missing
 Leashable.createQuadLeashOffsets	port	crates/horizon-client/src/mobs/leash.rs::Holder::create_quad_leash_offsets	four attachment points around an entity, front-left first, clockwise from above
@@ -110,8 +110,8 @@ LivingEntity.getPassengerRidingPosition	port	crates/horizon-client/src/mobs/ride
 LivingEntity.lerpHeadRotationStep	inline	crates/horizon-client/src/game/remote.rs::Game::tick_remote_entities	head_lerps: 1/steps of the way to the target yaw
 LivingEntity.isInvulnerableTo	inline	crates/horizon-client/src/mobs.rs::Mob::damage_with	gap: minor: the invulnerable flag only; no enchantment damage immunity
 Mob.getMoveControl	port	crates/horizon-client/src/mobs/control.rs::Mob::move_control_tick	a mount is steered through riders.rs::drive
-Mob.getNavigation	inline	crates/horizon-client/src/mobs/riders.rs::drive	a rider's vehicle carries it along; each mob keeps its own ai.nav
-Mob.getControllingPassenger	inline	crates/horizon-client/src/mobs/riders.rs::drive	extra.rider steers the vehicle with its goals
+Mob.getNavigation	inline	crates/horizon-client/src/mobs/riders.rs::tick	controlling mob passengers lend the vehicle navigation recursively; path creation uses the vehicle body, raw serverAiStep ticks private navigation
+Mob.getControllingPassenger	inline	crates/horizon-client/src/mobs/riders.rs::controller	NoAI vehicle has no controller; a mob passenger may have NoAI but must not be in non_controlling_rider
 Mob.asValidTarget	port	crates/horizon-client/src/mobs/monster_brain.rs::can_attack	creative and spectator players are never valid; goal mobs use goals.rs Mob::can_target_player
 Mob.spawnAnim	port	crates/horizon-client/src/game/spawner.rs::Game::poof_particles	the poof of a mob a spawner made (event 20 on a server's client)
 Mob.updateControlFlags	inline	crates/horizon-client/src/mobs/riders.rs::drive	gap: minor: a mob in a boat keeps its JUMP goals

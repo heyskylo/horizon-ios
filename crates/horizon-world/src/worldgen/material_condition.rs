@@ -391,13 +391,15 @@ impl<R: RandomSource> Compiled<R> {
             _ => None,
         }
     }
-    /// The vertical gradients' bounds, and whether the preliminary surface
-    /// is asked for.
-    fn inputs(&self, gradients: &mut Vec<(i32, i32)>, surface: &mut bool) {
+    /// The first y of each band its vertical gradients decide differently
+    /// from the band below, and whether the preliminary surface is asked for.
+    fn inputs(&self, starts: &mut Vec<i32>, surface: &mut bool) {
         match &self.kind {
-            Kind::Gradient { low, high, .. } => gradients.push((*low, *high)),
+            // True at and below `low`, random between, false at and above
+            // `high`: decided within each band these bound.
+            Kind::Gradient { low, high, .. } => starts.extend([low.saturating_add(1), *high]),
             Kind::Simple(MaterialCondition::AbovePreliminarySurface) => *surface = true,
-            Kind::Not(child) => child.inputs(gradients, surface),
+            Kind::Not(child) => child.inputs(starts, surface),
             _ => {}
         }
     }
