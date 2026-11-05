@@ -183,7 +183,7 @@ blend = "gamma"            # optional: gamma (default) or linear
 ```
 
 0.1 is unchanged: the same prelude, entries and reference, and a 0.1 pack that names `[tonemap]` or `[frame]` is
-refused.
+refused. The example's port is `crates/horizon-shader-api/packs/golden_hour_0_2`, a test pack of the SDK.
 
 ## Guide, reference and examples
 
