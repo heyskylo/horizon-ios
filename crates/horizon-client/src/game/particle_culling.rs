@@ -127,20 +127,34 @@ struct CullJob {
 #[derive(Default)]
 pub(super) struct ParticleAsyncState {
     culler: Option<ParticleAsyncCuller>,
+    retired: Vec<ParticleAsyncCuller>,
     failed: bool,
 }
 
 impl ParticleAsyncState {
-    pub(super) fn shutdown(&mut self) -> bool {
-        if self
-            .culler
-            .as_mut()
-            .is_some_and(|culler| !culler.shutdown())
-        {
-            return false;
+    fn retire(&mut self) {
+        if let Some(mut culler) = self.culler.take() {
+            culler.request_stop();
+            self.retired.push(culler);
         }
-        self.culler = None;
-        true
+    }
+
+    fn poll_retired(&mut self) -> bool {
+        self.retired.retain_mut(|culler| !culler.shutdown());
+        self.retired.is_empty()
+    }
+
+    /// Transfer guest work before dropping its Game, retaining ownership without joining
+    /// a running worker on the frame thread.
+    pub(super) fn retire_from(&mut self, guest: &mut Self) {
+        guest.retire();
+        self.retired.append(&mut guest.retired);
+        self.poll_retired();
+    }
+
+    pub(super) fn shutdown(&mut self) -> bool {
+        self.retire();
+        self.poll_retired()
     }
 }
 
@@ -577,6 +591,7 @@ impl Game<'_> {
             } else {
                 ParticleCullingMode::Off
             };
+        self.async_particle_culler.borrow_mut().poll_retired();
         if mode == ParticleCullingMode::Asynchronous {
             let mut state = self.async_particle_culler.borrow_mut();
             if state.culler.is_none() && !state.failed {
@@ -593,7 +608,7 @@ impl Game<'_> {
             }
         } else {
             let mut state = self.async_particle_culler.borrow_mut();
-            state.culler = None;
+            state.retire();
             state.failed = false;
         }
         ParticleOcclusionContext {
@@ -690,6 +705,66 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn held_worker() -> (ParticleAsyncCuller, std::sync::mpsc::Sender<()>) {
+        let mut worker = ParticleAsyncCuller::new().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !worker.shutdown() && std::time::Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert!(worker.shutdown());
+        // Hold a worker at a deterministic boundary. Retirement must retain its join
+        // handle, regardless of whether the OS has scheduled the real culling job yet.
+        let (release, wait) = std::sync::mpsc::channel();
+        worker.thread = Some(std::thread::spawn(move || {
+            let _ = wait.recv();
+        }));
+        (worker, release)
+    }
+
+    #[test]
+    fn mode_and_guest_retirement_return_before_workers_finish_and_keep_their_ownership() {
+        for guest_transfer in [false, true] {
+            let (active, release_active) = held_worker();
+            let (retired, release_retired) = held_worker();
+            let mut state = ParticleAsyncState {
+                culler: Some(active),
+                retired: vec![retired],
+                failed: false,
+            };
+            let (returned, completed) = std::sync::mpsc::channel();
+            let owner = std::thread::spawn(move || {
+                if guest_transfer {
+                    let mut host = ParticleAsyncState::default();
+                    host.retire_from(&mut state);
+                    assert!(state.culler.is_none() && state.retired.is_empty());
+                    state = host;
+                } else {
+                    state.retire();
+                    state.poll_retired();
+                }
+                returned.send(state).unwrap();
+            });
+            let result = completed.recv_timeout(std::time::Duration::from_secs(5));
+            // Always release the held workers before asserting, including on regression,
+            // so a failed test never leaves an owner thread stuck in Drop::join.
+            release_active.send(()).unwrap();
+            release_retired.send(()).unwrap();
+            let mut state = result.expect("retirement joined a still-running worker");
+            owner.join().unwrap();
+            assert!(state.culler.is_none());
+            assert_eq!(
+                state.retired.len(),
+                2,
+                "active and previously retired work must move"
+            );
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while !state.shutdown() && std::time::Instant::now() < deadline {
+                std::thread::yield_now();
+            }
+            assert!(state.shutdown(), "the final owner must join every worker");
+        }
+    }
 
     #[test]
     fn stopping_an_idle_worker_wakes_and_joins_it() {

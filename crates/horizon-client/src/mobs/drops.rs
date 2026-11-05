@@ -603,13 +603,14 @@ pub fn die(
 /// The loot table `die` rolls for `m` (`LivingEntity.getLootTable`), when it
 /// rolls one: none with `doMobLoot` off, nor for a baby that isn't a monster.
 pub fn death_loot_table(m: &Mob, mob_drops: bool) -> Option<String> {
-    // Mob.getLootTable: the mob's own `DeathLootTable`, else its type's.
+    // Mob.getLootTable: the mob's own `DeathLootTable`, else its type's
+    // (`EntityType.getDefaultLootTable`: `entities/` before the type's path,
+    // in its namespace, so a content mod's type rolls its own table).
     (mob_drops && (is_monster(m.species()) || !m.is_baby())).then(|| {
         m.extra.death_loot_table.clone().unwrap_or_else(|| {
-            format!(
-                "minecraft:entities/{}",
-                m.kind.id.trim_start_matches("minecraft:")
-            )
+            let id = m.kind.id.as_str();
+            let (namespace, path) = id.split_once(':').unwrap_or(("minecraft", id));
+            format!("{namespace}:entities/{path}")
         })
     })
 }

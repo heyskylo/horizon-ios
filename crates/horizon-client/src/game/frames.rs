@@ -488,8 +488,8 @@ impl Game<'_> {
         let sprites = &self.gui.atlas.sprites;
         // Each with its frame's type: a pack tells a glow frame and what it holds apart by its
         // `entityId` (`glow_item_frame` in entity.properties), the item drawn within its frame.
-        let mut maps: Vec<(i32, glam::Mat4, u32, &'static str)> = Vec::new();
-        let mut items: Vec<(ItemStack, u32, glam::Mat4, u8, &'static str)> = Vec::new();
+        let mut maps: Vec<(i32, glam::Mat4, u32, bool, &'static str)> = Vec::new();
+        let mut items: Vec<(ItemStack, u32, glam::Mat4, u8, bool, &'static str)> = Vec::new();
         // ItemFrame.shouldRenderAtSqrDistance: 1024 blocks at a view scale
         // of 1.
         let range = 16.0 * 64.0 * self.view_scale();
@@ -513,6 +513,11 @@ impl Game<'_> {
             if !self.entity_in_view(camera, (lo + hi) / 2.0, range, lo, hi) {
                 continue;
             }
+            let culling = self.entity_cull_decision(f, 1.0);
+            if culling.hides_entity() {
+                continue;
+            }
+            let entity_start = out.len();
             let s = f.step();
             // Pose: to the block centre, then X/Y rotation by facing.
             let (x_rot, y_rot) = if s[1] == 0 {
@@ -599,7 +604,8 @@ impl Game<'_> {
                     v.layer |= u32::from(horizon_client::mesher::INCANDESCENT) << 16;
                 }
             }
-            self.cull_entity_vertices(out, entity_start);
+            self.finish_entity_occlusion(culling, f, out, entity_start);
+            let cull_contents = culling.checks_vertices();
             if let Some(stack) = &f.item {
                 let mut canceled = false;
                 self.native_render_item_in_frame(f.id, f.pos, stack, &mut canceled);
@@ -621,7 +627,7 @@ impl Game<'_> {
                     * glam::DMat4::from_rotation_z(std::f64::consts::PI)
                     * glam::DMat4::from_scale(glam::DVec3::splat(0.0078125))
                     * glam::DMat4::from_translation(glam::DVec3::new(-64.0, -64.0, -1.0));
-                maps.push((id, m.as_mat4(), item_light, f.kind()));
+                maps.push((id, m.as_mat4(), item_light, cull_contents, f.kind()));
                 continue;
             }
             let Some(stack) = f.item.clone() else {
@@ -634,13 +640,20 @@ impl Game<'_> {
                 * glam::DMat4::from_translation(glam::DVec3::new(0.0, 0.0, depth))
                 * glam::DMat4::from_rotation_z((f64::from(f.rotation) * 45.0).to_radians())
                 * glam::DMat4::from_scale(glam::DVec3::splat(0.5));
-            items.push((stack, f.id, m.as_mat4(), item_light, f.kind()));
+            items.push((
+                stack,
+                f.id,
+                m.as_mat4(),
+                item_light,
+                cull_contents,
+                f.kind(),
+            ));
         }
         // `extractRenderState`: FIXED, seeded by the frame entity.
         let skinning = self.skinning();
         let lights =
             horizon_client::block_entity_render::diffuse_lights(self.dim == super::Dim::Nether);
-        for (stack, id, m, light, kind) in items {
+        for (stack, id, m, light, cull, kind) in items {
             let entity_start = out.len();
             self.mark_entity(entity_start, kind);
             let owner = super::item_draw::owner_at([0.0; 3], 0.0, "minecraft:item_frame");
@@ -658,13 +671,17 @@ impl Game<'_> {
             if skinned.is_none() {
                 self.submit_item_world(&state, m, light, out);
             }
-            self.cull_skinned(out, entity_start, skinned);
+            if cull {
+                self.cull_skinned(out, entity_start, skinned);
+            }
         }
-        for (id, m, light, kind) in maps {
+        for (id, m, light, cull, kind) in maps {
             let entity_start = out.len();
             self.mark_entity(entity_start, kind);
             self.map_vertices(id, true, m, light, out);
-            self.cull_entity_vertices(out, entity_start);
+            if cull {
+                self.cull_entity_vertices(out, entity_start);
+            }
         }
     }
 }

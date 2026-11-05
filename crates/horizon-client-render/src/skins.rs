@@ -1349,7 +1349,7 @@ fn cached_texture(
     kind: Kind,
     fetch: impl FnOnce() -> Option<Vec<u8>>,
 ) -> Option<Vec<u8>> {
-    cached_texture_cancellable(file, kind, fetch, &|| true)
+    cached_texture_with(file, kind, fetch, &|| true, true)
 }
 fn cached_texture_cancellable(
     file: &std::path::Path,
@@ -1357,10 +1357,26 @@ fn cached_texture_cancellable(
     fetch: impl FnOnce() -> Option<Vec<u8>>,
     active: &impl Fn() -> bool,
 ) -> Option<Vec<u8>> {
+    cached_texture_with(file, kind, fetch, active, false)
+}
+fn cached_texture_with(
+    file: &std::path::Path,
+    kind: Kind,
+    fetch: impl FnOnce() -> Option<Vec<u8>>,
+    active: &impl Fn() -> bool,
+    keep_elytra_pixels: bool,
+) -> Option<Vec<u8>> {
     if !active() {
         return None;
     }
-    let decode = |bytes: &[u8]| decode_texture(bytes, kind, |b| crate::hud::decode_bytes(b).ok());
+    let decode = |bytes: &[u8]| match kind {
+        Kind::Cape => streamed_texture(bytes, kind, active),
+        // The downloader only needs Elytra's validation result. Its pixels are
+        // not uploaded by state(), so do not retain a potentially huge image in
+        // the completed-job channel until the render thread next polls it.
+        Kind::Elytra if !keep_elytra_pixels => streamed_texture(bytes, kind, active),
+        _ => decode_texture(bytes, kind, |b| crate::hud::decode_bytes(b).ok()),
+    };
     if let Some(image) = std::fs::read(file).ok().and_then(|bytes| decode(&bytes)) {
         return Some(image);
     }
@@ -1384,6 +1400,9 @@ fn decode_texture(
     kind: Kind,
     decode: impl FnOnce(&[u8]) -> Option<(u32, u32, Vec<u8>)>,
 ) -> Option<Vec<u8>> {
+    if matches!(kind, Kind::Cape) {
+        return streamed_texture(bytes, kind, &|| true);
+    }
     if matches!(kind, Kind::Skin) {
         let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
         // Match the existing HUD/NativeImage decoder's lenient CRC policy.
@@ -1400,6 +1419,100 @@ fn decode_texture(
         Kind::Cape => process_cape(w, h, &rgba),
         Kind::Elytra => Some(rgba),
     }
+}
+
+/// Read every PNG row, retaining only the texels the cape atlas actually uses.
+/// The decoder still validates the whole first frame, including rows outside
+/// the sampled cape area. A failed/unfinished response must not enter the cache.
+/// Elytra's current downloader consumer needs validation alone, not its pixels.
+fn streamed_texture(bytes: &[u8], kind: Kind, active: &impl Fn() -> bool) -> Option<Vec<u8>> {
+    debug_assert!(matches!(kind, Kind::Cape | Kind::Elytra));
+    if !active() {
+        return None;
+    }
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+    decoder.ignore_checksums(true);
+    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    let mut reader = decoder.read_info().ok()?;
+    // Preserve NativeImage's existing accepted image-size range without
+    // allocating a full image (or imposing a smaller cape dimension limit).
+    const MAX_DECODE_BYTES: usize = 256 << 20;
+    reader
+        .output_buffer_size()
+        .filter(|&n| n <= MAX_DECODE_BYTES)?;
+    let info = reader.info();
+    let (w, h) = info
+        .frame_control
+        .as_ref()
+        .map_or((info.width, info.height), |f| (f.width, f.height));
+    let (w, h) = (w as usize, h as usize);
+    w.checked_mul(h)?
+        .checked_mul(4)
+        .filter(|&n| n <= MAX_DECODE_BYTES)?;
+    let interlaced = info.interlaced;
+    let channels = reader.output_color_type().0.samples();
+    let mut result = if kind == Kind::Cape {
+        vec![0; 64 * 64 * 4]
+    } else {
+        Vec::new()
+    };
+    let (fit_w, fit_h) = if w <= 64 && h <= 32 { (w, h) } else { (64, 32) };
+    // PNG's seven Adam7 passes, expressed as first x/y and x/y strides. Reading
+    // the passes lets us select the same nearest source texels as process_cape
+    // without expanding the interlaced image into a width*height allocation.
+    let passes: &[(usize, usize, usize, usize)] = if interlaced {
+        &[
+            (0, 0, 8, 8),
+            (4, 0, 8, 8),
+            (0, 4, 4, 8),
+            (2, 0, 4, 4),
+            (0, 2, 2, 4),
+            (1, 0, 2, 2),
+            (0, 1, 1, 2),
+        ]
+    } else {
+        &[(0, 0, 1, 1)]
+    };
+    for &(first_x, first_y, step_x, step_y) in passes {
+        if first_x >= w {
+            continue;
+        }
+        for source_y in (first_y..h).step_by(step_y) {
+            if !active() {
+                return None;
+            }
+            let row = reader.next_row().ok()??;
+            if kind != Kind::Cape {
+                continue;
+            }
+            for y in 0..fit_h {
+                if y * h / fit_h != source_y {
+                    continue;
+                }
+                for x in 0..fit_w {
+                    let source_x = x * w / fit_w;
+                    if source_x < first_x || !(source_x - first_x).is_multiple_of(step_x) {
+                        continue;
+                    }
+                    let index = (source_x - first_x) / step_x * channels;
+                    let pixel = row.data().get(index..index + channels)?;
+                    let rgba = match channels {
+                        4 => [pixel[0], pixel[1], pixel[2], pixel[3]],
+                        3 => [pixel[0], pixel[1], pixel[2], 255],
+                        2 => [pixel[0], pixel[0], pixel[0], pixel[1]],
+                        _ => [pixel[0], pixel[0], pixel[0], 255],
+                    };
+                    let dest = (y * 64 + x) * 4;
+                    result[dest..dest + 4].copy_from_slice(&rgba);
+                }
+            }
+        }
+    }
+    // Flush and validate the remaining IDAT stream, just as next_frame does.
+    if !active() || reader.next_row().ok()?.is_some() {
+        return None;
+    }
+    Some(result)
 }
 
 /// A GET over HTTP or HTTPS (textures.minecraft.net serves both; vanilla
@@ -1633,6 +1746,158 @@ mod tests {
         assert!(
             decode_texture(&large, Kind::Elytra, |b| crate::hud::decode_bytes(b).ok()).is_some()
         );
+    }
+
+    #[test]
+    fn streamed_capes_preserve_pixels_for_color_and_interlace_formats() {
+        use std::io::Write;
+        fn chunk(bytes: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
+            bytes.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            bytes.extend_from_slice(kind);
+            bytes.extend_from_slice(data);
+            // Test the same lenient checksums as the ordinary PNG path.
+            bytes.extend_from_slice(&[0; 4]);
+        }
+        fn interlaced(w: u32, h: u32) -> Vec<u8> {
+            let mut raw = Vec::new();
+            // Derive each pixel's Adam7 pass from the public 8x8 pattern,
+            // independently of the production pass-stride traversal.
+            let pass_at = [
+                [1, 6, 4, 6, 2, 6, 4, 6],
+                [7, 7, 7, 7, 7, 7, 7, 7],
+                [5, 6, 5, 6, 5, 6, 5, 6],
+                [7, 7, 7, 7, 7, 7, 7, 7],
+                [3, 6, 4, 6, 3, 6, 4, 6],
+                [7, 7, 7, 7, 7, 7, 7, 7],
+                [5, 6, 5, 6, 5, 6, 5, 6],
+                [7, 7, 7, 7, 7, 7, 7, 7],
+            ];
+            for pass in 1..=7 {
+                for y in 0..h {
+                    let mut row = Vec::new();
+                    for x in 0..w {
+                        if pass_at[y as usize % 8][x as usize % 8] == pass {
+                            row.extend_from_slice(&[
+                                x as u8,
+                                y as u8,
+                                (x ^ y) as u8,
+                                (x + y) as u8,
+                            ]);
+                        }
+                    }
+                    if !row.is_empty() {
+                        raw.push(0); // PNG filter None.
+                        raw.extend_from_slice(&row);
+                    }
+                }
+            }
+            let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+            z.write_all(&raw).unwrap();
+            let mut result = b"\x89PNG\r\n\x1a\n".to_vec();
+            let mut header = Vec::new();
+            header.extend_from_slice(&w.to_be_bytes());
+            header.extend_from_slice(&h.to_be_bytes());
+            header.extend_from_slice(&[8, 6, 0, 0, 1]);
+            chunk(&mut result, b"IHDR", &header);
+            chunk(&mut result, b"IDAT", &z.finish().unwrap());
+            chunk(&mut result, b"IEND", &[]);
+            result
+        }
+        let mut cases: Vec<_> = [(1, 1), (22, 17), (37, 19), (128, 64), (1024, 257)]
+            .into_iter()
+            .map(|(w, h)| interlaced(w, h))
+            .collect();
+        for color in [
+            png::ColorType::Grayscale,
+            png::ColorType::GrayscaleAlpha,
+            png::ColorType::Rgb,
+            png::ColorType::Rgba,
+            png::ColorType::Indexed,
+        ] {
+            for depth in [png::BitDepth::Eight, png::BitDepth::Sixteen] {
+                if color == png::ColorType::Indexed && depth == png::BitDepth::Sixteen {
+                    continue;
+                }
+                let mut bytes = Vec::new();
+                let mut encoder = png::Encoder::new(&mut bytes, 127, 63);
+                encoder.set_color(color);
+                encoder.set_depth(depth);
+                if color == png::ColorType::Indexed {
+                    encoder.set_palette(vec![0, 7, 9, 31, 127, 253]);
+                    encoder.set_trns(vec![0, 137]);
+                }
+                let mut writer = encoder.write_header().unwrap();
+                let samples = 127
+                    * 63
+                    * color.samples()
+                    * if depth == png::BitDepth::Sixteen {
+                        2
+                    } else {
+                        1
+                    };
+                let pixels: Vec<_> = (0..samples)
+                    .map(|n| {
+                        if color == png::ColorType::Indexed {
+                            (n % 2) as u8
+                        } else {
+                            (n % 251) as u8
+                        }
+                    })
+                    .collect();
+                writer.write_image_data(&pixels).unwrap();
+                writer.finish().unwrap();
+                cases.push(bytes);
+            }
+        }
+        for depth in [png::BitDepth::One, png::BitDepth::Two, png::BitDepth::Four] {
+            let mut bytes = Vec::new();
+            let mut encoder = png::Encoder::new(&mut bytes, 127, 63);
+            encoder.set_color(png::ColorType::Grayscale);
+            encoder.set_depth(depth);
+            let mut writer = encoder.write_header().unwrap();
+            let samples = (127usize * depth as usize).div_ceil(8) * 63;
+            writer
+                .write_image_data(&(0..samples).map(|n| (n % 251) as u8).collect::<Vec<_>>())
+                .unwrap();
+            writer.finish().unwrap();
+            cases.push(bytes);
+        }
+        for bytes in cases {
+            let (w, h, rgba) = crate::hud::decode_bytes(&bytes).unwrap();
+            let expected = super::process_cape(w, h, &rgba).unwrap();
+            assert_eq!(
+                super::streamed_texture(&bytes, super::Kind::Cape, &|| true),
+                Some(expected)
+            );
+            assert_eq!(
+                super::streamed_texture(&bytes, super::Kind::Elytra, &|| true),
+                Some(Vec::new())
+            );
+        }
+    }
+
+    #[test]
+    fn streamed_texture_validates_unsampled_rows_and_cancels_before_publication() {
+        use std::cell::Cell;
+        let mut bytes = io_test_png(128, 128);
+        // Keep the header readable but cut off the end of the compressed pixel
+        // stream. Reading just the 32 sampled rows would wrongly accept it.
+        let length = u32::from_be_bytes(bytes[33..37].try_into().unwrap()) as usize;
+        bytes.truncate(41 + length / 2);
+        assert!(super::streamed_texture(&bytes, super::Kind::Cape, &|| true).is_none());
+        assert!(super::streamed_texture(&bytes, super::Kind::Elytra, &|| true).is_none());
+        let valid = io_test_png(128, 128);
+        for kind in [super::Kind::Cape, super::Kind::Elytra] {
+            let rows = Cell::new(0);
+            assert!(
+                super::streamed_texture(&valid, kind, &|| {
+                    rows.set(rows.get() + 1);
+                    rows.get() < 4
+                })
+                .is_none()
+            );
+            assert_eq!(rows.get(), 4);
+        }
     }
 
     #[test]

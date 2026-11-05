@@ -430,6 +430,18 @@ impl MobType {
     pub fn layer(&self, key: &str) -> Option<&Arc<Part>> {
         self.layers.get(key)
     }
+
+    /// The vanilla entity type whose class this type's mobs are: the type
+    /// itself, or the template a content mod's living type copies. What a
+    /// class saves and syncs of its own (`Zombie.addAdditionalSaveData`, its
+    /// entity data) follows it; the saved and sent id stays [`Self::id`].
+    pub fn class_id(&self) -> &str {
+        if self.id.starts_with("minecraft:") {
+            &self.id
+        } else {
+            species::vanilla_id(self.species)
+        }
+    }
 }
 /// Each type's default attribute values, parsed exactly (serde_json's
 /// default float parsing can miss the nearest double by one ulp).
@@ -520,8 +532,22 @@ impl MobTypes {
                 .collect(),
         );
         let mut out = HashMap::new();
-        for def in species::ALL {
-            let id = format!("minecraft:{}", def.name);
+        // A content mod's living type (its row names a vanilla `template`) is
+        // its template's mob under its own id: the template's model, sounds
+        // and behaviour, with the attributes its row has.
+        let mod_types = types
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter_map(|(id, row)| {
+                let template = row["template"].as_str()?.strip_prefix("minecraft:")?;
+                let def = species::ALL.iter().find(|d| d.name == template)?;
+                Some((id.clone(), def))
+            });
+        let vanilla = species::ALL
+            .iter()
+            .map(|def| (format!("minecraft:{}", def.name), def));
+        for (id, def) in vanilla.chain(mod_types) {
             let t = &types[&id];
             if t.is_null() {
                 continue;

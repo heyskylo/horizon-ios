@@ -41,7 +41,9 @@ def program(pad_source=None, command_source=None):
     command_source = command_source or (ROOT / 'crates/horizon-client/src/game/command_blocks.rs').read_text()
     methods += '\n' + method(command_source, 'command_block_key')
     chat_input = (ROOT / 'crates/horizon-client/src/game/chat_input.rs').read_text()
-    helper = 'mod chat_input { use super::*; pub(crate) ' + method(chat_input, 'text_without_physical_key') + ' }\n'
+    control = (ROOT / 'crates/horizon-client/src/game/control.rs').read_text()
+    title_owner = 'mod control { use super::*; pub(crate) ' + method(control, 'title_owns_text') + ' }\n'
+    helper = title_owner + 'mod chat_input { use super::*; pub(crate) ' + method(chat_input, 'text_without_physical_key') + ' }\n'
     uikit = (ROOT / 'third_party/winit/src/platform_impl/ios/hardware_keyboard.rs').read_text()
     callbacks = '\n'.join('pub(crate) ' + method(uikit, n) for n in
                           ['key_text', 'insert_text_keys', 'text_key_code', 'logical_key'])
@@ -80,8 +82,8 @@ struct Title { focused: bool }
 impl Title { fn list_focused(&self)->bool{false} fn has_caret_field(&self) -> bool { self.focused } fn focused_field(&mut self) -> Option<()> { self.focused.then_some(()) } fn confirm_edit(&mut self) {} }
 #[derive(Default)] struct Creative { search: bool }
 impl Creative { fn tab(&self) -> &Self { self } }
-#[derive(Default)] struct Options { typing: bool, selected_pad_action: Option<()> }
-impl Options { fn typing(&self) -> bool { self.typing } fn type_text(&mut self, _: &(), _: &str) {} }
+#[derive(Default)] struct Options { typing: bool, selected_pad_action: Option<()>, value: String }
+impl Options { fn typing(&self) -> bool { self.typing } fn type_text(&mut self, _: &(), text: &str) { self.value.push_str(text); } }
 #[derive(Default)] struct ChatInput { focused: bool }
 impl ChatInput {fn contains(&self,x:f64,y:f64)->bool{(0.0..100.0).contains(&x)&&(0.0..12.0).contains(&y)}}
 #[derive(Default)] struct ChatScreen { input: ChatInput }
@@ -93,7 +95,7 @@ impl FocusEditor { fn search_focused(&self)->bool{self.focused} fn text_focused(
  ios: bool, screen: Screen, title: Option<Title>, sign_edit: Option<()>, book: Option<books::BookScreen>,
  debug_options: Option<FocusEditor>, block_editor: Option<FocusEditor>,
  creative_screen: Creative, pad: Pad, window: Option<Window>, ui: Ui, gui: Gui,
- dialog: bool, dialog_text: bool, recipe: bool, station: bool, command: String, submitted: bool, block_typing: bool, key_code_calls: usize,
+ dialog: bool, dialog_text: bool, recipe: bool, station: bool, command: String, submitted: bool, block_typing: bool, key_code_calls: usize, title_text: String,
 }
 impl Game {
  fn new() -> Self { Self { ios: true, window: Some(Window::default()), ..Self::default() } }
@@ -113,7 +115,7 @@ impl Game {
  fn sign_input(&mut self,_:Option<KeyCode>,_:Option<&str>){} fn book_input(&mut self,_:Option<KeyCode>,_:Option<&str>){}
  fn creative_search_backspace(&mut self,_:bool){} fn creative_search_edit(&mut self,_:Option<&str>){}
  fn recipe_text(&mut self,_:Option<&str>,_:bool){} fn station_text(&mut self,_:Option<&str>,_:bool){}
- fn world_options_text(&mut self,_:Option<&str>){} fn title_edit(&mut self,_:Option<&str>,_:bool){}
+ fn world_options_text(&mut self,_:Option<&str>){} fn title_edit(&mut self,text:Option<&str>,_:bool){if let Some(text)=text{self.title_text.push_str(text)}}
  fn pad_synthetic_input(&self)->bool{false}
  fn gui_size(&self)->(f32,f32){(400.0,300.0)}
  fn edit_box_focused(&mut self)->bool{matches!(self.screen,Screen::Chat|Screen::CommandBlock)}
@@ -123,6 +125,16 @@ impl Game {
 '''
 
 CASES = r'''
+#[test] fn focused_options_over_title_request_their_own_keyboard() {
+ let mut g=Game::new();g.title=Some(Title{focused:false});g.screen=Screen::Options;g.ui.options.typing=true;
+ assert!(g.text_field_focused());g.sync_system_keyboard();assert!(g.system_keyboard_up());
+ g.ui.options.typing=false;g.title.as_mut().unwrap().focused=true;
+ assert!(!g.text_field_focused(),"underlying title must not own the options focus");
+}
+#[test] fn committed_options_text_never_edits_the_underlying_title() {
+ let mut g=Game::new();g.title=Some(Title{focused:true});g.screen=Screen::Options;g.ui.options.typing=true;
+ g.ime_commit("search language");assert_eq!(g.ui.options.value,"search language");assert_eq!(g.title_text,"");
+}
 #[test] fn automatically_opened_bed_chat_keeps_keyboard_down_and_navigation_available() {
  let mut g=Game::new(); g.screen=Screen::Chat;g.ui.in_bed_chat=true;g.ui.chat_screen=Some(ChatScreen::default());
  g.bed_chat_focus(false);g.sync_system_keyboard();
@@ -244,7 +256,7 @@ class MobileCommandKeyboardTests(unittest.TestCase):
             self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
             run = subprocess.run([str(binary)], capture_output=True, text=True, timeout=10)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
-            self.assertIn('13 passed', run.stdout)
+            self.assertIn('15 passed', run.stdout)
 
 
 if __name__ == '__main__':

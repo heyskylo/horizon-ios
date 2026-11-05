@@ -1389,6 +1389,7 @@ impl Game<'_> {
             self.native_client_disconnecting();
         }
         if let Some(mut r) = self.remote.take() {
+            self.retire_recording(&r.session);
             r.session.disconnect();
         }
         super::lan::forget_sync_data();
@@ -7285,6 +7286,7 @@ impl Game<'_> {
                     &mut next_float,
                     border,
                     &self.res.motion().fluids,
+                    &mut |_, _| {},
                 );
                 // `tick` set `previous` to the stepped position: keep the
                 // pre-step one, as `xo` is in vanilla.
@@ -9606,6 +9608,9 @@ impl Game<'_> {
             return;
         }
         if let Some(command) = message.strip_prefix('/') {
+            if self.studio_command(command) {
+                return;
+            }
             self.send_command(command);
         } else {
             self.send_signed_chat(message);

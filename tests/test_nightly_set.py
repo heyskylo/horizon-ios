@@ -3,6 +3,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tools.ci import nightly_set as ns
 
@@ -22,6 +23,28 @@ def lookup(*prs):
 
 def run(state, text, login="kacpherek", *prs):
     return ns.apply(state, ns.parse(text), login, NOW, lookup(*prs), PATTERNS)
+
+
+class CommandTests(unittest.TestCase):
+    """command(), as nightly-command.yml runs it: the comment in the environment, the answer posted back."""
+
+    def run_command(self, body, author=ns.OWNER):
+        answers = []
+        env = {"GITHUB_REPOSITORY": "horizon-rust/horizon", "ISSUE": "1", "AUTHOR": author, "BODY": body,
+               "COMMENT_URL": "", "GH_TOKEN": "token"}
+        with mock.patch.dict(os.environ, env), \
+                mock.patch.object(ns, "load_state", return_value=({"prs": [], "blocked": []}, "", None)), \
+                mock.patch.object(ns, "lookup", return_value=lookup()), \
+                mock.patch.object(ns, "answer", lambda repo, issue, text: answers.append(text)):
+            ns.command()
+        return answers
+
+    def test_status_reaches_an_answer(self):
+        # Until 2026-11-05 command() passed apply() a seventh argument it no longer takes, so every /nightly,
+        # status included, ended in TypeError and nobody got an answer.
+        answers = self.run_command("/nightly status")
+        self.assertEqual(len(answers), 1)
+        self.assertEqual(answers, ["The set is empty: the Nightly is main alone."])
 
 
 class NoReviewNeededTests(unittest.TestCase):

@@ -2,7 +2,7 @@
 //! variant choice (or the stack's `painting/variant`), `HangingEntity.survives`
 //! checks every 100 ticks, breaking by attack (`dropItem`), saving, and
 //! `PaintingRenderer` quads.
-use super::{Game, Hit};
+use super::{Game, Hit, entity_culling::default_range};
 use horizon_client::{entities::Painting, items::ItemStack, mesher::Vertex};
 use horizon_core::{
     geometry::{Aabb, Vec3},
@@ -351,13 +351,16 @@ impl Game<'_> {
             return;
         };
         for p in &self.paintings {
-            let entity_start = out.len();
             // EntityRenderer.shouldRender: the default range and its box,
             // measured from the box's centre (HangingEntity's position).
             let (lo, hi) = p.bounds();
             let (lo, hi) = (glam::DVec3::from(lo), glam::DVec3::from(hi));
-            let range = super::entity_culling::default_range(hi - lo, self.view_scale());
+            let range = default_range(hi - lo, self.view_scale());
             if !self.entity_in_view(camera, (lo + hi) / 2.0, range, lo, hi) {
+                continue;
+            }
+            let culling = self.entity_cull_decision(p, 1.0);
+            if culling.hides_entity() {
                 continue;
             }
             let Some(v) = self.painting_variants.get(&p.variant) else {
@@ -383,6 +386,7 @@ impl Game<'_> {
                 f64::from(p.height) / 2.0,
                 1.0 / 32.0,
             );
+            let entity_start = out.len();
             let light = self.world.light(p.pos[0], p.pos[1], p.pos[2]);
             let packed = (u32::from(light >> 4) * 16) | ((u32::from(light & 15) * 16) << 8);
             let mut quad =
@@ -486,7 +490,7 @@ impl Game<'_> {
                 strip,
                 0.6,
             );
-            self.cull_entity_vertices(out, entity_start);
+            self.finish_entity_occlusion(culling, p, out, entity_start);
         }
     }
 }

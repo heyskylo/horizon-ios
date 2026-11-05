@@ -1492,6 +1492,38 @@ fn content_root_with_only_an_item_checks_its_identity() {
     fs::remove_dir_all(&scratch).unwrap();
 }
 
+/// a living mod type's row in `entity-types.json` is its template's with
+/// `template` added and its own attribute bases; every other value keeps the
+/// template's text, to the digit. An attribute the template lacks is refused.
+#[test]
+fn a_living_mod_types_row_is_its_templates_with_its_attributes() {
+    let zombie = r#"{"width":0.6,"height":1.95,"eye_height":1.74,"category":"monster",
+        "fire_immune":false,"attributes":{"minecraft:max_health":20.0,
+        "minecraft:movement_speed":0.23000000417232513,"minecraft:armor":2.0}}"#;
+    let row = serde_json::value::RawValue::from_string(zombie.to_owned()).unwrap();
+    let ghoul = |attributes: &[(&str, f64)]| EntityType {
+        id: "ruby:ghoul".into(),
+        template: "minecraft:zombie".into(),
+        item: None,
+        damage: 0.0,
+        attributes: attributes
+            .iter()
+            .map(|(a, v)| (a.to_string(), *v))
+            .collect(),
+    };
+    let written = mod_entity_row(&row, &ghoul(&[("minecraft:max_health", 40.0)])).unwrap();
+    let written: serde_json::Value = serde_json::from_slice(&written).unwrap();
+    let mut expected: serde_json::Value = serde_json::from_str(zombie).unwrap();
+    expected["attributes"]["minecraft:max_health"] = 40.0.into();
+    expected["template"] = "minecraft:zombie".into();
+    assert_eq!(written, expected);
+    // the untouched speed keeps the template's text, not a reparsed float.
+    let text = String::from_utf8(mod_entity_row(&row, &ghoul(&[])).unwrap()).unwrap();
+    assert!(text.contains("0.23000000417232513"), "{text}");
+    let e = mod_entity_row(&row, &ghoul(&[("minecraft:flying_speed", 1.0)])).unwrap_err();
+    assert!(e.contains("not one of minecraft:zombie's"), "{e}");
+}
+
 /// a mod's thrown entity type gets the network id after vanilla's last, the
 /// commands accept it, and it changes the content identity.
 #[test]
@@ -1541,7 +1573,10 @@ fn content_root_registers_a_mod_entity_type() {
     let types: serde_json::Value =
         serde_json::from_slice(&fs::read(root.join("entity-types.json")).unwrap()).unwrap();
     assert!(types["minecraft:snowball"].is_object());
-    assert_eq!(types["example:bolt"], types["minecraft:snowball"]);
+    let mut bolt = types["example:bolt"].clone();
+    assert_eq!(bolt["template"], "minecraft:snowball");
+    bolt.as_object_mut().unwrap().remove("template");
+    assert_eq!(bolt, types["minecraft:snowball"]);
     // the rewritten table keeps vanilla's floats to the bit (a zombie's speed).
     let speed = |root: &Path| {
         let attributes =

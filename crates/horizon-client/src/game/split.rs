@@ -224,6 +224,7 @@ impl<'a> Split<'a> {
             stopped &= game.shutdown_culling_workers();
             stopped &= game.shutdown_far_terrain();
             stopped &= game.shutdown_skin_workers();
+            stopped &= game.shutdown_recording_workers();
             if let Some(renderer) = &mut game.renderer {
                 stopped &= renderer.shutdown_pack_compiler();
             }

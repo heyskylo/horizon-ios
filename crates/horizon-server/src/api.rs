@@ -582,14 +582,9 @@ pub fn same_token(a: &str, b: &str) -> bool {
     a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |d, (x, y)| d | (x ^ y)) == 0
 }
 
-/// Writes a file only its owner can read.
-pub fn write_private(path: &Path, text: impl AsRef<[u8]>) -> std::io::Result<()> {
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    options.open(path)?.write_all(text.as_ref())
-}
+/// Writes a file only its owner can read: through a private temporary file renamed over it
+/// (`horizon_server_files::private_file`), so an older, wider-readable file never keeps the token.
+pub use horizon_server_files::private_file::write_private;
 
 /// Removes the endpoint file when the supervisor ends.
 pub struct Endpoint(PathBuf);

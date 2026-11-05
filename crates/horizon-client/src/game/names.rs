@@ -547,12 +547,14 @@ impl Game<'_> {
         const BACKGROUND: u32 = 0x3F00_0000;
         // The camera's facing (Camera.rotation()), turned round in third-person
         // front view, so the text reads the right way from where it is seen.
-        let (view_yaw, view_pitch) =
-            if self.camera_type == super::perspective::CameraType::ThirdPersonFront {
+        let (view_yaw, view_pitch) = match self.posed_rotation {
+            // The frame's camera, already turned round in front view.
+            Some(rotation) => rotation,
+            None if self.camera_type == super::perspective::CameraType::ThirdPersonFront => {
                 (self.yaw + 180.0, -self.pitch)
-            } else {
-                (self.yaw, self.pitch)
-            };
+            }
+            None => (self.yaw, self.pitch),
+        };
         let forward = glam::DVec3::from_array(view_vector(view_yaw, view_pitch));
         let right = forward.cross(glam::DVec3::Y).normalize_or_zero();
         let up = right.cross(forward).normalize_or_zero();

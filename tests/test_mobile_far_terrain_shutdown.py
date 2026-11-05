@@ -18,7 +18,7 @@ def program():
     b = source.index('\n}', a) + 2
     workers = source[a:b].replace('horizon_client::lod::Lod', 'Worker').replace('horizon_client::bluemap::BlueMap', 'Worker')
     workers += '\nimpl FarTerrainWorkers {' + method(source[source.index('impl FarTerrainWorkers {'):], 'shutdown') + '}\n'
-    methods = ''.join(method(source, name) for name in ('shutdown_far_terrain', 'poll_retired_far_terrain', 'clear_lod', 'shutdown_skin_workers', 'poll_retired_skin_workers', 'retire_guest_skin_workers')).replace("Game<'_>", 'Game')
+    methods = ''.join(method(source, name) for name in ('shutdown_far_terrain', 'poll_retired_far_terrain', 'clear_lod', 'shutdown_skin_workers', 'poll_retired_skin_workers', 'retire_guest_skin_workers', 'poll_recording_workers', 'shutdown_recording_workers', 'retire_recording')).replace("Game<'_>", 'Game').replace('horizon_client::net::Session', 'Session')
     splitscreen = (ROOT / 'crates/horizon-client/src/game/splitscreen.rs').read_text()
     methods += method(splitscreen, 'stop_splitscreen')
     return STUBS + workers + '\nimpl Game {' + methods + '}\nfn poll(game:&mut Game,event_loop:&EventLoop){' + gate + 'READY.store(true,Ordering::SeqCst);}\n' + CASES
@@ -30,20 +30,20 @@ use std::{cell::RefCell,sync::{Arc,atomic::{AtomicBool,AtomicUsize,Ordering}},ti
 static READY:AtomicBool=AtomicBool::new(false);
 struct Worker{ready:AtomicBool,stop:AtomicBool}
 impl Worker{fn new()->Self{Self{ready:AtomicBool::new(false),stop:AtomicBool::new(false)}}fn shutdown(&self)->bool{self.stop.store(true,Ordering::SeqCst);self.ready.load(Ordering::SeqCst)}}
-struct WorkHandle(Arc<Worker>);impl WorkHandle{fn shutdown(&self)->bool{self.0.shutdown()}}
+#[derive(Clone)] struct WorkHandle(Arc<Worker>);impl WorkHandle{fn shutdown(&self)->bool{self.0.shutdown()}}
 struct SkinManager(Arc<Worker>);impl SkinManager{fn new(ready:bool)->Self{let worker=Worker::new();worker.ready.store(ready,Ordering::SeqCst);Self(Arc::new(worker))}fn shutdown(&mut self)->bool{self.0.shutdown()}fn retire_workers(&self)->WorkHandle{self.0.stop.store(true,Ordering::SeqCst);WorkHandle(self.0.clone())}}
-struct Session{cancels:AtomicUsize}impl Session{fn cancel_far_terrain(&self){self.cancels.fetch_add(1,Ordering::SeqCst);}fn disconnect(&mut self){}}
+struct Session{cancels:AtomicUsize,recording:Option<WorkHandle>}impl Session{fn recording_work(&self)->Option<WorkHandle>{self.recording.clone()}fn cancel_far_terrain(&self){self.cancels.fetch_add(1,Ordering::SeqCst);}fn disconnect(&mut self){}}
 struct Remote{session:Session}struct Renderer;impl Renderer{fn shutdown_pack_compiler(&mut self)->bool{true}fn clear_lods(&mut self){}}
 struct Rest{handle:JoinHandle<()>}
-struct Game{remote:Option<Remote>,lod:Option<Worker>,lod_blue_map:Option<Arc<Worker>>,renderer:Option<Renderer>,rest_loader:Option<Rest>,retired_far_terrain:Vec<FarTerrainWorkers>,lod_source_attempted:bool,lod_observe:Vec<()>,far_beacons:Vec<()>,lod_covered_at:Option<()>,splitscreen_guest:Option<Box<Game>>,skin_profiles:RefCell<SkinManager>,skin_downloads:RefCell<SkinManager>,retired_skin_workers:Vec<WorkHandle>}
-impl Game{fn shutdown_server_pack_worker(&mut self)->bool{true}fn shutdown_culling_workers(&mut self)->bool{true}fn shutdown_integrated_workers(&mut self)->bool{true}fn end_splitscreen(&mut self){}}
+struct Game{remote:Option<Remote>,lod:Option<Worker>,lod_blue_map:Option<Arc<Worker>>,renderer:Option<Renderer>,rest_loader:Option<Rest>,retired_far_terrain:Vec<FarTerrainWorkers>,lod_source_attempted:bool,lod_observe:Vec<()>,far_beacons:Vec<()>,lod_covered_at:Option<()>,splitscreen_guest:Option<Box<Game>>,skin_profiles:RefCell<SkinManager>,skin_downloads:RefCell<SkinManager>,retired_skin_workers:Vec<WorkHandle>,retired_recording_workers:Vec<WorkHandle>,studio_recording_notice_pending:bool}
+impl Game{fn retire_guest_culling_workers(&mut self,_:&mut Game){}fn shutdown_server_pack_worker(&mut self)->bool{true}fn shutdown_culling_workers(&mut self)->bool{true}fn shutdown_integrated_workers(&mut self)->bool{true}fn end_splitscreen(&mut self){}}
 mod shader_packs{pub fn shutdown_parser()->bool{true}}
 mod world_loading{pub fn shutdown_preload()->bool{true}pub fn shutdown_prepared_files()->bool{true}}
 enum ControlFlow{WaitUntil(Instant)}struct EventLoop;impl EventLoop{fn set_control_flow(&self,_:ControlFlow){}}
 '''
 
 CASES = r'''
-fn game_with_workers()->Game{Game{remote:Some(Remote{session:Session{cancels:AtomicUsize::new(0)}}),lod:Some(Worker::new()),lod_blue_map:Some(Arc::new(Worker::new())),renderer:None,rest_loader:None,retired_far_terrain:Vec::new(),lod_source_attempted:true,lod_observe:vec![],far_beacons:vec![],lod_covered_at:None,splitscreen_guest:None,skin_profiles:RefCell::new(SkinManager::new(true)),skin_downloads:RefCell::new(SkinManager::new(true)),retired_skin_workers:vec![]}}
+fn game_with_workers()->Game{Game{remote:Some(Remote{session:Session{cancels:AtomicUsize::new(0),recording:None}}),lod:Some(Worker::new()),lod_blue_map:Some(Arc::new(Worker::new())),renderer:None,rest_loader:None,retired_far_terrain:Vec::new(),lod_source_attempted:true,lod_observe:vec![],far_beacons:vec![],lod_covered_at:None,splitscreen_guest:None,skin_profiles:RefCell::new(SkinManager::new(true)),skin_downloads:RefCell::new(SkinManager::new(true)),retired_skin_workers:vec![],retired_recording_workers:vec![],studio_recording_notice_pending:false}}
 fn main(){
  let mut g=game_with_workers();
  poll(&mut g,&EventLoop);assert!(!READY.load(Ordering::SeqCst));
@@ -60,13 +60,20 @@ fn main(){
  READY.store(false,Ordering::SeqCst);poll(&mut g,&EventLoop);assert!(!READY.load(Ordering::SeqCst));
  g.retired_far_terrain[0].lod.as_ref().unwrap().ready.store(true,Ordering::SeqCst);poll(&mut g,&EventLoop);assert!(!READY.load(Ordering::SeqCst));
  g.retired_far_terrain[0].blue_map.as_ref().unwrap().ready.store(true,Ordering::SeqCst);poll(&mut g,&EventLoop);assert!(READY.load(Ordering::SeqCst));assert!(g.retired_far_terrain.is_empty());
+ // Recording finalization is independent of terrain/skin readiness.
+ let recording=Arc::new(Worker::new());g.remote.as_mut().unwrap().session.recording=Some(WorkHandle(recording.clone()));
+ READY.store(false,Ordering::SeqCst);poll(&mut g,&EventLoop);assert!(!READY.load(Ordering::SeqCst));assert!(recording.stop.load(Ordering::SeqCst));
+ recording.ready.store(true,Ordering::SeqCst);poll(&mut g,&EventLoop);assert!(READY.load(Ordering::SeqCst));
+ let retired=Arc::new(Worker::new());g.retired_recording_workers.push(WorkHandle(retired.clone()));
+ READY.store(false,Ordering::SeqCst);poll(&mut g,&EventLoop);assert!(!READY.load(Ordering::SeqCst));retired.ready.store(true,Ordering::SeqCst);poll(&mut g,&EventLoop);assert!(READY.load(Ordering::SeqCst));assert!(g.retired_recording_workers.is_empty());
  g.remote=None;g.lod=None;g.lod_blue_map=None;READY.store(false,Ordering::SeqCst);poll(&mut g,&EventLoop);assert!(READY.load(Ordering::SeqCst));
  // Removing the AirPlay guest transfers its unfinished cohorts to the host.
  let mut child=game_with_workers();child.skin_profiles=RefCell::new(SkinManager::new(false));child.skin_downloads=RefCell::new(SkinManager::new(false));child.retired_skin_workers.push(WorkHandle(Arc::new(Worker::new())));
- g.splitscreen_guest=Some(Box::new(child));g.stop_splitscreen();assert!(g.splitscreen_guest.is_none());assert_eq!(g.retired_far_terrain.len(),1);assert_eq!(g.retired_skin_workers.len(),3);
+ let guest_recording=Arc::new(Worker::new());child.remote.as_mut().unwrap().session.recording=Some(WorkHandle(guest_recording.clone()));
+ g.splitscreen_guest=Some(Box::new(child));g.stop_splitscreen();assert!(g.splitscreen_guest.is_none());assert_eq!(g.retired_far_terrain.len(),1);assert_eq!(g.retired_skin_workers.len(),3);assert_eq!(g.retired_recording_workers.len(),1);
  READY.store(false,Ordering::SeqCst);poll(&mut g,&EventLoop);assert!(!READY.load(Ordering::SeqCst));
  g.retired_far_terrain[0].lod.as_ref().unwrap().ready.store(true,Ordering::SeqCst);g.retired_far_terrain[0].blue_map.as_ref().unwrap().ready.store(true,Ordering::SeqCst);poll(&mut g,&EventLoop);assert!(!READY.load(Ordering::SeqCst));assert!(g.retired_far_terrain.is_empty());
- for worker in &g.retired_skin_workers{worker.0.ready.store(true,Ordering::SeqCst);}poll(&mut g,&EventLoop);assert!(READY.load(Ordering::SeqCst));assert!(g.retired_skin_workers.is_empty());
+ for worker in &g.retired_skin_workers{worker.0.ready.store(true,Ordering::SeqCst);}poll(&mut g,&EventLoop);assert!(!READY.load(Ordering::SeqCst),"guest recording outlived readiness gate");guest_recording.ready.store(true,Ordering::SeqCst);poll(&mut g,&EventLoop);assert!(READY.load(Ordering::SeqCst));assert!(g.retired_skin_workers.is_empty());
 }
 '''
 
