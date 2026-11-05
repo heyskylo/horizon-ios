@@ -170,12 +170,46 @@ fn searches_by_category_and_tag() {
     );
     assert_eq!(found("sunset", &[]), ["glow"], "tags are searched");
     assert!(found("dawn", &[]).is_empty());
+    let tagged = |tags: &[&str]| -> Vec<String> {
+        let mut q = Query::new("", Kind::Shader);
+        q.filters.tags = tags.iter().map(|t| t.to_string()).collect();
+        search(&index, &q).into_iter().map(|p| p.id).collect()
+    };
+    assert_eq!(tagged(&["sunset"]), ["glow"]);
+    assert!(tagged(&["sunset", "dawn"]).is_empty(), "every tag asked");
     // The filter offers the kind's own list: a resolution for resource packs, not for shaders.
     let shader = Registry.tags(Kind::Shader).unwrap().categories;
     assert!(shader.iter().any(|c| c.name == "path-tracing"));
     let packs = Registry.tags(Kind::ResourcePack).unwrap().categories;
     assert!(packs.iter().any(|c| c.name == "16x"));
     assert!(!shader.iter().any(|c| c.name == "16x"));
+}
+
+#[test]
+fn the_tag_filter_offers_the_kinds_tags_most_used_first() {
+    let mut index = sample();
+    let at = |index: &Index, id: &str| index.projects.iter().position(|p| p.id == id).unwrap();
+    let glow = at(&index, "glow");
+    index.projects[glow].tags = vec![
+        "sunset".into(),
+        "cozy".into(),
+        "sunset".into(),
+        "Not Plain".into(),
+    ];
+    assert_eq!(
+        tags_of(&index, Kind::Shader),
+        ["cozy", "sunset"],
+        "ties by name"
+    );
+    let mut dusk = index.projects[glow].clone();
+    dusk.id = "dusk".into();
+    dusk.tags = vec!["sunset".into()];
+    index.projects.push(dusk);
+    let hud = at(&index, "coords_hud");
+    index.projects[hud].tags = vec!["pvp".into()];
+    assert_eq!(tags_of(&index, Kind::Shader), ["sunset", "cozy"]);
+    assert_eq!(tags_of(&index, Kind::Mod), ["pvp"], "each kind its own");
+    assert!(tags_of(&index, Kind::DataPack).is_empty());
 }
 
 /// A data pack zip with one function, and the registry project that lists it.
