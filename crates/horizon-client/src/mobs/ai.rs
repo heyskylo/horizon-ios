@@ -710,6 +710,8 @@ pub fn tick(
         if horse {
             super::equine::ai_step(m, w, events);
         }
+        // LivingEntity.aiStep ends in the water's hurt with or without AI.
+        hurt_by_water(m, w, events);
         // Ravager.aiStep runs outside serverAiStep: NoAI still advances
         // attack/stun/roar, including the stun-to-roar transition.
         if m.species() == Species::Ravager {
@@ -1229,10 +1231,6 @@ fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
                 }
             }
         }
-
-        if m.kind.flags.water_sensitive && (m.fluids.in_water || in_rain(m, w)) {
-            m.damage(1.0, Damage::of(DamageKind::Drown));
-        }
         freeze_tick(m, w);
     }
     if m.species() == Species::Illusioner {
@@ -1613,6 +1611,7 @@ fn ai_step(m: &mut Mob, w: &MobWorld, level_random: &mut LegacyRandom, events: &
     // LivingEntity.aiStep: applyEffectsFromBlocks follows travel.
     m.apply_effects_from_blocks(w, events);
     push_entities(m, w, events);
+    hurt_by_water(m, w, events);
     // Spider.tick: climbing while pressed against a wall.
     if m.kind.flags.climber {
         m.climbing = m.horizontal_collision;
@@ -1621,6 +1620,20 @@ fn ai_step(m: &mut Mob, w: &MobWorld, level_random: &mut LegacyRandom, events: &
     animal_step(m, events);
     burn_undead(m, w, events);
     species_ai_step(m, w, level_random, events);
+}
+/// The end of `LivingEntity.aiStep`: a mob that water hurts (an enderman, a
+/// blaze, a snow golem) takes 1 drowning damage in water or rain
+/// (`isSensitiveToWater`, `isInWaterOrRain`). An enderman's teleport is part of
+/// that hurt (`Enderman.hurtServer`), so it happens now, not next tick.
+fn hurt_by_water(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
+    if m.kind.flags.water_sensitive && (m.fluids.in_water || in_rain(m, w)) {
+        m.damage(1.0, Damage::of(DamageKind::Drown));
+        if m.species() == Species::Enderman {
+            // The hurt sound comes before the teleport's.
+            events.append(&mut m.outbox);
+            super::enderman::run_pending_teleports(m, w, events);
+        }
+    }
 }
 impl Mob {
     /// LivingEntity.isPushable (and the push it takes from `Entity.push(Entity)`):
@@ -2537,7 +2550,6 @@ pub fn accepts_damage(m: &mut Mob, source: &Damage, _amount: f32) -> bool {
 pub fn after_hurt(m: &mut Mob, source: &Damage) {
     m.ai.no_action_time = 0;
     match m.species() {
-        Species::Enderman => super::enderman::after_hurt(m, source),
         Species::Armadillo => super::armadillo::after_hurt(m, source),
         Species::Shulker => super::shulker::after_hurt(m),
         Species::Warden => super::warden::hurt(m, source),
