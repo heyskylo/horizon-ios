@@ -1238,7 +1238,7 @@ impl Hub {
         let joined = C::SystemChat(play::SystemChat {
             content: yellow_names(
                 "multiplayer.player.joined",
-                vec![display_name(self.guests[i].uuid, &name)],
+                vec![self.player_display_name(self.guests[i].uuid, &name)],
             ),
             overlay: false,
         })
@@ -2028,7 +2028,7 @@ impl Hub {
         let left = C::SystemChat(play::SystemChat {
             content: yellow_names(
                 "multiplayer.player.left",
-                vec![display_name(g.uuid, &g.name)],
+                vec![self.player_display_name(g.uuid, &g.name)],
             ),
             overlay: false,
         })
@@ -4578,7 +4578,7 @@ mod tests {
     fn hub_with_sync(sync: SyncData) -> (Hub, std::sync::mpsc::Receiver<crate::lan::Out>) {
         let config = crate::lan::NetConfig {
             announce: false,
-            ..crate::lan::NetConfig::lan(0, "EffectSyncTest".into(), 2)
+            ..crate::lan::NetConfig::loopback(0, "EffectSyncTest".into(), 2)
         };
         let sync = std::sync::Arc::new(sync);
         let lan = Lan::start_with(sync.clone(), config).unwrap();

@@ -11059,6 +11059,8 @@ mod tests {
         let motion_hooks = free_hooks(include_str!("../motion.rs"));
         // The chat relay's (`horizon_client_lib::lan::hub::chat`).
         let chat_hooks = free_hooks(include_str!("../lan/hub/chat.rs"));
+        // The mob AI's (`horizon_client_lib::mobs::ai`).
+        let mob_hooks = free_hooks(include_str!("../mobs/ai.rs"));
         let declared: BTreeSet<_> = section
             .lines()
             .chain(level_section.lines())
@@ -11078,6 +11080,7 @@ mod tests {
             .chain(landing_hooks.iter().copied())
             .chain(motion_hooks.iter().copied())
             .chain(chat_hooks.iter().copied())
+            .chain(mob_hooks.iter().copied())
             .collect();
         let mut names = BTreeSet::new();
         let mut contracts = BTreeSet::new();
@@ -11114,6 +11117,8 @@ mod tests {
             } else if breath_hooks.contains(name) {
                 // breathing.rs compiles into horizon-client-lib too.
                 format!("horizon_client_lib::breathing::native_{name}")
+            } else if mob_hooks.contains(name) {
+                format!("horizon_client_lib::mobs::ai::native_{name}")
             } else if level_hooks.contains(name) {
                 format!("horizon_client::game::native_hooks::GameLevel<'_>::native_{name}")
             } else {

@@ -1222,6 +1222,7 @@ impl Game<'_> {
         self.audio
             .play("minecraft:entity.ender_eye.launch", Some(at), 1.0, pitch);
         self.consume_held();
+        self.award_stat("used", "minecraft:ender_eye", 1);
         self.swing_arm();
     }
 

@@ -49,6 +49,17 @@ impl Game<'_> {
         if !container || self.chest_menu_blocked(key, &name) {
             return;
         }
+        // BaseContainerBlockEntity.canOpen: a spectator opens no container that still
+        // has a loot table to unpack (it clears while it rolls, on first open).
+        if self
+            .world
+            .chunks
+            .get(&(key.0 >> 4, key.2 >> 4))
+            .and_then(|c| c.saved.as_ref())
+            .is_some_and(|s| s.rolled_loot.iter().any(|r| r.pos == key))
+        {
+            return;
+        }
         let Some(entity) = BlockEntity::for_block(&name) else {
             return;
         };

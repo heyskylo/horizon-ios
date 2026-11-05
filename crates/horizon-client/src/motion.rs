@@ -933,7 +933,28 @@ impl PlayerMotion {
         keys: crate::sprint::Keys,
         sprint_window: i32,
     ) -> Result<()> {
+        let conditions = self.sprint_conditions();
+        self.run_sprint_tick(keys, conditions, sprint_window)
+    }
+    /// The same phase for a passenger: `LocalPlayer.isSprintingPossible` asks the
+    /// vehicle's `canSprint` and this client's authority there, not food.
+    pub fn sprint_input_tick_riding(
+        &mut self,
+        keys: crate::sprint::Keys,
+        sprint_window: i32,
+        vehicle_can_sprint: bool,
+        vehicle_local: bool,
+    ) -> Result<()> {
         let conditions = crate::sprint::Conditions {
+            passenger: true,
+            vehicle_can_sprint,
+            vehicle_local,
+            ..self.sprint_conditions()
+        };
+        self.run_sprint_tick(keys, conditions, sprint_window)
+    }
+    fn sprint_conditions(&self) -> crate::sprint::Conditions {
+        crate::sprint::Conditions {
             sprinting: self.sprinting,
             mobility_restricted: self.mobility_restricted,
             enough_food: self.health.food.has_enough_food(),
@@ -951,7 +972,14 @@ impl PlayerMotion {
             under_water: self.is_under_water(),
             swimming: self.swimming,
             ..Default::default()
-        };
+        }
+    }
+    fn run_sprint_tick(
+        &mut self,
+        keys: crate::sprint::Keys,
+        conditions: crate::sprint::Conditions,
+        sprint_window: i32,
+    ) -> Result<()> {
         // The sprint setter edits attributes and flags, independent of local
         // keyboard history. Retain the input prefix even if that setter fails.
         let mut state = self.sprint_input;
@@ -2856,7 +2884,7 @@ impl LivingAirWorld for MotionWorld<'_, '_, '_> {
         Ok(self.player.status.levitation)
     }
     fn is_client_side(&mut self) -> Result<bool> {
-        Ok(false)
+        Ok(self.player.client_side)
     }
     fn has_chunk_at(&mut self, p: BlockPos) -> Result<bool> {
         Ok(self.scene.chunks.contains_key(&(p.x >> 4, p.z >> 4)))
@@ -2868,7 +2896,7 @@ impl LivingAirWorld for MotionWorld<'_, '_, '_> {
         self.player.position.y
     }
     fn minimum_y(&mut self) -> Result<i32> {
-        Ok(0)
+        Ok(self.scene.shape.min_y)
     }
     fn discard_friction(&mut self) -> Result<bool> {
         Ok(false)
@@ -3043,6 +3071,37 @@ mod tests {
             [0.0, 0.0],
             Vec3::new(0.0, 0.0, 0.2)
         ));
+    }
+
+    #[test]
+    fn a_glide_that_just_ended_moves_slowly_until_the_pose_changes() {
+        let root = std::env::var_os("HORIZON_TEST_RESOURCES")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../.local/horizon-client")
+                    .join(horizon_core::VANILLA_VERSION)
+            });
+        if !root.join("movement-properties.nbt").exists() {
+            eprintln!("skipped glide exit regression: prepared resources unavailable");
+            return;
+        }
+        let assets = Assets::load(&root).unwrap();
+        let resources = MotionResources::load(&root, &assets).unwrap();
+        let mut p = PlayerMotion::new(&resources, Vec3::ZERO).unwrap();
+        p.set_pose(crate::pose::Pose::FallFlying).unwrap();
+        // Gliding: LivingEntity.isVisuallySwimming is false.
+        p.fall_flying = true;
+        assert!(!p.moving_slowly());
+        // The glide ended, the pose not yet: visually crawling.
+        p.fall_flying = false;
+        assert!(p.moving_slowly());
+        // Not in water (Entity.isVisuallyCrawling).
+        p.fluids.was_touching_water = true;
+        assert!(!p.moving_slowly());
+        p.fluids.was_touching_water = false;
+        p.set_pose(crate::pose::Pose::Standing).unwrap();
+        assert!(!p.moving_slowly());
     }
 
     #[test]
@@ -5803,5 +5862,44 @@ mod tests {
             0.1,
             "the flight speed follows the sprint state, not the sprint key"
         );
+    }
+    /// #9817: `LivingEntity.travelInAir`: a client (`level.isClientSide()`) whose
+    /// chunk below is not loaded skips gravity and falls at 0.1 a tick
+    /// (above `getMinY`), before the 0.98 vertical drag.
+    #[test]
+    fn a_client_over_an_unloaded_chunk_falls_at_a_tenth() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("movement-properties.nbt").exists() {
+            return;
+        }
+        let assets = Assets::load(&root).unwrap();
+        let render = assets.reload(&root).unwrap();
+        let binding = crate::collisions::load(&root, assets.registry).unwrap();
+        let resources = MotionResources::load(&root, &assets).unwrap();
+        for (client_side, want) in [
+            (true, -0.1 * f64::from(0.98_f32)),
+            (false, -0.0784000015258789),
+        ] {
+            let mut scene = World::test_scene(&assets, &render, 2).unwrap();
+            // Far outside the test scene's chunks.
+            let at = Vec3::new(10_000.5, 20.0, 10_000.5);
+            assert!(!scene.chunks.contains_key(&(10_000 >> 4, 10_000 >> 4)));
+            let mut player = PlayerMotion::new(&resources, at).unwrap();
+            player.client_side = client_side;
+            MotionWorld {
+                entities: &[],
+                player: &mut player,
+                scene: &mut scene,
+                assets: &assets,
+                collision_binding: &binding,
+                resources: &resources,
+                health: &resources.health,
+            }
+            .controlled_simulation_tick(Default::default())
+            .unwrap();
+            assert_eq!(player.velocity.y, want, "client_side={client_side}");
+        }
     }
 }

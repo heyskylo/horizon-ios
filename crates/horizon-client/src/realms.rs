@@ -10,7 +10,10 @@
 pub mod client;
 
 use crate::hud::{HudAtlas, HudBatch, rgba};
-use client::{PendingInviteDto, RealmAddress, RealmServer, RealmsClient, RealmsError};
+use crate::text::Text;
+use client::{
+    PendingInviteDto, RealmAddress, RealmServer, RealmsClient, RealmsError, Subscription,
+};
 use horizon_client_render::auth::{self, AuthSession};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -21,6 +24,8 @@ const HEADER_HEIGHT: f32 = 44.0;
 const CONTENT_WIDTH: f32 = 308.0;
 const ROW_WIDTH: f32 = 300.0;
 const ROW_HEIGHT: f32 = 36.0;
+/// `RealmsConfigureWorldScreen`'s `MenuTabBar` height (`gui/tab_header_background`).
+const TAB_HEIGHT: f32 = 24.0;
 /// `hud::rgba` packing (ABGR): 160 grey, vanilla's red and `RealmsPopups.COLOR_INFO`.
 const GREY: u32 = 0xFFA0_A0A0;
 const RED: u32 = 0xFF55_55FF;
@@ -142,6 +147,88 @@ fn extend_link(server: &RealmServer, profile: u128) -> String {
     }
 }
 
+/// `RealmsConfigureWorldScreen`'s tabs, in `MenuTabBar` order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConfigureTab {
+    Worlds,
+    Players,
+    Subscription,
+    Settings,
+}
+
+impl ConfigureTab {
+    /// The tabs in `MenuTabBar` order, which is also their index.
+    const ALL: [Self; 4] = [
+        Self::Worlds,
+        Self::Players,
+        Self::Subscription,
+        Self::Settings,
+    ];
+    /// `RealmsWorldsTab.TITLE` and the other tabs' own titles.
+    fn title(self) -> &'static str {
+        match self {
+            Self::Worlds => "mco.configure.worlds.title",
+            Self::Players => "mco.configure.world.players.title",
+            Self::Subscription => "mco.configure.world.subscription.tab",
+            Self::Settings => "mco.configure.world.settings.title",
+        }
+    }
+    /// `RealmsConfigureWorldScreen.init`'s `setTabActiveState(3, !serverData.expired)`: an
+    /// expired Realm's settings tab is off (with the expired tooltip).
+    fn enabled(self, expired: bool) -> bool {
+        self != Self::Settings || !expired
+    }
+}
+
+/// The tab bar's geometry over `MenuTabBar.builder(this, width)`: the bar is at most 400
+/// wide, centred, and each of the four tabs is an eighth of its inner width rounded up to an
+/// even number (`Java`'s integer division before the rounding).
+fn tab_geometry(w: f32) -> (f32, f32) {
+    let width = w.min(400.0) - 28.0;
+    let x = (((w - width) / 2.0).floor() / 2.0).ceil() * 2.0;
+    let tab = ((width / 4.0).floor() / 2.0).ceil() * 2.0;
+    (x, tab)
+}
+
+/// `RealmsSubscriptionTab.daysLeftPresentation`: what the days-left line says, in the
+/// caller's language; empty when nothing is left to say.
+fn days_left_text(days_left: i32, expired: bool) -> String {
+    let t = crate::lang::get;
+    if days_left < 0 && expired {
+        return t("mco.configure.world.subscription.expired");
+    }
+    if days_left <= 1 {
+        return t("mco.configure.world.subscription.less_than_a_day");
+    }
+    let (months, days) = (days_left / 30, days_left % 30);
+    match (months > 0, days > 0) {
+        (true, true) => crate::lang::tr(
+            "mco.configure.world.subscription.remaining.months.days",
+            &[&months, &days],
+        ),
+        (true, false) => crate::lang::tr(
+            "mco.configure.world.subscription.remaining.months",
+            &[&months],
+        ),
+        (false, true) => {
+            crate::lang::tr("mco.configure.world.subscription.remaining.days", &[&days])
+        }
+        (false, false) => String::new(),
+    }
+}
+
+/// `RealmsSubscriptionTab.localPresentation`: the start date in the player's own local
+/// time. The process has no locale to format with, so the shape is fixed (`%Y-%m-%d`)
+/// where vanilla asks for the locale's medium date.
+fn start_date_text(epoch_millis: i64) -> String {
+    let Some(time) = chrono::DateTime::from_timestamp_millis(epoch_millis) else {
+        return String::new();
+    };
+    time.with_timezone(&chrono::Local)
+        .format("%Y-%m-%d")
+        .to_string()
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum LayoutState {
     Loading,
@@ -165,6 +252,8 @@ pub enum Popup {
     Leave(RealmServer),
     /// `GetServerDetailsTask.resourcePackDownloadConfirmationScreen`.
     ResourcePack { pack: RealmsPack },
+    /// `RealmsSubscriptionTab`'s delete question (only offered once the Realm has expired).
+    Delete(RealmServer),
 }
 
 #[derive(Clone, Debug)]
@@ -181,7 +270,14 @@ pub enum SubScreen {
     },
     Configure {
         server: RealmServer,
+        tab: ConfigureTab,
+        /// `RealmsClient.subscriptionFor` on a worker, then its answer (the subscription tab).
+        subscription: Option<Result<Subscription, RealmsError>>,
+        subscription_job: Option<Job<Result<Subscription, RealmsError>>>,
+        /// `RealmsClient.deleteRealm` on a worker, from the subscription tab's question.
+        deleting: Option<Job<Result<(), RealmsError>>>,
         error: Option<String>,
+        /// `RealmsClient.open`/`close` on a worker.
         job: Option<Job<Result<(), RealmsError>>>,
     },
     AddRealm,
@@ -337,13 +433,37 @@ impl Screen {
                     *invites = Some(result);
                 }
             }
-            SubScreen::Configure { server, error, job } => {
+            SubScreen::Configure {
+                server,
+                subscription,
+                subscription_job,
+                deleting,
+                error,
+                job,
+                ..
+            } => {
                 if let Some(result) = job.as_ref().and_then(take) {
                     *job = None;
                     match result {
                         Ok(()) => {
                             let open = server.is_open();
                             server.state = if open { "CLOSED" } else { "OPEN" }.to_owned();
+                            refresh = true;
+                        }
+                        Err(e) => *error = Some(e.text()),
+                    }
+                }
+                if let Some(result) = subscription_job.as_ref().and_then(take) {
+                    *subscription_job = None;
+                    *subscription = Some(result);
+                }
+                if let Some(result) = deleting.as_ref().and_then(take) {
+                    *deleting = None;
+                    match result {
+                        // The Realm is gone: the list reloads without it.
+                        Ok(()) => {
+                            self.subscreen = SubScreen::Main;
+                            self.selected = None;
                             refresh = true;
                         }
                         Err(e) => *error = Some(e.text()),
@@ -455,9 +575,17 @@ impl Screen {
     /// Play: `RealmsMainScreen.play` → `GetServerDetailsTask` on a worker. The screen
     /// shows "Connecting to the Realm..." and stays responsive.
     fn play_selected(&mut self) -> Outcome {
-        let Some(server) = self.selected_server().filter(|s| s.is_open()).cloned() else {
+        match self.selected_server() {
+            Some(server) => self.start_join(server.clone()),
+            None => Outcome::None,
+        }
+    }
+
+    /// `RealmsMainScreen.play` for `server`, the list's or the configuration screen's.
+    fn start_join(&mut self, server: RealmServer) -> Outcome {
+        if !server.is_open() {
             return Outcome::None;
-        };
+        }
         let Some(client) = client() else {
             return Outcome::None;
         };
@@ -473,6 +601,26 @@ impl Screen {
         Outcome::None
     }
 
+    /// `RealmsConfigureWorldScreen.init`'s `fetchSubscription`: the subscription tab's
+    /// data, on a worker.
+    fn start_configure_subscription(&mut self) {
+        let SubScreen::Configure {
+            server,
+            subscription_job,
+            ..
+        } = &mut self.subscreen
+        else {
+            return;
+        };
+        if subscription_job.is_some() {
+            return;
+        }
+        if let Some(client) = client() {
+            let id = server.id;
+            *subscription_job = Some(spawn(move || client.subscription_for(id)));
+        }
+    }
+
     pub fn click(&mut self, hit: Option<u8>, x: f32, y: f32, (w, h): (f32, f32)) -> Outcome {
         match hit {
             Some(1) => self.play_selected(),
@@ -481,9 +629,14 @@ impl Screen {
                 if let Some(server) = self.selected_server().cloned() {
                     self.subscreen = SubScreen::Configure {
                         server,
+                        tab: ConfigureTab::Worlds,
+                        subscription: None,
+                        subscription_job: None,
+                        deleting: None,
                         error: None,
                         job: None,
                     };
+                    self.start_configure_subscription();
                 }
                 Outcome::None
             }
@@ -538,7 +691,9 @@ impl Screen {
                 Outcome::None
             }
             Some(30) => {
-                if let SubScreen::Configure { server, error, job } = &mut self.subscreen
+                if let SubScreen::Configure {
+                    server, error, job, ..
+                } = &mut self.subscreen
                     && job.is_none()
                     && let Some(client) = client()
                 {
@@ -554,6 +709,40 @@ impl Screen {
                 }
                 Outcome::None
             }
+            // The configuration screen's tabs (60..=63) and its footer: Play (64).
+            Some(sel @ 60..=63) => {
+                if let SubScreen::Configure { server, tab, .. } = &mut self.subscreen
+                    && let Some(wanted) = ConfigureTab::ALL.get(usize::from(sel - 60))
+                    && wanted.enabled(server.expired)
+                {
+                    *tab = *wanted;
+                }
+                Outcome::None
+            }
+            Some(64) => match &self.subscreen {
+                SubScreen::Configure { server, .. } => self.start_join(server.clone()),
+                _ => Outcome::None,
+            },
+            // The subscription tab's own buttons: Delete (expired only, after its question)
+            // and Extend.
+            Some(65) => {
+                if let SubScreen::Configure {
+                    server, deleting, ..
+                } = &self.subscreen
+                    && server.expired
+                    && deleting.is_none()
+                {
+                    let server = server.clone();
+                    self.subscreen = SubScreen::Popup(Popup::Delete(server));
+                }
+                Outcome::None
+            }
+            Some(66) => match (&self.subscreen, session()) {
+                (SubScreen::Configure { server, .. }, Some(s)) => {
+                    Outcome::OpenUri(extend_link(server, s.uuid))
+                }
+                _ => Outcome::None,
+            },
             Some(40) => Outcome::OpenUri(BUY_REALMS.to_owned()),
             Some(50) => self.popup_continue(),
             Some(btn @ 100..=200) => {
@@ -573,6 +762,21 @@ impl Screen {
                         };
                         done.and_then(|()| client.pending_invites())
                     }));
+                }
+                Outcome::None
+            }
+            // The tab bar draws its own tabs (`MenuTabBar`), so a click there carries no
+            // button id: the tab bar's geometry decides.
+            None if matches!(self.subscreen, SubScreen::Configure { .. }) => {
+                let (bar_x, tab_w) = tab_geometry(w);
+                if y < TAB_HEIGHT && x >= bar_x {
+                    let index = ((x - bar_x) / tab_w).floor() as usize;
+                    if let SubScreen::Configure { server, tab, .. } = &mut self.subscreen
+                        && let Some(wanted) = ConfigureTab::ALL.get(index)
+                        && wanted.enabled(server.expired)
+                    {
+                        *tab = *wanted;
+                    }
                 }
                 Outcome::None
             }
@@ -614,6 +818,27 @@ impl Screen {
                     *slot = Some(pack);
                 }
                 Outcome::Connect(address)
+            }
+            // RealmsSubscriptionTab.deleteRealm: the question was asked over the
+            // configuration screen, so it answers there; the list returns once the
+            // Realm is gone.
+            Popup::Delete(server) => {
+                let Some(client) = client() else {
+                    return Outcome::None;
+                };
+                let id = server.id;
+                self.subscreen = SubScreen::Configure {
+                    server,
+                    tab: ConfigureTab::Subscription,
+                    subscription: None,
+                    subscription_job: None,
+                    deleting: Some(spawn(move || client.delete_realm(id))),
+                    error: None,
+                    job: None,
+                };
+                // A failed delete stays here and the tab reads again.
+                self.start_configure_subscription();
+                Outcome::None
             }
         }
     }
@@ -710,22 +935,53 @@ impl Screen {
                     }
                 }
             }
-            SubScreen::Configure { server, job, .. } => {
-                let label = if server.is_open() {
+            SubScreen::Configure {
+                server,
+                tab,
+                subscription,
+                deleting,
+                job,
+                ..
+            } => {
+                // The footer: Play, the open/close toggle (vanilla keeps it on the settings
+                // tab; it stays here until that tab lands) and Back.
+                buttons.push((
+                    cx - 155.0,
+                    h - 26.0,
+                    100.0,
+                    t("mco.selectServer.play"),
+                    server.is_open(),
+                    64,
+                    None,
+                ));
+                let toggle = if server.is_open() {
                     t("mco.configure.world.buttons.close")
                 } else {
                     t("mco.configure.world.buttons.open")
                 };
-                buttons.push((
-                    cx - 100.0,
-                    mid + 10.0,
-                    200.0,
-                    label,
-                    job.is_none(),
-                    30,
-                    None,
-                ));
-                buttons.push((cx - 100.0, h - 36.0, 200.0, t("gui.back"), true, 32, None));
+                buttons.push((cx - 50.0, h - 26.0, 100.0, toggle, job.is_none(), 30, None));
+                buttons.push((cx + 55.0, h - 26.0, 100.0, t("gui.back"), true, 32, None));
+                // RealmsSubscriptionTab's own two buttons.
+                if *tab == ConfigureTab::Subscription && matches!(subscription, Some(Ok(_))) {
+                    buttons.push((
+                        cx - 100.0,
+                        92.0,
+                        200.0,
+                        t("mco.configure.world.subscription.extend"),
+                        true,
+                        66,
+                        None,
+                    ));
+                    buttons.push((
+                        cx - 100.0,
+                        118.0,
+                        200.0,
+                        t("mco.configure.world.delete.button"),
+                        server.expired && deleting.is_none(),
+                        65,
+                        None,
+                    ));
+                }
             }
             SubScreen::AddRealm => {
                 buttons.push((
@@ -895,19 +1151,6 @@ impl Screen {
         buttons
     }
 
-    /// `RealmsServer` expiry tooltip text (`RealmsMainScreen` status line).
-    fn expiry_text(server: &RealmServer) -> String {
-        if server.expired {
-            crate::lang::get("mco.selectServer.expired")
-        } else if server.days_left <= 0 {
-            crate::lang::get("mco.selectServer.expires.soon")
-        } else if server.days_left == 1 {
-            crate::lang::get("mco.selectServer.expires.day")
-        } else {
-            crate::lang::tr("mco.selectServer.expires.days", &[&server.days_left])
-        }
-    }
-
     #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &self,
@@ -915,7 +1158,7 @@ impl Screen {
         atlas: &HudAtlas,
         caret: &mut crate::ui::Caret,
         focused_at: Instant,
-        _cursor: (f32, f32),
+        cursor: (f32, f32),
         w: f32,
         h: f32,
     ) {
@@ -1005,19 +1248,151 @@ impl Screen {
                     }
                 }
             }
-            SubScreen::Configure { server, error, job } => {
-                let title = format!("{} {}", t("mco.configure.world.title"), server.name);
-                centered(batch, atlas, &title, cx, 20.0, u32::MAX);
-                let info_y = mid - 60.0;
-                centered(batch, atlas, &server.motd, cx, info_y, GREY);
-                centered(
+            SubScreen::Configure {
+                server,
+                tab,
+                subscription,
+                deleting,
+                error,
+                job,
+                ..
+            } => {
+                // `RealmsConfigureWorldScreen`: the tab bar over `gui/tab_header_background`,
+                // the header separators either side of it, and the footer's separator.
+                crate::ui::tiled(
                     batch,
                     atlas,
-                    &Self::expiry_text(server),
-                    cx,
-                    info_y + 14.0,
-                    GREY,
+                    "gui/tab_header_background",
+                    0.0,
+                    0.0,
+                    w,
+                    TAB_HEIGHT,
+                    16.0,
+                    u32::MAX,
                 );
+                let (bar_x, tab_w) = tab_geometry(w);
+                let now = crate::hud_overlays::now_ms();
+                for (i, which) in ConfigureTab::ALL.iter().enumerate() {
+                    let x = bar_x + i as f32 * tab_w;
+                    let selected = which == tab;
+                    let hover = crate::ui::hovered(cursor, x, 0.0, tab_w, TAB_HEIGHT);
+                    let sprite = match (selected, hover) {
+                        (true, true) => "gui/sprites/widget/tab_selected_highlighted",
+                        (true, false) => "gui/sprites/widget/tab_selected",
+                        (false, true) => "gui/sprites/widget/tab_highlighted",
+                        (false, false) => "gui/sprites/widget/tab",
+                    };
+                    crate::ui::nine_slice(
+                        batch,
+                        atlas,
+                        sprite,
+                        x,
+                        0.0,
+                        tab_w,
+                        TAB_HEIGHT,
+                        u32::MAX,
+                    );
+                    if selected {
+                        crate::ui::menu_background(
+                            batch,
+                            atlas,
+                            x + 2.0,
+                            2.0,
+                            tab_w - 4.0,
+                            22.0,
+                            false,
+                        );
+                        batch.fill(atlas, x + 2.0, 22.0, tab_w - 4.0, 1.0, u32::MAX);
+                    }
+                    crate::ui::menu_tab_label(
+                        batch,
+                        atlas,
+                        &Text::translate(which.title(), &[]),
+                        (x, 0.0, tab_w, TAB_HEIGHT),
+                        selected,
+                        which.enabled(server.expired),
+                        now,
+                    );
+                }
+                for (left, width) in [(0.0, bar_x), (bar_x + 4.0 * tab_w, w - bar_x - 4.0 * tab_w)]
+                {
+                    crate::ui::tiled_sized(
+                        batch,
+                        atlas,
+                        "gui/header_separator",
+                        left,
+                        TAB_HEIGHT - 2.0,
+                        width,
+                        2.0,
+                        [32.0, 2.0],
+                        u32::MAX,
+                    );
+                }
+                crate::ui::tiled_sized(
+                    batch,
+                    atlas,
+                    "gui/footer_separator",
+                    0.0,
+                    h - 35.0,
+                    w,
+                    2.0,
+                    [32.0, 2.0],
+                    u32::MAX,
+                );
+                let left = cx - 100.0;
+                match tab {
+                    ConfigureTab::Subscription => match subscription {
+                        Some(Ok(sub)) => {
+                            let mut label = |y: f32, text: &str, color: u32| {
+                                batch.text(atlas, text, left, y, color, true);
+                            };
+                            label(26.0, &t("mco.configure.world.subscription.start"), u32::MAX);
+                            label(41.0, &start_date_text(sub.start_date), GREY);
+                            let days_label = if sub.kind == "RECURRING" {
+                                t("mco.configure.world.subscription.recurring.daysleft")
+                            } else {
+                                t("mco.configure.world.subscription.timeleft")
+                            };
+                            label(56.0, &days_label, u32::MAX);
+                            label(71.0, &days_left_text(sub.days_left, server.expired), GREY);
+                            for (i, line) in wrap_lines(
+                                &t("mco.configure.world.subscription.recurring.info"),
+                                atlas,
+                                200.0,
+                            )
+                            .iter()
+                            .enumerate()
+                            {
+                                label(146.0 + i as f32 * 10.0, line, GREY);
+                            }
+                        }
+                        Some(Err(e)) => {
+                            for (i, line) in
+                                wrap_lines(&e.text(), atlas, w - 40.0).iter().enumerate()
+                            {
+                                centered(batch, atlas, line, cx, 60.0 + i as f32 * 10.0, RED);
+                            }
+                        }
+                        None => centered(
+                            batch,
+                            atlas,
+                            &t("mco.configure.world.loading"),
+                            cx,
+                            60.0,
+                            u32::MAX,
+                        ),
+                    },
+                    // The other tabs land in follow-ups; vanilla shows this while its own
+                    // fetches run.
+                    _ => centered(
+                        batch,
+                        atlas,
+                        &t("mco.configure.world.loading"),
+                        cx,
+                        60.0,
+                        u32::MAX,
+                    ),
+                }
                 let status = if job.is_some() {
                     Some((
                         t(if server.is_open() {
@@ -1027,19 +1402,14 @@ impl Screen {
                         }),
                         u32::MAX,
                     ))
+                } else if deleting.is_some() {
+                    Some((t("mco.configure.world.buttons.delete"), u32::MAX))
                 } else {
                     error.clone().map(|e| (e, RED))
                 };
                 if let Some((text, color)) = status {
                     for (i, line) in wrap_lines(&text, atlas, w - 40.0).iter().enumerate() {
-                        centered(
-                            batch,
-                            atlas,
-                            line,
-                            cx,
-                            info_y + 32.0 + i as f32 * 10.0,
-                            color,
-                        );
+                        centered(batch, atlas, line, cx, h - 60.0 + i as f32 * 10.0, color);
                     }
                 }
             }
@@ -1062,6 +1432,7 @@ impl Screen {
                 let message = match popup {
                     Popup::Leave(_) => t("mco.configure.world.leave.question.line1"),
                     Popup::ResourcePack { .. } => t("mco.configure.world.resourcepack.question"),
+                    Popup::Delete(_) => t("mco.configure.world.delete.question.line1"),
                 };
                 let lines = wrap_lines(&message, atlas, CONTENT_WIDTH);
                 let top = mid - 10.0 - 10.0 * lines.len() as f32;
@@ -1454,5 +1825,81 @@ mod tests {
         assert!(!join_btn.4, "Join is off while the code is empty");
         assert!(!screen.escape());
         assert!(matches!(screen.subscreen, SubScreen::Main));
+    }
+
+    /// `RealmsConfigureWorldScreen`'s `MenuTabBar`: Worlds, Players, Subscription,
+    /// Settings, and an expired Realm's settings tab is off.
+    #[test]
+    fn configure_tabs_follow_the_vanilla_order_and_expiry() {
+        assert_eq!(
+            ConfigureTab::ALL,
+            [
+                ConfigureTab::Worlds,
+                ConfigureTab::Players,
+                ConfigureTab::Subscription,
+                ConfigureTab::Settings,
+            ]
+        );
+        for tab in ConfigureTab::ALL {
+            assert!(tab.enabled(false), "{}", tab.title());
+        }
+        assert!(!ConfigureTab::Settings.enabled(true));
+        for tab in [
+            ConfigureTab::Worlds,
+            ConfigureTab::Players,
+            ConfigureTab::Subscription,
+        ] {
+            assert!(tab.enabled(true), "{}", tab.title());
+        }
+    }
+
+    /// `MenuTabBar.builder(this, width)`: at most 400 wide, centred, four even tabs.
+    #[test]
+    fn the_tab_bar_is_centred_and_four_tabs_wide() {
+        // 854x480 at GUI scale 2 is 427x240: 372 inner width, 28 from the left, 94 a tab.
+        assert_eq!(tab_geometry(427.0), (28.0, 94.0));
+        // A window narrower than 400 keeps its own width less the bar's margins:
+        // 272 inner width over four tabs, 14 from the left.
+        assert_eq!(tab_geometry(300.0), (14.0, 68.0));
+    }
+
+    /// `RealmsSubscriptionTab.daysLeftPresentation`, compared with the same translations
+    /// so the check reads in any language.
+    #[test]
+    fn days_left_says_what_vanilla_says() {
+        let t = crate::lang::get;
+        assert_eq!(
+            days_left_text(-1, true),
+            t("mco.configure.world.subscription.expired")
+        );
+        let less = t("mco.configure.world.subscription.less_than_a_day");
+        assert_eq!(days_left_text(0, false), less);
+        assert_eq!(days_left_text(1, false), less);
+        assert_eq!(
+            days_left_text(45, false),
+            crate::lang::tr(
+                "mco.configure.world.subscription.remaining.months.days",
+                &[&1, &15]
+            )
+        );
+        assert_eq!(
+            days_left_text(60, false),
+            crate::lang::tr("mco.configure.world.subscription.remaining.months", &[&2])
+        );
+        assert_eq!(
+            days_left_text(5, false),
+            crate::lang::tr("mco.configure.world.subscription.remaining.days", &[&5])
+        );
+        // An expired Realm still shows its remaining time while it has some.
+        assert_eq!(
+            days_left_text(60, true),
+            crate::lang::tr("mco.configure.world.subscription.remaining.months", &[&2])
+        );
+    }
+
+    /// An unreadable start date says nothing rather than a wrong date.
+    #[test]
+    fn an_unreadable_start_date_is_empty() {
+        assert_eq!(start_date_text(i64::MAX), "");
     }
 }
