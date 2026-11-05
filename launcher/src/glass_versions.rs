@@ -241,11 +241,13 @@ impl Launcher {
             .as_ref()
             .filter(|(e, _)| e == tag)
             .map(|(_, e)| e.clone());
-        crate::glass::plate(radius::PANEL)
+        crate::glass::plate(radius::ROW)
             .flex()
             .flex_col()
             .gap(px(12.))
-            .p(px(20.))
+            .px(px(20.))
+            .py(px(14.))
+            .mb(px(10.))
             .child(
                 div()
                     .relative()
@@ -449,10 +451,9 @@ impl Launcher {
             let mut d = div()
                 .flex()
                 .flex_col()
-                .gap(px(10.))
                 .mb(px(24.))
-                .child(ui::card_heading(tr(title).to_string()))
-                .children(notice_.map(|n| notice(n.to_string(), &self.theme)));
+                .child(ui::card_heading(tr(title).to_string()).mb(px(12.)))
+                .children(notice_.map(|n| notice(n.to_string(), &self.theme).mb(px(12.))));
             for tag in tags {
                 let mut line = Vec::new();
                 if let Some(about) = native_mods::about(&tag) {
