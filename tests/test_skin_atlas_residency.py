@@ -26,7 +26,7 @@ def program():
     # own impl instead of silently pulling the unrelated profile cache in.
     methods = methods.replace(method(source, 'new'), method(source[source.index('impl Downloader {'):], 'new'), 1)
     a = source.index('pub struct SkinSlots {')
-    b = source.index('/// Decode before trusting', a)
+    b = source.index('/// Reserve a shared skin slot', a)
     slots = source[a:b]
     game = '\n'.join(method(remote, n) for n in (
         'skin_available', 'ready_skin', 'request_skin', 'mark_skin_used',
@@ -50,6 +50,7 @@ mod workers{use super::*;pub struct Pool;impl Pool{
 #[derive(Clone,Copy)]enum Download{Ready,Pending,Failed}
 const MAX_SKIN_IMAGES:usize=1024;
 fn cached_texture(_: &std::path::Path,_:Kind,_:impl FnOnce()->Option<Vec<u8>>)->Option<Vec<u8>>{panic!("fixture images are already in memory; disk/HTTP must not run")}
+fn cached_texture_cancellable(p:&std::path::Path,k:Kind,f:impl FnOnce()->Option<Vec<u8>>,active:&impl Fn()->bool)->Option<Vec<u8>>{if !active(){return None;}cached_texture(p,k,f)}
 struct Atlas{sprites:HashMap<String,usize>}struct Gui{atlas:Atlas}
 struct Game{skin_slots:SkinSlots,skin_downloads:RefCell<Downloader>,gui:Gui}
 impl Game{

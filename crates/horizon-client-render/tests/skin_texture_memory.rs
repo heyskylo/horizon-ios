@@ -133,28 +133,32 @@ fn completed_cape_and_elytra_downloads_do_not_retain_full_images() {
         );
         peaks.push((kind, peak));
         let uploads = downloader.take_ready();
-        if kind == Kind::Cape {
-            assert_eq!(uploads.len(), 4);
-            for (_, rgba) in uploads {
-                assert_eq!(rgba.len(), 64 * 64 * 4);
-                for y in 0..32 {
-                    for x in 0..64 {
-                        let (sx, sy) = (x * SIDE / 64, y * SIDE / 32);
-                        assert_eq!(
-                            &rgba[(y * 64 + x) * 4..][..4],
-                            &[
-                                (sx % 251) as u8,
-                                (sy % 241) as u8,
-                                ((sx ^ sy) % 239) as u8,
-                                255
-                            ]
-                        );
-                    }
+        assert_eq!(
+            uploads.len(),
+            4,
+            "{kind:?} finished but offered no atlas pixels"
+        );
+        for (_, rgba) in uploads {
+            assert_eq!(rgba.len(), 64 * 64 * 4);
+            for y in 0..32 {
+                for x in 0..64 {
+                    let (sx, sy) = if kind == Kind::Elytra {
+                        ((2 * x + 1) * SIDE / 128, (2 * y + 1) * SIDE / 64)
+                    } else {
+                        (x * SIDE / 64, y * SIDE / 32)
+                    };
+                    assert_eq!(
+                        &rgba[(y * 64 + x) * 4..][..4],
+                        &[
+                            (sx % 251) as u8,
+                            (sy % 241) as u8,
+                            ((sx ^ sy) % 239) as u8,
+                            255
+                        ]
+                    );
                 }
-                assert!(rgba[32 * 64 * 4..].iter().all(|p| *p == 0));
             }
-        } else {
-            assert!(uploads.is_empty());
+            assert!(rgba[32 * 64 * 4..].iter().all(|p| *p == 0));
         }
     }
     let deadline = Instant::now() + Duration::from_secs(3);

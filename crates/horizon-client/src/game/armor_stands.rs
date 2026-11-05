@@ -67,7 +67,7 @@ fn armor_stand_cart_shove(
 /// colour when undyed) takes the stack's `minecraft:dyed_color`, else that
 /// colour; any other layer stays white, dyed or not. The result is in the
 /// renderer's byte order (R and B swapped).
-fn layer_color(undyed: Option<u32>, stack: Option<&ItemStack>) -> u32 {
+pub(super) fn layer_color(undyed: Option<u32>, stack: Option<&ItemStack>) -> u32 {
     let dyed = stack
         .and_then(|s| s.data())
         .and_then(|d| d.dyed_color)
@@ -89,6 +89,8 @@ pub(super) struct ArmorStandAssets {
     pub player: HashMap<&'static str, Part>,
     /// asset id -> layer kind (humanoid / humanoid_leggings) -> each layer's (texture, undyed colour), in order.
     pub equipment: HashMap<String, HashMap<String, Vec<(String, Option<u32>)>>>,
+    /// Each wing layer's `use_player_texture` flag, in equipment-file order.
+    pub wing_player_textures: HashMap<String, Vec<bool>>,
     /// asset id -> `trim_overrides`.
     pub trim_overrides: HashMap<String, Vec<TrimOverride>>,
     pub trims: TrimRegistry,
@@ -122,6 +124,7 @@ impl ArmorStandAssets {
             }
         }
         let mut equipment = HashMap::new();
+        let mut wing_player_textures = HashMap::new();
         let mut trim_overrides = HashMap::new();
         // EquipmentAssetManager reads every namespace: vanilla's and the content mods'.
         let namespaces = std::iter::once("minecraft".to_owned())
@@ -169,6 +172,15 @@ impl ArmorStandAssets {
                     }
                 }
                 trim_overrides.insert(id.clone(), TrimOverride::list(&v));
+                wing_player_textures.insert(
+                    id.clone(),
+                    v["layers"]["wings"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .map(|layer| layer["use_player_texture"].as_bool().unwrap_or(false))
+                        .collect(),
+                );
                 equipment.insert(id, kinds);
             }
         }
@@ -178,6 +190,7 @@ impl ArmorStandAssets {
             layers,
             player,
             equipment,
+            wing_player_textures,
             trim_overrides,
             trims: TrimRegistry::load(root),
             root: root.to_owned(),

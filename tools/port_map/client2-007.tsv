@@ -123,9 +123,9 @@ MapTextureManager.getOrCreateMapInstance	port	crates/horizon-client/src/game/map
 MapTextureManager.MapInstance.replaceMapData	port	crates/horizon-client/src/game/maps.rs::MapData::update_color	gap: minor: vanilla also flags an upload when the saved-data object is swapped; Horizon flags per changed colour
 MapTextureManager.MapInstance.updateTextureIfNeeded	port	crates/horizon-client/src/game/maps.rs::Game::map_texture	uploads the 128x128 colours when dirty
 SkinManager.get	port	crates/horizon-client-render/src/skins.rs::lookup	gap: minor: the packed textures come from ResolvedProfile::textures; the debug default-skin override is not ported
-SkinManager.registerTextures	port	crates/horizon-client-render/src/skins.rs::lookup	gap: minor: returns the skin location only; cape and elytra are downloaded here but not returned
+SkinManager.registerTextures	port	crates/horizon-client-render/src/skins.rs::lookup_locations	body/cape/Elytra locations; missing SKIN uses UUID default body/model; allOf pending/exceptional futures fall back to the default profile
 SkinManager.TextureCache.getOrLoad	port	crates/horizon-client-render/src/skins.rs::Downloader::state	one download per URL, then its state
-SkinManager.TextureCache.getTextureLocation	port	crates/horizon-client-render/src/skins.rs::skin_location	gap: minor: only the skins/ location; capes and elytra have no location fn
+SkinManager.TextureCache.getTextureLocation	port	crates/horizon-client-render/src/skins.rs::skin_location	skins/, capes/ and elytra/ locations hash UTF-16 code units as vanilla does
 SplashManager.getSplash	port	crates/horizon-client/src/title.rs::choose_splash	gap: player: no '<NAME> IS YOU' splash; vanilla sometimes shows the logged-in player's name instead of a splash on the title screen
 WaypointStyle.validate	port	crates/horizon-client/src/locator_bar.rs::WaypointStyle::parse	validation is folded into the parse
 WaypointStyleManager.apply	port	crates/horizon-client/src/locator_bar.rs::WaypointStyles::load	gap: minor: loads the arrow and dot sprites from the assets folder into one map

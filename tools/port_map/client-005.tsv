@@ -73,8 +73,8 @@ TropicalFishPatternLayer.submit	port	crates/horizon-client/src/mobs/render.rs::l
 VillagerProfessionLayer.submit	port	crates/horizon-client/src/mobs/render.rs::layers	type, profession and level layers; hat masks applied in render_visible
 VillagerProfessionLayer.getIdentifier	port	crates/horizon-client/src/mobs/render.rs::layers	texture paths built per type, profession and level
 VillagerProfessionLayer.getHatData	port	crates/horizon-client/src/mobs/villager_hats.rs::VillagerHats::load	hat metadata read from the resources
-WingsLayer.submit	port	crates/horizon-client/src/game/perspective.rs::Game::wings_geometry	gap: minor: the wings texture comes from the equipment asset; a skin's own elytra or cape texture is not used; players and armour stands only, humanoid mobs draw no wings (#3843)
-WingsLayer.getPlayerElytraTexture	port	crates/horizon-client/src/game/perspective.rs::Game::player_elytra_geometry	gap: minor: a skin elytra or cape texture is never chosen
+WingsLayer.submit	port	crates/horizon-client/src/game/perspective.rs::Game::wings_geometry	per-layer equipment textures and use_player_texture; dedicated profile Elytra then visible cape; gap: minor: non-avatar humanoid mobs draw no wings (#3843)
+WingsLayer.getPlayerElytraTexture	port	crates/horizon-client/src/game/perspective.rs::Game::player_elytra_geometry	dedicated profile Elytra, else cape when CAPE model part is shown, else equipment default; atlas readiness preserves fallback while an upload is pending
 WitchItemLayer.applyTranslation	port	crates/horizon-client/src/mobs/render.rs::held_item_transform	
 WolfArmorLayer.submit	port	crates/horizon-client/src/mobs/render.rs::layers	gap: minor: the armour texture is fixed to the armadillo scute; the equipment asset is not read
 WolfArmorLayer.maybeRenderCracks	port	crates/horizon-client/src/mobs/render.rs::layers	cracks at three damage levels

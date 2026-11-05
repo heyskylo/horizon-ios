@@ -261,6 +261,7 @@ impl Game<'_> {
             let (yaw, pitch) = (self.yaw, self.pitch);
             let (y_sin, y_cos, dir_y) = cast_direction(yaw, pitch);
             let eye_y = p.position.y + f64::from(p.dimensions.eye_height);
+            // snapTo(x, getEyeY(), z): the hook's feet start at the owner's eye.
             let start = Vec3::new(
                 p.position.x - f64::from(y_sin) * 0.3,
                 eye_y,
@@ -274,8 +275,6 @@ impl Game<'_> {
                 v.y * (0.6 / len + triangle(r, 0.5, 0.0103365)),
                 v.z * (0.6 / len + triangle(r, 0.5, 0.0103365)),
             );
-            // A spawned hook's start position is its feet: centre the box on the eye.
-            let start = Vec3::new(start.x, start.y - SIZE / 2.0, start.z);
             self.next_entity += 1;
             self.hook = Some(Hook {
                 id: self.next_entity,

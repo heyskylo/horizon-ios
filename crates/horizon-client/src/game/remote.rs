@@ -566,6 +566,8 @@ struct MannequinProfile {
     profile: horizon_protocol::entity_data::Profile,
     lookup: Option<horizon_client::skins::ProfileLookup>,
     textures: horizon_client::skins::Textures,
+    /// The fully resolved GameProfile's id, even when it has no SKIN property.
+    resolved_id: Option<u128>,
 }
 impl MannequinProfile {
     fn new(
@@ -599,12 +601,14 @@ impl MannequinProfile {
             profile: profile.clone(),
             lookup,
             textures: textures.unwrap_or_default(),
+            resolved_id: None,
         }
     }
     fn textures(&mut self) -> horizon_client::skins::Textures {
         if let Some(lookup) = &self.lookup
             && let horizon_client::skins::Resolve::Done(profile) = lookup.state()
         {
+            self.resolved_id = profile.as_ref().map(|profile| profile.id);
             self.textures = profile
                 .and_then(|profile| profile.textures())
                 .map(|(value, signature)| {
@@ -5598,6 +5602,47 @@ impl Game<'_> {
         entry.textures()
     }
 
+    fn mannequin_profile_id(
+        &self,
+        entity: u32,
+        profile: &horizon_protocol::entity_data::Profile,
+    ) -> u128 {
+        if let Some(remote) = &self.remote
+            && let Some(id) = remote
+                .mannequin_profiles
+                .borrow()
+                .get(&entity)
+                .filter(|entry| entry.profile == *profile)
+                .and_then(|entry| entry.resolved_id)
+        {
+            return id;
+        }
+        if self.remote.is_none() && profile.properties.is_empty() {
+            let key = match (&profile.name, profile.uuid) {
+                (Some(name), None) => Some(horizon_client::skins::NameOrId::Name(name.clone())),
+                (None, Some(id)) => Some(horizon_client::skins::NameOrId::Id(id)),
+                _ => None,
+            };
+            if let Some(key) = key
+                && let horizon_client::skins::Resolve::Done(Some(resolved)) =
+                    self.skin_profiles.borrow_mut().state(&key)
+            {
+                return resolved.id;
+            }
+        }
+        // ResolvableProfile.createPartialProfile: the supplied id, the
+        // name-derived offline UUID, or NIL_UUID. Never the entity's numeric id.
+        profile
+            .uuid
+            .or_else(|| {
+                profile
+                    .name
+                    .as_deref()
+                    .map(horizon_protocol::crypto::offline_uuid)
+            })
+            .unwrap_or(0)
+    }
+
     pub(super) fn update_remote_skins(&mut self) {
         self.skin_profiles.borrow_mut().poll();
         if let Some(remote) = &self.remote {
@@ -5652,7 +5697,10 @@ impl Game<'_> {
                 if t.cape.is_none() {
                     t.cape = own.cape.clone();
                 }
-            } else if own.skin.is_some() || own.cape.is_some() {
+                if t.elytra.is_none() {
+                    t.elytra = own.elytra.clone();
+                }
+            } else if own.skin.is_some() || own.cape.is_some() || own.elytra.is_some() {
                 entries.retain(|(u, _)| *u != local);
                 entries.push((local, own));
             }
@@ -5662,23 +5710,29 @@ impl Game<'_> {
         let mut slim = std::collections::HashSet::new();
         // PlayerSkin.cape of each resolved skin.
         let mut capes: HashMap<u128, String> = HashMap::new();
+        let mut elytras: HashMap<u128, String> = HashMap::new();
         for (uuid, textures) in entries {
             // PlayerInfo.createSkinLookup: only the local player's own skin
             // may be unsigned.
             let skin = {
                 let mut downloads = self.skin_downloads.borrow_mut();
-                horizon_client::skins::lookup(&textures, uuid != local, |kind, url| {
+                horizon_client::skins::lookup_locations(&textures, uuid != local, |kind, url| {
                     downloads.state(kind, url)
                 })
             };
-            if let Some(skin) = skin {
-                if textures.slim {
+            if let Some(locations) = skin {
+                if locations.skin.is_some() && textures.slim {
                     slim.insert(uuid);
                 }
-                if let Some(cape) = horizon_client::skins::cape(&textures) {
+                if let Some(cape) = locations.cape {
                     capes.insert(uuid, cape);
                 }
-                resolved.push((uuid, skin));
+                if let Some(elytra) = locations.elytra {
+                    elytras.insert(uuid, elytra);
+                }
+                if let Some(skin) = locations.skin {
+                    resolved.push((uuid, skin));
+                }
             }
         }
         // An offline name's skin from the launcher, where neither the server
@@ -5749,7 +5803,8 @@ impl Game<'_> {
             mob.skin = Some(skin);
             mob.slim = is_slim;
             mob.skin_3d = skin_3d;
-            mob.cape = cape;
+            mob.cape = cape.filter(|_| mob.extra.hidden_model_parts & 1 == 0);
+            mob.elytra = elytras.get(&uuid).cloned();
         }
         if self.player_model.is_some() {
             let (skin, is_slim) = self.ready_skin(own, skin_of(&skins, own));
@@ -5767,37 +5822,55 @@ impl Game<'_> {
                 mob.slim = is_slim;
                 mob.skin_3d = skin_3d;
                 mob.cape = cape;
+                mob.elytra = elytras.get(&own).cloned();
             }
         }
         // ClientMannequin.updateSkin (PlayerSkinRenderCache.lookup): a
         // mannequin's DATA_PROFILE `textures` property resolves like a
         // player's, never required to be signed.
-        let mannequins: Vec<(u32, horizon_client::skins::Textures)> = self
+        let mannequins: Vec<(u32, u128, horizon_client::skins::Textures)> = self
             .mobs
             .iter()
             .filter(|m| &*m.kind.id == "minecraft:mannequin" && m.profile.is_some())
-            .map(|m| (m.id, self.mannequin_textures(m.id, m.profile.as_ref())))
+            .map(|m| {
+                let textures = self.mannequin_textures(m.id, m.profile.as_ref());
+                (
+                    m.id,
+                    self.mannequin_profile_id(m.id, m.profile.as_ref().unwrap()),
+                    textures,
+                )
+            })
             .collect();
-        let mut resolved: Vec<(u32, Option<String>, bool)> = Vec::new();
-        for (id, textures) in mannequins {
+        let mut resolved = Vec::new();
+        for (id, profile_id, textures) in mannequins {
             let skin = {
                 let mut downloads = self.skin_downloads.borrow_mut();
-                horizon_client::skins::lookup(&textures, false, |kind, url| {
+                horizon_client::skins::lookup_locations(&textures, false, |kind, url| {
                     downloads.state(kind, url)
                 })
             };
-            let slim = skin.is_some() && textures.slim;
-            resolved.push((id, skin, slim));
+            let (skin, cape, elytra) =
+                skin.map_or((None, None, None), |s| (s.skin, s.cape, s.elytra));
+            let (skin, slim) = skin.map_or_else(
+                || {
+                    let default = horizon_client::tab_list::default_skin(profile_id);
+                    (default.to_owned(), default.contains("/slim/"))
+                },
+                |skin| (skin, textures.slim),
+            );
+            resolved.push((id, profile_id, skin, slim, cape, elytra));
         }
-        for (id, skin, slim) in resolved {
-            let skin = skin.filter(|s| !s.starts_with("skins/") || self.skin_available(s));
+        for (id, profile_id, skin, slim, cape, elytra) in resolved {
+            let (skin, slim) = self.ready_skin(profile_id, (skin, slim));
             if let Some(mob) = self
                 .mobs
                 .iter_mut()
                 .find(|m| m.id == id && &*m.kind.id == "minecraft:mannequin")
             {
-                mob.slim = slim && skin.is_some();
-                mob.skin = skin;
+                mob.slim = slim;
+                mob.skin = Some(skin);
+                mob.cape = cape.filter(|_| mob.extra.hidden_model_parts & 1 == 0);
+                mob.elytra = elytra;
             }
         }
     }
@@ -5808,35 +5881,14 @@ impl Game<'_> {
         self.skin_downloads
             .borrow_mut()
             .remember_image(&location, &rgba);
-        let Some((slot, evicted)) = self.skin_slots.place(location.clone()) else {
-            return;
-        };
-        if let Some(old) = evicted {
-            self.gui.atlas.sprites.remove(&old);
-        }
-        let Some(mut rect) = self
-            .gui
-            .atlas
-            .sprites
-            .get(&format!("horizon/skin{slot}"))
-            .copied()
-        else {
-            return;
-        };
-        let (w, h) = (self.gui.atlas.width as f32, self.gui.atlas.height as f32);
-        self.map_patches.push(horizon_client::font::Patch {
-            x: (rect.u0 * w).round() as u32,
-            y: (rect.v0 * h).round() as u32,
-            width: 64,
-            height: 64,
+        if let Some(patch) = horizon_client::skins::atlas_upload(
+            &mut self.skin_slots,
+            &mut self.gui.atlas,
+            location,
             rgba,
-        });
-        // A cape occupies the top half of a 64x64 skin slot.
-        if location.starts_with("capes/") {
-            rect.v1 = (rect.v0 + rect.v1) / 2.0;
-            rect.h /= 2;
+        ) {
+            self.map_patches.push(patch);
         }
-        self.gui.atlas.sprites.insert(location, rect);
     }
     fn skin_available(&self, location: &str) -> bool {
         self.skin_slots.contains(location) && self.gui.atlas.sprites.contains_key(location)
@@ -5882,12 +5934,16 @@ impl Game<'_> {
         if let Some(cape) = &mob.cape {
             self.request_skin(cape);
         }
+        if let Some(elytra) = &mob.elytra {
+            self.request_skin(elytra);
+        }
     }
     /// Called for actual geometry/face references, even when posed geometry
     /// is cached. Model readiness alone must not keep an atlas slot alive.
     pub(super) fn mark_skin_used(&self, location: &str) {
         if (location.starts_with("skins/")
             || location.starts_with("capes/")
+            || location.starts_with("elytra/")
             || location.starts_with("patch/")
             || location == "horizon/offline_skin")
             && self.skin_available(location)

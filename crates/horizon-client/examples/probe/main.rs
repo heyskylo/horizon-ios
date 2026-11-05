@@ -76,6 +76,7 @@ mod pack_selection_fixture;
 mod particle_providers_probe;
 mod pick_block_data_fixture;
 mod place_recipe_fixture;
+mod player_skin_fixture;
 mod player_sync_fixture;
 mod raid_fixture;
 mod random_tick_sections_probe;
@@ -195,6 +196,7 @@ probes! {
     server_files_probe,
     situational_music_fixture,
     skin_image_fixture,
+    player_skin_fixture,
     late_entity_pair_fixture,
     sheep_dye_fixture,
     allay_interaction_fixture,

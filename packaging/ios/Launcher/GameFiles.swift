@@ -62,9 +62,14 @@ final class GameFilesDownload: NSObject, ObservableObject {
             state = .failed("That is not a web link. It starts with https:// (or http:// on your own network).")
             return
         }
-        UserDefaults.standard.set(text, forKey: "gameFilesLink")
         let token = token.trimmingCharacters(in: .whitespacesAndNewlines)
-        Keychain.write(token.isEmpty ? nil : token)
+        do {
+            try Keychain.write(token.isEmpty ? nil : token)
+        } catch {
+            state = .failed(error.localizedDescription)
+            return
+        }
+        UserDefaults.standard.set(text, forKey: "gameFilesLink")
         begin(url: url, token: token.isEmpty ? nil : token)
     }
 
@@ -250,13 +255,26 @@ private enum Keychain {
         return String(data: data, encoding: .utf8)
     }
 
-    static func write(_ token: String?) {
-        SecItemDelete(query as CFDictionary)
-        guard let token, let data = token.data(using: .utf8) else { return }
-        var item = query
-        item[kSecValueData as String] = data
-        item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-        SecItemAdd(item as CFDictionary, nil)
+    static func write(_ token: String?) throws {
+        guard let token else {
+            let status = SecItemDelete(query as CFDictionary)
+            guard status == errSecSuccess || status == errSecItemNotFound else { throw storageError() }
+            return
+        }
+        // Never remove a working credential before its replacement is saved.
+        let values: [String: Any] = [kSecValueData as String: Data(token.utf8),
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock]
+        var status = SecItemUpdate(query as CFDictionary, values as CFDictionary)
+        if status == errSecItemNotFound {
+            var item = query
+            values.forEach { item[$0.key] = $0.value }
+            status = SecItemAdd(item as CFDictionary, nil)
+        }
+        guard status == errSecSuccess else { throw storageError() }
+    }
+
+    private static func storageError() -> DownloadError {
+        DownloadError("The download credential could not be updated securely. Unlock this device and try again.")
     }
 }
 

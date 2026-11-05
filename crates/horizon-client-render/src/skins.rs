@@ -3,6 +3,8 @@
 //! `SkinManager` lookup (which texture a player shows, and when the default
 //! one) and `SkinTextureDownloader.processLegacySkin`.
 
+#[cfg(test)]
+mod upload_tests;
 mod workers;
 use std::sync::{
     Arc,
@@ -736,6 +738,11 @@ pub fn cape_location(hash: &str) -> String {
     location("capes/", hash)
 }
 
+/// `SkinManager.TextureCache` for a profile's own wing texture.
+pub fn elytra_location(hash: &str) -> String {
+    location("elytra/", hash)
+}
+
 fn location(folder: &str, hash: &str) -> String {
     let units: Vec<u8> = hash.encode_utf16().flat_map(u16::to_le_bytes).collect();
     let digest = sha1(&units);
@@ -848,41 +855,73 @@ pub enum Kind {
 pub fn lookup(
     textures: &Textures,
     require_secure: bool,
-    mut download: impl FnMut(Kind, &str) -> Download,
+    download: impl FnMut(Kind, &str) -> Download,
 ) -> Option<String> {
-    let mut skin = None;
-    let mut state = Download::Ready;
-    let urls = [
+    lookup_locations(textures, require_secure, download).and_then(|s| s.skin)
+}
+
+/// The registered textures of one resolved PlayerSkin. A missing SKIN uses
+/// the profile UUID's default body/model at the caller; cape and Elytra are
+/// still valid in that case (`SkinManager.registerTextures`).
+#[derive(Debug)]
+pub struct SkinLocations {
+    pub skin: Option<String>,
+    pub cape: Option<String>,
+    pub elytra: Option<String>,
+}
+pub fn lookup_locations(
+    textures: &Textures,
+    require_secure: bool,
+    mut download: impl FnMut(Kind, &str) -> Download,
+) -> Option<SkinLocations> {
+    let mut locations = SkinLocations {
+        skin: None,
+        cape: None,
+        elytra: None,
+    };
+    let mut pending = false;
+    let mut failed = false;
+    for (kind, url) in [
         (Kind::Skin, &textures.skin),
         (Kind::Cape, &textures.cape),
         (Kind::Elytra, &textures.elytra),
-    ];
-    for (kind, url) in urls {
+    ] {
         let Some(url) = url else { continue };
-        // registerTexture computes the hash first. A cape or elytra URL the
-        // hash cannot take is that texture's problem alone: vanilla's lookup
-        // goes on to the next, and only the skin texture decides the default.
         let Some(hash) = texture_hash(url) else {
             if kind == Kind::Skin {
                 return None;
             }
             continue;
         };
-        if kind == Kind::Skin {
-            skin = Some(skin_location(&hash));
-        }
         match download(kind, url) {
-            // A cape or elytra that cannot be fetched is simply not drawn; only
-            // the skin itself falls back to the default one (`SkinManager.get`).
-            Download::Failed if kind == Kind::Skin => return None,
-            Download::Failed | Download::Ready => {}
-            Download::Pending => state = Download::Pending,
+            // Native registerTextures combines all three futures with allOf:
+            // an exceptional download falls back to the whole default profile.
+            Download::Failed => failed = true,
+            Download::Pending => pending = true,
+            Download::Ready => match kind {
+                Kind::Skin => locations.skin = Some(skin_location(&hash)),
+                Kind::Cape => locations.cape = Some(cape_location(&hash)),
+                Kind::Elytra => locations.elytra = Some(elytra_location(&hash)),
+            },
         }
     }
-    if state != Download::Ready || require_secure && !textures.signed {
+    if failed || pending || require_secure && !textures.signed {
         return None;
     }
-    skin
+    Some(locations)
+}
+
+/// `WingsLayer.getPlayerElytraTexture`: a dedicated texture wins regardless
+/// of the CAPE model-part option; only the cape fallback obeys that option.
+pub fn wings_texture<'a>(
+    elytra: Option<&'a str>,
+    cape: Option<&'a str>,
+    show_cape: bool,
+    available: impl Fn(&str) -> bool,
+) -> Option<&'a str> {
+    elytra
+        .filter(|s| available(s))
+        .or_else(|| cape.filter(|s| show_cape && available(s)))
 }
 
 /// `SkinTextureDownloader.processLegacySkin` on RGBA pixels: 64x32 skins
@@ -1088,7 +1127,7 @@ impl Downloader {
                     match key.0 {
                         Kind::Skin => self.queue(skin_location(&key.1), rgba),
                         Kind::Cape => self.queue(cape_location(&key.1), rgba),
-                        Kind::Elytra => {}
+                        Kind::Elytra => self.queue(elytra_location(&key.1), rgba),
                     }
                     self.failed.remove(&key);
                     Download::Ready
@@ -1199,6 +1238,8 @@ impl Downloader {
             (Kind::Skin, digest)
         } else if let Some(digest) = location.strip_prefix("capes/") {
             (Kind::Cape, digest)
+        } else if let Some(digest) = location.strip_prefix("elytra/") {
+            (Kind::Elytra, digest)
         } else {
             return false;
         };
@@ -1207,7 +1248,7 @@ impl Downloader {
                 .root
                 .join(if digest.len() > 2 { &digest[..2] } else { "xx" })
                 .join(digest);
-            cached_texture(&file, kind, || None)
+            cached_texture_cancellable(&file, kind, || None, &|| true)
         });
         let Some(image) = image else {
             return false;
@@ -1335,6 +1376,34 @@ impl SkinSlots {
     }
 }
 
+/// Reserve a shared skin slot and publish the sprite's UVs for its pixel
+/// upload. Used by the game for bodies, capes and dedicated wing textures.
+pub fn atlas_upload(
+    slots: &mut SkinSlots,
+    atlas: &mut crate::hud::HudAtlas,
+    location: String,
+    rgba: Vec<u8>,
+) -> Option<crate::font::Patch> {
+    let (slot, evicted) = slots.place(location.clone())?;
+    if let Some(old) = evicted {
+        atlas.sprites.remove(&old);
+    }
+    let mut rect = *atlas.sprites.get(&format!("horizon/skin{slot}"))?;
+    let patch = crate::font::Patch {
+        x: (rect.u0 * atlas.width as f32).round() as u32,
+        y: (rect.v0 * atlas.height as f32).round() as u32,
+        width: 64,
+        height: 64,
+        rgba,
+    };
+    if location.starts_with("capes/") || location.starts_with("elytra/") {
+        rect.v1 = (rect.v0 + rect.v1) / 2.0;
+        rect.h /= 2;
+    }
+    atlas.sprites.insert(location, rect);
+    Some(patch)
+}
+
 impl Drop for Downloader {
     fn drop(&mut self) {
         self.workers.cancel_scope(&self.scope);
@@ -1344,6 +1413,7 @@ impl Drop for Downloader {
 
 /// Decode before trusting or persisting a cached response: truncated PNGs and HTTP error bodies
 /// must not become a permanent default-skin result on subsequent launches.
+#[cfg(test)]
 fn cached_texture(
     file: &std::path::Path,
     kind: Kind,
@@ -1371,9 +1441,8 @@ fn cached_texture_with(
     }
     let decode = |bytes: &[u8]| match kind {
         Kind::Cape => streamed_texture(bytes, kind, active),
-        // The downloader only needs Elytra's validation result. Its pixels are
-        // not uploaded by state(), so do not retain a potentially huge image in
-        // the completed-job channel until the render thread next polls it.
+        // Wings use the same bounded slot pool as capes, with normalized
+        // 64x32 UVs. Never retain a full downloaded canvas in the result queue.
         Kind::Elytra if !keep_elytra_pixels => streamed_texture(bytes, kind, active),
         _ => decode_texture(bytes, kind, |b| crate::hud::decode_bytes(b).ok()),
     };
@@ -1424,7 +1493,8 @@ fn decode_texture(
 /// Read every PNG row, retaining only the texels the cape atlas actually uses.
 /// The decoder still validates the whole first frame, including rows outside
 /// the sampled cape area. A failed/unfinished response must not enter the cache.
-/// Elytra's current downloader consumer needs validation alone, not its pixels.
+/// Elytra uses the whole source image at normalized UVs; unlike the legacy
+/// cape layout, small wing images fill the slot rather than being padded.
 fn streamed_texture(bytes: &[u8], kind: Kind, active: &impl Fn() -> bool) -> Option<Vec<u8>> {
     debug_assert!(matches!(kind, Kind::Cape | Kind::Elytra));
     if !active() {
@@ -1451,12 +1521,12 @@ fn streamed_texture(bytes: &[u8], kind: Kind, active: &impl Fn() -> bool) -> Opt
         .filter(|&n| n <= MAX_DECODE_BYTES)?;
     let interlaced = info.interlaced;
     let channels = reader.output_color_type().0.samples();
-    let mut result = if kind == Kind::Cape {
-        vec![0; 64 * 64 * 4]
+    let mut result = vec![0; 64 * 64 * 4];
+    let (fit_w, fit_h) = if kind == Kind::Cape && w <= 64 && h <= 32 {
+        (w, h)
     } else {
-        Vec::new()
+        (64, 32)
     };
-    let (fit_w, fit_h) = if w <= 64 && h <= 32 { (w, h) } else { (64, 32) };
     // PNG's seven Adam7 passes, expressed as first x/y and x/y strides. Reading
     // the passes lets us select the same nearest source texels as process_cape
     // without expanding the interlaced image into a width*height allocation.
@@ -1482,15 +1552,21 @@ fn streamed_texture(bytes: &[u8], kind: Kind, active: &impl Fn() -> bool) -> Opt
                 return None;
             }
             let row = reader.next_row().ok()??;
-            if kind != Kind::Cape {
-                continue;
-            }
             for y in 0..fit_h {
-                if y * h / fit_h != source_y {
+                let sample_y = if kind == Kind::Elytra {
+                    (2 * y + 1) * h / (2 * fit_h)
+                } else {
+                    y * h / fit_h
+                };
+                if sample_y != source_y {
                     continue;
                 }
                 for x in 0..fit_w {
-                    let source_x = x * w / fit_w;
+                    let source_x = if kind == Kind::Elytra {
+                        (2 * x + 1) * w / (2 * fit_w)
+                    } else {
+                        x * w / fit_w
+                    };
                     if source_x < first_x || !(source_x - first_x).is_multiple_of(step_x) {
                         continue;
                     }
@@ -1869,10 +1945,17 @@ mod tests {
                 super::streamed_texture(&bytes, super::Kind::Cape, &|| true),
                 Some(expected)
             );
-            assert_eq!(
-                super::streamed_texture(&bytes, super::Kind::Elytra, &|| true),
-                Some(Vec::new())
-            );
+            let wing = super::streamed_texture(&bytes, super::Kind::Elytra, &|| true).unwrap();
+            assert_eq!(wing.len(), 64 * 64 * 4);
+            for y in 0..32usize {
+                for x in 0..64usize {
+                    let source_x = (2 * x + 1) * w as usize / 128;
+                    let source_y = (2 * y + 1) * h as usize / 64;
+                    let source = (source_y * w as usize + source_x) * 4;
+                    assert_eq!(&wing[(y * 64 + x) * 4..][..4], &rgba[source..source + 4]);
+                }
+            }
+            assert!(wing[32 * 64 * 4..].iter().all(|p| *p == 0));
         }
     }
 
@@ -2933,11 +3016,11 @@ mod tests {
         assert!(super::ely_name("Steve_01") && !super::ely_name("a b") && !super::ely_name("../x"));
     }
 
-    /// A cape or elytra that cannot be fetched takes only itself out of the
-    /// picture: the player's skin still shows. Only the skin texture's own
-    /// failure is the default skin.
+    /// SkinManager.registerTextures combines the body/cape/wings futures with
+    /// allOf. Native createLookup uses the whole default profile after a failed
+    /// future (VanillaWingTextureOracle), not just a missing optional texture.
     #[test]
-    fn a_failed_cape_does_not_hide_the_skin() {
+    fn an_exceptional_accessory_download_uses_the_default_profile() {
         let textures = super::Textures {
             skin: Some("https://textures.minecraft.net/texture/skin1".into()),
             cape: Some("https://textures.minecraft.net/texture/cape1".into()),
@@ -2949,8 +3032,9 @@ mod tests {
             super::Kind::Skin => super::Download::Ready,
             _ => super::Download::Failed,
         });
-        assert_eq!(skin, Some(super::skin_location("skin1")));
-        // A cape URL the hash cannot take is the same: the skin shows.
+        assert_eq!(skin, None);
+        // A URL from which no texture registration is made is distinct from
+        // an exceptional future after a real registration.
         let bad_url = super::Textures {
             cape: Some("no-scheme".into()),
             ..textures.clone()
@@ -2964,6 +3048,78 @@ mod tests {
             super::lookup(&textures, true, |_, _| super::Download::Failed),
             None
         );
+    }
+
+    #[test]
+    fn accessories_use_default_body_and_wings_respect_model_part_and_atlas_readiness() {
+        use super::{Download, Kind, Textures};
+        let textures = Textures {
+            skin: None,
+            cape: Some("https://textures.minecraft.net/texture/cape".into()),
+            elytra: Some("https://textures.minecraft.net/texture/elytra".into()),
+            signed: true,
+            slim: false,
+        };
+        let ready = super::lookup_locations(&textures, true, |_, _| Download::Ready).unwrap();
+        assert!(
+            ready.skin.is_none(),
+            "the caller must use the UUID's default body/model"
+        );
+        assert_eq!(
+            ready.cape.as_deref(),
+            Some(super::cape_location("cape").as_str())
+        );
+        assert_eq!(
+            ready.elytra.as_deref(),
+            Some(super::elytra_location("elytra").as_str())
+        );
+        for show in [false, true] {
+            assert_eq!(
+                super::wings_texture(ready.elytra.as_deref(), ready.cape.as_deref(), show, |_| {
+                    true
+                }),
+                ready.elytra.as_deref()
+            );
+        }
+        assert_eq!(
+            super::wings_texture(None, ready.cape.as_deref(), true, |_| true),
+            ready.cape.as_deref()
+        );
+        assert_eq!(
+            super::wings_texture(None, ready.cape.as_deref(), false, |_| true),
+            None
+        );
+        // A valid but evicted wing sprite is requested again by the game. Until
+        // the upload arrives, preserve the visible cape or the equipment default.
+        let in_atlas = |s: &str| Some(s) == ready.cape.as_deref();
+        assert_eq!(
+            super::wings_texture(
+                ready.elytra.as_deref(),
+                ready.cape.as_deref(),
+                true,
+                in_atlas
+            ),
+            ready.cape.as_deref()
+        );
+        assert_eq!(
+            super::wings_texture(
+                ready.elytra.as_deref(),
+                ready.cape.as_deref(),
+                false,
+                in_atlas
+            ),
+            None
+        );
+        for state in [Download::Failed, Download::Pending] {
+            assert!(
+                super::lookup_locations(&textures, true, |kind, _| if kind == Kind::Elytra {
+                    state
+                } else {
+                    Download::Ready
+                })
+                .is_none()
+            );
+        }
     }
 
     /// A 1x1 PNG of `rgba`.

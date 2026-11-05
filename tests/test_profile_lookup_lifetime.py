@@ -32,7 +32,7 @@ def program():
     impl_at = remote.index('impl MannequinProfile {', b)
     mannequin += 'impl MannequinProfile {\n' + method(remote[impl_at:], 'new') + method(remote[impl_at:], 'textures') + '}\n'
     mannequin += method(remote, 'prune_mannequin_profiles')
-    return CLOCK + SKIN_ENDPOINTS + method(skins, 'io_active') + '\n' + profile + definitions + method(skins, 'valid_player_name') + '\nimpl Resolver {' + methods + '}\n' + CACHE_ENDPOINTS + '\n}\n' + ENTITIES + mannequin + '\nimpl Game {' + method(remote, 'mannequin_textures') + '}\n' + CASES
+    return CLOCK + SKIN_ENDPOINTS + method(skins, 'io_active') + '\n' + profile + definitions + method(skins, 'valid_player_name') + '\nimpl Resolver {' + methods + '}\n' + CACHE_ENDPOINTS + '\n}\n' + ENTITIES + mannequin + '\nimpl Game {' + method(remote, 'mannequin_textures') + method(remote, 'mannequin_profile_id') + '}\n' + CASES
 
 
 CLOCK = r'''
@@ -95,6 +95,7 @@ pub fn cached(r:&Resolver,key:&NameOrId)->bool{r.entries.contains_key(key)}
 '''
 
 ENTITIES = r'''
+pub mod crypto{pub fn offline_uuid(name:&str)->u128{assert_eq!(name,"VisibleSlim","unexpected identity endpoint");0x624452b8de833ade80cebc2542610c15}}
 pub mod packets{pub mod login{#[derive(Clone,Debug,Default,PartialEq)]pub struct Property{pub name:String,pub value:String,pub signature:Option<String>}}}
 pub mod entity_data{#[derive(Clone,Debug,Default,PartialEq)]pub struct Profile{pub name:Option<String>,pub uuid:Option<u128>,pub properties:Vec<crate::packets::login::Property>}}
 struct Remote{mannequin_profiles:RefCell<HashMap<u32,MannequinProfile>>}
@@ -107,6 +108,7 @@ CASES = r'''
 fn main(){
  reset();let g=Game::new();let profiles:Vec<_>=(0..500).map(|i|profile(&format!("NPC{i}"))).collect();let visible=profile("VisibleSlim");
  assert!(g.mannequin_textures(9999,Some(&visible)).skin.is_none());
+ assert_eq!(g.mannequin_profile_id(9999,&visible),0x624452b8de833ade80cebc2542610c15,"pending name uses the partial profile UUID");
  for(i,p)in profiles.iter().enumerate(){assert!(g.mannequin_textures(i as u32,Some(p)).skin.is_none());}
  assert_eq!(LOADS.load(Ordering::SeqCst),501);
  skins::force_sweep(&mut g.skin_profiles.borrow_mut());assert_eq!(skins::cache_len(&g.skin_profiles.borrow()),256);assert!(!skins::cached(&g.skin_profiles.borrow(),&skins::NameOrId::Name("VisibleSlim".into())));
@@ -115,7 +117,7 @@ fn main(){
  NOW.fetch_add(45_000_000,Ordering::SeqCst);pump();g.skin_profiles.borrow_mut().poll();
  for round in 0..4{
   for(i,p)in profiles.iter().enumerate(){assert_eq!(g.mannequin_textures(i as u32,Some(p)).skin.as_deref(),Some(format!("skins/NPC{i}").as_str()));}
-  let skin=g.mannequin_textures(9999,Some(&visible));assert_eq!(skin.skin.as_deref(),Some("skins/VisibleSlim"));assert!(skin.slim);
+  let skin=g.mannequin_textures(9999,Some(&visible));assert_eq!(skin.skin.as_deref(),Some("skins/VisibleSlim"));assert!(skin.slim);assert_eq!(g.mannequin_profile_id(9999,&visible),1,"completed default body uses the resolved GameProfile UUID");
   NOW.fetch_add(700_000_000,Ordering::SeqCst);skins::force_sweep(&mut g.skin_profiles.borrow_mut());assert!(skins::cache_len(&g.skin_profiles.borrow())<=256);
   assert_eq!(LOADS.load(Ordering::SeqCst),501,"round{round}: live callers restarted profile requests");
  }

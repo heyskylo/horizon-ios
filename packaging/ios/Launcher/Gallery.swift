@@ -33,7 +33,12 @@ final class Thumbnails: ObservableObject {
         let size = CGSize(width: side * 16 / 9 * 3, height: side * 3)
         Task.detached(priority: .utility) {
             let image = await UIImage(contentsOfFile: url.path)?.byPreparingThumbnail(ofSize: size)
-            await MainActor.run { self.images[url] = image }
+            await MainActor.run {
+                self.images[url] = image
+                // A file may still be arriving or temporarily unreadable.
+                // Coalesce only in-flight work and successfully cached images.
+                if image == nil { self.asked.remove(url) }
+            }
         }
     }
 }
