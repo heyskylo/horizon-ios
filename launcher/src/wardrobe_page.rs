@@ -35,11 +35,14 @@ const TOAST: Duration = Duration::from_secs(4);
 
 /// The slots a row each, with their names. Name tags have no model; launcher themes are free in
 /// Settings, not worn.
-const SLOTS: [(&str, &str); 5] = [
+const SLOTS: [(&str, &str); 8] = [
     ("head", "Head"),
     ("back", "Back"),
     ("torso", "Shirt"),
     ("shoulder", "Shoulder pet"),
+    ("companion", "Companion"),
+    ("trail", "Trail"),
+    ("aura", "Aura"),
     ("name_tag", "Name tag"),
 ];
 
