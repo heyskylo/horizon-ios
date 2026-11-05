@@ -649,7 +649,7 @@ fn writer_may_be_alive(stream: &Path, pid: u32) -> bool {
     {
         // A process with that pid is running, but only the writer itself holds
         // the stream locked: an unlocked one means the pid was reused.
-        return Path::new("/proc").join(pid.to_string()).exists() && !stream_is_unlocked(stream);
+        Path::new("/proc").join(pid.to_string()).exists() && !stream_is_unlocked(stream)
     }
     #[cfg(not(target_os = "linux"))]
     {
