@@ -97,7 +97,7 @@ impl Game<'_> {
             return Err(error);
         }
         let swap = self
-            .enter_guest(&mut host, conn)
+            .enter_guest(&mut host, conn, back)
             .expect("the owner is not already acting");
         self.lan = Some(host);
         let result = f(self);
