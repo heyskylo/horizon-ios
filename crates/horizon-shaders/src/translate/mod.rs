@@ -163,6 +163,10 @@ pub struct GbuffersInputs {
     /// The program may read `currentRenderedItemId` without declaring it, as Iris 1.11.7
     /// lets the hand's (observed with probe packs; terrain's may not).
     pub item_id_declared: bool,
+    /// The depth test sees the far plane (window depth 1) unless the program writes
+    /// `gl_FragDepth`, while `gl_FragCoord.z` stays the geometry's own: the sky shows only where
+    /// nothing else drew, and reads its own depth as in Iris 1.11.7.
+    pub far_depth: bool,
 }
 
 /// A fragment stays when its output 0's alpha compares to `reference` as `op` says (a GLSL
@@ -549,6 +553,9 @@ fn translate(
     }
     for name in &f.inits {
         writeln!(fragment_main, "    {name} = hz_init_{name}();").unwrap();
+    }
+    if gbuffers.is_some_and(|g| g.far_depth) {
+        fragment_main.push_str("    gl_FragDepth = 1.0;\n");
     }
     fragment_main.push_str("    hz_main();\n");
     for copy in &f.out_copies {

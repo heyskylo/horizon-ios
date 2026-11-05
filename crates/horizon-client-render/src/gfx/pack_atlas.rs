@@ -674,6 +674,7 @@ impl PackAtlas {
             after: String::new(),
             alpha_test: None,
             item_id_declared: false,
+            far_depth: false,
         }
     }
 }
