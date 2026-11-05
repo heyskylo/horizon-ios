@@ -115,6 +115,10 @@ cargo run --release -p horizon-client -- --render-distance 12
 
 Development builds that link quickly: `cargo build --profile fast -p horizon-client`.
 
+`HORIZON_OCCLUSION_PROFILE=1` enables detailed entity-occlusion phase and bounds-scan timings
+in `horizon-ctl stats` and `bench`. The normal benchmark keeps these CPU-clock reads disabled;
+query, cache-hit and cull counters remain available without profiling.
+
 Optional Windows allocator build features are documented in
 [Windows allocator experiments](windows-allocators.md).
 
@@ -282,7 +286,10 @@ the inventory screen and places one, through the CLI and through MCP.
 constant speed and replies with the same summary as `bench` (avg/1%-low FPS and
 p50/p95/p99/max frame times), plus CPU and GPU time per frame; [the graphics
 benchmark](graphics.md#benchmark) is built on it. Frame times include waits for
-presentation, so `bench` reports what is on screen.
+presentation, so `bench` reports what is on screen. With asynchronous entity
+culling active, the summary also includes `async_occlusion_culling`: cache hits
+and misses, worker time, queued and skipped queries, budget limits, and entity
+vertices culled.
 
 ### Discord Rich Presence
 

@@ -5202,6 +5202,16 @@ impl Renderer {
     pub fn start_occlusion(&mut self, camera: DVec3, distance: f32) {
         self.occlusion.update(camera, (distance / 16.0) as i32 + 2);
     }
+    /// Whether the camera's current section graph knows this section is
+    /// reachable. `None` means the graph cannot safely answer for this camera
+    /// or section, so callers should keep the geometry.
+    pub fn section_occlusion_visible(
+        &self,
+        key: SectionKey,
+        camera_section: SectionKey,
+    ) -> Option<bool> {
+        self.occlusion.visible_for_camera(key, camera_section)
+    }
     pub fn upload(&mut self, key: SectionKey, mesh: &SectionMesh) {
         if let Some(copies) = &mut self.capture_copies {
             copies.section(key, mesh);
