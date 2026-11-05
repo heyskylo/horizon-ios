@@ -131,10 +131,10 @@ SCENARIOS = {
                          75: ['mouse right up']}),
     'eat': dict(
         setup=[f'item replace entity {PLAYER} weapon.mainhand with minecraft:golden_apple 4'],
-        # Two bites cut short: when a full one ends is the server's to say (its entity event), and a busy
-        # server says it ticks late.
-        ticks=70, steps={5: ['mouse right down'], 25: ['mouse right up'], 35: ['mouse right down'],
-                         55: ['mouse right up']}),
+        # Two bites of 10 ticks, a third of the 32 a golden apple takes: when a full one ends is the server's to
+        # say (its entity event), and a loaded server that catches up runs its ticks in a burst.
+        ticks=50, steps={5: ['mouse right down'], 15: ['mouse right up'], 25: ['mouse right down'],
+                         35: ['mouse right up']}),
     'bridge': dict(
         setup=[f'fill -2 {FLOOR + 1} -2 2 {FLOOR + 2} 2 minecraft:stone', f'tp {PLAYER} 0.5 {FLOOR + 3} 2.2 180 78',
                f'item replace entity {PLAYER} weapon.mainhand with minecraft:stone 64'],
