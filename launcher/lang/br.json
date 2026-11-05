@@ -1219,5 +1219,6 @@
   "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Echuit ar paeamant en ho merdeer. Erruout a raio hoc'h elfennoù er Wiskamant a-benn ur pennadig.",
   "{name} was left out: made for another Horizon version": "{name} a zo bet lezet a-gostez: graet evit ur stumm all eus Horizon",
   "{name} was left out: clashes with {other}": "{name} a zo bet lezet a-gostez: en em stok a ra gant {other}",
-  "{name} was left out: it needs {other}, which was left out": "{name} a zo bet lezet a-gostez: ezhomm en deus eus {other}, a zo bet lezet a-gostez"
+  "{name} was left out: it needs {other}, which was left out": "{name} a zo bet lezet a-gostez: ezhomm en deus eus {other}, a zo bet lezet a-gostez",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Ne vez ket savet war an Horizon a c'hoarit ({code}): ur sevel a lez anezhañ a-gostez betek ma vo hizivaet gant e aozer"
 }

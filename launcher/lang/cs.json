@@ -1219,5 +1219,6 @@
   "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Dokončete platbu v prohlížeči. Předměty dorazí do Šatníku za chvíli.",
   "{name} was left out: made for another Horizon version": "{name} byl vynechán: vytvořen pro jinou verzi Horizonu",
   "{name} was left out: clashes with {other}": "{name} byl vynechán: koliduje s {other}",
-  "{name} was left out: it needs {other}, which was left out": "{name} byl vynechán: potřebuje {other}, který byl vynechán"
+  "{name} was left out: it needs {other}, which was left out": "{name} byl vynechán: potřebuje {other}, který byl vynechán",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Nesestaví se na Horizonu, který hraješ ({code}): sestavení ho vynechá, dokud ho autor neaktualizuje"
 }

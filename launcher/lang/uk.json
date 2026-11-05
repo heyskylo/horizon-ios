@@ -1219,5 +1219,6 @@
   "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Завершіть оплату в браузері. Предмети з'являться в Гардеробі за мить.",
   "{name} was left out: made for another Horizon version": "{name} пропущено: зроблено для іншої версії Horizon",
   "{name} was left out: clashes with {other}": "{name} пропущено: конфліктує з {other}",
-  "{name} was left out: it needs {other}, which was left out": "{name} пропущено: йому потрібен {other}, який пропущено"
+  "{name} was left out: it needs {other}, which was left out": "{name} пропущено: йому потрібен {other}, який пропущено",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Не збирається на Horizon, у який ви граєте ({code}): збирання пропустить його, доки автор не оновить"
 }

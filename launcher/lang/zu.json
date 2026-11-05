@@ -1219,5 +1219,6 @@
   "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Qedela ukukhokha kusiphequluli sakho. Izinto zakho zizofika eKhabetheni maduze.",
   "{name} was left out: made for another Horizon version": "I-{name} ishiywe ngaphandle: yenzelwe enye inguqulo ye-Horizon",
   "{name} was left out: clashes with {other}": "I-{name} ishiywe ngaphandle: ingqubuzana ne-{other}",
-  "{name} was left out: it needs {other}, which was left out": "I-{name} ishiywe ngaphandle: idinga i-{other}, eshiywe ngaphandle"
+  "{name} was left out: it needs {other}, which was left out": "I-{name} ishiywe ngaphandle: idinga i-{other}, eshiywe ngaphandle",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Ayakhiwa ku-Horizon oyidlalayo ({code}): ukwakha kuyayishiya ngaphandle kuze kube umbhali wayo uyayibuyekeza"
 }

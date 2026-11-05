@@ -1219,5 +1219,6 @@
   "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Amaitu ordainketa nabigatzailean. Zure elementuak Armairura iritsiko dira une batean.",
   "{name} was left out: made for another Horizon version": "{name} kanpoan utzi da: Horizonen beste bertsio baterako egina",
   "{name} was left out: clashes with {other}": "{name} kanpoan utzi da: {other}(r)ekin talka egiten du",
-  "{name} was left out: it needs {other}, which was left out": "{name} kanpoan utzi da: {other} behar du, eta hura kanpoan utzi da"
+  "{name} was left out: it needs {other}, which was left out": "{name} kanpoan utzi da: {other} behar du, eta hura kanpoan utzi da",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Ez da eraikitzen jokatzen duzun Horizonen ({code}): eraikuntzak kanpoan uzten du egileak eguneratu arte"
 }

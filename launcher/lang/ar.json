@@ -1219,5 +1219,6 @@
   "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "أكمل الدفع في متصفحك. تصل عناصرك إلى خزانة الملابس بعد لحظة.",
   "{name} was left out: made for another Horizon version": "تم استبعاد {name}: صُنع لإصدار آخر من Horizon",
   "{name} was left out: clashes with {other}": "تم استبعاد {name}: يتعارض مع {other}",
-  "{name} was left out: it needs {other}, which was left out": "تم استبعاد {name}: يحتاج إلى {other}، الذي تم استبعاده"
+  "{name} was left out: it needs {other}, which was left out": "تم استبعاد {name}: يحتاج إلى {other}، الذي تم استبعاده",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "لا يُبنى على إصدار Horizon الذي تلعبه ({code}): يستبعده البناء حتى يحدّثه مؤلفه"
 }

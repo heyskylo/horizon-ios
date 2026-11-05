@@ -1219,5 +1219,6 @@
   "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Fullfør betalingen i nettleseren. Tingene dine kommer i Garderoben om et øyeblikk.",
   "{name} was left out: made for another Horizon version": "{name} ble utelatt: laget for en annen Horizon-versjon",
   "{name} was left out: clashes with {other}": "{name} ble utelatt: kolliderer med {other}",
-  "{name} was left out: it needs {other}, which was left out": "{name} ble utelatt: den trenger {other}, som ble utelatt"
+  "{name} was left out: it needs {other}, which was left out": "{name} ble utelatt: den trenger {other}, som ble utelatt",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Bygger ikke på Horizon-versjonen du spiller ({code}): en bygging utelater den til forfatteren oppdaterer den"
 }

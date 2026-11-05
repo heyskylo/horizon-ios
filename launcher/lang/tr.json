@@ -1219,5 +1219,6 @@
   "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Ödemeyi tarayıcıda tamamla. Eşyaların biraz sonra Gardıroba gelir.",
   "{name} was left out: made for another Horizon version": "{name} dışarıda bırakıldı: başka bir Horizon sürümü için yapılmış",
   "{name} was left out: clashes with {other}": "{name} dışarıda bırakıldı: {other} ile çakışıyor",
-  "{name} was left out: it needs {other}, which was left out": "{name} dışarıda bırakıldı: dışarıda bırakılan {other} gerekiyor"
+  "{name} was left out: it needs {other}, which was left out": "{name} dışarıda bırakıldı: dışarıda bırakılan {other} gerekiyor",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Oynadığın Horizon'da derlenmiyor ({code}): yazarı güncelleyene kadar derleme onu dışarıda bırakır"
 }

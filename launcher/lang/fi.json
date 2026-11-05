@@ -1219,5 +1219,6 @@
   "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Viimeistele maksu selaimessa. Esineet saapuvat Vaatekaappiin hetken kuluttua.",
   "{name} was left out: made for another Horizon version": "{name} jätettiin pois: tehty toiselle Horizon-versiolle",
   "{name} was left out: clashes with {other}": "{name} jätettiin pois: törmää modin {other} kanssa",
-  "{name} was left out: it needs {other}, which was left out": "{name} jätettiin pois: se tarvitsee modin {other}, joka jätettiin pois"
+  "{name} was left out: it needs {other}, which was left out": "{name} jätettiin pois: se tarvitsee modin {other}, joka jätettiin pois",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Ei käänny pelaamallasi Horizonilla ({code}): käännös jättää sen pois, kunnes tekijä päivittää sen"
 }

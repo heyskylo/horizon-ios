@@ -1219,5 +1219,6 @@
   "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Termina el pago en tu navegador. Tus objetos llegan al Armario un momento después.",
   "{name} was left out: made for another Horizon version": "Se dejó fuera {name}: hecho para otra versión de Horizon",
   "{name} was left out: clashes with {other}": "Se dejó fuera {name}: choca con {other}",
-  "{name} was left out: it needs {other}, which was left out": "Se dejó fuera {name}: necesita {other}, que se dejó fuera"
+  "{name} was left out: it needs {other}, which was left out": "Se dejó fuera {name}: necesita {other}, que se dejó fuera",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "No se compila en el Horizon que juegas ({code}): la compilación lo deja fuera hasta que su autor lo actualice"
 }

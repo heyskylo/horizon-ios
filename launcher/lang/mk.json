@@ -1219,5 +1219,6 @@
   "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Завршете го плаќањето во прелистувачот. Предметите стигнуваат во Гардеробата за момент.",
   "{name} was left out: made for another Horizon version": "{name} е изоставен: направен за друга верзија на Horizon",
   "{name} was left out: clashes with {other}": "{name} е изоставен: се судира со {other}",
-  "{name} was left out: it needs {other}, which was left out": "{name} е изоставен: му треба {other}, кој е изоставен"
+  "{name} was left out: it needs {other}, which was left out": "{name} е изоставен: му треба {other}, кој е изоставен",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Не се гради на Horizon што го играш ({code}): градењето го изоставува додека авторот не го ажурира"
 }

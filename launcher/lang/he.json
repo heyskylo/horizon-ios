@@ -1219,5 +1219,6 @@
   "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "סיימו לשלם בדפדפן. הפריטים יגיעו לארון הבגדים בעוד רגע.",
   "{name} was left out: made for another Horizon version": "{name} הושמט: נוצר לגרסה אחרת של Horizon",
   "{name} was left out: clashes with {other}": "{name} הושמט: מתנגש עם {other}",
-  "{name} was left out: it needs {other}, which was left out": "{name} הושמט: הוא צריך את {other}, שהושמט"
+  "{name} was left out: it needs {other}, which was left out": "{name} הושמט: הוא צריך את {other}, שהושמט",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "לא נבנה על ה-Horizon שבו אתה משחק ({code}): בנייה משמיטה אותו עד שהיוצר יעדכן אותו"
 }

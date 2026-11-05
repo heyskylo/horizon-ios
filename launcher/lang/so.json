@@ -1219,5 +1219,6 @@
   "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Ku dhammee lacag bixinta biraawsarka. Alaabtaadu waxay gaari doontaa Armaajada wax yar kadib.",
   "{name} was left out: made for another Horizon version": "{name} waa laga reebay: waxaa loo sameeyay nooc kale oo Horizon ah",
   "{name} was left out: clashes with {other}": "{name} waa laga reebay: wuxuu ku dhacaa {other}",
-  "{name} was left out: it needs {other}, which was left out": "{name} waa laga reebay: wuxuu u baahan yahay {other}, oo laga reebay"
+  "{name} was left out: it needs {other}, which was left out": "{name} waa laga reebay: wuxuu u baahan yahay {other}, oo laga reebay",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Kuma dhismo Horizon-ka aad ciyaarto ({code}): dhismuhu wuu ka reebayaa ilaa qoraagiisu cusboonaysiiyo"
 }

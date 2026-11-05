@@ -1219,5 +1219,6 @@
   "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Acabatz lo pagament dins lo navegador. Vòstres objèctes arriban a la Garda-rauba un momenton aprèp.",
   "{name} was left out: made for another Horizon version": "{name} es estat daissat de caire: fach per una autra version d'Horizon",
   "{name} was left out: clashes with {other}": "{name} es estat daissat de caire: en conflicte amb {other}",
-  "{name} was left out: it needs {other}, which was left out": "{name} es estat daissat de caire: a besonh de {other}, daissat de caire"
+  "{name} was left out: it needs {other}, which was left out": "{name} es estat daissat de caire: a besonh de {other}, daissat de caire",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Se compila pas sus l'Horizon que i jogas ({code}): una compilacion lo daissa de caire fins que son autor lo mete a jorn"
 }

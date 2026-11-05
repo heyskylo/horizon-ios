@@ -1219,5 +1219,6 @@
   "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Acaba el pagament al navegador. Els objectes arriben a l'Armari un moment després.",
   "{name} was left out: made for another Horizon version": "S'ha deixat fora {name}: fet per a una altra versió d'Horizon",
   "{name} was left out: clashes with {other}": "S'ha deixat fora {name}: entra en conflicte amb {other}",
-  "{name} was left out: it needs {other}, which was left out": "S'ha deixat fora {name}: necessita {other}, que s'ha deixat fora"
+  "{name} was left out: it needs {other}, which was left out": "S'ha deixat fora {name}: necessita {other}, que s'ha deixat fora",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "No es compila a l'Horizon que jugues ({code}): la compilació el deixa fora fins que el seu autor l'actualitzi"
 }

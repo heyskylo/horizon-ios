@@ -1219,5 +1219,6 @@
   "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Gorffennwch dalu yn eich porwr. Bydd eich eitemau'n cyrraedd y Cwpwrdd Dillad mewn eiliad.",
   "{name} was left out: made for another Horizon version": "Gadawyd {name} allan: wedi'i wneud ar gyfer fersiwn arall o Horizon",
   "{name} was left out: clashes with {other}": "Gadawyd {name} allan: mae'n gwrthdaro â {other}",
-  "{name} was left out: it needs {other}, which was left out": "Gadawyd {name} allan: mae angen {other} arno, a adawyd allan"
+  "{name} was left out: it needs {other}, which was left out": "Gadawyd {name} allan: mae angen {other} arno, a adawyd allan",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Nid yw'n adeiladu ar yr Horizon rwyt ti'n ei chwarae ({code}): mae adeiladu yn ei adael allan nes i'w awdur ei ddiweddaru"
 }
