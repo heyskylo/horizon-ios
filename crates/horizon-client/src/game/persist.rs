@@ -1788,23 +1788,9 @@ impl Game<'_> {
         i: usize,
         keys: &HashSet<ChunkKey>,
     ) -> Option<(ChunkKey, Tag)> {
-        let (id, at) = (self.tnts[i].id, self.tnts[i].position);
-        keys.contains(&chunk_of(at)).then(|| {
-            let uuid = self.uuid_for(id);
-            let t = &self.tnts[i];
-            let tag = entity_nbt::tnt_to_nbt(
-                t.position,
-                t.velocity,
-                t.on_ground,
-                t.fuse,
-                t.power,
-                t.block_state_nbt(self.pack.assets.registry),
-                t.rotation,
-                uuid,
-                self.persist.raw.get(&id),
-            );
-            (chunk_of(at), tag)
-        })
+        let at = self.tnts[i].position;
+        keys.contains(&chunk_of(at))
+            .then(|| (chunk_of(at), self.tnt_nbt(i)))
     }
     pub(super) fn save_boat(
         &mut self,
