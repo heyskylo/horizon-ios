@@ -3702,7 +3702,7 @@ mod tests {
         let sync = std::sync::Arc::new(data::SyncData::empty());
         let config = NetConfig {
             announce: false,
-            ..NetConfig::lan(0, name.into(), 2)
+            ..NetConfig::loopback(0, name.into(), 2)
         };
         let lan = Lan::start_with(sync.clone(), config).unwrap();
         let encoder = ChunkEncoder::new(

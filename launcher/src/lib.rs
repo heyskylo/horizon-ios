@@ -54,4 +54,6 @@ pub mod themes;
 pub mod uninstall_aside;
 pub mod update_handoff;
 pub mod wardrobe;
+#[cfg(windows)]
+mod windows_runtime;
 pub mod worlds;
