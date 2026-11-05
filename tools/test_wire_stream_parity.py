@@ -416,18 +416,15 @@ def run(args, out):
 
 def anchored_diffs(v, h, ticks, anchor, problems):
     """wire_stream.compare over the scenario's ticks. With an anchor (a frame packet the server's answer brings,
-    as AcceptTeleportation), the ticks before it compare one to one and the ticks from it on are aligned on it:
-    a loaded server answers a tick or more later in one run than in the other. Numbers are vanilla's ticks."""
+    as AcceptTeleportation), the two ticks that answer arrived in compare with each other
+    (wire_stream.compare_answered). Numbers are vanilla's ticks."""
     if not anchor:
         return wire_stream.compare(v, h, ticks)
     av, ah = wire_stream.first_frame(v, anchor), wire_stream.first_frame(h, anchor)
     if av is None or ah is None:
         problems.append(f'  no {anchor}: vanilla at tick {av}, Horizon at tick {ah}')
         return wire_stream.compare(v, h, ticks)
-    # Between the two anchors both clients wait for the server: the ticks after the shorter wait are left out.
-    before = wire_stream.compare(v[:min(av, ah)], h[:min(av, ah)], min(av, ah) - 1)
-    after = wire_stream.compare(v[av:], h[ah:], ticks - max(av, ah))
-    return before + [(i + av, vt, ht) for i, vt, ht in after]
+    return wire_stream.compare_answered(v, h, ticks, av, ah)
 
 
 def compare(captures, scenarios):

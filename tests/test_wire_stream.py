@@ -87,6 +87,19 @@ class WireStreamTest(unittest.TestCase):
         self.assertEqual(a[0][0]['packets'][0][1]['stale'], 0)
         self.assertEqual(b[0][1]['packets'][0][1]['stale'], 1)
 
+    def test_a_late_answer_compares_with_vanilla_s_answer_and_the_script_keeps_its_clock(self):
+        tick = lambda *names: {'packets': [(n, {}) for n in names], 'frame': [], 'misplaced': []}  # noqa
+        # The server's answer (an abort) reaches vanilla in tick 1 and Horizon in tick 2; the script acts in tick 3.
+        vanilla = [tick('punch'), tick('abort', 'punch'), tick('punch'), tick('pos'), tick()]
+        horizon = [tick('punch'), tick('punch'), tick('abort', 'punch'), tick('pos'), tick()]
+        self.assertEqual(wire_stream.compare_answered(vanilla, horizon, 4, 1, 2), [])
+        # What the answer brings is compared: a new dig instead of the abort.
+        restart = [tick('punch'), tick('punch'), tick('start', 'punch'), tick('pos'), tick()]
+        self.assertEqual([d[0] for d in wire_stream.compare_answered(vanilla, restart, 4, 1, 2)], [1])
+        # So is the script's clock: a packet a tick late anywhere else.
+        late = [tick('punch'), tick('punch'), tick('abort', 'punch'), tick(), tick('pos')]
+        self.assertEqual([d[0] for d in wire_stream.compare_answered(vanilla, late, 4, 1, 2)], [3, 4])
+
     def test_compare_reports_the_first_field_that_differs(self):
         tick = lambda y: {'packets': [('move_player_pos', {'x': 0.5, 'y': y})], 'frame': [], 'misplaced': []}  # noqa
         diffs = wire_stream.compare([tick(-60.0)], [tick(-60.0000001)], 0)
