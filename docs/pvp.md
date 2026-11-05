@@ -43,3 +43,37 @@ Each feature is built from what it visibly does, never from another client's or 
   vanilla's: `OverlayTexture`'s red over 30%.
 - The texel rides in the frame's uniforms (`colored_count.y`, 0 for vanilla's), so changing it costs nothing.
 - Shader packs keep vanilla's red (`pack_entities::entity_color`).
+
+## HUD widgets (each default off)
+
+Boxes in the screen corners, placed like the minimap and mods' boxes (`extras_hud::Corners`), each in a corner of
+its own, with an optional dark background (on by default). F3's debug screen takes the top corners as it does from
+mods' boxes. Code: `crates/horizon-client-render/src/pvp_hud.rs` (lines, cache, layout) and `game/pvp.rs`.
+
+- **Armour** (bottom right): each piece worn, head first, with the uses left as a number or a percent, coloured
+  like the item's durability bar (green to red). Only what the inventory already shows.
+- **Effects** (top right): icon, name and level, time left, for every active effect; in place of vanilla's
+  icons there (`Hud.extractEffects`), as the inventory's effect panels show them.
+- **Held item count** (bottom right): how many of the held item the inventory and off hand hold; with a bow or
+  crossbow, the arrows. Hidden for a single item.
+
+Cost: a widget keeps its lines (`pvp_hud::Widget`) and rebuilds them only when what it shows changes (a piece
+takes damage, an effect's second ticks, the count changes); a frame reads a few slots, compares, and adds the
+box's quads. With nothing changing, a frame allocates nothing.
+- **Ping** (top left): the latency the server's player list reports for you (the tab list's bars as a number); nothing until the server's first latency update, up to 30 s after joining.
+  Multiplayer only.
+- **Coordinates** (top left): block position and the direction faced (`Direction.fromYRot`), as F3 shows them.
+  Hidden whenever F3 is reduced (`reducedDebugInfo`: the option, the game rule or the server), so it never shows
+  what the server hides.
+- **Server address** (top left): the address you joined (`net::shown_address`: invite codes stay hidden).
+  Multiplayer only.
+- **Combo counter** (top left): your hits in a row, each counted when the server reports an entity hurt with you
+  as the damage's direct entity (`ClientboundDamageEventPacket`: melee and spear hits, not arrows or fire). A
+  report that names no attacker counts once, within a second of a swing at that entity. Back to 0 when you are hurt or
+  3 seconds pass without a hit. It counts what the game already shows (the target's hurt flash).
+
+## Enchantment levels as numbers (`numericEnchants`, default off)
+
+`Enchantment.getFullname` with the level as a number ("Sharpness 5", also past vanilla's numerals: "Sharpness 255")
+wherever the client names an enchantment (tooltips, the enchanting table's hint). A one-level enchantment still has
+none ("Mending"). Code: `horizon_items::enchant::set_numeric_levels`, set each frame from the option.

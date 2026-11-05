@@ -84,6 +84,7 @@ pub mod potent_sulfur;
 pub mod preedit;
 pub mod providers;
 pub mod pvp;
+pub mod pvp_hud;
 pub mod screen_draw;
 pub mod screen_effects;
 pub mod sculk;
