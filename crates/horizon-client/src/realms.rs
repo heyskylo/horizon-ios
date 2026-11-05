@@ -12,7 +12,8 @@ pub mod client;
 use crate::hud::{HudAtlas, HudBatch, rgba};
 use crate::text::Text;
 use client::{
-    PendingInviteDto, RealmAddress, RealmServer, RealmsClient, RealmsError, Subscription,
+    PendingInviteDto, PlayerInfo, RealmAddress, RealmServer, RealmsClient, RealmsError,
+    Subscription,
 };
 use horizon_client_render::auth::{self, AuthSession};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -32,6 +33,7 @@ const RED: u32 = 0xFF55_55FF;
 const INFO: u32 = 0xFFBE_887D;
 
 const REALMS_INVITE_CODE: crate::clipboard::FieldId = ("realms.invite_code", 0);
+const REALMS_PLAYER_NAME: crate::clipboard::FieldId = ("realms.player_name", 0);
 
 /// `CommonLinks.BUY_REALMS`.
 const BUY_REALMS: &str = "https://aka.ms/BuyJavaRealms";
@@ -254,6 +256,11 @@ pub enum Popup {
     ResourcePack { pack: RealmsPack },
     /// `RealmsSubscriptionTab`'s delete question (only offered once the Realm has expired).
     Delete(RealmServer),
+    /// `RealmsPlayersTab.PlayerEntry.uninvite`'s confirm (`RealmsConfirmScreen`).
+    Uninvite {
+        server: RealmServer,
+        player: PlayerInfo,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -274,11 +281,26 @@ pub enum SubScreen {
         /// `RealmsClient.subscriptionFor` on a worker, then its answer (the subscription tab).
         subscription: Option<Result<Subscription, RealmsError>>,
         subscription_job: Option<Job<Result<Subscription, RealmsError>>>,
+        /// `RealmsClient.getOwnRealm` on a worker, then its answer (the slots and players).
+        detail: Option<Result<RealmServer, RealmsError>>,
+        detail_job: Option<Job<Result<RealmServer, RealmsError>>>,
         /// `RealmsClient.deleteRealm` on a worker, from the subscription tab's question.
         deleting: Option<Job<Result<(), RealmsError>>>,
+        /// `RealmsClient.op`/`deop`/`uninvite` on a worker, from the players tab.
+        member_job: Option<Job<Result<(), RealmsError>>>,
         error: Option<String>,
         /// `RealmsClient.open`/`close` on a worker.
         job: Option<Job<Result<(), RealmsError>>>,
+    },
+    /// `RealmsInviteScreen`: a name to invite to the Realm.
+    Invite {
+        server: RealmServer,
+        /// The invited players as the tab had them (the duplicate check).
+        players: Vec<PlayerInfo>,
+        name: String,
+        /// `RealmsClient.invite` on a worker, then the players.
+        job: Option<Job<Result<Vec<PlayerInfo>, RealmsError>>>,
+        error: Option<String>,
     },
     AddRealm,
     Popup(Popup),
@@ -412,6 +434,7 @@ impl Screen {
             }
         }
         let mut refresh = false;
+        let mut refetch_detail = false;
         match &mut self.subscreen {
             SubScreen::JoinCode { error, job, .. } => {
                 if let Some(result) = job.as_ref().and_then(take) {
@@ -437,7 +460,10 @@ impl Screen {
                 server,
                 subscription,
                 subscription_job,
+                detail,
+                detail_job,
                 deleting,
+                member_job,
                 error,
                 job,
                 ..
@@ -457,6 +483,18 @@ impl Screen {
                     *subscription_job = None;
                     *subscription = Some(result);
                 }
+                if let Some(result) = detail_job.as_ref().and_then(take) {
+                    *detail_job = None;
+                    *detail = Some(result);
+                }
+                if let Some(result) = member_job.as_ref().and_then(take) {
+                    *member_job = None;
+                    match result {
+                        // `updateOps`: the list reads again with the new operators.
+                        Ok(()) => refetch_detail = true,
+                        Err(e) => *error = Some(e.text()),
+                    }
+                }
                 if let Some(result) = deleting.as_ref().and_then(take) {
                     *deleting = None;
                     match result {
@@ -470,8 +508,40 @@ impl Screen {
                     }
                 }
             }
+            SubScreen::Invite {
+                server, job, error, ..
+            } => {
+                if let Some(result) = job.as_ref().and_then(take) {
+                    *job = None;
+                    match result {
+                        Ok(_players) => {
+                            // `invitePlayer` succeeded: back to the players tab, which
+                            // reads the list again.
+                            let server = server.clone();
+                            self.subscreen = SubScreen::Configure {
+                                server,
+                                tab: ConfigureTab::Players,
+                                subscription: None,
+                                subscription_job: None,
+                                detail: None,
+                                detail_job: None,
+                                deleting: None,
+                                member_job: None,
+                                error: None,
+                                job: None,
+                            };
+                            self.start_configure_subscription();
+                            self.start_configure_detail();
+                        }
+                        Err(e) => *error = Some(e.text()),
+                    }
+                }
+            }
             SubScreen::Connecting { .. } => return self.poll_join(),
             _ => {}
+        }
+        if refetch_detail {
+            self.start_configure_detail();
         }
         if refresh {
             self.refresh();
@@ -537,15 +607,18 @@ impl Screen {
     }
 
     pub fn focused_box(&self, (w, _h): (f32, f32)) -> Option<[f32; 4]> {
-        matches!(self.subscreen, SubScreen::JoinCode { .. })
-            .then(|| [(w / 2.0).floor() - 100.0, 64.0, 200.0, 20.0])
+        match &self.subscreen {
+            SubScreen::JoinCode { .. } => Some([(w / 2.0).floor() - 100.0, 64.0, 200.0, 20.0]),
+            SubScreen::Invite { .. } => Some([(w / 2.0).floor() - 100.0, 62.0, 200.0, 20.0]),
+            _ => None,
+        }
     }
 
     pub fn focused_text(&mut self) -> Option<(crate::clipboard::FieldId, &mut String, usize)> {
-        if let SubScreen::JoinCode { ref mut code, .. } = self.subscreen {
-            Some((REALMS_INVITE_CODE, code, 128))
-        } else {
-            None
+        match &mut self.subscreen {
+            SubScreen::JoinCode { code, .. } => Some((REALMS_INVITE_CODE, code, 128)),
+            SubScreen::Invite { name, .. } => Some((REALMS_PLAYER_NAME, name, 16)),
+            _ => None,
         }
     }
 
@@ -621,6 +694,84 @@ impl Screen {
         }
     }
 
+    /// `RealmsConfigureWorldScreen.init`'s `fetchServerData`: the slots and players, on a
+    /// worker.
+    fn start_configure_detail(&mut self) {
+        let SubScreen::Configure {
+            server, detail_job, ..
+        } = &mut self.subscreen
+        else {
+            return;
+        };
+        if detail_job.is_some() {
+            return;
+        }
+        if let Some(client) = client() {
+            let id = server.id;
+            *detail_job = Some(spawn(move || client.get_own_realm(id)));
+        }
+    }
+
+    /// `RealmsInviteScreen.onInvite`: a blank name or one already invited is refused
+    /// before any request; the rest goes to `RealmsClient.invite` on a worker.
+    fn invite_clicked(&mut self) {
+        let (name, id, already) = match &self.subscreen {
+            SubScreen::Invite {
+                server,
+                players,
+                name,
+                job,
+                ..
+            } if job.is_none() => (
+                name.trim().to_owned(),
+                server.id,
+                players
+                    .iter()
+                    .any(|p| p.name.eq_ignore_ascii_case(name.trim())),
+            ),
+            _ => return,
+        };
+        let refusal = if name.is_empty() {
+            Some("mco.configure.world.players.error")
+        } else if already {
+            Some("mco.configure.world.players.invite.duplicate")
+        } else {
+            None
+        };
+        if let SubScreen::Invite { job, error, .. } = &mut self.subscreen {
+            if let Some(key) = refusal {
+                *error = Some(crate::lang::get(key));
+                return;
+            }
+            if let Some(client) = client() {
+                *error = None;
+                *job = Some(spawn(move || client.invite_player(id, &name)));
+            }
+        }
+    }
+
+    /// `RealmsInviteScreen.onClose`: back to the players tab.
+    fn back_to_players(&mut self) {
+        let SubScreen::Invite { server, .. } = &self.subscreen else {
+            return;
+        };
+        let server = server.clone();
+        self.subscreen = SubScreen::Configure {
+            server,
+            tab: ConfigureTab::Players,
+            subscription: None,
+            subscription_job: None,
+            detail: None,
+            detail_job: None,
+            deleting: None,
+            member_job: None,
+            error: None,
+            job: None,
+        };
+        self.start_configure_subscription();
+        self.start_configure_detail();
+    }
+
     pub fn click(&mut self, hit: Option<u8>, x: f32, y: f32, (w, h): (f32, f32)) -> Outcome {
         match hit {
             Some(1) => self.play_selected(),
@@ -632,11 +783,15 @@ impl Screen {
                         tab: ConfigureTab::Worlds,
                         subscription: None,
                         subscription_job: None,
+                        detail: None,
+                        detail_job: None,
                         deleting: None,
+                        member_job: None,
                         error: None,
                         job: None,
                     };
                     self.start_configure_subscription();
+                    self.start_configure_detail();
                 }
                 Outcome::None
             }
@@ -737,6 +892,36 @@ impl Screen {
                 }
                 Outcome::None
             }
+            Some(67) => {
+                if let SubScreen::Configure { server, tab, .. } = &self.subscreen
+                    && *tab == ConfigureTab::Players
+                {
+                    let players = match &self.subscreen {
+                        SubScreen::Configure {
+                            detail: Some(Ok(detail)),
+                            ..
+                        } => detail.players.clone(),
+                        _ => Vec::new(),
+                    };
+                    self.subscreen = SubScreen::Invite {
+                        server: server.clone(),
+                        players,
+                        name: String::new(),
+                        job: None,
+                        error: None,
+                    };
+                }
+                Outcome::None
+            }
+            // RealmsInviteScreen: Invite (80) and Back (81).
+            Some(80) => {
+                self.invite_clicked();
+                Outcome::None
+            }
+            Some(81) => {
+                self.back_to_players();
+                Outcome::None
+            }
             Some(66) => match (&self.subscreen, session()) {
                 (SubScreen::Configure { server, .. }, Some(s)) => {
                     Outcome::OpenUri(extend_link(server, s.uuid))
@@ -746,22 +931,86 @@ impl Screen {
             Some(40) => Outcome::OpenUri(BUY_REALMS.to_owned()),
             Some(50) => self.popup_continue(),
             Some(btn @ 100..=200) => {
-                if let SubScreen::PendingInvites { invites, job } = &mut self.subscreen
-                    && job.is_none()
-                    && let Some(Ok(list)) = invites
-                    && let Some(invite) = list.get(usize::from((btn - 100) / 2))
-                    && let Some(client) = client()
-                {
-                    let accept = (btn - 100) % 2 == 0;
-                    let id = invite.invitation_id.clone();
-                    *job = Some(spawn(move || {
-                        let done = if accept {
-                            client.accept_invite(&id)
-                        } else {
-                            client.reject_invite(&id)
+                // The button's meaning: a pending invite's answer, or a player row's
+                // Op/Deop/Remove (`RealmsPlayersTab.PlayerEntry`).
+                enum Row {
+                    Nothing,
+                    Pending(bool, String),
+                    Member(bool, i64, String),
+                    Uninvite(RealmServer, PlayerInfo),
+                }
+                let row = match &self.subscreen {
+                    SubScreen::PendingInvites { invites, job } if job.is_none() => {
+                        match invites.as_ref().and_then(|i| i.as_ref().ok()) {
+                            Some(list) => match list.get(usize::from((btn - 100) / 2)) {
+                                Some(invite) => {
+                                    Row::Pending((btn - 100) % 2 == 0, invite.invitation_id.clone())
+                                }
+                                None => Row::Nothing,
+                            },
+                            None => Row::Nothing,
+                        }
+                    }
+                    SubScreen::Configure {
+                        server,
+                        tab,
+                        detail,
+                        member_job,
+                        ..
+                    } if *tab == ConfigureTab::Players && member_job.is_none() => {
+                        let index = usize::from((btn - 100) / 3);
+                        let which = (btn - 100) % 3;
+                        let player = match detail {
+                            Some(Ok(detail)) => detail.players.get(index).cloned(),
+                            _ => None,
                         };
-                        done.and_then(|()| client.pending_invites())
-                    }));
+                        match player {
+                            Some(player) if which < 2 => match &player.uuid {
+                                Some(uuid) if !uuid.is_empty() => {
+                                    Row::Member(which == 0, server.id, uuid.clone())
+                                }
+                                _ => Row::Nothing,
+                            },
+                            Some(player) => Row::Uninvite(server.clone(), player),
+                            None => Row::Nothing,
+                        }
+                    }
+                    _ => Row::Nothing,
+                };
+                match row {
+                    Row::Nothing => {}
+                    Row::Pending(accept, id) => {
+                        if let SubScreen::PendingInvites { job, .. } = &mut self.subscreen
+                            && job.is_none()
+                            && let Some(client) = client()
+                        {
+                            *job = Some(spawn(move || {
+                                let done = if accept {
+                                    client.accept_invite(&id)
+                                } else {
+                                    client.reject_invite(&id)
+                                };
+                                done.and_then(|()| client.pending_invites())
+                            }));
+                        }
+                    }
+                    Row::Member(op, realm_id, uuid) => {
+                        if let SubScreen::Configure { member_job, .. } = &mut self.subscreen
+                            && member_job.is_none()
+                            && let Some(client) = client()
+                        {
+                            *member_job = Some(spawn(move || {
+                                if op {
+                                    client.op_player(realm_id, &uuid).map(drop)
+                                } else {
+                                    client.deop_player(realm_id, &uuid).map(drop)
+                                }
+                            }));
+                        }
+                    }
+                    Row::Uninvite(server, player) => {
+                        self.subscreen = SubScreen::Popup(Popup::Uninvite { server, player });
+                    }
                 }
                 Outcome::None
             }
@@ -819,6 +1068,29 @@ impl Screen {
                 }
                 Outcome::Connect(address)
             }
+            // RealmsPlayersTab.PlayerEntry.uninvite, answered: the player goes and the
+            // list reads again.
+            Popup::Uninvite { server, player } => {
+                let Some(client) = client() else {
+                    return Outcome::None;
+                };
+                let (id, uuid) = (server.id, player.uuid.clone().unwrap_or_default());
+                self.subscreen = SubScreen::Configure {
+                    server,
+                    tab: ConfigureTab::Players,
+                    subscription: None,
+                    subscription_job: None,
+                    detail: None,
+                    detail_job: None,
+                    deleting: None,
+                    member_job: Some(spawn(move || client.uninvite_player(id, &uuid))),
+                    error: None,
+                    job: None,
+                };
+                self.start_configure_subscription();
+                self.start_configure_detail();
+                Outcome::None
+            }
             // RealmsSubscriptionTab.deleteRealm: the question was asked over the
             // configuration screen, so it answers there; the list returns once the
             // Realm is gone.
@@ -832,12 +1104,16 @@ impl Screen {
                     tab: ConfigureTab::Subscription,
                     subscription: None,
                     subscription_job: None,
+                    detail: None,
+                    detail_job: None,
                     deleting: Some(spawn(move || client.delete_realm(id))),
+                    member_job: None,
                     error: None,
                     job: None,
                 };
                 // A failed delete stays here and the tab reads again.
                 self.start_configure_subscription();
+                self.start_configure_detail();
                 Outcome::None
             }
         }
@@ -939,7 +1215,9 @@ impl Screen {
                 server,
                 tab,
                 subscription,
+                detail,
                 deleting,
+                member_job,
                 job,
                 ..
             } => {
@@ -982,6 +1260,58 @@ impl Screen {
                         None,
                     ));
                 }
+                // RealmsPlayersTab: a row's Op/Deop/Remove, then Invite Player.
+                if *tab == ConfigureTab::Players
+                    && let Some(Ok(detail)) = detail
+                {
+                    let rx = ((w - ROW_WIDTH) / 2.0).floor();
+                    for (i, player) in detail.players.iter().enumerate() {
+                        let row_y = 36.0 + 22.0 + 2.0 + i as f32 * ROW_HEIGHT;
+                        if row_y + ROW_HEIGHT > h - 48.0 {
+                            break;
+                        }
+                        let id = 100 + i as u8 * 3;
+                        let width = (ROW_WIDTH - 140.0).max(40.0) / 3.0;
+                        // The vanilla buttons carry the sprite; these say what they do in
+                        // the same three translations (`invites.*.tooltip`).
+                        for (n, key) in [
+                            (0u8, "mco.configure.world.invites.ops.tooltip"),
+                            (1, "mco.configure.world.invites.normal.tooltip"),
+                            (2, "mco.configure.world.invites.remove.tooltip"),
+                        ] {
+                            buttons.push((
+                                rx + ROW_WIDTH - 132.0 + n as f32 * width,
+                                row_y + 8.0,
+                                width - 2.0,
+                                t(key),
+                                player.uuid.is_some() && member_job.is_none(),
+                                id + n,
+                                None,
+                            ));
+                        }
+                    }
+                    buttons.push((
+                        cx - 100.0,
+                        h - 60.0,
+                        200.0,
+                        t("mco.configure.world.buttons.invite"),
+                        true,
+                        67,
+                        None,
+                    ));
+                }
+            }
+            SubScreen::Invite { job, .. } => {
+                buttons.push((
+                    cx - 100.0,
+                    mid + 10.0,
+                    200.0,
+                    t("mco.configure.world.buttons.invite"),
+                    job.is_none(),
+                    80,
+                    None,
+                ));
+                buttons.push((cx - 100.0, h - 36.0, 200.0, t("gui.back"), true, 81, None));
             }
             SubScreen::AddRealm => {
                 buttons.push((
@@ -1252,6 +1582,7 @@ impl Screen {
                 server,
                 tab,
                 subscription,
+                detail,
                 deleting,
                 error,
                 job,
@@ -1382,8 +1713,49 @@ impl Screen {
                             u32::MAX,
                         ),
                     },
-                    // The other tabs land in follow-ups; vanilla shows this while its own
-                    // fetches run.
+                    ConfigureTab::Players => match detail {
+                        Some(Ok(detail)) => {
+                            let invited = crate::lang::tr(
+                                "mco.configure.world.invited.number",
+                                &[&detail.players.len() as &dyn std::fmt::Display],
+                            );
+                            centered(batch, atlas, &invited, cx, 26.0, u32::MAX);
+                            let rx = ((w - ROW_WIDTH) / 2.0).floor();
+                            for (i, player) in detail.players.iter().enumerate() {
+                                let row_y = 36.0 + 22.0 + 2.0 + i as f32 * ROW_HEIGHT;
+                                if row_y + ROW_HEIGHT > h - 48.0 {
+                                    break;
+                                }
+                                let name = if player.operator {
+                                    format!(
+                                        "{} [{}]",
+                                        player.name,
+                                        t("mco.configure.world.invites.ops.tooltip")
+                                    )
+                                } else {
+                                    player.name.clone()
+                                };
+                                batch.text(atlas, &name, rx + 4.0, row_y + 14.0, u32::MAX, true);
+                            }
+                        }
+                        Some(Err(e)) => {
+                            for (i, line) in
+                                wrap_lines(&e.text(), atlas, w - 40.0).iter().enumerate()
+                            {
+                                centered(batch, atlas, line, cx, 60.0 + i as f32 * 10.0, RED);
+                            }
+                        }
+                        None => centered(
+                            batch,
+                            atlas,
+                            &t("mco.configure.world.loading"),
+                            cx,
+                            60.0,
+                            u32::MAX,
+                        ),
+                    },
+                    // The Worlds and Settings tabs land in follow-ups; vanilla shows this
+                    // while its own fetches run.
                     _ => centered(
                         batch,
                         atlas,
@@ -1413,6 +1785,46 @@ impl Screen {
                     }
                 }
             }
+            SubScreen::Invite {
+                name, job, error, ..
+            } => {
+                // `RealmsInviteScreen`: the title, the name field and the message below
+                // the Invite button.
+                centered(
+                    batch,
+                    atlas,
+                    &t("mco.configure.world.buttons.invite"),
+                    cx,
+                    20.0,
+                    u32::MAX,
+                );
+                batch.text(
+                    atlas,
+                    &t("mco.configure.world.invite.profile.name"),
+                    cx - 100.0,
+                    50.0,
+                    GREY,
+                    true,
+                );
+                caret.draw(
+                    batch,
+                    atlas,
+                    (REALMS_PLAYER_NAME, name, 16),
+                    [cx - 100.0, 62.0, 200.0, 20.0],
+                    true,
+                    focused_at,
+                );
+                let status = if job.is_some() {
+                    Some((t("mco.configure.world.players.inviting"), u32::MAX))
+                } else {
+                    error.clone().map(|e| (e, RED))
+                };
+                if let Some((text, color)) = status {
+                    for (i, line) in wrap_lines(&text, atlas, 200.0).iter().enumerate() {
+                        centered(batch, atlas, line, cx, 88.0 + i as f32 * 10.0, color);
+                    }
+                }
+            }
             SubScreen::AddRealm => {
                 centered(batch, atlas, &t("mco.title"), cx, 24.0, u32::MAX);
                 let lines = wrap_lines(&t("mco.selectServer.popup"), atlas, CONTENT_WIDTH);
@@ -1433,10 +1845,18 @@ impl Screen {
                     Popup::Leave(_) => t("mco.configure.world.leave.question.line1"),
                     Popup::ResourcePack { .. } => t("mco.configure.world.resourcepack.question"),
                     Popup::Delete(_) => t("mco.configure.world.delete.question.line1"),
+                    Popup::Uninvite { player, .. } => crate::lang::tr(
+                        "mco.configure.world.uninvite.player",
+                        &[&player.name as &dyn std::fmt::Display],
+                    ),
                 };
                 let lines = wrap_lines(&message, atlas, CONTENT_WIDTH);
                 let top = mid - 10.0 - 10.0 * lines.len() as f32;
-                centered(batch, atlas, &t("mco.info"), cx, top - 16.0, INFO);
+                let header = match popup {
+                    Popup::Uninvite { .. } => t("mco.question"),
+                    _ => t("mco.info"),
+                };
+                centered(batch, atlas, &header, cx, top - 16.0, INFO);
                 for (i, line) in lines.iter().enumerate() {
                     centered(batch, atlas, line, cx, top + i as f32 * 10.0, u32::MAX);
                 }
@@ -1813,6 +2233,53 @@ mod tests {
         let enabled = |id| buttons.iter().find(|b| b.5 == id).map(|b| b.4);
         assert_eq!(enabled(14), Some(false), "Join Realm");
         assert_eq!(enabled(15), Some(false), "invites");
+    }
+
+    /// `RealmsInviteScreen.onInvite`: a blank name and one already invited are refused
+    /// before any request.
+    #[test]
+    fn inviting_an_empty_or_duplicate_name_asks_nothing() {
+        let mut screen = Screen {
+            state: FetchState::Loaded(vec![server(7, None)]),
+            subscreen: SubScreen::Invite {
+                server: server(7, None),
+                players: vec![PlayerInfo {
+                    name: "Alex".into(),
+                    uuid: Some("01234567-89ab-cdef-0123-456789abcdef".into()),
+                    ..Default::default()
+                }],
+                name: "  ".into(),
+                job: None,
+                error: None,
+            },
+            selected: Some(0),
+            joining: None,
+            leaving: None,
+            last_click: None,
+        };
+        screen.invite_clicked();
+        let SubScreen::Invite { error, job, .. } = &screen.subscreen else {
+            panic!("still the invite screen");
+        };
+        assert!(job.is_none(), "a blank name asks the service nothing");
+        assert_eq!(
+            error.as_deref(),
+            Some(crate::lang::get("mco.configure.world.players.error").as_str())
+        );
+
+        if let SubScreen::Invite { name, error, .. } = &mut screen.subscreen {
+            *name = "ALEX".into();
+            *error = None;
+        }
+        screen.invite_clicked();
+        let SubScreen::Invite { error, job, .. } = &screen.subscreen else {
+            panic!("still the invite screen");
+        };
+        assert!(job.is_none(), "a duplicate name asks the service nothing");
+        assert_eq!(
+            error.as_deref(),
+            Some(crate::lang::get("mco.configure.world.players.invite.duplicate").as_str())
+        );
     }
 
     #[test]

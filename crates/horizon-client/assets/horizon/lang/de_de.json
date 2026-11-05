@@ -378,6 +378,12 @@
   "horizon.tempban.invalid_duration": "%s ist keine Zeitdauer: 30m, 12h, 7d",
   "horizon.tempban.dedicated_required": "Temporäre Sperren benötigen einen dedizierten Server",
   "horizon.tempban.success": "%1$s für %2$s, bis %3$s",
+  "horizon.extras.cosmetics_solo": "Im Einzelspieler",
+  "horizon.extras.cosmetics_solo.tooltip": "Deine Kosmetik und das Abzeichen deines Namens auch in deinen Einzelspielerwelten zeigen (deinen Namen mit „Eigenes Namensschild“). Aus: nur auf Servern.",
+  "horizon.extras.horizon_marks": "Horizon-Logos",
+  "horizon.extras.horizon_marks.tooltip": "Das Horizon-Logo neben Horizon-Spielern zeigen: ein kleines Logo vor den Namen anderer Spieler, die Horizon nutzen, über ihren Köpfen und in der Spielerliste. Nur Horizon-Spieler sehen es: Server erhalten nichts.",
+  "horizon.extras.horizon_me": "Mich als Horizon zeigen",
+  "horizon.extras.horizon_me.tooltip": "Mich als Horizon-Spieler zeigen: andere Horizon-Spieler sehen das Logo neben deinem Namen. An, sagt der Dienst jedem, der nach dir fragt, dass du in den letzten 3 Stunden Horizon gespielt hast; aus, meldet er dich nie.",
   "horizon.tempban.list.empty": "Es gibt keine befristeten Sperren",
   "horizon.tempban.list.count": "Es gibt %s befristete Sperre(n):",
   "horizon.tempban.list.entry": "%1$s wurde von %2$s gesperrt, %3$s (bis %4$s)"

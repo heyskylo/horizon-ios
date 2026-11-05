@@ -144,9 +144,11 @@ pub struct Shadow {
     pub sun_path_rotation: f32,
     /// `shadowMapFov`: a perspective projection of this many degrees instead of orthographic.
     pub fov: Option<f32>,
-    /// `shadowNearPlane`, `shadowFarPlane`.
-    pub near: f32,
-    pub far: f32,
+    /// `shadowNearPlane`, `shadowFarPlane`: the orthographic projection's planes, as JOML's
+    /// `zNear`/`zFar`. None when the pack doesn't set one: Iris 1.11.7 then uses -100.05 and
+    /// 156 (measured with a probe pack), each on its own.
+    pub near: Option<f32>,
+    pub far: Option<f32>,
     /// `shadowHardwareFiltering(0|1)`: shadowtex0/1 sampled with depth comparison.
     pub hardware_filtering: [bool; 2],
     /// `shadowtex0Nearest` (or `shadowtexNearest`, `shadow0MinMagNearest`) and
@@ -173,8 +175,8 @@ impl Default for Shadow {
             euclidean_snap: false,
             sun_path_rotation: 0.0,
             fov: None,
-            near: 0.05,
-            far: 256.0,
+            near: None,
+            far: None,
             hardware_filtering: [false; 2],
             nearest: [false; 2],
             colors: std::array::from_fn(|_| white.clone()),
@@ -362,8 +364,8 @@ impl Config {
             "voxelDistance" => float(&mut s.voxel_distance),
             "shadowIntervalSize" => float(&mut s.interval),
             "sunPathRotation" => float(&mut s.sun_path_rotation),
-            "shadowNearPlane" => float(&mut s.near),
-            "shadowFarPlane" => float(&mut s.far),
+            "shadowNearPlane" => s.near = number(value).or(s.near),
+            "shadowFarPlane" => s.far = number(value).or(s.far),
             "shadowMapFov" => s.fov = number(value).filter(|f| *f > 0.0),
             "shadowHardwareFiltering" => {
                 if let Some(b) = boolean(value) {
