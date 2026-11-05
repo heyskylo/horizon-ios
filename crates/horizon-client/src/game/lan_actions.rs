@@ -1442,6 +1442,12 @@ impl Game<'_> {
             .iter()
             .position(|b| b.id as i32 == pos.2 && b.chest)
         {
+            // AbstractChestBoat.createMenu: a spectator opens no boat whose
+            // loot table is still to roll, and the table stays.
+            let spectator = host.hub.guest(conn).is_some_and(|g| g.spectator());
+            if spectator && self.boat_loot_pending(self.boats[i].id) {
+                return false;
+            }
             self.unpack_boat_loot(i);
         }
         // `createMenu` (ChestMenu.threeRows or a HopperMenu), and
@@ -1476,6 +1482,13 @@ impl Game<'_> {
     /// its raw NBT still holds rolls into the slots on the first open (an empty
     /// boat, as a command leaves one), and `player_generates_container_loot`
     /// fires for the player who opened it.
+    fn boat_loot_pending(&self, id: u32) -> bool {
+        matches!(
+            self.persist.raw.get(&id),
+            Some(horizon_world::nbt::Tag::Compound(map)) if map.contains_key(&"LootTable".into())
+        )
+    }
+
     fn unpack_boat_loot(&mut self, i: usize) {
         use horizon_world::nbt::Tag;
         let id = self.boats[i].id;
