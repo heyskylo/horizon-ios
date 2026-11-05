@@ -4782,6 +4782,14 @@ def advancement_reward_functions():
     return ops
 
 
+def moving_piston_presentation_diagnostic():
+    try:
+        from .moving_piston_data_corpus import moving_piston_presentation
+    except ImportError:
+        from moving_piston_data_corpus import moving_piston_presentation
+    return moving_piston_presentation(cmd, setup)
+
+
 def piston_entity_tick_order():
     """#9337: entities travel before moving pistons push them, not afterward."""
     ops = []
@@ -4849,12 +4857,14 @@ def loaded_ticket_removal(blocks=False):
 def groups():
     try:
         from .loaded_cloud_corpus import loaded_clouds
+        from .moving_piston_data_corpus import moving_piston_data
         from .carpet_farm_corpus import carpet_farms
         from .passenger_teleport_corpus import passenger_teleports
         from .gateway_passenger_corpus import gateway_passengers
         from .item_merge_corpus import stack_limit_merges
     except ImportError:
         from loaded_cloud_corpus import loaded_clouds
+        from moving_piston_data_corpus import moving_piston_data
         from carpet_farm_corpus import carpet_farms
         from passenger_teleport_corpus import passenger_teleports
         from gateway_passenger_corpus import gateway_passengers
@@ -4862,6 +4872,7 @@ def groups():
     return [
         ('setup', group_setup()),
         ('item stack-size override merges', stack_limit_merges(cmd, setup)),
+        ('moving piston command data', moving_piston_data(cmd, setup)),
         ('bell server glow', bell_server_glow()),
         ('advancement reward functions', advancement_reward_functions()),
         ('named weather predicates', named_weather_predicates()),

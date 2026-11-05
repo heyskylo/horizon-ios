@@ -102,6 +102,8 @@ def main():
     parser.add_argument("--boat-item-hit-fixture", action="store_true")
     parser.add_argument("--reference-only", action="store_true")
     parser.add_argument("--boat-motion-diagnostic", action="store_true")
+    parser.add_argument('--moving-piston-history-diagnostic', action='store_true',
+                        help='retain the full piston presentation/default-origin controls, including H191 insertion-history gaps')
     args = parser.parse_args()
     build = args.work_dir.resolve() if args.work_dir else lab.LOCAL / 'command-exec-parity'
     build.mkdir(parents=True, exist_ok=True)
@@ -130,6 +132,9 @@ def main():
     if args.loaded_fixture:
         groups = [('setup', corpus_module.group_setup()),
                   ('loaded ticket removal', corpus_module.loaded_ticket_removal(args.loaded_block_diagnostic))]
+    if args.moving_piston_history_diagnostic:
+        groups.append(('moving piston presentation diagnostic',
+                       corpus_module.moving_piston_presentation_diagnostic()))
     if args.pot_string_sherd_diagnostic:
         groups = [(name, corpus_module.decorated_pot_data(string_sherd=True)
                    if name == 'decorated pot data' else ops) for name, ops in groups]
