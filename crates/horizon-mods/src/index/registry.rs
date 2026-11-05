@@ -212,9 +212,6 @@ impl Entry {
         for e in rules::check(&self.kind, &self.description, &self.categories, &self.tags) {
             errors.push(format!("{id}: {e}"));
         }
-        if rules::REQUIRED && self.icon.is_none() {
-            errors.push(format!("{id}: has no icon (icons/{id}.png, a square PNG)"));
-        }
         if self.screenshots.len() > rules::MAX_SCREENSHOTS {
             errors.push(format!(
                 "{id}: {} screenshots, at most {}",
@@ -529,6 +526,7 @@ fn version_at(
         side: facts.side,
         capabilities: facts.capabilities,
         api_level: facts.api_level,
+        hooks: facts.hooks,
         game: v.game.clone(),
         requires: facts.requires,
         file: File {
@@ -641,6 +639,25 @@ pub fn build(src: &Sources) -> Result<Index, Vec<String>> {
     let mut errors = Vec::new();
     let mut projects = Vec::new();
     for entry in entries.iter().filter(|e| listed(e, src)) {
+        // A listed project's page is complete (registry v2's rollout, step 4).
+        let page = match &entry.repo {
+            Some(_) => Cache::read(src.registry, &entry.id)
+                .map(|c| c.page)
+                .unwrap_or_default(),
+            None => Page::default(),
+        };
+        let e = entry.resolved(&page);
+        errors.extend(
+            rules::check_required(
+                &e.id,
+                &e.description,
+                &e.categories,
+                e.icon.as_deref(),
+                &e.screenshots,
+            )
+            .into_iter()
+            .map(|problem| format!("{}: {problem}", e.id)),
+        );
         match project(entry, src) {
             Ok(p) => projects.push(p),
             Err(e) => errors.extend(e),

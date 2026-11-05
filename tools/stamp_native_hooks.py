@@ -16,8 +16,14 @@ CATALOG = Path("native-hooks.json")
 MOD_API = Path("crates/horizon-client/src/mod_api.rs")
 
 
-def stamp(check):
+def stamp(check, only=None):
     paths = sorted((ROOT / FRAGMENTS).glob("*.json"))
+    if only is not None:
+        selected = set(only)
+        missing = selected - {path.stem for path in paths}
+        if missing:
+            raise ValueError(f"unknown pending fragment(s): {', '.join(sorted(missing))}")
+        paths = [path for path in paths if path.stem in selected]
     if not paths:
         return False
     if check:
@@ -45,7 +51,7 @@ def stamp(check):
     names = {hook["name"] for hook in catalog["hooks"]}
     helper_names = {helper["name"] for helper in catalog.get("helpers", [])}
     extra = {}
-    # Match the build-time generator's fragment order so stamping preserves the generated API.
+    # Append the selected entries in filename order, as the build-time generator reads fragments.
     for path in sorted(ordered):
         fragment = json.loads(path.read_text())
         for hook in fragment["hooks"]:
@@ -109,9 +115,11 @@ def stamp(check):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true", help="fail if fragments are pending")
+    parser.add_argument("--only", nargs="+", metavar="FRAGMENT",
+                        help="stamp only these pending fragment names (without .json), in merge order")
     args = parser.parse_args()
     try:
-        return int(stamp(args.check))
+        return int(stamp(args.check, args.only))
     except (ValueError, KeyError, OSError, subprocess.CalledProcessError) as error:
         print(f"stamp_native_hooks: {error}", file=sys.stderr)
         return 1

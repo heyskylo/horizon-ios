@@ -1292,6 +1292,7 @@ impl Game<'_> {
             Some(reason) => horizon_client::multiplayer::Screen::Disconnected {
                 reason,
                 retry: None,
+                lines: std::cell::Cell::new(1),
             },
             None => horizon_client::multiplayer::Screen::list(&saves),
         });

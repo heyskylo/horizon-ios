@@ -52,8 +52,9 @@ pub(super) enum Event {
     About(HashMap<String, Vec<String>>),
     /// Registry files taken down that the launcher turned off.
     TakenDown(Vec<String>),
-    /// What the automatic updates did (`horizon::auto`).
-    AutoUpdated(Vec<String>),
+    /// What the automatic updates did (`horizon::auto`), and the instances (ids) whose native
+    /// mods moved on: their game is built again before it plays.
+    AutoUpdated(Vec<String>, Vec<String>),
     /// A project page's part, an image or a filter's values (`mods_project`).
     Loaded(super::mods_project::Loaded),
     /// The palette's registry mods for its search of that number.
@@ -101,6 +102,10 @@ pub(super) struct Mods {
     pub(super) message: Option<Result<String, String>>,
     pub(super) updates: HashMap<(SourceId, String), String>,
     confirm_remove: Option<String>,
+    /// Instances (ids) whose native mods the automatic update moved on: Play builds their game
+    /// first (`build_native`), then plays it when `play_after_build` is set.
+    pub(super) rebuild: Vec<String>,
+    pub(super) play_after_build: bool,
     /// The project the glass look's detail card shows; the first result when none is.
     pub(super) picked: Option<String>,
     /// The project the glass detail card showed last.
@@ -196,6 +201,8 @@ impl Mods {
             native_files: Default::default(),
             updates: HashMap::new(),
             confirm_remove: None,
+            rebuild: Vec::new(),
+            play_after_build: false,
             picked: None,
             shown: None,
             checks: HashMap::new(),
@@ -393,7 +400,15 @@ impl Launcher {
                     m.about.extend(about);
                     m.results_list.reset();
                 }
-                Event::TakenDown(lines) | Event::AutoUpdated(lines) => {
+                Event::AutoUpdated(lines, rebuild) => {
+                    m.rebuild.extend(rebuild);
+                    if !lines.is_empty() {
+                        m.message = Some(Ok(lines.join("\n")));
+                        m.installed = installed::Installed::load(&m.home()).entries;
+                        m.installed_list.reset();
+                    }
+                }
+                Event::TakenDown(lines) => {
                     m.message = Some(Ok(lines.join("\n")));
                     m.installed = installed::Installed::load(&m.home()).entries;
                     m.installed_list.reset();
@@ -470,10 +485,16 @@ impl Launcher {
                 .ok_or_else(|| format!("{} isn't set up.", source.label()))
                 .and_then(|s| s.search(&query));
             let about: HashMap<String, Vec<String>> = match (&result, source) {
-                (Ok(found), SourceId::Horizon) => found
-                    .iter()
-                    .map(|p| (p.id.clone(), horizon::trust_and_capabilities(&p.id)))
-                    .collect(),
+                (Ok(found), SourceId::Horizon) => {
+                    let instance = horizon_launcher::instances::selected();
+                    found
+                        .iter()
+                        .map(|p| {
+                            let lines = horizon::trust_and_capabilities(&p.id, Some(&instance));
+                            (p.id.clone(), lines)
+                        })
+                        .collect()
+                }
                 _ => HashMap::new(),
             };
             let _ = tx.send(Event::Found(search, offset, result));
@@ -513,22 +534,21 @@ impl Launcher {
         if !self.settings.auto_updates_mods() {
             return;
         }
-        let list: Vec<(instances::Instance, Option<u32>)> = self
+        let list: Vec<AutoTarget> = self
             .instances
             .list
             .iter()
-            .map(|i| {
-                (
-                    i.clone(),
-                    self.version_of(i).map(|tag| backend::mod_api_level(tag)),
-                )
+            .map(|i| AutoTarget {
+                level: self.version_of(i).map(|tag| backend::mod_api_level(tag)),
+                natives: !pinned_to_nightly(i),
+                instance: i.clone(),
             })
             .collect();
         let tx = self.mods.tx.clone();
         std::thread::spawn(move || {
-            let lines = auto_update(&list);
-            if !lines.is_empty() {
-                let _ = tx.send(Event::AutoUpdated(lines));
+            let (lines, rebuild) = auto_update(&list);
+            if !lines.is_empty() || !rebuild.is_empty() {
+                let _ = tx.send(Event::AutoUpdated(lines, rebuild));
             }
         });
     }
@@ -1442,21 +1462,24 @@ impl Launcher {
             let detail = div()
                 .flex()
                 .flex_col()
-                .child(format!(
-                    "{}{} · {}{} · {}",
+                .child({
+                    let from = e
+                        .source
+                        .shown_for(&e.project)
+                        .map(|s| trf("from {source}", &[("source", s)]));
+                    let needed = e
+                        .dependency
+                        .then(|| tr("needed by another pack").to_string());
+                    let origin: Vec<String> = from.into_iter().chain(needed).collect();
                     e.verdict
-                        .as_ref()
-                        .map(|v| format!("{} · ", tr(v)))
-                        .unwrap_or_default(),
-                    e.number,
-                    trf("from {source}", &[("source", e.source.label())]),
-                    if e.dependency {
-                        format!(", {}", tr("needed by another pack"))
-                    } else {
-                        String::new()
-                    },
-                    e.file
-                ))
+                        .iter()
+                        .map(|v| tr(v).to_string())
+                        .chain([e.number.clone()])
+                        .chain((!origin.is_empty()).then(|| origin.join(", ")))
+                        .chain([e.file.clone()])
+                        .collect::<Vec<_>>()
+                        .join(" · ")
+                })
                 .children(instance.as_ref().filter(|_| is_native).map(|name| {
                     div()
                         .text_color(t.ink)
@@ -1834,7 +1857,9 @@ impl Launcher {
                 by.push(trf("by {author}", &[("author", &p.author)]));
             }
             by.push(trf("{count} downloads", &[("count", &count(p.downloads))]));
-            by.push(trf("from {source}", &[("source", p.source.label())]));
+            if let Some(source) = p.source.shown_for(&p.id) {
+                by.push(trf("from {source}", &[("source", source)]));
+            }
             if !p.license.is_empty() {
                 by.push(p.license.clone());
             }
@@ -1900,25 +1925,48 @@ impl Launcher {
     }
 }
 
-/// Updates the registry projects of `instances` (each with the mod API level of the game it
-/// plays): Horizon's own instances only, never a modpack's profile, whose pack pins its mods.
-/// What happened, for the page's notice.
-pub(super) fn auto_update(instances: &[(instances::Instance, Option<u32>)]) -> Vec<String> {
-    let mut lines = Vec::new();
-    for (i, level) in instances {
+/// An instance whose registry projects may update: the mod API level of the game it plays, and
+/// whether its native mods may (`horizon::auto::Context`).
+pub(super) struct AutoTarget {
+    pub(super) instance: instances::Instance,
+    pub(super) level: Option<u32>,
+    pub(super) natives: bool,
+}
+
+/// Whether `instance` keeps a Nightly, or a native build made on one: its native mods stay as
+/// they are, built for that Horizon.
+pub(super) fn pinned_to_nightly(instance: &instances::Instance) -> bool {
+    let nightly = |v: &str| v.starts_with("nightly-");
+    instance
+        .version
+        .as_deref()
+        .is_some_and(|v| nightly(v) || native_mods::about(v).is_some_and(|a| nightly(&a.base)))
+}
+
+/// Updates the registry projects of `targets`: Horizon's own instances only, never a modpack's
+/// profile, whose pack pins its mods. What happened, for the page's notice, and the instances
+/// whose native mods were updated.
+pub(super) fn auto_update(targets: &[AutoTarget]) -> (Vec<String>, Vec<String>) {
+    let (mut lines, mut rebuild) = (Vec::new(), Vec::new());
+    for t in targets {
+        let i = &t.instance;
         let pack = i.id.starts_with("pack:") || i.id.starts_with("port:");
-        let (false, None, Some(level)) = (pack, &i.java, level) else {
+        let (false, None, Some(level)) = (pack, &i.java, t.level) else {
             continue;
         };
         let ctx = horizon::auto::Context {
             in_pack: horizon::auto::in_pack(&i.home),
-            level: *level,
+            level,
+            natives: t.natives,
         };
         if let Some(report) = horizon::auto::run(&i.home, &ctx, &|_, _| {}) {
             lines.extend(report.lines());
+            if report.rebuild {
+                rebuild.push(i.id.clone());
+            }
         }
     }
-    lines
+    (lines, rebuild)
 }
 
 /// Where a kind's tab searches first: Horizon's registry for mods and shader packs, Modrinth for

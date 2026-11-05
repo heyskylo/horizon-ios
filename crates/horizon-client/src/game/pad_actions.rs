@@ -66,8 +66,8 @@ fn draw_glyph(
 ) {
     let (label, [r, g, b]) = (button.label(style), button.color(style));
     let width = HudBatch::text_width(atlas, label).ceil() + 4.0;
-    batch.fill(atlas, x - 1.0, y - 2.0, width, 11.0, rgba(40, 40, 40, 255));
-    batch.text(atlas, label, x + 1.0, y, rgba(r, g, b, 255), false);
+    let color = rgba(r, g, b, 255);
+    horizon_client::controller_notice::key(batch, atlas, label, color, x, y, width);
 }
 
 impl Game<'_> {

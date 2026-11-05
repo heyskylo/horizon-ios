@@ -466,5 +466,6 @@
   "horizon.extras.cosmetics_auras.tooltip": "Αύρες και μονοπάτια φορούν άλλοι παίκτες. Απενεργοποίηση από προεπιλογή.",
   "horizon.extras.cosmetics.shown": "Εμφανίζεται",
   "horizon.extras.cosmetics.hidden": "Κρυφό",
-  "horizon.extras.cosmetics.name_tags": "Μόνο ετικέτες ονομάτων"
+  "horizon.extras.cosmetics.name_tags": "Μόνο ετικέτες ονομάτων",
+  "Shader Packs...": "Πακέτα Shader..."
 }

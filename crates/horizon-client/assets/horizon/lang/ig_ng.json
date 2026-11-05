@@ -405,6 +405,7 @@
   "Frame Generation": "Ọgbọ Frame",
   "Shows a made-up frame between each two real ones: smoother, a little more lag.": "Na-egosi etiti emebere n'etiti ezigbo abụọ nke ọ bụla: dị nro, ntakịrị lag.",
   "Shadow Cache": "Cache onyinyo",
+  "Shader Packs...": "Ngwungwu Shader...",
   "Reuses the pack shadow map when sun, view and world match. Off by default.": "Na-ejigharị maapụ onyinyo mkpọ mgbe anwụ, nlele na egwuregwu ụwa. Gbanyụọ na ndabara.",
   "Find BlueMap": "Chọta BlueMap",
   "On servers, finds their BlueMap web map for far terrain. Next join.": "Na sava, na-achọta maapụ weebụ BlueMap ha maka ebe dị anya. sonye ọzọ.",

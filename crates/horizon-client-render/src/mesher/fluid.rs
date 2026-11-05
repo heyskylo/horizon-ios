@@ -188,13 +188,28 @@ impl FluidFlowWorld for FlowView<'_> {
         Ok(self.info[state as usize].sturdy & 1 << d as u8 != 0)
     }
 }
+/// Whether a `shaders/` pack's fluid top with these corner heights is split into triangles along
+/// its north-east to south-west diagonal, as Iris 1.11.7 draws it, rather than along vanilla's
+/// north-west to south-east one (`FluidRenderer.tesselate` puts its vertices NW, SW, SE, NE, and
+/// `RenderSystem`'s quad indices join vertex 0 to 2).
+///
+/// Our probe packs' readings of Iris (#8464) fit this: a top is split along the diagonal whose
+/// corners differ more in height, and a top whose north-west and south-east corners are level
+/// (a still, flat top among them) along north-east to south-west. It is a fit, not Iris's code:
+/// it covers every lava top we read and every still top but one, and misses 26 of the 343 water
+/// tops we read (undiagnosed).
+pub(super) fn splits_north_east(nw: f32, ne: f32, sw: f32, se: f32) -> bool {
+    let (along_nw, along_ne) = ((nw - se).abs(), (ne - sw).abs());
+    along_nw < along_ne || along_nw == 0.0
+}
 /// Emits one fluid cell at section-relative `[x, y, z]`.
-/// `(nether, shader_pack_lighting, separate_ao)`: the Nether's face shading, only the up-face value
-/// when a shader pack lights the faces (`Mesher::shader_pack_lighting`), and whether to keep pure
-/// alpha for separate AO.
+/// `(nether, shader_pack_lighting, separate_ao, shader_pack)`: the Nether's face shading, only the
+/// up-face value when a shader pack lights the faces (`Mesher::shader_pack_lighting`), whether to
+/// keep pure alpha for separate AO, and whether a `shaders/` pack draws the terrain
+/// (`Mesher::shader_pack`: tops split as Iris splits them, [`splits_north_east`]).
 pub(super) fn tesselate(
     tables: &MeshTables,
-    (nether, shader_pack_lighting, separate_ao): (bool, bool, bool),
+    (nether, shader_pack_lighting, separate_ao, shader_pack): (bool, bool, bool, bool),
     pad: &Padded,
     water_color: u32,
     out: &mut SectionMesh,
@@ -383,13 +398,19 @@ pub(super) fn tesselate(
                 !same(s) && !s.solid
             })
         });
+        let mut corners = [
+            ([fx, fy + nw, fz], uv[0]),
+            ([fx, fy + sw, fz + 1.0], uv[1]),
+            ([fx + 1.0, fy + se, fz + 1.0], uv[2]),
+            ([fx + 1.0, fy + ne, fz], uv[3]),
+        ];
+        // Starting from the south-west corner joins it to the north-east one (0 to 2), with the
+        // same winding.
+        if shader_pack && splits_north_east(nw, ne, sw, se) {
+            corners.rotate_left(1);
+        }
         quad(
-            [
-                ([fx, fy + nw, fz], uv[0]),
-                ([fx, fy + sw, fz + 1.0], uv[1]),
-                ([fx + 1.0, fy + se, fz + 1.0], uv[2]),
-                ([fx + 1.0, fy + ne, fz], uv[3]),
-            ],
+            corners,
             layer,
             color(cardinal(D::Up)),
             light([x, y, z]),
@@ -491,6 +512,49 @@ mod tests {
             assert!((atan2(y, x) - exact).abs() < 1e-6, "{y} {x}");
         }
         assert!(atan2(f64::NAN, 1.0).is_nan());
+    }
+    /// Corner heights read back from Iris 1.11.7 with a probe pack of ours (#8464), from water
+    /// and lava spreading over a floor and from a still lake, and whether Iris split each top
+    /// along north-east to south-west. Each height is the vanilla average it reads as (for
+    /// example 13/27 for 0.48047 + 0.001), less `FluidRenderer`'s 0.001.
+    #[test]
+    fn fluid_tops_split_where_iris_splits_them() {
+        let h = |num: f32, den: f32| num / den - 0.001;
+        // (north-west, north-east, south-west, south-east)
+        let cases = [
+            // Still and flat: a lake's water, a lava pool.
+            ([h(8.0, 9.0); 4], true),
+            ([h(96.0, 117.0); 4], true),
+            // Level along one axis: both diagonals equally steep.
+            (
+                [h(5.0, 9.0), h(13.0, 27.0), h(5.0, 9.0), h(13.0, 27.0)],
+                false,
+            ),
+            (
+                [h(100.0, 117.0), h(100.0, 117.0), h(2.0, 3.0), h(2.0, 3.0)],
+                false,
+            ),
+            // North-west to south-east steeper.
+            ([h(5.0, 9.0), h(4.0, 9.0), h(4.0, 9.0), h(7.0, 18.0)], false),
+            ([h(7.0, 18.0), h(4.0, 9.0), h(4.0, 9.0), h(5.0, 9.0)], false),
+            ([h(5.0, 6.0), h(4.0, 9.0), h(2.0, 9.0), h(2.0, 9.0)], false),
+            // North-east to south-west steeper.
+            ([h(1.0, 2.0), h(5.0, 9.0), h(7.0, 18.0), h(4.0, 9.0)], true),
+            (
+                [h(4.0, 9.0), h(2.0, 9.0), h(96.0, 117.0), h(4.0, 9.0)],
+                true,
+            ),
+            // North-west and south-east level: a saddle.
+            ([h(4.0, 9.0), h(7.0, 18.0), h(7.0, 18.0), h(4.0, 9.0)], true),
+        ];
+        for ([nw, ne, sw, se], iris) in cases {
+            assert_eq!(
+                splits_north_east(nw, ne, sw, se),
+                iris,
+                "{:?}",
+                [nw, ne, sw, se]
+            );
+        }
     }
     #[test]
     fn coverage_of_full_and_partial_faces() {

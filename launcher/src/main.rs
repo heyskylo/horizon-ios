@@ -1380,8 +1380,11 @@ impl Launcher {
                     }) {
                         Err(Ok(list)) => self.native_mismatch = Some(list),
                         Err(Err(e)) => self.native_error = Some(e),
+                        // Play waited for this build (`Mods::rebuild`).
+                        Ok(_) if std::mem::take(&mut self.mods.play_after_build) => self.play(),
                         Ok(_) => {}
                     }
+                    self.mods.play_after_build = false;
                 }
                 Msg::LauncherProgress(p) => {
                     if let SelfUpdate::Downloading(_, f) = &mut self.self_update {
@@ -1775,6 +1778,20 @@ impl Launcher {
         if !self.can_start(&tag) {
             return;
         }
+        // Native mods the start's automatic update moved on: the game they are built into is
+        // built again first (the Mods page's Build), then plays.
+        let rebuild = self
+            .selected_instance()
+            .map(|i| i.id.clone())
+            .filter(|id| self.mods.rebuild.contains(id));
+        if let Some(id) = rebuild.filter(|_| self.native_step.is_none()) {
+            self.mods.rebuild.retain(|r| *r != id);
+            if native_mods::is_native(&tag) {
+                self.mods.play_after_build = true;
+                self.build_native(false);
+                return;
+            }
+        }
         self.starting_pack = None;
         self.start_client(tag);
     }
@@ -1842,18 +1859,23 @@ impl Launcher {
         self.play_pressed = Some(Instant::now());
         let tx = self.tx.clone();
         let offline_without_owner = self.settings.dev_offline;
-        // Registry mods update before the game reads them (`horizon::auto`).
+        // Registry mods update before the game reads them (`horizon::auto`); native mods only
+        // at start, where a build can follow.
         let auto = self
             .selected_instance()
             .filter(|_| self.settings.auto_updates_mods() && self.starting_pack.is_none())
-            .map(|i| (i.clone(), Some(backend::mod_api_level(&tag))));
+            .map(|i| mods_page::AutoTarget {
+                instance: i.clone(),
+                level: Some(backend::mod_api_level(&tag)),
+                natives: false,
+            });
         let mods_tx = self.mods.tx.clone();
         std::thread::spawn(move || {
             backend::complete_assets(&tag);
             if let Some(auto) = auto {
-                let lines = mods_page::auto_update(&[auto]);
+                let (lines, _) = mods_page::auto_update(&[auto]);
                 if !lines.is_empty() {
-                    let _ = mods_tx.send(mods_page::Event::AutoUpdated(lines));
+                    let _ = mods_tx.send(mods_page::Event::AutoUpdated(lines, Vec::new()));
                 }
             }
             let session = account::session_for_game(&backend::game_home(), offline_without_owner);
@@ -2617,6 +2639,25 @@ fn slot_row(
                 })),
         )
         .children(right)
+}
+
+/// Microsoft account actions go below the profile in the fixed-width glass card.
+fn account_row(
+    slot: Option<Div>,
+    name: impl IntoElement,
+    detail: Option<AnyElement>,
+    actions: Div,
+    t: &Theme,
+) -> Div {
+    if glass_ui::flat() {
+        return div()
+            .flex()
+            .flex_col()
+            .min_w_0()
+            .child(slot_row(slot, name, detail, None, t))
+            .child(actions.flex_wrap().px(px(16.)).pb(px(12.)));
+    }
+    slot_row(slot, name, detail, Some(actions.into_any_element()), t)
 }
 
 /// A plate that stands apart from the page: notices, the console, the agents note.
@@ -4444,7 +4485,7 @@ impl Launcher {
                 }))
             });
             n += 1;
-            rows = rows.child(slot_row(
+            rows = rows.child(account_row(
                 Some(self.profile_heads.draw(Some(&a.uuid), 32., self.scale, &t)),
                 a.name.clone(),
                 Some(
@@ -4462,7 +4503,7 @@ impl Launcher {
                         })
                         .into_any_element(),
                 ),
-                Some(actions.into_any_element()),
+                actions,
                 &t,
             ));
         }
@@ -5695,8 +5736,17 @@ fn main() {
     // What the launcher downloads goes through the player's proxy, if they set one: the parts
     // that build their own agents (`horizon-port-pack`) are told before anything starts.
     horizon_launcher::proxy::announce(horizon_launcher::backend::Settings::load().proxy);
-    if let Some(code) = cli::run() {
-        std::process::exit(code);
+    // The setup wizard and `horizon-launcher.exe uninstall` (what Control Panel runs) are windows,
+    // not CLI commands: asked of the CLI parser first, `uninstall` was refused as an unknown
+    // subcommand, with the error going to the console that Control Panel's start doesn't have.
+    #[cfg(windows)]
+    let setup_window = horizon_launcher::installer::window_mode();
+    #[cfg(not(windows))]
+    let setup_window: Option<horizon_launcher::setup_args::Mode> = None;
+    if setup_window.is_none() {
+        if let Some(code) = cli::run() {
+            std::process::exit(code);
+        }
     }
     gpui_platform::application()
         .with_assets(blocks::Assets)
@@ -5730,10 +5780,12 @@ fn main() {
             cx.set_menus(menus());
             // The setup exe (and `horizon-launcher.exe uninstall`) opens its own window instead.
             #[cfg(windows)]
-            if let Some(mode) = horizon_launcher::installer::window_mode() {
+            if let Some(mode) = setup_window {
                 setup_page::open(mode, cx);
                 return;
             }
+            #[cfg(not(windows))]
+            let _ = setup_window;
             let bounds = Bounds::centered(None, size(px(1180.), px(760.)), cx);
             cx.open_window(
                 WindowOptions {

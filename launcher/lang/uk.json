@@ -1144,7 +1144,7 @@
   "Move…": "Перенести…",
   "Move and restart": "Перенести й перезапустити",
   "Could not open the data folder: {error}": "Could not open the data folder: {error}",
-  "Open the shop": "Відкрити крамницю",
+  "Get more cosmetics on playhorizon.dev": "Більше косметики на playhorizon.dev",
   "You don't own any cosmetics yet.": "У вас поки немає косметики.",
   "Automatic follows this launcher's architecture. On Windows ARM, choose x64 or ARM64. Releases without ARM64 use the signed x64 build.": "Автоматично використовує архітектуру цього лаунчера. У Windows на ARM можна вибрати x64 або ARM64. У випусках без ARM64 використовується підписана збірка x64.",
   "Game architecture": "Архітектура гри",
@@ -1174,6 +1174,11 @@
   "At start and before you play, what you installed from Horizon's registry moves to its newest version for this game. Never inside a modpack, and an update that would remove blocks or items waits for you.": "At start and before you play, what you installed from Horizon's registry moves to its newest version for this game. Never inside a modpack, and an update that would remove blocks or items waits for you.",
   "Updated automatically: {list}.": "Updated automatically: {list}.",
   "{title} wasn't updated: {error}": "{title} wasn't updated: {error}",
+  "Builds on the Horizon you play": "Збирається на вашій версії Horizon",
+  "Needs native hook points v{needs}, the Horizon you play has v{has}: update Horizon first": "Потрібні нативні точки підключення v{needs}, у вашій версії Horizon є v{has}: спершу оновіть Horizon",
+  "Made for Horizon {pin}, but {mods} pin another commit: the build will ask you to Build anyway and may not compile": "Зроблено для Horizon {pin}, але {mods} прив'язані до іншого коміту: збірка попросить «Все одно зібрати» і може не скомпілюватися",
+  "Made for Horizon {pin}, you play {yours}: the launcher builds your game on {pin}": "Зроблено для Horizon {pin}, ви граєте на {yours}: лаунчер збере гру на {pin}",
   "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.",
+  "Tags": "Теги",
   "Windows' Smart App Control is blocking the build (os error 4551). It only lets signed programs run, and a native build runs programs no one has signed: the ones it compiles on this computer and some of the compiler's own. To build native mods, turn it off in Windows Security > App & browser control > Smart App Control settings, then build again. On some Windows versions it can't be turned back on without reinstalling Windows. Content mods (.hmod) need no build and work with it on.": "Розумне керування програмами (Smart App Control) Windows блокує збірку (os error 4551). Воно дозволяє запускати лише підписані програми, а нативна збірка запускає програми, які ніхто не підписував: скомпільовані на цьому комп'ютері та деякі програми самого компілятора. Щоб збирати нативні моди, вимкніть його в «Безпека Windows» > «Керування програмами та браузером» > «Параметри розумного керування програмами» і запустіть збірку знову. У деяких версіях Windows його не можна знову ввімкнути без перевстановлення Windows. Контентні моди (.hmod) не потребують збірки й працюють із ним."
 }

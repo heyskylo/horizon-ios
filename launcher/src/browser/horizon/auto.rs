@@ -5,7 +5,9 @@
 //!
 //! - a game folder inside a modpack's profile: the pack pins its mods by SHA-256 and updates as a
 //!   whole, when the player asks;
-//! - a native mod (`.hnmod`): it needs a build;
+//! - a native mod (`.hnmod`) when the instance's build is pinned to a Nightly, or before Play
+//!   (only the start's run updates them: the launcher rebuilds the game with them before it
+//!   plays, [`Report::rebuild`]);
 //! - a data pack: it lives in a world, not in the browser's list;
 //! - a version for another Minecraft than the one installed, a newer version that needs a newer
 //!   Horizon, and anything older than what is installed.
@@ -37,10 +39,12 @@ pub enum Decision<'a> {
     Skip,
 }
 
-/// The game folder's place: inside a modpack's profile, and the mod API level of the game.
+/// The game folder's place: inside a modpack's profile, the mod API level of the game, and
+/// whether its native mods may update (no Nightly pin, and a build can follow).
 pub struct Context {
     pub in_pack: bool,
     pub level: u32,
+    pub natives: bool,
 }
 
 /// What an automatic update did: `Title version` updated, what waits for the player and why,
@@ -50,6 +54,8 @@ pub struct Report {
     pub updated: Vec<String>,
     pub held: Vec<String>,
     pub failed: Vec<String>,
+    /// A native mod was updated: the game is built again before it plays.
+    pub rebuild: bool,
 }
 
 impl Report {
@@ -76,7 +82,12 @@ pub fn in_pack(home: &Path) -> bool {
 /// Whether `entry` updates automatically, and to what.
 pub fn decide<'a>(index: &'a Index, entry: &installed::Entry, ctx: &Context) -> Decision<'a> {
     let native = crate::native_status::is_native_file(&entry.file);
-    if entry.source != SourceId::Horizon || ctx.in_pack || native || entry.kind == Kind::DataPack {
+    let skip_native = native && !ctx.natives;
+    if entry.source != SourceId::Horizon
+        || ctx.in_pack
+        || skip_native
+        || entry.kind == Kind::DataPack
+    {
         return Decision::Skip;
     }
     let Some(p) = index.project(&entry.project) else {
@@ -91,7 +102,8 @@ pub fn decide<'a>(index: &'a Index, entry: &installed::Entry, ctx: &Context) -> 
         return Decision::Skip;
     };
     let same_game = p.versions[now].game == target.game;
-    if next >= now || !same_game || needs_port(target) || p.kind == index::Kind::NativeMod {
+    let native_next = p.kind == index::Kind::NativeMod;
+    if next >= now || !same_game || needs_port(target) || (native_next && !ctx.natives) {
         return Decision::Skip;
     }
     Decision::Update(target)
@@ -248,7 +260,10 @@ pub(super) fn run_with(
         };
         let p = index.project(&entry.project).expect("decide found it");
         match update(index, local, p, v, &entry, home, progress) {
-            Ok(None) => report.updated.push(format!("{} {}", p.name, v.version)),
+            Ok(None) => {
+                report.rebuild |= p.kind == index::Kind::NativeMod;
+                report.updated.push(format!("{} {}", p.name, v.version));
+            }
             Ok(Some(why)) => report.held.push(why),
             Err(e) => report.failed.push(trf(
                 "{title} wasn't updated: {error}",
@@ -273,7 +288,8 @@ fn update(
     let held = RefCell::new(None);
     // Content mods: nothing the worlds may hold goes missing.
     let guard = |new: &Path| -> Result<(), String> {
-        let (Some(old), true) = (&old, entry.file.ends_with(".hmod")) else {
+        let content = entry.file.ends_with(".hmod") && v.file.name.ends_with(".hmod");
+        let (Some(old), true) = (&old, content) else {
             return Ok(());
         };
         let gone = dropped(old, new)?;

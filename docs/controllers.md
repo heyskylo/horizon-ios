@@ -174,6 +174,8 @@ the crafting result, armour to the player's grid.
 | LB / RB | previous / next tab (Create World, Player Social, the graphics settings' sidebar) |
 | Right stick | scroll the list, wherever the focus is: the focus stays on its row (when the row leaves the view, on the nearest one still in view), no value changes, and nothing scrolls under the on-screen keyboard |
 
+- **Tooltips**: an options page's tooltip hangs from the focused widget's bottom left while the pad's focus drives
+  the page, since the pad's hidden pointer sits mid-widget. The mouse and the keyboard keep vanilla's positioners.
 - **Declared buttons**: a button that says what it's for gets its controller
   button and a glyph on it while the pad drives; see "Adding a screen".
 - **Sliders**: left and right move the value (one pixel per press like
@@ -338,8 +340,10 @@ hints, "Press X to dismount") only while the pad is the last-used input.
 ## Options and remapping
 
 Controller settings are Horizon's own: **Options → Controls → Controller
-Settings...** (or **Options → Horizon Settings... → Controller Settings...**),
-a vanilla options list with **Controller Binds...** at the top. They live in
+Settings...**, a screen in the graphics settings' style with a search field and General, Bindings and Device pages. It
+names the player whose profile it edits and the controller the game sees; Device also shows its vendor and
+product ids, the detected glyph family and the override. Changes apply at once; **Undo** (X) is there only
+while something differs from when the screen opened, and **Done** (B) leaves. They live in
 `horizon-controller.txt` next to `options.txt`, like `horizon-graphics.txt`: `options.txt` stays
 exactly vanilla's, so a vanilla client can share the game folder.
 

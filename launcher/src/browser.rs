@@ -85,6 +85,16 @@ impl SourceId {
             SourceId::Horizon => "Horizon",
         }
     }
+
+    /// The source a list names after the author ("from {source}") for project `id`: Modrinth and
+    /// CurseForge always, Horizon's registry only for Horizon's own projects
+    /// ([`horizon::official`]), so a contributor's project reads "by <author>" alone.
+    pub fn shown_for(self, id: &str) -> Option<&'static str> {
+        match self {
+            SourceId::Horizon if !horizon::is_official(id) => None,
+            _ => Some(self.label()),
+        }
+    }
 }
 
 /// How well a project runs in Horizon.

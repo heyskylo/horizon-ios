@@ -1144,7 +1144,7 @@
   "Move…": "Déplacer…",
   "Move and restart": "Déplacer et redémarrer",
   "Could not open the data folder: {error}": "Could not open the data folder: {error}",
-  "Open the shop": "Ouvrir la boutique",
+  "Get more cosmetics on playhorizon.dev": "Plus de cosmétiques sur playhorizon.dev",
   "You don't own any cosmetics yet.": "Vous ne possédez encore aucun cosmétique.",
   "Automatic follows this launcher's architecture. On Windows ARM, choose x64 or ARM64. Releases without ARM64 use the signed x64 build.": "Automatique suit l’architecture de ce lanceur. Sous Windows ARM, choisissez x64 ou ARM64. Les versions sans ARM64 utilisent la version x64 signée.",
   "Game architecture": "Architecture du jeu",
@@ -1174,6 +1174,11 @@
   "At start and before you play, what you installed from Horizon's registry moves to its newest version for this game. Never inside a modpack, and an update that would remove blocks or items waits for you.": "Au démarrage et avant de jouer, ce que vous avez installé depuis le registre d'Horizon passe à sa version la plus récente pour ce jeu. Jamais dans un modpack, et une mise à jour qui retirerait des blocs ou des objets vous attend.",
   "Updated automatically: {list}.": "Mis à jour automatiquement : {list}.",
   "{title} wasn't updated: {error}": "{title} n'a pas été mis à jour : {error}",
+  "Builds on the Horizon you play": "Se compile sur le Horizon auquel vous jouez",
+  "Needs native hook points v{needs}, the Horizon you play has v{has}: update Horizon first": "Nécessite les points d'accroche natifs v{needs}, le Horizon auquel vous jouez a la v{has} : mettez d'abord Horizon à jour",
+  "Made for Horizon {pin}, but {mods} pin another commit: the build will ask you to Build anyway and may not compile": "Fait pour Horizon {pin}, mais {mods} visent un autre commit : la compilation vous demandera « Compiler quand même » et risque d'échouer",
+  "Made for Horizon {pin}, you play {yours}: the launcher builds your game on {pin}": "Fait pour Horizon {pin}, vous jouez à {yours} : le launcher compile votre jeu sur {pin}",
   "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} vous attend : il n'a plus {ids}, que vos mondes utilisent peut-être. Mettez-le à jour depuis la page Mods quand vous serez prêt.",
+  "Tags": "Tags",
   "Windows' Smart App Control is blocking the build (os error 4551). It only lets signed programs run, and a native build runs programs no one has signed: the ones it compiles on this computer and some of the compiler's own. To build native mods, turn it off in Windows Security > App & browser control > Smart App Control settings, then build again. On some Windows versions it can't be turned back on without reinstalling Windows. Content mods (.hmod) need no build and work with it on.": "Le contrôle intelligent des applications (Smart App Control) de Windows bloque la compilation (os error 4551). Il ne laisse s'exécuter que les programmes signés, et une compilation native lance des programmes que personne n'a signés : ceux qu'elle compile sur cet ordinateur et certains du compilateur lui-même. Pour compiler des mods natifs, désactivez-le dans Sécurité Windows > Contrôle des applications et du navigateur > Paramètres du contrôle intelligent des applications, puis relancez la compilation. Sur certaines versions de Windows, il ne peut pas être réactivé sans réinstaller Windows. Les mods de contenu (.hmod) n'ont pas besoin de compilation et fonctionnent avec lui."
 }

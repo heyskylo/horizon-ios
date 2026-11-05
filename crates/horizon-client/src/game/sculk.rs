@@ -13,7 +13,7 @@ use horizon_client::{
     sculk::{self, Context, Info, SculkEntity, SculkKind, WardenSpawnTracker},
 };
 use horizon_core::{
-    geometry::{Direction, Vec3},
+    geometry::{Aabb, Direction, Vec3},
     position::BlockPos,
     random::RandomSource,
 };
@@ -1662,21 +1662,30 @@ impl Game<'_> {
             self.sculk.falling_items.insert(id);
         }
         if on_ground && self.sculk.falling_items.remove(&id) {
-            self.post_landing_event(position, false);
+            // EntityType.ITEM: 0.25 by 0.25.
+            let bounds = Aabb::new(
+                Vec3::new(position.x - 0.125, position.y, position.z - 0.125),
+                Vec3::new(position.x + 0.125, position.y + 0.25, position.z + 0.125),
+            );
+            self.post_landing_event(position, bounds, false);
         }
     }
 
     /// `Entity.checkFallDamage` emits HIT_GROUND after the block's fallOn.
-    pub(super) fn post_landing_event(&mut self, position: Vec3, living: bool) {
+    pub(super) fn post_landing_event(&mut self, position: Vec3, bounds: Aabb, living: bool) {
         if self.remote.is_some() || self.options.execution_role.is_client() {
             return;
         }
         self.sculk_prepare();
-        let state = self.world.block(
-            position.x.floor() as i32,
-            (position.y - 0.2).floor() as i32,
-            position.z.floor() as i32,
-        );
+        // mainSupportingBlockPos, or the block's state at getOnPosLegacy.
+        let state = match self.supporting_block(position, bounds) {
+            Some(support) => self.world.block(support.x, support.y, support.z),
+            None => self.world.block(
+                position.x.floor() as i32,
+                (position.y - 0.2).floor() as i32,
+                position.z.floor() as i32,
+            ),
+        };
         let mut context = self.who_context(None, Some(state));
         context.living = living;
         self.post_game_event(
@@ -1948,6 +1957,39 @@ impl Game<'_> {
         self.res.facts().get(self.world.block(x, y, z)).fluid
             == horizon_client::blocks::Fluid::Water
     }
+    /// `Entity.checkSupportingBlock`: the block under this box closest to the
+    /// entity. Everything but the player works it out when it asks.
+    fn supporting_block(&self, position: Vec3, bounds: Aabb) -> Option<BlockPos> {
+        let (min, max) = (bounds.min_position(), bounds.max_position());
+        let foot = Aabb::new(
+            Vec3::new(min.x, min.y - 1.0e-6, min.z),
+            Vec3::new(max.x, min.y, max.z),
+        );
+        let mut scene = horizon_client::collisions::SceneCollisions {
+            world: &self.world,
+            binding: self.collision,
+            subject: None,
+        };
+        horizon_world::ground_support::find_supporting_block(
+            &mut scene,
+            horizon_world::collision_context::CollisionContext::position(position.y),
+            position,
+            foot,
+            1_000_000,
+        )
+        .ok()
+        .flatten()
+    }
+    /// `Entity.mainSupportingBlockPos` of a player or mob on the ground.
+    fn main_support(&self, who: Who) -> Option<BlockPos> {
+        match who {
+            Who::Player => self.player.as_ref()?.ground.supporting_block,
+            Who::Mob(id) => {
+                let mob = self.mobs.iter().find(|m| m.id == id)?;
+                self.supporting_block(mob.position, mob.bounds())
+            }
+        }
+    }
     /// `Entity.move`'s emission: footsteps, swimming, landing and splashes.
     fn entity_motion_events(
         &mut self,
@@ -1976,9 +2018,19 @@ impl Game<'_> {
             at[1] - previous.last[1],
             at[2] - previous.last[2],
         );
-        // Entity.checkFallDamage: touching down after falling.
+        // Entity.checkFallDamage: touching down after falling, with the state
+        // of mainSupportingBlockPos (the block's state at getOnPosLegacy without one).
         if on_ground && (!previous.on_ground || dy < -1.0e-6) && dy < 0.0 && !in_water {
-            self.post_entity_event("minecraft:hit_ground", who);
+            let state = match self.main_support(who) {
+                Some(support) => self.world.block(support.x, support.y, support.z),
+                None => self.world.block(
+                    at[0].floor() as i32,
+                    (at[1] - 0.2).floor() as i32,
+                    at[2].floor() as i32,
+                ),
+            };
+            let ctx = self.who_context(Some(who), Some(state));
+            self.post_game_event("minecraft:hit_ground", at, ctx);
         }
         // Entity.updateInWaterStateAndDoFluidPushing: entering water splashes.
         if in_water && !previous.in_water {
@@ -1989,14 +2041,14 @@ impl Game<'_> {
             return;
         }
         let horizontal = ((dx * dx + dz * dz).sqrt() * f64::from(0.6f32)) as f32;
-        let block = (
+        // Entity.getOnPos without a supporting block. Finding a mob's support
+        // waits for a step that is due: this runs for every mob on every tick.
+        let unsupported = self.world.block(
             at[0].floor() as i32,
-            (at[1] - 0.2).floor() as i32,
+            (at[1] - 1.0e-5).floor() as i32,
             at[2].floor() as i32,
         );
-        let state = self.world.block(block.0, block.1, block.2);
-        let air = self.res.facts().is_air(state);
-        let climbable = self.state_is(&self.sculk.tables.climbable, state);
+        let climbable = self.state_is(&self.sculk.tables.climbable, unsupported);
         let travelled = if climbable {
             ((dx * dx + dy * dy + dz * dz).sqrt() * f64::from(0.6f32)) as f32
         } else {
@@ -2006,9 +2058,22 @@ impl Game<'_> {
             return;
         };
         entry.move_dist += travelled;
-        if entry.move_dist > entry.next_step && !air {
+        let move_dist = entry.move_dist;
+        if move_dist <= entry.next_step {
+            return;
+        }
+        // Entity.applyMovementEmissionAndPlaySound: the state at getOnPos, so a
+        // carpet and not the block under it.
+        let state = match on_ground.then(|| self.main_support(who)).flatten() {
+            Some(support) => self.world.block(support.x, support.y, support.z),
+            None => unsupported,
+        };
+        let air = self.res.facts().is_air(state);
+        let Some(entry) = self.sculk.steps.get_mut(&who) else {
+            return;
+        };
+        if !air {
             let steps_on_block = on_ground || climbable;
-            let move_dist = entry.move_dist;
             if steps_on_block {
                 entry.next_step = if warden {
                     // Warden.nextStep
