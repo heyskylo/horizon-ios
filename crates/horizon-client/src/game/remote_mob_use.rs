@@ -134,9 +134,10 @@ impl Game<'_> {
     }
     /// Whether that answer is `InteractionResult.SUCCESS`, the only result that
     /// swings the hand: `CONSUME` ends the click without one. An adult animal's
-    /// food (`Animal.mobInteract`), a tame tamable's sit or stand, a zombie
-    /// villager's golden apple and a sheep's shears (the server alone checks
-    /// `readyForShearing`) all answer CONSUME on a client (#9437).
+    /// food (`Animal.mobInteract`), a zombie villager's golden apple and a
+    /// sheep's shears (the server alone checks `readyForShearing`) answer
+    /// CONSUME on a client, and a horse's or panda's food SUCCESS_SERVER
+    /// (#9437). A tame wolf, cat or parrot sitting down is SUCCESS.
     pub(super) fn remote_mob_swings(&self, i: usize, hand: Hand) -> bool {
         let Some(m) = self.mobs.get(i).filter(|m| m.alive()) else {
             return false;
@@ -146,24 +147,7 @@ impl Game<'_> {
             Hand::Off => self.offhand.as_ref(),
         };
         let item = stack.map_or("", |s| &*s.item);
-        // A baby's food is SUCCESS, since it ages up; an adult's is CONSUME,
-        // as only the server knows whether it can breed.
-        if m.kind.flags.animal
-            && !matches!(m.species(), Species::Nautilus | Species::ZombieNautilus)
-            && m.kind.food.iter().any(|f| f.as_str() == item)
-        {
-            return m.is_baby() && !m.extra.age_locked;
-        }
-        let consumes = match m.species() {
-            // TamableAnimal.mobInteract: a tame one sits or stands.
-            Species::Wolf | Species::Cat | Species::Parrot => m.extra.tame,
-            // ZombieVillager.mobInteract: a golden apple cures it on the server.
-            Species::ZombieVillager => item == "minecraft:golden_apple",
-            // Sheep.mobInteract: shears, sheared or not.
-            Species::Sheep => item == "minecraft:shears",
-            _ => false,
-        };
-        !consumes
+        mob_swings(m, item)
     }
     /// `AbstractHorse.handleEating` (`Llama`'s and `Camel`'s too) on this
     /// client's copy: a baby fed something that ages it draws one happy
@@ -268,6 +252,48 @@ pub(super) fn ages_on_food(m: &Mob, item: &str) -> bool {
     }
 }
 
+/// [`Game::remote_mob_swings`] for mob `m` and the held `item`.
+fn mob_swings(m: &Mob, item: &str) -> bool {
+    let food = m.kind.food.iter().any(|f| f.as_str() == item);
+    let hurt = m.health < m.attrs.max_health;
+    match m.species() {
+        // AbstractHorse.fedFood (Camel's, Llama's too): SUCCESS_SERVER,
+        // which swings on the server's side only.
+        s if food
+            && (equine::is_equine(s)
+                || llama::is_llama(s)
+                || matches!(s, Species::Camel | Species::CamelHusk)) =>
+        {
+            return false;
+        }
+        // Panda.mobInteract: its bamboo answers SUCCESS_SERVER.
+        Species::Panda if food => return false,
+        // Cat.mobInteract: food tames an untamed cat, and heals a hurt
+        // tame one: SUCCESS before Animal.mobInteract is reached.
+        Species::Cat if food && (!m.extra.tame || hurt) => return true,
+        // Wolf.mobInteract: food heals a hurt tame wolf (SUCCESS).
+        Species::Wolf if food && m.extra.tame && hurt => return true,
+        _ => {}
+    }
+    // Animal.mobInteract: a baby's food is SUCCESS, since it ages up; an
+    // adult's is CONSUME, as only the server knows whether it can breed.
+    if m.kind.flags.animal
+        && !matches!(m.species(), Species::Nautilus | Species::ZombieNautilus)
+        && food
+    {
+        return m.is_baby() && !m.extra.age_locked;
+    }
+    // A tame wolf, cat or parrot sits or stands up: SUCCESS
+    // (TamableAnimal's subclasses), so it swings.
+    let consumes = match m.species() {
+        // ZombieVillager.mobInteract: a golden apple cures it on the server.
+        Species::ZombieVillager => item == "minecraft:golden_apple",
+        // Sheep.mobInteract: shears, sheared or not.
+        Species::Sheep => item == "minecraft:shears",
+        _ => false,
+    };
+    !consumes
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -288,6 +314,50 @@ mod tests {
             horizon_core::geometry::Vec3::new(0.0, 4.0, 0.0),
             0.0,
         ))
+    }
+
+    /// Tamables' and horses' own `mobInteract` answer before `Animal.mobInteract`'s
+    /// CONSUME (#9450): sitting down and healing are SUCCESS, a horse's food
+    /// SUCCESS_SERVER.
+    #[test]
+    fn only_a_client_success_swings_the_hand() {
+        let Some(mut wolf) = mob("minecraft:wolf") else {
+            return;
+        };
+        wolf.extra.tame = true;
+        assert!(
+            mob_swings(&wolf, ""),
+            "a tame wolf sits: SUCCESS.withoutItem"
+        );
+        assert!(
+            !mob_swings(&wolf, "minecraft:beef"),
+            "full health: Animal's CONSUME"
+        );
+        wolf.health = wolf.attrs.max_health - 1.0;
+        assert!(
+            mob_swings(&wolf, "minecraft:beef"),
+            "hurt: Wolf.feed is SUCCESS"
+        );
+        let mut cat = mob("minecraft:cat").unwrap();
+        assert!(mob_swings(&cat, "minecraft:cod"), "taming: SUCCESS");
+        cat.extra.tame = true;
+        assert!(
+            !mob_swings(&cat, "minecraft:cod"),
+            "tame, full health: CONSUME"
+        );
+        assert!(mob_swings(&cat, ""), "a tame cat sits: SUCCESS");
+        let mut parrot = mob("minecraft:parrot").unwrap();
+        parrot.extra.tame = true;
+        assert!(mob_swings(&parrot, ""), "a tame parrot sits: SUCCESS");
+        let horse = mob("minecraft:horse").unwrap();
+        assert!(
+            !mob_swings(&horse, "minecraft:apple"),
+            "AbstractHorse.fedFood: SUCCESS_SERVER"
+        );
+        let cow = mob("minecraft:cow").unwrap();
+        assert!(!mob_swings(&cow, "minecraft:wheat"), "adult: CONSUME");
+        let sheep = mob("minecraft:sheep").unwrap();
+        assert!(!mob_swings(&sheep, "minecraft:shears"), "Sheep: CONSUME");
     }
 
     /// `Sheep.mobInteract` and `DyeItem.interactLivingEntity` on a client (#9121).
