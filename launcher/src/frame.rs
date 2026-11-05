@@ -876,8 +876,8 @@ impl Launcher {
         ))
     }
 
-    /// The ⋮ menu of a sidebar row, beside it: Edit…, Duplicate…, Open folder, Export…, the
-    /// desktop shortcut, then Delete… (asked twice). Each acts on that instance.
+    /// The ⋮ menu of a sidebar row, beside it: Edit…, Duplicate…, Open folder, Export…,
+    /// launch settings, the desktop shortcut, then Delete… (asked twice). Each acts on that instance.
     pub(super) fn row_menu(
         &mut self,
         window: &Window,
@@ -904,7 +904,8 @@ impl Launcher {
             this.select_instance(i);
             this.go(Page::Play);
         };
-        let (edit, copy, export, shortcut) = (
+        let (edit, copy, export, launch, shortcut) = (
+            instance.clone(),
             instance.clone(),
             instance.clone(),
             instance.clone(),
@@ -959,6 +960,18 @@ impl Launcher {
                         if this.export.is_none() {
                             this.toggle_export();
                         }
+                        cx.notify();
+                    },
+                )),
+            )
+            .child(
+                item("launch", "sliders-horizontal", tr("Launch…").into()).on_click(cx.listener(
+                    move |this, _: &ClickEvent, _, cx| {
+                        pick(this, &launch);
+                        this.home_tab = home_tabs::HomeTab::Overview;
+                        // A panel left open for another instance must not turn this into Close.
+                        this.launch = None;
+                        this.toggle_launch();
                         cx.notify();
                     },
                 )),
