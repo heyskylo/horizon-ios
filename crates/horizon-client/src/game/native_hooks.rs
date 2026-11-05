@@ -3134,6 +3134,34 @@ impl Game<'_> {
     ) {
         mod_api::dispatch_block_entity_fluids(self, mod_api::mods(), block, fluids);
     }
+    /// Does tank `tank` of the mod block `block` take `fluid`
+    /// (`minecraft:water`, `minecraft:lava`, or a mod's own,
+    /// `create:chocolate`)? NeoForge's `IFluidHandler.isFluidValid`: a water
+    /// tank refuses a mod's fluid, so a removed mod leaves no id it cannot
+    /// use behind. Asked on the server before `native_fluid_insert` fills a
+    /// tank that the block's `ModFluidTanks` lets be filled through that
+    /// face, in both passes (same fluid first, then empty), and before
+    /// `native_move_fluids` counts that tank's room. Set `cancel` to refuse
+    /// the fluid there; the fill tries the next tank. Every tank accepts
+    /// every fluid unless a mod says otherwise; a cauldron, which holds only
+    /// water and lava, and a drain never ask it. Bundles need "hooks":
+    /// @API:block_entity_accepts_fluid@.
+    pub(super) fn native_block_entity_accepts_fluid(
+        &self,
+        block: &str,
+        tank: usize,
+        fluid: &str,
+        cancel: &mut bool,
+    ) {
+        mod_api::dispatch_block_entity_accepts_fluid(
+            self,
+            mod_api::mods(),
+            block,
+            tank,
+            fluid,
+            cancel,
+        );
+    }
     /// Block `block`'s block entity has an energy buffer
     /// (`Capabilities.Energy.BLOCK`): set `energy` when the block is yours,
     /// as `SimpleEnergyHandler` is built: its capacity, the most one insert

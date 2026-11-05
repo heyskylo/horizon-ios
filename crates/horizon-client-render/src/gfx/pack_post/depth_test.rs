@@ -653,15 +653,23 @@ pub(super) fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
 /// moved toward the next texel, times four (0 nearest, 255 linear). `nearest` is a line for
 /// both stage files.
 fn shadow_depth_filtering(nearest: &str) -> Option<Vec<[u8; 4]>> {
+    shadow_depth_reads(
+        nearest,
+        "float moved(sampler2D s, ivec2 t) {\n\
+             float a = texelFetch(s, t, 0).r;\n\
+             return (texture(s, (vec2(t) + vec2(0.75, 0.5)) / 16.0).r - a) * 16.0;\n\
+         }\n\
+         void main() {\n\
+             ivec2 t = ivec2(int(gl_FragCoord.x) % 15, 8);\n\
+             gl_FragColor = vec4(moved(shadowtex0, t) * 4.0, moved(shadowtex1, t) * 4.0, 0.0, 1.0);\n\
+         }\n",
+    )
+}
+
+/// `shadow_depth_filtering`'s shadow map read by `reads`: `final`'s code after its declarations
+/// of shadowtex0 and shadowtex1.
+fn shadow_depth_reads(nearest: &str, reads: &str) -> Option<Vec<[u8; 4]>> {
     let gpu = Gpu::new()?;
-    if !gpu
-        .device
-        .features()
-        .contains(wgpu::Features::FLOAT32_FILTERABLE)
-    {
-        eprintln!("DEPTH_FIXTURE_NO_FLOAT32_FILTERABLE");
-        return None;
-    }
     let color = gpu.texture(T::Rgba8Unorm);
     let depth = gpu.texture(T::Depth32Float);
     gpu.clear(&color, &depth, 0.0);
@@ -693,15 +701,7 @@ fn shadow_depth_filtering(nearest: &str) -> Option<Vec<[u8; 4]>> {
             "final.fsh".into(),
             format!(
                 "#version 330 compatibility\n{settings}\
-                 uniform sampler2D shadowtex0;\nuniform sampler2D shadowtex1;\n\
-                 float moved(sampler2D s, ivec2 t) {{\n\
-                     float a = texelFetch(s, t, 0).r;\n\
-                     return (texture(s, (vec2(t) + vec2(0.75, 0.5)) / 16.0).r - a) * 16.0;\n\
-                 }}\n\
-                 void main() {{\n\
-                     ivec2 t = ivec2(int(gl_FragCoord.x) % 15, 8);\n\
-                     gl_FragColor = vec4(moved(shadowtex0, t) * 4.0, moved(shadowtex1, t) * 4.0, 0.0, 1.0);\n\
-                 }}\n"
+                 uniform sampler2D shadowtex0;\nuniform sampler2D shadowtex1;\n{reads}"
             ),
         ),
         // The shadow map's depth runs from 0 at its left edge to 1 at its right.
@@ -772,6 +772,24 @@ fn shadow_depth_is_read_linearly_through_a_plain_sampler() {
     // Iris 1.11.7 filters both (probe packs of our own; the PR has the readings).
     if let Some(pixels) = shadow_depth_filtering("") {
         all_pixels(&pixels, [255, 255, 0, 255], "shadowtex linear");
+    }
+}
+
+#[test]
+fn shadow_depth_reads_filter_directly_and_with_a_texel_offset() {
+    // texture2D on the sampler itself, and textureOffset one texel to the right: both a quarter
+    // texel past a centre, so each moves a quarter of the way to the next texel.
+    let reads = "void main() {\n\
+             ivec2 t = ivec2(int(gl_FragCoord.x) % 14, 8);\n\
+             vec2 p = (vec2(t) + vec2(0.75, 0.5)) / 16.0;\n\
+             float a = texelFetch(shadowtex0, t, 0).r;\n\
+             float b = texelFetch(shadowtex1, t + ivec2(1, 0), 0).r;\n\
+             float r = (texture2D(shadowtex0, p).r - a) * 64.0;\n\
+             float g = (textureOffset(shadowtex1, p, ivec2(1, 0)).r - b) * 64.0;\n\
+             gl_FragColor = vec4(r, g, 0.0, 1.0);\n\
+         }\n";
+    if let Some(pixels) = shadow_depth_reads("", reads) {
+        all_pixels(&pixels, [255, 255, 0, 255], "shadowtex direct and offset");
     }
 }
 

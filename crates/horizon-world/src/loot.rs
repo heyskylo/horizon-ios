@@ -904,10 +904,10 @@ impl LootData {
 
     /// LootTable.getRandomItems with the given random (its state is
     /// advanced), luck and, for fishing, whether the hook is in open water.
-    pub fn roll(
+    pub fn roll<R: RandomSource + Clone>(
         &self,
         table: &str,
-        random: &mut LegacyRandom,
+        random: &mut R,
         luck: f32,
         biome: Option<&str>,
         open_water: Option<bool>,
@@ -925,7 +925,7 @@ impl LootData {
             entity: None,
         };
         let mut items = Vec::new();
-        c.table_raw(table, json, &mut |_, stack| items.push(stack));
+        c.table_raw(table, json, &mut |c, stack| c.data.split(stack, &mut items));
         *random = c.random;
         items
     }
@@ -2131,6 +2131,40 @@ mod native_kinds_tests {
         let data = LootData::load(&root, &PackOverlay::NONE).unwrap();
         let _ = std::fs::remove_dir_all(&root);
         data
+    }
+
+    #[test]
+    fn fishing_roll_can_advance_a_persistent_xoroshiro_sequence() {
+        let data = table(
+            "fishing_sequence",
+            r#"{"pools":[{"rolls":{"type":"minecraft:uniform","min":1,"max":5},"entries":[{"type":"minecraft:item","name":"minecraft:cod"}]}]}"#,
+        );
+        let mut sequence = horizon_core::random::XoroshiroRandom::from_state(123, 456);
+        let mut expected = sequence.clone();
+        for _ in 0..2 {
+            let count = 1 + expected.next_int_bound(5).unwrap();
+            assert_eq!(
+                data.roll("minecraft:test", &mut sequence, 0.0, None, Some(true))
+                    .len(),
+                count as usize
+            );
+        }
+        assert_eq!(sequence.next_long(), expected.next_long());
+    }
+
+    #[test]
+    fn fishing_roll_splits_oversized_stacks() {
+        let data = table(
+            "fishing_split",
+            r#"{"pools":[{"rolls":1,"entries":[{"type":"minecraft:item","name":"minecraft:cod","modifier":[{"type":"minecraft:set_count","count":130}]}]}]}"#,
+        );
+        let mut random = LegacyRandom::new(1);
+        let counts: Vec<_> = data
+            .roll("minecraft:test", &mut random, 0.0, None, Some(true))
+            .iter()
+            .map(|stack| stack.count)
+            .collect();
+        assert_eq!(counts, [64, 64, 2]);
     }
 
     /// An unclaimed condition fails (the pool drops nothing) and an

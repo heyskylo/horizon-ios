@@ -409,6 +409,7 @@
   "Frame Generation": "Giniúint Fráma",
   "Shows a made-up frame between each two real ones: smoother, a little more lag.": "Taispeánann sé fráma comhdhéanta idir an dá fhíor: níos réidhe, beagán níos moille.",
   "Shadow Cache": "Scáth taisce",
+  "Shader Packs...": "Pacaí scáthaithe...",
   "Reuses the pack shadow map when sun, view and world match. Off by default.": "Athúsáideann sé an scáthléarscáil paca nuair a mheaitseálann an ghrian, an radharc agus an domhan. Off de réir réamhshocraithe.",
   "Find BlueMap": "Aimsigh BlueMap",
   "On servers, finds their BlueMap web map for far terrain. Next join.": "Ar fhreastalaithe, aimsíonn a léarscáil gréasáin BlueMap don tír-raon i bhfad. Ar Aghaidh páirt.",

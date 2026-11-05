@@ -61,6 +61,7 @@ Every command `horizon-ctl` takes, its MCP tool in `horizon-ctl mcp` (the launch
 
 | Command | MCP tool | What it does | Arguments |
 | --- | --- | --- | --- |
+| `emote [ID\|stop]` | `emote` | Play one of the player's emotes, stop it, or list them | `id` (string): an owned emote's id, or stop |
 | `break X Y Z [--timeout S]` | `break` | Mine a block, holding the attack button until it breaks | `x` (integer, required): block X<br>`y` (integer, required): block Y<br>`z` (integer, required): block Z<br>`--timeout` (number): give up after this many seconds (default 30) |
 | `place X Y Z [--item ITEM]` | `place` | Place the held item (or ITEM from the hotbar) at an empty position | `x` (integer, required): block X<br>`y` (integer, required): block Y<br>`z` (integer, required): block Z<br>`--item` (string): hotbar item to select first |
 | `interact X Y Z [FACE]` | `interact` | Right-click a block: open a chest or crafting table, press a button, open a door | `x` (integer, required): block X<br>`y` (integer, required): block Y<br>`z` (integer, required): block Z<br>`face` (down, up, north, south, west, east): which face to click |
@@ -98,7 +99,7 @@ Every command `horizon-ctl` takes, its MCP tool in `horizon-ctl mcp` (the launch
 | `respawn` | `respawn` | Respawn from the death screen | none |
 | `pause` | `pause` | Open the pause menu | none |
 | `resume` | `resume` | Leave the pause menu | none |
-| `options [PAGE]` | `options` | Open the options screen, or one of its pages (Horizon's too) | `page` (main, video, sound, controls, keybinds, controller, controller-binds, mouse, chat, accessibility, language, font, packs, mods, shader-packs, graphics, graphics-advanced, graphics-hdr, extras, horizon, agent): the page (default: the main options) |
+| `options [PAGE]` | `options` | Open the options screen, or one of its pages (Horizon's too) | `page` (main, video, sound, controls, keybinds, controller, controller-binds, mouse, chat, accessibility, language, font, packs, mods, shader-packs, graphics, graphics-advanced, graphics-hdr, extras, horizon, agent, video-vanilla): the page (default: the main options) |
 | `book [next\|back\|take\|done]` | `book` | The open book or lectern: its page text, or press one of its buttons | `action` (next, back, take, done): a button to press |
 | `signedit X Y Z [front\|back]` | `signedit` | Open the sign editor of the sign at X Y Z (then type and close) | `x` (integer, required): block X<br>`y` (integer, required): block Y<br>`z` (integer, required): block Z<br>`side` (front, back): which side |
 | `mount-menu` | `mount_menu` | Open the inventory of the horse, donkey, mule or llama being ridden | none |

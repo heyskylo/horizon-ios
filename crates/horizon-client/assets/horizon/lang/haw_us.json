@@ -405,6 +405,7 @@
   "Frame Generation": "Hoʻokumu ʻana i ka pā",
   "Shows a made-up frame between each two real ones: smoother, a little more lag.": "Hōʻike i kahi kiʻi i hana ʻia ma waena o kēlā me kēia ʻelua mau mea maoli: ʻoi aku ka maʻalahi, ʻoi aku ka lag.",
   "Shadow Cache": "Kahu huna",
+  "Shader Packs...": "Nā Pūʻolo Shader...",
   "Reuses the pack shadow map when sun, view and world match. Off by default.": "Hoʻohana hou i ka palapala ʻāina malu i ka wā e pāʻani ai ka lā, ka nānā a me ka honua. Paʻa ma ka paʻamau.",
   "Find BlueMap": "E ʻimi iā BlueMap",
   "On servers, finds their BlueMap web map for far terrain. Next join.": "Ma nā kikowaena, ʻike lākou i kā lākou palapala pūnaewele BlueMap no ka ʻāina mamao. Hoʻohui aʻe.",

@@ -50,6 +50,9 @@ impl Stage<'_> {
         if self.gather_offsets {
             p.push_str(&gather_offsets());
         }
+        if self.tokens.iter().any(|t| DEPTH_NAMES.contains(t)) {
+            p.push_str(DEPTH_FILTER);
+        }
         if self.query_lod {
             p.push_str(&query_lod());
         }
@@ -133,6 +136,62 @@ impl Stage<'_> {
             .filter(|&(_, &t)| t == "struct")
             .filter_map(|(i, _)| next(i).map(|j| self.tokens[j]))
             .collect();
+        // `shadowtex0`... (`DEPTH_NAMES`) as declared, read through a plain sampler: texture
+        // calls on it go to our filtering helpers, the sampler followed by its flag: its
+        // `hz_depth_linear` component, or for a parameter carrying one (`depth_scope`) its own.
+        let depth_flag = |j: usize,
+                          params: &HashMap<String, String>,
+                          hidden: &[(&str, usize, i32)],
+                          scope: &[&str]|
+         -> Option<String> {
+            let name = self.tokens[j];
+            if hidden.iter().any(|&(h, from, _)| h == name && j >= from) {
+                return None;
+            }
+            if scope.contains(&name) {
+                return Some(format!("hz_l_{name}"));
+            }
+            let k = DEPTH_NAMES.iter().position(|&n| n == name)?;
+            (sampler_ty.get(name) == Some(&"sampler2D") && !params.contains_key(name))
+                .then(|| format!("hz_depth_linear.{}", ['x', 'y', 'z', 'w'][k]))
+        };
+        // The pack's functions given one of them as a whole sampler argument, and where: those
+        // parameters carry its `hz_depth_linear` component too (`hz_l_`, -1 for other samplers).
+        let mut depth_params: Vec<(&str, usize)> = Vec::new();
+        {
+            let mut open: Vec<(&str, usize)> = Vec::new();
+            for (j, &tok) in self.tokens.iter().enumerate() {
+                match tok {
+                    "(" => open.push((prev(j).map_or("", |k| self.tokens[k]), 0)),
+                    ")" => {
+                        open.pop();
+                    }
+                    "," => {
+                        if let Some(c) = open.last_mut() {
+                            c.1 += 1;
+                        }
+                    }
+                    _ if DEPTH_NAMES.contains(&tok)
+                        && sampler_ty.get(tok) == Some(&"sampler2D")
+                        && prev(j).is_some_and(|k| matches!(self.tokens[k], "(" | ","))
+                        && next(j).is_some_and(|k| matches!(self.tokens[k], "," | ")")) =>
+                    {
+                        if let Some(&(callee, arg)) = open.last()
+                            && self
+                                .sampler_functions
+                                .get(callee)
+                                .is_some_and(|p| p.get(arg) == Some(&true))
+                            && !depth_params.contains(&(callee, arg))
+                        {
+                            depth_params.push((callee, arg));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        // Sampler parameters of the function being written that carry `hz_l_`.
+        let mut depth_scope: Vec<&str> = Vec::new();
         // GLSL 1.20's user functions hide all built-ins with the same name (8).
         let mut own_size = Vec::new();
         let mut declaration_depth = 0usize;
@@ -299,6 +358,7 @@ impl Stage<'_> {
                     hidden.retain(|&(_, _, d)| d <= depth);
                     if depth == 0 {
                         params.clear();
+                        depth_scope.clear();
                         hidden.clear();
                         returns = None;
                     }
@@ -313,6 +373,7 @@ impl Stage<'_> {
                 ";" if depth == 0 && calls.is_empty() => {
                     hidden.clear();
                     params.clear();
+                    depth_scope.clear();
                 }
                 "(" => {
                     let callee = prev(i).map_or("", |j| self.tokens[j]);
@@ -367,6 +428,10 @@ impl Stage<'_> {
                     let name = self.tokens[n];
                     let (texture, sampler) = split_sampler(t);
                     write!(out, "{texture} {name}, {sampler} hz_s_{name}").unwrap();
+                    if t == "sampler2D" && depth_params.contains(&(calls[0].0, calls[0].2)) {
+                        write!(out, ", float hz_l_{name}").unwrap();
+                        depth_scope.push(name);
+                    }
                     params.insert(name.to_owned(), t.to_owned());
                     skip_until = n + 1;
                     continue;
@@ -416,6 +481,17 @@ impl Stage<'_> {
                 .map(String::as_str)
                 .or_else(|| sampler_ty.get(t).copied())
                 .filter(|_| !called);
+            if sampler.is_some()
+                && calls.last().is_some_and(|&(callee, _, arg)| {
+                    arg == 0 && depth_call(callee, depth_scope.contains(&t)).is_some()
+                })
+                && prev(i).is_some_and(|j| self.tokens[j] == "(")
+                && next(i).is_some_and(|j| self.tokens[j] == ",")
+                && let Some(flag) = depth_flag(i, &params, &hidden, &depth_scope)
+            {
+                write!(out, "{t}, hz_s_{t}, {flag}").unwrap();
+                continue;
+            }
             if let Some(ty) = sampler {
                 let as_argument = calls.last().is_some_and(|(callee, _, arg)| {
                     self.sampler_functions
@@ -425,6 +501,13 @@ impl Stage<'_> {
                     .is_some_and(|j| matches!(self.tokens[j], "(" | ","));
                 if as_argument {
                     write!(out, "{t}, hz_s_{t}").unwrap();
+                    if let Some(&(callee, _, arg)) = calls.last()
+                        && depth_params.contains(&(callee, arg))
+                    {
+                        let flag = depth_flag(i, &params, &hidden, &depth_scope)
+                            .unwrap_or_else(|| "-1.0".into());
+                        write!(out, ", {flag}").unwrap();
+                    }
                 } else {
                     write!(out, "{ty}({t}, hz_s_{t})").unwrap();
                 }
@@ -466,6 +549,15 @@ impl Stage<'_> {
                     .or_else(|| sampler_ty.get(name).copied())
                     .is_some_and(|ty| ty.strip_prefix(['i', 'u']).unwrap_or(ty) == expected)
             });
+            if called
+                && let Some(a) = next(i).and_then(next)
+                && let Some(helper) = depth_call(t, depth_scope.contains(&self.tokens[a]))
+                && next(a).is_some_and(|j| self.tokens[j] == ",")
+                && depth_flag(a, &params, &hidden, &depth_scope).is_some()
+            {
+                out.push_str(helper);
+                continue;
+            }
             let replaced: Option<String> = match t {
                 "main" if depth == 0 && called => Some("hz_main".into()),
                 // GLSL's `modf`, which naga's frontend lacks.
@@ -500,10 +592,15 @@ impl Stage<'_> {
                 "shadow2DLod" if called => Some("vec4(textureLod".into()),
                 "shadow2DProj" if called => Some("vec4(textureProj".into()),
                 "ftransform" if called => {
-                    // `ftransform()` → the product it stands for; its `()` stays as a no-op call... so skip it.
+                    // `ftransform()` → the transform it stands for; its `()` stays as a no-op call... so skip it.
+                    // The vertex goes through the model-view matrix first, then the projection:
+                    // read back with a probe pack of ours, Iris 1.11.7's `ftransform()` has the
+                    // bits of `gl_ProjectionMatrix * (gl_ModelViewMatrix * gl_Vertex)` at every
+                    // vertex our probes read, where the product matrix
+                    // `hz_ModelViewProjectionMatrix` rounds differently in the last bits (#8464).
                     let close = next(i).and_then(next);
                     skip_until = close.map_or(i + 1, |c| c + 1);
-                    Some("(hz_ModelViewProjectionMatrix * hz_Vertex)".into())
+                    Some("(hz_ProjectionMatrix * (hz_ModelViewMatrix * hz_Vertex))".into())
                 }
                 "gl_FragColor" => Some("hz_out0".into()),
                 "gl_FragData" | "gl_TexCoord" => match self.index_after(i) {
@@ -826,6 +923,84 @@ fn trinary(name: &str) -> String {
     }
     p
 }
+
+/// The depth samplers a plain `sampler2D` can name: `hz_depth_linear`'s x, y, z and w.
+const DEPTH_NAMES: [&str; 4] = ["shadowtex0", "shadowtex1", "shadow", "watershadow"];
+
+/// The helper standing for a texture call on one of `DEPTH_NAMES`, or on a parameter carrying
+/// one (`parameter`: no offset helpers, see `DEPTH_FILTER`).
+fn depth_call(callee: &str, parameter: bool) -> Option<&'static str> {
+    if parameter && callee.ends_with("Offset") {
+        return None;
+    }
+    Some(match callee {
+        "texture2D" | "texture" => "hz_depthTexture",
+        "texture2DLod" | "texture2DLodARB" | "textureLod" => "hz_depthTextureLod",
+        "textureOffset" => "hz_depthTextureOffset",
+        "textureLodOffset" => "hz_depthTextureLodOffset",
+        "texture2DGrad" | "texture2DGradARB" | "textureGrad" => "hz_depthTextureGrad",
+        "textureGradOffset" => "hz_depthTextureGradOffset",
+        "texture2DProj" | "textureProj" => "hz_depthTextureProj",
+        "texture2DProjLod" | "textureProjLod" => "hz_depthTextureProjLod",
+        _ => return None,
+    })
+}
+
+/// A shadow depth read through a plain sampler, filtered as a filtering sampler reads a colour
+/// texture when `l` is 1 (0: the nearest texel): the four texels around the point gathered, at
+/// the corner they share so the hardware's choice of texels can't differ from ours, and blended
+/// bilinearly. wgpu filters a depth format only in a comparison. The depth has one level, so a
+/// level, bias or gradients change nothing; offsets and projection apply. `l` is -1 for any other
+/// texture passed to a parameter that also takes a depth: then the built-in the pack called. A
+/// texel offset must be a constant, which a helper's parameter is not, so the offset helpers serve
+/// only the samplers themselves (`depth_call`).
+const DEPTH_FILTER: &str = "vec4 hz_depthRead(texture2D t, sampler s, float l, vec2 p) {\n\
+    \x20   if (l == 0.0) return textureLod(sampler2D(t, s), p, 0.0);\n\
+    \x20   vec2 size = vec2(textureSize(sampler2D(t, s), 0));\n\
+    \x20   vec2 x = p * size - 0.5;\n\
+    \x20   vec2 i = floor(x);\n\
+    \x20   vec2 f = x - i;\n\
+    \x20   vec4 g = textureGather(sampler2D(t, s), (i + 1.0) / size);\n\
+    \x20   return vec4(mix(mix(g.w, g.z, f.x), mix(g.x, g.y, f.x), f.y), 0.0, 0.0, 1.0);\n}\n\
+    vec2 hz_depthOffset(texture2D t, sampler s, ivec2 o) { return vec2(o) / vec2(textureSize(sampler2D(t, s), 0)); }\n\
+    vec4 hz_depthTexture(texture2D t, sampler s, float l, vec2 p) {\n\
+    \x20   if (l < 0.0) return texture(sampler2D(t, s), p);\n\
+    \x20   return hz_depthRead(t, s, l, p);\n}\n\
+    vec4 hz_depthTexture(texture2D t, sampler s, float l, vec2 p, float b) {\n\
+    \x20   if (l < 0.0) return texture(sampler2D(t, s), p, b);\n\
+    \x20   return hz_depthRead(t, s, l, p);\n}\n\
+    vec4 hz_depthTextureLod(texture2D t, sampler s, float l, vec2 p, float lod) {\n\
+    \x20   if (l < 0.0) return textureLod(sampler2D(t, s), p, lod);\n\
+    \x20   return hz_depthRead(t, s, l, p);\n}\n\
+    vec4 hz_depthTextureOffset(texture2D t, sampler s, float l, vec2 p, ivec2 o) {\n\
+    \x20   return hz_depthRead(t, s, l, p + hz_depthOffset(t, s, o));\n}\n\
+    vec4 hz_depthTextureOffset(texture2D t, sampler s, float l, vec2 p, ivec2 o, float b) {\n\
+    \x20   return hz_depthRead(t, s, l, p + hz_depthOffset(t, s, o));\n}\n\
+    vec4 hz_depthTextureLodOffset(texture2D t, sampler s, float l, vec2 p, float lod, ivec2 o) {\n\
+    \x20   return hz_depthRead(t, s, l, p + hz_depthOffset(t, s, o));\n}\n\
+    vec4 hz_depthTextureGrad(texture2D t, sampler s, float l, vec2 p, vec2 dx, vec2 dy) {\n\
+    \x20   if (l < 0.0) return textureGrad(sampler2D(t, s), p, dx, dy);\n\
+    \x20   return hz_depthRead(t, s, l, p);\n}\n\
+    vec4 hz_depthTextureGradOffset(texture2D t, sampler s, float l, vec2 p, vec2 dx, vec2 dy, ivec2 o) {\n\
+    \x20   return hz_depthRead(t, s, l, p + hz_depthOffset(t, s, o));\n}\n\
+    vec4 hz_depthTextureProj(texture2D t, sampler s, float l, vec3 p) {\n\
+    \x20   if (l < 0.0) return textureProj(sampler2D(t, s), p);\n\
+    \x20   return hz_depthRead(t, s, l, p.xy / p.z);\n}\n\
+    vec4 hz_depthTextureProj(texture2D t, sampler s, float l, vec4 p) {\n\
+    \x20   if (l < 0.0) return textureProj(sampler2D(t, s), p);\n\
+    \x20   return hz_depthRead(t, s, l, p.xy / p.w);\n}\n\
+    vec4 hz_depthTextureProj(texture2D t, sampler s, float l, vec3 p, float b) {\n\
+    \x20   if (l < 0.0) return textureProj(sampler2D(t, s), p, b);\n\
+    \x20   return hz_depthRead(t, s, l, p.xy / p.z);\n}\n\
+    vec4 hz_depthTextureProj(texture2D t, sampler s, float l, vec4 p, float b) {\n\
+    \x20   if (l < 0.0) return textureProj(sampler2D(t, s), p, b);\n\
+    \x20   return hz_depthRead(t, s, l, p.xy / p.w);\n}\n\
+    vec4 hz_depthTextureProjLod(texture2D t, sampler s, float l, vec3 p, float lod) {\n\
+    \x20   if (l < 0.0) return textureProjLod(sampler2D(t, s), p, lod);\n\
+    \x20   return hz_depthRead(t, s, l, p.xy / p.z);\n}\n\
+    vec4 hz_depthTextureProjLod(texture2D t, sampler s, float l, vec4 p, float lod) {\n\
+    \x20   if (l < 0.0) return textureProjLod(sampler2D(t, s), p, lod);\n\
+    \x20   return hz_depthRead(t, s, l, p.xy / p.w);\n}\n";
 
 fn gather_offsets() -> String {
     let mut p = String::new();
