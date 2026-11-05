@@ -58,6 +58,21 @@ cargo horizon-mod check target/horizon-mod/my_mod.hmod   # the registry's checks
   and `.hshader` files.
 - `registry build|review|check|list|release|page` is the registry repository's CI ([api/mod-index.md](api/mod-index.md)).
 
+### A real-game Recipes check
+
+`python tools/lan_e2e.py --check recipes-hmod --bin-dir PATH` runs two real clients against the
+host's integrated server. `PATH` must contain `horizon-client` compiled with the official native
+Recipes mod and a matching `horizon-ctl`. This opt-in check fails if Recipes is absent; ordinary
+LAN runs do not require it.
+
+The runner installs the same original `tools/fixtures/recipes_hmod` package in both scratch game
+folders. It searches for its custom item, checks unknown recipes and missing ingredients, fills the
+crafting grid through Recipes' `+` button, takes the result, and checks authoritative inventory counts
+before and after Save and Quit/rejoin. Logs, screenshots and `recipes-hmod.json` go under `--out`.
+As an assertion canary, changing only the fixture's result count from two to one must fail the custom
+result check; restore it before running the passing case. This is a content scenario, not general
+Java-mod compatibility coverage.
+
 ### The manifest
 
 ```toml
