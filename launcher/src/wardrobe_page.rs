@@ -635,10 +635,14 @@ impl Launcher {
                     hash: String::new(),
                     slot: slot(i).to_owned(),
                     names: [("en_us".to_owned(), title_case(&i.id))].into(),
-                    theme: None,
+                    ..Default::default()
                 })
                 .collect(),
             claim: claim.clone(),
+            currencies: Vec::new(),
+            sets: Vec::new(),
+            collections: Vec::new(),
+            supporter: None,
         };
         let account = account::Account {
             uuid: "00000000000000000000000000000001".into(),
