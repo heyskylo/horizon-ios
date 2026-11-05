@@ -264,7 +264,7 @@
   "Backups": "Kopije zapasowe",
   "Nothing found.": "Nic niy znojdziōno.",
   "The source at commit {commit}.": "Zdrzōdło przi zatwierdzyniu {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Pobrania, zalogowanie i aktualizacyje przechodzōm bez tyn proxy HTTP (http://host:port). Prōżne ôznaczo żodne: HTTPS_PROXY je używane zamiast tego, kej ôdpalacz bōł uruchomiōny z jednym.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Pobrania, zalogowanie i aktualizacyje przechodzōm bez tyn proxy (http://host:port, socks5://host:port). Prōżne ôznaczo żodne: HTTPS_PROXY je używane zamiast tego, kej ôdpalacz bōł uruchomiōny z jednym.",
   "Beta": "Beta",
   "Benchmark uploads": "Przesyłania ôdniesiynio",
   "Saved: the next Play {what}.": "Zapisane: dalsze Ôdtworzynie {what}.",

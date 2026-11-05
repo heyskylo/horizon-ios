@@ -264,7 +264,7 @@
   "Backups": "Varmuuskopiot",
   "Nothing found.": "Mitään ei löytynyt.",
   "The source at commit {commit}.": "Lähde commitissa {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Lataukset, sisäänkirjautumiset ja päivitykset kulkevat tämän HTTP-välityspalvelimen (http://host:port) kautta. Tyhjä tarkoittaa ei mitään: HTTPS_PROXY:tä käytetään sen sijaan, kun käynnistysohjelma käynnistettiin yhdellä.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Lataukset, sisäänkirjautumiset ja päivitykset kulkevat tämän välityspalvelimen (http://host:port, socks5://host:port) kautta. Tyhjä tarkoittaa ei mitään: HTTPS_PROXY:tä käytetään sen sijaan, kun käynnistysohjelma käynnistettiin yhdellä.",
   "Beta": "Beta",
   "Benchmark uploads": "Vertailulataukset",
   "Saved: the next Play {what}.": "Tallennettu: seuraava toisto {what}.",

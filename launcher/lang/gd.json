@@ -263,7 +263,7 @@
   "Backups": "Cùl-taic",
   "Nothing found.": "Chan eil dad ri lorg.",
   "The source at commit {commit}.": "An tùs aig gealltanas {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Bidh luchdachadh sìos, clàradh a-steach agus ùrachaidhean a’ dol tron neach-ionaid HTTP seo (http://host:port). Chan eil falamh a’ ciallachadh gin: thathas a’ cleachdadh HTTPS_PROXY na àite nuair a thòisich an lannsair le fear.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Bidh luchdachadh sìos, clàradh a-steach agus ùrachaidhean a’ dol tron neach-ionaid seo (http://host:port, socks5://host:port). Chan eil falamh a’ ciallachadh gin: thathas a’ cleachdadh HTTPS_PROXY na àite nuair a thòisich an lannsair le fear.",
   "Beta": "Beta",
   "Benchmark uploads": "Comharran-sampaill luchdadh a-nuas",
   "Saved: the next Play {what}.": "Air a shàbhaladh: an ath chluich {what}.",

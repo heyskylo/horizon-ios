@@ -263,7 +263,7 @@
   "Backups": "Reservekopyen",
   "Nothing found.": "Neat fûn.",
   "The source at commit {commit}.": "De boarne by commit {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Downloads, oanmelden en updates geane fia dizze HTTP-proxy (http://host:port). Leech betsjut gjin: HTTPS_PROXY wurdt ynstee brûkt as de launcher mei ien begon is.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Downloads, oanmelden en updates geane fia dizze proxy (http://host:port, socks5://host:port). Leech betsjut gjin: HTTPS_PROXY wurdt ynstee brûkt as de launcher mei ien begon is.",
   "Beta": "Beta",
   "Benchmark uploads": "Benchmark uploads",
   "Saved: the next Play {what}.": "Opslein: de folgjende Play {what}.",

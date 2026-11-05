@@ -264,7 +264,7 @@
   "Backups": "النسخ الاحتياطي",
   "Nothing found.": "لم يتم العثور على شيء.",
   "The source at commit {commit}.": "المصدر عند الالتزام (Commit) {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.",
   "Beta": "نسخة تجريبية (Beta)",
   "Benchmark uploads": "رفع نتائج اختبار الأداء",
   "Saved: the next Play {what}.": "تم الحفظ: التشغيل التالي {what}.",

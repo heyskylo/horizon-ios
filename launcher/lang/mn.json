@@ -263,7 +263,7 @@
   "Backups": "Нөөцлөлт",
   "Nothing found.": "Юу ч олдсонгүй.",
   "The source at commit {commit}.": "Үйлдлийн эх сурвалж {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Татаж авах, нэвтрэх болон шинэчлэлтүүд нь энэ HTTP прокси (http://host:port)-оор дамждаг. Хоосон гэдэг нь байхгүй гэсэн үг: Эхлүүлэгчийг нэгээр эхлүүлсэн үед оронд нь HTTPS_PROXY-г ашигладаг.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Татаж авах, нэвтрэх болон шинэчлэлтүүд нь энэ прокси (http://host:port, socks5://host:port)-оор дамждаг. Хоосон гэдэг нь байхгүй гэсэн үг: Эхлүүлэгчийг нэгээр эхлүүлсэн үед оронд нь HTTPS_PROXY-г ашигладаг.",
   "Beta": "Бета",
   "Benchmark uploads": "Жишиг байршуулалт",
   "Saved: the next Play {what}.": "Хадгалсан: дараагийн Play {what}.",

@@ -264,7 +264,7 @@
   "Backups": "Резервные копии",
   "Nothing found.": "Ничего не найдено.",
   "The source at commit {commit}.": "Исходный код на коммите {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Загрузки, вход в аккаунт и обновления проходят через этот HTTP-прокси (http://host:port). Пустое поле означает отсутствие: вместо этого используется HTTPS_PROXY, если лаунчер был запущен с ним.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Загрузки, вход в аккаунт и обновления проходят через этот прокси (http://host:port, socks5://host:port). Пустое поле означает отсутствие: вместо этого используется HTTPS_PROXY, если лаунчер был запущен с ним.",
   "Beta": "Бета",
   "Benchmark uploads": "Benchmark uploads",
   "Saved: the next Play {what}.": "Сохранено: при следующем запуске {what}.",

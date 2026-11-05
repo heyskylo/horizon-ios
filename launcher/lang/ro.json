@@ -264,7 +264,7 @@
   "Backups": "Backup-uri",
   "Nothing found.": "Nu s-a găsit nimic.",
   "The source at commit {commit}.": "Sursa de la commit {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Descărcările, conectările și actualizările trec prin acest proxy HTTP (http://host:port). Golit înseamnă că nu există: HTTPS_PROXY este folosit atunci când lansatorul a fost pornit cu unul.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Descărcările, conectările și actualizările trec prin acest proxy (http://host:port, socks5://host:port). Golit înseamnă că nu există: HTTPS_PROXY este folosit atunci când lansatorul a fost pornit cu unul.",
   "Beta": "Beta",
   "Benchmark uploads": "Încărcări de referință",
   "Saved: the next Play {what}.": "Salvat: următoarea redare {what}.",

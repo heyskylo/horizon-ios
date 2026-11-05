@@ -4305,7 +4305,7 @@ impl Launcher {
         )
     }
 
-    /// Settings' Proxy row: the HTTP proxy every download and sign-in goes through, kept in
+    /// Settings' Proxy row: the proxy every download and sign-in goes through, kept in
     /// `settings.json` and read back by `proxy.rs` on each request.
     fn proxy_row(&self, n: usize, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
@@ -4356,8 +4356,8 @@ impl Launcher {
             (false, Some(why)) => div().text_color(t.danger).child(why).into_any_element(),
             _ => div()
                 .child(tr(
-                    "Downloads, sign-ins and updates go through this HTTP proxy \
-                     (http://host:port). Empty means none: HTTPS_PROXY is used instead when the \
+                    "Downloads, sign-ins and updates go through this proxy (http://host:port, \
+                     socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the \
                      launcher was started with one.",
                 ))
                 .into_any_element(),

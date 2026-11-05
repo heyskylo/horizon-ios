@@ -264,7 +264,7 @@
   "Backups": "备份",
   "Nothing found.": "未找到任何内容。",
   "The source at commit {commit}.": "位于提交 {commit} 的源代码。",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "下载、登录和更新均通过此 HTTP 代理（http://host:port）。留空表示不使用：若启动器启动时设置了 HTTPS_PROXY 则会优先使用。",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "下载、登录和更新均通过此代理（http://host:port, socks5://host:port）。留空表示不使用：若启动器启动时设置了 HTTPS_PROXY 则会优先使用。",
   "Beta": "测试版",
   "Benchmark uploads": "基准测试上传",
   "Saved: the next Play {what}.": "已保存：下次点击“开始游戏”时 {what}。",

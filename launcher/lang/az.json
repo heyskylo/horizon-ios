@@ -263,7 +263,7 @@
   "Backups": "Yedəkləmələr",
   "Nothing found.": "Heç nə tapılmadı.",
   "The source at commit {commit}.": "Tövsiyə olunan mənbə {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Endirmələr, girişlər və yeniləmələr bu HTTP proksisindən keçir (http://host:port). Boş heç biri deməkdir: Başlatıcı biri ilə işə salındıqda əvəzinə HTTPS_PROXY istifadə olunur.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Endirmələr, girişlər və yeniləmələr bu proksisindən keçir (http://host:port, socks5://host:port). Boş heç biri deməkdir: Başlatıcı biri ilə işə salındıqda əvəzinə HTTPS_PROXY istifadə olunur.",
   "Beta": "Beta",
   "Benchmark uploads": "Benchmark yükləmələri",
   "Saved: the next Play {what}.": "Yadda saxlandı: növbəti Play {what}.",

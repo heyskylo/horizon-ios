@@ -264,7 +264,7 @@
   "Backups": "Sauvagardas",
   "Nothing found.": "Res trobat.",
   "The source at commit {commit}.": "La font a commit {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Los telecargaments, las connexions e las mesas a jorn passan per aqueste mandatari HTTP (http://host:port). Vuèg significa pas cap : HTTPS_PROXY es utilizat a la plaça quand lo lançaire foguèt aviat amb un.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Los telecargaments, las connexions e las mesas a jorn passan per aqueste mandatari (http://host:port, socks5://host:port). Vuèg significa pas cap : HTTPS_PROXY es utilizat a la plaça quand lo lançaire foguèt aviat amb un.",
   "Beta": "Beta",
   "Benchmark uploads": "Los enviaments de referéncia",
   "Saved: the next Play {what}.": "Enregistrat: lo pròplèu Jogar {what}.",

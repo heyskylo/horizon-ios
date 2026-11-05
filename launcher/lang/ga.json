@@ -263,7 +263,7 @@
   "Backups": "Cúltacaí",
   "Nothing found.": "Ní bhfuarthas aon rud.",
   "The source at commit {commit}.": "An fhoinse ag gealltanas {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Téann íoslódálacha, síniú isteach agus nuashonruithe tríd an seachfhreastalaí HTTP seo (http://host:port). Ní chiallaíonn folamh aon cheann: úsáidtear HTTPS_PROXY ina ionad sin nuair a cuireadh tús leis an tosaitheoir le ceann amháin.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Téann íoslódálacha, síniú isteach agus nuashonruithe tríd an seachfhreastalaí seo (http://host:port, socks5://host:port). Ní chiallaíonn folamh aon cheann: úsáidtear HTTPS_PROXY ina ionad sin nuair a cuireadh tús leis an tosaitheoir le ceann amháin.",
   "Beta": "Béite",
   "Benchmark uploads": "Uaslódálacha tagarmhairc",
   "Saved: the next Play {what}.": "Sábháilte: an chéad Imirt eile {what}.",

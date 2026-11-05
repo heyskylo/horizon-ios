@@ -263,7 +263,7 @@
   "Backups": "Izipele",
   "Nothing found.": "Akukho okutholiwe.",
   "The source at commit {commit}.": "Umthombo wokuzibophezela {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Ukulanda, ukungena ngemvume nezibuyekezo kungena kulo mmeleli we-HTTP (http://host:port). Ukungenalutho kusho ukuthi akukho: I-HTTPS_PROXY isetshenziswa esikhundleni lapho isiqalisi siqalwa ngaso.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Ukulanda, ukungena ngemvume nezibuyekezo kungena kulo mmeleli we-(http://host:port, socks5://host:port). Ukungenalutho kusho ukuthi akukho: I-HTTPS_PROXY isetshenziswa esikhundleni lapho isiqalisi siqalwa ngaso.",
   "Beta": "I-Beta",
   "Benchmark uploads": "Ukulayishwa kwebhentshimakhi",
   "Saved: the next Play {what}.": "Ilondoloziwe: Ukudlala okulandelayo {what}.",

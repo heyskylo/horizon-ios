@@ -264,7 +264,7 @@
   "Backups": "Backup",
   "Nothing found.": "Negott truvà.",
   "The source at commit {commit}.": "La funt al impegno {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "I scaricament, i access e i aggiornament passan travers chestu proxy HTTP (http://host:port). Vœui significa nissun: HTTPS_PROXY l’è duperà inveci quand el lanciador l’è stà avvià cun un.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "I scaricament, i access e i aggiornament passan travers chestu proxy (http://host:port, socks5://host:port). Vœui significa nissun: HTTPS_PROXY l’è duperà inveci quand el lanciador l’è stà avvià cun un.",
   "Beta": "Beta",
   "Benchmark uploads": "Caricament de riferiment",
   "Saved: the next Play {what}.": "Salvà: la prossima Gioca {what}.",

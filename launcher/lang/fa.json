@@ -264,7 +264,7 @@
   "Backups": "پشتیبان گیری",
   "Nothing found.": "چیزی پیدا نشد",
   "The source at commit {commit}.": "منبع در commit {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "دانلودها، ورود به سیستم و به‌روزرسانی‌ها از طریق این پروکسی HTTP (http://host:port) انجام می‌شود. خالی به معنای هیچ: HTTPS_PROXY زمانی استفاده می‌شود که راه‌انداز با یکی شروع شود.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "دانلودها، ورود به سیستم و به‌روزرسانی‌ها از طریق این پروکسی (http://host:port, socks5://host:port) انجام می‌شود. خالی به معنای هیچ: HTTPS_PROXY زمانی استفاده می‌شود که راه‌انداز با یکی شروع شود.",
   "Beta": "بتا",
   "Benchmark uploads": "بارگذاری های معیار",
   "Saved: the next Play {what}.": "ذخیره شده: بازی بعدی {what}.",

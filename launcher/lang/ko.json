@@ -264,7 +264,7 @@
   "Backups": "백업",
   "Nothing found.": "검색 결과가 없습니다.",
   "The source at commit {commit}.": "커밋 {commit}의 소스 코드입니다.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "다운로드, 로그인 및 업데이트는 지정된 HTTP 프록시(http://host:port)를 거칩니다. 비워두면 프록시를 사용하지 않으며, 런처가 시작될 때 설정된 경우 HTTPS_PROXY가 대신 사용됩니다.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "다운로드, 로그인 및 업데이트는 지정된 프록시(http://host:port, socks5://host:port)를 거칩니다. 비워두면 프록시를 사용하지 않으며, 런처가 시작될 때 설정된 경우 HTTPS_PROXY가 대신 사용됩니다.",
   "Beta": "베타",
   "Benchmark uploads": "벤치마크 업로드",
   "Saved: the next Play {what}.": "저장됨: 다음 플레이 시 {what}.",

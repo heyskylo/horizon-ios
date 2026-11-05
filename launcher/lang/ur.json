@@ -264,7 +264,7 @@
   "Backups": "بیک اپس",
   "Nothing found.": "کچھ نہیں ملا۔",
   "The source at commit {commit}.": "کمٹ {commit} پر ذریعہ۔",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "ڈاؤن لوڈ، سائن ان اور اپ ڈیٹ اس HTTP پراکسی (http://host:port) سے ہوتے ہیں۔ خالی کا مطلب کوئی نہیں: HTTPS_PROXY اس کے بجائے استعمال کیا جاتا ہے جب لانچر ایک کے ساتھ شروع کیا گیا تھا۔",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "ڈاؤن لوڈ، سائن ان اور اپ ڈیٹ اس پراکسی (http://host:port, socks5://host:port) سے ہوتے ہیں۔ خالی کا مطلب کوئی نہیں: HTTPS_PROXY اس کے بجائے استعمال کیا جاتا ہے جب لانچر ایک کے ساتھ شروع کیا گیا تھا۔",
   "Beta": "بیٹا",
   "Benchmark uploads": "بینچ مارک اپ لوڈز",
   "Saved: the next Play {what}.": "محفوظ کیا گیا: اگلا پلے {what}۔",

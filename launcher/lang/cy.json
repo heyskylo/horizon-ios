@@ -263,7 +263,7 @@
   "Backups": "Copïau wrth gefn",
   "Nothing found.": "Heb ganfod dim.",
   "The source at commit {commit}.": "Y ffynhonnell yn ymrwymo {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Mae lawrlwythiadau, mewngofnodi a diweddariadau yn mynd trwy'r dirprwy HTTP hwn (http://host:port). Gwag yn golygu dim: HTTPS_PROXY yn cael ei ddefnyddio yn lle hynny pan ddechreuwyd y lansiwr gydag un.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Mae lawrlwythiadau, mewngofnodi a diweddariadau yn mynd trwy'r dirprwy hwn (http://host:port, socks5://host:port). Gwag yn golygu dim: HTTPS_PROXY yn cael ei ddefnyddio yn lle hynny pan ddechreuwyd y lansiwr gydag un.",
   "Beta": "Beta",
   "Benchmark uploads": "Uwchlwythiadau meincnod",
   "Saved: the next Play {what}.": "Wedi'i gadw: y Chwarae nesaf {what}.",

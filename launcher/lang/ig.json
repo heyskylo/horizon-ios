@@ -263,7 +263,7 @@
   "Backups": "Ndabere",
   "Nothing found.": "Ọnweghị ihe ahụrụ.",
   "The source at commit {commit}.": "Isi mmalite na-eme {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Nbudata, nbanye na mmelite na-aga site na proxy HTTP a (http://host: port). Ihe efu pụtara enweghị nke ọ bụla: HTTPS_PROXY na-eji kama mgbe ejiri otu malite onye nrụpụta.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Nbudata, nbanye na mmelite na-aga site na proxy a (http://host:port, socks5://host:port). Ihe efu pụtara enweghị nke ọ bụla: HTTPS_PROXY na-eji kama mgbe ejiri otu malite onye nrụpụta.",
   "Beta": "Beta",
   "Benchmark uploads": "Nbulite benchmark",
   "Saved: the next Play {what}.": "Echekwara: Egwuregwu na-esote {what}.",

@@ -263,7 +263,7 @@
   "Backups": "Mga backup",
   "Nothing found.": "Walang nahanap.",
   "The source at commit {commit}.": "Ang pinagmulan sa commit {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Ang mga pag-download, pag-sign-in at pag-update ay dumadaan sa HTTP proxy na ito (http://host:port). Ang walang laman ay nangangahulugang wala: HTTPS_PROXY ang ginagamit sa halip kapag sinimulan ang launcher gamit ang isa.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Ang mga pag-download, pag-sign-in at pag-update ay dumadaan sa proxy na ito (http://host:port, socks5://host:port). Ang walang laman ay nangangahulugang wala: HTTPS_PROXY ang ginagamit sa halip kapag sinimulan ang launcher gamit ang isa.",
   "Beta": "Beta",
   "Benchmark uploads": "Mga pag-upload ng benchmark",
   "Saved: the next Play {what}.": "Nai-save: ang susunod na Play {what}.",

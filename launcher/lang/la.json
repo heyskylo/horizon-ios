@@ -263,7 +263,7 @@
   "Backups": "Tergum",
   "Nothing found.": "Nihil inveni.",
   "The source at commit {commit}.": "Fons in committere{commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Download, signum-ins et updates per hoc procuratorem HTTP (http://host:port). Inanis significat nullum: HTTPS_PROXY loco adhibetur cum launcher ab uno inchoatum est.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Download, signum-ins et updates per hoc procuratorem (http://host:port, socks5://host:port). Inanis significat nullum: HTTPS_PROXY loco adhibetur cum launcher ab uno inchoatum est.",
   "Beta": "Beta",
   "Benchmark uploads": "Probatio uploads",
   "Saved: the next Play {what}.": "Servata est altera Play {what}.",

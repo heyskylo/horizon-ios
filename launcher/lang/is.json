@@ -263,7 +263,7 @@
   "Backups": "Öryggisafrit",
   "Nothing found.": "Ekkert fannst.",
   "The source at commit {commit}.": "Heimildin við commit {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Niðurhal, innskráningar og uppfærslur fara í gegnum þennan HTTP proxy (http://host:port). Tómt þýðir ekkert: HTTPS_PROXY er notað í staðinn þegar ræsiforritið var ræst með einum.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Niðurhal, innskráningar og uppfærslur fara í gegnum þennan proxy (http://host:port, socks5://host:port). Tómt þýðir ekkert: HTTPS_PROXY er notað í staðinn þegar ræsiforritið var ræst með einum.",
   "Beta": "Beta",
   "Benchmark uploads": "Viðmiðunarupphleðslur",
   "Saved: the next Play {what}.": "Vistað: næsta Play {what}.",

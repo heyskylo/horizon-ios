@@ -264,7 +264,7 @@
   "Backups": "Backup",
   "Nothing found.": "Niente trovato.",
   "The source at commit {commit}.": "La fonte a commit {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "I scaricamenti, i sign-in e i ajornamenti i va atraverso sto proxy HTTP (http://host:port). Vodo vol dir gnente: HTTPS_PROXY el vien doparà invese quando el lansador el xe stà scominsià co uno.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "I scaricamenti, i sign-in e i ajornamenti i va atraverso sto proxy (http://host:port, socks5://host:port). Vodo vol dir gnente: HTTPS_PROXY el vien doparà invese quando el lansador el xe stà scominsià co uno.",
   "Beta": "Beta",
   "Benchmark uploads": "Caricamenti de riferimento",
   "Saved: the next Play {what}.": "Salvato: la prossima Play {what}.",

@@ -263,7 +263,7 @@
   "Backups": "Сақтық көшірмелер",
   "Nothing found.": "Ештеңе табылмады.",
   "The source at commit {commit}.": "Орындаудағы дереккөз {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Жүктеп алулар, кірулер және жаңартулар осы HTTP проксиі (http://host:port) арқылы өтеді. Бос ешбір дегенді білдіреді: HTTPS_PROXY оның орнына іске қосу құралы біреуімен іске қосылғанда пайдаланылады.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Жүктеп алулар, кірулер және жаңартулар осы проксиі (http://host:port, socks5://host:port) арқылы өтеді. Бос ешбір дегенді білдіреді: HTTPS_PROXY оның орнына іске қосу құралы біреуімен іске қосылғанда пайдаланылады.",
   "Beta": "Бета",
   "Benchmark uploads": "Эталондық жүктеп салулар",
   "Saved: the next Play {what}.": "Сақталған: келесі Ойнату {what}.",

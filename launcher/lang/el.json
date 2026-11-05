@@ -264,7 +264,7 @@
   "Backups": "Αντίγραφα ασφαλείας",
   "Nothing found.": "Δεν βρέθηκε τίποτα.",
   "The source at commit {commit}.": "Η πηγή στο commit {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Οι λήψεις, οι συνδέσεις και οι ενημερώσεις πραγματοποιούνται μέσω αυτού του διακομιστή μεσολάβησης HTTP (http://host:port). Κενό σημαίνει κανένα: Το HTTPS_PROXY χρησιμοποιείται αντ' αυτού όταν η εκκίνηση ξεκίνησε με ένα.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Οι λήψεις, οι συνδέσεις και οι ενημερώσεις πραγματοποιούνται μέσω αυτού του διακομιστή μεσολάβησης (http://host:port, socks5://host:port). Κενό σημαίνει κανένα: Το HTTPS_PROXY χρησιμοποιείται αντ' αυτού όταν η εκκίνηση ξεκίνησε με ένα.",
   "Beta": "Βήτα",
   "Benchmark uploads": "Συγκριτική αξιολόγηση μεταφορτώσεων",
   "Saved: the next Play {what}.": "Αποθηκεύτηκε: το επόμενο παιχνίδι {what}.",

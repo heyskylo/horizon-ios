@@ -264,7 +264,7 @@
   "Backups": "การสำรองข้อมูล",
   "Nothing found.": "ไม่พบอะไรเลย",
   "The source at commit {commit}.": "แหล่งที่มาที่กระทำ {commit}",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "การดาวน์โหลด การลงชื่อเข้าใช้ และการอัปเดตต้องดำเนินการผ่านพร็อกซี HTTP นี้ (http://host:port) ว่างเปล่าหมายความว่าไม่มี: ใช้ HTTPS_PROXY แทนเมื่อตัวเรียกใช้งานเริ่มต้นด้วยอันหนึ่ง",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "การดาวน์โหลด การลงชื่อเข้าใช้ และการอัปเดตต้องดำเนินการผ่านพร็อกซี นี้ (http://host:port, socks5://host:port) ว่างเปล่าหมายความว่าไม่มี: ใช้ HTTPS_PROXY แทนเมื่อตัวเรียกใช้งานเริ่มต้นด้วยอันหนึ่ง",
   "Beta": "เบต้า",
   "Benchmark uploads": "การอัปโหลดเกณฑ์มาตรฐาน",
   "Saved: the next Play {what}.": "บันทึกแล้ว: เล่นครั้งต่อไป {what}",

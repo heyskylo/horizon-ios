@@ -263,7 +263,7 @@
   "Backups": "Backups",
   "Nothing found.": "Näischt fonnt.",
   "The source at commit {commit}.": "D'Quell bei engagéieren {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Downloads, Umeldungen an Updates ginn duerch dësen HTTP Proxy (http://host:port). Eidel heescht keen: HTTPS_PROXY gëtt amplaz benotzt wann de Launcher mat engem gestart gouf.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Downloads, Umeldungen an Updates ginn duerch dësen Proxy (http://host:port, socks5://host:port). Eidel heescht keen: HTTPS_PROXY gëtt amplaz benotzt wann de Launcher mat engem gestart gouf.",
   "Beta": "Beta",
   "Benchmark uploads": "Benchmark eropluede",
   "Saved: the next Play {what}.": "Gespäichert: dat nächst Spill {what}.",

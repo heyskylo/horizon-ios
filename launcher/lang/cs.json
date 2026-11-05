@@ -264,7 +264,7 @@
   "Backups": "Zálohy",
   "Nothing found.": "Nic nenalezeno.",
   "The source at commit {commit}.": "Zdroj v potvrzení {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Stahování, přihlášení a aktualizace procházejí přes tento HTTP proxy (http://hostitel:port). Prázdné znamená žádné: místo toho se použije HTTPS_PROXY, když byl spouštěč spuštěn s jedním.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Stahování, přihlášení a aktualizace procházejí přes tento proxy (http://hostitel:port, socks5://hostitel:port). Prázdné znamená žádné: místo toho se použije HTTPS_PROXY, když byl spouštěč spuštěn s jedním.",
   "Beta": "Beta",
   "Benchmark uploads": "Srovnávací nahrávání",
   "Saved: the next Play {what}.": "Uloženo: další přehrávání {what}.",
