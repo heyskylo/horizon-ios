@@ -558,7 +558,15 @@ where
                                     if column.fills_runs(fill.block)
                                         && worker.veins_miss(fill, BlockPos::new(x, y, z))?
                                     {
-                                        let lowest = band_low.max(write_min_y);
+                                        // A run above the minimum surface level stops
+                                        // there too: below it the band takes its other
+                                        // variant (`surface` is false).
+                                        let lowest = match minimum {
+                                            Some(level) if surface => {
+                                                band_low.max(write_min_y).max(level)
+                                            }
+                                            _ => band_low.max(write_min_y),
+                                        };
                                         let mut run_low = y;
                                         loop {
                                             let next = run_low.wrapping_sub(1);
