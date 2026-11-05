@@ -1893,6 +1893,84 @@ impl ArmorStand {
     pub fn render_position(&self, alpha: f64) -> Vec3 {
         self.previous.lerp(self.position, alpha)
     }
+    /// `ArmorStand.getDimensionsMarker(false)`: the width, height and eye
+    /// height of the box a stand has without the marker flag, which is the box
+    /// a marker's light probe walks (`MARKER_DIMENSIONS` itself is empty, and
+    /// `isBaby()` is `isSmall()`).
+    pub fn probe_dimensions(&self) -> (f64, f64, f64) {
+        if self.small {
+            (0.25, 0.9875, 0.9875)
+        } else {
+            (0.5, 1.975, 1.7775)
+        }
+    }
+    /// `ArmorStand.getLightProbePosition` as the cell the renderer reads
+    /// (`BlockPos.containing` of the position it returns): a marker walks
+    /// `BlockPos.betweenClosed` of its non-marker box at `position()` - it
+    /// takes no partial tick - and returns the first cell whose brightness
+    /// `max(block, sky)` is 15, else the brightest, ties going to the first
+    /// cell walked; every other stand is lit from its eye
+    /// (`Entity.getLightProbePosition` is `getEyePosition(partialTick)`).
+    /// `light` is the level's packed light.
+    pub fn light_probe(
+        &self,
+        partial: f64,
+        mut light: impl FnMut(i32, i32, i32) -> u8,
+    ) -> [i32; 3] {
+        let (width, height, eye) = self.probe_dimensions();
+        if !self.marker {
+            let at = self.render_position(partial);
+            return [
+                at.x.floor() as i32,
+                (at.y + eye).floor() as i32,
+                at.z.floor() as i32,
+            ];
+        }
+        let half = width / 2.0;
+        let (lo_x, hi_x) = (
+            (self.position.x - half).floor() as i32,
+            (self.position.x + half).floor() as i32,
+        );
+        let (lo_z, hi_z) = (
+            (self.position.z - half).floor() as i32,
+            (self.position.z + half).floor() as i32,
+        );
+        let (lo_y, hi_y) = (
+            self.position.y.floor() as i32,
+            (self.position.y + height).floor() as i32,
+        );
+        // `BlockPos.betweenClosed` walks x fastest, then y, then z; the stand's
+        // own cell is what it falls back to when the box is empty.
+        let mut best = [
+            self.position.x.floor() as i32,
+            self.position.y.floor() as i32,
+            self.position.z.floor() as i32,
+        ];
+        let mut brightest = i32::MIN;
+        for cell_z in lo_z..=hi_z {
+            for cell_y in lo_y..=hi_y {
+                for cell_x in lo_x..=hi_x {
+                    let level = light(cell_x, cell_y, cell_z);
+                    let brightness = i32::from((level & 15).max(level >> 4));
+                    if brightness == 15 {
+                        return [cell_x, cell_y, cell_z];
+                    }
+                    if brightness > brightest {
+                        brightest = brightness;
+                        best = [cell_x, cell_y, cell_z];
+                    }
+                }
+            }
+        }
+        best
+    }
+    /// `EntityRenderer.getPackedLightCoords` for the cell `light_probe` chose:
+    /// the level's sky light over the cell's block light, at 15 block light
+    /// while the stand `isOnFire`. `light` is the level's packed light.
+    pub fn render_light(&self, light: u8) -> u32 {
+        let block = if self.fire_ticks > 0 { 15 } else { light & 15 };
+        (u32::from(light >> 4) * 16) | ((u32::from(block) * 16) << 8)
+    }
     /// The body's yaw `alpha` of the way through the tick
     /// (`LivingEntityRenderer.solveBodyRot`: `Mth.rotLerp(partialTick,
     /// yBodyRotO, yBodyRot)`).
