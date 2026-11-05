@@ -175,6 +175,16 @@ pub(super) fn click(state: &mut State, cursor: (f32, f32), size: (f32, f32)) {
         state.select(row);
     }
 }
+/// The focus landed on the row at `cursor`: it is selected, and the search box no longer has the
+/// keys. Whether a row was there.
+pub(super) fn focus_row(state: &mut State, cursor: (f32, f32), size: (f32, f32)) -> bool {
+    let Some(row) = row_at(state, cursor, size) else {
+        return false;
+    };
+    state.query_focused = false;
+    state.select(row);
+    true
+}
 pub(super) fn wheel(state: &mut State, delta: f32, cursor: (f32, f32), size: (f32, f32)) {
     let rows = state.rows();
     let (top, bottom, _, content) = list_area(size, rows.len());
@@ -289,6 +299,9 @@ pub(super) fn draw(
     for (at, index) in rows.iter().enumerate() {
         let y = top + 2.0 + at as f32 * ROW_HEIGHT - offset;
         let target = [left, y - 2.0, ROW_WIDTH, ROW_HEIGHT];
+        if let Some(name) = state.name(*index) {
+            super::flat::row_target(name, target, top, bottom);
+        }
         if selected == Some(at) {
             batch.fill(
                 atlas,

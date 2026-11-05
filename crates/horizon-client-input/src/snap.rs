@@ -91,6 +91,36 @@ pub fn settle(start: Point, end: Point, targets: &[Point], tuning: &Tuning) -> O
     }
 }
 
+/// Where a cursor left on a target goes once the targets moved: with most of
+/// them if they moved together (a recipe book opened), else to the nearest
+/// one (a creative tab with other slots), so it never rests between targets.
+/// `None` when it wasn't on a target, or one is still there.
+pub fn follow(at: Point, before: &[Point], after: &[Point]) -> Option<usize> {
+    const SAME: f32 = 0.5;
+    let on = before.iter().find(|t| distance(at, **t) <= SAME)?;
+    if after.iter().any(|t| distance(at, *t) <= SAME) {
+        return None;
+    }
+    let carried = |by: Point| {
+        before
+            .iter()
+            .filter(|b| {
+                let moved = (b.0 + by.0, b.1 + by.1);
+                after.iter().any(|a| distance(moved, *a) <= SAME)
+            })
+            .count()
+    };
+    let together = after
+        .iter()
+        .enumerate()
+        .map(|(i, a)| (i, carried((a.0 - on.0, a.1 - on.1))))
+        .max_by_key(|&(_, count)| count)
+        .filter(|&(_, count)| count * 2 > before.len());
+    together
+        .map(|(i, _)| i)
+        .or_else(|| nearest(at, after, f32::INFINITY))
+}
+
 /// The cursor `seconds` into a glide from `from` to `to`: eased out, so it
 /// slows as it lands, and exactly `to` once the glide is over.
 pub fn glide(from: Point, to: Point, seconds: f32, tuning: &Tuning) -> Point {
@@ -108,6 +138,26 @@ mod tests {
 
     /// A row of inventory slots, 18 pixels apart, and the slot below the first.
     const SLOTS: [Point; 4] = [(8.0, 8.0), (26.0, 8.0), (44.0, 8.0), (8.0, 26.0)];
+
+    #[test]
+    fn follow_goes_with_targets_that_moved_together() {
+        let moved = SLOTS.map(|s| (s.0 + 77.0, s.1));
+        assert_eq!(follow(SLOTS[1], &SLOTS, &moved), Some(1));
+    }
+
+    #[test]
+    fn follow_takes_the_nearest_of_other_targets() {
+        let other = [(30.0, 50.0), (200.0, 200.0)];
+        assert_eq!(follow(SLOTS[1], &SLOTS, &other), Some(0));
+    }
+
+    #[test]
+    fn follow_leaves_a_free_cursor_and_a_target_still_there() {
+        let other = [(30.0, 50.0)];
+        assert_eq!(follow((100.0, 100.0), &SLOTS, &other), None);
+        assert_eq!(follow(SLOTS[0], &SLOTS, &SLOTS), None);
+        assert_eq!(follow(SLOTS[0], &SLOTS, &[]), None);
+    }
 
     #[test]
     fn a_short_flick_moves_to_the_neighbour_it_heads_for() {

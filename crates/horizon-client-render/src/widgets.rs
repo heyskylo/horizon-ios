@@ -3,6 +3,7 @@
 //! click-button Respawn`) or any widget by its id in [`tree`] (`horizon-ctl
 //! click done`), whatever screen drew it. Also the mouse cursor the widget
 //! under the mouse asks for.
+use crate::gamepad::ScrollArea;
 use std::cell::{Cell, RefCell};
 
 /// The mouse cursor a frame's widgets asked for (`CursorTypes`; the others
@@ -102,6 +103,8 @@ thread_local! {
     static ACTION_GLYPHS: Cell<bool> = const { Cell::new(false) };
     /// The screen the buttons in `ACTIONS` were declared on, the same two frames.
     static ACTION_SCREENS: Cell<(u64, u64)> = const { Cell::new((0, 0)) };
+    /// The lists drawn with a scrollbar since `end_frame`, and the last frame's.
+    static SCROLL_AREAS: RefCell<(Vec<ScrollArea>, Vec<ScrollArea>)> = const { RefCell::new((Vec::new(), Vec::new())) };
 }
 
 /// Splitscreen: one player's buttons and focus targets, kept aside while another player's game
@@ -113,6 +116,7 @@ pub struct Saved(
     (Vec<DeclaredAction>, Vec<DeclaredAction>),
     bool,
     (u64, u64),
+    (Vec<ScrollArea>, Vec<ScrollArea>),
 );
 
 /// This thread's buttons and targets, leaving none.
@@ -123,6 +127,7 @@ pub fn take() -> Saved {
         ACTIONS.take(),
         ACTION_GLYPHS.take(),
         ACTION_SCREENS.take(),
+        SCROLL_AREAS.take(),
     )
 }
 
@@ -130,6 +135,7 @@ pub fn take() -> Saved {
 pub fn put(saved: Saved) {
     WIDGETS.set(saved.0);
     TARGETS.set(saved.1);
+    SCROLL_AREAS.set(saved.5);
     ACTIONS.set(saved.2);
     ACTION_GLYPHS.set(saved.3);
     ACTION_SCREENS.set(saved.4);
@@ -238,6 +244,37 @@ pub fn clip_targets(mark: usize, y0: f32, y1: f32) {
     });
 }
 
+/// This frame drew a list with something to scroll, in `rect`, scrolled `amount`
+/// of `max`: a focus step goes through its hidden rows before it leaves
+/// (`gamepad::list_step`).
+pub fn scroll_area(rect: [f32; 4], amount: f32, max: f32) {
+    let area = ScrollArea {
+        rect,
+        amount,
+        up: amount > 0.5,
+        down: amount < max - 0.5,
+    };
+    SCROLL_AREAS.with_borrow_mut(|(current, _)| current.push(area));
+}
+
+/// The lists the last drawn frame could scroll.
+pub fn last_scroll_areas() -> Vec<ScrollArea> {
+    SCROLL_AREAS.with_borrow(|(_, last)| last.clone())
+}
+
+/// A point the open screen's list scrolls under: `at` when it is over one, else
+/// the same column at the list's middle. For the right stick, which scrolls the
+/// list wherever the hidden pointer is.
+pub fn over_scroll_area(at: (f32, f32)) -> (f32, f32) {
+    SCROLL_AREAS.with_borrow(|(_, last)| {
+        let over = |a: &ScrollArea| (a.rect[1]..a.rect[1] + a.rect[3]).contains(&at.1);
+        match last.first() {
+            Some(area) if !last.iter().any(over) => (at.0, area.rect[1] + area.rect[3] / 2.0),
+            _ => at,
+        }
+    })
+}
+
 /// The focus targets of the last drawn frame.
 pub fn last_targets() -> Vec<Target> {
     TARGETS.with_borrow(|(_, last, _)| last.clone())
@@ -312,6 +349,9 @@ pub fn end_frame(frames: u64) {
                 *last = std::mem::take(current);
             });
             ACTION_SCREENS.set((ACTION_SCREENS.get().0, ACTION_SCREENS.get().0));
+            SCROLL_AREAS.with_borrow_mut(|(current, last)| {
+                *last = std::mem::take(current);
+            });
             NARRATION.with_borrow_mut(|(current, last)| {
                 *last = std::mem::replace(current, Narration::EMPTY);
             });

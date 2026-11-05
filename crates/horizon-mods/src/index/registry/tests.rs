@@ -211,6 +211,53 @@ fn an_entry_written_reads_back() {
 }
 
 #[test]
+fn owners_and_owner_ids_must_name_the_same_accounts() {
+    let entry = |extra: &str| -> Entry {
+        toml::from_str(&hud_entry().replacen("owners = [\"ludovic111\"]", extra, 1)).unwrap()
+    };
+    let mismatch = |e: &Entry| e.check_fields().iter().any(|m| m.contains("owner_ids"));
+    // No IDs yet (older entries), or one ID per login: fine.
+    assert!(!mismatch(&entry(r#"owners = ["ludovic111"]"#)));
+    assert!(!mismatch(&entry(
+        "owner_ids = [136255825, 583231]\nowners = [\"ludovic111\", \"someone\"]"
+    )));
+    // A co-owner added to `owners` alone would silently not be an owner: refused when it's made.
+    assert!(mismatch(&entry(
+        "owner_ids = [136255825]\nowners = [\"ludovic111\", \"someone\"]"
+    )));
+    assert!(mismatch(&entry(
+        "owner_ids = [136255825, 583231]\nowners = [\"ludovic111\"]"
+    )));
+}
+
+#[test]
+fn owner_ids_are_optional_and_kept() {
+    // Entries from before IDs were recorded still read, and write no `owner_ids`.
+    let old: Entry = toml::from_str(&hud_entry()).unwrap();
+    assert!(old.owner_ids.is_empty());
+    assert!(!old.to_toml().unwrap().contains("owner_ids"));
+    let text = hud_entry().replacen("owners = ", "owner_ids = [583231]\nowners = ", 1);
+    let new: Entry = toml::from_str(&text).unwrap();
+    assert_eq!(new.owner_ids, [583231]);
+    assert_eq!(
+        toml::from_str::<Entry>(&new.to_toml().unwrap()).unwrap(),
+        new
+    );
+    // A change of IDs is pointed out to reviewers.
+    let r = review(
+        std::slice::from_ref(&old),
+        std::slice::from_ref(&new),
+        "ludovic111",
+    );
+    assert!(
+        r.notes
+            .iter()
+            .any(|n| n.contains("owner IDs (none) -> 583231")),
+        "{r:?}"
+    );
+}
+
+#[test]
 fn a_review_protects_published_files() {
     let base: Entry = toml::from_str(&hud_entry()).unwrap();
     let cozy: Entry = toml::from_str(COZY).unwrap();

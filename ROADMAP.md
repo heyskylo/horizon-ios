@@ -206,7 +206,7 @@ Manage a server from a console, ban and pardon players, and drive it from other 
 
 <details><summary>Technical</summary>
 
-`horizon-server console` (a text interface), `ban`, `pardon`, `ban-ip` and `mcp` over stdio. Admin API additions: the player list, kick, ban, op and whitelist, an SSE stream of logs and events, a text metrics endpoint, config GET and PATCH, backup delete and download. The panel's later features (bans, worlds, server.properties import, logs and crash reports, modpacks) and vanilla's management protocol (the JSON-RPC over WebSocket that the `management-server-*` keys configure), so vanilla's tools can manage a Horizon server. [docs/server.md](docs/server.md), [docs/api/server.md](docs/api/server.md).
+`horizon-server console` (a text interface), `ban`, `pardon`, `ban-ip` and `mcp` over stdio. Admin API additions: the player list, kick, ban, op and whitelist, an SSE stream of logs and events, a text metrics endpoint, config GET and PATCH, backup delete and download. The last pieces merged: bans edited while the server is stopped ([#9767](https://github.com/horizon-rust/horizon/issues/9767)) and the MCP tools' contracts pinned by a test ([#9748](https://github.com/horizon-rust/horizon/issues/9748)). The panel's later features and vanilla's management protocol are their own item (server-panel-management). [docs/server.md](docs/server.md), [docs/api/server.md](docs/api/server.md).
 
 </details>
 
@@ -395,6 +395,16 @@ A Datapacks tab beside Mods and Resource packs: install into a chosen world's da
 </details>
 
 ### Servers and multiplayer
+
+#### Server panel extras and vanilla's management protocol
+
+More of a server managed from its web panel (bans, worlds, logs and crash reports, modpacks), and vanilla's own server-management tools working with a Horizon server.
+
+<details><summary>Technical</summary>
+
+The panel's later features (bans, worlds, server.properties import, logs and crash reports, modpacks) and vanilla's management protocol (the JSON-RPC over WebSocket that the `management-server-*` keys configure), so vanilla's tools can manage a Horizon server. Split from server-admin. [docs/server.md](docs/server.md), [docs/api/server.md](docs/api/server.md).
+
+</details>
 
 #### Ely.by and other sign-in providers
 
@@ -597,16 +607,6 @@ Pick the speakers or headphones Horizon plays through, in Music & Sounds.
 <details><summary>Technical</summary>
 
 An output device list in Music & Sounds, falling back to the system default. [#1035](https://github.com/horizon-rust/horizon/issues/1035) started it: a player on an older Windows computer had no sound at all, and a device choice is how such cases are found and fixed.
-
-</details>
-
-#### Play in your language
-
-Item names, container titles and server messages follow the language you pick, as in vanilla. Today parts of the game stay in English.
-
-<details><summary>Technical</summary>
-
-Translatable components resolved through the selected language for items, containers and server text ([#1806](https://github.com/horizon-rust/horizon/issues/1806)), on top of the bundled languages the prepared resources carry ([#1594](https://github.com/horizon-rust/horizon/issues/1594)). Left: the client's own screens ([#1672](https://github.com/horizon-rust/horizon/issues/1672)) and the main menu with zh_cn.
 
 </details>
 
@@ -860,30 +860,11 @@ More: [https://playhorizon.dev/docs/performance](https://playhorizon.dev/docs/pe
 
 </details>
 
-### Gameplay parity
-
-#### End city banners keep their pattern
-
-Banners in End cities show as plain magenta instead of with their pattern.
-
-<details><summary>Technical</summary>
-
-Compare the banner block entities the End city templates place with vanilla's (`EndCityPieces`, the templates' block entity NBT, `BannerBlockEntity`'s patterns), in `crates/horizon-world/src/worldgen/structure/`. Issue [#1438](https://github.com/horizon-rust/horizon/issues/1438); possibly related: [#526](https://github.com/horizon-rust/horizon/issues/526). The templates' block entities now keep their patterns ([#1928](https://github.com/horizon-rust/horizon/issues/1928)).
-
-</details>
-
-#### Enchanted loot in End cities
-
-Armour and tools in End city chests should come enchanted, as in vanilla.
-
-<details><summary>Technical</summary>
-
-`loot.rs` implements `enchant_with_levels`: find why the End city chest table's rolls come out bare, and compare them with vanilla's for a few seeds. Issues [#1437](https://github.com/horizon-rust/horizon/issues/1437), [#1660](https://github.com/horizon-rust/horizon/issues/1660). The loot's enchantment functions now reach every table that rolls ([#1911](https://github.com/horizon-rust/horizon/issues/1911), [#2037](https://github.com/horizon-rust/horizon/issues/2037)).
-
-</details>
-
 ## Recently shipped
 
+- **Enchanted loot in End cities** (v0.2.73): Armour and tools in End city chests should come enchanted, as in vanilla. [#1437](https://github.com/horizon-rust/horizon/issues/1437) · [#1660](https://github.com/horizon-rust/horizon/issues/1660) · [#1911](https://github.com/horizon-rust/horizon/issues/1911) · [#2037](https://github.com/horizon-rust/horizon/issues/2037)
+- **End city banners keep their pattern** (v0.2.67): Banners in End cities show as plain magenta instead of with their pattern. [#1438](https://github.com/horizon-rust/horizon/issues/1438) · [#526](https://github.com/horizon-rust/horizon/issues/526) · [#1928](https://github.com/horizon-rust/horizon/issues/1928)
+- **Play in your language** (v0.2.65): Item names, container titles and server messages follow the language you pick, as in vanilla. Today parts of the game stay in English. [#1806](https://github.com/horizon-rust/horizon/issues/1806) · [#1594](https://github.com/horizon-rust/horizon/issues/1594) · [#1672](https://github.com/horizon-rust/horizon/issues/1672)
 - **Chickens flap while they fall** (v0.2.67): Chickens should flap their wings while they fall, not stand still in the air. [#1706](https://github.com/horizon-rust/horizon/issues/1706) · [#1892](https://github.com/horizon-rust/horizon/issues/1892)
 - **Ctrl+Backspace and scroll bars in menus** (v0.2.67): Ctrl+Backspace should delete a whole word in the creative search, and every list's scroll bar should be draggable. [#1764](https://github.com/horizon-rust/horizon/issues/1764) · [#1782](https://github.com/horizon-rust/horizon/issues/1782) · [#1884](https://github.com/horizon-rust/horizon/issues/1884) · [#1931](https://github.com/horizon-rust/horizon/issues/1931)
 - **A pointing hand over buttons** (v0.2.67): The mouse pointer should turn into a pointing hand over menu buttons, as in vanilla 26.3. [#1347](https://github.com/horizon-rust/horizon/issues/1347) · [#1897](https://github.com/horizon-rust/horizon/issues/1897)

@@ -287,6 +287,13 @@ impl Game<'_> {
             .shortcut(&self.gui.atlas, shortcut, &mut self.clipboard)
     }
     pub(super) fn options_scroll(&mut self, amount: f32) -> Result<()> {
+        if self.pad_stick_scroll() {
+            let size = self.gui_size();
+            self.ui
+                .options
+                .scroll_at(&self.settings, size, self.cursor, amount);
+            return Ok(());
+        }
         let framebuffer = self.renderer.as_ref().map_or([1280, 720], |r| {
             [r.config.width as i32, r.config.height as i32]
         });

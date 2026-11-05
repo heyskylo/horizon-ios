@@ -490,12 +490,11 @@ impl Game<'_> {
                 );
             }
             let name = self.pack.names.display_item(&stack.item);
-            horizon_client::widgets::record_as(
-                &format!("{name} tab"),
-                [x + 1.0, y + 1.0, 16.0, 16.0],
-                true,
-                horizon_client::widgets::Kind::Tab(i == selected),
-            );
+            let rect = [x + 1.0, y + 1.0, 16.0, 16.0];
+            let kind = horizon_client::widgets::Kind::Tab(i == selected);
+            horizon_client::widgets::record_as(&format!("{name} tab"), rect, true, kind);
+            // The kind reaches the bumpers only as a target (`key_focus::drawn_targets`).
+            horizon_client::widgets::target_as(rect, kind);
         }
     }
 

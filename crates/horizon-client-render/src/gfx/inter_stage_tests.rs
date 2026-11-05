@@ -102,6 +102,11 @@ fn composed() -> Vec<(&'static str, Vec<&'static str>, String)> {
     vec![
         ("entity", vec!["entity.wgsl"], entity.clone()),
         (
+            "GPU culling occlusion test",
+            vec!["gpu_culling.wgsl", "gpu_occlusion.wgsl"],
+            include_str!("gpu_culling.wgsl").to_owned() + include_str!("gpu_occlusion.wgsl"),
+        ),
+        (
             "static entity",
             vec!["entity.wgsl", "static_entity.wgsl"],
             entity.clone() + include_str!("../static_entity.wgsl"),

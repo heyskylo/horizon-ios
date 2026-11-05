@@ -903,6 +903,9 @@ impl Game<'_> {
             return;
         };
         let cursor = self.cursor;
+        let stick_scroll = self.pad_stick_scroll();
+        // A focus step past the body's edge scrolls the body, not a box it's leaving.
+        let step_scroll = self.pad_step_scroll();
         if let Some(open) = self.dialogs.open.as_mut() {
             let [_, ay, _, ah] = layout.area;
             if delta != 0.0 && cursor.1 >= ay && cursor.1 < ay + ah {
@@ -916,7 +919,7 @@ impl Game<'_> {
                             } if ui::hovered(cursor, x, y, w, h) => Some(input),
                             _ => None,
                         });
-                if let Some(input) = hovered_cycle {
+                if let Some(input) = hovered_cycle.filter(|_| !stick_scroll) {
                     // CycleButton.mouseScrolled: up goes back.
                     cycle(open, input, if delta > 0.0 { -1 } else { 1 });
                     return;
@@ -941,7 +944,10 @@ impl Game<'_> {
                         },
                         _ => None,
                     });
-                if let Some(Some(Field::Multi(edit))) = text.and_then(|i| open.fields.get_mut(i)) {
+                if let Some(Some(Field::Multi(edit))) = text
+                    .filter(|_| !step_scroll)
+                    .and_then(|i| open.fields.get_mut(i))
+                {
                     edit.wheel(delta);
                     return;
                 }

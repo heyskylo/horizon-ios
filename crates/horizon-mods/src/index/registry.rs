@@ -43,6 +43,12 @@ pub struct Entry {
     pub authors: Vec<String>,
     /// GitHub logins allowed to publish updates.
     pub owners: Vec<String>,
+    /// The owners' numeric GitHub IDs, which decide who they are: GitHub hands a renamed or deleted
+    /// account's login to whoever claims it next, while an ID is never reused. The form records the
+    /// lister's; the registry's backfill fills in older entries. When it is empty, an update is matched
+    /// by login and always waits for a reviewer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub owner_ids: Vec<u64>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub license: String,
     /// Defaults to the repository's address.
@@ -165,6 +171,16 @@ impl Entry {
         }
         if self.owners.is_empty() {
             errors.push(format!("{id}: needs at least one owner (a GitHub login)"));
+        }
+        // Once an entry records IDs, only they make an owner: a login added to `owners` alone would
+        // silently not be one (and be refused while listed). Both lists name the same accounts.
+        if !self.owner_ids.is_empty() && self.owner_ids.len() != self.owners.len() {
+            errors.push(format!(
+                "{id}: owners lists {} login(s) but owner_ids {} ID(s): give each owner's numeric GitHub \
+                 ID in owner_ids, in the same order (`gh api users/<login> --jq .id`)",
+                self.owners.len(),
+                self.owner_ids.len()
+            ));
         }
         for (field, value) in [
             ("name", &self.name),
@@ -655,6 +671,22 @@ pub fn review(base: &[Entry], head: &[Entry], author: &str) -> Review {
                 old.id,
                 old.owners.join(", "),
                 new.owners.join(", ")
+            ));
+        }
+        if new.owner_ids != old.owner_ids {
+            let ids = |ids: &[u64]| match ids {
+                [] => "(none)".to_owned(),
+                ids => ids
+                    .iter()
+                    .map(u64::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            };
+            r.notes.push(format!(
+                "{}: owner IDs {} -> {}: check each is the account its login names",
+                old.id,
+                ids(&old.owner_ids),
+                ids(&new.owner_ids)
             ));
         }
         if new.key != old.key {

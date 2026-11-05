@@ -1458,14 +1458,18 @@ impl Launcher {
                                 .client_started
                                 .take()
                                 .and_then(|since| backend::crash_report_since(&home, since));
-                            if error.is_some() && report.is_none() && self.switched_to_dx12() {
-                                self.client_error = Some(
+                            let switched = if error.is_some() && report.is_none() {
+                                self.switched_from_vulkan()
+                            } else {
+                                None
+                            };
+                            if let Some(api) = switched {
+                                self.client_error = Some(trf(
                                     "Horizon's Vulkan renderer crashed while starting on this \
-                                     graphics card, so the game now uses DirectX 12. Press Play \
-                                     to start it again. Video Settings > Graphics API switches \
-                                     back."
-                                        .into(),
-                                );
+                                     graphics card, so the game now uses {api}. Press Play to \
+                                     start it again. Video Settings > Graphics API switches back.",
+                                    &[("api", api)],
+                                ));
                             } else if error.is_some() || report.is_some() {
                                 let summary = report
                                     .as_ref()
@@ -1531,11 +1535,13 @@ impl Launcher {
     }
 
     /// After a crash with no report: when the game's output ends while its Vulkan renderer
-    /// started, a native crash in the graphics driver (#746), switches the game to DirectX 12
-    /// (Windows only; only where the player left the graphics API on Auto). True when it did.
-    fn switched_to_dx12(&self) -> bool {
-        if !cfg!(windows) || !backend::vulkan_start_crashed(&self.prepare_log) {
-            return false;
+    /// started, a native crash in the graphics driver (#746), switches the game to
+    /// `backend::vulkan_crash_fallback` (DirectX 12 on Windows, OpenGL on Linux; only where the
+    /// player left the graphics API on Auto). The API's label when it did.
+    fn switched_from_vulkan(&self) -> Option<&'static str> {
+        let (api, label) = backend::vulkan_crash_fallback(std::env::consts::OS)?;
+        if !backend::vulkan_start_crashed(&self.prepare_log) {
+            return None;
         }
         // The GPU is the same for every profile: the game home's setting and the crashed run's.
         let home = backend::game_home();
@@ -1543,12 +1549,12 @@ impl Launcher {
         homes.extend(self.client_home.clone().filter(|h| *h != home));
         let mut switched = false;
         for home in homes {
-            match backend::switch_to_dx12(&home) {
+            match backend::switch_from_auto(&home, api) {
                 Ok(changed) => switched |= changed,
-                Err(e) => eprintln!("Horizon launcher: could not switch to DirectX 12: {e}"),
+                Err(e) => eprintln!("Horizon launcher: could not switch to {label}: {e}"),
             }
         }
-        switched
+        switched.then_some(label)
     }
 
     /// The version Play starts: the selected instance's own, else the launcher's.
