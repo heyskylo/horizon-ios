@@ -122,6 +122,10 @@ fn install_version_in(
     let pack = Modpack::read(&path)?;
     let home = home(work);
     fs::create_dir_all(&home).map_err(|e| format!("{}: {e}", home.display()))?;
+    // A mod the pack's last version listed keeps the player's on/off choice from the Mods
+    // page; a mod this version adds starts at the pack's `on`. `install_version` turns a mod
+    // on, so the choice is read before it and written back after.
+    let before = read(work).map(|p| p.mods).unwrap_or_default();
     let mut mods = Vec::new();
     for m in &pack.manifest.mods {
         let found = index
@@ -133,8 +137,12 @@ fn install_version_in(
                 p.name, m.id, m.version
             ));
         };
+        let was = before
+            .iter()
+            .any(|s| s.split(' ').next() == Some(m.id.as_str()))
+            .then(|| java::is_enabled(&home, &m.id));
         install_version(index, local, mp, mv, &home, progress)?;
-        java::set_enabled(&home, &m.id, m.on)?;
+        java::set_enabled(&home, &m.id, was.unwrap_or(m.on))?;
         mods.push(format!("{} {}", m.id, m.version));
     }
     // Settings once: the player's own changes to the profile stay on updates.
