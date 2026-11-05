@@ -1208,6 +1208,9 @@
       "name": "item_picked_up",
       "version": 1,
       "target": "horizon_client::game::native_hooks::Game<'_>::native_item_picked_up",
+      "neoforge": "ItemEntityPickupEvent.Pre (canceled is setCanPickup(TriState.FALSE); no forced pickup)",
+      "side": "server",
+      "cancellable": true,
       "mod_api": {
         "contract": "cancel",
         "out": "canceled"
@@ -1652,6 +1655,9 @@
       "name": "screen_render_post",
       "version": 1,
       "target": "horizon_client::game::native_hooks::Game<'_>::native_screen_render_post",
+      "neoforge": "ScreenEvent.Render.Post",
+      "side": "client",
+      "cancellable": false,
       "mod_api": {
         "contract": "listen"
       }
@@ -1672,6 +1678,9 @@
       "name": "screen_mouse_button_pressed_pre",
       "version": 1,
       "target": "horizon_client::game::native_hooks::Game<'_>::native_screen_mouse_button_pressed_pre",
+      "neoforge": "ScreenEvent.MouseButtonPressed.Pre",
+      "side": "client",
+      "cancellable": true,
       "mod_api": {
         "contract": "cancel",
         "out": "canceled"
@@ -1681,6 +1690,9 @@
       "name": "screen_mouse_button_released_pre",
       "version": 1,
       "target": "horizon_client::game::native_hooks::Game<'_>::native_screen_mouse_button_released_pre",
+      "neoforge": "ScreenEvent.MouseButtonReleased.Pre",
+      "side": "client",
+      "cancellable": true,
       "mod_api": {
         "contract": "cancel",
         "out": "canceled"
@@ -1795,6 +1807,9 @@
       "name": "screen_mouse_scrolled_pre",
       "version": 1,
       "target": "horizon_client::game::native_hooks::Game<'_>::native_screen_mouse_scrolled_pre",
+      "neoforge": "ScreenEvent.MouseScrolled.Pre",
+      "side": "client",
+      "cancellable": true,
       "mod_api": {
         "contract": "cancel",
         "out": "canceled"
@@ -1825,6 +1840,9 @@
       "name": "screen_key_pressed_pre",
       "version": 1,
       "target": "horizon_client::game::native_hooks::Game<'_>::native_screen_key_pressed_pre",
+      "neoforge": "ScreenEvent.KeyPressed.Pre",
+      "side": "client",
+      "cancellable": true,
       "mod_api": {
         "contract": "cancel",
         "out": "canceled"
@@ -1834,6 +1852,9 @@
       "name": "screen_char_typed_pre",
       "version": 1,
       "target": "horizon_client::game::native_hooks::Game<'_>::native_screen_char_typed_pre",
+      "neoforge": "ScreenEvent.CharacterTyped.Pre",
+      "side": "client",
+      "cancellable": true,
       "mod_api": {
         "contract": "cancel",
         "out": "canceled"
