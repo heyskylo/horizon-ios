@@ -29,7 +29,8 @@ sent the same things over TLS, and every answer is compared exactly:
   property and restart), the live view distance read and changed (including invalid input, saved
   properties and restart), the live simulation distance read and changed (including invalid input, saved
   properties and restart), the live entity broadcast range read and changed (including invalid input,
-  saved properties and restart), and `server/stop`;
+  saved properties and restart), and `server/stop`, after which each process ends as vanilla's does (how long
+  it took is recorded);
 - the TLS version each server agrees on.
 
 A parse error's `data` is Gson's message in vanilla and serde's in Horizon: left out. The notifications the
@@ -348,6 +349,12 @@ def management_properties(port, keystore):
     }
 
 
+def properties_value(value):
+    """A `server.properties` value as vanilla writes it: Java's parser reads a backslash as the start of an
+    escape, so a Windows path (the keystore) must have its own doubled."""
+    return value.replace('\\', '\\\\')
+
+
 def make_keystore(work):
     """A PKCS12 keystore with a self-signed certificate for 127.0.0.1, made with the JDK's keytool, and a TLS
     client context that trusts it."""
@@ -514,6 +521,23 @@ def session(port, context, log):
     return seen
 
 
+def wait_for_exit(server, side, timeout):
+    """The seconds the server's process took to end after `server/stop`, how long it was given.
+
+    Vanilla's exits: `net.minecraft.server.jsonrpc.methods.ServerStateService.stop` submits
+    `MinecraftServer.halt(false)`, `runServer` returns and `main` ends the process. A server still running is
+    the regression this harness exists to catch, so the failure names the side and the last lines it logged,
+    not only Python's `TimeoutExpired`."""
+    asked = time.time()
+    while time.time() - asked < timeout:
+        if server.process.poll() is not None:
+            return round(time.time() - asked, 1)
+        time.sleep(0.1)
+    raise AssertionError(
+        f'the {side} server was still running {timeout} s after server/stop, where vanilla\'s process '
+        f'exits:\n' + '\n'.join(server.since(0)[-10:]))
+
+
 def main():
     lock, jars, libraries = base.verify_artifacts()
     build = lab.LOCAL / NAME
@@ -536,7 +560,8 @@ def main():
                      'generate-structures': 'false', 'view-distance': '3', 'simulation-distance': '3',
                      **management_properties(management, keystore)}
             if side == 'vanilla':
-                (folder / 'server.properties').write_text(''.join(f'{k}={v}\n' for k, v in props.items()))
+                (folder / 'server.properties').write_text(''.join(f'{k}={properties_value(v)}\n'
+                                                                   for k, v in props.items()))
                 command = ['java', '-Xmx2g', '-Duser.timezone=UTC', f'-Dminecraft.api.discovery.host={NO_SERVICES}',
                            '-cp',
                            os.pathsep.join(map(str, [jars['server'], *libraries])), 'net.minecraft.server.Main',
@@ -556,7 +581,7 @@ def main():
                 server.wait_for(DONE, 600)
                 with (build / f'{side}-session.log').open('w') as log:
                     sides[side] = session(management, context, log)
-                server.process.wait(timeout=180)
+                sides[side]['stop_seconds'] = wait_for_exit(server, side, 180)
                 properties = (folder / 'server.properties').read_text()
                 sides[side]['saved_difficulty'] = next(
                     (line.partition('=')[2] for line in properties.splitlines()

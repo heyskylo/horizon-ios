@@ -269,6 +269,7 @@ impl Game<'_> {
                         count += 1;
                         // Mob.startRiding drops its lead.
                         self.break_leash(mob, true, false);
+                        self.note_started_riding(id);
                     }
                     continue;
                 }

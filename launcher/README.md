@@ -246,7 +246,12 @@ page `servers.json` (the list), `servers/<name>/` (the servers created there) an
   what the window does while you play (stays by default; Minimise, or Hide on macOS, puts it away
   when the game starts and brings it back to the front when the game closes; `settings
   while-playing stay|minimize|hide`), the game's extra command-line arguments, an HTTP proxy for
-  downloads, and the launcher's own version and update state.
+  downloads, and the launcher's own version and update state. On Windows ARM, **Game
+  architecture** chooses Automatic, x64 or ARM64 independently from the launcher; automatic
+  preserves the launcher's architecture, and a release without ARM64 uses the signed x64 build.
+  A changed choice reinstalls the selected version when automatic updates are on, and the game
+  won't launch an installed build that conflicts with a manual choice. `horizon-launcher settings
+  game-architecture auto|x64|arm64`.
 - **Updates**: Horizon ships only the Nightly (since 2026-10-28, docs/release-flow.md). The
   launcher installs the current one (the `nightly` pre-release, checksums signed for the Nightly
   channel) as `nightly-<date>-<commit>` and selects it when the player was on a Nightly, on the
