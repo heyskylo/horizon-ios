@@ -119,7 +119,7 @@ pub(super) fn overlay_files(
     for (path, bytes) in contributed {
         // One bad file would fail its whole table and drop the world's pack
         // content with it, so it is skipped alone: every kind is JSON.
-        if let Err(e) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+        if let Err(e) = serde_json::from_slice::<Box<serde_json::value::RawValue>>(&bytes) {
             log::warn!("Horizon: a native mod's data pack file {path} is not JSON, skipped: {e}");
             continue;
         }
