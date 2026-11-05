@@ -413,6 +413,11 @@ impl Game<'_> {
                     position: g.position,
                     sneaking: g.sneaking,
                     input_sneak: g.input & 32 != 0,
+                    team: self
+                        .score
+                        .board
+                        .players_team(&g.name)
+                        .map(|t| t.name.clone()),
                     gamemode: Some(
                         match g.game_mode {
                             1 => "creative",
@@ -591,6 +596,7 @@ impl Game<'_> {
                 })
                 .collect(),
             gamemode: Some(self.mode.name().to_owned()),
+            team: self.player_team().map(|t| t.name.clone()),
             // Vanilla looks for it inside PlayerPredicate.matches whatever the
             // trigger; skipped for a trigger whose criteria can't ask.
             looking_at: looking
@@ -685,6 +691,7 @@ impl Game<'_> {
                 .collect(),
             passengers,
             nbt,
+            team: self.mob_team_of(m).map(|t| t.name.clone()),
             ..Default::default()
         }
     }
