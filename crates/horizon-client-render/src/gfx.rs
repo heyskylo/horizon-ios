@@ -12289,7 +12289,10 @@ mod tests {
                     else {
                         continue;
                     };
-                    let vector_of = |h| match *function_info[h].ty.inner_with(&module.types) {
+                    let vector_of = |h: naga::Handle<naga::Expression>| match *function_info[h]
+                        .ty
+                        .inner_with(&module.types)
+                    {
                         naga::TypeInner::Vector { scalar, .. } => Some(scalar.kind),
                         _ => None,
                     };
