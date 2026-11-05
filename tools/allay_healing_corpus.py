@@ -76,6 +76,7 @@ def allay_healing(cmd, setup):
         sample()
     for uuid, *_ in actors:
         out.extend(setup(f'/kill {uuid}'))
-    out.extend(setup('/scoreboard objectives remove allay_heal',
+    out.extend(setup('/fill 0 99 0 63 103 63 air',
+                     '/scoreboard objectives remove allay_heal',
                      '/forceload remove 0 0 63 63', '/tick unfreeze'))
     return out
