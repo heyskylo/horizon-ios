@@ -1403,6 +1403,23 @@ impl Game<'_> {
                     .push(self.fangs_to_nbt(f, uuid));
             }
         }
+        // `AreaEffectCloud.addAdditionalSaveData`: a lingering potion's cloud is
+        // an entity of its chunk. A dragon's own breath carries no potion and
+        // is not written.
+        for c in &self.breath_clouds {
+            let at = Vec3::new(c.at[0], c.at[1], c.at[2]);
+            if c.potion.is_none() || !keys.contains(&chunk_of(at)) {
+                continue;
+            }
+            let uuid = self
+                .persist
+                .uuids
+                .get(&c.id)
+                .copied()
+                .unwrap_or_else(random_uuid);
+            let tag = super::potions::potion_cloud_to_nbt(c, uuid, self.persist.raw.get(&c.id));
+            out.entry(chunk_of(at)).or_default().push(tag);
+        }
         for o in &self.others {
             if keys.contains(&chunk_of(o.position)) {
                 let uuid = self

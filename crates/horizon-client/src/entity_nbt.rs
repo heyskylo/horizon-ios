@@ -2306,6 +2306,28 @@ pub fn evoker_fangs_to_nbt(
     tag
 }
 
+/// The `Entity` fields a saved non-mob entity carries (`Base::tag`), for a
+/// caller that writes its own kind's fields around them.
+pub fn entity_base_tag(
+    id: &str,
+    position: Vec3,
+    motion: Vec3,
+    rotation: [f32; 2],
+    uuid: [i32; 4],
+    raw: Option<&Tag>,
+) -> Tag {
+    Base {
+        id,
+        uuid,
+        position,
+        motion,
+        rotation,
+        on_ground: raw.is_some_and(|t| flag(t, "OnGround")),
+        fall_distance: 0.0,
+    }
+    .tag(raw)
+}
+
 pub fn item_entity_from_nbt(tag: &Tag, id: u32, bob_offset: f32) -> Option<ItemEntity> {
     let stack = item_from_nbt(tag.get("Item")?)?;
     let position = position(tag)?;
