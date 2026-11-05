@@ -344,8 +344,8 @@ page stays hidden.
   *Reset view* (the live view above, `launcher/src/wardrobe_page/viewer.rs`); **what you own for
   the chosen slot**, "Nothing" first. Hovering a card tries its item on the player (or, for
   "Nothing", takes the slot's item off) until the pointer leaves; equipping shows at once.
-- **One way to the Shop tab**: a plain button by the page's title, *Get more cosmetics on
-  playhorizon.dev*, opens the launcher's Shop tab (below; paying happens on the website); no badge,
+- **One way to the Shop tab**: a plain button by the page's title, *Get more
+  cosmetics*, opens the launcher's Shop tab (below; paying happens on the website); no badge,
   reminder or pop-up points to it. An account that owns nothing yet sees "You don't own any
   cosmetics yet." with that button instead. The founder set's free *Claim for free* where Paddle
   doesn't sell (`Claim::here`) stays here too: the site sends those players to the Wardrobe, since
