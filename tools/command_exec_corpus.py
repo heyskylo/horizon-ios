@@ -5526,10 +5526,15 @@ ISOLATED_REINFORCEMENTS = frozenset({'command zombie reinforcements', 'command r
 # These overlays replace built-in recipes, never beside the corpus's fixed vanilla recipe-count controls.
 ISOLATED_RECIPES = frozenset({'crafting recipe priority', 'crafting base recipe control', 'transmute result patches'})
 ISOLATED_FRAME_MAPS = frozenset({'frame live map detachment'})
-ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS
+ISOLATED_POTION_ICONS = frozenset({'potion custom effect icons'})
+ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_POTION_ICONS
 
 
 def groups():
+    try:
+        from .potion_effect_icon_corpus import cases as potion_effect_icons
+    except ImportError:
+        from potion_effect_icon_corpus import cases as potion_effect_icons
     try:
         from .transmute_patch_corpus import cases as transmute_patches
     except ImportError:
@@ -5562,6 +5567,7 @@ def groups():
         from item_merge_corpus import stack_limit_merges
     return [
         ('setup', group_setup()),
+        ('potion custom effect icons', potion_effect_icons(cmd, setup)),
         ('transmute result patches', transmute_patches(cmd, setup)),
         ('mob effect predicate view', mob_effect_predicates(cmd, setup)),
         ('frame live map detachment', frame_maps(cmd, setup)),

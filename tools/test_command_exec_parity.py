@@ -139,6 +139,7 @@ def main():
     parser.add_argument('--map-decoration-patch-fixture', action='store_true')
     parser.add_argument('--map-decoration-removal-diagnostic', action='store_true')
     parser.add_argument("--selector-bounds-fixture", action="store_true")
+    parser.add_argument('--potion-effect-icon-fixture', action='store_true')
     args = parser.parse_args()
     build = args.work_dir.resolve() if args.work_dir else lab.LOCAL / 'command-exec-parity'
     build.mkdir(parents=True, exist_ok=True)
@@ -201,6 +202,11 @@ def main():
     if args.loaded_fixture:
         groups = [('setup', corpus_module.group_setup()),
                   ('loaded ticket removal', corpus_module.loaded_ticket_removal(args.loaded_block_diagnostic))]
+    if args.potion_effect_icon_fixture or args.only == 'potion custom effect icons':
+        groups = [(name, ops) for name, ops in corpus_module.groups()
+                  if name == 'potion custom effect icons']
+    elif not args.only:
+        groups = [(name, ops) for name, ops in groups if name not in corpus_module.ISOLATED_POTION_ICONS]
     if args.moving_piston_history_diagnostic:
         groups.append(('moving piston presentation diagnostic',
                        corpus_module.moving_piston_presentation_diagnostic()))
