@@ -4118,7 +4118,9 @@ impl Game<'_> {
                 .as_ref()
                 .is_some_and(|p| p.entity_id as u32 == id)
         {
-            return Some(self.player_entity_for(trigger));
+            // `player_entity_for` takes `&mut self` (the compound for `nbt`);
+            // this view of the killer goes without it.
+            return Some(self.player_entity_looking(self.adv.tree.may_look(trigger)));
         }
         host.hub
             .guests
