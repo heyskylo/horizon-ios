@@ -704,7 +704,16 @@ impl Game<'_> {
             );
             if horizon_cosmetics::enabled() {
                 let base = horizon_client::mobs::render::base_transform(m, alpha as f32, camera);
-                self.cosmetics_geometry(m, true, base, alpha as f32, packed, false, out);
+                self.cosmetics_geometry(
+                    m,
+                    true,
+                    base,
+                    Some(camera),
+                    alpha as f32,
+                    packed,
+                    false,
+                    out,
+                );
             }
             self.player_elytra_geometry(m, chest, camera, alpha as f32, packed, out);
             self.spin_attack_geometry(m, camera, alpha as f32, packed, out);
@@ -821,7 +830,7 @@ impl Game<'_> {
         );
         if horizon_cosmetics::enabled() {
             let base = horizon_client::mobs::render::base_transform(&m, 1.0, camera);
-            self.cosmetics_geometry(&m, true, base, 1.0, 240 | 240 << 8, false, &mut verts);
+            self.cosmetics_geometry(&m, true, base, None, 1.0, 240 | 240 << 8, false, &mut verts);
         }
         // `WingsLayer` draws through `RenderTypes.armorCutoutNoCull`: the
         // wings' faces show from both sides (the elytra texture is empty on

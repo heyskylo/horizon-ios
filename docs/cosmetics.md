@@ -319,6 +319,38 @@ same cached `/v1/worn` answers as what they wear (no request of its own, nothing
   player model (the CPU path where that is off), lit and culled with the player. A helmet hides a
   head item, an elytra or cape a back item. The third person view and the
   inventory's player preview show your own.
+- **Companions, trails and auras** (`game/cosmetics/fx.rs`), drawn only by the game, never sent to
+  a server, never an entity: nothing collides with them or can be hit through them.
+  - A *companion* is posed on no bone. Each frame its place moves toward the anchor (in the
+    wearer's model space, turned with the body) by `follow::Follow::step`, a lag of `lag` ticks
+    that doesn't depend on the frame rate; it jumps there when 8 blocks away (a teleport). It faces
+    the wearer's head yaw and its `look` part turns with their pitch (60 %, ±30°). It is drawn with
+    the wearer's items, lit where the wearer stands (`glow`: full bright). It never comes nearer
+    the head than 11 pixels plus its size, and the player's own companion, in first person, never
+    enters the 35° cone around the crosshair (`follow::out_of_view`); it is drawn after the
+    first-person body goes to the shadow pass only.
+  - A *trail*'s particles (`trail::Emitter`) are spawned only by distance walked (`rate` per
+    block, none standing, sneaking or asleep, none after a jump of 4 blocks or more), live their
+    `lifetime` exactly and are placed from their age alone (fall, sway, spin, fade): nothing is
+    stepped per tick. 24 per player and 512 in all (`trail::Budget`); past them none spawn until
+    some die. The player's own trail is never drawn in first person (their body isn't).
+  - An *aura* is a model at the feet or round the body, its texels' alpha times `alpha`, its
+    faces turned away from the camera dropped (`mesher::SHADED_CULL_W`) so nothing in it is drawn
+    twice: it never shows more than `alpha`. None while the wearer flies with an elytra, swims or
+    sleeps.
+  - None is drawn for a wearer farther than 48 blocks from the camera (a few pixels across), and
+    none for one outside the view (they are drawn with the wearer, after its frustum test).
+  - Trails and auras of every player go in one see-through span after the players (shader packs
+    see it as `minecraft:player`, translucent). Others' are hidden by *Hide other players' trails
+    and auras*, and with every other cosmetic by *Name tags only* and *Hidden*.
+- **Cost of companions, trails and auras**: the work of `horizon-cosmetics` per frame
+  (`examples/fx_bench.rs`, items at the format's limits: a 504-vertex companion and aura and the
+  densest trail; release build on an i7-7500U) is 3.6 µs for 1 wearer in view, 58 µs for 16 and
+  189 µs for 64 (trails stop growing at the 512-particle budget). The game spends more: posing,
+  the aura's vertices built on the CPU and their copy into the frame. On that laptop (Intel HD 620,
+  `HORIZON_COSMETICS_LOCAL` mannequins wearing all three and walking in view), the frame's
+  `prepare` phase grows by about 0.6 ms with 16 wearers and 1 to 2.4 ms with 64, mostly the auras.
+  None in view: nothing.
 - **Cost**: a player with nothing to wear adds one cache lookup; with no cosmetic in view the frame
   does no cosmetics work beyond that. The bench scene `stress_avatars` (300 mannequins, 20×15)
   measures the cost with `HORIZON_COSMETICS=1 HORIZON_COSMETICS_LOCAL=…` against the same run off.
