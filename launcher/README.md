@@ -310,10 +310,12 @@ against the release's signed `SHA256SUMS`, and says "A new version is available"
 `src/update_handoff.rs`), which waits for the window's process to exit, puts the new launcher in place (the
 binary, the `.app` bundle or the AppImage) and starts it. Closing the window with an update downloaded installs
 it the same way, so the next start is the new launcher. When the installer can't put it in place, the old
-launcher starts again and says why. A copy that can't replace itself says so at once and offers **Download
-again** (the website's install page): one in a read-only folder (the disk image, or the read-only copy macOS
-runs a downloaded app from until it is moved to Applications), or Windows' temporary copy of a program opened
-inside a `.zip`. `horizon-launcher update` replaces it at once. Development builds and
+launcher starts again and says why. Each process stages in its own folder, and the installer checks the signed
+SHA-256 again before anything goes in; when the launcher in place is already that version or newer, it changes
+nothing. Servers keep running through **Update**. A copy that can't replace itself says so at once and offers
+**Download again** (the website's install page): one in a read-only folder (the disk image, or the read-only copy
+macOS runs a downloaded app from until it is moved to Applications), or on Windows one running from the temporary
+folder, as a program opened inside a `.zip` does. `horizon-launcher update` replaces it at once. Development builds and
 `HORIZON_LAUNCHER_NO_SELF_UPDATE=1` never replace themselves.
 
 On Linux the release also comes as an AppImage, `horizon-launcher-linux-x86_64.AppImage`: one file

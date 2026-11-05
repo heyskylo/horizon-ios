@@ -96,3 +96,45 @@ def mob_contacts(durations=False):
         if cooldown:
             run(f'/data get entity {target} HurtTime', 8)
     return out
+
+
+def overlapping_cod_control():
+    """An overlapping pig proves contact is active while the cod is left alone."""
+    ops = []
+
+    def run(command, expected=None, record=True):
+        ops.append(cmd(command, expect_result=expected, record=record))
+
+    run('/tick freeze', 1)
+    for command in ['/gamerule spawn_mobs false', '/gamerule advance_time false',
+                    '/gamemode creative', '/forceload add 0 0 15 15']:
+        run(command)
+    ops.append({'op': 'settle', 'required_chunks': [[0, 0]]})
+    run('/fill 7 199 7 13 199 13 stone')
+    run('/fill 7 200 7 13 203 13 water')
+    run('/setblock 10 199 5 stone')
+    run('/tp @s 10.5 200 5.5 0 0')
+    run('/execute if entity @s[type=player,gamemode=creative,nbt={Health:20f,Pos:[10.5d,200d,5.5d]}]', 1)
+    run('/execute if loaded 10 201 10', 1)
+    run('/execute if block 10 201 10 water[level=0]', 1)
+    run('/scoreboard objectives add overlap_clock dummy', 1)
+    for species, ident, health in [('pufferfish', 101, 3), ('pig', 102, 10), ('cod', 103, 3)]:
+        puff = ',PuffState:2' if species == 'pufferfish' else ''
+        run(f'/summon {species} 10.5 201 10.5 {{UUID:[I;313,0,0,{ident}],'
+            f'NoAI:1b,NoGravity:1b,Silent:1b,PersistenceRequired:1b{puff}}}', 1)
+        run(f'/execute if entity @e[type={species},nbt={{UUID:[I;313,0,0,{ident}],'
+            f'Health:{health}f,Pos:[10.5d,201d,10.5d],NoAI:1b,NoGravity:1b}}]', 1)
+    run('/execute store result score start overlap_clock run time query gametime', record=False)
+    run('/tick step 2')
+    ops.append({'op': 'tick', 'n': 2})
+    run('/execute store result score elapsed overlap_clock run time query gametime', record=False)
+    run('/scoreboard players operation elapsed overlap_clock -= start overlap_clock', record=False)
+    run('/scoreboard players get elapsed overlap_clock', 2)
+    for species, ident, health in [('pufferfish', 101, 3), ('pig', 102, 7), ('cod', 103, 3)]:
+        uuid = f'00000139-0000-0000-0000-{ident:012x}'
+        run(f'/execute if entity @e[type={species},nbt={{UUID:[I;313,0,0,{ident}]}}]', 1)
+        run(f'/data get entity {uuid} Pos')
+        run(f'/data get entity {uuid} Health', health)
+    run('/execute if data entity 00000139-0000-0000-0000-000000000066 active_effects[{id:"minecraft:poison"}]', 1)
+    run('/execute unless data entity 00000139-0000-0000-0000-000000000067 active_effects[{id:"minecraft:poison"}]', 1)
+    return ops

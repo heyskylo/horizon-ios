@@ -102,10 +102,13 @@ def main():
     parser.add_argument("--boat-item-hit-fixture", action="store_true")
     parser.add_argument("--reference-only", action="store_true")
     parser.add_argument("--boat-motion-diagnostic", action="store_true")
+    parser.add_argument("--pufferfish-contact-fixture", action="store_true")
+    parser.add_argument("--pufferfish-body-diagnostic", action="store_true")
     parser.add_argument('--moving-piston-history-diagnostic', action='store_true',
                         help='retain the full piston presentation/default-origin controls, including H191 insertion-history gaps')
     parser.add_argument("--pufferfish-mob-fixture", action="store_true")
     parser.add_argument("--pufferfish-mob-duration-diagnostic", action="store_true")
+    parser.add_argument("--pufferfish-mob-overlap-control", action="store_true")
     args = parser.parse_args()
     build = args.work_dir.resolve() if args.work_dir else lab.LOCAL / 'command-exec-parity'
     build.mkdir(parents=True, exist_ok=True)
@@ -190,8 +193,12 @@ def main():
         from boat_item_hit_corpus import boat_item_hits
         groups = [('boat item hit', boat_item_hits(args.boat_motion_diagnostic))]
     if args.pufferfish_mob_fixture:
-        from pufferfish_mob_contact_corpus import mob_contacts
-        groups = [("pufferfish mob contact", mob_contacts(args.pufferfish_mob_duration_diagnostic))]
+        from pufferfish_mob_contact_corpus import mob_contacts, overlapping_cod_control
+        groups = [("pufferfish mob contact", overlapping_cod_control() if args.pufferfish_mob_overlap_control
+                   else mob_contacts(args.pufferfish_mob_duration_diagnostic))]
+    if args.pufferfish_contact_fixture:
+        from pufferfish_contact_corpus import contact_fixture
+        groups = [("pufferfish player contact", contact_fixture(args.pufferfish_body_diagnostic))]
     if args.only:
         groups = [g for g in groups if args.only in g[0] or g[0] == 'setup']
     if args.slot_codec_diagnostic:
@@ -206,6 +213,10 @@ def main():
     predicates = corpus_module.predicate_selector_fixtures([name for name, _ in groups])
     functions = corpus_module.function_return_fixtures([name for name, _ in groups])
     advancements = corpus_module.advancement_reward_fixtures([name for name, _ in groups])
+
+    if args.pufferfish_contact_fixture:
+        from pufferfish_contact_corpus import advancements as contact_advancements
+        advancements.update(contact_advancements())
 
     run(['javac', '--release', lock['minecraft']['java_major'], '-proc:none', '-cp', str(jars['server']) + os.pathsep + dependency_path, '-d', classes, oracle], 'compile-java')
     vanilla_dir = build / 'vanilla'
@@ -229,10 +240,12 @@ def main():
             sys.exit('Java direct underwater reference prerequisite failed')
     if args.reference_only:
         reference = [json.loads(line) for line in (build / 'vanilla.jsonl').read_text().splitlines()]
-        recorded = [op for op in script if op['op'] == 'cmd' and op.get('record', True)]
+        recorded = [op for op in script if op['op'] in ('player_state', 'player_loop') or (op['op'] == 'cmd' and op.get('record', True))]
         if len(recorded) != len(reference):
             sys.exit('reference-only record count differs')
         for op, row in zip(recorded, reference):
+            if "expect_observation" in op and row.get("state") != op["expect_observation"]:
+                sys.exit(f"Java observation prerequisite failed: {op}: {row}")
             if 'expect_result' in op and row.get('results') != [[True, op['expect_result']]]:
                 sys.exit(f'Java fixture guard failed: {op}: {row.get("results")}')
         print(f'Java reference: {len(reference)} records, fixture guards passed')
@@ -277,12 +290,14 @@ def main():
     rust = [json.loads(l) for l in (build / 'rust.jsonl').open(encoding='utf-8')]
     if len(vanilla) != len(rust):
         sys.exit(f'record count differs: vanilla {len(vanilla)} rust {len(rust)}')
-    recorded_ops = [op for op in script if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'chunk_ready', 'server_distances') or
+    recorded_ops = [op for op in script if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'chunk_ready', 'server_distances', 'player_state', 'player_loop') or
                     (op['op'] == 'cmd' and op.get('record', True)) or
                     (op['op'] == 'tick' and op.get('record'))]
     if len(recorded_ops) != len(vanilla):
         sys.exit(f'script record count differs: expected {len(recorded_ops)}, got {len(vanilla)}')
     for op, reference in zip(recorded_ops, vanilla):
+        if "expect_observation" in op and reference.get("state") != op["expect_observation"]:
+            sys.exit(f"Java observation prerequisite failed: {op}: {reference}")
         if 'expect_result' in op and reference.get('results') != [[True, op['expect_result']]]:
             sys.exit(f'Java fixture control failed: {op["cmd"]}: {reference.get("results")}')
         if 'expect_values' in op and reference.get('results') != [[True, n] for n in op['expect_values']]:
@@ -296,7 +311,7 @@ def main():
     commands_by_group = []
     index = 0
     for name, lines in groups:
-        n = sum(1 for op in lines if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'chunk_ready', 'server_distances') or (op['op'] == 'cmd' and op.get('record', True)) or (op['op'] == 'tick' and op.get('record')))
+        n = sum(1 for op in lines if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'chunk_ready', 'server_distances', 'player_state', 'player_loop') or (op['op'] == 'cmd' and op.get('record', True)) or (op['op'] == 'tick' and op.get('record')))
         commands_by_group.append((name, index, index + n))
         index += n
     mismatches = []
@@ -379,6 +394,8 @@ def compare(v, r, comparison=None):
         return None if left is not None and right is not None and left == right else 'positive_result'
     if comparison is not None:
         raise ValueError(f'unknown command comparison: {comparison}')
+    if v.get("state") != r.get("state"):
+        return "state"
     if masked(v) != masked(r):
         return 'messages'
     if v['results'] != r['results']:
