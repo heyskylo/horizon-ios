@@ -130,6 +130,8 @@ def main():
     parser.add_argument("--pufferfish-mob-overlap-control", action="store_true")
     parser.add_argument("--map-decoration-namespace-fixture", action="store_true")
     parser.add_argument("--map-decoration-empty-diagnostic", action="store_true")
+    parser.add_argument('--map-decoration-patch-fixture', action='store_true')
+    parser.add_argument('--map-decoration-removal-diagnostic', action='store_true')
     args = parser.parse_args()
     build = args.work_dir.resolve() if args.work_dir else lab.LOCAL / 'command-exec-parity'
     build.mkdir(parents=True, exist_ok=True)
@@ -258,6 +260,9 @@ def main():
         parser.error('reinforcement fixtures require --only with one exact group')
     if any(name in isolated_recipes for name, _ in groups) and sum(name != 'setup' for name, _ in groups) != 1:
         parser.error('crafting recipe fixtures require --only with one exact group')
+    if args.map_decoration_patch_fixture:
+        from map_decoration_patch_corpus import map_decoration_patches
+        groups = [('setup', corpus_module.group_setup()), ('map decoration saved patch', map_decoration_patches(args.map_decoration_removal_diagnostic))]
     script = []
     for _, lines in groups:
         script.extend(lines)
