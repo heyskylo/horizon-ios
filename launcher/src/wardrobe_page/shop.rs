@@ -22,10 +22,12 @@ pub(crate) struct Shop {
     selected: Option<String>,
     busy: bool,
     said: Option<String>,
-    /// Quarter turns of the picture.
-    turn: u8,
-    /// The picture, baked at (window scale, turn, what is worn).
-    seen: Option<(f32, u8, Vec<String>, Arc<RenderImage>)>,
+    /// The player in 3D, the Wardrobe's view (`viewer`) with a camera of its own.
+    viewer: Option<gpui::Entity<Viewer>>,
+    /// The outfit last handed to the view.
+    shown: Option<Outfit>,
+    /// The pointer is turning the view.
+    dragging: bool,
 }
 
 impl Shop {
@@ -112,7 +114,7 @@ impl Launcher {
         if std::mem::take(&mut self.wardrobe_reload) || self.wardrobe.is_none() {
             self.open_wardrobe(cx);
         }
-        let picture = self.shop_picture();
+        let viewer = self.shop_dress(cx);
         let Some(w) = self.wardrobe.as_ref() else {
             return page.child(header);
         };
@@ -161,7 +163,7 @@ impl Launcher {
             .gap(px(16.))
             .w(px(320.))
             .flex_none()
-            .child(self.shop_try_on(&me, &c, picture, cx))
+            .child(self.shop_try_on(&me, &c, viewer, cx))
             .children(self.shop_details(&me, &c, &currency, cx));
         let right = self.shop_cards(&me, &c, &currency, cx).flex_1().min_w_0();
         page.child(header).child(
@@ -205,49 +207,52 @@ impl Launcher {
         rules::try_on(&me.equipped, tried)
     }
 
-    /// The account's skin wearing what is tried on, baked once per change: the Wardrobe's still
-    /// picture, until its 3D view (`wardrobe-3d`) takes this place.
-    fn shop_picture(&mut self) -> Option<Arc<RenderImage>> {
-        let scale = self.scale;
+    /// The player in 3D wearing what is tried on, handed to the view when that changed (after
+    /// this frame, as the Wardrobe does: the page never reads the view while it renders).
+    fn shop_dress(&mut self, cx: &mut Context<Self>) -> Option<gpui::Entity<Viewer>> {
         let w = self.wardrobe.as_ref()?;
         let (me, c) = (w.saved.me.as_ref()?, w.saved.catalogue.as_ref()?);
-        let worn: Vec<String> = self.shop_tried(me, c).into_values().collect();
-        if let Some((s, turn, seen, image)) = &self.shop.seen {
-            if *s == scale && *turn == self.shop.turn && *seen == worn {
-                return Some(image.clone());
-            }
-        }
-        let fallback = plain();
-        let (texture, slim) = match &w.skin {
-            Some((t, slim)) => (t, *slim),
-            None => (&fallback, false),
+        let worn = self.shop_tried(me, c);
+        let (skin, slim) = w.skin.clone().unwrap_or_else(|| (Arc::new(plain()), false));
+        let outfit = Outfit {
+            skin,
+            slim,
+            items: (worn.values().filter_map(|id| w.items.get(id)))
+                .filter(|i| i.slot != Slot::NameTag)
+                .cloned()
+                .collect(),
         };
-        let body = preview::player_model(slim);
-        let mut draws = vec![preview::Draw {
-            root: &body,
-            base: Default::default(),
-            texture,
-            poses: Vec::new(),
-        }];
-        draws.extend(
-            (worn.iter().filter_map(|id| w.items.get(id)))
-                .flat_map(|item| preview::Draw::item(item, &body, 0.0)),
-        );
-        let (pw, ph) = ((W * scale) as u32, (H * scale) as u32);
-        let yaw = 30. + 90. * f32::from(self.shop.turn);
-        let image = preview::render(&draws, pw, ph, yaw, 10.);
-        let texels: Vec<[u8; 4]> = image.rgba.as_chunks::<4>().0.to_vec();
-        let baked = art::bake(&texels, pw as usize, ph as usize, 1. / scale, scale);
-        self.shop.seen = Some((scale, self.shop.turn, worn, baked.clone()));
-        Some(baked)
+        let viewer = (self.shop.viewer)
+            .get_or_insert_with(|| cx.new(|_| Viewer::new()))
+            .clone();
+        if self.shop.shown.as_ref() != Some(&outfit) {
+            self.shop.shown = Some(outfit.clone());
+            let motion = crate::sky::motion() != crate::sky::Motion::Still;
+            let to = viewer.clone();
+            cx.defer(move |cx| to.update(cx, |v, cx| v.dress(outfit, motion, cx)));
+        }
+        Some(viewer)
     }
 
-    /// The player with the name tag tried on over the head, and Turn.
+    /// Sets whether the pointer turns the Shop's view, for its hand.
+    fn shop_drag(cx: &mut Context<Self>) -> impl Fn(bool, &mut App) + Clone + 'static {
+        let page = cx.entity().downgrade();
+        move |on, cx: &mut App| {
+            let _ = page.update(cx, |this, cx| {
+                if this.shop.dragging != on {
+                    this.shop.dragging = on;
+                    cx.notify();
+                }
+            });
+        }
+    }
+
+    /// The player in 3D with the name tag tried on over the head; drag to turn, scroll to zoom.
     fn shop_try_on(
         &mut self,
         me: &Me,
         c: &Catalogue,
-        picture: Option<Arc<RenderImage>>,
+        viewer: Option<gpui::Entity<Viewer>>,
         cx: &mut Context<Self>,
     ) -> Div {
         let t = self.theme;
@@ -280,12 +285,22 @@ impl Launcher {
             )
             .children(mark.map(|m| gpui::img(m).size(px(16.))))
             .when_some(line, |d, c| d.border_b_2().border_color(c));
-        let turn = button("shop-turn", "Turn", Kind::Ghost, &t).on_click(cx.listener(
+        let reset = button("shop-reset", "Reset view", Kind::Ghost, &t).on_click(cx.listener(
             |this, _: &ClickEvent, _, cx| {
-                this.shop.turn = (this.shop.turn + 1) % 4;
-                cx.notify();
+                if let Some(v) = this.shop.viewer.clone() {
+                    v.update(cx, |v, cx| v.reset(cx));
+                }
             },
         ));
+        let controls = div()
+            .flex()
+            .items_center()
+            .gap(px(12.))
+            .child(
+                ui::text(12., FontWeight::NORMAL, ink::NOTE)
+                    .child(tr("Drag to turn, scroll to zoom.")),
+            )
+            .child(reset);
         glass::plate(radius::PANEL)
             .flex()
             .flex_col()
@@ -293,13 +308,10 @@ impl Launcher {
             .gap(px(10.))
             .p(px(20.))
             .child(name_tag)
-            .child(
-                div()
-                    .w(px(W))
-                    .h(px(H))
-                    .children(picture.map(|i| gpui::img(i).w(px(W)).h(px(H)))),
-            )
-            .child(turn)
+            .child(div().w(px(viewer::W)).h(px(viewer::H)).children(
+                viewer.map(|v| viewer::frame(v, self.shop.dragging, Self::shop_drag(cx))),
+            ))
+            .child(controls)
     }
 
     /// A card: its name and, under it, its price or that it's owned; the chosen one outlined.
