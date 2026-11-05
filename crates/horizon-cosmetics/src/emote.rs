@@ -363,7 +363,14 @@ impl Emote {
                 p[..6].copy_from_slice(&[at.x, at.y, at.z, x, y, z]);
             }
         }
-        let w = weight.min(1.0);
+        // Fully in (most of an emote): the target as it is, no blending to pay for.
+        if weight >= 1.0 {
+            for (p, goal) in poses.iter_mut().zip(target) {
+                p[..6].copy_from_slice(&goal[..6]);
+            }
+            return;
+        }
+        let w = weight;
         for (p, goal) in poses.iter_mut().zip(target) {
             let at = Vec3::new(p[0], p[1], p[2]).lerp(Vec3::new(goal[0], goal[1], goal[2]), w);
             let turned = quat([p[3], p[4], p[5]]).slerp(quat([goal[3], goal[4], goal[5]]), w);
