@@ -1,5 +1,6 @@
 //! Read triggers from mapped buttons, or the conventional unmapped Linux axes.
 use gilrs::{Axis, Button, Gamepad, MappingSource};
+use horizon_client::gamepad::BITDO_ULTIMATE2_VID_PID;
 
 pub(super) fn triggers(pad: &Gamepad) -> [f32; 2] {
     let axes = cfg!(target_os = "linux")
@@ -15,6 +16,15 @@ pub(super) fn triggers(pad: &Gamepad) -> [f32; 2] {
             ]
             .iter()
             .all(|&axis| pad.axis_code(axis).is_some()),
+            [
+                Button::South,
+                Button::East,
+                Button::West,
+                Button::North,
+                Button::C,
+                Button::Z,
+            ]
+            .map(|button| pad.button_code(button).is_some()),
             (pad.vendor_id(), pad.product_id()),
         );
     [
@@ -35,12 +45,17 @@ pub(super) fn triggers(pad: &Gamepad) -> [f32; 2] {
 fn axis_triggers(
     source: MappingSource,
     six_axes: bool,
+    face_buttons: [bool; 6],
     device: (Option<u16>, Option<u16>),
 ) -> bool {
     source == MappingSource::Driver
         && six_axes
+        // The default Xbox-style button layout skips C and Z. A generic six-axis
+        // pad can otherwise put its right stick on LeftZ/RightZ: its centred
+        // value would be mistaken for a half-pulled trigger.
+        && face_buttons == [true, true, true, true, false, false]
         // This model's default LeftZ is the right stick, not a trigger.
-        && device != (Some(0x2dc8), Some(0x6012))
+        && device != (Some(BITDO_ULTIMATE2_VID_PID.0), Some(BITDO_ULTIMATE2_VID_PID.1))
 }
 
 fn trigger_value(mapped: bool, value: Option<f32>, pressed: bool, axis: Option<f32>) -> f32 {
@@ -57,31 +72,84 @@ fn trigger_value(mapped: bool, value: Option<f32>, pressed: bool, axis: Option<f
 
 #[cfg(test)]
 mod tests {
-    use super::{axis_triggers, trigger_value};
+    use super::{BITDO_ULTIMATE2_VID_PID, axis_triggers, trigger_value};
     use gilrs::MappingSource;
+    use horizon_client::gamepad::{Button, Edges, PadState};
+
+    const XBOX_BUTTONS: [bool; 6] = [true, true, true, true, false, false];
 
     #[test]
-    fn only_unmapped_six_axis_layouts_use_axis_triggers() {
-        assert!(axis_triggers(MappingSource::Driver, true, (None, None)));
+    fn only_unmapped_xbox_style_six_axis_layouts_use_axis_triggers() {
+        assert!(axis_triggers(
+            MappingSource::Driver,
+            true,
+            XBOX_BUTTONS,
+            (None, None)
+        ));
         assert!(!axis_triggers(
             MappingSource::SdlMappings,
             true,
+            XBOX_BUTTONS,
             (None, None)
         ));
-        assert!(!axis_triggers(MappingSource::Driver, false, (None, None)));
+        assert!(!axis_triggers(
+            MappingSource::Driver,
+            false,
+            XBOX_BUTTONS,
+            (None, None)
+        ));
         assert!(!axis_triggers(
             MappingSource::Driver,
             true,
-            (Some(0x2dc8), Some(0x6012))
+            XBOX_BUTTONS,
+            (
+                Some(BITDO_ULTIMATE2_VID_PID.0),
+                Some(BITDO_ULTIMATE2_VID_PID.1)
+            )
         ));
+        for button in 0..6 {
+            let mut different = XBOX_BUTTONS;
+            different[button] = !different[button];
+            assert!(!axis_triggers(
+                MappingSource::Driver,
+                true,
+                different,
+                (None, None)
+            ));
+        }
     }
 
     #[test]
-    fn unmapped_trigger_axis_pulls_and_releases() {
-        assert_eq!(trigger_value(false, None, false, Some(-1.0)), 0.0);
-        assert_eq!(trigger_value(false, None, false, Some(0.0)), 0.5);
-        assert_eq!(trigger_value(false, None, false, Some(1.0)), 1.0);
-        assert_eq!(trigger_value(false, None, false, Some(-1.0)), 0.0);
+    fn a_centred_stick_on_a_generic_layout_never_holds_attack_or_use() {
+        let fallback = axis_triggers(MappingSource::Driver, true, [true; 6], (None, None));
+        let mut edges = Edges::default();
+        for axis in [None, Some(1.0), Some(0.0), Some(-1.0), Some(0.0)] {
+            let value = trigger_value(false, None, false, axis.filter(|_| fallback));
+            assert_eq!(value, 0.0);
+            let state = PadState {
+                triggers: [value; 2],
+                ..PadState::default()
+            };
+            assert!(edges.update(&state, 0.4).is_empty());
+            assert!(!edges.is_held(Button::LeftTrigger));
+            assert!(!edges.is_held(Button::RightTrigger));
+        }
+    }
+
+    #[test]
+    fn eight_bit_trigger_rest_pull_and_release_generate_button_edges() {
+        for (index, button) in [(0, Button::LeftTrigger), (1, Button::RightTrigger)] {
+            let mut edges = Edges::default();
+            let mut seen = Vec::new();
+            for axis in [-0.9921875, 0.0, 1.0, -0.9921875] {
+                let value = trigger_value(false, None, false, Some(axis));
+                let mut state = PadState::default();
+                state.triggers[index] = value;
+                seen.extend(edges.update(&state, 0.4));
+            }
+            assert_eq!(seen, vec![(button, true), (button, false)]);
+            assert!(!edges.is_held(button));
+        }
     }
 
     #[test]

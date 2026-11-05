@@ -431,8 +431,9 @@ fn lends_output(solo: bool, p1_has_pad: bool) -> bool {
     solo && p1_has_pad
 }
 
-/// Still holding the press that gave the pad its player: a button, or a trigger off its rest
-/// (gilrs reports a trigger press as a button, but `PadState` keeps it in `triggers`).
+/// Still holding the press that gave the pad its player: a button, or a trigger off its rest.
+/// Mapped triggers may also report a gilrs button press; unmapped axis triggers
+/// only appear in `PadState::triggers` and do not create the join `Press` event.
 fn pressing(state: &PadState) -> bool {
     state.buttons != 0 || state.triggers.iter().any(|&t| t > 0.05)
 }
