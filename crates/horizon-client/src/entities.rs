@@ -1293,6 +1293,8 @@ impl ExperienceOrb {
         if moved.y != wanted.y {
             self.velocity.y = 0.0;
         }
+        // ExperienceOrb.tick applies block effects after moving, before drag.
+        let discarded = server && self.apply_lava_contact_damage(world, fluids, wanted);
         // `float friction = getAirDrag()` (0.98F), the ground's block
         // friction multiplied in as a float, widened once for the scale.
         let mut friction = 0.98_f32;
@@ -1319,7 +1321,38 @@ impl ExperienceOrb {
             self.velocity.y = -wanted.y * 0.4;
         }
         self.age += 1;
-        self.age < 6000
+        !discarded && self.age < 6000
+    }
+    /// `LavaFluid.entityInside` -> `Entity.lavaHurt`: four damage on the
+    /// server, through the orb's existing hurt/discard policy. This is separate
+    /// from the lava impulse at the start of the tick.
+    fn apply_lava_contact_damage(
+        &mut self,
+        world: &World,
+        fluids: &crate::motion::FluidResources,
+        wanted: Vec3,
+    ) -> bool {
+        let contacts = orb_lava_contacts(self.previous, self.position, wanted, |p| {
+            let fluid = fluids.fluid(world.block(p.x, p.y, p.z));
+            if !fluid
+                .kind()
+                .same_family(horizon_world::fluid::FluidKind::Lava)
+            {
+                return None;
+            }
+            let above = fluids.fluid(world.block(p.x, p.y + 1, p.z));
+            Some(if fluid.kind().same_family(above.kind()) {
+                1.0
+            } else {
+                f64::from(fluid.own_height())
+            })
+        });
+        for _ in 0..contacts {
+            if self.hurt(4.0) {
+                return true;
+            }
+        }
+        false
     }
     /// `Entity.moveTowardsClosestSpace` from the middle of the orb's box:
     /// towards the nearest side of its block (north, south, west, east or
@@ -4008,3 +4041,186 @@ mod render_light_tests {
     }
 }
 crate::impl_joined!(ItemEntity, ExperienceOrb, ArmorStand);
+#[cfg(test)]
+mod orb_lava_tests {
+    use super::*;
+
+    #[test]
+    fn a_server_orb_takes_lava_damage_after_moving_and_discards_at_zero() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("movement-properties.nbt").exists() {
+            eprintln!("orb lava fixture unavailable: prepared resources missing");
+            return;
+        }
+        let assets = crate::assets::Assets::load(&root).unwrap();
+        let render = assets.reload(&root).unwrap();
+        let facts = BlockFacts::load(&root, assets.registry).unwrap();
+        let fluids = crate::motion::FluidResources::new(&assets, &facts).unwrap();
+        let collision = crate::collisions::load(&root, assets.registry).unwrap();
+        let mut world = World::test_scene(&assets, &render, 3).unwrap();
+        let lava = assets.registry.default_state("minecraft:lava").unwrap();
+        world.set(20, 4, 20, lava).unwrap();
+        let at = Vec3::new(20.5, 4.1, 20.5);
+        let mut orb = ExperienceOrb {
+            rotation: [0.0, 0.0],
+            join: Default::default(),
+            no_gravity: false,
+            id: 1,
+            position: at,
+            previous: at,
+            velocity: Vec3::ZERO,
+            value: 1,
+            age: 0,
+            on_ground: false,
+            count: 1,
+            ticks: 0,
+            health: 5,
+        };
+        let mut client = orb.clone();
+        for expected_age in 1..=2 {
+            assert!(client.tick(
+                &world,
+                &facts,
+                &collision,
+                None,
+                false,
+                &mut || 0.0,
+                None,
+                &fluids
+            ));
+            assert_eq!((client.health, client.age), (5, expected_age));
+        }
+        assert!(orb.tick(
+            &world,
+            &facts,
+            &collision,
+            None,
+            true,
+            &mut || 0.0,
+            None,
+            &fluids
+        ));
+        assert_eq!((orb.health, orb.age), (1, 1));
+        assert!(!orb.tick(
+            &world,
+            &facts,
+            &collision,
+            None,
+            true,
+            &mut || 0.0,
+            None,
+            &fluids
+        ));
+        assert_eq!((orb.health, orb.age), (-3, 2));
+    }
+}
+
+/// `Entity.checkInsideBlocks` and `collidedWithFluid`: fluid AABB contacts
+/// along Entity.move's axis-ordered path, each block visited once.
+fn orb_lava_contacts(
+    from: Vec3,
+    to: Vec3,
+    wanted: Vec3,
+    mut lava_height: impl FnMut(BlockPos) -> Option<f64>,
+) -> usize {
+    let delta = to.subtract(from);
+    let mut visited = std::collections::HashSet::new();
+    let mut contacts = 0;
+    let mut remaining = 16;
+    let mut segment = |start: Vec3, end: Vec3, budget: i32| {
+        let mut iterations = 0;
+        let epsilon = f64::from(1.0e-5_f32);
+        let target = ExperienceOrb::box_at(end).deflate(Vec3::new(epsilon, epsilon, epsilon));
+        let _ = horizon_core::geometry::sweep_intersected_blocks(
+            start,
+            end,
+            target,
+            1_000_000,
+            |p, step| {
+                if step >= budget {
+                    return false;
+                }
+                iterations = step;
+                if visited.contains(&p) {
+                    return true;
+                }
+                if let Some(height) = lava_height(p) {
+                    let min = Vec3::new(f64::from(p.x), f64::from(p.y), f64::from(p.z));
+                    let fluid = Aabb::new(min, min.add_vector(Vec3::new(1.0, height, 1.0)));
+                    if ExperienceOrb::box_at(start)
+                        .collided_along_vector(end.subtract(start), &[fluid])
+                    {
+                        visited.insert(p);
+                        contacts += 1;
+                    }
+                }
+                true
+            },
+        );
+        iterations + 1
+    };
+    if delta.length_squared() > 0.0 {
+        // Direction.axisStepOrder uses the original, uncollided movement.
+        let order = if wanted.x.abs() < wanted.z.abs() {
+            [1, 2, 0]
+        } else {
+            [1, 0, 2]
+        };
+        let components = delta.components();
+        let mut start = from;
+        for axis in order {
+            if components[axis] != 0.0 {
+                let mut end = start.components();
+                end[axis] += components[axis];
+                let end = Vec3::new(end[0], end[1], end[2]);
+                remaining -= segment(start, end, remaining);
+                start = end;
+            }
+        }
+    } else {
+        remaining -= segment(from, to, remaining);
+    }
+    if remaining <= 0 {
+        segment(to, to, 1);
+    }
+    contacts
+}
+
+#[cfg(test)]
+mod orb_lava_shape_tests {
+    use super::*;
+
+    fn contacts(from: Vec3, to: Vec3) -> usize {
+        orb_lava_contacts(from, to, to.subtract(from), |p| {
+            (p == BlockPos::new(0, 0, 0)).then_some(f64::from(8.0_f32 / 9.0))
+        })
+    }
+
+    #[test]
+    fn lava_uses_the_swept_box_and_fluid_height_not_the_feet_block() {
+        let side = Vec3::new(-0.2, 0.1, 0.5);
+        assert_eq!(contacts(side, side), 1);
+        let above = Vec3::new(0.5, 0.95, 0.5);
+        assert_eq!(contacts(above, above), 0);
+        let through = Vec3::new(-1.0, 0.1, 0.5);
+        let end = Vec3::new(2.0, 0.1, 0.5);
+        assert_eq!(contacts(through, end), 1);
+        let away = Vec3::new(-1.0, 0.1, -1.0);
+        assert_eq!(contacts(away, away), 0);
+    }
+
+    #[test]
+    fn axis_segments_do_not_damage_twice_for_the_same_lava_cell() {
+        let from = Vec3::new(0.1, 0.1, 0.1);
+        let to = Vec3::new(0.7, 0.2, 0.7);
+        assert_eq!(contacts(from, to), 1);
+        assert_eq!(
+            orb_lava_contacts(from, to, Vec3::new(0.1, 0.1, 0.9), |p| {
+                (p == BlockPos::new(0, 0, 0)).then_some(1.0)
+            }),
+            1
+        );
+    }
+}

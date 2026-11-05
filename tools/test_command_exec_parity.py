@@ -92,6 +92,8 @@ def main():
                         help='retain the original two-tag and spectator-selector item-merge diagnostic')
     parser.add_argument('--orb-water-fixture', action='store_true', help='guarded orb water/air scene')
     parser.add_argument('--orb-water-raw-diagnostic', action='store_true', help='add whole Pos/Motion records')
+    parser.add_argument('--orb-lava-fixture', action='store_true', help='guarded server orb lava contact scene')
+    parser.add_argument('--orb-lava-raw-diagnostic', action='store_true', help='retain random Pos/Motion as exact raw diagnostics')
     args = parser.parse_args()
     build = args.work_dir.resolve() if args.work_dir else lab.LOCAL / 'command-exec-parity'
     build.mkdir(parents=True, exist_ok=True)
@@ -150,6 +152,13 @@ def main():
         except ImportError:
             from orb_water_corpus import orb_water, arithmetic_inputs
         groups = [('setup', corpus_module.group_setup()), ('orb underwater arithmetic', orb_water(args.orb_water_raw_diagnostic))]
+    if args.orb_lava_fixture:
+        try:
+            from .orb_lava_corpus import orb_lava
+        except ImportError:
+            from orb_lava_corpus import orb_lava
+        groups = [('setup', corpus_module.group_setup()),
+                  ('orb lava contact', orb_lava(args.orb_lava_raw_diagnostic))]
     if args.only:
         groups = [g for g in groups if args.only in g[0] or g[0] == 'setup']
     if args.slot_codec_diagnostic:
@@ -237,6 +246,8 @@ def main():
             sys.exit(f'Java readiness/distance prerequisite failed: {op}: {reference}')
         if 'expect_callback' in op and reference.get('results') != [op['expect_callback']]:
             sys.exit(f'Java loaded contract failed: {op}: {reference}')
+        if 'expect_callback' in op and reference.get('results') != [op['expect_callback']]:
+            sys.exit(f'Java callback guard failed: {op}: {reference.get("results")}')
         if 'expect_state' in op and reference.get('results') != [[True, v] for v in op['expect_state']]:
             sys.exit(f'Java weather guard failed: {op["label"]}: {reference.get("results")}')
     commands_by_group = []
