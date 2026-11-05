@@ -193,6 +193,7 @@ pub fn check(
 /// category, and an icon kept in the registry (`icons/`), screenshots too: the site and the launcher
 /// load images only from the registry's own host.
 pub fn check_required(
+    id: &str,
     description: &str,
     categories: &[String],
     icon: Option<&str>,
@@ -210,8 +211,8 @@ pub fn check_required(
     }
     match icon {
         None => errors.push("has no icon: icons/<id>.png, a square PNG".into()),
-        Some(icon) if !icon.starts_with("icons/") => errors.push(format!(
-            "its icon {icon:?} must be kept in the registry, icons/<id>.png"
+        Some(icon) if icon != format!("icons/{id}.png") => errors.push(format!(
+            "its icon {icon:?} must be kept in the registry as icons/{id}.png"
         )),
         Some(_) => {}
     }
@@ -370,21 +371,25 @@ mod tests {
     fn a_listed_page_is_complete_and_its_images_are_ours() {
         let text = "x".repeat(MIN_DESCRIPTION);
         let ok = check_required(
+            "a",
             &text,
             &strings(&["mobs"]),
             Some("icons/a.png"),
             &strings(&["screenshots/a/1.png"]),
         );
         assert!(ok.is_empty(), "{ok:?}");
-        let all = check_required("short", &[], None, &[]);
+        let all = check_required("a", "short", &[], None, &[]);
         assert_eq!(all.len(), 3, "{all:?}");
         let far = check_required(
+            "a",
             &text,
             &strings(&["mobs"]),
             Some("https://x.test/i.png"),
             &strings(&["https://x.test/1.png"]),
         );
         assert_eq!(far.len(), 2, "{far:?}");
+        let other_icon = check_required("a", &text, &strings(&["mobs"]), Some("icons/b.png"), &[]);
+        assert_eq!(other_icon.len(), 1, "{other_icon:?}");
     }
 
     #[test]

@@ -648,6 +648,7 @@ pub fn build(src: &Sources) -> Result<Index, Vec<String>> {
         let e = entry.resolved(&page);
         errors.extend(
             rules::check_required(
+                &e.id,
                 &e.description,
                 &e.categories,
                 e.icon.as_deref(),
