@@ -5276,9 +5276,10 @@ impl Game<'_> {
             let Some(item) = self.dropped.iter().find(|d| d.id == item_id) else {
                 continue;
             };
-            let stack = item.stack.clone();
-            let refused =
-                self.as_guest(host, conn, |g| g.native_pickup_refused(&stack)) == Some(true);
+            let (stack, thrower, at) = (item.stack.clone(), item.thrower, item.position);
+            let refused = self
+                .as_guest(host, conn, |g| g.native_pickup_refused(&stack, thrower, at))
+                == Some(true);
             // The hook can remove or change any item entity.
             let Some(i) = self.dropped.iter().position(|d| d.id == item_id) else {
                 continue;

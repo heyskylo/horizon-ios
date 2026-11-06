@@ -6591,6 +6591,30 @@ impl Game<'_> {
             rotation,
         );
     }
+    /// `native_item_picked_up` with the whole stack (its components: enchantments, damage, a
+    /// custom name, unbreakable, attribute modifiers...), the item entity's `thrower` (the UUID
+    /// that threw or dropped it; none for a block's or a mob's drop) and its `position`. Heard
+    /// just before `native_item_picked_up`, which hears nothing of a pickup canceled here. Set
+    /// `canceled` to leave the stack on the ground: it isn't offered again for 10 ticks.
+    /// Server-side. @API:item_picked_up_v2@.
+    pub(super) fn native_item_picked_up_v2(
+        &mut self,
+        player: u128,
+        stack: &ItemStack,
+        thrower: Option<u128>,
+        position: [f64; 3],
+        canceled: &mut bool,
+    ) {
+        mod_api::dispatch_item_picked_up_v2(
+            self,
+            mod_api::mods(),
+            player,
+            stack,
+            thrower,
+            position,
+            canceled,
+        );
+    }
     /// A click in a menu a mod opened (`native_open_menu`), which moved
     /// nothing: the menu's `slot` (its own first, then the player's
     /// inventory, `native_menu_inventory_slot`; -999 outside), the `button`
@@ -9665,10 +9689,19 @@ impl Game<'_> {
         drops.retain(|stack| stack.count > 0 && &*stack.item != "minecraft:air");
     }
     /// Whether a native mod keeps the acting player from taking `stack`.
-    pub(super) fn native_pickup_refused(&mut self, stack: &ItemStack) -> bool {
+    pub(super) fn native_pickup_refused(
+        &mut self,
+        stack: &ItemStack,
+        thrower: Option<[i32; 4]>,
+        at: horizon_core::geometry::Vec3,
+    ) -> bool {
         let player = self.native_acting_id();
         let mut canceled = false;
-        self.native_item_picked_up(player, &stack.item, stack.count, &mut canceled);
+        let thrower = thrower.map(horizon_client::lan::playerdata::ints_uuid);
+        self.native_item_picked_up_v2(player, stack, thrower, [at.x, at.y, at.z], &mut canceled);
+        if !canceled {
+            self.native_item_picked_up(player, &stack.item, stack.count, &mut canceled);
+        }
         canceled
     }
     /// Tells the mods of the chunks that came and went in this level.

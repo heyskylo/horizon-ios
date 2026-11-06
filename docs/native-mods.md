@@ -2507,6 +2507,10 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   the level and the world around them are chosen and sent. Change the dimension, feet position or yaw/pitch and they
   appear there, with no teleport afterwards; an unknown dimension or a non-finite value leaves that part as it was.
   No state is swapped in.
+- **`native_item_picked_up_v2(player, stack, thrower, position, canceled)`**: an additive version of
+  `native_item_picked_up` with the whole `ItemStack` (its components: enchantments, unbreakable, attribute modifiers, a
+  custom name...), the item entity's thrower UUID (none for block and mob drops) and its position. Heard just before v1,
+  which keeps its signature and firing point and hears nothing of a pickup canceled here.
 
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The

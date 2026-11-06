@@ -4573,7 +4573,7 @@ impl Game<'_> {
                 && b.max_position().z > min[2];
             // ItemEntity.playerTouch: no pickup delay, and the target (if any) is this player.
             if touching && item.pickup_delay == 0 && item.target.is_none_or(|t| t == own) {
-                if self.native_pickup_refused(&item.stack) {
+                if self.native_pickup_refused(&item.stack, item.thrower, item.position) {
                     item.pickup_delay = 10;
                     kept.push(item);
                     continue;
