@@ -21,6 +21,8 @@ pub struct TargetInfo {
     pub position: Vec3,
     pub eye_y: f64,
     pub bounds: Aabb,
+    /// `LivingEntity.getHitbox`: `bounds` cut below the seat of a rider.
+    pub hitbox: Aabb,
     pub alive: bool,
     pub can_be_seen_as_enemy: bool,
     pub is_player: bool,
@@ -299,6 +301,15 @@ impl MobWorld<'_> {
                 position: p.position,
                 eye_y: p.eye[1],
                 bounds: p.bounds,
+                // A riding player's seat is `Avatar.DEFAULT_VEHICLE_ATTACHMENT`
+                // (0.6) above its feet.
+                hitbox: if p.passenger {
+                    let (lo, hi) = (p.bounds.min_position(), p.bounds.max_position());
+                    let y = (p.position.y + f64::from(0.6_f32)).max(lo.y);
+                    Aabb::new(Vec3::new(lo.x, y, lo.z), hi)
+                } else {
+                    p.bounds
+                },
                 alive: p.alive,
                 can_be_seen_as_enemy: true,
                 is_player: true,
@@ -309,6 +320,7 @@ impl MobWorld<'_> {
                 position: s.position,
                 eye_y: s.eye_y,
                 bounds: s.bounds,
+                hitbox: s.hitbox,
                 alive: s.alive,
                 can_be_seen_as_enemy: !s.playing_dead,
                 is_player: false,

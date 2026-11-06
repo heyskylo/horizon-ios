@@ -69,34 +69,45 @@ impl Launcher {
                 cx.notify();
             }),
         );
-        let head = div()
+        let wide = self.window_width >= 1200.;
+        let page_title = ui::page_head(
+            tr("Versions"),
+            tr(
+                "Horizon's Nightly builds, newest first. Your worlds live in the game \
+                folder, so removing a version never touches them.",
+            ),
+        )
+        .mb_0();
+        let auto_switch = div()
             .flex()
-            .items_end()
-            .justify_between()
-            .gap(px(20.))
-            .mb(px(28.))
+            .flex_none()
+            .items_center()
+            .gap(px(12.))
             .child(
-                ui::page_head(
-                    tr("Versions"),
-                    tr(
-                        "Horizon's Nightly builds, newest first. Your worlds live in the game \
-                        folder, so removing a version never touches them.",
-                    ),
-                )
-                .mb_0(),
+                ui::text(14., FontWeight::NORMAL, 0.85)
+                    .child(tr("Install new versions automatically")),
             )
-            .child(
-                div()
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .gap(px(12.))
-                    .child(
-                        ui::text(14., FontWeight::NORMAL, 0.85)
-                            .child(tr("Install new versions automatically")),
-                    )
-                    .child(auto),
-            );
+            .child(auto);
+        let head = if wide {
+            div()
+                .flex()
+                .flex_row()
+                .items_end()
+                .justify_between()
+                .gap(px(20.))
+                .child(page_title)
+                .child(auto_switch)
+                .mb(px(28.))
+        } else {
+            div()
+                .flex()
+                .flex_col()
+                .items_start()
+                .gap(px(16.))
+                .child(page_title.w_full())
+                .child(auto_switch)
+                .mb(px(28.))
+        };
         // The space they take and Import a game build (not in the mockup): a quiet line above
         // the list.
         let import: AnyElement = if self.importing_build {
