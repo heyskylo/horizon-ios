@@ -78,6 +78,33 @@ fn a_refused_command_line_exits_2_without_a_crash_report() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// A control socket no system would bind: refused before the game folder, the start marker in its
+/// options.txt or the resources are touched, so the next start doesn't read it as a failed one.
+#[cfg(unix)]
+#[test]
+fn a_control_socket_path_too_long_is_a_refused_command_line() {
+    let dir = scratch("socket");
+    let socket = dir.join(format!("{}.sock", "x".repeat(150)));
+    let output = run(
+        &dir,
+        &[
+            "--home",
+            "home",
+            "--game-dir",
+            "game",
+            "--offscreen",
+            "--control-socket",
+            socket.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    let line = last_stderr_line(&output);
+    assert!(line.contains("too long"), "last stderr line: {line}");
+    assert!(!dir.join("home/crash-reports").exists());
+    assert!(!dir.join("game").exists());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 #[test]
 fn an_error_exits_1_and_names_the_crash_report_under_home() {
     let dir = scratch("error");
