@@ -2494,6 +2494,13 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   included. Set `cancel` and it does not run. Push to `replies` to answer: each line is logged as the console's
   feedback is, so it also reaches the RCON client or the `horizon-server` caller. There is no player (the console is
   level 4). An audit log's `ServerCommandEvent`/`RemoteServerCommandEvent`. Bundles need `"hooks": @API:console_line@`.
+- **`native_log_line(level, thread, message, line)`** (`horizon_client_lib::native_client_hooks`): a message was
+  written to `logs/latest.log`, so a console bridge needs no tailing of the file. `level` is `INFO`, `WARN` or `ERROR`,
+  `thread` the thread the line names, `message` the text and `line` what the file got (`[HH:mm:ss] [thread/LEVEL]:
+  message`). It runs on the log's own writer thread after the file is written, never on the server or render thread,
+  so a slow mod holds up no tick; it has no `Game`, and a line a mod logs from it comes back to it later (don't log
+  each line you hear). Lines the flood limit leaves out are not heard, and a mod that panics in it is not called again.
+  Bundles need `"hooks": @API:log_line@`.
 
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The

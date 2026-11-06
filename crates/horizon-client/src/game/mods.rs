@@ -882,6 +882,7 @@ mod tests {
             register_goals: |mob| dispatch_register_goals(&MODS, mob),
             ingredient: |_, _, _| {},
             ingredient_test: |_, _, _, _| {},
+            log_line: |_, _, _, _| {},
         });
         assert!(installed.is_ok());
 
