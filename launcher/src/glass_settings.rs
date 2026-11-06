@@ -3,9 +3,10 @@
 //! the list follows the scroll and takes the pane to a section. The rows inside are the mockup's
 //! `SettingRow`s ([`glass_ui::flat_rows`]).
 //!
-//! Not in the mockup, kept in its patterns: the appearance, the Home background, the logs folder
-//! and the applications menu (rows under About's tiles), the AI clients, data collection (its own
-//! entry in the list) and the hidden developer options. The mockup's Native mods switch is the
+//! Not in the mockup, kept in its patterns: the appearance, the Home background, the data and
+//! logs folders and the applications menu (About's rows), the AI clients, data collection (its own
+//! entry in the list) and the hidden developer options. The mockup's About tiles for Horizon and
+//! the launcher open Updates here, beside the switches that decide how updates install. The mockup's Native mods switch is the
 //! native mods' build profile here: they are always on.
 
 use super::*;
@@ -45,9 +46,9 @@ fn card() -> Div {
         .p(px(8.))
 }
 
-/// An About tile (`rounded-[14px] bg-white/[0.045] p-5`): its lead, name, a line under it and
-/// what it does.
-fn about_tile(lead: AnyElement, title: String, note: String, action: AnyElement) -> Div {
+/// A tile (the mockup's `AboutTile`, `rounded-[14px] bg-white/[0.045] p-5`): its lead, name, a
+/// line under it and what it does.
+fn tile(lead: AnyElement, title: String, note: String, action: AnyElement) -> Div {
     div()
         .flex()
         .flex_col()
@@ -284,16 +285,15 @@ impl Launcher {
         )
     }
 
-    /// About's three tiles (the mockup's `AboutTile`s): Horizon and its update, the launcher and
-    /// its own, and the data folder.
-    fn about_tiles(
+    /// Updates' two tiles (the mockup's `AboutTile`s): Horizon and its update, the launcher and its
+    /// own.
+    fn update_tiles(
         &mut self,
         horizon: String,
         horizon_action: Option<AnyElement>,
         launcher: String,
         launcher_action: Option<AnyElement>,
     ) -> Div {
-        let t = self.theme;
         let installed = self
             .settings
             .selected
@@ -327,24 +327,19 @@ impl Launcher {
             .text_color(ink)
             .child(ui::dot(tone))
             .child(div().min_w_0().truncate().child(horizon));
-        let square = |icon: &'static str| {
-            div()
-                .flex()
-                .items_center()
-                .justify_center()
-                .size(px(42.))
-                .rounded(px(11.))
-                .bg(white(0.08))
-                .child(ui::icon(icon, 21., white(0.8)))
-                .into_any_element()
-        };
-        let open = ui::quiet("about-open-data", tr("Open"), 36., &t)
-            .on_click(|_, _, cx| crate::glass_toast::open(cx, &backend::data_dir()))
+        let launcher_mark = div()
+            .flex()
+            .items_center()
+            .justify_center()
+            .size(px(42.))
+            .rounded(px(11.))
+            .bg(white(0.08))
+            .child(ui::icon("computer", 21., white(0.8)))
             .into_any_element();
         div()
             .flex()
             .gap(px(8.))
-            .child(about_tile(
+            .child(tile(
                 self.horizon_mark(42.),
                 "Horizon".into(),
                 installed.unwrap_or_else(|| tr("Nightly").to_string()),
@@ -357,17 +352,11 @@ impl Launcher {
                     .children(horizon_action)
                     .into_any_element(),
             ))
-            .child(about_tile(
-                square("computer"),
+            .child(tile(
+                launcher_mark,
                 tr("Launcher").to_string(),
                 launcher,
                 div().children(launcher_action).into_any_element(),
-            ))
-            .child(about_tile(
-                square("folder-01"),
-                tr("Data folder").to_string(),
-                short(&backend::data_dir()),
-                open,
             ))
     }
 
@@ -377,6 +366,7 @@ impl Launcher {
         let n = 0;
         let account = card().child(self.glass_account(cx));
         let updates = card()
+            .child(self.update_tiles(b.horizon, b.horizon_action, b.launcher, b.launcher_action))
             .child(index_row(
                 0,
                 tr("Install new versions automatically"),
@@ -439,7 +429,17 @@ impl Launcher {
                 .into_any_element()
         };
         let about = card()
-            .child(self.about_tiles(b.horizon, b.horizon_action, b.launcher, b.launcher_action))
+            .child(index_row(
+                0,
+                tr("Data folder"),
+                Some(mono(short(&backend::data_dir()))),
+                Some(
+                    button("about-open-data", "Open", Kind::Secondary, &t)
+                        .on_click(|_, _, cx| crate::glass_toast::open(cx, &backend::data_dir()))
+                        .into_any_element(),
+                ),
+                &t,
+            ))
             .child(index_row(
                 0,
                 tr("Logs"),
