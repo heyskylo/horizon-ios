@@ -2504,6 +2504,13 @@ calls them without a mod.
   heard by `native_food_level_changed`, except inside the player's own turn. False for a player not reached, a dead one,
   a value that is not a number, a negative level or total, or a progress outside 0 to 1.
   Bundles need `"hooks": @API:player_status@`.
+- Helpers **`native_effects(uuid)`**, **`native_add_effect(uuid, effect)`**, **`native_remove_effect(uuid, id)`** and
+  **`native_set_effects(uuid, effects)`**: a player's effects as `NativeEffect { id, amplifier, duration, ambient,
+  particles }` (`MobEffectInstance`; duration -1 is infinite); one given as `LivingEntity.addEffect` gives it (Bukkit's
+  `addPotionEffect`: a weaker or shorter one of the kind waits under it), one taken off as `/effect clear` takes it, or
+  all replaced (a saved player's potion effects restored). The client gets `UpdateMobEffect` with the ambient and
+  particle flags. Horizon keeps no hidden-icon flag on an effect, so the icon always shows. Unknown effects and a
+  duration of 0 or below -1 are refused. Bundles need `"hooks": @API:player_effects@`.
 
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The

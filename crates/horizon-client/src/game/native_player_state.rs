@@ -6,8 +6,49 @@
 //! their command) only that player is reached, outside one (`native_tick`,
 //! `native_server_tick`, `native_menu_clicked`) everyone on.
 use super::{Game, commands::Target};
-use horizon_client::{entities::Experience, lan::playerdata};
+use horizon_client::{brewing, effects::EffectInstance, entities::Experience, lan::playerdata};
 use horizon_world::nbt::Tag;
+
+/// An effect on a player, as `native_effects` reads it and
+/// `native_add_effect` and `native_set_effects` take it (vanilla's
+/// `MobEffectInstance`).
+#[allow(dead_code)]
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct NativeEffect {
+    /// `minecraft:speed`, or a content mod's `<namespace>:<path>`.
+    pub id: String,
+    /// 0 for level I.
+    pub amplifier: u8,
+    /// Ticks left; -1 for an infinite one.
+    pub duration: i32,
+    /// From a beacon or a conduit: translucent particles, a framed icon.
+    pub ambient: bool,
+    /// Whether it shows particles.
+    pub particles: bool,
+}
+
+/// The game's effect for `effect`: None for an unknown id or a duration
+/// below -1 or 0.
+fn instance(effect: &NativeEffect) -> Option<EffectInstance> {
+    let def = brewing::effect(&effect.id)?;
+    if effect.duration == 0 || effect.duration < -1 {
+        return None;
+    }
+    let mut e = EffectInstance::new(def.id, effect.duration, i32::from(effect.amplifier));
+    e.ambient = effect.ambient;
+    e.visible = effect.particles;
+    Some(e)
+}
+
+fn native_effect(e: &EffectInstance) -> NativeEffect {
+    NativeEffect {
+        id: brewing::namespaced(e.id).to_owned(),
+        amplifier: e.amplifier.clamp(0, 255) as u8,
+        duration: e.duration,
+        ambient: e.ambient,
+        particles: e.visible,
+    }
+}
 
 /// Where a player's state is while a helper reads it.
 #[derive(Clone, Copy)]
@@ -161,5 +202,96 @@ impl Game<'_> {
             }
         })
         .is_some()
+    }
+
+    /// The player `uuid`'s effects, as `/effect` and potions gave them. None
+    /// for a player not reached. API @API:player_effects@.
+    pub(super) fn native_effects(&self, uuid: u128) -> Option<Vec<NativeEffect>> {
+        let list = match self.native_place(uuid)? {
+            Place::Acting => &self.potions.effects.list,
+            Place::Guest(i) => &self.lan.as_ref()?.hub.guests[i].effects.list,
+        };
+        Some(list.iter().map(native_effect).collect())
+    }
+
+    /// Gives the player `uuid` `effect` as vanilla's `LivingEntity.addEffect`
+    /// (Bukkit's `addPotionEffect`): it takes the place of a weaker or
+    /// shorter one of the same kind, which waits under it. Their client gets
+    /// `UpdateMobEffect` with the ambient and particle flags. Whether
+    /// anything changed; false also for an unknown effect, a duration of 0
+    /// or below -1, a player not reached, and a dead one. API
+    /// @API:player_effects@.
+    pub(super) fn native_add_effect(&mut self, uuid: u128, effect: &NativeEffect) -> bool {
+        let Some(e) = instance(effect) else {
+            return false;
+        };
+        self.native_player_turn(uuid, |game| game.add_player_effect(e))
+            .unwrap_or(false)
+    }
+
+    /// Takes the effect `id` off the player `uuid`, as `/effect clear`:
+    /// whether they had it. API @API:player_effects@.
+    pub(super) fn native_remove_effect(&mut self, uuid: u128, id: &str) -> bool {
+        let Some(def) = brewing::effect(id) else {
+            return false;
+        };
+        self.native_player_turn(uuid, |game| {
+            let before = game.potions.effects.list.len();
+            game.potions.effects.list.retain(|e| e.id != def.id);
+            game.apply_effect_status();
+            game.potions.effects.list.len() != before
+        })
+        .unwrap_or(false)
+    }
+
+    /// Replaces all of the player `uuid`'s effects with `effects`, each
+    /// given as `native_add_effect` gives it: what a mod restoring a saved
+    /// player does (HuskSync's potion effects). False, and nothing changed,
+    /// when one of them would be refused, and for a player not reached or
+    /// dead. API @API:player_effects@.
+    pub(super) fn native_set_effects(&mut self, uuid: u128, effects: &[NativeEffect]) -> bool {
+        let Some(list) = effects.iter().map(instance).collect::<Option<Vec<_>>>() else {
+            return false;
+        };
+        self.native_player_turn(uuid, |game| {
+            game.potions.effects.clear();
+            game.apply_effect_status();
+            for e in list {
+                game.add_player_effect(e);
+            }
+        })
+        .is_some()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn effect(id: &str, duration: i32) -> NativeEffect {
+        NativeEffect {
+            id: id.into(),
+            amplifier: 1,
+            duration,
+            ambient: true,
+            particles: false,
+        }
+    }
+
+    #[test]
+    fn an_effect_goes_to_the_game_and_back_unchanged() {
+        let e = effect("minecraft:speed", 200);
+        let game = instance(&e).unwrap();
+        assert_eq!(game.id, "speed");
+        assert!(game.ambient && !game.visible);
+        assert_eq!(native_effect(&game), e);
+        assert!(instance(&effect("speed", -1)).is_some());
+    }
+
+    #[test]
+    fn an_unknown_effect_or_a_bad_duration_is_refused() {
+        assert!(instance(&effect("minecraft:no_such_effect", 200)).is_none());
+        assert!(instance(&effect("minecraft:speed", 0)).is_none());
+        assert!(instance(&effect("minecraft:speed", -2)).is_none());
     }
 }
