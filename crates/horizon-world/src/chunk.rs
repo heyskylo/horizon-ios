@@ -13,7 +13,7 @@ use horizon_core::{
     storage::PackedStorage,
     ticks::{ChunkTicks, SavedTick, TickTypeId},
 };
-use std::io;
+use std::{collections::HashMap, io};
 
 fn key(value: &str) -> JavaString {
     JavaString::from(value)
@@ -146,10 +146,34 @@ impl PalettedContainer {
         Ok(())
     }
 
+    /// `PalettedContainer.pack`: the cells re-encoded into a fresh palette in
+    /// first-use order, so a slot no cell holds any more is not written and the
+    /// bit count is the one for the entries that remain. Saving the palette as
+    /// it is would keep a state a block edit replaced and pack wider than
+    /// vanilla writes for the same cells.
     pub fn to_nbt(&self) -> Tag {
         let mut map = self.extra.clone();
-        map.insert(key("palette"), Tag::List(self.palette.clone()));
-        if let Some(storage) = &self.storage {
+        let mut palette: Vec<&Tag> = Vec::with_capacity(self.palette.len());
+        let mut seen: HashMap<&Tag, u32> = HashMap::with_capacity(self.palette.len());
+        let mut ids = Vec::with_capacity(self.entries);
+        for index in 0..self.entries {
+            let id = self.storage.as_ref().map_or(0, |s| s.get(index).unwrap()) as usize;
+            let value = &self.palette[id];
+            ids.push(*seen.entry(value).or_insert_with(|| {
+                palette.push(value);
+                palette.len() as u32 - 1
+            }));
+        }
+        let bits = bits_for_palette(palette.len(), self.min_bits);
+        map.insert(
+            key("palette"),
+            Tag::List(palette.into_iter().cloned().collect()),
+        );
+        if bits > 0 {
+            let mut storage = PackedStorage::new(bits, self.entries).unwrap();
+            for (index, id) in ids.into_iter().enumerate() {
+                storage.set(index, id).unwrap();
+            }
             map.insert(
                 key("data"),
                 Tag::LongArray(storage.words().iter().map(|&v| v as i64).collect()),
