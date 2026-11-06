@@ -2057,12 +2057,9 @@ impl Game<'_> {
         // `time of <clock>` names the clock; otherwise the dimension's default clock.
         let clock = match ctx.get("clock") {
             Some(Arg::Resource(c)) => c.clone(),
-            _ => match self.dim {
-                Dim::Overworld => "minecraft:overworld".to_owned(),
-                Dim::End => "minecraft:the_end".to_owned(),
-                Dim::Nether => {
-                    return Err(err("commands.time.no_default_clock", &[&self.dim.id()]));
-                }
+            _ => match self.dimension_type().default_clock.clone() {
+                Some(clock) => clock,
+                None => return Err(err("commands.time.no_default_clock", &[&self.dim.id()])),
             },
         };
         let total = self.command_clock_time(&clock);
