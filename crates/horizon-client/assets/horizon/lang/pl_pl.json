@@ -242,6 +242,8 @@
   "horizon.extras.no_ai": "Bez AI",
   "horizon.extras.agent_control": "Sterowanie agentem",
   "horizon.extras.discord_presence": "Discord Rich Presence",
+  "horizon.extras.zoom": "Zoom",
+  "horizon.extras.zoom_mod_install": "Zoom: zainstaluj w Modach",
   "horizon.extras.fullbright.tooltip": "Pokazuje bloki i byty w pełnym oświetleniu, nawet w ciemnych miejscach.",
   "horizon.extras.dynamic_lights.tooltip": "Pochodnie i inne źródła światła trzymane w dłoni, upuszczone lub płonące oświetlają otaczające bloki.",
   "horizon.extras.own_name_tag.tooltip": "Pokazuje twój nick nad głową w widoku z trzeciej osoby, tak jak widzą go inni gracze. Ukryty, gdy serwer ukrywa nazwy twojej drużyny lub jesteś niewidzialny.",

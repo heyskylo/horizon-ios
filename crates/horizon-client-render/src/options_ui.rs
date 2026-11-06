@@ -2709,6 +2709,41 @@ impl OptionsUi {
         }
         rows
     }
+    /// The row that reaches the Zoom mod that replaced the extra: its switch and settings page
+    /// when it is built in, else a note saying where it is installed (Options > Mods). Zoom
+    /// became an official native mod, so Extras has no setting of its own for it (#8713).
+    fn zoom_mod_row(s: &Settings) -> Row {
+        let Some(i) = s
+            .mods
+            .installed
+            .iter()
+            .position(|m| m.id == "zoom" && m.native.is_some())
+        else {
+            // A note, not a button: Options > Mods already has the one way into the Mods page
+            // (`every_setting_and_page_is_reached_from_one_place`).
+            return Row::Note(lang::get("horizon.extras.zoom_mod_install"));
+        };
+        let label = || Text::option_name_value(tr("horizon.extras.zoom"), on_off(s.mods.is_on(i)));
+        let toggle = |width| button(0.0, 0.0, width, label(), Act::ToggleMod(i));
+        let settings = s.mods.installed[i]
+            .native
+            .as_ref()
+            .is_some_and(|page| !page.keys.is_empty() || !page.buttons.is_empty());
+        if settings {
+            Row::Buttons(
+                toggle(150.0),
+                Some(button(
+                    0.0,
+                    0.0,
+                    150.0,
+                    tr("horizon.mods.settings"),
+                    Act::ModSettings(i),
+                )),
+            )
+        } else {
+            Row::Buttons(toggle(310.0), None)
+        }
+    }
     /// A native mod's page: its name, its keys as Key Binds rows (the
     /// player's choice, else the default), then its buttons.
     fn native_rows(&self, s: &Settings, i: usize) -> Vec<Row> {
@@ -2781,6 +2816,11 @@ impl OptionsUi {
                 // (Horizon Settings has it).
                 let preset = button(0.0, 0.0, 150.0, tr("horizon.pvp.preset"), Act::PvpPreset);
                 let mut rows = Vec::new();
+                if self.page() == Page::Extras {
+                    // Zoom, the FPS counter, Keystrokes and the Minimap are official mods now;
+                    // Extras keeps a way to the one players look for here (#8713).
+                    rows.push(Self::zoom_mod_row(s));
+                }
                 if self.page() == Page::Pvp {
                     // The editor moves what the game shows: only from a world.
                     let edit = button(0.0, 0.0, 150.0, tr("horizon.pvp.editor"), Act::HudEditor);
@@ -6645,6 +6685,60 @@ mod tests {
             on.vertices.len() - off.vertices.len(),
             on.vertices.len(),
             off.vertices.len(),
+        );
+    }
+
+    #[test]
+    fn extras_reaches_the_zoom_mod_that_replaced_the_extra() {
+        let mut s = Settings::default();
+        let mut ui = OptionsUi::default();
+        ui.show(Page::Extras);
+        let english = || lang::Language::load(&[], "en_us");
+        // Without the mod, Extras says where it is installed (a note, not a second way into
+        // Options > Mods).
+        let (widgets, _, _, _) = lang::scoped(english(), || ui.layout(&s, 480.0, 4000.0)).0;
+        assert!(
+            widgets.iter().any(|w| matches!(
+                &w.kind,
+                WKind::Text { text, .. } if text.plain() == "Zoom: install from Mods"
+            )),
+            "Extras has no hint for the Zoom mod"
+        );
+        // Built in, Zoom's settings live on its page: Extras opens that page.
+        s.mods.installed.push(crate::mod_list::Installed {
+            id: "zoom".into(),
+            title: "Zoom 2.0.0".into(),
+            description: String::new(),
+            problem: None,
+            dev: false,
+            native: Some(crate::mod_list::NativePage {
+                keys: vec![["zoom".into(), "Zoom".into(), "key.keyboard.z".into()]],
+                buttons: Vec::new(),
+            }),
+        });
+        let (widgets, _, _, _) = lang::scoped(english(), || ui.layout(&s, 480.0, 4000.0)).0;
+        assert!(
+            widgets.iter().any(|w| matches!(
+                &w.kind,
+                WKind::Button {
+                    act: Act::ModSettings(0),
+                    label,
+                    ..
+                } if label.plain() == "Settings"
+            )),
+            "Extras doesn't open the Zoom mod's settings"
+        );
+        // The mod's switch is on the same row, so Extras keeps the Zoom setting it had.
+        assert!(
+            widgets.iter().any(|w| matches!(
+                &w.kind,
+                WKind::Button {
+                    act: Act::ToggleMod(0),
+                    label,
+                    ..
+                } if label.plain().starts_with("Zoom")
+            )),
+            "Extras doesn't switch the Zoom mod"
         );
     }
 
