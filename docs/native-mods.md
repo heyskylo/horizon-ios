@@ -2493,6 +2493,20 @@ biomes) in some chunks or all of them, as Bukkit's `ChunkGenerator` does.
 - **`native_world_seed()`** (`native_world_seed.rs`): the world's seed as `/seed` prints it (`WorldOptions.seed`,
   Bukkit's `World.getSeed`), the one every level generates from, for a preview that draws the terrain a chunk will get.
   None off a server: a client only knows a hash of its server's seed. API @API:world_seed@.
+- **`native_chunk_generate(dimension, chunk, seed, flat, chunk_out, generate)`**
+  (`horizon_world::worldgen::native_generate`): chunk `[x, z]` of the level `dimension` is about to get its terrain,
+  after its biomes and structure starts and before the noise (Bukkit's `ChunkGenerator.generateNoise`, vanilla's
+  `NOISE` status); `flat` says the level is superflat. To build it, set its blocks with `chunk_out.set_block(x, y, z,
+  state)` (all air until then; `chunk_out.registry()` names the states) and set `generate` to `NativeGenerate::Replaced
+  { surface, carvers, structures, decorations }`: vanilla then adds only what the flags ask for, the dimension's surface
+  rule, its carvers (on a superflat level too), the structures, the biomes' features (Bukkit's `shouldGenerateSurface`,
+  `shouldGenerateCaves`, `shouldGenerateStructures`, `shouldGenerateDecorations`). Left at `Vanilla` with no block set,
+  the chunk is vanilla's, byte for byte; `chunk_out.set_biomes(pick)` (what decoration, the saved chunk and the players
+  see; the surface rule and structure placement keep reading the biome source) and `chunk_out.clear_structures()` work
+  with either answer. Mods are asked in turn. It runs on the generation workers, for several chunks at once on several
+  threads and never on the server thread, so no `Game` helper works there; a chunk can be asked again (a proto chunk
+  saved unfinished, the neighbours of a finished one, the far terrain's decoration), so answer the same each time. Also
+  where single player and the far terrain generate. API @API:chunk_generate@.
 
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
