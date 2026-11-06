@@ -1753,6 +1753,7 @@ impl ChatScreen {
         if self.is_draft && key == K::Backspace {
             self.input.set_value(m, "");
             self.is_draft = false;
+            self.edited(m, c);
             return ChatAction::None;
         }
         match key {
