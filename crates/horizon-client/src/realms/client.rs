@@ -103,8 +103,19 @@ pub struct Ops {
 pub struct RealmSetting {
     #[serde(default, deserialize_with = "nullable")]
     pub name: String,
-    #[serde(default, deserialize_with = "nullable")]
+    #[serde(default, deserialize_with = "setting_value")]
     pub value: String,
+}
+
+/// `JsonPrimitive.getAsString`: the service sends a setting's value as a JSON bool or
+/// number where Gson reads a string, so either reads as its text.
+fn setting_value<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    Ok(match serde_json::Value::deserialize(d)? {
+        serde_json::Value::Bool(value) => value.to_string(),
+        serde_json::Value::Number(value) => value.to_string(),
+        serde_json::Value::String(value) => value,
+        _ => String::new(),
+    })
 }
 
 /// `RealmsSlot`: one of the Realm's world slots.
