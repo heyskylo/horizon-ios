@@ -23,6 +23,9 @@ Steps, in docs/server.md's order ("A hand-over, in order"), each checked:
 7. `player-release <uuid> <id> moved` on A: the player is out of A's world, without "left the game", and A
    writes no file for it, before or after it stops.
 
+`transfer-status` is read on the way: after 2 (B expects one player), after 4 (B holds it, A has it placed and
+frozen) and after 7 (the player is on B, A has nobody).
+
 Then the cancels: a hand-over from B back to A is aborted (`player-drop` on A, `player-release ... abort` on B)
 and the player plays on on B; a late `moved` for it is refused.
 
@@ -467,6 +470,10 @@ def run(bins, resources, scratch, out):
         # 2. B expects it.
         reply = b.ask(f'player-expect {player_uuid}')
         steps.check('2. player-expect on B', reply.get('ok') is True, reply=reply)
+        status = b.ask('transfer-status')
+        steps.check('2. transfer-status on B counts the player as expected, and B is not full',
+                    status.get('expected') == 1 and status.get('players') == 0 and status.get('full') is False,
+                    status=status)
 
         # 3. A exports it, frozen; a repeat answers the same bytes.
         reply = a.ask(f'player-export {player_uuid} freeze')
@@ -499,6 +506,13 @@ def run(bins, resources, scratch, out):
         b.server.wait_for(rf'{PLAYER} is held: it arrives from another server', 60)
         steps.check('4. the login on B is held, and announced to no one',
                     not any('joined the game' in l for l in b.server.since(mark_b)))
+        status = b.ask('transfer-status')
+        steps.check('4. transfer-status on B: held, no longer expected, and its place taken',
+                    status.get('held') == 1 and status.get('expected') == 0 and status.get('online') == 1,
+                    status=status)
+        status = a.ask('transfer-status')
+        steps.check('4. transfer-status on A: the player is placed and frozen',
+                    status.get('players') == 1 and status.get('frozen') == 1, status=status)
 
         # 5. Import without placing.
         request = json.dumps({'record': record, 'place': False})
@@ -551,6 +565,11 @@ def run(bins, resources, scratch, out):
         steps.check("7. A's connection of the player is closed", first.process.poll() is not None)
         late = a.ask(f'player-release {player_uuid} {handover} moved')
         steps.check('7. a repeated release is refused', 'error' in late, reply=late)
+        status_a, status_b = a.ask('transfer-status'), b.ask('transfer-status')
+        steps.check('7. transfer-status: the player is on B now, and A has nobody',
+                    status_b.get('players') == 1 and status_b.get('held') == 0
+                    and status_a.get('players') == 0 and status_a.get('frozen') == 0,
+                    a=status_a, b=status_b)
 
         # The cancel: from B back to A, aborted.
         reply = a.ask(f'player-expect {player_uuid}')

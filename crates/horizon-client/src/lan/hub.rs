@@ -133,6 +133,12 @@ pub enum HostEvent {
     /// A guest left (state to save, entities to drop).
     Left(Box<Guest>),
     Packet(u32, Box<S>),
+    /// An accepted position started a jump, before later gameplay packets.
+    Jump {
+        conn: u32,
+        from: [f64; 3],
+        yaw: f32,
+    },
     /// A guest changed the dominant hand in their client options.
     MainHandChanged(u32, bool),
     /// A guest changed their client language option.
@@ -1755,15 +1761,22 @@ impl Hub {
     }
     /// Server mods' commands changed: every player gets their tree again.
     pub fn set_mod_commands(&mut self, key: u64, commands: serde_json::Value) {
-        let resend = self.mod_commands.0 != commands;
-        self.mod_commands = (commands, Some(key));
-        if resend {
+        if self.store_mod_commands(key, commands) {
             for i in 0..self.guests.len() {
                 if self.guests[i].placed {
                     self.send_commands(i);
                 }
             }
         }
+    }
+
+    /// [`Hub::set_mod_commands`] without sending: true when the tree changed.
+    /// The caller sends the trees itself (`native_refresh_commands` first asks
+    /// the mods which root commands each player keeps).
+    pub fn store_mod_commands(&mut self, key: u64, commands: serde_json::Value) -> bool {
+        let changed = self.mod_commands.0 != commands;
+        self.mod_commands = (commands, Some(key));
+        changed
     }
 
     /// Commands.sendCommands: the command tree for this player.
@@ -3958,12 +3971,16 @@ impl Hub {
                 S::Chat(c) => self.handle_chat(i, c, events),
                 S::ChatAck(p) => self.chat_ack(i, p.offset, events),
                 S::ChatSessionUpdate(p) => self.chat_session_update(i, p, events),
-                // handlePlayerAction (a dig starting, stopping or finishing) is the
-                // game's, run after this pass. A move queued behind it is checked
-                // against the block the player just broke and falls through, so it
-                // would be sent back; it waits for the next tick, when the block is
-                // gone, as vanilla handles the packets in order.
-                S::PlayerAction(p) if p.action <= 3 => {
+                // handlePlayerAction is the game's, run after this pass, and a move
+                // queued behind it waits for the next tick, as vanilla handles the
+                // packets in order. For a dig starting, stopping or finishing, the
+                // move is checked against the block the player just broke and falls
+                // through, so it would be sent back. A drop, a RELEASE_USE_ITEM (a
+                // bow's arrow, a trident, a spear) and a stab use the player's
+                // position and known movement now (#8423): shot after the move, an
+                // arrow left the position of the tick after the release, a tick
+                // ahead of the camera's instead of a tick behind it.
+                S::PlayerAction(p) => {
                     events.push(HostEvent::Packet(conn, Box::new(S::PlayerAction(p))));
                     held = self.move_queued(i);
                 }
@@ -4180,15 +4197,23 @@ impl Hub {
         // ServerChunkCache.move: its pairs are checked again.
         g.moved = true;
         let moved = [0, 1, 2].map(|k| g.position[k] - g.previous_position[k]);
+        let on_ground = flags & 1 != 0;
+        if g.on_ground && !on_ground && moved[1] > 0.0 && !g.spectator() {
+            events.push(HostEvent::Jump {
+                conn: g.conn,
+                from: g.previous_position,
+                yaw: g.yaw,
+            });
+        }
         if g.moves.is_empty() {
             g.moves_from_ground = g.on_ground;
         }
-        g.moves.push((moved, flags & 1 != 0));
+        g.moves.push((moved, on_ground));
         g.known_movement = moved;
         g.yaw = yaw;
         g.pitch = pitch.clamp(-90.0, 90.0);
         g.head_yaw = g.yaw;
-        g.on_ground = flags & 1 != 0;
+        g.on_ground = on_ground;
         g.ticks = g.ticks.max(1);
     }
 
@@ -4971,6 +4996,38 @@ mod tests {
         (hub, rx)
     }
 
+    /// `store_mod_commands` keeps a new mod tree without sending it (the
+    /// game sends it after the mods filtered it: `native_refresh_commands`),
+    /// and `set_mod_commands` still sends a changed tree, and only a changed one.
+    #[test]
+    fn stored_mod_commands_are_not_sent_until_asked() {
+        let (mut hub, rx) = hub_with_a_guest();
+        let trees = |rx: &std::sync::mpsc::Receiver<crate::lan::Out>| {
+            let mut sent = 0;
+            while let Ok(out) = rx.try_recv() {
+                if let crate::lan::Out::Packet(body) = out {
+                    let mut r = horizon_protocol::buf::Reader::new(&body);
+                    let pid = r.varint().unwrap();
+                    if let Ok(C::Commands(_)) = C::decode(pid, r.rest()) {
+                        sent += 1;
+                    }
+                }
+            }
+            sent
+        };
+        let first = serde_json::json!({"hello": {}});
+        assert!(hub.store_mod_commands(0, first.clone()));
+        assert!(!hub.store_mod_commands(0, first.clone()));
+        assert_eq!(trees(&rx), 0);
+        assert_eq!(hub.mod_commands_key(), Some(0));
+        hub.set_mod_commands(0, first);
+        assert_eq!(trees(&rx), 0, "an unchanged tree is not sent again");
+        hub.set_mod_commands(0, serde_json::json!({"hello": {}, "bye": {}}));
+        assert_eq!(trees(&rx), 1);
+        hub.resend_commands();
+        assert_eq!(trees(&rx), 1, "every placed player gets their tree again");
+    }
+
     /// `onGameRuleChanged`: a changed `reduced_debug_info` reaches each player
     /// as their own entity event 22 / 23, and an unchanged one sends nothing.
     #[test]
@@ -5488,6 +5545,78 @@ mod tests {
                 [(S::MovePlayerRot(_), _)]
             ),
             "the turn did not wait for the next tick"
+        );
+    }
+
+    /// #8423: a RELEASE_USE_ITEM shoots from the player's position and known
+    /// movement of the last move the server handled; the move the client sent
+    /// after it waits for the next tick, as vanilla handles the two in order.
+    #[test]
+    fn a_release_shoots_before_the_move_behind_it() {
+        let (mut hub, _rx) = hub_with_a_guest();
+        hub.guests[0].load_timeout = 0;
+        let before = (hub.guests[0].position, hub.guests[0].known_movement);
+        let inbox = &mut hub.guests[0].inbox;
+        inbox.push_back((
+            S::PlayerAction(play::PlayerAction {
+                action: 6,
+                pos: [0; 3],
+                direction: 0,
+                sequence: 0,
+            }),
+            0,
+        ));
+        inbox.push_back((
+            S::MovePlayerPos(play::MovePlayerPos {
+                x: before.0[0] + 0.3,
+                y: before.0[1],
+                z: before.0[2],
+                flags: 1,
+            }),
+            0,
+        ));
+        let mut world = World::new(horizon_world::registry::BlockStateId(0), 0);
+        let mut next_entity = 2;
+        let border = crate::worldborder::WorldBorder::default();
+        let mut ctx = TickCtx {
+            world: &mut world,
+            entities: &[],
+            next_entity: &mut next_entity,
+            spawn: [0.5, 64.0, 0.5],
+            difficulty: 2,
+            difficulty_locked: false,
+            clock_rate: 1.0,
+            tick_rate: 20.0,
+            tick_frozen: false,
+            tick_steps: Default::default(),
+            collision: None,
+            border: &border,
+            streaming: None,
+        };
+        let events = hub.drain_packets(&mut ctx);
+        let handled: Vec<&S> = events
+            .iter()
+            .filter_map(|e| match e {
+                HostEvent::Packet(_, p) => Some(&**p),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            matches!(handled[..], [S::PlayerAction(_)]),
+            "the game was handed {handled:?}"
+        );
+        assert!(
+            matches!(
+                hub.guests[0].inbox.iter().collect::<Vec<_>>()[..],
+                [(S::MovePlayerPos(_), _)]
+            ),
+            "the move did not wait for the next tick"
+        );
+        let g = &hub.guests[0];
+        assert_eq!(
+            (g.position, g.known_movement),
+            before,
+            "the shot's position"
         );
     }
 

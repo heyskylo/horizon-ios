@@ -3057,6 +3057,11 @@ impl B {
                         if let Some(first) = items.first() {
                             *look_time = 900;
                             m.extra.set_main_hand_stack(Some(first.clone()));
+                            super::finalize::set_drop_chance(
+                                m,
+                                super::equip::Slot::MainHand.index(),
+                                0.0,
+                            );
                         }
                     }
                 }
@@ -3071,11 +3076,21 @@ impl B {
                                 *index = 0;
                             }
                             m.extra.set_main_hand_stack(Some(items[*index].clone()));
+                            super::finalize::set_drop_chance(
+                                m,
+                                super::equip::Slot::MainHand.index(),
+                                0.0,
+                            );
                         }
                     }
                 } else {
                     // clearHeldItem; no offer matches: look for a while only.
                     m.extra.set_main_hand(None);
+                    super::finalize::set_drop_chance(
+                        m,
+                        super::equip::Slot::MainHand.index(),
+                        0.085,
+                    );
                     *look_time = (*look_time).min(40);
                 }
                 *look_time -= 1;
@@ -3334,6 +3349,7 @@ impl B {
                 mem(m).interaction_target.clear();
                 // clearHeldItem
                 m.extra.set_main_hand(None);
+                super::finalize::set_drop_chance(m, super::equip::Slot::MainHand.index(), 0.085);
                 *player_item = None;
             }
             B::TradeWithVillager(t) => {
@@ -4697,3 +4713,7 @@ mod reputation_witness_tests {
         ));
     }
 }
+
+#[cfg(test)]
+#[path = "villager_trades_tests.rs"]
+mod trades_tests;

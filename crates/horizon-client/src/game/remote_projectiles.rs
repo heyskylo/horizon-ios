@@ -113,7 +113,7 @@ fn projectile_kind(kind: &str) -> Option<ProjectileKind> {
 /// tracker's updates (10 to 20 ticks apart) with its own gravity and drag,
 /// and a block stops it there; only the server decides what it hits.
 pub(super) fn remote_projectile_tick(p: &mut Projectile, w: &impl ProjectileWorld) {
-    if !matches!(p.tick(w).1, Hit::None) {
+    if !matches!(p.tick_remote(w).1, Hit::None) {
         p.velocity = Vec3::ZERO;
     }
 }
@@ -361,10 +361,13 @@ impl Game<'_> {
             "minecraft:fishing_bobber" => self.spawn_remote_hook(id, at, velocity, data),
             "minecraft:end_crystal" => {
                 // EndCrystal's constructor starts `time` from the crystal's own
-                // random, so each placed crystal spins from its own phase.
-                let time = horizon_client::mobs::entity_random(id, at)
+                // random, so each placed crystal spins from its own phase. The id is the
+                // server's, given in the order its chunks load, so under `HORIZON_STILL` the
+                // position alone seeds it.
+                let drawn = horizon_client::mobs::entity_random(id, at)
                     .next_int_bound(100_000)
                     .unwrap_or(0);
+                let time = super::dragon::Crystal::start_time(at, drawn, self.clock.still());
                 self.crystals.push(super::dragon::Crystal {
                     id,
                     position: at,
