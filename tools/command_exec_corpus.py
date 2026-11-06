@@ -53,6 +53,12 @@ def inline_predicate_constants():
 
 def predicate_selector_fixtures(group_names):
     fixtures = {}
+    if 'mob custom name components' in group_names:
+        try:
+            from .mob_name_predicate_corpus import predicates as name_predicates
+        except ImportError:
+            from mob_name_predicate_corpus import predicates as name_predicates
+        fixtures.update(name_predicates())
     if 'mob effect predicate view' in group_names:
         try:
             from .mob_effect_predicate_corpus import predicates as effect_predicates
@@ -5784,6 +5790,10 @@ def groups():
     except ImportError:
         from mob_effect_predicate_corpus import cases as mob_effect_predicates
     try:
+        from .mob_name_predicate_corpus import cases as mob_name_predicates
+    except ImportError:
+        from mob_name_predicate_corpus import cases as mob_name_predicates
+    try:
         from .frame_map_corpus import frame_maps
         from .allay_damage_corpus import allay_player_damage
         from .wolf_anger_corpus import groups as wolf_anger_groups
@@ -5812,6 +5822,7 @@ def groups():
         ('mob saved pickup loot', mob_saved_pickup_loot()),
         ('transmute result patches', transmute_patches(cmd, setup)),
         ('mob effect predicate view', mob_effect_predicates(cmd, setup)),
+        ('mob custom name components', mob_name_predicates(cmd, setup)),
         ('frame live map detachment', frame_maps(cmd, setup)),
         ('allay player damage immunity', allay_player_damage(cmd, setup)),
         *wolf_anger_groups(cmd, setup),

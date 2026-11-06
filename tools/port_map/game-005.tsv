@@ -1,4 +1,5 @@
 Entity.<init>	port	crates/horizon-client/src/mobs.rs::Mob::new	mobs only; players and projectiles are built by their own structs and the synched defaults (flags, air, name, pose) are plain fields
+Entity.get	port	crates/horizon-client/src/game/advancements.rs::Game::mob_entity	mob predicate projection: live custom_name Text and the existing type-variant component; gap: custom_data is not projected
 Entity.getMovementEmission	port	crates/horizon-client/src/mobs/ai.rs::movement_sounds	EVENTS for silverfish, endermite, bats, squids, glow squids, guardians, elder guardians and breezes (game events, no sounds), NONE for a shulker (ai.rs::emits_movement), ALL for every other type
 Entity.isColliding	missing		minor: a block change that a server refuses and that comes back inside the player does not snap the player to the position of the prediction (end_predictions only restores the block)
 Entity.canInteractWithLevel	inline	crates/horizon-client/src/mobs/leash.rs::tick	gap: minor: only the leashed mob's life is tested (a dead one drops its lead); a dead or spectating holder is not tested
