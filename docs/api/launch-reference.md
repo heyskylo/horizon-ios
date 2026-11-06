@@ -127,7 +127,7 @@ Prints one JSON object on stdout and exits 0. `horizon` is the build's version; 
 }
 ```
 
-`content` is what this build loads, so a launcher offers only what works on it: content mods of the manifest `api` lines in `mod.api`; native mods built for hooks up to `native_mod.hooks`, which need the game rebuilt (`rebuild`); shader packs of `shader.schema` and the lines in `shader.api` (a newer line is read, not drawn); resource and data packs of `format` (`[major, minor]`; others still load, marked too old or too new as vanilla marks them); modpacks of `modpack.format`; the mod index of `index.schema`.
+`content` is what this build loads ([content.md](content.md)), so a launcher offers only what works on it: content mods of the manifest `api` lines in `mod.api`; native mods built for hooks up to `native_mod.hooks`, which need the game rebuilt (`rebuild`); shader packs of `shader.schema` and the lines in `shader.api` (a newer line is read, not drawn); resource and data packs of `format` (`[major, minor]`; others still load, marked too old or too new as vanilla marks them); modpacks of `modpack.format`; the mod index of `index.schema`.
 
 ## Exit codes
 

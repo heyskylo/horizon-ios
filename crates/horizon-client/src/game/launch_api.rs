@@ -216,7 +216,8 @@ pub fn markdown() -> String {
     let _ = writeln!(w, "```json\n{}\n```\n", reference_reply());
     let _ = writeln!(
         w,
-        "`content` is what this build loads, so a launcher offers only what works on it: content \
+        "`content` is what this build loads ([content.md](content.md)), so a launcher offers only \
+         what works on it: content \
          mods of the manifest `api` lines in `mod.api`; native mods built for hooks up to \
          `native_mod.hooks`, which need the game rebuilt (`rebuild`); shader packs of \
          `shader.schema` and the lines in `shader.api` (a newer line is read, not drawn); resource \
