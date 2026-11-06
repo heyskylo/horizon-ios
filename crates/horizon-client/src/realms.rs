@@ -520,6 +520,9 @@ pub enum SubScreen {
         regions: Vec<RegionDataDto>,
         /// The highlighted row: `(preference, region)`.
         selected: Option<(i32, Option<String>)>,
+        /// The settings tab's data, carried back so its save can run at once.
+        detail: Option<Result<RealmServer, RealmsError>>,
+        tier: Option<Result<RealmTierConfiguration, RealmsError>>,
     },
     /// `RealmsInviteCodesScreen`: the Realm's shareable codes.
     InviteCodes {
@@ -1208,17 +1211,23 @@ impl Screen {
     }
 
     /// A chosen region preference: back to the settings tab with it.
-    fn back_to_settings(&mut self, server: RealmServer, settings: SettingsDraft) {
+    fn back_to_settings(
+        &mut self,
+        server: RealmServer,
+        settings: SettingsDraft,
+        detail: Option<Result<RealmServer, RealmsError>>,
+        tier: Option<Result<RealmTierConfiguration, RealmsError>>,
+    ) {
         self.subscreen = SubScreen::Configure {
             server,
             tab: ConfigureTab::Settings,
             subscription: None,
             subscription_job: None,
-            detail: None,
+            detail,
             detail_job: None,
             deleting: None,
             member_job: None,
-            tier: None,
+            tier,
             tier_job: None,
             settings: Some(settings),
             regions: None,
@@ -1301,6 +1310,8 @@ impl Screen {
             server,
             settings: Some(draft),
             regions: Some(Ok(list)),
+            detail,
+            tier,
             ..
         } = &self.subscreen
         else {
@@ -1313,6 +1324,8 @@ impl Screen {
             settings,
             regions,
             selected,
+            detail: detail.clone(),
+            tier: tier.clone(),
         };
     }
 
@@ -1689,6 +1702,8 @@ impl Screen {
                     server,
                     settings,
                     selected,
+                    detail,
+                    tier,
                     ..
                 } = &self.subscreen
                     && let Some((preference, region)) = selected
@@ -1697,18 +1712,22 @@ impl Screen {
                     let mut settings = settings.clone();
                     settings.preference = *preference;
                     settings.region = region.clone();
-                    self.back_to_settings(server, settings);
+                    self.back_to_settings(server, settings, detail.clone(), tier.clone());
                 }
                 Outcome::None
             }
             Some(86) => {
                 if let SubScreen::RegionPreference {
-                    server, settings, ..
+                    server,
+                    settings,
+                    detail,
+                    tier,
+                    ..
                 } = &self.subscreen
                 {
                     let server = server.clone();
                     let settings = settings.clone();
-                    self.back_to_settings(server, settings);
+                    self.back_to_settings(server, settings, detail.clone(), tier.clone());
                 }
                 Outcome::None
             }
@@ -1718,6 +1737,8 @@ impl Screen {
                     server,
                     settings: Some(draft),
                     regions,
+                    detail,
+                    tier,
                     ..
                 } = &self.subscreen
                 {
@@ -1737,6 +1758,8 @@ impl Screen {
                                 settings: draft,
                                 regions,
                                 selected,
+                                detail: detail.clone(),
+                                tier: tier.clone(),
                             };
                         }
                     } else if let SubScreen::Configure { regions_job, .. } = &mut self.subscreen
