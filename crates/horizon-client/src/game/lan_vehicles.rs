@@ -596,6 +596,7 @@ impl Game<'_> {
         };
         if let Some(b) = self.boats.iter_mut().find(|b| b.id == vehicle) {
             b.paddling = paddles;
+            b.paddle_controller = true;
         }
     }
 }

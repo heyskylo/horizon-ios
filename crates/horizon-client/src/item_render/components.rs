@@ -28,6 +28,35 @@ pub fn tag_json(tag: &Tag) -> Value {
     }
 }
 
+/// Custom model flags use Codec.BOOL even though NBT stores them as numbers.
+/// Keep the other custom-model fields, and generic NBT JSON, numeric.
+pub(super) fn custom_model_data_json(tag: &Tag) -> Value {
+    let mut value = tag_json(tag);
+    let flags: Option<Vec<Value>> = match tag.get("flags") {
+        Some(Tag::List(flags)) => flags
+            .iter()
+            .map(|flag| crate::item_data::component_bool(flag).map(Value::Bool))
+            .collect(),
+        Some(Tag::ByteArray(flags)) => flags
+            .iter()
+            .map(|flag| crate::item_data::component_bool(&Tag::Byte(*flag as i8)).map(Value::Bool))
+            .collect(),
+        Some(Tag::IntArray(flags)) => flags
+            .iter()
+            .map(|flag| crate::item_data::component_bool(&Tag::Int(*flag)).map(Value::Bool))
+            .collect(),
+        Some(Tag::LongArray(flags)) => flags
+            .iter()
+            .map(|flag| crate::item_data::component_bool(&Tag::Long(*flag)).map(Value::Bool))
+            .collect(),
+        _ => None,
+    };
+    if let (Some(flags), Some(object)) = (flags, value.as_object_mut()) {
+        object.insert("flags".into(), Value::Array(flags));
+    }
+    value
+}
+
 /// Match the custom-data condition against the resolver's JSON component view.
 /// SNBT booleans become byte values, just as stack_view converts network NBT.
 pub fn custom_data_matches(actual: &Value, pattern: &Value) -> bool {

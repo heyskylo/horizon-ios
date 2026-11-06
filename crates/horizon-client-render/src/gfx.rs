@@ -1413,6 +1413,7 @@ pub struct Renderer {
     // Shader packs contain large inline pipeline tables; keep them off the
     // main-thread stack even when this optional state is empty.
     pack_post: Option<(i32, Option<Box<pack_post::PackPost>>)>,
+    pack_resize_pending: bool,
     // Keep queued shader compilation state off the main-thread stack too.
     pack_compiler: Box<pack_loader::Compiler>,
     pack_generation: u64,
@@ -4854,6 +4855,7 @@ impl Renderer {
             frame_format,
             hdr_marker: None,
             pack_post: None,
+            pack_resize_pending: false,
             pack_compiler: Default::default(),
             pack_generation: 0,
             shader_context: {
@@ -7233,14 +7235,34 @@ impl Renderer {
         if self.device_lost() {
             return Err("the graphics device was lost".into());
         }
-        if let Some(request) = self.capture.take() {
-            let result = self.write_capture(&request, frame);
-            self.capture_result = Some(result.map_err(|e| e.to_string()));
-        }
+        self.poll_shader_compilation();
         let scaled = self.screenshot_size();
-        let rendered = match scaled {
-            Some(size) => self.draw_scaled_frame(frame, size),
-            None => self.draw_frame(frame, None),
+        let (picture, scale) = match scaled {
+            Some(size) => (size, self.world_post.scale / self.world_post.scale.max(1.0)),
+            None => (
+                [self.config.width, self.config.height],
+                self.world_post.scale,
+            ),
+        };
+        let size = picture.map(|side| ((side as f32 * scale).round() as u32).clamp(1, 8192));
+        self.pack_resize_pending = false;
+        if let Some((_, Some(post))) = &mut self.pack_post {
+            self.pack_resize_pending =
+                post.resize(&self.device, &self.queue, size)? == pack_post::ResizeState::Pending;
+        }
+        let rendered = if self.pack_resize_pending {
+            // No drawable/screenshot target has been acquired. The display keeps
+            // its last complete image, and capture/screenshot requests stay queued.
+            Ok(false)
+        } else {
+            if let Some(request) = self.capture.take() {
+                let result = self.write_capture(&request, frame);
+                self.capture_result = Some(result.map_err(|e| e.to_string()));
+            }
+            match scaled {
+                Some(size) => self.draw_scaled_frame(frame, size),
+                None => self.draw_frame(frame, None),
+            }
         };
         // A frame that was not drawn still submits the section copies and
         // atlas patches (glyphs, skins, maps), which the caller already took.
@@ -7270,6 +7292,12 @@ impl Renderer {
         // A scaled screenshot's frame never reached the window.
         rendered.map(|drawn| drawn && scaled.is_none())
     }
+    /// A deferred GPU target retirement, not a completed/presented frame. The
+    /// owner may request another redraw; queued capture requests are retained.
+    pub fn pack_resize_pending(&self) -> bool {
+        self.pack_resize_pending
+    }
+
     /// Whether the device's loss callback has fired. A surface reconfigure
     /// alone cannot restore resources belonging to a lost device.
     pub fn device_lost(&self) -> bool {
@@ -7346,7 +7374,6 @@ impl Renderer {
     }
     /// `checks`: the error scopes of a scaled screenshot's frame, checked before its PNG is written.
     fn draw_frame(&mut self, frame: &Frame, checks: Option<GpuChecks>) -> Result<bool> {
-        self.poll_shader_compilation();
         // Its steps as spans (HORIZON_SPIKES): each lap names the step that just ended.
         let mut laps = crate::spans::laps();
         let landing = Instant::now();
@@ -7801,9 +7828,7 @@ impl Renderer {
         // Allocate resized pack inputs before deciding which world draws the pack replaces.
         // On failure, reject it once and let normal rendering draw this same frame.
         let failed_pack = if let Some((dimension, Some(post))) = &mut self.pack_post {
-            let size = [self.config.width, self.config.height]
-                .map(|v| ((v as f32 * self.world_post.scale).round() as u32).clamp(1, 8192));
-            post.resize(&self.device, size);
+            debug_assert!(!self.pack_resize_pending);
             (!post.complete).then(|| (*dimension, post.notes.clone()))
         } else {
             None
@@ -7968,9 +7993,7 @@ impl Renderer {
         if let Some(v) = &shadow_view {
             let radius = (frame.detail_distance / 16.0) as i32;
             let light = ShadowCull {
-                light: Frustum {
-                    planes: frustum(v.cull),
-                },
+                light: shadow_box(v),
                 casters: v.view_casters.then(|| shadow_casters(cull_proj, v.light)),
                 reach: v.distance,
             };
@@ -10730,7 +10753,7 @@ impl Renderer {
                 indices: self.indices.clone(),
                 quads: cloud_quads,
             }));
-            post.run(
+            let state = post.run(
                 &self.device,
                 &self.queue,
                 &mut encoder,
@@ -10744,7 +10767,11 @@ impl Renderer {
                 &pages,
                 &mut terrain,
             );
+
             self.pack_post = Some((dimension, Some(post)));
+            if state? != pack_post::ResizeState::Ready {
+                return Err("shader resize was not prepared before the frame".into());
+            }
         } else if let Some((color, depth)) = &scaled
             && native_post
             && let Some(native) = &mut self.native
@@ -11783,6 +11810,17 @@ impl Cull for ShadowCull {
     fn tight(&self) -> bool {
         self.casters.is_none()
     }
+}
+/// The shadow camera's box that the shadow pass draws terrain in: the sides of `view.cull`, and
+/// its near and far planes only with `depth_planes`.
+fn shadow_box(view: &pack_post::ShadowView) -> Frustum {
+    let mut planes = frustum(view.cull);
+    if !view.depth_planes {
+        // `frustum`'s faces at depth 0 and 1 take in everything.
+        planes[4] = Vec4::W;
+        planes[5] = Vec4::W;
+    }
+    Frustum { planes }
 }
 /// Camera-relative clip planes (`Frustum`).
 #[derive(Clone, Copy, Debug)]
@@ -13774,6 +13812,7 @@ mod shadow_face_tests {
             unculled: None,
             every_face,
             view_casters: true,
+            depth_planes: false,
         }
     }
 
@@ -13945,6 +13984,52 @@ mod shadow_caster_tests {
             drawn(&|out| sections.visible(camera, 4, &view, |_| true, |_, _| false, out))
                 .is_empty()
         );
+    }
+
+    /// Our probe pack's Iris 1.11.7 shadow maps, under a noon sun with `shadowDistance` 128, hold
+    /// the terrain at every depth along the light whatever planes the pack gives (#10403): from
+    /// a cave at y -7, the surface's sections ~70 blocks toward the light with `shadowNearPlane`
+    /// 0.05 and `shadowFarPlane` 256; from y 600, the ground ~535 blocks away with no planes set;
+    /// and both with the planes at 200 and 210. Only the box's sides cull.
+    #[test]
+    fn the_shadow_pass_draws_terrain_outside_the_pack_s_planes() {
+        let kept = |near: Option<f32>, far: Option<f32>, y: f64, min: [f32; 3], depth: bool| {
+            let shadow = horizon_shaders::Shadow {
+                distance: 128.0,
+                near,
+                far,
+                ..horizon_shaders::Shadow::default()
+            };
+            let camera = DVec3::new(13.5, y + 1.62, -13.5);
+            let view = pack_post::ShadowView {
+                cull: pack_uniforms::shadow_culling_at(Vec3::Y, camera, &shadow),
+                light: Vec3::Y,
+                distance: None,
+                unculled: None,
+                every_face: true,
+                view_casters: false,
+                depth_planes: depth,
+            };
+            let cull = ShadowCull {
+                light: shadow_box(&view),
+                casters: None,
+                reach: None,
+            };
+            let min = Vec3::from(min);
+            cull.intersects(min, min + 16.0)
+        };
+        // The section holding the surface (y 64..80) above the cave, and the ground under y 600.
+        let above = [-8.0, 64.0 - (-7.0 + 1.62), -8.0];
+        let below = [-8.0, 64.0 - (600.0 + 1.62), -8.0];
+        assert!(kept(Some(0.05), Some(256.0), -7.0, above, false));
+        assert!(kept(None, None, 600.0, below, false));
+        assert!(kept(Some(200.0), Some(210.0), -7.0, above, false));
+        assert!(kept(Some(200.0), Some(210.0), 600.0, below, false));
+        // A section 200 blocks off to the side is still outside the box.
+        let side = [200.0, 0.0, -8.0];
+        assert!(!kept(Some(0.05), Some(256.0), -7.0, side, false));
+        // Horizon's own packs keep culling by their planes.
+        assert!(!kept(Some(0.05), Some(256.0), -7.0, above, true));
     }
 
     /// The margin doesn't follow the field of view: from the same camera under a noon sun, our

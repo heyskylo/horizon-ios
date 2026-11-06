@@ -69,6 +69,14 @@ const HORIZONTAL: [[i32; 3]; 8] = [
     [-1, 0, 1],
     [1, 0, 1],
 ];
+/// Blocks vanilla defines with `.liquid()`: water, lava and the bubble column.
+fn is_liquid_block_name(name: &str) -> bool {
+    matches!(
+        name,
+        "minecraft:water" | "minecraft:lava" | "minecraft:bubble_column"
+    )
+}
+
 fn respawn_offsets() -> impl Iterator<Item = [i32; 3]> {
     HORIZONTAL
         .into_iter()
@@ -413,7 +421,7 @@ impl Game<'_> {
         name.ends_with("_banner")
             || f.sign_form().is_some()
             || name.ends_with("_pressure_plate")
-            || !(f.legacy_solid || matches!(name, "minecraft:water" | "minecraft:lava"))
+            || !(f.legacy_solid || is_liquid_block_name(name))
     }
     /// `RespawnAnchorBlock.findStandUpPosition`: a safe spot around the
     /// anchor, else any spot.
@@ -538,6 +546,14 @@ fn wrap_degrees(degrees: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bubble_column_counts_as_liquid_for_respawn() {
+        assert!(is_liquid_block_name("minecraft:bubble_column"));
+        assert!(is_liquid_block_name("minecraft:water"));
+        assert!(is_liquid_block_name("minecraft:lava"));
+        assert!(!is_liquid_block_name("minecraft:kelp"));
+    }
 
     #[test]
     fn waking_up_next_to_a_bed_looks_toward_the_bed_head() {

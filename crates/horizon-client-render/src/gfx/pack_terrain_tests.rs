@@ -421,6 +421,7 @@ impl Gpu {
 
     /// One `PackPost::run` over `pages`; the screen's rows, top first.
     fn frame(&self, post: &mut PackPost, terrain: &Terrain, pages: &[Page], label: &str) -> Pixels {
+        super::wait_resize(post, &self.device, &self.queue, [SIDE; 2]);
         let world = |label, format| {
             self.device
                 .create_texture(&wgpu::TextureDescriptor {
@@ -474,19 +475,23 @@ impl Gpu {
                 }),
                 ..Default::default()
             });
-            post.run(
-                &self.device,
-                &self.queue,
-                &mut encoder,
-                &color,
-                &depth,
-                &screen,
-                &frame,
-                &inputs,
-                [SIDE; 2],
-                [SIDE; 2],
-                &handles,
-                &mut |rp, list, page, _geometry| terrain.draw(pages, rp, list, page),
+            assert_eq!(
+                post.run(
+                    &self.device,
+                    &self.queue,
+                    &mut encoder,
+                    &color,
+                    &depth,
+                    &screen,
+                    &frame,
+                    &inputs,
+                    [SIDE; 2],
+                    [SIDE; 2],
+                    &handles,
+                    &mut |rp, list, page, _geometry| terrain.draw(pages, rp, list, page),
+                )
+                .unwrap(),
+                ResizeState::Ready
             );
             encoder.copy_texture_to_buffer(
                 self.screen.as_image_copy(),

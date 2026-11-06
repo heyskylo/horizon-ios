@@ -59,15 +59,14 @@ impl Zoom {
         }
     }
 }
-/// Vanilla key mappings bound to the zoom key. The key still reaches them
+/// Key mappings bound to the zoom key. The key still reaches them
 /// (a key bound twice triggers both, as vanilla's do), so the Extras page
 /// says so.
 pub fn zoom_key_conflicts(e: &Extras, keys: &crate::keybinds::KeyBinds) -> Vec<&'static str> {
     if e.zoom_key == "key.keyboard.unknown" {
         return Vec::new();
     }
-    crate::keybinds::MAPPINGS
-        .iter()
+    crate::keybinds::all_mappings()
         .map(|m| m.0)
         .filter(|name| keys.get(name) == e.zoom_key)
         .collect()

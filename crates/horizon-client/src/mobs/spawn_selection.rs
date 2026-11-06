@@ -25,6 +25,29 @@ use std::{borrow::Cow, collections::HashMap, fs, path::Path};
 
 pub use crate::biome::{SpawnCost, parse_costs, parse_entries};
 
+thread_local! {
+    static ATTEMPT_COUNTS: std::cell::Cell<[u64; 2]> = const { std::cell::Cell::new([0; 2]) };
+}
+/// Reset or publish once per natural-spawn tick, not once per chunk.
+pub fn attempt_counters(publish: bool) {
+    if !crate::spans::enabled() {
+        return;
+    }
+    let counts = ATTEMPT_COUNTS.with(|c| c.replace([0; 2]));
+    if publish {
+        crate::spans::counters(&[("sa_attempts", counts[0]), ("sa_spawns", counts[1])]);
+    }
+}
+fn attempt_count(index: usize) {
+    if crate::spans::enabled() {
+        ATTEMPT_COUNTS.with(|c| {
+            let mut counts = c.get();
+            counts[index] += 1;
+            c.set(counts);
+        });
+    }
+}
+
 /// `MobCategory`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Category {
@@ -1070,14 +1093,19 @@ pub fn spawn_category_for_chunk<L: NaturalLevel, R: RandomSource>(
 ) {
     let x = chunk.0 * 16 + random.next_int_bound(16).unwrap_or(0);
     let z = chunk.1 * 16 + random.next_int_bound(16).unwrap_or(0);
-    let top = l.heightmap(Heightmap::WorldSurface, x, z) + 1;
     let min = l.min_y();
-    let y = min + random.next_int_bound(top - min + 1).unwrap_or(0);
+    let y = random_start_y(random, min, l.heightmap(Heightmap::WorldSurface, x, z));
     trace(Event::Start(category, [x, y, z]));
     if y > min {
         spawn_category_for_position(l, random, state, category, chunk, [x, y, z], spawn, trace);
     }
 }
+// NaturalSpawner.getRandomPosWithin adds one to ChunkAccess.getHeight's
+// highest occupied Y. NaturalLevel.heightmap already returns the first empty Y.
+fn random_start_y(random: &mut impl RandomSource, min: i32, first_empty: i32) -> i32 {
+    min + random.next_int_bound(first_empty - min + 1).unwrap_or(0)
+}
+
 /// `NaturalSpawner.spawnCategoryForPosition` with the spawn state's
 /// `canSpawn` and `afterSpawn`.
 #[allow(clippy::too_many_arguments)]
@@ -1111,6 +1139,7 @@ pub fn spawn_category_for_position<L: NaturalLevel, R: RandomSource>(
             z += random.next_int_bound(6).unwrap_or(0) - random.next_int_bound(6).unwrap_or(0);
             let (xx, zz) = (f64::from(x) + 0.5, f64::from(z) + 0.5);
             trace(Event::Try(x, z));
+            attempt_count(0);
             let Some(distance) = nearest.distance_sqr(l, xx, f64::from(y), zz) else {
                 continue;
             };
@@ -1177,6 +1206,7 @@ pub fn spawn_category_for_position<L: NaturalLevel, R: RandomSource>(
             let Some(result) = spawn(l, &request) else {
                 continue;
             };
+            attempt_count(1);
             group_index += 1;
             spawned.push(result.bounds);
             cluster += 1;
@@ -1457,6 +1487,28 @@ fn top_non_colliding<L: NaturalLevel>(l: &L, entity: &str, x: i32, z: i32) -> [i
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn random_start_uses_first_empty_y_as_inclusive_ceiling() {
+        use horizon_core::random::LegacyRandom;
+
+        // Vanilla getRandomPosWithin: a solid column through Y=63 has
+        // topEmptyY=64, so [-64, 64] contains 129 possible starts, not 130.
+        for seed in 0..1024 {
+            let mut actual = LegacyRandom::new(seed);
+            let mut vanilla = LegacyRandom::new(seed);
+            let expected = -64 + vanilla.next_int_bound(129).unwrap();
+            assert_eq!(random_start_y(&mut actual, -64, 64), expected);
+            assert_eq!(actual.next_long(), vanilla.next_long());
+        }
+        // An empty column must still consume nextInt(1), then fail the
+        // spawnCategoryForChunk minimum-height gate without any group draws.
+        let mut actual = LegacyRandom::new(42);
+        let mut vanilla = LegacyRandom::new(42);
+        vanilla.next_int_bound(1).unwrap();
+        assert_eq!(random_start_y(&mut actual, -64, -64), -64);
+        assert_eq!(actual.next_long(), vanilla.next_long());
+    }
 
     /// The grid finds the players whose chunk is within 8 of a chunk on both
     /// axes, in their order, as a look at every player does.

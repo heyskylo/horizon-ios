@@ -8,6 +8,7 @@
 //! into entity vertices with the level's lighting.
 mod components;
 mod definitions;
+use components::custom_model_data_json;
 pub use components::{custom_data_matches, tag_json};
 pub mod cit;
 mod glint_atlas;
@@ -998,7 +999,20 @@ pub fn stack_view(stack: &crate::items::ItemStack) -> StackView {
             let key = k.to_string_lossy();
             match key.strip_prefix('!') {
                 Some(removed) => view.patch.insert(removed.to_owned(), None),
-                None => view.patch.insert(key, Some(tag_json(v))),
+                None => {
+                    // The component codec turns NBT numeric booleans into JSON booleans.
+                    // Generic NBT conversion must keep unrelated bytes numeric.
+                    let value = if key == "minecraft:enchantment_glint_override" {
+                        crate::item_data::component_bool(v)
+                            .map(Value::Bool)
+                            .unwrap_or_else(|| tag_json(v))
+                    } else if key == "minecraft:custom_model_data" {
+                        custom_model_data_json(v)
+                    } else {
+                        tag_json(v)
+                    };
+                    view.patch.insert(key, Some(value))
+                }
             };
         }
     }
@@ -1124,6 +1138,66 @@ pub fn cluster_poses(state: &ItemRenderState, pose: Mat4, amount: u32, seed: i64
 #[cfg(test)]
 mod tests {
     use super::*;
+    use horizon_assets::item_model::ClientItem;
+
+    #[test]
+    fn custom_model_flags_select_their_model_after_stack_nbt_decoding() {
+        let mut actual = Vec::new();
+        for flags in [
+            Tag::List(vec![Tag::Byte(1), Tag::Byte(0)]),
+            Tag::ByteArray(vec![1, 0]),
+        ] {
+            let mut stack = crate::items::ItemStack::new("minecraft:diamond", 1);
+            let component = Tag::compound([
+                ("flags", flags),
+                ("floats", Tag::List(vec![Tag::Float(1.25f32.to_bits())])),
+                ("colors", Tag::List(vec![Tag::Int(0x12_34_56)])),
+                ("strings", Tag::List(vec![Tag::String("keep".into())])),
+            ]);
+            (stack.damage, stack.extra) = crate::item_data::decode_components(Some(
+                &Tag::compound([("minecraft:custom_model_data", component)]),
+            ));
+            let view = stack_view(&stack);
+            for index in 0..3 {
+                let mut models = ItemModels::default();
+                models.prototypes.insert(
+                    "minecraft:diamond".into(),
+                    BTreeMap::from([(
+                        "minecraft:item_model".into(),
+                        serde_json::json!("minecraft:diamond"),
+                    )]),
+                );
+                models.definitions.insert("minecraft:diamond".into(), ClientItem::decode(&serde_json::json!({
+                    "model": {"type": "minecraft:condition", "property": "minecraft:custom_model_data", "index": index,
+                        "on_true": {"type": "minecraft:model", "model": "horizon:item/yes"},
+                        "on_false": {"type": "minecraft:model", "model": "horizon:item/no"}}
+                })).unwrap());
+                let resolved = models.resolve(
+                    &view,
+                    &Context {
+                        display: DisplayContext::Gui,
+                        owner: None,
+                        level: None,
+                        seed: 0,
+                    },
+                    &horizon_assets::item_model::NoEnv,
+                );
+                assert_eq!(resolved.layers.len(), 1);
+                actual.push(
+                    resolved.layers[0].content
+                        == LayerContent::Model {
+                            model: "horizon:item/yes".into(),
+                        },
+                );
+            }
+            // Non-boolean fields must retain their codec's numeric/string values.
+            let component = view.patch["minecraft:custom_model_data"].as_ref().unwrap();
+            assert_eq!(component["floats"], serde_json::json!([1.25]));
+            assert_eq!(component["colors"], serde_json::json!([0x12_34_56]));
+            assert_eq!(component["strings"], serde_json::json!(["keep"]));
+        }
+        assert_eq!(actual, [true, false, false, true, false, false]);
+    }
 
     #[test]
     fn posed_item_bounds_include_each_cluster_transform() {
@@ -1339,12 +1413,85 @@ mod tests {
             ("a", Tag::Int(3)),
             ("b", Tag::List(vec![Tag::String("x".into())])),
             ("c", Tag::Float(1.5f32.to_bits())),
+            ("d", Tag::Byte(1)),
         ]);
         assert_eq!(
             tag_json(&tag),
-            serde_json::json!({"a": 3, "b": ["x"], "c": 1.5})
+            serde_json::json!({"a": 3, "b": ["x"], "c": 1.5, "d": 1})
         );
     }
+    #[test]
+    fn stack_glint_override_reaches_the_resolved_item_layers() {
+        use horizon_assets::item_model::NoEnv;
+        let mut models = ItemModels::default();
+        models.definitions.insert(
+            "horizon:fixture".into(),
+            ClientItem::from_json(
+                r#"{"model":{"type":"minecraft:model","model":"horizon:item/fixture"}}"#,
+            )
+            .unwrap(),
+        );
+        for default in [false, true] {
+            models.prototypes.insert(
+                "minecraft:diamond".into(),
+                BTreeMap::from([
+                    (
+                        "minecraft:item_model".into(),
+                        serde_json::json!("horizon:fixture"),
+                    ),
+                    (
+                        "minecraft:enchantment_glint_override".into(),
+                        Value::Bool(default),
+                    ),
+                ]),
+            );
+            for (tag, flag) in [
+                (Tag::Byte(1), true),
+                (Tag::Byte(0), false),
+                (Tag::Byte(-1), true),
+                (Tag::Short(256), true),
+                (Tag::Int(1), true),
+                (Tag::Long(1 << 40), true),
+                (Tag::Float(0.5_f32.to_bits()), true),
+                (Tag::Float((-0.0_f32).to_bits()), false),
+                (Tag::Double(0.5_f64.to_bits()), true),
+                (Tag::Double((-0.0_f64).to_bits()), false),
+                (Tag::Float(f32::NAN.to_bits()), true),
+                (Tag::Double(f64::INFINITY.to_bits()), true),
+            ] {
+                let mut stack = crate::items::ItemStack::new("minecraft:diamond", 1);
+                (stack.damage, stack.extra) = crate::item_data::decode_components(Some(
+                    &Tag::compound([("minecraft:enchantment_glint_override", tag)]),
+                ));
+                assert_eq!(stack.has_foil(default), flag);
+                let view = stack_view(&stack);
+                assert_eq!(
+                    view.patch["minecraft:enchantment_glint_override"],
+                    Some(Value::Bool(flag))
+                );
+                let resolved = models.resolve(
+                    &view,
+                    &Context {
+                        display: DisplayContext::Gui,
+                        owner: None,
+                        level: None,
+                        seed: 0,
+                    },
+                    &NoEnv,
+                );
+                assert_eq!(resolved.layers.len(), 1);
+                assert_eq!(
+                    resolved.layers[0].foil,
+                    if flag {
+                        FoilType::Standard
+                    } else {
+                        FoilType::None
+                    }
+                );
+            }
+        }
+    }
+
     #[test]
     fn palette_trns_partial_alpha_counts_as_translucent() {
         // Slime/honey (and ice) are indexed PNGs with a tRNS chunk. Decode must

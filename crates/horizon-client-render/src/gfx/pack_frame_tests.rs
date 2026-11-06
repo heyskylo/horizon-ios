@@ -279,25 +279,30 @@ impl<'a> Harness<'a> {
 
     /// One `PackPost::run` at `render` pixels per side onto the 4x4 window, read back row 0 first.
     fn frame(&self, post: &mut PackPost, render: u32) -> Pixels {
+        super::wait_resize(post, self.device, self.queue, [render, render]);
         let world = WorldTargets::new(self.device, render);
         let hud = crate::hud::HudBatch::new(WINDOW);
         let frame = empty_frame(&hud);
         let inputs = PackInputs::default();
         let mut encoder = self.device.create_command_encoder(&Default::default());
         world.clear(&mut encoder);
-        post.run(
-            self.device,
-            self.queue,
-            &mut encoder,
-            &world.color,
-            &world.depth,
-            &self.screen_view,
-            &frame,
-            &inputs,
-            [render, render],
-            WINDOW,
-            &[],
-            &mut no_terrain,
+        assert_eq!(
+            post.run(
+                self.device,
+                self.queue,
+                &mut encoder,
+                &world.color,
+                &world.depth,
+                &self.screen_view,
+                &frame,
+                &inputs,
+                [render, render],
+                WINDOW,
+                &[],
+                &mut no_terrain,
+            )
+            .unwrap(),
+            ResizeState::Ready
         );
         encoder.copy_texture_to_buffer(
             self.screen.as_image_copy(),
@@ -499,7 +504,7 @@ fn run_executes_setup_begin_and_final_across_resize_on_metal() {
     );
     // The upstream backend allocates lazily. Prime its 1x1 targets without
     // executing setup/begin, then verify actual-extent reuse on the first frame.
-    post.resize(&device, [1, 1]);
+    post.resize(&device, &queue, [1, 1]).unwrap();
     assert_eq!(extent(&post, "volume"), [2, 2, 2]);
     assert_eq!(extent(&post, "history"), [1, 1, 1]);
     let volume = texture_of(&post, "volume");

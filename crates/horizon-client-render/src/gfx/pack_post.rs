@@ -113,6 +113,8 @@ enum SamplerKind {
     NearestRepeat,
     /// The block atlas: nearest texels, blended between the two nearest levels.
     Atlas,
+    /// colortex buffers: linear, blended between the two nearest levels.
+    Buffer,
     Comparison,
 }
 
@@ -140,15 +142,18 @@ impl SamplerKind {
                 (true, false) => Self::Repeat,
                 (false, false) => Self::NearestRepeat,
             },
-            Source::Color(_) | Source::ShadowColor(_) | Source::Dummy | Source::Lightmap => {
-                Self::Linear
-            }
+            // Iris 1.11.7 blends a buffer's two nearest mipmap levels (our probe packs, #9307:
+            // every colortex read at levels 1.25 and 2.5 in composite and final).
+            Source::Color(_) => Self::Buffer,
+            Source::ShadowColor(_) | Source::Dummy | Source::Lightmap => Self::Linear,
         }
     }
 
     fn binding_type(self) -> wgpu::SamplerBindingType {
         match self {
-            Self::Linear | Self::Repeat | Self::Atlas => wgpu::SamplerBindingType::Filtering,
+            Self::Linear | Self::Repeat | Self::Atlas | Self::Buffer => {
+                wgpu::SamplerBindingType::Filtering
+            }
             Self::Nearest | Self::NearestRepeat => wgpu::SamplerBindingType::NonFiltering,
             Self::Comparison => wgpu::SamplerBindingType::Comparison,
         }
@@ -433,6 +438,39 @@ struct Mips {
     levels: Vec<(wgpu::TextureView, wgpu::BindGroup)>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ResizeState {
+    Ready,
+    Pending,
+    Failed,
+}
+struct ResizePending {
+    size: [u32; 2],
+    complete: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// Direct GPU fixtures model the owner's retry loop before beginning a frame.
+#[cfg(test)]
+fn wait_resize(post: &mut PackPost, device: &wgpu::Device, queue: &wgpu::Queue, size: [u32; 2]) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        match post
+            .resize(device, queue, size)
+            .expect("GPU retirement poll")
+        {
+            ResizeState::Ready => return,
+            ResizeState::Failed => panic!("target resize failed: {:?}", post.notes),
+            ResizeState::Pending => {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "GPU retirement did not finish"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+    }
+}
+
 struct Targets {
     size: [u32; 2],
     /// A and B of each buffer used.
@@ -689,6 +727,7 @@ pub struct PackPost {
     /// Bit n set: B is buffer n's "main".
     main: u16,
     targets: Option<Targets>,
+    resize_pending: Option<ResizePending>,
     noise: wgpu::TextureView,
     dummy: wgpu::TextureView,
     dummy_black: wgpu::TextureView,
@@ -716,6 +755,8 @@ pub struct PackPost {
     repeat: wgpu::Sampler,
     nearest_repeat: wgpu::Sampler,
     atlas_sampler: wgpu::Sampler,
+    /// colortex buffers' (`SamplerKind::Buffer`).
+    buffer_sampler: wgpu::Sampler,
     /// None when it would write nothing: colortex0 holds integers and there is no depth to copy
     /// nor buffer to clear.
     blit: Option<(wgpu::RenderPipeline, wgpu::BindGroupLayout)>,
@@ -1184,6 +1225,11 @@ pub(super) struct ShadowView {
     /// maps fit keeping only those with `shadow.culling` unset (#8464): under a noon sun, only
     /// the terrain above the ground the camera sees; with a low sun ahead, none behind the camera.
     pub view_casters: bool,
+    /// Whether the projection's near and far planes in `cull` drop sections too. Our probes'
+    /// Iris 1.11.7 maps hold the terrain at every depth we put it along the light (from 535 blocks
+    /// beyond the shadow camera to about 120 before it), whatever `shadowNearPlane` and
+    /// `shadowFarPlane` the pack sets, or none (#10403): only its sides cull.
+    pub depth_planes: bool,
 }
 
 /// Set 3 of flat terrain, read by the vertex stage: the sprite layers' table (`mc_Entity`'s id
@@ -3065,6 +3111,7 @@ impl PackPost {
             blit_group: None,
             main: 0,
             targets: None,
+            resize_pending: None,
             noise: pack_textures::noise(&textures)
                 .cloned()
                 .unwrap_or_else(|| noise(device, queue)),
@@ -3166,6 +3213,13 @@ impl PackPost {
                 label: Some("Shader pack atlas"),
                 address_mode_u: wgpu::AddressMode::Repeat,
                 address_mode_v: wgpu::AddressMode::Repeat,
+                mipmap_filter: wgpu::MipmapFilterMode::Linear,
+                ..Default::default()
+            }),
+            buffer_sampler: device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("Shader pack buffers"),
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
                 mipmap_filter: wgpu::MipmapFilterMode::Linear,
                 ..Default::default()
             }),
@@ -3377,6 +3431,7 @@ impl PackPost {
                     SamplerKind::Repeat => &self.repeat,
                     SamplerKind::NearestRepeat => &self.nearest_repeat,
                     SamplerKind::Atlas => &self.atlas_sampler,
+                    SamplerKind::Buffer => &self.buffer_sampler,
                     SamplerKind::Comparison => shadow.map_or(&self.shadow.1, |t| &t.comparison),
                 };
                 entries.push(wgpu::BindGroupEntry {
@@ -4225,6 +4280,7 @@ impl PackPost {
             },
             every_face: true,
             view_casters: true,
+            depth_planes: false,
         })
     }
 
@@ -4337,15 +4393,60 @@ impl PackPost {
         }
     }
 
-    pub(super) fn resize(&mut self, device: &wgpu::Device, size: [u32; 2]) {
-        if self.targets.as_ref().is_some_and(|t| t.size == size) {
-            return;
+    pub(super) fn resize(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        size: [u32; 2],
+    ) -> Result<ResizeState, wgpu::PollError> {
+        self.resize_with(device, size, |complete| {
+            queue.on_submitted_work_done(move || {
+                complete.store(true, std::sync::atomic::Ordering::Release)
+            });
+        })
+    }
+
+    // The registration seam lets the Metal control hold a real submission's
+    // retirement acknowledgement without blocking a GPU callback or the UI.
+    fn resize_with(
+        &mut self,
+        device: &wgpu::Device,
+        size: [u32; 2],
+        register: impl FnOnce(std::sync::Arc<std::sync::atomic::AtomicBool>),
+    ) -> Result<ResizeState, wgpu::PollError> {
+        use std::sync::atomic::Ordering;
+        if !self.complete {
+            return Ok(ResizeState::Failed);
         }
+        if self.targets.as_ref().is_some_and(|t| t.size == size) {
+            return Ok(ResizeState::Ready);
+        }
+        if self.resize_pending.is_none() && self.targets.take().is_some() {
+            // No new targets or relative images are allocated while the old GPU
+            // submission can retain this set. Fixed-size image history stays owned.
+            self.forget_groups();
+            let complete = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            register(complete.clone());
+            self.resize_pending = Some(ResizePending { size, complete });
+        }
+        if let Some(pending) = &mut self.resize_pending {
+            pending.size = size;
+            device.poll(wgpu::PollType::Poll)?;
+            if !pending.complete.load(Ordering::Acquire) {
+                return Ok(ResizeState::Pending);
+            }
+        }
+        let size = self
+            .resize_pending
+            .take()
+            .map_or(size, |pending| pending.size);
         if let Err(error) = checked(device, || self.resize_targets(device, size)) {
             self.complete = false;
             self.notes
                 .push(format!("Shader targets could not resize: {error}"));
+            return Ok(ResizeState::Failed);
         }
+        Ok(ResizeState::Ready)
     }
     fn resize_targets(&mut self, device: &wgpu::Device, size: [u32; 2]) {
         if pack_images::resize_images(device, &mut self.images, size) {
@@ -4739,7 +4840,7 @@ impl PackPost {
     /// Runs the pack over the world drawn into `world` (colour) and `world_depth`, then draws
     /// the result onto `screen`.
     #[allow(clippy::too_many_arguments)]
-    pub fn run(
+    pub(super) fn run(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -4753,10 +4854,10 @@ impl PackPost {
         window: [u32; 2],
         pages: &[(u32, wgpu::Buffer, wgpu::Buffer)],
         terrain: &mut TerrainDraw<'_>,
-    ) {
-        self.resize(device, size);
-        if !self.complete {
-            return;
+    ) -> Result<ResizeState, wgpu::PollError> {
+        let resized = self.resize(device, queue, size)?;
+        if resized != ResizeState::Ready {
+            return Ok(resized);
         }
         if let Some(targets) = &mut self.targets {
             if size == window
@@ -4828,13 +4929,11 @@ impl PackPost {
             .get_or_insert_with(|| super::pack_center_depth::CenterDepth::new(device))
             .collect(device);
         self.uniforms.update(frame, inputs, size);
-        // Until the camera's biome is known, `smooth` waits for the world's values.
-        if !inputs.biome_known {
-            self.custom.restart_smoothing();
-        }
+        // `smooth` starts on the first frame that knows the camera's biome.
+        self.custom.world_frame(inputs.biome_known);
         self.uniforms.eval_custom(&mut self.custom);
         if self.targets.is_none() {
-            return;
+            return Ok(ResizeState::Failed);
         }
         // Images start the frame cleared, before the shadow pass writes them.
         if let Some(dump) = &mut self.dump {
@@ -4848,7 +4947,9 @@ impl PackPost {
             self.gpu.clear,
             &mut self.zeros,
         );
-        let Some(targets) = &self.targets else { return };
+        let Some(targets) = &self.targets else {
+            return Ok(ResizeState::Failed);
+        };
         // Every frame starts on A. A buffer that isn't cleared and ended the last frame on B has B
         // copied back to A, and B keeps what was last written into it: a model that fits Iris 1.11.7's
         // values in probe packs of our own (#9009), not a documented Iris rule. colortex0's A is
@@ -5216,6 +5317,7 @@ impl PackPost {
             rp.set_bind_group(0, &group, &[]);
             rp.draw(0..3, 0..1);
         }
+        Ok(ResizeState::Ready)
     }
 }
 
@@ -5412,7 +5514,7 @@ mod tests {
                     PackPost::new(&device, &queue, &adapter, post, T::Rgba8Unorm, world)
                         .expect("the pack runs");
                 if result.complete {
-                    result.resize(&device, [16, 16]);
+                    result.resize(&device, &queue, [16, 16]).unwrap();
                 }
                 let programs = result.programs();
                 println!(
@@ -6142,3 +6244,9 @@ mod unknown_sampler_terrain_tests;
 
 #[cfg(test)]
 mod mipmap_box_tests;
+
+#[cfg(test)]
+mod colortex_mip_blend_tests;
+
+#[cfg(test)]
+mod resize_retirement_tests;

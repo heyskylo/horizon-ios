@@ -1401,7 +1401,25 @@ fn resources_at(dir: &Path) -> PathBuf {
 const RESOURCES_MANIFEST: &str = "horizon-resources.json";
 
 pub fn is_prepared(tag: &str) -> bool {
-    resources(tag).join(RESOURCES_MANIFEST).exists()
+    prepared_at(&resources(tag))
+}
+
+/// Whether the prepared folder `resources` is usable: its manifest is a JSON
+/// document and no top-level table a killed preparation or an interrupted
+/// copy left empty. Such a folder used to count as prepared, so Play started
+/// the game on it and the loader crashed on the empty file.
+fn prepared_at(resources: &Path) -> bool {
+    if read_json(&resources.join(RESOURCES_MANIFEST)).is_none() {
+        return false;
+    }
+    let Ok(entries) = fs::read_dir(resources) else {
+        return false;
+    };
+    entries.flatten().all(|entry| {
+        let path = entry.path();
+        path.extension() != Some(std::ffi::OsStr::new("json"))
+            || fs::metadata(&path).is_ok_and(|meta| meta.len() > 0)
+    })
 }
 
 /// Whether a version's resources hold Minecraft's sounds, which `sounds` copies from the player's own
@@ -6153,6 +6171,30 @@ pub fn {f}("
     }
 
     #[test]
+    fn a_prepared_folder_with_an_empty_table_is_not_prepared() {
+        let dir =
+            std::env::temp_dir().join(format!("horizon-launcher-empty-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        assert!(!prepared_at(&dir), "no manifest is not prepared");
+
+        fs::write(dir.join(RESOURCES_MANIFEST), "{}").unwrap();
+        assert!(prepared_at(&dir));
+
+        // A killed export left the biggest table empty: Play must prepare
+        // again instead of starting a game that crashes on it.
+        fs::write(dir.join("gameplay-facts.json"), "").unwrap();
+        assert!(!prepared_at(&dir));
+
+        fs::write(dir.join("gameplay-facts.json"), "{}").unwrap();
+        assert!(prepared_at(&dir));
+
+        fs::write(dir.join(RESOURCES_MANIFEST), "").unwrap();
+        assert!(!prepared_at(&dir), "an empty manifest is not prepared");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn a_new_version_reuses_resources_prepared_by_a_compatible_one() {
         let versions =
             std::env::temp_dir().join(format!("horizon-launcher-test-{}", std::process::id()));
@@ -6189,11 +6231,7 @@ pub fn {f}("
                 "{}",
             );
         };
-        let is_prepared = |tag: &str| {
-            resources_at(&versions.join(tag))
-                .join(RESOURCES_MANIFEST)
-                .exists()
-        };
+        let is_prepared = |tag: &str| prepared_at(&resources_at(&versions.join(tag)));
 
         release("v2026.10.13", "26.3");
         prepared("v2026.10.13", "26.3");

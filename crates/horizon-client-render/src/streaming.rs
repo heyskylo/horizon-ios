@@ -295,7 +295,14 @@ pub struct FinalWrites {
     blocks: Vec<([i32; 3], u32)>,
     block_entities: Vec<((i32, i32, i32), crate::chunk::block_entity::BlockEntity)>,
 }
+/// A job canceled after leaving the queue still owns any checked-out protos.
+/// Its fields stay private: only Streaming can return those owners.
+pub struct CancelledGeneration {
+    at: Option<(i32, i32)>,
+    job: Job,
+}
 pub enum Done {
+    Cancelled(CancelledGeneration),
     Generated(Chunk),
     /// A proto chunk, and whether it was decorated (loaded so from the save).
     Proto(i32, i32, Proto, bool),
@@ -347,6 +354,22 @@ struct Shared {
     /// cleared buffers avoids racing the renderer for the process heap.
     meshes: Mutex<MeshPool>,
     aborted: std::sync::atomic::AtomicBool,
+}
+impl Shared {
+    /// Close the pop/abort race without dropping a job's checked-out inputs.
+    fn accept_job(&self, job: Queued) -> Option<Queued> {
+        if self.aborted.load(std::sync::atomic::Ordering::Relaxed)
+            && !matches!(job.job, Job::Save(..))
+        {
+            self.done.send(Done::Cancelled(CancelledGeneration {
+                at: job.at,
+                job: job.job,
+            }));
+            None
+        } else {
+            Some(job)
+        }
+    }
 }
 #[derive(Default)]
 struct MeshPool {
@@ -496,6 +519,8 @@ pub struct Streaming {
     saves: Arc<dyn Saves>,
     /// Results received while `save` waited, for the next `update`.
     deferred: Vec<Done>,
+    /// Non-save results held aside so repeated save polls cannot starve owned completions.
+    save_deferred: Vec<Done>,
     sequence: u64,
     pub center: (i32, i32),
     /// The view distance around `center`; below 0, no area there (a dedicated
@@ -819,14 +844,9 @@ impl<G: ChunkGenerator> Source for Jobs<G> {
         let Some(job) = self.shared.queue.lock().unwrap().pop() else {
             return false;
         };
-        if self
-            .shared
-            .aborted
-            .load(std::sync::atomic::Ordering::Relaxed)
-            && !matches!(job.job, Job::Save(..))
-        {
+        let Some(job) = self.shared.accept_job(job) else {
             return true;
-        }
+        };
         let started = job_stats::enabled().then(|| {
             let kind = match &job.job {
                 Job::Generate(..) => 1,
@@ -1084,6 +1104,7 @@ impl Streaming {
             written: Default::default(),
             saves,
             deferred: Vec::new(),
+            save_deferred: Vec::new(),
             sequence: 0,
             center: (0, 0),
             radius: 8,
@@ -1302,6 +1323,41 @@ impl Streaming {
         let mut queue = self.shared.queue.lock().unwrap();
         rank_again(&mut queue, |x, z| self.distance(x, z));
     }
+    fn receive_cancelled(&mut self, cancelled: CancelledGeneration) {
+        match cancelled.job {
+            Job::Decorate(x, z, region, finals) => {
+                self.decorating -= 1;
+                for (i, _) in &finals {
+                    self.decorating_finals
+                        .remove(&(x + (i % 3) as i32 - 1, z + (i / 3) as i32 - 1));
+                }
+                for (i, proto) in (*region).into_iter().enumerate() {
+                    if !finals.iter().any(|(final_i, _)| *final_i == i) {
+                        self.protos.insert(
+                            (x + (i % 3) as i32 - 1, z + (i / 3) as i32 - 1),
+                            Some(proto),
+                        );
+                    }
+                }
+            }
+            Job::Finish(proto) => {
+                let key = cancelled.at.expect("finish job has a column");
+                self.finishing.remove(&key);
+                self.protos.insert(key, Some(proto));
+                // Scheduling Finish transfers dirty ownership out of `written`.
+                self.written.insert(key);
+            }
+            Job::LightView(x, z, proto) => {
+                self.viewing.remove(&(x, z));
+                self.protos.insert((x, z), Some(proto));
+            }
+            Job::Generate(x, z) => {
+                self.generating.remove(&(x, z));
+            }
+            Job::Save(_) => unreachable!("durable saves are never canceled"),
+            _ => {}
+        }
+    }
     fn receive_decorated(
         &mut self,
         x: i32,
@@ -1355,7 +1411,13 @@ impl Streaming {
         let protos: Vec<((i32, i32), Proto)> = keys
             .into_iter()
             .filter_map(|k| {
-                let proto = self.protos.get_mut(&k)?.take()?;
+                let slot = self.protos.get_mut(&k)?;
+                let Some(proto) = slot.take() else {
+                    // A generation/light-view job still owns these dirty inputs.
+                    // Autosave must not forget them before the owner returns.
+                    self.written.insert(k);
+                    return None;
+                };
                 self.light_views.remove(&k);
                 Some((k, proto))
             })
@@ -1641,8 +1703,10 @@ impl Streaming {
         let received = self.shared.done.take();
         // Meshes made stale meanwhile, freed with the uploaded ones (`free`).
         let mut stale = Vec::new();
-        for done in deferred.into_iter().chain(received) {
+        let save_deferred = std::mem::take(&mut self.save_deferred);
+        for done in save_deferred.into_iter().chain(deferred).chain(received) {
             match done {
+                Done::Cancelled(job) => self.receive_cancelled(job),
                 Done::Proto(x, z, proto, decorated) => {
                     self.generation_scan.exhausted = false;
                     self.generating.remove(&(x, z));
@@ -2258,20 +2322,29 @@ impl Streaming {
         self.shared
             .aborted
             .store(true, std::sync::atomic::Ordering::SeqCst);
-        if let Ok(mut queue) = self.shared.queue.lock() {
-            let mut saves = Vec::new();
+        let cancelled = {
+            let mut queue = self.shared.queue.lock().unwrap();
+            let mut cancelled = Vec::new();
+            let mut saves = BinaryHeap::new();
             for item in std::mem::take(&mut *queue).into_vec() {
                 if matches!(item.job, Job::Save(..)) {
                     saves.push(item);
+                } else {
+                    cancelled.push(CancelledGeneration {
+                        at: item.at,
+                        job: item.job,
+                    });
                 }
             }
-            *queue = std::collections::BinaryHeap::from(saves);
+            *queue = saves;
+            cancelled
+        };
+        for job in cancelled {
+            self.receive_cancelled(job);
         }
         self.generating.clear();
-        self.decorating = 0;
-        self.decorating_finals.clear();
-        self.finishing.clear();
-        self.viewing.clear();
+        // Running decoration/finish/light-view jobs still own dirty protos.
+        // Their counts survive until completion; closing save drains them.
         self.waiting.clear();
         self.meshing.clear();
         self.lighting.clear();
@@ -2291,16 +2364,18 @@ impl Streaming {
             return;
         }
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        let aborted = self
-            .shared
-            .aborted
-            .load(std::sync::atomic::Ordering::Relaxed);
-        while (self.saving > 0)
-            || (!aborted
-                && (self.decorating > 0 || !self.finishing.is_empty() || !self.viewing.is_empty()))
+        let mut deferred = std::mem::take(&mut self.deferred).into_iter();
+        while self.saving > 0
+            || self.decorating > 0
+            || !self.finishing.is_empty()
+            || !self.viewing.is_empty()
         {
             let left = deadline.saturating_duration_since(std::time::Instant::now());
-            match self.shared.done.recv_timeout(left) {
+            match deferred
+                .next()
+                .or_else(|| self.shared.done.recv_timeout(left))
+            {
+                Some(Done::Cancelled(job)) => self.receive_cancelled(job),
                 Some(Done::Decorated(x, z, region, finals, writes)) => {
                     self.receive_decorated(x, z, *region, finals, writes, world)
                 }
@@ -2309,13 +2384,14 @@ impl Streaming {
                 Some(Done::LightView(x, z, proto, view)) => {
                     self.receive_light_view(x, z, proto, view)
                 }
-                Some(other) => self.deferred.push(other),
+                Some(other) => self.save_deferred.push(other),
                 None => {
                     log::warn!("Horizon: chunk generation did not finish before saving");
                     break;
                 }
             }
         }
+        self.deferred.extend(deferred);
         let protos: Vec<&Proto> = self
             .written
             .iter()
@@ -2332,27 +2408,27 @@ impl Streaming {
     /// in `save(true)`, so older generation cannot overwrite the final chunks.
     pub fn poll_save(&mut self, world: &mut World) -> bool {
         let started = std::time::Instant::now();
-        while let Some(done) = self.shared.done.try_recv() {
+        let mut deferred = std::mem::take(&mut self.deferred).into_iter();
+        while let Some(done) = deferred.next().or_else(|| self.shared.done.try_recv()) {
             match done {
+                Done::Cancelled(job) => self.receive_cancelled(job),
                 Done::Decorated(x, z, region, finals, writes) => {
                     self.receive_decorated(x, z, *region, finals, writes, world)
                 }
                 Done::Generated(chunk) => self.receive_generated(chunk, world),
                 Done::Saved(protos) => self.receive_saved(protos),
                 Done::LightView(x, z, proto, view) => self.receive_light_view(x, z, proto, view),
-                other => self.deferred.push(other),
+                other => self.save_deferred.push(other),
             }
             if started.elapsed() >= std::time::Duration::from_millis(2) {
+                self.deferred.extend(deferred);
                 return false;
             }
         }
-        let aborted = self
-            .shared
-            .aborted
-            .load(std::sync::atomic::Ordering::Relaxed);
-        if (self.saving > 0)
-            || (!aborted
-                && (self.decorating > 0 || !self.finishing.is_empty() || !self.viewing.is_empty()))
+        if self.saving > 0
+            || self.decorating > 0
+            || !self.finishing.is_empty()
+            || !self.viewing.is_empty()
         {
             return false;
         }
@@ -4400,3 +4476,7 @@ mod cover_tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "streaming_retirement_tests.rs"]
+mod retirement_tests;

@@ -265,6 +265,7 @@ impl Fixture {
         size: [u32; 2],
         terrain: &mut TerrainDraw<'_>,
     ) -> Vec<[u8; 4]> {
+        super::wait_resize(post, &self.device, &self.queue, size);
         let world = self.texture(size, T::Rgba8Unorm);
         let depth = self.texture(size, T::Depth32Float);
         let screen = self.texture(size, T::Rgba8Unorm);
@@ -277,19 +278,23 @@ impl Fixture {
         });
         let hud = HudBatch::new(size);
         let mut encoder = self.device.create_command_encoder(&Default::default());
-        post.run(
-            &self.device,
-            &self.queue,
-            &mut encoder,
-            &world,
-            &depth,
-            &screen,
-            &fixture_frame(&hud),
-            &Default::default(),
-            size,
-            size,
-            &[],
-            terrain,
+        assert_eq!(
+            post.run(
+                &self.device,
+                &self.queue,
+                &mut encoder,
+                &world,
+                &depth,
+                &screen,
+                &fixture_frame(&hud),
+                &Default::default(),
+                size,
+                size,
+                &[],
+                terrain,
+            )
+            .unwrap(),
+            ResizeState::Ready
         );
         encoder.copy_texture_to_buffer(
             screen.texture().as_image_copy(),
@@ -652,7 +657,8 @@ fn beacon_only_storage_images_get_storage_allocations() {
     );
     assert!(storage_image_names(&parsed).contains("beacon"));
     let mut post = fixture.build(parsed);
-    post.resize(&fixture.device, [4, 4]);
+    post.resize(&fixture.device, &fixture.queue, [4, 4])
+        .unwrap();
     assert!(post.complete, "{:?}", post.notes);
     let image = post
         .images

@@ -31,7 +31,7 @@ fn stick_on_break(stack: &ItemStack, wear: u32, max: u32) -> Option<ItemStack> {
     Some(rod)
 }
 
-fn steering_item(species: Species, main: Option<&str>, offhand: Option<&str>) -> bool {
+pub(super) fn steering_item(species: Species, main: Option<&str>, offhand: Option<&str>) -> bool {
     let item = match species {
         Species::Pig => "minecraft:carrot_on_a_stick",
         Species::Strider => "minecraft:warped_fungus_on_a_stick",

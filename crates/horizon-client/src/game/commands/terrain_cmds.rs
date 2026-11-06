@@ -518,12 +518,28 @@ impl Game<'_> {
                     let (tag, _) = horizon_world::nbt::parse_snbt(&table)
                         .map_err(|e| err("argument.nbt.invalid", &[&e]))?;
                     let json = horizon_client::scoreboard::tag_to_json(&tag);
+                    // LootCommand's omitted fishing tool is EMPTY, not mainhand.
+                    let held = if id == "loot.fish"
+                        && (ctx.get("tool").is_some() || ctx.has("mainhand") || ctx.has("offhand"))
+                    {
+                        self.tool_stack(ctx)?
+                    } else {
+                        None
+                    };
                     let drops = match json["random_sequence"].as_str() {
                         Some(sequence) => {
                             let random = self.rand_sequences.get(sequence, self.level.seed);
-                            world_items!(self).inline_loot_table(&json, random)
+                            world_items!(self).inline_loot_table_with_tool(
+                                &json,
+                                held.as_ref(),
+                                random,
+                            )
                         }
-                        None => world_items!(self).inline_loot_table(&json, &mut self.world.random),
+                        None => world_items!(self).inline_loot_table_with_tool(
+                            &json,
+                            held.as_ref(),
+                            &mut self.world.random,
+                        ),
                     };
                     (drops, None)
                 } else {

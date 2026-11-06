@@ -27,7 +27,7 @@ fn rain_depth_controls_writes_for_rain_snow_and_fallbacks() {
             let mut post = pack(&device, &queue, &adapter, program, property);
             // Retain the pipelines for another frame, then resize their targets.
             for size in [[6, 1], [6, 1], [12, 2]] {
-                post.resize(&device, size);
+                post.resize(&device, &queue, size).unwrap();
                 let mut encoder = device.create_command_encoder(&Default::default());
                 let targets = post.targets.as_ref().unwrap();
                 let color = &targets.color[0].as_ref().unwrap()[0];

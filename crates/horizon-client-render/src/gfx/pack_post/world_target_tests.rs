@@ -358,6 +358,7 @@ fn render(
     size: [u32; 2],
     window: [u32; 2],
 ) -> Vec<[u8; 4]> {
+    super::wait_resize(post, device, queue, size);
     let screen = texture(device, window, T::Rgba8Unorm);
     let stride = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
     let read = device.create_buffer(&wgpu::BufferDescriptor {
@@ -367,19 +368,23 @@ fn render(
         mapped_at_creation: false,
     });
     let mut encoder = device.create_command_encoder(&Default::default());
-    post.run(
-        device,
-        queue,
-        &mut encoder,
-        colour,
-        depth,
-        &screen,
-        frame,
-        &Default::default(),
-        size,
-        window,
-        &[],
-        &mut |_, _, _, _| {},
+    assert_eq!(
+        post.run(
+            device,
+            queue,
+            &mut encoder,
+            colour,
+            depth,
+            &screen,
+            frame,
+            &Default::default(),
+            size,
+            window,
+            &[],
+            &mut |_, _, _, _| {},
+        )
+        .unwrap(),
+        ResizeState::Ready
     );
     encoder.copy_texture_to_buffer(
         screen.texture().as_image_copy(),

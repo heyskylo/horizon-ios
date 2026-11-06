@@ -16,8 +16,9 @@ pub use workers::{poll_retired_workers, shutdown_workers};
 use crate::hud::{HudAtlas, HudBatch, rgba};
 use crate::text::Text;
 use client::{
-    PendingInviteDto, PlayerInfo, RealmAddress, RealmServer, RealmSlot, RealmWorldOptions,
-    RealmsClient, RealmsError, RegionDataDto, RegionSelectionPreferenceDto, Subscription,
+    PendingInviteDto, PlayerInfo, RealmAddress, RealmServer, RealmSlot, RealmTierConfiguration,
+    RealmTierRange, RealmWorldOptions, RealmsClient, RealmsError, RegionDataDto,
+    RegionSelectionPreferenceDto, Subscription,
 };
 use horizon_client_render::auth::{self, AuthSession};
 use std::cell::RefCell;
@@ -28,6 +29,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const HEADER_HEIGHT: f32 = 44.0;
 const CONTENT_WIDTH: f32 = 308.0;
+/// `RealmsPdpScreen`'s list: the row width and the text's width beside the picture.
+const PDP_ROW_WIDTH: f32 = 290.0;
+const PDP_TEXT_WIDTH: f32 = 182.0;
+
 const ROW_WIDTH: f32 = 300.0;
 const ROW_HEIGHT: f32 = 36.0;
 const PLAYERS_TOP: f32 = 60.0;
@@ -183,6 +188,10 @@ pub struct SettingsDraft {
     pub region: Option<String>,
     /// The field with the caret: the name (false) or the description (true).
     pub on_description: bool,
+    /// The picked distances, once the tier configuration arrived
+    /// (`RealmsSettingsTab`'s two `OptionInstance`s; none while it hasn't).
+    pub render_distance: Option<i32>,
+    pub simulation_distance: Option<i32>,
 }
 
 impl SettingsDraft {
@@ -204,6 +213,8 @@ impl SettingsDraft {
             preference,
             region,
             on_description: false,
+            render_distance: None,
+            simulation_distance: None,
         }
     }
     /// The preference as `RegionSelectionPreferenceDto`: the region only for `MANUAL`.
@@ -216,6 +227,12 @@ impl SettingsDraft {
                 .filter(|_| self.preference == client::MANUAL),
         }
     }
+}
+
+/// `RealmsSettingsTab.save`'s `updatedRenderDistance`/`updatedSimulationDistance`: a distance
+/// is sent only when the player changed it and the tier answer lets the service configure it.
+fn changed_distance(picked: Option<i32>, range: Option<&RealmTierRange>) -> Option<i32> {
+    picked.filter(|picked| range.is_some_and(|range| *picked != range.current_or_default()))
 }
 
 /// `RealmsSettingsTab.getTranslatableFromPreference`: a manual choice shows its region,
@@ -425,6 +442,10 @@ pub enum SubScreen {
         member_job: Option<Job<Result<(), RealmsError>>>,
         /// The settings tab's editable fields, once the tab has been opened.
         settings: Option<SettingsDraft>,
+        /// `RealmsClient.getRealmTierConfiguration`, then its answer: the settings tab's
+        /// distance sliders (`tierConfigurationFetched` keeps it to one fetch).
+        tier: Option<Result<RealmTierConfiguration, RealmsError>>,
+        tier_job: Option<Job<Result<RealmTierConfiguration, RealmsError>>>,
         /// `RealmsClient.preferredRegions` for the region preference screen.
         regions: Option<Result<Vec<RegionDataDto>, RealmsError>>,
         regions_job: Option<Job<Result<Vec<RegionDataDto>, RealmsError>>>,
@@ -466,7 +487,12 @@ pub enum SubScreen {
         job: Option<Job<Result<Vec<PlayerInfo>, RealmsError>>>,
         error: Option<String>,
     },
-    AddRealm,
+    /// `RealmsPdpScreen`: the product page behind Add Realm, its picture rows and scroll.
+    AddRealm {
+        scroll: crate::ui::Scroll,
+        /// The list's drawn height, measured in [`Screen::draw`] and read by the wheel.
+        content: std::cell::Cell<f32>,
+    },
     Popup(Popup),
     /// `RealmsLongRunningMcoTaskScreen` running `GetServerDetailsTask`: the join request is on
     /// a worker (`joining`); an error stays on screen with a Back button.
@@ -638,6 +664,36 @@ fn wait_for_retry(
     }
 }
 
+/// `RealmsPdpScreen`'s list: the trial header (no picture) and the three features, each
+/// with its 80x45 picture and the text beside it. The header has no subtitle: Horizon does
+/// not ask `trialAvailabilityTask`, and vanilla shows the trial description only when a
+/// trial is available (its footer then offers the trial instead of Buy).
+fn pdp_entries() -> [(&'static str, &'static str, &'static [&'static str]); 4] {
+    [
+        ("", "mco.pdp.trial.title", &[]),
+        (
+            "gui/realms/friends",
+            "mco.pdp.friends.title",
+            &["mco.pdp.friends.description"],
+        ),
+        (
+            "gui/realms/minigames",
+            "mco.pdp.minigames.title",
+            &["mco.pdp.minigames.description"],
+        ),
+        (
+            "gui/realms/private_server",
+            "mco.pdp.private.title",
+            &[
+                "mco.pdp.private.backups",
+                "mco.pdp.private.easyToManage",
+                "mco.pdp.private.worldSlots",
+                "mco.pdp.private.secure",
+            ],
+        ),
+    ]
+}
+
 fn wrap_lines(text: &str, atlas: &HudAtlas, width: f32) -> Vec<String> {
     crate::multiplayer::wrap(text, width, atlas)
 }
@@ -753,6 +809,9 @@ impl Screen {
                 detail_job,
                 deleting,
                 member_job,
+                settings,
+                tier,
+                tier_job,
                 regions,
                 regions_job,
                 saving,
@@ -778,6 +837,26 @@ impl Screen {
                 if let Some(result) = detail_job.as_ref().and_then(take) {
                     *detail_job = None;
                     *detail = Some(result);
+                }
+                if let Some(result) = tier_job.as_ref().and_then(take) {
+                    *tier_job = None;
+                    // The tab's sliders take the ranges as they arrived; a draft opened
+                    // before the answer gets its initial values now.
+                    if let Ok(config) = result.as_ref()
+                        && let Some(draft) = settings.as_mut()
+                        && draft.render_distance.is_none()
+                        && draft.simulation_distance.is_none()
+                    {
+                        draft.render_distance = config
+                            .render_distance
+                            .as_ref()
+                            .map(RealmTierRange::current_or_default);
+                        draft.simulation_distance = config
+                            .sim_distance
+                            .as_ref()
+                            .map(RealmTierRange::current_or_default);
+                    }
+                    *tier = Some(result);
                 }
                 if let Some(result) = member_job.as_ref().and_then(take) {
                     *member_job = None;
@@ -812,6 +891,19 @@ impl Screen {
                             server.name = saved.name.clone();
                             server.motd = saved.description.clone();
                             server.region_selection_preference = Some(saved.preference_dto());
+                            *tier_job = None;
+                            if let Some(Ok(config)) = tier.as_mut() {
+                                if let (Some(range), Some(value)) =
+                                    (&mut config.render_distance, saved.render_distance)
+                                {
+                                    range.current = Some(value);
+                                }
+                                if let (Some(range), Some(value)) =
+                                    (&mut config.sim_distance, saved.simulation_distance)
+                                {
+                                    range.current = Some(value);
+                                }
+                            }
                             if let Some(open) = open {
                                 server.state = if open { "OPEN" } else { "CLOSED" }.into();
                             }
@@ -884,6 +976,8 @@ impl Screen {
                                 deleting: None,
                                 member_job: None,
                                 settings: None,
+                                tier: None,
+                                tier_job: None,
                                 regions: None,
                                 regions_job: None,
                                 saving: None,
@@ -1115,6 +1209,8 @@ impl Screen {
             subscription: Some(Ok(subscription.clone())),
             subscription_job: None,
             settings: None,
+            tier: None,
+            tier_job: None,
             regions: None,
             regions_job: None,
             saving: None,
@@ -1215,6 +1311,31 @@ impl Screen {
             let id = server.id;
             *detail_job = Some(self.workers.spawn(move || client.get_own_realm(id)));
         }
+        self.start_configure_tier();
+    }
+
+    /// `RealmsConfigureWorldScreen.init`'s `fetchTierConfiguration`: asked again on every
+    /// entry until it answered (`tierConfigurationFetched`).
+    fn start_configure_tier(&mut self) {
+        let SubScreen::Configure {
+            server,
+            tier,
+            tier_job,
+            ..
+        } = &mut self.subscreen
+        else {
+            return;
+        };
+        if tier.is_some() || tier_job.is_some() {
+            return;
+        }
+        if let Some(client) = client(&self.workers) {
+            let id = server.id;
+            *tier_job = Some(
+                self.workers
+                    .spawn(move || client.get_tier_configuration(id)),
+            );
+        }
     }
 
     /// `RealmsInviteScreen.onInvite`: a blank name or one already invited is refused
@@ -1275,6 +1396,8 @@ impl Screen {
             detail_job: None,
             deleting: None,
             member_job: None,
+            tier: None,
+            tier_job: None,
             settings: Some(settings),
             regions: None,
             regions_job: None,
@@ -1308,12 +1431,14 @@ impl Screen {
     }
 
     fn begin_settings_using(&mut self, client: RealmsClient, next: SettingsNext) -> bool {
-        let (realm, snapshot, slot, changed) = match &self.subscreen {
+        let (realm, snapshot, slot, changed, render_distance, sim_distance) = match &self.subscreen
+        {
             SubScreen::Configure {
                 server,
                 detail: Some(Ok(detail)),
                 settings: Some(draft),
                 saving: None,
+                tier,
                 ..
             } => {
                 let Some(slot) = detail.slots.get(&detail.active_slot).cloned() else {
@@ -1332,7 +1457,24 @@ impl Screen {
                 let changed = snapshot.name != server.name
                     || snapshot.description != server.motd
                     || wanted != before;
-                (server.id, snapshot, slot, changed)
+                let (render_distance, sim_distance) = match tier {
+                    Some(Ok(config)) => (
+                        changed_distance(snapshot.render_distance, config.render_distance.as_ref()),
+                        changed_distance(
+                            snapshot.simulation_distance,
+                            config.sim_distance.as_ref(),
+                        ),
+                    ),
+                    _ => (None, None),
+                };
+                (
+                    server.id,
+                    snapshot,
+                    slot,
+                    changed,
+                    render_distance,
+                    sim_distance,
+                )
             }
             SubScreen::Configure {
                 saving: Some(_), ..
@@ -1343,7 +1485,7 @@ impl Screen {
             SettingsNext::Toggle(open) => Some(open),
             _ => None,
         };
-        if !changed && toggle.is_none() {
+        if !changed && render_distance.is_none() && sim_distance.is_none() && toggle.is_none() {
             return false;
         }
         let client = client.with_cancellation(self.workers.cancellation());
@@ -1356,6 +1498,12 @@ impl Screen {
                     &snapshot.preference_dto(),
                     &slot,
                 )?;
+            }
+            if let Some(distance) = render_distance {
+                client.update_render_distance(realm, distance)?;
+            }
+            if let Some(distance) = sim_distance {
+                client.update_simulation_distance(realm, distance)?;
             }
             let opened = match toggle {
                 Some(open) => set_realm_open_task(&client, realm, open).map(|()| Some(open)),
@@ -1399,6 +1547,7 @@ impl Screen {
             tab: ConfigureTab::Settings,
             detail: Some(Ok(detail)),
             settings,
+            tier,
             ..
         } = &mut self.subscreen
             && settings.is_none()
@@ -1406,7 +1555,18 @@ impl Screen {
             server.name = detail.name.clone();
             server.motd = detail.motd.clone();
             server.region_selection_preference = detail.region_selection_preference.clone();
-            *settings = Some(SettingsDraft::of(detail));
+            let mut draft = SettingsDraft::of(detail);
+            if let Some(Ok(config)) = tier {
+                draft.render_distance = config
+                    .render_distance
+                    .as_ref()
+                    .map(RealmTierRange::current_or_default);
+                draft.simulation_distance = config
+                    .sim_distance
+                    .as_ref()
+                    .map(RealmTierRange::current_or_default);
+            }
+            *settings = Some(draft);
         }
     }
 
@@ -1458,6 +1618,8 @@ impl Screen {
             deleting: None,
             member_job: None,
             settings: None,
+            tier: None,
+            tier_job: None,
             regions: None,
             regions_job: None,
             saving: None,
@@ -1550,6 +1712,8 @@ impl Screen {
             deleting: None,
             member_job: None,
             settings: None,
+            tier: None,
+            tier_job: None,
             regions: None,
             regions_job: None,
             saving: None,
@@ -1584,6 +1748,8 @@ impl Screen {
                         deleting: None,
                         member_job: None,
                         settings: None,
+                        tier: None,
+                        tier_job: None,
                         regions: None,
                         regions_job: None,
                         saving: None,
@@ -1605,7 +1771,10 @@ impl Screen {
                 Outcome::None
             }
             Some(13) => {
-                self.subscreen = SubScreen::AddRealm;
+                self.subscreen = SubScreen::AddRealm {
+                    scroll: crate::ui::Scroll::default(),
+                    content: std::cell::Cell::new(0.0),
+                };
                 Outcome::None
             }
             Some(14) => {
@@ -1996,9 +2165,12 @@ impl Screen {
                     return Outcome::None;
                 }
                 // RealmsSettingsTab's two fields: the click moves the caret between them.
+                // The two distance sliders: a click on the track sets the value, as the
+                // spawn-protection slider does (no drag event on this screen yet).
                 if let SubScreen::Configure {
                     tab: ConfigureTab::Settings,
                     settings: Some(draft),
+                    tier,
                     ..
                 } = &mut self.subscreen
                 {
@@ -2011,6 +2183,33 @@ impl Screen {
                         if (86.0..106.0).contains(&y) {
                             draft.on_description = true;
                             return Outcome::None;
+                        }
+                    }
+                    if let Some(Ok(config)) = tier.as_ref() {
+                        // `OptionInstance`'s slider: the value snaps into the range.
+                        let bands = [
+                            (
+                                config.render_distance.as_ref(),
+                                126.0,
+                                &mut draft.render_distance,
+                            ),
+                            (
+                                config.sim_distance.as_ref(),
+                                166.0,
+                                &mut draft.simulation_distance,
+                            ),
+                        ];
+                        for (range, slider_y, picked) in bands {
+                            let (Some(range), Some(picked)) = (range, picked) else {
+                                continue;
+                            };
+                            if (slider_y..slider_y + 20.0).contains(&y)
+                                && (left..left + 212.0).contains(&x)
+                            {
+                                *picked =
+                                    range.from_slider(crate::ui::slider_value(left, 212.0, x));
+                                return Outcome::None;
+                            }
                         }
                     }
                 }
@@ -2147,6 +2346,8 @@ impl Screen {
                 subscription: None,
                 subscription_job: None,
                 settings: None,
+                tier: None,
+                tier_job: None,
                 regions: None,
                 regions_job: None,
                 saving: None,
@@ -2241,6 +2442,8 @@ impl Screen {
                             .spawn(move || client.uninvite_player(id, &uuid)),
                     ),
                     settings: None,
+                    tier: None,
+                    tier_job: None,
                     regions: None,
                     regions_job: None,
                     saving: None,
@@ -2269,6 +2472,8 @@ impl Screen {
                     deleting: Some(self.workers.spawn(move || client.delete_realm(id))),
                     member_job: None,
                     settings: None,
+                    tier: None,
+                    tier_job: None,
                     regions: None,
                     regions_job: None,
                     saving: None,
@@ -2404,6 +2609,13 @@ impl Screen {
     /// Mouse, trackpad, controller and touch-drag wheel events take the same
     /// path through Title. Fractional deltas accumulate instead of being lost.
     pub fn scroll(&mut self, delta: f32, cursor: (f32, f32), size: (f32, f32)) -> bool {
+        if matches!(self.subscreen, SubScreen::AddRealm { .. }) {
+            if !delta.is_finite() {
+                return false;
+            }
+            self.wheel(delta, cursor, size);
+            return true;
+        }
         if let SubScreen::RegionPreference { regions, .. } = &self.subscreen {
             let left = ((size.0.ceil() - 300.0) / 2.0).floor();
             if !delta.is_finite()
@@ -2440,6 +2652,18 @@ impl Screen {
         let max = detail.players.len().saturating_sub(rows) as f32;
         self.players_scroll = (self.players_scroll.clamp(0.0, max) - delta).clamp(0.0, max);
         true
+    }
+
+    /// `AbstractScrollArea.mouseScrolled` over the product page's list.
+    pub fn wheel(&mut self, delta: f32, cursor: (f32, f32), (_, h): (f32, f32)) {
+        let SubScreen::AddRealm { scroll, content } = &mut self.subscreen else {
+            return;
+        };
+        let (top, bottom) = (44.0, h - 40.0);
+        if cursor.1 < top || cursor.1 >= bottom {
+            return;
+        }
+        scroll.wheel(delta, 10.0, top, bottom, content.get());
     }
 
     pub fn buttons(
@@ -2517,6 +2741,7 @@ impl Screen {
                 tab,
                 subscription,
                 detail,
+                tier,
                 deleting,
                 member_job,
                 saving,
@@ -2548,11 +2773,17 @@ impl Screen {
                     None,
                 ));
                 // RealmsSettingsTab: the region preference and the open/close toggle
-                // (vanilla keeps the toggle on this tab).
+                // (vanilla keeps the toggle on this tab). The two distance sliders push
+                // them down once the tier answer arrived.
                 if *tab == ConfigureTab::Settings {
+                    let shift = if matches!(tier, Some(Ok(_))) {
+                        80.0
+                    } else {
+                        0.0
+                    };
                     buttons.push((
                         cx - 106.0,
-                        146.0,
+                        146.0 + shift,
                         212.0,
                         t("mco.configure.world.buttons.region_preference"),
                         saving.is_none() && job.is_none() && member_job.is_none(),
@@ -2566,7 +2797,7 @@ impl Screen {
                     };
                     buttons.push((
                         cx - 106.0,
-                        174.0,
+                        174.0 + shift,
                         212.0,
                         toggle,
                         job.is_none() && member_job.is_none() && saving.is_none(),
@@ -2740,17 +2971,18 @@ impl Screen {
                 ));
                 buttons.push((cx - 100.0, h - 36.0, 200.0, t("gui.back"), true, 81, None));
             }
-            SubScreen::AddRealm => {
+            SubScreen::AddRealm { .. } => {
+                // `RealmsPdpScreen`'s footer: the buy button carries the PDP's own title.
                 buttons.push((
-                    cx - 100.0,
-                    mid + 30.0,
-                    200.0,
-                    t("mco.selectServer.buy"),
+                    cx - 102.0,
+                    h - 26.0,
+                    100.0,
+                    t("mco.selectServer.purchase"),
                     true,
                     40,
                     None,
                 ));
-                buttons.push((cx - 100.0, h - 36.0, 200.0, t("gui.back"), true, 41, None));
+                buttons.push((cx + 2.0, h - 26.0, 100.0, t("gui.back"), true, 41, None));
             }
             SubScreen::Popup(_) => {
                 buttons.push((
@@ -3013,6 +3245,7 @@ impl Screen {
                 subscription,
                 detail,
                 settings,
+                tier,
                 regions,
                 saving,
                 deleting,
@@ -3236,8 +3469,9 @@ impl Screen {
                     },
                     ConfigureTab::Settings => match settings {
                         Some(draft) => {
-                            // `RealmsSettingsTab`: the name and description fields, the
-                            // region preference line and the open/close button.
+                            // `RealmsSettingsTab`: the name and description fields, the two
+                            // distance sliders once the tier answer arrived, the region
+                            // preference line and the open/close button.
                             let left = cx - 106.0;
                             batch.text(
                                 atlas,
@@ -3271,24 +3505,94 @@ impl Screen {
                                 draft.on_description,
                                 focused_at,
                             );
+                            let mut shift = 0.0;
+                            if let Some(Ok(config)) = tier.as_ref() {
+                                // `createDistanceOption`: a slider over the range, its value
+                                // as `options.chunks`.
+                                for (range, picked, tooltip, y) in [
+                                    (
+                                        config.render_distance.as_ref(),
+                                        draft.render_distance,
+                                        "mco.configure.world.renderDistance.tooltip",
+                                        126.0,
+                                    ),
+                                    (
+                                        config.sim_distance.as_ref(),
+                                        draft.simulation_distance,
+                                        "mco.configure.world.simulationDistance.tooltip",
+                                        166.0,
+                                    ),
+                                ] {
+                                    let Some((range, picked)) = range.zip(picked) else {
+                                        continue;
+                                    };
+                                    let value = range.slider_position(picked);
+                                    // `CommonLayouts.labeledElement`: the caption above, the
+                                    // button showing the value alone (`options.chunks`).
+                                    let text = crate::lang::tr(
+                                        "options.chunks",
+                                        &[&picked as &dyn std::fmt::Display],
+                                    );
+                                    // `createDistanceOption`: the button's
+                                    // `cachedConstantTooltip`.
+                                    let hover = crate::ui::hovered(cursor, left, y, 212.0, 20.0);
+                                    crate::ui::slider(
+                                        batch,
+                                        atlas,
+                                        left,
+                                        y,
+                                        212.0,
+                                        &Text::literal(&text),
+                                        value.clamp(0.0, 1.0),
+                                        hover,
+                                        saving.is_none(),
+                                        false,
+                                    );
+                                    if hover {
+                                        crate::ui::tooltip(
+                                            batch,
+                                            atlas,
+                                            &[Text::translate(tooltip, &[])],
+                                            cursor,
+                                        );
+                                    }
+                                }
+                                shift = 80.0;
+                                batch.text(
+                                    atlas,
+                                    &t("mco.configure.world.renderDistance"),
+                                    left,
+                                    114.0,
+                                    GREY,
+                                    true,
+                                );
+                                batch.text(
+                                    atlas,
+                                    &t("mco.configure.world.simulationDistance"),
+                                    left,
+                                    154.0,
+                                    GREY,
+                                    true,
+                                );
+                            }
                             batch.text(
                                 atlas,
                                 &t("mco.configure.world.region_preference"),
                                 left,
-                                114.0,
+                                114.0 + shift,
                                 GREY,
                                 true,
                             );
                             let current =
                                 preference_label(draft.preference, draft.region.as_deref());
-                            batch.text(atlas, &current, left, 126.0, GREY, true);
+                            batch.text(atlas, &current, left, 126.0 + shift, GREY, true);
                             if saving.is_some() {
                                 centered(
                                     batch,
                                     atlas,
                                     &t("mco.configure.world.loading"),
                                     cx,
-                                    200.0,
+                                    200.0 + shift,
                                     u32::MAX,
                                 );
                             }
@@ -3477,19 +3781,94 @@ impl Screen {
                     }
                 }
             }
-            SubScreen::AddRealm => {
-                centered(batch, atlas, &t("mco.title"), cx, 24.0, u32::MAX);
-                let lines = wrap_lines(&t("mco.selectServer.popup"), atlas, CONTENT_WIDTH);
-                let top = mid - 10.0 * lines.len() as f32;
-                for (i, line) in lines.iter().enumerate() {
+            SubScreen::AddRealm { scroll, content } => {
+                // `RealmsPdpScreen`: the Realms header's logo, then the trial header and
+                // the three feature rows (an 80x45 picture and 182-wide text), scrolling
+                // between the header and the footer.
+                if atlas.sprites.contains_key("gui/title/realms") {
+                    // The header's logo, as `draw_main` draws it.
+                    batch.sprite_region(
+                        atlas,
+                        "gui/title/realms",
+                        [cx - 64.0, 5.0, 128.0, 34.0],
+                        128.0,
+                        64.0,
+                    );
+                } else {
                     centered(
                         batch,
                         atlas,
-                        line,
+                        &t("mco.selectServer.purchase"),
                         cx,
-                        top + i as f32 * 10.0,
-                        rgba(180, 180, 180, 255),
+                        14.0,
+                        u32::MAX,
                     );
+                }
+                let (top, bottom) = (44.0, h - 40.0);
+                let rx = ((w - PDP_ROW_WIDTH) / 2.0).floor();
+                // `PdpFeatureEntry.entryHeight`: the picture's 45 or the text, plus 16.
+                let mut rows: Vec<(Option<&'static str>, Vec<String>, bool, f32)> = Vec::new();
+                for (image, title, descriptions) in pdp_entries() {
+                    let mut lines = wrap_lines(&t(title), atlas, PDP_TEXT_WIDTH);
+                    let mut height = lines.len() as f32 * 10.0 + 4.0;
+                    for description in descriptions {
+                        lines.push(String::new());
+                        height += 2.0;
+                        let wrapped = wrap_lines(&t(description), atlas, PDP_TEXT_WIDTH);
+                        height += wrapped.len() as f32 * 10.0;
+                        lines.extend(wrapped);
+                    }
+                    let header = image.is_empty();
+                    let row = if header {
+                        height + 16.0
+                    } else {
+                        height.max(45.0) + 16.0
+                    };
+                    let image = (!image.is_empty()).then_some(image);
+                    rows.push((image, lines, header, row));
+                }
+                let total: f32 = rows.iter().map(|row| row.3).sum();
+                content.set(total);
+                crate::ui::scrollbar(
+                    batch,
+                    atlas,
+                    rx + PDP_ROW_WIDTH + 2.0,
+                    top,
+                    bottom,
+                    total,
+                    scroll.amount,
+                );
+                let mut y = top - scroll.amount;
+                for (image, lines, header, height) in &rows {
+                    if y + height >= top && y <= bottom {
+                        if let Some(image) = image {
+                            crate::ui::blit_sprite(
+                                batch,
+                                atlas,
+                                image,
+                                rx + 4.0,
+                                y + 4.0,
+                                80.0,
+                                45.0,
+                                u32::MAX,
+                            );
+                        }
+                        let mut text_y = y + 4.0;
+                        for line in lines {
+                            if line.is_empty() {
+                                text_y += 2.0;
+                                continue;
+                            }
+                            let x = if *header {
+                                cx - (HudBatch::text_width(atlas, line) / 2.0).floor()
+                            } else {
+                                rx + 100.0
+                            };
+                            batch.text(atlas, line, x, text_y, u32::MAX, true);
+                            text_y += 10.0;
+                        }
+                    }
+                    y += height;
                 }
             }
             SubScreen::Popup(popup) => {
@@ -3709,6 +4088,8 @@ pub(crate) fn players_fixture(count: usize) -> Screen {
             subscription: Some(Ok(Subscription::default())),
             subscription_job: None,
             settings: None,
+            tier: None,
+            tier_job: None,
             regions: None,
             regions_job: None,
             saving: None,
@@ -3964,6 +4345,64 @@ mod tests {
         assert!(realm.is_open());
         assert_eq!(draft.name, "Dirty name");
         assert_eq!(server.join().unwrap().len(), 1);
+        finish_slot_workers(&screen.workers);
+    }
+
+    #[test]
+    fn distance_save_uses_owned_snapshot_and_waits_before_changing_tabs() {
+        let (base, server) = slot_service(vec![(204, None, ""), (204, None, "")]);
+        let mut screen = settings_fixture();
+        if let SubScreen::Configure {
+            settings: Some(draft),
+            tier,
+            ..
+        } = &mut screen.subscreen
+        {
+            let range = RealmTierRange {
+                min: 2,
+                max: 16,
+                default_value: 8,
+                current: Some(8),
+            };
+            *tier = Some(Ok(RealmTierConfiguration {
+                render_distance: Some(range.clone()),
+                sim_distance: Some(range),
+            }));
+            draft.render_distance = Some(12);
+            draft.simulation_distance = Some(6);
+        }
+        assert!(
+            screen
+                .begin_settings_using(slot_client(&base), SettingsNext::Tab(ConfigureTab::Players))
+        );
+        if let SubScreen::Configure {
+            tab,
+            settings: Some(draft),
+            ..
+        } = &mut screen.subscreen
+        {
+            assert_eq!(*tab, ConfigureTab::Settings);
+            draft.render_distance = Some(15);
+        }
+        wait_settings(&mut screen);
+        let SubScreen::Configure {
+            tab,
+            tier: Some(Ok(tier)),
+            ..
+        } = &screen.subscreen
+        else {
+            panic!("missing acknowledged tier");
+        };
+        assert_eq!(*tab, ConfigureTab::Players);
+        assert_eq!(tier.render_distance.as_ref().unwrap().current, Some(12));
+        assert_eq!(tier.sim_distance.as_ref().unwrap().current, Some(6));
+        assert_eq!(
+            server.join().unwrap(),
+            [
+                "PUT /worlds/7/configuration/renderDistance/12 HTTP/1.1",
+                "PUT /worlds/7/configuration/simDistance/6 HTTP/1.1"
+            ]
+        );
         finish_slot_workers(&screen.workers);
     }
 
@@ -4732,6 +5171,8 @@ mod tests {
                 subscription: Some(Ok(subscription.clone())),
                 subscription_job: None,
                 settings: None,
+                tier: None,
+                tier_job: None,
                 regions: None,
                 regions_job: None,
                 saving: None,
@@ -4758,6 +5199,8 @@ mod tests {
                         subscription: Some(Ok(data)),
                         subscription_job: None,
                         settings: None,
+                        tier: None,
+                        tier_job: None,
                         regions: None,
                         regions_job: None,
                         saving: None,
@@ -4810,6 +5253,8 @@ mod tests {
                     subscription: Some(Ok(subscription.clone())),
                     subscription_job: None,
                     settings: None,
+                    tier: None,
+                    tier_job: None,
                     regions: None,
                     regions_job: None,
                     saving: None,
@@ -5049,6 +5494,8 @@ mod tests {
                     subscription: Some(Ok(subscription.clone())),
                     subscription_job: None,
                     settings: None,
+                    tier: None,
+                    tier_job: None,
                     regions: None,
                     regions_job: None,
                     saving: None,
@@ -5147,5 +5594,28 @@ mod tests {
     #[test]
     fn an_unreadable_start_date_is_empty() {
         assert_eq!(start_date_text(i64::MAX), "");
+    }
+    /// `RealmsSettingsTab.save`: only a distance the player changed, and only when the tier
+    /// answer names the range, is sent.
+    #[test]
+    fn a_distance_is_saved_only_when_it_differs_from_the_service() {
+        let range = RealmTierRange {
+            min: 2,
+            max: 16,
+            default_value: 8,
+            current: Some(10),
+        };
+        assert_eq!(changed_distance(Some(10), Some(&range)), None);
+        assert_eq!(changed_distance(Some(12), Some(&range)), Some(12));
+        // No tier answer: the slider was never usable, so nothing goes out.
+        assert_eq!(changed_distance(Some(12), None), None);
+        assert_eq!(changed_distance(None, Some(&range)), None);
+        // A range without `current` compares against its default (`currentOrDefault`).
+        let default = RealmTierRange {
+            current: None,
+            ..range
+        };
+        assert_eq!(changed_distance(Some(8), Some(&default)), None);
+        assert_eq!(changed_distance(Some(9), Some(&default)), Some(9));
     }
 }

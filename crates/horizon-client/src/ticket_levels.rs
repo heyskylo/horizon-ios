@@ -191,6 +191,12 @@ impl Levels {
         self.get(x, z)
             .is_none_or(|(l, s)| l <= ENTITY_TICKING && s <= ENTITY_TICKING)
     }
+    /// `DistanceManager.inEntityTickingRange` alone: the simulation level,
+    /// whatever the chunk's own status. `ChunkMap.tick` sends an entity's
+    /// changes there only (or when it changed section or needs sync).
+    pub fn in_entity_ticking_range(&self, x: i32, z: i32) -> bool {
+        self.get(x, z).is_none_or(|(_, s)| s <= ENTITY_TICKING)
+    }
     /// `inBlockTickingRange` in a block-ticking chunk: where scheduled ticks,
     /// block events and block entities run.
     pub fn block_ticking(&self, x: i32, z: i32) -> bool {
@@ -497,6 +503,8 @@ mod tests {
         assert!(l.block_ticking(5, 5) && !l.block_ticking(6, 0));
         assert!(l.loaded_entity_ticking(4, 0));
         assert!(!l.loaded_entity_ticking(5, 0));
+        // ChunkMap.tick's sendChanges reads the simulation level alone.
+        assert!(l.in_entity_ticking_range(10, 0) && !l.in_entity_ticking_range(11, 0));
     }
 
     #[test]

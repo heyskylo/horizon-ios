@@ -108,11 +108,11 @@ fn storage_volume_compute_is_sampled_and_retains_history_on_metal() {
         post.shadow_comp[0].pipeline,
         Pipeline::Compute { .. }
     ));
-    post.resize(&device, [2, 2]);
+    post.resize(&device, &queue, [2, 2]).unwrap();
     assert_eq!(post.shadow_comp[0].image_copies, 1);
     assert!(post.images[0].copy.is_some());
     assert_eq!(post.images[0].dimension, wgpu::TextureViewDimension::D3);
-    post.resize(&device, [2, 2]);
+    post.resize(&device, &queue, [2, 2]).unwrap();
     assert!(post.complete, "resize notes: {:?}", post.notes);
     let target = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("storage regression output"),

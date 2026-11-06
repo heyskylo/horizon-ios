@@ -143,6 +143,13 @@ fn strips_of_expected(
     } else {
         gpu.load(files, world, inputs)
     };
+    if gpu_rejection {
+        // load_gpu_rejected has checked the real GPU validation failure and
+        // removal of BOTH terrain pipelines. A rejected pack must not enter the
+        // render harness; these None values describe ownership, not pixel reads.
+        assert!(!post.complete && post.terrain.is_none() && post.terrain_cutout.is_none());
+        return Some(([None; 3], Some(post.notes.clone())));
+    }
     let opaque = u32::from(crate::mesher::OPAQUE_LAYER);
     let mut vertices: Vec<u32> = Vec::new();
     for (i, layer) in [opaque | 1, 2, u32::from(LAVA)].into_iter().enumerate() {
