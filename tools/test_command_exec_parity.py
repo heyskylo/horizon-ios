@@ -139,6 +139,7 @@ def main():
     parser.add_argument('--map-decoration-patch-fixture', action='store_true')
     parser.add_argument('--map-decoration-removal-diagnostic', action='store_true')
     parser.add_argument("--selector-bounds-fixture", action="store_true")
+    parser.add_argument('--orb-uuid-fixture', action='store_true')
     args = parser.parse_args()
     build = args.work_dir.resolve() if args.work_dir else lab.LOCAL / 'command-exec-parity'
     build.mkdir(parents=True, exist_ok=True)
@@ -164,6 +165,10 @@ def main():
             sys.exit(f'{name} failed ({result.returncode}):\n{tail}')
 
     groups = corpus_module.groups()
+    if args.orb_uuid_fixture or args.only == 'orb saved UUID':
+        groups = [(name, ops) for name, ops in groups if name == 'orb saved UUID']
+    elif not args.only:
+        groups = [(name, ops) for name, ops in groups if name not in corpus_module.ISOLATED_ORB_UUID]
     if not args.only:
         groups = [(name, ops) for name, ops in groups if name not in corpus_module.ISOLATED_FRAME_MAPS]
     if not args.only and not args.wolf_anger_clock_diagnostic:
