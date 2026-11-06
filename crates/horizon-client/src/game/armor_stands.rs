@@ -359,8 +359,26 @@ impl Game<'_> {
                     .into_iter()
                     .zip(["helmet", "chestplate", "leggings", "boots"])
             }));
+        // The smithing screen's preview stand wears the result slot's item.
+        let preview = self
+            .station
+            .as_ref()
+            .filter(|s| s.kind == super::stations::Kind::Smithing)
+            .and_then(|s| s.result.as_ref())
+            .map(|stack| {
+                let equip = items.get(&stack.item).and_then(|i| i.equip_slot.as_deref());
+                let layer = match preview_slot(equip) {
+                    2 => "boots",
+                    3 => "leggings",
+                    4 => "chestplate",
+                    5 => "helmet",
+                    _ => "",
+                };
+                (Some(stack), layer)
+            });
+        let stacks = stacks.map(|(s, l)| (s.as_ref(), l)).chain(preview);
         for (stack, layer) in stacks {
-            let Some(stack) = stack.as_ref().filter(|s| s.extra.is_some()) else {
+            let Some(stack) = stack.filter(|s| s.extra.is_some()) else {
                 continue;
             };
             let Some(asset) = items
