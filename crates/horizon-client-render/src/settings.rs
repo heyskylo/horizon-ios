@@ -921,14 +921,20 @@ mod tests {
         // Untouched: no extras file is made for it.
         Settings::default().save(&options);
         assert!(!dir.join(crate::extras::FILE).exists());
-        assert_eq!(Settings::load(&options).keys.get("key.emote"), "key.keyboard.b");
+        assert_eq!(
+            Settings::load(&options).keys.get("key.emote"),
+            "key.keyboard.b"
+        );
         // Rebound in Controls: saved to horizon-extras.txt, and options.txt stays vanilla's.
         let mut s = Settings::load(&options);
         s.keys.set("key.emote", "key.keyboard.g");
         s.save(&options);
         assert!(!fs::read_to_string(&options).unwrap().contains("emote"));
         let extras = fs::read_to_string(dir.join(crate::extras::FILE)).unwrap();
-        assert!(extras.lines().any(|l| l == "emoteKey:key.keyboard.g"), "{extras}");
+        assert!(
+            extras.lines().any(|l| l == "emoteKey:key.keyboard.g"),
+            "{extras}"
+        );
         let back = Settings::load(&options);
         assert_eq!(back.keys.get("key.emote"), "key.keyboard.g");
         // horizon-ctl options-set rebuilds from options.txt text and keeps it.
@@ -938,9 +944,15 @@ mod tests {
         );
         // Reset to B and back to the default: the file says so.
         let mut s = back;
-        s.keys.set("key.emote", crate::keybinds::KeyBinds::default_of("key.emote"));
+        s.keys.set(
+            "key.emote",
+            crate::keybinds::KeyBinds::default_of("key.emote"),
+        );
         s.save(&options);
-        assert_eq!(Settings::load(&options).keys.get("key.emote"), "key.keyboard.b");
+        assert_eq!(
+            Settings::load(&options).keys.get("key.emote"),
+            "key.keyboard.b"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -950,23 +962,43 @@ mod tests {
         // options.txt is vanilla's again.
         let dir = scratch("emote-key-move");
         let options = dir.join("options.txt");
-        fs::write(&options, "fov:0.5\nkey_key.emote:key.keyboard.h\nkey_key.jump:key.keyboard.j\n").unwrap();
+        fs::write(
+            &options,
+            "version:4000\nfov:0.5\nkey_key.emote:key.keyboard.h\nkey_key.jump:key.keyboard.j\n",
+        )
+        .unwrap();
         let s = Settings::load(&options);
         assert_eq!(s.keys.get("key.emote"), "key.keyboard.h");
         assert_eq!(s.keys.get("key.jump"), "key.keyboard.j");
         s.save(&options);
         assert!(!fs::read_to_string(&options).unwrap().contains("emote"));
-        assert_eq!(Settings::load(&options).keys.get("key.emote"), "key.keyboard.h");
+        assert_eq!(
+            Settings::load(&options).keys.get("key.emote"),
+            "key.keyboard.h"
+        );
         // Once horizon-extras.txt has its own line, a stale options.txt one is ignored.
         fs::write(dir.join(crate::extras::FILE), "emoteKey:key.keyboard.k\n").unwrap();
-        fs::write(&options, "key_key.emote:key.keyboard.h\n").unwrap();
-        assert_eq!(Settings::load(&options).keys.get("key.emote"), "key.keyboard.k");
+        fs::write(&options, "version:4000\nkey_key.emote:key.keyboard.h\n").unwrap();
+        assert_eq!(
+            Settings::load(&options).keys.get("key.emote"),
+            "key.keyboard.k"
+        );
         // A value that is no key is not adopted; an unbound emote key is.
         fs::remove_file(dir.join(crate::extras::FILE)).unwrap();
-        fs::write(&options, "key_key.emote:banana\n").unwrap();
-        assert_eq!(Settings::load(&options).keys.get("key.emote"), "key.keyboard.b");
-        fs::write(&options, "key_key.emote:key.keyboard.unknown\n").unwrap();
-        assert_eq!(Settings::load(&options).keys.get("key.emote"), "key.keyboard.unknown");
+        fs::write(&options, "version:4000\nkey_key.emote:banana\n").unwrap();
+        assert_eq!(
+            Settings::load(&options).keys.get("key.emote"),
+            "key.keyboard.b"
+        );
+        fs::write(
+            &options,
+            "version:4000\nkey_key.emote:key.keyboard.unknown\n",
+        )
+        .unwrap();
+        assert_eq!(
+            Settings::load(&options).keys.get("key.emote"),
+            "key.keyboard.unknown"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
