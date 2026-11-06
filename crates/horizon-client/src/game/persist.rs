@@ -968,6 +968,11 @@ impl Game<'_> {
             );
             c.insert("UUID".into(), Tag::IntArray(uuid.to_vec()));
         }
+        // A marker is saved as `Entity.saveWithoutId` writes it: its common
+        // fields are there even when the loaded compound omitted them.
+        if matches!(o.kind.as_str(), "minecraft:marker" | "marker") {
+            entity_nbt::fill_common_defaults(&mut tag);
+        }
         tag
     }
     /// The root of a stack of riders (`Entity.getRootVehicle`).
