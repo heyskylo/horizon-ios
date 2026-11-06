@@ -2030,12 +2030,17 @@ impl Game<'_> {
                             f64::from(-trig::cos(r)),
                         ));
                         let dot = dir.dot(aim) as f32;
-                        let angle = (f64::from(dot).acos() * 57.2957763671875) as f32 + 0.5;
+                        let angle = (f64::from(dot).acos() * 180.0
+                            / f64::from(std::f32::consts::PI))
+                            as f32
+                            + 0.5;
                         if angle < 0.0 || angle > 10.0 {
                             let head = d.parts[0].0;
                             let (xd, zd) = (pp.x - head.x, pp.z - head.z);
                             let delta = wrap64(
-                                180.0 - trig::atan2(xd, zd) * 57.2957763671875 - f64::from(d.yaw),
+                                180.0
+                                    - trig::atan2(xd, zd) * 180.0 / f64::from(std::f32::consts::PI)
+                                    - f64::from(d.yaw),
                             )
                             .clamp(-100.0, 100.0);
                             d.yaw_accel *= 0.8;
@@ -4658,8 +4663,6 @@ mod tests {
         )
     }
 
-    /// `EnderDragon.tickDeath` roars (`globalLevelEvent(1028)`) only when
-    /// `!isSilent()`; `Silent` is saved only when set, as a byte.
     /// `Mth.wrapDegrees`: `% 360` then one step of 360, exact for a negative angle
     /// (a remainder made positive and back again loses the float's low bits).
     #[test]
@@ -4675,6 +4678,8 @@ mod tests {
         }
         assert_eq!(wrap64(-10.123456789), -10.123456789);
     }
+    /// `EnderDragon.tickDeath` roars (`globalLevelEvent(1028)`) only when
+    /// `!isSilent()`; `Silent` is saved only when set, as a byte.
     #[test]
     fn a_dragon_is_silent_only_with_a_set_silent_byte() {
         use horizon_world::nbt::{Compound, Tag};
