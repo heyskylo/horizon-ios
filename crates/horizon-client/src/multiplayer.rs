@@ -1256,17 +1256,6 @@ impl Screen {
                                 gray,
                                 true,
                             );
-                            // The selected row's move arrows, for the pad: its click lands on
-                            // a row's centre, not on them.
-                            if *selected == index {
-                                let arrows = [(k > 0, 0.0), (k + 1 < servers.len(), 16.0)];
-                                for (_, y) in arrows.into_iter().filter(|(shown, _)| *shown) {
-                                    crate::widgets::target_as(
-                                        [cx, cy + y, 16.0, 16.0],
-                                        crate::widgets::Kind::Button,
-                                    );
-                                }
-                            }
                             // Hovering the row: the join arrow over the icon
                             // and the move arrows, each highlighted under
                             // the pointer.

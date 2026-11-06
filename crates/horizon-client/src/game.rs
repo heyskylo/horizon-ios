@@ -8251,9 +8251,13 @@ impl Game<'_> {
     /// Whether the other device still holds the sneak or sprint mapping `source` released.
     fn toggle_held_elsewhere(&self, slot: usize, key: KeyCode, source: Source) -> bool {
         match source {
-            Source::Keyboard => self
-                .pad
-                .holds_action(&self.settings.controller, ["key.sneak", "key.sprint"][slot]),
+            // A pad's toggle-sneak isn't holding it: it has no release that would end it.
+            Source::Keyboard => {
+                !(slot == SNEAK && self.settings.controller.toggle_sneak)
+                    && self
+                        .pad
+                        .holds_action(&self.settings.controller, ["key.sneak", "key.sprint"][slot])
+            }
             Source::Pad => self.physical_keys.iter().any(|physical| {
                 self.settings
                     .keys

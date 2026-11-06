@@ -204,7 +204,9 @@ impl Pads {
                     }
                 }
                 E::ButtonPressed(..) => self.devices.active = Some(id),
-                E::AxisChanged(axis, value, _) if axis_takes_over(axis, value) => {
+                E::AxisChanged(axis, value, _)
+                    if axis_takes_over(axis, value, z_is_a_stick(&gilrs.gamepad(id))) =>
+                {
                     self.devices.active = Some(id)
                 }
                 E::ButtonChanged(_, value, _) if value > TAKEOVER => self.devices.active = Some(id),
@@ -235,12 +237,24 @@ impl Pads {
 /// How far a stick or trigger has to go for its pad to become the active one.
 const TAKEOVER: f32 = 0.5;
 
+/// Whether this pad has a stick on Z, where most pads have triggers.
+fn z_is_a_stick(pad: &gilrs::Gamepad) -> bool {
+    hid_layout::right_stick_on_z(pad)
+        || (pad.mapping_source() != gilrs::MappingSource::SdlMappings
+            && (pad.vendor_id(), pad.product_id())
+                == (
+                    Some(gamepad::BITDO_ULTIMATE2_VID_PID.0),
+                    Some(gamepad::BITDO_ULTIMATE2_VID_PID.1),
+                ))
+}
+
 /// Whether an axis this far along means someone is using its pad. Z and axes gilrs has no name for
 /// can be triggers, which rest at -1, so only their pulled end counts: touching an idle pad's
 /// trigger mustn't take over from the pad in use.
-fn axis_takes_over(axis: gilrs::Axis, value: f32) -> bool {
+fn axis_takes_over(axis: gilrs::Axis, value: f32, z_is_a_stick: bool) -> bool {
     use gilrs::Axis as A;
     match axis {
+        A::LeftZ | A::RightZ if z_is_a_stick => value.abs() > TAKEOVER,
         A::LeftZ | A::RightZ | A::Unknown => value > TAKEOVER,
         _ => value.abs() > TAKEOVER,
     }
@@ -751,17 +765,28 @@ mod takeover_tests {
     #[test]
     fn an_idle_pads_resting_trigger_doesnt_take_over() {
         for axis in [A::LeftZ, A::RightZ, A::Unknown] {
-            assert!(!axis_takes_over(axis, -0.99), "{axis:?}");
-            assert!(axis_takes_over(axis, 0.9), "{axis:?}");
+            assert!(!axis_takes_over(axis, -0.99, false), "{axis:?}");
+            assert!(axis_takes_over(axis, 0.9, false), "{axis:?}");
         }
     }
 
     #[test]
     fn a_stick_takes_over_in_either_direction() {
         for axis in [A::LeftStickX, A::LeftStickY, A::RightStickX, A::RightStickY] {
-            assert!(axis_takes_over(axis, -0.9), "{axis:?}");
-            assert!(axis_takes_over(axis, 0.9), "{axis:?}");
-            assert!(!axis_takes_over(axis, 0.2), "{axis:?}");
+            assert!(axis_takes_over(axis, -0.9, false), "{axis:?}");
+            assert!(axis_takes_over(axis, 0.9, false), "{axis:?}");
+            assert!(!axis_takes_over(axis, 0.2, false), "{axis:?}");
         }
+    }
+
+    #[test]
+    fn a_right_stick_on_z_takes_over_in_either_direction() {
+        // An Xbox pad over Bluetooth pushed left, or up.
+        assert!(axis_takes_over(A::LeftZ, -0.9, true));
+        assert!(axis_takes_over(A::RightZ, -0.9, true));
+        assert!(
+            !axis_takes_over(A::Unknown, -0.99, true),
+            "its triggers rest here"
+        );
     }
 }
