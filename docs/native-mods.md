@@ -2496,6 +2496,14 @@ calls them without a mod.
   (`players/data/<uuid>.dat`, vanilla's `ServerPlayer.saveWithoutId`), with every key Horizon keeps without modelling
   it. None inside a player's turn (their live state is out of their record) and for a player not on.
   Bundles need `"hooks": @API:player_compound@`.
+- Helpers **`native_player_food(uuid)`** and **`native_set_player_status(uuid, health, food, xp)`**: the food level,
+  saturation and exhaustion (`FoodData`); and health, food `(level, saturation, exhaustion)` and experience
+  `(level, progress, total)` set, each when given, as Bukkit's `setHealth`, `setFoodLevel`, `setSaturation`,
+  `setExhaustion`, `setLevel`, `setExp` and `setTotalExperience`. Health is capped at the player's maximum; 0 or less
+  kills them as `/kill` does, with the death message "<player> died" (Bukkit's `setHealth(0)`). The mod's food is not
+  heard by `native_food_level_changed`, except inside the player's own turn. False for a player not reached, a dead one,
+  a value that is not a number, a negative level or total, or a progress outside 0 to 1.
+  Bundles need `"hooks": @API:player_status@`.
 
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
