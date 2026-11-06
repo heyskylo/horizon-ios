@@ -2494,6 +2494,13 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   one per fork of `execute as @a run ...`; 0 for a failed `execute if entity`; 1 for a mod's command a mod ran), and
   `output` holds the lines it answered with, which reach no one else, operators included. Where `native_run_command`
   runs (no player swapped in); inside a player's hook nothing runs. Bundles need `"hooks": @API:run_command_captured@`.
+- `native_run_command_as(player, line) -> NativeCommandResult`: `line` runs as that player typing it would (Bukkit's
+  `Player.performCommand`): their source, operator level and position, so `/gamemode creative` for a level-0 player
+  is refused with vanilla's error; a command a mod registered goes to the mods when their level allows it. The answer
+  is sent to them as their own command's, and the same lines come back in `output`. `native_player_command` doesn't
+  hear it. Where `native_run_command` runs, or inside that player's own hook (`native_perform_command`: the lines
+  join its feedback); for anyone else, or a player not on the server, nothing runs. Bundles need
+  `"hooks": @API:run_command_as@`.
 
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The

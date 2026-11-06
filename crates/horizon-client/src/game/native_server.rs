@@ -7,7 +7,7 @@
 //! player's plain items: count, take, give. They act on the server's own
 //! players (the hub's: a dedicated server's, a LAN host's, single player's
 //! server thread's), never on a client's.
-use super::{Dim, Game, commands::execute, lan::LanHost};
+use super::{Dim, Game, commands::execute, lan::LanHost, lan_actions::GuestCommand};
 // Their old home, for mixin code that names them here.
 pub(crate) use horizon_client::mod_api::{NativeCommand, NativeServerPlayer};
 use horizon_client::{
@@ -527,6 +527,69 @@ impl Game<'_> {
         out.output = std::mem::replace(&mut self.chat_capture, outer_lines).unwrap_or_default();
         let results = std::mem::replace(&mut self.cmds.results, outer_results).unwrap_or_default();
         out.result = if modded {
+            i32::from(out.ran)
+        } else {
+            results.iter().filter(|r| r.0).map(|r| r.1).sum()
+        };
+        out
+    }
+    /// Runs `line` (a leading slash allowed) as the player `uuid` typing it
+    /// would (Bukkit's `Player.performCommand`): their source, operator level
+    /// and position, a command a mod registered going to the mods
+    /// (`native_perform_command`) when their level allows it. Its answer is
+    /// sent to them as their own command's, and its lines also come back in
+    /// `output`. `native_player_command` doesn't hear it. Where
+    /// `native_run_command` runs, or inside that player's own hook (then the
+    /// lines join the hook's feedback); elsewhere, or for a player not on the
+    /// server, nothing runs. API @API:run_command_as@.
+    pub(super) fn native_run_command_as(&mut self, uuid: u128, line: &str) -> NativeCommandResult {
+        let mut out = NativeCommandResult::default();
+        let line = line.strip_prefix('/').unwrap_or(line).to_owned();
+        let outer_results = self.cmds.results.replace(Vec::new());
+        if self.lan_acting.is_some() {
+            if let (Some(conn), Some(permission), true) = (
+                self.lan_acting,
+                self.lan_acting_permission,
+                self.lan_acting_uuid == Some(uuid),
+            ) {
+                let outer = self.chat_capture.replace(Vec::new());
+                let level = std::mem::replace(&mut self.ui.registries.permission, permission);
+                out.ran = self.perform_native_command(conn, permission, &line)
+                    || self.run_command(&line);
+                self.ui.registries.permission = level;
+                out.output = std::mem::replace(&mut self.chat_capture, outer).unwrap_or_default();
+                for line in &out.output {
+                    self.native_feedback(line.clone());
+                }
+            }
+        } else if let Some(host) = &self.lan
+            && let Some(g) = host.hub.guests.iter().find(|g| g.placed && g.uuid == uuid)
+        {
+            let integrated = host.hub.config.integrated;
+            let allowed = self.options.dedicated.is_some() || self.allow_commands();
+            let modded = Self::native_command_level(host, &line).is_some();
+            let command = GuestCommand {
+                conn: g.conn,
+                command: line,
+                permission: g.permission,
+                integrated,
+                quiet: false,
+            };
+            if !modded && !integrated && (!host.settings.guest_commands || !allowed) {
+                // `guest_command`'s answer where guests may not run commands.
+                let unknown = Text::translate("command.unknown.command", &[]);
+                self.native_tell(uuid, unknown.clone());
+                out.output.push(unknown);
+            } else {
+                let outer = self.chat_capture.take();
+                if let Some((ran, lines)) = self.run_guest_command_told(command) {
+                    (out.ran, out.output) = (ran, lines);
+                }
+                self.chat_capture = outer;
+            }
+        }
+        let results = std::mem::replace(&mut self.cmds.results, outer_results).unwrap_or_default();
+        out.result = if results.is_empty() {
             i32::from(out.ran)
         } else {
             results.iter().filter(|r| r.0).map(|r| r.1).sum()
