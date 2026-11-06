@@ -150,6 +150,12 @@ pub const HORIZON_CLIENTS_ONLY: &str = "horizon-clients-only";
 /// What another client is told.
 pub const HORIZON_CLIENTS_ONLY_REASON: &str =
     "This server is for the Horizon client: playhorizon.dev";
+/// The server.properties key (server.toml's `server.accept_older_clients`) that lets 26.2 clients join
+/// (off unless "true").
+pub const ACCEPT_OLDER_CLIENTS: &str = "horizon-accept-older-clients";
+/// What a 26.2 client is told while only its packet ids are translated (#10404).
+pub const OLDER_CLIENTS_UNFINISHED: &str =
+    "This server lets 26.2 join, but Horizon cannot translate 26.2 yet: join with 26.3";
 
 /// How the server side of the network behaves: an integrated server's LAN
 /// uses the defaults, a dedicated server takes them from server.properties.
@@ -210,6 +216,15 @@ pub struct NetConfig {
     /// client whose `minecraft:brand` isn't Horizon's is turned away during
     /// configuration. A brand can be spoofed: a gate, not security.
     pub horizon_clients_only: bool,
+    /// `horizon-accept-older-clients` (off): a client of 26.2 joins too, its packets renumbered
+    /// (horizon_protocol::adapter::ClientSession). Off, it is turned away as vanilla turns it away.
+    pub accept_older_clients: bool,
+    /// Lets an older client past configuration although only its packet ids are translated yet
+    /// (#10404's later parts translate the registry ids and the packets whose layout changed): for tests
+    /// of the id renumbering, never in server.toml. False, such a client is told
+    /// [`OLDER_CLIENTS_UNFINISHED`] before any registry data, tag or play packet would reach it in 26.3's
+    /// ids and layouts.
+    pub older_clients_play: bool,
     /// `horizon-lod-distance` (Horizon's own server.properties key, 64): how
     /// far, in chunks, the server samples far terrain for Horizon clients
     /// (`lod_net`); 0 serves none.
@@ -258,6 +273,8 @@ impl NetConfig {
             code_of_conducts: Vec::new(),
             server_links: Vec::new(),
             horizon_clients_only: false,
+            accept_older_clients: false,
+            older_clients_play: false,
             lod_distance: crate::lod_net::DEFAULT_DISTANCE,
             levels: crate::chunk::LevelShapes::VANILLA,
             owner_profile: None,
@@ -481,6 +498,10 @@ impl Shared {
     /// ServerStatus.CODEC): description, players with up to 12 shuffled
     /// names, version, favicon and enforcesSecureChat when true.
     pub fn status_json(&self) -> String {
+        self.status_json_for(PROTOCOL_VERSION)
+    }
+    /// [`Self::status_json`] stating `protocol`: an older client's own, when it may join.
+    pub fn status_json_for(&self, protocol: i32) -> String {
         use crate::server::json::Json;
         let motd = self.motd.lock().unwrap().clone();
         let online: Vec<(u128, String)> = self.online.lock().unwrap().clone();
@@ -522,10 +543,7 @@ impl Shared {
                 "version".to_owned(),
                 Json::Object(vec![
                     ("name".to_owned(), Json::String(GAME_VERSION.to_owned())),
-                    (
-                        "protocol".to_owned(),
-                        Json::Number(PROTOCOL_VERSION.to_string()),
-                    ),
+                    ("protocol".to_owned(), Json::Number(protocol.to_string())),
                 ]),
             ),
         ];

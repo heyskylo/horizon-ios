@@ -634,9 +634,10 @@ impl Projectile {
     }
     /// `EntityRenderer.getPackedLightCoords` lights an entity from the block
     /// its `getLightProbePosition` is in, which is `getEyePosition`: the eye
-    /// height of its box, not the cell its feet rest in.
-    pub fn light_probe_y(&self) -> f64 {
-        self.position.y + self.kind.eye_height()
+    /// height of its box over `getPosition(partialTick)`, so the frame's
+    /// position rather than this tick's, and not the cell its feet rest in.
+    pub fn light_probe_y(&self, partial: f64) -> f64 {
+        self.previous.y + (self.position.y - self.previous.y) * partial + self.kind.eye_height()
     }
     pub fn water_bubbles(&self) -> Option<([f64; 3], [f64; 3])> {
         if !self.touching_water {
@@ -2033,16 +2034,38 @@ mod render_light_tests {
             effect: None,
         });
         arrow.position = Vec3::new(0.5, 64.9, 0.5);
-        assert_eq!(arrow.light_probe_y().floor(), 65.0);
+        assert_eq!(arrow.light_probe_y(1.0).floor(), 65.0);
         assert_eq!(arrow.position.y.floor(), 64.0);
         // A wind charge's entity type declares no eye height, so it keeps its feet.
         let mut wind = shot(ProjectileKind::WindCharge);
         wind.position = Vec3::new(0.5, 64.9, 0.5);
-        assert_eq!(wind.light_probe_y(), 64.9);
+        assert_eq!(wind.light_probe_y(1.0), 64.9);
         // A snowball's box is a quarter block: the eye is 0.2125 up.
         let mut ball = shot(ProjectileKind::Snowball);
         ball.position = Vec3::new(0.5, 64.8, 0.5);
-        assert!((ball.light_probe_y() - 64.8 - 0.85 * 0.25).abs() < 1e-6);
+        assert!((ball.light_probe_y(1.0) - 64.8 - 0.85 * 0.25).abs() < 1e-6);
+    }
+
+    /// `getEyePosition(partialTick)` reads `getPosition(partialTick)`: an arrow
+    /// falling from 64 to 65 is probed at 64.63 for the first half of the frame
+    /// (the cell at 64) and only reaches the cell at 65 when the frame ends.
+    /// Horizon read the tick's own position, so the light popped a frame early.
+    #[test]
+    fn a_projectile_probe_follows_the_frame() {
+        let mut arrow = shot(ProjectileKind::Arrow {
+            base_damage: 2.0,
+            critical: false,
+            effect: None,
+        });
+        arrow.previous = Vec3::new(0.5, 64.0, 0.5);
+        arrow.position = Vec3::new(0.5, 65.0, 0.5);
+        assert!((arrow.light_probe_y(0.0) - 64.13).abs() < 1e-6);
+        assert_eq!(arrow.light_probe_y(0.0).floor(), 64.0);
+        assert_eq!(arrow.light_probe_y(0.5).floor(), 64.0);
+        assert!((arrow.light_probe_y(0.5) - 64.63).abs() < 1e-6);
+        assert_eq!(arrow.light_probe_y(1.0).floor(), 65.0);
+        // The old probe, this tick's position, was 65.0 for every frame.
+        assert_eq!((arrow.position.y + arrow.kind.eye_height()).floor(), 65.0);
     }
 }
 crate::impl_joined!(Projectile);

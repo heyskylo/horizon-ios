@@ -455,6 +455,19 @@ a version. Helpers (`native_text`, `native_player`…) have no hook entry; the c
 the generated `Host` offers, and they are kept stable as the hook points are. A test (`catalog_matches_hook_points`) keeps the
 catalog and the hook points' sources (`native_hooks.rs`, `gfx/native_render.rs`, `horizon-world`'s `loot.rs`) in step.
 
+### How fast a player digs
+
+`native_break_speed` is NeoForge's `PlayerEvent.BreakSpeed`, at the end of vanilla's `Player.getDestroySpeed`. It is
+told the block's state and position, and the speed vanilla gives the player for it: the tool, mining efficiency, Haste
+and Mining Fatigue, the block break speed attribute, and the slowdowns under water and off the ground. A mod may change
+`speed`. Every mod is called in turn, and `original` stays vanilla's. `BlockBehaviour.getDestroyProgress` then divides
+the speed by the block's hardness, and by 30 (or 100 without the right tool), for each tick of the dig. A speed of 0
+makes no progress, so the block isn't broken, not even one that breaks at once. It isn't asked for an unbreakable
+block (hardness -1) or in creative mode. It fires on the `Game` that works out the dig: in single player, on a LAN or
+dedicated host for each guest (the helpers read that player), and in a remote client's own prediction. A mod that
+changes the speed alike on both sides keeps the crack in step with the server. It is asked every tick of a dig, on
+each side, so it takes `&self` and should only compute. API @API:break_speed@.
+
 ### Host-aware weapon damage (API next)
 
 `living_incoming_damage_v2` is an additive hook, like `menu_button_v2`; v1 keeps its signature and firing point.
@@ -465,6 +478,20 @@ It currently fires for player-to-mob melee, sweep and spear hits (including LAN 
 v1. Unless canceled, v1 receives the modified amount. It is not a replacement for v1 on
 projectiles, player victims, dragons, mob attacks or environmental damage. There is no extra per-hit allocation
 without loaded mods. The fragment `living_incoming_damage_v2.json` receives its API number at merge.
+
+### Damage the health takes
+
+`native_living_damage_pre` and `native_living_damage_post` are NeoForge's `LivingDamageEvent.Pre` and `.Post`, at
+the end of vanilla's `LivingEntity.actuallyHurt`, for the players, mobs and ender dragon that
+`native_living_incoming_damage` hears, with that hook's arguments. Pre comes once armour (worn down by the hit
+already), enchantment protection, effects and absorption have taken their part, with the amount about to come off
+the health. A mod may change it: a negative or NaN amount takes nothing, an infinite one `Float.MAX_VALUE`. The hit
+can't be canceled any more, so its invulnerable time, hurt sound and knockback follow whatever the amount. Post
+comes once the health and the combat tracker are done, with what came off the health, 0 when nothing did (absorption
+took it all, or a mod made it 0), and only hears. Neither fires when no hit reaches `actuallyHurt` (refused,
+canceled by `native_living_incoming_damage`, or within the cooldown and no stronger than the last hit), nor when a
+wolf's armour takes the hit. Like `native_living_incoming_damage`, they have no `self` and run on the server thread.
+API @API:living_damage@.
 
 ### The build's warnings
 
@@ -2956,6 +2983,15 @@ A cancelled tutorial hint isn't asked again while it stays the current hint; a c
 its next update. The startup menu's narrator toast is not told: it shows before the game's `Host` exists.
 Bundles need `"hooks": @API:toast_add@`.
 
+### The client's tick
+
+`native_client_tick_pre()` and `native_client_tick_post()` (client) are NeoForge's `ClientTickEvent.Pre` and `.Post`:
+they bracket each client tick of the window, the top and the end of vanilla's `Minecraft.tick`. The window ticks 20
+times a second on the title screen, while paused and in a world alike, so a mod checks for itself whether a world is
+shown (`native_clock()` is None on the title screen). A frame that falls behind runs the ticks it owes back to back,
+each one bracketed. A server never fires them, single player's own included (it ticks on its own thread): server work
+goes in `native_server_tick`. A tick that errors ends without its `post`. Bundles need `"hooks": @API:client_tick@`.
+
 ### Values for a mod's shader pack
 
 `native_shader_params(partial, params)` (client) asks every frame, while a Horizon shader pack is on, for eight
@@ -2980,6 +3016,19 @@ game runs, for seasons (a golden autumn, a pale winter) or a world that greens a
 - Block-breaking and falling-leaf particles keep the biome's own colours for now.
 - A season's mood in a shader pack (warmer grading, a lower sun, more haze) comes from the same mod through
   `native_shader_params` (`frame.mods`); its server half can send the season to each client with mod messages.
+
+### Logging in and out
+
+`native_client_player_network_logging_in()` (client) is NeoForge's `ClientPlayerNetworkEvent.LoggingIn`: the window's
+player logs in to a server, single player's own included. It fires once per login packet
+(`ClientPacketListener.handleLogin`), after the new client level (`native_client_level_load`). Respawns and dimension
+changes don't log in again; a server that sends its player back through configuration logs it in again, with no logout
+between. Horizon makes the player with the server's first position, so `native_player()` is None here, but the
+connection is up: `native_send_packet` reaches the server. The counterpart is `native_client_disconnecting()`,
+NeoForge's `ClientPlayerNetworkEvent.LoggingOut`. It is told before a connection is discarded, after
+`native_client_level_unload`, and only when a connection ends: NeoForge's documentation says its event may also fire as
+a new integrated server is created, and Horizon's doesn't. A mod keeps its per-server state between the two: caches, a
+handshake with its server half, a welcome message. Bundles need `"hooks": @API:client_player_network_logging_in@`.
 
 ### Sounds a client mod plays
 

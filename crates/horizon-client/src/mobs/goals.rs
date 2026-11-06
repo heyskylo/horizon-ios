@@ -655,11 +655,63 @@ impl Mob {
         self.ai.seen_cache.push((who, v));
         v
     }
-    /// Mob.isWithinMeleeAttackRange: the box inflated by sqrt(2.04) - 0.6.
+    /// Mob.isWithinMeleeAttackRange: the box inflated by sqrt(2.04) - 0.6, or
+    /// for an active item with `attack_range` (the spears) by its
+    /// `effectiveMaxRange` for a mob (`max_reach * mob_factor`), and not
+    /// within its `effectiveMinRange` (`min_reach * mob_factor`).
     pub fn within_melee_range(&self, t: &TargetInfo) -> bool {
-        let reach = 2.04f32.sqrt() as f64 - 0.6;
-        let b = self.bounds().inflate(Vec3::new(reach, 0.0, reach));
-        b.intersects(t.bounds)
+        self.melee_reaches(t.bounds)
+    }
+    /// [`Self::within_melee_range`] for a target's box (`getHitbox`).
+    pub fn melee_reaches(&self, target: Aabb) -> bool {
+        let (max, min) = match self.active_attack_range() {
+            Some((max, min)) => (f64::from(max), f64::from(min)),
+            None => (2.04f32.sqrt() as f64 - 0.6, 0.0),
+        };
+        let reaches = |range: f64| {
+            self.bounds()
+                .inflate(Vec3::new(range, 0.0, range))
+                .intersects(target)
+        };
+        reaches(max) && (min <= 0.0 || !reaches(min))
+    }
+    /// The active item's `attack_range` for a mob: `effectiveMaxRange` and
+    /// `effectiveMinRange` (`max_reach` and `min_reach` times `mob_factor`).
+    /// A patch on the held stack wins (`!minecraft:attack_range` removes it;
+    /// the codec's defaults are 0, 3 and a factor of 1); else the spears'.
+    fn active_attack_range(&self) -> Option<(f32, f32)> {
+        let item = self.active_item()?;
+        let patch = (self.extra.main_hand.as_deref() == Some(item))
+            .then(|| self.extra.main_hand_stack().and_then(|s| s.data()))
+            .flatten();
+        if patch.is_some_and(|d| d.other("!minecraft:attack_range").is_some()) {
+            return None;
+        }
+        if let Some(range) = patch.and_then(|d| d.other("minecraft:attack_range")) {
+            let float = |key: &str, default: f32| match range.get(key) {
+                Some(horizon_world::nbt::Tag::Float(bits)) => f32::from_bits(*bits),
+                Some(horizon_world::nbt::Tag::Double(bits)) => f64::from_bits(*bits) as f32,
+                Some(horizon_world::nbt::Tag::Int(v)) => *v as f32,
+                _ => default,
+            };
+            let factor = float("mob_factor", 1.0);
+            return Some((
+                float("max_reach", 3.0) * factor,
+                float("min_reach", 0.0) * factor,
+            ));
+        }
+        crate::spear::Kinetic::of(item).map(|_| {
+            let r = &crate::spear::REACH;
+            (r.max * r.mob_factor, r.min * r.mob_factor)
+        })
+    }
+    /// `LivingEntity.getActiveItem`: the item being used, else the main hand's.
+    pub fn active_item(&self) -> Option<&str> {
+        if super::spear_use::is_using_item(self) && self.extra.using_off_hand {
+            self.extra.off_hand.as_deref()
+        } else {
+            self.extra.main_hand.as_deref()
+        }
     }
     /// Whether the species is a `TamableAnimal` (not the horses and llamas,
     /// which are tamed another way).
@@ -3317,5 +3369,65 @@ mod breed_xp_tests {
                 .any(|e| matches!(e, MobEvent::Breed { parent: 1, .. })),
             "mob_drops off: the pair still breeds"
         );
+    }
+}
+
+#[cfg(test)]
+mod melee_range_tests {
+    use super::*;
+
+    fn mob_holding(item: &str, components: Option<&str>) -> Mob {
+        let kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
+        let mut m = Mob::new(1, Arc::new(kind), Vec3::new(0.5, 64.0, 0.5), 0.0);
+        let mut stack = crate::items::ItemStack::new(item, 1);
+        if let Some(text) = components {
+            let tag = horizon_world::nbt::parse_snbt(text).unwrap().0;
+            (stack.damage, stack.extra) = crate::item_data::decode_components(Some(&tag));
+        }
+        m.extra.set_main_hand_stack(Some(stack));
+        m
+    }
+    /// A one-block target whose near face is `gap` blocks east of the mob's box.
+    fn target(m: &Mob, gap: f64) -> Aabb {
+        let x = m.bounds().max_position().x + gap;
+        Aabb::new(Vec3::new(x, 64.0, 0.0), Vec3::new(x + 1.0, 65.0, 1.0))
+    }
+
+    /// `Mob.isWithinMeleeAttackRange` with `getActiveItem().get(ATTACK_RANGE)`:
+    /// no component reaches sqrt(2.04) - 0.6 (about 0.83); a spear 4.5 and 2.0
+    /// times its mob factor 0.5; a patched component with the codec's
+    /// defaults (`mob_factor` 1, `min_reach` 0); a removed one the default.
+    #[test]
+    fn the_active_items_attack_range_sets_the_reach() {
+        let sword = mob_holding("minecraft:iron_sword", None);
+        assert!(sword.melee_reaches(target(&sword, 0.8)));
+        assert!(!sword.melee_reaches(target(&sword, 0.9)));
+
+        let spear = mob_holding("minecraft:iron_spear", None);
+        assert!(spear.melee_reaches(target(&spear, 2.2)));
+        assert!(!spear.melee_reaches(target(&spear, 2.3)));
+        assert!(
+            !spear.melee_reaches(target(&spear, 0.5)),
+            "inside the minimum range"
+        );
+        assert!(spear.melee_reaches(target(&spear, 1.1)));
+
+        let long = mob_holding(
+            "minecraft:iron_sword",
+            Some(r#"{"minecraft:attack_range":{max_reach:6.0f}}"#),
+        );
+        assert!(long.melee_reaches(target(&long, 5.9)));
+        assert!(
+            long.melee_reaches(target(&long, 0.0)),
+            "no minimum by default"
+        );
+        assert!(!long.melee_reaches(target(&long, 6.1)));
+
+        let blunt = mob_holding(
+            "minecraft:iron_spear",
+            Some(r#"{"!minecraft:attack_range":{}}"#),
+        );
+        assert!(blunt.melee_reaches(target(&blunt, 0.5)));
+        assert!(!blunt.melee_reaches(target(&blunt, 2.0)));
     }
 }
