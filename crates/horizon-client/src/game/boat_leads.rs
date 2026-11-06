@@ -468,7 +468,9 @@ impl Game<'_> {
             if self.boat_can_attach(i, player) {
                 let mut b = self.boats[i].clone();
                 self.release_boat_leash(&mut b, true);
+                // LeashData.setLeashHolder forgets a holder still waiting in the save.
                 b.leash = Some(Holder::Player);
+                b.leash_pending = None;
                 b.leash_player = Some(self.acting_player_uuid());
                 self.boats[i] = b;
                 self.lead_sound("tied", at);
