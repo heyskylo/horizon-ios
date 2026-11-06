@@ -455,6 +455,19 @@ a version. Helpers (`native_text`, `native_player`…) have no hook entry; the c
 the generated `Host` offers, and they are kept stable as the hook points are. A test (`catalog_matches_hook_points`) keeps the
 catalog and the hook points' sources (`native_hooks.rs`, `gfx/native_render.rs`, `horizon-world`'s `loot.rs`) in step.
 
+### How fast a player digs
+
+`native_break_speed` is NeoForge's `PlayerEvent.BreakSpeed`, at the end of vanilla's `Player.getDestroySpeed`. It is
+told the block's state and position, and the speed vanilla gives the player for it: the tool, mining efficiency, Haste
+and Mining Fatigue, the block break speed attribute, and the slowdowns under water and off the ground. A mod may change
+`speed`. Every mod is called in turn, and `original` stays vanilla's. `BlockBehaviour.getDestroyProgress` then divides
+the speed by the block's hardness, and by 30 (or 100 without the right tool), for each tick of the dig. A speed of 0
+makes no progress, so the block isn't broken, not even one that breaks at once. It isn't asked for an unbreakable
+block (hardness -1) or in creative mode. It fires on the `Game` that works out the dig: in single player, on a LAN or
+dedicated host for each guest (the helpers read that player), and in a remote client's own prediction. A mod that
+changes the speed alike on both sides keeps the crack in step with the server. It is asked every tick of a dig, on
+each side, so it takes `&self` and should only compute. API @API:break_speed@.
+
 ### Host-aware weapon damage (API next)
 
 `living_incoming_damage_v2` is an additive hook, like `menu_button_v2`; v1 keeps its signature and firing point.
@@ -465,6 +478,20 @@ It currently fires for player-to-mob melee, sweep and spear hits (including LAN 
 v1. Unless canceled, v1 receives the modified amount. It is not a replacement for v1 on
 projectiles, player victims, dragons, mob attacks or environmental damage. There is no extra per-hit allocation
 without loaded mods. The fragment `living_incoming_damage_v2.json` receives its API number at merge.
+
+### Damage the health takes
+
+`native_living_damage_pre` and `native_living_damage_post` are NeoForge's `LivingDamageEvent.Pre` and `.Post`, at
+the end of vanilla's `LivingEntity.actuallyHurt`, for the players, mobs and ender dragon that
+`native_living_incoming_damage` hears, with that hook's arguments. Pre comes once armour (worn down by the hit
+already), enchantment protection, effects and absorption have taken their part, with the amount about to come off
+the health. A mod may change it: a negative or NaN amount takes nothing, an infinite one `Float.MAX_VALUE`. The hit
+can't be canceled any more, so its invulnerable time, hurt sound and knockback follow whatever the amount. Post
+comes once the health and the combat tracker are done, with what came off the health, 0 when nothing did (absorption
+took it all, or a mod made it 0), and only hears. Neither fires when no hit reaches `actuallyHurt` (refused,
+canceled by `native_living_incoming_damage`, or within the cooldown and no stronger than the last hit), nor when a
+wolf's armour takes the hit. Like `native_living_incoming_damage`, they have no `self` and run on the server thread.
+API @API:living_damage@.
 
 ### The build's warnings
 
@@ -1805,6 +1832,10 @@ trusting native code is the player's decision, never an agent's.
 4. **Mixins.** The bundles are copied first, so the build and its key use that copy whatever happens to the
    folder meanwhile. `horizon-mixins apply` stages the modded source; the launcher copies only the files that
    changed into `native/stage/`, so Cargo, which goes by file times, recompiles only the crates the mods touch.
+   Each file written gets the current time, never the archive's (the commit's) or the copy's original: on
+   Windows and macOS a copy keeps it, and a file older than the last build reads as already compiled, so
+   switching Nightlies linked the previous one's crates (#10421). A stage from before that fix is written again
+   once (`native/stage.stamped` marks it).
    With mods' crates, their dependencies are checked against Horizon's `Cargo.lock` ("The mod's crate").
 5. **Compile**: `cargo build --locked --profile <fast|release> [--config ...] [--features horizon-client/mods] -p
    horizon-client`, into `native/target/`, with one of three build profiles:
@@ -2819,6 +2850,32 @@ items are left out (NeoForge's `RenderLivingEvent.Pre`, cancelled); its name tag
   after its vanilla model and layers, in the same frame (not for one a mod drew itself); `who` is set for a player. The
   geometry hangs from the entity's frame, not from a model bone: place a hat from `head_yaw`, `pitch` and the entity type's
   eye height.
+- A model built in code, as a NeoForge mod's `createBodyLayer()` builds it, is an entity model layer (API
+  @API:model_layers@). `native_layer_definitions(layers)` (`EntityRenderersEvent.RegisterLayerDefinitions`, asked once at
+  start) takes a mod's layers by id, `<mod id>:<model>#<layer>`. Each is a `LayerDefinition`: a `MeshDefinition` whose
+  named parts hold `CubeListBuilder` boxes at a `PartPose`, on a texture of a given size. A box takes its faces from the
+  texture as vanilla's do (`tex_offs`, `mirror`), and a `CubeDeformation` grows it over the same texels.
+  `native_bake_layer(layer)` (`EntityModelSet.bakeLayer`) bakes one of them, or a vanilla layer by its
+  `entity-models.json` name (`minecraft:zombie#main`), into a `ModelPart` tree. Bake it once and keep it. Each frame,
+  `reset_all_poses` and set the parts' `x_rot`, `y_rot`, `z_rot` and place, as `setupAnim` does, then draw the tree
+  with `native_draw_model_part(draw, part, sprite, tint)` (`ModelPart.render`). A mob's model is in the model's own
+  frame, +y down with its front towards -z: turn the mob's frame into it first, as `LivingEntityRenderer` does.
+
+  ```rust
+  fn layer_definitions(&self, event: &mut LayerDefinitionsEvent<'_>) {
+      let mut mesh = MeshDefinition::new();
+      let root = mesh.root();
+      let body = CubeListBuilder::create().tex_offs(0, 16).add_box([-4.0, 0.0, -2.0], [8.0, 12.0, 4.0]);
+      let body = mesh.add_or_replace_child(root, "body", body, PartPose::offset(0.0, 0.0, 0.0));
+      let head = CubeListBuilder::create().tex_offs(0, 0).add_box([-4.0, -8.0, -4.0], [8.0, 8.0, 8.0]);
+      mesh.add_or_replace_child(body, "head", head, PartPose::ZERO);
+      event.layers.push(("mymod:golem#main".into(), LayerDefinition::create(mesh, 64, 64)));
+  }
+  // In mob_submit, with `model` from host.bake_layer("mymod:golem#main"):
+  draw.scale([1.0, -1.0, -1.0]);
+  draw.translate([0.0, -1.501, 0.0]);
+  host.draw_model_part(draw, &model, "mymod:entity/golem", 0xFFFFFF);
+  ```
 
 ### Advancement triggers
 
@@ -2926,6 +2983,15 @@ A cancelled tutorial hint isn't asked again while it stays the current hint; a c
 its next update. The startup menu's narrator toast is not told: it shows before the game's `Host` exists.
 Bundles need `"hooks": @API:toast_add@`.
 
+### The client's tick
+
+`native_client_tick_pre()` and `native_client_tick_post()` (client) are NeoForge's `ClientTickEvent.Pre` and `.Post`:
+they bracket each client tick of the window, the top and the end of vanilla's `Minecraft.tick`. The window ticks 20
+times a second on the title screen, while paused and in a world alike, so a mod checks for itself whether a world is
+shown (`native_clock()` is None on the title screen). A frame that falls behind runs the ticks it owes back to back,
+each one bracketed. A server never fires them, single player's own included (it ticks on its own thread): server work
+goes in `native_server_tick`. A tick that errors ends without its `post`. Bundles need `"hooks": @API:client_tick@`.
+
 ### Values for a mod's shader pack
 
 `native_shader_params(partial, params)` (client) asks every frame, while a Horizon shader pack is on, for eight
@@ -2950,6 +3016,19 @@ game runs, for seasons (a golden autumn, a pale winter) or a world that greens a
 - Block-breaking and falling-leaf particles keep the biome's own colours for now.
 - A season's mood in a shader pack (warmer grading, a lower sun, more haze) comes from the same mod through
   `native_shader_params` (`frame.mods`); its server half can send the season to each client with mod messages.
+
+### Logging in and out
+
+`native_client_player_network_logging_in()` (client) is NeoForge's `ClientPlayerNetworkEvent.LoggingIn`: the window's
+player logs in to a server, single player's own included. It fires once per login packet
+(`ClientPacketListener.handleLogin`), after the new client level (`native_client_level_load`). Respawns and dimension
+changes don't log in again; a server that sends its player back through configuration logs it in again, with no logout
+between. Horizon makes the player with the server's first position, so `native_player()` is None here, but the
+connection is up: `native_send_packet` reaches the server. The counterpart is `native_client_disconnecting()`,
+NeoForge's `ClientPlayerNetworkEvent.LoggingOut`. It is told before a connection is discarded, after
+`native_client_level_unload`, and only when a connection ends: NeoForge's documentation says its event may also fire as
+a new integrated server is created, and Horizon's doesn't. A mod keeps its per-server state between the two: caches, a
+handshake with its server half, a welcome message. Bundles need `"hooks": @API:client_player_network_logging_in@`.
 
 ### Sounds a client mod plays
 

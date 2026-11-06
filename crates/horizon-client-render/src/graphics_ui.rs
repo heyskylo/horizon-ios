@@ -1576,7 +1576,7 @@ impl GraphicsUi {
             &cols,
             &lines,
             self.scroll.amount,
-            Page::name,
+            |page| lang::get(page.name()),
             |batch, setting: Setting, y| {
                 let item = setting.item;
                 let rect = cols.row(y);

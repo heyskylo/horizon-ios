@@ -41,6 +41,9 @@ mod higher_shadowcolor_tests;
 mod single_side_tests;
 
 #[cfg(test)]
+mod undrawn_terrain_tests;
+
+#[cfg(test)]
 mod shadow_faces_tests;
 
 #[cfg(test)]
@@ -54,6 +57,9 @@ mod custom_type_tests;
 
 #[cfg(test)]
 mod sky_depth_tests;
+
+#[cfg(test)]
+mod translucent_color_tests;
 
 /// The texture behind a pack sampler name.
 #[derive(Clone, Copy, PartialEq)]
@@ -113,6 +119,8 @@ enum SamplerKind {
     NearestRepeat,
     /// The block atlas: nearest texels, blended between the two nearest levels.
     Atlas,
+    /// colortex buffers: linear, blended between the two nearest levels.
+    Buffer,
     Comparison,
 }
 
@@ -140,15 +148,18 @@ impl SamplerKind {
                 (true, false) => Self::Repeat,
                 (false, false) => Self::NearestRepeat,
             },
-            Source::Color(_) | Source::ShadowColor(_) | Source::Dummy | Source::Lightmap => {
-                Self::Linear
-            }
+            // Iris 1.11.7 blends a buffer's two nearest mipmap levels (our probe packs, #9307:
+            // every colortex read at levels 1.25 and 2.5 in composite and final).
+            Source::Color(_) => Self::Buffer,
+            Source::ShadowColor(_) | Source::Dummy | Source::Lightmap => Self::Linear,
         }
     }
 
     fn binding_type(self) -> wgpu::SamplerBindingType {
         match self {
-            Self::Linear | Self::Repeat | Self::Atlas => wgpu::SamplerBindingType::Filtering,
+            Self::Linear | Self::Repeat | Self::Atlas | Self::Buffer => {
+                wgpu::SamplerBindingType::Filtering
+            }
             Self::Nearest | Self::NearestRepeat => wgpu::SamplerBindingType::NonFiltering,
             Self::Comparison => wgpu::SamplerBindingType::Comparison,
         }
@@ -472,7 +483,7 @@ pub(super) struct World<'a> {
     pub lightmap: wgpu::TextureView,
     /// Terrain's geometry, when the pack draws it.
     pub terrain: Option<Geometry<'a>>,
-    /// Of each block sprite layer, `mc_Entity` (id, then 1 for fluids or -1) and `at_midBlock.w`
+    /// Of each block sprite layer, `mc_Entity` (id, then 1 for fluids or 0) and `at_midBlock.w`
     /// (its block's light): three values a layer.
     pub block_ids: &'a [i32],
     /// The atlas of the sun and moon's sprites.
@@ -550,6 +561,10 @@ pub struct PackPost {
     terrain_cutout: Option<Pass>,
     /// What draws translucent terrain (`gbuffers_water` or its fallback), after `deferred`.
     water: Option<Pass>,
+    /// The pack has no program for solid and cutout terrain, or for translucent terrain:
+    /// nothing draws it (`horizon_shaders::Post::terrain_undrawn`).
+    terrain_undrawn: bool,
+    water_undrawn: bool,
     /// What draws the sky (`gbuffers_skybasic` or its fallback), before terrain, and its vertices.
     sky: Option<Sky>,
     /// What draws entities and block entities, after terrain, and their vertices.
@@ -660,6 +675,8 @@ pub struct PackPost {
     repeat: wgpu::Sampler,
     nearest_repeat: wgpu::Sampler,
     atlas_sampler: wgpu::Sampler,
+    /// colortex buffers' (`SamplerKind::Buffer`).
+    buffer_sampler: wgpu::Sampler,
     /// None when it would write nothing: colortex0 holds integers and there is no depth to copy
     /// nor buffer to clear.
     blit: Option<(wgpu::RenderPipeline, wgpu::BindGroupLayout)>,
@@ -1131,6 +1148,11 @@ pub(super) struct ShadowView {
     /// maps fit keeping only those with `shadow.culling` unset (#8464): under a noon sun, only
     /// the terrain above the ground the camera sees; with a low sun ahead, none behind the camera.
     pub view_casters: bool,
+    /// Whether the projection's near and far planes in `cull` drop sections too. Our probes'
+    /// Iris 1.11.7 maps hold the terrain at every depth we put it along the light (from 535 blocks
+    /// beyond the shadow camera to about 120 before it), whatever `shadowNearPlane` and
+    /// `shadowFarPlane` the pack sets, or none (#10403): only its sides cull.
+    pub depth_planes: bool,
 }
 
 /// Set 3 of flat terrain, read by the vertex stage: the sprite layers' table (`mc_Entity`'s id
@@ -1261,8 +1283,9 @@ fn bindings(
     let mut reads = 0u16;
     let mut shadow_reads = 0u16;
     let watershadow = interface.samplers.iter().any(|s| s.name == "watershadow");
-    // A gbuffers pass draws into its buffers and the depth buffer: reading them as well would
-    // be a feedback loop (undefined in GL, refused by wgpu), so those read a blank texture.
+    // Opaque gbuffers draws cannot sample their own attachments. Translucent draws can
+    // read colortex4 and above from the preceding deferred stage; those reads use a copy
+    // taken before the draw, so the sampled texture is never also an attachment.
     let in_place = match geometry {
         Some(_) => buffers.iter().fold(0u16, |m, &b| m | 1 << b),
         None => 0,
@@ -1372,7 +1395,9 @@ fn bindings(
                     Source::Depth => geometry.is_some(),
                     // Translucent terrain reads the copy; opaque terrain would read itself.
                     Source::Depth1 | Source::Depth2 => group == Group::Gbuffers,
-                    Source::Color(n) => in_place & 1 << n != 0,
+                    Source::Color(n) => {
+                        (group != Group::Translucent || n < 4) && in_place & 1 << n != 0
+                    }
                     _ => false,
                 };
                 let mut sample_type = match src {
@@ -1853,7 +1878,13 @@ fn build_pass(
         ids: geometry.is_some_and(|g| g.ids.is_some()),
         groups: HashMap::new(),
         portal_groups: HashMap::new(),
-        copies: image_buffers(&images) & reads,
+        copies: (image_buffers(&images)
+            | if p.group == Group::Translucent {
+                written
+            } else {
+                0
+            })
+            & reads,
         reads: reads | image_buffers(&images),
         buffers: !interface.buffers.is_empty(),
         images,
@@ -2276,6 +2307,7 @@ impl PackPost {
             cull: g.cull,
         });
         let split = post.terrain.is_some() && post.terrain_cutout.is_some();
+        let (terrain_undrawn, water_undrawn) = (post.terrain_undrawn, post.water_undrawn);
         let mut terrain = post
             .terrain
             .zip(terrain_geometry.as_ref())
@@ -2822,6 +2854,8 @@ impl PackPost {
             terrain,
             terrain_cutout,
             water,
+            terrain_undrawn,
+            water_undrawn,
             sky,
             entities,
             clouds,
@@ -2975,6 +3009,13 @@ impl PackPost {
                 label: Some("Shader pack atlas"),
                 address_mode_u: wgpu::AddressMode::Repeat,
                 address_mode_v: wgpu::AddressMode::Repeat,
+                mipmap_filter: wgpu::MipmapFilterMode::Linear,
+                ..Default::default()
+            }),
+            buffer_sampler: device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("Shader pack buffers"),
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
                 mipmap_filter: wgpu::MipmapFilterMode::Linear,
                 ..Default::default()
             }),
@@ -3189,6 +3230,7 @@ impl PackPost {
                     SamplerKind::Repeat => &self.repeat,
                     SamplerKind::NearestRepeat => &self.nearest_repeat,
                     SamplerKind::Atlas => &self.atlas_sampler,
+                    SamplerKind::Buffer => &self.buffer_sampler,
                     SamplerKind::Comparison => shadow.map_or(&self.shadow.1, |t| &t.comparison),
                 };
                 entries.push(wgpu::BindGroupEntry {
@@ -4037,12 +4079,13 @@ impl PackPost {
             },
             every_face: true,
             view_casters: true,
+            depth_planes: false,
         })
     }
 
-    /// Whether the pack draws terrain itself.
+    /// Whether the pack draws terrain itself, or has nothing draw it.
     pub fn has_terrain(&self) -> bool {
-        self.terrain.is_some() || self.terrain_cutout.is_some()
+        self.terrain.is_some() || self.terrain_cutout.is_some() || self.terrain_undrawn
     }
 
     /// Whether the pack's shadow pass draws terrain (`shadow_view`).
@@ -4070,7 +4113,7 @@ impl PackPost {
 
     /// Whether the pack draws translucent terrain itself.
     pub fn has_water(&self) -> bool {
-        self.water.is_some()
+        self.water.is_some() || self.water_undrawn
     }
 
     /// The names of the programs that run, in order.
@@ -4122,6 +4165,14 @@ impl PackPost {
         }
         self.setup_pending = true;
         self.rgb_unset = true;
+        // Free the old targets before making the new ones: a pack with large buffers can't
+        // hold both sets at once on a card it otherwise fits (a window resize ran out of video
+        // memory). The bind groups hold the old views too, and the GPU may still be using
+        // them, so wait for it; a resize is rare.
+        if self.targets.take().is_some() {
+            self.forget_groups();
+            let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        }
         let sizes: [[u32; 2]; BUFFERS] =
             std::array::from_fn(|i| self.sizes[i].map_or(size, |s| s.resolve(size)));
         let full_chain = |size: [u32; 2]| 32 - size[0].max(size[1]).max(1).leading_zeros();
@@ -4580,10 +4631,8 @@ impl PackPost {
             .get_or_insert_with(|| super::pack_center_depth::CenterDepth::new(device))
             .collect(device);
         self.uniforms.update(frame, inputs, size);
-        // Until the camera's biome is known, `smooth` waits for the world's values.
-        if !inputs.biome_known {
-            self.custom.restart_smoothing();
-        }
+        // `smooth` starts on the first frame that knows the camera's biome.
+        self.custom.world_frame(inputs.biome_known);
         self.uniforms.eval_custom(&mut self.custom);
         if self.targets.is_none() {
             return;
@@ -5679,3 +5728,6 @@ mod unknown_sampler_terrain_tests;
 
 #[cfg(test)]
 mod mipmap_box_tests;
+
+#[cfg(test)]
+mod colortex_mip_blend_tests;

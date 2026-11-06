@@ -28,7 +28,8 @@ impl Game<'_> {
         let griefing = self.ui.rules.bool("mob_griefing");
         for i in 0..self.mobs.len() {
             let m = &self.mobs[i];
-            if m.species() != Species::Panda || !m.alive() {
+            if m.species() != Species::Panda || !m.alive() || !self.creatures.ticked.contains(&m.id)
+            {
                 continue;
             }
             let id = m.id;
