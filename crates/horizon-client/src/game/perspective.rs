@@ -479,6 +479,7 @@ impl Game<'_> {
             p.pose == Pose::Swimming || (!p.fall_flying && p.pose == Pose::FallFlying);
         let in_water = p.fluids.was_touching_water;
         let in_lava = p.is_in_lava();
+        let ticks_frozen = p.ticks_frozen;
         let (yaw, pitch) = (self.yaw, self.pitch);
         let main = self.inventory[self.selected].clone();
         let off = self.offhand.as_ref().map(|s| s.item.clone());
@@ -578,6 +579,9 @@ impl Game<'_> {
         // What custom entity model animations read of the fluids (`is_in_water`, crawling).
         m.fluids.in_water = in_water;
         m.fluids.in_lava = in_lava;
+        // Entity.DATA_TICKS_FROZEN: `isFullyFrozen` is the shiver of
+        // `LivingEntityRenderer.isShaking` (#11217).
+        m.ticks_frozen = ticks_frozen;
         m.extra.passenger = riding;
         m.extra.previous_velocity = m.velocity;
         m.velocity = velocity;

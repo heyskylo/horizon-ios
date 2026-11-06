@@ -3907,6 +3907,15 @@ impl Game<'_> {
                                     pl.air = *air;
                                 }
                             }
+                            // Entity.DATA_TICKS_FROZEN: the server's count of the
+                            // powder snow freeze, which the client's own copy reads
+                            // for the frost overlay, the frozen hearts and the
+                            // shiver of its third-person model (#11217).
+                            (7, Value::Int(ticks)) => {
+                                if let Some(pl) = self.player.as_mut() {
+                                    pl.ticks_frozen = *ticks;
+                                }
+                            }
                             // LivingEntity.DATA_ARROW_COUNT_ID and DATA_STINGER_COUNT_ID.
                             (12, Value::Int(count)) => {
                                 if let Some(r) = self.remote.as_mut() {
