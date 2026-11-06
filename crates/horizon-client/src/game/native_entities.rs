@@ -259,14 +259,94 @@ impl Game<'_> {
     /// Removes entity `id`, one Horizon keeps without simulating, as `/kill`
     /// does (it drops nothing and isn't saved). False for no such entity or
     /// another dimension. Mobs go with `native_remove_mob`. API
-    /// 59.
+    /// 59. Since API @API:remove_projectiles@ it also takes projectiles
+    /// (arrows, tridents, snowballs, eggs, pearls, fireballs, wind charges,
+    /// llama spit, shulker bullets, firework rockets) as `/kill` does, and a
+    /// server player's fishing bobber (`Entity.discard`; the player in place's,
+    /// or, outside a guest's turn, any of this level's players').
     pub(super) fn native_remove_entity(&mut self, dimension: &str, id: u32) -> bool {
-        if !self.native_simulates_level(dimension) || !self.others.iter().any(|o| o.id == id) {
+        if !self.native_simulates_level(dimension) {
             return false;
         }
-        self.others.retain(|o| o.id != id);
-        self.persist.raw.remove(&id);
-        true
+        if self.others.iter().any(|o| o.id == id) {
+            self.others.retain(|o| o.id != id);
+            self.persist.raw.remove(&id);
+            return true;
+        }
+        // An id of 0 is a projectile no server tracks yet: never one a mod was told of.
+        if id != 0
+            && let Some(
+                projectile @ (Target::Projectile(_) | Target::Trident(_) | Target::Rocket(_)),
+            ) = self.level_entity(id as i32)
+        {
+            self.kill_target(projectile);
+            return true;
+        }
+        self.remove_server_hook(id)
+    }
+    /// Hurts the living entity `target` (a mob, or a player of the level `dimension`) by
+    /// `amount` of `damage_type` (`minecraft:mob_attack`), from `attacker` (a mob's or a
+    /// player's entity id: the causing and direct entity, as vanilla's
+    /// `damageSources().mobAttack(attacker)`; none for no entity), as `LivingEntity.hurtServer`
+    /// and `/damage <target> <amount> <damage_type> by <attacker>` do: armour, effects,
+    /// invulnerability time, knockback from the attacker, death and its message, and the damage
+    /// hooks (`native_living_incoming_damage` and its versions) hear it. Whether it was hurt:
+    /// false for an invulnerable, dead or creative target, another dimension, an entity that
+    /// isn't living, an attacker that isn't there, or an amount that isn't a finite number.
+    /// API @API:hurt_entity@.
+    pub(super) fn native_hurt_entity(
+        &mut self,
+        dimension: &str,
+        target: u32,
+        amount: f32,
+        damage_type: &str,
+        attacker: Option<u32>,
+    ) -> bool {
+        if !self.native_simulates_level(dimension) || !amount.is_finite() {
+            return false;
+        }
+        let Some(victim) = self.hurt_entity_target(dimension, target) else {
+            return false;
+        };
+        let by = match attacker {
+            Some(id) => match self.hurt_entity_target(dimension, id) {
+                Some(t) => Some(t),
+                None => return false,
+            },
+            None => None,
+        };
+        let from = by.and_then(|t| self.target_position(t));
+        self.damage_target(victim, amount, damage_type, None, by, from)
+    }
+    /// The player or mob `id` names in the level `dimension`: a player by their entity id
+    /// (the one in place, whose turn it is, as `Target::Player`), a mob that is there.
+    fn hurt_entity_target(&self, dimension: &str, id: u32) -> Option<Target> {
+        let entity = i32::try_from(id).ok()?;
+        let guest = self
+            .lan
+            .iter()
+            .flat_map(|h| h.hub.guests.iter())
+            .find(|g| g.placed && g.entity_id == entity && g.dimension == dimension);
+        if let Some(g) = guest {
+            let acting = self.lan_acting == Some(g.conn) && self.player.is_some();
+            return Some(if acting {
+                Target::Player
+            } else {
+                Target::Guest(g.conn)
+            });
+        }
+        // The player in place while the hub is out (a guest's turn), or a LAN host.
+        if (self.lan_acting.is_some() || self.options.dedicated.is_none())
+            && self.player.as_ref().is_some_and(|p| p.entity_id == entity)
+        {
+            return Some(Target::Player);
+        }
+        match self.level_entity(entity)? {
+            Target::Mob(mob) if self.mobs.iter().any(|m| m.id == mob && m.alive()) => {
+                Some(Target::Mob(mob))
+            }
+            _ => None,
+        }
     }
 }
 

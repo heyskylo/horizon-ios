@@ -1240,6 +1240,26 @@ impl GameLevel<'_> {
         );
     }
 
+    /// The button, lever or pressure plate at `pos` is about to change its signal from `old`
+    /// to `new` (0 to 15; Bukkit's `BlockRedstoneEvent`): a button pressed or let go (by a
+    /// hand, an arrow or its release tick), a lever pulled, a plate's weight checked. Change
+    /// `new` and the component takes that signal instead, clamped to 0 to 15: one equal to
+    /// `old` keeps it as it is (a held button's release is scheduled again, a plate held on is
+    /// checked again, a lever stays; no sound), and an on-or-off component is on for anything
+    /// above 0. Not heard: redstone wire, torches, repeaters, comparators, observers, detector
+    /// rails, tripwire hooks, daylight detectors and the other signal sources. Server-side.
+    /// @API:block_redstone@.
+    #[inline(always)]
+    pub(super) fn native_block_redstone(
+        &self,
+        dimension: LevelDimension,
+        pos: BlockPos,
+        old: i32,
+        new: &mut i32,
+    ) {
+        mod_api::dispatch_block_redstone(self, mod_api::mods(), dimension, pos, old, new);
+    }
+
     /// A non-persistent leaf block at distance 7 is about to decay at `pos`.
     /// Set `cancel` to keep it. Server-side. 235.
     #[inline(always)]
@@ -6962,6 +6982,133 @@ impl Game<'_> {
             cancel,
         );
     }
+    /// `native_interact_entity` with the hand: a player right-clicks the entity `entity`
+    /// (`Entity.getId`) of type `kind` with `hand` (NeoForge's
+    /// `PlayerInteractEvent.EntityInteract.getHand`), holding `stack` (none in an empty hand),
+    /// where `Player.interactOn` starts. Asked right after the unchanged v1 hook, once per hand
+    /// tried: vanilla tries the main hand, then the off hand only when the main hand's turn did
+    /// nothing, so a mod that claims the main hand's click hears one event per click. Set
+    /// `cancel` to take the click: the hand swings and neither the entity's own `interact` nor
+    /// the item's `interactLivingEntity` runs. A click v1 claimed is not asked here. Server-side,
+    /// for every player of the world (the helpers read the acting one). @API:interact_entity_v2@.
+    pub(super) fn native_interact_entity_v2(
+        &mut self,
+        entity: i32,
+        kind: &str,
+        hand: Hand,
+        stack: Option<&ItemStack>,
+        cancel: &mut bool,
+    ) {
+        mod_api::dispatch_interact_entity_v2(
+            self,
+            mod_api::mods(),
+            entity,
+            kind,
+            hand,
+            stack,
+            cancel,
+        );
+    }
+    /// `native_right_click_block` with the hand: a player right clicks the block at `pos` with
+    /// `hand` (NeoForge's `PlayerInteractEvent.RightClickBlock.getHand`), `face` the face clicked,
+    /// where `ServerPlayerGameMode.useItemOn` starts, before the block's own use and before
+    /// `native_use_item_on`. Asked right after the unchanged v1 hook, once per hand tried (the
+    /// off hand only when the main hand's turn did nothing). Set `cancel` to stop the click:
+    /// neither the block nor the item acts, the hand doesn't swing, and a guest sees the block as
+    /// it is; that hand's turn ends the click, as a v1 cancel does. A click v1 canceled is not
+    /// asked here. Server-side, for every player of the world (`native_acting_player` says who).
+    /// @API:right_click_block_v2@.
+    pub(super) fn native_right_click_block_v2(
+        &mut self,
+        pos: [i32; 3],
+        face: [i32; 3],
+        hand: Hand,
+        cancel: &mut bool,
+    ) {
+        mod_api::dispatch_right_click_block_v2(self, mod_api::mods(), pos, face, hand, cancel);
+    }
+    /// `native_player_fish` with the hand: the server player's fishing rod in `hand`, with
+    /// `state` as v1 has it (0 the cast, 1 a bite, 2 to 4 the reel-ins). The cast and the
+    /// reel-ins name the hand the rod is used with (Bukkit's `PlayerFishEvent.getHand`); a bite
+    /// has none of its own and names the hand holding the rod, the main hand first, as
+    /// `FishingHook.shouldStopFishing` looks. Asked right after the unchanged v1 hook with the
+    /// same `cancel`, which does what v1's does; one v1 set is not asked here. The player's state
+    /// is swapped in. @API:player_fish_v2@.
+    pub(super) fn native_player_fish_v2(
+        &mut self,
+        player: u128,
+        name: &str,
+        state: i32,
+        hand: Hand,
+        cancel: &mut bool,
+    ) {
+        mod_api::dispatch_player_fish_v2(self, mod_api::mods(), player, name, state, hand, cancel);
+    }
+    /// The fishing bobber `hook` (its entity id) of the server player `player` touches a
+    /// block in the level `dimension` this tick (Bukkit's `ProjectileHitEvent` for a
+    /// `FishHook`): `block` the block, `face` the side it meets (`[0, 1, 0]` the top). Heard
+    /// once each tick the flying bobber meets a block on its way, and once each tick it lies on
+    /// one (on the ground as the tick begins or ends; then the block under its centre, on its
+    /// top), at the end of `FishingHook.tick`, with the bobber in place: `native_remove_entity`
+    /// takes it from here. Not heard for a bobber in water, one hooked to an entity, nor the host
+    /// of a LAN world's. It only hears; the bobber moves as it would. The player's state is
+    /// swapped in, but the server's other players are out of reach (`native_tell` reaches nobody
+    /// here). @API:fishing_hook_landed@.
+    pub(super) fn native_fishing_hook_landed(
+        &mut self,
+        player: u128,
+        hook: u32,
+        dimension: &str,
+        block: [i32; 3],
+        face: [i32; 3],
+    ) {
+        mod_api::dispatch_fishing_hook_landed(
+            self,
+            mod_api::mods(),
+            player,
+            hook,
+            dimension,
+            block,
+            face,
+        );
+    }
+    /// `native_living_incoming_damage` with who the hit names (NeoForge's
+    /// `LivingIncomingDamageEvent`, Bukkit's `EntityDamageEvent` and `EntityDamageByEntityEvent`):
+    /// `LivingEntity.hurtServer`, past its guards, is about to hurt `victim` (its entity id) of
+    /// type `kind` by `amount` of `damage_type`. `victim_uuid` is a player victim's UUID (a mob's
+    /// is none: look it up by id). `attacker` is the causing entity (`DamageSource.getEntity`),
+    /// where v1 leaves 0: the mob of a mob's melee, the player of a player's melee or of the
+    /// synchronous attack in progress; `attacker_uuid` is a player attacker's UUID; `direct` is the
+    /// direct entity (`getDirectEntity`, the arrow) when known. Each is none when Horizon does not
+    /// know it, and an attacker that is the victim itself is none. Fires everywhere v1 fires,
+    /// right after it with the amount v1 left: change `amount` or set `cancel`, which does what a
+    /// v1 cancel does; a hit v1 canceled is not asked here. A player is named once they acted on
+    /// the server (their first turn). No `self`, like v1: the game is in the middle of the hit.
+    /// It runs on the server thread. @API:living_incoming_damage_v3@.
+    pub(super) fn native_living_incoming_damage_v3(
+        victim: u32,
+        victim_uuid: Option<u128>,
+        kind: &str,
+        attacker: Option<u32>,
+        attacker_uuid: Option<u128>,
+        direct: Option<u32>,
+        damage_type: &str,
+        amount: &mut f32,
+        cancel: &mut bool,
+    ) {
+        mod_api::dispatch_living_incoming_damage_v3(
+            mod_api::mods(),
+            victim,
+            victim_uuid,
+            kind,
+            attacker,
+            attacker_uuid,
+            direct,
+            damage_type,
+            amount,
+            cancel,
+        );
+    }
     /// A click in a menu a mod opened (`native_open_menu`), which moved
     /// nothing: the menu's `slot` (its own first, then the player's
     /// inventory, `native_menu_inventory_slot`; -999 outside), the `button`
@@ -8736,6 +8883,12 @@ pub(super) fn block_contact(
 /// `native_living_incoming_damage` for the damage code (`health::HURT_SERVER`): whether
 /// it canceled the hit. Its one caller.
 pub(super) fn hurt_server(hurting: Hurting<'_>, amount: &mut f32) -> bool {
+    // Who the hit names, for v3: only while a native mod listens.
+    let parties = if mod_api::mods().is_empty() {
+        None
+    } else {
+        Some(super::native_damage::parties(&hurting))
+    };
     let (entity, kind, source) = hurt_server_args(hurting);
     let HurtSource {
         damage_type,
@@ -8752,6 +8905,19 @@ pub(super) fn hurt_server(hurting: Hurting<'_>, amount: &mut f32) -> bool {
         amount,
         &mut canceled,
     );
+    if let Some(parties) = parties {
+        Game::native_living_incoming_damage_v3(
+            entity as u32,
+            parties.victim_uuid,
+            kind,
+            parties.attacker,
+            parties.attacker_uuid,
+            parties.direct,
+            damage_type,
+            amount,
+            &mut canceled,
+        );
+    }
     canceled
 }
 /// `native_living_damage_pre` for the damage code (`health::DAMAGE_PRE`). Its

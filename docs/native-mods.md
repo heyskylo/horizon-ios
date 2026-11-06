@@ -2730,6 +2730,76 @@ that tick the other mobs of that level read as gone.
   vanilla, where the attack goal checks and swings first. True when the blow was dealt (whether it hurt, a shield or
   creative mode aside, is the damage hooks' to tell); false for no such living mob or target, the mob itself, and a
   player while a guest's packet is handled, where the hub is taken out. API @API:npc_mob_attack@.
+
+#### Server hooks for plugin ports: damage, hands, fishing and redstone
+
+`native_living_incoming_damage_v3(victim, victim_uuid, kind, attacker, attacker_uuid, direct, damage_type, amount,
+cancel)` is `native_living_incoming_damage` with who the hit names (NeoForge's `LivingIncomingDamageEvent`, Bukkit's
+`EntityDamageEvent`). It fires everywhere v1 fires (players, mobs and the dragon; melee, projectiles, the environment),
+right after v1 with the amount v1 left: change `amount` or set `cancel`, which does what a v1 cancel does; a hit v1
+canceled is not asked. `victim_uuid` is a player victim's UUID (a player is known from their first turn on the server;
+a mob's UUID is looked up by its id). `attacker` is the causing entity where v1 has 0 for it: a mob's melee names the
+mob, a player's melee the player, and a source naming no entity falls back to the synchronous attack in progress, as
+`native_living_knockback_v2` does; `attacker_uuid` is a player attacker's UUID and `direct` the direct entity (the
+arrow). Each is none when Horizon does not know it, and an attacker that is the victim itself is none. No `self`, like
+v1: the victim is borrowed out of the game during the hit, so the entity helpers can't be called here; a mod keeps
+what it needs and acts in its next tick hook. Bukkit's damage modifier breakdown (armour, blocking, resistance,
+absorption as separate values) is not offered: the reductions are applied after this hook. Bundles need "hooks":
+@API:living_incoming_damage_v3@.
+
+`native_interact_entity_v2(entity, kind, hand, stack, cancel)` is `native_interact_entity` with the hand that clicks
+(`Hand::Main` or `Hand::Off`, NeoForge's `PlayerInteractEvent.EntityInteract.getHand`). It is asked right after the
+unchanged v1 hook, once per hand vanilla tries: the main hand first, the off hand only when the main hand's turn did
+nothing. Setting `cancel` claims the click, as v1's `claimed` does. A mod that claims the main hand's click hears one
+event per click, as Bukkit's `PlayerInteractEntityEvent` for `EquipmentSlot.HAND`. A click v1 claimed is not asked
+again. Bundles need "hooks": @API:interact_entity_v2@.
+
+`native_right_click_block_v2(pos, face, hand, cancel)` is `native_right_click_block` with the hand that clicks
+(NeoForge's `PlayerInteractEvent.RightClickBlock.getHand`), asked right after the unchanged v1 hook, once per hand
+tried. A canceled click does what a v1 cancel does (neither the block nor the item acts, the hand doesn't swing, the
+other hand gets no turn); a click v1 canceled is not asked again. A protection mod refuses an off-hand flint and steel
+or bone meal by its hand. Bundles need "hooks": @API:right_click_block_v2@.
+
+`native_player_fish_v2(player, name, state, hand, cancel)` is `native_player_fish` with the rod's hand: the cast and the
+reel-ins (states 0 and 2 to 4) name the hand the rod is used with, as Bukkit's `PlayerFishEvent.getHand`; a bite
+(state 1) names the hand holding the rod, the main hand first. It is asked right after v1 with the same `cancel`; one
+v1 set is not asked again. A stasis or power rod in the off hand is seen, and read from that hand's stack. Bundles
+need "hooks": @API:player_fish_v2@.
+
+`native_fishing_hook_landed(player, hook, dimension, block, face)` hears a server player's fishing bobber (`hook`, its
+entity id) touching a block, as Bukkit's `ProjectileHitEvent` for a `FishHook`: once each tick the flying bobber meets
+a block on its way (`face` the side it meets), and once each tick it lies on one (on the ground as the tick begins or
+ends: the block under its centre, `face` `[0, 1, 0]`). It is heard at the end of the bobber's tick with the bobber in
+place, so a mod that powers the button or plate it rests on can also take it away with `native_remove_entity`. A
+bobber in water, one hooked to an entity and a LAN host's own bobber are not heard. It only hears: the bobber moves as
+it would. The player's state is swapped in, the other players are out of reach. Bundles need "hooks":
+@API:fishing_hook_landed@.
+
+`native_remove_entity(dimension, id)` also removes projectiles (arrows, tridents, snowballs, eggs, ender pearls,
+fireballs, wind charges, llama spit, shulker bullets, firework rockets) as `/kill` does, and a server player's fishing
+bobber, as `Entity.discard` (Bukkit's `Entity.remove`): an arrow cleanup, or a power rod's bobber taken once its
+button is held. A bobber can be removed for the player in place (inside their hooks, `native_fishing_hook_landed`
+included), and outside a guest's turn for any player of the level; it ends as a bobber that goes by itself, and the
+rod takes no wear. False for another dimension or no such entity. Bundles need "hooks": @API:remove_projectiles@.
+
+`native_block_redstone(dimension, pos, old, new)` (a `GameLevel` hook) is asked when a button, lever or pressure plate
+is about to change its signal from `old` to `new`, 0 to 15, as Bukkit's `BlockRedstoneEvent`: a button pressed by a
+hand or an arrow or let go by its release tick, a lever pulled, a plate's weight checked. Change `new` and the
+component takes that signal (clamped to 0 to 15; an on-or-off component is on for anything above 0). One equal to
+`old` keeps it as it is, without a sound: a held button's release is scheduled again and asked again, a plate held on
+is checked again, a lever stays. A mod holds a power rod's button or plate on with no 1-tick gap. Not heard yet:
+redstone wire, torches, repeaters, comparators, observers, detector rails, tripwire hooks, daylight detectors and the
+other sources. Server-side. Bundles need "hooks": @API:block_redstone@.
+
+`native_hurt_entity(dimension, target, amount, damage_type, attacker)` hurts a mob or a player of the level `dimension`
+by `amount` of `damage_type` (`minecraft:mob_attack`), from `attacker` (a mob's or a player's entity id, the causing
+and direct entity, as vanilla's `damageSources().mobAttack(attacker)`; none for no entity). It goes the way
+`/damage <target> <amount> <damage_type> by <attacker>` goes: armour, effects, invulnerability time, knockback away from
+the attacker, death and its message, and the damage hooks hear it. It returns whether the target was hurt: false for
+an invulnerable, dead or creative target, another dimension, an entity that is not a mob or a player, an attacker that
+isn't there, or an amount that is not a finite number. An NPC's own hit needs no `damage` command and no UUID lookup.
+Bundles need "hooks": @API:hurt_entity@.
+
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a
@@ -2982,6 +3052,7 @@ names the level it means by its `dimension` (`minecraft:overworld`), as `native_
   transformation (translation, left rotation, scale, right rotation; quaternions `[x, y, z, w]`), the ticks players see it
   ease over (`interpolation`) and its teleport duration (`teleport`, 0 to 59). Each call restarts the ease on clients.
 - `native_remove_entity(dimension, id)` removes such an entity as `/kill` does. Mobs go with `native_remove_mob`.
+  Since API @API:remove_projectiles@ it also removes projectiles and server players' fishing bobbers.
 
 A model that moves (a turning gun barrel, a thrown projectile) is an `item_display` showing an item whose model comes from
 the mod's `.hmod` assets: summon it once, then move and pose it from a tick hook. Easing between ticks happens on each

@@ -223,6 +223,7 @@ pub mod native_client_services;
 mod native_components;
 mod native_configs;
 mod native_criteria;
+mod native_damage;
 mod native_data_maps;
 mod native_entities;
 mod native_entity_data;
@@ -1243,6 +1244,11 @@ impl LevelAccess for GameLevel<'_> {
     ) {
         if self.native_authoritative {
             self.native_neighbor_changed(self.dimension, pos, state, changed, moved);
+        }
+    }
+    fn redstone_change(&self, pos: BlockPos, old: i32, new: &mut i32) {
+        if self.native_authoritative {
+            self.native_block_redstone(self.dimension, pos, old, new);
         }
     }
     fn allow_spread(
@@ -6648,6 +6654,7 @@ impl Game<'_> {
             let stack = self.held().cloned();
             let mut claimed = false;
             self.native_interact_entity(id, &kind, stack.as_ref(), &mut claimed);
+            self.native_interact_entity_v2(id, &kind, self.hand, stack.as_ref(), &mut claimed);
             if claimed {
                 self.swing_arm();
                 return Ok(true);
@@ -6717,6 +6724,8 @@ impl Game<'_> {
             let mut canceled = false;
             horizon_client::spans::time("use_mods", || {
                 self.native_right_click_block(hit.pos, hit.face, &mut canceled);
+                let hand = self.hand;
+                self.native_right_click_block_v2(hit.pos, hit.face, hand, &mut canceled);
             });
             if canceled {
                 // Nothing was used, so nothing consumed the action.
