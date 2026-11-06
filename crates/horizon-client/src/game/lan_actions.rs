@@ -1499,6 +1499,17 @@ impl Game<'_> {
             // loot table is still to roll, and the table stays.
             let spectator = host.hub.guest(conn).is_some_and(|g| g.spectator());
             if spectator && self.boat_loot_pending(self.boats[i].id) {
+                // ServerPlayer.openMenu: the refused spectator's action bar, red.
+                let message =
+                    horizon_client::text::Text::translate("container.spectatorCantOpen", &[])
+                        .with_color(horizon_client::text::RED);
+                host.hub.send_to(
+                    conn,
+                    &C::SystemChat(play::SystemChat {
+                        content: horizon_client::lan::data::component_nbt(&message.component()),
+                        overlay: true,
+                    }),
+                );
                 return false;
             }
             self.unpack_boat_loot(i);
