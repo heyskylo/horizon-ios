@@ -2539,6 +2539,12 @@ What packet-level plugins (ProtocolLib, PacketEvents, TAB), plugin channel liste
   heard by v1, are heard here in order once the player has logged in, right after `native_player_logged_in`, with the
   hub in place; a player disconnected for declining a required pack never logs in. v1 keeps its signature and firing
   point. It only hears. Bundles need `"hooks": @API:resource_pack_status_v2@`.
+- Helper **`native_kick(player, reason)`**: disconnects a player with `reason`, a whole `Text` in its colours and
+  translations (Adventure's `Player.kick(Component)`; `/kick` takes one line of plain text), as `/kick` does: the
+  client shows it, the log's "lost connection" line names it and `native_player_kicked` hears it. The kick happens at
+  the tick's end, with the mod messages, so it works from any server hook, the kicked player's own included. True when
+  it is queued; false on a client, in a world nobody else can join, and for a player who isn't on when the hub can tell
+  (a player gone by the tick's end isn't kicked either). Bundles need `"hooks": @API:kick@`.
 
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The

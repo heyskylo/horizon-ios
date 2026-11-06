@@ -10,12 +10,37 @@ use horizon_protocol::packets::{
 };
 use std::sync::atomic::Ordering;
 
+/// What the mods asked for that waits until the hub is back, at the tick's end.
+#[derive(Default)]
+pub(super) struct NativePackets {
+    /// `native_kick`'s: the player and the reason.
+    kicks: Vec<(u128, Text)>,
+}
+
 /// `ClientboundResourcePackPushPacket.MAX_HASH_LENGTH`.
 const MAX_PACK_HASH: usize = 40;
 /// The longest URL the push's `STRING_UTF8` takes, in characters.
 const MAX_PACK_URL: usize = 32767;
 
 impl Game<'_> {
+    /// The kicks the mods asked for (`native_kick`): each of the player's connections is
+    /// disconnected with the reason, as `/kick` does.
+    pub(super) fn flush_native_kicks(&mut self, host: &mut LanHost) {
+        for (player, reason) in std::mem::take(&mut self.native_packets.kicks) {
+            let reason = component_nbt(&reason.component());
+            let conns: Vec<u32> = host
+                .hub
+                .guests
+                .iter()
+                .filter(|g| g.uuid == player)
+                .map(|g| g.conn)
+                .collect();
+            for conn in conns {
+                host.hub.kick(conn, reason.clone());
+            }
+        }
+    }
+
     /// A `minecraft:register` (`register`) or `minecraft:unregister` message from the guest at
     /// `gi` in play: their channels change, and the mods hear the names that did, with the
     /// guest's state swapped in, as their other packets.
@@ -143,5 +168,24 @@ impl Game<'_> {
     /// `native_send`. @API:resource_packs@.
     pub(super) fn native_pop_resource_pack(&mut self, player: u128, id: Option<u128>) -> bool {
         self.native_send(player, C::ResourcePackPop(ResourcePackPop { id }))
+    }
+    /// Disconnects `player` with `reason` (Adventure's `Player.kick(Component)`), whole, in its
+    /// colours and translations, as `/kick` does: their client shows it, the log's "lost
+    /// connection" line names it and `native_player_kicked` hears it. It happens at the tick's
+    /// end, from any server hook, the kicked player's own included. True when it is queued:
+    /// false on a client, in a world nobody else can join, and for a player who isn't on when
+    /// the hub can tell (a player gone by the tick's end is not kicked either).
+    /// @API:kick@.
+    pub(super) fn native_kick(&mut self, player: u128, reason: &Text) -> bool {
+        if self.remote.is_some() || (self.serving.is_none() && self.options.dedicated.is_none()) {
+            return false;
+        }
+        if let Some(host) = &self.lan
+            && !host.hub.guests.iter().any(|g| g.uuid == player)
+        {
+            return false;
+        }
+        self.native_packets.kicks.push((player, reason.clone()));
+        true
     }
 }
