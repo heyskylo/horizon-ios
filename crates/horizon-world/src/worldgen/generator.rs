@@ -904,6 +904,11 @@ struct Settings {
     default_block: BlockStateId,
     default_fluid: BlockStateId,
     legacy: bool,
+    /// `NoiseGeneratorSettings.disableMobGeneration`: whether the generator
+    /// spawns the creature packs it would otherwise add to every chunk it
+    /// builds (`spawnOriginalMobs`). The End's preset is the only shipped one
+    /// that turns it on.
+    disable_mob_generation: bool,
 }
 
 /// The seed-bound pipeline for one random-source kind.
@@ -1059,6 +1064,9 @@ where
             default_block: state(&codec, &settings_json["default_block"])?,
             default_fluid: state(&codec, &settings_json["default_fluid"])?,
             legacy: settings_json["legacy_random_source"]
+                .as_bool()
+                .unwrap_or(false),
+            disable_mob_generation: settings_json["disable_mob_generation"]
                 .as_bool()
                 .unwrap_or(false),
         };
@@ -2416,6 +2424,9 @@ trait SeededPipeline: Send + Sync {
     /// The exact `end_island_decorated` origins in a chunk, without terrain.
     fn end_island_origins(&self, chunk: ChunkPos) -> Vec<[i32; 3]>;
     fn sea_level(&self) -> i32;
+    /// `NoiseGeneratorSettings.disableMobGeneration`, which
+    /// `NoiseBasedChunkGenerator.spawnOriginalMobs` reads.
+    fn disable_mob_generation(&self) -> bool;
     /// The level's build range (minimum Y, height).
     fn level(&self) -> (i32, i32);
     fn surface_sample(
@@ -2569,6 +2580,9 @@ where
     }
     fn sea_level(&self) -> i32 {
         self.settings.sea_level
+    }
+    fn disable_mob_generation(&self) -> bool {
+        self.settings.disable_mob_generation
     }
     fn level(&self) -> (i32, i32) {
         (self.settings.level_min_y, self.settings.level_height)
@@ -3581,6 +3595,11 @@ impl OverworldGenerator {
     }
     pub fn sea_level(&self) -> i32 {
         self.pipeline.sea_level()
+    }
+    /// `NoiseGeneratorSettings.disableMobGeneration`: the End's preset asks for
+    /// no creature packs at generation, every other shipped one does.
+    pub fn disable_mob_generation(&self) -> bool {
+        self.pipeline.disable_mob_generation()
     }
     /// The dimension's build range (minimum Y, height): what its chunks span.
     pub fn level(&self) -> (i32, i32) {
