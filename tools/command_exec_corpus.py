@@ -945,6 +945,8 @@ def vehicle_item_stack_config():
         ('minecart', 'minecart[custom_name="Named",entity_data={id:"minecraft:minecart",Tags:["both"]}]',
          ('CustomName', 'Tags')),
         ('minecart', 'minecart[entity_data={id:"minecraft:tnt_minecart",Tags:["wrong_id"]}]', ('Tags',)),
+        # Entity.applyImplicitComponent's other component, saved as `data`; entity_data's merges over it.
+        ('minecart', 'minecart[custom_data={a:1b},entity_data={id:"minecraft:minecart",data:{b:2b}}]', ('data',)),
     )):
         x, z = 1 + i * 2, 7
         ops += setup(f'/setblock {x} 200 {z} rail', f'/item replace entity @s weapon.mainhand with minecraft:{item}')
@@ -957,17 +959,18 @@ def vehicle_item_stack_config():
     # A boat, used looking down ahead at the floor (BoatItem refuses a spot that overlaps the player).
     ops += setup('/tp @s 8.5 200 3.5 0 45',
                  '/item replace entity @s weapon.mainhand with minecraft:oak_boat[custom_name="Boaty",'
-                 'entity_data={id:"minecraft:oak_boat",Tags:["boat_data"]}]')
+                 'entity_data={id:"minecraft:oak_boat",Tags:["boat_data"],Rotation:[90f,10f]}]')
     # The packet's rotation, on both sides (the plain use_item op sends 0, 0 to Horizon).
     ops += [{'op': 'use_item', 'sequence': 1, 'yaw': 0.0, 'pitch': 45.0}]
     boat = '@e[type=minecraft:oak_boat,x=8.5,y=200,z=5,distance=..2,limit=1]'
+    # BoatItem.use turns the boat to the player's yaw after the data loads.
     ops += [cmd(f'/execute if entity {boat}'), cmd(f'/data get entity {boat} CustomName'),
-            cmd(f'/data get entity {boat} Tags')]
+            cmd(f'/data get entity {boat} Tags'), cmd(f'/data get entity {boat} Rotation[0] 10')]
     # Dispensed: a minecart onto a rail and a boat into the air, then a powered dispenser.
     for i, (item, kind, front) in enumerate((
         ('tnt_minecart[custom_name="Disp",entity_data={id:"minecraft:tnt_minecart",Tags:["disp_data"]}]',
          'tnt_minecart', 'rail'),
-        ('oak_boat[custom_name="DispBoat",entity_data={id:"minecraft:oak_boat",Tags:["disp_boat"]}]',
+        ('oak_boat[custom_name="DispBoat",entity_data={id:"minecraft:oak_boat",Tags:["disp_boat"],Rotation:[90f,0f]}]',
          'oak_boat', 'air'),
         ('command_block_minecart[entity_data={id:"minecraft:command_block_minecart",Command:"say no"}]',
          'command_block_minecart', 'rail'),
@@ -983,6 +986,8 @@ def vehicle_item_stack_config():
                 cmd(f'/data get entity {sel} Tags')]
         if kind == 'command_block_minecart':
             ops += [cmd(f'/data get entity {sel} Command')]
+        if kind == 'oak_boat':
+            ops += [cmd(f'/data get entity {sel} Rotation[0] 10')]
     ops += setup('/kill @e[type=#minecraft:boat]', '/kill @e[type=minecraft:command_block_minecart]',
                  '/kill @e[type=minecraft:tnt_minecart]', '/kill @e[type=minecraft:minecart]',
                  '/fill 0 200 0 15 203 15 air', '/gamemode survival', '/forceload remove 0 0 15 15')

@@ -2045,9 +2045,10 @@ impl Game<'_> {
             p.velocity = Vec3::ZERO;
         }
     }
-    /// `MinecartItem.useOn`: a cart on the clicked rail.
     /// `EntityType.createDefaultStackConfig` on a vehicle an item made: the
-    /// item's custom name (`applyComponentsFromItemStack`), then its
+    /// item's custom name and custom data (`applyComponentsFromItemStack`:
+    /// `Entity.applyImplicitComponent`'s two, saved as `CustomName` and
+    /// `data`), then its
     /// `minecraft:entity_data` loaded over the vehicle (`updateCustomEntityTag`)
     /// when it names this type. An op-only type (command block and spawner
     /// minecarts) takes it from an op player only, never from a dispenser
@@ -2061,17 +2062,26 @@ impl Game<'_> {
     ) {
         use horizon_world::nbt::Tag;
         let name = stack.data().and_then(|d| d.custom_name.clone());
+        let custom = stack
+            .data()
+            .and_then(|d| d.other("minecraft:custom_data"))
+            .cloned();
         let op = by_player && self.acting_player_is_op();
         let data =
             horizon_client::block_entity_item::spawn_egg_entity_data(stack, kind, op).cloned();
-        if name.is_none() && data.is_none() {
+        if name.is_none() && custom.is_none() && data.is_none() {
             return;
         }
         let Some(mut own) = self.entity_nbt(target) else {
             return;
         };
-        if let (Some(name), Tag::Compound(map)) = (name, &mut own) {
-            map.insert("CustomName".into(), name);
+        if let Tag::Compound(map) = &mut own {
+            if let Some(name) = name {
+                map.insert("CustomName".into(), name);
+            }
+            if let Some(custom) = custom {
+                map.insert("data".into(), custom);
+            }
         }
         let tag = match &data {
             Some(data) => horizon_client::data_cmd::merged(&own, data),
@@ -2080,6 +2090,7 @@ impl Game<'_> {
         // The vehicle's own compound, its name and data merged in: it loads back.
         let _ = self.apply_entity_nbt(target, tag);
     }
+    /// `MinecartItem.useOn`: a cart on the clicked rail.
     pub(super) fn place_minecart(&mut self, hit: &Hit, stack: &ItemStack) -> bool {
         let Some(kind) = CartKind::from_id(&stack.item) else {
             return false;

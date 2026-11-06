@@ -1252,10 +1252,12 @@ impl Game<'_> {
             boat = boat.with_chest();
         }
         self.world.modified.insert((front.0 >> 4, front.2 >> 4));
-        let (id, kind) = (boat.id, boat.entity_type());
+        let (id, kind, yaw) = (boat.id, boat.entity_type(), boat.yaw);
         self.boats.push(boat);
-        // BoatDispenseItemBehavior: createDefaultStackConfig with no user.
+        // BoatDispenseItemBehavior: createDefaultStackConfig with no user,
+        // then setYRot(direction.toYRot()).
         self.apply_vehicle_stack_config(super::commands::Target::Boat(id), &kind, &stack, false);
+        self.set_boat_yaw(id, yaw);
         if self.serving.is_some() || self.options.dedicated.is_some() {
             let boat = self.boats.last().unwrap();
             self.native_vehicle_create(
