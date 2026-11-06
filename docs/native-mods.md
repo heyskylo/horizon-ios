@@ -2521,6 +2521,13 @@ injections before.
   are this viewer's client-side entities and leaves other ids alone. `native_reserve_entity_id()` is an id from the
   server's own counter for a mod's own packets. Outside a player's hook; None or false there, when the viewer isn't on,
   for an unknown type and for an id that isn't theirs. Bundles need `"hooks": @API:client_entities@`.
+- Helper **`native_set_list_name(uuid, name)`** (`host.set_list_name`): styled text (colours, a rank prefix) for that
+  player in everyone's Tab list in place of their nickname or name, as Bukkit's `Player.setPlayerListName`; None shows
+  the nickname or name again. Only the Tab list (chat keeps `native_set_display_name`'s or the nickname). It is sent at
+  once and with every entry the lists get of them later (they join, a vanish ends, `native_hide_entity_from` shows them
+  again), and kept by UUID until a mod sets it again or the server stops, also if they leave and come back, so a Tab
+  plugin needs no per-tick diff. Outside a player's hook; false there and when they aren't on. Bundles need
+  `"hooks": @API:set_list_name@`.
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a

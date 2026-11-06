@@ -333,6 +333,9 @@ pub struct Hub {
     /// (`native_set_nickname`), by UUID. Their real name stays everywhere
     /// else: the log, commands, the hover of the shown name.
     pub nicknames: std::collections::HashMap<u128, String>,
+    /// The Tab list names a server mod gave players (`native_set_list_name`),
+    /// by UUID, as component NBT: they take a nickname's place there.
+    pub list_names: std::collections::HashMap<u128, Tag>,
     last_clock: i64,
     last_rate: f32,
     ticking: (f32, bool),
@@ -682,6 +685,7 @@ impl Hub {
             hidden: Default::default(),
             teams: Vec::new(),
             nicknames: std::collections::HashMap::new(),
+            list_names: std::collections::HashMap::new(),
         }
     }
 
@@ -1213,10 +1217,18 @@ impl Hub {
             game_mode: Some(mode),
             listed: Some(true),
             latency: Some(latency),
-            display_name: Some(self.nicknames.get(&uuid).map(|n| literal(n))),
+            display_name: Some(self.list_name(uuid)),
             list_order: Some(0),
             show_hat: Some(guest.is_none_or(|g| g.info.model_customisation & 0x40 != 0)),
         }
+    }
+    /// The name a player's Tab list entry shows in place of theirs
+    /// (`PlayerInfo.displayName`): a mod's list name, else their nickname.
+    fn list_name(&self, uuid: u128) -> Option<Tag> {
+        self.list_names
+            .get(&uuid)
+            .cloned()
+            .or_else(|| self.nicknames.get(&uuid).map(|n| literal(n)))
     }
     /// ClientboundPlayerInfoUpdatePacket.createPlayerInitializing: every action.
     const INFO_ACTIONS: u8 = 0xFF;
@@ -4466,7 +4478,25 @@ impl Hub {
             actions: 0x20,
             entries: vec![play::PlayerInfo {
                 uuid,
-                display_name: Some(self.nicknames.get(&uuid).map(|n| literal(n))),
+                display_name: Some(self.list_name(uuid)),
+                ..Default::default()
+            }],
+        }));
+    }
+
+    /// A player's Tab list name changed (None: their nickname or name
+    /// again), as component NBT: kept by UUID, sent with every entry the
+    /// player lists get of them, and now as UPDATE_DISPLAY_NAME to everyone.
+    pub fn set_list_name(&mut self, uuid: u128, name: Option<Tag>) {
+        match name {
+            Some(n) => self.list_names.insert(uuid, n),
+            None => self.list_names.remove(&uuid),
+        };
+        self.broadcast(&C::PlayerInfoUpdate(play::PlayerInfoUpdate {
+            actions: 0x20,
+            entries: vec![play::PlayerInfo {
+                uuid,
+                display_name: Some(self.list_name(uuid)),
                 ..Default::default()
             }],
         }));
