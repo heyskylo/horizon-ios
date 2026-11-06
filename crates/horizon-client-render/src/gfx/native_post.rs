@@ -592,6 +592,15 @@ impl NativeFrame {
         inputs
     }
 
+    /// Forgets the frames before, as a freshly loaded pack: the post stage's next `history` is
+    /// black, eased values start at their targets, wetness dry, the frame count at 0.
+    pub(super) fn reset_history(&mut self) {
+        self.last = None;
+        self.frames = 0;
+        self.wetness = (0.0, None);
+        self.start = std::time::Instant::now();
+    }
+
     /// Takes the post stage's pending history reset. It stays pending if post rendering is
     /// skipped for a frame, so the first frame it does render still sees black history.
     pub(super) fn take_history_reset(&mut self) -> bool {
@@ -1372,6 +1381,40 @@ mod tests {
             second.wetness
         );
         assert!(!native.take_history_reset());
+    }
+
+    /// After a reset, the same frames give the same inputs, to the bit, as a pack just made,
+    /// however the frames before moved the eased values, wetness and the frame count.
+    #[test]
+    fn a_reset_frame_gives_a_fresh_pack_s_inputs() {
+        use crate::gfx::pack_uniforms::FrameTiming;
+        let Some((device, _)) = device() else {
+            return;
+        };
+        let hud = crate::hud::HudBatch::new([4, 4]);
+        let mut frame = crate::gfx::pack_uniforms::initial_history_tests::frame(&hud);
+        let new = || NativeFrame::new(&device, None, Vec::new(), Default::default(), None);
+        let (mut used, mut fresh) = (new(), new());
+        frame.pack.rain = 1.0;
+        frame.pack.eye_light = [12, 3];
+        frame.pack.eye_in = 1;
+        for n in 1..=5 {
+            frame.pack.frame_timing = Some(FrameTiming::nth(n, 700.0));
+            used.next_inputs(&frame, [4, 4]);
+        }
+        used.reset_history();
+        frame.pack.eye_light = [2, 15];
+        frame.pack.eye_in = 0;
+        for n in 1..=3 {
+            frame.pack.frame_timing = Some(FrameTiming::nth(n, 50.0));
+            let inputs = [&mut used, &mut fresh].map(|f| f.next_inputs(&frame, [4, 4]));
+            assert_eq!(
+                bytemuck::bytes_of(&inputs[0]),
+                bytemuck::bytes_of(&inputs[1]),
+                "frame {n}"
+            );
+            assert_eq!(used.take_history_reset(), fresh.take_history_reset());
+        }
     }
 
     fn device() -> Option<(wgpu::Device, wgpu::Queue)> {

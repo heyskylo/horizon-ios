@@ -6481,6 +6481,19 @@ impl Renderer {
         }
         Ok(report)
     }
+    /// Makes the running shader pack, of either kind, forget what it kept from earlier frames:
+    /// the next frame draws as a freshly loaded pack's first. Nothing to do without a pack.
+    pub fn reset_shader_pack_history(&mut self) {
+        // A frame still on the submit thread uses the targets and readbacks replaced
+        // here.
+        self.land_frame();
+        if let Some((_, Some(post))) = &mut self.pack_post {
+            post.reset_history(&self.device);
+        }
+        if let Some(native) = &mut self.native {
+            native.frame.reset_history();
+        }
+    }
     /// Drops the running shader pack, of either kind.
     pub fn drop_shader_packs(&mut self) {
         self.pack_post = None;
