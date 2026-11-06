@@ -410,6 +410,31 @@ public final class VanillaCommandExecOracle {
                 bobs.add(row);
                 hook.discard();
             }
+            // Dry block hits run on both sides: compare the client's movement
+            // prediction with the real hook before and after touching the floor.
+            level.setBlockAndUpdate(waterPos, net.minecraft.world.level.block.Blocks.STONE.defaultBlockState());
+            double[][] motions = {{0.2, -0.4, 0.1}, {-0.2, -0.4, 0.1}, {0.0, -0.6, -0.2}};
+            for (int c = 0; c < motions.length; c++) {
+                var hook = new net.minecraft.world.entity.projectile.FishingHook(player, level, 0, 0);
+                hook.setPos(0.5, 301.1, 0.5);
+                hook.setDeltaMovement(motions[c][0], motions[c][1], motions[c][2]);
+                for (int tick = 0; tick < 5; tick++) {
+                    hook.tick();
+                    var at = hook.position();
+                    var motion = hook.getDeltaMovement();
+                    JsonObject row = new JsonObject();
+                    row.addProperty("case", c);
+                    row.addProperty("tick", tick);
+                    JsonArray position = new JsonArray();
+                    position.add(at.x); position.add(at.y); position.add(at.z);
+                    JsonArray movement = new JsonArray();
+                    movement.add(motion.x); movement.add(motion.y); movement.add(motion.z);
+                    row.add("position", position);
+                    row.add("motion", movement);
+                    bobs.add(row);
+                }
+                hook.discard();
+            }
             player.snapTo(oldPos.x, oldPos.y, oldPos.z, originalYaw, originalPitch);
             level.setBlockAndUpdate(waterPos, oldBlock);
             Files.writeString(output.resolveSibling("fishing-bobbing-reference.json"), bobs.toString());
