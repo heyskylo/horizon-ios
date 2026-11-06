@@ -5,7 +5,7 @@
 //! mockup's.
 use super::*;
 use crate::glass_ui::{self as ui, white};
-use crate::picture_cache::{self, Look};
+use crate::picture_cache::Look;
 use gpui::RenderImage;
 use horizon_theme::glass::{fill, radius};
 use std::path::Path;
@@ -48,7 +48,7 @@ impl Launcher {
     pub(super) fn shot_picture(&mut self, path: &Path, cx: &mut Context<Self>) -> AnyElement {
         let look = match self.shot_blur.hidden {
             true => Look::Blurred,
-            false => Look::Fit(picture_cache::THUMB),
+            false => Look::Fit(self.thumb_side()),
         };
         match self.picture(path, look, cx) {
             Some(image) => gpui::img(image)

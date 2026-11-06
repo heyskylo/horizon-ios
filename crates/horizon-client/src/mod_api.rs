@@ -37,10 +37,15 @@ pub use crate::gfx::native_render::{
 };
 pub use crate::hud::HudBatch;
 pub use crate::hud_layout::{GuiDraw, HealthHud, HealthInputs};
+pub use crate::item_data::StackData;
 pub use crate::items::ItemStack;
 pub use crate::merchant::MerchantOffer;
 pub use crate::mesher::TintSource;
 pub use crate::mobs::goals::{Cx, Goal, GoalSelector};
+pub use crate::mobs::model_layers::{
+    CubeDefinition, CubeDeformation, CubeListBuilder, LayerDefinition, MeshDefinition, ModelPart,
+    ModelPolygon, ModelVertex, PartId, PartPose,
+};
 pub use crate::mobs::{Mob, MobWorld};
 pub use crate::music::{Music, MusicLayer};
 pub use crate::particles::{ParticleOptions, ParticleType};
@@ -75,6 +80,7 @@ use serde_json::{Map, Value};
 use std::time::Duration;
 /// The window events `input_key` hands over (`winit::event::KeyEvent`) and their key types.
 pub use winit;
+pub use winit::keyboard::KeyCode;
 
 /// Camera values from the most recently extracted world frame.
 #[derive(Clone, Debug)]

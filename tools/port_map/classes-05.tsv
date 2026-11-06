@@ -1,4 +1,4 @@
-RegionFileVersion.configure	missing		minor: region-file-compression is read from server.properties (horizon-server-files properties.rs) but nothing applies it; chunk saves always write zlib (save.rs compress_records)
+RegionFileVersion.configure	port	crates/horizon-world/src/compression.rs::Compression::configure	read from server.properties by the dedicated server (game/dedicated.rs), every chunk region written with it (save.rs compress_records); an unknown name is logged and the default kept
 RegionFileVersion.register	skip:data		static version table; Horizon's codecs are the Compression enum (compression.rs)
 RegionFileVersion.wrap	port	crates/horizon-world/src/compression.rs::Compression::encode	whole-buffer codec; output side (input side is Compression::decode)
 RegionStorageInfo.withTypeSuffix	port	crates/horizon-client/src/save.rs::Folder::name	folder name per region kind; only the fixed region, entities and poi folders exist, none is suffixed
