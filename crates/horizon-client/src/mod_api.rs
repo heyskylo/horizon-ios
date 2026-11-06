@@ -49,6 +49,8 @@ pub use crate::mobs::{Mob, MobWorld};
 pub use crate::music::{Music, MusicLayer};
 pub use crate::particles::{ParticleOptions, ParticleType};
 pub use crate::recipe_book::RecipeBookCategory;
+/// A named step of the server tick and its wall and CPU milliseconds (`native_server_tick_timed`).
+pub use crate::spans::Span as TickSpan;
 pub use crate::text::Text;
 pub use crate::world_primitives::{PrimitiveShape, WorldPrimitive, WorldPrimitives};
 pub use horizon_assets::item_model::{DisplayContext, StackView};
@@ -393,6 +395,21 @@ pub struct NativeLevelStats {
     /// Its block entities by type (`minecraft:chest`, else a mod block's name), in the same
     /// order.
     pub block_entity_types: Vec<(String, usize)>,
+}
+
+/// What one mob type cost one level's ticks while a mod sampled them
+/// (`native_take_mob_costs`). API @API:server_tick_timed@.
+#[derive(Clone, Debug, Default, PartialEq)]
+#[non_exhaustive]
+pub struct NativeMobCost {
+    /// The level, `minecraft:overworld`.
+    pub dimension: String,
+    /// The mob type, `minecraft:zombie`.
+    pub kind: String,
+    /// The time its mobs' own ticks took (their riders' inside), in nanoseconds.
+    pub nanos: u64,
+    /// The mob ticks timed.
+    pub mob_ticks: u64,
 }
 
 /// A player on the server, as a server hook sees them.

@@ -2515,6 +2515,18 @@ while no mod asks for it.
   `horizon_protocol::ids::play`'s as the server sent or read it (before an older client's renumbering; keep-alives
   and the disconnect included), the bytes are id and payload before compression and encryption. A tick stalled for
   long keeps at most 65536 packets each way. Bundles need `"hooks": @API:server_packets@`.
+- **`native_server_tick_timed(wall_ms, cpu_ms, spans)`**, **`native_spans(on)`**, **`native_mob_cost_sampling(on)`**
+  and **`native_take_mob_costs()`**: a profiler by tick step instead of by stack, as spark's. After each pass of the
+  server tick (paused ones too) while its spans are recorded, the hook gets the pass's wall time, the server thread's
+  CPU time in it (None where the system doesn't tell) and its spans (`TickSpan`: name, wall and CPU milliseconds,
+  depth; summed by name in the order first seen, `tick_mobs` inside `tick`). A dedicated server records them anyway
+  (its slow-tick log), so there the hook fires every tick; elsewhere it fires while `native_spans(true)`,
+  `HORIZON_SPIKES` or a performance report wants them: one switch shared by all, on while anyone wants it, which costs
+  two clock reads a step on every thread. `native_mob_cost_sampling(true)` times every mob's own tick (riders inside)
+  by level and type until it is turned off, apart from `horizon-report`'s sampling, so both can run;
+  `native_take_mob_costs()` takes the sums (`NativeMobCost`), costliest first. For a lighter profile, sample one tick
+  in N: turn it on in `ServerTickStart` and off after. Call both from server hooks: the sampling belongs to the
+  server thread. Bundles need `"hooks": @API:server_tick_timed@`.
 
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The

@@ -609,6 +609,7 @@ impl Game<'_> {
                 slowest_steps(&notes)
             );
         }
+        self.native_server_tick_timed(wall, cpu, &spans);
         record(wall, cpu, spans, in_tick);
         result
     }

@@ -1,9 +1,14 @@
 //! What a server's diagnostics mod reads (docs/native-mods.md, "Server hooks
 //! for plugin ports: diagnostics"): the tick clock as vanilla and Bukkit
-//! report it, what each open level holds and the packets each player's
-//! connection carries. Reads only; nothing here changes what the server does.
-use super::{Dim, Game, commands::Target, native_entities::target_id};
-use horizon_client::{mod_api::NativeLevelStats, world::World};
+//! report it, what each open level holds, the packets each player's
+//! connection carries, and the switches of the tick's profiler (spans and
+//! sampled mob costs). Reads only; nothing here changes what the server
+//! does.
+use super::{Dim, Game, commands::Target, native_entities::target_id, tick_profile};
+use horizon_client::{
+    mod_api::{NativeLevelStats, NativeMobCost},
+    world::World,
+};
 use std::collections::BTreeMap;
 
 // Native mods use these; nothing in Horizon does.
@@ -115,6 +120,42 @@ impl Game<'_> {
                 self.native_server_packets(player, &received, false);
             }
         }
+    }
+
+    /// Record the server tick's spans for `native_server_tick_timed` (or no
+    /// longer): elsewhere than on a dedicated server, which records them
+    /// anyway, the hook fires only while they are on. One switch shared with
+    /// `HORIZON_SPIKES`, performance reports and every mod: spans stay on
+    /// while anyone wants them. Spans are recorded on every thread (two clock
+    /// reads a step): turn them on for a profiling session and off after.
+    /// Only on a server. API @API:server_tick_timed@.
+    pub(super) fn native_spans(&self, on: bool) {
+        if self.native_authoritative() {
+            tick_profile::want_spans(tick_profile::SPANS_MOD, on);
+        }
+    }
+    /// Time every mob's own tick (its riders inside it) from now on, or no
+    /// longer, summed by level and mob type for `native_take_mob_costs`:
+    /// two clock reads and a map update a mob while on, one thread-local
+    /// read off. Sampled apart from a performance report's, so both can run.
+    /// For a lighter profile, turn it on in `ServerTickStart` of one tick in
+    /// N and off after. Call it from a server hook (it belongs to the server
+    /// thread). API @API:server_tick_timed@.
+    pub(super) fn native_mob_cost_sampling(&self, on: bool) {
+        tick_profile::set_mod_sampling(on);
+    }
+    /// The mob costs sampled since the last call (`native_mob_cost_sampling`),
+    /// costliest first; clears them. API @API:server_tick_timed@.
+    pub(super) fn native_take_mob_costs(&self) -> Vec<NativeMobCost> {
+        tick_profile::take_mod()
+            .into_iter()
+            .map(|c| NativeMobCost {
+                dimension: c.dimension.to_owned(),
+                kind: c.kind,
+                nanos: c.nanos,
+                mob_ticks: c.mob_ticks,
+            })
+            .collect()
     }
 
     /// The open level `dimension` names, on a server.
