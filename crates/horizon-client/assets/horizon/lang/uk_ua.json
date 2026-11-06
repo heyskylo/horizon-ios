@@ -454,5 +454,22 @@
   "Particle Culling": "Відсікання частинок",
   "Draws every particle.": "Малює всі частинки.",
   "Skips offscreen, subpixel and terrain-hidden particles.": "Пропускає частинки поза екраном, менші за піксель і закриті місцевістю.",
-  "Skips offscreen, subpixel and terrain-hidden particles with less render-thread work.": "Пропускає частинки поза екраном, менші за піксель і закриті місцевістю, зменшуючи роботу потоку рендерингу."
+  "Skips offscreen, subpixel and terrain-hidden particles with less render-thread work.": "Пропускає частинки поза екраном, менші за піксель і закриті місцевістю, зменшуючи роботу потоку рендерингу.",
+  "Installed": "Установлені",
+  "Apply": "Застосувати",
+  "Reset all options": "Скинути всі параметри",
+  "A Horizon shader pack.": "Пакет шейдерів Horizon.",
+  "An OptiFine or Iris shader pack.": "Пакет шейдерів OptiFine або Iris.",
+  "In use: press to turn shaders off.": "Використовується: натисніть, щоб вимкнути шейдери.",
+  "Press to use it.": "Натисніть, щоб використати.",
+  "Put shader pack .zip files or folders in it.": "Покладіть у неї файли .zip або теки пакетів шейдерів.",
+  "Puts every option of this pack back to its default.": "Повертає всі параметри цього пакета до типових значень.",
+  "Sets many options at once, as the pack groups them.": "Задає одразу багато параметрів так, як їх групує пакет.",
+  "No shader packs yet: open the pack folder and put some in it.": "Пакетів шейдерів поки немає: відкрийте теку пакетів і покладіть у неї кілька.",
+  "Pick a shader pack. Picking the one in use turns shaders off.": "Виберіть пакет шейдерів. Вибір пакета, що використовується, вимикає шейдери.",
+  "Changed options apply with Apply, or when you leave.": "Змінені параметри застосовуються кнопкою «Застосувати» або під час виходу.",
+  "Pack settings": "Налаштування пакета",
+  "Built-in settings": "Вбудовані налаштування",
+  "%s settings": "Налаштування %s",
+  "Settings made by the pack's author: they change only this pack.": "Налаштування, створені автором пакета: вони змінюють лише цей пакет."
 }

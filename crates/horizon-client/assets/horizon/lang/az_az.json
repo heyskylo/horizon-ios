@@ -463,5 +463,22 @@
   "horizon.extras.cosmetics_hide_fx.tooltip": "Digər oyunçuların izləri və auraları gizli qalır; digər kosmetikaları görünməyə davam edir. Defolt olaraq söndürülüb.",
   "horizon.extras.cosmetics.shown": "Göstərildi",
   "horizon.extras.cosmetics.hidden": "Gizli",
-  "horizon.extras.cosmetics.name_tags": "Yalnız ad etiketləri"
+  "horizon.extras.cosmetics.name_tags": "Yalnız ad etiketləri",
+  "Installed": "Quraşdırılmış",
+  "Apply": "Tətbiq et",
+  "Reset all options": "Bütün seçimləri sıfırla",
+  "A Horizon shader pack.": "Horizon şeyder paketi.",
+  "An OptiFine or Iris shader pack.": "OptiFine və ya Iris şeyder paketi.",
+  "In use: press to turn shaders off.": "İstifadədədir: şeyderləri söndürmək üçün basın.",
+  "Press to use it.": "İstifadə etmək üçün basın.",
+  "Put shader pack .zip files or folders in it.": "Şeyder paketlərinin .zip fayllarını və ya qovluqlarını bura qoyun.",
+  "Puts every option of this pack back to its default.": "Bu paketin bütün seçimlərini ilkin dəyərinə qaytarır.",
+  "Sets many options at once, as the pack groups them.": "Paketin qruplaşdırdığı kimi, bir çox seçimi birdən təyin edir.",
+  "No shader packs yet: open the pack folder and put some in it.": "Hələ şeyder paketi yoxdur: paket qovluğunu açıb bir neçəsini qoyun.",
+  "Pick a shader pack. Picking the one in use turns shaders off.": "Şeyder paketi seçin. İstifadədə olanı seçmək şeyderləri söndürür.",
+  "Changed options apply with Apply, or when you leave.": "Dəyişdirilmiş seçimlər Tətbiq et ilə və ya çıxdıqda tətbiq olunur.",
+  "Pack settings": "Paket seçimləri",
+  "Built-in settings": "Daxili seçimlər",
+  "%s settings": "%s seçimləri",
+  "Settings made by the pack's author: they change only this pack.": "Paketin müəllifinin yaratdığı seçimlər: yalnız bu paketə təsir edir."
 }
