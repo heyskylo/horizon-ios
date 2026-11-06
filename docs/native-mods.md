@@ -2521,6 +2521,14 @@ server's command tree ask. Without such a mod every answer is the operator level
   check passed), so their client completes and highlights it; take a name out of `names` to hide it, as with v1. Only
   the tree changes: running a granted vanilla command still needs its level (`native_player_command_level`). Mods are
   asked in order and share both lists. Bundles need `"hooks": @API:player_commands_sent_v2@`.
+- **`NativeCommand::permission(node)`** (`NativeCommand::new("tpa <player:player>").permission("essentials.tpa")`): a
+  mod's command that a permission node decides, as Bukkit's `plugin.yml` `permission:`. Before the server puts it in a
+  player's tree and before it runs a player's typed one, it asks `native_has_permission(player, node, level)` with
+  the command's level as the default, so a permissions mod grants it to a player below that level or refuses it to an
+  operator; without one the level decides, as for a command without a node. `native_player_commands_sent_v2` then
+  hears a command its node refuses in `names_hidden` and one it grants in `names`. A command's node is the first one
+  its usages give. A dedicated server's console runs every registered command without asking. Bundles need
+  `"hooks": @API:command_permission@`.
 
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The

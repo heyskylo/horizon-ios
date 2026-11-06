@@ -418,6 +418,9 @@ pub struct NativeCommand {
     pub usage: String,
     /// The operator level a player needs to see and run it (0: everyone).
     pub level: u8,
+    /// The permission node that decides instead, when set
+    /// ([`NativeCommand::permission`]). API @API:command_permission@.
+    pub permission: Option<String>,
 }
 
 impl NativeCommand {
@@ -426,6 +429,7 @@ impl NativeCommand {
         Self {
             usage: usage.to_owned(),
             level: 0,
+            permission: None,
         }
     }
     /// The same, for operators of `level` and above.
@@ -433,7 +437,19 @@ impl NativeCommand {
         Self {
             usage: usage.to_owned(),
             level: level.min(4),
+            permission: None,
         }
+    }
+    /// The same, for the players who have the permission node `node`
+    /// (Bukkit's `plugin.yml` `permission:`): the server asks
+    /// `native_has_permission(player, node, level)` before it shows or runs
+    /// the command, so a permissions mod grants or refuses it whatever the
+    /// player's level, and without one the level decides as before. A
+    /// command's node is the first one its usages give.
+    /// API @API:command_permission@.
+    pub fn permission(mut self, node: &str) -> Self {
+        self.permission = Some(node.to_owned());
+        self
     }
 }
 

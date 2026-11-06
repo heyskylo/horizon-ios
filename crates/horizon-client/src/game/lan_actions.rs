@@ -3449,12 +3449,15 @@ impl Game<'_> {
             self.guest_tempban_command(host, conn, &words);
             return;
         }
-        // A native mod's command, for every player its level allows,
-        // whether the world allows commands or not (game/native_server.rs).
+        // A native mod's command, for every player its level allows (or,
+        // for one with a permission node, whom the node lets: asked when it
+        // runs), whether the world allows commands or not
+        // (game/native_server.rs).
         let integrated = host.hub.config.integrated;
-        if let Some(level) = Self::native_command_level(host, command.trim_start_matches('/'))
+        let line = command.trim_start_matches('/');
+        if let Some(level) = Self::native_command_level(host, line)
             && let Some(permission) = host.hub.guest(conn).map(|g| g.permission)
-            && permission >= level
+            && (permission >= level || Self::native_command_node(host, line).is_some())
         {
             host.commands.push(GuestCommand {
                 conn,
