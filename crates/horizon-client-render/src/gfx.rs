@@ -11785,6 +11785,9 @@ mod tests {
                                     let point = inverse * Vec4::new(clip_x, clip_y, depth, 1.0);
                                     let point = point.truncate() / point.w;
                                     assert!(guarded.intersects_sphere(point, 1.0e-4));
+                                    // Flame preparation uses AABBs rather than orb spheres.
+                                    let slack = Vec3::splat(1.0e-4);
+                                    assert!(guarded.intersects(point - slack, point + slack));
                                     if !ordinary.intersects_sphere(point, 0.0) {
                                         outside_unjittered += 1;
                                     }

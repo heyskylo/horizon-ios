@@ -18,8 +18,9 @@ rear-view culling, not an attempt to cull every sprite beyond the viewport sides
 
 The change is automatic and introduces no setting or native-mod-presence restriction.
 OIT uses the same check. Shader packs (including native shader packs) retain their existing
-geometry path because they can change vertices or views. TAA uses a separate orb-only
-frustum with a one-rendered-pixel guard band; other entities keep their existing frustum.
+geometry path because they can change vertices or views. TAA uses a separate billboard
+frustum with a one-rendered-pixel guard band, shared with flame preparation; ordinary entity
+models keep their existing frustum.
 The visible quad, atlas UVs, lighting, color, simulation, pickup state and shadow preparation
 keep their existing behavior.
 
@@ -80,7 +81,7 @@ FPS samples use ordinary executables without mods.
 
 ## TAA support and separate measurements
 
-TAA's projection moves by at most half an input pixel per axis. The orb-only culling
+TAA's projection moves by at most half an input pixel per axis. The billboard culling
 frustum expands by one full input pixel per side, then extracts normalized clip planes.
 This covers every jitter phase without modifying the near/far planes or the TAA shader,
 jitter sequence or history algorithm. The input dimensions reuse world-post rounding,
@@ -93,7 +94,7 @@ All those points survive the guard, while spheres behind the eye are still rejec
 GPU-backed test checks predicted sizes, rounding, zero-size clamping and the first TAA frame.
 The Halton test covers all 128 phases allowed by the renderer's maximum upscaling ratio.
 
-The final candidate is measured separately with TAA enabled at native resolution. It uses
+The orb-only TAA candidate is measured separately with TAA enabled at native resolution. It uses
 the same machine, scene, camera, A/B/B/A/B/A/A/B order and 3+8-second protocol above:
 
 | Scene | Baseline FPS | Candidate FPS | Paired change [approx. 95% interval] | Prepare ms |
@@ -120,5 +121,9 @@ channel difference is one 8-bit level in both groups. These are **not** zero-dif
 TAA images; per-phase changed-pixel counts and mean differences are retained in the data.
 A further third-person TAA run with the loaded native camera-observer mod also differs
 by at most one level, as does its independent unmodified-baseline control. Ordinary
-non-TAA screenshots from the final TAA-capable executable still match in all nine views
+non-TAA screenshots from that orb-only TAA-capable executable still match in all nine views
 with zero changed pixels.
+
+The flame follow-up reuses this guarded frustum; it does not change the per-orb predicate.
+Orb measurements above retain their original binary/patch provenance. Flame measurements
+and image controls are reported separately in [entity-flame-culling.md](entity-flame-culling.md).
