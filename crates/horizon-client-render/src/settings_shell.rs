@@ -170,6 +170,11 @@ impl<P: Copy, S: Copy> Lines<P, S> {
         }
         self.y += style::GROUP_GAP;
     }
+    /// A group of rows under its page's own name (`list`'s `page_name`), for pages named at run
+    /// time, such as a shader pack's screens.
+    pub(crate) fn titled(&mut self, page: P, rows: Vec<S>) {
+        self.group(page, "", rows);
+    }
     /// The lines and the content's height.
     pub(crate) fn finish(self) -> (Vec<Line<P, S>>, f32) {
         (self.lines, (self.y - style::GROUP_GAP).max(0.0))
@@ -292,14 +297,15 @@ pub(crate) fn plate(batch: &mut HudBatch, atlas: &HudAtlas, cols: &Columns, head
 }
 
 /// The list, clipped to its view: each group's panel, then its names and rows on it. `row`
-/// draws a setting at its `y`.
+/// draws a setting at its `y`; `page_name` names a page, and a group without a name of its own
+/// (`Lines::titled`), in the player's language.
 pub(crate) fn list<P: Copy, S: Copy>(
     batch: &mut HudBatch,
     atlas: &HudAtlas,
     cols: &Columns,
     lines: &[Line<P, S>],
     scroll: f32,
-    page_name: impl Fn(P) -> &'static str,
+    page_name: impl Fn(P) -> String,
     mut row: impl FnMut(&mut HudBatch, S, f32),
 ) {
     let start = batch.vertices.len();
@@ -325,10 +331,11 @@ pub(crate) fn list<P: Copy, S: Copy>(
         }
         let Some(setting) = line.setting else {
             let (name, color, dy) = match line.group {
-                Some((name, _)) => (name, style::MUTED, 3.0),
+                Some(("", _)) => (page_name(line.page), style::MUTED, 3.0),
+                Some((name, _)) => (lang::get(name), style::MUTED, 3.0),
                 None => (page_name(line.page), style::ACCENT, 4.0),
             };
-            let name = Text::literal(lang::get(name));
+            let name = Text::literal(name);
             batch.text_styled(atlas, &name, cols.list_x + 2.0, y + dy, color, true);
             continue;
         };
