@@ -555,6 +555,10 @@ impl Game<'_> {
         // `ServerTickEnd`: an errored tick or an idle-close failure (at
         // the `?` above) never reaches this site.
         self.native_lifecycle_server_tick_end(paused);
+        // The packets counted for `native_server_packets` (only while a mod counts them).
+        if server {
+            self.diagnostics_packets_tick();
+        }
         Ok(())
     }
 
@@ -605,6 +609,7 @@ impl Game<'_> {
                 slowest_steps(&notes)
             );
         }
+        self.native_server_tick_timed(wall, cpu, &spans);
         record(wall, cpu, spans, in_tick);
         result
     }

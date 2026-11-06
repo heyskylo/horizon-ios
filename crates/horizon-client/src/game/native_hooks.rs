@@ -998,7 +998,8 @@ use horizon_assets::item_model::StackView;
 use horizon_client::mod_api::EntityDataValue;
 use horizon_client::mod_api::{
     self, NativeBossBar, NativeCamera, NativeCommand, NativeDispensed, NativeLifecycleContext,
-    NativeNoteBlockChange, NativeServerPlayer, RecipeBookCategory, ServerTickPhase, WorldPhase,
+    NativeNoteBlockChange, NativeServerPlayer, RecipeBookCategory, ServerTickPhase, TickSpan,
+    WorldPhase,
 };
 use horizon_client::mod_api::{AttachmentResult, Attachments, Holder, LayerDefinition, Suggestion};
 pub(crate) use horizon_client::mod_api::{
@@ -7186,6 +7187,44 @@ impl Game<'_> {
         slots: &mut Vec<Option<ItemStack>>,
     ) {
         let _ = (uuid, window, slots);
+    }
+    /// Once a server tick, after `ServerTickEnd`, the play packets one
+    /// player's connection sent (`outbound`) or received since the last tick
+    /// while a mod counts them (`native_count_packets(true)`; off, nothing is
+    /// kept and this never fires): each as (packet id, body bytes) in order,
+    /// the id of `horizon_protocol::ids::play` as the server sent or read it
+    /// (before an older client's renumbering, keep-alives and the disconnect
+    /// included) and the bytes of id and payload, before compression and
+    /// encryption, as PacketEvents counts them. Called at most twice a tick
+    /// per player, only with packets; a stalled tick keeps at most 65536 each
+    /// way. PacketEvents' send and receive events, batched. API
+    /// @API:server_packets@.
+    pub(super) fn native_server_packets(
+        &mut self,
+        player: u128,
+        packets: &[(i32, usize)],
+        outbound: bool,
+    ) {
+        mod_api::dispatch_server_packets(self, mod_api::mods(), player, packets, outbound);
+    }
+    /// After each pass of the server tick (paused ones too) while its spans
+    /// are recorded: always on a dedicated server, whose slow-tick log keeps
+    /// them on, elsewhere while `native_spans(true)`, `HORIZON_SPIKES` or a
+    /// performance report asks for them. `wall_ms` is the pass's wall time,
+    /// `cpu_ms` the server thread's CPU time in it (None where the system
+    /// doesn't tell), and `spans` its named steps, summed by name in the
+    /// order first seen, each with its depth (`tick_mobs` inside `tick`):
+    /// what a profiler such as spark samples, by step instead of stack. The
+    /// tick's own clock (`native_tick_times`) also counts the work after the
+    /// pass (the idle kick, the next tick's wait). API
+    /// @API:server_tick_timed@.
+    pub(super) fn native_server_tick_timed(
+        &mut self,
+        wall_ms: f32,
+        cpu_ms: Option<f32>,
+        spans: &[TickSpan],
+    ) {
+        mod_api::dispatch_server_tick_timed(self, mod_api::mods(), wall_ms, cpu_ms, spans);
     }
     /// A click in a menu a mod opened (`native_open_menu`), which moved
     /// nothing: the menu's `slot` (its own first, then the player's

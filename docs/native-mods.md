@@ -2881,6 +2881,49 @@ biomes) in some chunks or all of them, as Bukkit's `ChunkGenerator` does.
   far column, many per tile, on the far terrain's workers, several at once: answer from the terrain function alone,
   without building the chunk. Like vanilla's, a far column shows no carver's caves. API @API:lod_column@.
 
+#### Server hooks for plugin ports: diagnostics
+
+What a diagnostics or profiler port (Bukkit's `getTPS`, spark, PacketEvents' counters) reads. Each costs nothing
+while no mod asks for it.
+
+- **`native_tick_times()`** and **`native_tps()`**: the last 100 server tick durations in nanoseconds, laid out as
+  vanilla's `MinecraftServer.getTickTimesNanos` (the tick numbered `n` at index `n % 100`, 0 where none was recorded
+  yet; sort a copy for percentiles, `native_tick_stats` has the average), and the ticks a second over the last one,
+  five and fifteen minutes (Bukkit's `Server.getTPS`), measured between the ends of the recorded ticks and averaged
+  once a second as a load average is. They start at 20; an idle server reads 20, a sprint more and a server that
+  falls behind less. Bundles need `"hooks": @API:tick_times@`.
+- **`native_level_stats(dimension)`**, **`native_level_entities(dimension)`** and
+  **`native_level_block_entities(dimension)`**: what an open level of a server holds (`minecraft:the_nether`; None or
+  empty on a client and for a level that isn't open), as Bukkit's `World.getLoadedChunks`, `getForceLoadedChunks`,
+  `getEntities` and `Chunk.getTileEntities` give it. `NativeLevelStats` counts the loaded chunks, the forced ones
+  (`/forceload` and `native_force_chunk`), the block entities and those that tick, and the entities (players
+  included) and block entities by type, the most first. The entity list gives each entity's id (what events and
+  `native_entity` take), type and position; the block entity list each one's position and type: the vanilla block
+  entity type of its block (`minecraft:barrel`, `minecraft:mob_spawner`), else the block's name. A level not in place
+  is swapped in for the count and back, as `/execute in` does. The players are the hub's, so none are counted inside
+  a player's own hook, where the hub is taken out. Each walks every entity or block entity: call them once a second
+  or less, not every tick. Bundles need `"hooks": @API:level_stats@`.
+- **`native_server_packets(player, packets, outbound)`** and **`native_count_packets(on)`**: the play packets each
+  player's connection carries, by type, as PacketEvents' send and receive events count them. Nothing is kept until a
+  mod calls `native_count_packets(true)` (one switch for the server, shared by every mod; off drops what is kept, and
+  a packet costs one relaxed load); while on, once a server tick after `ServerTickEnd` each player's packets since the
+  last tick arrive, those sent (`outbound`) and those received, each as (packet id, body bytes) in order. The id is
+  `horizon_protocol::ids::play`'s as the server sent or read it (before an older client's renumbering; keep-alives
+  and the disconnect included), the bytes are id and payload before compression and encryption. A tick stalled for
+  long keeps at most 65536 packets each way. Bundles need `"hooks": @API:server_packets@`.
+- **`native_server_tick_timed(wall_ms, cpu_ms, spans)`**, **`native_spans(on)`**, **`native_mob_cost_sampling(on)`**
+  and **`native_take_mob_costs()`**: a profiler by tick step instead of by stack, as spark's. After each pass of the
+  server tick (paused ones too) while its spans are recorded, the hook gets the pass's wall time, the server thread's
+  CPU time in it (None where the system doesn't tell) and its spans (`TickSpan`: name, wall and CPU milliseconds,
+  depth; summed by name in the order first seen, `tick_mobs` inside `tick`). A dedicated server records them anyway
+  (its slow-tick log), so there the hook fires every tick; elsewhere it fires while `native_spans(true)`,
+  `HORIZON_SPIKES` or a performance report wants them: one switch shared by all, on while anyone wants it, which costs
+  two clock reads a step on every thread. `native_mob_cost_sampling(true)` times every mob's own tick (riders inside)
+  by level and type until it is turned off, apart from `horizon-report`'s sampling, so both can run;
+  `native_take_mob_costs()` takes the sums (`NativeMobCost`), costliest first. For a lighter profile, sample one tick
+  in N: turn it on in `ServerTickStart` and off after. Call both from server hooks: the sampling belongs to the
+  server thread. Bundles need `"hooks": @API:server_tick_timed@`.
+
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a
