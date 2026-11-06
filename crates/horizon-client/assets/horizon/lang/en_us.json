@@ -982,5 +982,11 @@
   "horizon.recipe_transfer.missing": "Missing Items",
   "horizon.recipe_transfer.no_room": "Inventory full",
   "horizon.recipe_transfer.unavailable": "Recipe does not fit this menu",
-  "horizon.recipe_transfer.unsupported": "Server requires a known recipe"
+  "horizon.recipe_transfer.unsupported": "Server requires a known recipe",
+  "horizon.debug.pass_detail.title": "Horizon pass detail (%s)",
+  "horizon.debug.pass_detail.inside_passes": "timestamps inside passes",
+  "horizon.debug.pass_detail.separate_passes": "separate passes, adds GPU time",
+  "horizon.debug.pass_detail.part": "%s › %s: %s ms",
+  "horizon.debug.pass_detail.counters": "%s: %s fragments, %s per pixel, %s vertices, %s of %s triangles kept",
+  "horizon.debug.pass_detail.no_counters": "GPU counters: Vulkan only"
 }

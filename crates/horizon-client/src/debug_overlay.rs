@@ -8,6 +8,7 @@ use crate::{
     java_text,
     text::Text,
 };
+use horizon_client_render::gfx::pack_timing::{Counters, DetailSupport, PartsMode, PassCounters};
 use std::time::{Duration, Instant};
 
 /// `extractLines`'s background: ARGB 0x90505050.
@@ -144,6 +145,76 @@ pub fn labelled_pass_lines(label: &str, passes: &[(String, f32)]) -> Vec<String>
     if costliest.len() > SHOWN {
         let rest: f32 = costliest[SHOWN..].iter().map(|p| p.1).sum();
         lines.push(format!("{} more: {rest:.2} ms", costliest.len() - SHOWN));
+    }
+    lines
+}
+
+/// `n` in three digits and an SI suffix: `512`, `83.0k`, `6.30M`, `1.20G`.
+pub fn compact_count(n: u64) -> String {
+    let (mut value, mut unit) = (n as f64, 0);
+    while value >= 999.5 && unit < 4 {
+        value /= 1000.0;
+        unit += 1;
+    }
+    let suffix = ["", "k", "M", "G", "T"][unit];
+    match value {
+        _ if unit == 0 => n.to_string(),
+        v if v < 9.995 => format!("{v:.2}{suffix}"),
+        v if v < 99.95 => format!("{v:.1}{suffix}"),
+        v => format!("{v:.0}{suffix}"),
+    }
+}
+
+/// F3's detail lines: each pass's parts, then the six passes with the most fragments and their segments.
+pub fn pass_detail_lines(
+    parts: &[(String, Vec<(String, f32)>)],
+    counters: &[(String, PassCounters)],
+    support: DetailSupport,
+) -> Vec<String> {
+    const SHOWN: usize = 6;
+    let tr = |key: &str, args: &[&dyn std::fmt::Display]| Text::tr(key, args).plain();
+    let mode = match support.parts {
+        PartsMode::InsidePasses => "horizon.debug.pass_detail.inside_passes",
+        PartsMode::SeparatePasses => "horizon.debug.pass_detail.separate_passes",
+    };
+    let mut lines = vec![tr("horizon.debug.pass_detail.title", &[&tr(mode, &[])])];
+    for (pass, parts) in parts {
+        for (part, ms) in parts {
+            let ms = format!("{ms:.2}");
+            lines.push(tr("horizon.debug.pass_detail.part", &[pass, part, &ms]));
+        }
+    }
+    if !support.counters {
+        lines.push(tr("horizon.debug.pass_detail.no_counters", &[]));
+        return lines;
+    }
+    let per_pixel = |fragments: u64, pixels: u64| match support.fragment_unit {
+        Some(unit) if pixels > 0 => {
+            format!("{:.2}", unit.pixels_of(fragments) as f64 / pixels as f64)
+        }
+        _ => "?".to_owned(),
+    };
+    let line = |name: &str, c: &Counters, pixels: u64| {
+        let (fragments, vertices) = (c.fragment_shader_invocations, c.vertex_shader_invocations);
+        tr(
+            "horizon.debug.pass_detail.counters",
+            &[
+                &name,
+                &compact_count(fragments),
+                &per_pixel(fragments, pixels),
+                &compact_count(vertices),
+                &compact_count(c.clipper_primitives_out),
+                &compact_count(c.clipper_invocations),
+            ],
+        )
+    };
+    let mut busiest: Vec<&(String, PassCounters)> = counters.iter().collect();
+    busiest.sort_by_key(|c| std::cmp::Reverse(c.1.total.fragment_shader_invocations));
+    for (pass, c) in busiest.into_iter().take(SHOWN) {
+        lines.push(line(pass, &c.total, c.pixels));
+        for (part, counted) in &c.parts {
+            lines.push(format!("  {}", line(part, counted, c.pixels)));
+        }
     }
     lines
 }
@@ -547,6 +618,7 @@ pub fn memory_lines(m: ProcessMemory, rate: i64) -> [String; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use horizon_client_render::gfx::pack_timing;
 
     fn lines(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| (*s).to_owned()).collect()
@@ -582,6 +654,88 @@ mod tests {
         // A smaller repaint leaves nothing of the last one behind.
         cache.store(start, layout, &[]);
         assert_eq!(cache.fresh(start, layout).map(<[_]>::len), Some(0));
+    }
+
+    #[test]
+    fn counts_read_in_three_digits_with_an_si_suffix() {
+        for (n, want) in [
+            (0, "0"),
+            (999, "999"),
+            (1000, "1.00k"),
+            (83_049, "83.0k"),
+            (999_999, "1.00M"),
+            (6_300_000, "6.30M"),
+            (1_200_000_000, "1.20G"),
+        ] {
+            assert_eq!(compact_count(n), want, "{n}");
+        }
+    }
+
+    fn counted(fragments: u64, parts: &[(&str, u64)]) -> PassCounters {
+        let c = |fragment_shader_invocations| Counters {
+            vertex_shader_invocations: 1000,
+            clipper_invocations: 400,
+            clipper_primitives_out: 300,
+            fragment_shader_invocations,
+        };
+        PassCounters {
+            total: c(fragments),
+            pixels: 1000,
+            parts: parts.iter().map(|p| (p.0.to_owned(), c(p.1))).collect(),
+        }
+    }
+
+    #[test]
+    fn pass_detail_lines_list_parts_then_the_six_busiest_passes_with_segments() {
+        let support = DetailSupport {
+            parts: PartsMode::InsidePasses,
+            encoder_stamps: true,
+            counters: true,
+            fragment_unit: Some(pack_timing::FragmentUnit::Quad),
+        };
+        let parts = vec![("GPU culling".to_owned(), vec![("cull".to_owned(), 0.3141)])];
+        let mut counters: Vec<(String, PassCounters)> = (1..=7)
+            .map(|i| (format!("P{i}"), counted(i * 100, &[])))
+            .collect();
+        counters[2].1 = counted(1_000_000, &[("a", 600_000), ("b", 400_000)]);
+        let (lines, _) = crate::lang::scoped(crate::lang::Language::load(&[], "en_us"), || {
+            pass_detail_lines(&parts, &counters, support)
+        });
+        assert_eq!(
+            lines,
+            [
+                "Horizon pass detail (timestamps inside passes)",
+                "GPU culling › cull: 0.31 ms",
+                "P3: 1.00M fragments, 4000.00 per pixel, 1.00k vertices, 300 of 400 triangles kept",
+                "  a: 600k fragments, 2400.00 per pixel, 1.00k vertices, 300 of 400 triangles kept",
+                "  b: 400k fragments, 1600.00 per pixel, 1.00k vertices, 300 of 400 triangles kept",
+                "P7: 700 fragments, 2.80 per pixel, 1.00k vertices, 300 of 400 triangles kept",
+                "P6: 600 fragments, 2.40 per pixel, 1.00k vertices, 300 of 400 triangles kept",
+                "P5: 500 fragments, 2.00 per pixel, 1.00k vertices, 300 of 400 triangles kept",
+                "P4: 400 fragments, 1.60 per pixel, 1.00k vertices, 300 of 400 triangles kept",
+                "P2: 200 fragments, 0.80 per pixel, 1.00k vertices, 300 of 400 triangles kept",
+            ]
+        );
+    }
+
+    #[test]
+    fn pass_detail_lines_say_so_when_the_device_has_no_counters() {
+        let support = DetailSupport {
+            parts: PartsMode::SeparatePasses,
+            encoder_stamps: false,
+            counters: false,
+            fragment_unit: None,
+        };
+        let (lines, _) = crate::lang::scoped(crate::lang::Language::load(&[], "en_us"), || {
+            pass_detail_lines(&[], &[], support)
+        });
+        assert_eq!(
+            lines,
+            [
+                "Horizon pass detail (separate passes, adds GPU time)",
+                "GPU counters: Vulkan only"
+            ]
+        );
     }
 
     #[test]

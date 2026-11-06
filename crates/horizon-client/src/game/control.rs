@@ -1,6 +1,7 @@
 //! Commands from the control socket (`horizon-ctl`), run on the game thread.
 use super::event_loop::EventLoopCtl;
 use super::{Game, Screen};
+use horizon_client::gfx::pack_timing;
 use horizon_client::held::Source;
 use horizon_client::{Result, items::ItemStack};
 use horizon_core::geometry::Vec3;
@@ -164,6 +165,14 @@ impl Game<'_> {
                     .map(|(name, ms)| (name, json!(ms)))
                     .collect(),
             );
+        }
+        if let Some(r) = self.renderer.as_ref().filter(|r| r.pass_detail())
+            && let Some(support) = r.pass_detail_support()
+            && let Value::Object(detail) =
+                pack_timing::detail_json(&r.own_pass_parts(), &r.own_pass_counters(), support)
+            && let Some(summary) = summary.as_object_mut()
+        {
+            summary.extend(detail);
         }
         self.add_async_occlusion_stats(&mut summary);
         summary
@@ -454,13 +463,16 @@ impl Game<'_> {
                 Ok(Some(json!({ "ok": true, "cull": r.section_cull() })))
             }
             "gpu-passes" => {
-                match words.get(1).copied() {
-                    None => {}
-                    Some("on") => self.gpu_passes = true,
-                    Some("off") => self.gpu_passes = false,
-                    Some(other) => return Err(format!("unknown gpu pass mode {other}").into()),
-                }
-                Ok(Some(json!({ "ok": true, "gpu_passes": self.gpu_passes })))
+                (self.gpu_passes, self.gpu_pass_detail) = gpu_pass_switches(
+                    words.get(1).copied(),
+                    (self.gpu_passes, self.gpu_pass_detail),
+                )?;
+                let support = self.renderer.as_ref().and_then(|r| r.pass_detail_support());
+                Ok(Some(gpu_passes_reply(
+                    self.gpu_passes,
+                    self.gpu_pass_detail,
+                    support,
+                )))
             }
             // Every thread's spans as a timeline Perfetto opens (`spans::trace`).
             "trace" => match words.get(1).copied() {
@@ -1684,6 +1696,35 @@ fn key_code(name: &str) -> Option<KeyCode> {
     })
 }
 
+/// The (times, detail) switches `gpu-passes [on|off|detail]` leaves, given the current ones.
+fn gpu_pass_switches(word: Option<&str>, now: (bool, bool)) -> Result<(bool, bool)> {
+    match word {
+        None => Ok(now),
+        Some("on") => Ok((true, false)),
+        Some("detail") => Ok((true, true)),
+        Some("off") => Ok((false, false)),
+        Some(other) => Err(format!("unknown gpu pass mode {other}").into()),
+    }
+}
+
+/// The `gpu-passes` reply: the switches and what detail can show on this device.
+fn gpu_passes_reply(
+    passes: bool,
+    detail: bool,
+    support: Option<pack_timing::DetailSupport>,
+) -> Value {
+    let shown = support.map(pack_timing::support_json);
+    let field = |key: &str, none: Value| shown.as_ref().map_or(none, |s| s[key].clone());
+    json!({
+        "ok": true,
+        "gpu_passes": passes,
+        "detail": detail,
+        "parts_mode": field("parts_mode", Value::Null),
+        "counters": field("counters", json!(false)),
+        "fragment_unit": field("fragment_unit", Value::Null),
+    })
+}
+
 /// The title's own screens (not one opened over it, as Options is) take the
 /// text: the world name, the seed, a server's address.
 pub(super) fn title_owns_text(screen: &Screen, title_up: bool) -> bool {
@@ -1719,6 +1760,39 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), features.len(), "a group is named twice");
+    }
+
+    #[test]
+    fn gpu_passes_detail_replies_detail_and_on_turns_it_off_again() {
+        let support = pack_timing::DetailSupport {
+            parts: pack_timing::PartsMode::SeparatePasses,
+            encoder_stamps: false,
+            counters: true,
+            fragment_unit: Some(pack_timing::FragmentUnit::Quad),
+        };
+        let (passes, detail) = gpu_pass_switches(Some("detail"), (false, false)).unwrap();
+        let reply = gpu_passes_reply(passes, detail, Some(support));
+        assert_eq!(reply["detail"], true);
+        assert_eq!(reply["gpu_passes"], true);
+        assert_eq!(reply["parts_mode"], "separate_passes");
+        assert_eq!(reply["counters"], true);
+        assert_eq!(reply["fragment_unit"], "quad");
+        let (passes, detail) = gpu_pass_switches(Some("on"), (passes, detail)).unwrap();
+        let reply = gpu_passes_reply(passes, detail, None);
+        assert_eq!(
+            (reply["gpu_passes"].as_bool(), reply["detail"].as_bool()),
+            (Some(true), Some(false))
+        );
+        assert_eq!(
+            (reply["parts_mode"].is_null(), reply["counters"].as_bool()),
+            (true, Some(false))
+        );
+        assert_eq!(
+            gpu_pass_switches(Some("off"), (true, true)).unwrap(),
+            (false, false)
+        );
+        assert_eq!(gpu_pass_switches(None, (true, true)).unwrap(), (true, true));
+        assert!(gpu_pass_switches(Some("nope"), (false, false)).is_err());
     }
 
     #[test]

@@ -197,7 +197,7 @@ mod pack_post;
 mod pack_shadow;
 mod pack_sky;
 mod pack_textures;
-pub(crate) mod pack_timing;
+pub mod pack_timing;
 pub mod pack_uniforms;
 mod pack_weather;
 mod page_runs;
@@ -7147,6 +7147,17 @@ impl Renderer {
             .as_ref()
             .map(pack_timing::PassTiming::part_medians)
             .unwrap_or_default()
+    }
+    /// Each counted pass's counters (medians), while detail is on and the device has them.
+    pub fn own_pass_counters(&self) -> Vec<(String, pack_timing::PassCounters)> {
+        self.own_timing
+            .as_ref()
+            .map(pack_timing::PassTiming::counter_medians)
+            .unwrap_or_default()
+    }
+    /// Whether dispatch parts and counters are being asked for (`set_pass_detail`).
+    pub fn pass_detail(&self) -> bool {
+        self.pass_detail
     }
     /// What detail timing can show on this device; `None` without pass timing.
     pub fn pass_detail_support(&self) -> Option<pack_timing::DetailSupport> {

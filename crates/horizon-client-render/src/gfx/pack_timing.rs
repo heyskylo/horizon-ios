@@ -6,6 +6,7 @@
 //! write them), then read back when mapped. The next frame after that is timed again, once `gap`
 //! has passed since the last.
 
+use serde_json::{Value, json};
 use std::collections::VecDeque;
 use std::sync::{
     Arc,
@@ -39,12 +40,50 @@ pub enum PartsMode {
     SeparatePasses,
 }
 
+/// What `fragment_shader_invocations` counts on a device: pixels (NVIDIA) or shaded 2x2 quads (RADV).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FragmentUnit {
+    Pixel,
+    Quad,
+}
+
+impl FragmentUnit {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Pixel => "pixel",
+            Self::Quad => "quad",
+        }
+    }
+
+    /// The unit a calibration draw of `pixels` fragments shows, or none when `count` fits neither (within 12.5%).
+    fn of_calibration(count: u64, pixels: u64) -> Option<Self> {
+        let near = |scaled: u64| (7 * pixels..=9 * pixels).contains(&scaled);
+        if near(8 * count) {
+            Some(Self::Pixel)
+        } else if near(32 * count) {
+            Some(Self::Quad)
+        } else {
+            None
+        }
+    }
+
+    /// The pixels `count` fragment invocations stand for.
+    pub fn pixels_of(self, count: u64) -> u64 {
+        match self {
+            Self::Pixel => count,
+            Self::Quad => count * 4,
+        }
+    }
+}
+
 /// What detail timing can show on this device.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DetailSupport {
     pub parts: PartsMode,
     pub encoder_stamps: bool,
     pub counters: bool,
+    /// What the fragment counter counts, from a calibration draw; none until it ran or when it fit neither unit.
+    pub fragment_unit: Option<FragmentUnit>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -125,6 +164,7 @@ pub struct PassTiming {
     parts_mode: PartsMode,
     encoder_stamps: bool,
     counters: bool,
+    fragment_unit: Option<FragmentUnit>,
     want_detail: bool,
     kind: FrameKind,
     /// Created by the first `set_detail(true)` on a device with pipeline statistics.
@@ -190,6 +230,7 @@ impl PassTiming {
             },
             encoder_stamps: has.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS),
             counters: has.contains(wgpu::Features::PIPELINE_STATISTICS_QUERY),
+            fragment_unit: None,
             want_detail: false,
             kind: FrameKind::Plain,
             stats: None,
@@ -229,6 +270,7 @@ impl PassTiming {
             parts: self.parts_mode,
             encoder_stamps: self.encoder_stamps,
             counters: self.counters,
+            fragment_unit: self.fragment_unit,
         }
     }
 
@@ -302,6 +344,7 @@ impl PassTiming {
                 ty: wgpu::QueryType::PipelineStatistics(STAT_FLAGS),
                 count: STATS_CAPACITY,
             }));
+            self.fragment_unit = calibrate_fragment_unit(device, queue);
         }
         if matches!(self.stage, Stage::Idle)
             && self.timed_at.is_none_or(|at| at.elapsed() >= self.gap)
@@ -629,6 +672,195 @@ impl PassTiming {
     }
 }
 
+/// Draws a full-screen triangle on a small target with a statistics query and reads the count, once at setup.
+fn calibrate_fragment_unit(device: &wgpu::Device, queue: &wgpu::Queue) -> Option<FragmentUnit> {
+    const SIDE: u32 = 64;
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("Fragment counter calibration"),
+        source: wgpu::ShaderSource::Wgsl(
+            "@vertex fn vs(@builtin(vertex_index) v: u32) -> @builtin(position) vec4<f32> {
+                let p = vec2<f32>(f32((v << 1u) & 2u), f32(v & 2u));
+                return vec4<f32>(p * 2.0 - 1.0, 0.0, 1.0);
+            }
+            @fragment fn fs() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }"
+                .into(),
+        ),
+    });
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: None,
+        layout: None,
+        vertex: wgpu::VertexState {
+            module: &module,
+            entry_point: Some("vs"),
+            compilation_options: Default::default(),
+            buffers: &[],
+        },
+        primitive: Default::default(),
+        depth_stencil: None,
+        multisample: Default::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &module,
+            entry_point: Some("fs"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::TextureFormat::Rgba8Unorm.into())],
+        }),
+        multiview_mask: None,
+        cache: None,
+    });
+    let target = device
+        .create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width: SIDE,
+                height: SIDE,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        })
+        .create_view(&Default::default());
+    let queries = device.create_query_set(&wgpu::QuerySetDescriptor {
+        label: None,
+        ty: wgpu::QueryType::PipelineStatistics(
+            wgpu::PipelineStatisticsTypes::FRAGMENT_SHADER_INVOCATIONS,
+        ),
+        count: 1,
+    });
+    let buffer = |usage| {
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: 8,
+            usage,
+            mapped_at_creation: false,
+        })
+    };
+    let resolve = buffer(wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC);
+    let read = buffer(wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ);
+    let mut encoder = device.create_command_encoder(&Default::default());
+    {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &target,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Discard,
+                },
+            })],
+            ..Default::default()
+        });
+        pass.set_pipeline(&pipeline);
+        pass.begin_pipeline_statistics_query(&queries, 0);
+        pass.draw(0..3, 0..1);
+        pass.end_pipeline_statistics_query();
+    }
+    encoder.resolve_query_set(&queries, 0..1, &resolve, 0);
+    encoder.copy_buffer_to_buffer(&resolve, 0, &read, 0, 8);
+    queue.submit([encoder.finish()]);
+    read.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+    device.poll(wgpu::PollType::wait_indefinitely()).ok()?;
+    let count = u64::from_le_bytes(
+        read.slice(..).get_mapped_range().ok()?[..8]
+            .try_into()
+            .ok()?,
+    );
+    let pixels = u64::from(SIDE * SIDE);
+    let unit = FragmentUnit::of_calibration(count, pixels);
+    log::info!("fragment counter calibration: {count} for {pixels} pixels, unit {unit:?}");
+    unit
+}
+
+fn round_to(value: f64, decimals: i32) -> f64 {
+    let scale = 10f64.powi(decimals);
+    (value * scale).round() / scale
+}
+
+fn counters_json(c: Counters) -> serde_json::Map<String, serde_json::Value> {
+    let Value::Object(fields) = json!({
+        "vertex_shader_invocations": c.vertex_shader_invocations,
+        "clipper_invocations": c.clipper_invocations,
+        "clipper_primitives_out": c.clipper_primitives_out,
+        "fragment_shader_invocations": c.fragment_shader_invocations,
+    }) else {
+        unreachable!()
+    };
+    fields
+}
+
+/// Dispatch times by pass, as the `gpu_pass_parts` object.
+pub fn parts_json(parts: &[(String, Vec<(String, f32)>)]) -> Value {
+    parts
+        .iter()
+        .map(|(pass, parts)| {
+            let times = parts
+                .iter()
+                .map(|(part, ms)| (part.clone(), json!(round_to(f64::from(*ms), 3))))
+                .collect::<serde_json::Map<_, _>>();
+            (pass.clone(), Value::Object(times))
+        })
+        .collect::<serde_json::Map<_, _>>()
+        .into()
+}
+
+/// Counters by pass, as the `gpu_counters` object; `fragments_per_pixel` only when the unit is known.
+pub fn counters_by_pass_json(
+    counters: &[(String, PassCounters)],
+    unit: Option<FragmentUnit>,
+) -> Value {
+    counters
+        .iter()
+        .map(|(pass, c)| {
+            let mut fields = counters_json(c.total);
+            fields.insert("pixels".into(), json!(c.pixels));
+            if let Some(unit) = unit.filter(|_| c.pixels > 0) {
+                let shaded = unit.pixels_of(c.total.fragment_shader_invocations) as f64;
+                let per_pixel = round_to(shaded / c.pixels as f64, 2);
+                fields.insert("fragments_per_pixel".into(), json!(per_pixel));
+            }
+            if !c.parts.is_empty() {
+                let parts = c
+                    .parts
+                    .iter()
+                    .map(|(name, part)| (name.clone(), Value::Object(counters_json(*part))))
+                    .collect::<serde_json::Map<_, _>>();
+                fields.insert("parts".into(), Value::Object(parts));
+            }
+            (pass.clone(), Value::Object(fields))
+        })
+        .collect::<serde_json::Map<_, _>>()
+        .into()
+}
+
+/// How detail was measured: the parts mode, whether counters exist and what they count.
+pub fn support_json(support: DetailSupport) -> Value {
+    json!({
+        "parts_mode": match support.parts {
+            PartsMode::InsidePasses => "inside_passes",
+            PartsMode::SeparatePasses => "separate_passes",
+        },
+        "counters": support.counters,
+        "fragment_unit": support.fragment_unit.map(FragmentUnit::name),
+    })
+}
+
+/// The keys `stats` and `bench` add while detail is on.
+pub fn detail_json(
+    parts: &[(String, Vec<(String, f32)>)],
+    counters: &[(String, PassCounters)],
+    support: DetailSupport,
+) -> Value {
+    json!({
+        "gpu_pass_detail": support_json(support),
+        "gpu_pass_parts": parts_json(parts),
+        "gpu_counters": counters_by_pass_json(counters, support.fragment_unit),
+    })
+}
+
 fn window_push<T>(window: &mut VecDeque<T>, value: T) {
     if window.len() == WINDOW {
         window.pop_front();
@@ -867,7 +1099,11 @@ fn entry_times(
 
 #[cfg(test)]
 mod tests {
-    use super::{PartsMode, PassTiming, compute_parts, counted, entry_times};
+    use super::{
+        Counters, DetailSupport, FragmentUnit, PartsMode, PassCounters, PassTiming, compute_parts,
+        counted, counters_by_pass_json, detail_json, entry_times,
+    };
+    use serde_json::json;
 
     fn interleave(pairs: &[(f32, f32)]) -> Vec<u64> {
         let ns = |ms: f32| (ms * 1e6) as u64;
@@ -933,6 +1169,111 @@ mod tests {
             entry_times(&stamps, &entries, 1.0),
             [Some(4.0), Some(0.5), None, Some(1.0)]
         );
+    }
+
+    fn support(unit: Option<FragmentUnit>) -> DetailSupport {
+        DetailSupport {
+            parts: PartsMode::InsidePasses,
+            encoder_stamps: true,
+            counters: true,
+            fragment_unit: unit,
+        }
+    }
+
+    #[test]
+    fn detail_json_has_the_documented_fields_and_nesting() {
+        let c = |v, f| Counters {
+            vertex_shader_invocations: v,
+            clipper_invocations: 2_050_000,
+            clipper_primitives_out: 1_200_000,
+            fragment_shader_invocations: f,
+        };
+        let counters = vec![
+            (
+                "World".to_owned(),
+                PassCounters {
+                    total: c(4_100_000, 6_300_000),
+                    pixels: 2_073_600,
+                    parts: vec![
+                        ("before translucent".into(), c(3_000_000, 5_100_000)),
+                        ("translucent terrain".into(), c(1_100_000, 1_200_000)),
+                    ],
+                },
+            ),
+            (
+                "Visibility IDs".to_owned(),
+                PassCounters {
+                    total: c(10, 20),
+                    pixels: 100,
+                    parts: Vec::new(),
+                },
+            ),
+        ];
+        let parts = vec![("GPU culling".to_owned(), vec![("cull".to_owned(), 0.31049)])];
+        let got = detail_json(&parts, &counters, support(Some(FragmentUnit::Pixel)));
+        let want = json!({
+            "gpu_pass_detail": {"parts_mode": "inside_passes", "counters": true, "fragment_unit": "pixel"},
+            "gpu_pass_parts": {"GPU culling": {"cull": 0.31}},
+            "gpu_counters": {
+                "World": {
+                    "vertex_shader_invocations": 4_100_000, "clipper_invocations": 2_050_000,
+                    "clipper_primitives_out": 1_200_000, "fragment_shader_invocations": 6_300_000,
+                    "pixels": 2_073_600, "fragments_per_pixel": 3.04,
+                    "parts": {
+                        "before translucent": {
+                            "vertex_shader_invocations": 3_000_000, "clipper_invocations": 2_050_000,
+                            "clipper_primitives_out": 1_200_000, "fragment_shader_invocations": 5_100_000
+                        },
+                        "translucent terrain": {
+                            "vertex_shader_invocations": 1_100_000, "clipper_invocations": 2_050_000,
+                            "clipper_primitives_out": 1_200_000, "fragment_shader_invocations": 1_200_000
+                        }
+                    }
+                },
+                "Visibility IDs": {
+                    "vertex_shader_invocations": 10, "clipper_invocations": 2_050_000,
+                    "clipper_primitives_out": 1_200_000, "fragment_shader_invocations": 20,
+                    "pixels": 100, "fragments_per_pixel": 0.2
+                }
+            }
+        });
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn quad_counting_devices_scale_fragments_per_pixel_and_unknown_ones_omit_it() {
+        let counted = vec![(
+            "World".to_owned(),
+            PassCounters {
+                total: Counters {
+                    fragment_shader_invocations: 1000,
+                    ..Default::default()
+                },
+                pixels: 2000,
+                parts: Vec::new(),
+            },
+        )];
+        let per_pixel =
+            |unit| counters_by_pass_json(&counted, unit)["World"]["fragments_per_pixel"].clone();
+        assert_eq!(per_pixel(Some(FragmentUnit::Pixel)), json!(0.5));
+        assert_eq!(per_pixel(Some(FragmentUnit::Quad)), json!(2.0));
+        assert!(per_pixel(None).is_null());
+    }
+
+    #[test]
+    fn calibration_counts_name_the_unit() {
+        let pixels = 64 * 64;
+        // 4096 is NVIDIA's pixel count, 1056 RADV's quads of two triangles over a diagonal.
+        for (count, unit) in [
+            (4096, Some(FragmentUnit::Pixel)),
+            (1024, Some(FragmentUnit::Quad)),
+            (1056, Some(FragmentUnit::Quad)),
+            (2048, None),
+            (0, None),
+            (8192, None),
+        ] {
+            assert_eq!(FragmentUnit::of_calibration(count, pixels), unit, "{count}");
+        }
     }
 
     const SHADER: &str = "
@@ -1274,6 +1615,12 @@ mod tests {
         // RADV counts shaded 2x2 quads (1056 per full-screen layer here), NVIDIA counts pixels.
         let full = u64::from(QUAD_COUNT) * pixels / 4;
         assert!(far.total.fragment_shader_invocations >= full, "{far:?}");
+        let unit = timing.detail_support().fragment_unit.expect("calibrated");
+        // The unit the calibration draw found must turn this scene's count back into its pixels.
+        assert!(
+            unit.pixels_of(far.total.fragment_shader_invocations) >= u64::from(QUAD_COUNT) * pixels,
+            "{unit:?} {far:?}"
+        );
         assert!(
             near.total.fragment_shader_invocations <= 2 * pixels,
             "{near:?}"
