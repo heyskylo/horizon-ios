@@ -1045,7 +1045,18 @@ pub fn stack_view(stack: &crate::items::ItemStack) -> StackView {
             let key = k.to_string_lossy();
             match key.strip_prefix('!') {
                 Some(removed) => view.patch.insert(removed.to_owned(), None),
-                None => view.patch.insert(key, Some(tag_json(v))),
+                None => {
+                    // The component codec turns NBT numeric booleans into JSON booleans.
+                    // Generic NBT conversion must keep unrelated bytes numeric.
+                    let value = if key == "minecraft:enchantment_glint_override" {
+                        crate::item_data::component_bool(v)
+                            .map(Value::Bool)
+                            .unwrap_or_else(|| tag_json(v))
+                    } else {
+                        tag_json(v)
+                    };
+                    view.patch.insert(key, Some(value))
+                }
             };
         }
     }
@@ -1332,12 +1343,85 @@ mod tests {
             ("a", Tag::Int(3)),
             ("b", Tag::List(vec![Tag::String("x".into())])),
             ("c", Tag::Float(1.5f32.to_bits())),
+            ("d", Tag::Byte(1)),
         ]);
         assert_eq!(
             tag_json(&tag),
-            serde_json::json!({"a": 3, "b": ["x"], "c": 1.5})
+            serde_json::json!({"a": 3, "b": ["x"], "c": 1.5, "d": 1})
         );
     }
+    #[test]
+    fn stack_glint_override_reaches_the_resolved_item_layers() {
+        use horizon_assets::item_model::NoEnv;
+        let mut models = ItemModels::default();
+        models.definitions.insert(
+            "horizon:fixture".into(),
+            ClientItem::from_json(
+                r#"{"model":{"type":"minecraft:model","model":"horizon:item/fixture"}}"#,
+            )
+            .unwrap(),
+        );
+        for default in [false, true] {
+            models.prototypes.insert(
+                "minecraft:diamond".into(),
+                BTreeMap::from([
+                    (
+                        "minecraft:item_model".into(),
+                        serde_json::json!("horizon:fixture"),
+                    ),
+                    (
+                        "minecraft:enchantment_glint_override".into(),
+                        Value::Bool(default),
+                    ),
+                ]),
+            );
+            for (tag, flag) in [
+                (Tag::Byte(1), true),
+                (Tag::Byte(0), false),
+                (Tag::Byte(-1), true),
+                (Tag::Short(256), true),
+                (Tag::Int(1), true),
+                (Tag::Long(1 << 40), true),
+                (Tag::Float(0.5_f32.to_bits()), true),
+                (Tag::Float((-0.0_f32).to_bits()), false),
+                (Tag::Double(0.5_f64.to_bits()), true),
+                (Tag::Double((-0.0_f64).to_bits()), false),
+                (Tag::Float(f32::NAN.to_bits()), true),
+                (Tag::Double(f64::INFINITY.to_bits()), true),
+            ] {
+                let mut stack = crate::items::ItemStack::new("minecraft:diamond", 1);
+                (stack.damage, stack.extra) = crate::item_data::decode_components(Some(
+                    &Tag::compound([("minecraft:enchantment_glint_override", tag)]),
+                ));
+                assert_eq!(stack.has_foil(default), flag);
+                let view = stack_view(&stack);
+                assert_eq!(
+                    view.patch["minecraft:enchantment_glint_override"],
+                    Some(Value::Bool(flag))
+                );
+                let resolved = models.resolve(
+                    &view,
+                    &Context {
+                        display: DisplayContext::Gui,
+                        owner: None,
+                        level: None,
+                        seed: 0,
+                    },
+                    &NoEnv,
+                );
+                assert_eq!(resolved.layers.len(), 1);
+                assert_eq!(
+                    resolved.layers[0].foil,
+                    if flag {
+                        FoilType::Standard
+                    } else {
+                        FoilType::None
+                    }
+                );
+            }
+        }
+    }
+
     #[test]
     fn palette_trns_partial_alpha_counts_as_translucent() {
         // Slime/honey (and ice) are indexed PNGs with a tRNS chunk. Decode must

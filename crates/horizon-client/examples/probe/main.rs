@@ -98,6 +98,7 @@ mod sound_event_fixture;
 mod spawn_rules_fixture;
 mod sprint_probe;
 mod squid_client_probe;
+mod stack_foil_fixture;
 mod storage_menu_fixture;
 mod subtitle_fixture;
 mod tab_list_fixture;
@@ -214,6 +215,7 @@ probes! {
     trading_fixture,
     trident_probe,
     translucency_fixture,
+    stack_foil_fixture,
     vehicle_container_fixture,
     weather_fixture,
     world_border_render_fixture,

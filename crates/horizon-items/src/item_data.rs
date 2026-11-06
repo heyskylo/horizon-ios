@@ -255,6 +255,20 @@ pub fn destroyed_container(stack: &mut ItemStack) -> Vec<ItemStack> {
     held.into_iter().map(|(_, stack)| stack).collect()
 }
 
+/// `NbtOps.getBooleanValue`, used by boolean component codecs: every numeric tag
+/// is true unless its double value is zero. In particular, fractions stay true.
+pub fn component_bool(value: &Tag) -> Option<bool> {
+    Some(match value {
+        Tag::Byte(v) => *v != 0,
+        Tag::Short(v) => *v != 0,
+        Tag::Int(v) => *v != 0,
+        Tag::Long(v) => *v != 0,
+        Tag::Float(bits) => f32::from_bits(*bits) != 0.0,
+        Tag::Double(bits) => f64::from_bits(*bits) != 0.0,
+        _ => return None,
+    })
+}
+
 impl ItemStack {
     pub fn new(item: &str, count: u32) -> Self {
         Self {
@@ -334,11 +348,12 @@ impl ItemStack {
     /// non-empty `minecraft:enchantments` component (`Item.isFoil` is
     /// `ItemStack.isEnchanted`; stored book enchantments do not count).
     pub fn has_foil(&self, item_glint: bool) -> bool {
-        if let Some(Tag::Byte(flag)) = self
+        if let Some(flag) = self
             .data()
             .and_then(|d| d.other("minecraft:enchantment_glint_override"))
+            .and_then(component_bool)
         {
-            return *flag != 0;
+            return flag;
         }
         item_glint || !self.enchantments().is_empty()
     }
