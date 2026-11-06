@@ -3310,6 +3310,8 @@ impl Game<'_> {
                     false,
                     horizon_client::level_loading::Reason::Other,
                 );
+                // handleLogin: ClientPlayerNetworkEvent.LoggingIn, the new level made.
+                self.native_client_player_network_logging_in();
                 // No ClientInformation here: the configuration phase sent it,
                 // and ClientPacketListener.broadcastClientInformation sends it
                 // again only when an option changes it.
