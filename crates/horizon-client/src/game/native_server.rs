@@ -10,7 +10,9 @@
 use super::{Dim, Game, commands::execute, lan::LanHost};
 // Their old home, for mixin code that names them here.
 pub(crate) use horizon_client::mod_api::{NativeCommand, NativeServerPlayer};
-use horizon_client::{items::ItemStack, lan::data::component_nbt, text::Text};
+use horizon_client::{
+    items::ItemStack, lan::data::component_nbt, mod_api::NativeCommandResult, text::Text,
+};
 use horizon_protocol::packets::play::{self, Clientbound as C};
 use serde_json::{Map, Value, json};
 use std::{collections::HashMap, path::PathBuf};
@@ -488,6 +490,48 @@ impl Game<'_> {
         let ok = self.as_console(|g| g.run_command(line));
         self.command_source = outer;
         ok
+    }
+    /// `native_run_command` with its answer kept, as vanilla's
+    /// `CommandSourceStack.withCallback` on a source that keeps what it is
+    /// sent: `line` (a leading slash allowed) runs as the console, a command a
+    /// mod registered going to the mods (`native_perform_console_command`),
+    /// anything else to vanilla's. The lines it answers with come back in
+    /// `output` and reach no one else, operators included. Only where
+    /// `native_run_command` runs: inside a player's hook nothing runs. API
+    /// @API:run_command_captured@.
+    pub(super) fn native_run_command_captured(&mut self, line: &str) -> NativeCommandResult {
+        let mut out = NativeCommandResult::default();
+        if self.lan_acting.is_some() || self.lan.is_none() {
+            return out;
+        }
+        let line = line.strip_prefix('/').unwrap_or(line);
+        let outer_lines = self.chat_capture.replace(Vec::new());
+        let outer_results = self.cmds.results.replace(Vec::new());
+        let admins = self.admin_feedback.len();
+        let modded = self
+            .lan
+            .as_ref()
+            .is_some_and(|host| Self::native_command_level(host, line).is_some());
+        if modded {
+            self.native_perform_console_command(line, &mut out.ran);
+            if !out.ran {
+                self.native_feedback(
+                    Text::translate("command.unknown.command", &[])
+                        .with_color(horizon_client::text::RED),
+                );
+            }
+        } else {
+            out.ran = self.native_run_command(line);
+        }
+        self.admin_feedback.truncate(admins);
+        out.output = std::mem::replace(&mut self.chat_capture, outer_lines).unwrap_or_default();
+        let results = std::mem::replace(&mut self.cmds.results, outer_results).unwrap_or_default();
+        out.result = if modded {
+            i32::from(out.ran)
+        } else {
+            results.iter().filter(|r| r.0).map(|r| r.1).sum()
+        };
+        out
     }
     /// The open world's folder (`world/`, beside its `level.dat`): a server
     /// mod keeps its data in a folder of its own there, so the world's

@@ -2484,6 +2484,17 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
 - **`native_player_jump(player, name)`**: accepted guest movement made the server player jump from the ground, after movement simulation finishes. The guest's state is swapped in.
 - **`native_player_kicked(player, name, reason)`**: a guest was kicked after the hub recorded the rendered disconnect reason and sent the disconnect. The guest's state is swapped in, unless the guest was already removed in the same poll (a kick and the disconnect arriving together): the hook still fires, without it.
 - **`native_player_level_change(player, name, from, to)`**: a server player's experience change altered their level, after the new level was applied. The guest's state is swapped in when the player is a guest.
+
+#### Running commands from mods
+
+- `native_run_command_captured(line) -> NativeCommandResult`: `native_run_command` with the answer kept (vanilla's
+  `CommandSourceStack.withCallback` on a source that keeps what it is sent). `line` (a leading slash allowed) runs as
+  the console; a command a mod registered goes to the mods (`native_perform_console_command`), anything else to
+  vanilla's. `ran` says it ran without failing, `result` is vanilla's result value (the sum of the successful results,
+  one per fork of `execute as @a run ...`; 0 for a failed `execute if entity`; 1 for a mod's command a mod ran), and
+  `output` holds the lines it answered with, which reach no one else, operators included. Where `native_run_command`
+  runs (no player swapped in); inside a player's hook nothing runs. Bundles need `"hooks": @API:run_command_captured@`.
+
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a

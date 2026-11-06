@@ -435,6 +435,20 @@ impl NativeCommand {
     }
 }
 
+/// What a command a mod ran did (`native_run_command_captured`): whether it
+/// ran without failing, its result and the lines it answered with, in order.
+#[derive(Clone, Debug, Default, PartialEq)]
+#[non_exhaustive]
+pub struct NativeCommandResult {
+    pub ran: bool,
+    /// Vanilla's `CommandResultCallback` value: the sum of the successful
+    /// results (one for a plain command, one per fork of `execute as @a run`),
+    /// 0 when it failed (`execute if entity` of nobody). A mod's command gives
+    /// 1 when a mod ran it.
+    pub result: i32,
+    pub output: Vec<Text>,
+}
+
 /// Which `Game` observes the phase; a mirror `Game` never fires.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
