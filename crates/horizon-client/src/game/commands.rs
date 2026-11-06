@@ -4076,6 +4076,11 @@ impl Game<'_> {
                     secure: false,
                 });
             }
+            // SayCommand sends no feedback: the broadcast above already reached
+            // the guest whose command is being captured.
+            if self.lan.is_some() && self.chat_capture.is_some() {
+                return Ok(1);
+            }
             self.player_message(line);
             return Ok(1);
         }
