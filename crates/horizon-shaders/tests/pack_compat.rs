@@ -87,3 +87,23 @@ fn global_constant_reads_a_member_of_an_array_element() {
          void main() { gl_FragData[0] = stretch; }\n",
     );
 }
+
+#[test]
+fn integer_samplers_read_through_the_float_sampling_functions() {
+    // Mello, Voyager, Exposa, Reverie: `uint mask = texture(colortex3, uv).r` on a usampler2D.
+    let module = assert_terrain_translates(
+        "#version 330\nuniform usampler2D colortex3;\nuniform isampler2D colortex4;\n\
+         uint read(usampler2D s, vec2 p) { return texture(s, p).r; }\n\
+         in vec2 texcoord;\nlayout(location = 0) out vec4 color;\n\
+         void main() {\n\
+         uint mask = texture(colortex3, texcoord).r + read(colortex3, texcoord);\n\
+         int lod = textureLod(colortex4, texcoord, 1.0).g + texture(colortex4, texcoord, 0.5).b;\n\
+         color = vec4(float(mask), float(lod), 0.0, 1.0);\n}\n",
+    );
+    assert!(
+        module
+            .functions
+            .iter()
+            .any(|(_, f)| f.name.as_deref() == Some("hz_integerTexture"))
+    );
+}
