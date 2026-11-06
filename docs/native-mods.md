@@ -2484,6 +2484,19 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
 - **`native_player_jump(player, name)`**: accepted guest movement made the server player jump from the ground, after movement simulation finishes. The guest's state is swapped in.
 - **`native_player_kicked(player, name, reason)`**: a guest was kicked after the hub recorded the rendered disconnect reason and sent the disconnect. The guest's state is swapped in, unless the guest was already removed in the same poll (a kick and the disconnect arriving together): the hook still fires, without it.
 - **`native_player_level_change(player, name, from, to)`**: a server player's experience change altered their level, after the new level was applied. The guest's state is swapped in when the player is a guest.
+
+#### Server hooks for plugin ports: diagnostics
+
+What a diagnostics or profiler port (Bukkit's `getTPS`, spark, PacketEvents' counters) reads. Each costs nothing
+while no mod asks for it.
+
+- **`native_tick_times()`** and **`native_tps()`**: the last 100 server tick durations in nanoseconds, laid out as
+  vanilla's `MinecraftServer.getTickTimesNanos` (the tick numbered `n` at index `n % 100`, 0 where none was recorded
+  yet; sort a copy for percentiles, `native_tick_stats` has the average), and the ticks a second over the last one,
+  five and fifteen minutes (Bukkit's `Server.getTPS`), measured between the ends of the recorded ticks and averaged
+  once a second as a load average is. They start at 20; an idle server reads 20, a sprint more and a server that
+  falls behind less. Bundles need `"hooks": @API:tick_times@`.
+
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a

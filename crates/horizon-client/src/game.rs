@@ -222,6 +222,7 @@ mod native_components;
 mod native_configs;
 mod native_criteria;
 mod native_data_maps;
+mod native_diagnostics;
 mod native_entities;
 mod native_entity_data;
 mod native_entity_motion;
