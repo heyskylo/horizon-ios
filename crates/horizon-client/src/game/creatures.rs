@@ -191,6 +191,16 @@ impl ProjectileWorld for ProjWorld<'_, '_> {
     fn empty(&self, p: [i32; 3]) -> bool {
         self.w.facts.is_air(self.w.world.block(p[0], p[1], p[2]))
     }
+    fn bubble_column(&self, p: [i32; 3]) -> Option<(bool, bool)> {
+        horizon_client::motion::bubble_column_at(
+            self.w.world,
+            self.w.registry,
+            self.w.facts,
+            self.w.collision,
+            BlockPos::new(p[0], p[1], p[2]),
+        )
+        .map(|c| (c.drag, c.surface))
+    }
     fn solid(&self, p: [i32; 3]) -> bool {
         self.w
             .facts
