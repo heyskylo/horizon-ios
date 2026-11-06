@@ -11,6 +11,37 @@ use horizon_world::{
 };
 
 impl Game<'_> {
+    /// `Enderman.hurtServer` teleports inside the hurt (`teleport()`,
+    /// `repeatedlyTryToTeleport()`). `Mob::damage` has no world, so it leaves
+    /// the tries in `counter2`; a hurt the game layer deals runs them here,
+    /// right after it, not on the enderman's next AI step.
+    pub(super) fn settle_hurt_teleports(&mut self) -> Result<()> {
+        let mut events = Vec::new();
+        for i in 0..self.mobs.len() {
+            let m = &self.mobs[i];
+            if m.species() != Species::Enderman || m.extra.counter2 <= 0 {
+                continue;
+            }
+            // The world is read while the enderman moves: take it out, then put
+            // it back where it was.
+            let mut mob = self.mobs.swap_remove(i);
+            {
+                let world = self.mob_world_base(&[]);
+                horizon_client::mobs::enderman::run_pending_teleports(
+                    &mut mob,
+                    &world,
+                    &mut events,
+                );
+            }
+            self.mobs.push(mob);
+            let last = self.mobs.len() - 1;
+            self.mobs.swap(i, last);
+        }
+        if events.is_empty() {
+            return Ok(());
+        }
+        self.handle_mob_events(events)
+    }
     /// `EndermanLeaveBlockGoal.tick`: normalize, check, place, then clear.
     pub(super) fn enderman_place_block(
         &mut self,

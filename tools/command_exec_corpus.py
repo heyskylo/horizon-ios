@@ -926,6 +926,32 @@ def item_command_damage():
     return ops + setup('/kill @e[tag=item_hurt_actor]', '/scoreboard objectives remove item_hurt', '/tick unfreeze')
 
 
+def enderman_command_damage():
+    """DamageCommand -> Enderman.hurtServer: with no living entity behind the damage,
+    random.nextInt(10) != 0 teleports the enderman then and there (teleport()), also when
+    the hurt cooldown refuses the hit. The world is frozen, so no AI step does it later. The
+    enderman floats (NoGravity) 32 blocks over a stone floor, so its teleport lands on it."""
+    ops = setup('/forceload add 128 128 223 223', '/fill 144 199 144 208 199 208 minecraft:stone')
+    # Every chunk a target can land in holds its entities (else @e no longer sees it there).
+    ops += [{'op': 'settle', 'required_chunks': [[x, z] for x in range(9, 14) for z in range(9, 14)]}]
+    ops += setup('/tick freeze')
+    ender = '@e[tag=hurt_tp,limit=1]'
+    ops += setup('/summon enderman 176.5 232 176.5 {Tags:["hurt_tp"],NoGravity:1b,PersistenceRequired:1b}')
+    ops += [cmd(f'/execute if entity {ender}', expect_result=1)]
+    # Nine draws in ten teleport. Hit again only while it is still where it was (a second
+    # teleport from the floor could leave it): four leave it in place one time in 10^4.
+    origin = '/execute positioned 176.5 232 176.5 as @e[tag=hurt_tp,distance=..0.5] run '
+    ops += [cmd(f'/damage {ender} 1')]
+    ops += setup(*[origin + 'damage @s 1'] * 3)
+    ops += [cmd(f'/execute if entity {ender}', expect_result=1),
+            cmd('/execute if entity @e[tag=hurt_tp,x=144,y=200,z=144,dx=64,dy=0,dz=64]', expect_result=1),
+            cmd('/execute positioned 176.5 232 176.5 unless entity @e[tag=hurt_tp,distance=..0.5]',
+                expect_result=1)]
+    ops += setup('/kill @e[tag=hurt_tp]', '/fill 144 199 144 208 199 208 minecraft:air',
+                 '/forceload remove 128 128 223 223', '/tick unfreeze')
+    return ops
+
+
 def dragon_command_damage():
     """DamageCommand -> EnderDragon.hurtServer (the body: a quarter plus up to 1, health only
     with a player behind it or #is_explosion, success either way) and EndCrystal.hurtServer
@@ -5888,6 +5914,7 @@ def groups():
         ('mannequin pose anchors', mannequin_pose_anchors()),
         ('item command damage', item_command_damage()),
         ('dragon command damage', dragon_command_damage()),
+        ('enderman command damage', enderman_command_damage()),
         ('execute', execute()),
         ('projectile origin', projectile_origin()),
         ('selector missing predicates', selector_missing_predicates()),

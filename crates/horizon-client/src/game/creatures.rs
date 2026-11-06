@@ -949,6 +949,9 @@ impl Game<'_> {
     }
     /// Advance every mob one tick, then apply their events.
     pub(super) fn tick_creatures(&mut self) -> Result<()> {
+        // Hurts dealt since the last creature tick (explosions, commands, the
+        // systems after it) teleport an enderman before it ticks, not in its AI step.
+        self.settle_hurt_teleports()?;
         self.attack_ticks = self.attack_ticks.saturating_add(1);
         self.refresh_gear_knockback_resistance();
         self.tick_leads();
@@ -1336,6 +1339,8 @@ impl Game<'_> {
             queued.append(&mut m.outbox);
         }
         self.handle_mob_events(queued)?;
+        // The enderman teleports those hurts asked for (`Enderman.hurtServer`).
+        self.settle_hurt_teleports()?;
         laps.lap("creature_outbox");
         Ok(())
     }
