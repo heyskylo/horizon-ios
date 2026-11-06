@@ -187,8 +187,9 @@ fn calibration_nits(p: vec2<f32>, size: vec2<f32>) -> f32 {
     var light = pow(c, vec3(2.2));
     // HDR lighting: alpha between 0.76 and 1 is how much of it the surface gets. Vanilla's
     // light is albedo times lightmap, so this is the lightmap going past 1. It eases into the
-    // peak from 60% of it, so bright textures keep their detail.
-    if shows && w.a >= 0.75 {
+    // peak from 60% of it, so bright textures keep their detail. Unmarked light (alpha 1)
+    // gets no gain and no knee: the clamp to the peak below is all it needs here.
+    if shows && w.a >= 0.75 && w.a < 1.0 {
         let top = max(light.r, max(light.g, light.b));
         let gain = 1.0 + (params.scene - 1.0) * (1.0 - w.a) / 0.24;
         let v = top * gain;
