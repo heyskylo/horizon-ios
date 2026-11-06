@@ -6609,6 +6609,37 @@ impl Game<'_> {
             cancel,
         );
     }
+    /// A guest is about to place `stack` as the block `state` at `pos`:
+    /// where `BlockItem.place` has found the position and the state and
+    /// checked that the block survives there unobstructed, before anything is
+    /// set (Bukkit's `BlockPlaceEvent`, NeoForge's
+    /// `BlockEvent.EntityPlaceEvent`). Set `cancel` and nothing is placed or
+    /// used (a failed placement): the client sees the blocks and its inventory
+    /// as they are, and `native_place_block` hears nothing. The guest's state
+    /// is swapped in. `state` is `getStateForPlacement`'s, before the stack's
+    /// `block_state` component; finding it asks `native_state_for_placement`
+    /// and `native_can_survive` once more. Server-side, guests only.
+    /// @API:block_place@.
+    pub(super) fn native_block_place(
+        &mut self,
+        player: u128,
+        name: &str,
+        stack: &ItemStack,
+        pos: [i32; 3],
+        state: BlockStateId,
+        cancel: &mut bool,
+    ) {
+        mod_api::dispatch_block_place(
+            self,
+            mod_api::mods(),
+            player,
+            name,
+            stack,
+            pos,
+            state,
+            cancel,
+        );
+    }
     /// A click in a menu a mod opened (`native_open_menu`), which moved
     /// nothing: the menu's `slot` (its own first, then the player's
     /// inventory, `native_menu_inventory_slot`; -999 outside), the `button`

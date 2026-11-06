@@ -2505,6 +2505,14 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   cursor evenly (left button), 1 puts one in each slot (right), 2 clones (middle, creative), and `slots` are the window
   slots the client dragged over, in order (the menu still skips those that cannot take the stack). Set `cancel` and
   nothing moves: the drag ends empty and the client's predicted slots and cursor are answered with the server's.
+- **`native_block_place(player, name, stack, pos, state, cancel)`**: a guest is about to place `stack` as the block
+  `state` at `pos`, heard where `BlockItem.place` has found the position and the state and checked that the block
+  survives there unobstructed, before anything is set (Bukkit's `BlockPlaceEvent`, NeoForge's
+  `BlockEvent.EntityPlaceEvent`). Set `cancel` and nothing is placed or used (a failed placement, so the hand does not
+  swing); the client sees the blocks and its inventory as they are, and `native_place_block` hears nothing. The guest's
+  state is swapped in. `state` is `getStateForPlacement`'s, before the stack's `block_state` component; finding it asks
+  `native_state_for_placement` and `native_can_survive` once more. Unlike claiming `native_use_item_on`, the block's
+  own use (a door, a chest) and the item's other uses are left alone.
 
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
