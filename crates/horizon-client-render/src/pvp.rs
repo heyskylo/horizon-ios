@@ -761,6 +761,10 @@ pub struct Combat {
     pub indicator: bool,
     /// Under Legacy, silence the attack sounds 1.9 added (1.8.9 played none on a hit).
     pub sounds: bool,
+    /// The worlds this game hosts (single player and LAN) fight by 1.8.9's rules: no attack
+    /// cooldown, no sweep, 1.8 weapon damage, effects, enchantments and critical hits
+    /// (`horizon_client::legacy_combat`). Never used as a client of a server.
+    pub rules: bool,
 }
 impl Combat {
     /// Whether this client leaves out sound `name` a server sent: under Legacy with its
@@ -913,6 +917,7 @@ impl Pvp {
             },
             "combatIndicator" => self.combat.indicator = flag(value, self.combat.indicator),
             "combatSounds" => self.combat.sounds = flag(value, self.combat.sounds),
+            "combatRules" => self.combat.rules = flag(value, self.combat.rules),
             "viewTime" => {
                 t.time = match value {
                     "off" => None,
@@ -1041,8 +1046,8 @@ impl Pvp {
         let feel = if c.legacy { "legacy" } else { "modern" };
         let _ = write!(
             out,
-            "combatFeel:{feel}\ncombatIndicator:{}\ncombatSounds:{}\n",
-            c.indicator, c.sounds
+            "combatFeel:{feel}\ncombatIndicator:{}\ncombatSounds:{}\ncombatRules:{}\n",
+            c.indicator, c.sounds, c.rules
         );
     }
 }
@@ -1188,6 +1193,8 @@ opts! {
         "Keeps the attack indicator under Legacy, which 1.8.9 didn't have.";
     CombatSounds, "combat_sounds", "1.8 hit sounds",
         "Under Legacy, leaves out the attack sounds 1.9 added (strong, weak, sweep, critical...). Hurt sounds stay.";
+    CombatRules, "combat_rules", "1.8 combat in worlds you host",
+        "Single player and the worlds you open to LAN fight by 1.8.9's rules: no attack cooldown or sweep, 1.8 weapon damage, Strength, Sharpness and critical hits. Servers you join keep their own rules.";
 }
 /// The PvP & HUD page: headers (language keys) and options.
 pub fn rows() -> Vec<Result<Opt, &'static str>> {
@@ -1268,7 +1275,7 @@ pub fn rows() -> Vec<Result<Opt, &'static str>> {
     rows.push(Err("horizon.pvp.header.chat"));
     rows.extend([ChatTimestamps, ChatCompact, ChatCopy, ChatSearch].map(Ok));
     rows.push(Err("horizon.pvp.header.combat"));
-    rows.extend([CombatFeel, CombatIndicator, CombatSounds].map(Ok));
+    rows.extend([CombatFeel, CombatIndicator, CombatSounds, CombatRules].map(Ok));
     rows
 }
 impl Opt {
@@ -1292,7 +1299,7 @@ impl Opt {
             FireLower | ShieldSize | TotemSize | GlintColour | ClearWater | ClearLava => None,
             ViewTime | ViewWeather => None,
             ChatTimestamps | ChatCompact | ChatCopy | ChatSearch => None,
-            CombatFeel | CombatIndicator | CombatSounds => None,
+            CombatFeel | CombatIndicator | CombatSounds | CombatRules => None,
             HudPingCorner => Some(HudPing),
             HudCoordsCorner => Some(HudCoords),
             HudServerCorner => Some(HudServer),
@@ -1336,6 +1343,7 @@ impl Opt {
             Opt::ChatSearch => p.chat.search,
             Opt::CombatIndicator => p.combat.indicator,
             Opt::CombatSounds => p.combat.sounds,
+            Opt::CombatRules => p.combat.rules,
             _ => return None,
         })
     }
@@ -1493,6 +1501,7 @@ impl Opt {
             Opt::CombatFeel => p.combat.legacy = !p.combat.legacy,
             Opt::CombatIndicator => p.combat.indicator = !p.combat.indicator,
             Opt::CombatSounds => p.combat.sounds = !p.combat.sounds,
+            Opt::CombatRules => p.combat.rules = !p.combat.rules,
             Opt::ViewWeather => {
                 let all: Vec<_> = std::iter::once(None)
                     .chain(ViewWeather::ALL.map(Some))
