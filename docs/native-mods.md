@@ -2541,6 +2541,12 @@ console (which waits for the next tick and does nothing inside a player's hook).
   changes, they respawn or they leave (vanilla sets it for the mode then); not saved. Done at once where nobody's state
   is swapped in, else after the players' packets of the server tick. True when done or queued; false for a player not
   on the server (where that can be seen) and on a client. Server-side. Bundles need `"hooks": @API:set_flight@`.
+- Helper **`native_respawn_player(uuid)`** (`host.respawn_player`): respawns a dead server player as their client's
+  Respawn click does (`ClientCommand` `PERFORM_RESPAWN`; Spigot's `player.spigot().respawn()`): at their bed, anchor or
+  the world spawn, with the respawn hooks, without waiting for the click. Done after the players' packets of the server
+  tick (the same tick from a packet's hook or the tick's start, else the next). True when queued; false for a player
+  seen not on the server or alive (inside another player's hook nobody else can be seen: it is queued and does nothing
+  for a living player), and on a client. Server-side. Bundles need `"hooks": @API:respawn_player@`.
 
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The

@@ -3703,7 +3703,7 @@ impl Game<'_> {
         );
     }
 
-    fn guest_respawn(&mut self, host: &mut LanHost, conn: u32) {
+    pub(super) fn guest_respawn(&mut self, host: &mut LanHost, conn: u32) {
         let Some(i) = host.hub.guests.iter().position(|g| g.conn == conn) else {
             return;
         };

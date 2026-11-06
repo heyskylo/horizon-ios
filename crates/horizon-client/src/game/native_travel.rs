@@ -16,6 +16,7 @@ pub(super) enum NativeMove {
         allow: bool,
         flying: bool,
     },
+    Respawn,
 }
 
 /// The level a mod names, of the three a server keeps.
@@ -285,6 +286,40 @@ impl Game<'_> {
         true
     }
 
+    /// Respawns the dead server player `uuid` as their client's Respawn click does (Spigot's
+    /// `player.spigot().respawn()`, `ClientCommand` `PERFORM_RESPAWN`): at their bed, anchor or
+    /// the world spawn, with `native_player_respawned` and the respawn hooks, without waiting
+    /// for the click. Done after the players' packets of the server tick (the same tick from a
+    /// packet's hook or the tick's start, else the next). True when queued; false for a player
+    /// seen not on the server or alive (inside a player's hook nobody else can be seen: it is
+    /// queued, and does nothing for a living player), and on a client. API
+    /// @API:respawn_player@.
+    pub(super) fn native_respawn_player(&mut self, uuid: u128) -> bool {
+        if !self.native_serves() {
+            return false;
+        }
+        if self.lan_acting_uuid == Some(uuid)
+            && self
+                .player
+                .as_ref()
+                .is_some_and(|p| p.health.health() > 0.0)
+        {
+            return false;
+        }
+        if self.lan_acting.is_none()
+            && let Some(host) = &self.lan
+            && !host
+                .hub
+                .guests
+                .iter()
+                .any(|g| g.placed && g.dead && g.uuid == uuid)
+        {
+            return false;
+        }
+        self.native_moves.push((uuid, NativeMove::Respawn));
+        true
+    }
+
     /// The teleport of a server player while nobody's state is swapped in.
     fn native_teleport_now(
         &mut self,
@@ -326,6 +361,21 @@ impl Game<'_> {
                 }
                 NativeMove::Flight { allow, flying } => {
                     self.native_flight_now(uuid, allow, flying);
+                }
+                NativeMove::Respawn => {
+                    let Some(mut host) = self.lan.take() else {
+                        continue;
+                    };
+                    let dead = host
+                        .hub
+                        .guests
+                        .iter()
+                        .find(|g| g.placed && g.dead && g.uuid == uuid)
+                        .map(|g| g.conn);
+                    if let Some(conn) = dead {
+                        self.guest_respawn(&mut host, conn);
+                    }
+                    self.lan = Some(host);
                 }
             }
         }
