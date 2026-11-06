@@ -1562,7 +1562,7 @@ impl Launcher {
                     .flex()
                     .items_center()
                     .gap(px(10.))
-                    .child(div().size(px(8.)).rounded_full().bg(dot))
+                    .child(div().size(px(8.)).bg(dot))
                     .child(caps(phase_label(&status)).text_color(t.muted))
                     .when_some(status.uptime.filter(|_| running), |d, up| {
                         d.child(caps(format!("· up {}", uptime(up))).text_color(t.muted))
@@ -1683,7 +1683,7 @@ impl Launcher {
                     .items_center()
                     .gap(px(12.))
                     .p(px(16.))
-                    .child(div().flex_none().size(px(6.)).rounded_full().bg(t.success))
+                    .child(div().flex_none().size(px(6.)).bg(t.success))
                     .child(
                         div()
                             .flex_1()
@@ -1706,7 +1706,7 @@ impl Launcher {
                     .items_center()
                     .gap(px(12.))
                     .p(px(16.))
-                    .child(div().flex_none().size(px(6.)).rounded_full().bg(t.accent))
+                    .child(div().flex_none().size(px(6.)).bg(t.accent))
                     .child(
                         div()
                             .flex_1()
@@ -3046,7 +3046,6 @@ impl Launcher {
                         .child(
                             div()
                                 .size(px(12.))
-                                .rounded_full()
                                 .border_1()
                                 .border_color(if chosen { t.accent } else { t.muted })
                                 .when(chosen, |d| d.bg(t.accent)),
@@ -3120,7 +3119,6 @@ impl Launcher {
                 .id(id)
                 .flex_none()
                 .size(px(18.))
-                .rounded(px(4.))
                 .border_1()
                 .border_color(if on { t.accent } else { t.muted })
                 .bg(if on { t.accent } else { t.surface })

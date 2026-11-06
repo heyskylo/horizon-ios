@@ -567,8 +567,7 @@ impl Launcher {
         // `window.appearance()`, so both draw the same look.
         titlebar::apply_appearance(window, settings.appearance);
         let mut this = Self {
-            theme: Theme::for_appearance(settings.appearance, settings.accent, window.appearance())
-                .with_glass(settings.glass_tint(), settings.glass_blur()),
+            theme: crate::theme::from_settings(&settings, window.appearance()),
             page: Page::from_env(),
             switches: 0,
             content_scroll: Scrollbar::default(),
@@ -3257,9 +3256,7 @@ impl Launcher {
                                 .when(latest, |d| {
                                     d.child(caps(tr("auto-update")).flex_none().text_color(t.muted))
                                 })
-                                .when(selected, |d| {
-                                    d.child(div().size(px(6.)).rounded_full().bg(t.accent))
-                                }),
+                                .when(selected, |d| d.child(div().size(px(6.)).bg(t.accent))),
                         )
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.pin_version((!latest).then(|| tag.clone()));
@@ -3737,14 +3734,7 @@ impl Launcher {
             .text_size(px(theme::UI.px))
             .line_height(px(21.))
             .text_color(t.ink)
-            .child(
-                div()
-                    .flex_none()
-                    .mt(px(11.))
-                    .size(px(6.))
-                    .rounded_full()
-                    .bg(t.danger),
-            )
+            .child(div().flex_none().mt(px(11.)).size(px(6.)).bg(t.danger))
             .child(body)
     }
 
@@ -3984,6 +3974,7 @@ impl Launcher {
                         Some(appearance.into_any_element()),
                         &t,
                     ))
+                    .child(self.launcher_theme_row(cx))
                     .child(self.accent_row(cx))
                     .child(self.home_background_row(cx))
                     .child(self.language_row(cx))
@@ -5321,10 +5312,11 @@ impl Render for Launcher {
         if self.opening.is_none() && window.focused(cx).is_none() {
             window.focus(&self.root_focus, cx);
         }
-        // Dark: the new design's scene; Light keeps the dawn sky until the design has a light
-        // look.
+        // The glass look draws the new design's scene in the dark appearance; the light look and
+        // the blocky looks keep the baked sky. The sky is tiles that don't depend on the
+        // window's size, so a resize costs no rebake.
         glass::begin_build(window);
-        let sky = if t.dark {
+        let sky = if t.glass && t.dark {
             self.scene.clone().into_any_element()
         } else {
             let (sky, next) = self.sky.render(
