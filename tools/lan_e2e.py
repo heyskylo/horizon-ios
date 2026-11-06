@@ -13376,6 +13376,89 @@ CHECKS += ['levelup-sounds']
 CHECK_FNS['levelup-sounds'] = check_levelup_sounds
 
 
+def check_death_credit(host, guest, out):
+    """ServerPlayer.die for each player (#9955): the death is heard (`gameEvent(ENTITY_DIE)`: a sensor
+    3 blocks away takes frequency 15, which beats the killing blow's `entity_damage`, 7, from the same
+    spot), and the kill credit's type gets a `killed_by` statistic: for a zombie's hit, and for a
+    creeper's blast, which kills inside the explosion while the creeper is still there."""
+    hx, hy, hz = (int(v // 1) for v in pos_of(host))
+    for kind in ('zombie', 'creeper'):
+        host('command', command=f'scoreboard objectives add death_by_{kind} minecraft.killed_by:minecraft.{kind}')
+    for rule in ('keep_inventory true', 'natural_health_regeneration false', 'spawn_mobs false'):
+        host('command', command=f'gamerule {rule}')
+    seen = {}
+
+    def quiet(game, sensor):
+        state, still = None, 0
+        for _ in range(200):
+            game.wait(1)
+            state = game.raw('getblock', *sensor)['block']
+            still = still + 1 if 'sculk_sensor_phase=inactive' in state else 0
+            if still == 10:
+                return
+        raise Failed(f'sensor did not settle: {state}')
+
+    try:
+        for game, dz in ((host, -6), (guest, 6)):
+            x, z = hx + 8, hz + dz
+            sensor = (x + 3, hy, z)
+            host('command', command=f'fill {x - 12} {hy - 1} {z - 2} {x + 4} {hy - 1} {z + 2} minecraft:stone')
+            host('command', command=f'fill {x - 12} {hy} {z - 2} {x + 4} {hy + 3} {z + 2} minecraft:air')
+            # The zombie stands beyond the sensor's 8 blocks, under a roof so that daylight doesn't burn it.
+            host('command', command=f'setblock {x - 10} {hy + 2} {z} minecraft:stone')
+            host('command', command=f'summon minecraft:zombie {x - 9.5} {hy} {z + 0.5} {{NoAI:1b,PersistenceRequired:1b}}')
+            game('command', command='gamemode survival')
+            game('command', command=f'tp @s {x + 0.5} {hy} {z + 0.5} 90 0')
+            game('command', command='effect give @s minecraft:instant_health 1 5 true')
+            host('command', command=f'setblock {sensor[0]} {sensor[1]} {sensor[2]} minecraft:sculk_sensor')
+            quiet(game, sensor)
+            game('command', command='damage @s 1000 minecraft:mob_attack by @e[type=minecraft:zombie,limit=1,sort=nearest]')
+            game.wait(10)
+            heard = command_says(game, f'data get block {sensor[0]} {sensor[1]} {sensor[2]} last_vibration_frequency')
+            by_zombie = command_says(game, 'scoreboard players get @s death_by_zombie')
+            respawn_when_ready(game)
+            game.wait(20)
+            back_to_game(game)
+            # A creeper lit with flint and steel blows up the player, left at one health.
+            host('command', command=f'kill @e[type=minecraft:zombie,x={x - 9.5},y={hy},z={z + 0.5},distance=..2]')
+            host('command', command=f'summon minecraft:creeper {x + 2.5} {hy} {z + 0.5} {{NoAI:1b}}')
+            game('command', command=f'tp @s {x + 0.5} {hy} {z + 0.5} -90 0')
+            game('command', command='effect give @s minecraft:instant_health 1 5 true')
+            game('command', command='give @s minecraft:flint_and_steel')
+            game.wait(10)
+            game.raw('select', 'minecraft:flint_and_steel')
+            game.wait(10)
+            game('command', command='damage @s 19 minecraft:generic')
+            creeper = game.raw('entities', 6, 'minecraft:creeper')['entities'][0]['id']
+            game.raw('interact-entity', creeper)
+            game.wait(60)
+            blown_up = game('state').get('screen')
+            by_creeper = command_says(game, 'scoreboard players get @s death_by_creeper')
+            respawn_when_ready(game)
+            game.wait(20)
+            back_to_game(game)
+            seen[game.name] = {'heard': heard, 'by_zombie': by_zombie, 'blown_up': blown_up, 'by_creeper': by_creeper}
+            host('command', command=f'fill {x - 12} {hy - 1} {z - 2} {x + 4} {hy + 3} {z + 2} minecraft:air')
+    finally:
+        host('command', command='gamerule natural_health_regeneration true')
+        host('command', command='gamerule keep_inventory false')
+        host('command', command='gamerule spawn_mobs true')
+        for kind in ('zombie', 'creeper'):
+            host('command', command=f'scoreboard objectives remove death_by_{kind}')
+        for game in (host, guest):
+            back_to_game(game)
+            game('command', command='clear @s')
+        face_each_other(host, guest)
+    for name, s in seen.items():
+        assert s['heard'].endswith(': 15'), f'{name} death not heard: {seen}'
+        assert ' has 1 ' in s['by_zombie'], f'{name} killed_by zombie: {seen}'
+        assert s['blown_up'] == 'dead', f'{name} survived the creeper: {seen}'
+        assert ' has 1 ' in s['by_creeper'], f'{name} killed_by creeper: {seen}'
+    return seen
+
+
+CHECKS += ['death-credit']
+CHECK_FNS['death-credit'] = check_death_credit
 def set_legacy_rules(game, on):
     """The PvP page's "1.8 combat in worlds you host" switch, as a player flips it."""
     game('options', page='pvp')
