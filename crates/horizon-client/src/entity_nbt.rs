@@ -734,7 +734,10 @@ pub fn mob_to_nbt(
         }
         "minecraft:creeper" => {
             map.insert("Fuse".into(), Tag::Short(m.max_swell as i16));
-            map.entry("ExplosionRadius".into()).or_insert(Tag::Byte(3));
+            map.insert(
+                "ExplosionRadius".into(),
+                Tag::Byte(m.extra.explosion_radius),
+            );
             map.insert("powered".into(), Tag::Byte(i8::from(m.extra.charged)));
             map.insert("ignited".into(), Tag::Byte(i8::from(m.extra.flag)));
         }
@@ -1829,6 +1832,8 @@ pub fn mob_from_nbt(
         // Creeper.readAdditionalSaveData: `ignited` lights the fuse.
         m.extra.flag = flag(tag, "ignited");
         m.max_swell = number(tag.get("Fuse")).unwrap_or(30) as i16 as i32;
+        // `getByteOr("ExplosionRadius", 3)`: any numeric tag, as a byte.
+        m.extra.explosion_radius = number(tag.get("ExplosionRadius")).unwrap_or(3) as i8;
     }
     if matches!(
         m.species(),
@@ -4194,6 +4199,52 @@ mod tests {
             mob.max_swell = 7;
             let saved = mob_to_nbt(&mob, [0; 4], Some(&raw), None, |_| None);
             assert_eq!(saved.get("Fuse"), Some(&Tag::Short(7)));
+        }
+    }
+
+    /// #11332: `Creeper.readAdditionalSaveData` reads `ExplosionRadius` as a
+    /// byte (default 3), `explodeCreeper` blows with it, twice it when powered,
+    /// and `addAdditionalSaveData` writes the value back as a byte.
+    #[test]
+    fn creeper_explosion_radius_nbt_sizes_the_blast_and_saves() {
+        let blast = |mob: &mut Mob| -> f32 {
+            let mut events = Vec::new();
+            mob.max_swell = 1;
+            crate::mobs::hostile::creeper_tick(mob, &mut events);
+            events
+                .iter()
+                .find_map(|e| match e {
+                    crate::mobs::MobEvent::Explode(_, radius, _) => Some(*radius),
+                    _ => None,
+                })
+                .expect("the creeper exploded")
+        };
+        for (radius, powered, expected) in [
+            (None, false, 3.0),
+            (None, true, 6.0),
+            (Some(Tag::Byte(12)), false, 12.0),
+            (Some(Tag::Byte(12)), true, 24.0),
+            (Some(Tag::Byte(0)), false, 0.0),
+            // getByteOr takes any numeric tag, narrowed to a byte.
+            (Some(Tag::Long(300)), false, 44.0),
+        ] {
+            let (mut mob, raw) = fused_creeper(None);
+            let mut tag = raw.clone();
+            if let Tag::Compound(c) = &mut tag {
+                if let Some(radius) = radius.clone() {
+                    c.insert("ExplosionRadius".into(), radius);
+                }
+                c.insert("powered".into(), Tag::Byte(i8::from(powered)));
+            }
+            let types = [("minecraft:creeper".into(), mob.kind.clone())].into();
+            mob = mob_from_nbt(&tag, &types, 1, None).unwrap();
+            let saved = mob_to_nbt(&mob, [0; 4], Some(&raw), None, |_| None);
+            assert_eq!(
+                saved.get("ExplosionRadius"),
+                Some(&Tag::Byte(expected as i8 / if powered { 2 } else { 1 })),
+                "{radius:?} powered={powered}"
+            );
+            assert_eq!(blast(&mut mob), expected, "{radius:?} powered={powered}");
         }
     }
 
