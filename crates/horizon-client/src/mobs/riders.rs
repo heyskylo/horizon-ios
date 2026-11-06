@@ -60,6 +60,7 @@ pub fn happy_ghast_attachment(index: usize) -> [f64; 3] {
     let [x, y, z] = SEATS[index.min(SEATS.len() - 1)];
     pt(x, y, z)
 }
+/// `Pig.getDefaultDimensions` and other species' age-specific passenger attachments.
 fn base_attachment(v: &Mob) -> [f64; 3] {
     let baby = v.is_baby();
     // Players and mannequins have no `passengerAttachments`: their box top.
@@ -74,6 +75,7 @@ fn base_attachment(v: &Mob) -> [f64; 3] {
         Species::Donkey => up(1.1125),
         Species::Mule => up(1.2125),
         Species::SkeletonHorse | Species::ZombieHorse => up(1.31875),
+        Species::Pig if baby => up(0.5),
         Species::Pig => up(0.86875),
         // `Hoglin.BABY_DIMENSIONS` and `EntityType.HOGLIN`.
         Species::Hoglin if baby => up(0.875),
@@ -193,8 +195,20 @@ pub fn link(mobs: &mut [Mob], rider: u32, vehicle: u32) {
         m.extra.mount = Some(vehicle);
         m.extra.passenger = true;
     }
-    if let Some(m) = mobs.iter_mut().find(|m| m.id == vehicle) {
+    if let Some(m) = mobs.iter_mut().find(|m| m.id == vehicle)
+        && m.extra.rider.is_none()
+    {
         m.extra.rider = Some(rider);
+    }
+}
+/// `canAddPassenger` with `aboard` passengers on `v`: a camel takes another
+/// while it carries at most two (`Camel`: `getPassengers().size() <= 2`, a baby
+/// too), a happy ghast up to four, anything else only when empty (`Entity`).
+pub fn can_add_passenger(v: &Mob, aboard: usize) -> bool {
+    match v.species() {
+        s if super::camel::is_camel(s) => aboard <= 2,
+        Species::HappyGhast => aboard < 4,
+        _ => aboard == 0,
     }
 }
 /// `Piglin.getTopPassenger`: down the chain of first passengers from
@@ -246,7 +260,13 @@ pub fn start_riding(mobs: &mut [Mob], rider: u32, vehicle: u32) -> bool {
     let Some(v) = mobs.iter().find(|m| m.id == vehicle) else {
         return false;
     };
-    if r.extra.boarding_cooldown > 0 || v.extra.rider.is_some() || v.rider.is_some() {
+    let count = usize::from(v.rider.is_some())
+        + mobs
+            .iter()
+            .filter(|m| m.extra.mount == Some(vehicle))
+            .count()
+            .max(usize::from(v.extra.rider.is_some()));
+    if r.extra.boarding_cooldown > 0 || !can_add_passenger(v, count) {
         return false;
     }
     link(mobs, rider, vehicle);
@@ -554,6 +574,35 @@ mod tests {
             1.312_500_059_604_645
         ));
     }
+    /// `Pig.getDefaultDimensions`: BABY_DIMENSIONS overrides PASSENGER.
+    #[test]
+    fn a_baby_pig_uses_its_own_passenger_attachment() {
+        let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
+        kind.id = "minecraft:pig".into();
+        kind.species = Species::Pig;
+        let kind = std::sync::Arc::new(kind);
+        let mut vehicle = Mob::new(1, kind.clone(), Vec3::new(4.5, 200.0, 4.5), 0.0);
+        let rider = Mob::new(2, kind, Vec3::ZERO, 0.0);
+        for (scale, baby_y, adult_y) in [
+            (0.0, 0.5, 0.868_749_976_158_142_1),
+            (1.0, 0.5, 0.868_749_976_158_142_1),
+            (2.0, 1.0, 1.737_499_952_316_284_2),
+        ] {
+            vehicle.extra.model_scale = scale;
+            for (age, expected) in [(-24000, baby_y), (-1, baby_y), (0, adult_y), (42, adult_y)] {
+                vehicle.extra.age = age;
+                let attachment = passenger_attachment(&vehicle);
+                assert_eq!(attachment, [0.0, expected, 0.0], "age={age}, scale={scale}");
+                let offset = vehicle_attachment(&rider, vehicle.width());
+                assert_eq!(offset, 0.0);
+                assert_eq!(
+                    seat(attachment, offset, vehicle.position, vehicle.yaw),
+                    Vec3::new(4.5, 200.0 + expected, 4.5)
+                );
+            }
+        }
+    }
+
     #[test]
     fn archers_keep_their_distance_and_brawlers_close_in() {
         assert!(ranged(Species::Skeleton) && ranged(Species::Pillager));
@@ -635,6 +684,33 @@ mod tests {
         ];
         assert!(start_riding(&mut others, 1, 2));
         assert_eq!(others[0].extra.variant3, 4);
+
+        // A camel takes riders while it carries at most two: the first stays
+        // extra.rider, and a fourth is refused.
+        let mut camel_ride = [
+            mob(1, "minecraft:husk", Species::Husk, 0),
+            mob(2, "minecraft:parched", Species::Parched, 0),
+            mob(3, "minecraft:zombie", Species::Zombie, 0),
+            mob(4, "minecraft:husk", Species::Husk, 0),
+            mob(10, "minecraft:camel_husk", Species::CamelHusk, 0),
+        ];
+        assert!(start_riding(&mut camel_ride, 1, 10), "first rider boards");
+        assert_eq!(camel_ride[4].extra.rider, Some(1), "first rider is driver");
+        assert!(start_riding(&mut camel_ride, 2, 10), "second rider boards");
+        assert_eq!(camel_ride[1].extra.mount, Some(10));
+        assert_eq!(camel_ride[4].extra.rider, Some(1), "driver stays");
+        assert!(start_riding(&mut camel_ride, 3, 10), "a third still fits");
+        assert!(!start_riding(&mut camel_ride, 4, 10), "a fourth is refused");
+        assert_eq!(camel_ride[3].extra.mount, None);
+
+        // Any other mob carries one.
+        let mut single = [
+            mob(1, "minecraft:zombie", Species::Zombie, 0),
+            mob(2, "minecraft:husk", Species::Husk, 0),
+            mob(10, "minecraft:chicken", Species::Chicken, 0),
+        ];
+        assert!(start_riding(&mut single, 1, 10));
+        assert!(!start_riding(&mut single, 2, 10));
     }
 }
 

@@ -113,6 +113,26 @@ def scenarios():
     for i, (x, seed) in enumerate([(0.5, 240), (6.5, 241)]):
         add(f'iron_golem_village_{i}', 400, VILLAGE + [f'mob minecraft:iron_golem {x} -60 3.5 0 {seed} persistent'], 'difficulty=0')
     add('iron_golem_outside_village', 400, VILLAGE + ['mob minecraft:iron_golem 30.5 -60 3.5 0 242 persistent'], 'difficulty=0')
+    # An enderman in the rain teleports away again and again (LivingEntity.randomTeleport): it lands
+    # on the first #entities_can_teleport_to block below the spot, at the spot's own height less the
+    # blocks it went down, never into a liquid, and not onto or into #enderman_does_not_teleport_to.
+    # The open field stops before a teleport lands past the probe's loaded 9x9 chunks.
+    add('enderman_rain_teleports', 46, ['mob minecraft:enderman 0.5 -60 0.5 0 351 persistent'], 'rain')
+    add('enderman_rain_dangers', 300, [
+        'fill -32 -61 -32 -1 -61 32 minecraft:magma_block',
+        'fill 1 -60 -32 32 -60 -1 minecraft:sweet_berry_bush[age=3]',
+        'fill 1 -60 1 32 -60 32 minecraft:wither_rose',
+        'fill -8 -61 -8 -2 -61 8 minecraft:bedrock',
+        'mob minecraft:enderman 0.5 -60 0.5 0 352 persistent',
+    ], 'rain')
+    # Not onto ground that holds water (Enderman.canRandomlyTeleportTo): a floor of waterlogged slabs.
+    add('enderman_rain_waterlogged', 190, [
+        'fill -32 -61 -32 32 -61 32 minecraft:oak_slab[type=top,waterlogged=true]',
+        'fill -3 -61 -3 3 -61 3 minecraft:stone',
+        'mob minecraft:enderman 0.5 -60 0.5 0 353 persistent',
+    ], 'rain')
+    # A NoAI enderman still teleports out of the rain's hurt (Enderman.hurtServer).
+    add('enderman_rain_noai', 46, ['mob minecraft:enderman 0.5 -60 0.5 0 354 persistent noai'], 'rain')
     # RandomStandGoal (rearing, with the ambient sound) of every equine, left alone for 800 ticks.
     for i, species in enumerate(['horse', 'donkey', 'mule', 'zombie_horse', 'skeleton_horse', 'llama']):
         # The zombie horse at night: by day it burns, and a burning horse's hurts are another matter.

@@ -9,7 +9,7 @@
 use horizon_core::{geometry::Vec3, random::RandomSource};
 
 use super::{
-    DamageKind, Mob, MobWorld, Species, Who,
+    Mob, MobWorld, Species, Who,
     goals::{
         Cx, Float, FollowParent, Goal, HurtByTarget, LookAtPlayer, MOVE, MeleeAttack,
         NearestTarget, Panic, RandomLookAround, Stroll, goal_clone,
@@ -88,20 +88,12 @@ impl Goal for PolarBearPanic {
         self.0.stop(m, cx)
     }
 }
-/// `DamageTypeTags.PANIC_ENVIRONMENTAL_CAUSES` (fire, lava, cactus), or
+/// `DamageTypeTags.PANIC_ENVIRONMENTAL_CAUSES` (`armadillo::environmental`), or
 /// burning.
 fn environmental_panic(m: &Mob) -> bool {
     m.fire_ticks > 0 && !m.kind.flags.fire_immune
         || m.last_damage.is_some_and(|(d, t)| {
-            matches!(
-                d.kind,
-                DamageKind::OnFire
-                    | DamageKind::InFire
-                    | DamageKind::Lava
-                    | DamageKind::Cactus
-                    | DamageKind::LightningBolt
-                    | DamageKind::HotFloor
-            ) && i64::from(m.age) - t <= 40
+            super::armadillo::environmental(d.kind) && i64::from(m.age) - t <= 40
         })
 }
 
@@ -274,5 +266,29 @@ mod tests {
         assert_eq!(m.dims().1, h0, "the flag alone does not grow the box");
         client_tick(&mut m);
         assert_eq!(m.dims().1, f64::from(base_h * (1.0 + 1.0 / STAND_TICKS)));
+    }
+}
+
+#[cfg(test)]
+mod freeze_panic_tests {
+    use super::*;
+
+    /// `#panic_environmental_causes` holds freeze and sulfur_cube_hot too.
+    #[test]
+    fn freezing_and_a_hot_sulfur_cube_are_environmental() {
+        let kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
+        for cause in [
+            super::super::DamageKind::Freeze,
+            super::super::DamageKind::SulfurCubeHot,
+        ] {
+            let mut m = Mob::new(
+                1,
+                std::sync::Arc::new(kind.clone()),
+                horizon_core::geometry::Vec3::ZERO,
+                0.0,
+            );
+            m.last_damage = Some((super::super::Damage::of(cause), i64::from(m.age)));
+            assert!(environmental_panic(&m), "{cause:?}");
+        }
     }
 }

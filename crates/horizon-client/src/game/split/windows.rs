@@ -516,9 +516,9 @@ impl<'a> Split<'a> {
                 continue;
             }
             // Opened without the focus: whoever types in the game's window keeps the keyboard.
-            let attributes = Window::default_attributes()
-                .with_window_icon(horizon_client::window::icon())
-                .with_active(false);
+            let attributes =
+                horizon_client::window::with_horizon_icon(Window::default_attributes())
+                    .with_active(false);
             // A monitor's window covers it, borderless. On macOS not the system's fullscreen, a
             // Space of its own that hides the other windows as it slides in.
             let placement = self.placement(*key).cloned();

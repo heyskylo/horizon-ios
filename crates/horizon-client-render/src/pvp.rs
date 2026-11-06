@@ -575,8 +575,53 @@ pub struct Hud {
     /// Hits in a row the server confirmed, until this player is hurt or 3 seconds pass.
     pub combo: bool,
     pub combo_corner: Corner,
+    /// Frames drawn in the last second.
+    pub fps: bool,
+    pub fps_corner: Corner,
+    /// Left and right clicks in the last second.
+    pub cps: bool,
+    pub cps_corner: Corner,
+    /// The movement keys, mouse buttons and jump, lit while held, with clicks per second.
+    pub keys: bool,
+    pub keys_corner: Corner,
+    /// The computer's local time.
+    pub clock: bool,
+    pub clock_corner: Corner,
+    /// How far the last hit landed from the eyes, for 3 seconds; it only measures.
+    pub reach: bool,
+    pub reach_corner: Corner,
+    /// Horizontal speed in blocks per second.
+    pub speed: bool,
+    pub speed_corner: Corner,
     /// A dark box behind each widget.
     pub background: bool,
+    /// The boxes' opacity, in percent.
+    pub opacity: u8,
+    /// The widgets' text colour (durability keeps its own).
+    pub text: Colour,
+    /// A shadow under the widgets' text, as vanilla's HUD text has.
+    pub shadow: bool,
+}
+impl Hud {
+    /// Whether any widget is on: with none, the HUD draws nothing and reads nothing.
+    pub fn any(&self) -> bool {
+        [
+            self.armour,
+            self.effects,
+            self.held,
+            self.ping,
+            self.coords,
+            self.server,
+            self.combo,
+            self.fps,
+            self.cps,
+            self.keys,
+            self.clock,
+            self.reach,
+            self.speed,
+        ]
+        .contains(&true)
+    }
 }
 impl Default for Hud {
     fn default() -> Self {
@@ -596,11 +641,35 @@ impl Default for Hud {
             server_corner: Corner::TopLeft,
             combo: false,
             combo_corner: Corner::TopLeft,
+            fps: false,
+            fps_corner: Corner::TopLeft,
+            cps: false,
+            cps_corner: Corner::TopLeft,
+            keys: false,
+            keys_corner: Corner::BottomLeft,
+            clock: false,
+            clock_corner: Corner::TopRight,
+            reach: false,
+            reach_corner: Corner::TopLeft,
+            speed: false,
+            speed_corner: Corner::TopLeft,
             background: true,
+            opacity: HUD_OPACITY,
+            text: Colour::White,
+            shadow: true,
         }
     }
 }
 pub use crate::extras::Corner;
+/// The widgets' boxes at first: the extras' 0x78 alpha, 47%.
+pub const HUD_OPACITY: u8 = 47;
+pub const HUD_OPACITIES: (u8, u8) = (0, 100);
+impl Hud {
+    /// The boxes' colour, ARGB.
+    pub fn background_argb(&self) -> u32 {
+        alpha(self.opacity) << 24
+    }
+}
 /// The value of the view options while they follow the world.
 fn world_label() -> String {
     crate::lang::get_or("horizon.pvp.view.world", "World's")
@@ -682,7 +751,38 @@ impl ChatOptions {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+/// Combat feel (`docs/pvp.md`): how fights look. Legacy draws them as 1.8.9 did; what the
+/// game sends to a server never changes, so a vanilla server and its anticheat see 26.3.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Combat {
+    /// Legacy (1.8.9) instead of Modern.
+    pub legacy: bool,
+    /// Keep the attack indicator under Legacy (1.8.9 had none).
+    pub indicator: bool,
+    /// Under Legacy, silence the attack sounds 1.9 added (1.8.9 played none on a hit).
+    pub sounds: bool,
+    /// The worlds this game hosts (single player and LAN) fight by 1.8.9's rules: no attack
+    /// cooldown, no sweep, 1.8 weapon damage, effects, enchantments and critical hits
+    /// (`horizon_client::legacy_combat`). Never used as a client of a server.
+    pub rules: bool,
+}
+impl Combat {
+    /// Whether this client leaves out sound `name` a server sent: under Legacy with its
+    /// sounds, the `entity.player.attack.*` family (strong, weak, crit, sweep, knockback,
+    /// nodamage), which 1.9 brought with the attack cooldown.
+    pub fn mutes_sound(&self, name: &str) -> bool {
+        let name = name.strip_prefix("minecraft:").unwrap_or(name);
+        self.legacy && self.sounds && name.starts_with("entity.player.attack.")
+    }
+    /// Whether this client leaves out particles of `ty` a server sent: under Legacy, the
+    /// sweep and the damage hearts, which 1.9 brought (1.8.9's hits show crits only).
+    pub fn hides_particle(&self, ty: crate::particles::ParticleType) -> bool {
+        use crate::particles::ParticleType as T;
+        self.legacy && matches!(ty, T::SweepAttack | T::DamageIndicator)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct Pvp {
     pub crosshair: Crosshair,
     pub outline: Outline,
@@ -690,6 +790,28 @@ pub struct Pvp {
     pub hud: Hud,
     pub tweaks: Tweaks,
     pub chat: ChatOptions,
+    /// Where each HUD widget sits and its size.
+    pub layout: crate::pvp_hud::Layout,
+    /// The key that opens the HUD editor from the game (unbound at first).
+    pub editor_key: String,
+    pub combat: Combat,
+}
+/// The HUD editor key's name for the controls (`Extras::set_key`).
+pub const HUD_EDITOR_KEY: &str = "horizon.hud_editor";
+impl Default for Pvp {
+    fn default() -> Self {
+        Self {
+            crosshair: Crosshair::default(),
+            outline: Outline::default(),
+            hit: Hit::default(),
+            hud: Hud::default(),
+            tweaks: Tweaks::default(),
+            chat: ChatOptions::default(),
+            layout: crate::pvp_hud::Layout::default(),
+            editor_key: "key.keyboard.unknown".into(),
+            combat: Combat::default(),
+        }
+    }
 }
 fn flag(value: &str, d: bool) -> bool {
     match value {
@@ -743,6 +865,15 @@ impl Pvp {
             "hudHeld" => u.held = flag(value, u.held),
             "hudHeldCorner" => u.held_corner = Corner::parse(value, u.held_corner),
             "hudBackground" => u.background = flag(value, u.background),
+            "hudOpacity" => u.opacity = num(value, HUD_OPACITIES, u.opacity),
+            "hudTextColour" => {
+                u.text = Colour::parse(value)
+                    .filter(|c| *c != Colour::Inverted)
+                    .unwrap_or(u.text)
+            }
+            "hudShadow" => u.shadow = flag(value, u.shadow),
+            "hudPlace" => self.layout.parse(value),
+            "hudEditorKey" if value.starts_with("key.") => self.editor_key = value.to_owned(),
             "hudPing" => u.ping = flag(value, u.ping),
             "hudPingCorner" => u.ping_corner = Corner::parse(value, u.ping_corner),
             "hudCoords" => u.coords = flag(value, u.coords),
@@ -751,6 +882,18 @@ impl Pvp {
             "hudServerCorner" => u.server_corner = Corner::parse(value, u.server_corner),
             "hudCombo" => u.combo = flag(value, u.combo),
             "hudComboCorner" => u.combo_corner = Corner::parse(value, u.combo_corner),
+            "hudFps" => u.fps = flag(value, u.fps),
+            "hudFpsCorner" => u.fps_corner = Corner::parse(value, u.fps_corner),
+            "hudCps" => u.cps = flag(value, u.cps),
+            "hudCpsCorner" => u.cps_corner = Corner::parse(value, u.cps_corner),
+            "hudKeys" => u.keys = flag(value, u.keys),
+            "hudKeysCorner" => u.keys_corner = Corner::parse(value, u.keys_corner),
+            "hudClock" => u.clock = flag(value, u.clock),
+            "hudClockCorner" => u.clock_corner = Corner::parse(value, u.clock_corner),
+            "hudReach" => u.reach = flag(value, u.reach),
+            "hudReachCorner" => u.reach_corner = Corner::parse(value, u.reach_corner),
+            "hudSpeed" => u.speed = flag(value, u.speed),
+            "hudSpeedCorner" => u.speed_corner = Corner::parse(value, u.speed_corner),
             "numericEnchants" => t.numeric_enchants = flag(value, t.numeric_enchants),
             "lowFire" => t.fire_lower = num(value, FIRE_LOWER, t.fire_lower),
             "shieldSize" => t.shield_size = num(value, SHIELD_SIZES, t.shield_size),
@@ -767,6 +910,14 @@ impl Pvp {
             "chatCompact" => self.chat.compact = flag(value, self.chat.compact),
             "chatCopy" => self.chat.copy = flag(value, self.chat.copy),
             "chatSearch" => self.chat.search = flag(value, self.chat.search),
+            "combatFeel" => match value {
+                "legacy" => self.combat.legacy = true,
+                "modern" => self.combat.legacy = false,
+                _ => {}
+            },
+            "combatIndicator" => self.combat.indicator = flag(value, self.combat.indicator),
+            "combatSounds" => self.combat.sounds = flag(value, self.combat.sounds),
+            "combatRules" => self.combat.rules = flag(value, self.combat.rules),
             "viewTime" => {
                 t.time = match value {
                     "off" => None,
@@ -838,6 +989,35 @@ impl Pvp {
             u.combo,
             u.combo_corner.name(),
         );
+        let _ = write!(
+            out,
+            "hudFps:{}\nhudFpsCorner:{}\nhudCps:{}\nhudCpsCorner:{}\nhudKeys:{}\nhudKeysCorner:{}\n",
+            u.fps,
+            u.fps_corner.name(),
+            u.cps,
+            u.cps_corner.name(),
+            u.keys,
+            u.keys_corner.name(),
+        );
+        let _ = write!(
+            out,
+            "hudClock:{}\nhudClockCorner:{}\nhudReach:{}\nhudReachCorner:{}\nhudSpeed:{}\nhudSpeedCorner:{}\n",
+            u.clock,
+            u.clock_corner.name(),
+            u.reach,
+            u.reach_corner.name(),
+            u.speed,
+            u.speed_corner.name(),
+        );
+        let _ = write!(
+            out,
+            "hudOpacity:{}\nhudTextColour:{}\nhudShadow:{}\n",
+            u.opacity,
+            u.text.name(),
+            u.shadow,
+        );
+        self.layout.serialize(out);
+        let _ = writeln!(out, "hudEditorKey:{}", self.editor_key);
         let t = &self.tweaks;
         let _ = write!(
             out,
@@ -861,6 +1041,13 @@ impl Pvp {
             out,
             "chatTimestamps:{}\nchatCompact:{}\nchatCopy:{}\nchatSearch:{}\n",
             c.timestamps, c.compact, c.copy, c.search,
+        );
+        let c = &self.combat;
+        let feel = if c.legacy { "legacy" } else { "modern" };
+        let _ = write!(
+            out,
+            "combatFeel:{feel}\ncombatIndicator:{}\ncombatSounds:{}\ncombatRules:{}\n",
+            c.indicator, c.sounds, c.rules
         );
     }
 }
@@ -955,7 +1142,27 @@ opts! {
     HudCombo, "hud_combo", "Combo counter",
         "Hits in a row the server confirmed, until you are hurt or 3 seconds pass without one.";
     HudComboCorner, "hud_combo_corner", "Combo corner", "Where the combo shows.";
+    HudFps, "hud_fps", "FPS", "Frames drawn in the last second.";
+    HudFpsCorner, "hud_fps_corner", "FPS corner", "Where the FPS shows.";
+    HudCps, "hud_cps", "Clicks per second", "Your left and right clicks in the last second.";
+    HudCpsCorner, "hud_cps_corner", "CPS corner", "Where the clicks per second show.";
+    HudKeys, "hud_keys", "Keystrokes",
+        "Your movement keys, mouse buttons and jump, lit while you hold them, with clicks per second.";
+    HudKeysCorner, "hud_keys_corner", "Keystrokes corner", "Where the keystrokes show.";
+    HudClock, "hud_clock", "Clock", "Your computer's time.";
+    HudClockCorner, "hud_clock_corner", "Clock corner", "Where the clock shows.";
+    HudReach, "hud_reach", "Reach",
+        "How far from your eyes your last hit landed, for 3 seconds. It only measures: your reach stays vanilla's.";
+    HudReachCorner, "hud_reach_corner", "Reach corner", "Where the reach shows.";
+    HudSpeed, "hud_speed", "Speed", "How fast you move across the ground, in blocks per second.";
+    HudSpeedCorner, "hud_speed_corner", "Speed corner", "Where the speed shows.";
     HudBackground, "hud_background", "Widget backgrounds", "A dark box behind each widget.";
+    HudOpacity, "hud_opacity", "Background opacity", "How dark the boxes behind the widgets are.";
+    HudTextColour, "hud_text_colour", "Text colour",
+        "The widgets' text colour. Durability keeps its green to red.";
+    HudShadow, "hud_shadow", "Text shadow", "A shadow under the widgets' text, as vanilla's HUD text has.";
+    HudEditorKey, "hud_editor_key", "HUD editor key",
+        "Opens the HUD editor from the game. Click, then press a key; Escape unbinds it.";
     NumericEnchants, "numeric_enchants", "Enchantment levels as numbers",
         "Tooltips and the enchanting table show Sharpness 5 instead of Sharpness V.";
     FireLower, "fire_lower", "Lower fire",
@@ -980,6 +1187,14 @@ opts! {
         "Clicking a message in the open chat copies its text, unless the click does something else.";
     ChatSearch, "chat_search", "Chat search",
         "Ctrl+F in the open chat: what you type shows only the messages holding it. Enter or Ctrl+F again stops.";
+    CombatFeel, "combat_feel", "Combat feel",
+        "Legacy draws fights as 1.8.9 did: the item in your hand, its swing, eating, the bow and a sword held up while you hold use, without the dip after each hit or the attack indicator. Only the look: what you send a server stays the same.";
+    CombatIndicator, "combat_indicator", "Attack indicator in Legacy",
+        "Keeps the attack indicator under Legacy, which 1.8.9 didn't have.";
+    CombatSounds, "combat_sounds", "1.8 hit sounds",
+        "Under Legacy, leaves out the attack sounds 1.9 added (strong, weak, sweep, critical...). Hurt sounds stay.";
+    CombatRules, "combat_rules", "1.8 combat in worlds you host",
+        "Single player and the worlds you open to LAN fight by 1.8.9's rules: no attack cooldown or sweep, 1.8 weapon damage, Strength, Sharpness and critical hits. Servers you join keep their own rules.";
 }
 /// The PvP & HUD page: headers (language keys) and options.
 pub fn rows() -> Vec<Result<Opt, &'static str>> {
@@ -1030,7 +1245,23 @@ pub fn rows() -> Vec<Result<Opt, &'static str>> {
             HudServerCorner,
             HudCombo,
             HudComboCorner,
+            HudFps,
+            HudFpsCorner,
+            HudCps,
+            HudCpsCorner,
+            HudKeys,
+            HudKeysCorner,
+            HudClock,
+            HudClockCorner,
+            HudReach,
+            HudReachCorner,
+            HudSpeed,
+            HudSpeedCorner,
             HudBackground,
+            HudOpacity,
+            HudTextColour,
+            HudShadow,
+            HudEditorKey,
         ]
         .map(Ok),
     );
@@ -1043,6 +1274,8 @@ pub fn rows() -> Vec<Result<Opt, &'static str>> {
     rows.extend([ViewTime, ViewWeather].map(Ok));
     rows.push(Err("horizon.pvp.header.chat"));
     rows.extend([ChatTimestamps, ChatCompact, ChatCopy, ChatSearch].map(Ok));
+    rows.push(Err("horizon.pvp.header.combat"));
+    rows.extend([CombatFeel, CombatIndicator, CombatSounds, CombatRules].map(Ok));
     rows
 }
 impl Opt {
@@ -1054,10 +1287,19 @@ impl Opt {
             OutlineColour | OutlineOpacity | OutlineThickness | OutlineFill => Some(Outline),
             HitColour | HitOpacity => Some(Hit),
             HudArmour | HudEffects | HudHeld | HudPing | HudCoords | HudServer | HudCombo
-            | HudBackground | NumericEnchants => None,
+            | HudFps | HudCps | HudKeys | HudClock | HudReach | HudSpeed | HudBackground
+            | HudTextColour | HudShadow | HudEditorKey | NumericEnchants => None,
+            HudOpacity => Some(HudBackground),
+            HudFpsCorner => Some(HudFps),
+            HudCpsCorner => Some(HudCps),
+            HudKeysCorner => Some(HudKeys),
+            HudClockCorner => Some(HudClock),
+            HudReachCorner => Some(HudReach),
+            HudSpeedCorner => Some(HudSpeed),
             FireLower | ShieldSize | TotemSize | GlintColour | ClearWater | ClearLava => None,
             ViewTime | ViewWeather => None,
             ChatTimestamps | ChatCompact | ChatCopy | ChatSearch => None,
+            CombatFeel | CombatIndicator | CombatSounds | CombatRules => None,
             HudPingCorner => Some(HudPing),
             HudCoordsCorner => Some(HudCoords),
             HudServerCorner => Some(HudServer),
@@ -1081,10 +1323,17 @@ impl Opt {
             Opt::HudEffects => p.hud.effects,
             Opt::HudHeld => p.hud.held,
             Opt::HudBackground => p.hud.background,
+            Opt::HudShadow => p.hud.shadow,
             Opt::HudPing => p.hud.ping,
             Opt::HudCoords => p.hud.coords,
             Opt::HudServer => p.hud.server,
             Opt::HudCombo => p.hud.combo,
+            Opt::HudFps => p.hud.fps,
+            Opt::HudCps => p.hud.cps,
+            Opt::HudKeys => p.hud.keys,
+            Opt::HudClock => p.hud.clock,
+            Opt::HudReach => p.hud.reach,
+            Opt::HudSpeed => p.hud.speed,
             Opt::NumericEnchants => p.tweaks.numeric_enchants,
             Opt::ClearWater => p.tweaks.clear_water,
             Opt::ClearLava => p.tweaks.clear_lava,
@@ -1092,6 +1341,9 @@ impl Opt {
             Opt::ChatCompact => p.chat.compact,
             Opt::ChatCopy => p.chat.copy,
             Opt::ChatSearch => p.chat.search,
+            Opt::CombatIndicator => p.combat.indicator,
+            Opt::CombatSounds => p.combat.sounds,
+            Opt::CombatRules => p.combat.rules,
             _ => return None,
         })
     }
@@ -1124,6 +1376,15 @@ impl Opt {
             Opt::HudCoordsCorner => corner_label(p.hud.coords_corner),
             Opt::HudServerCorner => corner_label(p.hud.server_corner),
             Opt::HudComboCorner => corner_label(p.hud.combo_corner),
+            Opt::HudFpsCorner => corner_label(p.hud.fps_corner),
+            Opt::HudCpsCorner => corner_label(p.hud.cps_corner),
+            Opt::HudKeysCorner => corner_label(p.hud.keys_corner),
+            Opt::HudClockCorner => corner_label(p.hud.clock_corner),
+            Opt::HudReachCorner => corner_label(p.hud.reach_corner),
+            Opt::HudSpeedCorner => corner_label(p.hud.speed_corner),
+            Opt::HudOpacity => format!("{}%", p.hud.opacity),
+            Opt::HudTextColour => p.hud.text.label(),
+            Opt::HudEditorKey => crate::keybinds::display_name(&p.editor_key).plain(),
             Opt::FireLower => match p.tweaks.fire_lower {
                 0 => crate::lang::get_or("Off", "Off"),
                 v => format!("{v}%"),
@@ -1133,6 +1394,10 @@ impl Opt {
             Opt::GlintColour => match p.tweaks.glint {
                 Some(colour) => colour.label(),
                 None => crate::lang::get_or("Off", "Off"),
+            },
+            Opt::CombatFeel => match p.combat.legacy {
+                true => crate::lang::get_or("horizon.pvp.combat_feel.legacy", "Legacy (1.8.9)"),
+                false => crate::lang::get_or("horizon.pvp.combat_feel.modern", "Modern"),
             },
             Opt::ViewTime => p.tweaks.time.map_or_else(world_label, ViewTime::label),
             Opt::ViewWeather => p
@@ -1191,6 +1456,11 @@ impl Opt {
             Opt::HudHeld => u.held = !u.held,
             Opt::HudHeldCorner => u.held_corner = corner(u.held_corner),
             Opt::HudBackground => u.background = !u.background,
+            Opt::HudOpacity => u.opacity = step_by(u.opacity, HUD_OPACITIES, 10, back),
+            Opt::HudTextColour => u.text = u.text.step_solid(back),
+            Opt::HudShadow => u.shadow = !u.shadow,
+            // Bound through the controls' key capture (`Item::key_name`).
+            Opt::HudEditorKey => {}
             Opt::HudPing => u.ping = !u.ping,
             Opt::HudPingCorner => u.ping_corner = corner(u.ping_corner),
             Opt::HudCoords => u.coords = !u.coords,
@@ -1199,6 +1469,18 @@ impl Opt {
             Opt::HudServerCorner => u.server_corner = corner(u.server_corner),
             Opt::HudCombo => u.combo = !u.combo,
             Opt::HudComboCorner => u.combo_corner = corner(u.combo_corner),
+            Opt::HudFps => u.fps = !u.fps,
+            Opt::HudFpsCorner => u.fps_corner = corner(u.fps_corner),
+            Opt::HudCps => u.cps = !u.cps,
+            Opt::HudCpsCorner => u.cps_corner = corner(u.cps_corner),
+            Opt::HudKeys => u.keys = !u.keys,
+            Opt::HudKeysCorner => u.keys_corner = corner(u.keys_corner),
+            Opt::HudClock => u.clock = !u.clock,
+            Opt::HudClockCorner => u.clock_corner = corner(u.clock_corner),
+            Opt::HudReach => u.reach = !u.reach,
+            Opt::HudReachCorner => u.reach_corner = corner(u.reach_corner),
+            Opt::HudSpeed => u.speed = !u.speed,
+            Opt::HudSpeedCorner => u.speed_corner = corner(u.speed_corner),
             Opt::NumericEnchants => p.tweaks.numeric_enchants = !p.tweaks.numeric_enchants,
             Opt::FireLower => t.fire_lower = step_by(t.fire_lower, FIRE_LOWER, 10, back),
             Opt::ShieldSize => t.shield_size = step_by(t.shield_size, SHIELD_SIZES, 10, back),
@@ -1216,6 +1498,10 @@ impl Opt {
             Opt::ChatCompact => p.chat.compact = !p.chat.compact,
             Opt::ChatCopy => p.chat.copy = !p.chat.copy,
             Opt::ChatSearch => p.chat.search = !p.chat.search,
+            Opt::CombatFeel => p.combat.legacy = !p.combat.legacy,
+            Opt::CombatIndicator => p.combat.indicator = !p.combat.indicator,
+            Opt::CombatSounds => p.combat.sounds = !p.combat.sounds,
+            Opt::CombatRules => p.combat.rules = !p.combat.rules,
             Opt::ViewWeather => {
                 let all: Vec<_> = std::iter::once(None)
                     .chain(ViewWeather::ALL.map(Some))
@@ -1517,5 +1803,33 @@ mod tests {
         for (key, english) in names.iter().chain(&shapes).chain(&times).chain(&weathers) {
             assert_eq!(en.get(key), Some(*english), "{key}");
         }
+    }
+
+    #[test]
+    fn legacy_leaves_out_what_1_9_added_to_a_hit() {
+        use crate::particles::ParticleType as T;
+        let modern = Combat::default();
+        let legacy = Combat {
+            legacy: true,
+            ..Combat::default()
+        };
+        let sounds = Combat {
+            sounds: true,
+            ..legacy
+        };
+        for name in [
+            "minecraft:entity.player.attack.strong",
+            "entity.player.attack.sweep",
+            "minecraft:entity.player.attack.nodamage",
+        ] {
+            assert!(sounds.mutes_sound(name), "{name}");
+            assert!(!legacy.mutes_sound(name), "only with the sounds option");
+            assert!(!modern.mutes_sound(name));
+        }
+        // 1.8.9 had the hurt sound: it stays.
+        assert!(!sounds.mutes_sound("minecraft:entity.player.hurt"));
+        assert!(legacy.hides_particle(T::SweepAttack) && legacy.hides_particle(T::DamageIndicator));
+        assert!(!legacy.hides_particle(T::Crit) && !legacy.hides_particle(T::EnchantedHit));
+        assert!(!modern.hides_particle(T::SweepAttack));
     }
 }
