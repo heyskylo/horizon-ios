@@ -814,6 +814,7 @@ impl Projectile {
         self.position = self.position.add_vector(movement);
         self.needs_sync = true;
     }
+    #[allow(dead_code)] // Called by the gameplay crate's piston-push bridge.
     pub(crate) fn piston_release_bounds(&self) -> Option<Aabb> {
         let arrow = self.arrow.as_ref()?;
         if !arrow.in_ground || arrow.no_physics {
@@ -821,6 +822,7 @@ impl Projectile {
         }
         Some(Aabb::new(self.position, self.position).inflate(Vec3::new(0.06, 0.06, 0.06)))
     }
+    #[allow(dead_code)] // Called by the gameplay crate's piston-push bridge.
     pub(crate) fn release_after_piston(&mut self, no_block_collision: bool) {
         let Some(arrow) = self.arrow.as_mut() else {
             return;
