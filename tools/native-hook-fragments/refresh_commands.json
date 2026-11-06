@@ -1,0 +1,11 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "refresh_commands", "target": "horizon_client::game::native_server::Game<'_>::native_refresh_commands"}
+  ],
+  "rust_summary": "the players' command trees rebuilt while the server runs (`native_refresh_commands`), for a mod that changes the commands it registers.",
+  "doc_summary": "`native_refresh_commands()` (`Host::refresh_commands()` for trait mods) asks every mod's `native_register_commands` again at the start of the next server tick, rebuilds the commands players may run, and sends every player on the server their tree again after `native_player_commands_sent`, as vanilla's `PlayerList.sendPlayerPermissionLevel` (`Commands.sendCommands`) does after `/reload`. Nothing happens where no world is open to players. Bundles need \"hooks\": @API:refresh_commands@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_server.rs"
+  ]
+}
