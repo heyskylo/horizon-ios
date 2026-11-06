@@ -2566,6 +2566,40 @@ before (#10461).
   lets operators through needs no `ops.json` of its own. Inside a player's hook, with the hub out of reach, only that
   player is found; None for a player who isn't on, and on a client. Bundles need `"hooks": @API:player_permission@`.
 
+#### Server hooks for plugin ports: players
+
+- **`native_player_logging_out(player, name)`**: a player is leaving (lost connection, kick, quit), heard while they are
+  still in their level and listed in `native_server_players`, before their menu closes and they are saved and removed
+  (Bukkit's `PlayerQuitEvent`). Their state is not swapped in, so the helpers that take a UUID and `native_run_command`
+  reach them. A death a mod causes here (`kill <name>`) happens at once where they stand, with its death message, drops
+  and `native_player_died`, and they are saved dead. Once per placed player who leaves, before `native_player_logged_out`.
+  Not heard when the server stops (`native_player_logged_out` tells then, with them still listed).
+- **`native_player_hurt_by_player(attacker, attacker_entity, victim, victim_entity, source, damage_type, amount, canceled)`**:
+  one player hurting another, both named by UUID and network entity id. `source` is `melee`, `sweep` or the projectile's
+  entity type (`minecraft:arrow`, `minecraft:spectral_arrow`, `minecraft:snowball`, `minecraft:egg`, a mod's thrown type).
+  Heard where `native_living_incoming_damage` is (the victim's `hurtServer` past its guards: the `pvp` rule and the teams
+  allow it, the victim is not creative, a spectator or dead; a hit in the hurt cooldown is heard too) and just before it.
+  Change `amount`, or set `canceled` and nothing of the hurt happens; v1 then hears nothing of it. A snowball or egg does
+  no damage and vanilla's `Player.hurtServer` stops on zero: it is heard there with amount 0, and what a mod sets changes
+  nothing. No `self`, like v1. Not heard: thorns, Channeling's lightning, fire, potion and tipped-arrow effects, thrown
+  tridents (they hurt no players yet).
+- **`native_player_spawn_location(player, name, dimension, position, rotation)`**: a joining player is about to be placed
+  (Spigot's `PlayerSpawnLocationEvent`): after `native_player_login` and their saved data (or a newcomer's spawn), before
+  the level and the world around them are chosen and sent. Change the dimension, feet position or yaw/pitch and they
+  appear there, with no teleport afterwards; an unknown dimension or a non-finite value leaves that part as it was.
+  No state is swapped in.
+- **`native_item_picked_up_v2(player, stack, thrower, position, canceled)`**: an additive version of
+  `native_item_picked_up` with the whole `ItemStack` (its components: enchantments, unbreakable, attribute modifiers, a
+  custom name...), the item entity's thrower UUID (none for block and mob drops) and its position. Heard just before v1,
+  which keeps its signature and firing point and hears nothing of a pickup canceled here.
+- **`native_item_dropped_v2(player, stack, cancel)`**: an additive, cancellable version of `native_item_dropped`
+  (NeoForge's `ItemTossEvent`) with the whole `ItemStack` thrown, heard just before v1, which keeps its signature and
+  firing point. Set `cancel` and nothing is thrown: the stack goes back into the player's inventory (the held slot
+  first; only what doesn't fit is thrown, unheard), and v1 hears nothing of it.
+- **`native_creative_slot_v2(player, name, slot, stack, cancel)`**: an additive version of `native_creative_slot` with
+  the whole `ItemStack` put in the slot (none for an emptied one), heard just before v1, which keeps its signature and
+  firing point and hears nothing of a packet canceled here. The player's state is swapped in, as for v1.
+
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a

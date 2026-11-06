@@ -6646,6 +6646,147 @@ impl Game<'_> {
     ) {
         mod_api::dispatch_custom_payload_from_client(self, mod_api::mods(), player, channel, data);
     }
+    /// `player` (`name`) is leaving the server (Bukkit's `PlayerQuitEvent`): their connection
+    /// is gone (lost, kicked, or they quit), but they are still in their level and listed in
+    /// `native_server_players`, before their menu closes and they are saved and removed. Their
+    /// state is not swapped in, so the helpers that take a UUID (`native_player_stacks`,
+    /// `native_tell`...) and `native_run_command` reach them as any other player. A death a mod
+    /// causes here (`kill <name>`) happens at once, where they stand: the death message, the
+    /// drops and experience, `native_player_died`; they are then saved dead. Once for each placed
+    /// player who leaves, before `native_player_logged_out`, on a server. Not heard when the
+    /// server stops, where `native_player_logged_out` tells with them still listed.
+    /// @API:player_logging_out@.
+    pub(super) fn native_player_logging_out(&mut self, player: u128, name: &str) {
+        mod_api::dispatch_player_logging_out(self, mod_api::mods(), player, name);
+    }
+    /// One player's attack hurting another (Bukkit's `EntityDamageByEntityEvent` between two
+    /// players): `attacker` (a UUID, and `attacker_entity`, their network entity id) hits
+    /// `victim` (`victim_entity`) for `amount` of `damage_type` (`minecraft:player_attack`,
+    /// `minecraft:arrow`). `source` is how: `melee`, `sweep`, or the projectile's entity type
+    /// (`minecraft:arrow`, `minecraft:spectral_arrow`, `minecraft:snowball`, `minecraft:egg`, a
+    /// mod's thrown type). Heard where `native_living_incoming_damage` is, at the victim's
+    /// `LivingEntity.hurtServer` past its guards: the `pvp` game rule and the teams allow it, and
+    /// the victim is neither invulnerable (creative, spectator) nor dead; a hit inside the
+    /// victim's hurt cooldown is heard, as vanilla's event is. Change `amount`, or set `canceled`
+    /// and nothing of the hurt happens, as for a canceled `native_living_incoming_damage`, which
+    /// then hears nothing of it; otherwise that hook follows with the amount set here. A snowball
+    /// or egg deals no damage, and vanilla's `Player.hurtServer` stops on zero: that is heard with
+    /// amount 0 where it stops, and what the mods set changes nothing. Not heard: thorns,
+    /// Channeling's lightning, fire, the effects of a potion or a tipped arrow, and thrown
+    /// tridents, which hurt no players yet. Like `native_living_incoming_damage` there is no
+    /// `self`: the game is in the middle of the hit. It runs on the server thread.
+    /// @API:player_hurt_by_player@.
+    pub(super) fn native_player_hurt_by_player(
+        attacker: u128,
+        attacker_entity: i32,
+        victim: u128,
+        victim_entity: i32,
+        source: &str,
+        damage_type: &str,
+        amount: &mut f32,
+        canceled: &mut bool,
+    ) {
+        mod_api::dispatch_player_hurt_by_player(
+            mod_api::mods(),
+            attacker,
+            attacker_entity,
+            victim,
+            victim_entity,
+            source,
+            damage_type,
+            amount,
+            canceled,
+        );
+    }
+    /// A joining player is about to be placed (Spigot's `PlayerSpawnLocationEvent`, inside
+    /// `PlayerList.placeNewPlayer`): their saved data is loaded and a newcomer's spawn found, so
+    /// `dimension` (`minecraft:overworld`, `minecraft:the_nether`, `minecraft:the_end`),
+    /// `position` (the feet) and `rotation` (yaw, pitch) are where they will appear. Change them
+    /// and the player is placed there, in that level, before the world around them is sent: no
+    /// teleport follows. A dimension the server does not have, or a value that is not finite,
+    /// leaves that part as it was. Once for each join, after `native_player_login` let them in
+    /// and before `native_player_logged_in`; no player's state is swapped in (they are in no
+    /// level yet). Server-side. @API:player_spawn_location@.
+    pub(super) fn native_player_spawn_location(
+        &mut self,
+        player: u128,
+        name: &str,
+        dimension: &mut String,
+        position: &mut [f64; 3],
+        rotation: &mut [f32; 2],
+    ) {
+        mod_api::dispatch_player_spawn_location(
+            self,
+            mod_api::mods(),
+            player,
+            name,
+            dimension,
+            position,
+            rotation,
+        );
+    }
+    /// `native_item_picked_up` with the whole stack (its components: enchantments, damage, a
+    /// custom name, unbreakable, attribute modifiers...), the item entity's `thrower` (the UUID
+    /// that threw or dropped it; none for a block's or a mob's drop) and its `position`. Heard
+    /// just before `native_item_picked_up`, which hears nothing of a pickup canceled here. Set
+    /// `canceled` to leave the stack on the ground: it isn't offered again for 10 ticks.
+    /// Server-side. @API:item_picked_up_v2@.
+    pub(super) fn native_item_picked_up_v2(
+        &mut self,
+        player: u128,
+        stack: &ItemStack,
+        thrower: Option<u128>,
+        position: [f64; 3],
+        canceled: &mut bool,
+    ) {
+        mod_api::dispatch_item_picked_up_v2(
+            self,
+            mod_api::mods(),
+            player,
+            stack,
+            thrower,
+            position,
+            canceled,
+        );
+    }
+    /// `native_item_dropped` with the whole stack thrown (its components: enchantments,
+    /// damage, a custom name, unbreakable, attribute modifiers...), cancellable (NeoForge's
+    /// `ItemTossEvent`). Heard just before `native_item_dropped`. Set `cancel` and nothing is
+    /// thrown: the stack goes back into the player's inventory (`Inventory.add`: the held slot
+    /// first), and only what doesn't fit there is thrown, unheard; v1 hears nothing of it. The
+    /// drop statistics and the arm swing still happen, as in NeoForge. Server-side.
+    /// @API:item_dropped_v2@.
+    pub(super) fn native_item_dropped_v2(
+        &mut self,
+        player: u128,
+        stack: &ItemStack,
+        cancel: &mut bool,
+    ) {
+        mod_api::dispatch_item_dropped_v2(self, mod_api::mods(), player, stack, cancel);
+    }
+    /// `native_creative_slot` with the whole stack put there (its components: enchantments,
+    /// a custom name, unbreakable, attribute modifiers, a container's contents...), none for an
+    /// emptied slot. Heard just before `native_creative_slot`, which hears nothing of a packet
+    /// canceled here. Set `cancel` and the packet is ignored. The player's state is swapped in,
+    /// as for v1. Server-side. @API:creative_slot_v2@.
+    pub(super) fn native_creative_slot_v2(
+        &mut self,
+        player: u128,
+        name: &str,
+        slot: i32,
+        stack: Option<&ItemStack>,
+        cancel: &mut bool,
+    ) {
+        mod_api::dispatch_creative_slot_v2(
+            self,
+            mod_api::mods(),
+            player,
+            name,
+            slot,
+            stack,
+            cancel,
+        );
+    }
     /// A click in a menu a mod opened (`native_open_menu`), which moved
     /// nothing: the menu's `slot` (its own first, then the player's
     /// inventory, `native_menu_inventory_slot`; -999 outside), the `button`
@@ -8427,6 +8568,24 @@ pub(super) fn hurt_server(hurting: Hurting<'_>, amount: &mut f32) -> bool {
         direct,
     } = source;
     let mut canceled = false;
+    // One player hurting another: the mods hear who first.
+    if kind == "minecraft:player"
+        && let Some(hit) = super::lan_pvp::pvp_hit(entity)
+    {
+        Game::native_player_hurt_by_player(
+            hit.attacker,
+            hit.attacker_entity,
+            hit.victim,
+            hit.victim_entity,
+            hit.source,
+            damage_type,
+            amount,
+            &mut canceled,
+        );
+        if canceled {
+            return true;
+        }
+    }
     Game::native_living_incoming_damage(
         entity,
         kind,
@@ -9797,10 +9956,19 @@ impl Game<'_> {
         drops.retain(|stack| stack.count > 0 && &*stack.item != "minecraft:air");
     }
     /// Whether a native mod keeps the acting player from taking `stack`.
-    pub(super) fn native_pickup_refused(&mut self, stack: &ItemStack) -> bool {
+    pub(super) fn native_pickup_refused(
+        &mut self,
+        stack: &ItemStack,
+        thrower: Option<[i32; 4]>,
+        at: horizon_core::geometry::Vec3,
+    ) -> bool {
         let player = self.native_acting_id();
         let mut canceled = false;
-        self.native_item_picked_up(player, &stack.item, stack.count, &mut canceled);
+        let thrower = thrower.map(horizon_client::lan::playerdata::ints_uuid);
+        self.native_item_picked_up_v2(player, stack, thrower, [at.x, at.y, at.z], &mut canceled);
+        if !canceled {
+            self.native_item_picked_up(player, &stack.item, stack.count, &mut canceled);
+        }
         canceled
     }
     /// Tells the mods of the chunks that came and went in this level.
