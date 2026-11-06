@@ -1755,15 +1755,22 @@ impl Hub {
     }
     /// Server mods' commands changed: every player gets their tree again.
     pub fn set_mod_commands(&mut self, key: u64, commands: serde_json::Value) {
-        let resend = self.mod_commands.0 != commands;
-        self.mod_commands = (commands, Some(key));
-        if resend {
+        if self.store_mod_commands(key, commands) {
             for i in 0..self.guests.len() {
                 if self.guests[i].placed {
                     self.send_commands(i);
                 }
             }
         }
+    }
+
+    /// [`Hub::set_mod_commands`] without sending: true when the tree changed.
+    /// The caller sends the trees itself (`native_refresh_commands` first asks
+    /// the mods which root commands each player keeps).
+    pub fn store_mod_commands(&mut self, key: u64, commands: serde_json::Value) -> bool {
+        let changed = self.mod_commands.0 != commands;
+        self.mod_commands = (commands, Some(key));
+        changed
     }
 
     /// Commands.sendCommands: the command tree for this player.
@@ -4969,6 +4976,38 @@ mod tests {
         bob.dimension = "minecraft:overworld".into();
         hub.guests.push(bob);
         (hub, rx)
+    }
+
+    /// `store_mod_commands` keeps a new mod tree without sending it (the
+    /// game sends it after the mods filtered it: `native_refresh_commands`),
+    /// and `set_mod_commands` still sends a changed tree, and only a changed one.
+    #[test]
+    fn stored_mod_commands_are_not_sent_until_asked() {
+        let (mut hub, rx) = hub_with_a_guest();
+        let trees = |rx: &std::sync::mpsc::Receiver<crate::lan::Out>| {
+            let mut sent = 0;
+            while let Ok(out) = rx.try_recv() {
+                if let crate::lan::Out::Packet(body) = out {
+                    let mut r = horizon_protocol::buf::Reader::new(&body);
+                    let pid = r.varint().unwrap();
+                    if let Ok(C::Commands(_)) = C::decode(pid, r.rest()) {
+                        sent += 1;
+                    }
+                }
+            }
+            sent
+        };
+        let first = serde_json::json!({"hello": {}});
+        assert!(hub.store_mod_commands(0, first.clone()));
+        assert!(!hub.store_mod_commands(0, first.clone()));
+        assert_eq!(trees(&rx), 0);
+        assert_eq!(hub.mod_commands_key(), Some(0));
+        hub.set_mod_commands(0, first);
+        assert_eq!(trees(&rx), 0, "an unchanged tree is not sent again");
+        hub.set_mod_commands(0, serde_json::json!({"hello": {}, "bye": {}}));
+        assert_eq!(trees(&rx), 1);
+        hub.resend_commands();
+        assert_eq!(trees(&rx), 1, "every placed player gets their tree again");
     }
 
     /// `onGameRuleChanged`: a changed `reduced_debug_info` reaches each player

@@ -592,16 +592,19 @@ pub fn is_monster(s: Species) -> bool {
 }
 /// One full entity tick. Returns false when the mob is gone.
 /// `Mob.getTarget` / `Mob.setTarget` (`asValidTarget`): a player in creative
-/// or spectator mode is never a mob's target, however the target was set (an
+/// or spectator mode or in Peaceful is never a mob's target, however the target was set (an
 /// alert from another mob included). A `NeutralMob` angry at that player stops
 /// being angry (`NeutralMob.updatePersistentAnger`).
 fn drop_invalid_player_target(m: &mut Mob, w: &MobWorld) {
     if m.ai.target == Some(Who::Player)
-        && w.player.as_ref().is_some_and(|p| p.creative || p.spectator)
+        && w.player
+            .as_ref()
+            .is_some_and(|p| p.creative || p.spectator || w.difficulty.base == 0)
     {
         m.ai.target = None;
         if matches!(m.species(), Species::ZombifiedPiglin | Species::IronGolem) {
             m.extra.anger = 0;
+            m.ai.last_hurt_by = None;
         }
     }
 }
@@ -1425,17 +1428,9 @@ fn play_ambient(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         Species::Allay if m.extra.main_hand.is_some() => "entity.allay.ambient_with_item",
         // Strider.getAmbientSound: quiet while panicking or tempted.
         Species::Strider if m.ai.panicking || m.ai.goals.is_running("Tempt") => return,
-        // HappyGhast: its own voice, never pitched up.
-        Species::HappyGhast => {
-            let sound = super::happy_ghast::sounds(m)[0];
-            events.push(MobEvent::Sound(
-                sound,
-                m.center(),
-                super::happy_ghast::volume(m),
-                1.0,
-            ));
-            return;
-        }
+        // HappyGhast: its own voice; `Mob::voice` plays it at the feet
+        // (`Entity.playSound`), never for a Silent ghast, at pitch 1.0.
+        Species::HappyGhast => super::happy_ghast::sounds(m)[0],
         // Sniffer.getAmbientSound.
         Species::Sniffer => match super::sniffer::ambient(m) {
             Some(s) => s,
@@ -1762,6 +1757,14 @@ fn push_entities(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
             && m.random.next_int_bound(20).unwrap_or(1) == 0
         {
             m.ai.target = Some(who);
+        }
+        // doPush calls the other living entity's push; sleeping vetoes both impulses.
+        let sleeping = match who {
+            Who::Player => w.player.as_ref().is_some_and(|p| p.sleeping),
+            Who::Mob(id) => w.seen(id).is_some_and(|o| o.sleeping),
+        };
+        if sleeping {
+            continue;
         }
         // Entity.push: passengers of the same vehicle (a rider and its mount
         // among them) never push each other.
@@ -3729,6 +3732,102 @@ mod same_vehicle_push_tests {
     }
 
     #[test]
+    fn sleeping_villager_vetoes_only_pushes_received_during_other_mobs_ticks() {
+        let mut pair = None;
+        let ran = with_test_world(&[], |_, types| {
+            let make = |id, name: &str, x| {
+                Mob::new(
+                    id,
+                    std::sync::Arc::new(types.types[name].clone()),
+                    Vec3::new(x, 64.0, 0.5),
+                    0.0,
+                )
+            };
+            let mut villager = make(1, "minecraft:villager", 0.5);
+            villager.extra.ints[1] = 1;
+            pair = Some((villager, make(2, "minecraft:cow", 0.9)));
+        });
+        // Without the vanilla data under .local/horizon-client the world
+        // cannot be built: the test has nothing to check.
+        let _ = ran;
+        let Some((mut villager, mut cow)) = pair else {
+            return;
+        };
+        let mut events = Vec::new();
+        let ran = with_test_world(&[villager.seen(None)], |w, _| {
+            push_entities(&mut cow, w, &mut events);
+        });
+        // Without the vanilla data under .local/horizon-client the world
+        // cannot be built: the test has nothing to check.
+        let _ = ran;
+        assert!(events.is_empty());
+        assert_eq!(cow.velocity, Vec3::ZERO);
+
+        let ran = with_test_world(&[cow.seen(None)], |w, _| {
+            push_entities(&mut villager, w, &mut events);
+        });
+        // Without the vanilla data under .local/horizon-client the world
+        // cannot be built: the test has nothing to check.
+        let _ = ran;
+        assert!(events.iter().any(|e| matches!(
+            e,
+            MobEvent::Push {
+                target: Who::Mob(2),
+                ..
+            }
+        )));
+        assert!(villager.velocity.x < 0.0);
+    }
+
+    #[test]
+    fn sleeping_fox_vetoes_pushes_received_during_other_mobs_ticks() {
+        let mut pair = None;
+        let ran = with_test_world(&[], |_, types| {
+            let make = |id, name: &str, x| {
+                Mob::new(
+                    id,
+                    std::sync::Arc::new(types.types[name].clone()),
+                    Vec3::new(x, 64.0, 0.5),
+                    0.0,
+                )
+            };
+            let mut fox = make(1, "minecraft:fox", 0.5);
+            fox.extra.ints[0] |= super::super::fox::SLEEPING;
+            pair = Some((fox, make(2, "minecraft:cow", 0.9)));
+        });
+        // Without the vanilla data under .local/horizon-client the world
+        // cannot be built: the test has nothing to check.
+        let _ = ran;
+        let Some((mut fox, mut cow)) = pair else {
+            return;
+        };
+        let mut events = Vec::new();
+        let ran = with_test_world(&[fox.seen(None)], |w, _| {
+            push_entities(&mut cow, w, &mut events);
+        });
+        // Without the vanilla data under .local/horizon-client the world
+        // cannot be built: the test has nothing to check.
+        let _ = ran;
+        assert!(events.is_empty());
+        assert_eq!(cow.velocity, Vec3::ZERO);
+
+        fox.extra.ints[0] &= !super::super::fox::SLEEPING;
+        let ran = with_test_world(&[fox.seen(None)], |w, _| {
+            push_entities(&mut cow, w, &mut events);
+        });
+        // Without the vanilla data under .local/horizon-client the world
+        // cannot be built: the test has nothing to check.
+        let _ = ran;
+        assert!(events.iter().any(|e| matches!(
+            e,
+            MobEvent::Push {
+                target: Who::Mob(1),
+                ..
+            }
+        )));
+    }
+
+    #[test]
     fn a_ridden_horse_is_not_pushed_but_still_pushes() {
         let pair = |ridden: bool| {
             let mut out = None;
@@ -4063,6 +4162,29 @@ mod forgiveness_tests {
         let mut t = (*crate::mobs::sensor_scan_tests::kind()).clone();
         t.species = species;
         Mob::new(1, Arc::new(t), Vec3::ZERO, 0.0)
+    }
+
+    #[test]
+    fn peaceful_drops_an_iron_golems_existing_player_target() {
+        crate::mobs::world::with_test_world(&[], |world, _| {
+            let mut world = world.clone();
+            world.player = Some(crate::mobs::world::test_player(Vec3::new(1.0, 0.0, 0.0)));
+            world.difficulty = super::super::spawning::LocalDifficulty::new(0, 18000, 0, 0.0);
+            let mut golem = mob(Species::IronGolem);
+            golem.ai.target = Some(Who::Player);
+            golem.extra.anger = 300;
+            golem.ai.last_hurt_by = Some(Who::Player);
+            let mut events = Vec::new();
+            tick(&mut golem, &world, &mut LegacyRandom::new(0), &mut events);
+            assert_eq!(golem.ai.target, None);
+            assert_eq!(golem.extra.anger, 0);
+            assert_eq!(golem.ai.last_hurt_by, None);
+            assert!(
+                !events
+                    .iter()
+                    .any(|e| matches!(e, MobEvent::AttackPlayer(..)))
+            );
+        });
     }
 
     /// The enderman's and zombified piglin's persistent anger is the target
@@ -5166,5 +5288,78 @@ mod dolphin_noai_air_tests {
     #[test]
     fn normal_dolphins_keep_their_underwater_countdown() {
         check(true, false, 4800, [4799, 4798]);
+    }
+}
+
+#[cfg(test)]
+mod happy_ghast_ambient_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn natural_happy_ghast_ambient_uses_entity_position() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let ran = crate::mobs::world::with_resource_test_world(
+            &root,
+            &[],
+            true,
+            true,
+            |world, _| {
+                world
+                    .chunks
+                    .insert((0, 0), Arc::new(crate::chunk::Chunk::empty(0, 0)));
+            },
+            |w, types| {
+                for baby in [false, true] {
+                    let kind = Arc::new(types.types["minecraft:happy_ghast"].clone());
+                    let mut mob = Mob::new(1, kind, Vec3::new(10.5, 208.0, 10.5), 0.0);
+                    mob.no_ai = true;
+                    mob.no_gravity = true;
+                    mob.persistent = true;
+                    mob.extra.age = if baby { -24000 } else { 0 };
+                    let sound = super::super::happy_ghast::sounds(&mob)[0];
+                    let mut random = LegacyRandom::new(0);
+                    let mut heard = false;
+                    // Natural scheduling: no ambient counter is forced or reset here.
+                    for _ in 0..1200 {
+                        let mut events = Vec::new();
+                        assert!(tick(&mut mob, w, &mut random, &mut events));
+                        for event in events {
+                            if let MobEvent::Sound(name, at, _, _) = event
+                                && name == sound
+                            {
+                                assert_eq!(at, [10.5, 208.0, 10.5], "baby={baby}");
+                                heard = true;
+                            }
+                        }
+                        if heard {
+                            break;
+                        }
+                    }
+                    assert!(heard, "no natural ambient event, baby={baby}");
+                }
+                // Entity.playSound plays nothing for a Silent entity.
+                let kind = Arc::new(types.types["minecraft:happy_ghast"].clone());
+                let mut mob = Mob::new(1, kind, Vec3::new(10.5, 208.0, 10.5), 0.0);
+                mob.no_ai = true;
+                mob.no_gravity = true;
+                mob.persistent = true;
+                mob.silent = true;
+                let sound = super::super::happy_ghast::sounds(&mob)[0];
+                let mut random = LegacyRandom::new(0);
+                for _ in 0..1200 {
+                    let mut events = Vec::new();
+                    assert!(tick(&mut mob, w, &mut random, &mut events));
+                    assert!(
+                        !events
+                            .iter()
+                            .any(|e| matches!(e, MobEvent::Sound(name, ..) if *name == sound)),
+                        "a Silent happy ghast is heard"
+                    );
+                }
+            },
+        );
+        assert!(ran, "prepared-data callback did not run");
     }
 }

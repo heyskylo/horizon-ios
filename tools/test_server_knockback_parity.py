@@ -225,6 +225,12 @@ SETUP = ['cmd Alice gamerule spawn_mobs false', 'cmd Alice gamerule spawn_monste
          f'cmd Alice tp Alice {A[0]} {A[1]} {A[2]} -90 0', f'cmd Alice tp Bob {V[0]} {V[1]} {V[2]} 90 0', 'ticks 40']
 
 
+def age_of(text):
+    """The number in a `/data get ... Age` reply (`60`, `4500s`)."""
+    digits = ''.join(c for c in text.split(':')[-1] if c.isdigit())
+    return int(digits) if digits else 0
+
+
 def server_data(server, selector, path, timeout=120):
     """An entity's data, asked from the console (its reply stays in the server's log, out of the clients')."""
     deadline = time.time() + timeout
@@ -301,6 +307,21 @@ def run_side(label, server_command, client_command, build, world):
                     client.stdin.write(f'attack Alice {line.split()[1]}\n')
                     client.stdin.flush()
                     while server_data(server, mob, 'Motion') == before:
+                        time.sleep(0.05)
+                    sync()
+                elif word == 'waitage':
+                    # Hold until an entity's `Age` has reached N. A value that
+                    # decays with the entity's own ticks (a blast's push on an
+                    # item) then belongs to a known age on both servers, whose
+                    # game clocks need not advance together between commands.
+                    # The console's own round trip can be two ticks, so the wait
+                    # is `>=` and the age is carried beside the value it pins.
+                    sync()
+                    selector, age = line.split()[1], int(line.split()[2])
+                    deadline = time.time() + 120
+                    while age_of(server_data(server, selector, 'Age')) < age:
+                        if time.time() > deadline:
+                            raise AssertionError(f'{server.log_path.name}: {selector} never reached Age {age}')
                         time.sleep(0.05)
                     sync()
                 elif word == 'tickstep':

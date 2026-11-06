@@ -964,6 +964,16 @@ impl Game<'_> {
 }
 
 impl Entity for Mob {
+    /// `Entity.move(MoverType.PISTON, ...)` ends in `setPos`, which `Shulker`
+    /// overrides to snap to the block centre.
+    fn move_by_piston(&mut self, movement: Vec3) {
+        let moved = self.position.add_vector(movement);
+        if self.species() == Species::Shulker {
+            crate::mobs::shulker::client_set_pos(self, moved.x, moved.y, moved.z);
+        } else {
+            self.position = moved;
+        }
+    }
     fn rotation(&self) -> [f32; 2] {
         [self.yaw, self.head_pitch]
     }
