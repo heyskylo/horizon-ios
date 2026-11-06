@@ -4539,7 +4539,10 @@ impl OptionsUi {
                     match act {
                         Act::Push(p) => {
                             if p == Page::ShaderPacks {
+                                // The pack list, and the picked pack's own settings with it.
                                 events.push(Event::ListShaderPacks);
+                                s.shader_options = None;
+                                events.push(Event::OpenShaderOptions);
                             }
                             if p == Page::Music {
                                 events.push(Event::ListMusicTracks);
@@ -5535,7 +5538,10 @@ impl OptionsUi {
                             self.focus_from_keyboard = false;
                             self.can_change_value = false;
                             if p == Page::ShaderPacks {
+                                // The pack list, and the picked pack's own settings with it.
                                 events.push(Event::ListShaderPacks);
+                                s.shader_options = None;
+                                events.push(Event::OpenShaderOptions);
                             }
                             if p == Page::Music {
                                 events.push(Event::ListMusicTracks);
@@ -8009,6 +8015,8 @@ mod tests {
         let events = ui.key(&mut s, &atlas, KeyCode::Enter, None);
         assert_eq!(ui.page(), Page::ShaderPacks);
         assert!(events.contains(&Event::ListShaderPacks), "{events:?}");
+        // The picked pack's own settings are read with the list.
+        assert!(events.contains(&Event::OpenShaderOptions), "{events:?}");
         ui.back(&mut s);
         assert_eq!(ui.page(), Page::Graphics);
         assert_eq!(ui.graphics.page(), crate::graphics_ui::Page::Shaders);
