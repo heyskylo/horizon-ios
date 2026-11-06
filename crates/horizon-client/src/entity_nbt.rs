@@ -2817,11 +2817,11 @@ pub fn spit_or_bullet_from_nbt(
         "minecraft:shulker_bullet" => ProjectileKind::ShulkerBullet {
             target,
             // `Dir`: `Direction.LEGACY_ID_CODEC`, the step the bullet is on,
-            // absent while it has not chosen one.
-            dir: number(tag.get("Dir")).map(|d| d as u8),
-            steps: number(tag.get("Steps"))
-                .unwrap_or(0)
-                .clamp(0, i32::MAX as i64) as i32,
+            // absent while it has not chosen one. A byte read through
+            // `Direction.from3DDataValue`, which wraps it: `abs(d % 6)`.
+            dir: number(tag.get("Dir")).map(|d| ((d as i8) % 6).unsigned_abs()),
+            // `getIntOr("Steps", 0)`: any int, a negative one included.
+            steps: number(tag.get("Steps")).unwrap_or(0) as i32,
             delta: [
                 float(tag.get("TXD")).unwrap_or(0.0),
                 float(tag.get("TYD")).unwrap_or(0.0),
@@ -6981,6 +6981,23 @@ mod shulker_bullet_nbt_tests {
     /// target — writes no `Target` key at all, as vanilla's
     /// `if (this.finalTarget != null)` does, and no `Dir` until it has chosen a
     /// step. `Steps` and the deltas are always written, zero or not.
+    #[test]
+    fn a_loaded_dir_wraps_and_steps_keep_their_sign() {
+        // `Direction.from3DDataValue(b)` is `BY_3D_DATA[abs(b % 6)]`, and
+        // `getIntOr` keeps a negative step count.
+        for (dir, steps, expected) in [(7, -3, (1, -3)), (-2, 4, (2, 4)), (5, 0, (5, 0))] {
+            let tag = Tag::compound([
+                ("id", Tag::String("minecraft:shulker_bullet".into())),
+                ("Pos", doubles(&[4.5, 80.0, 10.5])),
+                ("Dir", Tag::Byte(dir)),
+                ("Steps", Tag::Int(steps)),
+            ]);
+            let p = spit_or_bullet_from_nbt(&tag, None, None).unwrap();
+            let (_, d, s, _) = bullet_kind(&p);
+            assert_eq!((d, s), (Some(expected.0), expected.1), "Dir {dir}, Steps {steps}");
+        }
+    }
+
     #[test]
     fn a_bullet_without_a_target_writes_no_target_key() {
         let bare = Tag::compound([
