@@ -2003,7 +2003,9 @@ fn a_26_2_client_joins_only_a_server_that_accepts_older_clients() {
                     | cb::MOVE_ENTITY_POS_ROT
                     | cb::MOVE_ENTITY_ROT
                     | cb::ENTITY_POSITION_SYNC
-                    | cb::ANIMATE => continue,
+                    | cb::ANIMATE
+                    // Its tag displays are 26.2's bare tag ids.
+                    | cb::RECIPE_BOOK_ADD => continue,
                     _ => {}
                 }
             }
@@ -2101,6 +2103,28 @@ fn a_26_2_clients_walk_dig_swing_and_teleport_confirmations_read_as_26_3s() {
             if id == horizon_protocol::ids::play::clientbound::COMMANDS {
                 continue;
             }
+            // The packets written in 26.2's layout, which the pinned readers don't read.
+            {
+                use horizon_protocol::ids::play::clientbound as cb;
+                if id == cb::LEVEL_CHUNK_WITH_LIGHT {
+                    chunks += 1;
+                }
+                if matches!(
+                    id,
+                    cb::LEVEL_CHUNK_WITH_LIGHT
+                        | cb::LIGHT_UPDATE
+                        | cb::LEVEL_PARTICLES
+                        | cb::EXPLODE
+                        | cb::MOVE_ENTITY_POS
+                        | cb::MOVE_ENTITY_POS_ROT
+                        | cb::MOVE_ENTITY_ROT
+                        | cb::ENTITY_POSITION_SYNC
+                        | cb::ANIMATE
+                        | cb::RECIPE_BOOK_ADD
+                ) {
+                    continue;
+                }
+            }
             match C::decode(id, &payload).map_err(|e| format!("packet {id}: {e}"))? {
                 C::PlayerPosition(p) => {
                     let mut w = horizon_protocol::buf::Writer::new();
@@ -2108,7 +2132,6 @@ fn a_26_2_clients_walk_dig_swing_and_teleport_confirmations_read_as_26_3s() {
                     bot.send_raw(ACCEPT_TELEPORTATION_26_2, &w.data)?;
                     confirmed += 1;
                 }
-                C::LevelChunkWithLight(_) => chunks += 1,
                 C::ChunkBatchFinished(_) => {
                     bot.send(
                         S::ChunkBatchReceived(play::ChunkBatchReceived {
@@ -2123,18 +2146,16 @@ fn a_26_2_clients_walk_dig_swing_and_teleport_confirmations_read_as_26_3s() {
             if chunks >= 9 && confirmed > 0 && !sent {
                 sent = true;
                 bot.send(S::PlayerLoaded(Empty).encode())?;
-                // A walk from the spawn (8.5, 8.5) in two steps, on the stone.
-                for (x, z) in [(9.0, 9.0), (walked[0], walked[2])] {
-                    bot.send(
-                        S::MovePlayerPos(play::MovePlayerPos {
-                            x,
-                            y: walked[1],
-                            z,
-                            flags: 1,
-                        })
-                        .encode(),
-                    )?;
-                }
+                // A walk from the spawn (8.5, 8.5), on the stone: one move, as vanilla kicks a second in a tick.
+                bot.send(
+                    S::MovePlayerPos(play::MovePlayerPos {
+                        x: walked[0],
+                        y: walked[1],
+                        z: walked[2],
+                        flags: 1,
+                    })
+                    .encode(),
+                )?;
                 // Start and stop destroying the block below, as 26.2 numbers the actions.
                 for (action, sequence) in [(0, 5), (2, 6)] {
                     let mut w = horizon_protocol::buf::Writer::new();
