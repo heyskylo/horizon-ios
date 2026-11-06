@@ -11931,6 +11931,10 @@ mod tests {
         let item_hooks = free_hooks(include_str!("../../../horizon-world/src/item_defaults.rs"));
         // The loot tables' hook point (`horizon_world::loot`).
         let loot_hooks = free_hooks(include_str!("../../../horizon-world/src/loot.rs"));
+        // World generation's hook points (`horizon_world::worldgen::native_generate`).
+        let gen_hooks = free_hooks(include_str!(
+            "../../../horizon-world/src/worldgen/native_generate.rs"
+        ));
         // The menu engine's (`horizon_client::menu`).
         let menu_hooks = free_hooks(include_str!("../menu.rs"));
         // The air supply's (`horizon_client::breathing`).
@@ -11956,6 +11960,7 @@ mod tests {
             .chain(render_hooks.iter().copied())
             .chain(item_hooks.iter().copied())
             .chain(loot_hooks.iter().copied())
+            .chain(gen_hooks.iter().copied())
             .chain(menu_hooks.iter().copied())
             .chain(breath_hooks.iter().copied())
             .chain(crafting_hooks.iter().copied())
@@ -11981,6 +11986,8 @@ mod tests {
                 format!("horizon_world::item_defaults::native_{name}")
             } else if loot_hooks.contains(name) {
                 format!("horizon_world::loot::native_{name}")
+            } else if gen_hooks.contains(name) {
+                format!("horizon_world::worldgen::native_generate::native_{name}")
             } else if crafting_hooks.contains(name) {
                 // crafting.rs compiles into horizon-client-lib (#5446's
                 // split): horizon-mixins resolves the crate by its package.
