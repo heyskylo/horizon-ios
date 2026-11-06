@@ -900,8 +900,16 @@ mod tests {
         // with "the launcher has none for macos x86_64".
         for (os, arch, game, _) in backend::PLATFORMS {
             let host = host_for(os, arch).unwrap_or_else(|| panic!("no Rust for {game}"));
-            let expected_arch = if arch == "aarch64" { "aarch64-" } else { "x86_64-" };
-            assert!(host.target.starts_with(expected_arch), "{game}: {}", host.target);
+            let expected_arch = if arch == "aarch64" {
+                "aarch64-"
+            } else {
+                "x86_64-"
+            };
+            assert!(
+                host.target.starts_with(expected_arch),
+                "{game}: {}",
+                host.target
+            );
         }
         assert_eq!(
             host_for("macos", "x86_64").unwrap().target,
