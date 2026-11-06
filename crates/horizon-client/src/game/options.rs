@@ -125,8 +125,10 @@ impl Game<'_> {
         self.options_from_title = from_title;
         self.options_to_game = false;
         let minecart_improvements = self.minecart_improvements();
+        let mods_live = self.mods_live_now();
         let ui = &mut self.ui.options;
         ui.open_at(!from_title && self.title.is_none(), page);
+        ui.mods_live = mods_live;
         ui.minecart_improvements = minecart_improvements;
         let root = self.options.resources.clone();
         ui.languages = lang::available(&[&root]);
@@ -346,6 +348,8 @@ impl Game<'_> {
                 Event::Changed => {
                     self.settings.save(&Self::options_path());
                     self.apply_settings();
+                    self.switch_mods();
+                    self.sync_native_switches();
                     self.sync_pregen_option();
                     self.sync_agent_control();
                     self.ui.options.agent_status = self.agent_status_lines();
@@ -425,6 +429,16 @@ impl Game<'_> {
                     let _ = std::fs::create_dir_all(&dir);
                     super::packs::open_folder(&dir);
                 }
+                Event::BrowseMods => {
+                    let ui = &mut self.ui.options.mod_browser;
+                    self.mods.jobs.browse(ui, Self::game_dir());
+                }
+                Event::InstallMod(id) => {
+                    let ui = &mut self.ui.options.mod_browser;
+                    self.mods.jobs.install(ui, Self::game_dir(), id);
+                }
+                // The website, through ConfirmLinkScreen as other links.
+                Event::OpenModPage(url) => self.confirm_trusted_link(&url, Screen::Options),
                 Event::ListShaderPacks => {
                     let (key, _) = horizon_client::shader_pack_list::resolve(
                         &Self::shader_packs_dir(),
@@ -454,6 +468,7 @@ impl Game<'_> {
                 Event::NativeSettings(i) => self.native_settings_refresh(i),
                 Event::NativeButton(i, b) => self.native_settings_event(i, b),
                 Event::Credits => self.open_win_screen(false, super::win::Finish::Options),
+                Event::HudEditor => self.open_hud_editor(true),
                 // AccessibilityOptionsScreen's link button: ConfirmLinkScreen
                 // back to the options screen.
                 Event::AccessibilityHelp => {
@@ -694,7 +709,7 @@ fn detected_controller_style(
     fallback: horizon_client::gamepad::GlyphStyle,
 ) -> horizon_client::gamepad::GlyphStyle {
     device.map_or(fallback, |d| {
-        horizon_client::gamepad::GlyphStyle::of_vendor(d.vendor)
+        horizon_client::gamepad::GlyphStyle::of_device(d.vendor, d.product)
     })
 }
 
