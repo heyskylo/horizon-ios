@@ -273,6 +273,20 @@ impl Game<'_> {
                 );
                 // Entity.teleportToPortalDestination: isAllowedToEnterPortal.
                 if self.may_enter(plan.dim) {
+                    // NetherPortalBlock.getExitPortal: a spectator never
+                    // builds an exit portal, it gets no transition without one.
+                    if !self.spectator_exit_exists(host, &plan) {
+                        self.as_guest(host, conn, |g| {
+                            g.send_overlay_message(
+                                horizon_client::text::Text::translate(
+                                    "spectator.cannot_teleport",
+                                    &[],
+                                )
+                                .with_color(horizon_client::text::RED),
+                            );
+                        });
+                        return true;
+                    }
                     self.start_server_trip(host, conn, plan.dim, Some(plan));
                 }
             }
@@ -287,6 +301,20 @@ impl Game<'_> {
             _ => self.start_gateway_trip(host, conn, pos),
         }
         true
+    }
+
+    /// Whether an exit portal already stands in the plan's dimension
+    /// (`PortalForcer.findClosestPortalPosition`), searched without building.
+    fn spectator_exit_exists(&mut self, host: &mut LanHost, plan: &Plan) -> bool {
+        let source = self.dim;
+        if self.enter_level(Some(host), plan.dim).is_err() {
+            return false;
+        }
+        let exists = self.find_exit_portal(plan).is_some();
+        if let Err(e) = self.enter_level(Some(host), source) {
+            log::error!("could not reopen {}: {e}", source.id());
+        }
+        exists
     }
 
     /// Whether this guest's dimension change may start (`native_player_portal`).
