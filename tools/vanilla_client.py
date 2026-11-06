@@ -65,9 +65,19 @@ def host_library(path):
     return "java-objc-bridge" not in name
 
 
+def host_natives(path):
+    """A natives jar for this machine in place of another platform's: a prepared.json made on one machine
+    and shared with others (a shared .local) lists that machine's natives only; the jars sit side by side."""
+    name = Path(path).name
+    if "-natives-" not in name or name.endswith(NATIVES):
+        return path
+    mine = Path(path).with_name(name[:name.index("-natives-") + 1] + NATIVES)
+    return str(mine) if (ROOT / mine).exists() else path
+
+
 def classpath():
     prepared = json.loads((GAME / "prepared.json").read_text())
-    jars = [ROOT / p for p in prepared["libraries"]["client"] if host_library(p)]
+    jars = [ROOT / p for p in map(host_natives, prepared["libraries"]["client"]) if host_library(p)]
     return [GAME / "jars/client.jar", *jars]
 
 

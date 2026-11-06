@@ -54,16 +54,20 @@ wgsl_types! {
     [[f32; 4]; 8] => "array<vec4<f32>, 8>",
 }
 
-/// A uniform struct: the Rust type the renderer uploads, and its WGSL.
+/// A uniform struct: the Rust type the renderer uploads, and its WGSL. `pad` names a trailing
+/// field in Rust only, which fills the struct out to WGSL's size (a multiple of its 16-byte
+/// alignment), since `Pod` allows no implicit padding.
 macro_rules! uniform {
     ($(#[doc = $doc:literal])* $name:ident {
         $($(#[doc = $fdoc:literal])* $field:ident: $ty:ty,)*
-    }) => {
+    } $(pad $pad:ident: $pad_ty:ty)?) => {
         $(#[doc = $doc])*
         #[repr(C)]
         #[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
         pub struct $name {
             $($(#[doc = $fdoc])* pub $field: $ty,)*
+            $(/// Not in the WGSL: zeros up to its size.
+            pub $pad: $pad_ty,)?
         }
 
         impl $name {
@@ -200,6 +204,36 @@ uniform! {
         /// The ground one shadow texel covers at the map's centre, in blocks (for a bias that
         /// scales with it); 0 without a shadow map.
         shadow_center_texel: f32,
+        /// 1 while the output is HDR, else 0.
+        hdr: u32,
+        /// The peak over paper white: the brightest value the display shows (Apple's EDR
+        /// headroom, Android's HDR/SDR ratio). 1 in SDR. It changes while the game runs (the
+        /// system's SDR white, a calibration, another display), so read it every frame.
+        headroom: f32,
+        /// Paper white in nits; a nominal 80 in SDR.
+        paper_white: f32,
+        /// The peak brightness in nits; a nominal 80 in SDR, as `paper_white`.
+        peak: f32,
+        /// The display's black in nits (HDR's Black Level); 0 in SDR.
+        black_level: f32,
+    } pad padding: [u32; 3]
+}
+
+impl Frame {
+    /// The fields 0.1's prelude declares: the struct up to `shadow_center_texel`, a prefix of
+    /// the buffer the renderer uploads.
+    pub const FIELDS_0_1: usize = 49;
+
+    /// `Frame` as the line's prelude declares it.
+    pub fn line(api: crate::Api) -> Struct {
+        let fields = match api {
+            crate::Api::V0_1 => &Self::WGSL.fields[..Self::FIELDS_0_1],
+            crate::Api::V0_2 => Self::WGSL.fields,
+        };
+        Struct {
+            fields,
+            ..Self::WGSL
+        }
     }
 }
 
@@ -308,6 +342,17 @@ pub const WEATHER_INPUT: Struct = Struct {
     },
 };
 
+/// The tonemap stage's input (0.2): one pixel of the window.
+pub const TONEMAP_INPUT: Struct = Struct {
+    name: "TonemapInput",
+    doc: "One pixel of the window, for `fn tonemap(input: TonemapInput) -> vec3<f32>`, which returns its colour for the display: linear light, 1.0 at paper white, from 0 to `frame.headroom` (Horizon clamps it there).",
+    fields: fields! {
+        uv: "vec2<f32>" = "Where the pixel is, 0..1 from the top left.",
+        pixel: "vec2<f32>" = "The pixel's centre, in pixels from the top left of the window.",
+        color: "vec3<f32>" = "The post chain's picture here (the world's without one), linear light, never negative or NaN.",
+    },
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -315,9 +360,18 @@ mod tests {
     #[test]
     fn frame_fields_carry_their_docs() {
         let wgsl = Frame::WGSL;
-        assert_eq!(wgsl.fields.len(), 49);
+        assert_eq!(wgsl.fields.len(), 54);
         assert!(wgsl.fields.iter().all(|f| !f.doc.trim().is_empty()));
-        assert_eq!(std::mem::size_of::<Frame>(), 6 * 64 + 15 * 16 + 8 * 16);
+        // 0.1's 49 fields, then 0.2's five and the padding to a multiple of 16.
+        assert_eq!(
+            std::mem::size_of::<Frame>(),
+            6 * 64 + 15 * 16 + 8 * 16 + 2 * 16
+        );
+        assert_eq!(Frame::OFFSETS[Frame::FIELDS_0_1], 6 * 64 + 15 * 16 + 8 * 16);
+        assert_eq!(
+            Frame::line(crate::Api::V0_1).fields.len(),
+            Frame::FIELDS_0_1
+        );
         assert!(
             wgsl.wgsl()
                 .contains("    camera_position: vec3<f32>,\n    time: f32,\n")
