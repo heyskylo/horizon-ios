@@ -181,23 +181,32 @@ dashes in an answer (`123e4567-e89b-12d3-a456-426614174000`). A hand-over id is 
 `transfer-status` is what a proxy reads before it sends players to a server. It names no player and changes nothing:
 
 ```json
-{"ok": true, "players": 12, "held": 1, "expected": 2, "frozen": 0, "online": 13, "max_players": 20, "full": false}
+{"ok": true, "players": 12, "held": 1, "expected": 2, "frozen": 0, "online": 13, "max_players": 20, "full": false, "stopping": false}
 ```
 
 `players` are the players placed in the world (a player a `moved` release took out is no longer counted), `held`
 the logins held for a hand-over, `expected` the expectations still alive, and `frozen` the players this server is
 handing over. `online` is what the player limit counts: the placed and the held players and the logins still
 joining. `full` is `online` at `max_players` or above: an ordinary login, held or not, is then refused as
-`multiplayer.disconnect.server_full`, unless the player is an operator with `bypassesPlayerLimit`. A proxy asks it
-often, so it writes nothing to the log.
+`multiplayer.disconnect.server_full`, unless the player is an operator with `bypassesPlayerLimit`. `player-expect`
+counts the expected players too: it is refused once `online` and `expected` reach `max_players`. `stopping` is true
+once the server has begun to stop, and no player is taken in any more. A proxy asks it often, so it writes nothing to
+the log.
 
 `player-expect <uuid> [seconds]` tells the target server that the player is about to log in: within
 `expect_seconds` by default, `max_expect_seconds` at most (a longer time is cut to it), and at most
 `max_expected` players are expected at once. The reply is `{"ok": true, "renewed": false, "ttl_seconds": 10}`;
 asking again for the same player renews the time and says `"renewed": true`. It is refused for a missing or
-malformed id, a time that is not a whole number of seconds above zero, a player already connected, and a full
-table. The player's next login uses the expectation up as it starts, once the bans, the whitelist and the player
-limit let it in, so a login still in configuration when the time runs out (a resource pack prompt) keeps it. A
+malformed id, a time that is not a whole number of seconds above zero, a player already connected, a full table,
+a full server (`{"error": "the server is full"}`) and a server that is stopping (`{"error": "the server is
+stopping"}`). Each expectation holds a place until it is used up or runs out: once the places the player limit
+counts and those of the other expected players reach `max-players`, a new one is refused as a login would be, so two
+proxies sending players at once do not fill the server past its limit. As at login, an operator with
+`bypassesPlayerLimit` is never refused as full. The places are held against other expectations only: an ordinary
+login (one nobody expected) sees the vanilla limit alone, so it can take a place an expected player was counting on.
+That player's login is then refused as `server_full`, and the proxy aborts the hand-over on the source, where the
+player goes on as it was. `full` in `transfer-status` is likewise the vanilla condition alone. The player's next
+login uses the expectation up as it starts, once the bans, the whitelist and the player limit let it in, so a login still in configuration when the time runs out (a resource pack prompt) keeps it. A
 login that then fails before it reaches play (its connection drops in configuration, or the client refuses a
 required pack) gives the expectation back with its own deadline, so the proxy's next attempt within that time is
 still expected. An expectation no login used is reported in the log when its time runs out.
@@ -422,6 +431,12 @@ with `[transfer]` on and behind the proxy's Velocity forwarding:
 Every step that is not taken in time is undone by itself: an expectation after `expect_seconds`, a held player after
 `max_hold_seconds`, a freeze after `max_freeze_seconds`, each with a warning in the log. A `moved` that comes after
 the freeze ran out is refused, so the proxy must confirm and release within `max_freeze_seconds` of the export.
+
+**A server that stops.** From the `/stop` command (the console's, a player's or the control endpoint's) or a stop
+signal on, `player-expect`, `player-import` and `player-confirm` are refused `{"error": "the server is stopping"}`: a
+player must not arrive on a server that is about to close. The proxy drops the held player there and aborts on the
+source. A retry after the commit is still answered, and `player-export`, `player-release` and `player-drop` stay
+open: they are the way out.
 
 **In the log.** Each `player-*` request writes one line with what became of it: `INFO` and what it did
 (`player-import Alex (<uuid>): ok, parts inventory,experience, placed false, announced true, recentered false,
