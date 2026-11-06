@@ -859,11 +859,12 @@ impl Game<'_> {
             return;
         }
         // The faces of the players the list shows.
-        let faces: std::collections::HashSet<u128> =
-            tab_list::sorted_players(&players, &self.score.board)
-                .iter()
-                .map(|p| p.uuid)
-                .collect();
+        let faces: std::collections::HashSet<u128> = self
+            .tab_list
+            .displayed_ids(&players, &self.score.board)
+            .iter()
+            .copied()
+            .collect();
         for p in players.iter_mut().filter(|p| faces.contains(&p.uuid)) {
             p.skin = self.face_skin(p.uuid, &p.skin);
         }
