@@ -69,6 +69,7 @@ mod block_items;
 mod blockctl;
 mod boarding;
 mod boat_authority_fixture;
+mod special_attack_fixture;
 mod boat_leads;
 mod boat_passengers;
 mod boat_rider_fixture;
@@ -12268,6 +12269,24 @@ impl Game<'_> {
     /// box `area`. Before the hit resets the charge (`Player.onAttack`).
     pub(super) fn vehicle_attack_sounds(&mut self, area: Aabb, magic: Option<i32>) {
         self.attack_effects(area, None, false, mace::Spared::Nothing, magic);
+    }
+    /// Player.attack's cost after an accepted special-entity hurt. Hanging
+    /// decorations consume their hit in skipAttackInteraction, before this tail.
+    pub(super) fn special_attack_exhaustion(&mut self) {
+        if let Some(player) = self.player.as_mut() {
+            player.cause_food_exhaustion(0.1);
+        }
+    }
+    /// The attacker's side of Player.causeExtraKnockback, including when the
+    /// accepted target was removed by its hurt implementation.
+    pub(super) fn special_attack_slowdown(&mut self, knockback: f32) {
+        if knockback > 0.0 {
+            if let Some(player) = self.player.as_mut() {
+                player.velocity.x *= horizon_client::attack_strength::ATTACKER_SLOWDOWN;
+                player.velocity.z *= horizon_client::attack_strength::ATTACKER_SLOWDOWN;
+            }
+            self.stop_sprint_after_extra_knockback();
+        }
     }
     /// `Player.attack` after a target that is not a mob took the hit:
     /// the sprint knockback sound, a living target's critical hit (`living`:

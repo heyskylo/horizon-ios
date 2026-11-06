@@ -2318,9 +2318,14 @@ impl Game<'_> {
         let area = self.carts[i].bounds();
         // Player.attack's full damage against the cart's entity type.
         let id = self.carts[i].id as i32;
-        let (damage, _, _, magic) = self.melee_damage(self.carts[i].kind.id(), false);
-        self.hurt_cart(i, damage, self.creative, burning);
-        self.vehicle_attack_sounds(area, magic.then_some(id));
+        let kind = self.carts[i].kind.id();
+        let (damage, scale, _, magic) = self.melee_damage(kind, false);
+        if self.hurt_cart_result(i, damage, self.creative, burning) && damage > 0.0 {
+            self.vehicle_attack_sounds(area, magic.then_some(id));
+            let (knockback, _) = self.extra_knockback(kind, scale);
+            self.special_attack_slowdown(knockback);
+            self.special_attack_exhaustion();
+        }
         // Player.onAttack: the hit starts the attack strength again.
         self.attack_ticks = 0;
         self.swing_arm();
@@ -2352,12 +2357,16 @@ impl Game<'_> {
     /// `VehicleEntity.hurtServer`: shake, add the damage, break past 40 (at
     /// once for creative players); TNT minecarts prime instead when moving
     /// or hurt by fire or an explosion (`damageSourceIgnitesTnt`).
-    pub(super) fn hurt_cart(&mut self, i: usize, mut damage: f32, creative: bool, fire: bool) {
+    pub(super) fn hurt_cart(&mut self, i: usize, damage: f32, creative: bool, fire: bool) {
+        self.hurt_cart_result(i, damage, creative, fire);
+    }
+    /// Whether hurtServer accepted this hit; removal is still a successful hurt.
+    fn hurt_cart_result(&mut self, i: usize, mut damage: f32, creative: bool, fire: bool) -> bool {
         let kind = self.carts[i].kind.id();
         let mut cancel = false;
         self.native_vehicle_damage(kind, &mut damage, &mut cancel);
         if cancel {
-            return;
+            return false;
         }
         let destroyed = {
             let c = &mut self.carts[i];
@@ -2409,6 +2418,7 @@ impl Game<'_> {
                 }
             }
         }
+        true
     }
     /// Baked block-state faces with default block tints and terrain shade or diffuse lighting.
     pub(super) fn block_model_vertices(

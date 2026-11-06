@@ -732,8 +732,9 @@ impl Game<'_> {
         if !self.before_block(d) || self.mob_hit().is_some_and(|m| m.1 < d) {
             return false;
         }
-        let (_, _, crit, magic) = self.melee_damage("minecraft:armor_stand", true);
+        let (_, scale, crit, magic) = self.melee_damage("minecraft:armor_stand", true);
         let hurt = self.hit_armor_stand(i, |g, area, id| {
+            let (knockback, _) = g.extra_knockback("minecraft:armor_stand", scale);
             g.attack_effects(
                 area,
                 Some(id as i32),
@@ -741,11 +742,13 @@ impl Game<'_> {
                 super::mace::Spared::Stand(id),
                 magic.then_some(id as i32),
             );
+            g.special_attack_slowdown(knockback);
         });
         // Player.onAttack: the hit starts the attack strength again, hurt or
         // not (skipAttackInteraction only asks mayInteract).
         self.attack_ticks = 0;
         if hurt {
+            self.special_attack_exhaustion();
             self.swing_arm();
         }
         hurt

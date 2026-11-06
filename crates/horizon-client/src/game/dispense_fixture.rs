@@ -312,7 +312,9 @@ impl Game<'_> {
         );
         let state = self.world.block(origin.x, origin.y, origin.z);
         let mut used = Vec::new();
-        if let Some(op) = case.get("remove") {
+        if let Some(op) = case.get("special_attack") {
+            used = self.fixture_special_attack(op)?;
+        } else if let Some(op) = case.get("remove") {
             used = self.fixture_remove(origin, op)?;
         } else if let Some(op) = case.get("use") {
             used = self.fixture_use(origin, op)?;

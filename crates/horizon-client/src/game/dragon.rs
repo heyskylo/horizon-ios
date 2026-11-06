@@ -561,7 +561,7 @@ impl Dragon {
     /// `EnderDragon`'s constructor: full health, hovering (`EnderDragonPhase.HOVERING`). Only
     /// `EnderDragonFight.createNewDragon` sets the holding pattern; a dragon from `/summon`, a
     /// spawn egg or a save without `DragonPhase` keeps hovering where it was put.
-    fn new(position: Vec3, yaw: f32, seed: i64) -> Self {
+    pub(super) fn new(position: Vec3, yaw: f32, seed: i64) -> Self {
         Self {
             id: 0,
             position,
@@ -1726,7 +1726,7 @@ impl Game<'_> {
             return false;
         }
         // A dragon part is no LivingEntity: `canCriticalAttack` is false.
-        let (amount, _, _, _) = self.melee_damage("minecraft:ender_dragon", false);
+        let (amount, scale, _, _) = self.melee_damage("minecraft:ender_dragon", false);
         self.swing_arm();
         // The part's box.
         let area = self
@@ -1737,7 +1737,10 @@ impl Game<'_> {
         let hurt = self.hit_special(id, amount, true, DamageKind::PlayerAttack, None);
         // The sweep and the sounds read the charge, which the hit then spends.
         if let (Some(area), Hurt::Landed { .. }) = (area, hurt) {
+            let (knockback, _) = self.extra_knockback("minecraft:ender_dragon", scale);
             self.attack_effects(area, None, false, super::mace::Spared::Nothing, None);
+            self.special_attack_slowdown(knockback);
+            self.special_attack_exhaustion();
         }
         self.attack_ticks = 0;
         true
