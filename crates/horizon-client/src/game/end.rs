@@ -1477,9 +1477,9 @@ impl Game<'_> {
             .collect();
         let mut present: std::collections::HashSet<u32> = ids.iter().map(|(id, _)| *id).collect();
         // A pearl waiting for its exit keeps its portal cooldown.
-        present.extend(self.end.arrivals.iter().filter_map(|a| match &a.traveller {
-            Arriving::Pearl(p) => Some(p.id),
-            Arriving::Live(id) => Some(*id),
+        present.extend(self.end.arrivals.iter().map(|a| match &a.traveller {
+            Arriving::Pearl(p) => p.id,
+            Arriving::Live(id) => *id,
         }));
         self.end.gateways.retain(|id, _| present.contains(id));
         let mut leaving: Vec<(u32, BlockPos)> = Vec::new();
