@@ -2484,6 +2484,17 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
 - **`native_player_jump(player, name)`**: accepted guest movement made the server player jump from the ground, after movement simulation finishes. The guest's state is swapped in.
 - **`native_player_kicked(player, name, reason)`**: a guest was kicked after the hub recorded the rendered disconnect reason and sent the disconnect. The guest's state is swapped in, unless the guest was already removed in the same poll (a kick and the disconnect arriving together): the hook still fires, without it.
 - **`native_player_level_change(player, name, from, to)`**: a server player's experience change altered their level, after the new level was applied. The guest's state is swapped in when the player is a guest.
+#### Server hooks for plugin ports: Movement and teleports
+
+Hooks before players and projectiles move, so a port can stop or redirect a move instead of sending the player back a
+tick later with a command.
+
+- **`native_player_move(player, name, from, to, yaw, pitch, on_ground, cancel)`**: a server player's position or look
+  packet that changed either and passed the server's checks (moved too quickly, moved wrongly, the anticheat), before
+  it is applied (Bukkit's `PlayerMoveEvent`). `from` and `to` are the feet before and after. Set `cancel` and the
+  player is sent back to `from`; change `to` and they are put there instead (not checked against the blocks) and their
+  client gets a teleport there. Not heard: riders, sleepers, moves while a teleport waits for its answer, teleports.
+  Once a move, inside the packet's handling: keep it cheap. No `self`, no state swapped in. Server-side.
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a

@@ -99,6 +99,11 @@ pub struct BodyFlags {
     pub glowing: bool,
 }
 
+/// The game's native movement hook (`native_player_move`), set once by the game: player, name,
+/// from, to (which it may change), yaw, pitch, on_ground and cancel.
+pub type MoveHook = fn(u128, &str, [f64; 3], &mut [f64; 3], f32, f32, bool, &mut bool);
+pub static PLAYER_MOVE: std::sync::OnceLock<MoveHook> = std::sync::OnceLock::new();
+
 /// Everything the hub needs from the game for one tick.
 pub struct TickCtx<'a> {
     pub world: &'a mut World,
@@ -4145,6 +4150,33 @@ impl Hub {
                 None => {}
             }
         }
+        // Bukkit's PlayerMoveEvent: the mods hear a move that passed the checks. Canceled, the
+        // player is sent back; moved elsewhere, they are put there and their client told.
+        let (mut to, mut placed) = (to, false);
+        if let Some(hook) = PLAYER_MOVE.get() {
+            let g = &self.guests[i];
+            if to != start || (yaw, pitch) != (g.yaw, g.pitch) {
+                let (mut there, mut cancel) = (to, false);
+                let on_ground = flags & 1 != 0;
+                hook(
+                    g.uuid,
+                    &g.name,
+                    start,
+                    &mut there,
+                    yaw,
+                    pitch,
+                    on_ground,
+                    &mut cancel,
+                );
+                if cancel {
+                    self.resend_teleport(i, Some(start));
+                    return;
+                }
+                if there != to && there.iter().all(|v| v.is_finite()) {
+                    (to, placed) = (there, true);
+                }
+            }
+        }
         // clientIsFloating, from the move that is accepted: no upward-or-level
         // step onto something, nothing but air around the body, and nothing
         // that lets the player hover (the server's allow-flight, mayfly,
@@ -4190,6 +4222,9 @@ impl Hub {
         g.head_yaw = g.yaw;
         g.on_ground = flags & 1 != 0;
         g.ticks = g.ticks.max(1);
+        if placed {
+            self.resend_teleport(i, None);
+        }
     }
 
     /// `ServerGamePacketListenerImpl.noBlocksAround`: every block of the

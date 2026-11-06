@@ -6523,6 +6523,39 @@ impl Game<'_> {
     ) {
         mod_api::dispatch_player_level_change(self, mod_api::mods(), player, name, from, to);
     }
+    /// A server player's move is about to be applied (Bukkit's `PlayerMoveEvent`): a position
+    /// or look packet that changed either and passed the server's checks (moved too quickly,
+    /// moved wrongly, the anticheat), so `from` and `to` are their feet before and after and
+    /// `yaw`, `pitch` and `on_ground` what the client sent. Set `cancel` and the player is sent
+    /// back to `from` (the client gets a teleport there, as for a refused move). Change `to` and
+    /// they are put there instead, not checked against the blocks, and their client gets a
+    /// teleport there; a value that is not finite is ignored. Not heard: a rider (its vehicle
+    /// moves it), a sleeper, moves before the client loaded the level or while a teleport waits
+    /// for its answer, and teleports. It runs inside the server's handling of the packet, once
+    /// a move, so it should be cheap; there is no `self` and no player's state is swapped in.
+    /// Server-side. @API:player_move@.
+    pub(super) fn native_player_move(
+        player: u128,
+        name: &str,
+        from: [f64; 3],
+        to: &mut [f64; 3],
+        yaw: f32,
+        pitch: f32,
+        on_ground: bool,
+        cancel: &mut bool,
+    ) {
+        mod_api::dispatch_player_move(
+            mod_api::mods(),
+            player,
+            name,
+            from,
+            to,
+            yaw,
+            pitch,
+            on_ground,
+            cancel,
+        );
+    }
     /// A click in a menu a mod opened (`native_open_menu`), which moved
     /// nothing: the menu's `slot` (its own first, then the player's
     /// inventory, `native_menu_inventory_slot`; -999 outside), the `button`
