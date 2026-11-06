@@ -86,6 +86,7 @@ mod feature_placement_fixture;
 mod feature_region_fixture;
 mod feature_sort_fixture;
 mod fill_layer_fixture;
+mod float_text_fixture;
 mod fluid_box_fixture;
 mod fluid_fixture;
 mod fluid_flow_fixture;
@@ -262,6 +263,7 @@ probes! {
     fill_layer_fixture,
     fluid_box_fixture,
     fluid_fixture,
+    float_text_fixture,
     fluid_flow_fixture,
     fluid_occupancy_fixture,
     fluid_shape_fixture,
