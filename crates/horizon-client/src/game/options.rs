@@ -223,7 +223,13 @@ impl Game<'_> {
             (true, None) => {
                 let was = window.fullscreen().is_some();
                 if !was {
-                    window.set_fullscreen(Some(Fullscreen::Borderless(None)));
+                    if window.is_maximized() {
+                        window.set_maximized(false);
+                    }
+                    let monitor = window
+                        .current_monitor()
+                        .or_else(|| window.primary_monitor());
+                    window.set_fullscreen(Some(Fullscreen::Borderless(monitor)));
                 }
                 self.ui.options.calibration_fullscreen = Some(was);
             }
@@ -620,7 +626,11 @@ impl Game<'_> {
             }
             if let Some(w) = &self.window {
                 let on = w.fullscreen().is_none();
-                w.set_fullscreen(on.then_some(Fullscreen::Borderless(None)));
+                if on && w.is_maximized() {
+                    w.set_maximized(false);
+                }
+                let monitor = w.current_monitor().or_else(|| w.primary_monitor());
+                w.set_fullscreen(on.then_some(Fullscreen::Borderless(monitor)));
                 if !on {
                     windowed_again(w);
                 }
