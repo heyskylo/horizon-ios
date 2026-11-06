@@ -378,7 +378,9 @@ impl Game<'_> {
                 Event::Close => {
                     self.settings.save(&Self::options_path());
                     let to_game = std::mem::take(&mut self.options_to_game);
-                    self.screen = if std::mem::take(&mut self.options_to_world_options) {
+                    self.screen = if let Some(screen) = self.panel.recipes_settings_return.take() {
+                        screen
+                    } else if std::mem::take(&mut self.options_to_world_options) {
                         Screen::WorldOptions
                     } else if self.options_from_title || to_game {
                         Screen::Playing
