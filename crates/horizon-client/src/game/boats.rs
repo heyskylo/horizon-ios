@@ -84,6 +84,8 @@ pub(super) struct Boat {
     pub no_gravity: bool,
     pub paddles: [f32; 2],
     pub paddling: [bool; 2],
+    /// Whether this boat has a player controlling its paddles.
+    pub paddle_controller: bool,
     /// left, right, up, down
     pub input: [bool; 4],
     pub on_ground: bool,
@@ -192,6 +194,7 @@ impl Boat {
             no_gravity: false,
             paddles: [0.0; 2],
             paddling: [false; 2],
+            paddle_controller: false,
             input: [false; 4],
             on_ground: false,
             stuck: Vec3::ZERO,
@@ -324,9 +327,14 @@ impl Boat {
         fired
     }
     /// `getRowingTime`.
+    pub fn paddle_state(&self, side: usize) -> bool {
+        self.paddling[side] && self.paddle_controller
+    }
     pub fn rowing_time(&self, side: usize, a: f32) -> f32 {
-        if self.paddling[side] {
-            self.paddles[side] - PI / 8.0 + a * PI / 8.0
+        if self.paddle_state(side) {
+            let current = self.paddles[side];
+            let previous = current - PI / 8.0;
+            previous + a.clamp(0.0, 1.0) * (current - previous)
         } else {
             0.0
         }
@@ -642,6 +650,11 @@ impl Game<'_> {
         b.tick_submersion();
         b.hurt_time = (b.hurt_time - 1).max(0);
         b.damage = (b.damage - 1.0).max(0.0);
+        // A remote client gets the controller from the passenger packet, even when
+        // this window occupies the second seat. Local worlds derive it here.
+        if self.remote.is_none() {
+            b.paddle_controller = controlled;
+        }
         if !controlled {
             b.paddling = [false; 2];
             b.input = [false; 4];
@@ -776,9 +789,18 @@ impl Game<'_> {
             None,
         );
         b.velocity = horizon_world::entity_move::scale_by_block_speed(b.velocity, factor);
+        Self::tick_boat_paddles(&mut b, &mut self.audio, &mut self.world.random);
+        b
+    }
+    /// `AbstractBoat.tick` advances the oars even when this client does not move the hull.
+    pub(super) fn tick_boat_paddles(
+        b: &mut Boat,
+        audio: &mut super::Audio,
+        random: &mut horizon_core::random::LegacyRandom,
+    ) {
         // Paddle sounds at the top of each stroke.
         for i in 0..2 {
-            if b.paddling[i] {
+            if b.paddle_state(i) {
                 let p = b.paddles[i] % (2.0 * PI);
                 if p <= PI / 4.0 && (b.paddles[i] + PI / 8.0) % (2.0 * PI) >= PI / 4.0 {
                     let sound = match b.status {
@@ -791,8 +813,8 @@ impl Game<'_> {
                     if let Some(sound) = sound {
                         let v = view_vector(b.yaw, 0.0);
                         let (dx, dz) = if i == 1 { (-v[2], v[0]) } else { (v[2], -v[0]) };
-                        let pitch = 0.8 + 0.4 * self.world.random.next_float();
-                        self.audio.play(
+                        let pitch = 0.8 + 0.4 * random.next_float();
+                        audio.play(
                             sound,
                             Some([b.position.x + dx, b.position.y, b.position.z + dz]),
                             1.0,
@@ -805,7 +827,6 @@ impl Game<'_> {
                 b.paddles[i] = 0.0;
             }
         }
-        b
     }
     /// Every boat but the ridden one (which ticks with its rider).
     pub(super) fn tick_boats(&mut self) {

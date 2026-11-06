@@ -47,6 +47,8 @@ public final class VanillaBoatAuthorityOracle {
 
     static final class Probe extends Boat {
         boolean owned;
+        Entity passenger;
+        @Override public Entity getFirstPassenger() { return passenger; }
         Probe(Lvl level) { super(EntityTypes.OAK_BOAT, level, () -> Items.OAK_BOAT); }
         @Override protected boolean isLocalClientAuthoritative() { return owned; }
         @Override public void baseTick() {}
@@ -75,6 +77,36 @@ public final class VanillaBoatAuthorityOracle {
                 boat.setDeltaMovement(new Vec3(velocity.get(0).getAsDouble(), velocity.get(1).getAsDouble(), velocity.get(2).getAsDouble()));
                 spin.setFloat(boat, c.get("spin").getAsFloat());
                 JsonArray steps = new JsonArray();
+                if (c.has("paddles")) {
+                    JsonObject paddles = c.getAsJsonObject("paddles");
+                    Field positions = AbstractBoat.class.getDeclaredField("paddlePositions");
+                    positions.setAccessible(true);
+                    float[] phase = (float[]) positions.get(boat);
+                    phase[0] = paddles.getAsJsonArray("initial").get(0).getAsFloat();
+                    phase[1] = paddles.getAsJsonArray("initial").get(1).getAsFloat();
+                    Class<?> attacker = VanillaRemoteAttackOracle.Attacker.class;
+                    var player = (net.minecraft.world.entity.player.Player) VanillaVehicleContainerOracle.allocate.invoke(VanillaVehicleContainerOracle.unsafe, attacker);
+                    Entity mob = (Entity) VanillaVehicleContainerOracle.allocate.invoke(VanillaVehicleContainerOracle.unsafe, net.minecraft.world.entity.monster.zombie.Zombie.class);
+                    for (var entry : paddles.getAsJsonArray("steps")) {
+                        JsonObject paddleInput = entry.getAsJsonObject();
+                        boat.owned = paddleInput.has("owned") && paddleInput.get("owned").getAsBoolean();
+                        boolean firstPlayer = !paddleInput.has("first_player") || paddleInput.get("first_player").getAsBoolean();
+                        boat.passenger = paddleInput.get("occupied").getAsBoolean() ? (firstPlayer ? player : mob) : null;
+                        boat.setPaddleState(paddleInput.getAsJsonArray("flags").get(0).getAsBoolean(), paddleInput.getAsJsonArray("flags").get(1).getAsBoolean());
+                        boat.tick();
+                        JsonArray phases = new JsonArray();
+                        for (float value : phase) phases.add(String.format("%08x", Float.floatToRawIntBits(value)));
+                        JsonArray rowing = new JsonArray();
+                        for (float alpha : new float[]{0, 0.25f, 0.5f, 1}) {
+                            JsonArray sides = new JsonArray();
+                            for (int side = 0; side < 2; side++) sides.add(String.format("%08x", Float.floatToRawIntBits(boat.getRowingTime(side, alpha))));
+                            rowing.add(sides);
+                        }
+                        JsonObject state = new JsonObject(); state.add("phase", phases); state.add("rowing", rowing); steps.add(state);
+                    }
+                    JsonObject result = new JsonObject();result.add("name", c.get("name"));result.add("steps", steps);output.add(result);
+                    continue;
+                }
                 for (var ownership : c.getAsJsonArray("owned")) {
                     boat.owned = ownership.getAsBoolean();
                     boat.tick();
