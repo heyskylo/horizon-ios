@@ -187,10 +187,23 @@ pub struct Version {
     pub hooks: Option<u32>,
     /// The Minecraft version it is for.
     pub game: String,
+    /// The Horizon commits a native mod's version doesn't apply on, as the registry's daily check
+    /// on the newest Nightly found (horizon-mods' native-compat.yml): the launcher warns before
+    /// an install, and a build there leaves it out. Never in an entry: the publish job adds it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub broken_on: Vec<BrokenOn>,
     /// A modpack's mods, as its manifest lists them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub requires: Vec<Requirement>,
     pub file: File,
+}
+
+/// A Horizon commit a native mod's version doesn't apply on, and horizon-mixins' diagnostic code
+/// (`E_TARGET_NOT_FOUND`, `E_MODULE_CONFLICT`...).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrokenOn {
+    pub horizon: String,
+    pub code: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
