@@ -1167,6 +1167,20 @@ pub(super) use horizon_world::level::flags;
 pub(crate) const NATIVE_HOOKS_API: u32 = 411;
 
 impl GameLevel<'_> {
+    /// `EntityBlock.newBlockEntity` with the actual placed state. The first
+    /// entity supplied owns the result. No response means no new entity.
+    /// This is a creation callback, not a validity test: an existing entity
+    /// survives property changes within the same block, even if a fresh
+    /// instance of that state would have no entity. The actual block name and
+    /// property map are borrowed from the registry. No world, RNG or Host is
+    /// attached to a constructor; no context is allocated for this callback.
+    pub(super) fn native_block_entity_from_state(
+        block: &str,
+        properties: &BlockProperties,
+        entity: &mut Option<(String, Compound)>,
+    ) {
+        mod_api::dispatch_block_entity_from_state(mod_api::mods(), block, properties, entity);
+    }
     /// A hopper at `pos` is about to pick up `count` of `item`. Set `cancel` to leave the dropped stack in the world. Server-side. 232.
     #[inline(always)]
     pub(super) fn native_hopper_pickup_item(
@@ -8624,20 +8638,6 @@ impl GameLevel<'_> {
                 randomization: 0,
             });
         true
-    }
-    /// `EntityBlock.newBlockEntity` with the actual placed state. The first
-    /// entity supplied owns the result. No response means no new entity.
-    /// This is a creation callback, not a validity test: an existing entity
-    /// survives property changes within the same block, even if a fresh
-    /// instance of that state would have no entity. The actual block name and
-    /// property map are borrowed from the registry. No world, RNG or Host is
-    /// attached to a constructor; no context is allocated for this callback.
-    pub(super) fn native_block_entity_from_state(
-        block: &str,
-        properties: &BlockProperties,
-        entity: &mut Option<(String, Compound)>,
-    ) {
-        mod_api::dispatch_block_entity_from_state(mod_api::mods(), block, properties, entity);
     }
     /// Sets property `key` of the block at `pos` to `value` with
     /// `Level.setBlock(pos, state, flags)`, from a hook that gets the level's
