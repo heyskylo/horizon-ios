@@ -836,6 +836,7 @@ impl Snbt<'_> {
         })
     }
     /// A bare word: a typed number, a boolean, or else a string.
+    /// `FloatTag.valueOf` / `DoubleTag.valueOf` canonicalize either zero sign.
     fn scalar(word: &str) -> Tag {
         match word {
             "true" => return Tag::Byte(1),
@@ -859,11 +860,18 @@ impl Snbt<'_> {
             Some(b'b') => body.parse::<i8>().ok().map(Tag::Byte),
             Some(b's') => body.parse::<i16>().ok().map(Tag::Short),
             Some(b'l') => body.parse::<i64>().ok().map(Tag::Long),
-            Some(b'f') => body.parse::<f32>().ok().map(|v| Tag::Float(v.to_bits())),
-            Some(_) => body.parse::<f64>().ok().map(|v| Tag::Double(v.to_bits())),
-            None if body.contains('.') || body.contains('e') || body.contains('E') => {
-                body.parse::<f64>().ok().map(|v| Tag::Double(v.to_bits()))
-            }
+            Some(b'f') => body
+                .parse::<f32>()
+                .ok()
+                .map(|v| Tag::Float(if v == 0.0 { 0 } else { v.to_bits() })),
+            Some(_) => body
+                .parse::<f64>()
+                .ok()
+                .map(|v| Tag::Double(if v == 0.0 { 0 } else { v.to_bits() })),
+            None if body.contains('.') || body.contains('e') || body.contains('E') => body
+                .parse::<f64>()
+                .ok()
+                .map(|v| Tag::Double(if v == 0.0 { 0 } else { v.to_bits() })),
             None => body.parse::<i32>().ok().map(Tag::Int),
         };
         parsed.unwrap_or_else(|| Tag::String(JavaString::from(word)))
