@@ -197,7 +197,6 @@ pub(super) struct GuestSwap {
     left: bool,
     right: bool,
     riding: Option<u32>,
-    host_boarding: (i32, Option<u32>),
     host_station: Option<super::stations::Station>,
     sleeping: Option<[i32; 3]>,
     sleep_timer: u32,
@@ -572,11 +571,6 @@ impl Game<'_> {
         self.right = play.using.is_some() || self.using.is_some();
         // The guest's vehicle (Entity.vehicle) for its turn.
         let riding = std::mem::replace(&mut self.riding, g.vehicle);
-        // The guest's boarding cooldown for its turn; `guest_server_tick`
-        // counts it down once per tick (Entity.baseTick), not per turn.
-        let host_boarding = (self.boarding_cooldown, self.riding_at_tick);
-        self.boarding_cooldown = g.boarding_cooldown;
-        self.riding_at_tick = g.vehicle;
         // `Entity.isPassenger()` for that turn, from the same vehicle: the
         // guest's body keeps no swim (`Entity.updateSwimming` needs it false).
         // Taken from `g.vehicle` each turn, so boarding and getting out land.
@@ -692,7 +686,6 @@ impl Game<'_> {
             left,
             right,
             riding,
-            host_boarding,
             host_station,
             sleeping,
             sleep_timer,
@@ -794,7 +787,6 @@ impl Game<'_> {
             left,
             right,
             riding,
-            host_boarding,
             host_station,
             sleeping,
             sleep_timer,
@@ -975,11 +967,6 @@ impl Game<'_> {
             self.guest_attachments.entry(g.uuid).or_default(),
         );
         let left_vehicle = g.vehicle.filter(|_| guest_vehicle.is_none());
-        // Entity.removePassenger: 60 ticks before it may board again.
-        let guest_boarding =
-            super::boarding::after_leaving(self.boarding_cooldown, g.vehicle, guest_vehicle);
-        (self.boarding_cooldown, self.riding_at_tick) = host_boarding;
-        g.boarding_cooldown = guest_boarding;
         if guest_vehicle.is_none() {
             g.vehicle_good = None;
         }
@@ -2334,6 +2321,7 @@ impl Game<'_> {
                                 g.trigger_any_block_use(p.pos, &stack);
                             });
                         }
+                        reset_use_attack_strength(&mut g.attack_ticks, swings, g.swings_started);
                         g.forced_hit = None;
                         g.guest_use = None;
                         (g.swings_started != swings, consumed, attempt)
@@ -2404,6 +2392,7 @@ impl Game<'_> {
                     g.guest_use = Some(GuestUse::Item(hand));
                     let swings = g.swings_started;
                     let _ = g.use_item();
+                    reset_use_attack_strength(&mut g.attack_ticks, swings, g.swings_started);
                     g.guest_use = None;
                     (g.swings_started != swings, horn)
                 });
@@ -2432,6 +2421,7 @@ impl Game<'_> {
                     let swung = self.as_guest(host, conn, |g| {
                         let swings = g.swings_started;
                         g.with_hand(hand, |g| g.use_knot(knot, true));
+                        reset_use_attack_strength(&mut g.attack_ticks, swings, g.swings_started);
                         g.swings_started != swings
                     });
                     self.lan_swing_back(host, conn, swung);
@@ -2454,6 +2444,7 @@ impl Game<'_> {
                         g.guest_use = Some(GuestUse::Entity(hand, target));
                         let swings = g.swings_started;
                         let _ = g.use_item();
+                        reset_use_attack_strength(&mut g.attack_ticks, swings, g.swings_started);
                         g.guest_use = None;
                         g.swings_started != swings
                     });
@@ -4111,6 +4102,16 @@ impl Game<'_> {
             let drops = (g.game_mode != SPECTATOR)
                 .then(|| [at[0], at[1] + g.eye_height() - f64::from(0.3f32), at[2]]);
             let cause = host.play.get_mut(&conn).and_then(|p| p.death_cause.take());
+            // ServerPlayer.die opens with `gameEvent(ENTITY_DIE)` at the player:
+            // sculk sensors and wardens hear the death.
+            if here {
+                self.as_guest(host, conn, |game| {
+                    let ctx = game.player_context(None);
+                    game.post_game_event("minecraft:entity_die", at, ctx);
+                });
+            }
+            // `getKillCredit`, as the death finds it.
+            let killer = self.guest_kill_credit_type(host, conn);
             self.native_player_died(uuid, cause.as_deref());
             // ServerPlayer.die: the neutral mobs near a guest in this level
             // forget their anger at them.
@@ -4183,14 +4184,18 @@ impl Game<'_> {
             if consumed && catalyst_xp > 0 {
                 self.guest_catalyst_trigger(host, gi, conn, at, blow.clone());
             }
-            // ServerPlayer.die: the drops, then the deathCount objectives, then
-            // the killer's awardKillScore, then the `deaths` statistic and the
-            // two timers it resets.
+            // ServerPlayer.die: the drops, then the deathCount objectives, then,
+            // with a kill credit, `killed_by` for the killer's type and the
+            // killer's awardKillScore, then the `deaths` statistic and the two
+            // timers it resets.
             self.as_guest(host, conn, |game| {
                 if let Some(eyes) = drops {
                     game.drop_inventory(eyes, (uuid, id));
                 }
                 game.score_player_died();
+                if let Some(kind) = &killer {
+                    game.award_stat("killed_by", kind, 1);
+                }
             });
             self.guest_killed_player_trigger(host, conn, at, blow);
             self.as_guest(host, conn, |game| {
@@ -4300,6 +4305,38 @@ impl Game<'_> {
         self.as_guest(host, conn, |g| {
             g.trigger_killed_as(TRIGGER, &killer, blow.as_ref());
         });
+    }
+
+    /// The type of the entity a dying guest's combat record credits with the
+    /// kill (`LivingEntity.getKillCredit`): a player (the one in place or a
+    /// guest), a mob (one gone already credits nobody, as vanilla's reference
+    /// no longer resolves), a mob whose own blast this tick killed the guest,
+    /// or the ender dragon.
+    fn guest_kill_credit_type(&self, host: &LanHost, conn: u32) -> Option<String> {
+        let id = self
+            .guest_combat
+            .get(&conn)?
+            .kill_credit(self.world.game_time)?;
+        let in_place = self.lan_acting.is_none()
+            && self
+                .player
+                .as_ref()
+                .is_some_and(|p| p.entity_id as u32 == id);
+        if in_place || host.hub.guests.iter().any(|g| g.entity_id as u32 == id) {
+            return Some("minecraft:player".into());
+        }
+        if let Some(m) = self.mobs.iter().find(|m| m.id == id) {
+            return Some(m.kind.id.clone());
+        }
+        // A mob that blew up this tick has left the list, but vanilla's player
+        // dies inside that blast, before the source is discarded.
+        if let Some((_, kind)) = self.combat.exploded_kinds.iter().rfind(|(m, _)| *m == id) {
+            return Some(kind.clone());
+        }
+        self.dragon
+            .as_ref()
+            .filter(|d| d.id == id)
+            .map(|_| "minecraft:ender_dragon".into())
     }
 
     /// The dying guest's last blow (`LivingEntity.getLastDamageSource`), its
@@ -4588,10 +4625,43 @@ impl Game<'_> {
         }
     }
 
+    /// `handlePlayerPositionChange` jumps from the pre-move position and yaw.
+    /// A later attack packet reads the resulting velocity even before travel.
+    pub(super) fn guest_jump(&mut self, host: &mut LanHost, conn: u32, from: [f64; 3], yaw: f32) {
+        let identity = if horizon_client::mod_api::mods().is_empty() {
+            None
+        } else {
+            host.hub.guest(conn).map(|g| (g.uuid, g.name.clone()))
+        };
+        self.as_guest(host, conn, |game| {
+            let Some(player) = game.player.as_mut() else {
+                return;
+            };
+            let (position, yaw_after, ground) =
+                (player.position, player.yaw, player.ground.on_ground);
+            player.position = Vec3::new(from[0], from[1], from[2]);
+            player.yaw = yaw;
+            player.ground.on_ground = true;
+            let mut w = MotionWorld {
+                entities: &[],
+                player,
+                scene: &mut game.world,
+                assets: &game.pack.assets,
+                collision_binding: game.collision,
+                resources: game.motion,
+                health: &game.health_resources,
+            };
+            let _ = w.jump_from_ground();
+            (w.player.position, w.player.yaw, w.player.ground.on_ground) =
+                (position, yaw_after, ground);
+            if let Some((uuid, name)) = identity {
+                game.native_player_jump(uuid, &name);
+            }
+        });
+    }
+
     /// The guest's body on the server each tick: ServerPlayer.tick's damage
     /// clock and Entity.baseTick's fluid phase (burning), then for each move
-    /// the guest made ServerGamePacketListenerImpl.handleMovePlayer's jump
-    /// (`ServerPlayer.jumpFromGround`'s exhaustion),
     /// ServerPlayer.doCheckFallDamage (the fall distance grows while they go
     /// down and hurts them where they land, as the host's own landing does;
     /// water resets it, lava halves it) and checkMovementStatistics (the
@@ -4600,10 +4670,6 @@ impl Game<'_> {
     /// regeneration and the food tick (ServerPlayer.doTick). Their hurt
     /// sounds are heard at the guest.
     fn guest_server_tick(&mut self, host: &mut LanHost, conn: u32) {
-        // Entity.baseTick: the boarding cooldown counts down once a tick.
-        if let Some(g) = host.hub.guest_mut(conn) {
-            g.boarding_cooldown = super::boarding::tick_down(g.boarding_cooldown);
-        }
         self.guest_replay(host, conn);
         self.guest_vehicle_tick(host, conn);
         // The last move's fall stands in for the server's delta movement.
@@ -4641,7 +4707,6 @@ impl Game<'_> {
             self.as_guest(host, conn, |game| game.server_spin_attack());
         }
         let mut soul = None;
-        let mut jumps = 0;
         let events = self.as_guest(host, conn, |game| {
             let rules = game.world.health_rules;
             let freeze_immune = game.wears_freeze_immune();
@@ -4698,13 +4763,6 @@ impl Game<'_> {
             }
             for (moved, on_ground) in moves {
                 let movement = Vec3::new(moved[0], moved[1], moved[2]);
-                if w.player.ground.on_ground && !on_ground && moved[1] > 0.0 {
-                    // ServerGamePacketListenerImpl.handlePlayerPositionChange:
-                    // the server's copy jumps with the player, so the velocity
-                    // it sends them keeps the jump.
-                    jumps += 1;
-                    let _ = w.jump_from_ground();
-                }
                 let landed = (|| -> horizon_client::Result<()> {
                     w.set_on_ground_with_movement(on_ground, false, movement)?;
                     let pos = w.legacy_on_position()?;
@@ -4827,16 +4885,6 @@ impl Game<'_> {
         let Some((events, marked)) = events else {
             return;
         };
-        if jumps > 0
-            && !horizon_client::mod_api::mods().is_empty()
-            && let Some((uuid, name)) = host.hub.guest(conn).map(|g| (g.uuid, g.name.clone()))
-        {
-            self.as_guest(host, conn, |game| {
-                for _ in 0..jumps {
-                    game.native_player_jump(uuid, &name);
-                }
-            });
-        }
         if let Some((at, velocity)) = soul {
             super::lan_particles::send_soul_particle(host, at, velocity);
         }
@@ -5752,10 +5800,29 @@ fn stop_dig(play: &GuestPlay, pos: [i32; 3], air: bool, ticks: u64, per_tick: f3
     }
 }
 
+/// ServerPlayer.swingAndResetAttackStrength resets only when a use starts a swing.
+fn reset_use_attack_strength(ticker: &mut u32, before: u32, after: u32) {
+    if before != after {
+        *ticker = 0;
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::eye_columns;
+    use super::{eye_columns, reset_use_attack_strength};
     use horizon_client::pose::Pose;
+
+    #[test]
+    fn use_swing_resets_attack_charge_only_when_started() {
+        let mut ticker = 20;
+        reset_use_attack_strength(&mut ticker, 3, 4);
+        // A sword's attack speed is 1.6: vanilla's (ticker + 0.5) / 12.5.
+        assert_eq!((ticker as f32 + 0.5) / 12.5, 0.04);
+
+        ticker = 8;
+        reset_use_attack_strength(&mut ticker, 4, 4);
+        assert_eq!(ticker, 8); // No swing, or a swing rejected in its first half.
+    }
 
     #[test]
     fn a_block_break_suppresses_its_positional_duplicate_but_not_an_entity_sound() {
