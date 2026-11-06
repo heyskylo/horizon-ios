@@ -92,6 +92,17 @@ public final class VanillaCommandExecOracle {
         @Override public void save() {}
     }
 
+    static JsonObject raidActor(net.minecraft.world.entity.LivingEntity entity, ServerLevel level) {
+        JsonObject raw=new JsonObject();UUID u=entity.getUUID();
+        JsonArray words=new JsonArray();for (int w:new int[]{(int)(u.getMostSignificantBits()>>32),(int)u.getMostSignificantBits(),(int)(u.getLeastSignificantBits()>>32),(int)u.getLeastSignificantBits()}) words.add(w);raw.add("uuid",words);
+        raw.addProperty("type",net.minecraft.core.registries.BuiltInRegistries.ENTITY_TYPE.getKey(entity.getType()).toString());raw.addProperty("health",entity.getHealth());
+        JsonArray pos=new JsonArray();pos.add(entity.getX());pos.add(entity.getY());pos.add(entity.getZ());raw.add("pos",pos);
+        raw.addProperty("noai",entity instanceof net.minecraft.world.entity.Mob mob && mob.isNoAi());
+        raw.addProperty("raid_id",entity instanceof net.minecraft.world.entity.raid.Raider r && r.getCurrentRaid()!=null ? level.getRaids().getId(r.getCurrentRaid()).orElse(-1):-1);
+        JsonArray home=new JsonArray();if (entity instanceof net.minecraft.world.entity.npc.villager.Villager v) v.getBrain().getMemory(net.minecraft.world.entity.ai.memory.MemoryModuleType.HOME).ifPresent(p->{home.add(p.pos().getX());home.add(p.pos().getY());home.add(p.pos().getZ());});raw.add("home",home);
+        var output=net.minecraft.world.level.storage.TagValueOutput.createWithContext(net.minecraft.util.ProblemReporter.DISCARDING,level.registryAccess());entity.saveWithoutId(output);raw.addProperty("nbt",output.buildResult().toString());return raw;
+    }
+
     static final class Server extends MinecraftServer {
         final Path script;
         final Path output;
@@ -198,6 +209,78 @@ public final class VanillaCommandExecOracle {
                 rows.add(row);
             }
             Files.writeString(output.resolveSibling("fishing-fallback-reference.json"), rows.toString());
+        }
+
+        void writeHappyGhastLeashReference() throws Exception {
+            if (!Boolean.getBoolean("horizon.happyGhastLeashReference")) return;
+            var level = this.overworld();
+            var fencePos = new net.minecraft.core.BlockPos(0, 64, 0);
+            var oldBlock = level.getBlockState(fencePos);
+            level.setBlockAndUpdate(fencePos, net.minecraft.world.level.block.Blocks.OAK_FENCE.defaultBlockState());
+            JsonArray rows = new JsonArray();
+            for (String kind : new String[] {"adult", "baby", "cow"}) {
+                for (int probe = 0; probe < 12; probe++) {
+                    double slack = kind.equals("cow") ? 6.0 : 10.0;
+                    double snap = kind.equals("cow") ? 12.0 : 16.0;
+                    double distance = probe < 6 ? new int[] {2, 4, 8, 11, 13, 17}[probe]
+                        : (probe < 9 ? slack : snap) + ((probe - 6) % 3 - 1) * 1.0e-6;
+                    String phase = probe < 6 ? "dispatch" : probe < 9 ? "elastic" : "snap";
+                    net.minecraft.world.entity.PathfinderMob mob;
+                    if (kind.equals("cow")) {
+                        mob = new net.minecraft.world.entity.animal.cow.Cow(net.minecraft.world.entity.EntityTypes.COW, level);
+                    } else {
+                        var ghast = new net.minecraft.world.entity.animal.happyghast.HappyGhast(net.minecraft.world.entity.EntityTypes.HAPPY_GHAST, level);
+                        ghast.setAge(kind.equals("baby") ? -24000 : 0);
+                        mob = ghast;
+                    }
+                    var knot = new net.minecraft.world.entity.decoration.LeashFenceKnotEntity(level, fencePos);
+                    if (phase.equals("elastic")) {
+                        mob.setPos(knot.getX() + distance, knot.getY() + knot.getBbHeight() / 2.0 - mob.getBbHeight() / 2.0,
+                            knot.getZ() - mob.getBbWidth() / 2.0);
+                    } else if (phase.equals("snap")) {
+                        var center = knot.getBoundingBox().getCenter();
+                        mob.setPos(center.x + distance, center.y - mob.getBbHeight() / 2.0, center.z);
+                    } else mob.setPos(0.5 + distance, 64, 0.5);
+                    mob.setYRot(0);
+                    mob.setOnGround(false);
+                    mob.setDeltaMovement(net.minecraft.world.phys.Vec3.ZERO);
+                    var marker = new net.minecraft.core.BlockPos(8, 64, 8);
+                    var path = new net.minecraft.world.level.pathfinder.Path(
+                        List.of(new net.minecraft.world.level.pathfinder.Node(8, 64, 8)), marker, true);
+                    if (!mob.getNavigation().moveTo(path, 0.75)) throw new IllegalStateException("marker path rejected");
+                    mob.getMoveControl().setWantedPosition(20, 70, 20, 1.0);
+                    mob.setLeashedTo(knot, false);
+                    net.minecraft.world.entity.Leashable.tickLeash(level, mob);
+                    JsonObject row = new JsonObject();
+                    row.addProperty("kind", kind);
+                    row.addProperty("distance", distance);
+                    row.addProperty("phase", phase);
+                    JsonArray position = new JsonArray();
+                    position.add(mob.getX()); position.add(mob.getY()); position.add(mob.getZ());
+                    row.add("position", position);
+                    row.addProperty("snapped", !mob.isLeashed());
+                    row.addProperty("wanted", mob.getMoveControl().hasWanted());
+                    var currentPath = mob.getNavigation().getPath();
+                    if (currentPath == null) row.add("path", com.google.gson.JsonNull.INSTANCE);
+                    else {
+                        JsonArray target = new JsonArray();
+                        target.add(currentPath.getTarget().getX());
+                        target.add(currentPath.getTarget().getY());
+                        target.add(currentPath.getTarget().getZ());
+                        row.add("path", target);
+                    }
+                    JsonArray velocity = new JsonArray();
+                    var v = mob.getDeltaMovement();
+                    velocity.add(v.x); velocity.add(v.y); velocity.add(v.z);
+                    row.add("velocity", velocity);
+                    rows.add(row);
+                    mob.removeLeash();
+                    mob.discard();
+                    knot.discard();
+                }
+            }
+            level.setBlockAndUpdate(fencePos, oldBlock);
+            Files.writeString(output.resolveSibling("happy-ghast-leash-reference.json"), rows.toString());
         }
 
         void writeMountControlReference() throws Exception {
@@ -509,6 +592,7 @@ public final class VanillaCommandExecOracle {
                 Files.writeString(output.resolveSibling("client_config.json"), login.toString());
             }
             writeOrbWaterReference();
+            try { writeHappyGhastLeashReference(); } catch (Exception e) { throw new IOException(e); }
             try { writeMountControlReference(); } catch (Exception e) { throw new IOException(e); }
             try { writeFishingReference(); } catch (Exception e) { throw new IOException(e); }
             try { writeFishingFallbackReference(); } catch (Exception e) { throw new IOException(e); }
@@ -543,6 +627,36 @@ public final class VanillaCommandExecOracle {
                             if (op.has("trace") && op.get("trace").getAsBoolean()) System.err.println("command trace: " + gson.toJson(record));
                             if (!op.has("record") || op.get("record").getAsBoolean()) out.append(gson.toJson(record)).append('\n');
                         }
+                    }
+                    case "raid_state" -> {
+                        var raidLevel=player.level(); int id=op.get("id").getAsInt();
+                        var raid=raidLevel.getRaids().get(id);
+                        JsonObject state=new JsonObject(); state.addProperty("id",id); state.addProperty("present",raid!=null);
+                        if (raid!=null) {
+                            var tag=(net.minecraft.nbt.CompoundTag)net.minecraft.world.entity.raid.Raid.MAP_CODEC.codec()
+                                .encodeStart(net.minecraft.nbt.NbtOps.INSTANCE,raid).getOrThrow();
+                            state.addProperty("status",tag.getStringOr("status","missing"));
+                            state.addProperty("started",raid.isStarted());state.addProperty("active",raid.isActive());
+                            state.addProperty("groups_spawned",raid.getGroupsSpawned());
+                            state.add("center",gson.toJsonTree(new int[]{raid.getCenter().getX(),raid.getCenter().getY(),raid.getCenter().getZ()}));
+                            state.addProperty("village",raidLevel.isVillage(raid.getCenter()));
+                            if (op.get("members").getAsBoolean()) state.addProperty("member_present",raid.getAllRaiders().stream().anyMatch(e->e.isAlive() && e.getCurrentRaid()==raid));
+                        }
+                        JsonObject raw=new JsonObject();raw.addProperty("label",op.get("label").getAsString());raw.addProperty("id",id);
+                        var pp=op.getAsJsonArray("poi");var pos=new BlockPos(pp.get(0).getAsInt(),pp.get(1).getAsInt(),pp.get(2).getAsInt());
+                        raw.addProperty("loaded",raidLevel.hasChunkAt(pos));
+                        raw.addProperty("occupied",raidLevel.getPoiManager().getCountInRange(h->h.is(net.minecraft.tags.PoiTypeTags.VILLAGE),pos,0,net.minecraft.world.entity.ai.village.poi.PoiManager.Occupancy.IS_OCCUPIED));
+                        raw.addProperty("poi_type",raidLevel.getPoiManager().getType(pos).map(h->h.unwrapKey().orElseThrow().identifier().toString()).orElse("none"));
+                        raw.addProperty("raid_nbt",net.minecraft.world.entity.raid.Raids.CODEC.encodeStart(net.minecraft.nbt.NbtOps.INSTANCE,raidLevel.getRaids()).getOrThrow().toString());
+                        JsonArray members=new JsonArray();if (raid!=null) for (var entity:raid.getAllRaiders()) members.add(raidActor(entity,raidLevel));raw.add("actors",members);
+                        JsonArray villagers=new JsonArray();for (var uuid:op.getAsJsonArray("villagers")) {
+                            var entity=raidLevel.getEntity(UUID.fromString(uuid.getAsString()));
+                            if (!(entity instanceof net.minecraft.world.entity.npc.villager.Villager)) throw new IllegalStateException("raid fixture villager absent/wrong type");
+                            villagers.add(raidActor((net.minecraft.world.entity.LivingEntity)entity,raidLevel));
+                        }raw.add("villagers",villagers);
+                        System.err.println("raid input raw: "+gson.toJson(raw));
+                        JsonObject row=new JsonObject();row.addProperty("cmd","#raid_state "+op.get("label").getAsString()+" "+id);
+                        row.add("messages",new JsonArray());row.add("results",new JsonArray());row.add("state",state);out.append(gson.toJson(row)).append('\n');
                     }
                     case "mob_anger" -> {
                         try {

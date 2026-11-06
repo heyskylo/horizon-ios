@@ -1003,7 +1003,7 @@ mod tests {
                 assert_eq!(map.get(&"sleeping_pos".into()), expected.as_ref());
                 assert_eq!(map.get(&"h232_control".into()), Some(&Tag::Int(42)));
             }
-            let saved = crate::entity_nbt::mob_to_nbt(&m, [0; 4], None, None);
+            let saved = crate::entity_nbt::mob_to_nbt(&m, [0; 4], None, None, |_| None);
             assert_eq!(saved.get("sleeping_pos"), expected.as_ref());
         }
     }

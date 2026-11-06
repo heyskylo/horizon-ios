@@ -366,6 +366,10 @@ hold no names, UUIDs or addresses, so you can attach them to an issue as they ar
 `horizon-report [SECONDS]`; `horizon-report stop` writes the report now and `horizon-report status` says how far
 it is. Nothing restarts: the report runs beside the game.
 
+To see a slow stretch tick by tick, `horizon-trace [SECONDS]` (30 by default, up to 300) writes every thread's timed
+steps to `reports/trace-<time>.json`; [ui.perfetto.dev](https://ui.perfetto.dev) opens it as a timeline, one row per
+thread. `horizon-trace stop` ends it early. It holds step names and times only.
+
 Between reports, the log keeps the spikes: a tick slower than 250 ms writes a `Horizon: slow tick` line with
 its phases (`HORIZON_SPIKES=MS` in the engine's environment sets another threshold), and a server more than
 two seconds behind says `Can't keep up!` as vanilla's does, at most every 15 seconds.
@@ -581,6 +585,16 @@ region files are rewritten compacted (vanilla still reads them) and a file left 
 can't be read, files in `keep_files` (keys or text like `minecraft:overworld 12 -3`, objects with `dimension`,
 `x` and `z`), level.dat and player data are never touched; a `keep_files` file that exists but can't be read
 stops the prune before anything is deleted.
+
+Deletion stages each region's terrain, entities and POI together, keeping originals in the dimension's
+`.horizon-prune` folder until it commits. An interrupted region is rolled back before the next server
+start, even though `mode` is now `"off"`; committed earlier regions stay pruned. A failed prune or failed
+recovery stops startup and reports an error instead of reporting planned deletions as successful. Keep
+the recovery folder if recovery fails; do not delete it to force the server to start. Staging retains
+hard links to the originals and needs room for the compacted files of one region group. The three
+folders must support hard links on the same filesystem. Unix flushes files and directories; Windows
+flushes files and uses write-through renames. This does not replace a backup or promise recovery from
+filesystem corruption or storage hardware that ignores flushes.
 
 ### 1.8 combat: `[combat]`
 
