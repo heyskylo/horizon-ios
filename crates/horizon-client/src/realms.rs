@@ -2804,15 +2804,17 @@ impl Screen {
                             if let Some(Ok(config)) = tier.as_ref() {
                                 // `createDistanceOption`: a slider over the range, its value
                                 // as `options.chunks`.
-                                for (range, picked, y) in [
+                                for (range, picked, tooltip, y) in [
                                     (
                                         config.render_distance.as_ref(),
                                         draft.render_distance,
+                                        "mco.configure.world.renderDistance.tooltip",
                                         126.0,
                                     ),
                                     (
                                         config.sim_distance.as_ref(),
                                         draft.simulation_distance,
+                                        "mco.configure.world.simulationDistance.tooltip",
                                         166.0,
                                     ),
                                 ] {
@@ -2827,6 +2829,9 @@ impl Screen {
                                         "options.chunks",
                                         &[&picked as &dyn std::fmt::Display],
                                     );
+                                    // `createDistanceOption`: the button's
+                                    // `cachedConstantTooltip`.
+                                    let hover = crate::ui::hovered(cursor, left, y, 212.0, 20.0);
                                     crate::ui::slider(
                                         batch,
                                         atlas,
@@ -2835,10 +2840,18 @@ impl Screen {
                                         212.0,
                                         &Text::literal(&text),
                                         value.clamp(0.0, 1.0),
-                                        crate::ui::hovered(cursor, left, y, 212.0, 20.0),
+                                        hover,
                                         saving.is_none(),
                                         false,
                                     );
+                                    if hover {
+                                        crate::ui::tooltip(
+                                            batch,
+                                            atlas,
+                                            &[Text::translate(tooltip, &[])],
+                                            cursor,
+                                        );
+                                    }
                                 }
                                 shift = 80.0;
                                 batch.text(
