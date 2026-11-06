@@ -82,6 +82,41 @@ use std::time::Duration;
 pub use winit;
 pub use winit::keyboard::KeyCode;
 
+/// An owned fluid payload. Component additions and removals are preserved exactly;
+/// the amount is in millibuckets. Empty/negative stacks are not transferable.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NativeFluidStack {
+    pub fluid: String,
+    pub amount: i32,
+    pub components: Compound,
+}
+
+/// A tank exposed by a block's fluid capability, in provider order.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NativeFluidTankView {
+    pub tank: usize,
+    pub content: Option<NativeFluidStack>,
+    pub capacity: i32,
+    pub can_fill: bool,
+    pub can_drain: bool,
+}
+
+/// Simulation is read-only, including dirty flags, synchronization and RNG.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum NativeFluidAction {
+    Simulate,
+    Execute,
+}
+
+/// Maximum-only drain, or a drain matching the full selected fluid payload.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub enum NativeFluidDrain {
+    Any(i32),
+    Exact(NativeFluidStack),
+}
+
 /// Camera values from the most recently extracted world frame.
 #[derive(Clone, Debug)]
 pub struct NativeCamera {

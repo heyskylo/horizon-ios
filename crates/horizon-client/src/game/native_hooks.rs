@@ -996,8 +996,9 @@ use super::{
 };
 use horizon_assets::item_model::StackView;
 use horizon_client::mod_api::{
-    self, NativeCamera, NativeCommand, NativeDispensed, NativeLifecycleContext,
-    NativeNoteBlockChange, NativeServerPlayer, RecipeBookCategory, ServerTickPhase, WorldPhase,
+    self, NativeCamera, NativeCommand, NativeDispensed, NativeFluidAction, NativeFluidDrain,
+    NativeFluidStack, NativeFluidTankView, NativeLifecycleContext, NativeNoteBlockChange,
+    NativeServerPlayer, RecipeBookCategory, ServerTickPhase, WorldPhase,
 };
 use horizon_client::mod_api::{AttachmentResult, Attachments, Holder, LayerDefinition, Suggestion};
 pub(crate) use horizon_client::mod_api::{
@@ -3235,6 +3236,69 @@ impl Game<'_> {
             tank,
             fluid,
             cancel,
+        );
+    }
+    /// Opt a mod block into canonical custom fluid storage. Asked for mod block entities
+    /// when the block fluid helpers resolve their target. True takes precedence over API 54's
+    /// `fluids` storage, even when a runtime callback supplies no response.
+    /// Set custom to true for your block; never clear an earlier declaration.
+    /// @API:custom_block_fluids@
+    pub(super) fn native_custom_block_fluids(&self, block: &str, custom: &mut bool) {
+        mod_api::dispatch_custom_block_fluids(self, mod_api::mods(), block, custom);
+    }
+    /// Read the declared custom capability. None side is explicitly unsided.
+    /// The first supplied response owns the result; None never falls through
+    /// to ordinary storage. This callback must be read-only.
+    pub(super) fn native_custom_fluid_tanks(
+        &self,
+        pos: [i32; 3],
+        side: Option<Direction>,
+        out: &mut Option<Vec<NativeFluidTankView>>,
+    ) {
+        mod_api::dispatch_custom_fluid_tanks(self, mod_api::mods(), pos, side, out);
+    }
+    /// Fill the declared custom capability, returning the accepted amount.
+    /// Simulate must not mutate canonical NBT, inventory, dirty/sync state or
+    /// RNG. Execute owns those changes and notifications. Invalid responses
+    /// are refused, but validation cannot audit consumption or roll back a
+    /// provider's storage changes (including intentional source quirks).
+    pub(super) fn native_custom_fluid_fill(
+        &mut self,
+        pos: [i32; 3],
+        side: Option<Direction>,
+        resource: &NativeFluidStack,
+        action: NativeFluidAction,
+        out: &mut Option<i32>,
+    ) {
+        mod_api::dispatch_custom_fluid_fill(
+            self,
+            mod_api::mods(),
+            pos,
+            side,
+            resource,
+            action,
+            out,
+        );
+    }
+    /// Drain the declared custom capability. Exact matches fluid AND its
+    /// complete component patch; Any lets the provider choose. Simulate is
+    /// read-only. Execute owns canonical storage and notifications.
+    pub(super) fn native_custom_fluid_drain(
+        &mut self,
+        pos: [i32; 3],
+        side: Option<Direction>,
+        request: &NativeFluidDrain,
+        action: NativeFluidAction,
+        out: &mut Option<NativeFluidStack>,
+    ) {
+        mod_api::dispatch_custom_fluid_drain(
+            self,
+            mod_api::mods(),
+            pos,
+            side,
+            request,
+            action,
+            out,
         );
     }
     /// Block `block`'s block entity has an energy buffer
