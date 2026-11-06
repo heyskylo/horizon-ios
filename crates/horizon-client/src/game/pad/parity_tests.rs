@@ -60,6 +60,23 @@ fn pad_press(game: &mut Game, button: Button, action: &str) {
 
 #[test]
 #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn a_keyboard_release_keeps_the_sneak_the_pad_holds() {
+    playing(|game| {
+        // Hold mode: toggling, Shift's press would flip it anyway.
+        game.settings.controller.toggle_sneak = false;
+        pad_press(game, Button::RightStick, "key.sneak");
+        assert!(game.keys.held(Action::Sneak));
+        let shift = KeyCode::ShiftLeft;
+        game.mapped_key(shift, true, false, shift, Source::Keyboard)
+            .unwrap();
+        game.mapped_key(shift, false, false, shift, Source::Keyboard)
+            .unwrap();
+        assert!(game.keys.held(Action::Sneak), "R3 is still down");
+    });
+}
+
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
 fn keyboard_handoff_keeps_what_the_pad_holds() {
     playing(|game| {
         game.mapped_key(KeyCode::KeyW, true, false, KeyCode::KeyW, Source::Keyboard)
