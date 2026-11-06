@@ -5029,6 +5029,7 @@ mod tests {
                 sender: crate::lan::PlayerSender::new(tx, Arc::default()),
                 latency: Arc::new(std::sync::atomic::AtomicI32::new(0)),
                 address: "127.0.0.1:25566".parse().unwrap(),
+                expected: false,
             },
             2,
             [0.5, 64.0, 0.5],
