@@ -17,6 +17,7 @@ mod world;
 use super::{
     ServerVersion,
     ids::{self, Ids, Way, down_or_substitute},
+    layout_26_2,
     translate::packet_ids_entity::FALLING_BLOCK,
 };
 use crate::{
@@ -141,7 +142,11 @@ impl ClientSession {
             return Ok(None);
         };
         // A packet the renumbering can't read goes as it is, rather than the connection dropping here.
-        let rewritten = match self.version.ids().map(|ids| down(ids, state, id, payload)) {
+        let rewritten = match self
+            .version
+            .ids()
+            .map(|ids| layout_then_ids(self.version, ids, state, id, payload))
+        {
             None | Some(Ok(Sent::AsIs)) => None,
             Some(Ok(Sent::Rewritten(payload))) => Some(payload),
             Some(Ok(Sent::Dropped)) => return Ok(None),
@@ -158,6 +163,25 @@ impl ClientSession {
         w.bytes(rewritten.as_deref().unwrap_or(payload));
         Ok(Some(w.data))
     }
+}
+
+/// A 26.2 client's packets whose layout changed are written in its layout ([`layout_26_2`], when enabled),
+/// the others renumbered by [`down`].
+fn layout_then_ids(
+    version: ServerVersion,
+    ids: &'static Ids,
+    state: State,
+    id: i32,
+    payload: &[u8],
+) -> Result<Sent> {
+    if version == ServerVersion::V26_2 && layout_26_2::enabled() {
+        match layout_26_2::clientbound(ids, state, id, payload)? {
+            layout_26_2::Out::Untouched => {}
+            layout_26_2::Out::Rewritten(p) => return Ok(Sent::Rewritten(p)),
+            layout_26_2::Out::Dropped => return Ok(Sent::Dropped),
+        }
+    }
+    down(ids, state, id, payload)
 }
 
 /// What becomes of a clientbound payload on its way to an older client.
