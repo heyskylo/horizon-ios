@@ -256,6 +256,7 @@ mod native_scene;
 mod native_server;
 mod native_shaders;
 mod native_structures;
+pub mod native_text_field;
 mod native_ticks;
 mod native_visuals;
 mod native_world_columns;
@@ -18423,6 +18424,19 @@ impl Game<'_> {
                         key_event.text = left.map(Into::into);
                     }
                 }
+            }
+            // Title boxes keep their text on the key path. A field hook takes
+            // it through the same per-character editor as IME and control input.
+            if !canceled
+                && control::title_owns_text(&self.screen, self.title.is_some())
+                && self.types_text()
+                && let Some(text) = key_event.text.as_deref()
+                && let Some(result) = self.type_text_field_input(text)
+            {
+                if let Err(error) = result {
+                    log::warn!("Horizon: text input: {error}");
+                }
+                key_event.text = None;
             }
             if canceled {
                 // charTyped is a separate callback: the characters still
