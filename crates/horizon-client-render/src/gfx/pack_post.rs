@@ -433,6 +433,14 @@ struct Mips {
     levels: Vec<(wgpu::TextureView, wgpu::BindGroup)>,
 }
 
+/// The picture a pack's `final` draws at the world's size while the window is another: it is
+/// copied onto the window once, after the pack's passes, as the game's own post pass does
+/// without a pack.
+struct FinalTarget {
+    size: [u32; 2],
+    view: wgpu::TextureView,
+}
+
 struct Targets {
     size: [u32; 2],
     /// A and B of each buffer used.
@@ -664,6 +672,12 @@ pub struct PackPost {
     blit_group: Option<([wgpu::TextureView; 2], wgpu::BindGroup)>,
     /// Shows colortex0 when the pack has no `final` (OQ-5).
     copy: (wgpu::RenderPipeline, wgpu::BindGroupLayout),
+    /// Copies the picture `final` drew at the world's size onto the window: no flip, it is
+    /// already in the screen's rows.
+    upscale: (wgpu::RenderPipeline, wgpu::BindGroupLayout),
+    /// The picture `final` draws while the world's size is not the window's.
+    final_target: Option<FinalTarget>,
+    screen: wgpu::TextureFormat,
     uniforms: FrameUniforms,
 }
 
@@ -2724,7 +2738,7 @@ impl PackPost {
                 },
                 &[
                     texture_entry(0, float),
-                    texture_entry(1, wgpu::TextureSampleType::Depth),
+                    texture_entry(1, wgpu::TextureSampleType::Float { filterable: false }),
                 ],
                 &blit_targets,
                 // GL's window depth, written for depthtex0 and the terrain's depth test.
@@ -2740,6 +2754,20 @@ impl PackPost {
         let copy = helper(
             device,
             "vs_uv",
+            "fs_copy",
+            &[
+                texture_entry(0, float),
+                entry(
+                    2,
+                    wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                ),
+            ],
+            &[target(screen)],
+            None,
+        );
+        let upscale = helper(
+            device,
+            "vs_screen",
             "fs_copy",
             &[
                 texture_entry(0, float),
@@ -2952,6 +2980,9 @@ impl PackPost {
             }),
             blit,
             copy,
+            upscale,
+            final_target: None,
+            screen,
             uniforms: {
                 let mut u = FrameUniforms::default();
                 u.atlas = world.atlas.map_or([0; 2], |a| a.1);
@@ -4484,6 +4515,35 @@ impl PackPost {
         terrain: &mut TerrainDraw<'_>,
     ) {
         self.resize(device, size);
+        // A resolution scale leaves the picture smaller (or larger) than the window: the pack's
+        // `final` draws it at the picture's size, and one copy takes it to the window (#9291).
+        let final_view = if size != window && self.passes.iter().any(|p| p.group == Group::Final) {
+            if self.final_target.as_ref().is_none_or(|t| t.size != size) {
+                let texture = device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("Shader pack final"),
+                    size: wgpu::Extent3d {
+                        width: size[0],
+                        height: size[1],
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: self.screen,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                        | wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                });
+                self.final_target = Some(FinalTarget {
+                    size,
+                    view: texture.create_view(&Default::default()),
+                });
+            }
+            self.final_target.as_ref().map(|t| t.view.clone())
+        } else {
+            self.final_target = None;
+            None
+        };
         if let Some((layout, ids, rects)) = &self.block_ids {
             // A page that grew has a new buffer.
             self.page_groups
@@ -4788,8 +4848,8 @@ impl PackPost {
             self.mips_valid |= stale;
             let final_pass = pass.group == Group::Final;
             // A pass writing buffers of a size of their own draws at that size (they share it).
+            // `final` draws the picture at the world's size; a copy takes it to the window.
             let out = match pass.writes.first() {
-                _ if final_pass => window,
                 Some(&(_, b)) => self.targets.as_ref().map_or(size, |t| t.sizes[b]),
                 None => size,
             };
@@ -4812,7 +4872,7 @@ impl PackPost {
                 overwrite
             };
             if final_pass {
-                attachments.push(attach(screen, overwrite));
+                attachments.push(attach(final_view.as_ref().unwrap_or(screen), overwrite));
                 shown = true;
             } else if pass.sink {
                 attachments.push(attach(&targets.sink, ops));
@@ -4893,6 +4953,31 @@ impl PackPost {
                 ..Default::default()
             });
             rp.set_pipeline(&self.copy.0);
+            rp.set_bind_group(0, &group, &[]);
+            rp.draw(0..3, 0..1);
+        } else if let Some(picture) = &final_view {
+            // The picture at the world's size onto the window: one upscale, smoothly.
+            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Shader pack final"),
+                layout: &self.upscale.1,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(picture),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::Sampler(&self.linear),
+                    },
+                ],
+            });
+            let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Shader pack final"),
+                color_attachments: &[attach(screen, overwrite)],
+                timestamp_writes: self.timing.as_mut().and_then(|t| t.writes("final copy")),
+                ..Default::default()
+            });
+            rp.set_pipeline(&self.upscale.0);
             rp.set_bind_group(0, &group, &[]);
             rp.draw(0..3, 0..1);
         }

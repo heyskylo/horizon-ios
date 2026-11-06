@@ -124,7 +124,7 @@ impl Game<'_> {
         self.name_tags_with_hooks(camera, alpha, !mod_api::mods().is_empty())
     }
     fn name_tags_with_hooks(&self, camera: glam::DVec3, alpha: f64, hooks: bool) -> Vec<NameTag> {
-        let target = self.mob_hit().map(|(i, _)| self.mobs[i].id);
+        let target = self.mob_hit().map(|(i, _, _)| self.mobs[i].id);
         let viewer = self.player_team();
         let mut tags = Vec::new();
         let players = self.other_players();
@@ -158,9 +158,7 @@ impl Game<'_> {
         let local_entity_id = self.remote.as_ref().map(|r| r.entity_id as u32);
         let ridden = collect_vehicle_ids(
             &self.mobs,
-            self.text_displays.values().filter_map(|d| d.vehicle),
-            self.armor_stands.iter().filter_map(|a| a.vehicle),
-            self.interactions.values().filter_map(|i| i.vehicle),
+            self.remote_vehicle_ids(),
             self.riding,
             local_entity_id,
         );
@@ -296,8 +294,13 @@ impl Game<'_> {
             } else {
                 Marks::default()
             };
+            // Horizon: over a tall cosmetic. Without one, vanilla's height, untouched.
+            let at = match marks.top {
+                Some(top) => p + glam::DVec3::Y * cosmetic_lift(top, m.model_scale()),
+                None => p,
+            };
             tags.push(NameTag {
-                at: p,
+                at,
                 lines,
                 light: l,
                 discrete,
@@ -392,7 +395,7 @@ impl Game<'_> {
             .then(|| self.frame_hit())
             .flatten()
             .filter(|(_, distance)| {
-                self.before_block(*distance) && self.mob_hit().is_none_or(|(_, d)| d > *distance)
+                self.before_block(*distance) && self.mob_hit().is_none_or(|(_, d, _)| d > *distance)
             })
             .map(|(index, _)| index);
         let frames = if hooks {
@@ -657,7 +660,9 @@ impl Game<'_> {
 }
 
 /// Collect entity IDs of all vehicles: entities that have passengers
-/// (mobs, players, text displays, armor stands, or interactions riding them).
+/// (`passenger_vehicles`: what every entity the server sent rides, text displays,
+/// armor stands, item displays and interactions included; vanilla's `isVehicle` is
+/// any passenger at all).
 ///
 /// On multiplayer servers (e.g. `mcpvp.club`), server plugins hang custom nametags
 /// (ranks, prefixes, stats) over players using `TextDisplay` or `ArmorStand` passengers.
@@ -669,9 +674,7 @@ impl Game<'_> {
 /// is ridden and suppresses the duplicate tag (#9477).
 fn collect_vehicle_ids(
     mobs: &[Mob],
-    text_display_vehicles: impl IntoIterator<Item = u32>,
-    armor_stand_vehicles: impl IntoIterator<Item = u32>,
-    interaction_vehicles: impl IntoIterator<Item = u32>,
+    passenger_vehicles: impl IntoIterator<Item = u32>,
     local_riding: Option<u32>,
     local_entity_id: Option<u32>,
 ) -> std::collections::HashSet<u32> {
@@ -679,9 +682,7 @@ fn collect_vehicle_ids(
         .iter()
         .filter_map(|o| o.extra.mount)
         .chain(mobs.iter().filter_map(|m| m.extra.rider.map(|_| m.id)))
-        .chain(text_display_vehicles)
-        .chain(armor_stand_vehicles)
-        .chain(interaction_vehicles)
+        .chain(passenger_vehicles)
         .collect();
     if let Some(riding) = local_riding {
         ridden.insert(riding);
@@ -725,6 +726,20 @@ pub(super) fn name_tag_at(m: &Mob, alpha: f64) -> glam::DVec3 {
     )
 }
 
+/// Horizon: how far a player's name tag goes up so that it clears the tallest cosmetic drawn on
+/// them, `top` pixels above the model's neck (`Item::top`) on a player of `scale`
+/// (`LivingEntity.getScale`); 0 when the item stays under vanilla's tag. Measured standing: the
+/// model's neck is 1.501 blocks up, times `AvatarRenderer.scale`'s 0.9375 and `scale`; the tag's
+/// lowest pixel (the style's line under the background, 10 text pixels under the anchor) is at
+/// 1.8 + 0.5 - 10 × 0.025 = 2.05 blocks, and the lift leaves one text pixel between them. Other
+/// poses keep the same lift: crouching lowers the model more (0.39 blocks) than the tag (0.3).
+pub(super) fn cosmetic_lift(top: f32, scale: f32) -> f64 {
+    let item = f64::from(scale) * 0.9375 * (1.501 + f64::from(top) / 16.0);
+    let unit = f64::from(NAME_TAG_UNIT);
+    let bottom = 1.8 + 0.5 - 10.0 * unit;
+    (item + unit - bottom).max(0.0)
+}
+
 /// A name tag: where it hangs, its lines (text, lift), the packed light at
 /// the entity and whether it is discrete.
 struct NameTag {
@@ -740,6 +755,9 @@ struct NameTag {
 pub(super) struct Marks {
     pub horizon: bool,
     pub style: Option<TagStyle>,
+    /// How high the cosmetics drawn on their body get above the neck, in model pixels: the tag
+    /// goes up over a tall one (`cosmetic_lift`).
+    pub top: Option<f32>,
 }
 
 /// A cosmetic name tag style: a badge after the name and a line under it.
@@ -881,14 +899,7 @@ mod tests {
         let mobs = vec![remote_player];
 
         // 1. TextDisplay riding remote player 42
-        let ridden = collect_vehicle_ids(
-            &mobs,
-            vec![42],
-            std::iter::empty(),
-            std::iter::empty(),
-            None,
-            Some(100),
-        );
+        let ridden = collect_vehicle_ids(&mobs, vec![42], None, Some(100));
         assert!(
             ridden.contains(&42),
             "remote player 42 is ridden by text display"
@@ -897,14 +908,7 @@ mod tests {
         assert!(!ridden.contains(&0), "local model 0 has no passenger");
 
         // 2. ArmorStand riding local player 100 -> model 0 must be in ridden
-        let ridden_local = collect_vehicle_ids(
-            &mobs,
-            std::iter::empty(),
-            vec![100],
-            std::iter::empty(),
-            None,
-            Some(100),
-        );
+        let ridden_local = collect_vehicle_ids(&mobs, vec![100], None, Some(100));
         assert!(
             ridden_local.contains(&100),
             "local player 100 is ridden by armor stand"

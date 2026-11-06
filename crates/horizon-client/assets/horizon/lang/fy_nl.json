@@ -271,7 +271,6 @@
   "horizon.osk.close": "Slút",
   "horizon.extras.chat_animation.tooltip": "In nije petearrigel glydt fan links yn, wylst it yn ferdwynt, ynstee fan folslein te ferskinen.",
   "horizon.extras.chat_indicator.tooltip": "De kleurde balke oan de linkerkant fan in petear line.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "It scrollrad oer in knop yn 'e ynstellings feroaret syn wearde, lykas yn vanille. Off, it tsjil rôlet allinnich de list.",
   "horizon.extras.pack_browser.tooltip": "Selektearje boarnepakketten krijt in knop taheakje dy't Modrinth siket en in pakket ynstalleart yn jo pakketmap. Ut, it spultsje nea kontakt Modrinth.",
   "horizon.extras.splitscreen.tooltip": "Yn in wrâld kin in oare controller meidwaan as in nije spiler: druk op A as it freget, kies dan in profyl en wêr te spyljen.",
   "horizon.splitscreen.setup.monitor_unknown": "in monitor",
@@ -399,8 +398,8 @@
   "horizon.extras.cosmetics_mine.tooltip": "Ferburgen: elke Horizon-spiler sjocht jo sûnder jo kosmetika, jo ynbegrepen. Deselde switch as de Launcher syn Wardrobe.",
   "horizon.extras.cosmetics_others": "Oare spilers 'cosmetica",
   "horizon.extras.cosmetics_others.tooltip": "Wat oare Horizon-spilers drage: alles, allinich har nammelabelstilen, of neat. Ferburgen, it spultsje freget noait wat se drage.",
-  "horizon.extras.cosmetics_auras": "Oare aura's en spoaren",
-  "horizon.extras.cosmetics_auras.tooltip": "Auras en spoaren oare spilers drage. Standert út.",
+  "horizon.extras.cosmetics_hide_fx": "Spoaren en aura's fan oare spilers ferbergje",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "Spoaren en aura's fan oare spilers bliuwe ferburgen; harren oare kosmetika bliuwt sichtber. Standert út.",
   "horizon.extras.cosmetics.shown": "Oanjûn",
   "horizon.extras.cosmetics.hidden": "Ferburgen",
   "horizon.extras.cosmetics.name_tags": "Allinnich nammelabels"

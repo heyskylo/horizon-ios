@@ -59,6 +59,7 @@ mod owner_page;
 mod packs_page;
 mod partner;
 mod perf;
+mod picture_cache;
 mod plate;
 mod profile_heads;
 mod scene;
@@ -113,6 +114,9 @@ enum Page {
     Servers,
     /// What the player wears (`wardrobe_page.rs`), with the cosmetics flag on.
     Wardrobe,
+    /// Cosmetics to try on and buy (`wardrobe_page/shop.rs`), beside the Wardrobe and under the
+    /// same rule. A plain tab: no badge, and it never opens by itself.
+    Shop,
     Notes,
     Settings,
 }
@@ -128,6 +132,7 @@ impl Page {
             Ok("mods" | "modpacks" | "resourcepacks" | "shaders" | "datapacks") => Page::Mods,
             Ok("servers") => Page::Servers,
             Ok("wardrobe") if horizon_cosmetics::forced() => Page::Wardrobe,
+            Ok("shop") if horizon_cosmetics::forced() => Page::Shop,
             Ok("versions") => Page::Versions,
             Ok("notes") => Page::Notes,
             Ok("settings") => Page::Settings,
@@ -143,22 +148,23 @@ impl Page {
 
     /// Every page, with its name and icon: the top bar shows all but Settings, which has its
     /// own button.
-    const ALL: [(Page, &'static str, &'static str); 7] = [
+    const ALL: [(Page, &'static str, &'static str); 8] = [
         (Page::Play, "Home", "home"),
         (Page::Mods, "Mods", "package"),
         (Page::Servers, "Servers", "server"),
         (Page::Wardrobe, "Wardrobe", "user"),
+        (Page::Shop, "Shop", "bag"),
         (Page::Versions, "Versions", "archive"),
         (Page::Notes, "Patch notes", "notes"),
         (Page::Settings, "Settings", "sliders"),
     ];
 
-    /// The pages the top bar shows: all but Settings, and the Wardrobe only when `wardrobe`
-    /// (`Launcher::wardrobe_shown`).
+    /// The pages the top bar shows: all but Settings, and the Wardrobe and the Shop only when
+    /// `wardrobe` (`Launcher::wardrobe_shown`).
     fn in_top_bar(wardrobe: bool) -> impl Iterator<Item = (Page, &'static str, &'static str)> {
         Self::ALL.into_iter().filter(move |(page, ..)| match page {
             Page::Settings => false,
-            Page::Wardrobe => wardrobe,
+            Page::Wardrobe | Page::Shop => wardrobe,
             _ => true,
         })
     }
@@ -317,6 +323,8 @@ struct Launcher {
     wardrobe_marks: wardrobe_page::Marks,
     /// Ask the service again on the next draw of the Wardrobe (set by each visit).
     wardrobe_reload: bool,
+    /// The Shop page's basket and choices (`wardrobe_page/shop.rs`).
+    shop: wardrobe_page::Shop,
     /// The cosmetics service's last word on the founder set's window (`GET /v1/shop`): whether
     /// the top bar has the Wardrobe page with cosmetics off (`wardrobe_shown`).
     shop_status: Option<horizon_launcher::wardrobe::Claim>,
@@ -391,6 +399,10 @@ struct Launcher {
     friend_focus: FocusHandle,
     /// The window's width at the last frame: Home's head lays out by it, as the mockup's `xl`.
     window_width: f32,
+    /// The window's longer side in points, and the screen's pixels per point: the size pictures
+    /// are made at (`picture_cache`).
+    window_long_side: f32,
+    scale_factor: f32,
     joining: Option<String>,
     /// Where the next start goes at once: `--world <folder>` or `--server <address>`.
     quick_play: Option<(&'static str, String)>,
@@ -471,6 +483,8 @@ struct Launcher {
     multiplayer: multiplayer_page::Multiplayer,
     screenshots: screenshots_page::Screenshots,
     shot_blur: glass_shot_blur::ShotBlur,
+    /// Pictures from disk made at their drawn size (`picture_cache`).
+    pictures: picture_cache::Pictures,
     game_packs: packs_page::Packs,
     world_packs: datapacks_page::WorldPacks,
     export: Option<export_page::ExportPanel>,
@@ -631,6 +645,7 @@ impl Launcher {
             wardrobe: None,
             wardrobe_marks: Default::default(),
             wardrobe_reload: false,
+            shop: Default::default(),
             shop_status: None,
             shop_kept: None,
             // The first draw takes the launcher theme from Settings.
@@ -685,6 +700,8 @@ impl Launcher {
             friend_code: line_edit::LineEdit::new(String::new(), 256, 32),
             friend_focused: false,
             window_width: 0.,
+            window_long_side: 0.,
+            scale_factor: 1.,
             friend_focus: cx.focus_handle(),
             joining: None,
             quick_play: None,
@@ -729,6 +746,7 @@ impl Launcher {
             multiplayer: multiplayer_page::Multiplayer::default(),
             screenshots: screenshots_page::Screenshots::default(),
             shot_blur: Default::default(),
+            pictures: Default::default(),
             game_packs: packs_page::Packs::default(),
             world_packs: datapacks_page::WorldPacks::default(),
             export: None,
@@ -793,7 +811,10 @@ impl Launcher {
             this.open_instance_dialog(this.selected_instance().cloned());
         }
         if cfg!(debug_assertions)
-            && std::env::var("HORIZON_LAUNCHER_PAGE").as_deref() == Ok("wardrobe")
+            && matches!(
+                std::env::var("HORIZON_LAUNCHER_PAGE").as_deref(),
+                Ok("wardrobe" | "shop")
+            )
         {
             this.wardrobe_preview();
         }
@@ -866,7 +887,7 @@ impl Launcher {
             self.load_auth_statuses(false);
         }
         self.load_profile_heads();
-        self.wardrobe_reload |= page == Page::Wardrobe;
+        self.wardrobe_reload |= matches!(page, Page::Wardrobe | Page::Shop);
         if page != self.page {
             self.page = page;
             self.switches += 1;
@@ -1079,7 +1100,7 @@ impl Launcher {
         match self.bench.as_mut().map(|b| b.tick(&self.perf)) {
             Some(perf::Step::Go(page)) => {
                 let pages: Vec<Page> = (Page::ALL.iter().map(|p| p.0))
-                    .filter(|p| *p != Page::Wardrobe || self.wardrobe_shown())
+                    .filter(|p| !matches!(p, Page::Wardrobe | Page::Shop) || self.wardrobe_shown())
                     .collect();
                 self.go(pages[page % pages.len()]);
                 changed = true;
@@ -3588,19 +3609,24 @@ impl Launcher {
                         gpui::linear_color_stop(t.page.opacity(to), at),
                     ))
             };
-            let picture = self.home_background().map(|path| {
-                [
-                    gpui::img(path)
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .size_full()
-                        .object_fit(gpui::ObjectFit::Cover)
-                        .into_any_element(),
-                    veil(90., 0.82, 0., 0.62).into_any_element(),
-                    veil(180., 0., 0.75, 1.).into_any_element(),
-                ]
-            });
+            // At the window's size (`picture_cache`): a chosen picture may be far bigger.
+            let side = picture_cache::Look::Fit(self.window_side());
+            let picture = self
+                .home_background()
+                .and_then(|path| self.picture(&path, side, cx))
+                .map(|image| {
+                    [
+                        gpui::img(image)
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .size_full()
+                            .object_fit(gpui::ObjectFit::Cover)
+                            .into_any_element(),
+                        veil(90., 0.82, 0., 0.62).into_any_element(),
+                        veil(180., 0., 0.75, 1.).into_any_element(),
+                    ]
+                });
             div()
                 .relative()
                 .flex()
@@ -4284,7 +4310,7 @@ impl Launcher {
         )
     }
 
-    /// Settings' Proxy row: the HTTP proxy every download and sign-in goes through, kept in
+    /// Settings' Proxy row: the proxy every download and sign-in goes through, kept in
     /// `settings.json` and read back by `proxy.rs` on each request.
     fn proxy_row(&self, n: usize, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
@@ -4335,8 +4361,8 @@ impl Launcher {
             (false, Some(why)) => div().text_color(t.danger).child(why).into_any_element(),
             _ => div()
                 .child(tr(
-                    "Downloads, sign-ins and updates go through this HTTP proxy \
-                     (http://host:port). Empty means none: HTTPS_PROXY is used instead when the \
+                    "Downloads, sign-ins and updates go through this proxy (http://host:port, \
+                     socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the \
                      launcher was started with one.",
                 ))
                 .into_any_element(),
@@ -5312,16 +5338,20 @@ impl Render for Launcher {
         self.proxy_focused = self.proxy_focus.is_focused(window);
         let size = window.viewport_size();
         self.window_width = f32::from(size.width);
+        self.window_long_side = f32::from(size.width).max(f32::from(size.height));
+        self.scale_factor = window.scale_factor();
         let content = match self.page {
             Page::Play => self.play_page(cx),
             Page::Versions => self.versions_page(cx),
             Page::Mods => self.mods_page(cx),
             Page::Servers => self.servers_page(cx),
             Page::Wardrobe => self.wardrobe_page(cx),
+            Page::Shop => self.shop_page(cx),
             Page::Notes => self.notes_page(cx),
             Page::Settings => self.settings_page(cx),
         };
         self.sky.free_replaced(window);
+        self.pictures.free_retired(window);
         self.wardrobe_marks.free_replaced(window);
         // The new page fades in and rises a few pixels, as the website's tabs do (`hzl-pop`).
         let content = div()
@@ -5736,12 +5766,24 @@ fn main() {
     // What the launcher downloads goes through the player's proxy, if they set one: the parts
     // that build their own agents (`horizon-port-pack`) are told before anything starts.
     horizon_launcher::proxy::announce(horizon_launcher::backend::Settings::load().proxy);
-    if let Some(code) = cli::run() {
-        std::process::exit(code);
+    // The setup wizard and `horizon-launcher.exe uninstall` (what Control Panel runs) are windows,
+    // not CLI commands: asked of the CLI parser first, `uninstall` was refused as an unknown
+    // subcommand, with the error going to the console that Control Panel's start doesn't have.
+    #[cfg(windows)]
+    let setup_window = horizon_launcher::installer::window_mode();
+    #[cfg(not(windows))]
+    let setup_window: Option<horizon_launcher::setup_args::Mode> = None;
+    if setup_window.is_none() {
+        if let Some(code) = cli::run() {
+            std::process::exit(code);
+        }
     }
+    // The GPU's texture limit, which caps the pictures made from disk (`picture_cache`).
+    horizon_launcher::pictures::probe_gpu_limit();
     gpui_platform::application()
         .with_assets(blocks::Assets)
-        .run(|cx: &mut App| {
+        // `move`: the closure owns `setup_window`; `run` wants it to outlive this frame.
+        .run(move |cx: &mut App| {
             cx.text_system()
                 .add_fonts(vec![
                     Cow::Borrowed(horizon_theme::fonts::GEIST_MONO),
@@ -5771,10 +5813,12 @@ fn main() {
             cx.set_menus(menus());
             // The setup exe (and `horizon-launcher.exe uninstall`) opens its own window instead.
             #[cfg(windows)]
-            if let Some(mode) = horizon_launcher::installer::window_mode() {
+            if let Some(mode) = setup_window {
                 setup_page::open(mode, cx);
                 return;
             }
+            #[cfg(not(windows))]
+            let _ = setup_window;
             let bounds = Bounds::centered(None, size(px(1180.), px(760.)), cx);
             cx.open_window(
                 WindowOptions {

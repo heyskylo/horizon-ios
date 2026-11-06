@@ -376,6 +376,7 @@ impl Game<'_> {
         });
         notifiers.append(&mut self.server_packs.notifiers);
         self.server_packs.notifiers = notifiers;
+        self.drive_mod_browser();
         // A reload waits for the world's resources (`reload_packs`).
         if self.rest_loader.is_some() {
             return;
@@ -479,6 +480,7 @@ impl Game<'_> {
         let Some(prompt) = &self.server_packs.prompt else {
             return;
         };
+        horizon_client::widgets::cover_frame();
         let atlas = &self.gui.atlas;
         let (w, h) = (batch.width, batch.height);
         if self.player.is_none() {
@@ -498,9 +500,9 @@ impl Game<'_> {
         horizon_client::widgets::begin_screen(|| {
             super::screen_info::confirm("pack_prompt", &title.plain(), &message.plain())
         });
-        prompt
-            .layout(atlas, (w, h))
-            .draw(batch, atlas, self.cursor, [&yes, &no]);
+        let mut layout = prompt.layout(atlas, (w, h));
+        layout.declare_no();
+        layout.draw(batch, atlas, self.cursor, [&yes, &no]);
     }
     /// `IntegratedServer.reportChunkLoadFailure` and the like: what the server
     /// thread reported since the last frame, each in `SystemToast.addOrUpdate`
