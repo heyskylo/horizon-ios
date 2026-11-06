@@ -11,7 +11,7 @@ use crate::{
     projectiles::{Projectile, ProjectileKind},
     save::{
         doubles, float, floats, item_from_nbt, item_to_nbt, number, put, read_doubles, text,
-        uuid_from_tag,
+        uuid_from_tag, uuid_tag,
     },
 };
 use horizon_core::geometry::Vec3;
@@ -165,7 +165,11 @@ fn player_uuid() -> [i32; 4] {
 /// `uuid_of` answers from. When it answers `None` (the mob is no longer in the
 /// level) nothing is written, rather than a made-up UUID that would name nothing
 /// when the save is read back. The reference comes back with [`who_by_uuid`].
-fn who_uuid(who: Who, uuid_of: &mut impl FnMut(u32) -> Option<[i32; 4]>) -> Option<[i32; 4]> {
+///
+/// `mob_to_nbt`'s `uuid_of` is this for a field of a mob's own compound; the
+/// game layer's `Game::save_who_uuid` is the same rule for a field written
+/// outside one (a bullet's `Target`), answered from `EntityMemory::uuid_of`.
+pub fn who_uuid(who: Who, uuid_of: &mut impl FnMut(u32) -> Option<[i32; 4]>) -> Option<[i32; 4]> {
     match who {
         Who::Player => Some(player_uuid()),
         Who::Mob(id) => uuid_of(id),
@@ -2718,16 +2722,12 @@ pub fn saved_with_chunk(p: &Projectile) -> bool {
         | ProjectileKind::Potion(..)
         | ProjectileKind::ExperienceBottle
         | ProjectileKind::LlamaSpit
-        | ProjectileKind::ShulkerBullet { target: None, .. }
+        | ProjectileKind::ShulkerBullet { .. }
         | ProjectileKind::Thrown(_) => true,
         ProjectileKind::Arrow { .. } => p.arrow.is_some(),
-        // Not written yet: tridents save from their own list, and a bullet
-        // with a target would lose it.
-        ProjectileKind::Trident
-        | ProjectileKind::ShulkerBullet {
-            target: Some(_), ..
-        }
-        | ProjectileKind::WitherSkull { .. } => false,
+        // Not written yet: tridents save from their own list, and a wither
+        // skull's `dangerous` flag has no writer.
+        ProjectileKind::Trident | ProjectileKind::WitherSkull { .. } => false,
     }
 }
 
@@ -2790,24 +2790,42 @@ pub fn throwable_from_nbt(tag: &Tag, player: Option<[i32; 4]>) -> Option<Project
     Some(p)
 }
 
-/// `LlamaSpit` and `ShulkerBullet` as `/summon` or a chunk loads them:
-/// `Projectile`'s `Owner`, `LeftOwner`, `NoGravity` and the motion. A bullet
-/// loaded without a `Target` has none, so it falls (`ShulkerBullet.tick`).
-pub fn spit_or_bullet_from_nbt(tag: &Tag, player: Option<[i32; 4]>) -> Option<Projectile> {
+/// `LlamaSpit` and `ShulkerBullet` as `/summon` or a chunk loads them, with
+/// `ShulkerBullet.readAdditionalSaveData`'s `Dir`, `Steps` and per-axis target
+/// deltas: `Projectile`'s `Owner`, `LeftOwner`, `NoGravity` and the motion.
+/// `target` is the entity the caller resolved from `Target`; a bullet loaded
+/// without one falls (`ShulkerBullet.tick`).
+pub fn spit_or_bullet_from_nbt(
+    tag: &Tag,
+    player: Option<[i32; 4]>,
+    target: Option<Who>,
+) -> Option<Projectile> {
+    let at = position(tag)?;
     let kind = match kind(tag)?.as_str() {
         "minecraft:llama_spit" => ProjectileKind::LlamaSpit,
         "minecraft:shulker_bullet" => ProjectileKind::ShulkerBullet {
-            target: None,
-            dir: None,
-            steps: 0,
-            delta: [0.0; 3],
-            seed: 0,
+            target,
+            // `Dir`: `Direction.LEGACY_ID_CODEC`, the step the bullet is on,
+            // absent while it has not chosen one.
+            dir: number(tag.get("Dir")).map(|d| d as u8),
+            steps: number(tag.get("Steps"))
+                .unwrap_or(0)
+                .clamp(0, i32::MAX as i64) as i32,
+            delta: [
+                float(tag.get("TXD")).unwrap_or(0.0),
+                float(tag.get("TYD")).unwrap_or(0.0),
+                float(tag.get("TZD")).unwrap_or(0.0),
+            ],
+            // `Entity.random` is not saved: a loaded bullet gets a stream of
+            // its own from where it is, as `Projectile::new` does for an
+            // arrow.
+            seed: (at.x.to_bits() ^ at.z.to_bits().rotate_left(17)) | 1,
         },
         _ => return None,
     };
     let owner = owner_uuid(tag);
     let from_player = player.is_some() && owner == player;
-    let mut p = Projectile::new(kind, position(tag)?, from_player.then_some(Who::Player));
+    let mut p = Projectile::new(kind, at, from_player.then_some(Who::Player));
     p.velocity = motion(tag);
     [p.yaw, p.pitch] = rotation(tag);
     p.left_owner = flag(tag, "LeftOwner");
@@ -2817,16 +2835,18 @@ pub fn spit_or_bullet_from_nbt(tag: &Tag, player: Option<[i32; 4]>) -> Option<Pr
     Some(p)
 }
 
-/// The save of [`spit_or_bullet_from_nbt`]'s kinds: `Projectile`'s keys.
+/// The save of [`spit_or_bullet_from_nbt`]'s kinds: `Projectile`'s keys, and
+/// for a bullet the `Target`, `Dir`, `Steps` and target deltas vanilla writes.
 pub fn spit_or_bullet_to_nbt(
     p: &Projectile,
     uuid: [i32; 4],
     owner: Option<[i32; 4]>,
+    target: Option<[i32; 4]>,
     raw: Option<&Tag>,
 ) -> Option<Tag> {
     if !matches!(
         p.kind,
-        ProjectileKind::LlamaSpit | ProjectileKind::ShulkerBullet { target: None, .. }
+        ProjectileKind::LlamaSpit | ProjectileKind::ShulkerBullet { .. }
     ) {
         return None;
     }
@@ -2841,7 +2861,35 @@ pub fn spit_or_bullet_to_nbt(
     };
     let mut tag = base.tag(raw);
     put_projectile(&mut tag, p, owner);
+    // `ShulkerBullet.addAdditionalSaveData`: the target it homes on (written
+    // only while it has one), the step it is on (omitted while it has not
+    // chosen one), the steps left and the per-axis target deltas.
+    if let ProjectileKind::ShulkerBullet {
+        dir, steps, delta, ..
+    } = &p.kind
+    {
+        if let Tag::Compound(map) = &mut tag {
+            map.remove(&"Target".into());
+            map.remove(&"Dir".into());
+        }
+        if let Some(target) = target {
+            put(&mut tag, "Target", uuid_tag(target));
+        }
+        if let Some(dir) = dir {
+            put(&mut tag, "Dir", Tag::Byte(*dir as i8));
+        }
+        put(&mut tag, "Steps", Tag::Int(*steps));
+        for (key, v) in [("TXD", delta[0]), ("TYD", delta[1]), ("TZD", delta[2])] {
+            put(&mut tag, key, Tag::Double(v.to_bits()));
+        }
+    }
     Some(tag)
+}
+
+/// `ShulkerBullet.readAdditionalSaveData`'s `Target`: the UUID of the entity
+/// the bullet homes on, which vanilla keeps even while that entity is away.
+pub fn bullet_target(tag: &Tag) -> Option<[i32; 4]> {
+    uuid_from_tag(tag.get("Target"))
 }
 
 /// `Projectile`'s `Owner`.
@@ -6431,14 +6479,14 @@ mod fireball_nbt_tests {
                 ]);
                 let mut p = throwable_from_nbt(&raw, None)
                     .or_else(|| fireball_from_nbt(&raw, None))
-                    .or_else(|| spit_or_bullet_from_nbt(&raw, None))
+                    .or_else(|| spit_or_bullet_from_nbt(&raw, None, None))
                     .unwrap();
                 assert_eq!(p.has_been_shot, shot != 0);
                 for age in [0, 12] {
                     p.age = age;
                     let tag = throwable_to_nbt(&p, [1, 2, 3, 4], None, Some(&raw))
                         .or_else(|| fireball_to_nbt(&p, [1, 2, 3, 4], None, Some(&raw)))
-                        .or_else(|| spit_or_bullet_to_nbt(&p, [1, 2, 3, 4], None, Some(&raw)))
+                        .or_else(|| spit_or_bullet_to_nbt(&p, [1, 2, 3, 4], None, None, Some(&raw)))
                         .unwrap();
                     assert_eq!(number(tag.get("HasBeenShot")), Some(i64::from(shot)));
                 }
@@ -6777,6 +6825,229 @@ mod held_item_name_tests {
 }
 
 #[cfg(test)]
+mod shulker_bullet_nbt_tests {
+    use super::*;
+
+    /// The level's side of a bullet's `Target`: the id -> UUID map
+    /// (`EntityMemory.uuids`), the mobs it currently holds, and the player.
+    /// `save_who_uuid` and `bullet_target` are the game layer's two helpers,
+    /// kept here as the same two calls so both halves of the bridge are what the
+    /// round trips below go through.
+    struct Level {
+        uuids: HashMap<u32, [i32; 4]>,
+        mobs: Vec<Mob>,
+        player: Option<[i32; 4]>,
+    }
+    impl Level {
+        /// `Game::save_who_uuid`.
+        fn save_who_uuid(&self, who: Who) -> Option<[i32; 4]> {
+            who_uuid(who, &mut |id| self.uuids.get(&id).copied())
+        }
+        /// `Game::bullet_target`: the `Who` a saved `Target` names, while that
+        /// entity is in the level.
+        fn bullet_target(&self, tag: &Tag) -> Option<Who> {
+            who_by_uuid(&self.uuids, &self.mobs, self.player, bullet_target(tag)?)
+        }
+        /// A shulker in the level: its id and the UUID it is saved with.
+        fn with_mob(mut self, id: u32, uuid: [i32; 4]) -> Self {
+            self.uuids.insert(id, uuid);
+            self.mobs.push(Mob::new(
+                id,
+                crate::mobs::sensor_scan_tests::kind(),
+                Vec3::ZERO,
+                0.0,
+            ));
+            self
+        }
+    }
+    fn no_entities() -> Level {
+        Level {
+            uuids: HashMap::new(),
+            mobs: Vec::new(),
+            player: None,
+        }
+    }
+    /// The bullet the tests start from: fired by the player at mob 31 along +X.
+    fn homing(target: Option<Who>) -> Projectile {
+        Projectile::new(
+            ProjectileKind::ShulkerBullet {
+                target,
+                dir: Some(5),
+                steps: 23,
+                delta: [0.15, -0.15, 0.075],
+                seed: 7,
+            },
+            Vec3::new(4.5, 80.0, 10.5),
+            Some(Who::Player),
+        )
+    }
+    fn bullet_kind(p: &Projectile) -> (Option<Who>, Option<u8>, i32, [f64; 3]) {
+        let ProjectileKind::ShulkerBullet {
+            target,
+            dir,
+            steps,
+            delta,
+            ..
+        } = p.kind
+        else {
+            panic!("not a bullet: {:?}", p.kind);
+        };
+        (target, dir, steps, delta)
+    }
+
+    /// `ShulkerBullet.addAdditionalSaveData` then `readAdditionalSaveData`, both
+    /// over the UUID bridge: a bullet in flight keeps the target it homes on, the
+    /// step it is on, the steps left and its per-axis target deltas, and the
+    /// target comes back as the `Who::Mob` of the shulker it was fired at.
+    ///
+    /// Horizon wrote none of it and `saved_with_chunk` turned the kind away while
+    /// it had a target, so every bullet a shulker fired was dropped by the chunk
+    /// save.
+    #[test]
+    fn a_homing_bullet_round_trips_its_target_step_and_deltas() {
+        let shulker = [9, 8, 7, 6];
+        let level = no_entities().with_mob(31, shulker);
+        let p = homing(Some(Who::Mob(31)));
+        assert!(saved_with_chunk(&p), "a homing bullet is saved now");
+        // The writer `Game::save_projectile` calls, given the UUID
+        // `Game::save_who_uuid` answers for the target.
+        let target = level.save_who_uuid(Who::Mob(31));
+        assert_eq!(target, Some(shulker));
+        let tag = spit_or_bullet_to_nbt(&p, [1; 4], None, target, None).unwrap();
+        assert_eq!(kind(&tag).as_deref(), Some("minecraft:shulker_bullet"));
+        assert_eq!(
+            bullet_target(&tag),
+            Some(shulker),
+            "`Target` is the shulker's UUID"
+        );
+        assert_eq!(number(tag.get("Dir")), Some(5));
+        assert_eq!(number(tag.get("Steps")), Some(23));
+        assert_eq!(float(tag.get("TXD")), Some(0.15));
+        assert_eq!(float(tag.get("TYD")), Some(-0.15));
+        assert_eq!(float(tag.get("TZD")), Some(0.075));
+        // Read back the way `Game::load_spit_or_bullet` does: the compound's
+        // `Target` resolved against the level, then the bullet's own fields.
+        let target = level.bullet_target(&tag);
+        assert_eq!(target, Some(Who::Mob(31)), "back on the same shulker");
+        let p = spit_or_bullet_from_nbt(&tag, None, target).unwrap();
+        assert_eq!(
+            bullet_kind(&p),
+            (Some(Who::Mob(31)), Some(5), 23, [0.15, -0.15, 0.075])
+        );
+    }
+
+    /// A bullet with no target — a `/summon`ed one, or one loaded without its
+    /// target — writes no `Target` key at all, as vanilla's
+    /// `if (this.finalTarget != null)` does, and no `Dir` until it has chosen a
+    /// step. `Steps` and the deltas are always written, zero or not.
+    #[test]
+    fn a_bullet_without_a_target_writes_no_target_key() {
+        let bare = Tag::compound([
+            ("id", Tag::String("minecraft:shulker_bullet".into())),
+            ("Pos", doubles(&[4.5, 80.0, 10.5])),
+        ]);
+        let level = no_entities().with_mob(31, [9, 8, 7, 6]);
+        let p = spit_or_bullet_from_nbt(&bare, None, level.bullet_target(&bare)).unwrap();
+        assert_eq!(
+            bullet_kind(&p),
+            (None, None, 0, [0.0; 3]),
+            "a bare summon has no target and no step"
+        );
+        let saved = spit_or_bullet_to_nbt(&p, [1; 4], None, None, None).unwrap();
+        assert!(saved.get("Target").is_none(), "no `Target`");
+        assert!(saved.get("Dir").is_none(), "no `Dir` before a step");
+        assert_eq!(number(saved.get("Steps")), Some(0));
+        assert_eq!(float(saved.get("TXD")), Some(0.0));
+        // The same for a bullet whose target the level has no UUID for: the
+        // bridge writes nothing rather than a made-up UUID, and a re-read
+        // bullet has no target.
+        let p = homing(Some(Who::Mob(31)));
+        let nowhere = no_entities();
+        assert_eq!(nowhere.save_who_uuid(Who::Mob(31)), None);
+        let saved = spit_or_bullet_to_nbt(&p, [1; 4], None, None, None).unwrap();
+        assert!(saved.get("Target").is_none());
+        assert_eq!(nowhere.bullet_target(&saved), None);
+    }
+
+    /// The stored `Target` names a mob that is no longer loaded: vanilla keeps
+    /// the UUID and re-resolves it every tick, and Horizon's `Who` can only name
+    /// an entity in the level, so the bullet comes back with no target and falls
+    /// rather than homing on whatever the id now means. Here the id the mob had
+    /// is reused by a projectile the same save holds, which is the case a bare
+    /// id would get wrong.
+    #[test]
+    fn a_target_that_is_not_loaded_comes_back_with_none() {
+        let shulker = [9, 8, 7, 6];
+        let p = homing(Some(Who::Mob(31)));
+        let tag = spit_or_bullet_to_nbt(&p, [1; 4], None, Some(shulker), None).unwrap();
+        // id 31 is a projectile now, and 32 is the only mob left.
+        let mut uuids = HashMap::from([(31, shulker), (32, [1, 1, 1, 1])]);
+        let mut mobs = vec![Mob::new(
+            32,
+            crate::mobs::sensor_scan_tests::kind(),
+            Vec3::ZERO,
+            0.0,
+        )];
+        let gone = Level {
+            uuids: uuids.clone(),
+            mobs: mobs.clone(),
+            player: None,
+        };
+        assert_eq!(gone.bullet_target(&tag), None, "not the id-reusing entity");
+        let p = spit_or_bullet_from_nbt(&tag, None, gone.bullet_target(&tag)).unwrap();
+        let (target, dir, steps, delta) = bullet_kind(&p);
+        assert_eq!(target, None, "targetless, and it falls");
+        assert_eq!(
+            (dir, steps, delta),
+            (Some(5), 23, [0.15, -0.15, 0.075]),
+            "the rest of the bullet is still its own"
+        );
+        // The mob that is here still resolves, so the `None` above is the mob
+        // being gone and not the read half refusing every mob.
+        uuids.insert(33, [2, 2, 2, 2]);
+        mobs.push(Mob::new(
+            33,
+            crate::mobs::sensor_scan_tests::kind(),
+            Vec3::ZERO,
+            0.0,
+        ));
+        let here = Level {
+            uuids,
+            mobs,
+            player: None,
+        };
+        assert_eq!(here.bullet_target(&tag), None);
+        let mut moved = tag.clone();
+        put(&mut moved, "Target", uuid_tag([2, 2, 2, 2]));
+        assert_eq!(here.bullet_target(&moved), Some(Who::Mob(33)));
+    }
+
+    /// The player is the other `Who` a `Target` can name: the same bridge, the
+    /// player's own UUID.
+    #[test]
+    fn a_target_naming_the_player_comes_back_as_the_player() {
+        let player = player_uuid();
+        let level = Level {
+            uuids: HashMap::new(),
+            mobs: Vec::new(),
+            player: Some(player),
+        };
+        let p = homing(Some(Who::Player));
+        let target = level.save_who_uuid(Who::Player);
+        assert_eq!(target, Some(player));
+        let tag = spit_or_bullet_to_nbt(&p, [1; 4], None, target, None).unwrap();
+        assert_eq!(level.bullet_target(&tag), Some(Who::Player));
+        // With no player in the level the UUID names nobody.
+        let empty = Level {
+            uuids: HashMap::new(),
+            mobs: Vec::new(),
+            player: None,
+        };
+        assert_eq!(empty.bullet_target(&tag), None);
+    }
+}
+
+#[cfg(test)]
 mod mod_thrown_nbt_tests {
     use super::*;
 
@@ -6842,18 +7113,20 @@ mod mod_thrown_nbt_tests {
         assert_eq!(kind(&saved).as_deref(), Some("minecraft:arrow"));
 
         for id in ["minecraft:llama_spit", "minecraft:shulker_bullet"] {
-            let p = spit_or_bullet_from_nbt(&summoned(id, &[]), None).unwrap();
+            let p = spit_or_bullet_from_nbt(&summoned(id, &[]), None, None).unwrap();
             assert_eq!(p.kind.id(), id);
             assert!(!p.no_gravity && p.position == Vec3::new(0.5, 110.0, 0.5));
             let held =
-                spit_or_bullet_from_nbt(&summoned(id, std::slice::from_ref(&flag)), None).unwrap();
+                spit_or_bullet_from_nbt(&summoned(id, std::slice::from_ref(&flag)), None, None)
+                    .unwrap();
             assert!(held.no_gravity);
         }
-        assert!(spit_or_bullet_from_nbt(&summoned("minecraft:arrow", &[]), None).is_none());
+        assert!(spit_or_bullet_from_nbt(&summoned("minecraft:arrow", &[]), None, None).is_none());
         // a spit and a target-less bullet are saved and selectable (`/data`, `@e`).
-        let spit = spit_or_bullet_from_nbt(&summoned("minecraft:llama_spit", &[]), None).unwrap();
+        let spit =
+            spit_or_bullet_from_nbt(&summoned("minecraft:llama_spit", &[]), None, None).unwrap();
         assert!(saved_with_chunk(&spit));
-        let saved = spit_or_bullet_to_nbt(&spit, [1; 4], None, None).unwrap();
+        let saved = spit_or_bullet_to_nbt(&spit, [1; 4], None, None, None).unwrap();
         assert_eq!(kind(&saved).as_deref(), Some("minecraft:llama_spit"));
 
         // A summoned experience bottle flies as the bottle item, with a bottle's gravity.
