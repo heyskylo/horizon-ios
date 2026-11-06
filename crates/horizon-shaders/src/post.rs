@@ -214,13 +214,11 @@ const PARTICLES: [&str; 4] = [
     "gbuffers_basic",
 ];
 
-/// The sun and moon's default blend: added to the sky, as vanilla draws them.
-pub const CELESTIAL_BLEND: Blend = [
-    Factor::SrcAlpha,
-    Factor::One,
-    Factor::One,
-    Factor::OneMinusSrcAlpha,
-];
+/// The sun and moon's default blend: added to the sky, and their own alpha replacing the
+/// buffer's, as vanilla draws them (`RenderPipelines.CELESTIAL`, `BlendFunction.OVERLAY`). Iris
+/// 1.11.7 left the sun's alpha (2.0) in an RGBA32F buffer the sky had written 1.0 to, with a
+/// probe pack of ours (#10490).
+pub const CELESTIAL_BLEND: Blend = [Factor::SrcAlpha, Factor::One, Factor::One, Factor::Zero];
 
 const GROUPS: [(Group, &str); 6] = [
     (Group::Setup, "setup"),
@@ -2950,6 +2948,11 @@ blend.composite1.colortex3 = ONE ONE ONE ONE
         assert_eq!(
             (sun.name.as_str(), sun.blend),
             ("gbuffers_textured", Some(CELESTIAL_BLEND))
+        );
+        // Vanilla's `BlendFunction.OVERLAY`: colour added, alpha the sun's own.
+        assert_eq!(
+            sun.blend,
+            Some([Factor::SrcAlpha, Factor::One, Factor::One, Factor::Zero])
         );
         assert_eq!(
             (water.group, water.blend),
