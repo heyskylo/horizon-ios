@@ -6655,6 +6655,34 @@ impl Game<'_> {
             cancel,
         );
     }
+    /// A thrown projectile is about to cross the world border this tick (26.3's
+    /// `Projectile` border collision, MC-310476: a pearl, snowball, egg or potion that would
+    /// leave it stops on the border and hits it like a wall). `entity` is its network id and
+    /// `kind` its type (`minecraft:ender_pearl`...); `pos` and `velocity` are where it is and how
+    /// fast it goes before its move. A mod may change them (a value that is not finite is
+    /// ignored), and set `collide` false to let it fly through the border this tick as before
+    /// 26.3. Heard once a tick for each projectile inside the border whose next step would
+    /// end outside it (a step that drag then keeps inside is heard too); arrows and tridents,
+    /// which Horizon does not stop at the border, are not. No `self`: the projectiles are being
+    /// ticked. Server-side. @API:projectile_world_border@.
+    pub(super) fn native_projectile_world_border(
+        dimension: &str,
+        entity: u32,
+        kind: &str,
+        pos: &mut [f64; 3],
+        velocity: &mut [f64; 3],
+        collide: &mut bool,
+    ) {
+        mod_api::dispatch_projectile_world_border(
+            mod_api::mods(),
+            dimension,
+            entity,
+            kind,
+            pos,
+            velocity,
+            collide,
+        );
+    }
     /// A click in a menu a mod opened (`native_open_menu`), which moved
     /// nothing: the menu's `slot` (its own first, then the player's
     /// inventory, `native_menu_inventory_slot`; -999 outside), the `button`

@@ -2515,6 +2515,12 @@ tick later with a command.
   chance and checks (NeoForge's `FarmlandTrampleEvent`, Bukkit's `PlayerInteractEvent` `PHYSICAL` and
   `EntityInteractEvent`). Set `cancel` and the farmland and its crop stay; the fall damage is taken either way. Pressure
   plates, tripwires and other blocks a player sets off by touching them are not heard yet. No `self`. Server-side.
+- **`native_projectile_world_border(dimension, entity, kind, pos, velocity, collide)`**: a thrown projectile (pearl,
+  snowball, egg, potion...) inside the world border whose next step would end outside it, before 26.3 stops it on the
+  border like a wall (MC-310476). A mod may change `pos` and `velocity`, or set `collide` false and it flies through
+  this tick as before 26.3. Arrows and tridents, which Horizon does not stop at the border, are not heard. No `self`.
+  Server-side.
+
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a
