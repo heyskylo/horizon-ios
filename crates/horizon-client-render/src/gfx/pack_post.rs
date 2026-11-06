@@ -41,6 +41,9 @@ mod higher_shadowcolor_tests;
 mod single_side_tests;
 
 #[cfg(test)]
+mod mixed_size_tests;
+
+#[cfg(test)]
 mod shadow_faces_tests;
 
 #[cfg(test)]
@@ -2222,7 +2225,16 @@ impl PackPost {
             } else {
                 written.next()
             };
-            if !in_shadow && group != Group::Final && written.any(|s| Some(s) != first) {
+            // Sizes of one kind that differ never meet. A size relative to the render size and
+            // one in pixels can: the pass then draws while they resolve to one size
+            // (`PackPost::sizes_differ`). Iris 1.11.7 drew a composite program writing
+            // colortex2 at `0.25 0.25` and colortex3 at `320 180` at 1280×720 (#10454).
+            let apart = |s: horizon_shaders::BufferSize| {
+                first.is_some_and(|f| {
+                    f != s && (depth || std::mem::discriminant(&f) == std::mem::discriminant(&s))
+                })
+            };
+            if !in_shadow && group != Group::Final && written.any(apart) {
                 notes.push(format!(
                     "{}: writes buffers of different sizes (size.buffer); skipped",
                     pass.name
@@ -4040,6 +4052,18 @@ impl PackPost {
         })
     }
 
+    /// Whether the buffers `pass` writes have different sizes at the current render size: then
+    /// it is skipped, as one whose `size.buffer` sizes never meet is when the pack loads. Only
+    /// a pass writing buffers sized relative to the render size and in pixels can.
+    fn sizes_differ(&self, pass: &Pass) -> bool {
+        let Some(targets) = &self.targets else {
+            return false;
+        };
+        let mut sizes = pass.writes.iter().map(|&(_, b)| targets.sizes[b]);
+        let first = sizes.next();
+        !pass.group.shadow() && pass.group != Group::Final && sizes.any(|s| Some(s) != first)
+    }
+
     /// Whether the pack draws terrain itself.
     pub fn has_terrain(&self) -> bool {
         self.terrain.is_some() || self.terrain_cutout.is_some()
@@ -4272,6 +4296,14 @@ impl PackPost {
             mips,
         });
         self.forget_groups();
+        for pass in self.passes.iter().filter(|p| self.sizes_differ(p)) {
+            log::info!(
+                "shader pack: {}: writes buffers of different sizes at {}x{} (size.buffer); skipped",
+                pass.name,
+                size[0],
+                size[1]
+            );
+        }
     }
 
     /// The shadow pass (2.1, passes 2 and 3): the shadow buffers cleared, then the `shadowcomp`
@@ -4819,6 +4851,10 @@ impl PackPost {
             if !terrain_drawn && !early && pass.group != Group::Prepare {
                 terrain_drawn = true;
                 self.draw_opaque(device, queue, encoder, size, frame, terrain);
+            }
+            // As if the pack didn't have it: no compute stages, flips or stage changes.
+            if self.sizes_differ(pass) {
+                continue;
             }
             if !water_drawn && matches!(pass.group, Group::Composite | Group::Final) {
                 water_drawn = true;
