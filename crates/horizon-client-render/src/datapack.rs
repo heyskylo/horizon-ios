@@ -896,6 +896,13 @@ pub fn worldgen_overrides(
     let mut warnings = Vec::new();
     for pack in packs {
         for file in pack.list_kinds(&overrides::PACK_KINDS) {
+            if let Some(id) = overrides::template_id(&file) {
+                match pack.read(&file) {
+                    Some(nbt) => out.set_template(&id, nbt),
+                    None => warnings.push(format!("{}: {file}: unreadable", pack.id)),
+                }
+                continue;
+            }
             let read = || String::from_utf8(pack.read(&file)?).ok();
             match out.add_file(&pack.id, &file, read) {
                 PackFile::Read | PackFile::Other => {}
@@ -956,6 +963,7 @@ mod tests {
         for pack in ["a", "b", "off"] {
             write(pack, "pack.mcmeta", "{}");
             write(pack, "data/minecraft/worldgen/noise/cave.json", pack);
+            write(pack, "data/p/structure/room/a.nbt", pack);
             write(
                 pack,
                 "data/minecraft/tags/worldgen/biome/is_hill.json",
@@ -992,6 +1000,8 @@ mod tests {
             o.entries("noises").collect::<Vec<_>>(),
             [("minecraft:cave", "a")]
         );
+        assert_eq!(o.templates().len(), 1);
+        assert_eq!(&*o.templates()["p:room/a"], b"a");
         assert_eq!(
             o.entries("biomes").collect::<Vec<_>>(),
             [("minecraft:plains", "{}")]

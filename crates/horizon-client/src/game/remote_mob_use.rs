@@ -4,6 +4,7 @@
 //! (`Minecraft.startUseItem` then sends UseItem). The server does the real
 //! interaction; this is what the client's copy of the mob answers.
 use super::Game;
+use horizon_client::actions::Action;
 use horizon_client::{
     first_person::Hand,
     mobs::{Mob, Species, armadillo, equine, llama, nautilus},
@@ -50,7 +51,7 @@ impl Game<'_> {
         {
             return true;
         }
-        let sneaking = self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft);
+        let sneaking = self.keys.held(Action::Sneak);
         match m.species() {
             // Villager / WanderingTrader.mobInteract: trading, or a baby's head shake.
             Species::Villager | Species::WanderingTrader => item != "minecraft:villager_spawn_egg",

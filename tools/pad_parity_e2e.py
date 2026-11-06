@@ -13,6 +13,7 @@ Cases:
 - drop_stack: Ctrl+Q over an inventory slot throws the whole stack; the pad's left stick click
   (its "throw stack" button in menus) must too.
 - quick_move: Shift-click on an inventory slot moves the stack; so must the pad's Y.
+- gameplay_drop: Q in play throws one and Ctrl+Q the rest; the pad's drop button tapped and held must too.
 - screenshot: key.screenshot bound to the pad takes a screenshot as F2 does.
 
 Needs built fast binaries (`cargo build --profile fast -p horizon-client -p horizon-client-lib --bins`)
@@ -127,6 +128,35 @@ def quick_move(args, device):
         game.quit()
 
 
+def gameplay_drop(args, device):
+    """In play: one tap of drop, then the stack form. Returns the counts after each."""
+    game = Game(args, f'throw-{device}')
+    try:
+        game.ctl('command', 'gamemode survival')
+        game.ctl('command', 'item replace entity @s hotbar.0 with minecraft:oak_planks 16')
+        game.ctl('select', 1)
+        game.ctl('wait', 5)
+        if device == 'keyboard':
+            game.ctl('key', 'q', 'tap')
+        else:
+            game.ctl('pad', 'down', 'tap')
+        game.ctl('wait', 5)
+        one = hotbar_count(game, 0)
+        if device == 'keyboard':
+            game.ctl('key', 'ctrl', 'down')
+            game.ctl('key', 'q', 'tap')
+            game.ctl('key', 'ctrl', 'up')
+        else:
+            # Held past the stack threshold: Ctrl+Q has no button of its own.
+            game.ctl('pad', 'down', 'down')
+            time.sleep(1.5)
+            game.ctl('pad', 'down', 'up')
+        game.ctl('wait', 5)
+        return one, hotbar_count(game, 0)
+    finally:
+        game.quit()
+
+
 def screenshot(args, device):
     """Press the screenshot binding in game. Returns how many screenshots were written."""
     controller = 'bind_key.screenshot:select\nbind_key.playerlist:none\n' if device == 'pad' else ''
@@ -146,6 +176,7 @@ def screenshot(args, device):
 CASES = {
     'drop_stack': (drop_stack, 0),
     'quick_move': (quick_move, 0),
+    'gameplay_drop': (gameplay_drop, (15, 0)),
     'screenshot': (screenshot, 1),
 }
 
