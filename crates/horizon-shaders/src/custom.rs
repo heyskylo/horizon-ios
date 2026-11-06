@@ -197,6 +197,8 @@ pub struct Custom {
     /// Expressions that did not parse, and unknown names, as `key: message`.
     pub notes: Vec<String>,
     calls: usize,
+    /// Whether `smooth` has started on a frame of the world (see [`Custom::world_frame`]).
+    world_seen: bool,
 }
 
 impl Custom {
@@ -242,6 +244,20 @@ impl Custom {
     /// camera's biome is known).
     pub fn restart_smoothing(&mut self) {
         self.smooth.clear();
+    }
+
+    /// Called before each frame's [`Custom::eval`], with whether the camera's biome is known (its
+    /// chunk loaded). Until the first frame that knows it, `smooth` restarts every frame, so it
+    /// starts from that frame's values rather than from the frames before it (the biome reads
+    /// -1 there). From then on it keeps going for as long as the pack runs, through teleports
+    /// and the frames whose chunk isn't loaded yet: in Iris 1.11.7, our probe pack's
+    /// `smooth(cameraPosition.y + 200.0, 1000, 1000)` kept smoothing across teleports within a
+    /// dimension, and started again when the player entered the Nether.
+    pub fn world_frame(&mut self, biome_known: bool) {
+        if !self.world_seen {
+            self.restart_smoothing();
+            self.world_seen = biome_known;
+        }
     }
 
     /// Restarts `smooth` and `random` for a frame of the world's tick `tick`, so a frame drawn
@@ -1249,6 +1265,40 @@ mod tests {
         assert!(eval(&mut c, 0.6) < 0.01, "the fade holds the old value");
         c.restart_smoothing();
         assert_eq!(eval(&mut c, 0.6), 0.6);
+    }
+
+    /// Iris 1.11.7, with a probe pack of our own (`scenes.json`'s caves after loading at the
+    /// spawn): `smooth(cameraPosition.y + 200.0, 1000, 1000)` read 294.1, 291.1 and 288.1 in three
+    /// scenes after teleports to y -5.4, -5.4 and 23.6, still fading from the spawn's 300, and
+    /// `smooth(biome_category + 0.0, 1000, 1000)` read the biome's 10.0 in every scene. Horizon
+    /// started both again after each teleport, from the frames before the chunk was loaded:
+    /// 194.6 and 0.4 (the biome reads 0 there).
+    #[test]
+    fn smooth_starts_once_the_biome_is_known_and_keeps_going_through_teleports() {
+        let mut c = custom(
+            "uniform.float.cat = smooth(biome_category + 0.0, 1000, 1000)\n\
+             uniform.float.y = smooth(cameraPosition.y + 200.0, 1000, 1000)\n",
+        );
+        let frame = |c: &mut Custom, known: bool, cat: f64, y: f64| {
+            c.world_frame(known);
+            let out = c.eval(0.05, &|n: &str| match n {
+                "biome_category" => Some(Val::scalar(cat)),
+                "cameraPosition" => Some(Val::vector(&[0.5, y, 0.5])),
+                _ => None,
+            });
+            (out[0].v[0], out[1].v[0])
+        };
+        // Loading: the camera's chunk isn't there yet, so its biome reads 0.
+        frame(&mut c, false, 0.0, 100.0);
+        frame(&mut c, false, 0.0, 100.0);
+        assert_eq!(frame(&mut c, true, 10.0, 100.0), (10.0, 300.0));
+        // A teleport: a few frames before the chunk is there, then the scene.
+        for _ in 0..3 {
+            frame(&mut c, false, 0.0, -5.38);
+        }
+        let (cat, y) = (0..60).fold((0.0, 0.0), |_, _| frame(&mut c, true, 10.0, -5.38));
+        assert!(cat > 9.9, "the biome's category from the start: {cat}");
+        assert!(y > 290.0, "still fading from the spawn's 300: {y}");
     }
 
     #[test]

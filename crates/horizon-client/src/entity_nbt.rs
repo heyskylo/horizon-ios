@@ -22,6 +22,16 @@ use horizon_world::{
 };
 use std::{collections::HashMap, sync::Arc};
 
+/// Saved data carried by `ConversionType.convertCommon` outside the modelled
+/// mob fields. The converted entity has its own identity and type-specific data;
+/// only its command tags are inherited from the old entity's raw compound.
+pub fn conversion_tags(raw: Option<&Tag>) -> Option<Tag> {
+    let Tag::List(tags) = raw?.get("Tags")? else {
+        return None;
+    };
+    (!tags.is_empty()).then(|| Tag::compound([("Tags", Tag::List(tags.clone()))]))
+}
+
 fn string(s: &str) -> Tag {
     Tag::String(s.into())
 }
@@ -3671,6 +3681,35 @@ mod tnt_power_tests {
 mod tests {
     use super::*;
     use crate::items::ItemStack;
+
+    #[test]
+    fn conversion_keeps_only_the_old_mobs_command_tags() {
+        let tags = Tag::List(vec![
+            Tag::String("subject".into()),
+            Tag::String("quest".into()),
+        ]);
+        let raw = Tag::compound([
+            ("id", Tag::String("minecraft:husk".into())),
+            ("UUID", Tag::IntArray(vec![1, 2, 3, 4])),
+            ("HuskConversionTime", Tag::Int(1)),
+            ("Tags", tags.clone()),
+        ]);
+        let original = raw.clone();
+        assert_eq!(
+            conversion_tags(Some(&raw)),
+            Some(Tag::compound([("Tags", tags)]))
+        );
+        assert_eq!(raw, original);
+        assert_eq!(conversion_tags(None), None);
+        assert_eq!(
+            conversion_tags(Some(&Tag::compound([("Tags", Tag::List(Vec::new()))]))),
+            None
+        );
+        assert_eq!(
+            conversion_tags(Some(&Tag::Compound(Default::default()))),
+            None
+        );
+    }
 
     #[test]
     fn cubes_omit_supplied_age_and_pigs_keep_modeled_age() {

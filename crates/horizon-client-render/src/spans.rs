@@ -111,6 +111,22 @@ impl Drop for Guard {
         });
     }
 }
+/// Attach per-tick counts without interpreting them as durations.
+pub fn counters(counts: &[(&str, u64)]) {
+    if !enabled() {
+        return;
+    }
+    NOTES.with(|n| {
+        n.borrow_mut().push((
+            0.0,
+            counts
+                .iter()
+                .map(|(name, count)| format!("{name}={count}"))
+                .collect::<Vec<_>>()
+                .join(", "),
+        ))
+    });
+}
 /// Notes that one step inside a span took `ms` milliseconds doing `what` (one player's
 /// packets, say), when this thread records spans and the step took at least [`NOTE_MS`]: a
 /// span says where a slow tick went, its notes whose doing it was. Only the slowest few are

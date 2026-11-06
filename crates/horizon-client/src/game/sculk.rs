@@ -1745,11 +1745,15 @@ impl Game<'_> {
             let present: HashSet<u32> = self.dropped.iter().map(|item| item.id).collect();
             self.sculk.falling_items.retain(|id| present.contains(id));
         }
-        // Dropped items are entities too: Entity.applyEffectsFromBlocks.
+        // Dropped items are entities too: Entity.applyEffectsFromBlocks, from
+        // ItemEntity.tick, so only for the items in entity-ticking chunks.
+        let ticking = self.entity_ticking_area();
         let items: Vec<[f64; 3]> = self
             .dropped
             .iter()
-            .filter(|i| i.on_ground)
+            .filter(|i| {
+                i.on_ground && ticking(i.position.x.floor() as i32, i.position.z.floor() as i32)
+            })
             .map(|i| [i.position.x, i.position.y, i.position.z])
             .collect();
         for at in items {
@@ -1985,15 +1989,38 @@ impl Game<'_> {
             listeners,
             next_entity: self.next_entity,
         });
+        // Steps, landings, splashes, flaps and stepping on redstone ore come
+        // from the mob's own tick (Entity.move, LivingEntity.aiStep's
+        // applyEffectsFromBlocks), which ServerLevel.tick runs only in
+        // entity-ticking chunks: for the mobs `tick_creature_entities` ticked,
+        // and those standing in that area (the sculk fixture posts before the
+        // mobs tick). Damage and mounting are raised by `hurt` and
+        // `startRiding`, ticking or not.
+        let ticking = self.entity_ticking_area();
         for (id, at, on_ground, in_water, species, damaged, vehicle, age, resting) in snapshot {
-            if on_ground {
+            let ticked = self.creatures.ticked.contains(&id)
+                || ticking(at[0].floor() as i32, at[2].floor() as i32);
+            if on_ground && ticked {
                 self.step_on_redstone_ore(at, false, false);
             }
             // A mob first seen already riding raised its event when it spawned.
             let seen = self.sculk.steps.contains_key(&Who::Mob(id));
             self.mount_events(Who::Mob(id), vehicle, seen);
             let emits = !matches!(species, Species::Shulker);
-            if emits {
+            if emits && !ticked {
+                // Where it is now, without a move: a mob put elsewhere while
+                // it did not tick (a command) walked nowhere.
+                let entry = self.sculk.steps.entry(Who::Mob(id)).or_insert(Steps {
+                    move_dist: 0.0,
+                    next_step: 1.0,
+                    last: at,
+                    on_ground,
+                    in_water,
+                });
+                entry.last = at;
+                entry.on_ground = on_ground;
+                entry.in_water = in_water;
+            } else if emits {
                 let warden = species == Species::Warden;
                 self.entity_motion_events(
                     Who::Mob(id),

@@ -869,6 +869,8 @@ impl Game<'_> {
             let a = &mut self.armor_stands[i];
             a.previous = a.position;
             a.previous_yaw = a.yaw;
+            // Entity.baseTick clears firstTick only when the entity actually ticks.
+            a.first_tick = false;
             // aiStep's freezing step (removeFrost) makes the speed instance.
             a.speed_instance = true;
             let (water_height, lava_height) =
