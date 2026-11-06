@@ -2510,6 +2510,11 @@ tick later with a command.
   Left alone, the point is resolved as vanilla's is (the spot beside the bed, the world spawn's free column). Change the
   dimension or position and they are placed exactly there, no bed or anchor used; an unknown dimension or a non-finite
   value leaves that part as it was. On a LAN host's world the level stays the Overworld. No state swapped in.
+- **`native_trample(dimension, entity, kind, pos, fall_distance, cancel)`**: a player or mob (`entity` its network id,
+  `kind` its type) that fell `fall_distance` onto the farmland at `pos` is about to turn it to dirt, past vanilla's
+  chance and checks (NeoForge's `FarmlandTrampleEvent`, Bukkit's `PlayerInteractEvent` `PHYSICAL` and
+  `EntityInteractEvent`). Set `cancel` and the farmland and its crop stay; the fall damage is taken either way. Pressure
+  plates, tripwires and other blocks a player sets off by touching them are not heard yet. No `self`. Server-side.
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a

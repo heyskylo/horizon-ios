@@ -6628,6 +6628,33 @@ impl Game<'_> {
             pitch,
         );
     }
+    /// An entity is about to trample farmland (NeoForge's `FarmlandTrampleEvent`, Bukkit's
+    /// `PlayerInteractEvent` with `Action.PHYSICAL` for a player and `EntityInteractEvent` for
+    /// a mob): `entity` (its network id; a player's is the one their client knows) of type
+    /// `kind` (`minecraft:player`, `minecraft:zombie`...) fell `fall_distance` blocks onto the
+    /// farmland at `pos` in `dimension`, and vanilla's checks have let it (`FarmlandBlock.fallOn`:
+    /// the chance from the fall, a living entity big enough, `mob_griefing` for a mob). Set
+    /// `cancel` and the farmland stays, the crop on it too; the fall damage is taken either
+    /// way. There is no `self`: the game is in the middle of the entity's move. Server-side.
+    /// @API:trample@.
+    pub(super) fn native_trample(
+        dimension: &str,
+        entity: i32,
+        kind: &str,
+        pos: [i32; 3],
+        fall_distance: f64,
+        cancel: &mut bool,
+    ) {
+        mod_api::dispatch_trample(
+            mod_api::mods(),
+            dimension,
+            entity,
+            kind,
+            pos,
+            fall_distance,
+            cancel,
+        );
+    }
     /// A click in a menu a mod opened (`native_open_menu`), which moved
     /// nothing: the menu's `slot` (its own first, then the player's
     /// inventory, `native_menu_inventory_slot`; -999 outside), the `button`
