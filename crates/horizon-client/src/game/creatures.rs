@@ -4498,10 +4498,11 @@ impl Game<'_> {
                 | ProjectileKind::WindCharge
                 | ProjectileKind::BreezeWindCharge
         );
+        use horizon_client::arrows::OwnerLookup;
         let shooter_may_break = match p.owner {
             Some(Who::Player) => self.mode != GameMode::Adventure,
             Some(Who::Mob(_)) => false,
-            None => true,
+            None => !p.owner_uuid.is_some_and(|u| self.non_player_entity(u)),
         };
         if !impact || !shooter_may_break || !self.ui.rules.bool("projectiles_can_break_blocks") {
             return;
@@ -4650,6 +4651,7 @@ impl Game<'_> {
             raining: rain,
             mob_griefing: self.ui.rules.bool("mob_griefing"),
             tnt_explodes: self.ui.rules.bool("tnt_explodes"),
+            owners: self,
         }
     }
     /// The rest of the tick of an arrow that hit an entity
@@ -8604,6 +8606,16 @@ mod dye_mix_tests {
         assert_eq!(dye_color_mix_in_recipes(&recipes, orange, cyan), None);
         let kept = dye_mix(&recipes, &mut random, orange, cyan);
         assert!(kept == orange || kept == cyan, "kept {kept}");
+    }
+}
+
+impl horizon_client::arrows::OwnerLookup for Game<'_> {
+    fn non_player_entity(&self, uuid: [i32; 4]) -> bool {
+        let found = self.target_by_uuid(horizon_client::lan::playerdata::ints_uuid(uuid));
+        !matches!(
+            found,
+            None | Some(super::commands::Target::Player | super::commands::Target::Guest(_))
+        )
     }
 }
 
