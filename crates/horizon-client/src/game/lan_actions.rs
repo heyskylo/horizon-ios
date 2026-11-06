@@ -4588,10 +4588,43 @@ impl Game<'_> {
         }
     }
 
+    /// `handlePlayerPositionChange` jumps from the pre-move position and yaw.
+    /// A later attack packet reads the resulting velocity even before travel.
+    pub(super) fn guest_jump(&mut self, host: &mut LanHost, conn: u32, from: [f64; 3], yaw: f32) {
+        let identity = if horizon_client::mod_api::mods().is_empty() {
+            None
+        } else {
+            host.hub.guest(conn).map(|g| (g.uuid, g.name.clone()))
+        };
+        self.as_guest(host, conn, |game| {
+            let Some(player) = game.player.as_mut() else {
+                return;
+            };
+            let (position, yaw_after, ground) =
+                (player.position, player.yaw, player.ground.on_ground);
+            player.position = Vec3::new(from[0], from[1], from[2]);
+            player.yaw = yaw;
+            player.ground.on_ground = true;
+            let mut w = MotionWorld {
+                entities: &[],
+                player,
+                scene: &mut game.world,
+                assets: &game.pack.assets,
+                collision_binding: game.collision,
+                resources: game.motion,
+                health: &game.health_resources,
+            };
+            let _ = w.jump_from_ground();
+            (w.player.position, w.player.yaw, w.player.ground.on_ground) =
+                (position, yaw_after, ground);
+            if let Some((uuid, name)) = identity {
+                game.native_player_jump(uuid, &name);
+            }
+        });
+    }
+
     /// The guest's body on the server each tick: ServerPlayer.tick's damage
     /// clock and Entity.baseTick's fluid phase (burning), then for each move
-    /// the guest made ServerGamePacketListenerImpl.handleMovePlayer's jump
-    /// (`ServerPlayer.jumpFromGround`'s exhaustion),
     /// ServerPlayer.doCheckFallDamage (the fall distance grows while they go
     /// down and hurts them where they land, as the host's own landing does;
     /// water resets it, lava halves it) and checkMovementStatistics (the
@@ -4641,7 +4674,6 @@ impl Game<'_> {
             self.as_guest(host, conn, |game| game.server_spin_attack());
         }
         let mut soul = None;
-        let mut jumps = 0;
         let events = self.as_guest(host, conn, |game| {
             let rules = game.world.health_rules;
             let freeze_immune = game.wears_freeze_immune();
@@ -4698,13 +4730,6 @@ impl Game<'_> {
             }
             for (moved, on_ground) in moves {
                 let movement = Vec3::new(moved[0], moved[1], moved[2]);
-                if w.player.ground.on_ground && !on_ground && moved[1] > 0.0 {
-                    // ServerGamePacketListenerImpl.handlePlayerPositionChange:
-                    // the server's copy jumps with the player, so the velocity
-                    // it sends them keeps the jump.
-                    jumps += 1;
-                    let _ = w.jump_from_ground();
-                }
                 let landed = (|| -> horizon_client::Result<()> {
                     w.set_on_ground_with_movement(on_ground, false, movement)?;
                     let pos = w.legacy_on_position()?;
@@ -4827,16 +4852,6 @@ impl Game<'_> {
         let Some((events, marked)) = events else {
             return;
         };
-        if jumps > 0
-            && !horizon_client::mod_api::mods().is_empty()
-            && let Some((uuid, name)) = host.hub.guest(conn).map(|g| (g.uuid, g.name.clone()))
-        {
-            self.as_guest(host, conn, |game| {
-                for _ in 0..jumps {
-                    game.native_player_jump(uuid, &name);
-                }
-            });
-        }
         if let Some((at, velocity)) = soul {
             super::lan_particles::send_soul_particle(host, at, velocity);
         }

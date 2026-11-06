@@ -133,6 +133,12 @@ pub enum HostEvent {
     /// A guest left (state to save, entities to drop).
     Left(Box<Guest>),
     Packet(u32, Box<S>),
+    /// An accepted position started a jump, before later gameplay packets.
+    Jump {
+        conn: u32,
+        from: [f64; 3],
+        yaw: f32,
+    },
     /// A guest changed the dominant hand in their client options.
     MainHandChanged(u32, bool),
     /// A guest changed their client language option.
@@ -4180,15 +4186,23 @@ impl Hub {
         // ServerChunkCache.move: its pairs are checked again.
         g.moved = true;
         let moved = [0, 1, 2].map(|k| g.position[k] - g.previous_position[k]);
+        let on_ground = flags & 1 != 0;
+        if g.on_ground && !on_ground && moved[1] > 0.0 && !g.spectator() {
+            events.push(HostEvent::Jump {
+                conn: g.conn,
+                from: g.previous_position,
+                yaw: g.yaw,
+            });
+        }
         if g.moves.is_empty() {
             g.moves_from_ground = g.on_ground;
         }
-        g.moves.push((moved, flags & 1 != 0));
+        g.moves.push((moved, on_ground));
         g.known_movement = moved;
         g.yaw = yaw;
         g.pitch = pitch.clamp(-90.0, 90.0);
         g.head_yaw = g.yaw;
-        g.on_ground = flags & 1 != 0;
+        g.on_ground = on_ground;
         g.ticks = g.ticks.max(1);
     }
 
