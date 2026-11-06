@@ -1425,17 +1425,9 @@ fn play_ambient(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         Species::Allay if m.extra.main_hand.is_some() => "entity.allay.ambient_with_item",
         // Strider.getAmbientSound: quiet while panicking or tempted.
         Species::Strider if m.ai.panicking || m.ai.goals.is_running("Tempt") => return,
-        // HappyGhast: its own voice, never pitched up.
-        Species::HappyGhast => {
-            let sound = super::happy_ghast::sounds(m)[0];
-            events.push(MobEvent::Sound(
-                sound,
-                [m.position.x, m.position.y, m.position.z],
-                super::happy_ghast::volume(m),
-                1.0,
-            ));
-            return;
-        }
+        // HappyGhast: its own voice; `Mob::voice` plays it at the feet
+        // (`Entity.playSound`), never for a Silent ghast, at pitch 1.0.
+        Species::HappyGhast => super::happy_ghast::sounds(m)[0],
         // Sniffer.getAmbientSound.
         Species::Sniffer => match super::sniffer::ambient(m) {
             Some(s) => s,
@@ -5216,6 +5208,25 @@ mod happy_ghast_ambient_tests {
                         }
                     }
                     assert!(heard, "no natural ambient event, baby={baby}");
+                }
+                // Entity.playSound plays nothing for a Silent entity.
+                let kind = Arc::new(types.types["minecraft:happy_ghast"].clone());
+                let mut mob = Mob::new(1, kind, Vec3::new(10.5, 208.0, 10.5), 0.0);
+                mob.no_ai = true;
+                mob.no_gravity = true;
+                mob.persistent = true;
+                mob.silent = true;
+                let sound = super::super::happy_ghast::sounds(&mob)[0];
+                let mut random = LegacyRandom::new(0);
+                for _ in 0..1200 {
+                    let mut events = Vec::new();
+                    assert!(tick(&mut mob, w, &mut random, &mut events));
+                    assert!(
+                        !events
+                            .iter()
+                            .any(|e| matches!(e, MobEvent::Sound(name, ..) if *name == sound)),
+                        "a Silent happy ghast is heard"
+                    );
                 }
             },
         );
