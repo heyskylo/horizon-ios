@@ -365,6 +365,10 @@ hold no names, UUIDs or addresses, so you can attach them to an issue as they ar
 `horizon-report [SECONDS]`; `horizon-report stop` writes the report now and `horizon-report status` says how far
 it is. Nothing restarts: the report runs beside the game.
 
+To see a slow stretch tick by tick, `horizon-trace [SECONDS]` (30 by default, up to 300) writes every thread's timed
+steps to `reports/trace-<time>.json`; [ui.perfetto.dev](https://ui.perfetto.dev) opens it as a timeline, one row per
+thread. `horizon-trace stop` ends it early. It holds step names and times only.
+
 Between reports, the log keeps the spikes: a tick slower than 250 ms writes a `Horizon: slow tick` line with
 its phases (`HORIZON_SPIKES=MS` in the engine's environment sets another threshold), and a server more than
 two seconds behind says `Can't keep up!` as vanilla's does, at most every 15 seconds.
