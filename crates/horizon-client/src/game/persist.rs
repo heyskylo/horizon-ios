@@ -1138,6 +1138,28 @@ impl Game<'_> {
     pub(super) fn mob_tree_nbt(&mut self, i: usize) -> Tag {
         let id = self.mobs[i].id;
         let uuid = self.uuid_for(id);
+        // A warden's anger names each suspect by UUID. A mob that has never been
+        // loaded or saved has no UUID yet, so give it one, or the save would
+        // drop the anger at it (`who_uuid` writes nothing for a mob the map does
+        // not know).
+        let suspects: Vec<u32> = self.mobs[i]
+            .extra
+            .warden
+            .as_ref()
+            .map(|st| {
+                st.anger
+                    .suspects()
+                    .iter()
+                    .filter_map(|who| match who {
+                        Who::Mob(id) => Some(*id),
+                        Who::Player => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        for suspect in suspects {
+            self.uuid_for(suspect);
+        }
         // `NeutralMob.addPersistentAngerSaveData`: the anger ends at an
         // absolute game time, so it goes on while the chunk is unloaded, and
         // the target is the entity the mob is angry at.
@@ -1897,6 +1919,15 @@ impl Game<'_> {
             .get(&id)
             .copied()
             .unwrap_or_else(random_uuid)
+    }
+}
+
+/// The mob layer's [`horizon_client::mobs::WhoLookup`]: a warden's anger keeps
+/// the suspects that left by UUID, and resolves the ones that are back through
+/// the same map a save writes them from (`mob_to_nbt`'s `uuid_of`).
+impl horizon_client::mobs::WhoLookup for Game<'_> {
+    fn who_by_uuid(&self, uuid: [i32; 4]) -> Option<Who> {
+        Game::who_by_uuid(self, uuid)
     }
 }
 
