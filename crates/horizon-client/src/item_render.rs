@@ -1036,6 +1036,34 @@ pub fn tag_json(tag: &Tag) -> Value {
         Tag::LongArray(a) => Value::Array(a.iter().map(|v| Value::from(*v)).collect()),
     }
 }
+/// Custom model flags use Codec.BOOL even though NBT stores them as numbers.
+/// Keep the other custom-model fields, and generic NBT JSON, numeric.
+fn custom_model_data_json(tag: &Tag) -> Value {
+    let mut value = tag_json(tag);
+    let flags: Option<Vec<Value>> = match tag.get("flags") {
+        Some(Tag::List(flags)) => flags
+            .iter()
+            .map(|flag| crate::item_data::component_bool(flag).map(Value::Bool))
+            .collect(),
+        Some(Tag::ByteArray(flags)) => flags
+            .iter()
+            .map(|flag| crate::item_data::component_bool(&Tag::Byte(*flag as i8)).map(Value::Bool))
+            .collect(),
+        Some(Tag::IntArray(flags)) => flags
+            .iter()
+            .map(|flag| crate::item_data::component_bool(&Tag::Int(*flag)).map(Value::Bool))
+            .collect(),
+        Some(Tag::LongArray(flags)) => flags
+            .iter()
+            .map(|flag| crate::item_data::component_bool(&Tag::Long(*flag)).map(Value::Bool))
+            .collect(),
+        _ => None,
+    };
+    if let (Some(flags), Some(object)) = (flags, value.as_object_mut()) {
+        object.insert("flags".into(), Value::Array(flags));
+    }
+    value
+}
 /// The resolver's view of a client stack: its item, count and component patch.
 pub fn stack_view(stack: &crate::items::ItemStack) -> StackView {
     let mut view = StackView::new(&stack.item, stack.count as i32);
@@ -1052,6 +1080,8 @@ pub fn stack_view(stack: &crate::items::ItemStack) -> StackView {
                         crate::item_data::component_bool(v)
                             .map(Value::Bool)
                             .unwrap_or_else(|| tag_json(v))
+                    } else if key == "minecraft:custom_model_data" {
+                        custom_model_data_json(v)
                     } else {
                         tag_json(v)
                     };
@@ -1182,6 +1212,65 @@ pub fn cluster_poses(state: &ItemRenderState, pose: Mat4, amount: u32, seed: i64
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn custom_model_flags_select_their_model_after_stack_nbt_decoding() {
+        let mut actual = Vec::new();
+        for flags in [
+            Tag::List(vec![Tag::Byte(1), Tag::Byte(0)]),
+            Tag::ByteArray(vec![1, 0]),
+        ] {
+            let mut stack = crate::items::ItemStack::new("minecraft:diamond", 1);
+            let component = Tag::compound([
+                ("flags", flags),
+                ("floats", Tag::List(vec![Tag::Float(1.25f32.to_bits())])),
+                ("colors", Tag::List(vec![Tag::Int(0x12_34_56)])),
+                ("strings", Tag::List(vec![Tag::String("keep".into())])),
+            ]);
+            (stack.damage, stack.extra) = crate::item_data::decode_components(Some(
+                &Tag::compound([("minecraft:custom_model_data", component)]),
+            ));
+            let view = stack_view(&stack);
+            for index in 0..3 {
+                let mut models = ItemModels::default();
+                models.prototypes.insert(
+                    "minecraft:diamond".into(),
+                    BTreeMap::from([(
+                        "minecraft:item_model".into(),
+                        serde_json::json!("minecraft:diamond"),
+                    )]),
+                );
+                models.definitions.insert("minecraft:diamond".into(), ClientItem::decode(&serde_json::json!({
+                    "model": {"type": "minecraft:condition", "property": "minecraft:custom_model_data", "index": index,
+                        "on_true": {"type": "minecraft:model", "model": "horizon:item/yes"},
+                        "on_false": {"type": "minecraft:model", "model": "horizon:item/no"}}
+                })).unwrap());
+                let resolved = models.resolve(
+                    &view,
+                    &Context {
+                        display: DisplayContext::Gui,
+                        owner: None,
+                        level: None,
+                        seed: 0,
+                    },
+                    &horizon_assets::item_model::NoEnv,
+                );
+                assert_eq!(resolved.layers.len(), 1);
+                actual.push(
+                    resolved.layers[0].content
+                        == LayerContent::Model {
+                            model: "horizon:item/yes".into(),
+                        },
+                );
+            }
+            // Non-boolean fields must retain their codec's numeric/string values.
+            let component = view.patch["minecraft:custom_model_data"].as_ref().unwrap();
+            assert_eq!(component["floats"], serde_json::json!([1.25]));
+            assert_eq!(component["colors"], serde_json::json!([0x12_34_56]));
+            assert_eq!(component["strings"], serde_json::json!(["keep"]));
+        }
+        assert_eq!(actual, [true, false, false, true, false, false]);
+    }
 
     #[test]
     fn posed_item_bounds_include_each_cluster_transform() {
