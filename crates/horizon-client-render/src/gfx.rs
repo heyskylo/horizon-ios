@@ -6511,7 +6511,8 @@ impl Renderer {
     }
     /// `screenshot-sequence`: waits (30 seconds at most) for the frame just drawn to finish on
     /// the GPU, and takes the centre depth a `shaders/` pack copied in it, which its next frame
-    /// reads: that frame's, or an error, never an older one.
+    /// reads: that frame's, or an error, never an older one. The last frame's PNG has already
+    /// waited for it, without a limit, as `screenshot` does.
     pub fn finish_sequence_frame(&mut self) -> Result<()> {
         self.device
             .poll(wgpu::PollType::Wait {

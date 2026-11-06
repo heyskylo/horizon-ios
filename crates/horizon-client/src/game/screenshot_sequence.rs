@@ -67,6 +67,10 @@ impl Game<'_> {
             || self.pending_entry.is_some()
             || self.pack_reload.is_some()
             || self.pending_save.is_some()
+            || self
+                .remote
+                .as_ref()
+                .is_some_and(|r| r.level_load.is_active())
             || self.flight.is_some()
             || self.world.chunks.is_empty()
             || self.streaming.pending() != 0
