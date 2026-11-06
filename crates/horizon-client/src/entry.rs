@@ -119,6 +119,15 @@ pub fn main_with(mods: crate::mod_api::Mods) {
                 cancel,
             );
         },
+        sound_play: |sound, volume, pitch, cancel| {
+            crate::mod_api::dispatch_sound_play(
+                crate::mod_api::mods(),
+                sound,
+                volume,
+                pitch,
+                cancel,
+            );
+        },
         living_heal: |entity, amount, cancel| {
             crate::mod_api::dispatch_living_heal(crate::mod_api::mods(), entity, amount, cancel);
         },
@@ -175,6 +184,13 @@ pub fn main_with(mods: crate::mod_api::Mods) {
     .is_err()
     {
         log::warn!("Native client hooks already installed; keeping the first callbacks");
+    }
+    if horizon_client::sound_engine::install_playback_hook(
+        horizon_client::sound_playback::native_sound_play,
+    )
+    .is_err()
+    {
+        log::warn!("Native sound hook already installed; keeping the first callback");
     }
     raise_open_file_limit();
     if let Err(error) = game::run_with() {
