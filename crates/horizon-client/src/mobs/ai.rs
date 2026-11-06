@@ -1763,6 +1763,14 @@ fn push_entities(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         {
             m.ai.target = Some(who);
         }
+        // doPush calls the other living entity's push; sleeping vetoes both impulses.
+        let sleeping = match who {
+            Who::Player => w.player.as_ref().is_some_and(|p| p.sleeping),
+            Who::Mob(id) => w.seen(id).is_some_and(|o| o.sleeping),
+        };
+        if sleeping {
+            continue;
+        }
         // Entity.push: passengers of the same vehicle (a rider and its mount
         // among them) never push each other.
         if same {
@@ -3726,6 +3734,80 @@ mod same_vehicle_push_tests {
         assert_eq!(velocity, Vec3::ZERO, "its rider pushes the camel");
         let (pushed, _) = push(true).unwrap();
         assert_eq!(pushed, vec![3], "the camel pushes the zombie");
+    }
+
+    #[test]
+    fn sleeping_villager_vetoes_only_pushes_received_during_other_mobs_ticks() {
+        let mut pair = None;
+        assert!(with_test_world(&[], |_, types| {
+            let make = |id, name: &str, x| {
+                Mob::new(
+                    id,
+                    std::sync::Arc::new(types.types[name].clone()),
+                    Vec3::new(x, 64.0, 0.5),
+                    0.0,
+                )
+            };
+            let mut villager = make(1, "minecraft:villager", 0.5);
+            villager.extra.ints[1] = 1;
+            pair = Some((villager, make(2, "minecraft:cow", 0.9)));
+        }));
+        let (mut villager, mut cow) = pair.unwrap();
+        let mut events = Vec::new();
+        assert!(with_test_world(&[villager.seen(None)], |w, _| {
+            push_entities(&mut cow, w, &mut events);
+        }));
+        assert!(events.is_empty());
+        assert_eq!(cow.velocity, Vec3::ZERO);
+
+        assert!(with_test_world(&[cow.seen(None)], |w, _| {
+            push_entities(&mut villager, w, &mut events);
+        }));
+        assert!(events.iter().any(|e| matches!(
+            e,
+            MobEvent::Push {
+                target: Who::Mob(2),
+                ..
+            }
+        )));
+        assert!(villager.velocity.x < 0.0);
+    }
+
+    #[test]
+    fn sleeping_fox_vetoes_pushes_received_during_other_mobs_ticks() {
+        let mut pair = None;
+        assert!(with_test_world(&[], |_, types| {
+            let make = |id, name: &str, x| {
+                Mob::new(
+                    id,
+                    std::sync::Arc::new(types.types[name].clone()),
+                    Vec3::new(x, 64.0, 0.5),
+                    0.0,
+                )
+            };
+            let mut fox = make(1, "minecraft:fox", 0.5);
+            fox.extra.ints[0] |= super::super::fox::SLEEPING;
+            pair = Some((fox, make(2, "minecraft:cow", 0.9)));
+        }));
+        let (mut fox, mut cow) = pair.unwrap();
+        let mut events = Vec::new();
+        assert!(with_test_world(&[fox.seen(None)], |w, _| {
+            push_entities(&mut cow, w, &mut events);
+        }));
+        assert!(events.is_empty());
+        assert_eq!(cow.velocity, Vec3::ZERO);
+
+        fox.extra.ints[0] &= !super::super::fox::SLEEPING;
+        assert!(with_test_world(&[fox.seen(None)], |w, _| {
+            push_entities(&mut cow, w, &mut events);
+        }));
+        assert!(events.iter().any(|e| matches!(
+            e,
+            MobEvent::Push {
+                target: Who::Mob(1),
+                ..
+            }
+        )));
     }
 
     #[test]
