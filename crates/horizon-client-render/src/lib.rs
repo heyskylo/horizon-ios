@@ -40,6 +40,7 @@ pub mod effects;
 pub mod environment;
 pub mod extras;
 pub mod fast_hash;
+pub mod fluid_render;
 pub mod fog;
 pub mod font;
 pub mod fusion;

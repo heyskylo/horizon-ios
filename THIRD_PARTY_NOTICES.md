@@ -1,5 +1,15 @@
 # Third-party notices
 
+## Catnip / Ponder
+
+`crates/horizon-client-render/src/fluid_render.rs` translates the still-fluid face tiling and
+UV rules of Catnip's `FluidRenderHelper` from Ponder 1.0.82 for Minecraft 1.21.1
+(`net.createmod.ponder:ponder-neoforge:1.0.82+mc1.21.1`). Copyright (c) 2022 The Create Team,
+licensed under MIT (`LICENSE_Ponder` in that artifact); the full license heads the Rust file.
+The native renderer uses Horizon's own block-sprite arrays, pose and light packing. The
+development-only oracle calls the unchanged helper from the player's local artifact. No
+original classes, game shaders, textures or prepared resources are distributed here.
+
 ## wgpu-hal
 
 `third_party/wgpu-hal` is [wgpu-hal](https://github.com/gfx-rs/wgpu) 30.0.1 by the gfx-rs
