@@ -14,10 +14,47 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 const REPORT: usize = 30;
-/// Passes timed per frame at most (two timestamps each).
-const CAPACITY: u32 = 64;
+/// Timestamp pairs per frame at most: a pass, a part or an encoder span takes one.
+const CAPACITY: u32 = 96;
+const TIMESTAMP_BYTES: u64 = CAPACITY as u64 * 16;
+const _: () = assert!(TIMESTAMP_BYTES.is_multiple_of(wgpu::QUERY_RESOLVE_BUFFER_ALIGNMENT));
 /// Timed frames each pass's median is taken over.
 const WINDOW: usize = 15;
+
+/// How a pass's parts are timed (`compute_parts`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PartsMode {
+    /// One compute pass, a timestamp pair around each part.
+    InsidePasses,
+    /// A compute pass per part with pass-boundary stamps (adds boundaries).
+    SeparatePasses,
+}
+
+/// What detail timing can show on this device.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DetailSupport {
+    pub parts: PartsMode,
+    pub encoder_stamps: bool,
+    pub counters: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FrameKind {
+    Plain,
+    Parts,
+}
+
+/// A timed span: a pass, or a part of one.
+struct Entry {
+    name: String,
+    /// The entry this one is a part of.
+    parent: Option<usize>,
+    /// Timestamp pair (queries `2s` and `2s + 1`); none for a parent made of separate passes.
+    stamp: Option<u32>,
+}
+
+/// A closure that records one part of a compute pass.
+pub type Part<'f> = (&'static str, &'f mut dyn FnMut(&mut wgpu::ComputePass<'_>));
 
 enum Stage {
     /// The next frame is timed.
@@ -36,10 +73,21 @@ pub struct PassTiming {
     read: wgpu::Buffer,
     period_ns: f32,
     stage: Stage,
-    /// The passes of the timed frame, in order.
-    names: Vec<String>,
+    /// The spans of the timed frame, in order.
+    entries: Vec<Entry>,
+    /// Timestamp pairs the timed frame has used.
+    stamps_used: u32,
+    /// The entry the last `writes` or `compute_writes` made.
+    last_pass: Option<usize>,
+    parts_mode: PartsMode,
+    encoder_stamps: bool,
+    counters: bool,
+    want_detail: bool,
+    kind: FrameKind,
     /// Each pass's last `WINDOW` times, in milliseconds.
     samples: Vec<(String, VecDeque<f32>)>,
+    /// Each part's last `WINDOW` times, by (pass, part).
+    part_samples: Vec<(String, String, VecDeque<f32>)>,
     /// Log the medians every `REPORT` timed frames.
     log: bool,
     /// `mark`'s pipeline, for the target format it was made for.
@@ -54,10 +102,11 @@ pub struct PassTiming {
 impl PassTiming {
     /// `None` when the device can't time passes.
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Option<Self> {
-        if !device.features().contains(wgpu::Features::TIMESTAMP_QUERY) {
+        let has = device.features();
+        if !has.contains(wgpu::Features::TIMESTAMP_QUERY) {
             return None;
         }
-        let size = u64::from(CAPACITY) * 2 * 8;
+        let size = TIMESTAMP_BYTES;
         let buffer = |label, usage| {
             device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(label),
@@ -82,14 +131,72 @@ impl PassTiming {
             ),
             period_ns: queue.get_timestamp_period(),
             stage: Stage::Idle,
-            names: Vec::new(),
+            entries: Vec::new(),
+            stamps_used: 0,
+            last_pass: None,
+            parts_mode: if has.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES) {
+                PartsMode::InsidePasses
+            } else {
+                PartsMode::SeparatePasses
+            },
+            encoder_stamps: has.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS),
+            counters: has.contains(wgpu::Features::PIPELINE_STATISTICS_QUERY),
+            want_detail: false,
+            kind: FrameKind::Plain,
             samples: Vec::new(),
+            part_samples: Vec::new(),
             log: Self::logging(),
             marker: None,
             reports: 0,
             gap: Duration::ZERO,
             timed_at: None,
         })
+    }
+
+    /// The features detail timing wants that the adapter has.
+    pub fn features(adapter: &wgpu::Adapter) -> wgpu::Features {
+        adapter.features()
+            & (wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES
+                | wgpu::Features::PIPELINE_STATISTICS_QUERY)
+    }
+
+    /// A timer that records parts the given way.
+    #[cfg(test)]
+    pub fn with_parts_mode(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        mode: PartsMode,
+    ) -> Option<Self> {
+        let mut timing = Self::new(device, queue)?;
+        timing.parts_mode = mode;
+        Some(timing)
+    }
+
+    pub fn detail_support(&self) -> DetailSupport {
+        DetailSupport {
+            parts: self.parts_mode,
+            encoder_stamps: self.encoder_stamps,
+            counters: self.counters,
+        }
+    }
+
+    /// Asks for dispatch parts; a frame already recording keeps its layout.
+    pub fn set_detail(&mut self, on: bool) {
+        if !on {
+            self.part_samples.clear();
+        }
+        self.want_detail = on;
+    }
+
+    /// Whether the frame being recorded records parts.
+    pub fn parts_frame(&self) -> bool {
+        self.recording() && self.kind == FrameKind::Parts
+    }
+
+    /// Whether `HORIZON_GPU_PASS_DETAIL` asks for dispatch parts with pass timing.
+    pub fn detail_logging() -> bool {
+        static DETAIL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *DETAIL.get_or_init(|| std::env::var_os("HORIZON_GPU_PASS_DETAIL").is_some())
     }
 
     /// Whether `HORIZON_SHADER_PACK_TIMING` asks for timing without the F3 overlay.
@@ -105,14 +212,9 @@ impl PassTiming {
             // A timed frame that was never submitted: time this one instead.
             Stage::Recording => self.stage = Stage::Idle,
             Stage::Running(done) if done.load(Ordering::Acquire) => {
-                let bytes = self.names.len() as u64 * 16;
+                let bytes = u64::from(self.stamps_used) * 16;
                 let mut encoder = device.create_command_encoder(&Default::default());
-                encoder.resolve_query_set(
-                    &self.queries,
-                    0..self.names.len() as u32 * 2,
-                    &self.resolve,
-                    0,
-                );
+                encoder.resolve_query_set(&self.queries, 0..self.stamps_used * 2, &self.resolve, 0);
                 encoder.copy_buffer_to_buffer(&self.resolve, 0, &self.read, 0, bytes);
                 queue.submit([encoder.finish()]);
                 let mapped = Arc::new(AtomicBool::new(false));
@@ -134,7 +236,14 @@ impl PassTiming {
         if matches!(self.stage, Stage::Idle)
             && self.timed_at.is_none_or(|at| at.elapsed() >= self.gap)
         {
-            self.names.clear();
+            self.entries.clear();
+            self.stamps_used = 0;
+            self.last_pass = None;
+            self.kind = if self.want_detail {
+                FrameKind::Parts
+            } else {
+                FrameKind::Plain
+            };
             self.stage = Stage::Recording;
             self.timed_at = Some(Instant::now());
         }
@@ -147,24 +256,65 @@ impl PassTiming {
 
     /// Timestamp writes for the pass `name`, in a timed frame.
     pub fn writes(&mut self, name: &str) -> Option<wgpu::RenderPassTimestampWrites<'_>> {
-        let i = self.push(name)?;
+        let i = self.push_pass(name)?;
         Some(stamps(&self.queries, i))
     }
 
     /// Timestamp writes for the compute pass `name`, in a timed frame.
     pub fn compute_writes(&mut self, name: &str) -> Option<wgpu::ComputePassTimestampWrites<'_>> {
-        let i = self.push(name)?;
+        let i = self.push_pass(name)?;
         Some(compute_stamps(&self.queries, i))
     }
 
-    /// The index of the timed frame's next pass, `name`.
+    /// The timestamp pair of the timed frame's next top-level span, `name`.
     fn push(&mut self, name: &str) -> Option<u32> {
-        let i = self.names.len() as u32;
-        if !matches!(self.stage, Stage::Recording) || i >= CAPACITY {
+        let i = self.push_entry(name, None, true)?;
+        self.entries[i].stamp
+    }
+
+    /// `push` for a pass, remembered as the last one.
+    fn push_pass(&mut self, name: &str) -> Option<u32> {
+        let i = self.push_entry(name, None, true);
+        self.last_pass = i;
+        self.entries[i?].stamp
+    }
+
+    /// The index of a new entry in the timed frame; `None` when not recording or out of timestamps.
+    fn push_entry(&mut self, name: &str, parent: Option<usize>, stamped: bool) -> Option<usize> {
+        if !matches!(self.stage, Stage::Recording) || (stamped && self.stamps_used >= CAPACITY) {
             return None;
         }
-        self.names.push(name.to_owned());
+        let stamp = stamped.then(|| {
+            self.stamps_used += 1;
+            self.stamps_used - 1
+        });
+        self.entries.push(Entry {
+            name: name.to_owned(),
+            parent,
+            stamp,
+        });
+        Some(self.entries.len() - 1)
+    }
+
+    /// Starts an encoder-level span `name` (a parts frame, on a device that can); give the result to `encoder_end`.
+    pub fn encoder_begin(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        name: &str,
+    ) -> Option<usize> {
+        if !self.parts_frame() || !self.encoder_stamps {
+            return None;
+        }
+        let i = self.push_entry(name, None, true)?;
+        encoder.write_timestamp(&self.queries, 2 * self.entries[i].stamp?);
         Some(i)
+    }
+
+    /// Ends the span `encoder_begin` started.
+    pub fn encoder_end(&mut self, encoder: &mut wgpu::CommandEncoder, entry: Option<usize>) {
+        if let Some(s) = entry.and_then(|i| self.entries[i].stamp) {
+            encoder.write_timestamp(&self.queries, 2 * s + 1);
+        }
     }
 
     /// A pass that ends once everything drawn into `target` before it has, in a timed frame:
@@ -212,7 +362,7 @@ impl PassTiming {
         if !matches!(self.stage, Stage::Recording) {
             return;
         }
-        if self.names.is_empty() {
+        if self.stamps_used == 0 {
             self.stage = Stage::Idle;
             return;
         }
@@ -235,23 +385,45 @@ impl PassTiming {
             .collect();
         drop(data);
         self.read.unmap();
-        let times = pass_times(&stamps, self.period_ns);
-        for (name, ms) in self.names.iter().zip(times) {
-            let Some(ms) = ms.filter(|_| !name.is_empty()) else {
+        let layout: Vec<_> = self.entries.iter().map(|e| (e.stamp, e.parent)).collect();
+        let times = entry_times(&stamps, &layout, self.period_ns);
+        for (entry, ms) in self.entries.iter().zip(times) {
+            let Some(ms) = ms.filter(|_| !entry.name.is_empty()) else {
                 continue;
             };
-            let i = match self.samples.iter().position(|s| s.0 == *name) {
-                Some(i) => i,
+            match entry.parent {
                 None => {
-                    self.samples.push((name.clone(), VecDeque::new()));
-                    self.samples.len() - 1
+                    let i = match self.samples.iter().position(|s| s.0 == entry.name) {
+                        Some(i) => i,
+                        None => {
+                            self.samples.push((entry.name.clone(), VecDeque::new()));
+                            self.samples.len() - 1
+                        }
+                    };
+                    window_push(&mut self.samples[i].1, ms);
                 }
-            };
-            let window = &mut self.samples[i].1;
-            if window.len() == WINDOW {
-                window.pop_front();
+                // Detail was switched off while this frame was in flight.
+                Some(_) if !self.want_detail => {}
+                Some(p) => {
+                    let pass = &self.entries[p].name;
+                    let i = match self
+                        .part_samples
+                        .iter()
+                        .position(|s| s.0 == *pass && s.1 == entry.name)
+                    {
+                        Some(i) => i,
+                        None => {
+                            self.part_samples.push((
+                                pass.clone(),
+                                entry.name.clone(),
+                                VecDeque::new(),
+                            ));
+                            self.part_samples.len() - 1
+                        }
+                    };
+                    window_push(&mut self.part_samples[i].2, ms);
+                }
             }
-            window.push_back(ms);
         }
         self.reports += 1;
         if self.log && self.reports.is_multiple_of(REPORT) {
@@ -268,18 +440,97 @@ impl PassTiming {
         }
     }
 
-    /// Each pass's median time in milliseconds over its last timed frames, in the order the
-    /// passes first ran.
+    /// Each top-level pass's median ms over its last timed frames, in first-run order.
     pub fn medians(&self) -> Vec<(String, f32)> {
         self.samples
             .iter()
             .filter(|s| !s.1.is_empty())
-            .map(|(name, v)| {
-                let mut v: Vec<f32> = v.iter().copied().collect();
-                v.sort_by(f32::total_cmp);
-                (name.clone(), v[v.len() / 2])
-            })
+            .map(|(name, v)| (name.clone(), median(v)))
             .collect()
+    }
+
+    /// Each pass's parts with their median times in milliseconds, in the order they first ran.
+    pub fn part_medians(&self) -> Vec<(String, Vec<(String, f32)>)> {
+        let mut out: Vec<(String, Vec<(String, f32)>)> = Vec::new();
+        for (pass, part, v) in self.part_samples.iter().filter(|s| !s.2.is_empty()) {
+            let entry = (part.clone(), median(v));
+            match out.iter_mut().find(|o| o.0 == *pass) {
+                Some(o) => o.1.push(entry),
+                None => out.push((pass.clone(), vec![entry])),
+            }
+        }
+        out
+    }
+}
+
+fn window_push(window: &mut VecDeque<f32>, ms: f32) {
+    if window.len() == WINDOW {
+        window.pop_front();
+    }
+    window.push_back(ms);
+}
+
+fn median(window: &VecDeque<f32>) -> f32 {
+    let mut v: Vec<f32> = window.iter().copied().collect();
+    v.sort_by(f32::total_cmp);
+    v[v.len() / 2]
+}
+
+fn begin<'e>(
+    encoder: &'e mut wgpu::CommandEncoder,
+    label: &str,
+    timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'_>>,
+) -> wgpu::ComputePass<'e> {
+    encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+        label: Some(label),
+        timestamp_writes,
+    })
+}
+
+/// A compute pass `name` made of `parts`: one pass, or in a parts frame each part timed.
+pub fn compute_parts(
+    encoder: &mut wgpu::CommandEncoder,
+    timing: Option<&mut PassTiming>,
+    name: &str,
+    parts: &mut [Part<'_>],
+) {
+    let mode = timing
+        .as_deref()
+        .filter(|t| t.parts_frame())
+        .map(|t| t.parts_mode);
+    match (timing, mode) {
+        (Some(t), Some(PartsMode::InsidePasses)) => {
+            let mut pass = begin(encoder, name, t.compute_writes(name));
+            let parent = t.last_pass;
+            for (part, run) in parts.iter_mut() {
+                let stamp = parent
+                    .and_then(|p| t.push_entry(part, Some(p), true))
+                    .and_then(|i| t.entries[i].stamp);
+                if let Some(s) = stamp {
+                    pass.write_timestamp(&t.queries, 2 * s);
+                }
+                run(&mut pass);
+                if let Some(s) = stamp {
+                    pass.write_timestamp(&t.queries, 2 * s + 1);
+                }
+            }
+        }
+        (Some(t), Some(PartsMode::SeparatePasses)) => {
+            let parent = t.push_entry(name, None, false);
+            for (part, run) in parts.iter_mut() {
+                let stamp = parent
+                    .and_then(|p| t.push_entry(part, Some(p), true))
+                    .and_then(|i| t.entries[i].stamp);
+                let mut pass = begin(encoder, name, stamp.map(|s| compute_stamps(&t.queries, s)));
+                run(&mut pass);
+            }
+        }
+        (timing, _) => {
+            let mut pass = begin(encoder, name, timing.and_then(|t| t.compute_writes(name)));
+            for (_, run) in parts.iter_mut() {
+                run(&mut pass);
+            }
+        }
     }
 }
 
@@ -301,34 +552,239 @@ fn compute_stamps(queries: &wgpu::QuerySet, i: u32) -> wgpu::ComputePassTimestam
     }
 }
 
-/// Each pass's time in milliseconds from its (beginning, end) timestamps, `None` for a pass
-/// the GPU left unstamped. Passes overlap on tiled GPUs (a pass begins before the one before it
-/// ends): a pass costs the time from the later of its beginning and the previous pass's end.
-fn pass_times(stamps: &[u64], period_ns: f32) -> Vec<Option<f32>> {
-    let mut previous_end = 0;
-    stamps
-        .as_chunks::<2>()
-        .0
-        .iter()
-        .map(|&[begin, end]| {
-            if begin == 0 || end < begin {
-                return None;
+/// Each entry's ms from its stamps (tiled GPUs overlap: count from the later of start and previous end; no pair sums its parts).
+fn entry_times(
+    stamps: &[u64],
+    entries: &[(Option<u32>, Option<usize>)],
+    period_ns: f32,
+) -> Vec<Option<f32>> {
+    let pair = |s: u32| {
+        let at = 2 * s as usize;
+        stamps.get(at..at + 2).map(|p| (p[0], p[1]))
+    };
+    let link = |previous_end: &mut u64, s: u32| {
+        let (begin, end) = pair(s)?;
+        if begin == 0 || end < begin {
+            return None;
+        }
+        let from = begin.max(*previous_end).min(end);
+        *previous_end = end;
+        Some((end - from) as f32 * period_ns / 1e6)
+    };
+    let mut times = vec![None; entries.len()];
+    let mut end = 0;
+    for (i, &(stamp, parent)) in entries.iter().enumerate() {
+        if let Some(s) = stamp
+            && parent.is_none_or(|p| entries[p].0.is_none())
+        {
+            times[i] = link(&mut end, s);
+        }
+    }
+    for (p, &(stamp, _)) in entries.iter().enumerate() {
+        match stamp {
+            Some(ps) => {
+                let mut end = pair(ps).map_or(0, |b| b.0);
+                for (i, &(stamp, parent)) in entries.iter().enumerate() {
+                    if let (Some(s), true) = (stamp, parent == Some(p)) {
+                        times[i] = link(&mut end, s);
+                    }
+                }
             }
-            let from = begin.max(previous_end).min(end);
-            previous_end = end;
-            Some((end - from) as f32 * period_ns / 1e6)
-        })
-        .collect()
+            None => {
+                let parts = (0..entries.len()).filter(|&i| entries[i].1 == Some(p));
+                let known: Vec<f32> = parts.filter_map(|i| times[i]).collect();
+                times[p] = (!known.is_empty()).then(|| known.iter().sum());
+            }
+        }
+    }
+    times
 }
 
 #[cfg(test)]
 mod tests {
-    use super::pass_times;
+    use super::{PartsMode, PassTiming, compute_parts, entry_times};
+
+    fn interleave(pairs: &[(f32, f32)]) -> Vec<u64> {
+        let ns = |ms: f32| (ms * 1e6) as u64;
+        pairs.iter().flat_map(|p| [ns(p.0), ns(p.1)]).collect()
+    }
+
+    fn assert_times(got: Vec<Option<f32>>, want: &[f32]) {
+        assert_eq!(got.len(), want.len(), "{got:?}");
+        for (g, w) in got.iter().zip(want) {
+            assert!((g.expect("timed") - w).abs() < 1e-4, "{got:?} vs {want:?}");
+        }
+    }
 
     #[test]
     fn overlapping_passes_cost_from_the_previous_end() {
         // Pass 2 begins before pass 1 ends; pass 3 was never stamped.
         let stamps = [1_000_000, 3_000_000, 2_000_000, 5_000_000, 0, 0];
-        assert_eq!(pass_times(&stamps, 1.0), [Some(2.0), Some(2.0), None]);
+        let entries = [(Some(0), None), (Some(1), None), (Some(2), None)];
+        assert_eq!(
+            entry_times(&stamps, &entries, 1.0),
+            [Some(2.0), Some(2.0), None]
+        );
+    }
+
+    #[test]
+    fn parts_chain_inside_their_pass_and_the_next_pass_counts_from_its_end() {
+        let stamps = interleave(&[(1.0, 5.0), (1.0, 1.5), (1.5, 4.0), (4.0, 5.0), (4.5, 9.0)]);
+        let entries = [
+            (Some(0), None),
+            (Some(1), Some(0)),
+            (Some(2), Some(0)),
+            (Some(3), Some(0)),
+            (Some(4), None),
+        ];
+        assert_times(
+            entry_times(&stamps, &entries, 1.0),
+            &[4.0, 0.5, 2.5, 1.0, 4.0],
+        );
+    }
+
+    #[test]
+    fn a_pass_of_separate_passes_is_the_sum_of_its_parts() {
+        let stamps = interleave(&[(1.0, 1.2), (1.1, 3.0), (3.0, 6.0)]);
+        let entries = [
+            (None, None),
+            (Some(0), Some(0)),
+            (Some(1), Some(0)),
+            (Some(2), None),
+        ];
+        assert_times(entry_times(&stamps, &entries, 1.0), &[2.0, 0.2, 1.8, 3.0]);
+    }
+
+    #[test]
+    fn an_unstamped_part_loses_only_its_own_time() {
+        let stamps = interleave(&[(1.0, 5.0), (1.0, 1.5), (0.0, 0.0), (4.0, 5.0)]);
+        let entries = [
+            (Some(0), None),
+            (Some(1), Some(0)),
+            (Some(2), Some(0)),
+            (Some(3), Some(0)),
+        ];
+        assert_eq!(
+            entry_times(&stamps, &entries, 1.0),
+            [Some(4.0), Some(0.5), None, Some(1.0)]
+        );
+    }
+
+    const SHADER: &str = "
+@group(0) @binding(0) var<storage, read_write> out: array<u32>;
+@compute @workgroup_size(256) fn light(@builtin(global_invocation_id) id: vec3<u32>) {
+    if (id.x == 0u) { out[0] = 1u; }
+}
+@compute @workgroup_size(256) fn heavy(@builtin(global_invocation_id) id: vec3<u32>) {
+    var a = id.x;
+    for (var i = 0u; i < 16384u; i++) { a = (a ^ (a >> 3u)) * 1664525u + i; }
+    out[id.x] = a;
+}";
+
+    fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter = pollster::block_on(instance.request_adapter(&Default::default())).ok()?;
+        let needed =
+            wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES;
+        if !adapter.features().contains(needed) {
+            return None;
+        }
+        eprintln!("pass parts on {}", adapter.get_info().name);
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            required_features: needed,
+            ..Default::default()
+        }))
+        .ok()
+    }
+
+    /// The pass's median and its parts' medians after 20 timed frames of light, heavy, light2.
+    fn timed_parts(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        mode: Option<PartsMode>,
+    ) -> (f32, Vec<(String, f32)>) {
+        let mut timing = match mode {
+            Some(mode) => PassTiming::with_parts_mode(device, queue, mode),
+            None => PassTiming::new(device, queue),
+        }
+        .unwrap();
+        timing.set_detail(true);
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: None,
+            source: wgpu::ShaderSource::Wgsl(SHADER.into()),
+        });
+        let pipeline = |entry| {
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: None,
+                layout: None,
+                module: &module,
+                entry_point: Some(entry),
+                compilation_options: Default::default(),
+                cache: None,
+            })
+        };
+        let (light, heavy) = (pipeline("light"), pipeline("heavy"));
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: 256 * 256 * 4,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
+        let bind = |pipeline: &wgpu::ComputePipeline| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &pipeline.get_bind_group_layout(0),
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: buffer.as_entire_binding(),
+                }],
+            })
+        };
+        let (light_group, heavy_group) = (bind(&light), bind(&heavy));
+        let run = |pass: &mut wgpu::ComputePass<'_>, pipeline, group, n| {
+            pass.set_bind_group(0, group, &[]);
+            pass.set_pipeline(pipeline);
+            pass.dispatch_workgroups(n, 1, 1);
+        };
+        // A timed frame takes two iterations: record it, then resolve and map its times.
+        for _ in 0..60 {
+            timing.begin(device, queue);
+            let mut encoder = device.create_command_encoder(&Default::default());
+            compute_parts(
+                &mut encoder,
+                Some(&mut timing),
+                "parts",
+                &mut [
+                    ("light", &mut |p| run(p, &light, &light_group, 1)),
+                    ("heavy", &mut |p| run(p, &heavy, &heavy_group, 256)),
+                    ("light2", &mut |p| run(p, &light, &light_group, 1)),
+                ],
+            );
+            queue.submit([encoder.finish()]);
+            timing.submitted(queue);
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        }
+        let parent = timing.medians().into_iter().find(|m| m.0 == "parts");
+        let mut parts = timing.part_medians();
+        assert_eq!(parts.len(), 1, "{parts:?}");
+        (parent.expect("the pass has a time").1, parts.remove(0).1)
+    }
+
+    #[test]
+    fn the_heavy_part_of_a_pass_has_the_largest_time() {
+        let Some((device, queue)) = device() else {
+            eprintln!("no GPU with timestamps inside passes: skipped");
+            return;
+        };
+        for mode in [None, Some(PartsMode::SeparatePasses)] {
+            let (parent, parts) = timed_parts(&device, &queue, mode);
+            let names: Vec<_> = parts.iter().map(|p| p.0.as_str()).collect();
+            assert_eq!(names, ["light", "heavy", "light2"], "{mode:?}");
+            let heavy = parts[1].1;
+            assert!(parts.iter().all(|p| p.1 <= heavy), "{mode:?} {parts:?}");
+            let sum: f32 = parts.iter().map(|p| p.1).sum();
+            assert!(parent >= sum * 0.95, "{mode:?} {parent} < {parts:?}");
+            eprintln!("{mode:?}: parent {parent:.4} ms, parts {parts:?}");
+        }
     }
 }

@@ -1440,6 +1440,8 @@ pub struct Renderer {
     native: Option<native_pack::NativePack>,
     /// Time the shader pack's passes on the GPU (F3, or `HORIZON_SHADER_PACK_TIMING`).
     pass_timing: bool,
+    /// Times the parts of passes too (`set_pass_detail`).
+    pass_detail: bool,
     /// Least time between timed frames (`set_pass_timing_gap`).
     pass_timing_gap: std::time::Duration,
     /// Times Horizon's own passes on the GPU, as `pass_timing` does (`own_pass_times`).
@@ -2288,6 +2290,7 @@ async fn open_backend(
     // atomics on images: their buffers and images. Filtering 32-bit float textures: shader
     // packs' RGBA32F buffers, which GL filters and mipmaps. Count draws: GPU culling's (`gpu_culling`).
     let features = timing::GpuTimer::features(&adapter)
+        | pack_timing::PassTiming::features(&adapter)
         | cull::Cull::features(&adapter)
         | oit::features(&adapter)
         | (adapter.features()
@@ -4911,6 +4914,7 @@ impl Renderer {
             pack_loading: None,
             native: None,
             pass_timing: pack_timing::PassTiming::logging(),
+            pass_detail: pack_timing::PassTiming::detail_logging(),
             pass_timing_gap: std::time::Duration::ZERO,
             own_timing: None,
             pack_entity_rest: Vec::new(),
@@ -7071,6 +7075,10 @@ impl Renderer {
     pub fn set_pass_timing(&mut self, on: bool) {
         self.pass_timing = on || pack_timing::PassTiming::logging();
     }
+    /// Times the parts of Horizon's own passes while `on`, or always with `HORIZON_GPU_PASS_DETAIL`.
+    pub fn set_pass_detail(&mut self, on: bool) {
+        self.pass_detail = on || pack_timing::PassTiming::detail_logging();
+    }
     /// Times a frame at most once per `gap` while passes are timed (the F3 overlay needs far fewer
     /// samples than a measurement). `HORIZON_SHADER_PACK_TIMING` keeps every sample.
     pub fn set_pass_timing_gap(&mut self, gap: std::time::Duration) {
@@ -7110,6 +7118,19 @@ impl Renderer {
             .as_ref()
             .map(pack_timing::PassTiming::medians)
             .unwrap_or_default()
+    }
+    /// Each of Horizon's own passes with its parts' median GPU times in milliseconds.
+    pub fn own_pass_parts(&self) -> Vec<(String, Vec<(String, f32)>)> {
+        self.own_timing
+            .as_ref()
+            .map(pack_timing::PassTiming::part_medians)
+            .unwrap_or_default()
+    }
+    /// What detail timing can show on this device; `None` without pass timing.
+    pub fn pass_detail_support(&self) -> Option<pack_timing::DetailSupport> {
+        self.own_timing
+            .as_ref()
+            .map(pack_timing::PassTiming::detail_support)
     }
     /// The macros this renderer gives shader packs: the GL extensions this device has
     /// (subgroups, when it has them), and the vendor, renderer and mipmap levels
@@ -7696,6 +7717,7 @@ impl Renderer {
         }
         if let Some(t) = &mut self.own_timing {
             t.gap = self.pass_timing_gap;
+            t.set_detail(self.pass_detail);
             t.begin(&self.device, &self.queue);
         }
         if self.animated_textures {
@@ -8055,6 +8077,7 @@ impl Renderer {
                     &mut self.uploads,
                     &mut encoder,
                     &input,
+                    self.own_timing.as_mut(),
                 )
             });
             // A frame whose planes leave the test's integers (the camera millions of blocks
