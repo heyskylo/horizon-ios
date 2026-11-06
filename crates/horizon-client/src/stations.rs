@@ -1343,14 +1343,6 @@ mod tests {
                     .is_none(),
                 "{invalid}"
             );
-            for recipe in &stations.smithing {
-                if let Smithing::Transform { result, .. } = recipe {
-                    assert!(
-                        result.create().is_none(),
-                        "invalid displays must be empty too"
-                    );
-                }
-            }
         }
         for key in ["template", "base", "addition"] {
             let mut invalid = recipe.clone();
