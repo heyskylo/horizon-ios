@@ -11,7 +11,7 @@ macro_rules! actions {
             $($variant,)*
         }
         impl Action {
-            /// In `Options.keyMappings` order, the pad-only actions last.
+            /// In `Options.keyMappings` order, then Horizon's own mappings, the pad-only actions last.
             pub const ALL: &[Action] = &[$(Action::$variant,)*];
             /// The saved name: vanilla's for a mapping, `pad.*` for Horizon's own.
             pub fn name(self) -> &'static str {
@@ -49,7 +49,6 @@ actions! {
     PickItem, "key.pickItem", None;
     Command, "key.command", Some(KeyCode::Slash);
     Friends, "key.friends", Some(KeyCode::KeyO);
-    Emote, "key.emote", Some(KeyCode::KeyB);
     SocialInteractions, "key.socialInteractions", Some(KeyCode::KeyP);
     ToggleGui, "key.toggleGui", Some(KeyCode::F1);
     ToggleSpectatorShaderEffects, "key.toggleSpectatorShaderEffects", Some(KeyCode::F4);
@@ -96,6 +95,7 @@ actions! {
     DebugNetworkCharts, "key.debug.networkCharts", None;
     DebugLightmapTexture, "key.debug.lightmapTexture", None;
     DebugImprovedTransparency, "key.debug.improvedTransparency", None;
+    Emote, "key.emote", Some(KeyCode::KeyB);
     HotbarPrevious, "pad.hotbarPrevious", None;
     HotbarNext, "pad.hotbarNext", None;
 }
@@ -109,21 +109,24 @@ impl Action {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::keybinds::{self, KeyBinds, MAPPINGS};
+    use crate::keybinds::{self, HORIZON_MAPPINGS, KeyBinds, MAPPINGS, all_mappings};
 
     #[test]
     fn every_mapping_is_an_action_in_order() {
         let names: Vec<&str> = Action::ALL.iter().map(|a| a.name()).collect();
         let mappings: Vec<&str> = MAPPINGS.iter().map(|m| m.0).collect();
         assert_eq!(names[..mappings.len()], mappings[..]);
-        for action in &names[mappings.len()..] {
+        let horizon: Vec<&str> = HORIZON_MAPPINGS.iter().map(|m| m.0).collect();
+        let end = mappings.len() + horizon.len();
+        assert_eq!(names[mappings.len()..end], horizon[..]);
+        for action in &names[end..] {
             assert!(action.starts_with("pad."), "{action}");
         }
     }
 
     #[test]
     fn an_actions_key_is_its_mappings_default_key() {
-        for (name, _, category) in MAPPINGS {
+        for (name, _, category) in all_mappings() {
             let action = Action::parse(name).unwrap();
             let want = if *category == "debug" {
                 None

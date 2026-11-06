@@ -200,6 +200,71 @@ public final class VanillaCommandExecOracle {
             Files.writeString(output.resolveSibling("fishing-fallback-reference.json"), rows.toString());
         }
 
+        void writeMountControlReference() throws Exception {
+            if (!Boolean.getBoolean("horizon.mountControlReference")) return;
+            var level = this.overworld();
+            var oldMain = player.getMainHandItem();
+            var oldOff = player.getOffhandItem();
+            var oldPosition = player.position();
+            JsonArray rows = new JsonArray();
+            for (String kind : new String[] {"pig", "strider"}) {
+                for (boolean saddled : new boolean[] {false, true}) {
+                    for (boolean first : new boolean[] {false, true}) {
+                        for (String hand : new String[] {"none", "wrong", "main", "off"}) {
+                            net.minecraft.world.entity.Mob mount = kind.equals("pig")
+                                ? new net.minecraft.world.entity.animal.pig.Pig(net.minecraft.world.entity.EntityTypes.PIG, level)
+                                : new net.minecraft.world.entity.monster.Strider(net.minecraft.world.entity.EntityTypes.STRIDER, level);
+                            mount.setPos(oldPosition);
+                            mount.setItemSlot(net.minecraft.world.entity.EquipmentSlot.SADDLE,
+                                saddled ? new net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.SADDLE)
+                                    : net.minecraft.world.item.ItemStack.EMPTY);
+                            var stick = kind.equals("pig") ? net.minecraft.world.item.Items.CARROT_ON_A_STICK
+                                : net.minecraft.world.item.Items.WARPED_FUNGUS_ON_A_STICK;
+                            var wrong = kind.equals("pig") ? net.minecraft.world.item.Items.WARPED_FUNGUS_ON_A_STICK
+                                : net.minecraft.world.item.Items.CARROT_ON_A_STICK;
+                            player.setItemInHand(net.minecraft.world.InteractionHand.MAIN_HAND,
+                                hand.equals("main") ? new net.minecraft.world.item.ItemStack(stick)
+                                    : hand.equals("wrong") ? new net.minecraft.world.item.ItemStack(wrong)
+                                    : net.minecraft.world.item.ItemStack.EMPTY);
+                            player.setItemInHand(net.minecraft.world.InteractionHand.OFF_HAND,
+                                hand.equals("off") ? new net.minecraft.world.item.ItemStack(stick)
+                                    : net.minecraft.world.item.ItemStack.EMPTY);
+                            var other = new net.minecraft.world.entity.player.Player(level,
+                                new GameProfile(new UUID(0, 2), "OtherRider")) {
+                                public net.minecraft.world.level.GameType gameMode() {
+                                    return net.minecraft.world.level.GameType.SURVIVAL;
+                                }
+                            };
+                            if (!first && !other.startRiding(mount, true, true)) throw new IllegalStateException("first passenger rejected");
+                            if (!player.startRiding(mount, true, true)) throw new IllegalStateException("player passenger rejected");
+                            if ((mount.getFirstPassenger() == player) != first) throw new IllegalStateException("passenger order differs");
+                            var input = mount.getClass().getDeclaredMethod("getRiddenInput", net.minecraft.world.entity.player.Player.class,
+                                net.minecraft.world.phys.Vec3.class);
+                            input.setAccessible(true);
+                            var direction = (net.minecraft.world.phys.Vec3)input.invoke(mount, player, net.minecraft.world.phys.Vec3.ZERO);
+                            JsonObject row = new JsonObject();
+                            row.addProperty("kind", kind);
+                            row.addProperty("saddled", saddled);
+                            row.addProperty("first", first);
+                            row.addProperty("hand", hand);
+                            row.addProperty("controlled", mount.getControllingPassenger() == player);
+                            row.addProperty("server_simulates", mount.canSimulateMovement());
+                            row.addProperty("forward", direction.z);
+                            rows.add(row);
+                            player.stopRiding();
+                            other.stopRiding();
+                            other.discard();
+                            mount.discard();
+                        }
+                    }
+                }
+            }
+            player.setItemInHand(net.minecraft.world.InteractionHand.MAIN_HAND, oldMain);
+            player.setItemInHand(net.minecraft.world.InteractionHand.OFF_HAND, oldOff);
+            player.setPos(oldPosition);
+            Files.writeString(output.resolveSibling("mount-control-reference.json"), rows.toString());
+        }
+
         // Direct reference for FishingHook.retrieve on a real server player and level.
         void writeFishingReference() throws Exception {
             if (!Boolean.getBoolean("horizon.fishingReference")) return;
@@ -345,6 +410,31 @@ public final class VanillaCommandExecOracle {
                 bobs.add(row);
                 hook.discard();
             }
+            // Dry block hits run on both sides: compare the client's movement
+            // prediction with the real hook before and after touching the floor.
+            level.setBlockAndUpdate(waterPos, net.minecraft.world.level.block.Blocks.STONE.defaultBlockState());
+            double[][] motions = {{0.2, -0.4, 0.1}, {-0.2, -0.4, 0.1}, {0.0, -0.6, -0.2}};
+            for (int c = 0; c < motions.length; c++) {
+                var hook = new net.minecraft.world.entity.projectile.FishingHook(player, level, 0, 0);
+                hook.setPos(0.5, 301.1, 0.5);
+                hook.setDeltaMovement(motions[c][0], motions[c][1], motions[c][2]);
+                for (int tick = 0; tick < 5; tick++) {
+                    hook.tick();
+                    var at = hook.position();
+                    var motion = hook.getDeltaMovement();
+                    JsonObject row = new JsonObject();
+                    row.addProperty("case", c);
+                    row.addProperty("tick", tick);
+                    JsonArray position = new JsonArray();
+                    position.add(at.x); position.add(at.y); position.add(at.z);
+                    JsonArray movement = new JsonArray();
+                    movement.add(motion.x); movement.add(motion.y); movement.add(motion.z);
+                    row.add("position", position);
+                    row.add("motion", movement);
+                    bobs.add(row);
+                }
+                hook.discard();
+            }
             player.snapTo(oldPos.x, oldPos.y, oldPos.z, originalYaw, originalPitch);
             level.setBlockAndUpdate(waterPos, oldBlock);
             Files.writeString(output.resolveSibling("fishing-bobbing-reference.json"), bobs.toString());
@@ -419,6 +509,7 @@ public final class VanillaCommandExecOracle {
                 Files.writeString(output.resolveSibling("client_config.json"), login.toString());
             }
             writeOrbWaterReference();
+            try { writeMountControlReference(); } catch (Exception e) { throw new IOException(e); }
             try { writeFishingReference(); } catch (Exception e) { throw new IOException(e); }
             try { writeFishingFallbackReference(); } catch (Exception e) { throw new IOException(e); }
             StringBuilder out = new StringBuilder();
