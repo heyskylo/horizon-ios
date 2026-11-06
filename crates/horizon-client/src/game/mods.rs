@@ -644,6 +644,82 @@ pub(super) fn living_mod_types()
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sound_mod_dispatch_changes_real_channels_and_cancellation_short_circuits() {
+        use crate::mod_api::{Flow, Hooks, SoundPlayEvent};
+        use horizon_client::sound_engine::{
+            Attenuation, PlayResult, SoundEngine, SoundInstance, test_backend,
+        };
+        use horizon_client::sound_events::SoundRegistry;
+        use horizon_core::random::LegacyRandom;
+        struct First;
+        impl Hooks for First {
+            fn sound_play(&self, event: &mut SoundPlayEvent<'_>) -> Flow {
+                assert_eq!(event.sound.identifier, "test:beep");
+                event.volume *= 0.5;
+                Flow::Continue
+            }
+        }
+        struct Second;
+        impl Hooks for Second {
+            fn sound_play(&self, event: &mut SoundPlayEvent<'_>) -> Flow {
+                assert_eq!(event.volume, 0.4);
+                event.pitch = 2.0;
+                Flow::Continue
+            }
+        }
+        struct Cancel;
+        impl Hooks for Cancel {
+            fn sound_play(&self, _: &mut SoundPlayEvent<'_>) -> Flow {
+                Flow::Cancel
+            }
+        }
+        struct Never;
+        impl Hooks for Never {
+            fn sound_play(&self, _: &mut SoundPlayEvent<'_>) -> Flow {
+                panic!("dispatch after cancellation")
+            }
+        }
+        static MODS: std::sync::LazyLock<Vec<Box<dyn Hooks>>> =
+            std::sync::LazyLock::new(|| vec![Box::new(First), Box::new(Second)]);
+        static CANCEL: std::sync::LazyLock<Vec<Box<dyn Hooks>>> =
+            std::sync::LazyLock::new(|| vec![Box::new(Cancel), Box::new(Never)]);
+        let mut registry = SoundRegistry::default();
+        registry.add_file("test", br#"{"beep":{"sounds":["beep"]}}"#, &|_, _| true);
+        let mut engine = SoundEngine::new(registry);
+        engine.listening = true;
+        let mut backend = test_backend::Null::default();
+        let instance = || {
+            SoundInstance::new(
+                "test:beep",
+                4,
+                0.8,
+                1.0,
+                LegacyRandom::new(1),
+                false,
+                0,
+                Attenuation::None,
+                [0.0; 3],
+                true,
+            )
+        };
+        engine.set_test_playback_hook(|sound, volume, pitch, cancel| {
+            crate::mod_api::dispatch_sound_play(&MODS, sound, volume, pitch, cancel)
+        });
+        let (id, result) = engine.play_new(instance(), false, &mut backend);
+        assert_eq!(result, PlayResult::Started);
+        let channel = engine.channel(id).unwrap();
+        assert_eq!(backend.volume[&channel], 0.4);
+        assert_eq!(backend.pitch[&channel], 2.0);
+        let notifications = engine.notifications.len();
+        engine.set_test_playback_hook(|sound, volume, pitch, cancel| {
+            crate::mod_api::dispatch_sound_play(&CANCEL, sound, volume, pitch, cancel)
+        });
+        let (_, result) = engine.play_new(instance(), false, &mut backend);
+        assert_eq!(result, PlayResult::NotStarted);
+        assert_eq!(backend.volume.len(), 1);
+        assert_eq!(engine.notifications.len(), notifications);
+    }
     use super::*;
     use std::io::Write;
 
@@ -882,6 +958,7 @@ mod tests {
             std::sync::LazyLock::new(|| vec![Box::new(Guards)]);
         let installed = install(NativeClientHooks {
             menu_slot_rules: |_, _, _, _, _| {},
+            sound_play: |_, _, _, _| {},
             living_heal: |_, _, _| {},
             player_chat: |_, _, _, _, _| {},
             living_breathe: |_, _, _, _, _| {},

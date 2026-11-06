@@ -300,4 +300,5 @@ pub const IDS: super::ids::Ids = super::ids::Ids {
     dropped_components: DROPPED_COMPONENTS,
     // Not a registry: set by hand where a version numbers EntityDataSerializers differently.
     entity_data_serializer: super::ids::Remap::Same,
+    substitutes: super::ids::Substitutes::NONE,
 };

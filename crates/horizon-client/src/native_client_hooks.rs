@@ -6,6 +6,7 @@ use std::sync::OnceLock;
 /// Client-library hooks, installed before any menu, entity or recipe is used.
 pub struct NativeClientHooks {
     pub menu_slot_rules: fn(&str, usize, &ItemStack, &mut bool, &mut u32),
+    pub sound_play: crate::sound_engine::PlaybackHook,
     pub living_heal: fn(u32, &mut f32, &mut bool),
     pub player_chat: fn(u128, &str, &str, &mut Vec<horizon_client_core::text::Text>, &mut bool),
     pub living_breathe: fn(u32, &str, &mut bool, &mut i32, &mut i32),
@@ -192,5 +193,16 @@ pub(crate) fn handshake(
 ) {
     if let Some(hooks) = HOOKS.get() {
         (hooks.handshake)(address, host, intent, cancel, reason);
+    }
+}
+
+pub(crate) fn sound_play(
+    sound: &crate::sound_engine::SoundPlayback<'_>,
+    volume: &mut f32,
+    pitch: &mut f32,
+    cancel: &mut bool,
+) {
+    if let Some(hooks) = HOOKS.get() {
+        (hooks.sound_play)(sound, volume, pitch, cancel);
     }
 }

@@ -23,35 +23,67 @@ impl Launcher {
             .map(|(tab, _)| *tab)
             .find(|tab| *tab == self.home_tab)
             .unwrap_or(HomeTab::Overview);
+        let compact = self.window_width < 1200.;
+        let very_compact = self.window_width < 960.;
+        let super_compact = self.window_width < 750.;
+        let pad = if super_compact {
+            4.
+        } else if very_compact {
+            6.
+        } else if compact {
+            8.
+        } else {
+            14.
+        };
+        let gap = if very_compact {
+            1.
+        } else if compact {
+            2.
+        } else {
+            4.
+        };
         let strip = div()
+            .id("home-tabs-strip")
             .relative()
             .flex()
-            .flex_none()
             .items_center()
-            .gap(px(4.))
+            .gap(px(gap))
             .px(px(8.))
             .pt(px(8.))
             .pb(px(4.))
+            .w_full()
+            .min_w_0()
+            .overflow_x_scroll()
+            .on_scroll(|_, _, cx| cx.stop_propagation())
             .child(crate::glass::measure(self.home_strip.clone()))
             .children(tabs.into_iter().map(|(tab, count)| {
                 let (name, icon) = match tab {
-                    HomeTab::Overview => (tr("Overview"), Some("dashboard-square-01")),
-                    HomeTab::Mods => (tr("Mods"), Some("puzzle")),
-                    HomeTab::Worlds => (tr("Worlds"), Some("earth")),
-                    HomeTab::Multiplayer => (tr("Multiplayer"), Some("user-multiple-02")),
+                    HomeTab::Overview => {
+                        (tr("Overview"), (!compact).then_some("dashboard-square-01"))
+                    }
+                    HomeTab::Mods => (tr("Mods"), (!compact).then_some("puzzle")),
+                    HomeTab::Worlds => (tr("Worlds"), (!compact).then_some("earth")),
+                    HomeTab::Multiplayer => {
+                        (tr("Multiplayer"), (!compact).then_some("user-multiple-02"))
+                    }
                     HomeTab::Packs => (tr("Packs"), None),
                     HomeTab::Screenshots => (tr("Screenshots"), None),
-                    HomeTab::Console => (tr("Console"), Some("computer-terminal-01")),
+                    HomeTab::Console => {
+                        (tr("Console"), (!compact).then_some("computer-terminal-01"))
+                    }
                 };
-                ui::count_tab(
+                let mut item = ui::count_tab(
                     format!("home-tab-{tab:?}"),
                     icon,
                     name,
                     count.filter(|n| *n > 0),
                     tab == open,
                     &t,
-                )
-                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                );
+                if compact {
+                    item = item.px(px(pad));
+                }
+                item.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                     this.home_tab = tab;
                     cx.notify();
                 }))
@@ -74,7 +106,15 @@ impl Launcher {
             // `mt-12` under the head, of which Home's own gap gives 28.
             .mt(px(20.))
             .child(crate::glass::tabbed(self.home_strip.clone()))
-            .child(div().relative().flex().child(strip))
+            .child(
+                div()
+                    .relative()
+                    .flex()
+                    .w_full()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .child(strip),
+            )
             .child(
                 div().relative().p(px(8.)).child(
                     div()
@@ -92,6 +132,14 @@ impl Launcher {
 
     /// Overview: the last screenshots and the patch log side by side, then `rows`.
     fn glass_overview(&mut self, rows: Div, cx: &mut Context<Self>) -> Div {
+        let wide = self.window_width >= 1200.;
+        let shots = self.overview_shots(cx);
+        let patch = div()
+            .relative()
+            .when(wide, |d| d.flex_none().w(px(380.)))
+            .when(!wide, |d| d.w_full())
+            .min_h(px(BODY))
+            .child(self.patch_log(cx));
         div()
             .flex()
             .flex_col()
@@ -100,16 +148,10 @@ impl Launcher {
             .child(
                 div()
                     .flex()
-                    .gap(px(20.))
-                    .child(self.overview_shots(cx))
-                    .child(
-                        div()
-                            .relative()
-                            .flex_none()
-                            .w(px(380.))
-                            .min_h(px(BODY))
-                            .child(self.patch_log(cx)),
-                    ),
+                    .when(wide, |d| d.flex_row().gap(px(20.)))
+                    .when(!wide, |d| d.flex_col().gap(px(20.)))
+                    .child(shots)
+                    .child(patch),
             )
             .child(rows)
     }
