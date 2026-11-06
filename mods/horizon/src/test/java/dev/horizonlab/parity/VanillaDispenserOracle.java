@@ -23,6 +23,7 @@ import net.minecraft.world.level.block.CrafterBlock;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.entity.CrafterBlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.gameevent.GameEvent;
 import net.minecraft.world.level.gamerules.GameRules;
 import net.minecraft.world.level.levelgen.LegacyRandomSource;
 
@@ -580,8 +581,16 @@ public final class VanillaDispenserOracle {
         @Override public boolean isSilent() { return false; }
         // A book's screen needs a connection; nothing of it is printed.
         @Override public void openItemGui(ItemStack stack, net.minecraft.world.InteractionHand h) { }
+        // `LivingEntity.startUsingItem` on the server posts `ITEM_INTERACT_START`
+        // through `ItemStack.causeUseVibration` when the stack's use effects ask
+        // for interaction vibrations (every item's `UseEffects.DEFAULT` from
+        // `DataComponents.COMMON_ITEM_COMPONENTS`; spears turn it off). The
+        // headless level logs it as any other game event.
         @Override public void startUsingItem(net.minecraft.world.InteractionHand h) {
-            using = BuiltInRegistries.ITEM.getKey(getItemInHand(h).getItem()).toString();
+            ItemStack held = getItemInHand(h);
+            if (held.isEmpty() || isUsingItem()) return;
+            using = BuiltInRegistries.ITEM.getKey(held.getItem()).toString();
+            if (!level().isClientSide()) held.causeUseVibration(this, GameEvent.ITEM_INTERACT_START);
         }
         @Override public boolean isUsingItem() { return using != null; }
         @Override public void awardStat(net.minecraft.stats.Stat<?> stat, int count) {
