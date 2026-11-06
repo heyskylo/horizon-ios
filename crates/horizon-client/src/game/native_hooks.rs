@@ -6940,7 +6940,8 @@ impl Game<'_> {
     /// (`/tp`, `/teleport`), `ender_pearl`, `chorus_fruit`, `spectate` (a spectator's teleport
     /// menu), `dismount` (put beside the vehicle they left) or `unknown` (another server move of
     /// the player). `from` is their feet in `from_dimension`, `to` where they go in
-    /// `to_dimension` (the same level, but for a `command` or `spectate` teleport into another).
+    /// `to_dimension` (the same level, but for a `command`, `spectate` or `unknown` (a mod's
+    /// `native_teleport_player`) teleport into another).
     /// `relative` is the position packet's flags (vanilla's `Relative`: 8 and 16 keep the look,
     /// 32, 64 and 128 the motion, 256 turns the motion with the look); within a level a mod may
     /// set or clear those bits, so a pearl can keep the player's speed (0x1f8), while the

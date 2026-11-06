@@ -722,8 +722,8 @@ impl Game<'_> {
             ) {
                 let outer = self.chat_capture.replace(Vec::new());
                 let level = std::mem::replace(&mut self.ui.registries.permission, permission);
-                out.ran = self.perform_native_command(conn, permission, &line)
-                    || self.run_command(&line);
+                out.ran =
+                    self.perform_native_command(conn, permission, &line) || self.run_command(&line);
                 self.ui.registries.permission = level;
                 out.output = std::mem::replace(&mut self.chat_capture, outer).unwrap_or_default();
                 for line in &out.output {
@@ -1588,11 +1588,17 @@ mod tests {
         assert_eq!(go["parser"], "brigadier:string");
         assert_eq!(go["properties"]["type"], "word");
         assert_eq!(go["suggestions"], "minecraft:ask_server");
-        assert_eq!(stage["say"]["children"]["line"]["properties"]["type"], "greedy");
+        assert_eq!(
+            stage["say"]["children"]["line"]["properties"]["type"],
+            "greedy"
+        );
         let who = &stage["bring"]["children"]["who"];
         assert_eq!(who["suggestions"], PLAYER_NAMES);
         assert!(who["children"]["where"].get("suggestions").is_none());
-        assert_eq!(tree(&[NativeCommand::new("a <x:text?> <y:word>")]).2.len(), 1);
+        assert_eq!(
+            tree(&[NativeCommand::new("a <x:text?> <y:word>")]).2.len(),
+            1
+        );
         let names = |level, words: &[&str]| completes_player_name(&commands, level, "stage", words);
         assert!(names(2, &["bring", ""]));
         assert!(names(2, &["bring", "Al"]));
@@ -1607,7 +1613,10 @@ mod tests {
         let d = horizon_client::command::vanilla::dispatcher();
         let tp = vanilla_command_info(d, "tp").unwrap();
         assert_eq!(tp, vanilla_command_info(d, "teleport").unwrap());
-        assert_eq!((tp.name.as_str(), tp.level, tp.vanilla), ("teleport", 2, true));
+        assert_eq!(
+            (tp.name.as_str(), tp.level, tp.vanilla),
+            ("teleport", 2, true)
+        );
         assert_eq!(tp.aliases, ["tp"]);
         assert_eq!(tp.usages.len(), 1);
         assert!(tp.usages[0].starts_with("teleport "), "{:?}", tp.usages);

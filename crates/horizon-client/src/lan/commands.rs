@@ -295,7 +295,9 @@ fn fill(
                 suggestions
                     .get(path.join(" ").as_str())
                     .copied()
-                    .or(child["suggestions"].is_string().then_some("minecraft:ask_server"))
+                    .or(child["suggestions"]
+                        .is_string()
+                        .then_some("minecraft:ask_server"))
             } else {
                 None
             },
@@ -515,7 +517,10 @@ mod tests {
         let names: Vec<_> = packet.nodes.iter().map(|n| n.name.as_str()).collect();
         assert_eq!(names, ["", "me", "beacon", "action", "height", "who"]);
         // A mod's node with custom suggestions asks the server; vanilla's own keep theirs.
-        assert_eq!(packet.nodes[5].suggestions.as_deref(), Some("minecraft:ask_server"));
+        assert_eq!(
+            packet.nodes[5].suggestions.as_deref(),
+            Some("minecraft:ask_server")
+        );
         assert_eq!(packet.nodes[4].suggestions, None);
         assert_eq!(packet.nodes[3].suggestions, None);
         let beacon = &packet.nodes[2];

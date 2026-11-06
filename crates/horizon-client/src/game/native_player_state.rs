@@ -19,9 +19,8 @@ const PERSISTENT_DATA: &str = "NeoForgeData";
 /// An effect on a player, as `native_effects` reads it and
 /// `native_add_effect` and `native_set_effects` take it (vanilla's
 /// `MobEffectInstance`).
-#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct NativeEffect {
+pub struct NativeEffect {
     /// `minecraft:speed`, or a content mod's `<namespace>:<path>`.
     pub id: String,
     /// 0 for level I.

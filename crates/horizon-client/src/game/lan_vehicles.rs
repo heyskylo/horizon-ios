@@ -142,12 +142,20 @@ impl Game<'_> {
         // them; a vehicle nobody rides is told of with nobody swapped in.
         for (rider, id, kind, mount, from, to) in moved {
             let (mut dest, mut cancel) = (to, false);
-            let hook = |game: &mut Self| {
+            let mut hook = |game: &mut Self| {
                 if !mount {
                     game.native_vehicle_moved(rider.map(|r| r.1), &kind, from, to);
                 }
                 let player = rider.map(|r| r.1);
-                game.native_vehicle_moved_v2(player, dim.id(), id, &kind, from, &mut dest, &mut cancel);
+                game.native_vehicle_moved_v2(
+                    player,
+                    dim.id(),
+                    id,
+                    &kind,
+                    from,
+                    &mut dest,
+                    &mut cancel,
+                );
             };
             match rider {
                 None => hook(self),

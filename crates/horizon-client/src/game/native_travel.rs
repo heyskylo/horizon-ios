@@ -64,8 +64,7 @@ impl Game<'_> {
         let Some(dim) = native_dim(dimension) else {
             return false;
         };
-        if !self.native_serves() || !teleportable(pos) || !yaw.is_finite() || !pitch.is_finite()
-        {
+        if !self.native_serves() || !teleportable(pos) || !yaw.is_finite() || !pitch.is_finite() {
             return false;
         }
         let rotation = [yaw, pitch.clamp(-90.0, 90.0)];
@@ -89,6 +88,7 @@ impl Game<'_> {
                     at: pos,
                     rotation: Some(rotation),
                     vehicle: None,
+                    cause: Some("unknown"),
                 });
             }
             return true;
@@ -110,7 +110,12 @@ impl Game<'_> {
     /// `native_vehicle_moved_v2` a mod changes `to` instead): false inside a player's hook, for
     /// no such vehicle here, another dimension, a position outside `/tp`'s bounds, and on a
     /// client. API @API:teleport_vehicle@.
-    pub(super) fn native_teleport_vehicle(&mut self, dimension: &str, id: u32, pos: [f64; 3]) -> bool {
+    pub(super) fn native_teleport_vehicle(
+        &mut self,
+        dimension: &str,
+        id: u32,
+        pos: [f64; 3],
+    ) -> bool {
         if !self.native_serves()
             || dimension != self.dim.id()
             || !teleportable(pos)
@@ -132,7 +137,11 @@ impl Game<'_> {
             Some(Target::Boat(id))
         } else if self.carts.iter().any(|c| c.id == id) {
             Some(Target::Cart(id))
-        } else if self.mobs.iter().any(|m| m.id == id && !m.removed && m.alive()) {
+        } else if self
+            .mobs
+            .iter()
+            .any(|m| m.id == id && !m.removed && m.alive())
+        {
             Some(Target::Mob(id))
         } else {
             None
@@ -149,8 +158,10 @@ impl Game<'_> {
         if !self.native_serves() {
             return false;
         }
-        let (Some(rider), Some(vehicle)) = (self.native_rider(entity), self.native_vehicle_target(vehicle))
-        else {
+        let (Some(rider), Some(vehicle)) = (
+            self.native_rider(entity),
+            self.native_vehicle_target(vehicle),
+        ) else {
             return false;
         };
         match rider {
@@ -171,16 +182,15 @@ impl Game<'_> {
             return false;
         }
         match self.native_rider(entity) {
-            Some(rider @ (Target::Player | Target::Guest(_))) => {
-                self.for_player(rider, |g| {
+            Some(rider @ (Target::Player | Target::Guest(_))) => self
+                .for_player(rider, |g| {
                     if g.riding.is_none() {
                         return false;
                     }
                     g.stop_riding();
                     g.riding.is_none()
                 })
-                .unwrap_or(false)
-            }
+                .unwrap_or(false),
             Some(Target::Mob(id)) => {
                 let rides = |g: &Self| g.mobs.iter().any(|m| m.id == id && m.extra.mount.is_some());
                 if !rides(self) {
@@ -346,6 +356,7 @@ impl Game<'_> {
                 at: pos,
                 rotation: Some(rotation),
                 vehicle: None,
+                cause: Some("unknown"),
             });
         }
         true

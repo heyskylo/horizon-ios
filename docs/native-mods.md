@@ -2736,7 +2736,7 @@ tick later with a command.
   player is about to be teleported, before their client hears it (Bukkit's `PlayerTeleportEvent`, NeoForge's
   `EntityTeleportEvent`). `cause` is `command`, `ender_pearl`, `chorus_fruit`, `spectate` (the spectator teleport
   menu), `dismount` or `unknown` (another server move of the player). `to_dimension` differs from `from_dimension` only
-  for a `command` or `spectate` teleport into another level. Change `to` and they go there instead; set `cancel` and
+  for a `command`, `spectate` or `unknown` (a mod's `native_teleport_player`) teleport into another level. Change `to` and they go there instead; set `cancel` and
   they stay where they are. Within a level `relative` is the position packet's flags: a mod may set or clear the look and motion bits (8, 16,
   32, 64, 128, 256; 0x1f8 keeps a pearl's speed as 26.2 did), the position bits are ignored; into another level it is
   not used. Not heard: portals and End gateways (their own hooks), respawns, a rider its vehicle carries, waking from a

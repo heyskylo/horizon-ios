@@ -15,9 +15,8 @@ use horizon_client::{
 use std::path::Path;
 
 /// Which of a player's inventories (`native_inventory`).
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum NativeInventoryKind {
+pub enum NativeInventoryKind {
     /// 41 slots: 0..9 the hotbar, 9..36 the rest (as `Inventory`), 36..40
     /// the armour (feet, legs, chest, head), 40 the off hand.
     Player,
