@@ -2508,6 +2508,13 @@ before (#10461).
   message arrived, in arrival order, with the hub back and no player's state swapped in, so every helper works; it is
   heard from a dead player too. Every guest is heard (a single player world's own player sends none). The client side,
   a window's own plugin channels, is #6774. Bundles need `"hooks": @API:custom_payload_from_client@`.
+- Helper **`native_send_custom_payload_to_player(player, channel, data)`** (`host.send_custom_payload_to_player`):
+  sends `data` on a plugin channel (`namespace:path`, not Horizon's own `horizon:` ones, at most 1 MiB as
+  `ClientboundCustomPayloadPacket` takes) to one player's client, a vanilla client included, as Bukkit's
+  `Player.sendPluginMessage`. It is queued and leaves at the tick's end, so it works from any server hook, a player's
+  own included; `Ok` means queued, and a player who isn't on by then gets nothing. Unlike `native_net_send_to_player`
+  nothing caps or frames it. An error on a client, and for a bad channel or size. Bundles need
+  `"hooks": @API:send_custom_payload_to_player@`.
 
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The

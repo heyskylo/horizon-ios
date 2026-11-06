@@ -31,6 +31,29 @@ pub(super) struct NativeNet {
     /// Plugin channel messages from players on channels that aren't Horizon's own, for
     /// `native_custom_payload_from_client`: player, channel, data.
     payloads_from: Vec<(u128, String, Vec<u8>)>,
+    /// What `native_send_custom_payload_to_player` sent this tick: player, channel, data.
+    payloads_to: Vec<(u128, String, Vec<u8>)>,
+}
+
+/// `ClientboundCustomPayloadPacket.MAX_PAYLOAD_SIZE`.
+const MAX_CLIENTBOUND_PAYLOAD: usize = 1_048_576;
+
+/// A plugin channel `namespace:path` as `Identifier` takes it, not in Horizon's own namespace.
+fn plugin_channel_ok(channel: &str) -> bool {
+    let Some((namespace, path)) = channel.split_once(':') else {
+        return false;
+    };
+    let allowed = |b: u8, slash: bool| {
+        b.is_ascii_lowercase()
+            || b.is_ascii_digit()
+            || matches!(b, b'_' | b'.' | b'-')
+            || (slash && b == b'/')
+    };
+    !namespace.is_empty()
+        && !path.is_empty()
+        && namespace != "horizon"
+        && namespace.bytes().all(|b| allowed(b, false))
+        && path.bytes().all(|b| allowed(b, true))
 }
 
 /// A message's payload as `native_net_send_*` check it.
@@ -109,6 +132,17 @@ impl Game<'_> {
                 );
             }
         }
+        for (player, channel, data) in std::mem::take(&mut self.native_net.payloads_to) {
+            if let Some(g) = host
+                .hub
+                .guests
+                .iter()
+                .find(|g| g.placed && g.uuid == player)
+            {
+                host.hub
+                    .send_to(g.conn, &C::CustomPayload(CustomPayload { channel, data }));
+            }
+        }
         // The allowance is a server tick's, not a level pass's: it starts over
         // after the last level.
         if self.level_pass.last {
@@ -149,6 +183,39 @@ impl Game<'_> {
         }
         *count += 1;
         self.native_net.to_players.push((player, payload));
+        Ok(())
+    }
+
+    /// Sends `data` on the plugin channel `channel` (`namespace:path`, not
+    /// Horizon's own `horizon:` ones, at most 1 MiB as
+    /// `ClientboundCustomPayloadPacket` takes) to `player`'s client, any
+    /// client, a vanilla one included, at the tick's end, from any server
+    /// hook (Bukkit's `Player.sendPluginMessage`). Ok means queued: a player
+    /// who isn't on by then gets nothing. Nothing counts these; the bytes
+    /// are the mod's to get right. An error on a client, and for a bad
+    /// channel or size. API @API:send_custom_payload_to_player@.
+    pub(super) fn native_send_custom_payload_to_player(
+        &mut self,
+        player: u128,
+        channel: &str,
+        data: &[u8],
+    ) -> Result<(), String> {
+        if self.remote.is_some() {
+            return Err("a client has no players to send to".into());
+        }
+        if !plugin_channel_ok(channel) {
+            return Err(format!(
+                "the channel {channel:?} is not namespace:path outside horizon:"
+            ));
+        }
+        if data.len() > MAX_CLIENTBOUND_PAYLOAD {
+            return Err(format!(
+                "the payload is past {MAX_CLIENTBOUND_PAYLOAD} bytes"
+            ));
+        }
+        self.native_net
+            .payloads_to
+            .push((player, channel.to_owned(), data.to_vec()));
         Ok(())
     }
 
