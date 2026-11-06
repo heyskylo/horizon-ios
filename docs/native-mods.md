@@ -2494,6 +2494,16 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   reads a stack from a compound without asking the registry, and `mod_api::parse_snbt` is the SNBT reader itself (the
   tag and the bytes it read), so a mod that keeps items as text needs neither the game's internal `item_data` module
   nor a `summon` command to make them. Bundles need `"hooks": @API:item_from_snbt@`.
+- Helpers `native_new_map(dimension, colors) -> Option<i32>` and `native_paint_map(map_id, colors) -> bool`: maps a
+  server mod draws that the world keeps (Bukkit's `Server.createMap` and a `MapCanvas` drawn for everyone). `colors`
+  is the 128 x 128 picture, row by row, each byte a `MapColor` id times 4 plus its shade, as `native_send_map` takes.
+  `native_new_map` makes a locked map (as a cartography table locks one: no exploring draws over it, no player
+  markers) of the level `dimension`, scale 0, under the world's next map id, so it never meets an id the game hands
+  out; give a `minecraft:filled_map` with that `minecraft:map_id`. `native_paint_map` replaces the whole picture of a
+  map the world made or saved (false otherwise); an unlocked map is still drawn over where its holders explore. Both
+  are saved with the world's maps (`data/minecraft/maps/<id>.dat`) and sent like vanilla map data to whoever carries
+  the map or sees it framed, players who join later included, so the mod never resends them. None and false on a
+  client of a server. Bundles need `"hooks": @API:new_map@`.
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a

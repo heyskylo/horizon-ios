@@ -6544,6 +6544,44 @@ impl Game<'_> {
             .is_some()
             .then_some(stack)
     }
+    /// A new map of the world showing `colors` (128 x 128 `MapColor` ids
+    /// times 4 plus the shade, row by row), scale 0, locked as a cartography
+    /// table locks one (no exploring draws over it) and without player
+    /// markers, of the level `dimension`: Bukkit's `Server.createMap` with its
+    /// picture drawn. It takes the world's next map id (`last_id.dat`), is
+    /// saved with the world's maps and goes, like any map, to whoever carries
+    /// it or sees it framed, players who join later included. A
+    /// `minecraft:filled_map` with this `minecraft:map_id` shows it. None on
+    /// a client of a server and with no world open. API @API:new_map@.
+    #[allow(dead_code)]
+    pub(super) fn native_new_map(&mut self, dimension: &str, colors: &[u8; 16384]) -> Option<i32> {
+        if self.remote.is_some() || self.world_root.as_os_str().is_empty() {
+            return None;
+        }
+        let mut data = super::maps::MapData::fresh(0.0, 0.0, 0, dimension);
+        data.locked = true;
+        data.tracking = false;
+        data.unlimited = false;
+        data.colors = colors.to_vec();
+        Some(self.new_map_id(data))
+    }
+    /// Replaces the whole picture of the world's map `map_id` (`MapCanvas`
+    /// drawn for everyone): saved with the maps and sent in full to everyone
+    /// carrying it or seeing it framed. An unlocked map is still drawn over
+    /// where its holders explore, as vanilla's are. False for a map this
+    /// world never made or saved, and on a client of a server.
+    /// API @API:new_map@.
+    #[allow(dead_code)]
+    pub(super) fn native_paint_map(&mut self, map_id: i32, colors: &[u8; 16384]) -> bool {
+        if self.remote.is_some() {
+            return false;
+        }
+        let Some(map) = self.map(map_id) else {
+            return false;
+        };
+        map.paint(colors);
+        true
+    }
     /// A click in a menu a mod opened (`native_open_menu`), which moved
     /// nothing: the menu's `slot` (its own first, then the player's
     /// inventory, `native_menu_inventory_slot`; -999 outside), the `button`
