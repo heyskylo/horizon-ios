@@ -71,8 +71,12 @@ pub fn stared_at(m: &Mob, w: &MobWorld) -> bool {
             Vec3::new(m.position.x, m.eye_y(), m.position.z),
         )
 }
-/// Enderman.teleport(x, y, z): never while riding something; drop to standing
-/// ground, require free space without liquid.
+/// `Enderman.teleport(x, y, z)`: never while riding something, then
+/// `LivingEntity.randomTeleport(x, y, z, true, #enderman_does_not_teleport_to)`:
+/// the first `#entities_can_teleport_to` block below the spot is the ground,
+/// and the enderman lands at the spot's own height less the blocks it went
+/// down (`checkPositionAndTeleport`), unless the ground or a block in its new
+/// box is one it does not teleport to, the box collides or holds a liquid.
 pub fn teleport_to(
     m: &mut Mob,
     w: &MobWorld,
@@ -84,8 +88,8 @@ pub fn teleport_to(
     if m.extra.passenger {
         return false;
     }
-    // LivingEntity.randomTeleport: WorldBorder.clampVec3ToBound keeps the
-    // target inside the border (Mth.clamp, 1.0E-5F inside the far edges).
+    // WorldBorder.clampVec3ToBound keeps the target inside the border
+    // (Mth.clamp, 1.0E-5F inside the far edges).
     let (x, z) = match w.border {
         Some(border) => {
             let [min_x, min_z, max_x, max_z] = border.bounds(0.0);
@@ -101,39 +105,70 @@ pub fn teleport_to(
     if !w.world.loaded(bx, bz) {
         return false;
     }
+    let refused = |name: &str| w.has_tag("minecraft:enderman_does_not_teleport_to", name);
     let mut by = y.floor() as i32;
-    while by > w.world.bottom_y() && !w.facts.get(w.world.block(bx, by, bz)).full_collision {
+    let mut ny = y;
+    let ground = loop {
+        if by <= w.world.bottom_y() {
+            return false;
+        }
         by -= 1;
-    }
-    let ground = w.facts.get(w.world.block(bx, by, bz));
-    if !ground.full_collision || ground.fluid == Fluid::Water {
+        let name = w.block_name(bx, by, bz);
+        if w.has_tag("minecraft:entities_can_teleport_to", name) {
+            break name;
+        }
+        ny -= 1.0;
+    };
+    if refused(ground) {
         return false;
     }
-    let ny = f64::from(by + 1);
     let half = f64::from(m.width()) / 2.0;
     let b = Aabb::new(
         Vec3::new(x - half, ny, z - half),
         Vec3::new(x + half, ny + f64::from(m.height()), z + half),
     );
-    if !w.no_collision(b) || w.fluids(b, ny + m.eye_height()).in_water || w.fluids(b, ny).in_lava {
+    if !w.no_collision(b) {
         return false;
     }
-    let old = m.center();
+    // LevelReader.containsAnyLiquid and findBlocksIn: the same closed range of
+    // cells, from BlockPos.containing(min) to BlockPos.containing(max).
+    let (lo, hi) = (b.min_position(), b.max_position());
+    for cx in lo.x.floor() as i32..=hi.x.floor() as i32 {
+        for cy in lo.y.floor() as i32..=hi.y.floor() as i32 {
+            for cz in lo.z.floor() as i32..=hi.z.floor() as i32 {
+                if w.fluid(cx, cy, cz) != Fluid::None || refused(w.block_name(cx, cy, cz)) {
+                    return false;
+                }
+            }
+        }
+    }
+    // Enderman.canRandomlyTeleportTo: not onto ground that holds water
+    // (a waterlogged slab, leaves or roots).
+    if w.fluid(bx, by, bz) == Fluid::Water {
+        return false;
+    }
+    let old = m.position;
     let old_block = [
         m.position.x.floor() as i32,
         m.position.y.floor() as i32,
         m.position.z.floor() as i32,
     ];
+    // Entity.teleportTo -> snapTo: the old position moves too, the motion stays.
     m.position = Vec3::new(x, ny, z);
     m.previous = m.position;
-    m.velocity = Vec3::ZERO;
     m.ai.nav.stop();
-    // `LivingEntity.randomTeleport(..., true)` broadcasts entity event 46
-    // before the trail and the teleport sounds.
+    // `randomTeleport(..., true)` broadcasts entity event 46.
     events.push(MobEvent::EntityEvent {
         mob: m.id,
         event: 46,
         at: [m.position.x, m.position.y, m.position.z],
+    });
+    // Enderman.teleport: GameEvent.TELEPORT where it was, silent or not.
+    events.push(MobEvent::GameEvent {
+        event: "minecraft:teleport",
+        at: [old.x, old.y, old.z],
+        source: m.id,
+        state: horizon_world::registry::BlockStateId(0),
     });
     if !m.silent {
         // Level event 2018: the portal trail, from the old block to the new
@@ -145,14 +180,12 @@ pub fn teleport_to(
             pos: old_block,
             data: packed(0) << 16 | packed(1) << 8 | packed(2),
         });
+        // Both sounds are at the new feet: `xo` was moved by snapTo, and
+        // Entity.playSound plays at the position.
+        let at = [m.position.x, m.position.y, m.position.z];
+        events.push(MobEvent::Sound("entity.enderman.teleport", at, 1.0, 1.0));
+        events.push(MobEvent::Sound("entity.enderman.teleport", at, 1.0, 1.0));
     }
-    events.push(MobEvent::Sound("entity.enderman.teleport", old, 1.0, 1.0));
-    events.push(MobEvent::Sound(
-        "entity.enderman.teleport",
-        m.center(),
-        1.0,
-        1.0,
-    ));
     true
 }
 pub fn teleport_random(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) -> bool {
@@ -226,20 +259,29 @@ pub fn on_damage(m: &mut Mob, source: &Damage) -> bool {
     true
 }
 pub fn after_hurt(m: &mut Mob, source: &Damage) {
-    // A thrown potion's hit (`indirect_magic`, which only a splash potion
-    // deals to a mob) leaves `Enderman.hurtServer` before the random chance:
+    // A thrown potion's hit (`indirect_magic` with the potion as the direct
+    // entity, `Mob::damage_by`) and a projectile it dodges leave
+    // `Enderman.hurtServer` before the random chance:
     // `repeatedlyTryToTeleport` replaces it.
-    if source.kind != super::DamageKind::IndirectMagic
-        && source.attacker.is_none()
-        && m.random.next_int_bound(10).unwrap_or(0) != 0
-    {
+    if !dodges(m, source) && source.kind != super::DamageKind::IndirectMagic {
+        teleport_chance(m, source);
+    }
+}
+/// `Enderman.hurtServer`'s `!(source.getEntity() instanceof LivingEntity) &&
+/// random.nextInt(10) != 0`: a teleport after the hurt.
+pub fn teleport_chance(m: &mut Mob, source: &Damage) {
+    if source.attacker.is_none() && m.random.next_int_bound(10).unwrap_or(0) != 0 {
         m.extra.counter2 = 1;
     }
 }
-/// Pending teleports (repeatedlyTryToTeleport: up to 64 tries).
+/// Enderman.aiStep: never jumps; the teleports a hurt left run.
 pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
-    // Enderman.aiStep: never jumps.
     m.ai.jumping = false;
+    run_pending_teleports(m, w, events);
+}
+/// The teleports `hurtServer` asked for (`teleport()`, or
+/// `repeatedlyTryToTeleport`: up to 64 tries).
+pub fn run_pending_teleports(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     if m.extra.counter2 > 0 {
         let tries = m.extra.counter2;
         m.extra.counter2 = 0;
@@ -255,10 +297,6 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
                 break;
             }
         }
-    }
-    if (m.fluids.in_water || super::ai::in_rain(m, w)) && m.alive() {
-        // Hurt by water: teleport away.
-        m.extra.counter2 = m.extra.counter2.max(1);
     }
 }
 /// EndermanModel.setupAnim: half-speed clamped limbs, held-block arms, creepy head.
