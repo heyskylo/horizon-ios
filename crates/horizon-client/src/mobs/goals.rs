@@ -1620,6 +1620,11 @@ impl NearestTarget {
         self.interval = reduced(i);
         self
     }
+    /// `TargetGoal.setUnseenMemoryTicks`.
+    pub fn unseen_memory(mut self, ticks: i32) -> Self {
+        self.target_goal.unseen_memory = ticks;
+        self
+    }
     /// Scale the follow distance (llamas hunt wolves within a quarter of it).
     pub fn follow_scale(mut self, scale: f64) -> Self {
         self.target_goal.follow_scale = scale;
