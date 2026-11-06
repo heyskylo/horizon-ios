@@ -346,6 +346,59 @@ impl Game<'_> {
         Ok(())
     }
 
+    /// Puts `new` in slot `slot` of the player `uuid`'s inventory `kind`
+    /// (`native_inventory`'s numbering: armour and the off hand too), which
+    /// must still hold exactly `expected` (None: empty), and returns what was
+    /// there (Bukkit's `setItem`, checked like `native_move_stack`). Live or
+    /// their file; a player's screen follows with the tick's sync. Err as
+    /// `native_inventory`, for no such slot, or when the slot changed.
+    /// @API:set_inventory_slot@.
+    pub(super) fn native_set_inventory_slot(
+        &mut self,
+        uuid: u128,
+        kind: NativeInventoryKind,
+        slot: usize,
+        expected: Option<&ItemStack>,
+        new: Option<ItemStack>,
+    ) -> Result<Option<ItemStack>, String> {
+        let (old, _) = self.native_edit_slots(uuid, kind, |s, _| {
+            let at = s.get_mut(slot).ok_or("no such slot")?;
+            if at.as_ref() != expected {
+                return Err("that stack changed".into());
+            }
+            Ok(std::mem::replace(at, new))
+        })?;
+        Ok(old)
+    }
+
+    /// Takes the stacks out of the player `uuid`'s inventory (`Player`
+    /// numbering) slots, each of which must still hold exactly its stack, all
+    /// or none, and returns them in order. Live or their file; a player's
+    /// screen follows with the tick's sync. Err as `native_inventory`, for a
+    /// slot named twice, or when one changed (nothing is taken then).
+    /// @API:set_inventory_slot@.
+    pub(super) fn native_take_stacks(
+        &mut self,
+        uuid: u128,
+        slots: &[(usize, ItemStack)],
+    ) -> Result<Vec<ItemStack>, String> {
+        let (taken, _) = self.native_edit_slots(uuid, NativeInventoryKind::Player, |s, _| {
+            for (k, (slot, stack)) in slots.iter().enumerate() {
+                if slots[..k].iter().any(|(other, _)| other == slot) {
+                    return Err("a slot named twice".into());
+                }
+                if s.get(*slot).and_then(Option::as_ref) != Some(stack) {
+                    return Err("that stack changed".into());
+                }
+            }
+            Ok(slots
+                .iter()
+                .filter_map(|(slot, _)| s[*slot].take())
+                .collect())
+        })?;
+        Ok(taken)
+    }
+
     /// Edits the player `uuid`'s inventory `kind` (and, for `Player`, the
     /// held hotbar slot) live or in their file, as `native_inventory` reads
     /// it: nothing is written when `edit` fails. The guest's hub index when

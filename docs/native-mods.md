@@ -2519,6 +2519,12 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   are dead or while a player's state is swapped in (call it from `native_server_tick`). For `Player`,
   `selected` (0..9) becomes the held hotbar slot, the cursor and the 2x2 crafting grid are emptied, and a player on
   the server is sent the whole inventory at once. Err for a wrong number of slots.
+- Helpers `native_set_inventory_slot(uuid, kind, slot, expected, new) -> Result<Option<ItemStack>, String>` and
+  `native_take_stacks(uuid, slots) -> Result<Vec<ItemStack>, String>`, checked like `native_move_stack` and live or in
+  the file like it: the first puts `new` in one slot (armour and the off hand too), which must still hold exactly
+  `expected`, and returns what was there (Bukkit's `setItem`); the second takes the stacks out of the given `Player`
+  slots, each of which must still hold exactly its stack, all or none (a stake, a trade, a fine with enchanted gear).
+  A player's screen follows with the tick's sync.
 
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
