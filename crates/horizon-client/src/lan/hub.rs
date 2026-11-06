@@ -3965,12 +3965,16 @@ impl Hub {
                 S::Chat(c) => self.handle_chat(i, c, events),
                 S::ChatAck(p) => self.chat_ack(i, p.offset, events),
                 S::ChatSessionUpdate(p) => self.chat_session_update(i, p, events),
-                // handlePlayerAction (a dig starting, stopping or finishing) is the
-                // game's, run after this pass. A move queued behind it is checked
-                // against the block the player just broke and falls through, so it
-                // would be sent back; it waits for the next tick, when the block is
-                // gone, as vanilla handles the packets in order.
-                S::PlayerAction(p) if p.action <= 3 => {
+                // handlePlayerAction is the game's, run after this pass, and a move
+                // queued behind it waits for the next tick, as vanilla handles the
+                // packets in order. For a dig starting, stopping or finishing, the
+                // move is checked against the block the player just broke and falls
+                // through, so it would be sent back. A drop, a RELEASE_USE_ITEM (a
+                // bow's arrow, a trident, a spear) and a stab use the player's
+                // position and known movement now (#8423): shot after the move, an
+                // arrow left the position of the tick after the release, a tick
+                // ahead of the camera's instead of a tick behind it.
+                S::PlayerAction(p) => {
                     events.push(HostEvent::Packet(conn, Box::new(S::PlayerAction(p))));
                     held = self.move_queued(i);
                 }
@@ -5527,6 +5531,78 @@ mod tests {
                 [(S::MovePlayerRot(_), _)]
             ),
             "the turn did not wait for the next tick"
+        );
+    }
+
+    /// #8423: a RELEASE_USE_ITEM shoots from the player's position and known
+    /// movement of the last move the server handled; the move the client sent
+    /// after it waits for the next tick, as vanilla handles the two in order.
+    #[test]
+    fn a_release_shoots_before_the_move_behind_it() {
+        let (mut hub, _rx) = hub_with_a_guest();
+        hub.guests[0].load_timeout = 0;
+        let before = (hub.guests[0].position, hub.guests[0].known_movement);
+        let inbox = &mut hub.guests[0].inbox;
+        inbox.push_back((
+            S::PlayerAction(play::PlayerAction {
+                action: 6,
+                pos: [0; 3],
+                direction: 0,
+                sequence: 0,
+            }),
+            0,
+        ));
+        inbox.push_back((
+            S::MovePlayerPos(play::MovePlayerPos {
+                x: before.0[0] + 0.3,
+                y: before.0[1],
+                z: before.0[2],
+                flags: 1,
+            }),
+            0,
+        ));
+        let mut world = World::new(horizon_world::registry::BlockStateId(0), 0);
+        let mut next_entity = 2;
+        let border = crate::worldborder::WorldBorder::default();
+        let mut ctx = TickCtx {
+            world: &mut world,
+            entities: &[],
+            next_entity: &mut next_entity,
+            spawn: [0.5, 64.0, 0.5],
+            difficulty: 2,
+            difficulty_locked: false,
+            clock_rate: 1.0,
+            tick_rate: 20.0,
+            tick_frozen: false,
+            tick_steps: Default::default(),
+            collision: None,
+            border: &border,
+            streaming: None,
+        };
+        let events = hub.drain_packets(&mut ctx);
+        let handled: Vec<&S> = events
+            .iter()
+            .filter_map(|e| match e {
+                HostEvent::Packet(_, p) => Some(&**p),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            matches!(handled[..], [S::PlayerAction(_)]),
+            "the game was handed {handled:?}"
+        );
+        assert!(
+            matches!(
+                hub.guests[0].inbox.iter().collect::<Vec<_>>()[..],
+                [(S::MovePlayerPos(_), _)]
+            ),
+            "the move did not wait for the next tick"
+        );
+        let g = &hub.guests[0];
+        assert_eq!(
+            (g.position, g.known_movement),
+            before,
+            "the shot's position"
         );
     }
 
