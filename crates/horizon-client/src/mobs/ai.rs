@@ -766,6 +766,10 @@ pub fn tick(
         super::panda::tick(m, w, events);
     }
     aquatic::school_tick(m, w, level_random);
+    // Dolphin.tick: after super.tick, NoAI restores the species maximum.
+    if m.no_ai && m.species() == Species::Dolphin {
+        m.air = m.max_air_supply();
+    }
     true
 }
 /// `LivingEntity.aiStep` -> `Entity.applyEffectsFromBlocks` for the blocks
@@ -5051,5 +5055,76 @@ mod flight_effect_fall_tests {
             },
         );
         assert!(ran, "prepared resources must run the integration fixture");
+    }
+}
+
+#[cfg(test)]
+mod dolphin_noai_air_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn check(water: bool, no_ai: bool, initial: i32, expected: [i32; 2]) {
+        let build = |world: &mut crate::world::World,
+                     registry: &horizon_world::registry::BlockRegistry| {
+            world
+                .chunks
+                .insert((0, 0), Arc::new(crate::chunk::Chunk::empty(0, 0)));
+            if water {
+                let water = registry.default_state("minecraft:water").unwrap();
+                for x in 0..=4 {
+                    for z in 0..=4 {
+                        for y in 0..=8 {
+                            world.set(x, y, z, water).unwrap();
+                        }
+                    }
+                }
+            }
+        };
+        let ran = crate::mobs::world::with_built_test_world(&[], build, |w, types| {
+            let kind = Arc::new(types.types["minecraft:dolphin"].clone());
+            let mut mob = Mob::new(1, kind, Vec3::new(2.5, 3.0, 2.5), 0.0);
+            mob.no_ai = no_ai;
+            mob.no_gravity = true;
+            mob.persistent = true;
+            mob.attrs.speed = 0.0;
+            mob.air = initial;
+            let mut random = LegacyRandom::new(0);
+            let mut events = Vec::new();
+            assert_eq!(mob.health, 10.0);
+            assert_eq!(mob.max_air_supply(), 4800);
+            for (index, expected) in expected.into_iter().enumerate() {
+                assert!(tick(&mut mob, w, &mut random, &mut events));
+                assert_eq!(mob.age, (index + 1) as u32);
+                assert_eq!(mob.fluids.eye_in_water, water);
+                assert_eq!(mob.health, 10.0);
+                assert_eq!(mob.no_ai, no_ai);
+                assert_eq!(
+                    mob.air,
+                    expected,
+                    "water={water}, NoAI={no_ai}, initial={initial}, tick={}",
+                    index + 1
+                );
+            }
+        });
+        if !ran {
+            eprintln!("Prepared mob data unavailable; Dolphin full-tick coverage did not run");
+        }
+    }
+
+    /// `Dolphin.tick` restores max air after super.tick for a NoAI dolphin,
+    /// even when that superclass tick refilled or consumed loaded air.
+    #[test]
+    fn noai_dolphins_restore_air_after_the_full_mob_tick() {
+        for water in [false, true] {
+            for initial in [4800, 100] {
+                check(water, true, initial, [4800, 4800]);
+            }
+        }
+    }
+
+    /// The NoAI exception must not suppress normal underwater consumption.
+    #[test]
+    fn normal_dolphins_keep_their_underwater_countdown() {
+        check(true, false, 4800, [4799, 4798]);
     }
 }
