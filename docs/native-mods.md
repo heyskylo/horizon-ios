@@ -3193,6 +3193,37 @@ pieces.
   The tints are the biome's own at the column's top, not blended over the biome blend radius as the game draws them, so
   near a biome border they can differ from what players see by a few blocks.
 
+### Client world snapshots
+
+`crates/horizon-client/src/game/native_client_world.rs`: helpers for client mods that read the world in bulk on their
+own threads (a minimap baking tiles, a world map export, a shader pack's CPU side). They read the client world, what
+the window shows: on a client of a server, the chunks the server sent. API @API:client_world_snapshots@.
+
+- `native_client_chunks(from, to)` takes the loaded chunks from chunk `from` to chunk `to` (`[x, z]`, both included, in
+  either order) as `NativeClientChunks`, which is `Send` and `Sync`. It shares the chunks with the world, so taking or
+  cloning one copies no blocks. It reads by block position: `block(pos)` (a `BlockStateId`; air outside the world's
+  height and in columns not loaded), `biome(pos)` (a `NativeBiomeId`, one a 4 by 4 by 4 cell, `y` clamped to the build
+  height; none where not loaded), `loaded([x, z])`, `section_top([x, z])` (one above the highest 16-block section of the
+  column's chunk that isn't all air: the column is air from there up) and `height()` (the world's build height, from its
+  lowest y to one above its highest; `native_world_height` gives the lowest y and the height instead). `Err`, taking
+  nothing, on a server or for an area of more than 66,049 chunks (the square a render distance of 128 loads).
+- `native_client_chunks_changed(&snapshot)` names the chunks of the snapshot's area, in no set order, whose state in the
+  world differs from the snapshot's now: written to since it was taken (blocks, biomes or light, even a write that left
+  them the same), or loaded or unloaded where the snapshot had them the other way. Empty means the snapshot's blocks and
+  biomes are still the world's. A snapshot keeps its chunks as they were, so the world copies the section it edits in a
+  held chunk: drop snapshots you no longer read.
+- `native_client_biomes()` gives the biome table the terrain is drawn with (`NativeClientBiomes`, `Send` and `Sync`), a
+  mod's `native_biome_colors` included, none on a server. `name(id)` is the biome's name (`minecraft:plains`) and
+  `colors(id, [x, z])` its `BiomeColors` at a column: grass as drawn there (the dark forest's darkening, the swamp's
+  noise), foliage, dry foliage and water, before the biome blend the terrain smooths them with.
+  `native_client_biomes_changed(&biomes)` says when the terrain is drawn with another table (a mod recoloured the biomes
+  with `native_refresh_biome_colors`, the resources loaded again, another world opened): what was tinted from the old
+  one is out of date even where no chunk changed.
+
+A minimap takes a snapshot of the chunks a tile can see, bakes the tile from it on its worker, and keeps the snapshot
+and the biome table with the tile. Every so often it asks `native_client_chunks_changed` for the tiles in view and
+bakes again those with a changed chunk, and all of them when `native_client_biomes_changed` says so.
+
 ### Structure templates
 
 `crates/horizon-client/src/game/native_structures.rs`: a helper for server mods that reads a structure template without
