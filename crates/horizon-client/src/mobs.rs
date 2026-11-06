@@ -2981,7 +2981,7 @@ pub struct MobWorld<'a> {
     pub day_time: i64,
     pub raining: bool,
     pub thundering: bool,
-    pub nether: bool,
+    pub level: horizon_core::LevelKey,
     pub block_tags: &'a HashMap<String, std::collections::HashSet<String>>,
     /// Each block's `fallOn` rule (the player's landing registry).
     pub landing: &'a horizon_world::block_landing::BlockLandingRegistry,
@@ -2997,8 +2997,8 @@ pub struct MobWorld<'a> {
     /// `getCurrentDifficultyAt` at the mob being ticked (near the player
     /// outside the mob tick).
     pub difficulty: spawning::LocalDifficulty,
-    /// The End (its dimension type's monster spawn light rules).
-    pub end: bool,
+    /// The level's dimension type.
+    pub dimension_type: &'a horizon_world::dimension_type::DimensionFacts,
     /// The world seed (slime chunks).
     pub world_seed: i64,
     /// `Level.getSeaLevel` (63 in the overworld, -63 in a flat world).

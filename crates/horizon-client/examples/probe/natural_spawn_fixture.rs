@@ -30,7 +30,7 @@ use horizon_client::{
     mobs::{
         MobTypes, Species,
         data::MobData,
-        spawn_rules::{Dimension, SpawnLevel},
+        spawn_rules::SpawnLevel,
         spawn_selection::{
             self, Category, Counted, Event, GenEvent, Heightmap, NaturalLevel, SpawnCost,
             SpawnPlayer, SpawnRequest, SpawnState, Spawned, StructureAt, StructureSpawns,
@@ -49,12 +49,13 @@ use horizon_client::{
     vault::{Vault, VaultEvent, VaultLevel, VaultPlayer, VaultState},
 };
 use horizon_core::{
+    LevelKey,
     geometry::Aabb,
     random::{LegacyRandom, RandomSource},
 };
 use horizon_world::{
-    block_collision::BlockCollisionRegistry, chunk::BlockState, loot::PackOverlay, nbt::Tag,
-    registry::BlockStateId,
+    block_collision::BlockCollisionRegistry, chunk::BlockState, dimension_type::DimensionFacts,
+    loot::PackOverlay, nbt::Tag, registry::BlockStateId,
 };
 use serde_json::Value;
 use std::{
@@ -110,7 +111,7 @@ struct World<'a> {
     sea: i32,
     seed: i64,
     peaceful: bool,
-    dimension: Dimension,
+    dimension: &'static DimensionFacts,
     dimension_id: String,
     slime: f32,
     starts: Vec<Start>,
@@ -214,7 +215,7 @@ impl SpawnLevel for World<'_> {
     fn peaceful(&self) -> bool {
         self.peaceful
     }
-    fn dimension(&self) -> Dimension {
+    fn dimension_type(&self) -> &DimensionFacts {
         self.dimension
     }
     fn surface_slime_chance(&self, _: i32, _: i32, _: i32) -> f32 {
@@ -232,28 +233,24 @@ impl SpawnLevel for World<'_> {
 }
 impl NaturalLevel for World<'_> {
     fn min_y(&self) -> i32 {
-        if self.dimension == Dimension::Overworld {
+        if self.dimension.id == "minecraft:overworld" {
             -64
         } else {
             0
         }
     }
     fn max_y(&self) -> i32 {
-        if self.dimension == Dimension::Overworld {
+        if self.dimension.id == "minecraft:overworld" {
             319
         } else {
             255
         }
     }
     fn ambient_light(&self) -> f32 {
-        match self.dimension {
-            Dimension::Overworld => 0.0,
-            Dimension::Nether => 0.1,
-            Dimension::End => 0.25,
-        }
+        self.dimension.ambient_light
     }
     fn has_ceiling(&self) -> bool {
-        self.dimension == Dimension::Nether
+        self.dimension.id == "minecraft:the_nether"
     }
     fn mob_type(&self, entity: &str) -> Option<(Species, f32, f32, Category)> {
         let t = self.s.types.types.get(entity)?;
@@ -664,11 +661,8 @@ pub fn main() -> horizon_client::Result<()> {
             })
             .collect::<Vec<_>>();
         let dimension_id = get("dim", "minecraft:overworld");
-        let dimension = match dimension_id.as_str() {
-            "minecraft:the_nether" => Dimension::Nether,
-            "minecraft:the_end" => Dimension::End,
-            _ => Dimension::Overworld,
-        };
+        let dimension =
+            DimensionFacts::of_builtin_level(LevelKey::builtin_or_overworld(&dimension_id));
         let respawn = {
             let r = get("respawn", "0,-1000,0/minecraft:overworld");
             let (p, d) = r.split_once('/').ok_or("bad respawn")?;

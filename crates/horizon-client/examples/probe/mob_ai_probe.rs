@@ -1196,7 +1196,7 @@ pub fn main() -> horizon_client::Result<()> {
                     day_time: world.day_time,
                     raining: s.rain,
                     thundering: s.thunder,
-                    nether: false,
+                    level: horizon_core::LevelKey::OVERWORLD,
                     block_tags: &items.block_tags,
                     landing: &motion.landing,
                     biomes: &biomes,
@@ -1205,7 +1205,7 @@ pub fn main() -> horizon_client::Result<()> {
                     mob_drops: true,
                     max_entity_cramming: 24,
                     difficulty: LocalDifficulty::new(s.difficulty, world.day_time, 0, 0.0),
-                    end: false,
+                    dimension_type: horizon_world::dimension_type::DimensionFacts::overworld(),
                     world_seed: 0,
                     // FlatLevelSource.getSeaLevel.
                     sea_level: -63,
