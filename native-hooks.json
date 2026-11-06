@@ -740,6 +740,9 @@
       "name": "frame",
       "version": 1,
       "target": "horizon_client::game::native_hooks::Game<'_>::native_frame",
+      "neoforge": "RenderFrameEvent.Pre (once a frame, after the frame's ticks and before its drawing)",
+      "side": "client",
+      "cancellable": false,
       "mod_api": {
         "contract": "listen"
       }
@@ -1223,6 +1226,9 @@
       "name": "item_dropped",
       "version": 1,
       "target": "horizon_client::game::native_hooks::Game<'_>::native_item_dropped",
+      "neoforge": "ItemTossEvent (only hears: a toss can't be canceled)",
+      "side": "server",
+      "cancellable": false,
       "mod_api": {
         "contract": "listen"
       }
@@ -1487,7 +1493,9 @@
       "name": "tooltip_component",
       "version": 1,
       "target": "horizon_client::game::native_hooks::Game<'_>::native_tooltip_component",
+      "neoforge": "RenderTooltipEvent.GatherComponents (one image component after the text, drawn by tooltip_component_draw)",
       "side": "client",
+      "cancellable": false,
       "mod_api": {
         "contract": "replace",
         "out": "size"
@@ -3019,6 +3027,7 @@
       "name": "experience_orb_pickup",
       "version": 1,
       "target": "horizon_client::game::native_hooks::Game<'_>::native_experience_orb_pickup",
+      "neoforge": "PlayerXpEvent.PickupXp",
       "side": "server",
       "cancellable": true,
       "mod_api": {
@@ -5078,6 +5087,7 @@
       "name": "gui_render_post",
       "version": 1,
       "target": "horizon_client::game::native_hooks::Game<'_>::native_gui_render_post",
+      "neoforge": "RenderGuiEvent.Post (after the whole GUI, open screens included; also under F1, which gui_hidden tells)",
       "side": "client",
       "cancellable": false,
       "mod_api": {
