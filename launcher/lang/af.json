@@ -1220,5 +1220,7 @@
   "{name} was left out: made for another Horizon version": "{name} is weggelaat: gemaak vir 'n ander Horizon-weergawe",
   "{name} was left out: clashes with {other}": "{name} is weggelaat: bots met {other}",
   "{name} was left out: it needs {other}, which was left out": "{name} is weggelaat: dit het {other} nodig, wat weggelaat is",
-  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Bou nie op die Horizon wat jy speel nie ({code}): 'n bou laat dit weg totdat die outeur dit bywerk"
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Bou nie op die Horizon wat jy speel nie ({code}): 'n bou laat dit weg totdat die outeur dit bywerk",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Waar jy is, word die stigtersstel deur 'n gratis betaalblad op playhorizon.dev geëis. Eis dit in die Winkel: dit maak die betaalblad vir jou oop.",
+  "The founder set can't be claimed from your country.": "Die stigtersstel kan nie uit jou land geëis word nie."
 }

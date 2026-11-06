@@ -1220,5 +1220,7 @@
   "{name} was left out: made for another Horizon version": "{name} е изоставен: направен за друга верзија на Horizon",
   "{name} was left out: clashes with {other}": "{name} е изоставен: се судира со {other}",
   "{name} was left out: it needs {other}, which was left out": "{name} е изоставен: му треба {other}, кој е изоставен",
-  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Не се гради на Horizon што го играш ({code}): градењето го изоставува додека авторот не го ажурира"
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Не се гради на Horizon што го играш ({code}): градењето го изоставува додека авторот не го ажурира",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Таму каде што сте, комплетот на основачите се зема преку бесплатно плаќање на playhorizon.dev. Земете го од Продавницата: таа ќе ви го отвори плаќањето.",
+  "The founder set can't be claimed from your country.": "Комплетот на основачите не може да се земе од вашата земја."
 }

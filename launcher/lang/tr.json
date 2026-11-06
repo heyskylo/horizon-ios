@@ -1220,5 +1220,7 @@
   "{name} was left out: made for another Horizon version": "{name} dışarıda bırakıldı: başka bir Horizon sürümü için yapılmış",
   "{name} was left out: clashes with {other}": "{name} dışarıda bırakıldı: {other} ile çakışıyor",
   "{name} was left out: it needs {other}, which was left out": "{name} dışarıda bırakıldı: dışarıda bırakılan {other} gerekiyor",
-  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Oynadığın Horizon'da derlenmiyor ({code}): yazarı güncelleyene kadar derleme onu dışarıda bırakır"
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Oynadığın Horizon'da derlenmiyor ({code}): yazarı güncelleyene kadar derleme onu dışarıda bırakır",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Bulunduğun yerde kurucu seti playhorizon.dev üzerinde ücretsiz bir ödeme ile alınır. Mağaza'dan al: ödemeyi senin için açar.",
+  "The founder set can't be claimed from your country.": "Kurucu seti ülkenden alınamaz."
 }
