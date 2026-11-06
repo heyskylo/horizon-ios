@@ -1698,7 +1698,14 @@ mod tests {
         };
         let hud = crate::hud::HudBatch::new([4, 4]);
         let mut frame = crate::gfx::pack_uniforms::initial_history_tests::frame(&hud);
-        let mut native = NativeFrame::new(&device, None, Vec::new(), Default::default(), None);
+        let mut native = NativeFrame::new(
+            &device,
+            None,
+            Vec::new(),
+            Default::default(),
+            None,
+            Api::V0_1,
+        );
         frame.pack.still_ticks = Some(47_811);
         frame.pack.eye_light = [0, 15];
         frame.pack.rain = 1.0;
