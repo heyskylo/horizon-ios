@@ -211,6 +211,78 @@ public final class VanillaCommandExecOracle {
             Files.writeString(output.resolveSibling("fishing-fallback-reference.json"), rows.toString());
         }
 
+        void writeHappyGhastLeashReference() throws Exception {
+            if (!Boolean.getBoolean("horizon.happyGhastLeashReference")) return;
+            var level = this.overworld();
+            var fencePos = new net.minecraft.core.BlockPos(0, 64, 0);
+            var oldBlock = level.getBlockState(fencePos);
+            level.setBlockAndUpdate(fencePos, net.minecraft.world.level.block.Blocks.OAK_FENCE.defaultBlockState());
+            JsonArray rows = new JsonArray();
+            for (String kind : new String[] {"adult", "baby", "cow"}) {
+                for (int probe = 0; probe < 12; probe++) {
+                    double slack = kind.equals("cow") ? 6.0 : 10.0;
+                    double snap = kind.equals("cow") ? 12.0 : 16.0;
+                    double distance = probe < 6 ? new int[] {2, 4, 8, 11, 13, 17}[probe]
+                        : (probe < 9 ? slack : snap) + ((probe - 6) % 3 - 1) * 1.0e-6;
+                    String phase = probe < 6 ? "dispatch" : probe < 9 ? "elastic" : "snap";
+                    net.minecraft.world.entity.PathfinderMob mob;
+                    if (kind.equals("cow")) {
+                        mob = new net.minecraft.world.entity.animal.cow.Cow(net.minecraft.world.entity.EntityTypes.COW, level);
+                    } else {
+                        var ghast = new net.minecraft.world.entity.animal.happyghast.HappyGhast(net.minecraft.world.entity.EntityTypes.HAPPY_GHAST, level);
+                        ghast.setAge(kind.equals("baby") ? -24000 : 0);
+                        mob = ghast;
+                    }
+                    var knot = new net.minecraft.world.entity.decoration.LeashFenceKnotEntity(level, fencePos);
+                    if (phase.equals("elastic")) {
+                        mob.setPos(knot.getX() + distance, knot.getY() + knot.getBbHeight() / 2.0 - mob.getBbHeight() / 2.0,
+                            knot.getZ() - mob.getBbWidth() / 2.0);
+                    } else if (phase.equals("snap")) {
+                        var center = knot.getBoundingBox().getCenter();
+                        mob.setPos(center.x + distance, center.y - mob.getBbHeight() / 2.0, center.z);
+                    } else mob.setPos(0.5 + distance, 64, 0.5);
+                    mob.setYRot(0);
+                    mob.setOnGround(false);
+                    mob.setDeltaMovement(net.minecraft.world.phys.Vec3.ZERO);
+                    var marker = new net.minecraft.core.BlockPos(8, 64, 8);
+                    var path = new net.minecraft.world.level.pathfinder.Path(
+                        List.of(new net.minecraft.world.level.pathfinder.Node(8, 64, 8)), marker, true);
+                    if (!mob.getNavigation().moveTo(path, 0.75)) throw new IllegalStateException("marker path rejected");
+                    mob.getMoveControl().setWantedPosition(20, 70, 20, 1.0);
+                    mob.setLeashedTo(knot, false);
+                    net.minecraft.world.entity.Leashable.tickLeash(level, mob);
+                    JsonObject row = new JsonObject();
+                    row.addProperty("kind", kind);
+                    row.addProperty("distance", distance);
+                    row.addProperty("phase", phase);
+                    JsonArray position = new JsonArray();
+                    position.add(mob.getX()); position.add(mob.getY()); position.add(mob.getZ());
+                    row.add("position", position);
+                    row.addProperty("snapped", !mob.isLeashed());
+                    row.addProperty("wanted", mob.getMoveControl().hasWanted());
+                    var currentPath = mob.getNavigation().getPath();
+                    if (currentPath == null) row.add("path", com.google.gson.JsonNull.INSTANCE);
+                    else {
+                        JsonArray target = new JsonArray();
+                        target.add(currentPath.getTarget().getX());
+                        target.add(currentPath.getTarget().getY());
+                        target.add(currentPath.getTarget().getZ());
+                        row.add("path", target);
+                    }
+                    JsonArray velocity = new JsonArray();
+                    var v = mob.getDeltaMovement();
+                    velocity.add(v.x); velocity.add(v.y); velocity.add(v.z);
+                    row.add("velocity", velocity);
+                    rows.add(row);
+                    mob.removeLeash();
+                    mob.discard();
+                    knot.discard();
+                }
+            }
+            level.setBlockAndUpdate(fencePos, oldBlock);
+            Files.writeString(output.resolveSibling("happy-ghast-leash-reference.json"), rows.toString());
+        }
+
         void writeMountControlReference() throws Exception {
             if (!Boolean.getBoolean("horizon.mountControlReference")) return;
             var level = this.overworld();
@@ -520,6 +592,7 @@ public final class VanillaCommandExecOracle {
                 Files.writeString(output.resolveSibling("client_config.json"), login.toString());
             }
             writeOrbWaterReference();
+            try { writeHappyGhastLeashReference(); } catch (Exception e) { throw new IOException(e); }
             try { writeMountControlReference(); } catch (Exception e) { throw new IOException(e); }
             try { writeFishingReference(); } catch (Exception e) { throw new IOException(e); }
             try { writeFishingFallbackReference(); } catch (Exception e) { throw new IOException(e); }

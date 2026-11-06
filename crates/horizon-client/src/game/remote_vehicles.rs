@@ -254,6 +254,12 @@ impl Game<'_> {
         Some(position)
     }
 
+    /// AbstractBoat.getControllingPassenger: only the first player steers a boat.
+    /// A non-remote world retains its existing local movement ownership.
+    pub(super) fn controls_boat(&self, id: u32) -> bool {
+        self.riding == Some(id) && self.remote.as_ref().is_none_or(|r| r.first_passenger)
+    }
+
     /// The local player's tick in its vehicle, in place of its own movement:
     /// false when it rides nothing.
     pub(super) fn remote_ride(&mut self, keys: Keys, sprint_window: i32) -> Result<bool> {
@@ -287,8 +293,11 @@ impl Game<'_> {
             // It steers with the input `LocalPlayer.rideTick` latched on the
             // previous tick, so the paddle packet describes the motion the
             // server is sent; this tick's keys are latched after it ticked.
-            let mut b = self.tick_boat(self.boats[i].clone(), true);
-            b.input = [keys.left, keys.right, keys.forward, keys.backward];
+            let mut b = self.boats[i].clone();
+            if self.controls_boat(id) {
+                b = self.tick_boat(b, true);
+                b.input = [keys.left, keys.right, keys.forward, keys.backward];
+            }
             // positionRider: the seat turns with the boat; clampRotation.
             self.yaw += b.delta_rotation;
             let delta = (self.yaw - b.yaw + 180.0).rem_euclid(360.0) - 180.0;
@@ -349,6 +358,7 @@ impl Game<'_> {
         }
         let Some(b) = self
             .riding
+            .filter(|&id| self.controls_boat(id))
             .and_then(|id| self.boats.iter().find(|b| b.id == id))
         else {
             return Vec::new();
@@ -383,6 +393,7 @@ impl Game<'_> {
         }
         let Some(b) = self
             .riding
+            .filter(|&id| self.controls_boat(id))
             .and_then(|id| self.boats.iter_mut().find(|b| b.id == id))
         else {
             return;
@@ -414,7 +425,7 @@ impl Game<'_> {
     /// the synched bubble time, followed by the oars on boats this client does not drive.
     pub(super) fn tick_remote_boat_bubbles(&mut self) {
         for i in 0..self.boats.len() {
-            let driven = self.riding == Some(self.boats[i].id);
+            let driven = self.controls_boat(self.boats[i].id);
             if !driven {
                 // `AbstractBoat.tick`: the non-authoritative copy carries no
                 // cached motion into the next time this player drives it.

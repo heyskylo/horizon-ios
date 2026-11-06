@@ -572,7 +572,7 @@ impl ControllerUi {
             &cols,
             &lines,
             self.scroll.amount,
-            Page::name,
+            |page| lang::get(page.name()),
             |batch, setting: Setting, y| {
                 let item = setting.item;
                 let [rx, ry, rw, rh] = cols.row(y);
