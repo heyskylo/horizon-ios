@@ -5815,7 +5815,9 @@ impl Game<'_> {
             b.velocity = v;
         } else if let Some(t) = self.tridents.iter_mut().find(|t| t.id == id as u32) {
             t.velocity = v;
-            // AbstractArrow.lerpMotion: a trident set moving leaves its block.
+            // AbstractArrow.lerpMotion (ThrownTrident keeps it): `life`
+            // restarts, and a trident set moving leaves its block.
+            t.in_ground_time = 0;
             if t.in_ground && v.length_squared() > 0.0 {
                 t.in_ground = false;
             }
