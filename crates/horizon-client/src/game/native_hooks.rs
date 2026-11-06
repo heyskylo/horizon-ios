@@ -9980,6 +9980,11 @@ impl Game<'_> {
     pub(super) fn native_place_recipe(&mut self, book_id: i32, all: bool) -> Result<(), String> {
         self.recipe_place(book_id, all)
     }
+    /// Move ingredients for a viewer recipe into the open crafting grid.
+    /// Unlike the recipe book click, this doesn't require learning the recipe.
+    pub(super) fn native_transfer_recipe(&mut self, book_id: i32) {
+        self.transfer_viewer_recipe(book_id);
+    }
     /// Creative mode only: gives the player `count` of `item`
     /// (`minecraft:diamond`) as taking it from the creative inventory does
     /// (`ServerboundSetCreativeModeSlot`): the selected slot first, then the

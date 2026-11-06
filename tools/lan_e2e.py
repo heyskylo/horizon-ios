@@ -13215,15 +13215,9 @@ def prepare_recipes_hmod(*games):
         (settings / 'give').write_text('false')
 
 
-def check_recipes_hmod(host, guest, out):
-    """Recipes' real panel -> normal server menu -> custom output -> save/rejoin (#9647).
-
-    Opt in with --check recipes-hmod and --bin-dir pointing at a game compiled with the official
-    native Recipes mod. The fixture is ours; no Java mod, copied assets or synthetic game replies.
-    """
+def exercise_recipes_hmod(game, out, mode, supplied):
+    """Use the real Recipes panel and the authoritative crafting table."""
     item = 'minecraft:echo_shard'
-    recipe = 'recipe_pilot:flint_to_echo_shard'
-    seen = {}
 
     def widget(game, predicate):
         matches = [w for w in game.raw('ui')['widgets'] if predicate(w)]
@@ -13256,70 +13250,89 @@ def check_recipes_hmod(host, guest, out):
     def contents(game):
         return {'flint': server_count(game, 'flint'), 'echo_shard': server_count(game, item)}
 
-    for game, supplied in ((host, 4), (guest, 5)):
-        game('command', command='clear @s')
-        server_reply(game, 'recipe take @s *', 'recipe')
+    game('command', command=f'gamemode {mode}')
+    game.wait(10)
+    game.until(lambda: game('state')['gamemode'], lambda current: current == mode)
+    game('command', command='clear @s')
+    game('command', command='give @s minecraft:dirt 1')
+    table = None
+    if mode == 'creative':
         x, y, z = (math.floor(v) for v in pos_of(game))
         table = (x, y, z - 2)
         game('command', command=f'setblock {table[0]} {table[1]} {table[2]} minecraft:crafting_table')
         game.wait(10)
         game.raw('interact', *table)
-        game.raw('wait-for', 'screen', 'inventory', '--timeout', 10)
-        assert game('screen').get('craft_size') == 3
+    else:
+        game.raw('key', 'e', 'tap')
+    game.raw('wait-for', 'screen', 'inventory', '--timeout', 10)
+    assert game('screen').get('craft_size') == (3 if table else 2)
 
-        # The output exists in vanilla; its flint recipe is original .hmod content.
-        search(game, 'recipe_pilot:no_such_item')
-        assert not any(w.get('label') == 'Echo Shard' for w in game.raw('ui')['widgets'])
-        search(game, item)
-        game.shot(out, 'recipes-hmod-search')
-        unknown = page(game)
-        assert unknown['enabled'] is False, f'{game.name}: unknown recipe can be placed: {unknown}'
-        game.shot(out, 'recipes-hmod-unknown')
-        assert not any(i for i, _ in grid_of(game, 100, 109).values())
-        assert not result_of(game)[0]
+    # Put an unrelated item in the grid so a refused transfer cannot pass by
+    # merely clearing an already empty grid.
+    game.raw('click-slot', hotbar_slot(game, 'minecraft:dirt'))
+    game.raw('click-slot', 100)
+    game.wait(10)
+    before = grid_of(game, 100, 109)
+    assert before[100] == ('minecraft:dirt', 1), before
+    assert not result_of(game)[0], f'{mode}: control ingredient must have no output'
+    server_reply(game, 'recipe take @s *', 'recipe')
+    game.until(lambda: game('screen')['recipe_book']['known'], lambda count: count == 0)
 
-        server_reply(game, f'recipe give @s {recipe}', 'recipe')
-        game.wait(10)
-        back = widget(game, lambda w: w.get('label') == 'Back')
-        game.raw('click', back['id'])
-        game.wait(5)
-        known = page(game)
-        assert known['enabled'] is True, f'{game.name}: learned custom recipe unavailable: {known}'
-        game.raw('click', known['id'])
-        game.wait(10)
-        missing = contents(game)
-        assert missing == {'flint': 0, 'echo_shard': 0}, missing
-        assert not any(i for i, _ in grid_of(game, 100, 109).values())
-        assert not result_of(game)[0], f'{game.name}: missing ingredients fabricated a result'
-        game.shot(out, 'recipes-hmod-missing')
+    search(game, 'recipe_pilot:no_such_item')
+    assert not any(w.get('label') == 'Echo Shard' for w in game.raw('ui')['widgets'])
+    search(game, item)
+    transfer = page(game)
+    assert transfer['enabled'], f'{mode}: + must be available before unlock'
+    game.raw('click', transfer['id'])
+    game.until(lambda: game.raw('ui')['widgets'],
+               lambda widgets: any(w.get('label') == 'Missing Items' for w in widgets))
+    assert grid_of(game, 100, 109) == before, f'{mode}: missing ingredients changed the grid'
+    assert not result_of(game)[0], f'{mode}: missing ingredients fabricated a result'
+    missing = contents(game)
+    assert missing == {'flint': 0, 'echo_shard': 0}, missing
+    game.shot(out, f'{mode}-missing')
 
-        # Supply the input through the server, then use only the panel's normal + action.
-        game('command', command=f'give @s minecraft:flint {supplied}')
-        game.wait(10)
-        known = widget(game, lambda w: (w.get('label') or '').startswith('+ '))
-        game.raw('click', known['id'])
-        game.until(lambda: result_of(game), lambda r: bool(r[0]))
-        grid = [s for s in grid_of(game, 100, 109).values() if s[0]]
-        result = result_of(game)
-        assert grid == [('minecraft:flint', 1)], f'{game.name}: filled grid {grid}'
-        # Independent expected yield: changing the fixture to yield one must fail here.
-        assert result == (item, 2), f'{game.name}: custom result {result}'
-        game.shot(out, 'recipes-hmod-filled')
-        game.raw('click-slot', 200, 'shift')
-        game.wait(10)
-        assert not result_of(game)[0], f'{game.name}: consumed input left another result'
-        back_to_game(game)
-        crafted = contents(game)
-        assert crafted == {'flint': supplied - 1, 'echo_shard': 2}, crafted
-        seen[game.name] = {'missing': missing, 'grid': grid, 'result': result, 'crafted': crafted}
+    game('command', command=f'give @s minecraft:flint {supplied}')
+    server_reply(game, 'recipe take @s *', 'recipe')
+    game.until(lambda: game('screen')['recipe_book']['known'], lambda count: count == 0)
+    transfer = widget(game, lambda w: (w.get('label') or '').startswith('+ '))
+    game.raw('click', transfer['id'])
+    game.until(lambda: result_of(game), lambda r: bool(r[0]))
+    grid = [s for s in grid_of(game, 100, 109).values() if s[0]]
+    result = result_of(game)
+    assert grid == [('minecraft:flint', 1)], f'{mode}: filled grid {grid}'
+    assert result == (item, 2), f'{mode}: custom result {result}'
+    assert game('screen')['recipe_book']['known'] == 0, f'{mode}: transfer learned a recipe'
+    assert server_count(game, 'dirt') == 1, f'{mode}: displaced ingredient was lost'
+    assert server_count(game, 'flint') == supplied - 1, f'{mode}: transfer fabricated an input'
+    assert not any(w.get('label') == 'Missing Items' for w in game.raw('ui')['widgets'])
+    game.wait(140)
+    game.shot(out, f'{mode}-filled')
+    game.raw('click-slot', 200, 'shift')
+    game.wait(10)
+    assert not result_of(game)[0], f'{mode}: consumed input left another result'
+    back_to_game(game)
+    crafted = contents(game)
+    assert crafted == {'flint': supplied - 1, 'echo_shard': 2}, crafted
+    if table:
         game('command', command=f'setblock {table[0]} {table[1]} {table[2]} minecraft:air')
+    return {'mode': mode, 'missing': missing, 'warning': 'Missing Items',
+            'grid_unchanged_on_failure': True, 'known_before_and_after_fill': 0,
+            'grid': grid, 'result': result, 'crafted': crafted}
 
+
+def check_recipes_hmod(host, guest, out):
+    """Exercise Survival and Creative through the real host/guest server."""
+    seen = {
+        host.name: exercise_recipes_hmod(host, out, 'survival', 4),
+        guest.name: exercise_recipes_hmod(guest, out, 'creative', 5),
+    }
     save_and_reopen(host, guest)
     for game in (host, guest):
-        persisted = contents(game)
+        persisted = {'flint': server_count(game, 'flint'), 'echo_shard': server_count(game, 'echo_shard')}
         assert persisted == seen[game.name]['crafted'], f'{game.name}: after rejoin {persisted}'
         seen[game.name]['rejoined'] = persisted
-        game.shot(out, 'recipes-hmod-rejoined')
+        game.shot(out, f"{seen[game.name]['mode']}-rejoined")
     (out / 'recipes-hmod.json').write_text(json.dumps(seen, indent=2) + '\n')
     return seen
 

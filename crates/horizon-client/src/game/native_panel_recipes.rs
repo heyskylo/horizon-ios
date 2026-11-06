@@ -453,6 +453,17 @@ impl Game<'_> {
                 );
             }
         }
+        if let Some((key, fallback)) = self.panel.transfer_warning {
+            let warning = self.translate(key, fallback);
+            let width = self.gui.atlas.font.width(&warning);
+            horizon_client::widgets::record(&warning, [cursor.0, cursor.1, width, 9.0], false);
+            self.draw_tooltip_lines(
+                batch,
+                &[(warning, rgba(255, 100, 100, 255))],
+                cursor.0,
+                cursor.1,
+            );
+        }
     }
 
     /// The tabs, on slots; the selected one framed.

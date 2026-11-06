@@ -69,6 +69,7 @@ pub(super) struct Panel {
     searching: bool,
     /// The recipes shown instead of the items.
     pub(super) recipes: Option<super::native_panel_recipes::Pages>,
+    pub(super) transfer_warning: Option<(&'static str, &'static str)>,
 }
 
 impl Panel {
@@ -116,6 +117,7 @@ impl Panel {
     /// nothing, except while filtering the item list with a non-empty query.
     fn native_changed(&mut self, keep_search: bool) {
         self.versions += 1;
+        self.transfer_warning = None;
         if let Some(shown) = self.native.as_mut() {
             shown.version = self.versions;
             if shown.items.is_empty() && shown.recipes.is_none() && !keep_search {
@@ -499,8 +501,18 @@ impl Game<'_> {
     }
     /// The container screen closed: the search box lets go of the keys.
     pub(super) fn mod_browser_closed(&mut self) {
+        self.panel.transfer_warning = None;
         if let Some(search) = self.panel.search.as_mut() {
             search.focused = false;
+        }
+    }
+    pub(super) fn close_transferred_recipe(&mut self) {
+        if let Some(owner) = self.browser_sync()
+            && owner.native_id() == "recipes"
+            && self.panel.recipes.is_some()
+        {
+            self.mod_browser_closed();
+            self.panel_event(&owner, BrowserEvent::Back);
         }
     }
     /// The item under the pointer on a container screen, for the mods' keys
