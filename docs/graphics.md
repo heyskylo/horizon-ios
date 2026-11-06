@@ -133,6 +133,8 @@ vscreen is a headless compositor whose frames are software-rendered (lavapipe), 
 
 Two tools find where a slow frame goes: `HORIZON_SPIKES=MS` prints the timed spans (ticks by system, streaming, uploads, saving, renderer) of every frame slower than MS milliseconds, with the render thread's CPU time in the frame and, after a span that mostly waited (for the GPU, a lock or a core), its CPU time (`submit 30.2/0.1`), and a frame-pointer build (`RUSTFLAGS="-C force-frame-pointers=yes"`) profiles with `perf record --call-graph fp`.
 
+To see what ran when, on every thread, write a trace: `horizon-ctl trace /tmp/trace.json 10` (or `HORIZON_TRACE=FILE` from the start) writes each span of every thread for ten seconds as Chrome trace events, and [ui.perfetto.dev](https://ui.perfetto.dev) opens the file as it is. The spans sit on the thread that ran them, nested by time, so a frame that waited shows what it waited beside: far terrain, lighting or meshing on their workers, saving, the server thread.
+
 ### Render capture and replay
 
 A renderer change can be measured in seconds on a fixed scene, without starting the game, loading a world or waiting for far terrain: capture the scene once from a running game, then replay it offscreen with the real `Renderer` as often as needed.
