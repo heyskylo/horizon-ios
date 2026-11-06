@@ -277,6 +277,29 @@ impl PalettedContainer {
     /// `get` of the entries `start..start + out.len()`, the palette matched once.
     #[inline]
     pub fn get_run(&self, start: usize, out: &mut [u32]) {
+        if out.len() == 2 && !matches!(self.palette, Palette::Single(_)) {
+            let bits = usize::from(self.bits);
+            let per = 64 / bits;
+            let slot = start % per;
+            if slot + 1 < per {
+                let word = self.words[start / per] >> (slot * bits);
+                let mask = mask(self.bits);
+                let a = (word & mask) as usize;
+                let b = ((word >> bits) & mask) as usize;
+                match &self.palette {
+                    Palette::List(list) => {
+                        out[0] = list[a];
+                        out[1] = list[b];
+                    }
+                    Palette::Global => {
+                        out[0] = a as u32;
+                        out[1] = b as u32;
+                    }
+                    Palette::Single(_) => unreachable!(),
+                }
+                return;
+            }
+        }
         match &self.palette {
             Palette::Single(value) => out.fill(*value),
             Palette::List(list) => {
@@ -776,6 +799,11 @@ mod tests {
                 .map(|_| (rng(&mut state) % distinct) as u32)
                 .collect();
             let container = PalettedContainer::from_values(BLOCKS, &values);
+            for start in 0..4095 {
+                let mut pair = [u32::MAX; 2];
+                container.get_run(start, &mut pair);
+                assert_eq!(pair, values[start..start + 2]);
+            }
             for _ in 0..200 {
                 let start = (rng(&mut state) % 4096) as usize;
                 let len = (rng(&mut state) % 20) as usize;
