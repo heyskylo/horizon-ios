@@ -52,6 +52,15 @@ pub struct EntityMemory {
     /// Only filled while a mod is loaded.
     pub(super) live: Vec<(u32, String, bool)>,
 }
+impl EntityMemory {
+    /// The UUID entity `id` was loaded or saved with: what a save writes for a
+    /// field naming that entity (`entity_nbt::mob_to_nbt`'s `uuid_of`). `None`
+    /// for one that has none yet, so no reference is written rather than a
+    /// made-up UUID nothing would answer for.
+    pub(super) fn uuid_of(&self, id: u32) -> Option<[i32; 4]> {
+        self.uuids.get(&id).copied()
+    }
+}
 
 /// The key that marks a compound queued with the chunk loads as a fresh add
 /// (`PersistentEntitySectionManager.addNewEntity`: `/summon`, a portal
@@ -371,6 +380,7 @@ impl Game<'_> {
                         | "minecraft:small_fireball"
                         | "minecraft:wind_charge"
                         | "minecraft:breeze_wind_charge"
+                        | "minecraft:wither_skull"
                         | "minecraft:snowball"
                         | "minecraft:egg"
                         | "minecraft:ender_pearl"
@@ -736,8 +746,9 @@ impl Game<'_> {
 
     /// A saved end crystal.
     pub(super) fn load_crystal(&mut self, tag: Tag, uuid: Option<[i32; 4]>) {
-        let time = self.world.random.next_int_bound(100_000).unwrap_or(0);
-        if let Some(mut c) = super::dragon::Crystal::from_nbt(&tag, time) {
+        let drawn = self.world.random.next_int_bound(100_000).unwrap_or(0);
+        if let Some(mut c) = super::dragon::Crystal::from_nbt(&tag, drawn) {
+            c.time = super::dragon::Crystal::start_time(c.position, drawn, self.clock.still());
             // EndCrystal's constructor takes an id from the
             // entity counter.
             self.next_entity += 1;
@@ -883,11 +894,16 @@ impl Game<'_> {
         }
         riders
     }
-    /// The mobs riding entity `id` under `tag`'s `Passengers`, after the
-    /// passengers it kept from loading.
+    /// `Entity.shouldBeSaved`: the mobs riding entity `id` under `tag`'s
+    /// `Passengers`, after the passengers it kept from loading. Discarded
+    /// passengers cannot save even before their list entry is swept.
     pub(super) fn put_mob_passengers(&mut self, tag: &mut Tag, id: u32) {
         let mut riders: Vec<usize> = (0..self.mobs.len())
-            .filter(|&j| self.mobs[j].extra.mount == Some(id) && self.mobs[j].alive())
+            .filter(|&j| {
+                self.mobs[j].extra.mount == Some(id)
+                    && self.mobs[j].alive()
+                    && !self.mobs[j].removed
+            })
             .collect();
         if let Some(driver) = self
             .mobs
@@ -957,6 +973,19 @@ impl Game<'_> {
                 ]),
             );
             c.insert("UUID".into(), Tag::IntArray(uuid.to_vec()));
+            if matches!(o.kind.as_str(), "minecraft:interaction" | "interaction") {
+                // Interaction.addAdditionalSaveData always writes these settings.
+                c.entry("width".into())
+                    .or_insert(Tag::Float(1.0_f32.to_bits()));
+                c.entry("height".into())
+                    .or_insert(Tag::Float(1.0_f32.to_bits()));
+                c.entry("response".into()).or_insert(Tag::Byte(0));
+            }
+        }
+        // A marker is saved as `Entity.saveWithoutId` writes it: its common
+        // fields are there even when the loaded compound omitted them.
+        if matches!(o.kind.as_str(), "minecraft:marker" | "marker") {
+            entity_nbt::fill_common_defaults(&mut tag);
         }
         tag
     }
@@ -1139,9 +1168,12 @@ impl Game<'_> {
             -1
         };
         self.mobs[i].extra.angry_at = if anger > 0 {
-            // A wolf keeps its anger's target itself, also once the target
-            // is gone (`tame::update_persistent_anger`).
-            if self.mobs[i].species() == horizon_client::mobs::Species::Wolf {
+            // A wolf and an iron golem keep their anger's target themselves,
+            // also once the target is gone (`tame::update_persistent_anger`).
+            if matches!(
+                self.mobs[i].species(),
+                horizon_client::mobs::Species::Wolf | horizon_client::mobs::Species::IronGolem
+            ) {
                 self.mobs[i].extra.angry_at
             } else {
                 self.mobs[i].ai.target
@@ -1149,11 +1181,20 @@ impl Game<'_> {
         } else {
             None
         };
+        // A mob gets its UUID when it is first saved (`uuid_for`): the anger
+        // target still in the world gets it now, so `uuid_of` can name it.
+        if let Some(horizon_client::mobs::Who::Mob(target)) = self.mobs[i].extra.angry_at
+            && target != 0
+            && self.mobs.iter().any(|m| m.id == target)
+        {
+            self.uuid_for(target);
+        }
         let mut tag = entity_nbt::mob_to_nbt(
             &self.mobs[i],
             uuid,
             self.persist.raw.get(&id),
             Some(self.pack.assets.registry),
+            |other| self.persist.uuid_of(other),
         );
         if horizon_client::mobs::camel::is_camel(self.mobs[i].species())
             && let Tag::Compound(c) = &mut tag
@@ -1275,13 +1316,24 @@ impl Game<'_> {
             join_saved_team(&mut self.score.board, &name, tag);
         }
     }
+    /// The entity a UUID read back from a save names, while it is in the level:
+    /// the player, or a mob loaded or saved with that UUID. `None` for nothing
+    /// loaded (an entity that is not here, or one `Who` cannot carry) - never
+    /// some other entity as a stand-in.
+    pub(super) fn who_by_uuid(&self, uuid: [i32; 4]) -> Option<Who> {
+        let player = if self.player.is_some() {
+            self.level.player_uuid
+        } else {
+            None
+        };
+        entity_nbt::who_by_uuid(&self.persist.uuids, &self.mobs, player, uuid)
+    }
     /// The mob that was loaded or saved with a UUID.
     pub(super) fn mob_by_uuid(&self, uuid: [i32; 4]) -> Option<u32> {
-        self.persist
-            .uuids
-            .iter()
-            .find(|(id, u)| **u == uuid && self.mobs.iter().any(|m| m.id == **id))
-            .map(|(id, _)| *id)
+        match self.who_by_uuid(uuid) {
+            Some(Who::Mob(id)) => Some(id),
+            _ => None,
+        }
     }
     /// A mob's UUID, made up for new ones.
     pub(super) fn mob_uuid(&mut self, id: u32) -> [i32; 4] {
@@ -1799,23 +1851,9 @@ impl Game<'_> {
         i: usize,
         keys: &HashSet<ChunkKey>,
     ) -> Option<(ChunkKey, Tag)> {
-        let (id, at) = (self.tnts[i].id, self.tnts[i].position);
-        keys.contains(&chunk_of(at)).then(|| {
-            let uuid = self.uuid_for(id);
-            let t = &self.tnts[i];
-            let tag = entity_nbt::tnt_to_nbt(
-                t.position,
-                t.velocity,
-                t.on_ground,
-                t.fuse,
-                t.power,
-                t.block_state_nbt(self.pack.assets.registry),
-                t.rotation,
-                uuid,
-                self.persist.raw.get(&id),
-            );
-            (chunk_of(at), tag)
-        })
+        let at = self.tnts[i].position;
+        keys.contains(&chunk_of(at))
+            .then(|| (chunk_of(at), self.tnt_nbt(i)))
     }
     pub(super) fn save_boat(
         &mut self,
@@ -2287,5 +2325,222 @@ mod tests {
         assert!(take_fresh(&mut fresh));
         assert!(!take_fresh(&mut fresh));
         assert_eq!(fresh, Tag::Compound(Default::default()));
+    }
+
+    /// `NeutralMob.addPersistentAngerSaveData` names the mob the anger is at,
+    /// also one never saved yet (a mob gets its UUID when it is first saved).
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn anger_at_a_mob_not_saved_yet_names_it() {
+        use crate::game::{Audio, Options, Progress, Settings, load_resources};
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        let types = game.res.mob_types();
+        let golem = horizon_client::mobs::Mob::new(
+            1,
+            types.get("minecraft:iron_golem").unwrap().clone(),
+            Vec3::ZERO,
+            0.0,
+        );
+        let zombie = horizon_client::mobs::Mob::new(
+            2,
+            types.get("minecraft:zombie").unwrap().clone(),
+            Vec3::new(3.0, 0.0, 0.0),
+            0.0,
+        );
+        game.mobs.push(golem);
+        game.mobs.push(zombie);
+        game.mobs[0].extra.anger = 400;
+        game.mobs[0].extra.angry_at = Some(horizon_client::mobs::Who::Mob(2));
+        assert_eq!(game.persist.uuid_of(2), None);
+        let tag = game.mob_tree_nbt(0);
+        let Some(Tag::IntArray(named)) = tag.get("angry_at") else {
+            panic!("no angry_at in {tag:?}");
+        };
+        assert_eq!(
+            Some(named.as_slice()),
+            game.persist.uuid_of(2).as_ref().map(|u| &u[..])
+        );
+    }
+}
+#[cfg(test)]
+mod interaction_saved_defaults_tests {
+    use super::*;
+    use crate::game::{Audio, Options, Progress, Settings, commands::Target, load_resources};
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn registered_interactions_save_default_and_loaded_settings() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.game_dir = Some(std::env::current_dir().unwrap().join("game"));
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        let mut chunk = Chunk::empty(0, 0);
+        let stone = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:stone")
+            .unwrap();
+        for x in 0..16 {
+            for z in 0..16 {
+                chunk.set(x, 199, z, stone.0);
+            }
+        }
+        game.world.chunks.insert((0, 0), Arc::new(chunk));
+        game.block_ticks
+            .add_empty_chunk(ChunkPos::new(0, 0))
+            .unwrap();
+        assert!(game.run_command("forceload add 0 0"));
+        let time = game.world.game_time;
+        assert!(game.run_command("summon marker 10.5 200 7.5 {UUID:[I;109,0,0,4],data:{audit:7}}"));
+        assert!(game.run_command("summon pig 10.5 200 8.5 {UUID:[I;109,0,0,5],NoAI:1b,NoGravity:1b,PersistenceRequired:1b,Health:10f}"));
+        let marker_id = game
+            .others
+            .iter()
+            .find(|o| game.persist.uuids.get(&o.id) == Some(&[109, 0, 0, 4]))
+            .unwrap()
+            .id;
+        let marker_before = game.entity_nbt(Target::Other(marker_id)).unwrap();
+        let mut ids = Vec::new();
+        for (n, fields) in [
+            (1, ""),
+            (2, ",width:1f,height:1f,response:0b"),
+            (
+                3,
+                ",width:2.5f,height:3.5f,response:1b,attack:{player:[I;109,1,0,91],timestamp:17L},interaction:{player:[I;109,1,0,92],timestamp:23L}",
+            ),
+        ] {
+            assert!(game.run_command(&format!("summon interaction {} 200 4.5 {{UUID:[I;109,0,0,{n}],Rotation:[15f,-30f],CustomName:\"audit\",Tags:[\"audit\"]{fields}}}", 1.5+3.0*f64::from(n-1))));
+            let o = game
+                .others
+                .iter()
+                .find(|o| game.persist.uuids.get(&o.id) == Some(&[109, 0, 0, n]))
+                .unwrap();
+            assert_eq!(o.kind, "minecraft:interaction");
+            ids.push(o.id);
+        }
+        assert_eq!(
+            game.entity_nbt(Target::Other(marker_id)).unwrap(),
+            marker_before
+        );
+        for key in ["width", "height", "response"] {
+            assert!(marker_before.get(key).is_none());
+        }
+        let pig_id = game
+            .mobs
+            .iter()
+            .find(|m| game.persist.uuids.get(&m.id) == Some(&[109, 0, 0, 5]))
+            .unwrap()
+            .id;
+        let pig = game.entity_nbt(Target::Mob(pig_id)).unwrap();
+        assert_eq!(pig.get("NoAI"), Some(&Tag::Byte(1)));
+        assert_eq!(pig.get("PersistenceRequired"), Some(&Tag::Byte(1)));
+        let saved: Vec<_> = game
+            .entity_chunks(&[(0, 0)].into(), false)
+            .into_iter()
+            .flat_map(|(_, tags)| tags)
+            .collect();
+        for (index, id) in ids.iter().enumerate() {
+            let uuid = [109, 0, 0, index as i32 + 1];
+            let command_tag = game.entity_nbt(Target::Other(*id)).unwrap();
+            let chunk_tag = saved
+                .iter()
+                .find(|tag| entity_nbt::uuid(tag) == Some(uuid))
+                .unwrap();
+            for tag in [&command_tag, chunk_tag] {
+                assert_eq!(tag.get("UUID"), Some(&Tag::IntArray(uuid.to_vec())));
+                assert_eq!(tag.get("CustomName"), Some(&Tag::String("audit".into())));
+                assert_eq!(
+                    tag.get("Tags"),
+                    Some(&Tag::List(vec![Tag::String("audit".into())]))
+                );
+                assert_eq!(
+                    tag.get("width"),
+                    Some(&Tag::Float(
+                        (if index == 2 { 2.5f32 } else { 1.0f32 }).to_bits()
+                    )),
+                    "width case {index}"
+                );
+                assert_eq!(
+                    tag.get("height"),
+                    Some(&Tag::Float(
+                        (if index == 2 { 3.5f32 } else { 1.0f32 }).to_bits()
+                    ))
+                );
+                assert_eq!(tag.get("response"), Some(&Tag::Byte(i8::from(index == 2))));
+                if index == 2 {
+                    for (key, n, time) in [("attack", 91, 17), ("interaction", 92, 23)] {
+                        let record = tag.get(key).unwrap();
+                        assert_eq!(
+                            record.get("player"),
+                            Some(&Tag::IntArray(vec![109, 1, 0, n]))
+                        );
+                        assert_eq!(record.get("timestamp"), Some(&Tag::Long(time)));
+                    }
+                } else {
+                    assert!(tag.get("attack").is_none() && tag.get("interaction").is_none());
+                }
+            }
+        }
+        // The actual registered identity/position still supplies a fresh save without raw input.
+        game.persist.raw.remove(&ids[0]);
+        let fresh = game.entity_nbt(Target::Other(ids[0])).unwrap();
+        assert_eq!(fresh.get("UUID"), Some(&Tag::IntArray(vec![109, 0, 0, 1])));
+        assert_eq!(fresh.get("width"), Some(&Tag::Float(1.0f32.to_bits())));
+        assert_eq!(fresh.get("height"), Some(&Tag::Float(1.0f32.to_bits())));
+        assert_eq!(fresh.get("response"), Some(&Tag::Byte(0)));
+        assert_eq!(game.world.game_time, time);
     }
 }
