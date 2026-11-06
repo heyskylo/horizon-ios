@@ -183,6 +183,7 @@ impl FoodWorld for TickWorld<'_> {
             status: Default::default(),
             blocking: None,
             blocked: 0.0,
+            blocking_item_used: false,
             fully_blocked: false,
             block_sound: false,
             knocked: false,

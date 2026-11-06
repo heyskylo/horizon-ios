@@ -37,7 +37,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', type=Path)
     parser.add_argument('--resources', type=Path)
+    parser.add_argument('--timeout', type=float, default=600,
+                        help='Game fixture timeout in seconds, including debug resource loading')
     args = parser.parse_args()
+    if args.timeout <= 0:
+        parser.error('--timeout must be positive')
     lock, jars, libraries = base.verify_artifacts()
     work = lab.LOCAL / 'player-blocking-parity'
     work.mkdir(parents=True, exist_ok=True)
@@ -59,7 +63,8 @@ def main():
         binary = lab.cargo_target() / 'debug' / ('horizon-client.exe' if os.name == 'nt' else 'horizon-client')
     resources = args.resources or lab.LOCAL / 'horizon-client' / lock['minecraft']['version']
     rust = work / 'rust.txt'
-    run_game([str(binary.resolve()), '--headless', '--resources', str(resources.resolve())], cwd=work, check=True,
+    rust.unlink(missing_ok=True)
+    run_game([str(binary.resolve()), '--headless', '--resources', str(resources.resolve())], cwd=work, check=True, timeout=args.timeout,
              env=lab.game_env(HORIZON_DISPENSE_FIXTURE=f'{cases.resolve()},{rust.resolve()}'))
     expected = native.read_text(encoding='utf-8').splitlines()
     rust_lines = rust.read_text(encoding='utf-8').splitlines()
