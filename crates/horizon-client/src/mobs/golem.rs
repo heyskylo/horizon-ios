@@ -670,9 +670,6 @@ mod tests {
         });
     }
 
-    /// `IronGolem.canAttack` refuses creepers, and `HurtByTargetGoal.canUse`
-    /// asks it: the creeper that hurt the golem is never fought back, while
-    /// a zombie that hurts it is.
     /// `ResetUniversalAngerTargetGoal`: with the rule on, a golem hurt by a
     /// player forgets its target once and not again until hurt again; with
     /// the rule off it does nothing.
@@ -713,6 +710,9 @@ mod tests {
         }
     }
 
+    /// `IronGolem.canAttack` refuses creepers, and `HurtByTargetGoal.canUse`
+    /// asks it: the creeper that hurt the golem is never fought back, while
+    /// a zombie that hurts it is.
     #[test]
     fn a_creeper_that_hurts_an_iron_golem_is_never_fought_back() {
         let creeper = mob(2, Species::Creeper, Vec3::new(1.5, 64.0, 0.5));
