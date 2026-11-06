@@ -4,7 +4,7 @@
 //! - **Focus** (menus): a highlight steps between the widgets, list rows and
 //!   fields each screen registers (`widgets::target_as`) with vanilla's
 //!   arrow-key navigation; A presses the focused one, the bumpers switch tabs,
-//!   the right stick scrolls, left/right move a focused slider, A on a text
+//!   the right stick scrolls, A takes hold of a focused slider for left/right to move, A on a text
 //!   field opens the on-screen keyboard (`osk`).
 //! - **Crosshair** (inventories, containers and the screens whose clickable
 //!   parts register no target): a pointer the left stick moves and the D-pad
@@ -152,7 +152,7 @@ pub(super) struct MenuCursor {
     /// focus mode whatever the screen, the OS pointer shown.
     pub(super) keyboard: bool,
     /// The focused slider's arrows change its value (`canChangeValue`).
-    slider_edit: bool,
+    pub(super) slider_edit: bool,
     /// What the last click landed on: vanilla focuses it, so the next Tab
     /// or arrow goes on from there (`ContainerEventHandler.mouseClicked`).
     origin: Option<Rect>,
@@ -787,6 +787,11 @@ impl Game<'_> {
             }
             return Ok(());
         }
+        // B lets go of a slider, before it means Back or a screen's button.
+        if button == Button::East && self.pad_holding_slider() {
+            self.pad.menu.slider_edit = false;
+            return Ok(());
+        }
         if let Some((action, target)) = self.pad_action_target(button) {
             if action == widgets::Action::Exit {
                 self.pad_focus_on(event_loop, target);
@@ -833,8 +838,10 @@ impl Game<'_> {
             Button::South if self.pad_focusing() => {
                 let focus = self.pad.menu.focus.expect("focusing");
                 match focus.kind {
-                    // A click would jump the handle; left/right move it.
-                    Kind::Slider { .. } => {}
+                    // A click would jump the handle: A takes hold of it, or lets it go.
+                    Kind::Slider { .. } => {
+                        self.pad.menu.slider_edit = !self.pad.menu.slider_edit;
+                    }
                     Kind::Field => {
                         self.pad_click_at(event_loop, focus.center(), false);
                         self.pad_open_keyboard();
@@ -1013,9 +1020,7 @@ impl Game<'_> {
             self.pad_take_pointer(event_loop);
             return;
         };
-        if matches!(focus.kind, Kind::Slider { .. })
-            && matches!(button, Button::DPadLeft | Button::DPadRight)
-        {
+        if self.pad_holding_slider() && matches!(button, Button::DPadLeft | Button::DPadRight) {
             let step = gamepad::slider_step(self.pad.menu.repeats);
             let sign = if button == Button::DPadLeft {
                 -1.0
@@ -1026,6 +1031,18 @@ impl Game<'_> {
             return;
         }
         self.pad_focus_move(event_loop, button, focus, targets);
+    }
+
+    /// Left and right are the focused slider's, after A took hold of it. Until then they move the
+    /// focus, so passing over a slider doesn't change it.
+    fn pad_holding_slider(&self) -> bool {
+        let menu = &self.pad.menu;
+        menu.slider_edit
+            && !menu.keyboard
+            && self.pad_focus_mode()
+            && menu
+                .focus
+                .is_some_and(|focus| matches!(focus.kind, Kind::Slider { .. }))
     }
 
     /// Move a focused slider's handle by `by` GUI pixels (one pixel is
@@ -1109,6 +1126,7 @@ impl Game<'_> {
         if left.is_some_and(|l| l.rect != target.rect) {
             self.clear_screen_click_focus();
             self.pad.menu.armed = None;
+            self.pad.menu.slider_edit = false;
         }
         self.pad.menu.pending = None;
         self.pad.menu.nudge = None;
@@ -1761,6 +1779,7 @@ impl Game<'_> {
         serde_json::json!({
             "mode": if self.pad_focus_mode() { "focus" } else { "pointer" },
             "focus": self.pad.menu.focus.as_ref().map(target),
+            "holding_slider": self.pad_holding_slider(),
             "pointer": self.pad.menu.pos.map(|_| self.cursor),
             "keyboard": self.pad.menu.osk.is_some(),
             "targets": self.pad_targets().iter().map(target).collect::<Vec<_>>(),
@@ -2360,6 +2379,10 @@ impl Game<'_> {
     /// `EditBox`'s highlighted border).
     fn draw_pad_focus(&self, batch: &mut HudBatch, focus: Target) {
         key_focus::draw_outline(&self.gui.atlas, batch, focus);
+        // A slider in hand shows it: left and right do something else on one that isn't.
+        if self.pad_holding_slider() {
+            key_focus::draw_white_outline(&self.gui.atlas, batch, focus.rect);
+        }
     }
 }
 

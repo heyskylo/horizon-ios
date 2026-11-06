@@ -1943,6 +1943,9 @@ def controller_trigger_threshold(args, name):
                 break
             game.pad('down')
         check('40%' in (game.focused_label() or ''), f'not on its default: {game.focused_label()}')
+        check(not game.menu()['holding_slider'], 'landing on the slider took hold of it')
+        game.pad('south')
+        check(game.menu()['holding_slider'], 'A did not take hold of the slider')
         # A step of the D-pad is a pixel of the slider, which can be less than a percent.
         for _ in range(6):
             game.pad('right')
@@ -2058,6 +2061,71 @@ def gameplay_guide_mobs(args, name):
     return check.failures
 
 
+def slider_needs_a(args, name):
+    """Left and right only change a slider A took hold of; B and up or down let go of it."""
+    game = Game(args, name)
+    check = Check()
+    try:
+        open_controller(game)
+        game.pad('right')
+        for _ in range(24):
+            if 'trigger threshold' in (game.focused_label() or '').lower():
+                break
+            game.pad('down')
+        slider = game.focus()
+        # Right is either nothing or the widget beside it, which left comes back from.
+        game.pad('right')
+        if game.focus() != slider:
+            game.pad('left')
+        check(game.focus() == slider, f'never came back to the slider: {game.focus()}')
+        check('40%' in (game.focused_label() or ''), f'moved without A: {game.focused_label()}')
+        check(not game.menu()['holding_slider'], 'moving the focus took hold of the slider')
+
+        game.pad('south')
+        check(game.menu()['holding_slider'], 'A did not take hold of the slider')
+        for _ in range(6):
+            game.pad('right')
+            if '40%' not in (game.focused_label() or ''):
+                break
+        changed = game.focused_label()
+        check('40%' not in (changed or ''), f'right in hand left it on {changed}')
+        check(game.focus() == slider, 'left or right moved the focus off a slider in hand')
+
+        screen = game.menu()['screen_key']
+        game.pad('east')
+        check(not game.menu()['holding_slider'], 'B did not let go of the slider')
+        check(game.menu()['screen_key'] == screen, 'B left the screen as well as the slider')
+        check(game.focused_label() == changed, f'letting go changed the value: {game.focused_label()}')
+
+        game.pad('south')
+        check(game.menu()['holding_slider'], 'A did not take hold again')
+        game.pad('south')
+        check(not game.menu()['holding_slider'], 'A again did not let go')
+
+        game.pad('south')
+        game.pad('down')
+        check(not game.menu()['holding_slider'], 'down did not let go of the slider')
+        check(game.focus() != slider, 'down did not move on from the slider')
+    finally:
+        game.quit()
+    return check.failures
+
+
+def gameplay_guide_basic(args, name):
+    game = Game(args, name, world=True, seed=seed_controller('gameplayGuide:basic\n'))
+    check = Check()
+    try:
+        game.pad('lb')
+        check(game.ctl('pad', 'status')['in_use'], 'the pad is not in use')
+        left, _ = guide(game)
+        check(left == [], f'basic still shows the left column: {left}')
+        status = game.ctl('pad', 'status')['guide']
+        check('right' in status, f'no right column in {status}')
+    finally:
+        game.quit()
+    return check.failures
+
+
 def gameplay_guide_off(args, name):
     game = Game(args, name, world=True, seed=seed_controller('gameplayGuide:false\n'))
     check = Check()
@@ -2117,7 +2185,9 @@ CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': releas
          'osk_command_block': osk_command_block,
          'osk_jigsaw': osk_jigsaw,
          'controller_trigger_threshold': controller_trigger_threshold,
+         'slider_needs_a': slider_needs_a,
          'gameplay_guide': gameplay_guide,
+         'gameplay_guide_basic': gameplay_guide_basic,
          'gameplay_guide_off': gameplay_guide_off, 'gameplay_guide_mobs': gameplay_guide_mobs}
 
 

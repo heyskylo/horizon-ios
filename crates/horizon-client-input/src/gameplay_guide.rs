@@ -2,7 +2,7 @@
 //! and of an inventory it drives (Horizon's; vanilla has no gamepad input). The game reads the facts
 //! from its own hit results and capabilities (`game/pad/guide.rs`); this turns them into rows, and
 //! places the rows around what was drawn.
-use crate::gamepad::{Button, PadSettings, Rect};
+use crate::gamepad::{Button, GuideDetail, PadSettings, Rect};
 
 /// What a use does, by what takes it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -132,6 +132,24 @@ pub struct Guide {
     pub left: Vec<Row>,
     /// Top right: break, use and pick block.
     pub right: Vec<Row>,
+}
+
+impl Guide {
+    /// The rows this detail keeps. Basic is the right column: what the buttons do to what's in
+    /// front of the player, or the plain face buttons in an inventory.
+    pub fn at_detail(self, detail: GuideDetail) -> Self {
+        match detail {
+            GuideDetail::Full => self,
+            GuideDetail::Basic => Guide {
+                left: Vec::new(),
+                right: self.right,
+            },
+            GuideDetail::Off => Guide {
+                left: Vec::new(),
+                right: Vec::new(),
+            },
+        }
+    }
 }
 
 /// The rows for these facts on these bindings. An unbound action has no row, and neither has one
@@ -855,5 +873,42 @@ mod tests {
             place_column([50.0, 200.0], true, &[60.0, 20.0], &mut taken),
             [None, Some([2.0, 2.0, 20.0, 11.0])]
         );
+    }
+}
+
+#[cfg(test)]
+mod detail_tests {
+    use super::*;
+
+    fn rows() -> Guide {
+        Guide {
+            left: vec![Row::new(Button::South, "left")],
+            right: vec![Row::new(Button::East, "right")],
+        }
+    }
+
+    #[test]
+    fn full_keeps_both_columns() {
+        let guide = rows().at_detail(GuideDetail::Full);
+        assert_eq!((guide.left.len(), guide.right.len()), (1, 1));
+    }
+
+    #[test]
+    fn basic_keeps_the_right_column() {
+        let guide = rows().at_detail(GuideDetail::Basic);
+        assert_eq!((guide.left.len(), guide.right.len()), (0, 1));
+    }
+
+    #[test]
+    fn off_keeps_nothing() {
+        let guide = rows().at_detail(GuideDetail::Off);
+        assert_eq!((guide.left.len(), guide.right.len()), (0, 0));
+    }
+
+    #[test]
+    fn a_file_saved_with_the_old_switch_keeps_its_meaning() {
+        assert_eq!(GuideDetail::parse("true"), GuideDetail::Full);
+        assert_eq!(GuideDetail::parse("false"), GuideDetail::Off);
+        assert_eq!(GuideDetail::parse("basic"), GuideDetail::Basic);
     }
 }

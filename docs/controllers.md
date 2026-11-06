@@ -203,9 +203,11 @@ the crafting result, armour to the player's grid.
   the page, since the pad's hidden pointer sits mid-widget. The mouse and the keyboard keep vanilla's positioners.
 - **Declared buttons**: a button that says what it's for gets its controller
   button and a glyph on it while the pad drives; see "Adding a screen".
-- **Sliders**: left and right move the value (one pixel per press like
-  vanilla's arrow keys, faster while held); A does nothing on a slider, as a
-  click would jump the handle.
+- **Sliders**: A takes hold of a focused slider, shown by a white outline; left
+  and right then move the value (one pixel per press like vanilla's arrow keys,
+  faster while held). A or B lets go and keeps the value, and up or down lets go
+  and moves on. Until then left and right move the focus, so passing over a
+  slider doesn't change it.
 - **Lists** follow focus: a step out of a list that can still scroll that way
   scrolls it and lands on the next row once it is drawn, so every row can be
   reached; the buttons below or above come after its last or first row.

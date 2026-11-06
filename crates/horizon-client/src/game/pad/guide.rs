@@ -6,7 +6,7 @@ use super::super::{Game, Screen};
 use horizon_client::actions::Action;
 use horizon_client::{
     first_person::Hand,
-    gamepad::Rect,
+    gamepad::{GuideDetail, Rect},
     gameplay_guide::{self, Active, Facts, MenuFacts, Row, Target, Under, Verb},
     hud::HudBatch,
     items::ItemStack,
@@ -28,7 +28,7 @@ impl Game<'_> {
     fn pad_guide_shows(&self) -> bool {
         let settings = &self.settings.controller;
         settings.enabled
-            && settings.gameplay_guide
+            && settings.guide_detail != GuideDetail::Off
             && self.pad.in_use
             && !self.pad_in_menu()
             && !self.screen_over_playing()
@@ -54,7 +54,8 @@ impl Game<'_> {
                 facts
             }
         };
-        let guide = gameplay_guide::resolve(&facts, &self.settings.controller);
+        let guide = gameplay_guide::resolve(&facts, &self.settings.controller)
+            .at_detail(self.settings.controller.guide_detail);
         let mut taken = Self::guide_taken(batch, from);
         // The right column first: the left has the rows it can better do without.
         for (left, rows) in [(false, &guide.right), (true, &guide.left)] {
@@ -91,7 +92,7 @@ impl Game<'_> {
     pub(in crate::game) fn draw_pad_menu_guide(&mut self, batch: &mut HudBatch, from: usize) {
         let settings = &self.settings.controller;
         if !settings.enabled
-            || !settings.gameplay_guide
+            || settings.guide_detail == GuideDetail::Off
             || !self.pad.in_use
             || self.prompt_open()
             || self.title.is_some()
@@ -100,7 +101,8 @@ impl Game<'_> {
             return;
         }
         let facts = self.pad_menu_guide_facts(batch);
-        let guide = gameplay_guide::resolve_menu(&facts);
+        let guide =
+            gameplay_guide::resolve_menu(&facts).at_detail(self.settings.controller.guide_detail);
         let mut taken = Self::guide_taken(batch, from);
         for (left, rows) in [(false, &guide.right), (true, &guide.left)] {
             self.draw_guide_column(batch, left, true, rows, &mut taken);
