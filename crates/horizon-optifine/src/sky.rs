@@ -189,11 +189,12 @@ impl Fade {
     pub fn brightness(&self, day_time: i64) -> f32 {
         let since = |t: i64| (t - self.start_in).rem_euclid(DAY);
         let now = since(day_time);
-        let (end_in, start_out, end_out) = (
-            since(self.end_in),
-            since(self.start_out),
-            since(self.end_out),
-        );
+        let (end_in, start_out) = (since(self.end_in), since(self.start_out));
+        // A fade out that ends where the fade in starts ends a whole day later, not at once.
+        let end_out = match since(self.end_out) {
+            0 => DAY,
+            end_out => end_out,
+        };
         if now < end_in {
             now as f32 / end_in as f32
         } else if now < start_out {
@@ -557,6 +558,19 @@ mod tests {
         assert_eq!(l.brightness(0), 0.0); // 6:00
         assert_eq!(l.brightness(6000), 0.0); // noon
         assert_eq!(l.brightness(24000 * 3 + 13000), 0.5, "any day");
+    }
+
+    #[test]
+    fn a_fade_out_ending_where_the_fade_in_starts_still_ramps_down() {
+        let fade = Fade {
+            start_in: 0,
+            end_in: 1000,
+            start_out: 10000,
+            end_out: 0,
+        };
+        assert_eq!(fade.brightness(9999), 1.0);
+        assert_eq!(fade.brightness(17000), 0.5);
+        assert_eq!(fade.brightness(0), 0.0);
     }
 
     #[test]
