@@ -139,11 +139,11 @@ fn periodic(id: &str, tick: i32, amp: i32) -> Option<EffectAction> {
 pub fn instant(id: &str, amp: i32, scale: f64) -> Option<EffectAction> {
     match id {
         "instant_health" => Some(EffectAction::Heal(
-            (scale * f64::from(4 << amp.min(30)) + 0.5) as i32 as f32,
+            (scale * f64::from(4i32.wrapping_shl(amp as u32)) + 0.5) as i32 as f32,
         )),
         "instant_damage" => Some(EffectAction::Hurt(
             "minecraft:magic",
-            (scale * f64::from(6 << amp.min(30)) + 0.5) as i32 as f32,
+            (scale * f64::from(6i32.wrapping_shl(amp as u32)) + 0.5) as i32 as f32,
         )),
         "saturation" => Some(EffectAction::Eat(amp + 1, 1.0)),
         _ => None,
@@ -679,4 +679,16 @@ mod tests {
             )]
         );
     }
+    #[test]
+    fn instant_potions_wrap_java_shift_counts() {
+        // Java masks int shifts to five bits; these expected amounts also
+        // catch clamping the count or widening before the shift.
+        for (amp, heal, harm) in [(31, 0.0, 0.0), (32, 4.0, 6.0), (33, 8.0, 12.0), (255, 0.0, 0.0)] {
+            assert_eq!(instant("instant_health", amp, 1.0), Some(EffectAction::Heal(heal)));
+            assert_eq!(instant("instant_damage", amp, 1.0), Some(EffectAction::Hurt("minecraft:magic", harm)));
+            assert_eq!(instant("instant_health", amp, 0.5), Some(EffectAction::Heal(heal / 2.0)));
+            assert_eq!(instant("instant_damage", amp, 0.5), Some(EffectAction::Hurt("minecraft:magic", harm / 2.0)));
+        }
+    }
+
 }

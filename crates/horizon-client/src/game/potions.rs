@@ -1792,7 +1792,8 @@ impl Game<'_> {
     /// A splash potion's effects on the player in place, by their distance.
     fn splash_on_player(
         &mut self,
-        effects: &'static [(&'static str, i32, i32)],
+        effects: &[EffectInstance],
+        duration_scale: f32,
         at: Vec3,
         age: u32,
         owner: &PotionOwner,
@@ -1809,18 +1810,26 @@ impl Game<'_> {
             );
             if let Some(d2) = splash_distance_sqr(at, age, bounds) {
                 let intensity = 1.0 - d2.sqrt() / 4.0;
-                for (id, duration, amp) in effects {
+                for effect in effects {
+                    let (id, duration, amp) = (effect.id, effect.duration, effect.amplifier);
                     let instant = brewing::effect(id).is_some_and(|e| e.instant);
                     if instant {
-                        if let Some(a) = horizon_client::effects::instant(id, *amp, intensity) {
+                        if let Some(a) = horizon_client::effects::instant(id, amp, intensity) {
                             self.apply_indirect_effect_action(a, owner);
                         }
                     } else {
-                        let d = (intensity * f64::from(*duration) + 0.5) as i32;
-                        if d > 20
-                            && let Some(e) = brewing::effect(id)
+                        let d = if duration == -1 {
+                            -1
+                        } else {
+                            (intensity * f64::from(duration) * f64::from(duration_scale) + 0.5)
+                                as i32
+                        };
+                        if (d == -1 || d > 20)
+                            && brewing::effect(id).is_some()
                         {
-                            self.add_player_effect(EffectInstance::new(e.id, d, *amp));
+                            let mut instance = effect.clone();
+                            instance.duration = d;
+                            self.add_player_effect(instance);
                         }
                     }
                 }
@@ -1887,13 +1896,15 @@ impl Game<'_> {
                 .iter()
                 .any(|(id, ..)| brewing::effect(id).is_some_and(|e| e.instant))
         });
-        let color = brewing::potion_color(stack.potion());
+        let color = brewing::contents_color(stack);
+        let effects = brewing::contents_instances(stack);
+        let duration_scale = stack.potion_duration_scale();
         self.level_event_at(if instant { 2007 } else { 2002 }, block, color as i32);
         self.level_event_at(if instant { 1054 } else { 1053 }, block, 0);
         // AbstractThrownPotion.affectEntitiesAround: a water potion (the only
         // #rehydrates_axolotls) refills the air of the axolotls in the
         // projectile's box inflated by 4, 2 and 4 (Axolotl.rehydrate, 1800).
-        if stack.potion() == Some("minecraft:water") {
+        if self.potion_in_tag(stack, "minecraft:rehydrates_axolotls") {
             let (lo, hi) = (
                 [at.x - 0.125 - 4.0, at.y - 2.0, at.z - 0.125 - 4.0],
                 [at.x + 0.125 + 4.0, at.y + 0.25 + 2.0, at.z + 0.125 + 4.0],
@@ -1917,16 +1928,24 @@ impl Game<'_> {
                 }
             }
         }
-        let Some(def) = potion else {
-            return;
-        };
         if lingering {
             // The cloud sits at the mob it hit (its feet), else the impact;
             // radius 3, wait 10, 600 ticks, shrinking to nothing, and a
             // potion with no effects leaves none.
-            if !def.effects.is_empty() {
+            if !effects.is_empty() {
                 let at = mob.unwrap_or(at);
                 let id = self.take_entity_id();
+                // Keep the copied component for live cloud command queries as well
+                // as its resolved effects; custom names and visibility survive.
+                let item = horizon_client::save::item_to_nbt(stack);
+                if let Some(contents) = item
+                    .get("components")
+                    .and_then(|c| c.get("minecraft:potion_contents"))
+                {
+                    self.persist
+                        .raw
+                        .insert(id, Tag::compound([("potion_contents", contents.clone())]));
+                }
                 self.breath_clouds.push(Breath {
                     id,
                     at: [at.x, at.y, at.z],
@@ -1936,10 +1955,13 @@ impl Game<'_> {
                     from_dragon: false,
                     victims: Vec::new(),
                     potion: Some(PotionCloud {
-                        settings: CloudSettings::lingering(),
-                        effects: def.effects.to_vec(),
-                        hidden: Vec::new(),
-                        ambient: Vec::new(),
+                        settings: CloudSettings {
+                            duration_scale,
+                            ..CloudSettings::lingering()
+                        },
+                        effects: effects.iter().map(|e| (e.id, e.duration, e.amplifier)).collect(),
+                        hidden: effects.iter().filter(|e| !e.visible).map(|e| e.id).collect(),
+                        ambient: effects.iter().filter(|e| e.ambient).map(|e| e.id).collect(),
                         radius_per_tick: -3.0 / 600.0,
                         color,
                         victims: Vec::new(),
@@ -1955,7 +1977,7 @@ impl Game<'_> {
         }
         // Every player in range (`ThrownSplashPotion.applySplash` over
         // `LivingEntity`s, the players among them).
-        self.for_each_player(|g| g.splash_on_player(def.effects, at, age, owner));
+        self.for_each_player(|g| g.splash_on_player(&effects, duration_scale, at, age, owner));
         // Mobs take the instant effects (undead invert healing and harming).
         let undead = &self.stations().enchantments.entity_tags;
         let mut hits = Vec::new();
@@ -1970,18 +1992,24 @@ impl Game<'_> {
             }
         }
         for (i, intensity, inverted) in hits {
-            for (id, duration, amp) in def.effects {
-                let harm = match *id {
+            for effect in &effects {
+                let (id, duration, amp) = (effect.id, effect.duration, effect.amplifier);
+                let harm = match id {
                     "instant_damage" => !inverted,
                     "instant_health" => inverted,
                     _ => {
                         // `Potion.applySplash`: timed effects last in
                         // proportion to how close the mob was.
-                        let d = (intensity * f64::from(*duration) + 0.5) as i32;
-                        if d > 20
+                        let d = if duration == -1 {
+                            -1
+                        } else {
+                            (intensity * f64::from(duration) * f64::from(duration_scale) + 0.5)
+                                as i32
+                        };
+                        if (d == -1 || d > 20)
                             && let Some(name) = mob_effect_id(id)
                         {
-                            self.mobs[i].add_effect(name, d, *amp);
+                            self.mobs[i].add_effect_with(name, d, amp, effect.ambient, effect.visible);
                         }
                         continue;
                     }
@@ -1996,14 +2024,14 @@ impl Game<'_> {
                     }
                 } else if harm {
                     // HealOrHarmMobEffect.applyInstantaneousEffect: indirectMagic(potion, owner).
-                    let harm = (intensity * f64::from(6 << amp) + 0.5) as i32 as f32;
+                    let harm = (intensity * f64::from(6i32.wrapping_shl(amp as u32)) + 0.5) as i32 as f32;
                     let source = Damage::indirect_magic(owner.who(), [at.x, at.y, at.z]);
                     if m.damage_by(harm, source, "minecraft:splash_potion") && owner.player {
                         let id = m.id;
                         self.last_hurt_by_player.insert(id, owner.guest);
                     }
                 } else {
-                    m.heal((intensity * f64::from(4 << amp) + 0.5) as i32 as f32);
+                    m.heal((intensity * f64::from(4i32.wrapping_shl(amp as u32)) + 0.5) as i32 as f32);
                 }
             }
         }
