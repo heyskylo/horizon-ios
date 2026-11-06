@@ -581,7 +581,10 @@ public final class VanillaDispenserOracle {
         // A book's screen needs a connection; nothing of it is printed.
         @Override public void openItemGui(ItemStack stack, net.minecraft.world.InteractionHand h) { }
         @Override public void startUsingItem(net.minecraft.world.InteractionHand h) {
+            if (using != null) return;
             using = BuiltInRegistries.ITEM.getKey(getItemInHand(h).getItem()).toString();
+            // LivingEntity.startUsingItem's vibration; the stand-in keeps no use-item state of its own.
+            getItemInHand(h).causeUseVibration(this, net.minecraft.world.level.gameevent.GameEvent.ITEM_INTERACT_START);
         }
         @Override public boolean isUsingItem() { return using != null; }
         @Override public void awardStat(net.minecraft.stats.Stat<?> stat, int count) {
