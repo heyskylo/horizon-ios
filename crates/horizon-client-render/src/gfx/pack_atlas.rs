@@ -563,7 +563,7 @@ impl PackAtlas {
                 "layout(set = 1, binding = 0) readonly buffer HzBlockSlots { uint hz_block_slots[]; };\n\
                  layout(set = 1, binding = 1) readonly buffer HzSlotOrigins { vec4 hz_slot_origins[]; };\n",
             );
-            // Of each sprite layer, `mc_Entity` (id, then 1 for fluids or -1) and
+            // Of each sprite layer, `mc_Entity` (id, then 1 for fluids or 0) and
             // `at_midBlock.w` (its block's light), the game's table; and the arena page's
             // vertices (`TerrainVertex`, six words each).
             declarations.push_str(
@@ -641,7 +641,7 @@ impl PackAtlas {
         let entity = if flat {
             "vec4(float(hz_block_ids[3u * hz_layer]), float(hz_block_ids[3u * hz_layer + 1u]), 0.0, 0.0)"
         } else {
-            "vec4(-1.0, -1.0, 0.0, 0.0)"
+            "vec4(-1.0, 0.0, 0.0, 0.0)"
         };
         // The block a face belongs to: half a block behind its centre (the quad's diagonal);
         // w, the light it gives (Iris's `BLOCK_EMISSION_ATTRIBUTE`, 0 to 15).
