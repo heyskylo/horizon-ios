@@ -92,16 +92,23 @@ impl Game<'_> {
     /// below taking the disc): the song stops, the block loses its record,
     /// and the neighbours and comparators hear it.
     pub(super) fn jukebox_taken(&mut self, pos: [i32; 3]) {
+        let mut was_playing = false;
         if let Some(BlockEntity::Jukebox(j)) =
             self.world.block_entities.get_mut(&(pos[0], pos[1], pos[2]))
         {
             if j.record().is_some() {
                 return;
             }
+            was_playing = j.playing;
             j.playing = false;
             j.ticks = 0;
         }
-        self.stop_song_heard(pos);
+        // `JukeboxSongPlayer.stop` posts only while a song plays.
+        if was_playing {
+            self.stop_song_heard(pos);
+        } else {
+            self.stop_song(pos);
+        }
         self.set_has_record(pos, false);
         self.jukebox_changed(pos);
     }
@@ -282,15 +289,23 @@ impl Game<'_> {
     /// `popOutTheItem`: the disc above the jukebox, and the song stops.
     fn eject_record(&mut self, pos: [i32; 3]) {
         let key = (pos[0], pos[1], pos[2]);
+        let mut was_playing = false;
         let record = match self.world.block_entities.get_mut(&key) {
             Some(BlockEntity::Jukebox(j)) => {
+                was_playing = j.playing;
                 j.playing = false;
                 j.ticks = 0;
                 j.items[0].take()
             }
             _ => None,
         };
-        self.stop_song_heard(pos);
+        // `JukeboxSongPlayer.stop` posts only while a song plays: a disc
+        // taken out after its song ended is silent.
+        if was_playing {
+            self.stop_song_heard(pos);
+        } else {
+            self.stop_song(pos);
+        }
         if let Some(record) = record {
             // atLowerCornerWithOffset(pos, 0.5, 1.01, 0.5).offsetRandomXZ(random, 0.7);
             // `new ItemEntity` moves it with its own random.

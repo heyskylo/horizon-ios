@@ -380,13 +380,19 @@ mod jukebox_stop_tests {
                 }
                 game.tick_jukebox((0, 64, 0));
             }
+            // JukeboxSongPlayer.stop posts only while a song plays: taking
+            // the finished disc out is silent.
+            assert!(
+                game.use_jukebox([0, 64, 0], None),
+                "the empty hand pops it out"
+            );
         }) else {
             return;
         };
         assert_eq!(
             stops(&lines).len(),
             1,
-            "the song's own end posts it once: {lines:?}"
+            "the song's own end posts it once, its removal after it nothing: {lines:?}"
         );
 
         // A broken jukebox posts it from the world's spill instead, and a
