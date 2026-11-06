@@ -3229,12 +3229,13 @@ pub fn item_frame_to_nbt(f: &ItemFrame, uuid: [i32; 4], raw: Option<&Tag>) -> Ta
     }
     tag
 }
+/// `ItemFrame.readAdditionalSaveData`: an absent Facing defaults to Direction.DOWN.
 pub fn item_frame_from_nbt(tag: &Tag, id: u32) -> Option<ItemFrame> {
     let pos = attached_block_pos(tag)?;
     Some(ItemFrame {
         id,
         pos,
-        facing: number(tag.get("Facing")).unwrap_or(2).clamp(0, 5) as u8,
+        facing: number(tag.get("Facing")).unwrap_or(0).clamp(0, 5) as u8,
         glow: kind(tag).as_deref() == Some("minecraft:glow_item_frame"),
         item: tag
             .get("Item")
@@ -6458,6 +6459,54 @@ mod fireball_nbt_tests {
             ("Facing", Tag::Byte(1)),
         ]);
         assert_eq!(item_frame_from_nbt(&frame, 1).unwrap().pos, [-1, 80, 6]);
+    }
+
+    #[test]
+    fn frame_missing_facing_loads_down_and_valid_directions_round_trip() {
+        // ItemFrame.readAdditionalSaveData: LEGACY_ID_CODEC, orElse(DOWN).
+        for kind in ["minecraft:item_frame", "minecraft:glow_item_frame"] {
+            // Explicit controls run before the missing-field assertion.
+            for facing in [Some(0), Some(1), Some(2), Some(3), Some(4), Some(5), None] {
+                let mut tag = Tag::compound([
+                    ("id", string(kind)),
+                    ("block_pos", Tag::IntArray(vec![4, 102, 6])),
+                    ("Fixed", Tag::Byte(1)),
+                    ("ItemRotation", Tag::Byte(5)),
+                    ("ItemDropChance", Tag::Float(0.25_f32.to_bits())),
+                    (
+                        "Item",
+                        item_to_nbt(&crate::items::ItemStack::new("minecraft:diamond", 1)),
+                    ),
+                ]);
+                if let Some(direction) = facing {
+                    put(&mut tag, "Facing", Tag::Byte(direction));
+                }
+                let frame = item_frame_from_nbt(&tag, 17).unwrap();
+                assert_eq!(frame.kind(), kind);
+                assert_eq!(frame.id, 17);
+                assert!(frame.fixed);
+                assert_eq!(
+                    frame.item.as_ref().unwrap().item.as_ref(),
+                    "minecraft:diamond"
+                );
+                for raw in [None, Some(&tag)] {
+                    let saved = item_frame_to_nbt(&frame, [1, 2, 3, 4], raw);
+                    assert_eq!(
+                        saved.get("Facing"),
+                        Some(&Tag::Byte(facing.unwrap_or(0))),
+                        "{kind}"
+                    );
+                    assert_eq!(saved.get("Item"), tag.get("Item"));
+                    assert_eq!(saved.get("ItemRotation"), Some(&Tag::Byte(5)));
+                    assert_eq!(saved.get("ItemDropChance"), tag.get("ItemDropChance"));
+                    assert_eq!(saved.get("Fixed"), Some(&Tag::Byte(1)));
+                    assert_eq!(saved.get("block_pos"), tag.get("block_pos"));
+                    if facing.is_none() {
+                        assert_eq!(saved.get("Pos"), Some(&doubles(&[4.5, 102.96875, 6.5])));
+                    }
+                }
+            }
+        }
     }
 
     #[test]
