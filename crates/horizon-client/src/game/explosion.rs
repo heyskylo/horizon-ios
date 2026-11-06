@@ -1047,6 +1047,70 @@ impl Game<'_> {
     }
 }
 
+#[cfg(test)]
+impl Game<'_> {
+    /// Exercise the real explosion entity walk on an empty, headless world.
+    pub(super) fn run_explosion_items_fixture(
+        &mut self,
+        directory: &std::path::Path,
+    ) -> Result<()> {
+        #[derive(serde::Deserialize)]
+        struct Case {
+            name: String,
+            stack: String,
+            health: i32,
+            distances: Vec<f64>,
+            #[serde(default)]
+            sibling: bool,
+        }
+        let cases: Vec<Case> =
+            serde_json::from_str(&std::fs::read_to_string(directory.join("inputs.json"))?)?;
+        let mut output = Vec::new();
+        for case in cases {
+            self.dropped.clear();
+            let stack = horizon_client::item_data::parse_stack(&case.stack)?
+                .ok_or("empty fixture stack")?;
+            self.spawn_item(stack, [0.0, 100.0, 0.0], [0.0; 3], 0);
+            self.dropped[0].health = case.health;
+            let original = self.dropped[0].id;
+            if case.sibling {
+                self.spawn_item(
+                    ItemStack::new("minecraft:dirt", 1),
+                    [0.0, 100.0, 0.0],
+                    [0.0; 3],
+                    0,
+                );
+            }
+            let mut steps = Vec::new();
+            for distance in case.distances {
+                for item in &mut self.dropped {
+                    item.position = Vec3::new(distance, 100.0, 0.0);
+                }
+                self.explosion_hurt_entities(
+                    [0.0, 100.0, 0.0],
+                    1.0,
+                    "minecraft:explosion",
+                    BlockInteraction::Destroy,
+                    &[],
+                );
+                let mut remaining: Vec<_> = self
+                    .dropped
+                    .iter()
+                    .map(|item| (item.stack.item.to_string(), item.stack.count, item.health))
+                    .collect();
+                remaining.sort();
+                steps.push(serde_json::json!(remaining));
+                if !self.dropped.iter().any(|item| item.id == original) {
+                    break;
+                }
+            }
+            output.push(serde_json::json!({"name": case.name, "steps": steps}));
+        }
+        std::fs::write(directory.join("rust.json"), serde_json::to_vec(&output)?)?;
+        Ok(())
+    }
+}
+
 /// `ServerExplosion.addOrAppendStack`: `ItemEntity.areMergable` (same item and
 /// components, combined count within the item's max stack size), then
 /// `ItemEntity.merge(.., 16)`.
@@ -1087,6 +1151,16 @@ fn blast_resistance(base: f32, cap: Option<f32>, wither_immune: bool) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires prepared resources; tools/test_explosion_items_parity.py"]
+    fn explosion_items_parity_fixture() {
+        let directory = std::env::var_os("HORIZON_EXPLOSION_ITEMS_FIXTURE")
+            .expect("set HORIZON_EXPLOSION_ITEMS_FIXTURE to the fixture directory");
+        let mut game = crate::game::native_machines::tests::server_game();
+        game.run_explosion_items_fixture(std::path::Path::new(&directory))
+            .unwrap();
+    }
 
     /// A dangerous wither skull's blast treats a block as at most 0.8 harder to
     /// break, but a `#wither_immune` block keeps its own resistance and any
