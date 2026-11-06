@@ -2484,6 +2484,16 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
 - **`native_player_jump(player, name)`**: accepted guest movement made the server player jump from the ground, after movement simulation finishes. The guest's state is swapped in.
 - **`native_player_kicked(player, name, reason)`**: a guest was kicked after the hub recorded the rendered disconnect reason and sent the disconnect. The guest's state is swapped in, unless the guest was already removed in the same poll (a kick and the disconnect arriving together): the hook still fires, without it.
 - **`native_player_level_change(player, name, from, to)`**: a server player's experience change altered their level, after the new level was applied. The guest's state is swapped in when the player is a guest.
+
+#### Server hooks for plugin ports: Inventories
+
+- **`native_player_launch_projectile_v2(player, name, stack, cancel)`**: a guest is about to throw `stack` (a snowball,
+  an egg, an ender pearl, a mod's thrown item), heard where `ProjectileItem.use` creates the projectile, before it
+  exists (Bukkit's `ProjectileLaunchEvent` for a player). Set `cancel` and nothing is thrown, used or put on cooldown,
+  and `native_player_launch_projectile` (v1, which keeps its signature and firing point) hears nothing of it; the
+  client, which took the item at once, gets its inventory back. The guest's state is swapped in. Not heard: bows,
+  crossbows, tridents, splash and lingering potions, experience bottles, wind charges and fireworks.
+
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a

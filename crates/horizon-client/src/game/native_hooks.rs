@@ -6523,6 +6523,31 @@ impl Game<'_> {
     ) {
         mod_api::dispatch_player_level_change(self, mod_api::mods(), player, name, from, to);
     }
+    /// A guest is about to throw `stack` (a snowball, an egg, an ender pearl,
+    /// a mod's thrown item): where `ProjectileItem.use` creates the projectile,
+    /// before it exists, cancellable (Bukkit's `ProjectileLaunchEvent` for a
+    /// player). Set `cancel` and nothing is thrown, used or put on cooldown,
+    /// and `native_player_launch_projectile` hears nothing of it; the guest's
+    /// client, which took the item at once, gets its inventory back. The
+    /// guest's state is swapped in. Not heard: bows, crossbows, tridents,
+    /// splash potions, experience bottles, wind charges and fireworks.
+    /// Server-side, guests only. @API:player_launch_projectile_v2@.
+    pub(super) fn native_player_launch_projectile_v2(
+        &mut self,
+        player: u128,
+        name: &str,
+        stack: &ItemStack,
+        cancel: &mut bool,
+    ) {
+        mod_api::dispatch_player_launch_projectile_v2(
+            self,
+            mod_api::mods(),
+            player,
+            name,
+            stack,
+            cancel,
+        );
+    }
     /// A click in a menu a mod opened (`native_open_menu`), which moved
     /// nothing: the menu's `slot` (its own first, then the player's
     /// inventory, `native_menu_inventory_slot`; -999 outside), the `button`

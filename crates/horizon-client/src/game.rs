@@ -3209,6 +3209,9 @@ struct Game<'a> {
     /// The last `use_hand` that ended the click did so with `FAIL`, which
     /// does not consume the action (handleUseItemOn's ANY_BLOCK_USE).
     use_failed: bool,
+    /// A mod canceled a use the acting guest's client predicted (a throw, a
+    /// placement): their inventory goes out whole when the turn ends.
+    guest_inventory_resend: bool,
     /// Level events of this tick for the guests, and the guest acting now.
     lan_events: Vec<(i32, [i32; 3], i32, Option<u32>)>,
     /// Jukebox level events 1010 (song name) and 1011 (`None`) for the guests;
@@ -20106,6 +20109,7 @@ impl<'a> Game<'a> {
             block_reach: 4.5,
             guest_use: None,
             use_failed: false,
+            guest_inventory_resend: false,
             lan_events: Vec::new(),
             lan_songs: Vec::new(),
             lan_cushion_breaks: Vec::new(),

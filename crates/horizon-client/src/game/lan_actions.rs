@@ -1162,6 +1162,10 @@ impl Game<'_> {
         if let Some(mob) = guest_mount {
             self.lan_open_mount(host, conn, mob);
         }
+        // A use a mod canceled: the client's prediction of it is taken back.
+        if std::mem::take(&mut self.guest_inventory_resend) {
+            host.hub.send_inventory(i);
+        }
         // The turn's teleports are in the hub now: the mods hear them.
         self.flush_teleport_notes(host);
         // An inner turn may move, kill or change a player's mode. Once its
