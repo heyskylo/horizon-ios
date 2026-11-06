@@ -1539,6 +1539,15 @@ impl Game<'_> {
                 }
                 keep
             });
+            // The potion clouds written above leave with their chunk; a
+            // dragon's breath (no potion) was not written and stays.
+            self.breath_clouds.retain(|c| {
+                let keep = c.potion.is_none() || !gone(Vec3::new(c.at[0], c.at[1], c.at[2]));
+                if !keep {
+                    removed.push(c.id);
+                }
+                keep
+            });
             // Riders leave with their root vehicle, a boat's with the boat.
             let leaving: HashSet<u32> = (0..self.mobs.len())
                 .filter(|&i| {
@@ -2248,6 +2257,74 @@ mod tests {
             );
             println!("{kind}: id {id}, UUID kept, attachments loaded and saved back");
         }
+    }
+
+    /// A lingering potion's cloud is an entity of its chunk: unloading the chunk writes it and
+    /// takes it out of the level, so loading the chunk again gives back one cloud, not two.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_lingering_cloud_leaves_with_its_chunk() {
+        use super::super::{Audio, Game, Options, Progress, Settings, load_resources};
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!("no menu handoff"),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        let cloud = Tag::compound([
+            ("id", Tag::String("minecraft:area_effect_cloud".into())),
+            (
+                "Pos",
+                Tag::List(vec![
+                    Tag::Double(4.5f64.to_bits()),
+                    Tag::Double(64.0f64.to_bits()),
+                    Tag::Double(4.5f64.to_bits()),
+                ]),
+            ),
+            ("UUID", Tag::IntArray(vec![5, 6, 7, 8])),
+            ("Duration", Tag::Int(600)),
+            (
+                "potion_contents",
+                Tag::compound([("potion", Tag::String("minecraft:poison".into()))]),
+            ),
+        ]);
+        let clouds = |game: &Game| {
+            game.breath_clouds
+                .iter()
+                .filter(|c| c.potion.is_some())
+                .count()
+        };
+        game.world.loaded_entities.push(((0, 0), vec![cloud]));
+        game.spawn_loaded_entities();
+        assert_eq!(clouds(&game), 1, "the cloud loads");
+        let unloaded = game.entity_chunks(&HashSet::from([(0, 0)]), true);
+        let written: Vec<Tag> = unloaded.into_iter().flat_map(|(_, tags)| tags).collect();
+        assert_eq!(written.len(), 1, "the unload writes the cloud");
+        assert_eq!(clouds(&game), 0, "and takes it out of the level");
+        game.world.loaded_entities.push(((0, 0), written));
+        game.spawn_loaded_entities();
+        assert_eq!(clouds(&game), 1, "loading the chunk again gives one cloud");
     }
 
     #[test]
