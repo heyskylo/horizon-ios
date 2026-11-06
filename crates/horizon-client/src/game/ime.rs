@@ -110,6 +110,11 @@ impl Game<'_> {
 
     /// Text the input method committed (`WindowEvent::Ime(Commit)`).
     pub(super) fn ime_commit(&mut self, text: &str) {
+        // Software-key character callbacks can arrive before the ordinary
+        // window-event overlay fence. They must obey the same reload boundary.
+        if self.reload_blocks_input() {
+            return;
+        }
         preedit::set_preedit(None);
         let text: String = text.chars().filter(|c| !c.is_control()).collect();
         // ScreenEvent.CharacterTyped.Pre: the input method's committed text

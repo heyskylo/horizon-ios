@@ -221,6 +221,49 @@ struct Producer {
     cancel: Arc<Cancellation>,
     thread: Mutex<Option<JoinHandle<()>>>,
 }
+
+/// An independent owned job, sharing the browser's shutdown registry without
+/// occupying its install slot. Catalogue refreshes must not swallow installs.
+pub(super) struct OwnedJob<T> {
+    receive: Receiver<T>,
+    producer: Arc<Producer>,
+}
+impl<T: Send + 'static> OwnedJob<T> {
+    pub(super) fn spawn(
+        name: &str,
+        work: impl FnOnce(Arc<Cancellation>) -> T + Send + 'static,
+    ) -> std::io::Result<Self> {
+        let producer = Arc::new(Producer {
+            cancel: Arc::new(Cancellation::default()),
+            thread: Mutex::new(None),
+        });
+        let cancel = producer.cancel.clone();
+        let (send, receive) = channel();
+        let thread = std::thread::Builder::new()
+            .name(name.into())
+            .spawn(move || {
+                let _ = send.send(work(cancel));
+            })?;
+        *producer.thread.lock().unwrap() = Some(thread);
+        registry()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(producer.clone());
+        Ok(Self { receive, producer })
+    }
+    pub(super) fn poll(&self) -> Result<T, TryRecvError> {
+        self.receive.try_recv()
+    }
+    pub(super) fn shutdown(&self) -> bool {
+        self.producer.cancel.cancel();
+        self.producer.finished()
+    }
+}
+impl<T> Drop for OwnedJob<T> {
+    fn drop(&mut self) {
+        self.producer.cancel.cancel();
+    }
+}
 impl Producer {
     fn finished(&self) -> bool {
         let Ok(mut handle) = self.thread.try_lock() else {
@@ -259,10 +302,13 @@ pub(super) fn poll_retired_workers() {
 
 impl Game<'_> {
     pub(super) fn shutdown_mod_browser(&mut self) -> bool {
-        self.mods.jobs.shutdown()
+        let browser = self.mods.jobs.shutdown();
+        let catalog = self.shutdown_mod_catalog();
+        browser && catalog
     }
     /// Each frame: what the browser's worker finished.
     pub(super) fn drive_mod_browser(&mut self) {
+        self.poll_mod_catalog();
         let installed = self
             .mods
             .jobs
@@ -270,6 +316,14 @@ impl Game<'_> {
         if installed {
             self.settings.save(&Self::options_path());
             self.start_mods();
+            // A mod with blocks, items or worldgen waits for a restart: the
+            // project page says so instead of "installed and on".
+            if let (Some(note), Some((message, _))) = (
+                &self.ui.options.mods_note,
+                &mut self.ui.options.mod_browser.message,
+            ) {
+                *message = format!("{message} {note}");
+            }
         }
     }
 }

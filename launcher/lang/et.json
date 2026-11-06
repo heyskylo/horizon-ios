@@ -1220,5 +1220,7 @@
   "{name} was left out: made for another Horizon version": "{name} jäeti välja: tehtud teise Horizoni versiooni jaoks",
   "{name} was left out: clashes with {other}": "{name} jäeti välja: on vastuolus modiga {other}",
   "{name} was left out: it needs {other}, which was left out": "{name} jäeti välja: vajab modi {other}, mis jäeti välja",
-  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Ei ehitu Horizonil, mida mängid ({code}): ehitus jätab selle välja, kuni autor seda uuendab"
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Ei ehitu Horizonil, mida mängid ({code}): ehitus jätab selle välja, kuni autor seda uuendab",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Seal, kus sa oled, saab asutajate komplekti tasuta makse kaudu saidil playhorizon.dev. Nõua seda Poest: see avab makse sinu eest.",
+  "The founder set can't be claimed from your country.": "Asutajate komplekti ei saa sinu riigist nõuda."
 }

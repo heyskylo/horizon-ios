@@ -112,21 +112,39 @@ pub(super) fn forget_sync_data() {
     *SYNC.lock().unwrap_or_else(|e| e.into_inner()) = SyncCache::default();
 }
 
-/// Without a hub yet, retain this world's frozen registries through `/reload`
-/// too. World entry discards this snapshot before loading another world's.
-pub(super) fn reload_cached_sync_data(
+/// Build a replacement without publishing it to the session cache.
+pub(super) fn prepare_cached_sync_data(
     root: &std::path::Path,
     overlay: &horizon_world::loot::PackOverlay,
-) -> std::result::Result<(), String> {
-    let kept = prepare_sync_reload(&mut SYNC.lock().unwrap_or_else(|e| e.into_inner()), overlay);
-    if let Some(kept) = kept {
-        reload_sync_data(root, overlay, &kept)?;
+) -> std::result::Result<Arc<SyncData>, String> {
+    let cache = SYNC.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(kept) = cache
+        .data
+        .as_ref()
+        .and_then(|(_, result)| result.as_ref().ok())
+    {
+        let mut next = SyncData::reload(root, overlay, kept)?;
+        next.features.clone_from(&kept.features);
+        Ok(Arc::new(next))
+    } else {
+        match &cache.damage {
+            Some(damage) => SyncData::load_with_frozen_damage(root, overlay, damage),
+            None => SyncData::load(root, overlay),
+        }
+        .map(Arc::new)
     }
-    Ok(())
+}
+
+/// Publish only a fully prepared replacement. Frozen damage remains session-owned.
+pub(super) fn install_cached_sync_data(sync: Arc<SyncData>, world_packs: bool) {
+    let mut cache = SYNC.lock().unwrap_or_else(|e| e.into_inner());
+    cache.world_packs = world_packs;
+    cache.data = Some((world_packs || sync.has_pack_entries(), Ok(sync)));
 }
 
 /// Keep lazy-cache admission aligned with the current packs even when no
 /// complete wire snapshot has been loaded yet. Damage definitions stay frozen.
+#[cfg(test)]
 fn prepare_sync_reload(
     sync: &mut SyncCache,
     overlay: &horizon_world::loot::PackOverlay,
@@ -136,26 +154,6 @@ fn prepare_sync_reload(
         .as_ref()
         .and_then(|(_, result)| result.as_ref().ok())
         .cloned()
-}
-
-/// `/reload` (MinecraftServer.reloadResources) under a running hub: the
-/// tags, recipes and advancements read again with the world's packs, the
-/// synchronized registries `kept` (the hub's) as they were, and that becomes
-/// what `sync_data` gives.
-pub(super) fn reload_sync_data(
-    root: &std::path::Path,
-    overlay: &horizon_world::loot::PackOverlay,
-    kept: &SyncData,
-) -> std::result::Result<Arc<SyncData>, String> {
-    // Kept pack dialogs count as packs: a world opened without packs after
-    // a `/reload` that dropped them must read its own registries again.
-    let packs = !overlay.files.is_empty() || kept.has_pack_entries();
-    let sync = SyncData::reload(root, overlay, kept).map(|mut sync| {
-        sync.features.clone_from(&kept.features);
-        Arc::new(sync)
-    });
-    SYNC.lock().unwrap_or_else(|e| e.into_inner()).data = Some((packs, sync.clone()));
-    sync
 }
 
 impl Game<'_> {
@@ -1755,6 +1753,37 @@ impl Game<'_> {
                 .write(&super::stats::player_json(&self.world_root, "stats", uuid));
         }
     }
+    /// The advancements and statistics files of a held arrival, before it is placed
+    /// (`player-confirm`): each through a new file, synced and renamed into place
+    /// (`save::write_durable`), so the reply's `ok` means both are on the disk whole.
+    pub(super) fn write_arrival_records(
+        &self,
+        host: &LanHost,
+        guest: &horizon_client::lan::guest::Guest,
+    ) -> std::result::Result<(), String> {
+        if self.adv.tree.list.is_empty() {
+            return Ok(());
+        }
+        let Some(uuid) = self.records_uuid(host, guest.uuid) else {
+            return Ok(());
+        };
+        let write = |dir: &str, json: &serde_json::Value| {
+            let path = super::stats::player_json(&self.world_root, dir, uuid);
+            let text = serde_json::to_string_pretty(json).map_err(|e| e.to_string())?;
+            horizon_client::save::write_durable(&path, text.as_bytes())
+                .map_err(|e| format!("{} is not saved: {e}", path.display()))
+        };
+        write(
+            "advancements",
+            &guest
+                .advancements
+                .to_json(&self.adv.tree, horizon_world::DATA_VERSION),
+        )?;
+        if let Some(play) = host.play.get(&guest.conn) {
+            write("stats", &play.stats.to_json())?;
+        }
+        Ok(())
+    }
     /// `PlayerAdvancements.load` and `ServerStatsCounter.parseLocal` of a
     /// network player who joined; every statistic goes out on the first
     /// request (`PlayerList.placeNewPlayer`'s `markAllDirty`).
@@ -2094,10 +2123,18 @@ impl Game<'_> {
                                 super::dedicated::java_double(z)
                             ),
                         );
-                        super::dedicated::log(
-                            "INFO",
-                            &format!("System chat: {} joined the game", g.name),
-                        );
+                        // A held player is not announced: it is not in the world yet.
+                        if g.held {
+                            super::dedicated::log(
+                                "INFO",
+                                &horizon_client::lan::arrivals::held_line(&g.name),
+                            );
+                        } else {
+                            super::dedicated::log(
+                                "INFO",
+                                &format!("System chat: {} joined the game", g.name),
+                            );
+                        }
                     } else if self.player.is_some()
                         && let Some(g) = host.hub.guest(conn)
                         && g.placed
@@ -2156,20 +2193,33 @@ impl Game<'_> {
                     self.guest_attachments.remove(&guest.uuid);
                     host.play.remove(&guest.conn);
                     self.guest_combat.remove(&guest.conn);
-                    if self.options.dedicated.is_some() && guest.placed {
+                    // A held player was recorded as joined at its login: it leaves too.
+                    if self.options.dedicated.is_some() && (guest.placed || guest.held) {
                         super::dedicated::events::record(
                             "leave",
                             &guest.name,
                             guest.uuid,
                             serde_json::json!({ "reason": guest.left_reason }),
                         );
-                        super::dedicated::log(
-                            "INFO",
-                            &format!("{} lost connection: {}", guest.name, guest.left_reason),
-                        );
+                        if guest.held && !guest.placed {
+                            // Never announced, so no "left the game" either.
+                            super::dedicated::log(
+                                "INFO",
+                                &horizon_client::lan::arrivals::dropped_line(
+                                    &guest.name,
+                                    &guest.left_reason,
+                                ),
+                            );
+                        } else {
+                            super::dedicated::log(
+                                "INFO",
+                                &format!("{} lost connection: {}", guest.name, guest.left_reason),
+                            );
+                        }
                         // A player moved to another server without `announce` was not
-                        // announced as leaving, so the line is not logged either.
-                        if !guest.quiet_leave {
+                        // announced as leaving, so the line is not logged either; a held
+                        // player was never announced at all.
+                        if guest.placed && !guest.quiet_leave {
                             super::dedicated::log(
                                 "INFO",
                                 &format!("System chat: {} left the game", guest.name),
@@ -3169,12 +3219,12 @@ impl Game<'_> {
         // distance + 1) and those chunks' lit neighbours.
         let radius = host.hub.config.view_distance + 1;
         let rule = self.ui.rules.bool("spectators_generate_chunks");
+        // The held players are sent the level, so their chunks are kept as the placed ones'.
         self.streaming.extra = host
             .hub
-            .guests
-            .iter()
-            .filter(|g| host.hub.here(g) && super::game_mode::loads_chunks(rule, g.spectator()))
-            .map(|g| (g.chunk(), radius))
+            .loading_chunks(|g| super::game_mode::loads_chunks(rule, g.spectator()))
+            .into_iter()
+            .map(|chunk| (chunk, radius))
             .chain(
                 self.arrival_chunks(self.dim)
                     .into_iter()

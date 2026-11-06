@@ -373,7 +373,6 @@ pub(super) fn spawn_loader(
     let world = launch_world(options).map(str::to_owned);
     let progress = progress.clone();
     let import_home = horizon_client::import::home();
-    let mod_home = Game::game_dir();
     let handle = std::thread::Builder::new()
         .name("resource-loader".into())
         .spawn(move || {
@@ -386,14 +385,14 @@ pub(super) fn spawn_loader(
                     None
                 };
                 let mut pack_error = None;
-                let root = packs::startup_root(&vanilla_root, &settings.resource_packs, &[])
-                    .unwrap_or_else(|error| {
-                        pack_error = Some(error.to_string());
-                        vanilla_root.clone()
-                    });
-                let root = horizon_client::mod_registry::with_content_snapshot(&mod_home, || {
-                    mods::content_root(&root, &settings.mods.enabled, &dev_mods)
-                })?;
+                let (root, _base_lease) =
+                    packs::startup_root_leased(&vanilla_root, &settings.resource_packs, &[])
+                        .unwrap_or_else(|error| {
+                            pack_error = Some(error.to_string());
+                            (vanilla_root.clone(), Default::default())
+                        });
+                let content = mods::prepare_content(&root, &settings.mods.enabled, &dev_mods)?;
+                let root = content.root.clone();
                 load_resources_with_access(
                     root,
                     world.as_deref(),
@@ -408,9 +407,11 @@ pub(super) fn spawn_loader(
                         let _ = sender.send(LoaderMsg::Ui(gui, root.to_path_buf()));
                     },
                 )
-                .map(|mut loaded| {
+                .and_then(|mut loaded| {
                     loaded.pack_error = loaded.pack_error.or(pack_error);
-                    loaded
+                    loaded.pack.content =
+                        Some(mods::content_for_loaded_root(&loaded.root, content)?);
+                    Ok(loaded)
                 })
             };
             let result = load().map_err(|error| error.to_string());
@@ -1465,12 +1466,20 @@ mod tests {
         let access = horizon_client::import::acquire_home_access(&home).unwrap();
         let worker_access = access.clone();
         loaded.home_access = Some(access);
+        let managed_root = home.join(".horizon-cache/mod-content/0123456789abcdef");
+        std::fs::create_dir_all(&managed_root).unwrap();
+        std::fs::write(managed_root.join("horizon-mod-content.stamp"), b"fixture").unwrap();
+        let lease = horizon_assets::root_lease::RootLease::acquire(&managed_root).unwrap();
+        let worker_lease = horizon_assets::root_lease::lease_for(&managed_root);
+        assert!(worker_lease.is_some());
         let (release, waiting) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
             let _access = worker_access;
+            let _root_lease = worker_lease;
             waiting.recv().unwrap();
             Ok(())
         });
+        drop(lease);
         let id = worker.thread().id();
         loaded.rest_loader = Some(WorldRestLoader {
             progress: Progress::new(),
@@ -1488,6 +1497,9 @@ mod tests {
             .iter()
             .any(|h| h.thread().id() == id);
         let pending = !poll_retired_rest_loaders();
+        let collector_blocked = horizon_assets::root_lease::RootLease::try_exclusive(&managed_root)
+            .unwrap()
+            .is_none();
         let writer_home = home.clone();
         let (attempting, attempted) = std::sync::mpsc::channel();
         let (published, publication) = std::sync::mpsc::channel();
@@ -1520,6 +1532,16 @@ mod tests {
             std::thread::yield_now();
         }
         writer.join().unwrap();
+        assert!(
+            collector_blocked,
+            "failed handoff released the root while its tail still read it"
+        );
+        assert!(
+            horizon_assets::root_lease::RootLease::try_exclusive(&managed_root)
+                .unwrap()
+                .is_some(),
+            "finished tail did not release its root lease"
+        );
         assert!(
             retained && pending,
             "failed Loaded handoff detached its active tail"

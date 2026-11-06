@@ -155,6 +155,7 @@ A proxy handing players over between servers (docs/server.md). Not vanilla's acc
 | `max_expect_seconds` | `60` |  | the longest the proxy may ask for |
 | `max_expected` | `64` |  | players waited for at once |
 | `max_freeze_seconds` | `30` |  | the longest a player stays frozen while it is handed over |
+| `max_hold_seconds` | `60` |  | the longest a player arriving from another server is held before it is dropped |
 
 ### `[discord]`
 

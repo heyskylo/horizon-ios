@@ -24,15 +24,17 @@ def program():
     a = source.rfind('#[derive', 0, source.index('pub(super) enum ReloadKind'))
     b = source.index('#[cfg(test)]', a)
     worker = source[a:b].replace('pub(super)', 'pub(crate)')
-    spawn = 'pub(crate) ' + method(source, 'spawn_pack_reload')
+    spawn = '\n'.join('pub(crate) ' + method(source, name) for name in ('spawn_pack_reload', 'spawn_pack_reload_using'))
+    mods = (ROOT / 'crates/horizon-client/src/game/mods.rs').read_text()
+    spawn += '\n' + method(mods, 'requested_mod_selection')
     a = source.index('        let StagedPack {', source.index('fn apply_staged_pack('))
     b = source.index('} = staged;', a) + len('} = staged;')
     destructure = source[a:b]
     a = source.index('pub(super) struct StagedPack {')
     b = source.index('\n}', a)
     fields = re.findall(r'^\s*(?:pub\s+)?(\w+):', source[a:b], re.M)
-    declaration = 'struct StagedPack{' + ','.join(f'{name}:' + ('PathBuf' if name == 'root' else 'Option<import::HomeAccess>' if name == 'home_access' else '()') for name in fields) + '}\n'
-    values = ','.join(f'{name}:' + ('root.to_owned()' if name == 'root' else 'None' if name == 'home_access' else '()') for name in fields)
+    declaration = 'struct StagedPack{' + ','.join(f'{name}:' + ('PathBuf' if name == 'root' else 'Option<import::HomeAccess>' if name == 'home_access' else 'Option<Box<StagedPack>>' if name == 'rollback' else '()') for name in fields) + '}\n'
+    values = ','.join(f'{name}:' + ('root.to_owned()' if name == 'root' else 'None' if name in ('home_access', 'rollback') else '()') for name in fields)
     stage = STAGE.replace('STAGED_FIELDS', values)
     return STUBS.replace('HOME_ACCESS_API', access) + declaration + stage + '\nmod production{use super::*;\n' + worker + '\nimpl Game{\n' + spawn + '\n}\n' + HELPERS.replace('STAGED_DESTRUCTURE', destructure) + '\n}\n' + CASES
 
@@ -50,22 +52,34 @@ const RELOAD_LINES:[&str;0]=[];
 #[derive(Clone)]struct Mods{enabled:Vec<String>}
 struct Settings{resource_packs:Vec<String>,mods:Mods,force_unicode:bool,japanese_glyphs:bool}
 struct Ui{vanilla_root:PathBuf}
-struct Options{dev_mods:Vec<PathBuf>}
+struct Options{dev_mods:Vec<PathBuf>,resources:PathBuf}
 struct ServerPacks{active:Vec<()>}
-struct Pack{assets:Arc<()>,context:()}
-struct Game{keys:Vec<()>,physical_keys:Vec<()>,left:bool,right:bool,ui:Ui,settings:Settings,server_packs:ServerPacks,options:Options,pack:Pack,res:Arc<()>,pack_reload:Option<production::PackReload>}
+mod mods{pub mod catalog{
+ #[derive(Clone,Default,PartialEq)]pub struct Selection(pub u32);
+ #[derive(Default)]pub struct Catalog{pub id:u32}
+ }pub struct PreparedContent{pub selection:catalog::Selection,pub catalog:std::sync::Arc<catalog::Catalog>}}
+use mods::catalog::{Selection,Catalog};
+struct ModsState{content:Option<Arc<mods::PreparedContent>>,catalog:Option<Arc<Catalog>>,pending:Option<Selection>}
+struct Pack{assets:Arc<()>,context:(),content:Option<Arc<mods::PreparedContent>>}
+struct Game{keys:Vec<()>,physical_keys:Vec<()>,left:bool,right:bool,ui:Ui,settings:Settings,server_packs:ServerPacks,options:Options,pack:Pack,res:Arc<()>,pack_reload:Option<production::PackReload>,mods:ModsState,remote:Option<()>,integrated:Option<()>,world_root:PathBuf,input_blocks:usize}
 impl Game{
  fn vanilla_root(&self)->PathBuf{import::home().join("resources")}
- fn new()->Self{Self{keys:vec![],physical_keys:vec![],left:false,right:false,ui:Ui{vanilla_root:PathBuf::new()},settings:Settings{resource_packs:vec![],mods:Mods{enabled:vec![]},force_unicode:false,japanese_glyphs:false},server_packs:ServerPacks{active:vec![]},options:Options{dev_mods:vec![]},pack:Pack{assets:Arc::new(()),context:()},res:Arc::new(()),pack_reload:None}}
+ // The input-block behavior has its own production-hook fixture. Here its
+ // synchronous boundary is counted while the ownership hooks run unchanged.
+ fn begin_reload_input_block(&mut self){self.input_blocks+=1;}
+ fn new()->Self{Self{keys:vec![],physical_keys:vec![],left:false,right:false,ui:Ui{vanilla_root:PathBuf::new()},settings:Settings{resource_packs:vec![],mods:Mods{enabled:vec![]},force_unicode:false,japanese_glyphs:false},server_packs:ServerPacks{active:vec![]},options:Options{dev_mods:vec![],resources:import::home().join("resources")},pack:Pack{assets:Arc::new(()),context:(),content:None},res:Arc::new(()),pack_reload:None,mods:ModsState{content:Some(Arc::new(mods::PreparedContent{selection:Selection(1),catalog:Arc::new(Catalog{id:3})})),catalog:Some(Arc::new(Catalog{id:7})),pending:Some(Selection(9))},remote:None,integrated:None,world_root:PathBuf::new(),input_blocks:0}}
 }
 static CORE:Mutex<String>=Mutex::new(String::new());
+static SELECTIONS:Mutex<Vec<(u32,u32)>>=Mutex::new(Vec::new());
 '''
 
 STAGE = r'''
-fn stage_pack(root:&Path,_:&Vec<String>,_:&Vec<()>,_:&Vec<String>,_:&Vec<PathBuf>,_:&Arc<()>,_:&Arc<()>,_:&(),_:bool,_:bool,_:&Progress)->Result<StagedPack>{
+fn stage_pack(root:&Path,_:&Vec<String>,_:&Vec<()>,selection:&Selection,catalog:Arc<Catalog>,_:&Arc<()>,_:&Arc<()>,_:&(),_:bool,_:bool,_:&Progress)->Result<StagedPack>{
+ SELECTIONS.lock().unwrap().push((selection.0,catalog.id));
  *CORE.lock().unwrap()=fs::read_to_string(root.join("generation"))?;
  Ok(StagedPack{STAGED_FIELDS})
 }
+fn stage_root(_:&Path,root:PathBuf,_:Option<Arc<mods::PreparedContent>>,_:&Arc<()>,_:&Arc<()>,_:&(),_:bool,_:bool,_:&Progress)->Result<StagedPack>{Ok(StagedPack{STAGED_FIELDS})}
 '''
 HELPERS = r'''
 pub fn staged(game:&mut Game)->StagedPack{
@@ -92,16 +106,19 @@ fn main(){
  let home=import::home();fs::create_dir_all(home.join("resources")).unwrap();fs::write(home.join("resources/generation"),"before").unwrap();
  let mut game=Game::new();game.spawn_pack_reload(production::ReloadKind::Selection).unwrap();
  let staged=production::staged(&mut game);let core=CORE.lock().unwrap().clone();
+ assert_eq!(*SELECTIONS.lock().unwrap(),vec![(9,7)],"actual wrapper must capture requested local selection and catalog");assert_eq!(game.input_blocks,1);
  let(thread,finished)=writer(home.clone());let escaped=finished.recv_timeout(Duration::from_millis(150)).is_ok();
  let applied=production::apply(staged).unwrap();thread.join().unwrap();
  eprintln!("staged={core}; applied={applied}; writer_escaped={escaped}");
  assert!(!escaped,"Importer replaced the staged generation before the frame-thread apply read it");
  assert_eq!(core,applied);assert_eq!(fs::read_to_string(home.join("resources/generation")).unwrap(),"after");
  // Discarding a completed worker also releases ownership; no UI apply is needed.
+ game.remote=Some(());
  game.spawn_pack_reload(production::ReloadKind::Selection).unwrap();
  let deadline=Instant::now()+Duration::from_secs(3);while !production::worker_done(&game){assert!(Instant::now()<deadline);std::thread::yield_now();}
  let(thread,finished)=writer(home);assert!(finished.recv_timeout(Duration::from_millis(150)).is_err());
  production::discard(&mut game);finished.recv_timeout(Duration::from_secs(3)).unwrap();thread.join().unwrap();
+ assert_eq!(*SELECTIONS.lock().unwrap(),vec![(9,7),(1,3)],"remote server reload retains its applied content instead of pending local selection");assert_eq!(game.input_blocks,2);
 }
 '''
 
@@ -118,5 +135,5 @@ class PackReloadHomeLifetimeTests(unittest.TestCase):
             built = subprocess.run([compiler, '--edition=2024', str(source), '-o', str(binary)], capture_output=True, text=True, timeout=60)
             self.assertEqual(built.returncode, 0, built.stdout + built.stderr)
             env = dict(os.environ, HORIZON_PACK_HOME_FIXTURE=str(Path(folder) / 'home'))
-            ran = subprocess.run([str(binary)], env=env, capture_output=True, text=True, timeout=10)
+            ran = subprocess.run([str(binary)], cwd=folder, env=env, capture_output=True, text=True, timeout=10)
             self.assertEqual(ran.returncode, 0, ran.stdout + ran.stderr)

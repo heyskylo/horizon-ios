@@ -37,6 +37,8 @@ pub(super) struct Pads {
     feed_source: Option<PadId>,
     /// Changes when a different physical controller owns this player's input.
     pub(super) owner_epoch: u64,
+    /// A reload started, even if its worker completed before the next input poll.
+    pub(super) reload_pending: bool,
     /// The real controllers and the DualSense's output.
     #[cfg(any(feature = "controllers", target_os = "ios"))]
     devices: hardware::Devices,
@@ -90,6 +92,7 @@ struct Context {
     osk: bool,
     dialog: bool,
     enabled: bool,
+    reloading: bool,
 }
 
 #[cfg(all(feature = "controllers", not(target_os = "ios")))]
@@ -258,6 +261,7 @@ impl Game<'_> {
             osk: self.pad.menu.osk.is_some(),
             dialog: self.dialog_open() || self.code_of_conduct.is_some(),
             enabled: self.settings.controller.enabled,
+            reloading: self.reload_blocks_input(),
         }
     }
 
@@ -278,6 +282,10 @@ impl Game<'_> {
             self.pad_cancel_inputs(event_loop);
             self.pad.state = PadState::default();
             self.pad.in_use = false;
+            if self.reload_blocks_input() {
+                self.finish_reload_input_disarm(event_loop);
+                return;
+            }
             // The keyboard's menu focus follows its widget all the same.
             self.pad_menu_frame(event_loop);
             return;
@@ -315,6 +323,9 @@ impl Game<'_> {
             style == GlyphStyle::Nintendo && self.pad.by_letter(&self.settings.controller);
         self.ui.options.pad_driving = self.pad.in_use && self.pad_focus_mode();
         let mut state = hardware.merge(&self.pad.injected);
+        if self.pad_reload_sample(event_loop, state) {
+            return;
+        }
         let screen_before = self.screen;
         self.poll_emote_controller(&state);
         if self.screen != screen_before {
@@ -379,6 +390,33 @@ impl Game<'_> {
             }
         }
         self.pad_menu_frame(event_loop);
+    }
+
+    /// Sample hardware even while loading, suppressing holds until released.
+    fn pad_reload_sample(&mut self, event_loop: &dyn EventLoopCtl, state: PadState) -> bool {
+        if !self.reload_blocks_input() {
+            return false;
+        }
+        self.pad
+            .edges
+            .update(&state, self.settings.controller.trigger_threshold);
+        self.pad.state = state;
+        self.finish_reload_input_disarm(event_loop);
+        true
+    }
+
+    pub(super) fn finish_reload_input_disarm(&mut self, event_loop: &dyn EventLoopCtl) {
+        self.cancel_emote_controller();
+        self.pad_cancel_inputs(event_loop);
+        self.pad.held_drop = None;
+        self.pad.drop_stack = false;
+        self.pad.state = PadState::default();
+        self.pad.in_use = false;
+        self.pad.menu.osk = None;
+        self.suspend_system_keyboard();
+        self.cancel_touch_for_reload();
+        self.pad_output_off();
+        self.pad.reload_pending = false;
     }
 
     fn pad_edge(&mut self, event_loop: &dyn EventLoopCtl, button: Button, down: bool) {
@@ -453,7 +491,7 @@ impl Game<'_> {
         button: Button,
         down: bool,
     ) -> Result<()> {
-        if down && !self.pad_focused() {
+        if down && (self.reload_blocks_input() || !self.pad_focused()) {
             return Ok(());
         }
         let playing = !self.pad_in_menu();
@@ -461,7 +499,7 @@ impl Game<'_> {
             // Like a click into the window: take the pointer.
             self.capture(true);
         }
-        if !playing {
+        if !playing && !self.reload_blocks_input() {
             self.pad_menu_button(event_loop, button, down)?;
             if down {
                 return Ok(());
@@ -491,6 +529,9 @@ impl Game<'_> {
     /// A bound action: a vanilla mapping acts as its default key or mouse
     /// button, like a rebound keyboard key.
     fn pad_action(&mut self, action: &str, down: bool) -> Result<()> {
+        if down && self.reload_blocks_input() {
+            return Ok(());
+        }
         let Some(route) = gamepad::route(action) else {
             log::warn!("Horizon: controller action {action} has no handler");
             return Ok(());
@@ -577,7 +618,7 @@ impl Game<'_> {
 
     /// Each poll: a held drop button, as a held Q's key repeats reach the mapping.
     fn pad_drop_frame(&mut self) {
-        if self.pad_in_menu() || self.screen_over_playing() {
+        if self.reload_blocks_input() || self.pad_in_menu() || self.screen_over_playing() {
             return;
         }
         let interval = Duration::from_secs_f32(self.settings.controller.repeat_interval);
@@ -624,7 +665,11 @@ impl Game<'_> {
     /// The left stick as the move vector, while playing.
     pub(super) fn pad_move(&self) -> Option<[f32; 2]> {
         let settings = &self.settings.controller;
-        if !settings.enabled || self.pad_in_menu() || !self.pad_focused() {
+        if self.reload_blocks_input()
+            || !settings.enabled
+            || self.pad_in_menu()
+            || !self.pad_focused()
+        {
             return None;
         }
         gamepad::move_vector(self.pad.state.left, settings.move_deadzone)
@@ -653,7 +698,12 @@ impl Game<'_> {
     /// The right stick turns the view, once per frame (`Entity.turn`).
     pub(super) fn pad_look(&mut self, seconds: f32) {
         let settings = &self.settings.controller;
-        if !settings.enabled || self.pad_in_menu() || self.player.is_none() || !self.pad_focused() {
+        if self.reload_blocks_input()
+            || !settings.enabled
+            || self.pad_in_menu()
+            || self.player.is_none()
+            || !self.pad_focused()
+        {
             return;
         }
         // A long frame (a hitch) must not spin the view.

@@ -374,9 +374,11 @@ pub(super) fn preload_world_data(
         Preload::Used(_) => {}
         Preload::Idle if on_world_screens => {
             let resources = resources.to_owned();
+            let root_lease = horizon_assets::root_lease::lease_for(&resources);
             let spawned = std::thread::Builder::new()
                 .name("World data preload".into())
                 .spawn(move || {
+                    let _root_lease = root_lease;
                     horizon_threads::behind_server();
                     let sync = spawn_sync_preload(&resources, true);
                     // Errors are left for the world opening to report.
@@ -442,9 +444,11 @@ pub(super) fn preload_launch_world(
     };
     let world_root = dir.join("saves").join(folder);
     let resources = resources.to_owned();
+    let root_lease = horizon_assets::root_lease::lease_for(&resources);
     let spawned = std::thread::Builder::new()
         .name("World data preload".into())
         .spawn(move || {
+            let _root_lease = root_lease;
             // Not behind the server: the world's opening waits for it.
             let started = std::time::Instant::now();
             let sync = spawn_sync_preload(&resources, false);

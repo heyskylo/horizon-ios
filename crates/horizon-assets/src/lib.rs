@@ -13,5 +13,6 @@ pub mod namespaces;
 pub mod obj;
 pub mod palette;
 pub mod resolve;
+pub mod root_lease;
 
 pub use json::DecodeError;

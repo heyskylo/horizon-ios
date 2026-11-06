@@ -126,7 +126,8 @@ impl Game<'_> {
 
     /// The world is under the fingers, with no screen over it.
     pub(super) fn touch_playing(&self) -> bool {
-        self.title.is_none()
+        !self.reload_blocks_input()
+            && self.title.is_none()
             && self.screen == Screen::Playing
             && self.sign_edit.is_none()
             && self.book.is_none()
@@ -172,6 +173,10 @@ impl Game<'_> {
         event_loop: &dyn EventLoopCtl,
         touch: Touch,
     ) -> Result<()> {
+        if self.reload_blocks_input() {
+            self.cancel_touch_for_reload();
+            return Ok(());
+        }
         self.touch.seen = true;
         self.touch.hardware.touch();
         self.last_input = Instant::now();
@@ -216,9 +221,24 @@ impl Game<'_> {
         self.touch_act(out, batch.scale)
     }
 
+    /// Drop all pending fingers and deferred clicks at the reload boundary.
+    /// No release is routed through a possibly replaced screen; the boundary
+    /// already released gameplay holds and the screen's drag state.
+    pub(super) fn cancel_touch_for_reload(&mut self) {
+        self.touch.menu = None;
+        self.touch.fingers.release_all();
+        self.touch.late.clear();
+        self.touch.holding = None;
+        self.keys.release_source(Source::Touch);
+    }
+
     /// Once a frame: a held finger starts mining, held-back clicks release, and a screen that opened over the
     /// game lets go of every finger on it.
     pub(super) fn touch_frame(&mut self, event_loop: &dyn EventLoopCtl) {
+        if self.reload_blocks_input() {
+            self.cancel_touch_for_reload();
+            return;
+        }
         self.touch.hardware.refresh(
             horizon_gamecontroller::keyboard_connected(),
             horizon_gamecontroller::mouse_connected(),
@@ -297,6 +317,10 @@ impl Game<'_> {
     }
 
     fn touch_act(&mut self, out: Vec<Out>, scale: f32) -> Result<()> {
+        if self.reload_blocks_input() {
+            self.cancel_touch_for_reload();
+            return Ok(());
+        }
         for o in out {
             match o {
                 Out::Press(Control::Hotbar(slot)) => self.selected = usize::from(slot),

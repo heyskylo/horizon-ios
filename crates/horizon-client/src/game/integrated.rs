@@ -66,6 +66,8 @@ struct Flags {
     /// `options.entityDistanceScaling` (an `f32`'s bits), which
     /// `IntegratedServer.getScaledTrackingDistance` reads on every call.
     entity_distance: AtomicU32,
+    /// The PvP page's legacy combat rules, which the server's hits follow from the next tick.
+    legacy_rules: AtomicBool,
     /// `MinecraftServer.isCurrentlySaving`: the server is autosaving.
     saving: AtomicBool,
     /// Splitscreen players joined through memory (offline uuids): let in although the world is
@@ -91,6 +93,54 @@ struct Flags {
 /// Work the window hands its server thread (`MinecraftServer.execute`).
 type Task = Box<dyn FnOnce(&mut Game<'_>) + Send>;
 
+/// A session-bound, nonblocking sender for a prepared content transaction.
+#[derive(Clone)]
+pub(super) struct Poster {
+    tasks: Sender<Task>,
+    flags: Arc<Flags>,
+}
+impl Poster {
+    pub(super) fn post(&self, work: impl FnOnce(&mut Game<'_>) + Send + 'static) -> bool {
+        !self.flags.stop.load(Ordering::Acquire) && self.tasks.send(Box::new(work)).is_ok()
+    }
+    pub(super) fn is_for(&self, server: &Integrated) -> bool {
+        Arc::ptr_eq(&self.flags, &server.flags)
+    }
+}
+
+/// A test owns the receiving half of the real server task channel and chooses
+/// when its queued production callbacks execute. No helper thread is detached.
+#[cfg(test)]
+pub(super) struct TestTasks {
+    tasks: Receiver<Task>,
+    flags: Arc<Flags>,
+}
+#[cfg(test)]
+impl TestTasks {
+    pub(super) fn run_next(&self, game: &mut Game<'_>) -> bool {
+        if self.flags.stop.load(Ordering::Acquire) {
+            // A stopped session cannot commit work still queued for it.
+            while self.tasks.try_recv().is_ok() {}
+            return false;
+        }
+        match self.tasks.try_recv() {
+            Ok(task) => {
+                task(game);
+                true
+            }
+            Err(_) => false,
+        }
+    }
+}
+#[cfg(test)]
+impl Drop for TestTasks {
+    fn drop(&mut self) {
+        // Reject sends through any retained Poster, then dropping Receiver
+        // releases pending callbacks and their generation/root leases.
+        self.flags.stop.store(true, Ordering::Release);
+    }
+}
+
 /// The window's handle on its server thread.
 pub(super) struct Integrated {
     flags: Arc<Flags>,
@@ -100,6 +150,30 @@ pub(super) struct Integrated {
     pub world_name: String,
 }
 impl Integrated {
+    #[cfg(test)]
+    pub(super) fn controlled_test_session() -> (Self, TestTasks) {
+        let (tasks, receiver) = channel();
+        let flags = Arc::new(Flags::default());
+        let handle = Self {
+            flags: flags.clone(),
+            thread: None,
+            tasks,
+            world_name: "Controlled reload test".into(),
+        };
+        (
+            handle,
+            TestTasks {
+                tasks: receiver,
+                flags,
+            },
+        )
+    }
+    pub(super) fn poster(&self) -> Poster {
+        Poster {
+            tasks: self.tasks.clone(),
+            flags: self.flags.clone(),
+        }
+    }
     /// Queue every change, even if the currently published tree still has the requested state:
     /// an earlier update may be waiting for a busy server thread.
     fn queue_pregen_option(&self, enabled: bool) {
@@ -221,6 +295,10 @@ impl Integrated {
         if let Some(uuid) = uuid {
             self.leave_split_uuid(uuid);
         }
+    }
+    /// The window's legacy combat rules option, for the server's hits.
+    pub fn set_legacy_rules(&self, on: bool) {
+        self.flags.legacy_rules.store(on, Ordering::Relaxed);
     }
     /// `IntegratedServer.getPort` while `isPublished`.
     pub fn published(&self) -> Option<u16> {
@@ -500,6 +578,9 @@ impl Game<'_> {
         flags
             .entity_distance
             .store(settings.entity_distance.to_bits(), Ordering::Relaxed);
+        flags
+            .legacy_rules
+            .store(settings.extras.pvp.combat.rules, Ordering::Relaxed);
         let (ready_tx, ready) = channel();
         let (tasks, server_tasks) = channel();
         let server_flags = flags.clone();
@@ -1112,11 +1193,12 @@ impl Game<'_> {
     /// Publish or unpublish for real, once the hub is in its place (a
     /// player's `/publish` runs while it is out).
     /// IntegratedServer.tickServer: the server follows the window's render
-    /// and simulation distances when they change.
+    /// and simulation distances when they change (and Horizon's legacy combat rules).
     fn follow_distances(&mut self, flags: &Flags) {
         // IntegratedServer.getScaledTrackingDistance reads the option each time.
         self.settings.entity_distance =
             f32::from_bits(flags.entity_distance.load(Ordering::Relaxed));
+        self.settings.extras.pvp.combat.rules = flags.legacy_rules.load(Ordering::Relaxed);
         let Some(host) = self.lan.as_mut() else {
             return;
         };

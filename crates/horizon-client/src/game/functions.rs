@@ -38,6 +38,29 @@ pub(super) struct FnState {
     /// A dedicated server's `function-permission-level`.
     pub permission: Option<u8>,
 }
+/// An immutable server-side candidate. Dropping it publishes nothing and releases its root lease.
+pub(super) struct PreparedReload {
+    baseline: ReloadBaseline,
+    root: std::path::PathBuf,
+    content: Option<std::sync::Arc<super::mods::PreparedContent>>,
+    tables: Option<super::WorldTables>,
+    health: horizon_client::health::HealthResources,
+    functions: PreparedFunctions,
+    sync: std::sync::Arc<horizon_client::lan::data::SyncData>,
+    tree: std::sync::Arc<horizon_client::advancements::Tree>,
+    recipe_payloads: Vec<Vec<u8>>,
+}
+struct ReloadBaseline {
+    world_root: std::path::PathBuf,
+    resources: std::path::PathBuf,
+    generation: u64,
+}
+struct PreparedFunctions {
+    store: DataStore,
+    packs: Vec<DataPack>,
+    enabled: Vec<String>,
+}
+
 /// What a function reported through `return`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Outcome {
@@ -162,45 +185,163 @@ impl Game<'_> {
         self.reload_datapacks(false);
     }
     pub(super) fn reload_datapacks(&mut self, run_load: bool) {
-        let stack = pack_stack(
-            &self.world_root,
-            &self.options.resources,
-            self.cmds.vanilla_disabled,
-            &self.level.enabled_features,
-        );
-        self.fns.packs = stack.packs;
-        self.fns.enabled = stack.enabled;
-        self.rebuild_store();
-        self.fns.loaded = true;
-        self.fns.load_pending = true;
-        // An explicit reload (`/reload`, `/datapack`) reloads the content
-        // tables with the functions, as `ReloadableServerResources` does;
-        // the lazy first load ran after the world already built them.
         if run_load {
-            self.reload_world_tables();
+            if let Err(error) = self.reload_world_tables() {
+                log::warn!("Horizon: data pack reload failed; active data retained: {error}");
+                self.system_message(Text::translate("commands.reload.failure", &[]));
+            }
+            return;
         }
-        let _ = run_load;
-        if self.fns.schedule.is_empty() {
-            self.load_schedule();
-        }
+        let prepared = self.prepare_functions(&self.options.resources);
+        self.install_functions(prepared);
     }
-    fn rebuild_store(&mut self) {
-        // The built-in pack first (lowest priority), unless disabled.
+    fn prepare_functions(&self, root: &std::path::Path) -> PreparedFunctions {
         let stack = pack_stack(
             &self.world_root,
-            &self.options.resources,
+            root,
             self.cmds.vanilla_disabled,
             &self.level.enabled_features,
         );
         let packs: Vec<&DataPack> = stack.builtin.iter().chain(stack.enabled_packs()).collect();
         let store = DataStore::load(&packs);
-        for (id, e) in &store.errors {
-            log::warn!("Horizon: failed to load function {id}: {e}");
+        // Vanilla skips invalid individual functions, reporting their diagnostics.
+        for (id, error) in &store.errors {
+            log::warn!("Horizon: failed to load function {id}: {error}");
         }
-        self.fns.store = store;
+        PreparedFunctions {
+            store,
+            packs: stack.packs,
+            enabled: stack.enabled,
+        }
+    }
+    fn install_functions(&mut self, prepared: PreparedFunctions) {
+        let first_load = !self.fns.loaded;
+        self.fns.store = prepared.store;
+        self.fns.packs = prepared.packs;
+        self.fns.enabled = prepared.enabled;
+        self.fns.loaded = true;
+        self.fns.load_pending = true;
+        // Existing scheduled functions survive a reload; a first load adopts the saved queue.
+        if first_load && self.fns.schedule.is_empty() {
+            self.load_schedule();
+        }
         self.sync_function_registries();
     }
-    fn save_datapack_settings(&self) {
+    fn reload_baseline(&self) -> ReloadBaseline {
+        ReloadBaseline {
+            world_root: self.world_root.clone(),
+            resources: self.options.resources.clone(),
+            generation: self.damage_tag_generation,
+        }
+    }
+    fn check_reload_baseline(&self, baseline: &ReloadBaseline) -> horizon_client::Result<()> {
+        if self.remote.is_some()
+            || self.world_root != baseline.world_root
+            || self.options.resources != baseline.resources
+            || self.damage_tag_generation != baseline.generation
+        {
+            return Err("Data reload was superseded or belongs to another world".into());
+        }
+        Ok(())
+    }
+    pub(super) fn prepare_content_reload(
+        &mut self,
+        content: std::sync::Arc<super::mods::PreparedContent>,
+    ) -> horizon_client::Result<PreparedReload> {
+        self.prepare_reload_at(content.root.clone(), Some(content))
+    }
+    pub(super) fn prepare_reload_at(
+        &mut self,
+        root: std::path::PathBuf,
+        content: Option<std::sync::Arc<super::mods::PreparedContent>>,
+    ) -> horizon_client::Result<PreparedReload> {
+        if self.remote.is_some() {
+            return Err("Only the authoritative server can prepare data reloads".into());
+        }
+        // Capture before every native query: a callback can reenter reload.
+        // Its own side effects are not rolled back, but its changes cannot make
+        // the tables already being prepared look like the new generation.
+        let baseline = self.reload_baseline();
+        let (tables, health) = self.build_world_tables_at(
+            &root,
+            true,
+            &self.level.enabled_features,
+            content.is_some() || self.mods.data_switched,
+        )?;
+        let overlay = super::pack_files(&tables);
+        let functions = self.prepare_functions(&root);
+        let sync = if let Some(host) = &self.lan {
+            let kept = host.hub.lan.shared.sync();
+            let mut sync = horizon_client::lan::data::SyncData::reload(&root, &overlay, &kept)?;
+            sync.features.clone_from(&kept.features);
+            std::sync::Arc::new(sync)
+        } else {
+            super::lan::prepare_cached_sync_data(&root, &overlay)?
+        };
+        let tree = std::sync::Arc::new(horizon_client::advancements::Tree::load_with(
+            &root.join("data"),
+            &overlay,
+        ));
+        let mut types = Vec::new();
+        self.native_datapack_sync(&mut types);
+        types.sort();
+        types.dedup();
+        let sources = if types.is_empty() {
+            Vec::new()
+        } else {
+            horizon_client::crafting::Recipes::sources(&root, &overlay)?
+        };
+        let recipe_payloads = horizon_client::lan::recipes::encode_content(
+            &types,
+            &sources,
+            horizon_client::lan::recipes::sent_before(),
+        );
+        self.check_reload_baseline(&baseline)?;
+        Ok(PreparedReload {
+            baseline,
+            root,
+            content,
+            tables,
+            health,
+            functions,
+            sync,
+            tree,
+            recipe_payloads,
+        })
+    }
+    pub(super) fn commit_content_reload(
+        &mut self,
+        prepared: PreparedReload,
+    ) -> horizon_client::Result<()> {
+        self.check_reload_baseline(&prepared.baseline)?;
+        // Everything fallible has finished. Publish the generation on this server's own thread.
+        self.options.resources = prepared.root;
+        if let Some(content) = prepared.content {
+            self.mods.content = Some(content);
+            self.mods.data_switched = true;
+        }
+        self.world_tables = prepared.tables;
+        self.health_resources = prepared.health;
+        self.damage_tag_generation = self.damage_tag_generation.wrapping_add(1);
+        self.recipe_tables.categories = None;
+        horizon_client::structure_blocks::forget_loot_data();
+        self.install_functions(prepared.functions);
+        horizon_client::lan::recipes::set_content(prepared.recipe_payloads);
+        super::lan::install_cached_sync_data(
+            prepared.sync.clone(),
+            !self.pack_files().files.is_empty(),
+        );
+        if let Some(host) = self.lan.as_mut() {
+            host.hub.reload_resources(prepared.sync);
+            self.run_native_advancement_grants();
+        }
+        self.adv.tree = prepared.tree;
+        self.adv.reset_tree();
+        self.native_reload_listeners();
+        self.native_server_data_loaded(true);
+        Ok(())
+    }
+    fn save_datapack_settings(&self) -> std::io::Result<()> {
         let disabled: Vec<&String> = self
             .fns
             .packs
@@ -209,7 +350,7 @@ impl Game<'_> {
             .filter(|id| !self.fns.enabled.contains(id))
             .collect();
         let json = serde_json::json!({"enabled": self.fns.enabled, "disabled": disabled});
-        let _ = std::fs::write(self.datapack_settings_path(), json.to_string());
+        std::fs::write(self.datapack_settings_path(), json.to_string())
     }
     pub(super) fn sync_function_registries(&mut self) {
         let reg = &mut self.ui.registries;
@@ -915,6 +1056,7 @@ impl Game<'_> {
                         &[&name, flag],
                     ));
                 }
+                let previous = (self.fns.enabled.clone(), self.cmds.vanilla_disabled);
                 if name == "vanilla" {
                     self.cmds.vanilla_disabled = false;
                 } else {
@@ -938,7 +1080,7 @@ impl Game<'_> {
                     "commands.datapack.modify.enable",
                     &[self.pack_link(&name, true)],
                 ));
-                self.apply_pack_change();
+                self.apply_pack_change(previous)?;
                 Ok(self.selected_packs().len() as i32)
             }
             _ => {
@@ -954,6 +1096,7 @@ impl Game<'_> {
                     // flag stays on for the world's life.
                     return Err(err("commands.datapack.disable.failed.feature", &[&name]));
                 }
+                let previous = (self.fns.enabled.clone(), self.cmds.vanilla_disabled);
                 if name == "vanilla" {
                     self.cmds.vanilla_disabled = true;
                 } else {
@@ -963,7 +1106,7 @@ impl Game<'_> {
                     "commands.datapack.modify.disable",
                     &[self.pack_link(&name, true)],
                 ));
-                self.apply_pack_change();
+                self.apply_pack_change(previous)?;
                 Ok(self.selected_packs().len() as i32)
             }
         }
@@ -971,11 +1114,25 @@ impl Game<'_> {
     /// `ReloadCommand.reloadPacks`: no message of its own. It reloads the
     /// server's data as `/reload` does (`reload_datapacks`), the content
     /// tables with the functions.
-    fn apply_pack_change(&mut self) {
-        self.save_datapack_settings();
-        self.rebuild_store();
-        self.fns.load_pending = true;
-        self.reload_world_tables();
+    fn apply_pack_change(&mut self, previous: (Vec<String>, bool)) -> R<()> {
+        if let Err(error) = self.save_datapack_settings() {
+            self.fns.enabled = previous.0;
+            self.cmds.vanilla_disabled = previous.1;
+            log::warn!("Horizon: data pack selection could not be saved: {error}");
+            return Err(err("commands.reload.failure", &[]));
+        }
+        if let Err(error) = self.reload_world_tables() {
+            self.fns.enabled = previous.0;
+            self.cmds.vanilla_disabled = previous.1;
+            if let Err(restore) = self.save_datapack_settings() {
+                log::warn!(
+                    "Horizon: previous data pack selection could not be restored: {restore}"
+                );
+            }
+            log::warn!("Horizon: data pack selection was not applied: {error}");
+            return Err(err("commands.reload.failure", &[]));
+        }
+        Ok(())
     }
 
     // ---- predicates -------------------------------------------------------------------
@@ -1127,5 +1284,242 @@ mod tests {
             content_overlay(&dir, std::path::Path::new(""), true, &[])
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod reload_transaction_tests {
+    use super::*;
+    use crate::game::{
+        Audio, Options, Progress, Settings, execution_role::ExecutionRole, load_resources,
+    };
+    use std::{path::PathBuf, sync::Arc};
+
+    struct Scratch(PathBuf);
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Exercise real resource loaders and Game state: rejected data must not
+    /// publish functions, tables, a new root, or a load-tag tick. A second
+    /// candidate prepared against the same old generation is superseded.
+    #[test]
+    #[ignore = "requires prepared HORIZON_TEST_RESOURCES and isolated HORIZON_HOME"]
+    fn prepared_reload_failure_and_supersession_keep_the_running_generation() {
+        assert!(
+            std::env::var_os("HORIZON_HOME").is_some(),
+            "use an isolated test home"
+        );
+        let root =
+            PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").expect("prepared resources"));
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!("no loading window"),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let world = Scratch(
+            std::env::temp_dir().join(format!("horizon-reload-{}-{unique}", std::process::id())),
+        );
+        std::fs::create_dir_all(&world.0).unwrap();
+        game.world_root = world.0.clone();
+        game.fns.enabled = vec!["fixture:old".into()];
+        game.fns.loaded = true;
+        game.fns.load_pending = false;
+        let schedule = vec![Scheduled {
+            id: "fixture:later".into(),
+            time: 123,
+            seq: 1,
+        }];
+        game.fns.schedule = schedule.clone();
+        let candidate = |root: PathBuf| {
+            Arc::new(super::super::mods::PreparedContent {
+                root,
+                catalog: Default::default(),
+                selection: Default::default(),
+                lease: Default::default(),
+                data_changed: true,
+            })
+        };
+        let pack = world.0.join("datapacks/fixture");
+        std::fs::create_dir_all(pack.join("data/fixture/function")).unwrap();
+        std::fs::create_dir_all(pack.join("data/minecraft/tags/function")).unwrap();
+        std::fs::write(pack.join("pack.mcmeta"), "{}").unwrap();
+        std::fs::write(
+            world.0.join("datapacks.json"),
+            r#"{"enabled":["file/fixture"],"disabled":[]}"#,
+        )
+        .unwrap();
+        for (name, body) in [
+            (
+                "load",
+                "scoreboard objectives add reload_fixture dummy\nscoreboard players set order reload_fixture 1\n",
+            ),
+            ("later", "scoreboard players add order reload_fixture 10\n"),
+            ("tick", "scoreboard players add order reload_fixture 100\n"),
+        ] {
+            std::fs::write(
+                pack.join(format!("data/fixture/function/{name}.mcfunction")),
+                body,
+            )
+            .unwrap();
+        }
+        for name in ["load", "tick"] {
+            std::fs::write(
+                pack.join(format!("data/minecraft/tags/function/{name}.json")),
+                format!(r#"{{"values":["fixture:{name}"]}}"#),
+            )
+            .unwrap();
+        }
+        let generation = game.damage_tag_generation;
+        // Both preparation and commit use this guard. Exercise changes to the
+        // actual Game fields a reentrant native callback could replace.
+        let baseline = game.reload_baseline();
+        assert!(game.check_reload_baseline(&baseline).is_ok());
+        game.world_root = world.0.join("another-world");
+        assert!(game.check_reload_baseline(&baseline).is_err());
+        game.world_root = baseline.world_root.clone();
+        game.options.resources = world.0.join("another-generation");
+        assert!(game.check_reload_baseline(&baseline).is_err());
+        game.options.resources = baseline.resources.clone();
+        game.damage_tag_generation = generation.wrapping_add(1);
+        assert!(game.check_reload_baseline(&baseline).is_err());
+        game.damage_tag_generation = generation;
+        assert!(game.check_reload_baseline(&baseline).is_ok());
+        assert!(
+            game.prepare_content_reload(candidate(world.0.join("missing-resources")))
+                .is_err()
+        );
+        assert_eq!(game.options.resources, root);
+        assert_eq!(game.damage_tag_generation, generation);
+        assert_eq!(game.fns.enabled, ["fixture:old"]);
+        assert!(!game.fns.load_pending);
+        assert_eq!(game.fns.schedule, schedule);
+        assert!(game.mods.content.is_none());
+
+        let original_sync =
+            super::super::lan::sync_data(&root, &horizon_world::loot::PackOverlay::NONE).unwrap();
+        #[cfg(unix)]
+        {
+            let broken = world.0.join("bad-wire-resources");
+            std::fs::create_dir_all(&broken).unwrap();
+            for entry in std::fs::read_dir(&root).unwrap().flatten() {
+                if entry.file_name() != "registries.json" {
+                    std::os::unix::fs::symlink(entry.path(), broken.join(entry.file_name()))
+                        .unwrap();
+                }
+            }
+            std::fs::write(broken.join("registries.json"), "{").unwrap();
+            // Prove the candidate's tables succeed, so the failure below is the
+            // later wire-data validation rather than an early missing-root error.
+            assert!(
+                game.build_world_tables_at(&broken, true, &game.level.enabled_features, true)
+                    .is_ok()
+            );
+            let error = match game.prepare_content_reload(candidate(broken)) {
+                Err(error) => error,
+                Ok(_) => panic!("broken wire registries were accepted"),
+            };
+            assert!(error.to_string().contains("registries.json"), "{error}");
+            assert_eq!(game.options.resources, root);
+            assert_eq!(game.damage_tag_generation, generation);
+            assert_eq!(game.fns.enabled, ["fixture:old"]);
+            assert!(!game.fns.load_pending);
+            assert_eq!(game.fns.schedule, schedule);
+            assert!(game.mods.content.is_none());
+        }
+
+        let still_synced =
+            super::super::lan::sync_data(&root, &horizon_world::loot::PackOverlay::NONE).unwrap();
+        assert!(Arc::ptr_eq(&original_sync, &still_synced));
+        let content = candidate(root.clone());
+        let accepted = game.prepare_content_reload(content.clone()).unwrap();
+        let accepted_sync = accepted.sync.clone();
+        let obsolete = game
+            .prepare_content_reload(candidate(root.clone()))
+            .unwrap();
+        assert_eq!(game.damage_tag_generation, generation);
+        assert_eq!(game.fns.enabled, ["fixture:old"]);
+        assert!(!game.fns.load_pending);
+        game.commit_content_reload(accepted).unwrap();
+        let installed_sync = super::super::lan::sync_data(&root, &game.pack_files()).unwrap();
+        assert!(Arc::ptr_eq(&accepted_sync, &installed_sync));
+        assert_eq!(game.damage_tag_generation, generation.wrapping_add(1));
+        assert!(Arc::ptr_eq(game.mods.content.as_ref().unwrap(), &content));
+        assert!(game.fns.load_pending);
+        assert_eq!(game.fns.schedule, schedule);
+        let enabled = game.fns.enabled.clone();
+        // The load tag runs first, then a due preserved schedule, then the tick
+        // tag. It must run once, not once per prepared or superseded candidate.
+        game.world.game_time = 123;
+        game.tick_functions();
+        assert_eq!(
+            game.score
+                .board
+                .score("order", "reload_fixture")
+                .map(|s| s.value),
+            Some(111)
+        );
+        assert!(game.fns.schedule.is_empty());
+        assert!(!game.fns.load_pending);
+        assert!(game.commit_content_reload(obsolete).is_err());
+        assert!(Arc::ptr_eq(game.mods.content.as_ref().unwrap(), &content));
+        assert_eq!(game.damage_tag_generation, generation.wrapping_add(1));
+        assert_eq!(game.fns.enabled, enabled);
+        assert!(!game.fns.load_pending);
+        assert!(game.fns.schedule.is_empty());
+        game.tick_functions();
+        assert_eq!(
+            game.score
+                .board
+                .score("order", "reload_fixture")
+                .map(|s| s.value),
+            Some(211)
+        );
+        let future = Scheduled {
+            id: "fixture:later".into(),
+            time: 999,
+            seq: 2,
+        };
+        game.fns.schedule.push(future.clone());
+        game.reload_datapacks(true);
+        assert_eq!(game.damage_tag_generation, generation.wrapping_add(2));
+        assert!(game.fns.load_pending);
+        assert_eq!(game.fns.schedule.as_slice(), std::slice::from_ref(&future));
+        game.tick_functions();
+        assert_eq!(
+            game.score
+                .board
+                .score("order", "reload_fixture")
+                .map(|s| s.value),
+            Some(101)
+        );
+        assert_eq!(game.fns.schedule, [future]);
     }
 }

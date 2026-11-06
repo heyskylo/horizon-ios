@@ -466,6 +466,11 @@ impl Loading {
     /// files gets them from the launcher), the options, and what is only files: worlds, servers, pings.
     /// Game files that arrive end the wait for them.
     pub(super) fn poll_launcher(&mut self) -> Result<()> {
+        // Imports and starts share the game home with the previous engine's
+        // finite cache collector. Do not enqueue a new home owner ahead of it.
+        if !horizon_client::mod_content::poll_root_collectors() {
+            return Ok(());
+        }
         for request in horizon_ios_launcher::take() {
             let command = request.line.split_whitespace().next().unwrap_or_default();
             if horizon_ios_launcher::cancellation_requested() && !allowed_while_stopping(command) {

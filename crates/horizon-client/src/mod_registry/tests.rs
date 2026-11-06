@@ -422,3 +422,46 @@ fn waiting_for_another_home_commit_can_be_cancelled() {
     drop(held);
     fs::remove_dir_all(home).unwrap();
 }
+
+#[test]
+fn a_cancelled_snapshot_does_not_wait_for_another_publisher_or_read_files() {
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    };
+    let home = scratch("cancel-snapshot-wait");
+    let held = storage::lock_home(&home, &Cancellation::default()).unwrap();
+    let cancel = Arc::new(Cancellation::default());
+    let worker_cancel = cancel.clone();
+    let read = Arc::new(AtomicBool::new(false));
+    let worker_read = read.clone();
+    let worker_home = home.clone();
+    let (started, entered) = mpsc::channel();
+    let (done, result) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        started.send(()).unwrap();
+        let snapshot = with_content_snapshot_managed(&worker_home, &worker_cancel, || {
+            worker_read.store(true, Ordering::SeqCst);
+        });
+        done.send(snapshot).unwrap();
+    });
+    entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert!(matches!(
+        result.recv_timeout(Duration::from_millis(50)),
+        Err(mpsc::RecvTimeoutError::Timeout)
+    ));
+    cancel.cancel();
+    let error = result
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap()
+        .unwrap_err();
+    assert!(error.contains("cancelled"), "{error}");
+    assert!(
+        !read.load(Ordering::SeqCst),
+        "cancelled snapshot entered file-reading callback"
+    );
+    // The publisher is still locked: completion cannot depend on releasing it.
+    worker.join().unwrap();
+    drop(held);
+    fs::remove_dir_all(home).unwrap();
+}

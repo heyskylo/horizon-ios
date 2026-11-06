@@ -15,6 +15,10 @@ use std::{collections::BTreeSet, fs, io, path::Path, path::PathBuf};
 // Version 7 stacks blockstate files (every pack's definition, bottom first).
 const VERSION: u32 = 8;
 
+#[cfg(test)]
+#[path = "cache/generation_tests.rs"]
+mod generation_tests;
+
 #[derive(Default, Serialize, Deserialize)]
 pub(super) struct Dependencies {
     entries: Vec<(PathBuf, bool, String)>,
@@ -297,6 +301,236 @@ fn lock_path(out: &Path) -> PathBuf {
     marker_path(out).with_extension("lock")
 }
 
+const GENERATIONS: &str = "resourcepack-generations";
+
+fn is_generation(name: &str) -> bool {
+    name.len() == 64 && name.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn nonce() -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    format!(
+        "{}-{}-{:?}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        std::time::SystemTime::now()
+    )
+}
+
+fn selection_lock(cache: &Path, key: &str) -> io::Result<fs::File> {
+    fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(cache.join(format!("selection-{key}.lock")))
+}
+
+struct Staging(PathBuf);
+impl Drop for Staging {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+fn stage(roots: &Path, selection: &str) -> io::Result<Staging> {
+    loop {
+        let mut hash = Sha256::new();
+        field(&mut hash, nonce().as_bytes());
+        let path = roots.join(format!(".stage-{selection}-{}", finish(hash)));
+        match fs::create_dir(&path) {
+            Ok(()) => return Ok(Staging(path)),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let temporary = path.with_extension("publish-tmp");
+    let result = fs::write(&temporary, bytes).and_then(|_| fs::rename(&temporary, path));
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+fn touch_marker(root: &Path) -> io::Result<()> {
+    fs::File::options()
+        .write(true)
+        .open(marker_path(root))?
+        .set_modified(std::time::SystemTime::now())
+}
+
+fn valid_marker(root: &Path, vanilla: &Path, signature: &str) -> bool {
+    fs::read(marker_path(root))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Marker>(&bytes).ok())
+        .is_some_and(|mut marker| {
+            marker.dependencies.vanilla = vanilla.to_owned();
+            marker.version == VERSION
+                && marker.vanilla == vanilla
+                && marker.packs == signature
+                && marker.dependencies.valid()
+                && fs::symlink_metadata(root).is_ok_and(|m| m.file_type().is_dir())
+        })
+}
+
+/// Unlike `build`, this API never replaces a directory handed to a reader.
+/// The selection index is only a cache hint; generation paths are independent.
+pub(super) fn published_root(
+    vanilla: &Path,
+    packs: &[Pack],
+    cache: &Path,
+) -> io::Result<(PathBuf, horizon_assets::root_lease::RootLease)> {
+    use horizon_assets::root_lease::RootLease;
+    let vanilla = absolute(vanilla)?;
+    let base_lease = RootLease::acquire(&vanilla)?;
+    fs::create_dir_all(cache)?;
+    let mut selection = Sha256::new();
+    field(&mut selection, vanilla.as_os_str().as_encoded_bytes());
+    for pack in packs {
+        field(&mut selection, pack.id.as_bytes());
+    }
+    let selection = finish(selection);
+    let lock = selection_lock(cache, &selection)?;
+    lock.lock()?;
+    let roots = cache.join(GENERATIONS);
+    fs::create_dir_all(&roots)?;
+    let index = cache.join(format!("selection-{selection}.json"));
+    let signature = pack_signature(packs).ok();
+    if let Some(signature) = &signature
+        && let Ok(bytes) = fs::read(&index)
+        && let Ok(generation) = serde_json::from_slice::<String>(&bytes)
+        && is_generation(&generation)
+    {
+        let root = roots.join(generation);
+        // A collector may have seen an old timestamp: acquire before validating
+        // or touching a hit, so a returned generation cannot disappear in between.
+        let lease = RootLease::acquire_with_parent(&root, base_lease.clone())?;
+        if valid_marker(&root, &vanilla, signature) {
+            touch_marker(&root)?;
+            return Ok((root, lease));
+        }
+    }
+
+    let staging = stage(&roots, &selection)?;
+    let mut dependencies = Dependencies {
+        tracking: signature.is_some(),
+        vanilla: vanilla.clone(),
+        ..Default::default()
+    };
+    build_overlay_uncached(&vanilla, packs, &staging.0, &mut dependencies)?;
+    let marker = if let Some(signature) = signature {
+        if !dependencies.valid() || !pack_signature(packs).is_ok_and(|after| after == signature) {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "resource pack inputs changed while building the overlay",
+            ));
+        }
+        dependencies.entries.sort();
+        dependencies.entries.dedup();
+        serde_json::to_vec(&Marker {
+            version: VERSION,
+            vanilla: vanilla.clone(),
+            packs: signature,
+            dependencies,
+        })
+        .ok()
+    } else {
+        // Preserve the uncached path for unusual/external folder overlays. Each
+        // call gets its own generation, never a mutable shared destination.
+        None
+    };
+    let seed = marker.clone().unwrap_or_else(|| nonce().into_bytes());
+    let mut generation = finish(Sha256::new().chain_update(&seed));
+    loop {
+        let root = roots.join(&generation);
+        let lease = RootLease::acquire_with_parent(&root, base_lease.clone())?;
+        if fs::symlink_metadata(&root).is_ok() {
+            if let Some(marker) = &marker
+                && fs::symlink_metadata(&root).is_ok_and(|m| m.file_type().is_dir())
+                && fs::read(marker_path(&root)).is_ok_and(|bytes| bytes == *marker)
+            {
+                touch_marker(&root)?;
+                write_atomic(&index, &serde_json::to_vec(&generation)?)?;
+                return Ok((root, lease));
+            }
+            // Missing/invalid proof does not authorize overwriting an old reader.
+            let mut hash = Sha256::new();
+            field(&mut hash, &seed);
+            field(&mut hash, nonce().as_bytes());
+            generation = finish(hash);
+            continue;
+        }
+        fs::rename(&staging.0, &root)?;
+        let published = (|| {
+            write_atomic(&marker_path(&root), marker.as_deref().unwrap_or(b"{}"))?;
+            if marker.is_some() {
+                write_atomic(&index, &serde_json::to_vec(&generation)?)?;
+            }
+            Ok::<_, io::Error>(())
+        })();
+        if let Err(error) = published {
+            // This fresh directory was never handed to a reader or indexed.
+            let _ = fs::remove_dir_all(&root);
+            let _ = fs::remove_file(marker_path(&root));
+            return Err(error);
+        }
+        return Ok((root, lease));
+    }
+}
+
+/// Retired cache generations only. Persistent selection/lease locks and old
+/// ID-keyed directories are left alone; they may belong to an older game.
+pub(super) fn prune_generations(cache: &Path, keep: std::time::Duration) {
+    use horizon_assets::root_lease::RootLease;
+    let roots = cache.join(GENERATIONS);
+    let Ok(entries) = fs::read_dir(&roots) else {
+        return;
+    };
+    let stale = |path: &Path, marker: &Path| {
+        fs::metadata(marker)
+            .or_else(|_| fs::symlink_metadata(path))
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age > keep)
+    };
+    for entry in entries.flatten() {
+        if !entry.file_type().is_ok_and(|ty| ty.is_dir()) {
+            continue;
+        }
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if is_generation(&name) {
+            let marker = marker_path(&path);
+            if !stale(&path, &marker) {
+                continue;
+            }
+            let Ok(Some(_lease)) = RootLease::try_exclusive(&path) else {
+                continue;
+            };
+            if stale(&path, &marker) && fs::remove_dir_all(&path).is_ok() {
+                let _ = fs::remove_file(marker);
+            }
+        } else if let Some(stage) = name.strip_prefix(".stage-")
+            && let Some((selection, suffix)) = stage.split_once('-')
+            && is_generation(selection)
+            && is_generation(suffix)
+            && stale(&path, &path)
+            && let Ok(lock) = selection_lock(cache, selection)
+            && lock.try_lock().is_ok()
+        {
+            // An interrupted unpublished build: no active builder has its lock.
+            if stale(&path, &path) {
+                let _ = fs::remove_dir_all(path);
+            }
+        }
+    }
+}
+
 pub(super) fn build(vanilla: &Path, packs: &[Pack], out: &Path) -> io::Result<()> {
     if let Some(parent) = out.parent().filter(|p| !p.as_os_str().is_empty()) {
         fs::create_dir_all(parent)?;
@@ -439,7 +673,7 @@ mod tests {
     }
 
     // Stored/deflated ZIP fixture using the production reader, no zip dependency.
-    fn archive(files: &[(&str, Vec<u8>)], deflate: bool) -> Vec<u8> {
+    pub(super) fn archive(files: &[(&str, Vec<u8>)], deflate: bool) -> Vec<u8> {
         let mut out = Vec::new();
         let mut central = Vec::new();
         for (name, body) in files {
@@ -1034,7 +1268,7 @@ mod tests {
             let cached_cache = f.0.join("cached");
             fs::create_dir_all(&reference_cache).unwrap();
             let reference = original(&vanilla, selected, &reference_cache);
-            let out = packs::resource_root(&vanilla, selected, &cached_cache).unwrap();
+            let mut out = packs::resource_root(&vanilla, selected, &cached_cache).unwrap();
             assert_ne!(out, vanilla, "resource_root must not fall back to vanilla");
             assert!(marker_path(&out).exists());
             let expected = output_signature(&reference).unwrap();
@@ -1080,7 +1314,12 @@ mod tests {
                         1 => cold.push(ms),
                         _ => hit.push(ms),
                     }
-                    if operation != 0 {
+                    if operation == 1 {
+                        // Invalidating the proof must publish a fresh generation,
+                        // not rewrite the path an earlier reader may still hold.
+                        assert_ne!(result, out);
+                        out = result;
+                    } else if operation != 0 {
                         assert_eq!(result, out);
                     }
                 }

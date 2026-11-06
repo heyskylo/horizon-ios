@@ -102,10 +102,24 @@ pub fn recover_home(home: &Path) -> Result<(), String> {
 /// The callback is finite read/snapshot work on a loader worker or headless
 /// path, never on the window thread and never recursively installing a mod.
 pub fn with_content_snapshot<T>(home: &Path, read: impl FnOnce() -> T) -> Result<T, String> {
-    let cancel = Cancellation::default();
-    let _lock = storage::lock_home(home, &cancel)?;
+    with_content_snapshot_managed(home, &Cancellation::default(), read)
+}
+
+/// An owned worker's snapshot uses the same cancellation token while waiting
+/// for publication, recovering, reading, and returning its candidate generation.
+pub fn with_content_snapshot_managed<T>(
+    home: &Path,
+    cancel: &Cancellation,
+    read: impl FnOnce() -> T,
+) -> Result<T, String> {
+    check_cancel(cancel)?;
+    let _lock = storage::lock_home(home, cancel)?;
+    check_cancel(cancel)?;
     storage::recover(home)?;
-    Ok(read())
+    check_cancel(cancel)?;
+    let snapshot = read();
+    check_cancel(cancel)?;
+    Ok(snapshot)
 }
 
 pub(crate) fn check_cancel(cancel: &Cancellation) -> Result<(), String> {

@@ -988,20 +988,29 @@ pub fn able_to_clear_any_pack(all: &[Pack], selected: &[String]) -> bool {
 }
 /// Resource root for a pack selection: vanilla itself when no pack is on.
 pub fn resource_root(vanilla: &Path, packs: &[Pack], cache: &Path) -> io::Result<PathBuf> {
+    resource_root_leased(vanilla, packs, cache).map(|(root, _lease)| root)
+}
+
+/// The worker hands this lease to the loaded generation before releasing it.
+/// Archive bytes and merged files belong to an immutable output generation;
+/// ordinary Unix folder resources retain their documented live-link behavior.
+pub fn resource_root_leased(
+    vanilla: &Path,
+    packs: &[Pack],
+    cache: &Path,
+) -> io::Result<(PathBuf, horizon_assets::root_lease::RootLease)> {
     if packs.is_empty() {
-        return Ok(vanilla.to_path_buf());
+        return Ok((
+            vanilla.to_path_buf(),
+            horizon_assets::root_lease::RootLease::acquire(vanilla)?,
+        ));
     }
-    let key: String = packs
-        .iter()
-        .map(|p| p.id.as_str())
-        .collect::<Vec<_>>()
-        .join("|");
-    let hash = key.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
-        (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3)
-    });
-    let out = cache.join(format!("{hash:016x}"));
-    build_overlay(vanilla, packs, &out)?;
-    Ok(out)
+    cache::published_root(vanilla, packs, cache)
+}
+
+/// Cache maintenance after the engine has retired, under owned home access.
+pub fn prune_resource_roots(cache: &Path, keep: std::time::Duration) {
+    cache::prune_generations(cache, keep);
 }
 
 /// `Pack.Position`: where a pack goes when it is added to a list.

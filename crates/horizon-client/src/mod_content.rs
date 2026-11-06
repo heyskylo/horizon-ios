@@ -2703,31 +2703,293 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
 }
 
 /// The root to load: `base` itself with no content, else the mods' overlay
-/// over it, built in `cache/mod-content`.
+/// over it, built in `cache/mod-content/<stamp>`: one folder per mod set, so
+/// a running game keeps reading the root it was given while a switch builds
+/// another (docs/design/mod-hotload.md). Roots of other sets unused for a day
+/// are removed.
 ///
 /// The root is built once and kept: later starts with the same build, base
 /// and mod files reuse it. With ATM10's carried mods a build takes about
 /// 25 s and peaks above 3 GB, more than everything the game keeps.
 pub fn resource_root(base: &Path, mods: &[ContentMod], cache: &Path) -> Result<PathBuf> {
+    resource_root_leased(base, mods, cache).map(|(root, _lease)| root)
+}
+
+/// Prepare on a worker and carry the returned lease with every resource generation.
+/// An overlay retains its base too: untouched files may still be links into it.
+pub fn resource_root_leased(
+    base: &Path,
+    mods: &[ContentMod],
+    cache: &Path,
+) -> Result<(PathBuf, horizon_assets::root_lease::RootLease)> {
+    use horizon_assets::root_lease::RootLease;
+    let base_lease = RootLease::acquire(base)?;
     if mods
         .iter()
         .all(|m| m.content.is_empty() && m.content.blocks.is_empty() && m.content.items.is_empty())
     {
-        return Ok(base.to_owned());
+        return Ok((base.to_owned(), base_lease));
     }
-    let out = cache.join("mod-content");
     let stamp = stamp(base, mods)?;
+    let roots = cache.join("mod-content");
+    let out = roots.join(&stamp[..ROOT_NAME]);
+    // Serialize builders without taking a writer lock away from live readers.
+    let _builder = RootLease::build_lock(&out)?;
+    let lease = RootLease::acquire_with_parent(&out, base_lease.clone())?;
     if fs::read(out.join(STAMP)).is_ok_and(|s| s == stamp.as_bytes()) {
         // A reused root warns as the build did.
         let warnings = fs::read_to_string(out.join(WARNINGS)).unwrap_or_default();
         warnings.lines().for_each(|w| log::warn!("Horizon: {w}"));
-        return Ok(out);
+        // Used again: kept another day.
+        if let Ok(file) = fs::File::options().write(true).open(out.join(STAMP)) {
+            let _ = file.set_modified(std::time::SystemTime::now());
+        }
+        return Ok((out, lease));
     }
+    drop(lease);
+    let writer = RootLease::try_exclusive(&out)?.ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            "the cached content root is still in use and cannot be rebuilt",
+        )
+    })?;
     for warning in build(base, mods, &out)? {
         log::warn!("Horizon: {warning}");
     }
     fs::write(out.join(STAMP), stamp)?;
-    Ok(out)
+    let lease = writer.into_shared(base_lease)?;
+    Ok((out, lease))
+}
+
+/// The length of a root's folder name: the start of its stamp.
+const ROOT_NAME: usize = 16;
+/// How long a root no start or switch used is kept.
+const KEEP_ROOTS: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+
+/// Run on a worker after retiring the engine generation, never during root
+/// preparation. A lazy reader or another process may still own a shared lease;
+/// it is left for a later collection. Lock files themselves are never removed.
+pub fn prune_unused_roots(cache: &Path, current: &Path) {
+    crate::packs::prune_resource_roots(&cache.join("resourcepacks"), KEEP_ROOTS);
+    prune_roots(&cache.join("mod-content"), current, KEEP_ROOTS);
+    prune_named_roots(
+        &cache.join("mod-sources"),
+        current,
+        KEEP_ROOTS,
+        "horizon-mod-source.stamp",
+        64,
+    );
+}
+
+struct RootCollector {
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    thread: std::thread::JoinHandle<()>,
+}
+
+fn collectors() -> &'static std::sync::Mutex<Vec<RootCollector>> {
+    static COLLECTORS: std::sync::OnceLock<std::sync::Mutex<Vec<RootCollector>>> =
+        std::sync::OnceLock::new();
+    COLLECTORS.get_or_init(Default::default)
+}
+
+/// Schedule only after the old engine and its readers have retired. The owned
+/// worker acquires the home's transaction before touching any cache files.
+pub fn schedule_root_collection(home: PathBuf) -> std::io::Result<()> {
+    schedule_collection(home, |home| {
+        prune_unused_roots(&home.join(".horizon-cache"), Path::new(""));
+    })
+}
+
+fn schedule_collection(
+    home: PathBuf,
+    operation: impl FnOnce(&Path) + Send + 'static,
+) -> std::io::Result<()> {
+    if !home.is_absolute() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "root collection needs an absolute game home",
+        ));
+    }
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let worker_cancel = cancel.clone();
+    // Publish the handle before a concurrent poll can report that there is no
+    // collector. The registry is never held while acquiring HomeAccess or doing IO.
+    let mut workers = collectors().lock().unwrap_or_else(|e| e.into_inner());
+    let thread = std::thread::Builder::new()
+        .name("retired resource collection".into())
+        .spawn(move || {
+            let cancelled = || worker_cancel.load(std::sync::atomic::Ordering::Acquire);
+            if cancelled() {
+                return;
+            }
+            let _access = match crate::import::acquire_home_access(&home) {
+                Ok(access) => access,
+                Err(error) => {
+                    log::warn!("Horizon: old resource collection skipped: {error}");
+                    return;
+                }
+            };
+            if !cancelled() {
+                operation(&home);
+            }
+        })?;
+    workers.push(RootCollector { cancel, thread });
+    Ok(())
+}
+
+/// Stop a queued collector before it begins IO. If IO already started, the
+/// retirement gate still owns it and waits for its finite operation to finish.
+pub fn cancel_root_collectors() {
+    for worker in collectors()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+    {
+        worker
+            .cancel
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+}
+
+/// Nonblocking gate for quit/relaunch/import; only finished threads are joined.
+pub fn poll_root_collectors() -> bool {
+    let Ok(mut workers) = collectors().try_lock() else {
+        return false;
+    };
+    let mut index = 0;
+    while index < workers.len() {
+        if !workers[index].thread.is_finished() {
+            index += 1;
+            continue;
+        }
+        if workers.swap_remove(index).thread.join().is_err() {
+            log::warn!("Horizon: retired resource collector panicked");
+        }
+    }
+    workers.is_empty()
+}
+
+fn old_enough(root: &Path, stamp: &str, keep: std::time::Duration) -> bool {
+    fs::metadata(root.join(stamp))
+        .or_else(|_| fs::symlink_metadata(root))
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|time| time.elapsed().ok())
+        .is_some_and(|age| age > keep)
+}
+
+fn prune_named_roots(
+    roots: &Path,
+    current: &Path,
+    keep: std::time::Duration,
+    stamp: &str,
+    name_len: usize,
+) {
+    use horizon_assets::root_lease::RootLease;
+    let Ok(entries) = fs::read_dir(roots) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        if path == current
+            || name.len() != name_len
+            || !name
+                .to_string_lossy()
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit())
+            || !entry.file_type().is_ok_and(|ty| ty.is_dir())
+            || !old_enough(&path, stamp, keep)
+        {
+            continue;
+        }
+        let Ok(Some(_exclusive)) = RootLease::try_exclusive(&path) else {
+            continue;
+        };
+        // A start may have refreshed the stamp while we were acquiring the lease.
+        if old_enough(&path, stamp, keep)
+            && let Err(error) = fs::remove_dir_all(&path)
+        {
+            log::warn!(
+                "Horizon: old resource root stays: {}: {error}",
+                path.display()
+            );
+        }
+    }
+}
+
+/// The old single-root layout shares a separate lease. Keep recent legacy roots
+/// too; never treat an unknown timestamp as permission to delete player files.
+fn prune_roots(roots: &Path, current: &Path, keep: std::time::Duration) {
+    use horizon_assets::root_lease::RootLease;
+    prune_named_roots(roots, current, keep, STAMP, ROOT_NAME);
+    if roots == current || !roots.join(STAMP).is_file() || !old_enough(roots, STAMP, keep) {
+        return;
+    }
+    let Ok(Some(_legacy)) = RootLease::try_exclusive(roots) else {
+        return;
+    };
+    if !old_enough(roots, STAMP, keep) {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(roots) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path == current {
+            continue;
+        }
+        let name = entry.file_name();
+        let is_root = name.len() == ROOT_NAME
+            && name
+                .to_string_lossy()
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit())
+            && path.is_dir();
+        if is_root {
+            continue;
+        }
+        let removed = match path.is_dir() {
+            true => fs::remove_dir_all(&path),
+            false => fs::remove_file(&path),
+        };
+        if let Err(e) = removed {
+            log::warn!(
+                "Horizon: an old mod content root stays: {}: {e}",
+                path.display()
+            );
+        }
+    }
+}
+
+/// Whether turning a content mod on or off can apply in a running game
+/// (docs/design/mod-hotload.md): its assets and data can, through the
+/// resource reload and the server's data reload. What a world numbers or
+/// generates from cannot yet: then the translation key of why.
+pub fn live_switch(content: &Content) -> std::result::Result<(), &'static str> {
+    if !content.blocks.is_empty()
+        || !content.items.is_empty()
+        || !content.effects.is_empty()
+        || !content.entity_types.is_empty()
+        || !content.menu_types.is_empty()
+        || !content.creative_tabs.is_empty()
+    {
+        return Err("horizon.mods.switch.registries");
+    }
+    let worldgen = |file: &&String| {
+        let mut parts = file.split('/');
+        parts.next() == Some("data")
+            && parts.nth(1).is_some_and(|folder| {
+                matches!(folder, "worldgen" | "dimension" | "dimension_type")
+                    || folder == "tags" && file.contains("/tags/worldgen/")
+                    || matches!(folder, "neoforge" | "forge") && file.contains("/biome_modifier/")
+            })
+    };
+    if content.files.iter().any(|f| worldgen(&f)) {
+        return Err("horizon.mods.switch.worldgen");
+    }
+    Ok(())
 }
 
 /// In a root built by [`build`]: its warnings, one per line.

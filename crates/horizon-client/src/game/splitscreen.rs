@@ -71,11 +71,9 @@ impl<'a> Game<'a> {
         // The controller is the first player's.
         settings.controller.enabled = false;
         let vanilla = self.vanilla_root();
-        let root = super::packs::startup_root(
-            &vanilla,
-            &self.settings.resource_packs,
-            &self.server_packs.active,
-        )?;
+        // The GUI and cloned pack must describe the same running generation,
+        // including mods and any selection still waiting for a reload.
+        let root = self.options.resources.clone();
         let mut atlas = HudAtlas::build_over(&root, &vanilla)?;
         atlas.font.uniform = self.settings.force_unicode;
         atlas.font.japanese = self.settings.japanese_glyphs;

@@ -507,6 +507,12 @@ impl Launcher {
                 }
                 saved.me = Some(me);
             });
+            // Paddle sells where the player is now: the Shop offers its free checkout instead.
+            if result.as_ref().is_err_and(Error::use_checkout) {
+                if let Some(me) = saved.me.as_mut() {
+                    me.claim.one_click = false;
+                }
+            }
             if let Err(e) = saved.save(&dir(), &uuid) {
                 eprintln!("Horizon: the outfit is not saved: {e}");
             }

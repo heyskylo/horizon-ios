@@ -30,6 +30,8 @@ def program(pad_source=None, command_source=None):
     names = ['pad_typing', 'field_focused', 'sync_system_keyboard', 'show_system_keyboard',
              'hide_system_keyboard', 'toggle_system_keyboard', 'system_keyboard_up', 'pad_osk_output', 'key_focus_blocked']
     methods = '\n'.join(method(pad_source, n) for n in names)
+    methods += '\n' + method((ROOT / 'crates/horizon-client/src/game.rs').read_text(), 'reload_blocks_input')
+    methods += '\n' + method(pad_source, 'suspend_system_keyboard')
     chat = (ROOT / 'crates/horizon-client/src/game/chat.rs').read_text()
     methods += '\n' + method(chat, 'chat_text_focused') + '\n' + method(chat, 'bed_chat_focus') + '\n' + method(chat, 'bed_chat_choose_at')
     assert methods.count('cfg!(target_os = "ios")') == 2
@@ -77,7 +79,7 @@ struct KeyEvent { physical_key: PhysicalKey, state: ElementState, text: Option<S
 #[derive(Default)] struct Window { requests: RefCell<Vec<bool>> }
 impl Window { fn set_ime_allowed(&self, value: bool) { self.requests.borrow_mut().push(value); } }
 #[derive(Default)] struct Menu { osk: Option<()>, system_keyboard: bool, system_keyboard_hidden: bool, osk_dismissed: bool }
-#[derive(Default)] struct Pad { menu: Menu }
+#[derive(Default)] struct Pad { menu: Menu, reload_pending: bool }
 struct Title { focused: bool }
 impl Title { fn list_focused(&self)->bool{false} fn has_caret_field(&self) -> bool { self.focused } fn focused_field(&mut self) -> Option<()> { self.focused.then_some(()) } fn confirm_edit(&mut self) {} }
 #[derive(Default)] struct Creative { search: bool }
@@ -92,12 +94,13 @@ impl ChatInput {fn contains(&self,x:f64,y:f64)->bool{(0.0..100.0).contains(&x)&&
 impl FocusEditor { fn search_focused(&self)->bool{self.focused} fn text_focused(&self)->bool{self.focused} }
 #[derive(Default)] struct Gui { atlas: () }
 #[derive(Default)] struct Game {
- ios: bool, screen: Screen, title: Option<Title>, sign_edit: Option<()>, book: Option<books::BookScreen>,
+ pack_reload: Option<()>, transaction_busy: bool, ios: bool, screen: Screen, title: Option<Title>, sign_edit: Option<()>, book: Option<books::BookScreen>,
  debug_options: Option<FocusEditor>, block_editor: Option<FocusEditor>,
  creative_screen: Creative, pad: Pad, window: Option<Window>, ui: Ui, gui: Gui,
  dialog: bool, dialog_text: bool, dialog_lines: bool, recipe: bool, station: bool, command: String, submitted: bool, block_typing: bool, key_code_calls: usize, title_text: String,
 }
 impl Game {
+ fn content_reload_busy(&self)->bool{self.transaction_busy}
  fn new() -> Self { Self { ios: true, window: Some(Window::default()), ..Self::default() } }
  fn requests(&self) -> Vec<bool> { self.window.as_ref().unwrap().requests.borrow().clone() }
  fn dialog_open(&self)->bool{self.dialog} fn dialog_text_focused(&self)->bool{self.dialog && self.dialog_text}
@@ -128,6 +131,21 @@ impl Game {
 '''
 
 CASES = r'''
+#[test] fn overlay_blocks_native_and_controller_keyboard_for_all_reload_phases() {
+ for phase in 0..3 {
+ let mut g=Game::new();g.screen=Screen::CommandBlock;
+ match phase {0=>g.pack_reload=Some(()),1=>g.transaction_busy=true,_=>g.pad.reload_pending=true};
+ g.show_system_keyboard();g.sync_system_keyboard();
+ assert!(!g.system_keyboard_up());
+ g.pad_osk_output(osk::Output::Text("blocked".into()));g.ime_commit("blocked");
+ assert!(g.command.is_empty());
+ g.suspend_system_keyboard();assert!(!g.pad.menu.system_keyboard_hidden);
+ g.pack_reload=None;g.transaction_busy=false;g.pad.reload_pending=false;
+ g.show_system_keyboard();assert!(g.system_keyboard_up());
+ g.ime_commit("say restored");assert_eq!(g.command,"say restored");
+ }
+}
+
 #[test] fn focused_options_over_title_request_their_own_keyboard() {
  let mut g=Game::new();g.title=Some(Title{focused:false});g.screen=Screen::Options;g.ui.options.typing=true;
  assert!(g.text_field_focused());g.sync_system_keyboard();assert!(g.system_keyboard_up());

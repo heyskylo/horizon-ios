@@ -42,6 +42,9 @@ def program(game=None, control=None):
     methods += '\n'+method(control,'type_chars_into_screen')+'\n'+method(clip,'title_edit')
     ime = (ROOT / 'crates/horizon-client/src/game/ime.rs').read_text()
     methods += '\n'+method(ime,'ime_commit')
+    methods += '\n'+method(game,'reload_blocks_input')
+    transaction = (ROOT / 'crates/horizon-client/src/game/packs/transaction.rs').read_text()
+    methods += '\n'+method(transaction,'content_reload_busy')
     helpers = '\n'.join(method(hooks,n) for n in ['screen_text_hooked','chars_to_type'])
     owns = method(control,'title_owns_text') if 'fn title_owns_text(' in control else 'fn title_owns_text(_: &Screen,_:bool)->bool{false}'
     keys = sorted(set(re.findall(r'KeyCode::(\w+)', callbacks+arm)) | {'KeyA'})
@@ -90,10 +93,13 @@ struct Audio;impl Audio{fn play_button_click(&mut self){}}
 struct Options;impl Options{fn type_text(&mut self,_:&(),_:&str){}}
 struct UI{options:Options}struct GUI{atlas:()}
 struct Creative{search:bool}impl Creative{fn tab(&self)->&Self{self}}
-struct Game{screen:Screen,title:Option<Title>,modifiers:u32,book:Option<()>,sign_edit:Option<()>,ui:UI,gui:GUI,creative_screen:Creative,text_selection:Selection,audio:Audio,cancel:bool,cancel_key:bool,blocked:bool,dialog:bool,dialog_value:String,command:String,hooked:RefCell<String>}
+#[derive(Default)]struct Pad{reload_pending:bool}
+enum Transaction{Preparing,Committing}
+#[derive(Default)]struct Mods{transaction:Option<Transaction>}
+struct Game{pad:Pad,pack_reload:Option<()>,mods:Mods,screen:Screen,title:Option<Title>,modifiers:u32,book:Option<()>,sign_edit:Option<()>,ui:UI,gui:GUI,creative_screen:Creative,text_selection:Selection,audio:Audio,cancel:bool,cancel_key:bool,blocked:bool,dialog:bool,dialog_value:String,command:String,hooked:RefCell<String>}
 fn glfw_modifiers(m:u32)->u32{m}
 impl Game {
- fn new()->Self{Self{screen:Screen::Playing,title:Some(Title{value:String::new(),focused_button:None}),modifiers:0,book:None,sign_edit:None,ui:UI{options:Options},gui:GUI{atlas:()},creative_screen:Creative{search:false},text_selection:Selection,audio:Audio,cancel:false,cancel_key:false,blocked:false,dialog:false,dialog_value:String::new(),command:String::new(),hooked:RefCell::new(String::new())}}
+ fn new()->Self{Self{pad:Pad::default(),pack_reload:None,mods:Mods::default(),screen:Screen::Playing,title:Some(Title{value:String::new(),focused_button:None}),modifiers:0,book:None,sign_edit:None,ui:UI{options:Options},gui:GUI{atlas:()},creative_screen:Creative{search:false},text_selection:Selection,audio:Audio,cancel:false,cancel_key:false,blocked:false,dialog:false,dialog_value:String::new(),command:String::new(),hooked:RefCell::new(String::new())}}
  fn screen_hooks_open(&self)->bool{true}fn screen_view_now(&self)->Option<()>{Some(())}
  fn types_text(&self)->bool{!self.blocked}
  fn text_field_focused(&mut self)->bool{true}
@@ -119,6 +125,15 @@ fn type_uikit(g:&mut Game,text:&str){for (physical_key,logical) in insert_text_k
 #[test]fn editing_modifier_blocks_plain_characters(){let mut g=Game::new();g.blocked=true;type_uikit(&mut g,"v");assert_eq!(g.title.as_ref().unwrap().value,"");}
 #[test]fn canceled_physical_key_still_delivers_its_separate_character_callback(){let mut g=Game::new();g.cancel_key=true;g.dispatch(WindowEvent::KeyboardInput{event:KeyEvent{physical_key:PhysicalKey::Code(KeyCode::KeyA),state:ElementState::Pressed,text:Some("a".into()),repeat:false}});assert_eq!(g.title.as_ref().unwrap().value,"a");assert_eq!(*g.hooked.borrow(),"a");}
 #[test]fn names_unicode_and_hook_cancellation(){let mut g=Game::new();type_uikit(&mut g,"日本 🦀");assert_eq!(g.title.as_ref().unwrap().value,"日本 🦀");assert_eq!(*g.hooked.borrow(),"日本 🦀");g.cancel=true;type_uikit(&mut g,"blocked");assert_eq!(g.title.as_ref().unwrap().value,"日本 🦀");}
+#[test]fn ime_uses_the_shared_reload_boundary_before_hooks_or_fields(){
+ for mask in 1..8 {for committing in [false,true] {for field in 0..3 {
+  let mut g=Game::new();g.pad.reload_pending=mask&1!=0;g.pack_reload=(mask&2!=0).then_some(());g.mods.transaction=(mask&4!=0).then_some(if committing{Transaction::Committing}else{Transaction::Preparing});
+  if field==1{g.dialog=true;}if field==2{g.title=None;g.screen=Screen::CommandBlock;}
+  g.ime_commit("blocked");assert!(g.hooked.borrow().is_empty());assert!(g.dialog_value.is_empty()&&g.command.is_empty());if let Some(t)=&g.title{assert!(t.value.is_empty());}
+  g.pad.reload_pending=false;g.pack_reload=None;g.mods.transaction=None;g.ime_commit("ready");assert_eq!(*g.hooked.borrow(),"ready");
+  match field{0=>assert_eq!(g.title.as_ref().unwrap().value,"ready"),1=>assert_eq!(g.dialog_value,"ready"),_=>assert_eq!(g.command,"ready")}
+ }}}
+}
 '''
 
 
@@ -132,6 +147,6 @@ class MobileMultiplayerKeyboardTests(unittest.TestCase):
             source.write_text(program())
             build=subprocess.run([compiler,'--edition=2024','--test',str(source),'-o',str(binary)],capture_output=True,text=True,timeout=60)
             self.assertEqual(build.returncode,0,build.stdout+build.stderr)
-            run=subprocess.run([str(binary)],capture_output=True,text=True,timeout=10)
+            run=subprocess.run([str(binary)],cwd=directory,capture_output=True,text=True,timeout=10)
             self.assertEqual(run.returncode,0,run.stdout+run.stderr)
-            self.assertIn('6 passed', run.stdout)
+            self.assertIn('7 passed', run.stdout)

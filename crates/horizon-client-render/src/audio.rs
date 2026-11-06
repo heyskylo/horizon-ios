@@ -11,6 +11,7 @@ use crate::sound_engine::{
 use crate::sound_events::{Sound, SoundRegistry};
 #[cfg(feature = "audio")]
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use horizon_assets::root_lease::{RootLease, lease_for};
 use horizon_core::random::{LegacyRandom, RandomSource};
 use std::{
     collections::HashMap,
@@ -102,9 +103,13 @@ pub struct Heard {
 pub struct MixerBackend {
     mixer: Arc<Mutex<Mixer>>,
     root: PathBuf,
+    root_lease: RootLease,
     cache: Arc<Mutex<SoundCache>>,
     /// The decoder thread for static sounds, started with the first one.
     decoder: Option<std::sync::mpsc::Sender<Decode>>,
+    decoder_work: Option<AudioWork>,
+    streams: Vec<AudioWork>,
+    work_owner: Arc<()>,
     next: ChannelId,
     live: bool,
     /// Whose channels these are (`Channel::owner`).
@@ -116,6 +121,7 @@ pub struct MixerBackend {
 /// A splitscreen player's backend leaving: its camera and sounds go with it.
 impl Drop for MixerBackend {
     fn drop(&mut self) {
+        self.retire_work();
         if self.owner == 0 {
             return;
         }
@@ -127,6 +133,104 @@ impl Drop for MixerBackend {
             let owner = self.owner;
             m.channels.retain(|_, c| c.owner != owner);
         }
+    }
+}
+
+type Cancel = Arc<std::sync::atomic::AtomicBool>;
+
+/// Work owns its cancellation flag and thread. Dropping a sound generation
+/// cancels work and transfers the handle to retirement; it never detaches it.
+struct AudioWork {
+    cancel: Cancel,
+    owner: Arc<()>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+struct RetiredAudio {
+    owner: Arc<()>,
+    thread: std::thread::JoinHandle<()>,
+}
+
+fn retired_audio() -> &'static Mutex<Vec<RetiredAudio>> {
+    static WORK: std::sync::OnceLock<Mutex<Vec<RetiredAudio>>> = std::sync::OnceLock::new();
+    WORK.get_or_init(Default::default)
+}
+
+fn cancelled(cancel: &Cancel) -> bool {
+    cancel.load(std::sync::atomic::Ordering::Acquire)
+}
+
+impl AudioWork {
+    fn spawn(name: &str, owner: Arc<()>, run: impl FnOnce(Cancel) + Send + 'static) -> Self {
+        let cancel = Cancel::default();
+        let worker_cancel = cancel.clone();
+        let thread = std::thread::Builder::new()
+            .name(name.into())
+            .spawn(move || run(worker_cancel))
+            .expect("sound decoder thread");
+        Self {
+            cancel,
+            owner,
+            thread: Some(thread),
+        }
+    }
+
+    fn finished(&mut self) -> bool {
+        if self
+            .thread
+            .as_ref()
+            .is_some_and(|thread| !thread.is_finished())
+        {
+            return false;
+        }
+        if let Some(thread) = self.thread.take()
+            && thread.join().is_err()
+        {
+            log::warn!("Horizon: sound decoder panicked");
+        }
+        true
+    }
+}
+
+impl Drop for AudioWork {
+    fn drop(&mut self) {
+        self.cancel
+            .store(true, std::sync::atomic::Ordering::Release);
+        if let Some(thread) = self.thread.take() {
+            retired_audio()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(RetiredAudio {
+                    owner: self.owner.clone(),
+                    thread,
+                });
+        }
+    }
+}
+
+/// The full-engine retirement gate includes old audio generations and dropped
+/// split-screen players. Join only completed threads; never wait on the UI.
+pub fn poll_retired_workers() -> bool {
+    poll_retired_for(None)
+}
+
+fn poll_retired_for(owner: Option<&Arc<()>>) -> bool {
+    let Ok(mut work) = retired_audio().try_lock() else {
+        return false;
+    };
+    let mut index = 0;
+    while index < work.len() {
+        if !work[index].thread.is_finished() {
+            index += 1;
+            continue;
+        }
+        if work.swap_remove(index).thread.join().is_err() {
+            log::warn!("Horizon: retired sound decoder panicked");
+        }
+    }
+    match owner {
+        None => work.is_empty(),
+        Some(owner) => !work.iter().any(|work| Arc::ptr_eq(&work.owner, owner)),
     }
 }
 /// Splitscreen: each shared backend's channel ids start at a block of their own, never handed out
@@ -186,6 +290,12 @@ struct Decode {
     file: PathBuf,
     channel: ChannelId,
     looping: bool,
+    _root_lease: RootLease,
+}
+impl Decode {
+    fn load(&self) -> Samples {
+        decode(&self.file).map(|(samples, rate)| (Arc::new(samples), rate))
+    }
 }
 /// Give a channel waiting on its sound the decoded samples and start it, as
 /// the buffer future attaching and playing the source. A source stopped or
@@ -310,6 +420,20 @@ fn variantless(key: &str) -> &str {
         .trim_end_matches(|c: char| c.is_ascii_digit())
 }
 impl MixerBackend {
+    fn retire_work(&mut self) {
+        self.decoder = None;
+        self.decoder_work = None;
+        self.streams.clear();
+    }
+
+    fn poll_work(&mut self) {
+        self.streams.retain_mut(|work| !work.finished());
+        if self.decoder_work.as_mut().is_some_and(AudioWork::finished) {
+            self.decoder = None;
+            self.decoder_work = None;
+        }
+        let _ = poll_retired_workers();
+    }
     /// Splitscreen: another player's game started this same sound here just now (both clients
     /// heard it); this copy stays stopped, the first is heard from the nearest camera.
     ///
@@ -414,6 +538,7 @@ impl Backend for MixerBackend {
     /// `alSourcePlay`. A sound that cannot load leaves its source initial,
     /// as a failed buffer future does in vanilla.
     fn start(&mut self, channel: ChannelId, sound: &Sound, looping: bool) {
+        self.poll_work();
         if !self.live {
             return;
         }
@@ -426,10 +551,21 @@ impl Backend for MixerBackend {
         if sound.stream {
             // A streamed sound loops by restarting its stream.
             let mixer = self.mixer.clone();
-            std::thread::spawn(move || {
-                let samples = decode(&file).map(|(s, r)| (Arc::new(s), r));
-                attach(&mixer, channel, samples, looping);
-            });
+            let root_lease = self.root_lease.clone();
+            self.streams.push(AudioWork::spawn(
+                "sound stream decoder",
+                self.work_owner.clone(),
+                move |cancel| {
+                    let _root_lease = root_lease;
+                    if cancelled(&cancel) {
+                        return;
+                    }
+                    let samples = decode(&file).map(|(s, r)| (Arc::new(s), r));
+                    if !cancelled(&cancel) {
+                        attach(&mixer, channel, samples, looping);
+                    }
+                },
+            ));
             return;
         }
         let key = format!("{namespace}:{path}");
@@ -441,23 +577,29 @@ impl Backend for MixerBackend {
         let decoder = self.decoder.get_or_insert_with(|| {
             let (send, receive) = std::sync::mpsc::channel::<Decode>();
             let (mixer, cache) = (self.mixer.clone(), self.cache.clone());
-            std::thread::Builder::new()
-                .name("sound decoder".into())
-                .spawn(move || {
+            self.decoder_work = Some(AudioWork::spawn(
+                "sound decoder",
+                self.work_owner.clone(),
+                move |cancel| {
                     for job in receive {
+                        if cancelled(&cancel) {
+                            break;
+                        }
                         // Queued twice before the first decode finished.
                         let cached = cache.lock().ok().and_then(|mut c| c.get(&job.key));
                         let samples = cached.unwrap_or_else(|| {
-                            let samples = decode(&job.file).map(|(s, r)| (Arc::new(s), r));
+                            let samples = job.load();
                             if let Ok(mut c) = cache.lock() {
-                                c.insert(job.key, samples.clone());
+                                c.insert(job.key.clone(), samples.clone());
                             }
                             samples
                         });
-                        attach(&mixer, job.channel, samples, job.looping);
+                        if !cancelled(&cancel) {
+                            attach(&mixer, job.channel, samples, job.looping);
+                        }
                     }
-                })
-                .expect("sound decoder thread");
+                },
+            ));
             send
         });
         let _ = decoder.send(Decode {
@@ -465,6 +607,7 @@ impl Backend for MixerBackend {
             file,
             channel,
             looping,
+            _root_lease: self.root_lease.clone(),
         });
     }
     /// `alSourceStop`: any state becomes stopped, an initial source too (a
@@ -953,8 +1096,12 @@ impl Audio {
             backend: MixerBackend {
                 mixer,
                 root: root.to_owned(),
+                root_lease: lease_for(root).unwrap_or_default(),
                 cache: Arc::default(),
                 decoder: None,
+                decoder_work: None,
+                streams: Vec::new(),
+                work_owner: Arc::new(()),
                 next: 0,
                 live,
                 owner: 0,
@@ -1111,8 +1258,12 @@ impl Audio {
             backend: MixerBackend {
                 mixer: self.backend.mixer.clone(),
                 root: self.backend.root.clone(),
+                root_lease: self.backend.root_lease.clone(),
                 cache: self.backend.cache.clone(),
                 decoder: None,
+                decoder_work: None,
+                streams: Vec::new(),
+                work_owner: Arc::new(()),
                 next: (SHARED_CHANNELS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1)
                     << 40,
                 live: self.backend.live,
@@ -1268,11 +1419,28 @@ impl Audio {
     /// (`SoundRegistry::load`, which a pack reload runs off the render thread).
     pub fn reload_with(&mut self, root: &Path, registry: SoundRegistry) {
         self.stop_all();
+        self.backend.retire_work();
         self.engine.registry = registry;
         self.backend.root = root.to_owned();
-        let mut cache = self.backend.cache.lock().unwrap();
-        cache.entries.clear();
-        cache.bytes = 0;
+        self.backend.root_lease = lease_for(root).unwrap_or_default();
+        // Old queued jobs finish on their old cache. They must not populate the
+        // newly published generation under the same namespace/path key.
+        self.backend.cache = Arc::default();
+        self.backend.decoder = None;
+    }
+
+    /// Install the worker-acquired generation token without filesystem work on UI.
+    pub fn retain_root_lease(&mut self, lease: RootLease) {
+        self.backend.root_lease = lease;
+    }
+
+    /// Cancel queued reads and retire all owned workers before the game home can
+    /// be imported/replaced. An already running decode keeps its root until done.
+    pub fn shutdown_workers(&mut self) -> bool {
+        self.stop_all();
+        self.backend.live = false;
+        self.backend.retire_work();
+        poll_retired_for(Some(&self.backend.work_owner))
     }
     /// Play a sound event at a world position, as `ClientLevel.playLocalSound`
     /// (a `SimpleSoundInstance` seeded from the level random), or relative to
@@ -1966,8 +2134,12 @@ mod tests {
         let backend = |owner| MixerBackend {
             mixer: mixer.clone(),
             root: PathBuf::new(),
+            root_lease: RootLease::default(),
             cache: Arc::default(),
             decoder: None,
+            decoder_work: None,
+            streams: Vec::new(),
+            work_owner: Arc::new(()),
             next: (u64::from(owner)) << 40,
             live: true,
             owner,
@@ -2056,3 +2228,7 @@ mod tests {
         assert!(cards_changed(Some("0 [PCH ]"), Some("0 [PCH ]\n 1 [USB ]")));
     }
 }
+
+#[cfg(test)]
+#[path = "audio_root_tests.rs"]
+mod root_lifetime_tests;

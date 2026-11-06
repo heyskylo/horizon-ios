@@ -1220,5 +1220,7 @@
   "{name} was left out: made for another Horizon version": "Chaidh {name} fhàgail às: air a dhèanamh airson tionndadh eile de Horizon",
   "{name} was left out: clashes with {other}": "Chaidh {name} fhàgail às: tha e a' bualadh air {other}",
   "{name} was left out: it needs {other}, which was left out": "Chaidh {name} fhàgail às: feumaidh e {other}, a chaidh fhàgail às",
-  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Cha tog e air an Horizon a tha thu a' cluich ({code}): fàgaidh togail às e gus an ùraich an t-ùghdar e"
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Cha tog e air an Horizon a tha thu a' cluich ({code}): fàgaidh togail às e gus an ùraich an t-ùghdar e",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Far a bheil thu, thèid seata an luchd-stèidheachaidh fhaighinn le pàigheadh an-asgaidh air playhorizon.dev. Faigh e on Bhùth: fosglaidh i am pàigheadh dhut.",
+  "The founder set can't be claimed from your country.": "Chan urrainn dhut seata an luchd-stèidheachaidh fhaighinn on dùthaich agad."
 }

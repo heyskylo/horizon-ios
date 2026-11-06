@@ -1257,6 +1257,9 @@ impl Game<'_> {
     /// follows its widget from frame to frame, and the OS pointer hides
     /// while the pad drives.
     pub(super) fn pad_menu_frame(&mut self, event_loop: &dyn EventLoopCtl) {
+        if self.reload_blocks_input() {
+            return;
+        }
         let now = Instant::now();
         let seconds = self
             .pad
@@ -2164,6 +2167,9 @@ impl Game<'_> {
     /// while a touch is being handled) is otherwise never repeated, as `sync_system_keyboard` only asks on a
     /// change. The touch controls' keyboard button, when the keyboard is down.
     pub(super) fn show_system_keyboard(&mut self) {
+        if self.reload_blocks_input() {
+            return;
+        }
         self.bed_chat_focus(true);
         self.pad.menu.osk = None;
         self.pad.menu.system_keyboard = true;
@@ -2171,6 +2177,15 @@ impl Game<'_> {
         if let Some(window) = &self.window {
             window.set_ime_allowed(false);
             window.set_ime_allowed(true);
+        }
+    }
+
+    /// Hide IME for a loading overlay without treating it as the player's
+    /// explicit hide preference; the focused field may reopen it afterwards.
+    pub(super) fn suspend_system_keyboard(&mut self) {
+        self.pad.menu.system_keyboard = false;
+        if let Some(window) = &self.window {
+            window.set_ime_allowed(false);
         }
     }
 
@@ -2218,6 +2233,7 @@ impl Game<'_> {
             self.pad.menu.system_keyboard_hidden = false;
         }
         let want = cfg!(target_os = "ios")
+            && !self.reload_blocks_input()
             && focused
             && self.pad.menu.osk.is_none()
             && !self.pad.menu.system_keyboard_hidden;
@@ -2290,6 +2306,9 @@ impl Game<'_> {
     /// What a key of the on-screen keyboard does: the same as a typed key in
     /// the field that has focus.
     fn pad_osk_output(&mut self, out: osk::Output) {
+        if self.reload_blocks_input() {
+            return;
+        }
         use osk::Output;
         let (key, text) = match &out {
             Output::Text(t) => (None, Some(t.as_str())),

@@ -195,6 +195,7 @@ mod lan_waypoints;
 mod launch_api;
 mod launcher;
 mod leads;
+mod legacy_rules;
 mod level_particles;
 mod levels;
 mod lightning;
@@ -2245,6 +2246,7 @@ impl UiResources {
 /// cloning shares the loaded data.
 #[derive(Clone)]
 pub struct PackResources {
+    content: Option<Arc<mods::PreparedContent>>,
     assets: Arc<Assets>,
     render: Arc<RenderAssets>,
     context: Arc<WorkerContext>,
@@ -2311,6 +2313,7 @@ impl PackResources {
         light: Arc<LightTables>,
     ) -> Self {
         Self {
+            content: None,
             layer_names: Arc::new(
                 render
                     .sprite_layers
@@ -8423,6 +8426,37 @@ impl Game<'_> {
         let zoom = self.zoom_turn_scale();
         self.turn_player(x * zoom, y * zoom);
     }
+    /// LoadingOverlay owns input through CPU preparation, server transaction,
+    /// and the first input poll that disarms a completed-before-poll reload.
+    pub(super) fn reload_blocks_input(&self) -> bool {
+        self.pad.reload_pending || self.pack_reload.is_some() || self.content_reload_busy()
+    }
+
+    /// Called synchronously before preparing/replacing content, without a loop.
+    pub(super) fn begin_reload_input_block(&mut self) {
+        self.pad.reload_pending = true;
+        self.release_use_for_keybind_screen();
+        self.keys.clear();
+        self.physical_keys.clear();
+        self.physical_buttons.clear();
+        self.left = false;
+        self.right = false;
+        self.mining = None;
+        self.drag_button = None;
+        self.dragging = false;
+        self.inv_drag = None;
+        self.cancel_emote_controller();
+        self.cancel_touch_for_reload();
+        self.suspend_system_keyboard();
+        self.ui.options.release();
+        if let Some(title) = &mut self.title {
+            title.release();
+            title.release_field();
+        }
+        self.hud_editor_release();
+        self.capture(false);
+    }
+
     /// `Minecraft.pause`: a single-player game with a pausing screen open.
     fn pauses_game(&self) -> bool {
         self.has_singleplayer_server()
@@ -8997,7 +9031,13 @@ impl Game<'_> {
             self.draw_spyglass(&mut batch);
             // Hud.extractCrosshair / extractItemHotbar / extractPlayerHealth /
             // extractVehicleHealth and the experience bar, laid out by hud_layout.
-            let indicator = self.settings.attack_indicator;
+            // Combat feel Legacy hides the attack indicator unless the player keeps it.
+            let combat = self.settings.extras.pvp.combat;
+            let indicator = if combat.legacy && !combat.indicator {
+                0
+            } else {
+                self.settings.attack_indicator
+            };
             let delay = horizon_client::attack_strength::delay(self.main_hand_attack_speed());
             let strength = self.hand_strength.scale(0.0, self.main_hand_attack_speed());
             // The 3D crosshair (F3) takes the 2D one's place.
@@ -12161,6 +12201,9 @@ impl Game<'_> {
         target_kind: &str,
         living: bool,
     ) -> (f32, f32, bool, bool) {
+        if self.legacy_rules() {
+            return self.legacy_melee_damage(target_kind, living);
+        }
         let hand_damage = self.attack_damage();
         // Riptide's spin replaces the attack damage attribute.
         let spin = self.player.as_ref().map_or(0.0, |p| p.auto_spin_attack_dmg);
@@ -12190,11 +12233,19 @@ impl Game<'_> {
     }
     /// `Player.getAttackStrengthScale(0.5)`.
     fn attack_strength_scale(&self) -> f32 {
+        // 1.8.9 had no attack cooldown.
+        if self.legacy_rules() {
+            return 1.0;
+        }
         let delay = horizon_client::attack_strength::delay(self.main_hand_attack_speed());
         ((self.attack_ticks as f32 + 0.5) / delay).clamp(0.0, 1.0)
     }
     /// `Player.isSweepAttack`: a charged, grounded sword hit below the movement limit.
     pub(super) fn sweep_attack_position(&mut self, scale: f32, crit: bool) -> Option<[f64; 3]> {
+        // The sweep came with 1.9.
+        if self.legacy_rules() {
+            return None;
+        }
         // Player.getSpeed: the movement speed attribute as it is now (the
         // field is only refreshed by the local movement step, never for a
         // server's player).
@@ -12427,7 +12478,25 @@ impl Game<'_> {
         if landed {
             if knockback > 0.0 {
                 let (xd, zd) = self.extra_knockback_direction();
-                self.mobs[index].knockback_effect(f64::from(knockback), xd, zd, &source, amount);
+                if self.legacy_rules() {
+                    let m = &mut self.mobs[index];
+                    let v = [m.velocity.x, m.velocity.y, m.velocity.z];
+                    let [x, y, z] = horizon_client::legacy_combat::extra_knockback(
+                        v,
+                        f64::from(knockback),
+                        (xd, zd),
+                    );
+                    m.velocity = Vec3::new(x, y, z);
+                    m.needs_sync = true;
+                } else {
+                    self.mobs[index].knockback_effect(
+                        f64::from(knockback),
+                        xd,
+                        zd,
+                        &source,
+                        amount,
+                    );
+                }
                 self.stop_sprint_after_extra_knockback();
             }
             let mob = &self.mobs[index];
@@ -14683,6 +14752,21 @@ impl Game<'_> {
             .is_some_and(|p| p.auto_spin_attack_ticks > 0);
         let items = self.visible_hand_items();
         let off_hand_empty = items[1].is_none();
+        // Combat feel Legacy: a sword is held up while use is held, as 1.8.9's block looked.
+        // Only the picture changes: the clicks and what they send stay 26.3's.
+        let legacy_block = self.settings.extras.pvp.combat.legacy
+            && self.right
+            && self.screen == Screen::Playing
+            && items[0]
+                .as_ref()
+                .is_some_and(|s| s.item.ends_with("_sword"))
+            && match used_hand {
+                None => true,
+                Some(Hand::Off) => items[1]
+                    .as_ref()
+                    .is_some_and(|s| &*s.item == "minecraft:shield"),
+                Some(Hand::Main) => false,
+            };
         for (i, (hand, item)) in Hand::BOTH.into_iter().zip(items).enumerate() {
             if !shown[i] {
                 continue;
@@ -14733,6 +14817,10 @@ impl Game<'_> {
             };
             // The main hand on its arm, the off hand on the other one.
             let left = self.settings.main_hand_left != (hand == Hand::Off);
+            // A Legacy sword held up hides the off hand's shield.
+            if hand == Hand::Off && legacy_block {
+                continue;
+            }
             let Some(stack) = item else {
                 // renderArmWithItem: only the main hand's empty arm shows,
                 // on the main arm (the left one with the main hand set to
@@ -14876,6 +14964,23 @@ impl Game<'_> {
                 horizon_client::cit::Hand::Main
             };
             let state = self.resolve_item_in_hand(&stack, context, Some(&owner), seed, cit_hand);
+            // Combat feel Legacy: 1.8.9's pose for a flat item drawn with vanilla's display.
+            if self.settings.extras.pvp.combat.legacy
+                && !state.layers.is_empty()
+                && state
+                    .layers
+                    .iter()
+                    .all(|l| horizon_client::first_person::is_modern_flat_display(&l.matrix, left))
+                && let Some(legacy) = horizon_client::first_person::legacy_item_pose(
+                    left,
+                    inverse_height,
+                    attack,
+                    pose,
+                    hand == Hand::Main && legacy_block,
+                )
+            {
+                m = to_world * legacy;
+            }
             runs.push((out.len() as u32, item_id));
             let light = self.world.light(
                 eye[0].floor() as i32,
@@ -16286,7 +16391,7 @@ impl Game<'_> {
             }
             return Ok(false);
         }
-        if self.pending_entry.is_some() {
+        if self.pending_entry.is_some() && !self.content_reload_busy() {
             if let (Some(renderer), Some(loader)) = (&mut self.renderer, &self.rest_loader) {
                 horizon_client::widgets::begin_screen(|| {
                     screen_info::level_loading(Some(loader.progress.fraction()), &screen_info::tr)
@@ -16312,6 +16417,20 @@ impl Game<'_> {
                     &self.gui.atlas,
                     reload.progress.line(),
                     reload.progress.fraction(),
+                    self.settings.file.bool("darkMojangStudiosBackground"),
+                );
+                return renderer.render(&loading_frame(&hud));
+            }
+            return Ok(false);
+        }
+        if let Some((line, fraction)) = self.content_reload_progress() {
+            if let Some(renderer) = &mut self.renderer {
+                let mut hud = HudBatch::new([renderer.config.width, renderer.config.height]);
+                horizon_client::level_loading::draw_loading_overlay(
+                    &mut hud,
+                    &self.gui.atlas,
+                    line,
+                    fraction,
                     self.settings.file.bool("darkMojangStudiosBackground"),
                 );
                 return renderer.render(&loading_frame(&hud));
@@ -18382,7 +18501,7 @@ impl Game<'_> {
         }
         // The pack reload's progress overlay takes no input
         // (`LoadingOverlay`): `spawn_pack_reload` released what was held.
-        if self.pack_reload.is_some()
+        if self.reload_blocks_input()
             && !matches!(
                 &event,
                 WindowEvent::CloseRequested
@@ -19586,6 +19705,7 @@ impl Game<'_> {
                             self.settings.simulation_distance,
                             self.settings.entity_distance,
                         );
+                        server.set_legacy_rules(self.settings.extras.pvp.combat.rules);
                     }
                     self.clock.end_frame(self.pause);
                     let mut consumed = false;
@@ -19784,7 +19904,8 @@ impl Game<'_> {
         }
         #[cfg(target_os = "ios")]
         {
-            let want = self.focused
+            let want = !self.reload_blocks_input()
+                && self.focused
                 && self.title.is_none()
                 && self.screen == Screen::Playing
                 && self.player.is_some()
@@ -19874,6 +19995,7 @@ impl<'a> Game<'a> {
         prepared: Option<GameCpuResources>,
     ) -> Result<Self> {
         let root = options.resources.clone();
+        let content = pack.content.clone();
         let registry = pack.assets.registry;
         // Until a world is opened the streamer is idle.
         let mut streaming = Streaming::new(
@@ -20310,7 +20432,7 @@ impl<'a> Game<'a> {
             frame_graph: Default::default(),
             extras: Default::default(),
             pvp: Default::default(),
-            mods: Default::default(),
+            mods: mods::ModsState::with_content(content),
             recipe_tables: Default::default(),
             panel: Default::default(),
             native_shaders: Default::default(),
@@ -20628,7 +20750,7 @@ impl WorldRestLoader {
 impl Game<'_> {
     fn defer_world_entry(&mut self, entry: PendingWorldEntry) -> Result<bool> {
         self.poll_world_rest()?;
-        if self.rest_loader.is_none() {
+        if self.rest_loader.is_none() && !self.content_reload_busy() {
             return Ok(false);
         }
         self.perf.world_opening();
@@ -20642,7 +20764,7 @@ impl Game<'_> {
             );
         }
         self.pending_entry = Some(entry);
-        log::info!("Horizon: world entry waiting for world resources");
+        log::info!("Horizon: world entry waiting for coherent resources");
         Ok(true)
     }
 
@@ -20650,7 +20772,7 @@ impl Game<'_> {
         self.poll_integrated_start()?;
         self.poll_world_rest()?;
         self.poll_world_creation();
-        if self.rest_loader.is_some() {
+        if self.rest_loader.is_some() || self.content_reload_busy() {
             return Ok(());
         }
         let on_world_screens = !horizon_ios_launcher::covered()
@@ -20838,26 +20960,41 @@ impl Game<'_> {
         reload: bool,
         enabled_features: &[String],
     ) -> Result<(Option<WorldTables>, horizon_client::health::HealthResources)> {
+        self.build_world_tables_at(
+            &self.options.resources,
+            reload,
+            enabled_features,
+            self.mods.data_switched,
+        )
+    }
+    fn build_world_tables_at(
+        &self,
+        root: &std::path::Path,
+        reload: bool,
+        enabled_features: &[String],
+        force_tables: bool,
+    ) -> Result<(Option<WorldTables>, horizon_client::health::HealthResources)> {
         // The ask of this load, both here and on `/reload`: a native mod
         // recomputes the pack files it contributes every time.
         let mut contributed = Vec::new();
         self.native_data_pack_files(&mut contributed);
         let files = functions::overlay_files(
             &self.world_root,
-            &self.options.resources,
+            root,
             self.cmds.vanilla_disabled,
             enabled_features,
             contributed,
         );
         let overlay = horizon_world::loot::PackOverlay { files: &files };
-        let root = &self.options.resources;
         let base = if reload {
             &self.health_resources
         } else {
             &self.motion.health
         };
         let health = base.with_packs(root, &overlay, reload)?;
-        if files.is_empty() {
+        // With no pack, `res` holds the tables, unless content mods switched
+        // live since it was loaded: their data is in the new root.
+        if files.is_empty() && !force_tables {
             return Ok((None, health));
         }
         let mut items = Items::load(root, self.pack.assets.registry, self.res.facts(), &overlay)?;
@@ -20914,61 +21051,10 @@ impl Game<'_> {
             health,
         ))
     }
-    /// Reload the content tables with the world's packs, as
-    /// `/reload` reloads a server's (`ReloadableServerResources`).
-    pub(super) fn reload_world_tables(&mut self) {
-        if self.remote.is_some() {
-            return;
-        }
-        match self.build_world_tables(true, &self.level.enabled_features) {
-            Ok((tables, health)) => {
-                self.world_tables = tables;
-                self.health_resources = health;
-            }
-            Err(e) => {
-                log::warn!("Horizon: the world's data packs are not applied: {e}");
-                return;
-            }
-        }
-        self.damage_tag_generation = self.damage_tag_generation.wrapping_add(1);
-        self.recipe_tables.categories = None;
-        horizon_client::structure_blocks::forget_loot_data();
-        // Before the players are sent the reloaded data below.
-        self.sync_recipe_content();
-        // PlayerList.reloadResources: the tags and recipes go to the players
-        // and their advancements reload. The synchronized registries (the
-        // dialogs, and the commands' ids of them) stay the hub's.
-        let kept = self.lan.as_ref().map(|host| host.hub.lan.shared.sync());
-        match kept {
-            Some(kept) => {
-                match lan::reload_sync_data(&self.options.resources, &self.pack_files(), &kept) {
-                    Ok(sync) => {
-                        if let Some(host) = self.lan.as_mut() {
-                            host.hub.reload_resources(sync);
-                        }
-                        self.run_native_advancement_grants();
-                    }
-                    Err(e) => {
-                        log::warn!("Horizon: the players are not sent the reloaded data: {e}")
-                    }
-                }
-            }
-            None => {
-                if let Err(e) =
-                    lan::reload_cached_sync_data(&self.options.resources, &self.pack_files())
-                {
-                    log::warn!("Horizon: the cached world data is not reloaded: {e}");
-                }
-            }
-        }
-        let overlay = pack_files(&self.world_tables);
-        self.adv.tree = Arc::new(horizon_client::advancements::Tree::load_with(
-            &self.options.resources.join("data"),
-            &overlay,
-        ));
-        self.adv.reset_tree();
-        self.native_reload_listeners();
-        self.native_server_data_loaded(true);
+    /// Reload tables and functions together; preparation errors leave the active generation intact.
+    pub(super) fn reload_world_tables(&mut self) -> Result<()> {
+        let prepared = self.prepare_reload_at(self.options.resources.clone(), None)?;
+        self.commit_content_reload(prepared)
     }
 
     fn join_world_rest(&mut self) -> Result<()> {
@@ -21541,12 +21627,14 @@ fn load_resources_with_access(
         let home_access = home_access.clone();
         let resources = resources.clone();
         let root = root.clone();
+        let root_lease = horizon_assets::root_lease::lease_for(&root);
         let vanilla_root = vanilla_root.to_owned();
         let rest_progress = progress.clone();
         let progress = progress.clone();
         let handle = std::thread::Builder::new()
             .name("world-rest-loader".into())
             .spawn(move || {
+                let _root_lease = root_lease;
                 let _item_defaults = item_defaults;
                 let _step = startup::step("rest");
                 let rest = load_world_rest(
@@ -22357,7 +22445,10 @@ impl Loading {
                 let _ = tail.finish();
             }
         }
-        if !world_loading::shutdown_preload()
+        horizon_client::mod_content::cancel_root_collectors();
+        if !horizon_client::audio::poll_retired_workers()
+            || !horizon_client::mod_content::poll_root_collectors()
+            || !world_loading::shutdown_preload()
             || !poll_retired_rest_loaders()
             || !world_loading::shutdown_prepared_files()
         {
@@ -22836,6 +22927,8 @@ impl App {
     }
     fn about_to_wait_here(&mut self, event_loop: &ActiveEventLoop) {
         let _ = poll_retired_rest_loaders();
+        let _ = horizon_client::audio::poll_retired_workers();
+        let _ = horizon_client::mod_content::poll_root_collectors();
         horizon_client::realms::poll_retired_workers();
         horizon_cosmetics::workers::poll_retired_workers();
         mod_browser::poll_retired_workers();
@@ -22875,7 +22968,11 @@ impl App {
                 if game.quit_to_launcher {
                     let cancelled_start = horizon_ios_launcher::cancellation_owner();
                     // Poll expensive workers to completion without blocking UIKit.
-                    let mut stopped = shader_packs::shutdown_parser();
+                    horizon_client::mod_content::cancel_root_collectors();
+                    let mut stopped = game.audio.shutdown_workers();
+                    stopped &= horizon_client::audio::poll_retired_workers();
+                    stopped &= horizon_client::mod_content::poll_root_collectors();
+                    stopped &= shader_packs::shutdown_parser();
                     stopped &= game.shutdown_server_pack_worker();
                     stopped &= game.shutdown_culling_workers();
                     stopped &= game.shutdown_far_terrain();
@@ -22903,6 +23000,7 @@ impl App {
                     if let Some(loader) = game.rest_loader.take() {
                         let _ = loader.finish();
                     }
+                    let collection_home = std::env::current_dir().ok();
                     let mut options = game.options.clone();
                     let root = game.vanilla_root();
                     options.resources = root.clone();
@@ -22922,8 +23020,18 @@ impl App {
                     ) {
                         Ok(mut loading) => {
                             loading.window = game.window.clone();
+                            let collect = loading.handle.is_none() && loading.loaded.is_none();
                             *self = App::Loading(Box::new(loading));
                             world_loading::release_world_data();
+                            if collect
+                                && let Some(home) = collection_home
+                                && let Err(error) =
+                                    horizon_client::mod_content::schedule_root_collection(home)
+                            {
+                                log::warn!(
+                                    "Horizon: old resource collection did not start: {error}"
+                                );
+                            }
                             horizon_airplay::screen(false, false);
                             if let Some(owner) = cancelled_start {
                                 launcher::acknowledge_cancelled_start(&owner);
@@ -22940,6 +23048,17 @@ impl App {
                 return;
             }
             App::Loading(loading) => {
+                // A previous engine's cache maintenance owns finite home access.
+                // Let it finish before a new loader or import can acquire that home.
+                if loading.handle.is_none()
+                    && loading.loaded.is_none()
+                    && !horizon_client::mod_content::poll_root_collectors()
+                {
+                    event_loop.set_control_flow(ControlFlow::WaitUntil(
+                        Instant::now() + Duration::from_millis(33),
+                    ));
+                    return;
+                }
                 // A completed harness consumed its options in finish(). Keep
                 // its producer owner alive until the last operation retires.
                 if loading.completed_without_game {
@@ -22972,6 +23091,7 @@ impl App {
                         ));
                         return;
                     }
+                    let collection_home = std::env::current_dir().ok();
                     let Some(mut options) = loading.options.clone() else {
                         event_loop.exit();
                         return;
@@ -22993,8 +23113,18 @@ impl App {
                     match launcher_loading(options, settings, root, None, Instant::now()) {
                         Ok(mut idle) => {
                             idle.window = window;
+                            let collect = idle.handle.is_none() && idle.loaded.is_none();
                             *self = App::Loading(Box::new(idle));
                             world_loading::release_world_data();
+                            if collect
+                                && let Some(home) = collection_home
+                                && let Err(error) =
+                                    horizon_client::mod_content::schedule_root_collection(home)
+                            {
+                                log::warn!(
+                                    "Horizon: old resource collection did not start: {error}"
+                                );
+                            }
                             launcher::acknowledge_cancelled_start(&owner);
                         }
                         Err(error) => {
@@ -23229,6 +23359,41 @@ fn run_loading(
 
 pub use launch_api::{UsageError, exit_code};
 
+#[cfg(test)]
+mod process_retirement_tests;
+
+/// Declared before any engine: all Games and Loading receivers drop before it.
+/// This final retirement runs outside the event loop, also for headless/server
+/// launches and early errors, where no native-launcher frame will poll workers.
+struct ProcessResourceRetirement {
+    home: PathBuf,
+}
+
+impl ProcessResourceRetirement {
+    fn readers_stopped() -> bool {
+        let mut stopped = horizon_client::audio::poll_retired_workers();
+        stopped &= poll_retired_rest_loaders();
+        stopped &= horizon_client::mod_content::poll_root_collectors();
+        stopped
+    }
+}
+
+impl Drop for ProcessResourceRetirement {
+    fn drop(&mut self) {
+        horizon_client::mod_content::cancel_root_collectors();
+        while !Self::readers_stopped() {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        if let Err(error) = horizon_client::mod_content::schedule_root_collection(self.home.clone())
+        {
+            log::warn!("Horizon: final resource collection did not start: {error}");
+        }
+        while !Self::readers_stopped() {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
 pub fn run_with() -> Result<()> {
     let Some(mut options) = Options::read()? else {
         return Ok(());
@@ -23345,6 +23510,9 @@ pub fn run_with() -> Result<()> {
             log::warn!("could not add the partner servers to servers.dat: {e}");
         }
     }
+    let _retirement = ProcessResourceRetirement {
+        home: std::env::current_dir()?,
+    };
     mods::register_components(&vanilla_root)?;
     mods::register_standalone_models();
     let mut early_settings = Settings::load(&Game::options_path());
@@ -23372,21 +23540,21 @@ pub fn run_with() -> Result<()> {
         return run_loading(options, early_settings, vanilla_root, None, started);
     }
     let mut pack_error = None;
-    options.resources = packs::startup_root(&vanilla_root, &early_settings.resource_packs, &[])
-        .unwrap_or_else(|e| {
-            log::warn!("Horizon: resource packs not applied: {e}");
-            pack_error = Some(e.to_string());
-            vanilla_root.clone()
-        });
-    options.resources =
-        horizon_client::mod_registry::with_content_snapshot(&Game::game_dir(), || {
-            mods::content_root(
-                &options.resources,
-                &early_settings.mods.enabled,
-                &options.dev_mods,
-            )
-        })?;
-    let loaded = load_resources(
+    let (pack_root, _base_lease) =
+        packs::startup_root_leased(&vanilla_root, &early_settings.resource_packs, &[])
+            .unwrap_or_else(|e| {
+                log::warn!("Horizon: resource packs not applied: {e}");
+                pack_error = Some(e.to_string());
+                (vanilla_root.clone(), Default::default())
+            });
+    options.resources = pack_root;
+    let content = mods::prepare_content(
+        &options.resources,
+        &early_settings.mods.enabled,
+        &options.dev_mods,
+    )?;
+    options.resources = content.root.clone();
+    let mut loaded = load_resources(
         options.resources.clone(),
         launch_world(&options),
         &vanilla_root,
@@ -23397,6 +23565,7 @@ pub fn run_with() -> Result<()> {
         &Progress::new(),
         &mut |_, _| {},
     )?;
+    loaded.pack.content = Some(mods::content_for_loaded_root(&loaded.root, content)?);
     let gui = loaded.gui.ok_or("missing menu bundle")?;
     options.resources = loaded.root.clone();
     let audio = if !options.execution_role.is_client() || options.headless {

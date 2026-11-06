@@ -57,6 +57,12 @@ static PRELOAD_DONE:AtomicBool=AtomicBool::new(false);
 static PREPARED_DONE:AtomicBool=AtomicBool::new(false);
 static BROWSER_DONE:AtomicBool=AtomicBool::new(false);
 static RETIRED_BROWSER_DONE:AtomicBool=AtomicBool::new(false);
+static AUDIO_DONE:AtomicBool=AtomicBool::new(true);
+static AUDIO_POLLS:AtomicUsize=AtomicUsize::new(0);
+static COLLECTOR_DONE:AtomicBool=AtomicBool::new(true);
+static COLLECTOR_CANCELS:AtomicUsize=AtomicUsize::new(0);
+static NEW_COLLECTION_DONE:AtomicBool=AtomicBool::new(true);
+static COLLECTIONS:AtomicUsize=AtomicUsize::new(0);
 fn trace(s:&'static str){TRACE.lock().unwrap().push(s);}
 #[derive(Clone)]struct DropProbe(Arc<AtomicUsize>);impl Drop for DropProbe{fn drop(&mut self){self.0.fetch_add(1,Ordering::SeqCst);}}
 struct Progress;
@@ -80,12 +86,22 @@ impl EventLoop{fn set_control_flow(&self,_:ControlFlow){self.waits.set(self.wait
 fn launcher_loading(options:Options,settings:usize,root:PathBuf,_:Option<()>,_:Instant)->Result<Loading>{assert!(options.world.is_none()&&options.server.is_none());assert_eq!(options.resources,root);trace("replacement_constructed");Ok(Loading::idle(options,settings,root))}
 mod heartbeat{pub fn stop(){super::trace("heartbeat_stopped");}}
 mod mod_browser{pub fn shutdown_workers()->bool{super::RETIRED_BROWSER_DONE.load(super::Ordering::SeqCst)}}
+mod audio{pub fn poll_retired_workers()->bool{super::AUDIO_POLLS.fetch_add(1,super::Ordering::SeqCst);super::AUDIO_DONE.load(super::Ordering::SeqCst)}}
+mod mod_content{
+ pub fn cancel_root_collectors(){super::COLLECTOR_CANCELS.fetch_add(1,super::Ordering::SeqCst);}
+ pub fn poll_root_collectors()->bool{super::COLLECTOR_DONE.load(super::Ordering::SeqCst)&&super::NEW_COLLECTION_DONE.load(super::Ordering::SeqCst)}
+ pub fn schedule_root_collection(home:super::PathBuf)->super::Result<()>{
+  assert_eq!(home,std::env::current_dir().unwrap());assert!(super::COLLECTOR_DONE.load(super::Ordering::SeqCst));
+  let trace=super::TRACE.lock().unwrap();assert!(trace.contains(&"old_loading_dropped")&&trace.contains(&"world_data_released"));drop(trace);
+  super::trace("collection_scheduled");super::COLLECTIONS.fetch_add(1,super::Ordering::SeqCst);super::NEW_COLLECTION_DONE.store(false,super::Ordering::SeqCst);Ok(())
+ }
+}
 mod discord_presence{pub enum Status{Off}pub fn set(_:Status){super::trace("presence_off");}}
 pub fn screen(first:bool,second:bool){assert!(!first&&!second);trace("airplay_idle");}
 struct Installed;
 fn wait_for(mut ready:impl FnMut()->bool){let deadline=Instant::now()+Duration::from_secs(3);while !ready(){assert!(Instant::now()<deadline,"worker did not finish");thread::yield_now();}}
 fn reply(label:&str)->horizon_ios_launcher::Request{let label=label.to_owned();horizon_ios_launcher::Request::new(label.clone(),move|json|{
- if json.contains("\"stopped\""){assert!(PARENT_DONE.load(Ordering::SeqCst)&&TAIL_DONE.load(Ordering::SeqCst)&&PRELOAD_DONE.load(Ordering::SeqCst)&&PREPARED_DONE.load(Ordering::SeqCst)&&BROWSER_DONE.load(Ordering::SeqCst)&&RETIRED_BROWSER_DONE.load(Ordering::SeqCst),"ACK preceded producer shutdown");let t=TRACE.lock().unwrap().clone();let drop=t.iter().position(|s|*s=="old_loading_dropped").expect("ACK preceded state replacement/drop");let release=t.iter().position(|s|*s=="world_data_released").expect("ACK preceded world data release");assert!(drop<release);}
+ if json.contains("\"stopped\""){assert!(PARENT_DONE.load(Ordering::SeqCst)&&TAIL_DONE.load(Ordering::SeqCst)&&PRELOAD_DONE.load(Ordering::SeqCst)&&PREPARED_DONE.load(Ordering::SeqCst)&&BROWSER_DONE.load(Ordering::SeqCst)&&RETIRED_BROWSER_DONE.load(Ordering::SeqCst)&&AUDIO_DONE.load(Ordering::SeqCst)&&COLLECTOR_DONE.load(Ordering::SeqCst),"ACK preceded producer shutdown");let t=TRACE.lock().unwrap().clone();let drop=t.iter().position(|s|*s=="old_loading_dropped").expect("ACK preceded state replacement/drop");let release=t.iter().position(|s|*s=="world_data_released").expect("ACK preceded world data release");let collect=t.iter().position(|s|*s=="collection_scheduled").expect("ACK preceded retired-root scheduling");assert!(drop<release&&release<collect);}
  REPLIES.lock().unwrap().push((label,json.to_owned()));
 })}
 '''
@@ -142,7 +158,11 @@ fn main(){
  release_parent.send(()).unwrap();wait_for(||match &app{App::Loading(l)=>l.handle.as_ref().unwrap().is_finished(),_=>false});
  app.tick(&events);assert_eq!(ui_drops.load(Ordering::SeqCst),1);assert_eq!(loaded_drops.load(Ordering::SeqCst),0);assert_eq!(gui_drops.load(Ordering::SeqCst),0);assert!(REPLIES.lock().unwrap().is_empty());
  release_tail.send(()).unwrap();tail_finished_rx.recv().unwrap();wait_for(||match &app{App::Loading(l)=>l.loaded.as_ref().unwrap().as_ref().unwrap().rest_loader.as_ref().unwrap().ready().unwrap(),_=>false});
+ AUDIO_DONE.store(false,Ordering::SeqCst);COLLECTOR_DONE.store(false,Ordering::SeqCst);
  app.tick(&events);let App::Loading(l)=&app else{panic!()};assert!(l.loaded.as_ref().unwrap().as_ref().unwrap().rest_loader.is_none());assert!(REPLIES.lock().unwrap().is_empty());assert_eq!(loaded_drops.load(Ordering::SeqCst),0);
+ assert!(AUDIO_POLLS.load(Ordering::SeqCst)>0&&COLLECTOR_CANCELS.load(Ordering::SeqCst)>0);
+ AUDIO_DONE.store(true,Ordering::SeqCst);app.tick(&events);assert!(REPLIES.lock().unwrap().is_empty());assert_eq!(loaded_drops.load(Ordering::SeqCst),0,"collector still owns the generation");
+ COLLECTOR_DONE.store(true,Ordering::SeqCst);app.tick(&events);assert!(REPLIES.lock().unwrap().is_empty(),"preload still owns the generation");
  release_preload.send(()).unwrap();preload_finished_rx.recv().unwrap();app.tick(&events);assert!(REPLIES.lock().unwrap().is_empty());assert!(!world_loading::prepared_empty());assert!(!path.exists());
  release_prepared.send(()).unwrap();wait_for(world_loading::prepared_finished);app.tick(&events);
  assert!(REPLIES.lock().unwrap().is_empty());assert!(!TRACE.lock().unwrap().contains(&"old_loading_dropped"));
@@ -152,6 +172,7 @@ fn main(){
  assert_eq!(ui_drops.load(Ordering::SeqCst),1);assert_eq!(loaded_drops.load(Ordering::SeqCst),1);assert_eq!(gui_drops.load(Ordering::SeqCst),1);assert!(world_loading::prepared_empty());assert_eq!(fs::read(path).unwrap(),b"finished");
  assert!(!events.exited.get());assert!(events.waits.get()>=3);let App::Loading(l)=&app else{panic!()};assert_eq!(l.name,"idle");assert_eq!(l.window,Some(99));
  {let replies=REPLIES.lock().unwrap();assert_eq!(replies.len(),2);assert!(replies.iter().all(|(label,text)|label.starts_with("cancel A")&&text==r#"{"ok":true,"status":"stopped"}"#));}
+ assert_eq!(COLLECTIONS.load(Ordering::SeqCst),1);let before=events.waits.get();app.tick(&events);assert!(events.waits.get()>before,"replacement loader must wait for newly scheduled finite collection");NEW_COLLECTION_DONE.store(true,Ordering::SeqCst);
  launcher::acknowledge_cancelled_start("A");assert_eq!(REPLIES.lock().unwrap().len(),2);control.send("control still alive".into()).unwrap();import.send(Ok(Installed)).unwrap();launcher::check_untouched();launcher::clear();assert_eq!(REPLIES.lock().unwrap().len(),5);
  // A failed Done still drains and drops the menu, without trying to surface
  // the canceled error or upload its UI. Repeated draining is idempotent.
@@ -175,6 +196,6 @@ class MobileStartCancellationTests(unittest.TestCase):
             self.assertEqual(built.returncode, 0, built.stdout + built.stderr)
             env = os.environ.copy()
             env['HORIZON_CANCEL_FIXTURE_ROOT'] = folder
-            ran = subprocess.run([str(binary)], env=env, capture_output=True, text=True, timeout=15)
+            ran = subprocess.run([str(binary)], cwd=folder, env=env, capture_output=True, text=True, timeout=15)
             self.assertEqual(ran.returncode, 0, ran.stdout + ran.stderr)
             self.assertIn('replacement precedes matching ACK', ran.stdout)

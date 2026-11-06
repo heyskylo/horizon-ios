@@ -6,7 +6,8 @@ mod cohort;
 /// The same all-producer gate for active guests on Quit and departed guests each frame.
 pub(super) fn workers_stopped(game: &mut Game<'_>) -> bool {
     game.audio.stop_all();
-    let mut stopped = game.shutdown_server_pack_worker();
+    let mut stopped = game.audio.shutdown_workers();
+    stopped &= game.shutdown_server_pack_worker();
     stopped &= game.shutdown_culling_workers();
     stopped &= game.shutdown_far_terrain();
     stopped &= game.shutdown_skin_workers();
