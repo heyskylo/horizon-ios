@@ -27,14 +27,26 @@ fn main() {
             _ => "-Wl,--stack,8388608",
         };
         println!("cargo:rustc-link-arg-bin=horizon-client={arg}");
+        let (resource_manifest_dir, resource_icon) = match resource_path(&manifest_dir, &target_env)
+            .and_then(|dir| Ok((dir, resource_path(&ico, &target_env)?)))
+        {
+            Ok(paths) => paths,
+            // #10398: a local GNU build in a folder whose path has a space or a non-ASCII letter,
+            // on a volume without 8.3 names, still builds (the launcher's native mod builds use
+            // that toolchain), without the icon. CI never does.
+            Err(e) if std::env::var_os("CI").is_none() => {
+                println!("cargo:warning=building without Horizon's icon: {e}");
+                return;
+            }
+            Err(e) => panic!("{e}"),
+        };
         let mut resource = winresource::WindowsResource::new();
-        let resource_manifest_dir = resource_path(&manifest_dir, &target_env);
-        let resource_icon = resource_path(&ico, &target_env);
         resource.set_icon(&resource_icon);
         if std::env::var_os("CARGO_FEATURE_WINDOWS_SEGMENT_HEAP").is_some() {
             let manifest = manifest_dir.join("windows-segment-heap.manifest");
             println!("cargo:rerun-if-changed={}", manifest.display());
-            let resource_manifest = resource_path(&manifest, &target_env);
+            let resource_manifest =
+                resource_path(&manifest, &target_env).unwrap_or_else(|e| panic!("{e}"));
             resource.set_manifest_file(&resource_manifest);
         }
 
@@ -42,8 +54,7 @@ fn main() {
         if cfg!(windows) && target_env == "gnu" {
             // GNU windres can split paths with spaces or fail on non-ASCII paths while
             // preprocessing the .rc file. Pass an 8.3 alias for the include directory; the icon
-            // and optional manifest use the same alias. If short paths are unavailable, fail the
-            // build rather than emit an iconless executable.
+            // and optional manifest use the same alias.
             // This build script has no other Rust threads, and winresource reads this variable
             // only while compiling the resource; restore the original value immediately after.
             unsafe { std::env::set_var("CARGO_MANIFEST_DIR", &resource_manifest_dir) };
@@ -56,7 +67,9 @@ fn main() {
     }
 }
 
-fn resource_path(path: &std::path::Path, target_env: &str) -> String {
+/// `path` as the resource compiler takes it: an error only when GNU windres would need an 8.3 alias
+/// that the volume doesn't have.
+fn resource_path(path: &std::path::Path, target_env: &str) -> Result<String, String> {
     let path = path.canonicalize().unwrap_or_else(|error| {
         panic!(
             "resolving Windows resource path {}: {error}",
@@ -69,19 +82,19 @@ fn resource_path(path: &std::path::Path, target_env: &str) -> String {
         if target_env == "gnu"
             && (!path_string.is_ascii() || path_string.chars().any(char::is_whitespace))
         {
-            short_windows_path(&path).unwrap_or_else(|error| {
-                panic!(
+            short_windows_path(&path).map_err(|error| {
+                format!(
                     "GNU windres needs an ASCII Windows resource path for {}: {error}",
                     path.display()
                 )
-            })
+            })?
         } else {
             path
         }
     };
     #[cfg(not(windows))]
     let _ = target_env;
-    path.to_string_lossy().replace('\\', "/")
+    Ok(path.to_string_lossy().replace('\\', "/"))
 }
 
 #[cfg(windows)]
