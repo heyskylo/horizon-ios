@@ -4,7 +4,10 @@
       "name": "lod_column",
       "target": "horizon_world::worldgen::native_generate::native_lod_column",
       "neoforge": "none (NeoForge has no such event; far terrain is Horizon's own)",
-      "side": "both"
+      "side": "both",
+      "mod_api": {
+        "contract": "listen"
+      }
     }
   ],
   "rust_summary": "a mod's terrain in the far terrain before its chunks generate (`native_lod_column`).",

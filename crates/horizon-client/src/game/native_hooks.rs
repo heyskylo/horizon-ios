@@ -6886,7 +6886,7 @@ impl Game<'_> {
         packet: &mut ClientboundPlayPacket,
         cancel: &mut bool,
     ) {
-        let _ = (player, packet, cancel);
+        mod_api::dispatch_server_packet(mod_api::mods(), player, packet, cancel);
     }
     /// The entity data (`ClientboundSetEntityDataPacket`) the server is about to send the guest
     /// `viewer` for the entity with network id `entity`: `values` are its entries as
@@ -6909,7 +6909,7 @@ impl Game<'_> {
         entity: i32,
         values: &mut Vec<(u8, i32, EntityDataValue)>,
     ) {
-        let _ = (viewer, entity, values);
+        mod_api::dispatch_entity_data_to(mod_api::mods(), viewer, entity, values);
     }
     /// `player`'s client registered plugin channels (`minecraft:register`, `register`) or
     /// unregistered them (`minecraft:unregister`, not `register`): `channels` are the names that
@@ -6929,7 +6929,14 @@ impl Game<'_> {
         channels: &[String],
         register: bool,
     ) {
-        let _ = (player, name, channels, register);
+        mod_api::dispatch_player_register_channels(
+            self,
+            mod_api::mods(),
+            player,
+            name,
+            channels,
+            register,
+        );
     }
     /// `native_resource_pack_status` with the answered pack's id (`pack`,
     /// `ServerboundResourcePackPacket.id`, Bukkit's `PlayerResourcePackStatusEvent.getID`), so a
@@ -6949,7 +6956,14 @@ impl Game<'_> {
         pack: u128,
         status: i32,
     ) {
-        let _ = (player, name, pack, status);
+        mod_api::dispatch_resource_pack_status_v2(
+            self,
+            mod_api::mods(),
+            player,
+            name,
+            pack,
+            status,
+        );
     }
     /// A mob's target changed (NeoForge's `LivingChangeTargetEvent`, Bukkit's
     /// `EntityTargetEvent`, vanilla's `Mob.setTarget`): mob `entity` of type
@@ -7186,7 +7200,7 @@ impl Game<'_> {
         window: i32,
         slots: &mut Vec<Option<ItemStack>>,
     ) {
-        let _ = (uuid, window, slots);
+        mod_api::dispatch_menu_input_closed(self, mod_api::mods(), uuid, window, slots);
     }
     /// Once a server tick, after `ServerTickEnd`, the play packets one
     /// player's connection sent (`outbound`) or received since the last tick

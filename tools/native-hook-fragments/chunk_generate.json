@@ -4,7 +4,10 @@
       "name": "chunk_generate",
       "target": "horizon_world::worldgen::native_generate::native_chunk_generate",
       "neoforge": "none (NeoForge has no such event, a mod registers its own ChunkGenerator; Bukkit's ChunkGenerator.generateNoise)",
-      "side": "server"
+      "side": "server",
+      "mod_api": {
+        "contract": "listen"
+      }
     }
   ],
   "rust_summary": "a chunk's terrain built by a mod before vanilla's noise (`native_chunk_generate`), with vanilla's surface, carvers, structures and features on request.",

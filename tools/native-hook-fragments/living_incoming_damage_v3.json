@@ -5,7 +5,11 @@
       "target": "horizon_client::game::native_hooks::Game<'_>::native_living_incoming_damage_v3",
       "neoforge": "LivingIncomingDamageEvent",
       "side": "server",
-      "cancellable": true
+      "cancellable": true,
+      "mod_api": {
+        "contract": "cancel",
+        "out": "cancel"
+      }
     }
   ],
   "rust_summary": "damage everywhere v1 fires with the victim's and a player attacker's UUID and the causing and direct entity (`native_living_incoming_damage_v3`).",

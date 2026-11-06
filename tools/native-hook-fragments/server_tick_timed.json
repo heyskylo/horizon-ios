@@ -5,7 +5,10 @@
       "target": "horizon_client::game::native_hooks::Game<'_>::native_server_tick_timed",
       "neoforge": "none (NeoForge has no tick timing event; spark's tick monitor and profiler)",
       "side": "server",
-      "cancellable": false
+      "cancellable": false,
+      "mod_api": {
+        "contract": "listen"
+      }
     }
   ],
   "helpers": [

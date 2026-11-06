@@ -4,7 +4,10 @@
       "name": "resource_pack_status_v2",
       "target": "horizon_client::game::native_hooks::Game<'_>::native_resource_pack_status_v2",
       "neoforge": "none (NeoForge has no resource pack answer event; Bukkit's PlayerResourcePackStatusEvent with getID)",
-      "side": "server"
+      "side": "server",
+      "mod_api": {
+        "contract": "listen"
+      }
     }
   ],
   "rust_summary": "a player's answer to a resource pack with the pack's id, the configuration's answers included (`native_resource_pack_status_v2`), leaving `native_resource_pack_status` as it was.",
