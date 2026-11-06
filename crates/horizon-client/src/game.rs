@@ -216,6 +216,7 @@ mod narrator;
 mod native_biome_colors;
 pub mod native_block_entity_draw;
 mod native_block_sprites;
+mod native_bots;
 mod native_chunk_tickets;
 mod native_claimed_items;
 pub mod native_client_services;
