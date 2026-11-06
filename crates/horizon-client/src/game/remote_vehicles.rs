@@ -154,6 +154,7 @@ impl Game<'_> {
             return;
         };
         let vehicle_id = vehicle as u32;
+        self.remote_seat_passengers(vehicle_id, passengers);
         for m in &mut self.mobs {
             // `Entity.isVehicle` (the saddle reins of a ridden horse): the
             // server sends no rider on the mob itself, only this list.

@@ -50,6 +50,8 @@ fn state(id: u32, kind: &str, position: [f64; 3], yaw: f32, on_ground: bool) -> 
         vertical_collision: false,
         horizontal_collision: false,
         needs_sync: false,
+        idle: false,
+        bare: false,
         leash: None,
         spectator: false,
         watching: false,
@@ -525,7 +527,8 @@ impl Game<'_> {
     /// selectors use, so a client can name it back (the crosshair UUID that
     /// `ClientSuggestionProvider.getSelectedEntities` suggests).
     pub(super) fn lan_entity_uuids(&mut self, states: &mut States) {
-        for e in states.as_mut_slice() {
+        // A bare state is never paired: its UUID is never read.
+        for e in states.as_mut_slice().iter_mut().filter(|e| !e.bare) {
             e.uuid = ints_uuid(self.uuid_for(e.id as u32));
         }
     }
