@@ -235,6 +235,10 @@ pub enum LevelEvent {
         volume: f32,
         pitch: f32,
     },
+    /// A placed template's container whose data has a `LootTable`
+    /// (`RandomizableContainer.tryLoadLootTable`): the caller keeps the table
+    /// and rolls it, as for a container a command gives one.
+    ContainerLootTable { pos: BlockPos, tag: crate::nbt::Tag },
     /// `Block.dropResources(state, level, pos)`: the caller evaluates the
     /// block's loot table (no tool, no breaker) and pops the items.
     DropResources { pos: BlockPos, state: BlockStateId },

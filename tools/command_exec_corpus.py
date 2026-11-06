@@ -1755,6 +1755,16 @@ def world_misc():
     ]
 
 
+def template_container_loot_table():
+    """A template's chest keeps its loot table (`RandomizableContainer.tryLoadLootTable`)."""
+    return [
+        *setup('/forceload add 0 0 15 15'),
+        cmd('/place template minecraft:village/plains/houses/plains_small_house_7 0 200 0'),
+        cmd('/data get block 4 201 5 LootTable'),
+        *setup('/fill 0 200 0 15 215 15 minecraft:air', '/forceload remove 0 0 15 15'),
+    ]
+
+
 def progression():
     return [
         *setup('/gamemode survival', '/experience set @s 0 levels', '/experience set @s 0 points'),
@@ -2386,6 +2396,18 @@ def place_structure():
         # One chest between y 0 and 120 of chunk (0, 0): the piece's column is
         # inside that chunk whatever height its dig reached.
         cmd('/fill 0 0 0 15 120 15 minecraft:air replace minecraft:chest'),
+    ]
+
+
+def forceload_loads_the_chunk():
+    """`ServerLevel.setChunkForced` loads a newly forced chunk before the next command."""
+    return [
+        cmd('/execute if loaded 4000 200 4000'),
+        cmd('/forceload add 4000 4000'),
+        cmd('/execute if loaded 4000 200 4000'),
+        cmd('/setblock 4000 200 4000 minecraft:stone'),
+        cmd('/execute if block 4000 200 4000 minecraft:stone'),
+        *setup('/setblock 4000 200 4000 minecraft:air', '/forceload remove 4000 4000'),
     ]
 
 
@@ -3853,6 +3875,127 @@ def awake_villager_saved_position():
     ops.append({'op': 'settle'})
     return ops
 
+
+
+def mob_saved_pickup_loot():
+    """Valid boolean inputs only; full bodies retain unrelated save diagnostics."""
+    ops = [cmd('/tick freeze'), cmd('/forceload add 160 160 175 175'),
+           {'op': 'wait_chunks', 'chunks': [[10, 10]]},
+           cmd('/fill 160 199 160 175 199 175 stone', expect_result=256),
+           cmd('/execute if loaded 164 200 164', expect_result=1),
+           cmd('/execute if block 164 199 164 stone', expect_result=1),
+           cmd('/scoreboard objectives add pickup_save dummy', expect_result=1)]
+    ops += setup('/execute store result score start pickup_save run time query gametime')
+    for species, name in enumerate(['pig', 'allay', 'sulfur_cube']):
+        for value, supplied in enumerate(['', ',CanPickUpLoot:0b', ',CanPickUpLoot:1b']):
+            n = 1 + species * 3 + value
+            uuid = f'0000002e-0000-0000-0000-{n:012x}'
+            array = f'[I;46,0,0,{n}]'
+            tag = f'pickup_save_{n}'
+            body = 'Pos:[164.5d,200d,164.5d],Motion:[0d,0d,0d],NoAI:1b,NoGravity:1b,Silent:1b,PersistenceRequired:1b,Health:4f'
+            expected = int(name == 'sulfur_cube' or (name == 'pig' and value == 2))
+            ops += [cmd(f'/summon minecraft:{name} 164.5 200 164.5 {{UUID:{array},Tags:["{tag}"],{body}{supplied}}}', expect_result=1),
+                    cmd(f'/execute as {uuid} if entity @s[type=minecraft:{name},tag={tag}]', expect_result=1),
+                    cmd(f'/execute if data entity {uuid} {{UUID:{array},{body}}}', expect_result=1)]
+            for _ in range(2):
+                ops += setup('/scoreboard players set value pickup_save 317',
+                             '/scoreboard players set success pickup_save 17')
+                ops += [cmd(f'/data get entity {uuid} CanPickUpLoot', expect_result=expected),
+                        cmd(f'/execute store result score value pickup_save store success score success pickup_save run data get entity {uuid} CanPickUpLoot', expect_result=expected),
+                        cmd('/scoreboard players get value pickup_save', expect_result=expected),
+                        cmd('/scoreboard players get success pickup_save', expect_result=1),
+                        cmd(f'/execute if data entity {uuid} {{CanPickUpLoot:{expected}b}}', expect_result=1)]
+            full = cmd(f'/data get entity {uuid}', record=False)
+            full['trace'] = True
+            ops.append(full)
+    ops += setup('/execute store result score elapsed pickup_save run time query gametime',
+                 '/scoreboard players operation elapsed pickup_save -= start pickup_save')
+    return ops + [cmd('/scoreboard players get elapsed pickup_save', expect_result=0)]
+
+
+def orb_saved_uuid():
+    """Zero-tick identity gate; complete entity bodies remain raw diagnostics."""
+    ops = [cmd('/tick freeze'), cmd('/forceload add 160 160 175 175'),
+           {'op': 'wait_chunks', 'chunks': [[10, 10]]},
+           cmd('/fill 160 199 160 175 199 175 stone', expect_result=256),
+           cmd('/execute if loaded 164 200 164', expect_result=1),
+           cmd('/execute if block 164 199 164 stone', expect_result=1),
+           cmd('/scoreboard objectives add orb_identity dummy', expect_result=1)]
+    ops += setup('/execute store result score start orb_identity run time query gametime')
+    for kind, target, array, x, fields in [
+        ('experience_orb', '00000000-0000-0000-0000-000000000002', '[I;0,0,0,2]', 164.5,
+         'Value:1s,Age:0s,Health:5s'),
+        ('pig', '0000000b-0000-000c-0000-000d0000000e', '[I;11,12,13,14]', 166.5,
+         'Health:10f,NoAI:1b,Silent:1b,PersistenceRequired:1b'),
+    ]:
+        tag = f'orb_identity_{kind}'
+        body = f'Pos:[{x}d,200d,164.5d],Motion:[0d,0d,0d],NoGravity:1b,{fields}'
+        ops += [cmd(f'/summon minecraft:{kind} {x} 200 164.5 {{UUID:{array},Tags:["{tag}"],{body}}}', expect_result=1),
+                # No saved-UUID predicate in admission: that is the defect under test.
+                cmd(f'/execute as {target} if entity @s[type=minecraft:{kind},tag={tag}]', expect_result=1),
+                cmd(f'/execute if data entity {target} {{{body}}}', expect_result=1)]
+        for _ in range(3):
+            ops += setup('/scoreboard players set value orb_identity 317',
+                         '/scoreboard players set success orb_identity 17')
+            ops += [cmd(f'/data get entity {target} UUID', expect_result=4),
+                    cmd(f'/execute store result score value orb_identity store success score success orb_identity run data get entity {target} UUID', expect_result=4),
+                    cmd('/scoreboard players get value orb_identity', expect_result=4),
+                    cmd('/scoreboard players get success orb_identity', expect_result=1),
+                    cmd(f'/execute if data entity {target} {{UUID:{array}}}', expect_result=1),
+                    cmd(f'/execute as {target} if entity @s[type=minecraft:{kind},tag={tag}]', expect_result=1)]
+            full = cmd(f'/data get entity {target}', record=False)
+            full['trace'] = True
+            ops.append(full)
+    ops += setup('/execute store result score elapsed orb_identity run time query gametime',
+                 '/scoreboard players operation elapsed orb_identity -= start orb_identity')
+    return ops + [cmd('/scoreboard players get elapsed orb_identity', expect_result=0)]
+
+
+def stand_saved_fall():
+    """Five real tick boundaries; whole bodies remain separate raw diagnostics."""
+    ops = [cmd('/tick freeze'), cmd('/forceload add 0 0 15 15'),
+           {'op': 'settle', 'required_chunks': [[0, 0]]},
+           {'op': 'wait_chunks', 'chunks': [[0, 0]]},
+           cmd('/fill 0 199 0 15 199 15 stone', expect_result=256),
+           cmd('/fill 0 200 0 15 210 15 air'),
+           cmd('/execute if loaded 4 205 4', expect_result=1),
+           cmd('/scoreboard objectives add stand_fall dummy', expect_result=1)]
+    actors = [('0000001c-0000-0000-0000-000000000001', '[I;28,0,0,1]', 4.5, 0),
+              ('0000001c-0000-0000-0000-000000000002', '[I;28,0,0,2]', 12.5, 1)]
+    for uuid, array, x, gravity in actors:
+        cell = int(x)
+        ops += [cmd(f'/execute if block {cell} 199 4 stone', expect_result=1),
+                cmd(f'/execute if block {cell} 205 4 air', expect_result=1),
+                cmd(f'/execute if block {cell} 206 4 air', expect_result=1),
+                cmd(f'/summon armor_stand {x} 205 4.5 {{UUID:{array},Tags:["stand_fall_{gravity}"],Health:20f,NoGravity:{gravity}b,Motion:[0d,0d,0d]}}', expect_result=1),
+                cmd(f'/execute if data entity {uuid} {{Pos:[{x}d,205d,4.5d],Motion:[0d,0d,0d]}}', expect_result=1)]
+    ops += setup('/execute store result score start stand_fall run time query gametime')
+    for ticks, step in [(0, 0), (1, 1), (2, 1), (3, 1), (5, 2)]:
+        if step:
+            ops.append(cmd(f'/tick step {step}'))
+            ops.append({'op': 'tick', 'n': step})
+        ops += setup('/execute store result score elapsed stand_fall run time query gametime',
+                     '/scoreboard players operation elapsed stand_fall -= start stand_fall')
+        ops.append(cmd('/scoreboard players get elapsed stand_fall', expect_result=ticks))
+        for uuid, array, x, gravity in actors:
+            ops += [cmd(f'/execute as {uuid} if entity @s[type=minecraft:armor_stand,tag=stand_fall_{gravity}]', expect_result=1),
+                    cmd(f'/execute if data entity {uuid} {{UUID:{array},Health:20f}}', expect_result=1),
+                    cmd(f'/data get entity {uuid} Pos', expect_result=3),
+                    cmd(f'/data get entity {uuid} Motion', expect_result=3),
+                    cmd(f'/data get entity {uuid} fall_distance', expect_result=0),
+                    cmd(f'/data get entity {uuid} OnGround', expect_result=0)]
+            if gravity:
+                ops.append(cmd(f'/execute if data entity {uuid} {{NoGravity:1b,Pos:[{x}d,205d,4.5d],Motion:[0d,0d,0d],fall_distance:0d}}', expect_result=1))
+            else:
+                ops.append(cmd(f'/execute unless data entity {uuid} {{NoGravity:1b}}', expect_result=1))
+                # Independently measured on Java 26.3; the suffix also checks Double type.
+                distance = {0: '0.0', 1: '0.0', 2: '0.07840000092983246',
+                            3: '0.23363199830055237', 5: '0.7684761881828308'}[ticks]
+                ops.append(cmd(f'/execute if data entity {uuid} {{fall_distance:{distance}d}}', expect_result=1))
+            full = cmd(f'/data get entity {uuid}', record=False)
+            full['trace'] = True
+            ops.append(full)
+    return ops
 
 
 def projectile_saved_uuid():
@@ -5526,7 +5669,10 @@ ISOLATED_REINFORCEMENTS = frozenset({'command zombie reinforcements', 'command r
 # These overlays replace built-in recipes, never beside the corpus's fixed vanilla recipe-count controls.
 ISOLATED_RECIPES = frozenset({'crafting recipe priority', 'crafting base recipe control', 'transmute result patches'})
 ISOLATED_FRAME_MAPS = frozenset({'frame live map detachment'})
-ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS
+ISOLATED_PICKUP_SAVE = frozenset({'mob saved pickup loot'})
+ISOLATED_ORB_UUID = frozenset({'orb saved UUID'})
+ISOLATED_STAND_FALL = frozenset({'stand saved fall distance'})
+ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL
 
 
 def groups():
@@ -5562,6 +5708,9 @@ def groups():
         from item_merge_corpus import stack_limit_merges
     return [
         ('setup', group_setup()),
+        ('stand saved fall distance', stand_saved_fall()),
+        ('orb saved UUID', orb_saved_uuid()),
+        ('mob saved pickup loot', mob_saved_pickup_loot()),
         ('transmute result patches', transmute_patches(cmd, setup)),
         ('mob effect predicate view', mob_effect_predicates(cmd, setup)),
         ('frame live map detachment', frame_maps(cmd, setup)),
@@ -5682,7 +5831,9 @@ def groups():
         ('minecart drag', minecart_drag()),
         ('ender dragon', ender_dragon()),
         ('place structure', place_structure()),
+        ('template container loot table', template_container_loot_table()),
         ('tame wolf kills', tame_wolf_kills()),
+        ('forceload loads the chunk', forceload_loads_the_chunk()),
         ('experience orb fall', experience_orb_fall()),
         ('piglin pickups', piglin_pickups()),
         ('experience orb stuck', experience_orb_stuck()),

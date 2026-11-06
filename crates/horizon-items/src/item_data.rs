@@ -255,6 +255,20 @@ pub fn destroyed_container(stack: &mut ItemStack) -> Vec<ItemStack> {
     held.into_iter().map(|(_, stack)| stack).collect()
 }
 
+/// `NbtOps.getBooleanValue`, used by boolean component codecs: every numeric tag
+/// is true unless its double value is zero. In particular, fractions stay true.
+pub fn component_bool(value: &Tag) -> Option<bool> {
+    Some(match value {
+        Tag::Byte(v) => *v != 0,
+        Tag::Short(v) => *v != 0,
+        Tag::Int(v) => *v != 0,
+        Tag::Long(v) => *v != 0,
+        Tag::Float(bits) => f32::from_bits(*bits) != 0.0,
+        Tag::Double(bits) => f64::from_bits(*bits) != 0.0,
+        _ => return None,
+    })
+}
+
 impl ItemStack {
     pub fn new(item: &str, count: u32) -> Self {
         Self {
@@ -334,11 +348,12 @@ impl ItemStack {
     /// non-empty `minecraft:enchantments` component (`Item.isFoil` is
     /// `ItemStack.isEnchanted`; stored book enchantments do not count).
     pub fn has_foil(&self, item_glint: bool) -> bool {
-        if let Some(Tag::Byte(flag)) = self
+        if let Some(flag) = self
             .data()
             .and_then(|d| d.other("minecraft:enchantment_glint_override"))
+            .and_then(component_bool)
         {
-            return *flag != 0;
+            return flag;
         }
         item_glint || !self.enchantments().is_empty()
     }
@@ -939,7 +954,9 @@ pub fn decode_components(components: Option<&Tag>) -> (u32, Option<Box<StackData
     let Some(c) = components else {
         return (0, None);
     };
-    let damage = c.get("minecraft:damage").and_then(int).unwrap_or(0).max(0) as u32;
+    // NbtOps.getNumberValue supplies a boxed number; Codec.INT truncates its value.
+    let damage =
+        horizon_world::datafix::dynamic::as_int(c.get("minecraft:damage"), 0).max(0) as u32;
     let potion = match c.get("minecraft:potion_contents") {
         Some(Tag::String(s)) => Some(Arc::from(s.to_string_lossy().as_str())),
         Some(t) => t
@@ -1140,6 +1157,62 @@ pub fn command_components(text: &str) -> Result<Tag, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn numeric_damage_decodes_and_saves_as_a_modelled_int() {
+        let keep = Tag::compound([("keep", Tag::Int(87))]);
+        for (raw, expected) in [
+            (None, 0),
+            (Some(Tag::Byte(1)), 1),
+            (Some(Tag::Short(1)), 1),
+            (Some(Tag::Int(1)), 1),
+            (Some(Tag::Long(4_294_967_297)), 1),
+            (Some(Tag::Float(1.5_f32.to_bits())), 1),
+            (Some(Tag::Double(2.75_f64.to_bits())), 2),
+            (Some(Tag::Float((-0.5_f32).to_bits())), 0),
+            (
+                Some(Tag::Float(2_147_483_648_f32.to_bits())),
+                i32::MAX as u32,
+            ),
+            (Some(Tag::Double(1.0e20_f64.to_bits())), i32::MAX as u32),
+        ] {
+            let mut entries = vec![("minecraft:custom_data", keep.clone())];
+            if let Some(raw) = &raw {
+                entries.push(("minecraft:damage", raw.clone()));
+            }
+            let (damage, extra) = decode_components(Some(&Tag::compound(entries)));
+            let loaded = ItemStack {
+                damage,
+                extra,
+                ..ItemStack::new("minecraft:diamond_pickaxe", 1)
+            };
+            assert_eq!(loaded.damage, expected, "{raw:?}");
+            assert!(loaded.wire_patch().is_none());
+            assert!(loaded.data().unwrap().other("minecraft:damage").is_none());
+            let saved = crate::item_nbt::item_to_nbt(&loaded);
+            assert_eq!(
+                saved
+                    .get("components")
+                    .and_then(|c| c.get("minecraft:damage")),
+                (expected > 0).then_some(&Tag::Int(expected as i32)),
+                "{raw:?}"
+            );
+            assert_eq!(
+                saved
+                    .get("components")
+                    .unwrap()
+                    .get("minecraft:custom_data"),
+                Some(&keep)
+            );
+            // No retained source or wire patch: only modelled damage is saved.
+            let mut fresh = ItemStack::new("minecraft:diamond_pickaxe", 1);
+            fresh.damage = expected;
+            fresh
+                .data_mut()
+                .set_other("minecraft:custom_data", Some(keep.clone()));
+            assert_eq!(crate::item_nbt::item_to_nbt(&fresh), saved);
+        }
+    }
 
     #[test]
     fn map_decoration_types_round_trip_with_default_namespaces() {

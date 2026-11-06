@@ -79,6 +79,13 @@ pub(super) fn register_standalone_models() {
     Game::native_standalone_models(&mut names);
     horizon_client::models::register_standalone(names);
 }
+/// The native mods' entity model layers (`native_layer_definitions`), kept
+/// once at start for `native_bake_layer`.
+pub(super) fn register_layer_definitions() {
+    let mut layers = Vec::new();
+    Game::native_layer_definitions(&mut layers);
+    horizon_client::mobs::model_layers::register(layers);
+}
 
 /// `root` with the content mods that are on layered over it
 /// (docs/modpacks.md): their blocks, items, data and assets. Read once at

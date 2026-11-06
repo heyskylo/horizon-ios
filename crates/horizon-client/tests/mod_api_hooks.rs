@@ -80,6 +80,39 @@ fn recipe_book_categories_accept_mod_declarations() {
 }
 
 #[test]
+fn layer_definitions_collect_each_mods_layers_in_order() {
+    use horizon_client::mod_api::{
+        CubeListBuilder, LayerDefinition, LayerDefinitionsEvent, MeshDefinition, PartPose,
+        dispatch_layer_definitions,
+    };
+    struct Golem(&'static str);
+    impl Hooks for Golem {
+        fn layer_definitions(&self, event: &mut LayerDefinitionsEvent<'_>) {
+            let mut mesh = MeshDefinition::new();
+            let root = mesh.root();
+            let head = CubeListBuilder::create()
+                .tex_offs(0, 0)
+                .add_box([-4.0, -8.0, -4.0], [8.0, 8.0, 8.0]);
+            mesh.add_or_replace_child(root, "head", head, PartPose::offset(0.0, 6.0, 0.0));
+            event
+                .layers
+                .push((self.0.into(), LayerDefinition::create(mesh, 64, 32)));
+        }
+    }
+    let mods: Vec<Box<dyn Hooks>> = vec![
+        Box::new(Golem("first:golem#main")),
+        Box::new(Golem("second:golem#main")),
+    ];
+    let mut layers = Vec::new();
+    dispatch_layer_definitions(&mods, &mut layers);
+    let ids: Vec<_> = layers.iter().map(|(id, _)| id.as_str()).collect();
+    assert_eq!(ids, ["first:golem#main", "second:golem#main"]);
+    let model = layers[0].1.bake_root();
+    let head = model.get_child("head").expect("the head part");
+    assert_eq!((head.y, head.polygons.len()), (6.0, 6));
+}
+
+#[test]
 fn received_chat_is_replaced_in_order_and_cancel_stops_later_mods() {
     use horizon_client::mod_api::{ClientChatReceivedEvent, Flow, dispatch_client_chat_received};
     use horizon_client::text::Text;
