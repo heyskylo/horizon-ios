@@ -157,6 +157,7 @@ view_distance = 10
 simulation_distance = 10
 max_view_distance = 0        # past view_distance, saved chunks only, up to this (0: off)
 admin_feedback_to_ops = true # operators see each other's commands ([name: ...]); false: only the log
+accept_older_clients = false # true: 26.2 clients join too (see below; work in progress)
 
 [world]
 name = "world"
@@ -205,6 +206,17 @@ On by default, as vanilla: when an operator runs a command that reports to admin
 the other operators read `[name: ...]` in gray, and the console logs it. Players who aren't operators never see it
 either way. `false` keeps it to the console's log (`logs/latest.log`): nobody in game sees an operator's commands,
 while each operator still reads their own command's answer.
+
+### Older clients: `accept_older_clients`
+
+Off by default, a Horizon setting with no vanilla equivalent: a vanilla server, and Horizon's, turn away a client of
+any other release. With `accept_older_clients = true` a 26.2 client may join too: Horizon renumbers its packets both
+ways, with no proxy in between, and the server list shows the server as joinable for 26.2.
+
+This is work in progress (#10404): the ids inside packets and the packets whose layout changed between 26.2 and
+26.3 aren't translated yet, so for now a 26.2 player gets through the login and is then told that 26.2 can't be
+translated yet, before the server sends anything it would misread. 26.3 clients are served exactly as before,
+whatever the setting.
 
 ### Seeing further: `max_view_distance`
 
@@ -568,6 +580,19 @@ region files are rewritten compacted (vanilla still reads them) and a file left 
 can't be read, files in `keep_files` (keys or text like `minecraft:overworld 12 -3`, objects with `dimension`,
 `x` and `z`), level.dat and player data are never touched; a `keep_files` file that exists but can't be read
 stops the prune before anything is deleted.
+
+### 1.8 combat: `[combat]`
+
+Fights follow 26.3's rules. For 1.8.9's (no attack cooldown or sweep, 1.8 weapon damage, Strength and
+Sharpness; the list is in [pvp.md](pvp.md#18-combat-in-worlds-you-host-combatrules-default-off)), add to
+`server.toml`, then restart:
+
+```toml
+[combat]
+legacy = true
+```
+
+Players join with any vanilla 26.3 client: only the server decides the damage.
 
 ## 8. Start it with the computer
 

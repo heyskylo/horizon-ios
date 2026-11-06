@@ -202,6 +202,12 @@ pub(crate) fn read_json(path: &Path) -> Result<Value, String> {
     pyjson::loads(&text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// Whether an exporter's earlier output is still one: a killed JVM can leave
+/// an empty or half-written file, which an `exists` check alone would trust.
+fn reusable_export(path: &Path) -> bool {
+    path.exists() && read_json(path).is_ok()
+}
+
 /// Python's `Path.write_text`: text mode, so `\n` is the platform's line ending.
 fn write_text(path: &Path, text: &str) -> Result<(), String> {
     if cfg!(windows) {
@@ -833,7 +839,7 @@ fn steps(
         let sources: Vec<PathBuf> = oracles.iter().map(|o| run.oracle(o)).collect();
         let sources: Vec<&Path> = sources.iter().map(PathBuf::as_path).collect();
         let hashes = source_hashes(repo, &sources)?;
-        if !(run.previous(key) == Some(&hashes) && target.exists() && run.same(jar)) {
+        if !(run.previous(key) == Some(&hashes) && reusable_export(&target) && run.same(jar)) {
             let main = oracles[0].strip_suffix(".java").unwrap();
             let mut args = vec![arg(&target)];
             args.extend_from_slice(extra);
@@ -1097,7 +1103,7 @@ fn steps(
         let command_registries = root.join("command-registries.json");
         run.stage();
         if !(run.previous("command_registries_exporters_sha256") == Some(&command_sources)
-            && command_registries.exists()
+            && reusable_export(&command_registries)
             && run.same("server_sha256"))
         {
             let export = run.local.join("command-registries");
@@ -1657,6 +1663,24 @@ mod tests {
         // The lock it would have taken twice: once, then the output skips it.
         let _held = hold_lock(&local, &|_| {}).unwrap();
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_empty_or_half_written_export_is_written_again() {
+        let dir =
+            std::env::temp_dir().join(format!("horizon-prepare-export-{}", std::process::id()));
+        mkdir(&dir).unwrap();
+        // What a killed exporter leaves: the path exists but holds no document.
+        // A prepare that only checked `exists` kept it, so "prepare again" left
+        // the game crashing on it.
+        assert!(!reusable_export(&dir.join("missing.json")));
+        write(&dir.join("empty.json"), b"").unwrap();
+        assert!(!reusable_export(&dir.join("empty.json")));
+        write(&dir.join("cut.json"), br#"{"states": [}"#).unwrap();
+        assert!(!reusable_export(&dir.join("cut.json")));
+        write(&dir.join("whole.json"), br#"{"states": []}"#).unwrap();
+        assert!(reusable_export(&dir.join("whole.json")));
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

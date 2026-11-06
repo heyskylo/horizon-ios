@@ -1220,5 +1220,7 @@
   "{name} was left out: made for another Horizon version": "{name} ditinggalkan: dibuat untuk versi Horizon lain",
   "{name} was left out: clashes with {other}": "{name} ditinggalkan: bercanggah dengan {other}",
   "{name} was left out: it needs {other}, which was left out": "{name} ditinggalkan: ia memerlukan {other}, yang ditinggalkan",
-  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Tidak dibina pada Horizon yang anda mainkan ({code}): binaan meninggalkannya sehingga pengarangnya mengemas kininya"
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Tidak dibina pada Horizon yang anda mainkan ({code}): binaan meninggalkannya sehingga pengarangnya mengemas kininya",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Di tempat anda, set pengasas dituntut melalui pembayaran percuma di playhorizon.dev. Tuntut dari Kedai: ia membuka pembayaran untuk anda.",
+  "The founder set can't be claimed from your country.": "Set pengasas tidak boleh dituntut dari negara anda."
 }
