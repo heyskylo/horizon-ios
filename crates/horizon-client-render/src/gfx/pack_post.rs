@@ -113,6 +113,8 @@ enum SamplerKind {
     NearestRepeat,
     /// The block atlas: nearest texels, blended between the two nearest levels.
     Atlas,
+    /// colortex buffers: linear, blended between the two nearest levels.
+    Buffer,
     Comparison,
 }
 
@@ -140,15 +142,18 @@ impl SamplerKind {
                 (true, false) => Self::Repeat,
                 (false, false) => Self::NearestRepeat,
             },
-            Source::Color(_) | Source::ShadowColor(_) | Source::Dummy | Source::Lightmap => {
-                Self::Linear
-            }
+            // Iris 1.11.7 blends a buffer's two nearest mipmap levels (our probe packs, #9307:
+            // every colortex read at levels 1.25 and 2.5 in composite and final).
+            Source::Color(_) => Self::Buffer,
+            Source::ShadowColor(_) | Source::Dummy | Source::Lightmap => Self::Linear,
         }
     }
 
     fn binding_type(self) -> wgpu::SamplerBindingType {
         match self {
-            Self::Linear | Self::Repeat | Self::Atlas => wgpu::SamplerBindingType::Filtering,
+            Self::Linear | Self::Repeat | Self::Atlas | Self::Buffer => {
+                wgpu::SamplerBindingType::Filtering
+            }
             Self::Nearest | Self::NearestRepeat => wgpu::SamplerBindingType::NonFiltering,
             Self::Comparison => wgpu::SamplerBindingType::Comparison,
         }
@@ -660,6 +665,8 @@ pub struct PackPost {
     repeat: wgpu::Sampler,
     nearest_repeat: wgpu::Sampler,
     atlas_sampler: wgpu::Sampler,
+    /// colortex buffers' (`SamplerKind::Buffer`).
+    buffer_sampler: wgpu::Sampler,
     /// None when it would write nothing: colortex0 holds integers and there is no depth to copy
     /// nor buffer to clear.
     blit: Option<(wgpu::RenderPipeline, wgpu::BindGroupLayout)>,
@@ -2983,6 +2990,13 @@ impl PackPost {
                 mipmap_filter: wgpu::MipmapFilterMode::Linear,
                 ..Default::default()
             }),
+            buffer_sampler: device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("Shader pack buffers"),
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                mipmap_filter: wgpu::MipmapFilterMode::Linear,
+                ..Default::default()
+            }),
             blit,
             copy,
             upscale,
@@ -3194,6 +3208,7 @@ impl PackPost {
                     SamplerKind::Repeat => &self.repeat,
                     SamplerKind::NearestRepeat => &self.nearest_repeat,
                     SamplerKind::Atlas => &self.atlas_sampler,
+                    SamplerKind::Buffer => &self.buffer_sampler,
                     SamplerKind::Comparison => shadow.map_or(&self.shadow.1, |t| &t.comparison),
                 };
                 entries.push(wgpu::BindGroupEntry {
@@ -5685,3 +5700,6 @@ mod unknown_sampler_terrain_tests;
 
 #[cfg(test)]
 mod mipmap_box_tests;
+
+#[cfg(test)]
+mod colortex_mip_blend_tests;
