@@ -24,6 +24,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const HEADER_HEIGHT: f32 = 44.0;
 const CONTENT_WIDTH: f32 = 308.0;
+/// `RealmsPdpScreen`'s list: the row width and the text's width beside the picture.
+const PDP_ROW_WIDTH: f32 = 290.0;
+const PDP_TEXT_WIDTH: f32 = 182.0;
+
 const ROW_WIDTH: f32 = 300.0;
 const ROW_HEIGHT: f32 = 36.0;
 /// `RealmsConfigureWorldScreen`'s `MenuTabBar` height (`gui/tab_header_background`).
@@ -479,7 +483,12 @@ pub enum SubScreen {
         job: Option<Job<Result<Vec<PlayerInfo>, RealmsError>>>,
         error: Option<String>,
     },
-    AddRealm,
+    /// `RealmsPdpScreen`: the product page behind Add Realm, its picture rows and scroll.
+    AddRealm {
+        scroll: crate::ui::Scroll,
+        /// The list's drawn height, measured in [`Screen::draw`] and read by the wheel.
+        content: std::cell::Cell<f32>,
+    },
     Popup(Popup),
     /// `RealmsLongRunningMcoTaskScreen` running `GetServerDetailsTask`: the join request is on
     /// a worker (`joining`); an error stays on screen with a Back button.
@@ -538,6 +547,36 @@ fn fetch_address(
         }
     }
     Err(RealmsError::Timeout)
+}
+
+/// `RealmsPdpScreen`'s list: the trial header (no picture) and the three features, each
+/// with its 80x45 picture and the text beside it. The header has no subtitle: Horizon does
+/// not ask `trialAvailabilityTask`, and vanilla shows the trial description only when a
+/// trial is available (its footer then offers the trial instead of Buy).
+fn pdp_entries() -> [(&'static str, &'static str, &'static [&'static str]); 4] {
+    [
+        ("", "mco.pdp.trial.title", &[]),
+        (
+            "gui/realms/friends",
+            "mco.pdp.friends.title",
+            &["mco.pdp.friends.description"],
+        ),
+        (
+            "gui/realms/minigames",
+            "mco.pdp.minigames.title",
+            &["mco.pdp.minigames.description"],
+        ),
+        (
+            "gui/realms/private_server",
+            "mco.pdp.private.title",
+            &[
+                "mco.pdp.private.backups",
+                "mco.pdp.private.easyToManage",
+                "mco.pdp.private.worldSlots",
+                "mco.pdp.private.secure",
+            ],
+        ),
+    ]
 }
 
 fn wrap_lines(text: &str, atlas: &HudAtlas, width: f32) -> Vec<String> {
@@ -1328,7 +1367,10 @@ impl Screen {
                 Outcome::None
             }
             Some(13) => {
-                self.subscreen = SubScreen::AddRealm;
+                self.subscreen = SubScreen::AddRealm {
+                    scroll: crate::ui::Scroll::default(),
+                    content: std::cell::Cell::new(0.0),
+                };
                 Outcome::None
             }
             Some(14) => {
@@ -1996,6 +2038,18 @@ impl Screen {
         Outcome::None
     }
 
+    /// `AbstractScrollArea.mouseScrolled` over the product page's list.
+    pub fn wheel(&mut self, delta: f32, cursor: (f32, f32), (_, h): (f32, f32)) {
+        let SubScreen::AddRealm { scroll, content } = &mut self.subscreen else {
+            return;
+        };
+        let (top, bottom) = (44.0, h - 40.0);
+        if cursor.1 < top || cursor.1 >= bottom {
+            return;
+        }
+        scroll.wheel(delta, 10.0, top, bottom, content.get());
+    }
+
     pub fn buttons(
         &self,
         w: f32,
@@ -2279,17 +2333,18 @@ impl Screen {
                 ));
                 buttons.push((cx - 100.0, h - 36.0, 200.0, t("gui.back"), true, 81, None));
             }
-            SubScreen::AddRealm => {
+            SubScreen::AddRealm { .. } => {
+                // `RealmsPdpScreen`'s footer: the buy button carries the PDP's own title.
                 buttons.push((
-                    cx - 100.0,
-                    mid + 30.0,
-                    200.0,
-                    t("mco.selectServer.buy"),
+                    cx - 102.0,
+                    h - 26.0,
+                    100.0,
+                    t("mco.selectServer.purchase"),
                     true,
                     40,
                     None,
                 ));
-                buttons.push((cx - 100.0, h - 36.0, 200.0, t("gui.back"), true, 41, None));
+                buttons.push((cx + 2.0, h - 26.0, 100.0, t("gui.back"), true, 41, None));
             }
             SubScreen::Popup(_) => {
                 buttons.push((
@@ -3060,19 +3115,94 @@ impl Screen {
                     }
                 }
             }
-            SubScreen::AddRealm => {
-                centered(batch, atlas, &t("mco.title"), cx, 24.0, u32::MAX);
-                let lines = wrap_lines(&t("mco.selectServer.popup"), atlas, CONTENT_WIDTH);
-                let top = mid - 10.0 * lines.len() as f32;
-                for (i, line) in lines.iter().enumerate() {
+            SubScreen::AddRealm { scroll, content } => {
+                // `RealmsPdpScreen`: the Realms header's logo, then the trial header and
+                // the three feature rows (an 80x45 picture and 182-wide text), scrolling
+                // between the header and the footer.
+                if atlas.sprites.contains_key("gui/title/realms") {
+                    // The header's logo, as `draw_main` draws it.
+                    batch.sprite_region(
+                        atlas,
+                        "gui/title/realms",
+                        [cx - 64.0, 5.0, 128.0, 34.0],
+                        128.0,
+                        64.0,
+                    );
+                } else {
                     centered(
                         batch,
                         atlas,
-                        line,
+                        &t("mco.selectServer.purchase"),
                         cx,
-                        top + i as f32 * 10.0,
-                        rgba(180, 180, 180, 255),
+                        14.0,
+                        u32::MAX,
                     );
+                }
+                let (top, bottom) = (44.0, h - 40.0);
+                let rx = ((w - PDP_ROW_WIDTH) / 2.0).floor();
+                // `PdpFeatureEntry.entryHeight`: the picture's 45 or the text, plus 16.
+                let mut rows: Vec<(Option<&'static str>, Vec<String>, bool, f32)> = Vec::new();
+                for (image, title, descriptions) in pdp_entries() {
+                    let mut lines = wrap_lines(&t(title), atlas, PDP_TEXT_WIDTH);
+                    let mut height = lines.len() as f32 * 10.0 + 4.0;
+                    for description in descriptions {
+                        lines.push(String::new());
+                        height += 2.0;
+                        let wrapped = wrap_lines(&t(description), atlas, PDP_TEXT_WIDTH);
+                        height += wrapped.len() as f32 * 10.0;
+                        lines.extend(wrapped);
+                    }
+                    let header = image.is_empty();
+                    let row = if header {
+                        height + 16.0
+                    } else {
+                        height.max(45.0) + 16.0
+                    };
+                    let image = (!image.is_empty()).then_some(image);
+                    rows.push((image, lines, header, row));
+                }
+                let total: f32 = rows.iter().map(|row| row.3).sum();
+                content.set(total);
+                crate::ui::scrollbar(
+                    batch,
+                    atlas,
+                    rx + PDP_ROW_WIDTH + 2.0,
+                    top,
+                    bottom,
+                    total,
+                    scroll.amount,
+                );
+                let mut y = top - scroll.amount;
+                for (image, lines, header, height) in &rows {
+                    if y + height >= top && y <= bottom {
+                        if let Some(image) = image {
+                            crate::ui::blit_sprite(
+                                batch,
+                                atlas,
+                                image,
+                                rx + 4.0,
+                                y + 4.0,
+                                80.0,
+                                45.0,
+                                u32::MAX,
+                            );
+                        }
+                        let mut text_y = y + 4.0;
+                        for line in lines {
+                            if line.is_empty() {
+                                text_y += 2.0;
+                                continue;
+                            }
+                            let x = if *header {
+                                cx - (HudBatch::text_width(atlas, line) / 2.0).floor()
+                            } else {
+                                rx + 100.0
+                            };
+                            batch.text(atlas, line, x, text_y, u32::MAX, true);
+                            text_y += 10.0;
+                        }
+                    }
+                    y += height;
                 }
             }
             SubScreen::Popup(popup) => {
