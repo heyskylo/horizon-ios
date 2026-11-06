@@ -2334,6 +2334,7 @@ impl Game<'_> {
                                 g.trigger_any_block_use(p.pos, &stack);
                             });
                         }
+                        reset_use_attack_strength(&mut g.attack_ticks, swings, g.swings_started);
                         g.forced_hit = None;
                         g.guest_use = None;
                         (g.swings_started != swings, consumed, attempt)
@@ -2404,6 +2405,7 @@ impl Game<'_> {
                     g.guest_use = Some(GuestUse::Item(hand));
                     let swings = g.swings_started;
                     let _ = g.use_item();
+                    reset_use_attack_strength(&mut g.attack_ticks, swings, g.swings_started);
                     g.guest_use = None;
                     (g.swings_started != swings, horn)
                 });
@@ -2432,6 +2434,7 @@ impl Game<'_> {
                     let swung = self.as_guest(host, conn, |g| {
                         let swings = g.swings_started;
                         g.with_hand(hand, |g| g.use_knot(knot, true));
+                        reset_use_attack_strength(&mut g.attack_ticks, swings, g.swings_started);
                         g.swings_started != swings
                     });
                     self.lan_swing_back(host, conn, swung);
@@ -2454,6 +2457,7 @@ impl Game<'_> {
                         g.guest_use = Some(GuestUse::Entity(hand, target));
                         let swings = g.swings_started;
                         let _ = g.use_item();
+                        reset_use_attack_strength(&mut g.attack_ticks, swings, g.swings_started);
                         g.guest_use = None;
                         g.swings_started != swings
                     });
@@ -5746,10 +5750,29 @@ fn stop_dig(play: &GuestPlay, pos: [i32; 3], air: bool, ticks: u64, per_tick: f3
     }
 }
 
+/// ServerPlayer.swingAndResetAttackStrength resets only when a use starts a swing.
+fn reset_use_attack_strength(ticker: &mut u32, before: u32, after: u32) {
+    if before != after {
+        *ticker = 0;
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::eye_columns;
+    use super::{eye_columns, reset_use_attack_strength};
     use horizon_client::pose::Pose;
+
+    #[test]
+    fn use_swing_resets_attack_charge_only_when_started() {
+        let mut ticker = 20;
+        reset_use_attack_strength(&mut ticker, 3, 4);
+        // A sword's attack speed is 1.6: vanilla's (ticker + 0.5) / 12.5.
+        assert_eq!((ticker as f32 + 0.5) / 12.5, 0.04);
+
+        ticker = 8;
+        reset_use_attack_strength(&mut ticker, 4, 4);
+        assert_eq!(ticker, 8); // No swing, or a swing rejected in its first half.
+    }
 
     #[test]
     fn a_block_break_suppresses_its_positional_duplicate_but_not_an_entity_sound() {
