@@ -3041,8 +3041,9 @@ impl PackPost {
     /// and the centre depth too. Compiled programs and the pack's textures stay.
     pub fn reset_history(&mut self, device: &wgpu::Device) {
         self.uniforms.reset_history();
-        // A parsed pack's custom uniforms start at tick 0's seed.
+        // A parsed pack's custom uniforms start at tick 0's seed, before any frame of the world.
         self.custom.restart_at(0);
+        self.custom.forget_world();
         self.center_depth = None;
         self.targets = None;
         self.main = 0;
