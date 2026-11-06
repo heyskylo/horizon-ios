@@ -28,12 +28,6 @@ pub fn read<T: DeserializeOwned>(path: &Path) -> io::Result<T> {
     parse(path, &read_bytes(path)?)
 }
 
-/// Whether `path` holds a JSON document, as opposed to a missing, empty or
-/// half-written one. A killed exporter can leave an empty file behind.
-pub fn is_json_file(path: &Path) -> bool {
-    read::<serde_json::Value>(path).is_ok()
-}
-
 /// An I/O error whose message starts with the path it happened to.
 fn named(path: &Path, error: io::Error) -> io::Error {
     io::Error::new(error.kind(), format!("{}: {error}", path.display()))
@@ -68,29 +62,6 @@ mod tests {
         let missing = dir.join("attributes.json");
         let error = read::<serde_json::Value>(&missing).unwrap_err().to_string();
         assert!(error.contains("attributes.json"), "{error}");
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn only_a_complete_json_document_counts() {
-        let dir = test_dir("complete");
-        let file = dir.join("value.json");
-        fs::write(&file, b"{}").unwrap();
-        assert!(is_json_file(&file));
-
-        fs::write(&file, b" \r\n\t").unwrap();
-        assert!(!is_json_file(&file), "whitespace is not a document");
-
-        fs::write(&file, b"").unwrap();
-        assert!(!is_json_file(&file), "an empty export is not a document");
-
-        fs::write(&file, br#"{"states": [}"#).unwrap();
-        assert!(
-            !is_json_file(&file),
-            "a half-written export is not a document"
-        );
-
-        assert!(!is_json_file(&dir.join("missing.json")));
         let _ = fs::remove_dir_all(&dir);
     }
 }
