@@ -3853,6 +3853,7 @@ impl PackPost {
         portal: [f32; 4],
         rest: &mut Vec<super::Vertex>,
         skin: Option<&super::entity_skin::SkinFrame>,
+        motion: (&[(u32, u64)], &[u32]),
     ) {
         self.portal_rect = portal;
         let shadow = self.shadow_casters();
@@ -3873,6 +3874,7 @@ impl PackPost {
             shadow,
             rest,
             skin,
+            motion,
         );
     }
 

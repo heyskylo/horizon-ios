@@ -19,6 +19,13 @@ const SLOT: u64 = 32;
 /// What `gbuffers_hand` reads: the entity inputs, and the hand's projection from set 1.
 pub fn inputs() -> horizon_shaders::GbuffersInputs {
     let mut inputs = super::pack_entities::inputs();
+    // No last frame's hand to measure from: the hand's `at_velocity` reads zero (and its set 1
+    // has no previous vertices).
+    for (name, value) in &mut inputs.attributes {
+        if name == "at_velocity" {
+            *value = "vec3(0.0)".to_owned();
+        }
+    }
     // Iris 1.11.7 declares `currentRenderedItemId` in the hand's programs (observed).
     inputs.item_id_declared = true;
     inputs.declarations.push_str(

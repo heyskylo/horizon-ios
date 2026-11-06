@@ -2431,6 +2431,7 @@ pub(super) mod initial_history_tests {
             visible_static_block_entity_sections: &[],
             static_block_entity_stats: crate::block_entity_render::StaticCacheFrameStats::default(),
             entity_motion: &[],
+            entity_motion_posed: &[],
             colored_lights: &[],
             emissive_layers: &[],
             shadow_only: &[],

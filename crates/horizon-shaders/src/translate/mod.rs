@@ -316,6 +316,20 @@ fn translate(
             }
         }
     }
+    // A game-given attribute may read the previous frame's matrices (`at_velocity`): they join
+    // the block when the pack declares that attribute, whether or not it declares them.
+    if let Some(inputs) = gbuffers {
+        for (name, _, _) in &v.attributes {
+            let Some((_, given)) = inputs.attributes.iter().find(|a| &a.0 == name) else {
+                continue;
+            };
+            for matrix in ["gbufferPreviousModelView", "gbufferPreviousProjection"] {
+                if given.contains(matrix) {
+                    uniforms.insert(matrix.to_owned(), "mat4".to_owned());
+                }
+            }
+        }
+    }
     let mut samplers: BTreeMap<String, String> = BTreeMap::new();
     for stage in [&v, &f] {
         for (name, ty, at) in &stage.uniforms {
@@ -2394,6 +2408,58 @@ in VertexData {{ {member} }} vIn;
             // With `out` variables the pack tests alpha itself.
             assert_eq!(kill, kills, "{fsh}");
         }
+    }
+
+    /// `at_velocity`, given by the game from the previous frame's view, brings
+    /// `gbufferPreviousModelView` into the block when the pack declares the attribute, and only
+    /// then.
+    #[test]
+    fn a_game_attribute_brings_the_previous_view_it_reads() {
+        let translate = |declares: bool| {
+            let attribute = if declares {
+                "attribute vec3 at_velocity;\n"
+            } else {
+                ""
+            };
+            let read = if declares { "at_velocity" } else { "vec3(0.0)" };
+            let vsh = format!(
+                "#version 120\n{attribute}varying vec3 v;\nvoid main() {{\n    gl_Position = ftransform();\n    v = {read};\n}}\n"
+            );
+            let fsh = "#version 120\nvarying vec3 v;\nvoid main() {\n    gl_FragData[0] = vec4(v, 1.0);\n}\n";
+            let files = [
+                ("shaders/gbuffers_entities.vsh", vsh.as_str()),
+                ("shaders/gbuffers_entities.fsh", fsh),
+            ];
+            let pack = Pack::from_zip_bytes("P.zip", zip(&files)).unwrap();
+            let m = Macros::standard();
+            let game = GbuffersInputs {
+                declarations: "layout(location = 0) in vec3 game_pos;\n\
+                               vec3 game_velocity(mat4 now, mat4 then) { return (now * vec4(game_pos, 1.0) - then * vec4(game_pos, 1.0)).xyz; }\n"
+                    .into(),
+                body: "    hz_Vertex = vec4(game_pos, 1.0);\n    hz_Color = vec4(1.0);\n".into(),
+                attributes: vec![(
+                    "at_velocity".into(),
+                    "game_velocity(gbufferModelView, gbufferPreviousModelView)".into(),
+                )],
+                ..Default::default()
+            };
+            let p = translate_gbuffers(
+                &preprocess(&pack, "gbuffers_entities.vsh", &m),
+                &preprocess(&pack, "gbuffers_entities.fsh", &m),
+                Target::Buffers,
+                &game,
+            )
+            .unwrap_or_else(|e| panic!("{e:?}"));
+            p.interface
+                .uniforms
+                .iter()
+                .any(|u| u.name == "gbufferPreviousModelView")
+        };
+        assert!(
+            translate(true),
+            "declared at_velocity: the previous view is in the block"
+        );
+        assert!(!translate(false), "no at_velocity: no previous view");
     }
 
     #[test]
