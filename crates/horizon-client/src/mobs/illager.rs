@@ -79,18 +79,26 @@ pub fn register_vindicator(m: &mut Mob) {
     g.add(9, LookAtPlayer::new(3.0).probability(1.0));
     g.add(10, LookAtPlayer::mobs(8.0));
     targets(m, true);
-    // VindicatorJohnnyAttackGoal: a vindicator named Johnny attacks any
-    // living entity, other raiders included.
+    // VindicatorJohnnyAttackGoal: a vindicator that was named Johnny attacks
+    // any living entity, other raiders included. The flag is a latch
+    // (`Vindicator.setCustomName` sets it and never clears it), not the name in
+    // front of the mob now, so a rename keeps the goal.
     m.ai.targets.add(
         4,
         NearestTarget::new(Prey::Filter(|_| true), true)
             .interval(0)
-            .when(|m, _| m.custom_name.as_deref() == Some("Johnny")),
+            .when(|m, _| m.extra.johnny),
     );
 }
 /// `Vindicator.customServerAiStep`: its navigation opens doors while a raid
 /// is at its position.
 pub fn vindicator_server_ai_step(m: &mut Mob) {
+    // `Vindicator.setCustomName`'s latch, taken from the live name: a name that
+    // became `Johnny` sets it, and nothing clears it (`addAdditionalSaveData`
+    // saves it for the next load).
+    if m.custom_name.as_deref() == Some("Johnny") {
+        m.extra.johnny = true;
+    }
     if super::doors::can_navigate_ground(m) {
         m.ai.nav.can_open_doors = super::raider::state(m).is_some_and(|s| s.raided);
     }
