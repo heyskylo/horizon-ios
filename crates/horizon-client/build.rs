@@ -20,8 +20,6 @@ fn main() {
             _ => "-Wl,--stack,8388608",
         };
         println!("cargo:rustc-link-arg-bin=horizon-client={arg}");
-    }
-    if target_os == "windows" {
         let mut resource = winresource::WindowsResource::new();
         resource.set_icon(&ico);
         if std::env::var_os("CARGO_FEATURE_WINDOWS_SEGMENT_HEAP").is_some() {
@@ -29,8 +27,17 @@ fn main() {
             println!("cargo:rerun-if-changed={manifest}");
             resource.set_manifest_file(&manifest);
         }
-        resource
-            .compile()
-            .expect("embedding Horizon's icon in Windows resources");
+        if let Err(e) = resource.compile() {
+            // The GNU toolchain's `windres` (the launcher's mod builds use it) can't take a path
+            // with a space, and a Windows user name often has one; a cross build may have no
+            // `windres` at all: such a build goes on without the icon. Release builds run in CI,
+            // where the icon stays required.
+            if std::env::var_os("CI").is_some() {
+                panic!("embedding Windows resources: {e}");
+            }
+            println!(
+                "cargo:warning=building without Horizon's icon: embedding Windows resources failed: {e}"
+            );
+        }
     }
 }
