@@ -152,7 +152,9 @@ pub(super) struct MenuCursor {
     /// focus mode whatever the screen, the OS pointer shown.
     pub(super) keyboard: bool,
     /// The focused slider's arrows change its value (`canChangeValue`).
-    pub(super) slider_edit: bool,
+    slider_edit: bool,
+    /// The slider A took hold of for left and right to move, and the screen it's on.
+    pub(super) slider_hold: Option<(u64, Rect)>,
     /// What the last click landed on: vanilla focuses it, so the next Tab
     /// or arrow goes on from there (`ContainerEventHandler.mouseClicked`).
     origin: Option<Rect>,
@@ -789,10 +791,12 @@ impl Game<'_> {
         }
         // B lets go of a slider, before it means Back or a screen's button.
         if button == Button::East && self.pad_holding_slider() {
-            self.pad.menu.slider_edit = false;
+            self.pad.menu.slider_hold = None;
             return Ok(());
         }
         if let Some((action, target)) = self.pad_action_target(button) {
+            // The button may change a slider's value, which the pad's own position doesn't know.
+            self.pad.menu.nudge = None;
             if action == widgets::Action::Exit {
                 self.pad_focus_on(event_loop, target);
                 self.pad.menu.shortcut_focus = Some(target.rect);
@@ -840,7 +844,10 @@ impl Game<'_> {
                 match focus.kind {
                     // A click would jump the handle: A takes hold of it, or lets it go.
                     Kind::Slider { .. } => {
-                        self.pad.menu.slider_edit = !self.pad.menu.slider_edit;
+                        let hold =
+                            (!self.pad_holding_slider()).then(|| (self.key_screen(), focus.rect));
+                        self.pad.menu.slider_hold = hold;
+                        self.pad.menu.nudge = None;
                     }
                     Kind::Field => {
                         self.pad_click_at(event_loop, focus.center(), false);
@@ -1037,12 +1044,12 @@ impl Game<'_> {
     /// focus, so passing over a slider doesn't change it.
     fn pad_holding_slider(&self) -> bool {
         let menu = &self.pad.menu;
-        menu.slider_edit
-            && !menu.keyboard
+        !menu.keyboard
             && self.pad_focus_mode()
-            && menu
-                .focus
-                .is_some_and(|focus| matches!(focus.kind, Kind::Slider { .. }))
+            && menu.focus.is_some_and(|focus| {
+                matches!(focus.kind, Kind::Slider { .. })
+                    && menu.slider_hold == Some((self.key_screen(), focus.rect))
+            })
     }
 
     /// Move a focused slider's handle by `by` GUI pixels (one pixel is
@@ -1126,7 +1133,6 @@ impl Game<'_> {
         if left.is_some_and(|l| l.rect != target.rect) {
             self.clear_screen_click_focus();
             self.pad.menu.armed = None;
-            self.pad.menu.slider_edit = false;
         }
         self.pad.menu.pending = None;
         self.pad.menu.nudge = None;
@@ -1316,6 +1322,11 @@ impl Game<'_> {
             return;
         }
         self.pad.menu.open_polls = self.pad.menu.open_polls.saturating_add(1);
+        // Once the focus or the screen moved on from a slider it's let go for good, or coming back
+        // to it would find it still held.
+        if !self.pad_holding_slider() {
+            self.pad.menu.slider_hold = None;
+        }
         // A real mouse move hands the pointer back. The keyboard's focus
         // stays where the next Tab or arrow goes on from.
         if let Some(at) = self.pad.menu.pos

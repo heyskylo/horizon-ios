@@ -2106,6 +2106,20 @@ def slider_needs_a(args, name):
         game.pad('down')
         check(not game.menu()['holding_slider'], 'down did not let go of the slider')
         check(game.focus() != slider, 'down did not move on from the slider')
+        # Up can land on a row beside it, so find it again by name.
+        for button in ['up'] * 8 + ['down'] * 16:
+            if 'trigger threshold' in (game.focused_label() or '').lower():
+                break
+            game.pad(button)
+        check('trigger threshold' in (game.focused_label() or '').lower(),
+              f'never came back to the slider: {game.focused_label()}')
+        check(not game.menu()['holding_slider'], 'the slider was still held on coming back')
+
+        # The hold goes with the screen: Start, and back to where the focus is remembered.
+        game.pad('south')
+        check(game.menu()['holding_slider'], 'A did not take hold after coming back')
+        game.pad('start')
+        check(not game.menu()['holding_slider'], 'Start left a slider held')
     finally:
         game.quit()
     return check.failures

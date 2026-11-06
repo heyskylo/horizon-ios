@@ -121,7 +121,7 @@ impl Game<'_> {
         // the text stays in view.
         if let Some(focus) = focus.filter(|f| {
             f.kind == Kind::Field
-                || matches!(f.kind, Kind::Slider { .. }) && !self.pad.menu.slider_edit
+                || matches!(f.kind, Kind::Slider { .. }) && self.pad.menu.slider_hold.is_none()
         }) && let Some((x, y)) = glyph_at(focus.rect, width(Button::South), view, true)
         {
             glyphs.push((Button::South, x, y));
