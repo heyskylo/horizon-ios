@@ -1767,7 +1767,8 @@ pub struct ArmorStand {
     pub disabled_slots: i32,
     /// Server-only `LivingEntity.lastPos` for location-based enchantments.
     pub enchantment_block: Option<BlockPos>,
-    /// Travel accumulated for `LivingEntity.checkFallDamage`'s landing callback.
+    /// `Entity.fallDistance`, also used by `LivingEntity.checkFallDamage`'s landing callback.
+    /// Each downward movement is narrowed to float before adding to this double.
     pub enchantment_fall_distance: f64,
     /// Last equipment seen by `collectEquipmentChanges`; not saved to NBT.
     pub enchantment_equipment: [Option<ItemStack>; 6],

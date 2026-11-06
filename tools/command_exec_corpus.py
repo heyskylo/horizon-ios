@@ -3855,6 +3855,53 @@ def awake_villager_saved_position():
 
 
 
+def stand_saved_fall():
+    """Five real tick boundaries; whole bodies remain separate raw diagnostics."""
+    ops = [cmd('/tick freeze'), cmd('/forceload add 0 0 15 15'),
+           {'op': 'settle', 'required_chunks': [[0, 0]]},
+           {'op': 'wait_chunks', 'chunks': [[0, 0]]},
+           cmd('/fill 0 199 0 15 199 15 stone', expect_result=256),
+           cmd('/fill 0 200 0 15 210 15 air'),
+           cmd('/execute if loaded 4 205 4', expect_result=1),
+           cmd('/scoreboard objectives add stand_fall dummy', expect_result=1)]
+    actors = [('0000001c-0000-0000-0000-000000000001', '[I;28,0,0,1]', 4.5, 0),
+              ('0000001c-0000-0000-0000-000000000002', '[I;28,0,0,2]', 12.5, 1)]
+    for uuid, array, x, gravity in actors:
+        cell = int(x)
+        ops += [cmd(f'/execute if block {cell} 199 4 stone', expect_result=1),
+                cmd(f'/execute if block {cell} 205 4 air', expect_result=1),
+                cmd(f'/execute if block {cell} 206 4 air', expect_result=1),
+                cmd(f'/summon armor_stand {x} 205 4.5 {{UUID:{array},Tags:["stand_fall_{gravity}"],Health:20f,NoGravity:{gravity}b,Motion:[0d,0d,0d]}}', expect_result=1),
+                cmd(f'/execute if data entity {uuid} {{Pos:[{x}d,205d,4.5d],Motion:[0d,0d,0d]}}', expect_result=1)]
+    ops += setup('/execute store result score start stand_fall run time query gametime')
+    for ticks, step in [(0, 0), (1, 1), (2, 1), (3, 1), (5, 2)]:
+        if step:
+            ops.append(cmd(f'/tick step {step}'))
+            ops.append({'op': 'tick', 'n': step})
+        ops += setup('/execute store result score elapsed stand_fall run time query gametime',
+                     '/scoreboard players operation elapsed stand_fall -= start stand_fall')
+        ops.append(cmd('/scoreboard players get elapsed stand_fall', expect_result=ticks))
+        for uuid, array, x, gravity in actors:
+            ops += [cmd(f'/execute as {uuid} if entity @s[type=minecraft:armor_stand,tag=stand_fall_{gravity}]', expect_result=1),
+                    cmd(f'/execute if data entity {uuid} {{UUID:{array},Health:20f}}', expect_result=1),
+                    cmd(f'/data get entity {uuid} Pos', expect_result=3),
+                    cmd(f'/data get entity {uuid} Motion', expect_result=3),
+                    cmd(f'/data get entity {uuid} fall_distance', expect_result=0),
+                    cmd(f'/data get entity {uuid} OnGround', expect_result=0)]
+            if gravity:
+                ops.append(cmd(f'/execute if data entity {uuid} {{NoGravity:1b,Pos:[{x}d,205d,4.5d],Motion:[0d,0d,0d],fall_distance:0d}}', expect_result=1))
+            else:
+                ops.append(cmd(f'/execute unless data entity {uuid} {{NoGravity:1b}}', expect_result=1))
+                # Independently measured on Java 26.3; the suffix also checks Double type.
+                distance = {0: '0.0', 1: '0.0', 2: '0.07840000092983246',
+                            3: '0.23363199830055237', 5: '0.7684761881828308'}[ticks]
+                ops.append(cmd(f'/execute if data entity {uuid} {{fall_distance:{distance}d}}', expect_result=1))
+            full = cmd(f'/data get entity {uuid}', record=False)
+            full['trace'] = True
+            ops.append(full)
+    return ops
+
+
 def projectile_saved_uuid():
     """Direct identity guards are separate from repeated saved UUID views."""
     from uuid import UUID
@@ -5526,7 +5573,8 @@ ISOLATED_REINFORCEMENTS = frozenset({'command zombie reinforcements', 'command r
 # These overlays replace built-in recipes, never beside the corpus's fixed vanilla recipe-count controls.
 ISOLATED_RECIPES = frozenset({'crafting recipe priority', 'crafting base recipe control', 'transmute result patches'})
 ISOLATED_FRAME_MAPS = frozenset({'frame live map detachment'})
-ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS
+ISOLATED_STAND_FALL = frozenset({'stand saved fall distance'})
+ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_STAND_FALL
 
 
 def groups():
@@ -5562,6 +5610,7 @@ def groups():
         from item_merge_corpus import stack_limit_merges
     return [
         ('setup', group_setup()),
+        ('stand saved fall distance', stand_saved_fall()),
         ('transmute result patches', transmute_patches(cmd, setup)),
         ('mob effect predicate view', mob_effect_predicates(cmd, setup)),
         ('frame live map detachment', frame_maps(cmd, setup)),
