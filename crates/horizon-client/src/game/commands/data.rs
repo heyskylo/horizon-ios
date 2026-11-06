@@ -163,8 +163,8 @@ impl Game<'_> {
                 self.other_to_nbt(&o, uuid)
             }
             Target::Orb(id) => {
-                let tag =
-                    entity_nbt::orb_to_nbt(self.orbs.iter().find(|o| o.id == id)?, random_uuid());
+                let uuid = self.uuid_for(id);
+                let tag = entity_nbt::orb_to_nbt(self.orbs.iter().find(|o| o.id == id)?, uuid);
                 crate::game::persist::with_raw(tag, self.persist.raw.get(&id))
             }
             Target::Projectile(id) => {
@@ -201,19 +201,8 @@ impl Game<'_> {
                 crate::game::persist::with_raw(tag, self.persist.raw.get(&id))
             }
             Target::Tnt(id) => {
-                let uuid = self.uuid_for(id);
-                let t = self.tnts.iter().find(|t| t.id == id)?;
-                entity_nbt::tnt_to_nbt(
-                    t.position,
-                    t.velocity,
-                    t.on_ground,
-                    t.fuse,
-                    t.power,
-                    t.block_state_nbt(self.pack.assets.registry),
-                    t.rotation,
-                    uuid,
-                    self.persist.raw.get(&id),
-                )
+                let i = self.tnts.iter().position(|t| t.id == id)?;
+                self.tnt_nbt(i)
             }
             Target::Falling(id) => {
                 let f = self.falling.iter().find(|f| f.id == id)?.clone();
@@ -394,8 +383,10 @@ impl Game<'_> {
                 }
             }
             Target::Stand(id) => {
-                let new = entity_nbt::armor_stand_from_nbt(&tag, id).ok_or_else(stale)?;
+                let mut new = entity_nbt::armor_stand_from_nbt(&tag, id).ok_or_else(stale)?;
                 if let Some(slot) = self.armor_stands.iter_mut().find(|a| a.id == id) {
+                    // Entity.load keeps the existing entity's firstTick state.
+                    new.first_tick = slot.first_tick;
                     *slot = new;
                 }
             }
@@ -1205,6 +1196,84 @@ impl Game<'_> {
             return Err(err("commands.summon.failed.uuid", &[]));
         }
         Ok(target)
+    }
+}
+
+#[cfg(test)]
+mod orb_uuid_tests {
+    use super::Target;
+    use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+    use horizon_world::nbt::Tag;
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn saved_orb_uuid_comes_from_registered_identity_without_or_despite_raw() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        let uuid = [0, 0, 0, 2];
+        let tag = Tag::compound([
+            ("UUID", Tag::IntArray(uuid.to_vec())),
+            (
+                "Pos",
+                Tag::List(vec![
+                    Tag::Double(4.5_f64.to_bits()),
+                    Tag::Double(200.0_f64.to_bits()),
+                    Tag::Double(4.5_f64.to_bits()),
+                ]),
+            ),
+            ("Value", Tag::Short(1)),
+            ("Age", Tag::Short(0)),
+            ("Health", Tag::Short(5)),
+            ("NoGravity", Tag::Byte(1)),
+        ]);
+        game.load_orb(tag, Some(uuid));
+        assert_eq!(game.orbs.len(), 1);
+        let id = game.orbs[0].id;
+        assert_eq!(game.persist.uuids.get(&id), Some(&uuid));
+        let time = game.world.game_time;
+        for raw in [
+            None,
+            Some(Tag::compound([("UUID", Tag::IntArray(vec![9, 9, 9, 9]))])),
+        ] {
+            if let Some(raw) = &raw {
+                game.persist.raw.insert(id, raw.clone());
+            } else {
+                game.persist.raw.remove(&id);
+            }
+            for _ in 0..3 {
+                let saved = game.entity_nbt_in_level(Target::Orb(id)).unwrap();
+                assert_eq!(saved.get("UUID"), Some(&Tag::IntArray(uuid.to_vec())));
+                assert_eq!(game.persist.uuids.get(&id), Some(&uuid));
+                assert_eq!(game.persist.raw.get(&id), raw.as_ref());
+                assert_eq!(game.world.game_time, time);
+            }
+        }
     }
 }
 
