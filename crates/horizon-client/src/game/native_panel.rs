@@ -87,9 +87,11 @@ impl Panel {
     }
     /// `native_panel_recipes`.
     pub(super) fn show_recipes(&mut self, mod_id: &str, page: Option<RecipePage>) {
+        let filtering = mod_id == "recipes" && !self.sent.is_empty();
         if let Some(shown) = self.native_of(mod_id, page.is_some()) {
+            let returning_to_search = filtering && shown.recipes.is_some() && page.is_none();
             shown.recipes = page;
-            self.native_changed(false);
+            self.native_changed(returning_to_search);
         }
     }
     /// Mod `mod_id`'s panel, made when it shows something on another's;
@@ -213,22 +215,53 @@ impl Game<'_> {
     /// the search box at its foot. None when the screen has no room for it.
     fn browser_layout(&self, batch: &HudBatch) -> Option<Layout> {
         let image = self.container_image(batch);
+        let recipes = self
+            .panel
+            .of
+            .as_ref()
+            .is_some_and(|(owner, _)| owner.native_id() == "recipes");
         let left = (image.left + image.width) as f32 + MARGIN;
-        let right = batch.width - MARGIN;
-        let columns = (((right - left) / SLOT).floor().max(0.0) as usize).min(COLUMNS.0);
+        let (width, height) = self.renderer.as_ref().filter(|_| recipes).map_or(
+            (batch.width, batch.height),
+            |renderer| {
+                (
+                    (renderer.config.width as f32 / batch.scale).floor(),
+                    (renderer.config.height as f32 / batch.scale).floor(),
+                )
+            },
+        );
+        let right = width - if recipes { 6.0 } else { MARGIN };
+        let columns = (((right - left) / SLOT).floor().max(0.0) as usize).min(if recipes {
+            9
+        } else {
+            COLUMNS.0
+        });
         if columns < COLUMNS.1 {
             return None;
         }
-        let x = (left + (right - left - columns as f32 * SLOT) / 2.0).floor();
-        let arrows_y = MARGIN;
-        let top = arrows_y + 17.0 + 4.0;
-        let search = [x, batch.height - MARGIN - 16.0, columns as f32 * SLOT, 16.0];
+        let grid_width = columns as f32 * SLOT;
+        let x = if recipes {
+            right - grid_width
+        } else {
+            (left + (right - left - grid_width) / 2.0).floor()
+        };
+        let arrows_y = if recipes { 6.0 } else { MARGIN };
+        let top = arrows_y + if recipes { 22.0 } else { 21.0 };
+        let search = if recipes {
+            [x, height - 26.0, grid_width, 20.0]
+        } else {
+            [x, batch.height - MARGIN - 16.0, grid_width, 16.0]
+        };
         let rows = ((search[1] - 4.0 - top) / SLOT).floor().max(0.0) as usize;
         (rows > 0).then_some(Layout {
-            area: [left, 0.0, right - left, batch.height],
+            area: if recipes {
+                [x, 0.0, right - x, batch.height]
+            } else {
+                [left, 0.0, right - left, batch.height]
+            },
             grid: (x, top),
             columns,
-            rows,
+            rows: if recipes { rows.min(16) } else { rows },
             arrows_y,
             search,
         })
@@ -647,6 +680,17 @@ mod tests {
         assert_eq!(empty.owner, Owner::Native("recipes".into()));
         assert!(empty.items.is_empty());
         assert!(panel.shown(|id| id != "recipes").is_none());
+
+        panel.show_recipes(
+            "recipes",
+            RecipePage::new("Oak Planks", Vec::new(), 0, vec![view()]),
+        );
+        panel.show_recipes("recipes", None);
+        let empty = panel
+            .shown(|_| true)
+            .expect("return to the empty search after a recipe");
+        assert!(empty.items.is_empty() && empty.recipes.is_none());
+        assert_eq!(panel.sent, "no_such_item");
 
         panel.show_items("other", Vec::new());
         panel.sent = "pressed_fragment".into();
