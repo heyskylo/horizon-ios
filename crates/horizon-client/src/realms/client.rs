@@ -779,9 +779,9 @@ impl RealmsClient {
         Self::execute(self.request("PUT", &url, READ_TIMEOUT), Some("")).map(drop)
     }
 
-    /// `RealmsClient.subscriptionFor`: the configuration screen's subscription tab.
+    /// `RealmsClient.subscriptionFor`: `GET subscriptions/{id}` (no `worlds/` prefix).
     pub fn subscription_for(&self, realm_id: i64) -> Result<Subscription, RealmsError> {
-        let url = self.url(&format!("worlds/{realm_id}/subscription"));
+        let url = self.url(&format!("subscriptions/{realm_id}"));
         let json = Self::execute(self.request("GET", &url, READ_TIMEOUT), None)?;
         serde_json::from_str(&json).map_err(|_| RealmsError::Parse)
     }
