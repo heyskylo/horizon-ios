@@ -126,7 +126,7 @@ fn fallback_spawn(own: Option<Vec3>, world: Option<[i32; 3]>) -> Vec3 {
 pub(super) struct EndState {
     /// Ticks until the player can use a gateway again (TheEndGatewayBlockEntity cooldown).
     gateway_cooldown: u32,
-    gateways: HashMap<u32, horizon_client::end_gateway::Traveller>,
+    pub(super) gateways: HashMap<u32, horizon_client::end_gateway::Traveller>,
     /// The entities that went through a gateway, waiting for its exit.
     arrivals: Vec<GatewayArrival>,
     /// The chunks kept loaded for those arrivals.
@@ -1429,8 +1429,15 @@ impl Game<'_> {
             if self.restart_portal_cooldown(id) {
                 continue;
             }
-            self.end.gateways.entry(id).or_default().enter(pos);
+            let delay = self.entity_portal_delay(id);
+            self.end
+                .gateways
+                .entry(id)
+                .or_default()
+                .enter_with_delay(pos, delay);
         }
+        // ThrowableProjectile applies the gateway's block effect before Entity.tick.
+        self.handle_end_gateway_portals_phase(true);
     }
 
     /// `ThrownEnderpearl.onInsideBlock` in an End gateway: its owner's
@@ -1452,6 +1459,10 @@ impl Game<'_> {
     /// `Entity.handlePortal` for the entities in an End gateway: they go
     /// through to the gateway's exit, where they wait for its chunks.
     pub(super) fn handle_end_gateway_portals(&mut self) {
+        self.handle_end_gateway_portals_phase(false);
+    }
+
+    fn handle_end_gateway_portals_phase(&mut self, after_move: bool) {
         if self.remote.is_some() || self.dim != Dim::End {
             return;
         }
@@ -1488,11 +1499,20 @@ impl Game<'_> {
         self.end.gateways.retain(|id, _| present.contains(id));
         let mut leaving: Vec<(u32, BlockPos)> = Vec::new();
         for (id, allowed) in ids {
+            let is_pearl = self
+                .creatures
+                .projectiles
+                .iter()
+                .any(|p| p.id == id && matches!(p.kind, ProjectileKind::EnderPearl));
+            if is_pearl != after_move {
+                continue;
+            }
+            let delay = self.entity_portal_delay(id);
             let Some(state) = self.end.gateways.get_mut(&id) else {
                 continue;
             };
             // The End gateway has no transition time (Portal.getPortalTransitionTime).
-            if let Some(entry) = state.travel(allowed) {
+            if let Some(entry) = state.travel_with_delay(allowed, delay) {
                 leaving.push((id, entry));
             }
             if state.is_done() {

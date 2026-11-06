@@ -5893,6 +5893,9 @@ def groups():
         ('selector missing predicates', selector_missing_predicates()),
         ('levels', levels()),
         ('end portal entities', end_portal_entities()),
+        ('portal cooldown classes', portal_cooldown_classes()),
+        ('portal cooldown arrivals', portal_cooldown_arrivals()),
+        ('portal cooldown gateways', portal_cooldown_gateways()),
         ('items and loot', items_and_loot()),
         ('numeric array edits', numeric_array_edits()),
         ('projectile saved UUID', projectile_saved_uuid()),
@@ -5942,3 +5945,27 @@ def groups():
         ('summoned potions', summoned_potions()),
         ('creeper cloud selectors', creeper_cloud_selectors()),
     ]
+
+
+def portal_cooldown_classes():
+    try:
+        from .portal_cooldown_corpus import cases
+    except ImportError:
+        from portal_cooldown_corpus import cases
+    return cases(cmd, setup)
+
+
+def portal_cooldown_arrivals():
+    try:
+        from .portal_cooldown_corpus import arrivals
+    except ImportError:
+        from portal_cooldown_corpus import arrivals
+    return arrivals(cmd, setup)
+
+
+def portal_cooldown_gateways():
+    try:
+        from .portal_cooldown_corpus import gateways
+    except ImportError:
+        from portal_cooldown_corpus import gateways
+    return gateways(cmd, setup)
