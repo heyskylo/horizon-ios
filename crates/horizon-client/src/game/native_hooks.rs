@@ -2536,6 +2536,24 @@ impl Game<'_> {
     pub(super) fn native_level_tick_post(&mut self, dimension: &str) {
         mod_api::dispatch_level_tick_post(self, mod_api::mods(), dimension);
     }
+    /// The local player attacked an entity, right after the attack left for
+    /// the server (`MultiPlayerGameMode.attack`): `target` is the entity's id,
+    /// `player` whether it is another player. The window's own view, on any
+    /// server, a vanilla one or single player's own thread: a client mod
+    /// hears its player's attacks where the server's `native_attack_entity`
+    /// doesn't run. Whether the hit lands is the server's to say. Client only.
+    /// API @API:client_combat@.
+    pub(super) fn native_client_attack(&mut self, target: u32, player: bool) {
+        mod_api::dispatch_client_attack(self, mod_api::mods(), target, player);
+    }
+    /// The server says the local player was hurt
+    /// (`ClientboundDamageEventPacket`, the packet that tilts the camera):
+    /// `attacker` is the entity that caused it when the server names one (the
+    /// shooter of an arrow, not the arrow), `player` whether that is another
+    /// player. Client only. API @API:client_combat@.
+    pub(super) fn native_client_hurt(&mut self, attacker: Option<u32>, player: bool) {
+        mod_api::dispatch_client_hurt(self, mod_api::mods(), attacker, player);
+    }
     /// A client tick of the window starts (NeoForge's `ClientTickEvent.Pre`,
     /// at the top of `Minecraft.tick`), before any of its work. The window
     /// ticks 20 times a second on the title screen, while paused and in a

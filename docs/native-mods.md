@@ -3030,6 +3030,23 @@ NeoForge's `ClientPlayerNetworkEvent.LoggingOut`. It is told before a connection
 a new integrated server is created, and Horizon's doesn't. A mod keeps its per-server state between the two: caches, a
 handshake with its server half, a welcome message. Bundles need `"hooks": @API:client_player_network_logging_in@`.
 
+### The local player's combat, on the client
+
+API @API:client_combat@, `crates/horizon-client/src/game/native_hooks.rs`: what the window sees of its own player's
+fights, on any server (a vanilla one, a plugin server, single player's own thread). The server hooks
+(`native_attack_entity`, `native_living_incoming_damage`) run only where Horizon is the server, so a client mod such as
+a battle-music or combat-HUD mod listens to these instead.
+
+- `native_client_attack(target, player)`: the local player attacked entity `target`, right after the attack packet left
+  (`MultiPlayerGameMode.attack`, the same point vanilla swings the arm). `player` is whether `target` is another
+  player. Whether the hit lands is the server's to say: a hit that lands comes back as that entity's hurt animation.
+- `native_client_hurt(attacker, player)`: the server says the local player was hurt (`ClientboundDamageEventPacket`,
+  the packet that tilts the camera and plays the hurt sound). `attacker` is the entity that caused it when the server
+  names one (the shooter of an arrow, not the arrow; none for falling, lava or a cactus), `player` whether this client
+  knows it as a player. An attacker out of this client's tracking range is still named, as not a player.
+
+Both are only told: nothing to answer or cancel. Client only. Bundles need `"hooks": @API:client_combat@`.
+
 ### Sounds a client mod plays
 
 `native_play_local_sound(sound, at, volume, pitch, delay)` (client) plays sound event `sound` at `at` for this player only,

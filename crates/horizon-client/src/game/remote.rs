@@ -142,6 +142,18 @@ pub(super) fn remote_text(tag: &Tag) -> horizon_client::text::Text {
 /// neither raised for a baby nor jittered - `LivingEntity.getVoicePitch`, which
 /// the mobs port, does both. It takes no random, so it draws nothing from the
 /// level random either.
+/// Who hurt the local player, for `native_client_hurt`: the damage event's
+/// causing entity (`sourceCauseId`) and whether `is_player` knows it as a
+/// player. An entity this client doesn't track is still named, as not a player.
+fn own_hurt_attacker(
+    cause: Option<i32>,
+    is_player: impl Fn(u32) -> Option<bool>,
+) -> (Option<u32>, bool) {
+    let attacker = cause.and_then(|id| u32::try_from(id).ok());
+    let player = attacker.and_then(is_player).unwrap_or(false);
+    (attacker, player)
+}
+
 pub(super) fn player_voice_pitch() -> f32 {
     1.0
 }
@@ -4177,6 +4189,12 @@ impl Game<'_> {
                 let own = me == Some(p.id);
                 self.pvp_hurt(p.id, own, p.direct.map(|d| Some(d) == me));
                 if own {
+                    let (attacker, player) = own_hurt_attacker(p.cause, |id| {
+                        self.mob_index
+                            .get(&self.mobs, id)
+                            .map(|m| &*m.kind.id == "minecraft:player")
+                    });
+                    self.native_client_hurt(attacker, player);
                     let at = self
                         .player
                         .as_ref()
@@ -9172,6 +9190,8 @@ impl Game<'_> {
                     id: self.mobs[i].id as i32,
                 }));
                 self.pvp_attacked(self.mobs[i].id as i32, distance);
+                let (target, player) = (self.mobs[i].id, &*self.mobs[i].kind.id == "minecraft:player");
+                self.native_client_attack(target, player);
                 self.remote_player_attack(i);
                 self.reset_attack_strength();
             }
@@ -11157,6 +11177,24 @@ mod tests {
         // Interaction entities honor response.
         assert!(remote_object_swings(Some(true), false));
         assert!(!remote_object_swings(Some(false), false));
+    }
+
+    /// The local player's attacker for `native_client_hurt`: the cause the
+    /// server named, a player only when this client knows it as one.
+    #[test]
+    fn own_hurt_names_the_cause_and_whether_it_is_a_player() {
+        let known = |id: u32| match id {
+            7 => Some(true),
+            9 => Some(false),
+            _ => None,
+        };
+        assert_eq!(super::own_hurt_attacker(Some(7), known), (Some(7), true));
+        assert_eq!(super::own_hurt_attacker(Some(9), known), (Some(9), false));
+        // Out of this client's tracking range: named, not a player.
+        assert_eq!(super::own_hurt_attacker(Some(40), known), (Some(40), false));
+        // Fall damage, lava, a cactus: no cause.
+        assert_eq!(super::own_hurt_attacker(None, known), (None, false));
+        assert_eq!(super::own_hurt_attacker(Some(-1), known), (None, false));
     }
 
     /// A mod's chat goes out only from a joined player, and only what the
