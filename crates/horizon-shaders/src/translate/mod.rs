@@ -1283,6 +1283,7 @@ fn compile(stage: &Stage, text: &str, header_lines: usize) -> Result<naga::Modul
         }
     };
     end_returns_give_zero(&mut module);
+    lengths_of_loaded_arrays(&mut module);
     Validator::new(ValidationFlags::all(), Capabilities::all())
         .subgroup_operations(naga::valid::SubgroupOperationSet::all())
         .subgroup_stages(naga::valid::ShaderStages::all())
@@ -1300,6 +1301,37 @@ fn compile(stage: &Stage, text: &str, header_lines: usize) -> Result<naga::Modul
             vec![at(&text, span, message)]
         })?;
     Ok(module)
+}
+
+/// `block.member.length()` of a buffer block's runtime-sized array: naga's frontend loads the
+/// array and takes the length of the loaded value, which its validator refuses, since a
+/// runtime-sized array can't be loaded. The length is taken of the array's pointer instead. The
+/// load's slot becomes that length, and the old length expression a plain conversion of it, so
+/// every handle and emitted range stays as it was.
+fn lengths_of_loaded_arrays(module: &mut naga::Module) {
+    use naga::Expression as E;
+    let functions = module.functions.iter_mut().map(|(_, f)| f);
+    for f in functions.chain(module.entry_points.iter_mut().map(|e| &mut e.function)) {
+        let loads: Vec<_> = f
+            .expressions
+            .iter()
+            .filter_map(|(at, e)| match *e {
+                E::ArrayLength(loaded) => match f.expressions[loaded] {
+                    E::Load { pointer } => Some((at, loaded, pointer)),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        for (at, loaded, pointer) in loads {
+            f.expressions[loaded] = E::ArrayLength(pointer);
+            f.expressions[at] = E::As {
+                expr: loaded,
+                kind: naga::ScalarKind::Uint,
+                convert: Some(4),
+            };
+        }
+    }
 }
 
 /// GLSL lets a function that returns a value reach its end without a `return`: what it returns
@@ -3259,6 +3291,21 @@ in VertexData {{ {member} }} vIn;
             .into();
         assert_eq!(buffer_layout(&p.fragment, 2), (expected.clone(), 64));
         assert_eq!(buffer_layout(&p.vertex, 2), (expected, 64));
+    }
+
+    /// `.length()` of a runtime-sized array in a named buffer block translates: naga's validator
+    /// refused the load its frontend makes there.
+    #[test]
+    fn the_length_of_a_named_blocks_runtime_array_translates() {
+        let csh = "#version 430\nlayout(local_size_x = 1) in;\n\
+                   struct Point { vec4 at; };\n\
+                   layout(std430, binding = 1) buffer Points { int n; Point p[]; } points;\n\
+                   layout(std430, binding = 2) buffer Counts { float f[]; } counts;\n\
+                   void main() {\n    int n = points.p.length();\n    \
+                   counts.f[0] = float(n + counts.f.length());\n}\n";
+        let pack = Pack::from_zip_bytes("P.zip", zip(&[("shaders/deferred_a.csh", csh)])).unwrap();
+        translate_compute(&preprocess(&pack, "deferred_a.csh", &Macros::standard()))
+            .unwrap_or_else(|e| panic!("{e:?}"));
     }
 
     /// A block without an instance name: its member is named alone.
