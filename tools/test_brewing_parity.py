@@ -7,7 +7,13 @@ checks all three brewing-slot filters and calls the first matching recipe's
 `assemble`. The Rust probe calls `brewing::Brewing::is_bottle`/`is_reagent`,
 `brewing_fuel` and `Brewing::find`. Cases cover every bundled brewing recipe,
 every potion type and potion id against every reagent, candidates from the
-whole item registry, and non-matching pairs.
+whole item registry, and non-matching pairs. Tick cases run
+`BrewingStandBlockEntity.serverTick` and `BrewingStand::tick` for 0..8001
+ticks: the 400-tick brew time divided by `speed_multiplier` and its ceiling,
+blaze powder's 20 fuel uses, fuel loaded with nothing to brew, splash and
+lingering outputs, ingredient shrink and mismatch, the brew sound, and the
+bottle bits. `--no-tick` leaves the tick corpus out, and `--baseline` keeps
+only the exact recipe pairs.
 """
 import json
 from pathlib import Path
@@ -21,11 +27,11 @@ except ImportError:
 POTION_ITEMS = ['potion', 'splash_potion', 'lingering_potion']
 
 
-def stack(item, potion=None):
+def stack(item, potion=None, count=1):
     if potion:
-        return '{id:"%s",count:1,components:{"minecraft:potion_contents":{potion:"%s"}}}' % (
-            item, potion)
-    return '{id:"%s",count:1}' % item
+        return '{id:"%s",count:%d,components:{"minecraft:potion_contents":{potion:"%s"}}}' % (
+            item, count, potion)
+    return '{id:"%s",count:%d}' % (item, count)
 
 
 def recipes(resources):
@@ -40,6 +46,82 @@ def recipes(resources):
             'reagent': stack(data['reagent']['item']),
             'output': data['output'],
         })
+    return out
+
+
+def potion(kind='potion', name='water', count=1):
+    return '{id:"minecraft:%s",count:%d,components:{"minecraft:potion_contents":{potion:"minecraft:%s"}}}' % (
+        kind, count, name)
+
+
+def tick_case(ticks, slots, brew_time=0, fuel=0, total=0, total_fuel=20, speed=1.0,
+              ingredient='-'):
+    filled = [slot if slot else '-' for slot in slots]
+    return 'tick %d %s %d %d %d %d %s %s' % (
+        ticks, ' '.join(filled), brew_time, fuel, total, total_fuel, speed, ingredient)
+
+
+def tick_cases():
+    water = potion()
+    awkward = potion(name='awkward')
+    splash = potion('splash_potion')
+    lingering = potion('lingering_potion')
+    wart = stack('minecraft:nether_wart')
+    wart2 = stack('minecraft:nether_wart', count=2)
+    wart5 = stack('minecraft:nether_wart', count=5)
+    wart21 = stack('minecraft:nether_wart', count=21)
+    blaze = stack('minecraft:blaze_powder')
+    blaze2 = '{id:"minecraft:blaze_powder",count:2}'
+    redstone = stack('minecraft:redstone')
+    out = []
+    # Brew-time countdown, with fuel already in the tank.
+    for ticks in (0, 1, 2, 399, 400, 401, 402, 800):
+        out.append(tick_case(ticks, [water, None, None, wart, None], fuel=20,
+                             total=400, ingredient='minecraft:nether_wart'))
+    # Blaze powder loads the tank (uses=20, speed=1), then the brew runs.
+    for ticks in (0, 1, 2, 399, 400, 401):
+        out.append(tick_case(ticks, [water, None, None, wart, blaze], total=0,
+                             ingredient='minecraft:nether_wart'))
+    out.append(tick_case(1, [water, None, None, wart, blaze2], total=0,
+                         ingredient='minecraft:nether_wart'))
+    # Fuel loads even with nothing to brew.
+    out.append(tick_case(1, [None, None, None, wart, blaze], total=0,
+                         ingredient='minecraft:nether_wart'))
+    out.append(tick_case(1, [None, None, None, None, blaze], total=0))
+    # Brew time is ceil(400 / speed) and speed 0 falls back to 1.
+    for speed, finish in ((2.0, 200), (3.0, 134), (0.3, 1334), (0.0, 400)):
+        for ticks in (1, finish, finish + 1, finish + 2):
+            out.append(tick_case(ticks, [water, None, None, wart, None], fuel=5,
+                                 total=0, speed=speed, ingredient='minecraft:nether_wart'))
+    # Only the slots with a recipe change; the no-recipe bottle stays.
+    for ticks in (1, 400, 401):
+        out.append(tick_case(ticks, [water, awkward, water, wart, None], fuel=20,
+                             total=400, ingredient='minecraft:nether_wart'))
+    # The ingredient stack shrinks; the last one leaves an empty slot.
+    for wart_stack, ticks in ((wart2, 400), (wart5, 400), (stack('minecraft:nether_wart'), 400)):
+        out.append(tick_case(ticks, [water, None, None, wart_stack, None], fuel=20,
+                             total=400, ingredient='minecraft:nether_wart'))
+    # Changing the ingredient mid-brew clears the progress; finishing does not need fuel.
+    out.append(tick_case(1, [water, None, None, redstone, None], brew_time=200, fuel=5,
+                         total=400, ingredient='minecraft:nether_wart'))
+    out.append(tick_case(1, [water, None, None, wart, None], brew_time=1, fuel=0,
+                         total=400, ingredient='minecraft:nether_wart'))
+    out.append(tick_case(1, [water, None, None, None, None], brew_time=1, fuel=5,
+                         total=400, ingredient='minecraft:nether_wart'))
+    # Splash and lingering potions keep their kind through the mix.
+    out.append(tick_case(401, [splash, None, None, wart, None], fuel=20, total=400,
+                         ingredient='minecraft:nether_wart'))
+    out.append(tick_case(401, [lingering, None, None, wart, None], fuel=20, total=400,
+                         ingredient='minecraft:nether_wart'))
+    # Twenty brews from one blaze powder's twenty uses; the 21st ingredient stays.
+    out.append(tick_case(8001, [water, None, None, wart21, blaze], total=0,
+                         ingredient='minecraft:nether_wart'))
+    out.append(tick_case(8002, [water, None, None, wart21, blaze], total=0,
+                         ingredient='minecraft:nether_wart'))
+    # Bottle bits are set from the slots on the first tick.
+    for slots in ([None, None, None], [water, None, None], [water, None, water],
+                  [water, awkward, water]):
+        out.append(tick_case(1, slots + [None, None], fuel=20))
     return out
 
 
@@ -79,6 +161,8 @@ def make_cases(build):
         for potion in potion_ids:
             for item in POTION_ITEMS:
                 cases.append(f"- - {stack('minecraft:' + item, potion)}")
+    if '--no-tick' not in sys.argv:
+        cases += tick_cases()
     # Duplicate-free while keeping the first occurrence order.
     seen = set()
     unique = []
@@ -96,8 +180,9 @@ if __name__ == '__main__':
         'brewing-parity', 'VanillaBrewingOracle', 'brewing_fixture', make_cases,
         'BrewingRecipe matching and assemble over the vanilla brewing data, the brewing_input and '
         'brewing_reagent property sets and the potion, reagent and fuel slot filters, for every '
-        'bundled recipe, potion type/id and item candidate. --baseline leaves out the cross-product '
-        'and whole-registry slot candidates. The brewing-stand tick, brew time and fuel use remain pending.',
+        'bundled recipe, potion type/id and item candidate, plus the brewing-stand tick: brew time and '
+        'speed multiplier, fuel uses and loading, ingredient shrink, outputs and bottle bits. --baseline '
+        'leaves out the cross-product and whole-registry slot candidates; --no-tick leaves out the tick cases.',
         sources=[lab.ROOT / 'crates/horizon-client-render/src/brewing.rs',
                  lab.ROOT / 'crates/horizon-items/src/item_data.rs',
                  lab.ROOT / 'crates/horizon-items/src/items.rs'])
