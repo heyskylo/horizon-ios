@@ -6608,6 +6608,25 @@ impl Game<'_> {
     ) {
         mod_api::dispatch_player_level_change(self, mod_api::mods(), player, name, from, to);
     }
+    /// A line the dedicated server's console is about to run
+    /// (`DedicatedServer.handleConsoleInputs`), before vanilla's commands, the
+    /// dedicated-only ones and mods' registered ones (`native_perform_console_command`)
+    /// see it: `source` is `console` for a line typed on the console or sent
+    /// by `horizon-server` as the console (its console, `cmd`, the panel, its
+    /// own `save-off` around a backup), `rcon` for an RCON command. `line` is as
+    /// given, a leading slash included. Set `cancel` and it does not run. Each
+    /// line in `replies` answers the source as the console's feedback does: in
+    /// the log, and in the RCON or `horizon-server` reply. There is no player:
+    /// the source is the console at level 4. Server-side. API @API:console_line@.
+    pub(super) fn native_console_line(
+        &mut self,
+        source: &str,
+        line: &str,
+        cancel: &mut bool,
+        replies: &mut Vec<Text>,
+    ) {
+        mod_api::dispatch_console_line(self, mod_api::mods(), source, line, replies, cancel);
+    }
     /// A click in a menu a mod opened (`native_open_menu`), which moved
     /// nothing: the menu's `slot` (its own first, then the player's
     /// inventory, `native_menu_inventory_slot`; -999 outside), the `button`

@@ -15,6 +15,7 @@ pub struct NativeClientHooks {
     pub register_goals: fn(&mut crate::mobs::Mob),
     pub ingredient: fn(&str, &Map<String, Value>, &mut Vec<String>),
     pub ingredient_test: fn(&str, &Map<String, Value>, &ItemStack, &mut bool),
+    pub log_line: fn(&str, &str, &str, &str),
 }
 
 static HOOKS: OnceLock<NativeClientHooks> = OnceLock::new();
@@ -124,5 +125,25 @@ pub(crate) fn ingredient_test(
 ) {
     if let Some(hooks) = HOOKS.get() {
         (hooks.ingredient_test)(kind, data, stack, accept);
+    }
+}
+
+/// A message was written to the log (`logs/latest.log`), on the log's own writer thread, never
+/// the server's or the render thread, so a slow mod holds up no tick (the file is written first,
+/// and the lines a mod logs here come back to it later). `level` is `INFO`, `WARN` or `ERROR`,
+/// `thread` the thread it names (`Server thread`, `User Authenticator #1`...), `message` the text
+/// as logged and `line` what the file got, `[HH:mm:ss] [thread/LEVEL]: message`, a multi-line
+/// message's further lines after newlines. Every message the file gets, from the client or a
+/// dedicated server, from the first lines on; lines the flood limit leaves out are not heard.
+/// There is no `Game`: keep what you need and act on it in another hook. A mod that panics
+/// here is not called again. API @API:log_line@.
+#[inline(never)]
+pub fn native_log_line(level: &str, thread: &str, message: &str, line: &str) {
+    log_line(level, thread, message, line);
+}
+
+pub(crate) fn log_line(level: &str, thread: &str, message: &str, line: &str) {
+    if let Some(hooks) = HOOKS.get() {
+        (hooks.log_line)(level, thread, message, line);
     }
 }

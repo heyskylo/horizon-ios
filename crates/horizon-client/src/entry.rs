@@ -46,6 +46,8 @@ pub fn main_with(mods: crate::mod_api::Mods) {
         }
         (logging::game_home(), "client", "Render thread")
     };
+    // Before the log opens, so a mod's injection hears its first lines.
+    logging::set_line_hook(crate::native_client_hooks::native_log_line);
     if !help {
         logging::init(
             logging::player_dir_override().unwrap_or(home.as_path()),
@@ -170,6 +172,9 @@ pub fn main_with(mods: crate::mod_api::Mods) {
                 stack,
                 accept,
             );
+        },
+        log_line: |level, thread, message, line| {
+            crate::mod_api::dispatch_log_line(crate::mod_api::mods(), level, thread, message, line);
         },
     })
     .is_err()

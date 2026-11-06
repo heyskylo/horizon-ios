@@ -2511,6 +2511,24 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
 - **`native_player_jump(player, name)`**: accepted guest movement made the server player jump from the ground, after movement simulation finishes. The guest's state is swapped in.
 - **`native_player_kicked(player, name, reason)`**: a guest was kicked after the hub recorded the rendered disconnect reason and sent the disconnect. The guest's state is swapped in, unless the guest was already removed in the same poll (a kick and the disconnect arriving together): the hook still fires, without it.
 - **`native_player_level_change(player, name, from, to)`**: a server player's experience change altered their level, after the new level was applied. The guest's state is swapped in when the player is a guest.
+
+#### Server hooks for plugin ports: console and log
+
+- **`native_console_line(source, line, cancel, replies)`**: a line the dedicated server's console is about to run, before
+  any command sees it (vanilla's, the dedicated-only ones such as `stop`, and `native_perform_console_command`'s).
+  `source` is `console` for a line typed on the console or sent by `horizon-server` as the console (its console, `cmd`,
+  the panel, the `save-off` around its backups) and `rcon` for an RCON command; `line` is as given, a leading slash
+  included. Set `cancel` and it does not run. Push to `replies` to answer: each line is logged as the console's
+  feedback is, so it also reaches the RCON client or the `horizon-server` caller. There is no player (the console is
+  level 4). An audit log's `ServerCommandEvent`/`RemoteServerCommandEvent`. Bundles need `"hooks": @API:console_line@`.
+- **`native_log_line(level, thread, message, line)`** (`horizon_client_lib::native_client_hooks`): a message was
+  written to `logs/latest.log`, so a console bridge needs no tailing of the file. `level` is `INFO`, `WARN` or `ERROR`,
+  `thread` the thread the line names, `message` the text and `line` what the file got (`[HH:mm:ss] [thread/LEVEL]:
+  message`). It runs on the log's own writer thread after the file is written, never on the server or render thread,
+  so a slow mod holds up no tick; it has no `Game`, and a line a mod logs from it comes back to it later (don't log
+  each line you hear). Lines the flood limit leaves out are not heard, and a mod that panics in it is not called again.
+  Bundles need `"hooks": @API:log_line@`.
+
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a
