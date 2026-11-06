@@ -150,6 +150,11 @@ impl Levels {
         self.parked.get_mut(&dim).map(|level| &mut level.world)
     }
 
+    /// The streaming of the level not in place, in `dim`, to change.
+    pub(super) fn parked_streaming_mut(&mut self, dim: Dim) -> Option<&mut Streaming> {
+        self.parked.get_mut(&dim).map(|level| &mut level.streaming)
+    }
+
     /// The level not in place, in `dim`.
     pub(super) fn parked_mut(&mut self, dim: Dim) -> Option<&mut Parked> {
         self.parked.get_mut(&dim)
@@ -390,6 +395,8 @@ impl Game<'_> {
             if opened {
                 // The new streaming's radius and meshing options.
                 self.apply_settings();
+                // A mod's tickets held for the level while it was closed.
+                self.native_chunk_tickets_opened();
                 self.native_level_opened(target);
             }
         }
@@ -679,6 +686,8 @@ impl Game<'_> {
                     || self.mod_container_viewers.keys().any(|(k, _)| *k == d.id())
                     || self.player_bed_levels().any(|b| b == *d)
                     || forced
+                    // A native mod's tickets for a level not open yet (`native_force_chunk_in`).
+                    || self.mod_chunk_tickets.get(d).is_some_and(|l| !l.is_empty())
                     // A game test runs in its own level, players or not.
                     || self.game_tests.has_tests_in(*d)
                     || self.pregen_level() == Some(*d)
