@@ -1121,7 +1121,10 @@ impl Items {
         let Some(held) = held.filter(|s| s.count > 0 && &*s.item != "minecraft:air") else {
             return true;
         };
-        if held.data().is_some_and(|d| d.other("!minecraft:tool").is_some()) {
+        if held
+            .data()
+            .is_some_and(|d| d.other("!minecraft:tool").is_some())
+        {
             return true;
         }
         if let Some(tool) = held.data().and_then(|d| d.other("minecraft:tool")) {
@@ -1140,11 +1143,15 @@ impl Items {
     pub fn mining_speed(&self, held: Option<&ItemStack>, block: &str) -> f32 {
         let held = held.filter(|s| s.count > 0 && &*s.item != "minecraft:air");
         if let Some(stack) = held {
-            if stack.data().is_some_and(|d| d.other("!minecraft:tool").is_some()) {
+            if stack
+                .data()
+                .is_some_and(|d| d.other("!minecraft:tool").is_some())
+            {
                 return 1.0;
             }
             if let Some(tool) = stack.data().and_then(|d| d.other("minecraft:tool")) {
-                return self.stack_tool_rule(tool, block, "speed")
+                return self
+                    .stack_tool_rule(tool, block, "speed")
                     .and_then(tool_number)
                     .or_else(|| tool.get("default_mining_speed").and_then(tool_number))
                     .unwrap_or(1.0);
@@ -1170,12 +1177,17 @@ impl Items {
     pub fn correct_for_drops(&self, held: Option<&ItemStack>, block: &str) -> bool {
         let held = held.filter(|s| s.count > 0 && &*s.item != "minecraft:air");
         if let Some(stack) = held {
-            if stack.data().is_some_and(|d| d.other("!minecraft:tool").is_some()) {
+            if stack
+                .data()
+                .is_some_and(|d| d.other("!minecraft:tool").is_some())
+            {
                 return false;
             }
             if let Some(tool) = stack.data().and_then(|d| d.other("minecraft:tool")) {
                 return horizon_world::datafix::dynamic::as_bool(
-                    self.stack_tool_rule(tool, block, "correct_for_drops"), false);
+                    self.stack_tool_rule(tool, block, "correct_for_drops"),
+                    false,
+                );
             }
         }
         let Some(info) = held.and_then(|s| self.get(&s.item)) else {
@@ -1190,9 +1202,16 @@ impl Items {
         }
         false
     }
-    fn stack_tool_rule<'a>(&self, tool: &'a horizon_world::nbt::Tag, block: &str, field: &str) -> Option<&'a horizon_world::nbt::Tag> {
+    fn stack_tool_rule<'a>(
+        &self,
+        tool: &'a horizon_world::nbt::Tag,
+        block: &str,
+        field: &str,
+    ) -> Option<&'a horizon_world::nbt::Tag> {
         use horizon_world::nbt::Tag;
-        let Tag::List(rules) = tool.get("rules")? else { return None };
+        let Tag::List(rules) = tool.get("rules")? else {
+            return None;
+        };
         rules.iter().find_map(|rule| {
             let value = rule.get(field)?;
             let matches = |value: &Tag| match value {
@@ -1201,7 +1220,11 @@ impl Items {
                     let id = s.strip_prefix('#').unwrap_or(&s);
                     horizon_world::datafix::identifier(id).is_some_and(|(namespace, path)| {
                         let id = format!("{namespace}:{path}");
-                        if tag { self.block_in_tag(&id, block) } else { id == block }
+                        if tag {
+                            self.block_in_tag(&id, block)
+                        } else {
+                            id == block
+                        }
                     })
                 }),
                 _ => false,
@@ -1218,11 +1241,17 @@ impl Items {
         if stack.count == 0 || &*stack.item == "minecraft:air" {
             return None;
         }
-        if stack.data().is_some_and(|d| d.other("!minecraft:tool").is_some()) {
+        if stack
+            .data()
+            .is_some_and(|d| d.other("!minecraft:tool").is_some())
+        {
             return None;
         }
         if let Some(tool) = stack.data().and_then(|d| d.other("minecraft:tool")) {
-            return Some(horizon_world::datafix::dynamic::as_int(tool.get("damage_per_block"), 1).max(0) as u32);
+            return Some(
+                horizon_world::datafix::dynamic::as_int(tool.get("damage_per_block"), 1).max(0)
+                    as u32,
+            );
         }
         self.get(&stack.item)?.tool_damage_per_block
     }
@@ -1231,7 +1260,9 @@ impl Items {
     pub fn mining_damage_capacity(&self, stack: &ItemStack) -> u32 {
         let prototype_max = self.get(&stack.item).map_or(0, |info| info.max_damage);
         let component = |id| stack.data().and_then(|d| d.other(id));
-        if prototype_max == 0 || stack.count == 0 || &*stack.item == "minecraft:air"
+        if prototype_max == 0
+            || stack.count == 0
+            || &*stack.item == "minecraft:air"
             || component("!minecraft:max_damage").is_some()
             || component("!minecraft:damage").is_some()
             || component("minecraft:unbreakable").is_some()
@@ -2559,7 +2590,8 @@ mod tests {
 
     #[test]
     fn admitted_tool_rules_override_defaults_and_removals_survive_saving() {
-        let root = std::env::temp_dir().join(format!("horizon-tool-components-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("horizon-tool-components-{}", std::process::id()));
         fs::create_dir_all(root.join("data/minecraft/loot_table")).unwrap();
         fs::write(root.join("items.json"), r#"{"minecraft:stick":{},"minecraft:diamond_pickaxe":{"minecraft:max_damage":1561,"minecraft:tool":{"rules":[{"blocks":"minecraft:stone","speed":8.0,"correct_for_drops":true}],"damage_per_block":1}}}"#).unwrap();
         let items = Items::catalog(&root, &PackOverlay::NONE).unwrap();
@@ -2568,7 +2600,8 @@ mod tests {
         assert!(items.correct_for_drops(Some(&pick), "minecraft:stone"));
         let removal = crate::item_data::command_components("[!tool]").unwrap();
         (pick.damage, pick.extra) = crate::item_data::decode_components(Some(&removal));
-        let restored = crate::item_nbt::item_from_nbt(&crate::item_nbt::item_to_nbt(&pick)).unwrap();
+        let restored =
+            crate::item_nbt::item_from_nbt(&crate::item_nbt::item_to_nbt(&pick)).unwrap();
         assert_eq!(items.mining_speed(Some(&restored), "minecraft:stone"), 1.0);
         assert!(!items.correct_for_drops(Some(&restored), "minecraft:stone"));
         assert_eq!(items.mining_damage(&restored), None);
@@ -2580,8 +2613,15 @@ mod tests {
         assert_eq!(items.mining_speed(Some(&stick), "minecraft:cobweb"), 2.0);
         assert_eq!(items.mining_damage(&stick), Some(3));
         assert_eq!(items.mining_damage_capacity(&stick), 0);
-        stick.data_mut().set_other("minecraft:max_damage", Some(horizon_world::nbt::Tag::Int(20)));
-        assert_eq!(items.mining_damage_capacity(&stick), 0, "MAX_DAMAGE alone does not supply DAMAGE");
+        stick.data_mut().set_other(
+            "minecraft:max_damage",
+            Some(horizon_world::nbt::Tag::Int(20)),
+        );
+        assert_eq!(
+            items.mining_damage_capacity(&stick),
+            0,
+            "MAX_DAMAGE alone does not supply DAMAGE"
+        );
         stick.count = 0;
         assert_eq!(items.mining_speed(Some(&stick), "minecraft:stone"), 1.0);
         assert!(!items.correct_for_drops(Some(&stick), "minecraft:stone"));

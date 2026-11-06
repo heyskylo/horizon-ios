@@ -48,7 +48,7 @@ def main():
     metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--locked', '--no-deps', '--format-version', '1'], cwd=lab.ROOT))
     binary = Path(metadata['target_directory']) / 'debug/examples' / ('client_probe.exe' if os.name == 'nt' else 'client_probe')
     resources = Path(os.environ.get('HORIZON_TEST_RESOURCES', lab.RESOURCES))
-    harness.run_logged([binary, 'stack_mining_probe', inputs, build / 'rust.txt', resources], build, 'rust')
+    harness.run_logged([binary, 'stack_mining_probe', inputs, build / 'rust.txt', resources], build, 'rust', env=lab.game_env())
     harness.compare(build / 'vanilla.txt', build / 'rust.txt', len(rows))
     print(f'{len(rows)} stack mining command/save cases match pinned vanilla {lab.VERSION}')
 

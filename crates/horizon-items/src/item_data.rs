@@ -1180,8 +1180,15 @@ pub fn command_components(text: &str) -> Result<Tag, String> {
             entries.insert(JavaString::from(id.as_str()), tag);
             rest = &value[used..];
         } else if let Some(key) = key.strip_prefix('!') {
-            let id = if key.contains(':') { format!("!{key}") } else { format!("!minecraft:{key}") };
-            entries.insert(JavaString::from(id.as_str()), Tag::compound([] as [(&str, Tag); 0]));
+            let id = if key.contains(':') {
+                format!("!{key}")
+            } else {
+                format!("!minecraft:{key}")
+            };
+            entries.insert(
+                JavaString::from(id.as_str()),
+                Tag::compound([] as [(&str, Tag); 0]),
+            );
         }
         rest = rest.trim_start();
         rest = rest.strip_prefix(',').unwrap_or(rest).trim_start();

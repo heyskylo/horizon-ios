@@ -150,8 +150,6 @@ mod glowing;
 mod golems;
 mod growth;
 mod hand;
-#[cfg(test)]
-mod mining_component_tests;
 mod headless;
 mod hud_editor;
 mod ime;
@@ -205,6 +203,8 @@ mod machines;
 mod maps;
 mod memory;
 mod minecarts;
+#[cfg(test)]
+mod mining_component_tests;
 mod mob_blocks;
 #[cfg(test)]
 mod mob_discard_tests;
@@ -14044,9 +14044,18 @@ impl Game<'_> {
             Some(held) => self.wear(&held, amount),
             None => amount,
         };
-        self.apply_held_damage(amount, max, horizon_world::player_inventory::EquipmentSlot::MainHand);
+        self.apply_held_damage(
+            amount,
+            max,
+            horizon_world::player_inventory::EquipmentSlot::MainHand,
+        );
     }
-    fn apply_held_damage(&mut self, amount: u32, max: u32, break_slot: horizon_world::player_inventory::EquipmentSlot) {
+    fn apply_held_damage(
+        &mut self,
+        amount: u32,
+        max: u32,
+        break_slot: horizon_world::player_inventory::EquipmentSlot,
+    ) {
         let cell = self.held_mut();
         if let Some(stack) = cell.as_mut()
             && max > 0

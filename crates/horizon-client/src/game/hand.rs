@@ -412,7 +412,9 @@ impl Game<'_> {
     /// `EntityFluidInteraction`: compare the eyes with the camera fluid surface.
     fn mining_eyes_in_water(&self) -> bool {
         use horizon_client::blocks::Fluid;
-        let Some(eye) = self.eye_position() else { return false };
+        let Some(eye) = self.eye_position() else {
+            return false;
+        };
         let [x, y, z] = eye.map(|v| v.floor() as i32);
         let facts = self.res.facts();
         let inside = |y| {
