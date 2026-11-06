@@ -5,6 +5,7 @@ use gpui::{Div, TitlebarOptions, Window};
 use horizon_launcher::backend::Appearance;
 
 /// Whether the launcher draws its own title bar and needs the native chrome to be transparent.
+#[cfg(not(target_os = "linux"))]
 pub const DRAWN: bool = cfg!(target_os = "windows");
 
 pub fn draws_brand(window: &Window) -> bool {
