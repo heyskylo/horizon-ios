@@ -1103,6 +1103,11 @@ pub fn mob_to_nbt(
             map.insert("Peek".into(), Tag::Byte(m.extra.counter as i8));
             map.insert("Color".into(), Tag::Byte(m.extra.color as i8));
         }
+        // HappyGhast.addAdditionalSaveData: the still timeout (`serverStillTimeout`,
+        // kept in `counter`), which vanilla writes even at 0.
+        "minecraft:happy_ghast" => {
+            map.insert("still_timeout".into(), Tag::Int(m.extra.counter));
+        }
         // GlowSquid.addAdditionalSaveData.
         "minecraft:glow_squid" => {
             map.insert(
@@ -2182,6 +2187,11 @@ pub fn mob_from_nbt(
             .get("carriedBlockState")
             .and_then(|t| state_from_nbt(registry, t))
             .filter(|&state| !is_air(registry, state));
+    }
+    // HappyGhast.readAdditionalSaveData: the still timeout, 0 when absent (a fresh
+    // ghast, or one saved by a version that did not write it).
+    if m.species() == crate::mobs::Species::HappyGhast {
+        m.extra.counter = number(tag.get("still_timeout")).unwrap_or(0) as i32;
     }
     if m.species() == crate::mobs::Species::Shulker {
         m.extra.variant3 = number(tag.get("AttachFace")).unwrap_or(0).clamp(0, 5) as u8;
