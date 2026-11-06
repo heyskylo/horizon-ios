@@ -1510,15 +1510,7 @@ impl Game<'_> {
         // bundle contents component (including in the player's inventory).
         let mut tooltip_stack: Option<ItemStack> = None;
         {
-            let atlas = &self.gui.atlas;
-            batch.fill(
-                atlas,
-                0.0,
-                0.0,
-                batch.width,
-                batch.height,
-                rgba(16, 16, 16, 160),
-            );
+            self.render_transparent_background("station", batch);
         }
         let inventory_label = self.translate("container.inventory", "Inventory");
         if brewing {
