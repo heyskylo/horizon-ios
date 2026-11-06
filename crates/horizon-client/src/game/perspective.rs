@@ -154,13 +154,27 @@ pub(super) fn player_type(root: &Path) -> Option<Arc<MobType>> {
     if let Some((_, kind)) = cache.iter().find(|(cached, _)| cached == root) {
         return kind.clone();
     }
-    let kind = load_player_type(root);
+    let models = horizon_client::mobs::EntityModelDocument::load(root).ok();
+    let kind = models.as_ref().and_then(load_player_type);
+    cache.push((root.to_owned(), kind.clone()));
+    kind
+}
+/// `player_type` from a document the caller already parsed (`load_core`):
+/// one parse for the whole startup rather than one more beside it.
+pub(super) fn player_type_with_document(
+    root: &Path,
+    models: &horizon_client::mobs::EntityModelDocument,
+) -> Option<Arc<MobType>> {
+    let mut cache = PLAYER_TYPES.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, kind)) = cache.iter().find(|(cached, _)| cached == root) {
+        return kind.clone();
+    }
+    let kind = load_player_type(models);
     cache.push((root.to_owned(), kind.clone()));
     kind
 }
 /// `player_type` from the document: the model and its layers from one parse.
-fn load_player_type(root: &Path) -> Option<Arc<MobType>> {
-    let models = horizon_client::mobs::EntityModelDocument::load(root).ok()?;
+fn load_player_type(models: &horizon_client::mobs::EntityModelDocument) -> Option<Arc<MobType>> {
     models.model("minecraft:player#main").map(|model| {
         Arc::new(MobType {
             id: "minecraft:player".into(),
