@@ -50,6 +50,9 @@ mod undrawn_terrain_tests;
 mod shadow_faces_tests;
 
 #[cfg(test)]
+mod r11f_image_tests;
+
+#[cfg(test)]
 mod forced_flip_tests;
 
 #[cfg(test)]
@@ -1535,13 +1538,20 @@ fn bindings(
             }
             (None, None) => stand_in(&i.name, notes),
         };
-        if actual != format {
+        // An `R11F_G11F_B10F` image or buffer this device makes `RGBA16F` (a float stand-in
+        // that neither clamps nor drops NaN) takes `layout(r11f_g11f_b10f)` as `rgba16f`
+        // (`storage_formats_of`): Iris 1.11.7 stored into and read back such an image with a
+        // probe pack of ours (#10490), where Horizon refused the program.
+        let stand_in = format == wgpu::TextureFormat::Rg11b10Ufloat
+            && actual == wgpu::TextureFormat::Rgba16Float;
+        if actual != format && !stand_in {
             notes.push(format!(
                 "{name}: `{}` is {} but its texture is {actual:?}",
                 i.name, i.format
             ));
             return None;
         }
+        let format = actual;
         let access = match i.access.as_str() {
             "writeonly" => wgpu::StorageTextureAccess::WriteOnly,
             "readonly" => wgpu::StorageTextureAccess::ReadOnly,
@@ -1570,6 +1580,51 @@ fn bindings(
         images.push((i.binding, target));
     }
     Some((entries, samplers, slots, reads, shadow_reads, images))
+}
+
+/// Makes each storage image of `module` in group 0 declare the format its layout entry binds:
+/// a `layout(r11f_g11f_b10f)` image whose texture is the `RGBA16F` stand-in (`bindings`).
+fn storage_formats_of(module: &mut naga::Module, entries: &[wgpu::BindGroupLayoutEntry]) {
+    let globals: Vec<_> = module.global_variables.iter().map(|(h, _)| h).collect();
+    for handle in globals {
+        let var = &module.global_variables[handle];
+        let Some(naga::ResourceBinding { group: 0, binding }) = var.binding else {
+            continue;
+        };
+        let naga::TypeInner::Image {
+            dim,
+            arrayed,
+            class: naga::ImageClass::Storage { format, access },
+        } = module.types[var.ty].inner
+        else {
+            continue;
+        };
+        let bound = entries.iter().find_map(|e| match e.ty {
+            wgpu::BindingType::StorageTexture { format, .. } if e.binding == binding => {
+                Some(format)
+            }
+            _ => None,
+        });
+        if format == naga::StorageFormat::Rg11b10Ufloat
+            && bound == Some(wgpu::TextureFormat::Rgba16Float)
+        {
+            let ty = module.types.insert(
+                naga::Type {
+                    name: module.types[var.ty].name.clone(),
+                    inner: naga::TypeInner::Image {
+                        dim,
+                        arrayed,
+                        class: naga::ImageClass::Storage {
+                            format: naga::StorageFormat::Rgba16Float,
+                            access,
+                        },
+                    },
+                },
+                naga::Span::UNDEFINED,
+            );
+            module.global_variables[handle].ty = ty;
+        }
+    }
 }
 
 /// The wgpu format of an image's format qualifier.
@@ -1781,6 +1836,7 @@ fn build_pass(
         });
         let module = |mut m: naga::Module| {
             share_samplers(&mut m, &slots);
+            storage_formats_of(&mut m, &entries);
             device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some(&p.name),
                 source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(m)),
@@ -1967,6 +2023,7 @@ fn build_compute(
         });
         let mut module = c.module;
         share_samplers(&mut module, &slots);
+        storage_formats_of(&mut module, &entries);
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some(&name),
             source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(module)),
@@ -2139,9 +2196,14 @@ impl PackPost {
         // An image this device can't make or store into: the programs using it are skipped.
         let mut image_defs = std::mem::take(&mut post.images);
         let mut left_out = Vec::new();
+        let packed_float = gpu.storable(adapter, wgpu::TextureFormat::Rg11b10Ufloat, features);
         image_defs.retain(|def| {
-            let made = pack_images::makeable(device, def).and_then(|()| {
-                if gpu.storable(adapter, pack_images::format(def.format), features) {
+            let made = pack_images::makeable(device, def, packed_float).and_then(|()| {
+                if gpu.storable(
+                    adapter,
+                    pack_images::format(def.format, packed_float),
+                    features,
+                ) {
                     Ok(())
                 } else {
                     Err("this GPU can't store into its format".into())
@@ -2163,7 +2225,7 @@ impl PackPost {
             ));
             left_out.push(def);
         }
-        let images = pack_images::images(image_defs);
+        let images = pack_images::images(image_defs, packed_float);
         let mut objects = std::mem::take(&mut post.buffer_objects);
         if gpu.storage_stages().is_empty() {
             objects.clear();
