@@ -514,7 +514,12 @@ are compiled into `horizon-client`; a stable API crate for mods' own crates is #
 
 **Dependencies come from Horizon's `Cargo.lock`.** A crate names registry crates by version requirement
 (`crc32fast = "1"`, `{ version, features, default-features, optional }`); each must already be in Horizon's lock
-file in a version that matches, and builds in exactly that version. The lock file is the allow list: horizon-mixins
+file in a version that matches, and builds in exactly that version. The crates that are there only for mods are listed in
+`crates/horizon-mod-deps/Cargo.toml` (optional dependencies, with the features mods may turn on; nothing builds them):
+`mysql` 27 (blocking MariaDB/MySQL client, `minimal-rust` + `rustls-tls-ring`, no default features), `redis` 1 (blocking,
+no default features), `tungstenite` 0.30 (websocket over a stream the mod opens, no default features) and `rusty-opus` 1
+(Opus encoder and decoder). A feature of theirs that turns on a dependency not listed there is refused.
+The lock file is the allow list: horizon-mixins
 refuses a crate the lock lacks (`E_CRATE_DEPENDENCY`) and writes the mod's crates into the staged lock without
 changing any other byte, so the game still builds with `--locked`. The launcher checks it again (every downloaded
 package of the staged lock as in Horizon's: name, version, source, checksum), and a feature that turns on a
@@ -1800,6 +1805,10 @@ trusting native code is the player's decision, never an agent's.
 4. **Mixins.** The bundles are copied first, so the build and its key use that copy whatever happens to the
    folder meanwhile. `horizon-mixins apply` stages the modded source; the launcher copies only the files that
    changed into `native/stage/`, so Cargo, which goes by file times, recompiles only the crates the mods touch.
+   Each file written gets the current time, never the archive's (the commit's) or the copy's original: on
+   Windows and macOS a copy keeps it, and a file older than the last build reads as already compiled, so
+   switching Nightlies linked the previous one's crates (#10421). A stage from before that fix is written again
+   once (`native/stage.stamped` marks it).
    With mods' crates, their dependencies are checked against Horizon's `Cargo.lock` ("The mod's crate").
 5. **Compile**: `cargo build --locked --profile <fast|release> [--config ...] [--features horizon-client/mods] -p
    horizon-client`, into `native/target/`, with one of three build profiles:

@@ -228,6 +228,47 @@ fn load_chat_filter() -> Option<horizon_chat_filter::Guard> {
     Some(guard)
 }
 
+/// `server.toml`'s `[combat]` (docs/pvp.md): `legacy = true` resolves melee hits by 1.8.9's rules. Off without
+/// the file or the section, and (with an error logged) when the section is wrong.
+fn load_combat() -> bool {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Combat {
+        #[serde(default)]
+        legacy: bool,
+    }
+    let Ok(text) = std::fs::read_to_string("server.toml") else {
+        return false;
+    };
+    let section = toml::from_str::<toml::Table>(&text)
+        .map_err(|e| e.to_string())
+        .and_then(|mut t| match t.remove("combat") {
+            Some(section) => section
+                .try_into::<Combat>()
+                .map(|c| c.legacy)
+                .map_err(|e| format!("[combat]: {e}")),
+            None => Ok(false),
+        });
+    match section {
+        Ok(legacy) => {
+            if legacy {
+                log(
+                    "INFO",
+                    "1.8 combat rules on (server.toml [combat]; legacy = false turns them off)",
+                );
+            }
+            legacy
+        }
+        Err(e) => {
+            log(
+                "ERROR",
+                &format!("server.toml: {e}; fights keep 26.3's rules"),
+            );
+            false
+        }
+    }
+}
+
 /// The secret for Velocity's player information forwarding, from `forwarding.secret` beside server.properties.
 /// No file means no forwarding. A file that is empty or can't be read stops the start, because an empty secret
 /// would let anyone sign a login, and a typo must not leave a server open that was meant to be behind a proxy.
@@ -1132,11 +1173,12 @@ impl Game<'_> {
             log(
                 "INFO",
                 &format!(
-                    "Transfers on (server.toml [transfer]): players expected for {} s ({} s at most, {} at once), frozen for {} ticks at most",
+                    "Transfers on (server.toml [transfer]): players expected for {} s ({} s at most, {} at once), frozen for {} ticks and held for {} ticks at most",
                     s.expect.as_secs(),
                     s.max_expect.as_secs(),
                     s.max_expected,
-                    s.max_freeze_ticks
+                    s.max_freeze_ticks,
+                    s.max_hold_ticks
                 ),
             );
             host.hub.transfers = Some(transfers);
@@ -1144,6 +1186,7 @@ impl Game<'_> {
         self.sync_ops(&lists);
         let anticheat = load_anticheat();
         let chat_filter = load_chat_filter();
+        self.settings.extras.pvp.combat.rules = load_combat();
         // Horizon's far ring (docs/hosting.md): server.toml's `max_view_distance`.
         let far = props
             .raw
@@ -1392,11 +1435,12 @@ impl Game<'_> {
     pub(super) fn update_dedicated_streaming(&mut self) {
         let rule = self.ui.rules.bool("spectators_generate_chunks");
         let guest = self.lan.as_ref().and_then(|h| {
+            // A held player (arriving from another server) is sent the level too, so it
+            // holds the world loaded around it as a placed player does.
             h.hub
-                .guests
-                .iter()
-                .find(|g| h.hub.here(g) && super::game_mode::loads_chunks(rule, g.spectator()))
-                .map(|g| g.chunk())
+                .loading_chunks(|g| super::game_mode::loads_chunks(rule, g.spectator()))
+                .first()
+                .copied()
         });
         if self.standalone_server() {
             self.streaming.radius = if guest.is_some() {

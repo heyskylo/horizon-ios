@@ -1220,5 +1220,7 @@
   "{name} was left out: made for another Horizon version": "{name} tħalla barra: magħmul għal verżjoni oħra ta' Horizon",
   "{name} was left out: clashes with {other}": "{name} tħalla barra: jaħbat ma' {other}",
   "{name} was left out: it needs {other}, which was left out": "{name} tħalla barra: jeħtieġ {other}, li tħalla barra",
-  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Ma jinbeniex fuq il-Horizon li qed tilgħab ({code}): bini jħallih barra sakemm l-awtur jaġġornah"
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Ma jinbeniex fuq il-Horizon li qed tilgħab ({code}): bini jħallih barra sakemm l-awtur jaġġornah",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Fejn int, is-sett tal-fundaturi jintalab permezz ta' ħlas b'xejn fuq playhorizon.dev. Itolbu mill-Ħanut: jiftaħlek il-ħlas.",
+  "The founder set can't be claimed from your country.": "Is-sett tal-fundaturi ma jistax jintalab minn pajjiżek."
 }

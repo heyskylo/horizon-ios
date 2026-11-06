@@ -9,7 +9,7 @@ pub use crate::settings::Opt;
 use crate::{
     gamepad::{self, GlyphStyle},
     hud::{HudAtlas, HudBatch, rgba},
-    keybinds::{self, CATEGORIES, KeyBinds, MAPPINGS},
+    keybinds::{self, CATEGORIES, KeyBinds, all_mappings},
     lang::{self, LanguageInfo},
     settings::{SOUND_SOURCES, Settings},
     text::{self, Style, Text},
@@ -1633,6 +1633,11 @@ pub struct OptionsUi {
     pub mod_browser: crate::mod_browser::ModBrowser,
     /// The project whose page is open (`Page::ModProject`).
     pub mod_project: String,
+    /// The Mods page's line about switches that wait for a restart.
+    pub mods_note: Option<String>,
+    /// The content mods that switch with a world open: only assets and data,
+    /// in a world this game serves (docs/design/mod-hotload.md).
+    pub mods_live: std::collections::BTreeSet<String>,
     /// Horizon's `packBrowser` extra: the pack screen's Add button.
     pub pack_browser: bool,
     /// Packs: the packs found and the selection the screen opens with.
@@ -1723,6 +1728,8 @@ impl Default for OptionsUi {
             settings_search,
             mod_browser: Default::default(),
             mod_project: String::new(),
+            mods_note: None,
+            mods_live: Default::default(),
             pack_browser: false,
             pack_infos: Vec::new(),
             pack_selection: Vec::new(),
@@ -2591,6 +2598,14 @@ impl OptionsUi {
     }
     /// A registry project's page: what it is, Install or Update, its switch
     /// once installed, its description and changelog.
+    /// A content mod's set feeds the block-state tables the open world's
+    /// chunks were decoded with: changing it mid-world remaps their ids
+    /// (Forge/Fabric freeze the registry before a world opens). One with only
+    /// assets and data reloads live, and a native mod toggles live through
+    /// `native_on`, so they stay available.
+    fn mod_frozen(&self, installed: &crate::mod_list::Installed) -> bool {
+        self.in_world && installed.native.is_none() && !self.mods_live.contains(&installed.id)
+    }
     fn mod_project_rows(&self, s: &Settings) -> Vec<Row> {
         let b = &self.mod_browser;
         let Some(l) = b.listing(&self.mod_project) else {
@@ -2662,6 +2677,10 @@ impl OptionsUi {
                     Text::literal(format!("{}: ", lang::get("horizon.mods.browse.enabled")))
                         .append(on_off(s.mods.is_on(i)));
                 let toggle = button(0.0, 0.0, 150.0, label, Act::ToggleMod(i));
+                let toggle = match self.mod_frozen(&s.mods.installed[i]) {
+                    true => inactive(toggle),
+                    false => toggle,
+                };
                 rows.push(Row::Buttons(install, Some(toggle)));
                 rows.push(Row::Buttons(page, None));
             }
@@ -3072,6 +3091,9 @@ impl OptionsUi {
                     Act::Push(Page::ModBrowser),
                 );
                 let mut rows = vec![Row::Buttons(browse, None)];
+                if let Some(note) = &self.mods_note {
+                    rows.extend(wrap(note, 64).into_iter().map(Row::Note));
+                }
                 if s.mods.installed.is_empty() {
                     rows.push(Row::Header("horizon.mods.empty"));
                     return rows;
@@ -3088,16 +3110,11 @@ impl OptionsUi {
                     } else if installed.dev {
                         label = label.append(tr("horizon.mods.dev"));
                     }
-                    // A content mod's set feeds the block-state tables the
-                    // open world's chunks were decoded with: changing it
-                    // mid-world remaps their ids (Forge/Fabric freeze the
-                    // registry before a world opens). A native mod toggles
-                    // live through `native_on`, so it stays available.
-                    let content = installed.native.is_none();
-                    if self.in_world && content {
+                    let frozen = self.mod_frozen(installed);
+                    if frozen {
                         label = label.append(tr("horizon.mods.in_world"));
                     }
-                    let dead = installed.dev || installed.id.is_empty() || self.in_world && content;
+                    let dead = installed.dev || installed.id.is_empty() || frozen;
                     // Only native mods with actual settings need a second button.
                     if installed
                         .native
@@ -3325,7 +3342,7 @@ impl OptionsUi {
                     row: 0,
                 });
                 let mut mappings: Vec<(&str, &str)> =
-                    MAPPINGS.iter().map(|(n, _, c)| (*n, *c)).collect();
+                    all_mappings().map(|(n, _, c)| (*n, *c)).collect();
                 let query = self.settings_search.value.to_lowercase();
                 mappings.retain(|(name, _)| {
                     query.is_empty() || lang::get(name).to_lowercase().contains(&query)
@@ -3419,7 +3436,7 @@ impl OptionsUi {
                     }
                     let reset_x = scrollbar_x - 50.0 - 10.0;
                     let change_x = reset_x - 5.0 - 75.0;
-                    let name_static = MAPPINGS.iter().find(|m| m.0 == name).map_or("", |m| m.0);
+                    let name_static = all_mappings().find(|m| m.0 == name).map_or("", |m| m.0);
                     out.push(button(change_x, y, 75.0, message, Act::Key(name_static)));
                     if !conflicts.is_empty() {
                         out.push(Widget {
@@ -7809,9 +7826,10 @@ mod tests {
 
     /// A content mod's set builds the block-state tables an open world's
     /// chunks were decoded with, so its toggle freezes in-world; a native
-    /// mod gates live through `native_on` and stays available.
+    /// mod gates live through `native_on` and one of assets and data reloads
+    /// live, so they stay available.
     #[test]
-    fn in_a_world_only_native_mod_toggles_stay_active() {
+    fn in_a_world_only_live_mod_toggles_stay_active() {
         let mut s = Settings::default();
         let installed =
             |id: &str, native: Option<crate::mod_list::NativePage>| crate::mod_list::Installed {
@@ -7845,6 +7863,11 @@ mod tests {
         assert_eq!(toggles(&mut ui, &s), [(0, true), (1, true)]);
         ui.open_at(true, Page::Mods);
         assert_eq!(toggles(&mut ui, &s), [(0, false), (1, true)]);
+        // A content mod of assets and data only reloads live in a world this
+        // game serves (`mods_live`, filled by the game).
+        s.mods.installed.push(installed("data_only", None));
+        ui.mods_live.insert("data_only".into());
+        assert_eq!(toggles(&mut ui, &s), [(0, false), (1, true), (2, true)]);
     }
 
     /// An Extras or PvP & HUD label wider than half a row takes the whole row, so every label

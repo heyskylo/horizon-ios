@@ -510,10 +510,11 @@ impl Game<'_> {
             changed[h] = !same;
         }
         let speed = self.main_hand_attack_speed();
-        let replace = self.heights.tick(
+        let replace = self.heights.tick_with(
             self.hands_busy(),
             self.hand_strength.swap_scale(1.0, speed),
             changed,
+            self.settings.extras.pvp.combat.legacy,
         );
         for h in 0..2 {
             if replace[h] {

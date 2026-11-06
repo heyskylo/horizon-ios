@@ -1220,5 +1220,7 @@
   "{name} was left out: made for another Horizon version": "{name} varð útihildin: gjørd til eina aðra útgávu av Horizon",
   "{name} was left out: clashes with {other}": "{name} varð útihildin: stríðist við {other}",
   "{name} was left out: it needs {other}, which was left out": "{name} varð útihildin: hon tørvar {other}, sum varð útihildin",
-  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Byggir ikki á tí Horizon, tú spælir ({code}): ein bygging heldur hana úti, til høvundurin dagførir hana"
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Byggir ikki á tí Horizon, tú spælir ({code}): ein bygging heldur hana úti, til høvundurin dagførir hana",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Har tú ert, fæst stovnarasettið gjøgnum ein ókeypis gjalding á playhorizon.dev. Krev tað í Handlinum: hann letur gjaldingina upp fyri teg.",
+  "The founder set can't be claimed from your country.": "Stovnarasettið kann ikki krevjast úr tínum landi."
 }
