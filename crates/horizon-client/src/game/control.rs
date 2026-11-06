@@ -1,6 +1,7 @@
 //! Commands from the control socket (`horizon-ctl`), run on the game thread.
 use super::event_loop::EventLoopCtl;
 use super::{Game, Screen};
+use horizon_client::held::Source;
 use horizon_client::{Result, items::ItemStack};
 use horizon_core::geometry::Vec3;
 use serde_json::{Value, json};
@@ -293,6 +294,11 @@ impl Game<'_> {
             // The anvil's rename box, while it has an input to name.
             Screen::Inventory if self.station_typing() => self.station_text(Some(text), false),
             Screen::Creative if self.creative_screen.tab().search => {
+                // CreativeModeInventoryScreen.charTyped: the chat key that
+                // opened the tab does not type its letter.
+                if std::mem::take(&mut self.creative_ignore_text) {
+                    return Ok(());
+                }
                 // As typed: replaces a selected query, keeps the length limit.
                 self.creative_search_edit(Some(text))
             }
@@ -434,6 +440,27 @@ impl Game<'_> {
                 }
                 Ok(Some(json!({ "ok": true, "gpu_passes": self.gpu_passes })))
             }
+            // Every thread's spans as a timeline Perfetto opens (`spans::trace`).
+            "trace" => match words.get(1).copied() {
+                None => Ok(Some(
+                    json!({ "ok": true, "tracing": horizon_client::spans::trace::on() }),
+                )),
+                Some("stop") => Ok(Some(
+                    json!({ "ok": true, "events": horizon_client::spans::trace::stop() }),
+                )),
+                Some(file) => {
+                    let seconds = match words.get(2) {
+                        None => None,
+                        Some(s) => Some(
+                            s.parse::<u32>()
+                                .map_err(|_| "trace [FILE [SECONDS] | stop]")?,
+                        ),
+                    };
+                    horizon_client::spans::trace::start(std::path::Path::new(file), seconds)
+                        .map_err(|e| format!("trace {file}: {e}"))?;
+                    Ok(Some(json!({ "ok": true, "tracing": true, "file": file })))
+                }
+            },
             "render-capture" => match words.get(1).copied() {
                 None => {
                     let r = self.renderer.as_ref().ok_or("no renderer")?;
@@ -588,7 +615,7 @@ impl Game<'_> {
                 // A held edit modifier (`key super down`) and A/C/V/X: the
                 // open book's Select All, Copy, Paste or Cut.
                 if self.book.is_some() && arg(2)? != "up" {
-                    let held = |k: [KeyCode; 2]| k.iter().any(|k| self.keys.contains(k));
+                    let held = |k: [KeyCode; 2]| k.iter().any(|k| self.keys.raw(k));
                     let edit = if cfg!(target_os = "macos") {
                         held([KeyCode::SuperLeft, KeyCode::SuperRight])
                     } else {
@@ -662,14 +689,22 @@ impl Game<'_> {
                         Some(Ok(k)) => k,
                         Some(Err(button)) => {
                             let action = arg(2)?;
-                            if self.screen == Screen::Playing {
+                            if self.screen == Screen::Playing
+                                && self.shared_default_acts(
+                                    button,
+                                    horizon_client::keybinds::key_name(physical),
+                                )
+                            {
                                 if action != "up" {
-                                    self.play_mouse(button, true)?;
+                                    self.mouse_mapping(button, true, Source::Agent)?;
                                 }
                                 // A repeat keeps the key held, as the window's.
                                 if action == "up" || action == "tap" {
-                                    self.play_mouse(button, false)?;
+                                    self.mouse_mapping(button, false, Source::Agent)?;
                                 }
+                            }
+                            if action == "tap" {
+                                self.physical_keys.remove(&physical);
                             }
                             return ok();
                         }
@@ -679,23 +714,17 @@ impl Game<'_> {
                 match arg(2)? {
                     "down" => self.control_key_down(key, physical)?,
                     "up" => {
-                        self.keys.remove(&key);
+                        self.control_key_up(key);
                         self.physical_keys.remove(&key);
                     }
                     // The system's auto-repeat while the key is held.
                     "repeat" => {
                         self.physical_keys.insert(physical);
-                        self.mapped_key(
-                            key,
-                            true,
-                            true,
-                            key,
-                            horizon_client::held::Source::Keyboard,
-                        )?;
+                        self.mapped_key(key, true, true, key, Source::Agent)?;
                     }
                     "tap" => {
                         self.control_key_down(key, physical)?;
-                        self.keys.remove(&key);
+                        self.control_key_up(key);
                         self.physical_keys.remove(&physical);
                         self.debug_key(physical, horizon_client::debug_keys::KeyAction::Release);
                     }
@@ -745,17 +774,17 @@ impl Game<'_> {
                 match arg(2)? {
                     "down" => {
                         self.extras_mouse(button, true);
-                        self.play_mouse(button, true)?
+                        self.mouse_mapping(button, true, Source::Agent)?
                     }
                     "up" => {
                         self.extras_mouse(button, false);
-                        self.play_mouse(button, false)?
+                        self.mouse_mapping(button, false, Source::Agent)?
                     }
                     "click" => {
                         self.extras_mouse(button, true);
                         self.extras_mouse(button, false);
-                        self.play_mouse(button, true)?;
-                        self.play_mouse(button, false)?;
+                        self.mouse_mapping(button, true, Source::Agent)?;
+                        self.mouse_mapping(button, false, Source::Agent)?;
                     }
                     other => {
                         return Err(
@@ -1239,10 +1268,17 @@ impl Game<'_> {
             self.block_editor_key_code(key, None, None);
             return Ok(());
         }
-        if self.keys.insert(key) {
+        if self.keys.press(key, Source::Agent) {
             self.key_pressed(key, raw)?;
         }
         Ok(())
+    }
+
+    /// `key ... up`: the script lets go. What it pressed as the keyboard's stand-in goes with it
+    /// (a fixture's untagged press), and a controller's hold stays.
+    fn control_key_up(&mut self, key: KeyCode) {
+        self.keys.release(&key, Source::Agent);
+        self.keys.release(&key, Source::Keyboard);
     }
 
     fn screen_name(&self) -> &'static str {
@@ -1275,6 +1311,7 @@ impl Game<'_> {
             Screen::Win => "win",
             Screen::DebugOptions => "debug-options",
             Screen::Mod => "mod",
+            Screen::HudEditor => "hud-editor",
         }
     }
 

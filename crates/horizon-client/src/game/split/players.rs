@@ -454,12 +454,14 @@ impl Split<'_> {
         });
         let mut settings = settings;
         settings.extras.agent_control &= options.control.is_some();
-        let gui = UiResources::load(&options.resources, &options.resources)?;
+        // `options.resources` is P1's overlay when a pack is on: never the vanilla root, as a
+        // reload would rebuild that overlay out of itself.
+        let vanilla_root = host.vanilla_root();
+        let gui = UiResources::load(&options.resources, &vanilla_root)?;
         // P1's output, heard from this player's camera too (`Audio::share`).
         let audio = host.audio.share(seat as u8);
         let window = host.window.clone().ok_or("no window")?;
         let pack = host.pack.clone();
-        let resources = host.options.resources.clone();
         let mut guest = boxed(|| {
             start_game(
                 res,
@@ -468,7 +470,7 @@ impl Split<'_> {
                 options,
                 None,
                 audio,
-                resources,
+                vanilla_root,
                 Instant::now(),
                 None,
                 Some(settings),

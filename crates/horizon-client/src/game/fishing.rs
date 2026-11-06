@@ -349,6 +349,34 @@ impl Game<'_> {
                 "vz": hook.velocity.z.to_bits() as i64, "nibble": hook.nibble, "next": hook.random.next_long(),
             }));
         }
+        // The client must take the same block hit before moving as the server;
+        // otherwise it lands farther away and slides back on the next update.
+        let stone = self
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:stone")
+            .unwrap();
+        self.level_set(block, stone).unwrap();
+        for (case, motion) in [
+            Vec3::new(0.2, -0.4, 0.1),
+            Vec3::new(-0.2, -0.4, 0.1),
+            Vec3::new(0.0, -0.6, -0.2),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut state = (Vec3::new(x, 301.1, z), motion, State::Flying, false);
+            let mut random = LegacyRandom::new(0);
+            for tick in 0..5 {
+                state = self.client_hook_step(state, &mut random);
+                rows.push(serde_json::json!({
+                    "case": case, "tick": tick,
+                    "position": [state.0.x - f64::from(block[0]), state.0.y, state.0.z - f64::from(block[2])],
+                    "motion": [state.1.x, state.1.y, state.1.z],
+                }));
+            }
+        }
         self.hook = old_hook;
         self.offhand = old_offhand;
         self.player.as_mut().unwrap().position = old_position;
@@ -874,27 +902,8 @@ impl Game<'_> {
                 // checkCollision: find the first block and entity on the movement
                 // segment so a fast hook cannot tunnel or catch through a wall.
                 let to = h.position.add_vector(h.velocity);
-                let block_hit = {
-                    let mut scene = SceneCollisions {
-                        world: &self.world,
-                        binding: self.collision,
-                        subject: None,
-                    };
-                    traverse_blocks(h.position, to, 1024, |p: BlockPos| {
-                        let state = self.world.block(p.x, p.y, p.z);
-                        if self.res.facts().is_air(state) {
-                            return None;
-                        }
-                        let shape = self
-                            .collision
-                            .collision_shape(&mut scene, state, [p.x, p.y, p.z])
-                            .ok()?;
-                        shape.clip(h.position, to, p)
-                    })
-                    .ok()
-                    .flatten()
-                };
-                let entity_end = block_hit.map_or(to, |hit| hit.location);
+                let block_hit = self.hook_block_hit(h.position, to);
+                let entity_end = block_hit.unwrap_or(to);
                 let owner = self.lan_acting;
                 let own_vehicle = self.own_vehicle();
                 let hit = first_entity_hit(
@@ -968,9 +977,9 @@ impl Game<'_> {
                     self.projectile_event(
                         "minecraft:projectile_land",
                         Some(horizon_client::mobs::Who::Player),
-                        [hit.location.x, hit.location.y, hit.location.z],
+                        [hit.x, hit.y, hit.z],
                     );
-                    h.velocity = rebound(h.velocity, hit.location, h.position);
+                    h.velocity = rebound(h.velocity, hit, h.position);
                 }
             }
             State::Hooked(id) => {
@@ -1060,7 +1069,7 @@ impl Game<'_> {
             }
         }
         if !in_water && !h.on_ground {
-            h.velocity.y -= 0.03;
+            h.velocity.y -= f64::from(0.03_f32);
         }
         let mut scene = SceneCollisions {
             world: &self.world,
@@ -1584,6 +1593,28 @@ impl Game<'_> {
         self.remote_hooks = hooks;
     }
 
+    /// `FishingHook.checkCollision` clips blocks on both sides of the connection.
+    fn hook_block_hit(&self, from: Vec3, to: Vec3) -> Option<Vec3> {
+        let mut scene = SceneCollisions {
+            world: &self.world,
+            binding: self.collision,
+            subject: None,
+        };
+        traverse_blocks(from, to, 1024, |p: BlockPos| {
+            let state = self.world.block(p.x, p.y, p.z);
+            if self.res.facts().is_air(state) {
+                return None;
+            }
+            self.collision
+                .collision_shape(&mut scene, state, [p.x, p.y, p.z])
+                .ok()?
+                .clip(from, to, p)
+        })
+        .ok()
+        .flatten()
+        .map(|hit| hit.location)
+    }
+
     /// `FishingHook.tick`: one tick of movement without the fishing (the
     /// server's): position, motion, state and whether it rests on the ground.
     fn client_hook_step(
@@ -1608,7 +1639,11 @@ impl Game<'_> {
             State::Flying if velocity == Vec3::ZERO && on_ground => {
                 return (position, velocity, state, on_ground);
             }
-            State::Flying => {}
+            State::Flying => {
+                if let Some(hit) = self.hook_block_hit(position, position.add_vector(velocity)) {
+                    velocity = rebound(velocity, hit, position);
+                }
+            }
             State::Hooked(id) => {
                 // updateHookedEntity: at 0.8 of the hooked entity's height.
                 let hooked = if self
@@ -1661,7 +1696,7 @@ impl Game<'_> {
             }
         }
         if !in_water && !on_ground {
-            velocity.y -= 0.03;
+            velocity.y -= f64::from(0.03_f32);
         }
         let mut scene = SceneCollisions {
             world: &self.world,

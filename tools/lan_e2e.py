@@ -13235,5 +13235,85 @@ CHECKS += ['levelup-sounds']
 CHECK_FNS['levelup-sounds'] = check_levelup_sounds
 
 
+def set_legacy_rules(game, on):
+    """The PvP page's "1.8 combat in worlds you host" switch, as a player flips it."""
+    game('options', page='pvp')
+    for _ in range(40):
+        ui = game.raw('ui')
+        switch = next((w for w in ui['widgets']
+                       if w.get('label', '').startswith('1.8 combat in worlds you host')), None)
+        if switch:
+            break
+        # The switch sits at the end of the page: wheel down over the list.
+        width, height = ui['gui_size']
+        game.raw('scroll-at', f'{width / 2:.1f}', f'{height / 2:.1f}', -3)
+    assert switch, 'the PvP page has no "1.8 combat in worlds you host" switch'
+    if switch['label'].endswith('On') != on:
+        game('click', id=switch['id'])
+    game('close')
+    game.wait(5)
+
+
+def check_legacy_pvp(host, guest, out):
+    """The host's legacy combat rules (crates/horizon-client/src/legacy_combat.rs) on a guest's diamond axe hits:
+    one at full charge, and one right after a hotbar swap, which empties the charge on the server
+    (ServerPlayer's attack item change resets attackStrengthTicker).
+
+    1.8.9, EntityPlayer.attackTargetEntityWithCurrentItem: the hit deals the attack damage attribute, which is
+    EntityPlayer.applyEntityAttributes' base 1 plus the axe's weapon modifier (ItemAxe's 3.0F +
+    Item.ToolMaterial.EMERALD.getDamageVsEntity() 3.0F): 7, and 7 again after the swap, as nothing charges.
+    26.3, Player.attack: 9 at full charge, and the swapped hit is scaled by getAttackStrengthScale down to
+    9 * (0.2 + scale^2 * 0.8)."""
+    if dead(guest):
+        guest.raw('respawn')
+        guest.wait(40)
+    for g in (host, guest):
+        g('command', command='gamemode survival')
+    guest('command', command='item replace entity @s hotbar.0 with minecraft:diamond_axe')
+    guest('command', command='item replace entity @s hotbar.1 with minecraft:stick')
+    guest.raw('select', '1')
+    server_reply(host, 'gamerule natural_health_regeneration false', 'Game rule', 'false')
+    host('command', command='attribute @s minecraft:knockback_resistance base set 1')
+
+    def health():
+        reply = server_reply(host, 'data get entity @s Health', 'entity data')
+        return float(re.search(r'entity data: ([0-9.]+)f?\s*$', reply).group(1))
+
+    def dealt(swap):
+        """Health the host loses to one hit from full health: after a full charge, or right after a swap."""
+        host('command', command='effect give @s minecraft:instant_health 1 10')
+        host.wait(5)
+        hx, hy, hz = pos_of(host)
+        guest('command', command=f'tp @s {hx + 2:.2f} {hy:.2f} {hz:.2f}')
+        guest.wait(30)
+        guest.raw('look-at', f'{hx:.2f}', f'{hy + 1.6:.2f}', f'{hz:.2f}')
+        guest.wait(30)  # a full attack charge
+        before = health()
+        assert before == 20.0, f'the host was not healed: {before}'
+        # One ctl process keeps the swap and the hit together.
+        guest.script(['select 2', 'select 1', 'attack'] if swap else ['attack'])
+        guest.wait(10)
+        return before - health()
+
+    hits = {}
+    try:
+        for name, rules in (('modern', False), ('legacy', True)):
+            set_legacy_rules(host, rules)
+            hits[name] = (dealt(False), dealt(True))
+            guest.shot(out, f'legacy-pvp-{name}')
+    finally:
+        set_legacy_rules(host, False)
+        host('command', command='attribute @s minecraft:knockback_resistance base set 0')
+        host('command', command='gamerule natural_health_regeneration true')
+    assert hits['legacy'] == (7.0, 7.0), f'1.8.9 rules: 7, charged or not: {hits}'
+    full, swapped = hits['modern']
+    assert full == 9.0 and swapped < 9.0, f'26.3 rules: 9 charged, less right after a swap: {hits}'
+    return hits
+
+
+CHECKS += ['legacy-pvp']
+CHECK_FNS['legacy-pvp'] = check_legacy_pvp
+
+
 if __name__ == '__main__':
     main()

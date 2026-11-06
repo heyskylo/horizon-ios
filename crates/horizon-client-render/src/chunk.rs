@@ -225,11 +225,42 @@ pub const BIOME_STRATEGY: Strategy = Strategy::biomes(8);
 /// (what vanilla servers and clients send), more when content mods add states
 /// past 65,536 (docs/modpacks.md). Set once, before the first chunk.
 static BLOCK_BITS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(16);
+/// States in the registry, set with [`BLOCK_BITS`].
+static BLOCK_STATES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(u32::MAX);
 
 /// Block states are `PalettedContainer`s over the registry: vanilla's 16-bit
 /// global palette, wider with enough content mods.
 pub fn block_strategy() -> Strategy {
     Strategy::blocks(BLOCK_BITS.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// Whether the registry has this state. Every id is known until the registry is loaded.
+pub fn known_block_state(id: u32) -> bool {
+    id < BLOCK_STATES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// A server's block container in our palette width. Ids past our registry (a
+/// server or host with mods we lack) read as air: every per-state table is
+/// indexed by them, and a palette's unused entries are scanned too.
+pub fn known_blocks_only(blocks: PalettedContainer) -> PalettedContainer {
+    let ours = block_strategy();
+    let unknown = |id: u32| !known_block_state(id) || u64::from(id) >> ours.global_bits != 0;
+    let any_unknown = if blocks.is_global() {
+        blocks.has(unknown)
+    } else {
+        blocks.maybe_has(unknown)
+    };
+    if !any_unknown && blocks.strategy().global_bits == ours.global_bits {
+        return blocks;
+    }
+    let mut values = [0u32; 4096];
+    blocks.unpack(&mut values);
+    for value in &mut values {
+        if unknown(*value) {
+            *value = 0;
+        }
+    }
+    PalettedContainer::from_values(ours, &values)
 }
 
 /// Frees `columns` (`count` of them) on a short-lived thread of its own
@@ -250,6 +281,10 @@ pub fn free_columns<T: Send + 'static>(columns: T, count: usize) {
 pub fn set_block_states(states: usize) {
     let bits = horizon_core::paletted::ceil_log2(states).max(16);
     BLOCK_BITS.store(bits, std::sync::atomic::Ordering::Relaxed);
+    BLOCK_STATES.store(
+        u32::try_from(states).unwrap_or(u32::MAX),
+        std::sync::atomic::Ordering::Relaxed,
+    );
     forget_shared();
 }
 

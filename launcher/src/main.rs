@@ -59,6 +59,7 @@ mod owner_page;
 mod packs_page;
 mod partner;
 mod perf;
+mod picture_cache;
 mod plate;
 mod profile_heads;
 mod scene;
@@ -398,6 +399,10 @@ struct Launcher {
     friend_focus: FocusHandle,
     /// The window's width at the last frame: Home's head lays out by it, as the mockup's `xl`.
     window_width: f32,
+    /// The window's longer side in points, and the screen's pixels per point: the size pictures
+    /// are made at (`picture_cache`).
+    window_long_side: f32,
+    scale_factor: f32,
     joining: Option<String>,
     /// Where the next start goes at once: `--world <folder>` or `--server <address>`.
     quick_play: Option<(&'static str, String)>,
@@ -478,6 +483,8 @@ struct Launcher {
     multiplayer: multiplayer_page::Multiplayer,
     screenshots: screenshots_page::Screenshots,
     shot_blur: glass_shot_blur::ShotBlur,
+    /// Pictures from disk made at their drawn size (`picture_cache`).
+    pictures: picture_cache::Pictures,
     game_packs: packs_page::Packs,
     world_packs: datapacks_page::WorldPacks,
     export: Option<export_page::ExportPanel>,
@@ -693,6 +700,8 @@ impl Launcher {
             friend_code: line_edit::LineEdit::new(String::new(), 256, 32),
             friend_focused: false,
             window_width: 0.,
+            window_long_side: 0.,
+            scale_factor: 1.,
             friend_focus: cx.focus_handle(),
             joining: None,
             quick_play: None,
@@ -737,6 +746,7 @@ impl Launcher {
             multiplayer: multiplayer_page::Multiplayer::default(),
             screenshots: screenshots_page::Screenshots::default(),
             shot_blur: Default::default(),
+            pictures: Default::default(),
             game_packs: packs_page::Packs::default(),
             world_packs: datapacks_page::WorldPacks::default(),
             export: None,
@@ -1441,13 +1451,15 @@ impl Launcher {
                     }
                 }
                 Msg::Exit(job, result) => {
+                    // A preparation (or a build) ended: the disk may have changed under the pages.
+                    backend::forget_prepared();
                     let error = result.err();
                     match job {
                         Job::Prepare => {
                             self.preparing = false;
                             // Play pressed before the version was prepared plays now.
                             if let Some(tag) = self.play_when_prepared.take() {
-                                if error.is_none() && backend::is_prepared(&tag) {
+                                if error.is_none() && backend::check_prepared(&tag) {
                                     self.starting_pack = None;
                                     self.start_client(tag);
                                 }
@@ -3599,19 +3611,24 @@ impl Launcher {
                         gpui::linear_color_stop(t.page.opacity(to), at),
                     ))
             };
-            let picture = self.home_background().map(|path| {
-                [
-                    gpui::img(path)
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .size_full()
-                        .object_fit(gpui::ObjectFit::Cover)
-                        .into_any_element(),
-                    veil(90., 0.82, 0., 0.62).into_any_element(),
-                    veil(180., 0., 0.75, 1.).into_any_element(),
-                ]
-            });
+            // At the window's size (`picture_cache`): a chosen picture may be far bigger.
+            let side = picture_cache::Look::Fit(self.window_side());
+            let picture = self
+                .home_background()
+                .and_then(|path| self.picture(&path, side, cx))
+                .map(|image| {
+                    [
+                        gpui::img(image)
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .size_full()
+                            .object_fit(gpui::ObjectFit::Cover)
+                            .into_any_element(),
+                        veil(90., 0.82, 0., 0.62).into_any_element(),
+                        veil(180., 0., 0.75, 1.).into_any_element(),
+                    ]
+                });
             div()
                 .relative()
                 .flex()
@@ -4295,7 +4312,7 @@ impl Launcher {
         )
     }
 
-    /// Settings' Proxy row: the HTTP proxy every download and sign-in goes through, kept in
+    /// Settings' Proxy row: the proxy every download and sign-in goes through, kept in
     /// `settings.json` and read back by `proxy.rs` on each request.
     fn proxy_row(&self, n: usize, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
@@ -4346,8 +4363,8 @@ impl Launcher {
             (false, Some(why)) => div().text_color(t.danger).child(why).into_any_element(),
             _ => div()
                 .child(tr(
-                    "Downloads, sign-ins and updates go through this HTTP proxy \
-                     (http://host:port). Empty means none: HTTPS_PROXY is used instead when the \
+                    "Downloads, sign-ins and updates go through this proxy (http://host:port, \
+                     socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the \
                      launcher was started with one.",
                 ))
                 .into_any_element(),
@@ -5323,6 +5340,8 @@ impl Render for Launcher {
         self.proxy_focused = self.proxy_focus.is_focused(window);
         let size = window.viewport_size();
         self.window_width = f32::from(size.width);
+        self.window_long_side = f32::from(size.width).max(f32::from(size.height));
+        self.scale_factor = window.scale_factor();
         let content = match self.page {
             Page::Play => self.play_page(cx),
             Page::Versions => self.versions_page(cx),
@@ -5334,6 +5353,7 @@ impl Render for Launcher {
             Page::Settings => self.settings_page(cx),
         };
         self.sky.free_replaced(window);
+        self.pictures.free_retired(window);
         self.wardrobe_marks.free_replaced(window);
         // The new page fades in and rises a few pixels, as the website's tabs do (`hzl-pop`).
         let content = div()
@@ -5760,6 +5780,8 @@ fn main() {
             std::process::exit(code);
         }
     }
+    // The GPU's texture limit, which caps the pictures made from disk (`picture_cache`).
+    horizon_launcher::pictures::probe_gpu_limit();
     gpui_platform::application()
         .with_assets(blocks::Assets)
         // `move`: the closure owns `setup_window`; `run` wants it to outlive this frame.

@@ -321,7 +321,6 @@
   "horizon.osk.close": "Sule",
   "horizon.extras.chat_animation.tooltip": "Uus vestlusliin libiseb vasakult sisse, kui see sumbub, selle asemel, et paista tervena.",
   "horizon.extras.chat_indicator.tooltip": "Vestlusrea vasakul olev värviline riba.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "Seadetes nupu kohal olev kerimisratas muudab selle väärtust, nagu vanilje puhul. Väljas, ratas kerib ainult loendit.",
   "horizon.extras.pack_browser.tooltip": "Ressursipaketi valikul kuvatakse nupp Lisa, mis otsib Modrinthi ja installib paketi teie pakettide kausta. Väljas, mäng ei võta kunagi Modrinthiga ühendust.",
   "horizon.extras.splitscreen.tooltip": "Maailmas saab uue mängijana liituda teine kontroller: vajutage A, kui see küsib, seejärel valige profiil ja kus mängida.",
   "horizon.splitscreen.setup.monitor_unknown": "monitor",
@@ -464,8 +463,8 @@
   "horizon.extras.cosmetics_mine.tooltip": "Varjatud: iga Horizoni mängija näeb teid ilma teie kosmeetikata, kaasa arvatud. Sama lüliti, mis käivitaja riidekapil.",
   "horizon.extras.cosmetics_others": "Teiste mängijate kosmeetika",
   "horizon.extras.cosmetics_others.tooltip": "Mida teised Horizoni mängijad kannavad: kõike, ainult nende nimesiltide stiile või mitte midagi. Varjatud, mäng ei küsi kunagi, mida nad kannavad.",
-  "horizon.extras.cosmetics_auras": "Teiste aurad ja jäljed",
-  "horizon.extras.cosmetics_auras.tooltip": "Aurad ja jäljed, mida teised mängijad kannavad. Vaikimisi väljas.",
+  "horizon.extras.cosmetics_hide_fx": "Peida teiste mängijate jäljed ja aurad",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "Teiste mängijate jäljed ja aurad jäävad peidetuks; nende muu kosmeetika on endiselt näha. Vaikimisi väljas.",
   "horizon.extras.cosmetics.shown": "Näidatud",
   "horizon.extras.cosmetics.hidden": "Peidetud",
   "horizon.extras.cosmetics.name_tags": "Ainult nimesildid"
