@@ -111,8 +111,7 @@ def main():
         i = sys.argv.index('--reference')
         reference = Path(sys.argv[i + 1]).resolve()
         del sys.argv[i:i + 2]
-    harness_args.ensure_work_dir(driver.lab.LOCAL / 'inline-fishing-tool-parity')
-    build = Path(sys.argv[sys.argv.index('--work-dir') + 1]).resolve()
+    build = harness_args.ensure_work_dir(driver.lab.LOCAL / 'inline-fishing-tool-parity').resolve()
     assert reference is None or reference != build / 'vanilla.jsonl'
     reference_bytes = reference.read_bytes() if reference else None
     ops = program(full)

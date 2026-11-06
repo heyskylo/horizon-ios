@@ -20,17 +20,17 @@ DEFAULT = Path('/scratch/default')
 class EnsureWorkDirTest(unittest.TestCase):
     def test_one_argument_spelling_is_kept(self):
         argv = ['harness.py', '--work-dir=/tmp/asked-for', '--full-diagnostic']
-        harness_args.ensure_work_dir(DEFAULT, argv)
+        self.assertEqual(harness_args.ensure_work_dir(DEFAULT, argv), Path('/tmp/asked-for'))
         self.assertEqual(argv, ['harness.py', '--work-dir=/tmp/asked-for', '--full-diagnostic'])
 
     def test_separate_spelling_is_kept(self):
         argv = ['harness.py', '--work-dir', '/tmp/asked-for']
-        harness_args.ensure_work_dir(DEFAULT, argv)
+        self.assertEqual(harness_args.ensure_work_dir(DEFAULT, argv), Path('/tmp/asked-for'))
         self.assertEqual(argv, ['harness.py', '--work-dir', '/tmp/asked-for'])
 
     def test_default_is_appended_when_none_is_given(self):
         argv = ['harness.py', '--reference', '/tmp/vanilla.jsonl']
-        harness_args.ensure_work_dir(DEFAULT, argv)
+        self.assertEqual(harness_args.ensure_work_dir(DEFAULT, argv), DEFAULT)
         self.assertEqual(
             argv,
             ['harness.py', '--reference', '/tmp/vanilla.jsonl', '--work-dir', '/scratch/default'],
@@ -40,6 +40,10 @@ class EnsureWorkDirTest(unittest.TestCase):
         argv = ['--work-dir/not-an-argument.py']
         harness_args.ensure_work_dir(DEFAULT, argv)
         self.assertEqual(argv, ['--work-dir/not-an-argument.py', '--work-dir', '/scratch/default'])
+
+    def test_the_last_one_wins_as_in_argparse(self):
+        argv = ['harness.py', '--work-dir', '/tmp/first', '--work-dir=/tmp/second']
+        self.assertEqual(harness_args.ensure_work_dir(DEFAULT, argv), Path('/tmp/second'))
 
 
 if __name__ == '__main__':
