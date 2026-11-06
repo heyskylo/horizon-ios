@@ -673,10 +673,18 @@ impl Game<'_> {
                         // ravagers are pushed.
                         hurt_mob(m, hurtable, cause, (amount, source));
                     }
-                    // 5 health, destroyed by the explosion damage (nether stars resist).
+                    // `ItemEntity.hurtServer`: the damage comes off `Health`
+                    // (5 to start) in f32 and the item is destroyed at zero, so
+                    // a survivor keeps the health the blast left it. The nether
+                    // star is `ItemStack.canBeHurtBy`'s explosion exception, and
+                    // a blast with a source entity under `mobGriefing` off never
+                    // reaches here (`items_ignore`).
                     EntityHandle::Item(i) => {
-                        destroyed = &*self.dropped[i].stack.item != "minecraft:nether_star"
-                            && amount >= 5.0;
+                        let item = &mut self.dropped[i];
+                        if &*item.stack.item != "minecraft:nether_star" {
+                            item.health = (item.health as f32 - amount) as i32;
+                            destroyed = item.health <= 0;
+                        }
                     }
                     // `ExperienceOrb.hurtServer` takes the damage off their 5 health.
                     EntityHandle::Orb(i) => {

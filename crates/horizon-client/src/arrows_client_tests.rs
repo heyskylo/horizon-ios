@@ -47,6 +47,17 @@ fn shape_tag(shape: &VoxelShape) -> Tag {
     Tag::compound(fields)
 }
 
+const TNT: u32 = 20;
+struct Rules<'o> {
+    mob_griefing: bool,
+    owners: &'o dyn OwnerLookup,
+    server: bool,
+}
+const CLIENT: Rules<'static> = Rules {
+    mob_griefing: true,
+    owners: &(),
+    server: false,
+};
 fn run(cells: &[([i32; 3], u32)], ticks: usize, shared_fire: bool) -> Vec<Projectile> {
     run_with(cells, ticks, shared_fire, |_| {})
 }
@@ -56,6 +67,15 @@ fn run_with(
     shared_fire: bool,
     setup: impl FnOnce(&mut Projectile),
 ) -> Vec<Projectile> {
+    run_in(cells, ticks, shared_fire, CLIENT, setup)
+}
+fn run_in(
+    cells: &[([i32; 3], u32)],
+    ticks: usize,
+    shared_fire: bool,
+    rules: Rules,
+    setup: impl FnOnce(&mut Projectile),
+) -> Vec<Projectile> {
     let mut definitions = vec![("air", None), ("stone", None)];
     for level in 0..16 {
         definitions.push(("water", Some(("level", level.to_string()))));
@@ -63,6 +83,7 @@ fn run_with(
     for drag in [false, true] {
         definitions.push(("bubble_column", Some(("drag", drag.to_string()))));
     }
+    definitions.push(("tnt", None));
     let states: Vec<_> = definitions
         .iter()
         .map(|(name, property)| {
@@ -83,6 +104,7 @@ fn run_with(
                 ("minecraft:stone", Tag::Int(1)),
                 ("minecraft:water", Tag::Int(2)),
                 ("minecraft:bubble_column", Tag::Int(18)),
+                ("minecraft:tnt", Tag::Int(TNT as i32)),
             ]),
         ),
     ]))
@@ -99,7 +121,7 @@ fn run_with(
         serde_json::json!({"states":(0..states.len()).map(|id|serde_json::json!({"id":id})).collect::<Vec<_>>()} ).to_string(),
     )
     .unwrap();
-    let behaviours = serde_json::json!({"states":(0..states.len()).map(|id|if id==1{[63,0]}else{[0,0]}).collect::<Vec<_>>(),"blocks":(["air","stone","water","bubble_column"].iter().map(|name|serde_json::json!({"name":format!("minecraft:{name}"),"class":["Block"]})).collect::<Vec<_>>())});
+    let behaviours = serde_json::json!({"states":(0..states.len()).map(|id|if id==1||id==20{[63,0]}else{[0,0]}).collect::<Vec<_>>(),"blocks":(["air","stone","water","bubble_column","tnt"].iter().map(|name|serde_json::json!({"name":format!("minecraft:{name}"),"class":["Block"]})).collect::<Vec<_>>())});
     let facts = BlockFacts::load_with_behaviour_json(&root, &registry, &behaviours).unwrap();
     std::fs::remove_dir_all(root).unwrap();
     let table = Tag::compound([
@@ -114,7 +136,7 @@ fn run_with(
         ),
         (
             "cached_shapes",
-            Tag::IntArray((0..20).map(|id| i32::from(id == 1)).collect()),
+            Tag::IntArray((0..21).map(|id| i32::from(id == 1 || id == TNT)).collect()),
         ),
     ]);
     let collision = BlockCollisionRegistry::new(Arc::new(
@@ -140,8 +162,9 @@ fn run_with(
         collision: &collision,
         fluids: &fluids,
         raining: &|_| false,
-        mob_griefing: true,
+        mob_griefing: rules.mob_griefing,
         tnt_explodes: true,
+        owners: rules.owners,
     };
     let mut p = Projectile::new(
         ProjectileKind::Arrow {
@@ -159,7 +182,11 @@ fn run_with(
     let mut result = Vec::new();
     for _ in 0..ticks {
         p.arrow.as_mut().unwrap().events.clear();
-        tick_client(&mut p, &scene);
+        if rules.server {
+            tick(&mut p, &scene, &[]);
+        } else {
+            tick_client(&mut p, &scene);
+        }
         result.push(p.clone());
     }
     result
@@ -187,6 +214,43 @@ fn first_water_tick_moves_before_water_inertia_and_keeps_synced_flames() {
             assert_eq!(st.on_fire(), shared_fire);
         }
     }
+}
+
+struct ArmorStand;
+impl OwnerLookup for ArmorStand {
+    fn non_player_entity(&self, uuid: [i32; 4]) -> bool {
+        uuid == [1, 2, 3, 4]
+    }
+}
+fn primes_tnt(owner_uuid: Option<[i32; 4]>, mob_griefing: bool) -> bool {
+    let rules = Rules {
+        mob_griefing,
+        owners: &ArmorStand,
+        server: true,
+    };
+    let steps = run_in(&[([1, 18, 0], TNT)], 2, false, rules, |p| {
+        p.owner_uuid = owner_uuid;
+    });
+    steps
+        .iter()
+        .flat_map(|p| &p.arrow.as_ref().unwrap().events)
+        .any(|e| {
+            matches!(
+                e,
+                ArrowEvent::Block {
+                    reaction: BlockReaction::PrimeTnt,
+                    ..
+                }
+            )
+        })
+}
+#[test]
+fn an_arrow_owned_by_an_armor_stand_needs_mob_griefing_to_prime_tnt() {
+    assert!(!primes_tnt(Some([1, 2, 3, 4]), false));
+    assert!(primes_tnt(Some([1, 2, 3, 4]), true));
+    // An owner that isn't loaded is no owner (getOwner is null).
+    assert!(primes_tnt(Some([9, 9, 9, 9]), false));
+    assert!(primes_tnt(None, false));
 }
 
 #[test]
