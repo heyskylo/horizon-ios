@@ -152,12 +152,13 @@ impl Game<'_> {
 
     /// A player head of the player `uuid` (Bukkit's `SkullMeta.setOwningPlayer`): its
     /// `minecraft:profile` holds their id, and their name and properties (the skin) when they are
-    /// on and the hub is in reach, so it shows their skin at once; a profile of an id alone the
-    /// client resolves itself. API @API:player_textures@.
+    /// on and the hub is in reach, so it shows their skin at once (else their name from the profile
+    /// cache, if there); a profile without properties the client resolves itself. API @API:player_textures@.
     pub(super) fn native_player_head(&self, uuid: u128) -> ItemStack {
-        let (name, properties) = self
-            .online_profile(uuid)
-            .map_or((None, Vec::new()), |(name, p)| (Some(name), p));
+        let (name, properties) = self.online_profile(uuid).map_or(
+            (self.native_profile_by_uuid(uuid), Vec::new()),
+            |(name, p)| (Some(name), p),
+        );
         let profile = horizon_protocol::item::Profile {
             name,
             id: Some(uuid),
@@ -173,5 +174,31 @@ impl Game<'_> {
             Some(horizon_client::item_sync::profile_tag(&profile)),
         );
         head
+    }
+
+    /// A player the server knows by name, any case (Bukkit's `getOfflinePlayer` without its
+    /// network lookup, vanilla's `GameProfileCache.get`): one who is on, else one in a dedicated
+    /// server's profile cache (`usercache.json`: who joined in the last month, and names its
+    /// commands looked up). Their id and their name as written. Asks no profile service and makes
+    /// up no offline player; None when nobody is found. API @API:profile_cache@.
+    pub(super) fn native_profile_by_name(&self, name: &str) -> Option<(u128, String)> {
+        let online = self.lan.as_ref().and_then(|host| {
+            host.hub
+                .guests
+                .iter()
+                .find(|g| g.name.eq_ignore_ascii_case(name))
+                .map(|g| (g.uuid, g.name.clone()))
+        });
+        online.or_else(|| {
+            super::dedicated::cached_user_by_name(name).map(|user| (user.id, user.name))
+        })
+    }
+
+    /// The name of the player `uuid`: one who is on, else one in a dedicated server's profile
+    /// cache, as `native_profile_by_name`. API @API:profile_cache@.
+    pub(super) fn native_profile_by_uuid(&self, uuid: u128) -> Option<String> {
+        self.online_profile(uuid)
+            .map(|(name, _)| name)
+            .or_else(|| super::dedicated::cached_user_by_id(uuid).map(|user| user.name))
     }
 }

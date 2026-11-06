@@ -2528,6 +2528,12 @@ parsing before (#10461).
   (inside a player's own hook) the textures are None and the head carries the id only. Bundles need
   `"hooks": @API:player_textures@`.
 
+- Helpers **`native_profile_by_name(name)`** (`host.profile_by_name`) and **`native_profile_by_uuid(uuid)`**
+  (`host.profile_by_uuid`): a player the server knows, by name in any case (their id and name as written) or by id
+  (their name): one who is on, else one in a dedicated server's profile cache, `usercache.json` (vanilla's
+  `GameProfileCache`, Bukkit's `getOfflinePlayer` without its network lookup). They ask no profile service and make
+  up no offline player; None when nobody is found. Bundles need `"hooks": @API:profile_cache@`.
+
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a
