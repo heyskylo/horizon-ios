@@ -3855,6 +3855,42 @@ def awake_villager_saved_position():
 
 
 
+def mob_saved_pickup_loot():
+    """Valid boolean inputs only; full bodies retain unrelated save diagnostics."""
+    ops = [cmd('/tick freeze'), cmd('/forceload add 160 160 175 175'),
+           {'op': 'wait_chunks', 'chunks': [[10, 10]]},
+           cmd('/fill 160 199 160 175 199 175 stone', expect_result=256),
+           cmd('/execute if loaded 164 200 164', expect_result=1),
+           cmd('/execute if block 164 199 164 stone', expect_result=1),
+           cmd('/scoreboard objectives add pickup_save dummy', expect_result=1)]
+    ops += setup('/execute store result score start pickup_save run time query gametime')
+    for species, name in enumerate(['pig', 'allay', 'sulfur_cube']):
+        for value, supplied in enumerate(['', ',CanPickUpLoot:0b', ',CanPickUpLoot:1b']):
+            n = 1 + species * 3 + value
+            uuid = f'0000002e-0000-0000-0000-{n:012x}'
+            array = f'[I;46,0,0,{n}]'
+            tag = f'pickup_save_{n}'
+            body = 'Pos:[164.5d,200d,164.5d],Motion:[0d,0d,0d],NoAI:1b,NoGravity:1b,Silent:1b,PersistenceRequired:1b,Health:4f'
+            expected = int(name == 'sulfur_cube' or (name == 'pig' and value == 2))
+            ops += [cmd(f'/summon minecraft:{name} 164.5 200 164.5 {{UUID:{array},Tags:["{tag}"],{body}{supplied}}}', expect_result=1),
+                    cmd(f'/execute as {uuid} if entity @s[type=minecraft:{name},tag={tag}]', expect_result=1),
+                    cmd(f'/execute if data entity {uuid} {{UUID:{array},{body}}}', expect_result=1)]
+            for _ in range(2):
+                ops += setup('/scoreboard players set value pickup_save 317',
+                             '/scoreboard players set success pickup_save 17')
+                ops += [cmd(f'/data get entity {uuid} CanPickUpLoot', expect_result=expected),
+                        cmd(f'/execute store result score value pickup_save store success score success pickup_save run data get entity {uuid} CanPickUpLoot', expect_result=expected),
+                        cmd('/scoreboard players get value pickup_save', expect_result=expected),
+                        cmd('/scoreboard players get success pickup_save', expect_result=1),
+                        cmd(f'/execute if data entity {uuid} {{CanPickUpLoot:{expected}b}}', expect_result=1)]
+            full = cmd(f'/data get entity {uuid}', record=False)
+            full['trace'] = True
+            ops.append(full)
+    ops += setup('/execute store result score elapsed pickup_save run time query gametime',
+                 '/scoreboard players operation elapsed pickup_save -= start pickup_save')
+    return ops + [cmd('/scoreboard players get elapsed pickup_save', expect_result=0)]
+
+
 def projectile_saved_uuid():
     """Direct identity guards are separate from repeated saved UUID views."""
     from uuid import UUID
@@ -5526,7 +5562,8 @@ ISOLATED_REINFORCEMENTS = frozenset({'command zombie reinforcements', 'command r
 # These overlays replace built-in recipes, never beside the corpus's fixed vanilla recipe-count controls.
 ISOLATED_RECIPES = frozenset({'crafting recipe priority', 'crafting base recipe control', 'transmute result patches'})
 ISOLATED_FRAME_MAPS = frozenset({'frame live map detachment'})
-ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS
+ISOLATED_PICKUP_SAVE = frozenset({'mob saved pickup loot'})
+ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_PICKUP_SAVE
 
 
 def groups():
@@ -5562,6 +5599,7 @@ def groups():
         from item_merge_corpus import stack_limit_merges
     return [
         ('setup', group_setup()),
+        ('mob saved pickup loot', mob_saved_pickup_loot()),
         ('transmute result patches', transmute_patches(cmd, setup)),
         ('mob effect predicate view', mob_effect_predicates(cmd, setup)),
         ('frame live map detachment', frame_maps(cmd, setup)),
