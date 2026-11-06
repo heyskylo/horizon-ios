@@ -299,7 +299,8 @@ impl Game<'_> {
         let now = horizon_client::lan::border::Sent::of(&self.border);
         if let Some(sent) = host.border_sent.replace(now) {
             for packet in sent.changes(&self.border) {
-                host.hub.broadcast(&packet);
+                // PlayerList$1: only the players of the border's own level.
+                host.hub.broadcast_level(&packet);
             }
         }
     }
