@@ -2,7 +2,8 @@
 """Compare actual Player.attack's accepted special-target attacker tail.
 
 Both sides run the full attack entry, not just the target hurt or a copied tail.
-The scoped output is exhaustion, horizontal attacker velocity, sprint and cooldown.
+The scoped output first proves the special target accepted the hit, then compares
+exhaustion, horizontal attacker velocity, sprint and cooldown.
 Target movement, drops, sound delivery and weapon/enchantment effects are outside
 this probe. Painting/frame controls intentionally consume skipAttackInteraction
 without this tail. No real server, window, renderer or audio device is started.
@@ -89,6 +90,10 @@ def main():
         return [row for row in rows if row.startswith('special ')]
     vanilla, rust = scoped(work / 'native.txt'), scoped(work / 'rust.txt')
     assert len(vanilla) == len(rust) == len(fixtures), (len(vanilla), len(rust), len(fixtures))
+    for case, a, b in zip(fixtures, vanilla, rust):
+        if case['special_attack']['target'] in ('boat', 'cart', 'stand', 'dragon'):
+            assert a.startswith('special accepted '), (case['special_attack'], 'oracle did not accept', a)
+            assert b.startswith('special accepted '), (case['special_attack'], 'production did not accept', b)
     differences = [(case['special_attack'], a, b) for case, a, b in zip(fixtures, vanilla, rust) if a != b]
     (work / 'differences.json').write_text(json.dumps(differences, indent=2), encoding='utf-8')
     base.ensure_sources_unchanged(source_paths, source_hashes)

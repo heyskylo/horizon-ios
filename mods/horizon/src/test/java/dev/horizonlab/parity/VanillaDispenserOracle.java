@@ -836,18 +836,27 @@ public final class VanillaDispenserOracle {
             if (kind.equals("filled_frame")) frame.setItem(new ItemStack(Items.STONE));
             if (kind.equals("fixed_frame")) VanillaBlockUpdateOracle.set(frame.getClass(), frame, "fixed", true);
         }
+        Entity original = target;
         if (target instanceof net.minecraft.world.entity.boss.enderdragon.EnderDragon dragon) {
             target = dragon.head;
             target.snapTo(0.5, 1, 0.5, 0, 0);
         }
         w.entities.add(target);
         player.attack(target);
+        String outcome = "control";
+        if (original instanceof net.minecraft.world.entity.vehicle.VehicleEntity vehicle) {
+            outcome = original.isRemoved() || vehicle.getHurtTime() > 0 ? "accepted" : "unchanged";
+        } else if (original instanceof net.minecraft.world.entity.decoration.ArmorStand stand) {
+            outcome = stand.isRemoved() || (!op.get("break").getAsBoolean() && stand.lastHit == 100) ? "accepted" : "unchanged";
+        } else if (original instanceof net.minecraft.world.entity.boss.enderdragon.EnderDragon dragon) {
+            outcome = dragon.getHealth() < 200.0F ? "accepted" : "unchanged";
+        }
         Field ticker = LivingEntity.class.getDeclaredField("attackStrengthTicker");
         ticker.setAccessible(true);
         Field exhaustion = net.minecraft.world.food.FoodData.class.getDeclaredField("exhaustionLevel");
         exhaustion.setAccessible(true);
         var motion = player.getDeltaMovement();
-        return List.of(String.format(java.util.Locale.ROOT, "special %08x %016x %016x %s %d",
+        return List.of(String.format(java.util.Locale.ROOT, "special %s %08x %016x %016x %s %d", outcome,
             Float.floatToRawIntBits(exhaustion.getFloat(player.getFoodData())),
             Double.doubleToRawLongBits(motion.x), Double.doubleToRawLongBits(motion.z),
             player.isSprinting(), ticker.getInt(player)));

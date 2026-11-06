@@ -71,8 +71,19 @@ impl Game<'_> {
         self.yaw = (-dx).atan2(dz).to_degrees() as f32;
         self.pitch = (-dy).atan2((dx*dx+dz*dz).sqrt()).to_degrees() as f32;
         self.attack();
+        // A ray miss must not pass as an accepted hit with an unchanged cost.
+        let accepted = match kind {
+            "boat" => Some(self.boats.first().is_none_or(|b| b.hurt_time > 0)),
+            "cart" => Some(self.carts.first().is_none_or(|c| c.hurt_time > 0)),
+            "stand" => Some(self.armor_stands.first().is_none_or(|s| {
+                !op["break"].as_bool().unwrap_or(false) && s.last_hit == 100
+            })),
+            "dragon" => Some(self.dragon.as_ref().is_some_and(|d| d.health < 200.0)),
+            _ => None,
+        };
+        let outcome = accepted.map_or("control", |hit| if hit { "accepted" } else { "unchanged" });
         let player = self.player.take().ok_or("special attack player missing")?;
-        Ok(vec![format!("special {:08x} {:016x} {:016x} {} {}",
+        Ok(vec![format!("special {outcome} {:08x} {:016x} {:016x} {} {}",
             player.health.food.exhaustion.to_bits(), player.velocity.x.to_bits(), player.velocity.z.to_bits(),
             player.sprinting, self.attack_ticks)])
     }
