@@ -2983,6 +2983,15 @@ A cancelled tutorial hint isn't asked again while it stays the current hint; a c
 its next update. The startup menu's narrator toast is not told: it shows before the game's `Host` exists.
 Bundles need `"hooks": @API:toast_add@`.
 
+### The client's tick
+
+`native_client_tick_pre()` and `native_client_tick_post()` (client) are NeoForge's `ClientTickEvent.Pre` and `.Post`:
+they bracket each client tick of the window, the top and the end of vanilla's `Minecraft.tick`. The window ticks 20
+times a second on the title screen, while paused and in a world alike, so a mod checks for itself whether a world is
+shown (`native_clock()` is None on the title screen). A frame that falls behind runs the ticks it owes back to back,
+each one bracketed. A server never fires them, single player's own included (it ticks on its own thread): server work
+goes in `native_server_tick`. A tick that errors ends without its `post`. Bundles need `"hooks": @API:client_tick@`.
+
 ### Values for a mod's shader pack
 
 `native_shader_params(partial, params)` (client) asks every frame, while a Horizon shader pack is on, for eight
