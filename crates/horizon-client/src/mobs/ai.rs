@@ -2127,6 +2127,8 @@ pub fn voice_sounds(m: &Mob) -> [&'static str; 3] {
         Species::Nautilus | Species::ZombieNautilus => super::nautilus::sounds(m),
         Species::SulfurCube => super::sulfur_cube::sounds(m),
         Species::Armadillo => super::armadillo::sounds(m),
+        // HappyGhast.getHurtSound and getDeathSound: the ghastling's by age.
+        Species::HappyGhast => super::happy_ghast::sounds(m),
         // Panda.getAmbientSound.
         Species::Panda => {
             let ambient = if super::panda::is_aggressive(m) {
