@@ -825,6 +825,8 @@
   "horizon.pvp.combat_feel.modern": "Modern",
   "horizon.pvp.combat_feel.legacy": "Legacy (1.8.9)",
   "horizon.pvp.header.combat": "Combat feel",
+  "horizon.pvp.combat_sounds": "1.8 hit sounds",
+  "horizon.pvp.combat_sounds.tooltip": "Under Legacy, leaves out the attack sounds 1.9 added (strong, weak, sweep, critical...). Hurt sounds stay.",
   "Bindings": "Bindings",
   "Play": "Play",
   "Device": "Device",
