@@ -2484,6 +2484,22 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
 - **`native_player_jump(player, name)`**: accepted guest movement made the server player jump from the ground, after movement simulation finishes. The guest's state is swapped in.
 - **`native_player_kicked(player, name, reason)`**: a guest was kicked after the hub recorded the rendered disconnect reason and sent the disconnect. The guest's state is swapped in, unless the guest was already removed in the same poll (a kick and the disconnect arriving together): the hook still fires, without it.
 - **`native_player_level_change(player, name, from, to)`**: a server player's experience change altered their level, after the new level was applied. The guest's state is swapped in when the player is a guest.
+#### Server hooks for plugin ports: per-player feedback
+
+What Bukkit's and Adventure's `Player` methods send one player, which plugin ports built as raw packets through
+`native_send` before: a sound, particles, a title, boss bars and the compass target. Only
+that player is sent anything; the world, its `/bossbar` bars and the other players are untouched. NeoForge has no
+per-player helpers for these (a NeoForge mod sends `ServerPlayer.connection.send` itself), so none is named.
+
+- Helper **`native_play_sound_to(uuid, sound, category, at, volume, pitch)`** (`host.play_sound_to`): a
+  `ClientboundSoundPacket` to that player alone, as Bukkit's `Player.playSound`, at `at` in their level or, with None,
+  where they stand when it leaves. `category` is a `SoundSource` name (`master`, `music`, `record`, `weather`, `block`,
+  `hostile`, `neutral`, `player`, `ambient`, `voice`, `ui`). As for `GameLevel::native_play_sound`, an unknown
+  `minecraft:` event is dropped and another namespace's event goes by name (a client hears it if its resources define
+  it). No range applies: their client fades it with distance as any sound. It leaves at the tick's end, so it works
+  from any server hook, a player's own included; true means queued. False on a client, for a bad name, category,
+  position, volume or pitch, and for a player who isn't on (inside another player's hook, where the players are out of
+  reach, that player then gets nothing). Bundles need `"hooks": @API:play_sound_to@`.
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a

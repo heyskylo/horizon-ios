@@ -6523,6 +6523,53 @@ impl Game<'_> {
     ) {
         mod_api::dispatch_player_level_change(self, mod_api::mods(), player, name, from, to);
     }
+    /// Plays `sound` to that player alone, as Bukkit's `Player.playSound`:
+    /// at `at` in their level, or where they stand when it leaves (None),
+    /// in `category` (`SoundSource`'s name: `master`, `music`, `record`,
+    /// `weather`, `block`, `hostile`, `neutral`, `player`, `ambient`,
+    /// `voice`, `ui`). Nobody else hears it, however near. Names go as for
+    /// `GameLevel::native_play_sound`: an unknown `minecraft:` event is
+    /// dropped, another namespace's goes by name. It leaves at the tick's
+    /// end, so it works from any server hook; true means queued. False on a
+    /// client, for a bad name, category, position, volume or pitch, and for
+    /// a player who isn't on (inside another player's hook, where the
+    /// players are out of reach, such a player just gets nothing). API
+    /// @API:play_sound_to@.
+    pub(super) fn native_play_sound_to(
+        &mut self,
+        uuid: u128,
+        sound: &str,
+        category: &str,
+        at: Option<[f64; 3]>,
+        volume: f32,
+        pitch: f32,
+    ) -> bool {
+        let Some(source) = horizon_client::settings::SOUND_SOURCES
+            .iter()
+            .position(|s| *s == category)
+        else {
+            return false;
+        };
+        let position_ok = at.is_none_or(|at| {
+            at.into_iter()
+                .all(|v| v.is_finite() && v.abs() <= f64::from(i32::MAX) / 8.0)
+        });
+        let gain_ok = volume.is_finite() && volume >= 0.0 && pitch.is_finite() && pitch >= 0.0;
+        if !sound_id(sound) || !position_ok || !gain_ok || !self.player_fx_reaches(uuid) {
+            return false;
+        }
+        self.queue_native_player_fx(
+            uuid,
+            super::native_player_fx::PlayerFx::Sound {
+                sound: sound.to_owned(),
+                source: source as i32,
+                at,
+                volume,
+                pitch,
+            },
+        );
+        true
+    }
     /// A click in a menu a mod opened (`native_open_menu`), which moved
     /// nothing: the menu's `slot` (its own first, then the player's
     /// inventory, `native_menu_inventory_slot`; -999 outside), the `button`
