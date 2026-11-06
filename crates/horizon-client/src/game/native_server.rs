@@ -617,13 +617,26 @@ impl Game<'_> {
         if self.lan_acting.is_some() || self.lan.is_none() {
             return false;
         }
+        self.run_as_server_source(line, true)
+    }
+    /// `native_run_command`'s run, `silent` as the source's output is
+    /// suppressed. A source that keeps what it is sent isn't silent: it takes
+    /// every `sendSuccess` and `sendFailure` line, and it tells no operator
+    /// (`shouldInformAdmins` false), so the console flag is set to that while
+    /// it runs.
+    fn run_as_server_source(&mut self, line: &str, silent: bool) -> bool {
         let server = execute::Source {
             dimension: Dim::Overworld,
+            silent,
             ..self.server_source()
         };
+        let outer_console = (!silent).then(|| self.console_broadcast.replace(false));
         let outer = self.command_source.replace(server);
         let ok = self.as_console(|g| g.run_command(line));
         self.command_source = outer;
+        if let Some(outer_console) = outer_console {
+            self.console_broadcast = outer_console;
+        }
         ok
     }
     /// `native_run_command` with its answer kept, as vanilla's
@@ -656,7 +669,7 @@ impl Game<'_> {
                 );
             }
         } else {
-            out.ran = self.native_run_command(line);
+            out.ran = self.run_as_server_source(line, false);
         }
         self.admin_feedback.truncate(admins);
         out.output = std::mem::replace(&mut self.chat_capture, outer_lines).unwrap_or_default();
@@ -1624,5 +1637,74 @@ mod tests {
         assert_eq!((msg.name.as_str(), msg.level), ("msg", 0));
         assert_eq!(msg.aliases, ["tell", "w"]);
         assert!(vanilla_command_info(d, "nosuchcommand").is_none());
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_capturing_server_source_keeps_the_vanilla_feedback() {
+        use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        assert!(game.ui.rules.set_string("send_command_feedback", "false"));
+        let mut run = |line: &str, silent: bool| {
+            game.chat_capture = Some(Vec::new());
+            let ran = game.run_as_server_source(line, silent);
+            let lines: Vec<String> = game
+                .chat_capture
+                .take()
+                .unwrap()
+                .iter()
+                .map(Text::plain)
+                .collect();
+            (ran, lines)
+        };
+        // sendSuccess reaches a capturing source whatever send_command_feedback says.
+        let (ran, lines) = run("time query time", false);
+        assert!(ran && lines.len() == 1, "{lines:?}");
+        assert!(
+            lines[0].starts_with("Clock minecraft:overworld is at"),
+            "{lines:?}"
+        );
+        // The test passes with a count, as vanilla's `execute if entity` words it.
+        let (ran, lines) = run("execute if entity @e[type=minecraft:pig]", false);
+        assert!(!ran, "no pig, so the test fails");
+        assert_eq!(lines, ["Test failed"]);
+        let (ran, lines) = run("execute unless entity @e[type=minecraft:pig]", false);
+        assert!(ran);
+        assert_eq!(lines, ["Test passed"]);
+        // sendFailure too.
+        let (ran, lines) = run("time set 1 2 3", false);
+        assert!(!ran && !lines.is_empty());
+        // The plain console run stays silent, and the console flag is put back.
+        let (ran, lines) = run("time query time", true);
+        assert!(ran && lines.is_empty(), "{lines:?}");
+        assert!(game.console_broadcast.is_none());
     }
 }
