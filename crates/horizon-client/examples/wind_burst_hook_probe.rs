@@ -24,5 +24,13 @@ fn main() {
     } else {
         Arc::from([Box::new(Protect) as Box<dyn Hooks>])
     };
-    horizon_client::entry::main_with(mods);
+    // Debug Game construction exceeds the Windows main thread's default stack.
+    // This worker only loads the isolated component fixture; it has no window.
+    std::thread::Builder::new()
+        .name("wind-burst-fixture".into())
+        .stack_size(64 * 1024 * 1024)
+        .spawn(move || horizon_client::entry::main_with(mods))
+        .expect("start wind fixture")
+        .join()
+        .expect("wind fixture panicked");
 }

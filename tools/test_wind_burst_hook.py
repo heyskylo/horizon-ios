@@ -52,6 +52,9 @@ def check(binary, resources, timeout=600, evidence=None):
         for mode in ['no_mod', 'noop', 'protect']:
             output = work / (mode + '.txt')
             env = dict(os.environ, HORIZON_DISPENSE_FIXTURE=f'{inputs},{output}')
+            env['RUST_MIN_STACK'] = str(64 * 1024 * 1024)
+            env.setdefault('HORIZON_WORKER_THREADS', '2')
+            env.setdefault('HORIZON_JOB_THREADS', '2')
             env.pop('HORIZON_WIND_NO_MOD', None)
             env.pop('HORIZON_WIND_PROTECT', None)
             if mode == 'no_mod':
