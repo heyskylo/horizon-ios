@@ -964,6 +964,7 @@ impl Game<'_> {
     /// The entity phase of `tick_creatures`: every mob's tick, deaths, and the
     /// projectiles and effects that follow from them.
     pub(super) fn tick_creature_entities(&mut self) -> Result<()> {
+        let mut laps = horizon_client::spans::laps();
         // LivingEntity.die runs when the killing blow lands: mobs killed
         // since the last tick (by the player, explosions...) die first.
         let killed: Vec<Mob> = self
@@ -1060,6 +1061,7 @@ impl Game<'_> {
                 }
             }
             let mut cached_difficulty: Option<((i32, i32), spawning::LocalDifficulty)> = None;
+            laps.lap("tc_setup");
             for i in 0..mobs.len() {
                 let m = &mut mobs[i];
                 let (bx, bz) = (m.position.x.floor() as i32, m.position.z.floor() as i32);
@@ -1225,6 +1227,7 @@ impl Game<'_> {
                 grid.update(i, snapshot[i].bounds);
                 horizon_client::mobs::apply_brain_events(&mut mobs, &mut events, from);
             }
+            laps.lap("tc_mobs");
             let mut flags = keep.into_iter();
             mobs.retain(|_| flags.next().unwrap_or(true));
             for m in &mut mobs {
@@ -1301,6 +1304,7 @@ impl Game<'_> {
             queued.append(&mut m.outbox);
         }
         self.handle_mob_events(queued)?;
+        laps.lap("tc_finalize");
         Ok(())
     }
     /// `LivingEntity.makePoofParticles` (entity event 60) about a mob's box.
