@@ -18,6 +18,7 @@ use horizon_client::{
     hud::Rect,
     items::ItemStack,
     mesher::Vertex,
+    mobs::model_layers::{self, ModelPart},
     text::Text,
 };
 use horizon_world::registry::BlockStateId;
@@ -705,6 +706,53 @@ impl Game<'_> {
         true
     }
 
+    /// Draws model part `part` and the parts under it under `draw`'s pose, as
+    /// vanilla's `ModelPart.render` does: each part moved to its place (in
+    /// texels, 16 to a block), turned about z, then y, then x, and scaled,
+    /// its faces textured from `sprite` (`mymod:entity/golem`, a content
+    /// mod's `assets/mymod/textures/entity/golem.png`, or vanilla's
+    /// `entity/zombie/zombie`) times the 0xRRGGBB `tint`. A part that isn't
+    /// `visible` draws nothing, one that skips drawing (`skip_draw`) only its
+    /// children. A mob's model is built in the model's own frame (+y down,
+    /// its front towards -z, its feet 24 texels down): in `native_mob_submit`,
+    /// `draw.scale([1.0, -1.0, -1.0])` then `draw.translate([0.0, -1.501,
+    /// 0.0])` first, as `LivingEntityRenderer` does. False for an unknown
+    /// sprite. API @API:model_layers@.
+    pub(super) fn native_draw_model_part(
+        &self,
+        draw: &mut BlockEntityDraw,
+        part: &ModelPart,
+        sprite: &str,
+        tint: u32,
+    ) -> bool {
+        let Some(rect) = self.gui.atlas.sprites.get(sprite).copied() else {
+            return false;
+        };
+        draw_model_part(draw, part, rect, tint);
+        true
+    }
+
+    /// Entity model layer `layer` baked into its `ModelPart` tree, each part
+    /// at its pose, as `EntityModelSet.bakeLayer` bakes it: one a native mod
+    /// registered (`native_layer_definitions`), or vanilla's, by the name
+    /// `entity-models.json` gives it (`minecraft:zombie#main`,
+    /// `minecraft:player#main`). The tree is the caller's own copy: bake it
+    /// once, as a renderer does, and set its parts' poses each frame. None
+    /// for a layer neither has. A vanilla layer no mob has (a player's, a
+    /// chest's) is read from the resources each call, so slow. API
+    /// @API:model_layers@.
+    pub(super) fn native_bake_layer(&self, layer: &str) -> Option<ModelPart> {
+        if let Some(definition) = model_layers::registered(layer) {
+            return Some(definition.bake_root());
+        }
+        let key = layer.strip_prefix("minecraft:")?;
+        if let Some(part) = self.res.mob_types().values().find_map(|t| t.layer(key)) {
+            return Some(ModelPart::from_part(part));
+        }
+        let models = horizon_client::mobs::EntityModelDocument::load(&self.vanilla_root()).ok()?;
+        models.model(layer).map(|part| ModelPart::from_part(&part))
+    }
+
     /// Draws `stack` under `draw`'s pose as an item is drawn in the world
     /// (`ItemModelResolver.updateForTopItem` and `ItemStackRenderState.submit`), centred on the
     /// pose's origin, in its model's `display` transform: `Fixed` as a
@@ -762,6 +810,45 @@ impl Game<'_> {
     }
 }
 
+/// `ModelPart.render`: `part`'s faces under its own pose
+/// (`translateAndRotate`), then its children under theirs.
+fn draw_model_part(draw: &mut BlockEntityDraw, part: &ModelPart, sprite: Rect, tint: u32) {
+    if !part.visible || (part.is_empty() && part.children().next().is_none()) {
+        return;
+    }
+    draw.push();
+    draw.apply(part_transform(part));
+    if !part.skip_draw {
+        for polygon in &part.polygons {
+            let corners = polygon.vertices.map(|v| v.pos.map(|c| c / 16.0));
+            let uv = polygon.vertices.map(|v| [v.u, v.v]);
+            draw.quad(corners, uv, sprite, tint);
+        }
+    }
+    for (_, child) in part.children() {
+        draw_model_part(draw, child, sprite, tint);
+    }
+    draw.pop();
+}
+
+/// `ModelPart.translateAndRotate`: to the part's place in blocks, turned
+/// about z, then y, then x (`rotationZYX`), then scaled.
+fn part_transform(part: &ModelPart) -> Mat4 {
+    let mut m = Mat4::from_translation(Vec3::new(part.x, part.y, part.z) / 16.0);
+    if part.x_rot != 0.0 || part.y_rot != 0.0 || part.z_rot != 0.0 {
+        m *= Mat4::from_quat(Quat::from_euler(
+            glam::EulerRot::ZYX,
+            part.z_rot,
+            part.y_rot,
+            part.x_rot,
+        ));
+    }
+    if part.x_scale != 1.0 || part.y_scale != 1.0 || part.z_scale != 1.0 {
+        m *= Mat4::from_scale(Vec3::new(part.x_scale, part.y_scale, part.z_scale));
+    }
+    m
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -809,6 +896,73 @@ mod tests {
         d.scale([2.0, 2.0, 2.0]);
         let p = d.pose().transform_point3(Vec3::ONE);
         assert_eq!(p, Vec3::new(12.0, 4.0, 2.0));
+    }
+
+    /// An arm a block east of the frame's origin, turned a quarter about z,
+    /// with a hand a block below its pivot: `translateAndRotate` turns each
+    /// part about its own pivot, then moves it, and a child goes with its
+    /// parent. Expected corners are worked out by hand from JOML's
+    /// `rotationZYX` (a right-handed quarter turn takes +x to +y).
+    #[test]
+    fn a_model_part_draws_turned_about_its_pivot_and_carries_its_children() {
+        use horizon_client::mobs::model_layers::{
+            CubeListBuilder, LayerDefinition, MeshDefinition, PartPose,
+        };
+        use horizon_core::geometry::Direction as Face;
+        let mut mesh = MeshDefinition::new();
+        let root = mesh.root();
+        let cube = |face| CubeListBuilder::create().add_box_faces([0.0; 3], [16.0; 3], &[face]);
+        let arm = mesh.add_or_replace_child(
+            root,
+            "arm",
+            cube(Face::South),
+            PartPose::offset_and_rotation(16.0, 0.0, 0.0, 0.0, 0.0, std::f32::consts::FRAC_PI_2),
+        );
+        mesh.add_or_replace_child(
+            arm,
+            "hand",
+            cube(Face::North),
+            PartPose::offset(0.0, 16.0, 0.0),
+        );
+        let mut model = LayerDefinition::create(mesh, 64, 64).bake_root();
+        let drawn = |model: &ModelPart| {
+            let mut d = draw();
+            draw_model_part(&mut d, model, sprite(), 0xFF_FFFF);
+            d.into_vertices()
+        };
+        let near = |v: &Vertex, at: [f32; 3]| {
+            assert!(
+                Vec3::from(v.pos).abs_diff_eq(Vec3::from(at), 1e-5),
+                "{:?} not {at:?}",
+                v.pos
+            );
+        };
+
+        let all = drawn(&model);
+        assert_eq!(all.len(), 8);
+        // The arm's south face, (0, 0, 1) (1, 0, 1) (1, 1, 1) (0, 1, 1) in
+        // its frame, turned and moved a block east, then the frame's 10.
+        for (v, at) in all.iter().zip([
+            [11.0, 0.0, 1.0],
+            [11.0, 1.0, 1.0],
+            [10.0, 1.0, 1.0],
+            [10.0, 0.0, 1.0],
+        ]) {
+            near(v, at);
+        }
+        // Its net's last strip, 48 to 64 across and 16 to 32 down, in the sprite.
+        assert_eq!(all[0].uv, [0.75, 0.3125]);
+        // The hand's north face starts at its (1, 0, 0), the arm's (1, 1, 0).
+        near(&all[4], [10.0, 1.0, 0.0]);
+        near(&all[5], [10.0, 0.0, 0.0]);
+
+        let arm = model.get_child_mut("arm").unwrap();
+        arm.skip_draw = true;
+        let hand_only = drawn(&model);
+        assert_eq!(hand_only.len(), 4);
+        near(&hand_only[0], [10.0, 1.0, 0.0]);
+        model.get_child_mut("arm").unwrap().visible = false;
+        assert!(drawn(&model).is_empty());
     }
 
     #[test]

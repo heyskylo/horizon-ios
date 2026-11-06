@@ -13,7 +13,12 @@ pub(super) fn noise(v: &Value, report: &mut Report) -> Value {
         return v.clone();
     };
     let amps: Vec<f64> = amps.iter().filter_map(Value::as_f64).collect();
-    if amps.is_empty() || amps.len() > 32 || amps.iter().any(|a| *a < 0.0) {
+    if amps.is_empty() {
+        // No octaves: a noise of 0 everywhere, whatever its first octave. 26.3
+        // needs one octave and an octave in -32..=32, so that octave is muted.
+        return json!({"base_octave": 0, "amplitude_modifiers": [0.0]});
+    }
+    if amps.len() > 32 || amps.iter().any(|a| *a < 0.0) {
         report.lossy("noise: more than 32 octaves or negative amplitudes (left as they are)");
         return v.clone();
     }

@@ -97,14 +97,22 @@ public final class VanillaMarkerParticlesOracle {
      * particle and local sound it asks for is recorded. */
     public static final class TickLevel extends ClientLevel {
         BlockState state = Blocks.AIR.defaultBlockState();
+        /** Every block below y = 64, so a case can put something else under its block. */
+        BlockState floor = Blocks.AIR.defaultBlockState();
         java.util.List<String> particles;
         java.util.List<String> sounds;
         net.minecraft.world.attribute.EnvironmentAttributeSystem attributes;
         TickLevel() { super(null, null, null, null, 0, 0, null, false, 0L, 0); }
-        @Override public BlockState getBlockState(BlockPos pos) { return state; }
-        @Override public FluidState getFluidState(BlockPos pos) { return Fluids.EMPTY.defaultFluidState(); }
+        @Override public BlockState getBlockState(BlockPos pos) { return pos.getY() < 64 ? floor : state; }
+        /** The state's own fluid, as the probe's world reports it: a waterlogged
+         * block hands the loop a water source, which it then ticks and drips. */
+        @Override public FluidState getFluidState(BlockPos pos) { return getBlockState(pos).getFluidState(); }
         /** Dry weather, as the probe's stand-in world reports it. */
         @Override public boolean isRainingAt(BlockPos pos) { return false; }
+        /** The overworld's build height, which a stalactite's root search asks for
+         * and a level built without a dimension type cannot answer. */
+        @Override public int getMinY() { return -64; }
+        @Override public int getHeight() { return 384; }
         @Override public net.minecraft.world.attribute.EnvironmentAttributeSystem environmentAttributes() {
             return attributes;
         }
@@ -121,6 +129,70 @@ public final class VanillaMarkerParticlesOracle {
                        + " " + bits(x) + " " + bits(y) + " " + bits(z)
                        + " " + Integer.toHexString(Float.floatToIntBits(volume))
                        + " " + Integer.toHexString(Float.floatToIntBits(pitch)));
+        }
+    }
+    /** The pinned client's block tags, bound the way a datapack load binds them:
+     * a bootstrap-only run leaves every tag empty, and the ticks under test ask
+     * about `speleothems`, `impermeable` and the two ambient-sound tags. */
+    @SuppressWarnings("unchecked")
+    static void bindBlockTags() throws Exception {
+        var source = Block.class.getProtectionDomain().getCodeSource().getLocation();
+        var raw = new java.util.HashMap<Identifier, java.util.List<String>>();
+        try (var file = new java.util.zip.ZipFile(java.nio.file.Path.of(source.toURI()).toFile())) {
+            var entries = file.entries();
+            while (entries.hasMoreElements()) {
+                var entry = entries.nextElement();
+                var path = entry.getName();
+                var inner = path.indexOf("/tags/block/");
+                if (!path.startsWith("data/") || inner < 0 || !path.endsWith(".json")) continue;
+                var namespace = path.substring("data/".length(), inner);
+                var name = path.substring(inner + "/tags/block/".length(), path.length() - ".json".length());
+                var json = JsonParser.parseString(new String(file.getInputStream(entry).readAllBytes(),
+                                                             java.nio.charset.StandardCharsets.UTF_8)).getAsJsonObject();
+                var values = new java.util.ArrayList<String>();
+                for (var value : json.getAsJsonArray("values")) {
+                    if (value.isJsonPrimitive()) values.add(value.getAsString());
+                    else if (value.isJsonObject() && value.getAsJsonObject().has("id"))
+                        values.add(value.getAsJsonObject().get("id").getAsString());
+                }
+                raw.put(Identifier.fromNamespaceAndPath(namespace, name), values);
+            }
+        }
+        var registry = (net.minecraft.core.WritableRegistry<Block>) BuiltInRegistries.BLOCK;
+        var bound = new java.util.HashMap<net.minecraft.tags.TagKey<Block>,
+                java.util.List<net.minecraft.core.Holder<Block>>>();
+        for (var entry : raw.entrySet()) {
+            var holders = new java.util.ArrayList<net.minecraft.core.Holder<Block>>();
+            collectTaggedBlocks(raw, registry, entry.getValue(), holders, new java.util.HashSet<>());
+            bound.put(net.minecraft.tags.TagKey.create(
+                          net.minecraft.core.registries.Registries.BLOCK, entry.getKey()), holders);
+        }
+        // A frozen registry takes its tags through the reload a datapack load
+        // uses: prepare the pending set and apply it, which binds the tag
+        // contents and refreshes every holder's tag set.
+        var pending = registry.prepareTagReload(
+                new net.minecraft.tags.TagLoader.LoadResult<Block>(
+                        net.minecraft.core.registries.Registries.BLOCK, bound));
+        pending.apply();
+    }
+
+    static void collectTaggedBlocks(java.util.Map<Identifier, java.util.List<String>> raw,
+                                    net.minecraft.core.WritableRegistry<Block> registry,
+                                    java.util.List<String> values,
+                                    java.util.List<net.minecraft.core.Holder<Block>> out,
+                                    java.util.Set<Identifier> seen) {
+        for (var value : values) {
+            if (value.startsWith("#")) {
+                var tag = Identifier.parse(value.substring(1));
+                if (seen.add(tag) && raw.containsKey(tag)) {
+                    collectTaggedBlocks(raw, registry, raw.get(tag), out, seen);
+                }
+                continue;
+            }
+            // A block the pinned jar does not have is left out, as a datapack
+            // load drops an optional entry it cannot resolve.
+            registry.get(Identifier.parse(value))
+                    .ifPresent(block -> out.add((net.minecraft.core.Holder<Block>) block));
         }
     }
     /** A `minecraft:name[k=v,...]` state through the real block state definition. */
@@ -145,6 +217,7 @@ public final class VanillaMarkerParticlesOracle {
         for (var item : BuiltInRegistries.ITEM) {
             item.builtInRegistryHolder().bindComponents(net.minecraft.core.component.DataComponentMap.EMPTY);
         }
+        bindBlockTags();
         var allocator = Class.forName("sun.misc.Unsafe");
         var unsafe = field(allocator, "theUnsafe").get(null);
         var allocate = allocator.getMethod("allocateInstance", Class.class);
@@ -179,6 +252,8 @@ public final class VanillaMarkerParticlesOracle {
                     var random = RandomSource.create(c.get("seed").getAsLong());
                     field(Level.class, "random").set(tickLevel, random);
                     tickLevel.state = parseState(c.get("state").getAsString());
+                    tickLevel.floor = c.has("floor")
+                            ? parseState(c.get("floor").getAsString()) : tickLevel.state;
                     tickLevel.particles.clear();
                     tickLevel.sounds.clear();
                     var pos = new BlockPos.MutableBlockPos();

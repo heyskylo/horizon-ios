@@ -22,9 +22,18 @@ const TIMEOUT: Duration = Duration::from_secs(3600);
 /// 1.25 GB instead of 2 GB.
 pub(crate) const BATCH_OPTIONS: [&str; 2] = ["-XX:TieredStopAtLevel=1", "-XX:+UseSerialGC"];
 
-/// Exporters and JDK probes write to pipes or log files: on Windows they open no terminal.
+/// The variables a JVM reads extra options from. A collector chosen there, such as a player's
+/// global `-XX:+UseZGC`, stops a JVM started with [`BATCH_OPTIONS`]: "Multiple garbage collectors
+/// selected" (#10067).
+const JVM_OPTION_VARS: [&str; 3] = ["JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS"];
+
+/// Exporters and JDK probes write to pipes or log files: on Windows they open no terminal. They
+/// run with [`BATCH_OPTIONS`] alone, whatever options the player's environment sets for Java.
 pub(crate) fn command(program: impl AsRef<OsStr>) -> Command {
-    let command = Command::new(program);
+    let mut command = Command::new(program);
+    for var in JVM_OPTION_VARS {
+        command.env_remove(var);
+    }
     #[cfg(windows)]
     let command = {
         use std::os::windows::process::CommandExt;
@@ -405,6 +414,19 @@ fn run(mut command: Command, log: &fs::File) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn jvms_ignore_the_players_global_options() {
+        let command = command("java");
+        for var in JVM_OPTION_VARS {
+            assert!(
+                command
+                    .get_envs()
+                    .any(|(name, value)| name == var && value.is_none()),
+                "{var} reaches the JVM"
+            );
+        }
+    }
 
     #[test]
     fn verbatim_drive_paths_lose_their_prefix() {
