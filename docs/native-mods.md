@@ -2484,6 +2484,16 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
 - **`native_player_jump(player, name)`**: accepted guest movement made the server player jump from the ground, after movement simulation finishes. The guest's state is swapped in.
 - **`native_player_kicked(player, name, reason)`**: a guest was kicked after the hub recorded the rendered disconnect reason and sent the disconnect. The guest's state is swapped in, unless the guest was already removed in the same poll (a kick and the disconnect arriving together): the hook still fires, without it.
 - **`native_player_level_change(player, name, from, to)`**: a server player's experience change altered their level, after the new level was applied. The guest's state is swapped in when the player is a guest.
+
+#### Server hooks for plugin ports: players
+
+- **`native_player_logging_out(player, name)`**: a player is leaving (lost connection, kick, quit), heard while they are
+  still in their level and listed in `native_server_players`, before their menu closes and they are saved and removed
+  (Bukkit's `PlayerQuitEvent`). Their state is not swapped in, so the helpers that take a UUID and `native_run_command`
+  reach them. A death a mod causes here (`kill <name>`) happens at once where they stand, with its death message, drops
+  and `native_player_died`, and they are saved dead. Once per placed player who leaves, before `native_player_logged_out`.
+  Not heard when the server stops (`native_player_logged_out` tells then, with them still listed).
+
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a

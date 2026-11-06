@@ -6512,6 +6512,19 @@ impl Game<'_> {
     ) {
         mod_api::dispatch_player_level_change(self, mod_api::mods(), player, name, from, to);
     }
+    /// `player` (`name`) is leaving the server (Bukkit's `PlayerQuitEvent`): their connection
+    /// is gone (lost, kicked, or they quit), but they are still in their level and listed in
+    /// `native_server_players`, before their menu closes and they are saved and removed. Their
+    /// state is not swapped in, so the helpers that take a UUID (`native_player_stacks`,
+    /// `native_tell`...) and `native_run_command` reach them as any other player. A death a mod
+    /// causes here (`kill <name>`) happens at once, where they stand: the death message, the
+    /// drops and experience, `native_player_died`; they are then saved dead. Once for each placed
+    /// player who leaves, before `native_player_logged_out`, on a server. Not heard when the
+    /// server stops, where `native_player_logged_out` tells with them still listed.
+    /// @API:player_logging_out@.
+    pub(super) fn native_player_logging_out(&mut self, player: u128, name: &str) {
+        mod_api::dispatch_player_logging_out(self, mod_api::mods(), player, name);
+    }
     /// A click in a menu a mod opened (`native_open_menu`), which moved
     /// nothing: the menu's `slot` (its own first, then the player's
     /// inventory, `native_menu_inventory_slot`; -999 outside), the `button`

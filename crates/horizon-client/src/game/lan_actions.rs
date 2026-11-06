@@ -4020,6 +4020,30 @@ impl Game<'_> {
         }
     }
 
+    /// `native_player_logging_out` for guest `conn`, who has left but is still in the hub
+    /// and in their level (`HostEvent::Left`): the hub goes back into `self.lan` for the
+    /// hook, so its helpers and commands reach them, and a death it caused (`kill`) is
+    /// died at once, as they get no tick to die in. None when a hook's command closed the hub.
+    pub(super) fn tell_mods_logging_out(&mut self, host: LanHost, conn: u32) -> Option<LanHost> {
+        let Some((uuid, name, alive)) = host
+            .hub
+            .guest(conn)
+            .map(|g| (g.uuid, g.name.clone(), g.health > 0.0 && !g.dead))
+        else {
+            return Some(host);
+        };
+        self.lan = Some(host);
+        self.native_player_logging_out(uuid, &name);
+        let mut host = self.lan.take()?;
+        if alive
+            && let Some(gi) = host.hub.guests.iter().position(|g| g.conn == conn)
+            && host.hub.guests[gi].health <= 0.0
+        {
+            self.guest_die(&mut host, gi, conn);
+        }
+        Some(host)
+    }
+
     /// `ServerPlayer.die` for a guest whose health has run out: the death
     /// message, the loot and experience, the death screen.
     fn guest_die(&mut self, host: &mut LanHost, gi: usize, conn: u32) {

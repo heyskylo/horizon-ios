@@ -2168,6 +2168,11 @@ impl Game<'_> {
                             let conn = guest.conn;
                             let at = host.hub.guests.len();
                             host.hub.guests.push(*guest);
+                            // Bukkit's PlayerQuitEvent: the mods hear them leave while
+                            // they are still here.
+                            if !host.players_told_left {
+                                host = self.tell_mods_logging_out(host, conn)?;
+                            }
                             self.guest_disconnected(&mut host, conn);
                             *guest = host.hub.guests.remove(at);
                         }
