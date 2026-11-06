@@ -6616,10 +6616,19 @@ impl Game<'_> {
         );
     }
     /// `native_item_dropped` with the whole stack thrown (its components: enchantments,
-    /// damage, a custom name, unbreakable, attribute modifiers...). Heard just before
-    /// `native_item_dropped`. It only hears. Server-side. @API:item_dropped_v2@.
-    pub(super) fn native_item_dropped_v2(&mut self, player: u128, stack: &ItemStack) {
-        mod_api::dispatch_item_dropped_v2(self, mod_api::mods(), player, stack);
+    /// damage, a custom name, unbreakable, attribute modifiers...), cancellable (NeoForge's
+    /// `ItemTossEvent`). Heard just before `native_item_dropped`. Set `cancel` and nothing is
+    /// thrown: the stack goes back into the player's inventory (`Inventory.add`: the held slot
+    /// first), and only what doesn't fit there is thrown, unheard; v1 hears nothing of it. The
+    /// drop statistics and the arm swing still happen, as in NeoForge. Server-side.
+    /// @API:item_dropped_v2@.
+    pub(super) fn native_item_dropped_v2(
+        &mut self,
+        player: u128,
+        stack: &ItemStack,
+        cancel: &mut bool,
+    ) {
+        mod_api::dispatch_item_dropped_v2(self, mod_api::mods(), player, stack, cancel);
     }
     /// `native_creative_slot` with the whole stack put there (its components: enchantments,
     /// a custom name, unbreakable, attribute modifiers, a container's contents...), none for an

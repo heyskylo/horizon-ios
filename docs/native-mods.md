@@ -2511,8 +2511,10 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   `native_item_picked_up` with the whole `ItemStack` (its components: enchantments, unbreakable, attribute modifiers, a
   custom name...), the item entity's thrower UUID (none for block and mob drops) and its position. Heard just before v1,
   which keeps its signature and firing point and hears nothing of a pickup canceled here.
-- **`native_item_dropped_v2(player, stack)`**: an additive version of `native_item_dropped` with the whole `ItemStack`
-  thrown, heard just before v1, which keeps its signature and firing point.
+- **`native_item_dropped_v2(player, stack, cancel)`**: an additive, cancellable version of `native_item_dropped`
+  (NeoForge's `ItemTossEvent`) with the whole `ItemStack` thrown, heard just before v1, which keeps its signature and
+  firing point. Set `cancel` and nothing is thrown: the stack goes back into the player's inventory (the held slot
+  first; only what doesn't fit is thrown, unheard), and v1 hears nothing of it.
 - **`native_creative_slot_v2(player, name, slot, stack, cancel)`**: an additive version of `native_creative_slot` with
   the whole `ItemStack` put in the slot (none for an emptied one), heard just before v1, which keeps its signature and
   firing point and hears nothing of a packet canceled here. The player's state is swapped in, as for v1.
