@@ -52,8 +52,12 @@ pub fn motion(tag: &Tag) -> Vec3 {
 pub fn rotation(tag: &Tag) -> [f32; 2] {
     read_doubles::<2>(tag.get("Rotation")).map_or([0.0; 2], |r| [r[0] as f32, r[1] as f32])
 }
+/// `NumericTag.byteValue`'s nonzero test for entity NBT, defaulting to false.
 pub fn flag(tag: &Tag, key: &str) -> bool {
-    number(tag.get(key)).unwrap_or(0) != 0
+    // NBT floats floor before int narrowing; the final byte keeps the low bits.
+    tag.get(key)
+        .and_then(int_value)
+        .is_some_and(|value| value as i8 != 0)
 }
 /// `Entity.saveWithoutId` fields every entity has, over the loaded compound.
 struct Base<'a> {
@@ -4517,6 +4521,76 @@ mod tests {
         let cleared = item_entity_to_nbt(&cleared, [1, 2, 3, 4], Some(&tag));
         assert!(cleared.get("Thrower").is_none());
     }
+    #[test]
+    fn nbt_numeric_flags_decode_and_save_modeled_values_without_raw() {
+        let mut kind = crate::mobs::sensor_scan_tests::kind();
+        let def = Arc::make_mut(&mut kind);
+        def.id = "minecraft:pig".into();
+        def.species = crate::mobs::Species::Pig;
+        let types = [("minecraft:pig".into(), kind)].into();
+        for (input, expected) in [
+            (None, false),
+            (Some(Tag::Byte(0)), false),
+            (Some(Tag::Byte(1)), true),
+            (Some(Tag::Byte(-1)), true),
+            (Some(Tag::Short(256)), false),
+            (Some(Tag::Int(256)), false),
+            (Some(Tag::Int(257)), true),
+            (Some(Tag::Int(-256)), false),
+            (Some(Tag::Long(256)), false),
+            (Some(Tag::Long(257)), true),
+            (Some(Tag::Long(4294967296)), false),
+            (Some(Tag::Long(9007199254740993)), true),
+            (Some(Tag::Float(0.5f32.to_bits())), false),
+            (Some(Tag::Float((-0.5f32).to_bits())), true),
+            (Some(Tag::Float(256.5f32.to_bits())), false),
+            (Some(Tag::Float((-255.5f32).to_bits())), false),
+            (Some(Tag::Double(0.5f64.to_bits())), false),
+            (Some(Tag::Double((-0.5f64).to_bits())), true),
+            (Some(Tag::Double(256.5f64.to_bits())), false),
+            (Some(Tag::Double((-255.5f64).to_bits())), false),
+            (Some(Tag::Float((-1e20f32).to_bits())), false),
+            (Some(Tag::Double((-1e20f64).to_bits())), false),
+            (Some(Tag::Double(1e20f64.to_bits())), true),
+            (Some(string("1")), false),
+            (Some(string("true")), false),
+            (Some(Tag::compound([("a", Tag::Int(1))])), false),
+        ] {
+            let mut raw = Tag::compound([
+                ("id", string("minecraft:pig")),
+                ("Pos", doubles(&[4.5, 200.0, 4.5])),
+                ("Health", Tag::Float(10f32.to_bits())),
+                ("NoGravity", Tag::Byte(1)),
+                ("Unrelated", string("keep")),
+            ]);
+            if let Some(value) = input.as_ref() {
+                for key in ["NoAI", "CanPickUpLoot"] {
+                    put(&mut raw, key, value.clone());
+                }
+            }
+            let loaded = mob_from_nbt(&raw, &types, 7, None).unwrap();
+            assert_eq!(loaded.no_ai, expected, "NoAI {input:?}");
+            assert_eq!(loaded.can_pick_up_loot(), expected, "pickup {input:?}");
+            assert!(loaded.no_gravity);
+            for source in [None, Some(&raw)] {
+                let saved = mob_to_nbt(&loaded, [45, 0, 0, 1], source, None, |_| None);
+                assert_eq!(
+                    saved.get("NoAI"),
+                    expected.then_some(&Tag::Byte(1)),
+                    "NoAI {input:?}"
+                );
+                assert_eq!(
+                    saved.get("CanPickUpLoot"),
+                    Some(&Tag::Byte(i8::from(expected))),
+                    "pickup {input:?}"
+                );
+                if source.is_some() {
+                    assert_eq!(saved.get("Unrelated"), Some(&string("keep")));
+                }
+            }
+        }
+    }
+
     #[test]
     fn animal_integer_loads_save_modeled_values_without_raw_source() {
         let mut kind = crate::mobs::sensor_scan_tests::kind();
