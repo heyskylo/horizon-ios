@@ -103,6 +103,25 @@ impl Base<'_> {
     }
 }
 
+/// `Entity.saveWithoutId`'s common fields for entities Horizon keeps as raw
+/// compounds: each one is inserted only when the loaded compound has no value
+/// for it, so explicit values survive.
+pub fn fill_common_defaults(tag: &mut Tag) {
+    let Tag::Compound(map) = tag else {
+        return;
+    };
+    for (key, value) in [
+        ("Motion", doubles(&[0.0, 0.0, 0.0])),
+        ("OnGround", Tag::Byte(0)),
+        ("fall_distance", Tag::Double(0.0f64.to_bits())),
+        ("Air", Tag::Short(300)),
+        ("Invulnerable", Tag::Byte(0)),
+        ("PortalCooldown", Tag::Int(0)),
+    ] {
+        map.entry(key.into()).or_insert(value);
+    }
+}
+
 /// The mobs that save `Age` and `AgeLocked`.
 fn saves_age(s: crate::mobs::Species) -> bool {
     use crate::mobs::{Species, drops::can_be_baby, finalize::ageable};
@@ -7554,5 +7573,26 @@ mod stand_fall_save_tests {
                 }
             }
         }
+    }
+
+    /// `Entity.saveWithoutId`'s common fields are filled in when a raw compound
+    /// (a marker's) lacks them, and explicit values win.
+    #[test]
+    fn marker_common_fields_default_and_keep_explicit_values() {
+        let mut tag = Tag::compound([("Air", Tag::Short(10)), ("OnGround", Tag::Byte(1))]);
+        fill_common_defaults(&mut tag);
+        assert_eq!(tag.get("Air"), Some(&Tag::Short(10)));
+        assert_eq!(tag.get("OnGround"), Some(&Tag::Byte(1)));
+        assert_eq!(tag.get("Invulnerable"), Some(&Tag::Byte(0)));
+        assert_eq!(tag.get("PortalCooldown"), Some(&Tag::Int(0)));
+        assert_eq!(
+            tag.get("fall_distance"),
+            Some(&Tag::Double(0.0f64.to_bits()))
+        );
+        assert_eq!(tag.get("Motion"), Some(&doubles(&[0.0, 0.0, 0.0])));
+        // Anything but a compound is left untouched.
+        let mut plain = Tag::String("x".into());
+        fill_common_defaults(&mut plain);
+        assert_eq!(plain, Tag::String("x".into()));
     }
 }
