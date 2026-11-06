@@ -1020,5 +1020,125 @@ mod tests {
             );
         }
     }
+
+    /// A server's game on the prepared resources with the chunk at the origin
+    /// loaded, as `native_machines`' tests make one; None without them.
+    fn server_game() -> Option<Game<'static>> {
+        use crate::game::*;
+        let root = std::env::var_os("HORIZON_TEST_RESOURCES")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../.local/horizon-client")
+                    .join(horizon_core::VANILLA_VERSION)
+            });
+        if !root.join("movement-properties.nbt").exists() {
+            return None;
+        }
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let res: &'static _ = Box::leak(Box::new(loaded.resources));
+        let mut game = Game::new(
+            res,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.options.dedicated = Some(Vec::new());
+        game.world.chunks.insert(
+            (0, 0),
+            std::sync::Arc::new(horizon_client::chunk::Chunk::empty(0, 0)),
+        );
+        game.streaming.forced.insert((0, 0));
+        Some(game)
+    }
+
+    /// #10063: TNT lit between level ticks (flint and steel, a command) has its
+    /// first tick in the next level tick, so its fuse reads 79 after it, and it
+    /// explodes on the 80th (`PrimedTnt.tick`). Horizon held every TNT that
+    /// joined during a tick back one more: the late pass compared its join
+    /// against an `announced` already raised past it.
+    #[test]
+    fn lit_tnt_ticks_on_the_next_level_tick_and_explodes_on_the_80th() {
+        let Some(mut game) = server_game() else {
+            return;
+        };
+        game.add_primed_tnt(BlockPos::new(8, 64, 8), 0.0, 80, None, None);
+        // Hang it in the empty chunk, so it neither falls out nor lands.
+        game.tnts[0].no_gravity = true;
+        game.tnts[0].velocity = Vec3::ZERO;
+        game.tick_world(true).unwrap();
+        assert_eq!(game.tnts.len(), 1);
+        assert_eq!(
+            game.tnts[0].fuse, 79,
+            "its first tick is the next level tick"
+        );
+        let mut exploded_on = None;
+        for tick in 2..=90 {
+            game.tick_world(true).unwrap();
+            if game.tnts.is_empty() {
+                exploded_on = Some(tick);
+                break;
+            }
+        }
+        assert_eq!(exploded_on, Some(80), "explodes on the 80th tick");
+    }
+    /// TNT a blast primes joins while the entities tick (vanilla's
+    /// `EntityTickList` loop) and waits for the next tick. The fix for #10063
+    /// must not tick it in the tick it joined.
+    #[test]
+    fn tnt_primed_by_a_blast_waits_for_the_next_tick() {
+        let Some(mut game) = server_game() else {
+            return;
+        };
+        let block = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:tnt")
+            .unwrap();
+        game.world.set(9, 64, 8, block).unwrap();
+        game.add_primed_tnt(BlockPos::new(8, 64, 8), 0.0, 1, None, None);
+        game.tnts[0].no_gravity = true;
+        game.tnts[0].velocity = Vec3::ZERO;
+        let first = game.tnts[0].id;
+        for _ in 0..3 {
+            game.tick_world(true).unwrap();
+            if game.tnts.iter().all(|t| t.id != first) {
+                break;
+            }
+        }
+        assert!(
+            game.tnts.iter().all(|t| t.id != first),
+            "the first TNT went off"
+        );
+        assert_eq!(game.tnts.len(), 1, "its blast primed the TNT block");
+        let primed = &game.tnts[0];
+        assert_eq!(
+            primed.position, primed.previous,
+            "not ticked in the tick the blast primed it"
+        );
+        game.tick_world(true).unwrap();
+        let primed = &game.tnts[0];
+        assert_ne!(primed.position, primed.previous, "ticked on the next tick");
+    }
 }
 horizon_client::impl_joined!(PrimedTnt);
