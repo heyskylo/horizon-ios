@@ -77,7 +77,8 @@ horizon-rust/horizon-mods under `native/<name>/`, [mods.md](mods.md#horizons-off
 options. Players install them from the launcher's Mods page, and the launcher builds them into the game
 ([native-mods.md](native-mods.md)). The game keeps
 the hook points they use (`crates/horizon-client/src/game/native_hooks.rs`), and `horizon-extras.txt` keeps the old
-keys and `movedToMods`.
+keys and `movedToMods`. The Extras page keeps a **Zoom** row: the mod's switch and Settings button when
+it is built in, else a note saying to install it from the Mods page.
 
 The game still draws the minimap, for the native mod (`native_minimap` in `native_hooks.rs`, [mods.md](mods.md)):
 - a corner map (top right by default), square or round, small/medium/large, zoom 0.5 to 4 blocks per pixel, rotating

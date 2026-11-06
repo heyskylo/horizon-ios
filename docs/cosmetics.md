@@ -175,8 +175,8 @@ props; `Playing` is an emote someone plays (its start, its cancel) and gives its
 ### Playing an emote (`game/emotes.rs`, `game/emote_wheel.rs`)
 
 - **The wheel**: *Emote Wheel* (`key.emote`, **B** by default: no vanilla key uses it; Controls
-  rebinds it, and so does the controller's page, with no button by default: the stick's cursor
-  picks a slice). Up to 8 emotes around the middle of the screen, the game running behind. Hold
+  rebinds it, kept as `emoteKey` in `horizon-extras.txt` so `options.txt` stays vanilla's, and so
+  does the controller's page, with no button by default: the stick's cursor picks a slice). Up to 8 emotes around the middle of the screen, the game running behind. Hold
   the key, point at one and let go; or tap the key and click one, or press its number (1–8).
   Escape or the key again closes it. The wheel lists the emotes the account owns: when it opens,
   at most every 10 minutes, the game asks the service (`GET /v1/me`'s `emotes`: id, file hash
