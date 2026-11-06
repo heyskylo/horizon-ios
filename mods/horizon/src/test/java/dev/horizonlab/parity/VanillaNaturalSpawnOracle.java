@@ -349,7 +349,8 @@ public final class VanillaNaturalSpawnOracle {
         @Override public ChunkPos getPos() { return at; }
         @Override public BlockState getBlockState(BlockPos pos) { return level.getBlockState(pos); }
         @Override public FluidState getFluidState(BlockPos pos) { return level.getFluidState(pos); }
-        @Override public int getHeight(Heightmap.Types type, int x, int z) { return level.getHeight(type, x, z); }
+        /** ChunkAccess.getHeight is the heightmap's firstAvailable minus one; the level's own getHeight is firstAvailable. */
+        @Override public int getHeight(Heightmap.Types type, int x, int z) { return level.getHeight(type, x, z) - 1; }
     }
 
     static final class Source extends ServerChunkCache {
