@@ -558,6 +558,25 @@ impl Game<'_> {
             .comparator_outputs
             .get(&pos)
             .copied()
+            .or_else(|| {
+                let saved = self
+                    .world
+                    .chunks
+                    .get(&(p[0] >> 4, p[2] >> 4))?
+                    .saved
+                    .as_deref()?;
+                let tag = saved.block_entities.iter().find(|t| {
+                    [t.get("x"), t.get("y"), t.get("z")]
+                        .map(|v| save::number(v).unwrap_or(0) as i32)
+                        == p
+                        && save::text(t.get("id")).as_deref() == Some("minecraft:comparator")
+                })?;
+                let tag = horizon_client::block_entity_nbt::canonical(tag)?;
+                match tag.get("OutputSignal") {
+                    Some(Tag::Int(v)) => Some(*v),
+                    _ => None,
+                }
+            })
             .unwrap_or(0);
         Some(Tag::compound([
             ("id", Tag::String("minecraft:comparator".into())),
@@ -663,6 +682,13 @@ impl Game<'_> {
         let name = self.data_block_name(p);
         let e = self.world.block_entities.get(&key)?;
         let mut tag = save::block_entity_data(key, e, &name, self.world.block_lock(key));
+        if name == "minecraft:hopper" {
+            set_key(
+                &mut tag,
+                "TransferCooldown",
+                Tag::Int(self.hopper_cooldown(key)),
+            );
+        }
         if let (Some(custom), Tag::Compound(map)) = (self.world.block_names.get(&key), &mut tag) {
             map.entry("CustomName".into())
                 .or_insert_with(|| Tag::String(custom.as_str().into()));
@@ -703,6 +729,10 @@ impl Game<'_> {
                     return Ok(());
                 }
                 if let Some((_, mut new)) = save::decode_block_entity(&tag) {
+                    if self.data_block_name(*p) == "minecraft:hopper" {
+                        self.hoppers
+                            .insert(key, super::super::machines::HopperState::load(&tag));
+                    }
                     self.take_loot_table(key, &tag, &mut new);
                     self.load_block_name(key, &new, &tag);
                     self.world.block_entities.insert(key, new);

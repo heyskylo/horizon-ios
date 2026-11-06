@@ -192,6 +192,93 @@ impl Game<'_> {
             .world
             .block_entities
             .chunk_attachments(chunk.x, chunk.z);
+        // ComparatorBlockEntity.saveAdditional: the output belongs to the
+        // circuit, not the inventory map. Overlay only that field on the raw
+        // compound so components and other saved data survive.
+        for (p, output) in &self.block_ticks.comparator_outputs {
+            if (p.x >> 4, p.z >> 4) != (chunk.x, chunk.z)
+                || self
+                    .res
+                    .facts()
+                    .get(chunk.block(p.x & 15, p.y, p.z & 15))
+                    .name
+                    .as_ref()
+                    != "minecraft:comparator"
+            {
+                continue;
+            }
+            let at = [p.x, p.y, p.z];
+            let index = extras
+                .block_entities
+                .iter()
+                .position(|t| block_entity_pos(t) == at);
+            let tag = match index {
+                Some(i) => &mut extras.block_entities[i],
+                None => {
+                    extras.block_entities.push(Tag::compound([
+                        ("id", Tag::String("minecraft:comparator".into())),
+                        ("x", Tag::Int(p.x)),
+                        ("y", Tag::Int(p.y)),
+                        ("z", Tag::Int(p.z)),
+                    ]));
+                    extras.block_entities.last_mut().unwrap()
+                }
+            };
+            if text(tag.get("id")).as_deref() != Some("minecraft:comparator") {
+                *tag = Tag::compound([
+                    ("id", Tag::String("minecraft:comparator".into())),
+                    ("x", Tag::Int(p.x)),
+                    ("y", Tag::Int(p.y)),
+                    ("z", Tag::Int(p.z)),
+                ]);
+            }
+            if let Tag::Compound(c) = tag {
+                c.insert("OutputSignal".into(), Tag::Int(*output));
+            }
+        }
+        // HopperBlockEntity.saveAdditional: its inventory is modelled, but its
+        // transfer phase lives in Game. The snapshot's source overlay preserves
+        // the remaining NBT without changing the live source compound.
+        for (p, state) in &self.hoppers {
+            if (p.0 >> 4, p.2 >> 4) != (chunk.x, chunk.z)
+                || self
+                    .res
+                    .facts()
+                    .get(chunk.block(p.0 & 15, p.1, p.2 & 15))
+                    .name
+                    .as_ref()
+                    != "minecraft:hopper"
+            {
+                continue;
+            }
+            let index = extras.block_entity_sources.iter().position(|(q, _)| q == p);
+            let tag = match index {
+                Some(i) => &mut extras.block_entity_sources[i].1,
+                None => {
+                    extras.block_entity_sources.push((
+                        *p,
+                        Tag::compound([
+                            ("id", Tag::String("minecraft:hopper".into())),
+                            ("x", Tag::Int(p.0)),
+                            ("y", Tag::Int(p.1)),
+                            ("z", Tag::Int(p.2)),
+                        ]),
+                    ));
+                    &mut extras.block_entity_sources.last_mut().unwrap().1
+                }
+            };
+            if text(tag.get("id")).as_deref() != Some("minecraft:hopper") {
+                *tag = Tag::compound([
+                    ("id", Tag::String("minecraft:hopper".into())),
+                    ("x", Tag::Int(p.0)),
+                    ("y", Tag::Int(p.1)),
+                    ("z", Tag::Int(p.2)),
+                ]);
+            }
+            if let Tag::Compound(c) = tag {
+                c.insert("TransferCooldown".into(), Tag::Int(state.cooldown));
+            }
+        }
         // A chunk the scheduler hasn't registered yet (one loaded and
         // unloaded again before the next tick) still holds its saved ticks:
         // `register_chunk_ticks` empties that list once it takes them.
@@ -239,6 +326,30 @@ impl Game<'_> {
     pub(super) fn register_chunk_ticks(&mut self, key: (i32, i32)) {
         let pos = ChunkPos::new(key.0, key.1);
         let saved = self.world.chunks.get(&key).and_then(|c| c.saved.clone());
+        // Load before the first block-entity tick, including while ticks are
+        // frozen. The scheduler's maps are authoritative from this point on.
+        if let Some(saved) = saved.as_deref() {
+            for tag in &saved.block_entities {
+                let p = block_entity_pos(tag);
+                if text(tag.get("id")).as_deref() == Some("minecraft:comparator")
+                    && self.data_block_name(p) == "minecraft:comparator"
+                    && let Some(tag) = horizon_client::block_entity_nbt::canonical(tag)
+                    && let Some(Tag::Int(output)) = tag.get("OutputSignal")
+                {
+                    self.block_ticks
+                        .comparator_outputs
+                        .insert(BlockPos::new(p[0], p[1], p[2]), *output);
+                }
+            }
+            for (p, tag) in &saved.block_entity_sources {
+                if text(tag.get("id")).as_deref() == Some("minecraft:hopper")
+                    && self.data_block_name([p.0, p.1, p.2]) == "minecraft:hopper"
+                {
+                    self.hoppers
+                        .insert(*p, super::machines::HopperState::load(tag));
+                }
+            }
+        }
         // ChunkAccess.inhabitedTime as saved.
         if let Some(Tag::Long(t)) = saved
             .as_deref()
@@ -1998,6 +2109,271 @@ fn join_saved_team(board: &mut Scoreboard, name: &str, tag: &Tag) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn comparator_and_hopper_live_state_survives_chunk_reload() {
+        use super::super::{Audio, Options, Progress, Settings, load_resources};
+        use horizon_client::{containers::BlockEntity, items::ItemStack, save};
+        fn cooldown(game: &Game<'_>) -> i32 {
+            match game
+                .block_entity_nbt([3, 64, 3])
+                .unwrap()
+                .get("TransferCooldown")
+            {
+                Some(Tag::Int(value)) => *value,
+                _ => -1,
+            }
+        }
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!("no menu handoff"),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.headless = true;
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        let comparator = BlockPos::new(1, 64, 1);
+        let hopper = (3, 64, 3);
+        let barrel = (3, 63, 3);
+        let mut chunk = Chunk::empty(0, 0);
+        for (p, name) in [
+            ((1, 64, 1), "minecraft:comparator"),
+            (hopper, "minecraft:hopper"),
+            (barrel, "minecraft:barrel"),
+            ((1, 64, 0), "minecraft:redstone_block"),
+            ((1, 63, 1), "minecraft:stone"),
+        ] {
+            chunk.set(
+                p.0,
+                p.1,
+                p.2,
+                game.pack.assets.registry.default_state(name).unwrap().0,
+            );
+        }
+        let raw = |id: &str, p: (i32, i32, i32), key: &str, value: i32| {
+            Tag::compound([
+                ("id", Tag::String(id.into())),
+                ("x", Tag::Int(p.0)),
+                ("y", Tag::Int(p.1)),
+                ("z", Tag::Int(p.2)),
+                (key, Tag::Int(value)),
+                (
+                    "components",
+                    Tag::compound([(
+                        "minecraft:custom_data",
+                        Tag::compound([("mark", Tag::String("preserved".into()))]),
+                    )]),
+                ),
+            ])
+        };
+        let mut extras = ChunkExtras::default();
+        extras
+            .block_entities
+            .push(raw("minecraft:comparator", (1, 64, 1), "OutputSignal", 3));
+        extras.block_entity_sources.push((
+            hopper,
+            raw("minecraft:hopper", hopper, "TransferCooldown", 22),
+        ));
+        chunk.saved = Some(Arc::new(extras));
+        game.world.chunks.insert((0, 0), Arc::new(chunk));
+        game.world.block_entities.insert(
+            hopper,
+            BlockEntity::Chest(vec![Some(ItemStack::new("minecraft:stone", 64)); 5]),
+        );
+        game.world
+            .block_entities
+            .insert(barrel, BlockEntity::Chest(vec![None; 27]));
+        let mut trace = Vec::new();
+        for (index, value) in [
+            None,
+            Some(Tag::Byte(-1)),
+            Some(Tag::Short(23)),
+            Some(Tag::Int(i32::MIN)),
+            Some(Tag::Long(4_294_967_297)),
+            Some(Tag::Float((-1.5f32).to_bits())),
+            Some(Tag::Double(15.75f64.to_bits())),
+            Some(Tag::String("wrong".into())),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut extra = ChunkExtras::default();
+            let mut c = raw("minecraft:comparator", (1, 64, 1), "OutputSignal", 0);
+            let mut h = raw("minecraft:hopper", hopper, "TransferCooldown", -1);
+            for (tag, field) in [(&mut c, "OutputSignal"), (&mut h, "TransferCooldown")] {
+                if let Tag::Compound(map) = tag {
+                    match &value {
+                        Some(v) => {
+                            map.insert(field.into(), v.clone());
+                        }
+                        None => {
+                            map.remove(&field.into());
+                        }
+                    }
+                }
+            }
+            extra.block_entities.push(c);
+            extra.block_entity_sources.push((hopper, h));
+            let old = Arc::make_mut(game.world.chunks.get_mut(&(0, 0)).unwrap())
+                .saved
+                .replace(Arc::new(extra));
+            game.register_chunk_ticks((0, 0));
+            trace.push(format!(
+                "integer {index} {} {}",
+                game.block_ticks
+                    .comparator_outputs
+                    .get(&comparator)
+                    .copied()
+                    .unwrap_or(0),
+                cooldown(&game)
+            ));
+            Arc::make_mut(game.world.chunks.get_mut(&(0, 0)).unwrap()).saved = old;
+        }
+        game.sync_tick_chunks();
+        assert_eq!(
+            game.block_ticks
+                .comparator_outputs
+                .get(&comparator)
+                .copied()
+                .unwrap_or(0),
+            3,
+            "restored comparator output"
+        );
+        assert_eq!(cooldown(&game), 22);
+        // A real circuit update and transfer change both values since load.
+        game.with_level(|b, level, ticks| b.scheduled_block_tick(level, ticks, comparator));
+        assert_eq!(game.block_ticks.comparator_outputs[&comparator], 15);
+        game.build_registries();
+        game.set_allow_commands(true);
+        assert!(game.run_command_quietly("data merge block 3 64 3 {TransferCooldown:0}"));
+        for _ in 0..5 {
+            game.world.game_time += 1;
+            game.tick_hopper(hopper);
+        }
+        assert_eq!(cooldown(&game), 4);
+        game.world
+            .block_entities
+            .insert(barrel, BlockEntity::Chest(vec![None; 27]));
+        let batch = game.with_entities(game.world.chunks.values());
+        let encoded = save::encode(&batch[0], game.pack.assets.registry, world_biomes!(game));
+        // Streaming removes the resident chunk before preparing its save.
+        let resident = game.world.chunks.remove(&(0, 0)).unwrap();
+        let unloaded = game.with_entities([&resident]);
+        assert_eq!(
+            save::encode(&unloaded[0], game.pack.assets.registry, world_biomes!(game)).tag,
+            encoded.tag
+        );
+        game.world.chunks.insert((0, 0), resident);
+        let Some(Tag::List(tags)) = encoded.tag.get("block_entities") else {
+            panic!("missing entities")
+        };
+        for (id, key, expected) in [
+            ("minecraft:comparator", "OutputSignal", 15),
+            ("minecraft:hopper", "TransferCooldown", 4),
+        ] {
+            let tag = tags
+                .iter()
+                .find(|t| text(t.get("id")).as_deref() == Some(id))
+                .unwrap();
+            assert_eq!(tag.get(key), Some(&Tag::Int(expected)), "{id} live save");
+            assert_eq!(
+                text(
+                    tag.get("components")
+                        .unwrap()
+                        .get("minecraft:custom_data")
+                        .unwrap()
+                        .get("mark")
+                )
+                .as_deref(),
+                Some("preserved")
+            );
+        }
+        // Snapshotting must not rewrite either the source chunk or its raw NBT.
+        assert_eq!(
+            game.world.chunks[&(0, 0)]
+                .saved
+                .as_ref()
+                .unwrap()
+                .block_entity_sources[0]
+                .1
+                .get("TransferCooldown"),
+            Some(&Tag::Int(22))
+        );
+        let restored =
+            save::decode(&encoded, game.pack.assets.registry, world_biomes!(game)).unwrap();
+        game.world.block_entities.clear();
+        for (p, entity) in &restored.block_entities {
+            game.world.block_entities.insert(*p, entity.clone());
+        }
+        game.world.chunks.insert((0, 0), Arc::new(restored));
+        game.hoppers.clear();
+        game.block_ticks = horizon_world::level::Ticks::new(0);
+        game.tick_chunks.clear();
+        // Frozen: data must already show the saved values before any tick.
+        assert_eq!(
+            game.block_entity_nbt([1, 64, 1])
+                .unwrap()
+                .get("OutputSignal"),
+            Some(&Tag::Int(15))
+        );
+        assert_eq!(
+            game.block_entity_nbt([3, 64, 3])
+                .unwrap()
+                .get("TransferCooldown"),
+            Some(&Tag::Int(4))
+        );
+        game.sync_tick_chunks();
+        println!("persistence state 15 {} 0", cooldown(&game));
+        trace.push("state 15 4 0".to_owned());
+        for tick in 1..=6 {
+            game.world.game_time += 1;
+            game.tick_hopper(hopper);
+            let BlockEntity::Chest(items) = game.world.block_entities.get(&barrel).unwrap() else {
+                panic!("barrel")
+            };
+            let count: u32 = items.iter().flatten().map(|s| s.count).sum();
+            assert_eq!(count, u32::from(tick >= 4), "transfer tick {tick}");
+            let line = format!("tick {tick} {} {count}", cooldown(&game));
+            println!("persistence {line}");
+            trace.push(line);
+        }
+        if let Some(path) = std::env::var_os("HORIZON_PERSISTENCE_ORACLE") {
+            assert_eq!(
+                trace.join("\n"),
+                std::fs::read_to_string(path).unwrap().trim()
+            );
+        }
+        game.world.chunks.clear();
+        game.sync_tick_chunks();
+        assert!(!game.hoppers.contains_key(&hopper));
+        assert!(
+            !game
+                .block_ticks
+                .comparator_outputs
+                .contains_key(&comparator)
+        );
+    }
 
     const MOUNT: [i32; 4] = [1, 2, 3, 4];
 

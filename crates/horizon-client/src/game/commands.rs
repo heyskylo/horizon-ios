@@ -2748,7 +2748,15 @@ impl Game<'_> {
         let lock_changed = self.world.block_lock(key) != tag.get("lock");
         // So is the custom name.
         let name_changed = self.load_block_name(key, &new, &tag);
-        if after == before && !rolled && !lock_changed && !name_changed {
+        let cooldown_changed = if name == "minecraft:hopper" {
+            let state = super::machines::HopperState::load(&tag);
+            let changed = self.hoppers.get(&key).map_or(-1, |s| s.cooldown) != state.cooldown;
+            self.hoppers.insert(key, state);
+            changed
+        } else {
+            false
+        };
+        if after == before && !rolled && !lock_changed && !name_changed && !cooldown_changed {
             return false;
         }
         self.world.block_entities.insert(key, new);
