@@ -141,31 +141,37 @@ impl Game<'_> {
             let pitch = 0.8 + self.world.random.next_float() * 0.4;
             self.audio.play(sound, at, 1.0, pitch);
         }
-        if outcome.blocked <= 0.0 {
+        if !outcome.blocking_item_used {
             return;
         }
+        self.award_stat("used", &stack.item, 1);
         // ItemDamageFunction.apply, then hurtAndBreak.
         let (threshold, base, factor) = component.item_damage;
-        let item_damage = if outcome.blocked < threshold {
-            0
-        } else {
-            (base + factor * outcome.blocked).floor() as i32
-        };
-        if item_damage > 0 && !self.creative {
+        let item_damage = ItemDamageFunction {
+            threshold,
+            base,
+            factor,
+        }
+        .apply(outcome.blocked);
+        if item_damage > 0
+            && !self.creative
+            && let Some(max) = blocking_item_max_damage(
+                &stack,
+                self.items().get(&stack.item).map_or(0, |i| i.max_damage),
+            )
+        {
             let loss = self.wear(&stack, item_damage as u32);
-            let max = self
-                .res
-                .items()
-                .get(&stack.item)
-                .map_or(0, |i| i.max_damage);
             let cell = self.stack_in_mut(slot);
-            if let Some(s) = cell.as_mut()
-                && max > 0
+            if loss > 0
+                && let Some(s) = cell.as_mut()
             {
-                s.damage += loss;
+                s.damage = s.damage.saturating_add(loss).min(max);
                 if s.damage >= max {
                     let broken = s.clone();
-                    *cell = None;
+                    s.count -= 1;
+                    if s.count == 0 {
+                        *cell = None;
+                    }
                     self.using = None;
                     // ItemStack.hurtAndBreak: onEquippedItemBroken for the hand it was used from.
                     let hand = if slot == OFFHAND_SLOT {
@@ -178,7 +184,7 @@ impl Game<'_> {
                 }
             }
         }
-        if projectile {
+        if outcome.blocked <= 0.0 || projectile {
             return;
         }
         let Some(id) = attacker else {
@@ -285,4 +291,24 @@ impl Game<'_> {
             }
         }
     }
+}
+
+/// Built-in damageable blocking items' max damage, with component overrides
+/// checked before enchantment RNG and hooks. Nondamageable prototypes stay
+/// excluded: MAX_DAMAGE alone does not supply the required DAMAGE component.
+fn blocking_item_max_damage(stack: &ItemStack, default: u32) -> Option<u32> {
+    let component = |id| stack.data().and_then(|data| data.other(id));
+    if stack.count == 0
+        || default == 0
+        || component("minecraft:unbreakable").is_some()
+        || component("!minecraft:max_damage").is_some()
+        || component("!minecraft:damage").is_some()
+    {
+        return None;
+    }
+    let max = match component("minecraft:max_damage") {
+        Some(horizon_world::nbt::Tag::Int(value)) => u32::try_from(*value).ok()?,
+        _ => default,
+    };
+    (max > 0).then_some(max)
 }
