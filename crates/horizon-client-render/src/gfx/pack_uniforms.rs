@@ -94,6 +94,31 @@ pub struct PackInputs {
     /// `frameCounter`) instead of the wall clock and the frames drawn, and smoothed values
     /// (`wetness`, `eyeBrightnessSmooth`, `centerDepthSmooth`) at their targets.
     pub still_ticks: Option<u64>,
+    /// A scripted clock (`screenshot-sequence`): taken before `still_ticks` and the wall
+    /// clock, and smoothed values move by its `delta`.
+    pub frame_timing: Option<FrameTiming>,
+}
+
+/// One frame of a scripted pack clock: the frame's number from 1, the seconds since frame 1,
+/// and the seconds since the frame before (0 on frame 1).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FrameTiming {
+    pub counter: u32,
+    pub elapsed: f32,
+    pub delta: f32,
+}
+
+impl FrameTiming {
+    /// Frame `n` (from 1) of frames `step_ms` milliseconds apart (`16.666667` for 60 fps). The
+    /// elapsed time is worked out in f64, so frame 10 000 is as exact as frame 2.
+    pub fn nth(n: u32, step_ms: f64) -> Self {
+        let step = step_ms / 1000.0;
+        Self {
+            counter: n,
+            elapsed: (f64::from(n.saturating_sub(1)) * step) as f32,
+            delta: if n <= 1 { 0.0 } else { step as f32 },
+        }
+    }
 }
 
 /// The `cloudHeight` uniform: the dimension's `visual/cloud_height`
@@ -349,8 +374,10 @@ pub struct FrameUniforms {
     start: std::time::Instant,
     last: Option<std::time::Instant>,
     frame: u32,
-    /// The last frame's `PackInputs::still_ticks`, for `eval_custom`.
-    still_ticks: Option<u64>,
+    /// The tick `eval_custom` restarts the custom uniforms at: every frame's under STILL; on a
+    /// scripted clock's frame 1 only 0 (where a freshly parsed pack starts), so its later frames
+    /// carry their smoothing and randoms.
+    custom_restart: Option<u64>,
     previous: Option<(glam::DVec3, Mat4, Mat4)>,
     wetness: f32,
     eye_smooth: [f32; 2],
@@ -369,7 +396,7 @@ impl Default for FrameUniforms {
             start: std::time::Instant::now(),
             last: None,
             frame: 0,
-            still_ticks: None,
+            custom_restart: None,
             previous: None,
             wetness: 0.0,
             eye_smooth: [0.0; 2],
@@ -687,9 +714,16 @@ impl FrameUniforms {
         let now = std::time::Instant::now();
         let measured = self.last.map_or(0.0, |l| (now - l).as_secs_f32());
         self.last = Some(now);
-        self.still_ticks = inputs.still_ticks;
+        self.custom_restart = match inputs.frame_timing {
+            Some(timing) => (timing.counter <= 1).then_some(0),
+            None => inputs.still_ticks,
+        };
         // Smoothing over an endless step lands on its target.
-        let dt = inputs.still_ticks.map_or(measured, |_| f32::INFINITY);
+        let dt = match (inputs.frame_timing, inputs.still_ticks) {
+            (Some(timing), _) => timing.delta,
+            (None, Some(_)) => f32::INFINITY,
+            (None, None) => measured,
+        };
         let aspect = size[0] as f32 / size[1].max(1) as f32;
         // Packs take gbufferProjection for a plain perspective (they invert only its perspective
         // terms): the view bob and the nausea spin belong to the model-view, as GL drew them.
@@ -781,13 +815,14 @@ impl FrameUniforms {
         let (shadow_view, shadow_view_inverse) = shadow_model_view(frame, &self.shadow);
         let day_time = inputs.day_time.rem_euclid(24000) as i32;
         let world_day = inputs.day_time.div_euclid(24000);
-        let (seconds, frame_time, frame_counter) = match inputs.still_ticks {
-            Some(ticks) => (
+        let (seconds, frame_time, frame_counter) = match (inputs.frame_timing, inputs.still_ticks) {
+            (Some(timing), _) => (timing.elapsed, timing.delta, timing.counter as i32),
+            (None, Some(ticks)) => (
                 (ticks as f32 / 20.0) % 3600.0,
                 0.05,
                 (ticks % 720_720) as i32,
             ),
-            None => (
+            (None, None) => (
                 (now - self.start).as_secs_f32() % 3600.0,
                 measured,
                 self.frame as i32,
@@ -929,7 +964,7 @@ impl FrameUniforms {
     /// Evaluates the pack's custom uniforms with this frame's values and puts them after
     /// `NAMES`' values, in `custom.uniforms()` order.
     pub fn eval_custom(&mut self, custom: &mut horizon_shaders::Custom) {
-        if let Some(tick) = self.still_ticks {
+        if let Some(tick) = self.custom_restart {
             custom.restart_at(tick);
         }
         self.values.truncate(NAMES.len());
@@ -1298,7 +1333,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod initial_history_tests {
+pub(super) mod initial_history_tests {
     use super::*;
     use crate::hud::HudBatch;
     fn float(u: &FrameUniforms, name: &str) -> [f32; 16] {
@@ -2193,6 +2228,145 @@ mod initial_history_tests {
         assert_eq!(float(&u, "centerDepthSmooth")[0], 0.0);
     }
 
+    /// A scripted clock's values reach the pack as they are, before STILL's ticks.
+    #[test]
+    fn a_scripted_clock_comes_before_the_still_ticks() {
+        let hud = HudBatch::new([800, 450]);
+        let f = frame(&hud);
+        for still_ticks in [None, Some(47_811)] {
+            let mut u = FrameUniforms::default();
+            for (n, elapsed, delta) in [(1, 0.0, 0.0), (64, 3.15, 0.05)] {
+                let input = PackInputs {
+                    day_time: 6_001,
+                    still_ticks,
+                    frame_timing: Some(FrameTiming {
+                        counter: n,
+                        elapsed,
+                        delta,
+                    }),
+                    ..Default::default()
+                };
+                u.update(&f, &input, [800, 450]);
+                match u.values[index("frameCounter").unwrap()] {
+                    Value::I(v) => assert_eq!(v[0], n as i32),
+                    _ => panic!("integer uniform expected"),
+                }
+                assert_eq!(float(&u, "frameTimeCounter")[0], elapsed);
+                assert_eq!(float(&u, "frameTime")[0], delta);
+                match u.values[index("worldTime").unwrap()] {
+                    Value::I(v) => assert_eq!(v[0], 6_001),
+                    _ => panic!("integer uniform expected"),
+                }
+            }
+        }
+    }
+
+    /// Smoothed values move by a scripted clock's delta, also under STILL, which would
+    /// otherwise put them at their targets.
+    #[test]
+    fn a_scripted_clock_moves_smoothed_values_by_its_delta() {
+        let hud = HudBatch::new([800, 450]);
+        let f = frame(&hud);
+        let mut u = FrameUniforms::default();
+        let mut input = PackInputs {
+            rain: 1.0,
+            eye_light: [0, 15],
+            still_ticks: Some(47_811),
+            frame_timing: Some(FrameTiming::nth(1, 1000.0)),
+            ..Default::default()
+        };
+        u.center_depth_raw = Some(1.0);
+        u.update(&f, &input, [800, 450]);
+        input.rain = 0.0;
+        input.eye_light = [0, 0];
+        u.center_depth_raw = Some(0.0);
+        // A second each: eyeBrightnessSmooth halves (1 s half-life),
+        // centerDepthSmooth halves ten times (0.1 s), wetness falls by 0.5^(1/20) (20 s).
+        for (n, eye, depth, wetness) in [
+            (2, 120, 1.0 / 1_024.0, 0.965_936_3),
+            (3, 60, 1.0 / 1_048_576.0, 0.933_033),
+        ] {
+            input.frame_timing = Some(FrameTiming::nth(n, 1000.0));
+            u.update(&f, &input, [800, 450]);
+            match u.values[index("eyeBrightnessSmooth").unwrap()] {
+                Value::I(v) => assert_eq!(v[1], eye),
+                _ => panic!("integer uniform expected"),
+            }
+            assert_eq!(float(&u, "centerDepthSmooth")[0], depth);
+            assert!((float(&u, "wetness")[0] - wetness).abs() < 1e-6);
+        }
+    }
+
+    /// Custom uniforms start over on a scripted clock's frame 1 and carry their smoothing
+    /// and randoms through the frames after it, so a sequence drawn again repeats.
+    #[test]
+    fn custom_uniforms_start_over_on_a_scripted_frame_1() {
+        let properties = horizon_shaders::Properties::parse(
+            "uniform.float.s = smooth(rainStrength, 10.0)
+             uniform.float.r = random()
+",
+            &horizon_shaders::Macros::standard(),
+        );
+        let mut custom = horizon_shaders::Custom::parse(&properties);
+        let hud = HudBatch::new([800, 450]);
+        let f = frame(&hud);
+        let mut u = FrameUniforms::default();
+        let mut run = |u: &mut FrameUniforms| -> Vec<[u32; 2]> {
+            (1..=3)
+                .map(|n| {
+                    let input = PackInputs {
+                        rain: if n == 1 { 0.0 } else { 1.0 },
+                        still_ticks: Some(47_811),
+                        frame_timing: Some(FrameTiming::nth(n, 1000.0)),
+                        ..Default::default()
+                    };
+                    u.update(&f, &input, [800, 450]);
+                    u.eval_custom(&mut custom);
+                    std::array::from_fn(|i| match u.values[NAMES.len() + i] {
+                        Value::F(v) => v[0].to_bits(),
+                        _ => panic!("float uniform expected"),
+                    })
+                })
+                .collect()
+        };
+        let first = run(&mut u);
+        // The smoothed rain moves toward 1 over frames 2 and 3; the randoms differ
+        // each frame.
+        let s: Vec<f32> = first.iter().map(|v| f32::from_bits(v[0])).collect();
+        assert!(
+            s[0] == 0.0 && s[0] < s[1] && s[1] < s[2] && s[2] < 1.0,
+            "{s:?}"
+        );
+        assert!(first[0][1] != first[1][1] && first[1][1] != first[2][1]);
+        assert_eq!(run(&mut u), first);
+    }
+
+    #[test]
+    fn the_nth_scripted_frame_counts_from_1() {
+        assert_eq!(
+            FrameTiming::nth(1, 50.0),
+            FrameTiming {
+                counter: 1,
+                elapsed: 0.0,
+                delta: 0.0
+            }
+        );
+        assert_eq!(
+            FrameTiming::nth(2, 50.0),
+            FrameTiming {
+                counter: 2,
+                elapsed: 0.05,
+                delta: 0.05
+            }
+        );
+        assert_eq!(FrameTiming::nth(64, 50.0).elapsed, 3.15);
+        assert_eq!(FrameTiming::nth(10_000, 50.0).elapsed, 499.95);
+        assert_eq!(FrameTiming::nth(3, 1.0).elapsed, 0.002);
+        // 60 fps: frame 61 is one second in, not 61 × 16 ms or 61 × 17 ms.
+        let sixty = FrameTiming::nth(61, 1000.0 / 60.0);
+        assert_eq!((sixty.elapsed, sixty.delta), (1.0, 1.0 / 60.0));
+    }
+
     /// Iris 1.11.7 (probe pack): `ambientLight` is the dimension type's (0.1 in the Nether,
     /// 0.25 in the End), and `playerMood` and `constantMood` both the cave mood.
     #[test]
@@ -2210,7 +2384,7 @@ mod initial_history_tests {
         assert_eq!(float(&u, "constantMood")[0], 0.0235);
     }
 
-    fn frame(hud: &HudBatch) -> Frame<'_> {
+    pub(in crate::gfx) fn frame(hud: &HudBatch) -> Frame<'_> {
         Frame {
             eye: glam::DVec3::ZERO,
             eye_rotation: [0.0; 2],
