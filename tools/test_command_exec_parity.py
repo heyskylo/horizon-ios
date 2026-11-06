@@ -83,6 +83,8 @@ def install_datapack_fixtures(world, predicates, functions, jar, advancements=No
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--prepare', action='store_true')
+    parser.add_argument('--raid-village-fixture', action='store_true', help='match the existing development command trees in the isolated Java/native fixture processes')
+    parser.add_argument('--raid-release-command-diagnostic', action='store_true', help='retain the unmatched native release-tree admission prerequisite diagnostic')
     parser.add_argument('--advancement-loot-inline-parser-diagnostic', action='store_true',
                         help='retain all 100 inline observations, including the three missing-reference ACK differences')
     parser.add_argument('--advancement-loot-named-diagnostic', action='store_true',
@@ -139,6 +141,9 @@ def main():
     parser.add_argument('--map-decoration-patch-fixture', action='store_true')
     parser.add_argument('--map-decoration-removal-diagnostic', action='store_true')
     parser.add_argument("--selector-bounds-fixture", action="store_true")
+    parser.add_argument("--stand-fall-fixture", action="store_true")
+    parser.add_argument('--orb-uuid-fixture', action='store_true')
+    parser.add_argument("--mob-pickup-save-fixture", action="store_true")
     args = parser.parse_args()
     build = args.work_dir.resolve() if args.work_dir else lab.LOCAL / 'command-exec-parity'
     build.mkdir(parents=True, exist_ok=True)
@@ -164,6 +169,18 @@ def main():
             sys.exit(f'{name} failed ({result.returncode}):\n{tail}')
 
     groups = corpus_module.groups()
+    if args.stand_fall_fixture or args.only == "stand saved fall distance":
+        groups = [(name, ops) for name, ops in groups if name == "stand saved fall distance"]
+    elif not args.only:
+        groups = [(name, ops) for name, ops in groups if name not in corpus_module.ISOLATED_STAND_FALL]
+    if args.orb_uuid_fixture or args.only == 'orb saved UUID':
+        groups = [(name, ops) for name, ops in groups if name == 'orb saved UUID']
+    elif not args.only:
+        groups = [(name, ops) for name, ops in groups if name not in corpus_module.ISOLATED_ORB_UUID]
+    if args.mob_pickup_save_fixture or args.only == "mob saved pickup loot":
+        groups = [(name, ops) for name, ops in groups if name == "mob saved pickup loot"]
+    elif not args.only:
+        groups = [(name, ops) for name, ops in groups if name not in corpus_module.ISOLATED_PICKUP_SAVE]
     if not args.only:
         groups = [(name, ops) for name, ops in groups if name not in corpus_module.ISOLATED_FRAME_MAPS]
     if not args.only and not args.wolf_anger_clock_diagnostic:
@@ -328,7 +345,7 @@ def main():
     shutil.rmtree(vanilla_dir, ignore_errors=True)
     vanilla_dir.mkdir()
     install_datapack_fixtures(vanilla_dir / 'universe/harness', predicates, functions, jars['server'], advancements, loot_tables, recipes=recipes)
-    java_options = []
+    java_options = ['-DMC_DEBUG_ENABLED=true', '-DMC_DEBUG_DEV_COMMANDS=true'] if args.raid_village_fixture else []
     if args.orb_water_fixture:
         (build / 'orb-water-reference.json').unlink(missing_ok=True)
         direct_input = build / 'orb-water-inputs.json'
@@ -336,6 +353,10 @@ def main():
         java_options = ['-Dhorizon.orbWaterArithmetic=' + str(direct_input)]
     run(['java', '-Xmx3G', '-Duser.timezone=UTC', *(['-Dhorizon.loadedFixture=true'] if args.loaded_fixture else []), *java_options, '-cp', os.pathsep.join([str(classes), str(jars['server']), dependency_path]),
          'dev.horizonlab.parity.VanillaCommandExecOracle', vanilla_dir / 'universe', script_path, build / 'vanilla.jsonl', SEED], 'java', cwd=vanilla_dir)
+
+    if any(op['op'] == 'raid_state' for op in script):
+        from raid_village_corpus import validate_java_inputs
+        validate_java_inputs(build, script)
 
     if args.orb_water_fixture:
         direct = json.loads((build / 'orb-water-reference.json').read_text())
@@ -345,7 +366,7 @@ def main():
             sys.exit('Java direct underwater reference prerequisite failed')
     if args.reference_only:
         reference = [json.loads(line) for line in (build / 'vanilla.jsonl').read_text().splitlines()]
-        recorded = [op for op in script if op['op'] in ('player_state', 'player_loop', 'map_state', 'frame_map_state', 'mob_anger', 'menu_state') or
+        recorded = [op for op in script if op['op'] in ('player_state', 'player_loop', 'map_state', 'frame_map_state', 'mob_anger', 'raid_state', 'menu_state') or
                     (op['op'] == 'cmd' and op.get('record', True)) or
                     (op['op'] == 'tick' and op.get('record'))]
         if len(recorded) != len(reference):
@@ -382,10 +403,21 @@ def main():
     # either, a discovery address that refuses at once, rather than Mojang's over the network.
     env = lab.game_env(HORIZON_PLAYER_NAME="Player", HORIZON_COMMAND_SCRIPT=script_path,
                        HORIZON_COMMAND_OUTPUT=build / 'rust.jsonl', HORIZON_API_DISCOVERY='http://127.0.0.1:9/')
+    if args.raid_village_fixture and not args.raid_release_command_diagnostic:
+        env['HORIZON_DEV_COMMANDS'] = '1'
+    elif args.raid_release_command_diagnostic:
+        env.pop('HORIZON_DEV_COMMANDS', None)
     if args.loaded_fixture:
         env['HORIZON_HARNESS_LOADED_FIXTURE'] = '1'
         env['HORIZON_HARNESS_CLIENT_CONFIG'] = str(build / 'rust-client-config.json')
     run([binary, '--resources', lab.RESOURCES, '--world', 'harness', '--seed', SEED, '--radius', 2 if args.loaded_fixture else 4], 'rust', game=True, cwd=rust_dir, env=env)
+
+    if any(op['op'] == 'raid_state' for op in script):
+        from raid_village_corpus import validate_native_inputs
+        if args.raid_release_command_diagnostic:
+            print('REJECTED admission prerequisite diagnostic: native release tree vs Java development tree; not H162 loss evidence')
+        else:
+            validate_native_inputs(build, script)
 
     if args.loaded_fixture:
         for name in ['client_config.json', 'rust-client-config.json']:
@@ -407,7 +439,7 @@ def main():
     rust = [json.loads(l) for l in (build / 'rust.jsonl').open(encoding='utf-8')]
     if len(vanilla) != len(rust):
         sys.exit(f'record count differs: vanilla {len(vanilla)} rust {len(rust)}')
-    recorded_ops = [op for op in script if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'chunk_ready', 'server_distances', 'map_state', 'frame_map_state', 'light', 'player_state', 'player_loop', 'mob_anger', 'menu_state') or
+    recorded_ops = [op for op in script if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'chunk_ready', 'server_distances', 'map_state', 'frame_map_state', 'light', 'player_state', 'player_loop', 'mob_anger', 'raid_state', 'menu_state') or
                     (op['op'] == 'cmd' and op.get('record', True)) or
                     (op['op'] == 'tick' and op.get('record'))]
     if len(recorded_ops) != len(vanilla):
@@ -433,7 +465,7 @@ def main():
     commands_by_group = []
     index = 0
     for name, lines in groups:
-        n = sum(1 for op in lines if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'chunk_ready', 'server_distances', 'map_state', 'frame_map_state', 'light', 'player_state', 'player_loop', 'mob_anger', 'menu_state') or (op['op'] == 'cmd' and op.get('record', True)) or (op['op'] == 'tick' and op.get('record')))
+        n = sum(1 for op in lines if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'chunk_ready', 'server_distances', 'map_state', 'frame_map_state', 'light', 'player_state', 'player_loop', 'mob_anger', 'raid_state', 'menu_state') or (op['op'] == 'cmd' and op.get('record', True)) or (op['op'] == 'tick' and op.get('record')))
         commands_by_group.append((name, index, index + n))
         index += n
     mismatches = []

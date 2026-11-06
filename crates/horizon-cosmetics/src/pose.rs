@@ -174,6 +174,36 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn each_animated_part_is_posed_once_with_all_its_animations() {
+        // The crown swings and spins, the brim bobs: one pose each, in the order of their first
+        // animation, the crown's adding both of its own.
+        let item = hat("").replace(
+            r#"{"part": "crown", "motion": "swing", "axis": "z", "amplitude": 10, "period": 40}"#,
+            r#"{"part": "crown", "motion": "swing", "axis": "z", "amplitude": 10, "period": 40},
+               {"part": "brim", "motion": "bob", "axis": "y", "amplitude": 1.5, "period": 40},
+               {"part": "crown", "motion": "spin", "axis": "y", "period": 40}"#,
+        );
+        let item = Item::parse(item.as_bytes()).unwrap();
+        let mut got = Vec::new();
+        item.animate(10.0, |n, p| got.push((n.to_owned(), p)));
+        let names: Vec<&str> = got.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["crown", "brim"]);
+        // A quarter period: the swing at its 10 degrees, a quarter turn, the bob at 1.5.
+        let crown = got[0].1;
+        assert_eq!(crown[..3], [0.0, -2.0, 0.0]);
+        assert!((crown[5] - 10f32.to_radians()).abs() < 1e-6, "{crown:?}");
+        assert!(
+            (crown[4] - std::f32::consts::FRAC_PI_2).abs() < 1e-6,
+            "{crown:?}"
+        );
+        let brim = got[1].1;
+        assert!(
+            (brim[1] - 1.5).abs() < 1e-6 && brim[3..6] == [0.0; 3],
+            "{brim:?}"
+        );
+    }
+
+    #[test]
     fn refuses_items_past_the_limits() {
         let big = hat("").replace(r#""size": [4, 4, 4]"#, r#""size": [4, 4, 4], "inflate": 0"#);
         assert!(Item::parse(big.as_bytes()).is_ok());
