@@ -184,6 +184,31 @@ impl Game<'_> {
                 renderer.drop_shader_packs();
             }
         }
+        // A pack whose pipelines were building runs once they are built, or is turned off.
+        if let Some((dimension, name, started, report)) =
+            self.renderer.as_mut().and_then(|r| r.poll_shader_pack())
+        {
+            match report {
+                Ok(Some((programs, notes))) => {
+                    for note in notes {
+                        log::warn!("shader pack {name}: {note}");
+                    }
+                    log::info!(
+                        "shader pack {name}: {} programs ({}) in {} ms",
+                        programs.len(),
+                        programs.join(" "),
+                        started.elapsed().as_millis()
+                    );
+                }
+                Ok(None) => {}
+                Err(refused) => {
+                    for note in refused.notes {
+                        log::warn!("shader pack {name}: {note}");
+                    }
+                    self.shader_pack_failed(&name, dimension, &refused.reason);
+                }
+            }
+        }
         if picked.is_empty() {
             return PackInputs::default();
         }
@@ -309,25 +334,10 @@ impl Game<'_> {
                             table.len() / 3,
                             started_ids.elapsed().as_millis()
                         );
-                        let report = renderer
-                            .set_shader_pack(dimension, Some(post), &table)
-                            .map_err(|refused| {
-                                for note in refused.notes {
-                                    log::warn!("shader pack {name}: {note}");
-                                }
-                                refused.reason
-                            })?;
-                        if let Some((programs, notes)) = report {
-                            for note in notes {
-                                log::warn!("shader pack {name}: {note}");
-                            }
-                            log::info!(
-                                "shader pack {name}: folder `{folder}`, {} programs ({}) in {} ms",
-                                programs.len(),
-                                programs.join(" "),
-                                started.elapsed().as_millis()
-                            );
-                        }
+                        log::info!("shader pack {name}: folder `{folder}`, building its pipelines");
+                        // The driver compiles the programs on a thread of their own; the game
+                        // draws without a pack meanwhile, and the next frames pick it up.
+                        renderer.load_shader_pack(dimension, post, table, name.to_owned(), started);
                     }
                     Err(e) => {
                         self.pack_ids = None;
