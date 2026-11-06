@@ -1911,6 +1911,12 @@ def advancement_reward_fixtures(group_names):
 
 def function_return_fixtures(group_names):
     functions = {}
+    if 'function condition fallthrough' in group_names:
+        try:
+            from .function_condition_corpus import functions as condition_functions
+        except ImportError:
+            from function_condition_corpus import functions as condition_functions
+        functions.update(condition_functions())
     if any(name.startswith('wolf anger ') for name in group_names):
         try:
             from .wolf_anger_corpus import functions as anger_functions
@@ -2012,6 +2018,14 @@ def function_return_feedback():
                   cmd('/execute if score #clock audit = #after audit', expect_result=1),
                   cmd('/scoreboard objectives remove audit')])
     return lines
+
+
+def function_condition_fallthrough():
+    try:
+        from .function_condition_corpus import conditions
+    except ImportError:
+        from function_condition_corpus import conditions
+    return conditions()
 
 
 def functions_and_packs():
@@ -5992,6 +6006,7 @@ def groups():
         ('mob full resistance hits', mob_full_resistance_hits()),
         ('sulfur cube loaded health', sulfur_cube_loaded_health()),
         ('function return feedback', function_return_feedback()),
+        ('function condition fallthrough', function_condition_fallthrough()),
         ('ticking and random', ticking()),
         ('compute', compute()),
         ('social and scoreboard', social()),
