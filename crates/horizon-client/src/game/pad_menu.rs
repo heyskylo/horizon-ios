@@ -1193,6 +1193,14 @@ impl Game<'_> {
     /// A bumper: the next or previous tab, wrapping (creative keeps its own
     /// order; other screens register their tabs).
     fn pad_tab(&mut self, event_loop: &dyn EventLoopCtl, next: bool) {
+        // The server list has no tabs: the bumpers move the selected server.
+        if self
+            .title
+            .as_mut()
+            .is_some_and(|title| title.multiplayer_move_selected(next))
+        {
+            return;
+        }
         if self.screen == Screen::Creative && self.title.is_none() {
             self.pad_creative_tab(next);
             return;

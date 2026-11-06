@@ -206,6 +206,7 @@ the crafting result, armour to the player's grid.
 - **Sliders**: left and right move the value (one pixel per press like
   vanilla's arrow keys, faster while held); A does nothing on a slider, as a
   click would jump the handle.
+- **The server list**: the bumpers move the selected server up or down, as its arrows do.
 - **Lists** follow focus: a step out of a list that can still scroll that way
   scrolls it and lands on the next row once it is drawn, so every row can be
   reached; the buttons below or above come after its last or first row.

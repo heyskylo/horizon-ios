@@ -1901,6 +1901,31 @@ def chat_suggestion_rows(args, name):
     return check.failures
 
 
+def server_list_bumpers(args, name):
+    """The bumpers move the selected server, and the list saves it."""
+    game = Game(args, name, seed=seed_servers)
+    check = Check()
+    try:
+        game.press_through('south', 'down', 'south')
+        game.wait_targets()
+        first = game.rows()[0]['id']
+        game.focus_on(first)
+        game.pad('south')
+        before = [row.get('label') for row in game.rows()[:2]]
+        check(before[0] and before[1], f'no rows: {before}')
+        game.pad('rb')
+        time.sleep(SETTLE)
+        after = [row.get('label') for row in game.rows()[:2]]
+        check(after == before[::-1], f'the first server did not move down: {before} then {after}')
+        game.pad('lb')
+        time.sleep(SETTLE)
+        back = [row.get('label') for row in game.rows()[:2]]
+        check(back == before, f'it did not move back up: {after} then {back}')
+    finally:
+        game.quit()
+    return check.failures
+
+
 def osk_social(args, name):
     game = Game(args, name, world=True)
     check = Check()
@@ -2091,6 +2116,7 @@ CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': releas
          'osk_book': osk_book,
          'recipe_search_keyboard': recipe_search_keyboard,
          'chat_suggestion_rows': chat_suggestion_rows,
+         'server_list_bumpers': server_list_bumpers,
          'osk_sign': osk_sign,
          'osk_debug_options': osk_debug_options,
          'osk_command_block': osk_command_block,
