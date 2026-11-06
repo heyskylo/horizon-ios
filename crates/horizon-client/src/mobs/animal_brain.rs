@@ -2433,7 +2433,7 @@ fn axolotl_action(m: &mut Mob, cx: &mut Bx, action: AxolotlAction, until: &mut i
             if cx
                 .w
                 .target_info(target)
-                .is_some_and(|t| m.within_melee_range(&t))
+                .is_some_and(|t| m.within_melee_range(cx.w, &t))
                 && visible_contains(m, cx.w, target)
             {
                 mem(m).walk_target.clear();
@@ -2460,7 +2460,7 @@ fn axolotl_action(m: &mut Mob, cx: &mut Bx, action: AxolotlAction, until: &mut i
                 || !cx
                     .w
                     .target_info(target)
-                    .is_some_and(|t| m.within_melee_range(&t))
+                    .is_some_and(|t| m.within_melee_range(cx.w, &t))
             {
                 return false;
             }
