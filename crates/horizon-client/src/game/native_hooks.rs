@@ -6570,6 +6570,78 @@ impl Game<'_> {
         );
         true
     }
+    /// Shows particles to that player alone, as Bukkit's
+    /// `Player.spawnParticle` and vanilla's `ServerLevel.sendParticles(player,
+    /// ...)` (`/particle ... force|normal <player>`): `count` of them around
+    /// `at` in their level, spread by `spread`, at `speed` (0 sends one
+    /// directional particle, as `GameLevel::native_send_particles`). They
+    /// reach the player within 32 blocks of `at`, or 512 with `force`
+    /// (which also lifts the client's particle setting limit). The same
+    /// types as `GameLevel::native_send_particles`: block particles need
+    /// `state`, item, trail and vibration particles aren't sent, and a mod's
+    /// own type (`ParticleOptions::named`) reaches only a Horizon client. It
+    /// leaves at the tick's end, so it works from any server hook; true
+    /// means queued. False on a client, for options or numbers that can't
+    /// be sent, and for a player who isn't on (inside another player's
+    /// hook, such a player just gets nothing). API @API:send_particles_to@.
+    pub(super) fn native_send_particles_to(
+        &mut self,
+        uuid: u128,
+        options: &ParticleOptions,
+        state: Option<BlockStateId>,
+        at: [f64; 3],
+        spread: [f64; 3],
+        speed: f64,
+        count: i32,
+        force: bool,
+    ) -> bool {
+        use ParticleType as T;
+        if let Some(name) = &options.mod_particle {
+            let namespaced = name
+                .split_once(':')
+                .is_some_and(|(ns, path)| !ns.is_empty() && !path.is_empty());
+            if !namespaced {
+                return false;
+            }
+        }
+        let supported = match options.ty {
+            T::Block | T::BlockMarker | T::FallingDust | T::DustPillar | T::BlockCrumble => {
+                state.is_some_and(|id| self.pack.assets.registry.state(id).is_some())
+            }
+            T::Item | T::Trail | T::Vibration => false,
+            T::Geyser | T::GeyserPlume | T::GeyserBase | T::GeyserPoof => options
+                .geyser
+                .is_some_and(|(_, impulse)| impulse.is_finite()),
+            _ => true,
+        };
+        if !supported
+            || !at.into_iter().all(f64::is_finite)
+            || !spread
+                .into_iter()
+                .all(|v| v.is_finite() && v.abs() <= f32::MAX as f64)
+            || !speed.is_finite()
+            || speed.abs() > f32::MAX as f64
+            || !options.color.into_iter().all(f32::is_finite)
+            || !options.to_color.into_iter().all(f32::is_finite)
+            || !options.scale.is_finite()
+            || !self.player_fx_reaches(uuid)
+        {
+            return false;
+        }
+        self.queue_native_player_fx(
+            uuid,
+            super::native_player_fx::PlayerFx::Particles {
+                options: options.clone(),
+                state,
+                at,
+                spread,
+                speed,
+                count,
+                force,
+            },
+        );
+        true
+    }
     /// A click in a menu a mod opened (`native_open_menu`), which moved
     /// nothing: the menu's `slot` (its own first, then the player's
     /// inventory, `native_menu_inventory_slot`; -999 outside), the `button`

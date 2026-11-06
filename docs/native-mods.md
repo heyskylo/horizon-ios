@@ -2500,6 +2500,14 @@ per-player helpers for these (a NeoForge mod sends `ServerPlayer.connection.send
   from any server hook, a player's own included; true means queued. False on a client, for a bad name, category,
   position, volume or pitch, and for a player who isn't on (inside another player's hook, where the players are out of
   reach, that player then gets nothing). Bundles need `"hooks": @API:play_sound_to@`.
+- Helper **`native_send_particles_to(uuid, options, state, at, spread, speed, count, force)`**
+  (`host.send_particles_to`): particles for that player alone, as vanilla's `ServerLevel.sendParticles(player, ...)`
+  (`/particle ... normal|force <player>`) and Bukkit's `Player.spawnParticle`: sent when `at` is within 32 blocks of
+  the centre of their block, 512 with `force`, which also sets the packet's `overrideLimiter` (the client draws them
+  whatever its Particles option says). Options and their checks are `GameLevel::native_send_particles`'s: block
+  particles need `state`, item, trail and vibration particles aren't sent, a mod's own type
+  (`ParticleOptions::named`) reaches only a Horizon client. Queued as `native_play_sound_to`, with the same answers.
+  Bundles need `"hooks": @API:send_particles_to@`.
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a

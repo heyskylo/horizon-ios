@@ -1,9 +1,13 @@
 //! What server mods send one player (docs/native-mods.md, "Server hooks for
-//! plugin ports: per-player feedback"): sounds (`native_play_sound_to`). The
-//! hub is out of the game while a guest's turn runs, and they need it (registry
-//! ids, the player's position), so they wait here and leave at the tick's end,
-//! from whichever hook sent them.
+//! plugin ports: per-player feedback"): sounds (`native_play_sound_to`) and
+//! particles (`native_send_particles_to`). The hub is out of the game while a
+//! guest's turn runs, and these need it (registry ids, the player's position),
+//! so they wait here and leave at the tick's end, from whichever hook sent
+//! them.
 use super::{Game, lan::LanHost};
+use horizon_client::particles::ParticleOptions;
+use horizon_protocol::packets::play::{self, Clientbound as C};
+use horizon_world::registry::BlockStateId;
 
 /// One thing a mod sends one player.
 pub(super) enum PlayerFx {
@@ -14,6 +18,15 @@ pub(super) enum PlayerFx {
         at: Option<[f64; 3]>,
         volume: f32,
         pitch: f32,
+    },
+    Particles {
+        options: ParticleOptions,
+        state: Option<BlockStateId>,
+        at: [f64; 3],
+        spread: [f64; 3],
+        speed: f64,
+        count: i32,
+        force: bool,
     },
 }
 
@@ -51,12 +64,12 @@ impl Game<'_> {
             return;
         }
         for (uuid, fx) in std::mem::take(&mut self.native_player_fx.queued) {
-            let Some((conn, position)) = host
+            let Some((conn, position, horizon)) = host
                 .hub
                 .guests
                 .iter()
                 .find(|g| g.placed && g.uuid == uuid)
-                .map(|g| (g.conn, g.position))
+                .map(|g| (g.conn, g.position, g.brand == "horizon"))
             else {
                 continue;
             };
@@ -87,6 +100,43 @@ impl Game<'_> {
                         source,
                         seed,
                     )
+                }
+                PlayerFx::Particles {
+                    options,
+                    state,
+                    at,
+                    spread,
+                    speed,
+                    count,
+                    force,
+                } => {
+                    // A vanilla client can't decode a mod's particle id
+                    // (`mod_particle_only_for_horizon`).
+                    if options.mod_particle.is_some() && !horizon {
+                        continue;
+                    }
+                    // ServerLevel.sendParticles(player, ...): within 32 blocks
+                    // of the centre of the player's block, 512 when forced.
+                    let range: f64 = if force { 512.0 } else { 32.0 };
+                    let distance: f64 = (0..3)
+                        .map(|k| (position[k].floor() + 0.5 - at[k]).powi(2))
+                        .sum();
+                    if distance >= range * range {
+                        continue;
+                    }
+                    let Some(particle) = Self::hub_particle(&host.hub, &options, state) else {
+                        continue;
+                    };
+                    C::LevelParticles(play::LevelParticles {
+                        particle,
+                        override_limiter: force,
+                        always_show: false,
+                        pos: at,
+                        dist: spread.map(|d| d as f32),
+                        max_speed: [speed as f32; 3],
+                        count,
+                        randomization: 0,
+                    })
                 }
             };
             host.hub.send_to(conn, &packet);
