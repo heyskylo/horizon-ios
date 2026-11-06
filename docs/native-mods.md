@@ -2489,6 +2489,15 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
 What a skin, login or profile mod needs, which plugin ports reached with raw injections or their own `usercache.json`
 parsing before (#10461).
 
+- **`native_player_pre_login(player, name, address, defer)`**: a free function in `horizon_client_lib::lan::conn`,
+  heard on the connection's own thread for a player logging in, once the session service or the proxy has named them
+  and before the server's own checks (Bukkit's `AsyncPlayerPreLoginEvent`). `address` is theirs (behind a proxy, the
+  forwarded one). A mod that needs time, a permissions or inventory load from a database, or may refuse, pushes a
+  `Receiver<Result<(), Text>>` onto `defer` and answers on it from any thread: `Ok` lets the player on, `Err` refuses
+  them with that reason. The login waits for every answer, 20 s at most in all (a vanilla client gives up after 30 s
+  of silence); an answer that doesn't come by then, or whose sender is dropped, refuses with a plain "Disconnected".
+  Mods' loads run side by side. The integrated server's own player is not heard, and there is no `Game` on this
+  thread. Bundles need `"hooks": @API:player_pre_login@`.
 - **`native_player_profile(player, name, properties)`**: a free function in `horizon_client_lib::lan::conn`, heard on
   the connection's own thread once the server has let a player in (name, whitelist, bans and player limit checked) and
   before it sends `LoginFinished` (Velocity's `GameProfileRequestEvent`). `properties` are the profile's, as the session

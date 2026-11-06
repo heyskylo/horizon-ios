@@ -158,6 +158,15 @@ pub fn main_with(mods: crate::mod_api::Mods) {
         register_goals: |mob| {
             crate::mod_api::dispatch_register_goals(crate::mod_api::mods(), mob);
         },
+        player_pre_login: |player, name, address, defer| {
+            crate::mod_api::dispatch_player_pre_login(
+                crate::mod_api::mods(),
+                player,
+                name,
+                address,
+                defer,
+            );
+        },
         player_profile: |player, name, properties| {
             crate::mod_api::dispatch_player_profile(
                 crate::mod_api::mods(),

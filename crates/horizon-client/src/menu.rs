@@ -3626,6 +3626,7 @@ pub(crate) mod tests {
                 living_fall: |_, _, _, _, _| {},
                 living_jump: |_, _| {},
                 register_goals: |_| {},
+                player_pre_login: |_, _, _, _| {},
                 player_profile: |_, _, _| {},
                 ingredient: |_, _, _| {},
                 ingredient_test: |_, _, _, _| {},
