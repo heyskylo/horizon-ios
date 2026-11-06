@@ -11240,12 +11240,11 @@ impl Game<'_> {
         } else {
             self.yaw
         };
-        // Packs/mods may move vertices or draw from another camera; TAA jitters the
+        // Packs may move vertices or draw from another camera; TAA jitters the
         // projection beyond this unjittered frustum. Keep their original geometry path.
         let fire_view = self.view_frustum.as_ref().filter(|_| {
             self.pack_ids.is_none()
                 && self.native_shaders.picked.is_empty()
-                && horizon_client::mod_api::mods().is_empty()
                 && !self.settings.horizon.taa
         });
         let fire_visible = |position, width, height| {

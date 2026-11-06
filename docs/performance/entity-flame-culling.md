@@ -9,8 +9,9 @@ numerical slack and all yaw rotations covered. Invalid/unusual dimensions keep t
 
 Mobs (including charged blazes), dropped items, armor stands and the visible local body use
 the gate before light lookup. Fire simulation, damage, dynamic lights and visible flame geometry
-are unchanged. Shader packs, native mods and TAA keep the original path; TAA's jittered projection
-can extend beyond this camera frustum. This is automatic preparation culling without a new setting.
+are unchanged. Native mods do not disable the optimization. Shader packs and TAA keep the
+original path; TAA's jittered projection can extend beyond this camera frustum. This is
+automatic preparation culling without a new setting.
 
 ## Measurement
 
@@ -51,8 +52,8 @@ visible flames in the reference scene.
 Five baseline/candidate comparisons at 1280×720 were identical: front, above the body,
 the same edge with OIT enabled, a side view, and behind. Unit tests bound actual emitted
 vertices for seven dimensions, three scales, 24 yaws and cameras near the world border,
-and verify that unsupported dimensions retain the original path. Shader/mod/TAA compatibility
-is preserved by bypass; no shader-pack or TAA rendering gain is claimed.
+and verify that unsupported dimensions retain the original path. Shader-pack/TAA paths bypass
+the optimization; no shader-pack or TAA rendering gain is claimed.
 
 Armor-stand flame reception is not used as a benchmark: an existing shared-flag decoding gap
 in `remote_objects.rs` ignores its burning bit. This change does not address that separate bug.
@@ -60,3 +61,10 @@ in `remote_objects.rs` ignores its burning bit. This change does not address tha
 The dense front scene has two raster states differing in 236 pixels in a small overlap.
 Both occur in these unmodified-baseline launches, and each candidate state exactly matches
 one baseline state. The separate single-flame comparisons above provide the pixel oracle.
+
+A follow-up compatibility run enabled one native trait mod through `entry::main_with`.
+Its camera hook asserted that the mod was loaded and observed the camera without changing it.
+All five views above matched the updated ordinary executable exactly, including 3755 visible
+flame pixels above the offscreen body. Native mods therefore no longer cause a blanket bypass.
+The FPS samples above were collected without mods; this run checks rendering compatibility,
+not the behavior of arbitrary mixins that rewrite the flame generator or rendering passes.
