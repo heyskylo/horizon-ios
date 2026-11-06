@@ -1755,6 +1755,16 @@ def world_misc():
     ]
 
 
+def template_container_loot_table():
+    """A template's chest keeps its loot table (`RandomizableContainer.tryLoadLootTable`)."""
+    return [
+        *setup('/forceload add 0 0 15 15'),
+        cmd('/place template minecraft:village/plains/houses/plains_small_house_7 0 200 0'),
+        cmd('/data get block 4 201 5 LootTable'),
+        *setup('/fill 0 200 0 15 215 15 minecraft:air', '/forceload remove 0 0 15 15'),
+    ]
+
+
 def progression():
     return [
         *setup('/gamemode survival', '/experience set @s 0 levels', '/experience set @s 0 points'),
@@ -5760,6 +5770,7 @@ def groups():
         ('minecart drag', minecart_drag()),
         ('ender dragon', ender_dragon()),
         ('place structure', place_structure()),
+        ('template container loot table', template_container_loot_table()),
         ('tame wolf kills', tame_wolf_kills()),
         ('experience orb fall', experience_orb_fall()),
         ('piglin pickups', piglin_pickups()),
