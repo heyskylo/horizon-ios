@@ -79,6 +79,13 @@ pub(super) fn register_standalone_models() {
     Game::native_standalone_models(&mut names);
     horizon_client::models::register_standalone(names);
 }
+/// The native mods' entity model layers (`native_layer_definitions`), kept
+/// once at start for `native_bake_layer`.
+pub(super) fn register_layer_definitions() {
+    let mut layers = Vec::new();
+    Game::native_layer_definitions(&mut layers);
+    horizon_client::mobs::model_layers::register(layers);
+}
 
 /// `root` with the content mods that are on layered over it
 /// (docs/modpacks.md): their blocks, items, data and assets. Read once at
@@ -667,7 +674,8 @@ mod tests {
             Mob::new(2, ghoul.clone(), at, 0.0),
         );
         assert_eq!(ghoul.health, 40.0);
-        let saved = |m: &Mob| horizon_client::entity_nbt::mob_to_nbt(m, [0, 0, 0, 2], None, None);
+        let saved =
+            |m: &Mob| horizon_client::entity_nbt::mob_to_nbt(m, [0, 0, 0, 2], None, None, |_| None);
         let keys = |tag: &horizon_world::nbt::Tag| -> Vec<String> {
             let horizon_world::nbt::Tag::Compound(map) = tag else {
                 panic!("a mob saves a compound");
@@ -718,7 +726,8 @@ mod tests {
         let trader = Mob::new(1, types["minecraft:wandering_trader"].clone(), at, 0.0);
         let merchant = Mob::new(2, merchant.clone(), at, 0.0);
         assert!(merchant.ai.goals.has("Float") && trader.ai.goals.has("Float"));
-        let saved = |m: &Mob| horizon_client::entity_nbt::mob_to_nbt(m, [0, 0, 0, 2], None, None);
+        let saved =
+            |m: &Mob| horizon_client::entity_nbt::mob_to_nbt(m, [0, 0, 0, 2], None, None, |_| None);
         let keys = |tag: &Tag| -> Vec<String> {
             let Tag::Compound(map) = tag else {
                 panic!("a mob saves a compound");

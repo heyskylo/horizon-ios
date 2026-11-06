@@ -53,8 +53,15 @@ impl PerlinNoise {
     /// the two X permutes out of that loop avoids repeating them per Y.
     #[inline]
     fn gradients_at(&self, p: i32, q: i32, cell_y: i32, cell_z: i32) -> [[f32; 3]; 8] {
-        self.gradient_indices_at(p, q, cell_y, cell_z)
-            .map(|index| PERLIN_GRADIENTS[index])
+        // A loop rather than `array::map`, whose closure LLVM may leave out of line.
+        let mut gradients = [[0.0; 3]; 8];
+        for (gradient, index) in gradients
+            .iter_mut()
+            .zip(self.gradient_indices_at(p, q, cell_y, cell_z))
+        {
+            *gradient = PERLIN_GRADIENTS[index];
+        }
+        gradients
     }
 
     /// The [`PERLIN_GRADIENTS`] index of each corner of [`Self::gradients_at`].
@@ -157,10 +164,34 @@ impl PerlinNoise {
         y_scale: f64,
         amplitude: f32,
     ) -> Result<(), DensityError> {
-        self.add_volume::<true>(buffer, volume, xz_scale, y_scale, amplitude, None)
+        self.add_volume::<true>(buffer, volume, xz_scale, y_scale, amplitude, None, None)
+    }
+
+    /// [`Self::add_to_volume`] for a caller that reads only the Ys set in `needed`: bit `y` of
+    /// `needed[column]`, columns in buffer order. The other Ys may be left unchanged. Without
+    /// a bit for every Y (more than 64 Ys, or too few columns), every Y is added.
+    pub fn add_to_needed(
+        &self,
+        buffer: &mut [f32],
+        volume: DensityVolume,
+        xz_scale: f64,
+        y_scale: f64,
+        amplitude: f32,
+        needed: &[u64],
+    ) -> Result<(), DensityError> {
+        self.add_volume::<true>(
+            buffer,
+            volume,
+            xz_scale,
+            y_scale,
+            amplitude,
+            None,
+            Some(needed),
+        )
     }
 
     /// `BATCH` = false evaluates one Y at a time: the reference the batched loop is tested against.
+    #[allow(clippy::too_many_arguments)]
     fn add_volume<const BATCH: bool>(
         &self,
         buffer: &mut [f32],
@@ -169,11 +200,13 @@ impl PerlinNoise {
         y_scale: f64,
         amplitude: f32,
         fudge_y_scale: Option<f64>,
+        needed: Option<&[u64]>,
     ) -> Result<(), DensityError> {
         if buffer.len() < volume.size() {
             return Err(DensityError::BufferTooShort);
         }
         let [size_x, size_y, size_z] = volume.sizes();
+        let needed = needed.filter(|needed| size_y <= 64 && needed.len() >= size_x * size_z);
         // Every X/Z column walks the same Y coordinates, so their cells, offsets
         // and fades are computed once per volume instead of once per column.
         let mut stack = ([0_i32; STACK_Y], [0.0_f32; STACK_Y], [0.0_f32; STACK_Y]);
@@ -217,6 +250,12 @@ impl PerlinNoise {
             let dz = (shifted_z - f64::from(cell_z)) as f32;
             let fade_z = smoothstep(dz);
             for x in 0..size_x {
+                // The Ys of this column the caller reads, if not all of them.
+                let wanted = needed.map(|needed| needed[x + z * size_x]);
+                if wanted == Some(0) {
+                    index += size_y;
+                    continue;
+                }
                 let shifted_x =
                     wrap(f64::from(volume.coordinate(0, x)) * xz_scale) + self.table.offsets[0];
                 let cell_x = floor_i32(shifted_x);
@@ -231,7 +270,31 @@ impl PerlinNoise {
                 let column = &mut buffer[index..index + size_y];
                 let mut y = 0;
                 while y < size_y {
+                    if wanted.is_some_and(|wanted| (wanted >> y) & 1 == 0) {
+                        y += 1;
+                        continue;
+                    }
                     let cell = cells[y];
+                    // Four Ys in four cells, as when the cells change often: side by side too,
+                    // each lane with the corners of its own cell.
+                    if let Some(terms) = terms.as_ref().filter(|_| y + 4 <= size_y) {
+                        let block = &cells[y..y + 4];
+                        if block.windows(2).all(|pair| pair[0] != pair[1]) {
+                            let indices: [[usize; 8]; 4] = std::array::from_fn(|lane| {
+                                self.gradient_indices_at(p, q, block[lane], cell_z)
+                            });
+                            add_four(
+                                &mut column[y..y + 4],
+                                &offsets[y..y + 4],
+                                &fades[y..y + 4],
+                                |i, lane| terms.get(i, indices[lane][i]),
+                                [fade_x, fade_z],
+                                amplitude,
+                            );
+                            y += 4;
+                            continue;
+                        }
+                    }
                     if previous_y != cell {
                         if let Some(terms) = &terms {
                             let indices = self.gradient_indices_at(p, q, cell, cell_z);
@@ -255,8 +318,7 @@ impl PerlinNoise {
                             &mut column[y..y + 4],
                             &offsets[y..y + 4],
                             &fades[y..y + 4],
-                            xz_dots,
-                            y_gradients,
+                            |i, _| [xz_dots[i], y_gradients[i]],
                             [fade_x, fade_z],
                             amplitude,
                         );
@@ -366,6 +428,26 @@ impl SmearedPerlinNoise {
             y_scale,
             amplitude,
             Some(self.fudge_y_scale),
+            None,
+        )
+    }
+    pub fn add_to_needed(
+        &self,
+        buffer: &mut [f32],
+        volume: DensityVolume,
+        xz_scale: f64,
+        y_scale: f64,
+        amplitude: f32,
+        needed: &[u64],
+    ) -> Result<(), DensityError> {
+        self.base.add_volume::<true>(
+            buffer,
+            volume,
+            xz_scale,
+            y_scale,
+            amplitude,
+            Some(self.fudge_y_scale),
+            Some(needed),
         )
     }
 }
@@ -379,22 +461,25 @@ fn compute_fudge_y(input_y: f64, relative_y: f64, scale: f64) -> f64 {
     f64::from(floor_i32(limited_y / scale + f64::from(1e-7_f32))) * scale
 }
 
-/// Adds four Y samples of one cell, laid out lane by lane so LLVM vectorizes them (no intrinsics,
-/// no target feature). Each lane does the one-at-a-time loop's operations in the same order.
+/// Adds four Y samples, laid out lane by lane so LLVM vectorizes them (no intrinsics, no target
+/// feature). `corner(i, lane)` is corner `i`'s XZ dot product and Y gradient in that lane's cell.
+/// Each lane does the one-at-a-time loop's operations in the same order.
 #[inline]
 fn add_four(
     out: &mut [f32],
     offsets: &[f32],
     fades: &[f32],
-    dots: [f32; 8],
-    gradients: [f32; 8],
+    corner: impl Fn(usize, usize) -> [f32; 2],
     [fade_x, fade_z]: [f32; 2],
     amplitude: f32,
 ) {
     let dy: [f32; 4] = std::array::from_fn(|lane| offsets[lane]);
     let fy: [f32; 4] = std::array::from_fn(|lane| fades[lane]);
     let values: [[f32; 4]; 8] = std::array::from_fn(|i| {
-        std::array::from_fn(|lane| dots[i] + gradients[i] * (dy[lane] - ((i >> 1) & 1) as f32))
+        std::array::from_fn(|lane| {
+            let [dot, gradient] = corner(i, lane);
+            dot + gradient * (dy[lane] - ((i >> 1) & 1) as f32)
+        })
     });
     for lane in 0..4 {
         out[lane] += amplitude * lerp3([fade_x, fy[lane], fade_z], values.map(|v| v[lane]));
@@ -406,6 +491,7 @@ mod tests {
     use super::*;
     use crate::random::LegacyRandom;
 
+    /// The batched loop, with and without a mask of needed Ys, against the one-at-a-time loop.
     #[test]
     fn batched_volume_is_bit_identical() {
         let scales = [
@@ -434,6 +520,7 @@ mod tests {
         ];
         for seed in [0, -1, 1234, i64::MIN] {
             let noise = PerlinNoise::new(&mut LegacyRandom::new(seed));
+            let mut random = LegacyRandom::new(seed);
             for height in [1, 2, 3, 4, 5, 7, 8, 9, 31, 64, 65, 97] {
                 for (case, &scale) in scales.iter().enumerate() {
                     let minimum = [
@@ -451,20 +538,35 @@ mod tests {
                         let initial = [0.0, -0.0, 1.5, f32::from_bits(1)];
                         let mut a: Vec<_> =
                             (0..volume.size() + 3).map(|i| initial[i % 4]).collect();
-                        let mut b = a.clone();
+                        let (mut b, mut c) = (a.clone(), a.clone());
                         let amplitude = amplitudes[case % amplitudes.len()];
+                        // No Y, every Y, and two random sets.
+                        let needed = [
+                            0,
+                            u64::MAX,
+                            random.next_long() as u64,
+                            random.next_long() as u64,
+                        ];
+                        let (s, f) = (scale, fudge);
                         noise
-                            .add_volume::<false>(&mut a, volume, scale, scale, amplitude, fudge)
+                            .add_volume::<false>(&mut a, volume, s, s, amplitude, f, None)
                             .unwrap();
                         noise
-                            .add_volume::<true>(&mut b, volume, scale, scale, amplitude, fudge)
+                            .add_volume::<true>(&mut b, volume, s, s, amplitude, f, None)
                             .unwrap();
-                        for (i, (a, b)) in a.iter().zip(&b).enumerate() {
-                            assert_eq!(
-                                a.to_bits(),
-                                b.to_bits(),
-                                "seed={seed} height={height} scale={scale} fudge={fudge:?} index={i}"
-                            );
+                        noise
+                            .add_volume::<true>(&mut c, volume, s, s, amplitude, f, Some(&needed))
+                            .unwrap();
+                        for (i, ((a, b), c)) in a.iter().zip(&b).zip(&c).enumerate() {
+                            let case = (seed, height, scale, fudge, i);
+                            assert_eq!(a.to_bits(), b.to_bits(), "{case:?}");
+                            // Unneeded Ys (and the tail) hold either the sample or the initial value.
+                            let (column, y) = (i / height as usize, i % height as usize);
+                            let read = i < volume.size()
+                                && (height > 64 || (needed[column] >> y) & 1 == 1);
+                            if read || c.to_bits() != initial[i % 4].to_bits() {
+                                assert_eq!(a.to_bits(), c.to_bits(), "needed {case:?}");
+                            }
                         }
                     }
                 }

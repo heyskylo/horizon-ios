@@ -23,8 +23,6 @@ pub const MAPPINGS: &[(&str, &str, &str)] = &[
     ("key.pickItem", "key.mouse.middle", "gameplay"),
     ("key.command", "key.keyboard.slash", "multiplayer"),
     ("key.friends", "key.keyboard.o", "multiplayer"),
-    // Horizon's emote wheel (docs/cosmetics.md), on a key vanilla leaves free.
-    ("key.emote", "key.keyboard.b", "multiplayer"),
     ("key.socialInteractions", "key.keyboard.p", "multiplayer"),
     ("key.toggleGui", "key.keyboard.f1", "misc"),
     (
@@ -76,6 +74,17 @@ pub const MAPPINGS: &[(&str, &str, &str)] = &[
     ("key.debug.lightmapTexture", "key.keyboard.4", "debug"),
     ("key.debug.improvedTransparency", "key.keyboard.x", "debug"),
 ];
+/// Horizon's own key mappings: bound in Controls like the vanilla ones, but kept in
+/// `horizon-extras.txt` (`emoteKey`), never in `options.txt`, which stays exactly vanilla's
+/// (`MAPPINGS` is what the options parity harness compares with the pinned client).
+pub const HORIZON_MAPPINGS: &[(&str, &str, &str)] = &[
+    // The emote wheel (docs/cosmetics.md), on a key vanilla leaves free.
+    ("key.emote", "key.keyboard.b", "multiplayer"),
+];
+/// Every mapping the game binds: vanilla's in `Options.keyMappings` order, then Horizon's.
+pub fn all_mappings() -> impl Iterator<Item = &'static (&'static str, &'static str, &'static str)> {
+    MAPPINGS.iter().chain(HORIZON_MAPPINGS)
+}
 /// Mappings Options builds as `ToggleKeyMapping` (hold or toggle by option).
 pub fn is_toggle(name: &str) -> bool {
     matches!(name, "key.sneak" | "key.sprint" | "key.use" | "key.attack")
@@ -314,8 +323,7 @@ pub struct KeyBinds {
 impl Default for KeyBinds {
     fn default() -> Self {
         Self {
-            keys: MAPPINGS
-                .iter()
+            keys: all_mappings()
                 .map(|(n, d, _)| (*n, (*d).to_owned()))
                 .collect(),
         }
@@ -341,8 +349,7 @@ impl KeyBinds {
             .map_or("key.keyboard.unknown", String::as_str)
     }
     pub fn default_of(name: &str) -> &'static str {
-        MAPPINGS
-            .iter()
+        all_mappings()
             .find(|m| m.0 == name)
             .map_or("key.keyboard.unknown", |m| m.1)
     }
@@ -350,12 +357,20 @@ impl KeyBinds {
         self.get(name) == Self::default_of(name)
     }
     pub fn set(&mut self, name: &str, key: &str) {
-        if let Some((n, _, _)) = MAPPINGS.iter().find(|m| m.0 == name) {
+        if let Some((n, _, _)) = all_mappings().find(|m| m.0 == name) {
             self.keys.insert(n, key.to_owned());
         }
     }
+    /// The bindings `options.txt` holds: vanilla's mappings only.
     pub fn saved(&self) -> Vec<(&'static str, String)> {
         MAPPINGS
+            .iter()
+            .map(|(n, _, _)| (*n, self.get(n).to_owned()))
+            .collect()
+    }
+    /// Horizon's own bindings, for `horizon-extras.txt`.
+    pub fn horizon_saved(&self) -> Vec<(&'static str, String)> {
+        HORIZON_MAPPINGS
             .iter()
             .map(|(n, _, _)| (*n, self.get(n).to_owned()))
             .collect()
@@ -369,8 +384,7 @@ impl KeyBinds {
         if key == "key.keyboard.unknown" {
             return Vec::new();
         }
-        MAPPINGS
-            .iter()
+        all_mappings()
             .filter(|(n, _, _)| {
                 *n != name && self.get(n) == key && (!self.is_default(n) || !self.is_default(name))
             })
@@ -384,8 +398,7 @@ impl KeyBinds {
     /// Every mapping a physical input triggers, in list order: like
     /// `KeyMapping.set`/`click`, one key drives all the mappings bound to it.
     pub fn mappings_for<'a>(&'a self, key: &'a str) -> impl Iterator<Item = &'static str> + 'a {
-        MAPPINGS
-            .iter()
+        all_mappings()
             .map(|m| m.0)
             .filter(move |n| self.get(n) == key)
     }
@@ -395,8 +408,7 @@ impl KeyBinds {
     /// key and the binding itself); their defaults (A, S, D, T, L, 1 to 4...)
     /// would otherwise turn the key back into its old gameplay meaning.
     fn translated_mappings<'a>(&'a self, key: &'a str) -> impl Iterator<Item = &'static str> + 'a {
-        MAPPINGS
-            .iter()
+        all_mappings()
             .filter(|m| m.2 != "debug")
             .map(|m| m.0)
             .filter(move |n| self.get(n) == key)
@@ -404,9 +416,7 @@ impl KeyBinds {
     /// Whether a mapping (other than a debug key) whose default is `key` was
     /// bound elsewhere.
     fn default_moved(&self, key: &str) -> bool {
-        MAPPINGS
-            .iter()
-            .any(|(n, d, c)| *d == key && *c != "debug" && !self.is_default(n))
+        all_mappings().any(|(n, d, c)| *d == key && *c != "debug" && !self.is_default(n))
     }
     /// Translate a physical key into the default key of the mapping it is
     /// bound to, so game code written against vanilla defaults follows the
