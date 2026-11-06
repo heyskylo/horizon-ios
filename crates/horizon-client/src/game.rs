@@ -185,6 +185,7 @@ mod lan_vehicles;
 mod lan_waypoints;
 mod launch_api;
 mod leads;
+mod legacy_rules;
 mod level_particles;
 mod levels;
 mod lightning;
@@ -8882,7 +8883,13 @@ impl Game<'_> {
             self.draw_spyglass(&mut batch);
             // Hud.extractCrosshair / extractItemHotbar / extractPlayerHealth /
             // extractVehicleHealth and the experience bar, laid out by hud_layout.
-            let indicator = self.settings.attack_indicator;
+            // Combat feel Legacy hides the attack indicator unless the player keeps it.
+            let combat = self.settings.extras.pvp.combat;
+            let indicator = if combat.legacy && !combat.indicator {
+                0
+            } else {
+                self.settings.attack_indicator
+            };
             let delay = horizon_client::attack_strength::delay(self.main_hand_attack_speed());
             let strength = self.hand_strength.scale(0.0, self.main_hand_attack_speed());
             // The 3D crosshair (F3) takes the 2D one's place.
@@ -12031,6 +12038,9 @@ impl Game<'_> {
         target_kind: &str,
         living: bool,
     ) -> (f32, f32, bool, bool) {
+        if self.legacy_rules() {
+            return self.legacy_melee_damage(target_kind, living);
+        }
         let hand_damage = self.attack_damage();
         // Riptide's spin replaces the attack damage attribute.
         let spin = self.player.as_ref().map_or(0.0, |p| p.auto_spin_attack_dmg);
@@ -12060,11 +12070,19 @@ impl Game<'_> {
     }
     /// `Player.getAttackStrengthScale(0.5)`.
     fn attack_strength_scale(&self) -> f32 {
+        // 1.8.9 had no attack cooldown.
+        if self.legacy_rules() {
+            return 1.0;
+        }
         let delay = horizon_client::attack_strength::delay(self.main_hand_attack_speed());
         ((self.attack_ticks as f32 + 0.5) / delay).clamp(0.0, 1.0)
     }
     /// `Player.isSweepAttack`: a charged, grounded sword hit below the movement limit.
     pub(super) fn sweep_attack_position(&mut self, scale: f32, crit: bool) -> Option<[f64; 3]> {
+        // The sweep came with 1.9.
+        if self.legacy_rules() {
+            return None;
+        }
         // Player.getSpeed: the movement speed attribute as it is now (the
         // field is only refreshed by the local movement step, never for a
         // server's player).
@@ -14526,6 +14544,21 @@ impl Game<'_> {
             .is_some_and(|p| p.auto_spin_attack_ticks > 0);
         let items = self.visible_hand_items();
         let off_hand_empty = items[1].is_none();
+        // Combat feel Legacy: a sword is held up while use is held, as 1.8.9's block looked.
+        // Only the picture changes: the clicks and what they send stay 26.3's.
+        let legacy_block = self.settings.extras.pvp.combat.legacy
+            && self.right
+            && self.screen == Screen::Playing
+            && items[0]
+                .as_ref()
+                .is_some_and(|s| s.item.ends_with("_sword"))
+            && match used_hand {
+                None => true,
+                Some(Hand::Off) => items[1]
+                    .as_ref()
+                    .is_some_and(|s| &*s.item == "minecraft:shield"),
+                Some(Hand::Main) => false,
+            };
         for (i, (hand, item)) in Hand::BOTH.into_iter().zip(items).enumerate() {
             if !shown[i] {
                 continue;
@@ -14576,6 +14609,10 @@ impl Game<'_> {
             };
             // The main hand on its arm, the off hand on the other one.
             let left = self.settings.main_hand_left != (hand == Hand::Off);
+            // A Legacy sword held up hides the off hand's shield.
+            if hand == Hand::Off && legacy_block {
+                continue;
+            }
             let Some(stack) = item else {
                 // renderArmWithItem: only the main hand's empty arm shows,
                 // on the main arm (the left one with the main hand set to
@@ -14719,6 +14756,23 @@ impl Game<'_> {
                 horizon_client::cit::Hand::Main
             };
             let state = self.resolve_item_in_hand(&stack, context, Some(&owner), seed, cit_hand);
+            // Combat feel Legacy: 1.8.9's pose for a flat item drawn with vanilla's display.
+            if self.settings.extras.pvp.combat.legacy
+                && !state.layers.is_empty()
+                && state
+                    .layers
+                    .iter()
+                    .all(|l| horizon_client::first_person::is_modern_flat_display(&l.matrix, left))
+                && let Some(legacy) = horizon_client::first_person::legacy_item_pose(
+                    left,
+                    inverse_height,
+                    attack,
+                    pose,
+                    hand == Hand::Main && legacy_block,
+                )
+            {
+                m = to_world * legacy;
+            }
             runs.push((out.len() as u32, item_id));
             let light = self.world.light(
                 eye[0].floor() as i32,
@@ -19257,6 +19311,7 @@ impl Game<'_> {
                             self.settings.simulation_distance,
                             self.settings.entity_distance,
                         );
+                        server.set_legacy_rules(self.settings.extras.pvp.combat.rules);
                     }
                     self.clock.end_frame(self.pause);
                     let mut consumed = false;

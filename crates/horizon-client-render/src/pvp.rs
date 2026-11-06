@@ -751,6 +751,37 @@ impl ChatOptions {
     }
 }
 
+/// Combat feel (`docs/pvp.md`): how fights look. Legacy draws them as 1.8.9 did; what the
+/// game sends to a server never changes, so a vanilla server and its anticheat see 26.3.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Combat {
+    /// Legacy (1.8.9) instead of Modern.
+    pub legacy: bool,
+    /// Keep the attack indicator under Legacy (1.8.9 had none).
+    pub indicator: bool,
+    /// Under Legacy, silence the attack sounds 1.9 added (1.8.9 played none on a hit).
+    pub sounds: bool,
+    /// The worlds this game hosts (single player and LAN) fight by 1.8.9's rules: no attack
+    /// cooldown, no sweep, 1.8 weapon damage, effects, enchantments and critical hits
+    /// (`horizon_client::legacy_combat`). Never used as a client of a server.
+    pub rules: bool,
+}
+impl Combat {
+    /// Whether this client leaves out sound `name` a server sent: under Legacy with its
+    /// sounds, the `entity.player.attack.*` family (strong, weak, crit, sweep, knockback,
+    /// nodamage), which 1.9 brought with the attack cooldown.
+    pub fn mutes_sound(&self, name: &str) -> bool {
+        let name = name.strip_prefix("minecraft:").unwrap_or(name);
+        self.legacy && self.sounds && name.starts_with("entity.player.attack.")
+    }
+    /// Whether this client leaves out particles of `ty` a server sent: under Legacy, the
+    /// sweep and the damage hearts, which 1.9 brought (1.8.9's hits show crits only).
+    pub fn hides_particle(&self, ty: crate::particles::ParticleType) -> bool {
+        use crate::particles::ParticleType as T;
+        self.legacy && matches!(ty, T::SweepAttack | T::DamageIndicator)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Pvp {
     pub crosshair: Crosshair,
@@ -763,6 +794,7 @@ pub struct Pvp {
     pub layout: crate::pvp_hud::Layout,
     /// The key that opens the HUD editor from the game (unbound at first).
     pub editor_key: String,
+    pub combat: Combat,
 }
 /// The HUD editor key's name for the controls (`Extras::set_key`).
 pub const HUD_EDITOR_KEY: &str = "horizon.hud_editor";
@@ -777,6 +809,7 @@ impl Default for Pvp {
             chat: ChatOptions::default(),
             layout: crate::pvp_hud::Layout::default(),
             editor_key: "key.keyboard.unknown".into(),
+            combat: Combat::default(),
         }
     }
 }
@@ -877,6 +910,14 @@ impl Pvp {
             "chatCompact" => self.chat.compact = flag(value, self.chat.compact),
             "chatCopy" => self.chat.copy = flag(value, self.chat.copy),
             "chatSearch" => self.chat.search = flag(value, self.chat.search),
+            "combatFeel" => match value {
+                "legacy" => self.combat.legacy = true,
+                "modern" => self.combat.legacy = false,
+                _ => {}
+            },
+            "combatIndicator" => self.combat.indicator = flag(value, self.combat.indicator),
+            "combatSounds" => self.combat.sounds = flag(value, self.combat.sounds),
+            "combatRules" => self.combat.rules = flag(value, self.combat.rules),
             "viewTime" => {
                 t.time = match value {
                     "off" => None,
@@ -1000,6 +1041,13 @@ impl Pvp {
             out,
             "chatTimestamps:{}\nchatCompact:{}\nchatCopy:{}\nchatSearch:{}\n",
             c.timestamps, c.compact, c.copy, c.search,
+        );
+        let c = &self.combat;
+        let feel = if c.legacy { "legacy" } else { "modern" };
+        let _ = write!(
+            out,
+            "combatFeel:{feel}\ncombatIndicator:{}\ncombatSounds:{}\ncombatRules:{}\n",
+            c.indicator, c.sounds, c.rules
         );
     }
 }
@@ -1139,6 +1187,14 @@ opts! {
         "Clicking a message in the open chat copies its text, unless the click does something else.";
     ChatSearch, "chat_search", "Chat search",
         "Ctrl+F in the open chat: what you type shows only the messages holding it. Enter or Ctrl+F again stops.";
+    CombatFeel, "combat_feel", "Combat feel",
+        "Legacy draws fights as 1.8.9 did: the item in your hand, its swing, eating, the bow and a sword held up while you hold use, without the dip after each hit or the attack indicator. Only the look: what you send a server stays the same.";
+    CombatIndicator, "combat_indicator", "Attack indicator in Legacy",
+        "Keeps the attack indicator under Legacy, which 1.8.9 didn't have.";
+    CombatSounds, "combat_sounds", "1.8 hit sounds",
+        "Under Legacy, leaves out the attack sounds 1.9 added (strong, weak, sweep, critical...). Hurt sounds stay.";
+    CombatRules, "combat_rules", "1.8 combat in worlds you host",
+        "Single player and the worlds you open to LAN fight by 1.8.9's rules: no attack cooldown or sweep, 1.8 weapon damage, Strength, Sharpness and critical hits. Servers you join keep their own rules.";
 }
 /// The PvP & HUD page: headers (language keys) and options.
 pub fn rows() -> Vec<Result<Opt, &'static str>> {
@@ -1218,6 +1274,8 @@ pub fn rows() -> Vec<Result<Opt, &'static str>> {
     rows.extend([ViewTime, ViewWeather].map(Ok));
     rows.push(Err("horizon.pvp.header.chat"));
     rows.extend([ChatTimestamps, ChatCompact, ChatCopy, ChatSearch].map(Ok));
+    rows.push(Err("horizon.pvp.header.combat"));
+    rows.extend([CombatFeel, CombatIndicator, CombatSounds, CombatRules].map(Ok));
     rows
 }
 impl Opt {
@@ -1241,6 +1299,7 @@ impl Opt {
             FireLower | ShieldSize | TotemSize | GlintColour | ClearWater | ClearLava => None,
             ViewTime | ViewWeather => None,
             ChatTimestamps | ChatCompact | ChatCopy | ChatSearch => None,
+            CombatFeel | CombatIndicator | CombatSounds | CombatRules => None,
             HudPingCorner => Some(HudPing),
             HudCoordsCorner => Some(HudCoords),
             HudServerCorner => Some(HudServer),
@@ -1282,6 +1341,9 @@ impl Opt {
             Opt::ChatCompact => p.chat.compact,
             Opt::ChatCopy => p.chat.copy,
             Opt::ChatSearch => p.chat.search,
+            Opt::CombatIndicator => p.combat.indicator,
+            Opt::CombatSounds => p.combat.sounds,
+            Opt::CombatRules => p.combat.rules,
             _ => return None,
         })
     }
@@ -1332,6 +1394,10 @@ impl Opt {
             Opt::GlintColour => match p.tweaks.glint {
                 Some(colour) => colour.label(),
                 None => crate::lang::get_or("Off", "Off"),
+            },
+            Opt::CombatFeel => match p.combat.legacy {
+                true => crate::lang::get_or("horizon.pvp.combat_feel.legacy", "Legacy (1.8.9)"),
+                false => crate::lang::get_or("horizon.pvp.combat_feel.modern", "Modern"),
             },
             Opt::ViewTime => p.tweaks.time.map_or_else(world_label, ViewTime::label),
             Opt::ViewWeather => p
@@ -1432,6 +1498,10 @@ impl Opt {
             Opt::ChatCompact => p.chat.compact = !p.chat.compact,
             Opt::ChatCopy => p.chat.copy = !p.chat.copy,
             Opt::ChatSearch => p.chat.search = !p.chat.search,
+            Opt::CombatFeel => p.combat.legacy = !p.combat.legacy,
+            Opt::CombatIndicator => p.combat.indicator = !p.combat.indicator,
+            Opt::CombatSounds => p.combat.sounds = !p.combat.sounds,
+            Opt::CombatRules => p.combat.rules = !p.combat.rules,
             Opt::ViewWeather => {
                 let all: Vec<_> = std::iter::once(None)
                     .chain(ViewWeather::ALL.map(Some))
@@ -1733,5 +1803,33 @@ mod tests {
         for (key, english) in names.iter().chain(&shapes).chain(&times).chain(&weathers) {
             assert_eq!(en.get(key), Some(*english), "{key}");
         }
+    }
+
+    #[test]
+    fn legacy_leaves_out_what_1_9_added_to_a_hit() {
+        use crate::particles::ParticleType as T;
+        let modern = Combat::default();
+        let legacy = Combat {
+            legacy: true,
+            ..Combat::default()
+        };
+        let sounds = Combat {
+            sounds: true,
+            ..legacy
+        };
+        for name in [
+            "minecraft:entity.player.attack.strong",
+            "entity.player.attack.sweep",
+            "minecraft:entity.player.attack.nodamage",
+        ] {
+            assert!(sounds.mutes_sound(name), "{name}");
+            assert!(!legacy.mutes_sound(name), "only with the sounds option");
+            assert!(!modern.mutes_sound(name));
+        }
+        // 1.8.9 had the hurt sound: it stays.
+        assert!(!sounds.mutes_sound("minecraft:entity.player.hurt"));
+        assert!(legacy.hides_particle(T::SweepAttack) && legacy.hides_particle(T::DamageIndicator));
+        assert!(!legacy.hides_particle(T::Crit) && !legacy.hides_particle(T::EnchantedHit));
+        assert!(!modern.hides_particle(T::SweepAttack));
     }
 }
