@@ -2484,6 +2484,15 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
 - **`native_player_jump(player, name)`**: accepted guest movement made the server player jump from the ground, after movement simulation finishes. The guest's state is swapped in.
 - **`native_player_kicked(player, name, reason)`**: a guest was kicked after the hub recorded the rendered disconnect reason and sent the disconnect. The guest's state is swapped in, unless the guest was already removed in the same poll (a kick and the disconnect arriving together): the hook still fires, without it.
 - **`native_player_level_change(player, name, from, to)`**: a server player's experience change altered their level, after the new level was applied. The guest's state is swapped in when the player is a guest.
+
+#### Server hooks for plugin ports: damage, hands, fishing and redstone
+
+`native_interact_entity_v2(entity, kind, hand, stack, claimed)` is `native_interact_entity` with the hand that clicks
+(`Hand::Main` or `Hand::Off`, NeoForge's `PlayerInteractEvent.EntityInteract.getHand`). It is asked right after the
+unchanged v1 hook, once per hand vanilla tries: the main hand first, the off hand only when the main hand's turn did
+nothing. A mod that claims the main hand's click hears one event per click, as Bukkit's `PlayerInteractEntityEvent`
+for `EquipmentSlot.HAND`. A click v1 claimed is not asked again. Bundles need "hooks": @API:interact_entity_v2@.
+
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a

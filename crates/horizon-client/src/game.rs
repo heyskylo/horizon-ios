@@ -6628,6 +6628,7 @@ impl Game<'_> {
             let stack = self.held().cloned();
             let mut claimed = false;
             self.native_interact_entity(id, &kind, stack.as_ref(), &mut claimed);
+            self.native_interact_entity_v2(id, &kind, self.hand, stack.as_ref(), &mut claimed);
             if claimed {
                 self.swing_arm();
                 return Ok(true);
