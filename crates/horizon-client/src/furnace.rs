@@ -310,6 +310,7 @@ mod tests {
         }
     }
 
+    #[test]
     fn cooking_requires_output_components_and_capacity() {
         let (items, recipes, providers) = data("output-components");
         let mut different = ItemStack::new("test:ingot", 1);
