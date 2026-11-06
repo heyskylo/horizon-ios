@@ -101,6 +101,16 @@ impl Base<'_> {
         }
         tag
     }
+    /// Preserve Entity data without flags owned by Mob's save writer.
+    /// Only the dedicated boat, item and armor-stand writers use this path.
+    fn non_mob_tag(&self, raw: Option<&Tag>) -> Tag {
+        let mut tag = self.tag(raw);
+        if let Tag::Compound(map) = &mut tag {
+            map.remove(&"NoAI".into());
+            map.remove(&"PersistenceRequired".into());
+        }
+        tag
+    }
 }
 
 /// The mobs that save `Age` and `AgeLocked`.
@@ -2271,7 +2281,7 @@ pub fn item_entity_to_nbt(e: &ItemEntity, uuid: [i32; 4], raw: Option<&Tag>) -> 
         on_ground: e.on_ground,
         fall_distance: 0.0,
     };
-    let mut tag = base.tag(raw);
+    let mut tag = base.non_mob_tag(raw);
     for (key, value) in [
         ("Item", item_to_nbt(&e.stack)),
         ("Health", Tag::Short(e.health as i16)),
@@ -3322,7 +3332,7 @@ pub fn armor_stand_to_nbt(a: &ArmorStand, uuid: [i32; 4], raw: Option<&Tag>) -> 
         on_ground: a.on_ground,
         fall_distance: a.enchantment_fall_distance,
     };
-    let mut tag = base.tag(raw);
+    let mut tag = base.non_mob_tag(raw);
     let equipment: Vec<(&str, Tag)> = ArmorStand::SLOTS
         .iter()
         .zip(&a.equipment)
@@ -3476,7 +3486,7 @@ pub fn boat_to_nbt(
         on_ground: false,
         fall_distance: 0.0,
     }
-    .tag(raw);
+    .non_mob_tag(raw);
     if let (Some(items), Tag::Compound(map)) = (items, &mut tag) {
         map.insert("Items".into(), crate::save::encode_items(items));
     }
@@ -4517,6 +4527,95 @@ mod tests {
         let cleared = item_entity_to_nbt(&cleared, [1, 2, 3, 4], Some(&tag));
         assert!(cleared.get("Thrower").is_none());
     }
+    #[test]
+    fn non_mob_saves_drop_mob_flags_without_losing_entity_fields() {
+        let uuid = [104, 0, 0, 1];
+        let mut kind = crate::mobs::sensor_scan_tests::kind();
+        let def = Arc::make_mut(&mut kind);
+        def.id = "minecraft:pig".into();
+        def.species = crate::mobs::Species::Pig;
+        let types = [("minecraft:pig".into(), kind)].into();
+        for input in [None, Some(0), Some(1)] {
+            for id in [
+                "minecraft:oak_boat",
+                "minecraft:oak_chest_boat",
+                "minecraft:armor_stand",
+                "minecraft:item",
+                "minecraft:pig",
+            ] {
+                let mut raw = Tag::compound([
+                    ("id", string(id)),
+                    ("Pos", doubles(&[4.5, 200.0, 4.5])),
+                    ("Motion", doubles(&[0.0, 0.0, 0.0])),
+                    ("Silent", Tag::Byte(1)),
+                    ("NoGravity", Tag::Byte(1)),
+                    ("Invulnerable", Tag::Byte(1)),
+                    ("PortalCooldown", Tag::Int(17)),
+                    ("Tags", Tag::List(vec![string("audit")])),
+                    ("Unrelated", string("keep")),
+                    (
+                        "Item",
+                        item_to_nbt(&crate::items::ItemStack::new("minecraft:stone", 1)),
+                    ),
+                ]);
+                if let Some(value) = input {
+                    put(&mut raw, "NoAI", Tag::Byte(value));
+                    put(&mut raw, "PersistenceRequired", Tag::Byte(value));
+                }
+                let stand = armor_stand_from_nbt(&raw, 1).unwrap();
+                let item = item_entity_from_nbt(&raw, 1, 0.0).unwrap();
+                let boat = boat_from_nbt(&raw).unwrap();
+                for source in [None, Some(&raw)] {
+                    let saved = match id {
+                        "minecraft:armor_stand" => armor_stand_to_nbt(&stand, uuid, source),
+                        "minecraft:item" => item_entity_to_nbt(&item, uuid, source),
+                        "minecraft:pig" => {
+                            let mut mob = mob_from_nbt(&raw, &types, 1, None).unwrap();
+                            // The writer must use live state, even opposite stale raw values.
+                            mob.no_ai = input != Some(1);
+                            mob.persistent = input != Some(1);
+                            mob_to_nbt(&mob, uuid, source, None, |_| None)
+                        }
+                        _ => boat_to_nbt(
+                            id,
+                            boat.0,
+                            boat.1,
+                            [boat.2, 0.0],
+                            uuid,
+                            source,
+                            (id == "minecraft:oak_chest_boat").then_some(&[]),
+                        ),
+                    };
+                    if id == "minecraft:pig" {
+                        let live = input != Some(1);
+                        assert_eq!(saved.get("NoAI"), live.then_some(&Tag::Byte(1)));
+                        assert_eq!(
+                            saved.get("PersistenceRequired"),
+                            Some(&Tag::Byte(i8::from(live)))
+                        );
+                    } else {
+                        assert!(saved.get("NoAI").is_none(), "{id} {input:?}");
+                        assert!(saved.get("PersistenceRequired").is_none(), "{id} {input:?}");
+                    }
+                    assert_eq!(saved.get("UUID"), Some(&Tag::IntArray(uuid.to_vec())));
+                    assert_eq!(saved.get("Pos"), raw.get("Pos"));
+                    if source.is_some() {
+                        for key in [
+                            "Silent",
+                            "NoGravity",
+                            "Invulnerable",
+                            "PortalCooldown",
+                            "Tags",
+                            "Unrelated",
+                        ] {
+                            assert_eq!(saved.get(key), raw.get(key), "{id} {key}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn animal_integer_loads_save_modeled_values_without_raw_source() {
         let mut kind = crate::mobs::sensor_scan_tests::kind();
