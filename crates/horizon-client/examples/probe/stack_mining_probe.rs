@@ -1,7 +1,8 @@
 use horizon_client::{
-    Result, item_data, item_nbt,
+    Result, item_data,
     items::{ItemStack, Items},
 };
+use horizon_items::item_nbt;
 use horizon_world::loot::PackOverlay;
 use std::{
     fs::File,
