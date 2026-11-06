@@ -42,6 +42,8 @@ pub(super) struct PvpState {
     speed_shown: Widget<u32>,
     /// Each widget drawn last frame and its box on screen, for the HUD editor.
     pub(super) boxes: Vec<(pvp_hud::WidgetId, [f32; 4])>,
+    /// The HUD editor, while it is open.
+    pub(super) editor: Option<super::hud_editor::HudEditor>,
     /// The open chat's box holds a chat search's query (Ctrl+F).
     pub(super) chat_search: bool,
     /// What the chat box held when the search borrowed it.
@@ -247,6 +249,8 @@ impl Game<'_> {
     pub(super) fn draw_pvp_hud(&mut self, batch: &mut HudBatch, corners: &mut Corners) {
         let hud = self.settings.extras.pvp.hud;
         if self.player.is_none() || !hud.any() {
+            // The editor frames only what was drawn.
+            self.pvp.boxes.clear();
             return;
         }
         // What each widget shows, read before its cache is borrowed.
@@ -551,10 +555,24 @@ impl Game<'_> {
                 p.speed_shown.size,
             ),
         ];
+        // The editor shows a widget with nothing to show yet by its name.
+        let editing = self.hud_editing();
         for (id, on, corner, lines, size) in widgets {
-            if !on || lines.is_empty() {
+            if !on {
                 continue;
             }
+            let stand_in;
+            let (lines, size) = match lines.is_empty() {
+                false => (lines, size),
+                true if editing => {
+                    let key = format!("horizon.pvp.hud_{}", id.name());
+                    let name = horizon_client::lang::get_or(&key, id.name());
+                    let width = |s: &str| HudBatch::text_width(&self.gui.atlas, s);
+                    stand_in = vec![Line::new(Icon::None, name, &width)];
+                    (&stand_in, pvp_hud::size(&stand_in))
+                }
+                true => continue,
+            };
             let place = layout.get(id);
             if let Some(rect) = self.widget_rect(corners, place, corner, size, screen) {
                 self.paint_widget(batch, rect, lines, size, &style);

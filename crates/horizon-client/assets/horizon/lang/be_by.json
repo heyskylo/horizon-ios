@@ -326,7 +326,6 @@
   "horizon.osk.close": "Блізка",
   "horizon.extras.chat_animation.tooltip": "Новы радок чата слізгае злева, пакуль ён знікае, замест таго, каб выглядаць цалкам.",
   "horizon.extras.chat_indicator.tooltip": "Каляровая паласа злева ад радка чата.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "Кола пракруткі над кнопкай у наладах змяняе яе значэнне, як у vanilla. Выключана, кола толькі пракручвае спіс.",
   "horizon.extras.pack_browser.tooltip": "Select Resource Packs атрымлівае кнопку «Дадаць», якая выконвае пошук у Modrinth і ўсталёўвае пакет у вашу тэчку пакетаў. Выключана, гульня ніколі не звязваецца з Modrinth.",
   "horizon.extras.splitscreen.tooltip": "У свеце іншы кантролер можа далучыцца як новы гулец: націсніце A, калі ён запытае, затым выберыце профіль і дзе гуляць.",
   "horizon.splitscreen.setup.monitor": "Манітор %s",

@@ -324,7 +324,6 @@
   "horizon.osk.close": "затвори",
   "horizon.extras.chat_animation.tooltip": "Нова линия за чат се плъзга отляво, докато избледнява, вместо да се показва цяла.",
   "horizon.extras.chat_indicator.tooltip": "Цветната лента отляво на линия за чат.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "Колелцето за превъртане над бутон в настройките променя стойността му, както при vanilla. Изключено, колелото само превърта списъка.",
   "horizon.extras.pack_browser.tooltip": "Select Resource Packs получава бутон за добавяне, който търси в Modrinth и инсталира пакет във вашата папка с пакети. Off, играта никога не се свързва с Modrinth.",
   "horizon.extras.splitscreen.tooltip": "В един свят друг контролер може да се присъедини като нов играч: натиснете A, когато поиска, след това изберете профил и къде да играете.",
   "horizon.splitscreen.setup.monitor": "Монитор %s",

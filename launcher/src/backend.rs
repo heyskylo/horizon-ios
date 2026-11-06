@@ -4254,7 +4254,8 @@ pub struct Settings {
     /// default. Appended after the launcher's own arguments, so they can add to or override them.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub game_args: String,
-    /// The HTTP proxy every download goes through (`proxy`), such as `http://127.0.0.1:7890`.
+    /// The proxy every download goes through (`proxy`), such as `http://127.0.0.1:7890` or
+    /// `socks5://127.0.0.1:1080`.
     /// Unset means none: the environment's `HTTPS_PROXY` and `HTTP_PROXY` apply instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy: Option<String>,

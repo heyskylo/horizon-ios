@@ -4,6 +4,10 @@
 //! Screenshots can be huge: a high-resolution capture of 32768 × 16384 is 2 GiB once decoded.
 //! A PNG is therefore read one row at a time and averaged down as the rows come, so the whole
 //! picture is never in memory; other formats are decoded whole only under [`WHOLE_DECODE_MAX`].
+//!
+//! A picture is made at the size it is drawn ([`drawn_side`]), never above what the GPU's texture
+//! atlas holds ([`gpu_limit`]): GPUI's atlas makes a new max-size texture on every frame for a
+//! picture that doesn't fit, and never caches it (1 GiB a frame for a 32768 px screenshot).
 use std::collections::HashMap;
 use std::fs::File;
 use std::hash::Hash;
@@ -14,6 +18,58 @@ use std::time::{Duration, Instant};
 /// Formats without a row-by-row reader here (JPEG, WebP, interlaced PNG) are decoded whole
 /// first; a picture needing more than this is refused rather than decoded.
 pub const WHOLE_DECODE_MAX: u64 = 256 << 20;
+
+/// The biggest texture GPUI's atlas makes on Metal and DirectX (a fixed 16384 there; on Linux it is
+/// the wgpu device's own limit, [`gpu_limit`]).
+pub const ATLAS_MAX: u32 = 16384;
+
+/// Until the GPU has been asked (Linux): wgpu's default limit, which every adapter meets.
+const LIMIT_UNKNOWN: u32 = 8192;
+
+static GPU_LIMIT: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+
+/// The biggest picture side GPUI can hold in its atlas on this machine.
+pub fn gpu_limit() -> u32 {
+    if cfg!(any(target_os = "linux", target_os = "freebsd")) {
+        GPU_LIMIT.get().copied().unwrap_or(LIMIT_UNKNOWN)
+    } else {
+        ATLAS_MAX
+    }
+}
+
+/// Asks the GPU for its limit in the background (Linux; elsewhere the atlas has a fixed one).
+/// GPUI asks wgpu for a Vulkan or GL adapter and uses its `max_texture_dimension_2d`: this takes
+/// the smallest over all of them, whichever GPUI picks.
+pub fn probe_gpu_limit() {
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    std::thread::spawn(|| {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::VULKAN | wgpu::Backends::GL,
+            flags: wgpu::InstanceFlags::default(),
+            backend_options: wgpu::BackendOptions::default(),
+            memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
+            display: None,
+        });
+        let adapters = futures_lite::future::block_on(
+            instance.enumerate_adapters(wgpu::Backends::VULKAN | wgpu::Backends::GL),
+        );
+        let limit = adapters
+            .iter()
+            .map(|a| a.limits().max_texture_dimension_2d)
+            .min();
+        if let Some(limit) = limit {
+            let _ = GPU_LIMIT.set(limit.max(1024));
+        }
+    });
+}
+
+/// The side to make a picture drawn `points` across on a screen of `scale` pixels per point:
+/// what the screen shows, rounded up to 256 px (a resize doesn't remake it on every frame), and
+/// never more than `limit`, the GPU's ([`gpu_limit`]).
+pub fn drawn_side(points: f32, scale: f32, limit: u32) -> u32 {
+    let pixels = (points.max(1.) * scale.max(1.)).ceil().min(u32::MAX as f32) as u32;
+    pixels.div_ceil(256).saturating_mul(256).min(limit).max(1)
+}
 
 /// The size a `w` × `h` picture takes to fit inside `max` × `max`, keeping its shape. Never
 /// bigger than the picture itself, never zero.
@@ -301,6 +357,40 @@ mod tests {
         assert_eq!(fitted(1920, 1080, 3840), (1920, 1080));
         assert_eq!(fitted(100_000, 1, 640), (640, 1));
         assert_eq!(fitted(0, 0, 640), (1, 1));
+    }
+
+    #[test]
+    fn pictures_are_made_at_their_drawn_size_but_never_above_the_gpu_limit() {
+        // An 8K screen keeps every pixel it can show.
+        assert_eq!(drawn_side(3840., 2., 16384), 7680);
+        assert_eq!(drawn_side(335., 2., 16384), 768);
+        // A resize by a few points makes the same size.
+        assert_eq!(drawn_side(1440., 1., 16384), drawn_side(1430., 1., 16384));
+        // However big the window, never above the GPU's limit.
+        for limit in [2048, 8192, 16384, 32768] {
+            for points in [1., 900., 7680., 1e6, f32::MAX] {
+                for scale in [1., 1.5, 3.] {
+                    let side = drawn_side(points, scale, limit);
+                    assert!((1..=limit).contains(&side), "{points} × {scale}: {side}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_picture_wider_than_the_gpu_limit_comes_out_within_it() {
+        // 20000 px wide (over the 16384 atlas): what reaches GPUI fits in its atlas.
+        let dir = scratch("over-limit");
+        let path = dir.join("wide.png");
+        image::RgbImage::from_pixel(20000, 40, image::Rgb([10, 200, 30]))
+            .save(&path)
+            .unwrap();
+        let side = drawn_side(1e6, 2., ATLAS_MAX);
+        let out = load_fitted(&path, side).unwrap();
+        assert!(out.width() <= ATLAS_MAX && out.height() <= ATLAS_MAX);
+        assert_eq!(out.dimensions(), (ATLAS_MAX, 33));
+        assert_eq!(out.get_pixel(100, 10).0, [10, 200, 30, 255]);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

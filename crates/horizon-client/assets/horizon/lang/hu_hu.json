@@ -316,7 +316,6 @@
   "horizon.osk.close": "Bezárás",
   "horizon.extras.chat_animation.tooltip": "Egy új csevegősor balról csúszik be, miközben elhalványul, ahelyett, hogy egészben jelenne meg.",
   "horizon.extras.chat_indicator.tooltip": "A színes sáv a csevegősor bal oldalán.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "A beállításokban a gomb feletti görgő megváltoztatja annak értékét, mint a vanília esetében. Kikapcsolva a kerék csak a listát görgeti.",
   "horizon.extras.pack_browser.tooltip": "Az Erőforrás-csomagok kiválasztásakor megjelenik egy Hozzáadás gomb, amely megkeresi a Modrinth-t, és telepít egy csomagot a csomagok mappájába. Ki, a játék soha nem lép kapcsolatba a Modrinth-szal.",
   "horizon.extras.splitscreen.tooltip": "Egy világban egy másik kontroller is csatlakozhat új játékosként: nyomja meg az A gombot, amikor kéri, majd válasszon profilt és hol játszani.",
   "horizon.splitscreen.setup.monitor_unknown": "egy monitort",
