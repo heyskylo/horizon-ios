@@ -116,12 +116,7 @@ impl Game<'_> {
         ));
         let supported = behind.legacy_solid || (s[1] == 0 && behind.has_class("DiodeBlock"));
         // canCoexist(true): only hanging entities facing the same way block it.
-        let overlaps = |o: ([f64; 3], [f64; 3])| (0..3).all(|i| o.0[i] < hi[i] && lo[i] < o.1[i]);
-        supported
-            && !self
-                .item_frames
-                .iter()
-                .any(|o| o.id != f.id && o.facing == f.facing && overlaps(o.bounds()))
+        supported && super::paintings::frame_coexists(f, &self.item_frames, &self.paintings)
     }
     /// Asks the mods whether the acting guest may place a hanging entity
     /// of type `kind` at `pos` (`native_hanging_place`): true when one
