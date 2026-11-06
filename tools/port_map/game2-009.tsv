@@ -120,7 +120,7 @@ SmithingTransformRecipe.display	missing		the book's entries are built from shape
 SmithingTrimRecipe.display	missing		same as SmithingTransformRecipe.display: the table's own screens come from StationRecipes::smithing_result, the book builds no smithing entry
 TransmuteRecipe.computeResultSize	port	crates/horizon-client/src/crafting.rs::Special::assemble	result count plus the material count when it is added
 TransmuteRecipe.matches	port	crates/horizon-client/src/crafting.rs::Special::matches	Transmute arm: one input and the material list
-TransmuteRecipe.assemble	port	crates/horizon-client/src/crafting.rs::Special::assemble	Transmute arm: result with the input's components
+TransmuteRecipe.assemble	port	crates/horizon-client/src/crafting.rs::Special::assemble	Transmute arm: input patch followed by the result template patch, including removals and explicit zero values
 TransmuteRecipe.resultDisplay	port	crates/horizon-client/src/recipe_book.rs::RecipeIndex::result	the recipe's result id
 TransmuteRecipe.createPlacementInfo	port	crates/horizon-client/src/crafting.rs::Recipes::placement	the placement of the input and the materials
 RecipeDisplay.isEnabled	missing		no feature flag check: RecipeIndex::load and Book::build skip the level's enabled_features, so a display of a disabled feature still shows

@@ -612,9 +612,11 @@ impl Launcher {
                 ),
             );
         }
-        // `min-w-0 xl:shrink-0`: under 1280 px the pages give way to the buttons on the right
-        // and scroll sideways, as the mockup's `Tabs` (`overflow-x-auto`).
-        let wide = self.window_width >= 1280.;
+        // `min-w-0 xl:shrink-0`: under 1380 px the pages give way to the buttons on the right
+        // and scroll sideways, as the mockup's `Tabs` (`overflow-x-auto`). Non-English locales
+        // with wider labels (and the build log button) require ~1300+ px, so 1380 px ensures
+        // the action buttons (Microsoft sign-in, Settings) are never pushed off-screen (#9902).
+        let wide = self.window_width >= 1380.;
         let strip = crate::glass::plate(radius::LARGE)
             .p(px(4.))
             .min_w_0()

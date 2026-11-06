@@ -20,7 +20,7 @@ Level: preview ([stability.md](stability.md)). Schema 1.
   "projects": [{
     "id": "coords_hud", "kind": "mod", "name": "Coordinates HUD", "summary": "One line.",
     "description": "Markdown.", "authors": ["Horizon"], "owners": ["ludovic111"],
-    "license": "MIT", "source": "https://github.com/...", "icon": "https://...png", "key": "RWT...", "downloads": 1234,
+    "license": "MIT", "source": "https://github.com/...", "icon": "https://...png", "key": "RWT...", "downloads": 1234, "stars": 56,
     "categories": ["utility"], "tags": ["hud"], "screenshots": ["https://...png"],
     "versions": [{
       "version": "0.1.0", "published": "2026-10-24", "changelog": "",
@@ -48,7 +48,10 @@ Level: preview ([stability.md](stability.md)). Schema 1.
 | `key` | The author's [minisign](https://jedisct1.github.io/minisign/) public key. When set, every version must be signed with it; an update signed with another key is refused. Absent: the project is unsigned and the launcher says so. |
 | `versions` | Newest first, at least one. |
 | `downloads` | How many times its files were downloaded, every version together: GitHub's count of each release asset, summed by the publish job, which runs every hour. Absent until a file is downloaded. Read-only: never in an entry. |
+| `stars` | The GitHub stars of its `source` repository (`https://github.com/<owner>/<repo>`), read by the publish job every hour. Absent when it has none or its source isn't on GitHub. Read-only: never in an entry. The launcher shows it on the project's page with a "Star on GitHub" button that opens the repository. |
 | `api` | A mod's API line (its manifest's `api`); a native mod's pinned revisions (`native-1/<horizon>/<mixins>`); a modpack's manifest format (`1`). |
+| `hooks` | A native mod's hook points version (`hooks` in its `horizon-native.json`), read from the file by CI: it builds on any Horizon with that `NATIVE_HOOKS_API` or a later one. Absent, the mod pins the Horizon commit in `api` (or the index predates the field). The launcher compares it, or the pin, with the Horizon the player plays before install. |
+| `broken_on` | A native mod's version that horizon-mixins refused on a Horizon commit, as `[{"horizon": "<commit>", "code": "E_TARGET_NOT_FOUND"}]`: the registry applies every native mod's newest version on the newest Nightly each day (horizon-mods' `native-compat.yml`), and its publish job adds the ones refused. Read-only: never in an entry. Before an install, the launcher says such a mod doesn't build on the Horizon the player plays, when that is the commit; a build there leaves it out (docs/native-mods.md). |
 | `side`, `capabilities` | A mod's, read from its manifest by CI, never typed by hand. |
 | `api_level` | A legacy field in old entries; the launcher ignores it. |
 | `game` | The Minecraft version it is for. |
@@ -223,6 +226,7 @@ API line are its facts. A new kind gets its own check before it opens.
 
 ## Changelog
 
+- 2026-11-05: `projects[].stars`, the GitHub stars of a project's source repository, refreshed every hour. The index's schema is unchanged: readers from before ignore it.
 - 2026-11-05: every listed project needs a description of 50 characters or more, 1 to 3 categories and an icon kept in the registry (`icons/<id>.png`); screenshots are kept in the registry too (`registry build` refuses https:// images in entries).
 - 2026-11-05: the registry follows no repository any more: `registry review` refuses a new entry with `repo` (and an entry turning into one); entries from before keep theirs until they are pinned. The form uploads the icon and up to 8 screenshots into the registry and takes "Edit project" (an owner's page change, no version: pull request `edit/<id>-<time>`, label `owner-edit`).
 - 2026-11-05: kinds `shaderpack` and `datapack`; optional `categories`, `tags` and `screenshots` (entries and index). The index's schema is unchanged: readers from before keep the new kinds as unknown and ignore the new fields.

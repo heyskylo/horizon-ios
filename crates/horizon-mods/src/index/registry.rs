@@ -404,6 +404,7 @@ pub fn project(entry: &Entry, src: &Sources) -> Result<Project, Vec<String>> {
         key: entry.key.as_ref().map(|k| k.trim().to_owned()),
         versions,
         downloads: 0,
+        stars: 0,
     })
 }
 
@@ -526,7 +527,9 @@ fn version_at(
         side: facts.side,
         capabilities: facts.capabilities,
         api_level: facts.api_level,
+        hooks: facts.hooks,
         game: v.game.clone(),
+        broken_on: Vec::new(),
         requires: facts.requires,
         file: File {
             url,

@@ -35,6 +35,8 @@ sha2 = "0.10"
 sha1 = "0.10"
 base64 = "0.22"
 horizon-core = { path = "../horizon-core" }
+# [prune_chunks]: region files read and rewritten as vanilla's RegionFile does (prune.rs).
+horizon-world = { path = "../horizon-world" }
 # Its TLS (on by default, as vanilla's): rustls on ring, both already in the lockfile through ureq; the keystore
 # is a PKCS12 file, as vanilla's, and one is generated (self-signed) when the owner sets none.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
@@ -52,7 +54,7 @@ zip = { version = "9.1.3", default-features = false, features = ["deflate"] }
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_Threading"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_Threading", "Win32_Storage_FileSystem"] }
 
 [lints]
 workspace = true

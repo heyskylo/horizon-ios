@@ -35,6 +35,10 @@ its job runs on playhorizon's runner only (4 harnesses at a time), and waits for
 instead of taking the Mac mini's. Labels don't start `checks`: add it when opening the pull request
 (`gh pr create --label full-parity`), or before the next push.
 
+A pull request that must leave the picture alone (HDR, shader packs) carries the `frame-identity` label: its job also
+runs `frame_identity` ([parity-workflow.md](parity-workflow.md)), which no automatic selection picks, since it fails
+any change that moves the picture on purpose. Like `full-parity`, it is read when the job starts.
+
 Horizon never downloads the game, so harnesses that compare with vanilla run only where the maintainer's own
 copy is: the Mac mini and playhorizon (below). Their runners run as the maintainer's account and keep their checkout
 between runs (`clean: false`), so the probes build incrementally into `.local/parity-target` and earlier passes
