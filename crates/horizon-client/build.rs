@@ -17,6 +17,9 @@ fn main() {
     // The game's main thread gets 8 MB of stack on Windows as on macOS and Linux (Windows gives 1
     // MB): splitscreen builds a joining player's `Game`, ~67 KB, deep in the event loop.
     if target_os == "windows" {
+        println!("cargo:rerun-if-env-changed=WINDRES");
+        println!("cargo:rerun-if-env-changed=AR");
+        println!("cargo:rerun-if-env-changed=RC_PATH");
         let target_env = std::env::var("CARGO_CFG_TARGET_ENV")
             .expect("Cargo must provide the target environment");
         let arg = match target_env.as_str() {
@@ -54,26 +57,29 @@ fn main() {
 }
 
 fn resource_path(path: &std::path::Path, target_env: &str) -> String {
-    let mut path = path.canonicalize().unwrap_or_else(|error| {
+    let path = path.canonicalize().unwrap_or_else(|error| {
         panic!(
             "resolving Windows resource path {}: {error}",
             path.display()
         )
     });
     #[cfg(windows)]
-    {
+    let path = {
         let path_string = path.to_string_lossy();
         if target_env == "gnu"
             && (!path_string.is_ascii() || path_string.chars().any(char::is_whitespace))
         {
-            path = short_windows_path(&path).unwrap_or_else(|error| {
+            short_windows_path(&path).unwrap_or_else(|error| {
                 panic!(
                     "GNU windres needs an ASCII Windows resource path for {}: {error}",
                     path.display()
                 )
-            });
+            })
+        } else {
+            path
         }
-    }
+    };
+    #[cfg(not(windows))]
     let _ = target_env;
     path.to_string_lossy().replace('\\', "/")
 }
