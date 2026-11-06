@@ -33,6 +33,7 @@ mod cloud_fixture;
 mod command_parse_fixture;
 mod container_screen_probe;
 mod container_title_fixture;
+mod conversion_tags_fixture;
 mod creative_mining_probe;
 mod creative_search_fixture;
 mod cushion_placement_probe;
@@ -139,6 +140,7 @@ probes! {
     command_parse_fixture,
     container_screen_probe,
     container_title_fixture,
+    conversion_tags_fixture,
     creative_search_fixture,
     emitter_particles_probe,
     enchanting_fixture,
