@@ -1630,7 +1630,8 @@ impl Entity for Projectile {
             "minecraft:fireball"
             | "minecraft:small_fireball"
             | "minecraft:wind_charge"
-            | "minecraft:breeze_wind_charge" => game.load_fireball(tag, uuid, player_uuid),
+            | "minecraft:breeze_wind_charge"
+            | "minecraft:wither_skull" => game.load_fireball(tag, uuid, player_uuid),
             id if horizon_client::entity_nbt::throwable_kind(id).is_some() => {
                 game.load_throwable(tag, uuid, player_uuid)
             }
