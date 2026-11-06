@@ -2164,7 +2164,7 @@ impl Game<'_> {
                 // A mob's own `gameEvent(..)` calls: Armadillo.rollUp/rollOut's
                 // ENTITY_ACTION, Creeper.tick's PRIME_FUSE, Mob.ate's EAT, the
                 // shulker's lid (Shulker.setRawPeekAmount), an evoker's vexes
-                // (ENTITY_PLACE).
+                // (ENTITY_PLACE), Enderman.teleport's TELEPORT where it was.
                 MobEvent::GameEvent {
                     event, at, source, ..
                 } if matches!(
@@ -2175,6 +2175,7 @@ impl Game<'_> {
                         | "minecraft:container_open"
                         | "minecraft:container_close"
                         | "minecraft:entity_place"
+                        | "minecraft:teleport"
                 ) =>
                 {
                     let ctx = self.who_context(Some(Who::Mob(source)), None);
