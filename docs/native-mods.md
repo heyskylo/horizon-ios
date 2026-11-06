@@ -2522,6 +2522,15 @@ per-player helpers for these (a NeoForge mod sends `ServerPlayer.connection.send
   after the `/bossbar` bars and before a boss's). By UUID: kept for a player who is off, who sees it again when they
   come back, until a mod takes it away or the server stops. Works from any server hook. False on a client, and for a
   progress outside 0 to 1 or a colour or overlay `BossEvent` hasn't. Bundles need `"hooks": @API:boss_bar@`.
+- Helper **`native_set_compass_target(uuid, target)`** (`host.set_compass_target`): points that player's compass at
+  `Some((dimension, pos))`, or at the world spawn again with None, as Bukkit's `Player.setCompassTarget`. The
+  `ClientboundSetDefaultSpawnPositionPacket` they are sent carries the target in place of the world spawn, now and
+  every time the server sends the world spawn again (a respawn, a trip to another level), until a mod sets it again or
+  they leave. A compass points there only in that dimension (elsewhere it spins, as for the world spawn; a Horizon client so far
+  keeps only an Overworld target, `remote.rs`); a lodestone
+  compass and a recovery compass keep their own targets. Queued as `native_play_sound_to`, with the same answers; also
+  false for a dimension that isn't a namespaced id or a position a block position can't carry. Bundles need
+  `"hooks": @API:compass_target@`.
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a

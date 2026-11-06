@@ -1,9 +1,10 @@
 //! What server mods send one player (docs/native-mods.md, "Server hooks for
-//! plugin ports: per-player feedback"): sounds (`native_play_sound_to`) and
-//! particles (`native_send_particles_to`). The hub is out of the game while a
-//! guest's turn runs, and these need it (registry ids, the player's position),
-//! so they wait here and leave at the tick's end, from whichever hook sent
-//! them.
+//! plugin ports: per-player feedback"): sounds (`native_play_sound_to`),
+//! particles (`native_send_particles_to`) and compass targets
+//! (`native_set_compass_target`). The hub is out of the game while a guest's
+//! turn runs, and these need it (registry ids, the player's position, the
+//! compass target it keeps), so they wait here and leave at the tick's end,
+//! from whichever hook sent them.
 use super::{Game, lan::LanHost};
 use horizon_client::particles::ParticleOptions;
 use horizon_protocol::packets::play::{self, Clientbound as C};
@@ -28,6 +29,8 @@ pub(super) enum PlayerFx {
         count: i32,
         force: bool,
     },
+    /// The compass target, or None for the world spawn again.
+    Compass(Option<play::GlobalPos>),
 }
 
 /// What waits for the hub, by player UUID, in the order the mods sent it.
@@ -63,6 +66,7 @@ impl Game<'_> {
         if self.native_player_fx.queued.is_empty() {
             return;
         }
+        let spawn = self.spawn.map_or([0.5, 80.0, 0.5], |s| [s.x, s.y, s.z]);
         for (uuid, fx) in std::mem::take(&mut self.native_player_fx.queued) {
             let Some((conn, position, horizon)) = host
                 .hub
@@ -137,6 +141,13 @@ impl Game<'_> {
                         count,
                         randomization: 0,
                     })
+                }
+                PlayerFx::Compass(target) => {
+                    match target {
+                        Some(pos) => host.hub.compass_targets.insert(uuid, pos),
+                        None => host.hub.compass_targets.remove(&uuid),
+                    };
+                    host.hub.default_spawn(uuid, spawn)
                 }
             };
             host.hub.send_to(conn, &packet);
