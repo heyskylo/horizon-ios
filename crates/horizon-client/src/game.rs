@@ -11503,8 +11503,38 @@ impl Game<'_> {
                     v.intersects(o - glam::Vec3::ONE, o + glam::Vec3::splat(2.0))
                 })
             };
-            let dynamic_visible = |_: [i32; 3], state: u32, lo: glam::DVec3, hi: glam::DVec3| {
-                if off_screen(state) {
+            let camera_list: Vec<&([i32; 3], u32)> = r
+                .visible_block_entities_in_frustum(
+                    self.settings.chunk_fade,
+                    camera,
+                    view,
+                    &off_screen,
+                    long_range,
+                )
+                .filter(|(block, section_inside)| {
+                    let (pos, state) = **block;
+                    self.res.block_entity_render().renders(state)
+                        && (off_screen(state) || *section_inside || in_view(&pos))
+                })
+                .map(|(block, _)| block)
+                .collect();
+            // A shader pack's shadow pass draws the block entities of every section it draws,
+            // in the view or not (`Renderer::shadow_pass_block_entities`, #8464): those the
+            // view leaves out go in hidden from the camera.
+            let shadow_only: Vec<&([i32; 3], u32)> =
+                if self.pack_ids.is_some() && self.pack_shadow_casters.0 {
+                    let listed: HashSet<[i32; 3]> = camera_list.iter().map(|b| b.0).collect();
+                    r.shadow_pass_block_entities(camera)
+                        .filter(|(pos, state)| {
+                            !listed.contains(pos) && self.res.block_entity_render().renders(*state)
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+            let shadow_only_at: HashSet<[i32; 3]> = shadow_only.iter().map(|b| b.0).collect();
+            let dynamic_visible = |pos: [i32; 3], state: u32, lo: glam::DVec3, hi: glam::DVec3| {
+                if off_screen(state) || shadow_only_at.contains(&pos) {
                     return true;
                 }
                 if let Some(view) = view
@@ -11559,20 +11589,7 @@ impl Game<'_> {
                 glyphs: self.gui.atlas.font.epoch(),
                 dynamic_visible: Some(&dynamic_visible),
             };
-            let visible = r
-                .visible_block_entities_in_frustum(
-                    self.settings.chunk_fade,
-                    camera,
-                    view,
-                    &off_screen,
-                    long_range,
-                )
-                .filter(|(block, section_inside)| {
-                    let (pos, state) = **block;
-                    self.res.block_entity_render().renders(state)
-                        && (off_screen(state) || *section_inside || in_view(&pos))
-                })
-                .map(|(block, _)| block);
+            let visible = camera_list.into_iter().chain(shadow_only.iter().copied());
             let block_entity_cache = CacheOptions {
                 shulker_boxes: self.settings.horizon.cache_shulker_boxes,
                 signs: self.settings.horizon.cache_signs,
@@ -11600,7 +11617,11 @@ impl Game<'_> {
                         Some(&section_revision),
                         &mut out,
                         |_, state, start| self.mark_block_entity(start, state),
-                        |_, _, _, _| {},
+                        |pos, _, start, out| {
+                            if shadow_only_at.contains(&pos) {
+                                self.hide_spans_from(start, out.len());
+                            }
+                        },
                     );
             } else {
                 let cache_candidates = r
