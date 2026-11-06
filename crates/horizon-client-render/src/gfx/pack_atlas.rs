@@ -610,13 +610,17 @@ impl PackAtlas {
         // A vertex's place in its section goes down to the 32768th of a block below it: read back
         // with a probe pack of ours, Iris 1.11.7's terrain `gl_Vertex` has that for every position
         // we read (water tops at 8/9 - 0.001, plants' offsets), on all three axes (#8464). A fit,
-        // not Iris's code. Whole and half blocks, and every 1/16, are on that grid already.
+        // not Iris's code. Whole and half blocks, and every 1/16, are on that grid already. A place
+        // up to 1/32 of a 32768th (one float step below 16) under a grid line is on it: plants whose
+        // random offset is 9/15 of a block read exactly on a half block in Iris, and a 32768th
+        // under it in Horizon (our guess, not tested: Horizon's float sum lands just under the
+        // line) (#8464). Also a fit.
         let body = format!(
             "    vec4 hz_origin = {origin};\n    \
              uint hz_layer = hz_v_layer & 32767u;\n    \
              {cell}\
              hz_scale = vec2({:?}, {:?}) * {side};\n    \
-             hz_Vertex = vec4(floor(hz_v_pos * 32768.0) / 32768.0 + hz_origin.xyz, 1.0);\n    \
+             hz_Vertex = vec4(floor(hz_v_pos * 32768.0 + 0.03125) / 32768.0 + hz_origin.xyz, 1.0);\n    \
              hz_uv_scale = hz_origin.w > 0.0 ? uintBitsToFloat(floatBitsToUint(hz_origin.w) & 0xff800000u) : fract(abs(hz_origin.w));\n    \
              hz_mid = vec2(0.5);\n    \
              hz_MultiTexCoord0 = vec4((hz_cell + clamp(vec2(hz_v_uv) * hz_uv_scale, 0.0, 1.0)) * hz_scale, 0.0, 1.0);\n    \

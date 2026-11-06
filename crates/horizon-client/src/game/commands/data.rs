@@ -394,8 +394,10 @@ impl Game<'_> {
                 }
             }
             Target::Stand(id) => {
-                let new = entity_nbt::armor_stand_from_nbt(&tag, id).ok_or_else(stale)?;
+                let mut new = entity_nbt::armor_stand_from_nbt(&tag, id).ok_or_else(stale)?;
                 if let Some(slot) = self.armor_stands.iter_mut().find(|a| a.id == id) {
+                    // Entity.load keeps the existing entity's firstTick state.
+                    new.first_tick = slot.first_tick;
                     *slot = new;
                 }
             }
