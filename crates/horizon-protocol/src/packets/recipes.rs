@@ -160,7 +160,7 @@ impl SlotDisplay {
             }
             Self::Item(id) => {
                 w.varint(4);
-                w.varint(*id);
+                w.varint(crate::adapter::ids::item(*id));
             }
             Self::ItemStack(stack) => {
                 w.varint(5);

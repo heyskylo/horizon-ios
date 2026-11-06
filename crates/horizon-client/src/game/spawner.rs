@@ -499,9 +499,25 @@ impl Game<'_> {
     ) {
         let atlas = &self.gui.atlas;
         let lookup = |name: &str| atlas.sprites.get(name).map(|r| [r.u0, r.v0, r.u1, r.v1]);
+        // A shader pack's shadow pass draws a block entity only in the sections it draws
+        // (`Renderer::shadow_pass_block_entities`, #8464): a spawner's mob out of the view and
+        // out of those sections isn't drawn, where it would have gone to the shadow pass alone.
+        let shadow_sections = self
+            .renderer
+            .as_ref()
+            .filter(|_| self.pack_ids.is_some() && self.pack_shadow_casters.0);
         for (key, (_, mob)) in &self.spawners.displays {
             let at = glam::DVec3::new(f64::from(key.0), f64::from(key.1), f64::from(key.2));
             if at.distance_squared(camera) >= 64.0 * 64.0 {
+                continue;
+            }
+            if let Some(r) = shadow_sections
+                && !r.shadow_pass_drew([key.0, key.1, key.2])
+                && self.view_frustum.is_some_and(|v| {
+                    let o = (at - camera).as_vec3();
+                    !v.intersects(o - glam::Vec3::ONE, o + glam::Vec3::splat(2.0))
+                })
+            {
                 continue;
             }
             let (spin, scale) = match self.world.block_entities.get(key) {

@@ -105,12 +105,19 @@ impl Installed {
     }
 
     pub fn save(&self, home: &Path) -> Result<(), String> {
+        let _lock = super::lock_home(home);
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let id = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let path = home.join(MANIFEST);
-        let part = home.join(format!(".{MANIFEST}.part"));
+        let part = home.join(format!(".{MANIFEST}.{}-{id}.part", std::process::id()));
         let text = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
         fs::create_dir_all(home).map_err(|e| format!("{}: {e}", home.display()))?;
-        fs::write(&part, text).map_err(|e| format!("{}: {e}", part.display()))?;
-        fs::rename(&part, &path).map_err(|e| format!("{}: {e}", path.display()))
+        let res = fs::write(&part, text).and_then(|()| fs::rename(&part, &path));
+        if let Err(e) = res {
+            let _ = fs::remove_file(&part);
+            return Err(format!("{}: {e}", path.display()));
+        }
+        Ok(())
     }
 
     pub fn find(&self, source: SourceId, project: &str) -> Option<&Entry> {
@@ -209,6 +216,7 @@ pub fn install(
     home: &Path,
     progress: &dyn Fn(&str, f32),
 ) -> Result<Vec<Entry>, String> {
+    let _lock = super::lock_home(home);
     if project.source == SourceId::Horizon {
         return super::horizon::install(project, home, progress);
     }
@@ -234,6 +242,7 @@ pub(super) fn put(
     folder: &dyn Fn(Kind) -> &'static str,
     progress: &dyn Fn(&str, f32),
 ) -> Result<Vec<Entry>, String> {
+    let _lock = super::lock_home(home);
     let mut installed = Installed::load(home);
     let mut done = Vec::new();
     for step in steps {
@@ -303,6 +312,7 @@ pub(super) fn put(
 
 /// Removes what the browser installed for `name` (a project id or slug): its file and its entry.
 pub fn remove(home: &Path, name: &str) -> Result<Entry, String> {
+    let _lock = super::lock_home(home);
     let mut installed = Installed::load(home);
     let entry = installed
         .lookup(name)

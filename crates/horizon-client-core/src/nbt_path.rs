@@ -81,7 +81,7 @@ fn elements(tag: &Tag) -> Option<Vec<Tag>> {
 }
 /// `DoubleTag.intValue` / `FloatTag.intValue` floor before the i32 conversion;
 /// integral tags use their intValue narrowing. Byte arrays then keep the low byte.
-fn int_value(t: &Tag) -> Option<i32> {
+pub fn int_value(t: &Tag) -> Option<i32> {
     Some(match t {
         Tag::Byte(v) => i32::from(*v),
         Tag::Short(v) => i32::from(*v),

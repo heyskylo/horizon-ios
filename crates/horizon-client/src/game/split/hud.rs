@@ -1,9 +1,10 @@
 //! What splitscreen draws over a player's view: its badge, questions answered with the pad and
 //! notices.
 use super::*;
-use horizon_client::controller_notice::{NoticeSlot, key, panel};
+use horizon_client::controller_notice::{NoticeSlot, panel};
 use horizon_client::gamepad::Button;
 use horizon_client::hud::{HudBatch, rgba};
+use horizon_client::pad_glyph;
 use std::time::Duration;
 
 /// What splitscreen draws over a player's view (`Game::split_hud`): its corner badge (who, for a
@@ -93,11 +94,11 @@ impl Game<'_> {
             let glyphs: Vec<_> = prompt
                 .choices
                 .iter()
-                .map(|(b, what)| (b.label(style), b.color(style), what.as_str()))
+                .map(|(b, what)| (*b, pad_glyph::width(atlas, *b, style), what.as_str()))
                 .collect();
             let line: f32 = glyphs
                 .iter()
-                .map(|(g, _, what)| width(g) + 8.0 + width(what) + gap(what))
+                .map(|(_, gw, what)| gw + 4.0 + width(what) + gap(what))
                 .sum::<f32>()
                 - 12.0;
             let pw = width(&prompt.title).max(line) + 16.0;
@@ -118,9 +119,8 @@ impl Game<'_> {
             );
             let mut x = (px + (pw - line) / 2.0).floor();
             let y = py + 20.0;
-            for (glyph, [r, g, b], what) in glyphs {
-                let gw = width(glyph) + 4.0;
-                key(batch, atlas, glyph, rgba(r, g, b, 255), x, y, gw);
+            for (button, gw, what) in glyphs {
+                pad_glyph::draw(batch, atlas, button, style, x, y);
                 x += gw + 4.0;
                 batch.text(atlas, what, x, y, rgba(220, 220, 220, 255), false);
                 x += width(what) + gap(what);
