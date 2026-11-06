@@ -1333,6 +1333,14 @@ impl HudAtlas {
             }
         }
         if full {
+            // Official Recipes artwork from Just Enough Items, under MIT.
+            for (name, png) in [(
+                "search_background_v2",
+                include_bytes!("jei_recipes/search_background_v2.png").as_slice(),
+            )] {
+                let (width, height, rgba) = decode_bytes(png)?;
+                images.push((format!("horizon/jei/{name}"), width, height, rgba));
+            }
             Self::slots(&mut images, crate::trims::slot_size(root), mod_image);
             // MissingTextureAtlasSprite.generateMissingImage: 16x16, magenta
             // and black quarters.

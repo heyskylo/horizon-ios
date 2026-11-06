@@ -9364,6 +9364,7 @@ impl Game<'_> {
             }
             Screen::Creative => {
                 self.draw_creative(&mut batch);
+                self.draw_mod_browser(&mut batch);
             }
             Screen::Chat => self.draw_chat_screen(&mut batch),
             Screen::Playing | Screen::Options | Screen::Win => {}
@@ -16020,6 +16021,9 @@ impl Game<'_> {
         );
     }
     fn click_creative(&mut self, right: bool) {
+        if self.mod_browser_press(right) {
+            return;
+        }
         let Some(size) = self
             .renderer
             .as_ref()
@@ -17320,6 +17324,9 @@ impl Game<'_> {
         {
             return Ok(());
         }
+        if key == KeyCode::Escape && self.mod_browser_back() {
+            return Ok(());
+        }
         if self.remote.is_some() && self.remote_key(key)? {
             return Ok(());
         }
@@ -17334,6 +17341,7 @@ impl Game<'_> {
                 }
                 Screen::Creative => {
                     self.pad_clear_focus();
+                    self.mod_browser_closed();
                     self.carried = None;
                     self.screen = Screen::Playing;
                     self.capture(true);
@@ -19316,6 +19324,7 @@ impl Game<'_> {
                 WindowEvent::KeyboardInput { event, .. }
                     if self.screen == Screen::Creative
                         && self.creative_screen.tab().search
+                        && !self.mod_browser_typing()
                         && event.state == ElementState::Pressed
                         && !matches!(event.physical_key, PhysicalKey::Code(KeyCode::Escape)) =>
                 {

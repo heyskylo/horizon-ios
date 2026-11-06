@@ -173,7 +173,7 @@ impl Game<'_> {
     /// The mod showing a panel, with its items made into stacks once per
     /// change; none while no mod shows one or no container screen is up.
     fn browser_sync(&mut self) -> Option<Owner> {
-        if self.screen != Screen::Inventory || self.title.is_some() {
+        if !matches!(self.screen, Screen::Inventory | Screen::Creative) || self.title.is_some() {
             return None;
         }
         let disabled = &self.settings.mods.disabled;
@@ -183,6 +183,9 @@ impl Game<'_> {
             return None;
         };
         let of = (shown.owner.clone(), shown.version);
+        if self.screen == Screen::Creative && of.0.native_id() != "recipes" {
+            return None;
+        }
         if self.panel.of.as_ref() != Some(&of) {
             let items = world_items!(self);
             let stacks = shown
@@ -220,7 +223,11 @@ impl Game<'_> {
             .of
             .as_ref()
             .is_some_and(|(owner, _)| owner.native_id() == "recipes");
-        let left = (image.left + image.width) as f32 + MARGIN;
+        let left = if self.screen == Screen::Creative {
+            Self::creative_origin(batch).0 + 198.0 + MARGIN
+        } else {
+            (image.left + image.width) as f32 + MARGIN
+        };
         let (width, height) = self.renderer.as_ref().filter(|_| recipes).map_or(
             (batch.width, batch.height),
             |renderer| {
@@ -392,11 +399,17 @@ impl Game<'_> {
             self.draw_browser_items(batch, &layout);
         }
         let hint = self.translate("gui.recipebook.search_hint", "Search...");
+        let skin = self
+            .panel
+            .of
+            .as_ref()
+            .is_some_and(|(owner, _)| owner.native_id() == "recipes")
+            .then_some("horizon/jei/search_background_v2");
         let search = self.browser_search(&layout);
         // The hint shows in an empty box without focus, as the recipe book's.
         search.suggestion = (search.value.is_empty() && !search.focused).then_some(hint);
         let mut search = search.clone();
-        search.draw(batch, &self.gui.atlas, None);
+        search.draw_with_skin(batch, &self.gui.atlas, None, skin);
         self.panel.search = Some(search);
         if self.carried.is_some() {
             self.draw_carried(batch);
@@ -472,7 +485,7 @@ impl Game<'_> {
 
     /// Whether keys go to the panel's search box.
     pub(super) fn mod_browser_typing(&self) -> bool {
-        self.screen == Screen::Inventory
+        matches!(self.screen, Screen::Inventory | Screen::Creative)
             && self.panel.of.is_some()
             && self.panel.search.as_ref().is_some_and(|s| s.focused)
     }
@@ -535,6 +548,17 @@ impl Game<'_> {
         if let Some(search) = self.panel.search.as_mut() {
             search.focused = false;
         }
+    }
+    pub(super) fn mod_browser_back(&mut self) -> bool {
+        let Some(owner) = self.browser_sync() else {
+            return false;
+        };
+        if owner.native_id() != "recipes" || self.panel.recipes.is_none() {
+            return false;
+        }
+        self.mod_browser_closed();
+        self.panel_event(&owner, BrowserEvent::Back);
+        true
     }
     /// The item under the pointer on a container screen, for the mods' keys
     /// (the `Key` event): the panel's, else a slot's.
