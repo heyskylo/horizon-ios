@@ -1370,24 +1370,22 @@ impl Job {
 /// Makes the pipelines of `jobs` on as many threads as the machine has cores (up to 8): the
 /// driver compiles a big pack's programs for tens of seconds one at a time, on one core. The
 /// first one wgpu or the driver refuses, with why; `None` when all are made.
+///
+/// A refusal doesn't stop the others: every job is made, so that the serial rebuild `new` then
+/// runs finds the driver's shader cache warm instead of compiling the rest cold, one at a time.
 fn compile(device: &wgpu::Device, jobs: &[Job]) -> Option<(String, String)> {
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     let threads = std::thread::available_parallelism()
         .map_or(1, |n| n.get())
         .clamp(1, 8)
         .min(jobs.len().max(1));
     let next = AtomicUsize::new(0);
-    let failed = AtomicBool::new(false);
     let refused = std::sync::Mutex::new(None);
     std::thread::scope(|scope| {
         for _ in 0..threads {
             scope.spawn(|| {
-                while !failed.load(Ordering::Relaxed) {
-                    let Some(job) = jobs.get(next.fetch_add(1, Ordering::Relaxed)) else {
-                        break;
-                    };
+                while let Some(job) = jobs.get(next.fetch_add(1, Ordering::Relaxed)) {
                     if let Err(e) = checked(device, || job.create(device)) {
-                        failed.store(true, Ordering::Relaxed);
                         let mut refused = refused.lock().unwrap_or_else(|e| e.into_inner());
                         refused.get_or_insert((job.label().to_owned(), e));
                     }
@@ -5330,12 +5328,13 @@ mod tests {
         let bound = "@group(0) @binding(0) var<storage, read_write> b: array<u32>;\n\
                      @compute @workgroup_size(1) fn main() { b[0] = 1u; }";
         let (_, bad) = job("deferred3", module(bound));
-        let mut jobs: Vec<Job> = (0..4)
-            .map(|i| job(&format!("c{i}"), module(plain)).1)
-            .collect();
+        let (slots, mut jobs): (Vec<_>, Vec<_>) =
+            (0..4).map(|i| job(&format!("c{i}"), module(plain))).unzip();
         jobs.insert(2, bad);
         let (program, _why) = compile(&device, &jobs).expect("the pipeline is refused");
         assert_eq!(program, "deferred3");
+        // The refusal stops none of the others: they are all made.
+        assert!(slots.iter().all(|s| s.get().is_some()));
     }
 
     /// #3525: naga's SPIR-V writer panicked on Photon's gbuffers programs as the pipeline was
