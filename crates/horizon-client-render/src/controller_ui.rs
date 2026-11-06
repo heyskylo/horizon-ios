@@ -134,6 +134,13 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                     ],
                 ),
                 (
+                    "Play",
+                    vec![option(
+                        Opt::PadTriggerThreshold,
+                        "How far a trigger is pulled before it counts as pressed.",
+                    )],
+                ),
+                (
                     "Menus",
                     vec![
                         option(
@@ -565,7 +572,7 @@ impl ControllerUi {
             &cols,
             &lines,
             self.scroll.amount,
-            Page::name,
+            |page| lang::get(page.name()),
             |batch, setting: Setting, y| {
                 let item = setting.item;
                 let [rx, ry, rw, rh] = cols.row(y);
@@ -1266,6 +1273,7 @@ mod tests {
             Opt::PadInvertY,
             Opt::PadMoveDeadzone,
             Opt::PadLookDeadzone,
+            Opt::PadTriggerThreshold,
             Opt::PadGlyphs,
             Opt::PadKeyboard,
             Opt::PadPointerSpeed,

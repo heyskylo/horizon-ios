@@ -1,0 +1,18 @@
+{
+  "hooks": [
+    {
+      "name": "entity_change_block_v2",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_entity_change_block_v2",
+      "neoforge": "none (NeoForge has no such event; Bukkit's EntityChangeBlockEvent is cancellable)",
+      "side": "server",
+      "cancellable": true,
+      "mod_api": {
+        "contract": "cancel",
+        "out": "cancel"
+      }
+    }
+  ],
+  "rust_summary": "a mod's say before a player's landing changes a block (`native_entity_change_block_v2`).",
+  "doc_summary": "`native_entity_change_block_v2(player, entity, kind, pos, from, to, cancel)` is asked before a landing's block change takes effect: farmland trampled into dirt and a turtle egg broken by a player walking over it. `player` is the player whose landing it was, `entity` and `kind` the mob for a mob's landing, `from` and `to` the block names. Set `cancel` and the block stays as it was, and nothing the change would have caused happens - the crop above untouched farmland stays. Bukkit's `EntityChangeBlockEvent`. Bundles need \"hooks\": @API:entity_change_block_v2@.",
+  "comments": []
+}
