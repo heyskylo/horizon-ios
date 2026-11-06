@@ -380,6 +380,7 @@ impl Game<'_> {
                         | "minecraft:small_fireball"
                         | "minecraft:wind_charge"
                         | "minecraft:breeze_wind_charge"
+                        | "minecraft:wither_skull"
                         | "minecraft:snowball"
                         | "minecraft:egg"
                         | "minecraft:ender_pearl"

@@ -2629,8 +2629,9 @@ pub fn arrow_from_nbt(
     Some((p, tag.get("inBlockState").cloned()))
 }
 
-/// `LargeFireball` and `SmallFireball`: `AbstractHurtingProjectile`'s
-/// `acceleration_power`, `Projectile`'s owner and flags, `ExplosionPower`.
+/// `LargeFireball`, `SmallFireball` and `WitherSkull`: `AbstractHurtingProjectile`'s
+/// `acceleration_power`, `Projectile`'s owner and flags, `ExplosionPower`,
+/// and a skull's `dangerous`.
 pub fn fireball_to_nbt(
     p: &Projectile,
     uuid: [i32; 4],
@@ -2641,7 +2642,8 @@ pub fn fireball_to_nbt(
         ProjectileKind::LargeFireball { power } => Some(power),
         ProjectileKind::SmallFireball
         | ProjectileKind::WindCharge
-        | ProjectileKind::BreezeWindCharge => None,
+        | ProjectileKind::BreezeWindCharge
+        | ProjectileKind::WitherSkull { .. } => None,
         _ => return None,
     };
     let base = Base {
@@ -2661,13 +2663,18 @@ pub fn fireball_to_nbt(
     );
     put_projectile(&mut tag, p, owner);
     // AbstractHurtingProjectile.tick: shouldBurn is true for both fireballs, so
-    // once ticked they igniteForSeconds(1) every tick.
-    if p.age > 0 && !p.kind.ignores_blast() {
+    // once ticked they igniteForSeconds(1) every tick. WitherSkull.shouldBurn is
+    // false, so a skull never saves a fire.
+    if p.age > 0 && p.kind.is_item_fireball() {
         let fire = number(tag.get("Fire")).unwrap_or(0).max(20);
         put(&mut tag, "Fire", Tag::Short(fire as i16));
     }
     if let Some(power) = power {
         put(&mut tag, "ExplosionPower", Tag::Byte(power as i8));
+    }
+    // WitherSkull.addAdditionalSaveData: `dangerous`, false for a black skull.
+    if let ProjectileKind::WitherSkull { dangerous } = p.kind {
+        put(&mut tag, "dangerous", Tag::Byte(i8::from(dangerous)));
     }
     // Fireball.addAdditionalSaveData: the item `getItem` returns, a fire
     // charge unless `setItem` was given another (kept as a single one).
@@ -2747,6 +2754,7 @@ pub fn saved_with_chunk(p: &Projectile) -> bool {
         | ProjectileKind::SmallFireball
         | ProjectileKind::WindCharge
         | ProjectileKind::BreezeWindCharge
+        | ProjectileKind::WitherSkull { .. }
         | ProjectileKind::Snowball
         | ProjectileKind::Egg
         | ProjectileKind::EnderPearl
@@ -2761,8 +2769,7 @@ pub fn saved_with_chunk(p: &Projectile) -> bool {
         ProjectileKind::Trident
         | ProjectileKind::ShulkerBullet {
             target: Some(_), ..
-        }
-        | ProjectileKind::WitherSkull { .. } => false,
+        } => false,
     }
 }
 
@@ -2896,6 +2903,10 @@ pub fn fireball_from_nbt(tag: &Tag, player: Option<[i32; 4]>) -> Option<Projecti
         "minecraft:small_fireball" => ProjectileKind::SmallFireball,
         "minecraft:wind_charge" => ProjectileKind::WindCharge,
         "minecraft:breeze_wind_charge" => ProjectileKind::BreezeWindCharge,
+        // WitherSkull.readAdditionalSaveData: an absent `dangerous` is a black skull.
+        "minecraft:wither_skull" => ProjectileKind::WitherSkull {
+            dangerous: flag(tag, "dangerous"),
+        },
         _ => return None,
     };
     let owner = uuid_from_tag(tag.get("Owner"));
@@ -6387,6 +6398,38 @@ mod item_component_tests {
 #[cfg(test)]
 mod fireball_nbt_tests {
     use super::*;
+
+    /// `WitherSkull`: a skull in flight is saved with its chunk, `dangerous`
+    /// is a byte (absent means a black skull), and it never saves a fire
+    /// because `WitherSkull.shouldBurn` is false.
+    #[test]
+    fn a_wither_skull_keeps_whether_it_is_dangerous() {
+        let blue = Tag::compound([
+            ("id", Tag::String("minecraft:wither_skull".into())),
+            ("Pos", doubles(&[3.0, 64.0, 3.0])),
+            ("Motion", doubles(&[0.0, 0.0, 0.0])),
+            ("dangerous", Tag::Byte(1)),
+        ]);
+        let mut skull = fireball_from_nbt(&blue, None).unwrap();
+        assert_eq!(skull.kind, ProjectileKind::WitherSkull { dangerous: true });
+        assert!(saved_with_chunk(&skull));
+        skull.age = 5;
+        let back = fireball_to_nbt(&skull, [1, 2, 3, 4], None, None).unwrap();
+        assert_eq!(kind(&back).as_deref(), Some("minecraft:wither_skull"));
+        assert_eq!(number(back.get("dangerous")), Some(1));
+        // Entity saves Fire every time; a skull's stays 0 (a fireball's is 20 once ticked).
+        assert_eq!(number(back.get("Fire")), Some(0));
+
+        let black = Tag::compound([
+            ("id", Tag::String("minecraft:wither_skull".into())),
+            ("Pos", doubles(&[0.0, 0.0, 0.0])),
+        ]);
+        let skull = fireball_from_nbt(&black, None).unwrap();
+        assert_eq!(skull.kind, ProjectileKind::WitherSkull { dangerous: false });
+        let back = fireball_to_nbt(&skull, [1, 2, 3, 4], None, None).unwrap();
+        assert_eq!(number(back.get("dangerous")), Some(0));
+    }
+
     #[test]
     fn a_fireball_round_trips_its_flight() {
         let raw = Tag::compound([
