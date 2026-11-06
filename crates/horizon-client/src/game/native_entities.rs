@@ -250,14 +250,30 @@ impl Game<'_> {
     /// Removes entity `id`, one Horizon keeps without simulating, as `/kill`
     /// does (it drops nothing and isn't saved). False for no such entity or
     /// another dimension. Mobs go with `native_remove_mob`. API
-    /// 59.
+    /// 59. Since API @API:remove_projectiles@ it also takes projectiles
+    /// (arrows, tridents, snowballs, eggs, pearls, fireballs, wind charges,
+    /// llama spit, shulker bullets, firework rockets) as `/kill` does, and a
+    /// server player's fishing bobber (`Entity.discard`; the player in place's,
+    /// or, outside a guest's turn, any of this level's players').
     pub(super) fn native_remove_entity(&mut self, dimension: &str, id: u32) -> bool {
-        if !self.native_simulates_level(dimension) || !self.others.iter().any(|o| o.id == id) {
+        if !self.native_simulates_level(dimension) {
             return false;
         }
-        self.others.retain(|o| o.id != id);
-        self.persist.raw.remove(&id);
-        true
+        if self.others.iter().any(|o| o.id == id) {
+            self.others.retain(|o| o.id != id);
+            self.persist.raw.remove(&id);
+            return true;
+        }
+        // An id of 0 is a projectile no server tracks yet: never one a mod was told of.
+        if id != 0
+            && let Some(
+                projectile @ (Target::Projectile(_) | Target::Trident(_) | Target::Rocket(_)),
+            ) = self.level_entity(id as i32)
+        {
+            self.kill_target(projectile);
+            return true;
+        }
+        self.remove_server_hook(id)
     }
 }
 

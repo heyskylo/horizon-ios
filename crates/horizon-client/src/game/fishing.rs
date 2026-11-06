@@ -1760,6 +1760,43 @@ impl Game<'_> {
         (position, velocity, state, on_ground)
     }
 
+    /// Takes the server's fishing bobber `id` out of the level in place, for
+    /// `native_remove_entity`: the bobber of the player in place, or another of this
+    /// level's players' (out of reach during a guest's turn, when the hub is taken out).
+    /// Its tracking removes it from the clients; the rod is left as when the bobber goes
+    /// by itself. Whether it was there.
+    pub(super) fn remove_server_hook(&mut self, id: u32) -> bool {
+        if self.remote.is_some() || id == 0 {
+            return false;
+        }
+        if self.hook.as_ref().is_some_and(|h| h.id == id) {
+            self.hook = None;
+            return true;
+        }
+        let Some(host) = self.lan.as_mut() else {
+            return false;
+        };
+        let owner = host
+            .hub
+            .guests
+            .iter()
+            .filter(|g| host.hub.here(g))
+            .map(|g| g.conn)
+            .find(|conn| {
+                host.play
+                    .get(conn)
+                    .and_then(|p| p.hook.as_ref())
+                    .is_some_and(|h| h.id == id)
+            });
+        match owner.and_then(|conn| host.play.get_mut(&conn)) {
+            Some(play) => {
+                play.hook = None;
+                true
+            }
+            None => false,
+        }
+    }
+
     pub(super) fn remove_remote_hook(&mut self, id: u32) {
         if self.remote.is_some() && self.hook.as_ref().is_some_and(|h| h.id == id) {
             self.hook = None;

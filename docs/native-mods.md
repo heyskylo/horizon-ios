@@ -2514,6 +2514,13 @@ bobber in water, one hooked to an entity and a LAN host's own bobber are not hea
 it would. The player's state is swapped in, the other players are out of reach. Bundles need "hooks":
 @API:fishing_hook_landed@.
 
+`native_remove_entity(dimension, id)` also removes projectiles (arrows, tridents, snowballs, eggs, ender pearls,
+fireballs, wind charges, llama spit, shulker bullets, firework rockets) as `/kill` does, and a server player's fishing
+bobber, as `Entity.discard` (Bukkit's `Entity.remove`): an arrow cleanup, or a power rod's bobber taken once its
+button is held. A bobber can be removed for the player in place (inside their hooks, `native_fishing_hook_landed`
+included), and outside a guest's turn for any player of the level; it ends as a bobber that goes by itself, and the
+rod takes no wear. False for another dimension or no such entity. Bundles need "hooks": @API:remove_projectiles@.
+
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a
@@ -2764,6 +2771,7 @@ names the level it means by its `dimension` (`minecraft:overworld`), as `native_
   transformation (translation, left rotation, scale, right rotation; quaternions `[x, y, z, w]`), the ticks players see it
   ease over (`interpolation`) and its teleport duration (`teleport`, 0 to 59). Each call restarts the ease on clients.
 - `native_remove_entity(dimension, id)` removes such an entity as `/kill` does. Mobs go with `native_remove_mob`.
+  Since API @API:remove_projectiles@ it also removes projectiles and server players' fishing bobbers.
 
 A model that moves (a turning gun barrel, a thrown projectile) is an `item_display` showing an item whose model comes from
 the mod's `.hmod` assets: summon it once, then move and pose it from a tick hook. Easing between ticks happens on each
