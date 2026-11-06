@@ -3,10 +3,8 @@
 import argparse
 import hashlib
 import json
-import os
 from pathlib import Path
 import subprocess
-import tempfile
 import zipfile
 import lab
 
@@ -40,17 +38,9 @@ def main():
     assert libraries, 'prepare the pinned game dependencies first'
     java = str(args.java_home / 'bin/java') if args.java_home else 'java'
     javac = str(args.java_home / 'bin/javac') if args.java_home else 'javac'
-    env = os.environ.copy()
-    scratch = Path(tempfile.mkdtemp(prefix='homes-', dir=build))
-    for key in ['HORIZON_HOME', 'HORIZON_LAUNCHER_HOME', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME']:
-        path = scratch / key
-        path.mkdir()
-        env[key] = str(path)
     rust = build / 'rust.json'
     rust.unlink(missing_ok=True)
-    env.update(HORIZON_TEST_RESOURCES=str(args.resources.resolve()),
-               HORIZON_NO_AUDIO='1', HORIZON_LAUNCHER_NO_SELF_UPDATE='1',
-               HORIZON_DISCARD_REPORT=str(rust))
+    env = lab.game_env(HORIZON_TEST_RESOURCES=args.resources.resolve(), HORIZON_DISCARD_REPORT=rust)
     def run(name, command):
         with (build / (name + '.log')).open('w') as log:
             subprocess.run(list(map(str, command)), cwd=lab.ROOT, env=env,
