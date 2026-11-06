@@ -3650,9 +3650,7 @@ impl Game<'_> {
         &mut self,
         c: GuestCommand,
     ) -> Option<(bool, Vec<horizon_client::text::Text>)> {
-        let Some(mut host) = self.lan.take() else {
-            return None;
-        };
+        let mut host = self.lan.take()?;
         let Some(swap) = self.enter_guest(&mut host, c.conn, self.dim) else {
             self.lan = Some(host);
             return None;
