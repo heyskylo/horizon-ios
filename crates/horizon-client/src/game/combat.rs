@@ -698,9 +698,10 @@ fn mob_name(m: &Mob) -> Text {
     }
 }
 
-/// `Player.actuallyHurt`'s DAMAGE_TAKEN award: `Math.round(dmg * 10.0F)`
-/// tenths, only for damage under 3.4028235E37F. A huge hit (`/damage @s
-/// 3.4e38`) awards nothing, not a saturated count (#11339).
+/// `Player.actuallyHurt`'s DAMAGE_TAKEN award: `dmg * 10.0F` rounded as Java
+/// rounds a float (`jmath::round_f32`), only for damage under 3.4028235E37F.
+/// A huge hit (`/damage @s 3.4e38`) awards nothing, not a saturated count
+/// (#11339).
 fn damage_taken_award(amount: f32) -> Option<i32> {
     (amount < 3.402_823_5e37).then(|| horizon_core::jmath::round_f32(amount * 10.0))
 }
@@ -712,10 +713,10 @@ mod damage_taken_tests {
     #[test]
     fn tenths_rounded_as_java_does_and_nothing_for_a_huge_hit() {
         assert_eq!(damage_taken_award(2.0), Some(20));
-        // Math.round(0.5F) is 1: ties go up.
+        // Java rounds 0.5F up to 1: ties go up.
         assert_eq!(damage_taken_award(0.05), Some(1));
         assert_eq!(damage_taken_award(0.04), Some(0));
-        // Below the threshold the count saturates as Math.round(float) does.
+        // Below the threshold the count saturates, as Java's float rounding does.
         assert_eq!(damage_taken_award(3.4e37), Some(i32::MAX));
         assert_eq!(damage_taken_award(3.402_823_5e37), None);
         assert_eq!(damage_taken_award(3.4e38), None);
