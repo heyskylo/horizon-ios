@@ -1487,7 +1487,7 @@ mod tests {
         let restored = arrival_from_tag(&arrival_tag(&arrival)).unwrap();
         assert_eq!(restored.tag.get("PortalCooldown"), Some(&Tag::Int(5)));
         for old in [None, Some(0), Some(-1)] {
-            let mut tag = Tag::compound([]);
+            let mut tag = Tag::Compound(Default::default());
             if let (Some(old), Tag::Compound(fields)) = (old, &mut tag) {
                 fields.insert("PortalCooldown".into(), Tag::Int(old));
             }
