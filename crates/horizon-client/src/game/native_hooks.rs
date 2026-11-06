@@ -2586,6 +2586,36 @@ impl Game<'_> {
         mod_api::dispatch_gui_layer_post(self, mod_api::mods(), layer, batch);
     }
     /// A player right-clicks the entity `entity` (`Entity.getId`) of type
+    /// `kind` with `self.hand`, holding `stack`, at `location`: the point
+    /// clicked, measured from the entity's position (`EntityHitResult
+    /// .getLocation()` less `Entity.position()`, the interact packet's
+    /// `location`), as NeoForge's `PlayerInteractEvent.EntityInteractSpecific`.
+    /// It comes first where `Player.interactOn` starts, before
+    /// `native_interact_entity`, the entity's own `interact` (26.3's
+    /// `interactAt` and `interact` in one) and the item's
+    /// `interactLivingEntity`. Set `claimed` to take the click: the hand
+    /// swings and none of those runs. Asked once per hand, as vanilla tries
+    /// the main hand then the off hand. Server-side, for every player of the
+    /// world (the helpers read the acting one). API @API:entity_interact_specific@.
+    pub(super) fn native_entity_interact_specific(
+        &mut self,
+        entity: i32,
+        kind: &str,
+        stack: Option<&ItemStack>,
+        location: [f64; 3],
+        claimed: &mut bool,
+    ) {
+        mod_api::dispatch_entity_interact_specific(
+            self,
+            mod_api::mods(),
+            entity,
+            kind,
+            stack,
+            location,
+            claimed,
+        );
+    }
+    /// A player right-clicks the entity `entity` (`Entity.getId`) of type
     /// `kind` (`minecraft:cow`) with `self.hand`, holding `stack` (none in an
     /// empty hand): where `Player.interactOn` starts, before the entity's own
     /// `interact` and the item's `interactLivingEntity`. Set `claimed` to take

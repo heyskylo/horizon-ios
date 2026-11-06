@@ -6624,22 +6624,50 @@ impl Game<'_> {
     /// `Player.interactOn` with the acting hand: whether it took the click. A
     /// guest's interact packet names its entity (`target`), which the helpers
     /// use as it is; the local player picks from the crosshair instead, the
-    /// way `Minecraft.hitResult` does.
+    /// way `Minecraft.hitResult` does. `native_entity_interact_specific` and
+    /// `native_interact_entity` hear it first; a claim swings the hand and
+    /// ends the click.
     fn interact_entity(&mut self, target: Option<InteractTarget>) -> Result<bool> {
         // Native mods, where Player.interactOn starts: before the entity's
         // own interact and the item's interactLivingEntity. The entity is the
         // one the packet named, or the one the crosshair picked.
-        let named = match target {
-            Some(t) => Some(t.id),
-            None => self.pick_entity_hit().flatten(),
+        let (named, distance) = match target {
+            Some(t) => (Some(t.id), None),
+            None => match self.pick_entity_hit_at() {
+                Some((distance, id)) => (id, Some(distance)),
+                None => (None, None),
+            },
         };
         if let Some(id) = named
             && let Some(entity) = self.level_entity(id)
         {
+            // The point clicked, measured from the entity's position: a
+            // guest's packet carries it, and the local player's is where the
+            // crosshair's ray met the entity (`EntityHitResult.getLocation()`).
+            let location = match target {
+                Some(t) => Some(t.location),
+                None => distance
+                    .zip(self.aim())
+                    .zip(self.target_position(entity))
+                    .map(|((d, (eye, dir)), at)| {
+                        std::array::from_fn(|k| eye[k] + dir[k] * d - at[k])
+                    }),
+            };
             let kind = self.target_type(entity);
             let stack = self.held().cloned();
             let mut claimed = false;
-            self.native_interact_entity(id, &kind, stack.as_ref(), &mut claimed);
+            if let Some(location) = location {
+                self.native_entity_interact_specific(
+                    id,
+                    &kind,
+                    stack.as_ref(),
+                    location,
+                    &mut claimed,
+                );
+            }
+            if !claimed {
+                self.native_interact_entity(id, &kind, stack.as_ref(), &mut claimed);
+            }
             if claimed {
                 self.swing_arm();
                 return Ok(true);
