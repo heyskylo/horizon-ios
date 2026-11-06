@@ -4,6 +4,7 @@
 //! shearing interactions.
 use super::Game;
 use horizon_client::{
+    containers::BlockEntity,
     items::ItemStack,
     mobs::{
         Mob, Species,
@@ -11,7 +12,10 @@ use horizon_client::{
     },
 };
 use horizon_core::random::RandomSource;
-use horizon_world::chunk::BlockState;
+use horizon_world::{
+    chunk::BlockState,
+    nbt::{Compound, Tag},
+};
 
 /// `ContainerOpenersCounter.CHECK_TICK_DELAY`.
 const RECHECK_TICKS: i64 = 5;
@@ -178,6 +182,15 @@ impl Game<'_> {
         if self.level_set(pos, id).is_err() {
             return;
         }
+        // `createStatue`: the golem's custom name goes into the statue's components.
+        let mut components = Compound::new();
+        if let Some(name) = self.golem_name_tag(m) {
+            components.insert("minecraft:custom_name".into(), name);
+        }
+        self.world.block_entities.insert(
+            (pos[0], pos[1], pos[2]),
+            BlockEntity::CopperGolemStatue(components),
+        );
         self.golem_drop_equipment(m);
         m.extra.opened_chest = None;
         if m.extra.leash.is_some() {
@@ -191,6 +204,53 @@ impl Game<'_> {
             1.0,
             1.0,
         );
+    }
+    /// The golem's `CustomName` as a component: the styled name it was loaded
+    /// or summoned with while it still matches the plain name, else the plain one.
+    fn golem_name_tag(&self, m: &Mob) -> Option<Tag> {
+        let plain = m.custom_name.as_ref()?;
+        let saved = self
+            .persist
+            .raw
+            .get(&m.id)
+            .and_then(|raw| raw.get("CustomName"))
+            .filter(|name| match name {
+                Tag::String(s) => s.to_string_lossy() == *plain,
+                Tag::Compound(_) => matches!(
+                    name.get("text"),
+                    Some(Tag::String(s)) if s.to_string_lossy() == *plain
+                ),
+                _ => false,
+            });
+        Some(
+            saved
+                .cloned()
+                .unwrap_or_else(|| Tag::String(plain.as_str().into())),
+        )
+    }
+    /// `Entity.setCustomName` of golem `id` with the component `name`: its plain
+    /// and styled forms, and the saved compound a later save writes it from.
+    fn name_golem(&mut self, id: u32, name: Tag) {
+        let plain = match &name {
+            Tag::String(s) => Some(s.to_string_lossy()),
+            Tag::Compound(_) => match name.get("text") {
+                Some(Tag::String(s)) => Some(s.to_string_lossy()),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
+            m.custom_name = plain;
+            m.custom_name_text = Some(horizon_client::entity_nbt::name_text(&name));
+        }
+        if let Tag::Compound(raw) = self
+            .persist
+            .raw
+            .entry(id)
+            .or_insert_with(|| Tag::Compound(Default::default()))
+        {
+            raw.insert("CustomName".into(), name);
+        }
     }
     /// `Mob.dropPreservedEquipment`: the guaranteed drops in `EquipmentSlot`
     /// order, the carried stack (main hand) then the antenna flower (saddle),
@@ -239,9 +299,19 @@ impl Game<'_> {
             f64::from(pos[1]),
             f64::from(pos[2]) + 0.5,
         ];
+        // `removeStatue`: the golem takes the custom name the statue keeps.
+        let name = match self.world.block_entities.get(&(pos[0], pos[1], pos[2])) {
+            Some(BlockEntity::CopperGolemStatue(components)) => {
+                components.get(&"minecraft:custom_name".into()).cloned()
+            }
+            _ => None,
+        };
         let Some(id) = self.spawn_mob("minecraft:copper_golem", at, true) else {
             return false;
         };
+        if let Some(name) = name {
+            self.name_golem(id, name);
+        }
         if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
             m.yaw = yaw;
             m.previous_yaw = yaw;
