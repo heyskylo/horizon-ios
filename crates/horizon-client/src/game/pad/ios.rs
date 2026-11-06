@@ -14,6 +14,7 @@ pub(super) struct Devices {
     known: Vec<PadId>,
     started: bool,
     snapshots: Vec<horizon_gamecontroller::ConnectedController>,
+    routed: Option<Value>,
 }
 
 /// The glyphs to draw, from the product category iOS reports, through the vendor ids gilrs' pads are
@@ -26,7 +27,7 @@ fn style(category: &str) -> GlyphStyle {
     } else {
         None
     };
-    GlyphStyle::of_vendor(vendor)
+    GlyphStyle::of_device(vendor, None)
 }
 
 fn device_of(controller: &horizon_gamecontroller::Controller) -> Device {
@@ -187,6 +188,7 @@ impl PadRouter {
             active,
             known: self.pads.keys().copied().collect(),
             started: true,
+            routed: None,
             snapshots: self.pads.values().map(|pad| pad.snapshot.clone()).collect(),
         };
         pads.device = active.and_then(|id| self.device(id));
@@ -242,6 +244,14 @@ impl PadRouter {
             .get(&id)
             .map(|pad| device_of(&pad.snapshot.controller))
     }
+    pub(in crate::game) fn report_status(&self, pads: &mut Pads, active: Option<PadId>) {
+        let controllers: Vec<_> = self.pads.iter().map(|(id, pad)| {
+            let device = device_of(&pad.snapshot.controller);
+            json!({"name": device.name, "vendor": device.vendor, "product": device.product,
+                "category": pad.snapshot.controller.category, "gamepad": true, "active": active == Some(*id)})
+        }).collect();
+        pads.devices.routed = Some(json!({"backend": true, "controllers": controllers}));
+    }
     pub(in crate::game) fn connected(&self, id: PadId) -> bool {
         self.pads.contains_key(&id)
     }
@@ -287,6 +297,9 @@ impl Game<'_> {
     pub(in crate::game) fn pad_close_output(&mut self) {}
     pub(super) fn pad_vibrate(&mut self, _: Rumble, _: Pulse) {}
     pub(super) fn pad_devices_status(&self) -> Value {
+        if let Some(status) = &self.pad.devices.routed {
+            return status.clone();
+        }
         let pads: Vec<Value> = horizon_gamecontroller::controllers()
             .into_iter()
             .map(|c| json!({ "name": c.name, "category": c.category, "gamepad": c.gamepad }))

@@ -4,6 +4,7 @@
 //! extra is off.
 use super::{Dim, Game, Screen, native_hooks::NativeMinimap};
 use horizon_client::{
+    actions::Action,
     extras::{Corner, Cps, FpsCounter, Zoom, fov_target, turn_scale},
     extras_hud::{self, Corners, Keystrokes},
     hud::{HudBatch, MINIMAP_SPRITE},
@@ -11,6 +12,7 @@ use horizon_client::{
     minimap::{self, Layer, Minimap, View},
     multiplayer,
     reconnect::{Retry, Tracker},
+    sprint::Keys,
     title::Mode,
 };
 use std::time::Duration;
@@ -321,16 +323,16 @@ impl Game<'_> {
                 let [l, r] = &mut self.extras.cps;
                 (l.per_second(now), r.per_second(now))
             });
-            let held = |k| self.keys.contains(&k);
+            let input = self.native_keystroke_inputs();
             let label = |name| keybinds::display_name(self.settings.keys.get(name)).plain();
             let k = Keystrokes {
                 moves: [
-                    (held(KeyCode::KeyW), label("key.forward")),
-                    (held(KeyCode::KeyA), label("key.left")),
-                    (held(KeyCode::KeyS), label("key.back")),
-                    (held(KeyCode::KeyD), label("key.right")),
+                    (input.forward, label("key.forward")),
+                    (input.left, label("key.left")),
+                    (input.backward, label("key.back")),
+                    (input.right, label("key.right")),
                 ],
-                jump: held(KeyCode::Space),
+                jump: input.jump,
                 attack: self.extras.mouse[0],
                 use_: self.extras.mouse[1],
                 cps,
@@ -340,6 +342,21 @@ impl Game<'_> {
         self.draw_pvp_hud(batch, &mut corners);
         self.native_hud(batch, &mut corners);
     }
+    /// The overlay names mappings, not their physical default keys. Include
+    /// the stick flags exactly as normal player input does (including opposing
+    /// held keys); an eight-direction approximation would lose shallow diagonals.
+    fn native_keystroke_inputs(&self) -> Keys {
+        Keys {
+            forward: self.keys.held(Action::Forward),
+            backward: self.keys.held(Action::Back),
+            left: self.keys.held(Action::Left),
+            right: self.keys.held(Action::Right),
+            jump: self.keys.held(Action::Jump),
+            ..Keys::default()
+        }
+        .with_stick(self.pad_move())
+    }
+
     /// The height the status effect icons take at the top right
     /// (`Hud.extractEffects`: beneficial at y 1, harmful at y 26).
     fn effect_rows_height(&self) -> f32 {

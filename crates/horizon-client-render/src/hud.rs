@@ -268,12 +268,45 @@ pub fn decode_image_bytes(data: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
     }
 }
 
-/// A PNG in memory as RGBA pixels.
-pub fn decode_bytes(data: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
+/// Pixel-only resource reader. PNG text is not used by rendering; retaining one
+/// allocated string per ancillary chunk can dwarf the image's pixel budget.
+/// Animation/mipmap settings come from the separate .mcmeta file.
+pub(crate) fn resource_png_decoder(data: &[u8]) -> png::Decoder<std::io::Cursor<&[u8]>> {
     let mut decoder = png::Decoder::new(std::io::Cursor::new(data));
     decoder.ignore_checksums(true);
+    decoder.set_ignore_text_chunk(true);
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
-    let mut reader = decoder.read_info()?;
+    decoder
+}
+
+#[cfg(test)]
+pub(crate) fn text_metadata_png_fixture() -> Vec<u8> {
+    let mut encoded = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut encoded, 2, 2);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        for _ in 0..1024 {
+            encoder.add_text_chunk("k".into(), "v".into()).unwrap();
+        }
+        encoder
+            .add_ztxt_chunk("compressed".into(), "not a rendering input".repeat(32))
+            .unwrap();
+        encoder
+            .add_itxt_chunk("unicode".into(), "Unicode comment: ☃".into())
+            .unwrap();
+        let mut writer = encoder.write_header().unwrap();
+        writer
+            .write_image_data(&(1u8..=16).collect::<Vec<_>>())
+            .unwrap();
+        writer.finish().unwrap();
+    }
+    encoded
+}
+
+/// A PNG in memory as RGBA pixels.
+pub fn decode_bytes(data: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
+    let mut reader = resource_png_decoder(data).read_info()?;
     const MAX_DECODE_BYTES: usize = 256 << 20;
     let output = reader
         .output_buffer_size()
@@ -1259,7 +1292,8 @@ impl HudAtlas {
                     .ok();
             let animation = animation_of(mcmeta.as_deref());
             // An animated strip keeps its first frame.
-            let frames = name.starts_with("block/") || name.starts_with("item/");
+            let frames =
+                animation.is_some() || name.starts_with("block/") || name.starts_with("item/");
             let (w, h, pixels) = if frames {
                 first_frame(image, animation.as_ref())
             } else {
@@ -1352,12 +1386,13 @@ impl HudAtlas {
             })
             .collect();
         images.push(("horizon/missingno".into(), 16, 16, missing));
-        images.push((
-            crate::pad_cursor::SPRITE.into(),
-            crate::pad_cursor::SIZE,
-            crate::pad_cursor::SIZE,
-            crate::pad_cursor::pixels(),
-        ));
+        // The controller's art, unless a pack brought its own (walked above, as a mod's GUI
+        // textures are).
+        for image in crate::pad_glyph::images() {
+            if !images.iter().any(|i| i.0 == image.0) {
+                images.push(image);
+            }
+        }
         if full {
             Self::slots(&mut images, crate::trims::slot_size(root), mod_image);
             // MissingTextureAtlasSprite.generateMissingImage: 16x16, magenta
@@ -2935,6 +2970,24 @@ mod tests {
 
     /// The mod image slot is paid only by a game with a native mod loaded.
     #[test]
+    fn unused_png_text_is_skipped_without_changing_pixels() {
+        let encoded = text_metadata_png_fixture();
+        let ordinary = png::Decoder::new(std::io::Cursor::new(&encoded))
+            .read_info()
+            .unwrap();
+        assert_eq!(ordinary.info().uncompressed_latin1_text.len(), 1024);
+        assert_eq!(ordinary.info().compressed_latin1_text.len(), 1);
+        assert_eq!(ordinary.info().utf8_text.len(), 1);
+        let reader = resource_png_decoder(&encoded).read_info().unwrap();
+        assert!(reader.info().uncompressed_latin1_text.is_empty());
+        assert!(reader.info().compressed_latin1_text.is_empty());
+        assert!(reader.info().utf8_text.is_empty());
+        let (width, height, pixels) = decode_bytes(&encoded).unwrap();
+        assert_eq!((width, height), (2, 2));
+        assert_eq!(pixels, (1u8..=16).collect::<Vec<_>>());
+    }
+
+    #[test]
     fn the_mod_image_slot_exists_only_when_a_mod_is_loaded() {
         let root = Path::new("/nonexistent/horizon-test-assets");
         let plain = HudAtlas::build(root).unwrap();
@@ -3592,6 +3645,49 @@ mod tests {
         let banner = atlas.sprites["custom/banner"];
         assert_eq!(banner.texels((atlas.width, atlas.height)), (16, 32));
     }
+    #[test]
+    fn an_animated_gui_sprite_packs_its_first_frame_and_animates() {
+        let root =
+            std::env::temp_dir().join(format!("horizon-atlas-gui-anim-{}", std::process::id()));
+        let sprites = root.join("assets/minecraft/textures/gui/sprites/icon");
+        fs::create_dir_all(&sprites).unwrap();
+        // A GUI sprite like icon/music_notes: 4 frames stacked vertically (16x64),
+        // with animation metadata, and a still 16x32 texture beside it.
+        write_strip(
+            &sprites.join("music_notes.png"),
+            16,
+            64,
+            &[
+                [10, 20, 30, 255],
+                [40, 50, 60, 255],
+                [70, 80, 90, 255],
+                [100, 110, 120, 255],
+            ],
+            Some(r#"{"animation": {"frametime": 2}}"#),
+        );
+        write_strip(
+            &sprites.join("static_badge.png"),
+            16,
+            32,
+            &[[9, 9, 9, 255]],
+            None,
+        );
+        let atlas = HudAtlas::build(&root).unwrap();
+        let _ = fs::remove_dir_all(&root);
+        let rect = atlas.sprites["gui/sprites/icon/music_notes"];
+        // One frame, not the whole 16x64 strip squeezed into a slot.
+        assert_eq!(rect.texels((atlas.width, atlas.height)), (16, 16));
+        assert_eq!(texel_at(&atlas, rect, 0, 15), [10, 20, 30, 255]);
+        let (_, animation) = atlas
+            .sprite_animations
+            .iter()
+            .find(|(r, _)| r.u0 == rect.u0 && r.v0 == rect.v0)
+            .expect("the gui sprite animates");
+        assert_eq!(animation.frame_count(), 4);
+        // A still texture there stays whole.
+        let static_badge = atlas.sprites["gui/sprites/icon/static_badge"];
+        assert_eq!(static_badge.texels((atlas.width, atlas.height)), (16, 32));
+    }
     /// A resource root with one plain item texture and these CIT files (relative path, contents).
     fn cit_root(name: &str, files: &[(&str, &str)]) -> PathBuf {
         let root =
@@ -4018,12 +4114,16 @@ texture=wide",
             atlas.sprites["horizon/ui-text"].texels((atlas.width, atlas.height)),
             (2048, 1024)
         );
-        // Nothing Mojang's was walked: only the synthetic slots and what generating them needs.
+        // Nothing Mojang's was walked: only synthetic slots and the exact bundled controller
+        // images. Their names use the resource namespace spelling (`horizon:...`).
+        let bundled: std::collections::HashSet<String> = crate::pad_glyph::images()
+            .map(|(name, _, _, _)| name)
+            .collect();
         let foreign: Vec<&str> = atlas
             .sprites
             .keys()
             .map(String::as_str)
-            .filter(|name| !name.starts_with("horizon/"))
+            .filter(|name| !name.starts_with("horizon/") && !bundled.contains(*name))
             .collect();
         assert!(
             foreign.is_empty(),

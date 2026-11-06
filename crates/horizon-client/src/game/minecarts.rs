@@ -5,6 +5,7 @@
 //! furnace and TNT variants, saving, and `AbstractMinecartRenderer`'s old
 //! rail-following render with the display block.
 use super::{Game, Hit, InteractTarget, Keys, entity::Entity};
+use horizon_client::actions::Action;
 use horizon_client::entity_rules::EntityRules;
 use horizon_client::{
     blocks::Fluid,
@@ -657,11 +658,16 @@ impl Game<'_> {
             border: Some((self.border.geometry(), [c.position.x, c.position.z])),
         };
         if let Ok(moved) = scene.resolve(c.bounds(), delta, 0.0, c.on_ground) {
-            c.position = Vec3::new(
-                c.position.x + moved.x,
-                c.position.y + moved.y,
-                c.position.z + moved.z,
-            );
+            // Entity.move may skip setPos for tiny collision-limited motion,
+            // while still updating collisions and retaining unblocked velocity.
+            let moved_squared = moved.length_squared();
+            if moved_squared > 1.0e-7 || delta.length_squared() - moved_squared < 1.0e-7 {
+                c.position = Vec3::new(
+                    c.position.x + moved.x,
+                    c.position.y + moved.y,
+                    c.position.z + moved.z,
+                );
+            }
             c.on_ground = delta.y < 0.0 && moved.y > delta.y;
             c.horizontal_collision =
                 (moved.x - delta.x).abs() > 1.0e-7 || (moved.z - delta.z).abs() > 1.0e-7;
@@ -2182,7 +2188,7 @@ impl Game<'_> {
         if target.is_none() && !self.before_block(d) {
             return false;
         }
-        let sneaking = self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft);
+        let sneaking = self.keys.held(Action::Sneak);
         let held = self.held().cloned();
         match self.carts[i].kind {
             CartKind::Rideable => {
@@ -3415,3 +3421,45 @@ mod tests {
     }
 }
 horizon_client::impl_joined!(Minecart);
+
+#[cfg(test)]
+mod native_move_threshold_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires prepared resources"]
+    fn cart_position_threshold_preserves_collision_state_and_tiny_free_motion() {
+        let (mut game, _host) = super::super::lan_actions::vehicle_loot_tests::fixture();
+        game.boats.clear();
+        for x in 6..=10 {
+            for z in 6..=10 {
+                game.set_state_named([x, 64, z], "minecraft:stone", &[])
+                    .unwrap();
+            }
+        }
+        // This is Entity.move, called by both minecart behaviors; no rail
+        // interpolation or push-and-pickup retry is exercised by this test.
+        for (speed, blocked_y, advances) in [
+            (0.0002, true, false),
+            (0.001, true, true),
+            (0.0002, false, true),
+        ] {
+            let mut cart = Minecart::new(992, CartKind::Rideable, Vec3::new(8.5, 65.0, 8.5));
+            cart.velocity = Vec3::new(0.0, if blocked_y { -0.04 } else { 0.0 }, speed);
+            let movement = cart.velocity;
+            game.move_cart(&mut cart, movement);
+            assert_eq!(
+                cart.position.z > 8.5,
+                advances,
+                "speed={speed} blocked_y={blocked_y}"
+            );
+            assert_eq!(
+                cart.velocity.z, speed,
+                "position threshold does not discard residual velocity"
+            );
+            assert_eq!(cart.velocity.y, 0.0);
+            assert_eq!(cart.on_ground, blocked_y);
+            assert!(!cart.horizontal_collision);
+        }
+    }
+}

@@ -5,6 +5,7 @@
 mod placement;
 
 use super::{Game, InteractTarget, entity::Entity, entity_culling::at, view_vector};
+use horizon_client::actions::Action;
 use horizon_client::entity_rules::EntityRules;
 use horizon_client::{
     blocks::Fluid,
@@ -20,7 +21,7 @@ use horizon_client::{
     motion::{BubbleColumn, RiddenBoat, bubble_column_at},
 };
 use horizon_core::{
-    geometry::{Aabb, ShapeOp, Vec3, VoxelShape},
+    geometry::{Aabb, ShapeOp, Vec3, VoxelShape, trig},
     position::BlockPos,
     random::RandomSource,
 };
@@ -134,6 +135,19 @@ fn powder_snow_cells(bounds: Aabb, is_snow: impl Fn([i32; 3]) -> bool) -> Vec<[i
     }
     cells
 }
+/// AbstractBoat.clampRotation for a player passenger.
+pub(super) fn clamp_player_yaw(yaw: f32, body: f32) -> f32 {
+    let mut delta = (yaw - body) % 360.0;
+    if delta >= 180.0 {
+        delta -= 360.0;
+    }
+    if delta < -180.0 {
+        delta += 360.0;
+    }
+    // Keep Java's fadd then fsub: yaw + (clamped - delta) rounds differently.
+    (yaw + delta.clamp(-105.0, 105.0)) - delta
+}
+
 /// The snowflake `PowderSnowBlock.entityInside` sends for an entity whose known movement is
 /// `known`: none unless it moved horizontally and a coin falls so, then `Mth.randomBetween(-1, 1)`
 /// over 12 sideways and 0.05 up.
@@ -219,6 +233,34 @@ impl Boat {
             Vec3::new(p.x - w, p.y, p.z - w),
             Vec3::new(p.x + w, p.y + HEIGHT, p.z + w),
         )
+    }
+    /// AbstractBoat.controlBoat: inputs are the previous rider tick's latch.
+    fn control(&mut self) {
+        let [left, right, up, down] = self.input;
+        let mut acceleration = 0.0f32;
+        if left {
+            self.delta_rotation -= 1.0;
+        }
+        if right {
+            self.delta_rotation += 1.0;
+        }
+        if right != left && !up && !down {
+            acceleration += 0.005;
+        }
+        self.yaw += self.delta_rotation;
+        if up {
+            acceleration += 0.04;
+        }
+        if down {
+            acceleration -= 0.005;
+        }
+        // Native controlBoat multiplies float radians, looks up Mth's
+        // quantized table, multiplies float acceleration, then widens.
+        let x = trig::sin(f64::from(-self.yaw * trig::DEG_TO_RAD));
+        let z = trig::cos(f64::from(self.yaw * trig::DEG_TO_RAD));
+        self.velocity.x += f64::from(x * acceleration);
+        self.velocity.z += f64::from(z * acceleration);
+        self.paddling = [right && !left || up, left && !right || up];
     }
     /// The start of `Entity.move`: a boat made stuck since its last move goes its
     /// velocity times the multiplier, and its velocity and the multiplier are spent.
@@ -712,30 +754,8 @@ impl Game<'_> {
                 b.velocity.y = (b.velocity.y + buoyancy * (0.04 / 0.65)) * 0.75;
             }
         }
-        // controlBoat
         if controlled {
-            let [left, right, up, down] = b.input;
-            let mut acceleration = 0.0f32;
-            if left {
-                b.delta_rotation -= 1.0;
-            }
-            if right {
-                b.delta_rotation += 1.0;
-            }
-            if right != left && !up && !down {
-                acceleration += 0.005;
-            }
-            b.yaw += b.delta_rotation;
-            if up {
-                acceleration += 0.04;
-            }
-            if down {
-                acceleration -= 0.005;
-            }
-            let r = b.yaw.to_radians();
-            b.velocity.x += f64::from((-r).sin() * acceleration);
-            b.velocity.z += f64::from(r.cos() * acceleration);
-            b.paddling = [right && !left || up, left && !right || up];
+            b.control();
         }
         // Entity.move: collisions zero the blocked components, the world border's
         // among them (`CollisionGetter.borderCollision`).
@@ -746,11 +766,16 @@ impl Game<'_> {
         };
         let movement = b.take_movement();
         if let Ok(moved) = scene.resolve(b.bounds(), movement, 0.0, b.on_ground) {
-            b.position = Vec3::new(
-                b.position.x + moved.x,
-                b.position.y + moved.y,
-                b.position.z + moved.z,
-            );
+            // Entity.move still updates collision state below when a tiny
+            // resolved move loses enough motion to collision to skip setPos.
+            let moved_squared = moved.length_squared();
+            if moved_squared > 1.0e-7 || movement.length_squared() - moved_squared < 1.0e-7 {
+                b.position = Vec3::new(
+                    b.position.x + moved.x,
+                    b.position.y + moved.y,
+                    b.position.z + moved.z,
+                );
+            }
             b.on_ground = movement.y < 0.0 && moved.y > movement.y;
             if (moved.x - movement.x).abs() > 1.0e-7 {
                 b.velocity.x = 0.0;
@@ -1330,7 +1355,7 @@ impl Game<'_> {
         }) else {
             return false;
         };
-        let sneaking = self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft);
+        let sneaking = self.keys.held(Action::Sneak);
         // Only a client's own pick is stopped by a block: the range check passed.
         if target.is_none() && !self.before_block(d) {
             return false;
@@ -1861,3 +1886,355 @@ mod tests {
     }
 }
 horizon_client::impl_joined!(Boat);
+
+#[cfg(test)]
+mod native_move_threshold_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires prepared resources"]
+    fn boat_position_threshold_keeps_residual_velocity_and_unblocked_tiny_moves() {
+        let (mut game, _host) = super::super::lan_actions::vehicle_loot_tests::fixture();
+        game.boats.clear();
+        for x in 6..=10 {
+            for z in 6..=10 {
+                game.set_state_named([x, 64, z], "minecraft:stone", &[])
+                    .unwrap();
+            }
+        }
+        // Entity.move compares the resolved vector squared and the squared
+        // motion lost to collisions. Gravity is blocked by the floor here.
+        for (speed, gravity, advances) in [
+            (0.0004, true, false),
+            (0.001, true, true),
+            (0.0004, false, true),
+        ] {
+            let mut boat = Boat::new(991, "oak".into(), Vec3::new(8.5, 65.0, 8.5), 0.0);
+            boat.velocity.z = speed;
+            boat.no_gravity = !gravity;
+            let boat = game.tick_boat(boat, true);
+            assert_eq!(
+                boat.position.z > 8.5,
+                advances,
+                "speed={speed} gravity={gravity}"
+            );
+            assert!(
+                boat.velocity.z > 0.0,
+                "threshold must not discard residual velocity"
+            );
+            assert_eq!(boat.position.y, 65.0);
+            assert_eq!(boat.on_ground, gravity);
+        }
+    }
+}
+
+#[cfg(test)]
+mod native_turning_bits_tests {
+    use super::*;
+    // Raw bits from actual pinned26.3 AbstractBoat.controlBoat on initialized
+    // boats with a real player passenger, before any collision or drag step.
+    #[test]
+    fn control_boat_uses_native_table_trig_and_float_order() {
+        for (yaw, mask, vx, vz, rotation, delta) in [
+            (
+                -1.0f32,
+                1,
+                0x3fc003fd4b2c0000,
+                0xbfcf5c357f000000,
+                0xbfb33333,
+                0xbecccccc,
+            ),
+            (
+                -1.0f32,
+                5,
+                0x3fc01fea59600000,
+                0xbfcae1abf8000000,
+                0xbfb33333,
+                0xbecccccc,
+            ),
+            (
+                -1.0f32,
+                6,
+                0x3fbfe49b16800000,
+                0xbfcae15a00000000,
+                0x3f19999a,
+                0x3fcccccd,
+            ),
+            (
+                -1.0f32,
+                8,
+                0x3fbffdbcf2400000,
+                0xbfd051eb01800000,
+                0xbecccccc,
+                0x3f19999a,
+            ),
+            (
+                -2.6f32,
+                1,
+                0x3fc0089298000000,
+                0xbfcf5c62a0000000,
+                0xc0400000,
+                0xbecccccc,
+            ),
+            (
+                -2.6f32,
+                5,
+                0x3fc04494c0000000,
+                0xbfcae31500000000,
+                0xc0400000,
+                0xbecccccc,
+            ),
+            (
+                -2.6f32,
+                6,
+                0x3fc016dea0400000,
+                0xbfcae17b50000000,
+                0xbf7ffffe,
+                0x3fcccccd,
+            ),
+            (
+                -2.6f32,
+                8,
+                0x3fbff49121f00000,
+                0xbfd051deae800000,
+                0xbfffffff,
+                0x3f19999a,
+            ),
+            (
+                -4.56f32,
+                1,
+                0x3fc00e26a3500000,
+                0xbfcf5cc60c000000,
+                0xc09eb852,
+                0xbecccccc,
+            ),
+            (
+                -4.56f32,
+                5,
+                0x3fc071351a800000,
+                0xbfcae63060000000,
+                0xc09eb852,
+                0xbecccccc,
+            ),
+            (
+                -4.56f32,
+                6,
+                0x3fc04393bc800000,
+                0xbfcae30798000000,
+                0xc03d70a4,
+                0x3fcccccd,
+            ),
+            (
+                -4.56f32,
+                8,
+                0x3fbfe96603800000,
+                0xbfd051b96f800000,
+                0xc07d70a4,
+                0x3f19999a,
+            ),
+            (
+                0.0f32,
+                1,
+                0x3fc0012186e00000,
+                0xbfcf5c29fd000000,
+                0xbecccccc,
+                0xbecccccc,
+            ),
+            (
+                0.0f32,
+                5,
+                0x3fc0090c37000000,
+                0xbfcae14fe8000000,
+                0xbecccccc,
+                0xbecccccc,
+            ),
+            (
+                0.0f32,
+                6,
+                0x3fbfb6df8b000000,
+                0xbfcae1ca48000000,
+                0x3fcccccd,
+                0x3fcccccd,
+            ),
+            (
+                0.0f32,
+                8,
+                0x3fc001b64e980000,
+                0xbfd051ea60000000,
+                0x3f19999a,
+                0x3f19999a,
+            ),
+            (
+                30.0f32,
+                1,
+                0x3fbf5e28c2000000,
+                0xbfcf7189b7000000,
+                0x41eccccd,
+                0xbecccccc,
+            ),
+            (
+                30.0f32,
+                5,
+                0x3fbaf14610000000,
+                0xbfcb8c4db8000000,
+                0x41eccccd,
+                0xbecccccc,
+            ),
+            (
+                30.0f32,
+                6,
+                0x3fbaa28820000000,
+                0xbfcba395b0000000,
+                0x41fccccd,
+                0x3fcccccd,
+            ),
+            (
+                30.0f32,
+                8,
+                0x3fc05364ce000000,
+                0xbfd04683a4000000,
+                0x41f4cccd,
+                0x3f19999a,
+            ),
+            (
+                90.0f32,
+                1,
+                0x3fbeb853fa000000,
+                0xbfcffeda73b40000,
+                0x42b33333,
+                0xbecccccc,
+            ),
+            (
+                90.0f32,
+                5,
+                0x3fb5c29fd0000000,
+                0xbfcff6d39da00000,
+                0x42b33333,
+                0xbecccccc,
+            ),
+            (
+                90.0f32,
+                6,
+                0x3fb5c39490000000,
+                0xbfd012481d400000,
+                0x42b73333,
+                0x3fcccccd,
+            ),
+            (
+                90.0f32,
+                8,
+                0x3fc0a3d4c0000000,
+                0xbfcffe49b1680000,
+                0x42b53333,
+                0x3f19999a,
+            ),
+            (
+                180.0f32,
+                1,
+                0x3fbffdb4e7680000,
+                0xbfd051eb01800000,
+                0x4333999a,
+                0xbecccccc,
+            ),
+            (
+                180.0f32,
+                5,
+                0x3fbfeda73b400000,
+                0xbfd28f580c000000,
+                0x4333999a,
+                0xbecccccc,
+            ),
+            (
+                180.0f32,
+                6,
+                0x3fc024903a800000,
+                0xbfd28f1adc000000,
+                0x4335999a,
+                0x3fcccccd,
+            ),
+            (
+                180.0f32,
+                8,
+                0x3fbffc9362d00000,
+                0xbfcf5c2b40000000,
+                0x4334999a,
+                0x3f19999a,
+            ),
+            (
+                359.9f32,
+                1,
+                0x3fc00171f2fa0000,
+                0xbfcf5c2a98000000,
+                0x43b3c000,
+                0xbecccccc,
+            ),
+            (
+                359.9f32,
+                5,
+                0x3fc00b8f97d00000,
+                0xbfcae154c0000000,
+                0x43b3c000,
+                0xbecccccc,
+            ),
+            (
+                359.9f32,
+                6,
+                0x3fbfbb653c800000,
+                0xbfcae1ba98000000,
+                0x43b4c000,
+                0x3fcccccd,
+            ),
+            (
+                359.9f32,
+                8,
+                0x3fc0016ded960000,
+                0xbfd051eab8800000,
+                0x43b44000,
+                0x3f19999a,
+            ),
+        ] {
+            let mut boat = Boat::new(7, "oak".into(), Vec3::ZERO, yaw);
+            boat.velocity = Vec3::new(0.125, 0.0, -0.25);
+            boat.delta_rotation = 0.6;
+            boat.input = [mask & 1 != 0, mask & 2 != 0, mask & 4 != 0, mask & 8 != 0];
+            boat.control();
+            assert_eq!(boat.velocity.x.to_bits(), vx, "yaw={yaw} mask={mask} x");
+            assert_eq!(boat.velocity.z.to_bits(), vz, "yaw={yaw} mask={mask} z");
+            assert_eq!(
+                boat.yaw.to_bits(),
+                rotation,
+                "yaw={yaw} mask={mask} rotation"
+            );
+            assert_eq!(boat.delta_rotation.to_bits(), delta);
+        }
+    }
+    // Actual AbstractBoat.clampRotation for a real player, including coast
+    // angles that lose a bit if wrap or addition is algebraically rewritten.
+    #[test]
+    fn player_clamp_preserves_native_float_rounding() {
+        for (body, head, expected) in [
+            (0.0f32, 15.002921f32, 0x41700bf7),
+            (0.0f32, -4.559999f32, 0xc091eb83),
+            (0.0f32, 200.00002f32, 0x437f0000),
+            (0.0f32, -200.00002f32, 0xc37f0000),
+            (-33.500004f32, 15.002921f32, 0x41700bf8),
+            (-33.500004f32, -4.559999f32, 0xc091eb84),
+            (-33.500004f32, 200.00002f32, 0x435d8000),
+            (-33.500004f32, -200.00002f32, 0xc30a7fff),
+            (179.99998f32, 15.002921f32, 0x4295ffff),
+            (179.99998f32, -4.559999f32, 0xc2960002),
+            (179.99998f32, 200.00002f32, 0x43480001),
+            (179.99998f32, -200.00002f32, 0xc3480001),
+            (-179.99998f32, 15.002921f32, 0x42960003),
+            (-179.99998f32, -4.559999f32, 0xc295fffe),
+            (-179.99998f32, 200.00002f32, 0x43480001),
+            (-179.99998f32, -200.00002f32, 0xc3480001),
+        ] {
+            assert_eq!(
+                clamp_player_yaw(head, body).to_bits(),
+                expected,
+                "body={body} head={head}"
+            );
+        }
+    }
+}

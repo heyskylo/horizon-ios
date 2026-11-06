@@ -157,6 +157,7 @@ mod golems;
 mod growth;
 mod hand;
 mod headless;
+mod hud_editor;
 mod ime;
 mod import_screen;
 mod initial_spawn;
@@ -211,6 +212,7 @@ mod mob_index;
 mod mob_looting;
 mod mob_sounds;
 mod mod_api_host;
+mod mod_browser;
 mod mods;
 mod mount_menu;
 mod mounts;
@@ -363,6 +365,8 @@ mod test_environments;
 mod test_instance_edit;
 mod test_instances;
 mod text_displays;
+mod tick_profile;
+mod tick_script;
 mod titles;
 mod tnt;
 mod totem;
@@ -387,6 +391,8 @@ mod world_primitives;
 mod zombie_reinforcements;
 mod zombie_villagers;
 use event_loop::EventLoopCtl;
+// `Action` here is the title screen's buttons (`title::Action`).
+use horizon_client::actions::Action as Mapping;
 use horizon_client::held::Source;
 use horizon_client::spans::startup;
 use horizon_client::{
@@ -604,6 +610,16 @@ impl Options {
         else {
             return Ok(None);
         };
+        // Paths given on the command line stay relative to where the game was started.
+        if o.game_dir.is_some() {
+            o.control = o.control.map(std::path::absolute).transpose()?;
+        }
+        // Refused here, before the account's file is used up or anything loads.
+        if let Some(path) = &o.control {
+            horizon_client::control::check_path(path).map_err(|e| {
+                launch_api::UsageError(format!("--control-socket {}: {e}", path.display()))
+            })?;
+        }
         // The launcher's account: online-mode servers need it. A bad file
         // only leaves the game offline.
         let session = if o.session_stdin {
@@ -631,10 +647,9 @@ impl Options {
         }
         split::launcher::read_now();
         if let Some(dir) = o.game_dir.take() {
-            // Paths given on the command line stay relative to where the game was started.
+            // These too stay relative to where the game was started.
             o.resources = std::path::absolute(&o.resources)?;
             o.report = o.report.map(std::path::absolute).transpose()?;
-            o.control = o.control.map(std::path::absolute).transpose()?;
             std::fs::create_dir_all(&dir)
                 .and_then(|()| std::env::set_current_dir(&dir))
                 .map_err(|e| format!("game folder {}: {e}", dir.display()))?;
@@ -907,6 +922,8 @@ enum Screen {
     /// A screen of a native mod's own (`native_mod_screen_open`): it draws and
     /// takes its input through the screen hooks.
     Mod,
+    /// PvP & HUD's widget editor (game/hud_editor.rs).
+    HudEditor,
 }
 impl Screen {
     /// The id native mods see for this screen (`NativeScreenView.id`, the
@@ -936,6 +953,7 @@ impl Screen {
             Screen::Win => "win",
             Screen::DebugOptions => "debug_options",
             Screen::Mod => "mod",
+            Screen::HudEditor => "hud_editor",
         }
     }
 }
@@ -3146,6 +3164,8 @@ struct Game<'a> {
     input_trace: input_trace::InputTrace,
     /// A repro recording, export or replay (game/repro.rs).
     repro: repro::Repro,
+    /// `HORIZON_TICK_SCRIPT`'s scenario (game/tick_script.rs).
+    tick_script: tick_script::TickScript,
     /// The overworld's last `sky_darken` and its inputs (time, rain, thunder).
     sky_darken_memo: std::cell::Cell<Option<((i64, u32, u32), i32)>>,
     /// The last water plane `water_plane` found, kept while none is in reach.
@@ -3234,7 +3254,7 @@ struct Game<'a> {
     /// The mob of that `hitResult`, picked with the item held at the pick
     /// (`LocalPlayer.raycastHitResult`: a spear's `attack_range`), before the
     /// tick's number keys change it.
-    tick_mob: Option<Option<(usize, f64)>>,
+    tick_mob: Option<Option<(usize, f64, [f64; 3])>>,
     /// Number keys since the last tick (`keyHotbarSlots[i].consumeClick`):
     /// `Minecraft.handleKeybinds` selects them after the tick's pick.
     hotbar_presses: Vec<usize>,
@@ -3476,6 +3496,12 @@ fn facing_offset(facing: &str) -> [i32; 3] {
         _ => [0, -1, 0],
     }
 }
+/// The point a `ServerboundInteractPacket` carries: `EntityHitResult.getLocation()
+/// - entity.position()`, measured from the entity's feet, as
+/// `MultiPlayerGameMode.interact` computes it.
+fn interact_location(point: Vec3, feet: Vec3) -> [f64; 3] {
+    [point.x - feet.x, point.y - feet.y, point.z - feet.z]
+}
 /// How far along `dir` (within `reach`) a ray from `eye` enters `b`.
 fn ray_box(eye: [f64; 3], dir: [f64; 3], reach: f64, b: Aabb) -> Option<f64> {
     let (min, max) = (b.min_position(), b.max_position());
@@ -3496,6 +3522,13 @@ fn ray_box(eye: [f64; 3], dir: [f64; 3], reach: f64, b: Aabb) -> Option<f64> {
         t1 = t1.min(tb);
     }
     (t0 <= t1).then_some(t0)
+}
+/// `Entity.calculateViewVector`, which `GameRenderer.pick` aims with: float radians through `Mth.sin` and
+/// `Mth.cos`, vanilla's 65536-entry table. A placement's cursor and an interaction's point come from this ray, and
+/// the exact trigonometry below moved them by up to ~1e-4 of a block.
+fn pick_view_vector(yaw: f32, pitch: f32) -> [f64; 3] {
+    let v = horizon_world::view_direction::view_vector(pitch, yaw);
+    [v.x, v.y, v.z]
 }
 fn view_vector(yaw: f32, pitch: f32) -> [f64; 3] {
     let (y, p) = (f64::from(yaw).to_radians(), f64::from(pitch).to_radians());
@@ -3572,10 +3605,10 @@ impl Game<'_> {
         if let Some(m) = self.camera_mob() {
             return Some((
                 [m.position.x, m.eye_y(), m.position.z],
-                view_vector(m.head_yaw, m.head_pitch),
+                pick_view_vector(m.head_yaw, m.head_pitch),
             ));
         }
-        Some((self.eye_position()?, view_vector(self.yaw, self.pitch)))
+        Some((self.eye_position()?, pick_view_vector(self.yaw, self.pitch)))
     }
     /// `Player.blockInteractionRange`: the block pick's and mining's reach.
     fn reach(&self) -> f64 {
@@ -6712,7 +6745,7 @@ impl Game<'_> {
         self.use_failed = false;
         // isSecondaryUseActive with something in either hand keeps blocks
         // from reacting.
-        let sneaking = self.keys.contains(&KeyCode::ShiftLeft);
+        let sneaking = self.keys.held(Mapping::Sneak);
         let hands_full = self.stack_in(self.selected).is_some() || self.offhand.is_some();
         let mut anchor_passed = false;
         // Native mods, where ServerPlayerGameMode.useItemOn starts: a
@@ -7147,7 +7180,7 @@ impl Game<'_> {
             inside: false,
             yaw: self.yaw,
             pitch: self.pitch,
-            sneaking: self.keys.contains(&KeyCode::ShiftLeft),
+            sneaking: self.keys.held(Mapping::Sneak),
             item: stack.item.to_string(),
             can_use_game_master_blocks: self.can_use_game_master_blocks(),
         };
@@ -8253,7 +8286,10 @@ impl Game<'_> {
                         ) || (cfg!(target_os = "ios") && !pressed),
                         action,
                     ) {
-                        self.play_mouse(button, pressed)?;
+                        if self.shared_default_acts(button, horizon_client::keybinds::key_name(key))
+                        {
+                            self.mouse_mapping(button, pressed, Source::Keyboard)?;
+                        }
                     } else if container_key_clones(button, action) {
                         self.inventory_pick_key();
                     }
@@ -8305,7 +8341,7 @@ impl Game<'_> {
             if !pressed {
                 return Ok(());
             }
-            if self.keys.contains(&key) {
+            if self.keys.raw(&key) {
                 self.keys.press(key, source);
                 // sync_toggle creates an untagged keyboard entry for a newly
                 // down mapping; the event's real device owns that entry.
@@ -8407,6 +8443,7 @@ impl Game<'_> {
                     | Screen::DialogWarning
                     | Screen::CommandBlock
                     | Screen::DebugOptions
+                    | Screen::HudEditor
             ) || self.emote_wheel_pauses()
                 || self.book.is_some()
                 || self.win_screen_pauses())
@@ -8415,9 +8452,12 @@ impl Game<'_> {
     /// lectern, a sign, a server dialog, the code of conduct, a link or
     /// server pack prompt (vanilla's `Minecraft.screen` is set for each).
     fn screen_over_playing(&self) -> bool {
-        self.book.is_some()
-            || self.sign_edit.is_some()
-            || self.dialog_open()
+        self.book.is_some() || self.sign_edit.is_some() || self.prompt_open()
+    }
+    /// A prompt is up: over the world or over another open screen, it takes the input and is
+    /// answered first, in the order of `handle_window_event`'s arms and of what draws on top.
+    fn prompt_open(&self) -> bool {
+        self.dialog_open()
             || self.code_of_conduct.is_some()
             || self.link_prompt.is_some()
             || self.command_prompt.is_some()
@@ -9245,6 +9285,7 @@ impl Game<'_> {
             Screen::CommandBlock => self.draw_command_block(&mut batch),
             Screen::BlockEditor => self.draw_block_editor(&mut batch),
             Screen::DebugOptions => self.draw_debug_options(&mut batch),
+            Screen::HudEditor => self.draw_hud_editor(&mut batch),
             Screen::Inventory => {
                 self.draw_inventory(&mut batch);
                 self.draw_mod_browser(&mut batch);
@@ -11450,6 +11491,8 @@ impl Game<'_> {
                 .borrow_mut()
                 .extend(out.drain(player_start..));
         }
+        // Companions in first person, trails and auras (game/cosmetics/fx.rs).
+        self.cosmetics_fx_geometry(camera, alpha, &mut out);
         self.mark_entity(out.len(), "minecraft:evoker_fangs");
         self.fangs_geometry(camera, alpha, &mut out);
         self.block_item_display_geometry(camera, alpha, &mut out);
@@ -12077,13 +12120,16 @@ impl Game<'_> {
         self.sky_darken_memo.set(Some((key, darken)));
         darken
     }
-    fn mob_hit(&self) -> Option<(usize, f64)> {
+    /// The mob hit along the view, the distance to it and the point the ray
+    /// met its box at, measured from the mob's feet (`EntityHitResult
+    /// .getLocation() - entity.position()`, the interact packet's location).
+    fn mob_hit(&self) -> Option<(usize, f64, [f64; 3])> {
         if let Some(hit) = self.tick_mob {
             return hit;
         }
         let (eye, dir) = self.aim()?;
         let reach: f64 = self.entity_reach;
-        let mut best: Option<(usize, f64)> = None;
+        let mut best: Option<(usize, f64, [f64; 3])> = None;
         for (i, m) in self.mobs.iter().enumerate() {
             // ProjectileUtil.getEntityHitResult: the mob the player rides
             // shares its root vehicle and is never the hit, nor is the
@@ -12096,7 +12142,12 @@ impl Game<'_> {
             if let Some(t) = ray_box(eye, dir, reach, m.bounds())
                 && best.is_none_or(|b| t < b.1)
             {
-                best = Some((i, t));
+                let point = Vec3::new(
+                    eye[0] + dir[0] * t,
+                    eye[1] + dir[1] * t,
+                    eye[2] + dir[2] * t,
+                );
+                best = Some((i, t, interact_location(point, m.position)));
             }
         }
         best
@@ -12310,7 +12361,7 @@ impl Game<'_> {
         {
             return true;
         }
-        let Some((index, distance)) = self.mob_hit() else {
+        let Some((index, distance, _)) = self.mob_hit() else {
             return false;
         };
         if !self.before_block(distance) || !self.held_range_allows(distance) {
@@ -12501,6 +12552,16 @@ impl Game<'_> {
             self.destroy_type("mob_explosion_drop_decay")
         };
         self.server_explode(center, radius, interaction, fire)
+    }
+    /// `SulfurCube.tickFuse`: `ExplosionInteraction.TNT` (the
+    /// tnt_explosion_drop_decay rule) with mobGriefing, `NONE` without.
+    fn explode_sulfur_cube(&mut self, center: [f64; 3], radius: f32) -> Result<()> {
+        let interaction = if !self.ui.rules.bool("mob_griefing") {
+            explosion::BlockInteraction::Keep
+        } else {
+            self.destroy_type("tnt_explosion_drop_decay")
+        };
+        self.server_explode(center, radius, interaction, false)
     }
     /// Copies of a save batch carrying its live block entities and save data.
     fn with_entities<'a>(
@@ -13209,6 +13270,7 @@ impl Game<'_> {
     /// Let go of every entity of the level (saved first): the next world
     /// opened must not inherit them, nor save them as its own.
     pub(super) fn clear_entities(&mut self) {
+        self.clear_cosmetics_fx();
         self.mobs.clear();
         self.dropped.clear();
         self.orbs.clear();
@@ -13500,7 +13562,7 @@ impl Game<'_> {
         let Some(held) = held else {
             return Outcome::Pass;
         };
-        if self.keys.contains(&KeyCode::ShiftLeft) {
+        if self.keys.held(Mapping::Sneak) {
             return Outcome::Pass;
         }
         let Some((state, under_water)) = self.cauldron_at(pos) else {
@@ -13550,7 +13612,7 @@ impl Game<'_> {
             return Ok(false);
         };
         // Player.isSecondaryUseActive with an item in hand skips useItemOn.
-        if self.keys.contains(&KeyCode::ShiftLeft) {
+        if self.keys.held(Mapping::Sneak) {
             return Ok(false);
         }
         let removes_dye = cauldron::removes_dye(self.items(), &held.item);
@@ -13619,7 +13681,7 @@ impl Game<'_> {
             .offhand
             .as_ref()
             .is_some_and(|s| self.blocks_attacks(s).is_some());
-        if shield && !self.keys.contains(&KeyCode::ShiftLeft) {
+        if shield && !self.keys.held(Mapping::Sneak) {
             return None;
         }
         let face_name = match face {
@@ -13937,7 +13999,7 @@ impl Game<'_> {
             // `Player.isShiftKeyDown`: a block that refuses the fluid (any
             // non-air block under Shift) passes it to the block beside, where
             // Shift no longer counts.
-            let sneaking = self.keys.contains(&KeyCode::ShiftLeft);
+            let sneaking = self.keys.held(Mapping::Sneak);
             let creative = self.creative;
             let emptied = self.with_level(|b, level, ticks| {
                 b.bucket_empty(
@@ -15364,7 +15426,7 @@ impl Game<'_> {
             let bed_gone = !self.res.facts().get(bed).name.ends_with("_bed");
             // Vanilla has no Shift wake-up: the chat screen's capitals must
             // not get the sleeper up.
-            if (self.screen != Screen::Chat && self.keys.contains(&KeyCode::ShiftLeft))
+            if (self.screen != Screen::Chat && self.keys.held(Mapping::Sneak))
                 || bed_gone
                 || self
                     .player
@@ -16991,7 +17053,11 @@ impl Game<'_> {
             }
             return Ok(());
         }
-        if self.sort_key_press(key) || self.hdr_key_press(key) {
+        if self.sort_key_press(key)
+            || self.hdr_key_press(key)
+            || horizon_client::keybinds::key_name(key)
+                .is_some_and(|name| self.hud_editor_key_press(name))
+        {
             return Ok(());
         }
         if self.remote.is_some() && self.remote_key(key)? {
@@ -17041,6 +17107,7 @@ impl Game<'_> {
                 Screen::Win => self.close_win_screen()?,
                 Screen::DebugOptions => self.close_debug_options(),
                 Screen::Mod => self.close_mod_screen(),
+                Screen::HudEditor => self.close_hud_editor(),
             },
             // `checkHotbarKeyPressed`: the keys the controls bind to the off
             // hand and the hotbar slots, so a rebound key swaps instead of
@@ -17122,7 +17189,7 @@ impl Game<'_> {
             KeyCode::KeyE
                 if self.screen == Screen::Creative && self.creative_screen.tab().search => {}
             KeyCode::KeyE => match self.screen {
-                Screen::Playing if self.spectator() => {}
+                Screen::Playing if self.spectator() || self.in_portal_transition() => {}
                 Screen::Playing => {
                     // handleKeybinds: the number keys select before key.inventory.
                     self.select_queued_hotbar();
@@ -17182,7 +17249,8 @@ impl Game<'_> {
             KeyCode::KeyQ if self.screen == Screen::Playing => {
                 // handleKeybinds: the number keys select before key.drop.
                 self.select_queued_hotbar();
-                let all = drop_whole_stack(self.modifiers);
+                let all =
+                    drop_whole_stack(self.modifiers) || std::mem::take(&mut self.pad.drop_stack);
                 self.drop_held(all);
             }
             KeyCode::Digit1
@@ -17231,6 +17299,103 @@ impl Game<'_> {
             _ => {}
         }
         Ok(())
+    }
+    /// `MouseHandler.onScroll`: the hotbar (or the spectator menu) takes the wheel only when no
+    /// screen is open; a book, lectern, sign or prompt drawn over gameplay is one.
+    fn hotbar_takes_wheel(&self) -> bool {
+        self.screen == Screen::Playing
+            && !self.screen_over_playing()
+            && self.sleeping.is_none()
+            && self.player.is_some()
+    }
+    /// A mod's `MouseScrolling` cancels the step about to turn the hotbar.
+    fn hotbar_scroll_canceled(&mut self, scroll: [f64; 2], steps: [i32; 2]) -> bool {
+        let mut canceled = false;
+        self.native_mouse_scrolling(
+            scroll,
+            steps,
+            [
+                self.physical_buttons.contains(&MouseButton::Left),
+                self.physical_buttons.contains(&MouseButton::Middle),
+                self.physical_buttons.contains(&MouseButton::Right),
+            ],
+            [self.cursor.0, self.cursor.1],
+            glfw_modifiers(self.modifiers),
+            &mut canceled,
+        );
+        canceled
+    }
+    /// What one whole wheel step does in play (`MouseHandler.onScroll`): a spectator's menu or
+    /// flying speed, else the selected hotbar slot.
+    fn hotbar_wheel_step(&mut self, wheel: i32, vertical_steps: i32) {
+        if self.spectator() && self.spectator_gui.is_menu_active() {
+            self.spectator_scroll(-wheel);
+        } else if self.spectator() {
+            if let Some(player) = &mut self.player {
+                player.flying_speed = horizon_client::mouse::spectator_flying_speed(
+                    player.flying_speed,
+                    vertical_steps,
+                );
+            }
+        } else {
+            self.selected = horizon_client::mouse::ScrollWheelHandler::next_selection(
+                f64::from(wheel),
+                self.selected as i32,
+                9,
+            ) as usize;
+        }
+    }
+    /// A step of the hotbar from a controller's bumper: one wheel notch, down for the next slot,
+    /// through everything the wheel goes through.
+    fn hotbar_step(&mut self, next: bool) {
+        let wheel = if next { -1 } else { 1 };
+        if self.hotbar_takes_wheel()
+            && !self.native_wheel_event(wheel as f32)
+            && !self.hotbar_scroll_canceled([0.0, f64::from(wheel)], [0, wheel])
+        {
+            self.hotbar_wheel_step(wheel, wheel);
+        }
+    }
+    /// A mouse mapping pressed or let go by `source`. A release waits while another device holds
+    /// the mapping, so letting go of one can't end what the other still presses, as for keys
+    /// (`HeldKeys`).
+    fn mouse_mapping(&mut self, button: MouseButton, pressed: bool, source: Source) -> Result<()> {
+        if !pressed && self.mouse_mapping_held_elsewhere(button, source) {
+            return Ok(());
+        }
+        self.play_mouse(button, pressed)
+    }
+    /// Whether a device other than `source` holds what `button` stands for. Asks each device's own
+    /// live state rather than keeping a count: a screen takes a mouse release without telling the
+    /// mappings, and a count would then hold the attack for good. A script keeps no such state, so
+    /// nothing waits for a script's mouse hold.
+    fn mouse_mapping_held_elsewhere(&self, button: MouseButton, source: Source) -> bool {
+        let mapping = match button {
+            MouseButton::Left => "key.attack",
+            MouseButton::Right => "key.use",
+            _ => return false,
+        };
+        let touch = source != Source::Touch && self.touch_holds_mouse_mapping(button);
+        let pad =
+            source != Source::Pad && self.pad.holds_action(&self.settings.controller, mapping);
+        let keyboard = matches!(source, Source::Pad | Source::Touch) && {
+            let keys = &self.settings.keys;
+            self.physical_buttons
+                .iter()
+                .any(|held| keys.translate_mouse_all(*held).contains(&Err(button)))
+                || self
+                    .physical_keys
+                    .iter()
+                    .any(|held| keys.translate_all(*held).contains(&Err(button)))
+        };
+        touch || pad || keyboard
+    }
+    /// Two mappings with one default button are separate mappings all the same
+    /// (`Minecraft.handleKeybinds`): whether the middle-button action a physical `input` translated
+    /// to is one of those it is bound to, for this player now.
+    fn shared_default_acts(&self, button: MouseButton, input: Option<&str>) -> bool {
+        button != MouseButton::Middle
+            || input.is_none_or(|input| self.settings.keys.middle_acts(input, self.spectator()))
     }
     /// A mouse button while playing (window or control socket).
     fn play_mouse(&mut self, button: MouseButton, pressed: bool) -> Result<()> {
@@ -18037,6 +18202,13 @@ impl Game<'_> {
             self.native_mouse_button_post(button, pressed, modifiers);
         }
     }
+    /// One window event, in the order vanilla's `KeyboardHandler` and `MouseHandler` see it.
+    ///
+    /// A controller doesn't come through here in play: `pad_action` goes straight to the mappings
+    /// (`mapped_key`, `mouse_mapping`). So a key handled below before `mapped_key_event` (a window
+    /// shortcut, a special case) never reaches a controller. If a player could want it on one, give
+    /// it a handler both can call and a `gamepad::Route` (screenshot and fullscreen do this). A
+    /// screen's own raw keys, text and mods' key hooks stay raw on purpose.
     fn handle_window_event_inner(&mut self, event_loop: &dyn EventLoopCtl, mut event: WindowEvent) {
         if let WindowEvent::Focused(false) = &event {
             self.physical_keys.clear();
@@ -18488,6 +18660,9 @@ impl Game<'_> {
                         if self.screen == Screen::DebugOptions {
                             self.debug_options_drag();
                         }
+                        if self.screen == Screen::HudEditor {
+                            self.hud_editor_drag();
+                        }
                         if self.screen == Screen::WorldOptions {
                             self.world_options_drag();
                         }
@@ -18549,13 +18724,21 @@ impl Game<'_> {
                             return Ok(());
                         }
                     }
+                    // A prompt is vanilla's `Minecraft.screen`, the only one MouseHandler.onScroll
+                    // tells: the top one hears the wheel, as the click arms below pick it, and
+                    // nothing behind it does.
+                    if self.prompt_open() {
+                        if self.command_prompt.is_some() || self.link_prompt.is_some() {
+                        } else if self.code_of_conduct.is_some() {
+                            self.code_of_conduct_scroll(d);
+                        } else if self.server_packs.prompt.is_none() {
+                            self.dialog_scroll(d);
+                        }
+                        return Ok(());
+                    }
                     let stick_scroll = self.pad_stick_scroll();
                     let step_scroll = self.pad_step_scroll();
-                    if self.dialog_open() {
-                        self.dialog_scroll(d);
-                    } else if self.code_of_conduct.is_some() {
-                        self.code_of_conduct_scroll(d);
-                    } else if let Some(title) = &mut self.title
+                    if let Some(title) = &mut self.title
                         && self.screen != Screen::Win
                     {
                         let size = self
@@ -18576,51 +18759,22 @@ impl Game<'_> {
                     // MouseHandler.onScroll: the hotbar (or the spectator
                     // menu) takes the wheel only when no screen is open; a
                     // book, lectern, sign or prompt drawn over gameplay is one.
-                    if self.screen == Screen::Playing
-                        && !self.screen_over_playing()
-                        && self.sleeping.is_none()
-                        && self.player.is_some()
+                    if self.hotbar_takes_wheel()
                         && !self.extras_scroll(d)
                         && !self.native_wheel_event(d)
                         && let Some((wheel, (horizontal_steps, vertical_steps))) = self
                             .mouse
                             .on_scroll(raw_x, raw_y, discrete, wheel_sensitivity)
                     {
-                        if !self.pad_synthetic_input() {
-                            let mut canceled = false;
-                            self.native_mouse_scrolling(
+                        if !self.pad_synthetic_input()
+                            && self.hotbar_scroll_canceled(
                                 [scaled(raw_x), scaled(raw_y)],
                                 [horizontal_steps, vertical_steps],
-                                [
-                                    self.physical_buttons.contains(&MouseButton::Left),
-                                    self.physical_buttons.contains(&MouseButton::Middle),
-                                    self.physical_buttons.contains(&MouseButton::Right),
-                                ],
-                                [self.cursor.0, self.cursor.1],
-                                glfw_modifiers(self.modifiers),
-                                &mut canceled,
-                            );
-                            if canceled {
-                                return Ok(());
-                            }
+                            )
+                        {
+                            return Ok(());
                         }
-                        if self.spectator() && self.spectator_gui.is_menu_active() {
-                            self.spectator_scroll(-wheel);
-                        } else if self.spectator() {
-                            if let Some(player) = &mut self.player {
-                                player.flying_speed = horizon_client::mouse::spectator_flying_speed(
-                                    player.flying_speed,
-                                    vertical_steps,
-                                );
-                            }
-                        } else {
-                            self.selected =
-                                horizon_client::mouse::ScrollWheelHandler::next_selection(
-                                    f64::from(wheel),
-                                    self.selected as i32,
-                                    9,
-                                ) as usize;
-                        }
+                        self.hotbar_wheel_step(wheel, vertical_steps);
                     }
                     if self.screen == Screen::Chat && d != 0.0 {
                         self.chat_scroll(d);
@@ -18660,6 +18814,9 @@ impl Game<'_> {
                     }
                     if self.screen == Screen::DebugOptions && d != 0.0 {
                         self.debug_options_scroll(d);
+                    }
+                    if self.screen == Screen::HudEditor && d != 0.0 {
+                        self.hud_editor_scroll(f64::from(d));
                     }
                     if self.screen == Screen::Advancements {
                         self.advancements_scroll(scaled(raw_x) as f32, d);
@@ -18803,7 +18960,13 @@ impl Game<'_> {
                         // Neither edge of a bound button is an ordinary slot click.
                         return Ok(());
                     }
-                    if pressed && (self.sort_mouse_press(button) || self.hdr_mouse_press(button)) {
+                    if pressed
+                        && (self.sort_mouse_press(button)
+                            || self.hdr_mouse_press(button)
+                            || self.hud_editor_key_press(&horizon_client::keybinds::mouse_name(
+                                button,
+                            )))
+                    {
                         return Ok(());
                     }
                     match self.screen {
@@ -18819,9 +18982,12 @@ impl Game<'_> {
                             {
                                 self.smooth_camera_action();
                             }
+                            let input = horizon_client::keybinds::mouse_name(button);
                             for mapped in self.settings.keys.translate_mouse_all(button) {
                                 match mapped {
-                                    Err(b) => self.play_mouse(b, pressed)?,
+                                    Err(b)
+                                        if !self.shared_default_acts(b, Some(input.as_str())) => {}
+                                    Err(b) => self.mouse_mapping(b, pressed, Source::Keyboard)?,
                                     Ok(k) if pressed => {
                                         self.keys.insert(k);
                                         self.key_pressed(k, k)?;
@@ -18888,6 +19054,15 @@ impl Game<'_> {
                         }
                         Screen::DebugOptions if button == MouseButton::Left => {
                             self.debug_options_release()
+                        }
+                        Screen::HudEditor
+                            if pressed
+                                && matches!(button, MouseButton::Left | MouseButton::Right) =>
+                        {
+                            self.hud_editor_press(button == MouseButton::Right)
+                        }
+                        Screen::HudEditor if button == MouseButton::Left => {
+                            self.hud_editor_release()
                         }
                         Screen::ConfirmLink if pressed && button == MouseButton::Left => {
                             self.confirm_link_click()
@@ -19271,7 +19446,7 @@ impl Game<'_> {
                         && self.book.is_none()
                         && !self.dialog_open()
                     {
-                        let turn = |k| f32::from(u8::from(self.keys.contains(&k)));
+                        let turn = |k| f32::from(u8::from(self.keys.raw(&k)));
                         let secs = elapsed.as_secs_f32().min(0.1);
                         let yaw = (turn(KeyCode::ArrowRight) - turn(KeyCode::ArrowLeft)) * 90.0;
                         let pitch = (turn(KeyCode::ArrowDown) - turn(KeyCode::ArrowUp)) * 90.0;
@@ -19297,6 +19472,9 @@ impl Game<'_> {
                     for _ in 0..steps {
                         let started = Instant::now();
                         if self.title.is_none() && !self.pause {
+                            if self.tick_script.armed() {
+                                self.tick_script_step(event_loop);
+                            }
                             horizon_client::spans::time("tick", || self.tick())?;
                             // Cave mood (a shader pack's playerMood) samples on a random
                             // seeded from the clock: under `HORIZON_STILL` it waits for the
@@ -19517,6 +19695,7 @@ impl Game<'_> {
     }
     /// The loop ended: close the pads' output, save the world, write the perf report.
     pub(super) fn shut_down(&mut self) {
+        let _ = self.shutdown_mod_browser();
         self.stop_splitscreen();
         self.pad_close_output();
         if let Err(e) = self.save_for_exit() {
@@ -20116,6 +20295,7 @@ impl<'a> Game<'a> {
             events: Default::default(),
             input_trace: Default::default(),
             repro: Default::default(),
+            tick_script: tick_script::TickScript::from_env(),
             agent: agent::Agent::default(),
             view_frustum: None,
             entity_section_visibility_valid: false,
@@ -20381,7 +20561,50 @@ enum PendingWorldEntry {
 
 struct WorldRestLoader {
     progress: Progress,
-    handle: JoinHandle<std::result::Result<(), String>>,
+    handle: Option<JoinHandle<std::result::Result<(), String>>>,
+}
+
+type RestHandle = JoinHandle<std::result::Result<(), String>>;
+
+/// A failed handoff can drop Loaded (or a partially built Game) while its
+/// finite resource tail is still reading. Retain ownership until it exits.
+fn retired_rest_loaders() -> &'static std::sync::Mutex<Vec<RestHandle>> {
+    static RETIRED: std::sync::Mutex<Vec<RestHandle>> = std::sync::Mutex::new(Vec::new());
+    &RETIRED
+}
+
+fn poll_retired_rest_loaders() -> bool {
+    let mut retired = match retired_rest_loaders().try_lock() {
+        Ok(retired) => retired,
+        Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => return false,
+    };
+    let mut i = 0;
+    while i < retired.len() {
+        if !retired[i].is_finished() {
+            i += 1;
+            continue;
+        }
+        match retired.swap_remove(i).join() {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => log::warn!("Horizon: retired world resource loader failed: {error}"),
+            Err(_) => log::warn!("Horizon: retired world resource loader panicked"),
+        }
+    }
+    retired.is_empty()
+}
+
+impl Drop for WorldRestLoader {
+    fn drop(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            // Never join an active producer on the frame thread. Its closure
+            // retains the original HomeAccess until its reads/writes finish.
+            retired_rest_loaders()
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push(handle);
+        }
+    }
 }
 
 impl WorldRestLoader {
@@ -20389,11 +20612,13 @@ impl WorldRestLoader {
         // No time limit: the title stays usable while this loads, and a slow
         // disk or a debug build can take minutes. A failure ends the thread
         // and is reported by `finish`.
-        Ok(self.handle.is_finished())
+        Ok(self.handle.as_ref().is_none_or(JoinHandle::is_finished))
     }
 
-    fn finish(self) -> Result<()> {
+    fn finish(mut self) -> Result<()> {
         self.handle
+            .take()
+            .ok_or("world resource loader already joined")?
             .join()
             .map_err(|_| "world resource loader panicked")?
             .map_err(Into::into)
@@ -21351,7 +21576,7 @@ fn load_resources_with_access(
             })?;
         Some(WorldRestLoader {
             progress: rest_progress,
-            handle,
+            handle: Some(handle),
         })
     } else {
         let rest = load_world_rest(
@@ -21389,7 +21614,7 @@ fn load_resources_with_access(
             Ok(game_cpu) => game_cpu,
             Err(error) => {
                 if let Some(tail) = rest_loader {
-                    let _ = tail.handle.join();
+                    let _ = tail.finish();
                 }
                 return Err(error);
             }
@@ -22079,6 +22304,8 @@ struct Loading {
     loaded: Option<std::result::Result<Loaded, String>>,
     /// The loader's `Done` arrived: its channel closing afterwards is expected.
     delivered: bool,
+    /// A harness finished without constructing an interactive Game.
+    completed_without_game: bool,
     handle: Option<JoinHandle<()>>,
     shown: bool,
     /// When the menu bundle arrived (`set_ui`), and whether a title frame with
@@ -22122,7 +22349,7 @@ impl Loading {
             if loaded
                 .rest_loader
                 .as_ref()
-                .is_some_and(|tail| !tail.handle.is_finished())
+                .is_some_and(|tail| !tail.ready().unwrap_or(false))
             {
                 return false;
             }
@@ -22130,7 +22357,10 @@ impl Loading {
                 let _ = tail.finish();
             }
         }
-        if !world_loading::shutdown_preload() || !world_loading::shutdown_prepared_files() {
+        if !world_loading::shutdown_preload()
+            || !poll_retired_rest_loaders()
+            || !world_loading::shutdown_prepared_files()
+        {
             return false;
         }
         self.loaded = None;
@@ -22190,7 +22420,6 @@ impl Loading {
             Ok(w) => Arc::new(w),
             Err(e) => {
                 self.error = Some(e.into());
-                event_loop.exit();
                 return;
             }
         };
@@ -22243,7 +22472,6 @@ impl Loading {
                     stop.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
                 self.error = Some(e);
-                event_loop.exit();
                 return;
             }
         }
@@ -22264,7 +22492,6 @@ impl Loading {
         follow_keymap(&mut event);
         if let Err(error) = self.menu_event(event_loop, event) {
             self.error = Some(error);
-            event_loop.exit();
         }
     }
     /// The menu bundle arrived: rebuild the loading screen with the real atlas
@@ -22318,18 +22545,25 @@ impl Loading {
         // The loop may run once more after exit(): keep the first error, the
         // one that ended loading.
         if self.error.is_some() {
-            event_loop.exit();
             return;
         }
         if horizon_threads::stop_requests() > 0 {
             // No world is open yet: nothing to save.
+            let mut stopped = self.drain_cancelled_start();
+            stopped &= self.shutdown_mod_browser();
+            stopped &= mod_browser::shutdown_workers();
+            if !stopped {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(
+                    Instant::now() + Duration::from_millis(33),
+                ));
+                return;
+            }
             event_loop.exit();
             return;
         }
         if horizon_ios_launcher::waiting() {
             if let Err(error) = self.poll_launcher() {
                 self.error = Some(error);
-                event_loop.exit();
                 return;
             }
             horizon_airplay::screen(false, false);
@@ -22365,7 +22599,6 @@ impl Loading {
                 }
                 Err(error) => {
                     self.error = Some(error);
-                    event_loop.exit();
                     return;
                 }
             }
@@ -22378,7 +22611,6 @@ impl Loading {
         .and_then(|()| self.poll_launcher())
         {
             self.error = Some(error);
-            event_loop.exit();
             return;
         }
         if horizon_ios_launcher::covered() {
@@ -22454,7 +22686,7 @@ impl Loading {
         // block the frame thread and covers the final filesystem readers.
         let _home_access = loaded.home_access;
         let handoff_at = Instant::now();
-        let mut options = self.options.take().ok_or("loading already finished")?;
+        let mut options = self.options.clone().ok_or("loading already finished")?;
         options.resources = loaded.root.clone();
         // StartupMenu owns world selection until it can hand it to Game.
         options.world = None;
@@ -22490,6 +22722,7 @@ impl Loading {
                 if let Some(renderer) = &mut self.renderer {
                     let _ = renderer.recreate_surface();
                 }
+                self.gui = Some(gui);
                 return Err(e);
             }
         };
@@ -22509,7 +22742,7 @@ impl Loading {
         let res = loaded.resources;
         let game_at = Instant::now();
         let game_step = startup::step("handoff.start_game");
-        let Some(mut game) = start_game(
+        let next_game = match start_game(
             &res,
             loaded.pack,
             gui,
@@ -22521,10 +22754,22 @@ impl Loading {
             loaded.rest_loader,
             Some(self.settings.clone()),
             loaded.game_cpu,
-        )?
-        else {
+        ) {
+            Ok(game) => game,
+            Err(error) => {
+                drop(renderer);
+                if let Some(renderer) = &mut self.renderer {
+                    let _ = renderer.recreate_surface();
+                }
+                return Err(error);
+            }
+        };
+        let Some(mut game) = next_game else {
+            self.options = None;
+            self.completed_without_game = true;
             return Ok(None);
         };
+        self.options = None;
         drop(game_step);
         let game_ms = game_at.elapsed().as_millis();
         game.window = Some(window);
@@ -22590,8 +22835,10 @@ impl App {
         }
     }
     fn about_to_wait_here(&mut self, event_loop: &ActiveEventLoop) {
+        let _ = poll_retired_rest_loaders();
         horizon_client::realms::poll_retired_workers();
         horizon_cosmetics::workers::poll_retired_workers();
+        mod_browser::poll_retired_workers();
         enum Step {
             Waiting,
             Ready(Box<split::Split<'static>>),
@@ -22613,8 +22860,10 @@ impl App {
                     // navigation, before returning to the native launcher.
                     let mut stopped = split.stop_guests();
                     stopped &= split.host.cosmetics.shutdown();
+                    stopped &= split.host.shutdown_mod_browser();
                     stopped &= horizon_client::realms::shutdown_workers();
                     stopped &= horizon_cosmetics::workers::shutdown_workers();
+                    stopped &= mod_browser::shutdown_workers();
                     if !stopped {
                         event_loop.set_control_flow(ControlFlow::WaitUntil(
                             Instant::now() + Duration::from_millis(33),
@@ -22639,8 +22888,9 @@ impl App {
                     stopped &= game
                         .rest_loader
                         .as_ref()
-                        .is_none_or(|loader| loader.handle.is_finished());
+                        .is_none_or(|loader| loader.ready().unwrap_or(false));
                     stopped &= game.shutdown_integrated_workers();
+                    stopped &= poll_retired_rest_loaders();
                     stopped &= world_loading::shutdown_prepared_files();
                     if !stopped {
                         event_loop.set_control_flow(ControlFlow::WaitUntil(
@@ -22690,6 +22940,21 @@ impl App {
                 return;
             }
             App::Loading(loading) => {
+                // A completed harness consumed its options in finish(). Keep
+                // its producer owner alive until the last operation retires.
+                if loading.completed_without_game {
+                    let mut stopped = loading.drain_cancelled_start();
+                    stopped &= loading.shutdown_mod_browser();
+                    stopped &= mod_browser::shutdown_workers();
+                    if stopped {
+                        event_loop.exit();
+                    } else {
+                        event_loop.set_control_flow(ControlFlow::WaitUntil(
+                            Instant::now() + Duration::from_millis(33),
+                        ));
+                    }
+                    return;
+                }
                 if horizon_ios_launcher::cancellation_requested() {
                     if let Err(error) = loading.poll_launcher() {
                         loading.error = Some(error);
@@ -22698,7 +22963,10 @@ impl App {
                     loading.about_to_wait(event_loop);
                 }
                 if let Some(owner) = horizon_ios_launcher::cancellation_owner() {
-                    if !loading.drain_cancelled_start() {
+                    let mut stopped = loading.drain_cancelled_start();
+                    stopped &= loading.shutdown_mod_browser();
+                    stopped &= mod_browser::shutdown_workers();
+                    if !stopped {
                         event_loop.set_control_flow(ControlFlow::WaitUntil(
                             Instant::now() + Duration::from_millis(33),
                         ));
@@ -22737,6 +23005,15 @@ impl App {
                     return;
                 }
                 if loading.error.is_some() {
+                    let mut stopped = loading.drain_cancelled_start();
+                    stopped &= loading.shutdown_mod_browser();
+                    stopped &= mod_browser::shutdown_workers();
+                    if !stopped {
+                        event_loop.set_control_flow(ControlFlow::WaitUntil(
+                            Instant::now() + Duration::from_millis(33),
+                        ));
+                        return;
+                    }
                     event_loop.exit();
                     return;
                 }
@@ -22758,7 +23035,9 @@ impl App {
         match step {
             Step::Waiting => {}
             Step::Ready(game) => *self = App::Ready(game),
-            Step::Done => event_loop.exit(),
+            Step::Done => event_loop.set_control_flow(ControlFlow::WaitUntil(
+                Instant::now() + Duration::from_millis(33),
+            )),
             Step::Failed(e) => {
                 // A phone with nothing to load has one useful move left: stay open and say what it
                 // needs, and take the files over Wi-Fi or a cable. Everywhere else the window has a
@@ -22771,13 +23050,18 @@ impl App {
                     }
                     loading.error = Some(e);
                 }
-                event_loop.exit();
+                event_loop.set_control_flow(ControlFlow::WaitUntil(
+                    Instant::now() + Duration::from_millis(33),
+                ));
             }
         }
     }
     fn exiting_here(&mut self, event_loop: &ActiveEventLoop) {
+        let _ = mod_browser::shutdown_workers();
         if let App::Ready(game) = self {
             game.exiting(event_loop);
+        } else if let App::Loading(loading) = self {
+            let _ = loading.shutdown_mod_browser();
         }
     }
 }
@@ -22896,6 +23180,7 @@ fn launcher_loading(
         receiver,
         loaded: None,
         delivered: false,
+        completed_without_game: false,
         handle: loader,
         shown: false,
         ui_at: None,
@@ -23093,11 +23378,14 @@ pub fn run_with() -> Result<()> {
             pack_error = Some(e.to_string());
             vanilla_root.clone()
         });
-    options.resources = mods::content_root(
-        &options.resources,
-        &early_settings.mods.enabled,
-        &options.dev_mods,
-    );
+    options.resources =
+        horizon_client::mod_registry::with_content_snapshot(&Game::game_dir(), || {
+            mods::content_root(
+                &options.resources,
+                &early_settings.mods.enabled,
+                &options.dev_mods,
+            )
+        })?;
     let loaded = load_resources(
         options.resources.clone(),
         launch_world(&options),
@@ -23743,6 +24031,28 @@ mod tests {
         assert!(named_mob_pickable(true, 17, Some(23), Some(29)));
     }
 
+    /// The packet's location is `EntityHitResult.getLocation() -
+    /// entity.position()`, the point the view ray met the box at measured
+    /// from the mob's feet (`MultiPlayerGameMode.interact`). The old fixed
+    /// [0, 1, 0] was a point inside every mob, which the server's
+    /// `interactAt` paths (armour stands, saddles, leashes) read as the click.
+    #[test]
+    fn an_interact_packet_carries_the_point_the_ray_hit() {
+        let feet = Vec3::new(0.5, 0.0, 2.0);
+        let eye = [0.5, 1.5, 1.0];
+        let dir = [0.0, 0.0, 1.0];
+        let box_at = Aabb::new(feet, Vec3::new(1.5, 2.0, 3.0));
+        let t = ray_box(eye, dir, 3.0, box_at).unwrap();
+        let point = Vec3::new(
+            eye[0] + dir[0] * t,
+            eye[1] + dir[1] * t,
+            eye[2] + dir[2] * t,
+        );
+        // The ray enters the box's near face halfway up it, directly above
+        // the feet: not the old centre point of the entity.
+        assert_eq!(interact_location(point, feet), [0.0, 1.5, 0.0]);
+    }
+
     /// A mod screen on a hopper or dispenser menu owns its slots: the stock
     /// grid stands back so `slot_position` reaches the mod's own slots
     /// (`native_screen_slot`) and its `inventory_y` (#5141). Without a mod
@@ -23893,7 +24203,7 @@ mod tests {
         let mut left = true;
         let mut right = true;
         drop_held_behind_dialog(false, &mut keys, &mut left, &mut right);
-        assert!(keys.contains(&KeyCode::KeyW) && left && right);
+        assert!(keys.raw(&KeyCode::KeyW) && left && right);
         drop_held_behind_dialog(true, &mut keys, &mut left, &mut right);
         assert!(keys.is_empty() && !left && !right);
 
@@ -23951,18 +24261,64 @@ mod tests {
     }
 
     #[test]
+    fn world_rest_drop_retires_a_blocked_worker_without_waiting() {
+        let (release, wait) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            wait.recv().unwrap();
+            Ok(())
+        });
+        let id = worker.thread().id();
+        drop(WorldRestLoader {
+            progress: Progress::new(),
+            handle: Some(worker),
+        });
+        assert!(
+            retired_rest_loaders()
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|h| h.thread().id() == id)
+        );
+        assert!(!poll_retired_rest_loaders());
+        release.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let _ = poll_retired_rest_loaders();
+            if retired_rest_loaders()
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|h| h.thread().id() != id)
+            {
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
     fn world_rest_poll_does_not_wait_for_a_blocked_worker() {
         let (release, wait) = std::sync::mpsc::channel();
         let loader = WorldRestLoader {
             progress: Progress::new(),
-            handle: std::thread::spawn(move || {
+            handle: Some(std::thread::spawn(move || {
                 wait.recv().unwrap();
                 Ok(())
-            }),
+            })),
         };
+        let id = loader.handle.as_ref().unwrap().thread().id();
         assert!(!loader.ready().unwrap());
         release.send(()).unwrap();
         loader.finish().unwrap();
+        assert!(
+            retired_rest_loaders()
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|h| h.thread().id() != id),
+            "finish must consume ownership rather than retire a joined thread"
+        );
     }
 
     #[test]
@@ -23970,10 +24326,10 @@ mod tests {
         let (release, wait) = std::sync::mpsc::channel();
         let loader = WorldRestLoader {
             progress: Progress::new(),
-            handle: std::thread::spawn(move || {
+            handle: Some(std::thread::spawn(move || {
                 wait.recv().unwrap();
                 Ok(())
-            }),
+            })),
         };
         // However long it takes, a worker still loading is not an error.
         assert!(!loader.ready().unwrap());
@@ -23988,7 +24344,7 @@ mod tests {
     fn world_rest_worker_failure_reaches_the_client() {
         let loader = WorldRestLoader {
             progress: Progress::new(),
-            handle: std::thread::spawn(|| Err("missing world table".to_owned())),
+            handle: Some(std::thread::spawn(|| Err("missing world table".to_owned()))),
         };
         assert_eq!(
             loader.finish().unwrap_err().to_string(),
@@ -24000,7 +24356,7 @@ mod tests {
     fn world_rest_worker_panic_reaches_the_client() {
         let loader = WorldRestLoader {
             progress: Progress::new(),
-            handle: std::thread::spawn(|| panic!("broken loader")),
+            handle: Some(std::thread::spawn(|| panic!("broken loader"))),
         };
         assert_eq!(
             loader.finish().unwrap_err().to_string(),

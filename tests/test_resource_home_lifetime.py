@@ -45,12 +45,18 @@ type Result<T>=std::result::Result<T,Box<dyn std::error::Error+Send+Sync>>;
 mod import{use super::*;HOME_ACCESS_FUNCTION
  pub fn home()->PathBuf{PathBuf::from(std::env::var_os("HORIZON_HOME_LIFETIME_FIXTURE").unwrap())}
 }
+struct Game;impl Game{fn game_dir()->PathBuf{import::home()}}
+static RECOVERY_OBSERVED:AtomicBool=AtomicBool::new(false);
+static SNAPSHOT_HELD:AtomicBool=AtomicBool::new(false);
+// The rollback implementation has real filesystem tests in mod_registry/storage.rs.
+// Here its boundary records that production startup recovered the correct home before reading.
+mod mod_registry{use super::*;pub fn with_content_snapshot<T>(home:&Path,read:impl FnOnce()->T)->Result<T>{assert_eq!(home,import::home());RECOVERY_OBSERVED.store(true,Ordering::SeqCst);SNAPSHOT_HELD.store(true,Ordering::SeqCst);let result=read();SNAPSHOT_HELD.store(false,Ordering::SeqCst);Ok(result)}}
 #[derive(Clone)]struct Mods{enabled:Vec<String>}
 #[derive(Clone)]struct Settings{resource_packs:Vec<String>,mods:Mods}
 struct Options{dev_mods:Vec<PathBuf>}
 fn launch_world(_: &Options)->Option<&str>{None}
 mod packs{use super::*;pub fn startup_root(root:&Path,_:&Vec<String>,_:&[()])->Result<PathBuf>{Ok(root.to_owned())}}
-mod mods{use super::*;pub fn content_root(root:&Path,_:&Vec<String>,_:&Vec<PathBuf>)->PathBuf{root.to_owned()}}
+mod mods{use super::*;pub fn content_root(root:&Path,_:&Vec<String>,_:&Vec<PathBuf>)->PathBuf{assert!(SNAPSHOT_HELD.load(Ordering::SeqCst),"content read escaped snapshot gate");root.to_owned()}}
 mod startup{pub fn step(_:&str){}}
 mod telemetry{pub fn mark_rest_ready(){}}
 mod world_loading{use super::*;pub fn write_prepared_files(_:PathBuf,_:Option<import::HomeAccess>){}}
@@ -70,6 +76,7 @@ fn load_world_rest(root:&Path,_:&Resources,_:&(),_:&(),_:&(),_:(),_:&Progress,_:
 
 LOAD_PREFIX = r'''
 fn load_resources_with_access(root:PathBuf,_:Option<&str>,vanilla_root:&Path,_:&Settings,started:Instant,menu:bool,headless:bool,progress:&Progress,home_access:Option<import::HomeAccess>,publish:&mut dyn FnMut(UiResources,&Path))->Result<Loaded>{
+ assert!(RECOVERY_OBSERVED.load(Ordering::SeqCst),"core read preceded mod transaction recovery");
  let core=fs::read_to_string(root.join("generation"))?;
  publish(0,&root);
  let resources=Arc::new(Resources{rest:OnceLock::new()});
@@ -88,7 +95,7 @@ fn main(){
  let mut loaded=loop{match rx.recv_timeout(Duration::from_secs(3)).unwrap(){LoaderMsg::Ui(..)=>{},LoaderMsg::Done(result)=>break result.unwrap()}};
  parent.join().unwrap();
  let limit=Instant::now()+Duration::from_secs(3);while !TAIL_STARTED.load(Ordering::SeqCst){assert!(Instant::now()<limit);std::thread::yield_now();}
- let tail=loaded.rest_loader.take().unwrap();assert!(!tail.handle.is_finished());
+ let tail=loaded.rest_loader.take().unwrap();assert!(!tail.ready().unwrap());
  let core=loaded.core.clone();let resources=loaded.resources.clone();drop(loaded);
  let (trying,attempted)=mpsc::channel();let(done,published)=mpsc::channel();let writer_home=home.clone();let writer_root=root.clone();
  let writer=std::thread::spawn(move||{trying.send(()).unwrap();import::with_home_access(&writer_home,||{fs::write(writer_root.join("generation"),"after")?;Ok(())}).unwrap();done.send(()).unwrap();});

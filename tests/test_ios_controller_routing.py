@@ -27,6 +27,15 @@ def program():
     end = gamepad.index("/// An action's name in the binds list:", begin)
     code += 'mod gamepad {\n' + gamepad[:begin] + gamepad[end:] + '\n}\n'
     code += 'use gamepad::{Button,PadState,Edges,GlyphStyle};\n#[derive(Clone,Debug,Default,PartialEq)]struct Device{name:String,vendor:Option<u16>,product:Option<u16>}\n'
+    # The JSON endpoint double retains every controller field, so the actual
+    # report_status method can be checked without linking the whole renderer.
+    code += r'''
+#[derive(Clone,Debug,PartialEq)]enum Value { Controller{name:String,vendor:Option<u16>,product:Option<u16>,category:String,gamepad:bool,active:bool}, Status{backend:bool,controllers:Vec<Value>} }
+macro_rules! json {
+ ({"name": $name:expr, "vendor": $vendor:expr, "product": $product:expr, "category": $category:expr, "gamepad": $gamepad:expr, "active": $active:expr}) => { Value::Controller{name:$name.clone(),vendor:$vendor,product:$product,category:$category.clone(),gamepad:$gamepad,active:$active} };
+ ({"backend": $backend:expr, "controllers": $controllers:expr}) => { Value::Status{backend:$backend,controllers:$controllers} };
+}
+'''
     code += source[source.index('#[derive(Default)]'):source.index('/// The glyphs')].replace('pub(super)', 'pub(crate)')
     code += r'''
 #[derive(Default)]struct Menu { armed:Option<Button> }
@@ -66,6 +75,9 @@ fn main(){
  let reconnected=snapshot(3,true,false,[0.,0.],0.);
  assert_eq!(router.update(vec![two.clone(),reconnected]),vec![PadEvent::Back(3),PadEvent::Press(3,Button::South)]);
  assert_eq!(router.uuid(3),[0;16]);assert!(!router.connected(1));
+ let mut reported=Pads::default();router.report_status(&mut reported,Some(3));
+ let Some(Value::Status{backend,controllers})=reported.devices.routed else{panic!("router status missing")};assert!(backend);
+ assert_eq!(controllers.iter().map(|v|match v{Value::Controller{active,..}=>*active,_=>panic!("not a controller")}).collect::<Vec<_>>(),[false,true]);
  assert_eq!(router.update(vec![]),vec![PadEvent::Gone(2),PadEvent::Gone(3)]);
  handoffs();
 }

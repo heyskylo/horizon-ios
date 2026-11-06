@@ -47,6 +47,8 @@ pub(super) struct StartupMenu {
     key_screen: u64,
     pub pending: Option<PendingWorldEntry>,
     pub reload_packs: bool,
+    /// Browse mods' worker (`mod_browser`).
+    mod_jobs: super::mod_browser::Jobs,
     pub perf: horizon_client::telemetry::Session,
 }
 
@@ -123,12 +125,7 @@ impl StartupMenu {
         game.perf = std::mem::take(&mut self.perf);
         game.narrator_toast = self.narrator_toast.take();
         game.narration = std::mem::take(&mut self.narration);
-        // Preserve an existing resource-error screen opened by start_game.
-        if self.options_open {
-            let resource_error = game.ui.options.resource_error.take();
-            game.ui.options = std::mem::take(&mut self.options);
-            game.ui.options.resource_error =
-                game.ui.options.resource_error.take().or(resource_error);
+        if self.handoff_options(&mut game.ui.options, &mut game.mods.jobs) {
             game.screen = Screen::Options;
             game.options_from_title = true;
             game.dragging = self.dragging;
@@ -136,6 +133,23 @@ impl StartupMenu {
         if let Some(focus) = self.key_focus.take() {
             game.key_focus_adopt(focus, self.key_slider_edit);
         }
+    }
+
+    /// Move the screen and its producer together during StartupMenu::handoff.
+    fn handoff_options(
+        &mut self,
+        options: &mut OptionsUi,
+        jobs: &mut super::mod_browser::Jobs,
+    ) -> bool {
+        *jobs = std::mem::take(&mut self.mod_jobs);
+        if !self.options_open {
+            return false;
+        }
+        // Preserve an existing resource-error screen opened by start_game.
+        let resource_error = options.resource_error.take();
+        *options = std::mem::take(&mut self.options);
+        options.resource_error = options.resource_error.take().or(resource_error);
+        true
     }
 
     /// After a frame is drawn: its widgets become the last frame's, and the
@@ -359,6 +373,7 @@ pub(super) fn spawn_loader(
     let world = launch_world(options).map(str::to_owned);
     let progress = progress.clone();
     let import_home = horizon_client::import::home();
+    let mod_home = Game::game_dir();
     let handle = std::thread::Builder::new()
         .name("resource-loader".into())
         .spawn(move || {
@@ -376,7 +391,9 @@ pub(super) fn spawn_loader(
                         pack_error = Some(error.to_string());
                         vanilla_root.clone()
                     });
-                let root = mods::content_root(&root, &settings.mods.enabled, &dev_mods);
+                let root = horizon_client::mod_registry::with_content_snapshot(&mod_home, || {
+                    mods::content_root(&root, &settings.mods.enabled, &dev_mods)
+                })?;
                 load_resources_with_access(
                     root,
                     world.as_deref(),
@@ -403,6 +420,9 @@ pub(super) fn spawn_loader(
 }
 
 impl Loading {
+    pub(super) fn shutdown_mod_browser(&mut self) -> bool {
+        self.menu.mod_jobs.shutdown()
+    }
     pub(super) fn poll_menu_resources(&mut self) -> Result<()> {
         // Once `Done` arrived the generation is over: the caller may have taken
         // its result, and the finished loader's channel is closed.
@@ -430,7 +450,18 @@ impl Loading {
                 }
             }
         }
+        self.drive_menu_mod_browser();
         self.restart_menu_resources()
+    }
+    /// The startup menu's Browse mods, as `Game::drive_mod_browser`.
+    fn drive_menu_mod_browser(&mut self) {
+        let menu = &mut self.menu;
+        if menu
+            .mod_jobs
+            .poll(&mut menu.options.mod_browser, &mut self.settings.mods)
+        {
+            self.settings.save(&Game::options_path());
+        }
     }
     pub(super) fn apply_menu_settings(&mut self) {
         if let Some(renderer) = &mut self.renderer {
@@ -572,6 +603,15 @@ impl Loading {
                     let _ = std::fs::create_dir_all(&dir);
                     packs::open_folder(&dir);
                 }
+                Event::BrowseMods => {
+                    let ui = &mut self.menu.options.mod_browser;
+                    self.menu.mod_jobs.browse(ui, Game::game_dir());
+                }
+                Event::InstallMod(id) => {
+                    let ui = &mut self.menu.options.mod_browser;
+                    self.menu.mod_jobs.install(ui, Game::game_dir(), id);
+                }
+                Event::OpenModPage(url) => packs::open_uri(&url),
                 Event::ListShaderPacks => {
                     self.settings.shader_packs =
                         horizon_client::shader_pack_list::scan(&Game::shader_packs_dir());
@@ -624,7 +664,8 @@ impl Loading {
                     super::packs::open_uri(super::options::ACCESSIBILITY_HELP_LINK)
                 }
                 // Mods' settings pages open only in a running game.
-                Event::NativeSettings(_) | Event::NativeButton(..) => {}
+                // The HUD editor needs a world: its button is inactive here.
+                Event::NativeSettings(_) | Event::NativeButton(..) | Event::HudEditor => {}
                 // The startup menu runs before the game opens a control socket,
                 // and before its sound engine (no clicks, no volume previews,
                 // and no music tracks to list or play).
@@ -1331,6 +1372,7 @@ mod tests {
             receiver,
             loaded: None,
             delivered: false,
+            completed_without_game: false,
             handle: None,
             shown: false,
             ui_at: None,
@@ -1340,6 +1382,157 @@ mod tests {
             brand: Default::default(),
             error: None,
         }
+    }
+
+    #[test]
+    fn startup_options_handoff_moves_the_mod_install_and_its_busy_screen_together() {
+        let (jobs, release) = super::super::mod_browser::Jobs::blocked_test_install();
+        let mut menu = StartupMenu {
+            mod_jobs: jobs,
+            options_open: true,
+            ..Default::default()
+        };
+        menu.options.mod_browser.installing = Some("ruby".into());
+        let mut target = OptionsUi::default();
+        target.resource_error = Some("existing resource error".into());
+        let mut jobs = super::super::mod_browser::Jobs::default();
+        assert!(menu.handoff_options(&mut target, &mut jobs));
+        drop(menu);
+        assert_eq!(target.mod_browser.installing.as_deref(), Some("ruby"));
+        assert_eq!(
+            target.resource_error.as_deref(),
+            Some("existing resource error")
+        );
+        let mut mods = horizon_client::mod_list::ModList::default();
+        assert!(!jobs.poll(&mut target.mod_browser, &mut mods));
+        release.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !jobs.poll(&mut target.mod_browser, &mut mods) {
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        assert!(target.mod_browser.installing.is_none());
+        assert!(mods.enabled.contains("ruby"));
+        assert!(!jobs.poll(&mut target.mod_browser, &mut mods));
+        while !jobs.shutdown() {
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn fatal_startup_keeps_its_mod_worker_owned_until_shutdown_finishes() {
+        let (_sender, receiver) = std::sync::mpsc::channel();
+        let mut loading = loading(receiver);
+        let (jobs, release) = super::super::mod_browser::Jobs::blocked_test_install();
+        loading.menu.mod_jobs = jobs;
+        loading.error = Some("startup failed".into());
+        assert!(!loading.shutdown_mod_browser());
+        release.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !loading.shutdown_mod_browser() {
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        assert!(loading.error.is_some());
+    }
+
+    #[test]
+    #[ignore = "requires prepared vanilla resources in HORIZON_TEST_RESOURCES"]
+    fn failed_handoff_keeps_options_and_does_not_mark_a_completed_harness() {
+        let root =
+            PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").expect("prepared resources"));
+        let settings = Settings::default();
+        // Real CPU resources and pack state, but no window/GPU. finish fails at
+        // its missing menu bundle before any renderer construction is attempted.
+        let mut loaded = super::super::load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| {},
+        )
+        .unwrap();
+        let home = std::env::temp_dir().join(format!(
+            "horizon-failed-handoff-tail-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&home).unwrap();
+        let access = horizon_client::import::acquire_home_access(&home).unwrap();
+        let worker_access = access.clone();
+        loaded.home_access = Some(access);
+        let (release, waiting) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let _access = worker_access;
+            waiting.recv().unwrap();
+            Ok(())
+        });
+        let id = worker.thread().id();
+        loaded.rest_loader = Some(WorldRestLoader {
+            progress: Progress::new(),
+            handle: Some(worker),
+        });
+        let (_sender, receiver) = std::sync::mpsc::channel();
+        let mut loading = loading(receiver);
+        loading.options =
+            Options::parse(["--resources".into(), root.to_string_lossy().into_owned()].into_iter())
+                .unwrap();
+        let error = loading.finish(loaded).err().expect("missing GUI must fail");
+        let retained = retired_rest_loaders()
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|h| h.thread().id() == id);
+        let pending = !poll_retired_rest_loaders();
+        let writer_home = home.clone();
+        let (attempting, attempted) = std::sync::mpsc::channel();
+        let (published, publication) = std::sync::mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            attempting.send(()).unwrap();
+            horizon_client::import::with_home_access(&writer_home, || {
+                std::fs::write(writer_home.join("published"), b"new generation")?;
+                Ok(())
+            })
+            .unwrap();
+            published.send(()).unwrap();
+        });
+        attempted.recv().unwrap();
+        let escaped = publication.recv_timeout(Duration::from_millis(100)).is_ok();
+        // Always release the real worker before asserting, so a regression
+        // cannot leave a blocked producer behind in this test process.
+        release.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let _ = poll_retired_rest_loaders();
+            if retired_rest_loaders()
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|h| h.thread().id() != id)
+            {
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        writer.join().unwrap();
+        assert!(
+            retained && pending,
+            "failed Loaded handoff detached its active tail"
+        );
+        assert!(
+            !escaped,
+            "failed handoff released HomeAccess while the tail still read"
+        );
+        assert!(home.join("published").is_file());
+        std::fs::remove_dir_all(home).unwrap();
+        assert!(error.to_string().contains("missing menu bundle"));
+        assert_eq!(loading.options.as_ref().unwrap().resources, root);
+        assert!(!loading.completed_without_game);
     }
 
     #[test]

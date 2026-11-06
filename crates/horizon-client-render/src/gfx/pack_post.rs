@@ -2925,7 +2925,7 @@ impl PackPost {
                 },
                 &[
                     texture_entry(0, float),
-                    texture_entry(1, wgpu::TextureSampleType::Depth),
+                    texture_entry(1, wgpu::TextureSampleType::Float { filterable: false }),
                 ],
                 &blit_targets,
                 // GL's window depth, written for depthtex0 and the terrain's depth test.
@@ -4759,7 +4759,12 @@ impl PackPost {
             return;
         }
         if let Some(targets) = &mut self.targets {
-            if size == window {
+            if size == window
+                || !self
+                    .passes
+                    .iter()
+                    .any(|p| p.group == Group::Final && matches!(p.pipeline, Pipeline::Render(_)))
+            {
                 targets.final_color = None;
             } else if targets.final_color.is_none() {
                 targets.final_color = Some(
@@ -5091,6 +5096,7 @@ impl PackPost {
             self.mips_valid |= stale;
             let final_pass = pass.group == Group::Final;
             // A pass writing buffers of a size of their own draws at that size (they share it).
+            // `final` draws the picture at the world's size; a copy takes it to the window.
             let out = match pass.writes.first() {
                 _ if final_pass => size,
                 Some(&(_, b)) => self.targets.as_ref().map_or(size, |t| t.sizes[b]),
@@ -5197,6 +5203,13 @@ impl PackPost {
             let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Shader pack colortex0"),
                 color_attachments: &[attach(screen, overwrite)],
+                timestamp_writes: self.timing.as_mut().and_then(|t| {
+                    t.writes(if shown {
+                        "final copy"
+                    } else {
+                        "colortex0 copy"
+                    })
+                }),
                 ..Default::default()
             });
             rp.set_pipeline(if shown { &self.present.0 } else { &self.copy.0 });

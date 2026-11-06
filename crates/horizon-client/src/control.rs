@@ -162,8 +162,28 @@ pub fn default_path() -> PathBuf {
     dir.join("horizon-control.sock")
 }
 
+/// Whether `path` can be an endpoint at all, without touching it: a Unix socket's path has a
+/// length limit (`sockaddr_un`); a TCP endpoint is an ordinary file and has none.
+pub fn check_path(path: &Path) -> io::Result<()> {
+    if uses_tcp(path) {
+        return Ok(());
+    }
+    #[cfg(unix)]
+    std::os::unix::net::SocketAddr::from_pathname(path).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "{} bytes is too long for a Unix socket path; use a shorter one",
+                path.as_os_str().len()
+            ),
+        )
+    })?;
+    Ok(())
+}
+
 impl Server {
     pub fn start(path: &Path) -> io::Result<Self> {
+        check_path(path)?;
         // An endpoint left by a crashed game refuses connections; replace it.
         if path.exists() && connect(path).is_err() {
             std::fs::remove_file(path)?;
@@ -352,6 +372,37 @@ fn serve(stream: Stream, sender: &mpsc::Sender<Request>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The check agrees with the system at every length around its limit.
+    #[cfg(unix)]
+    #[test]
+    fn check_path_says_what_bind_does() {
+        let dir = std::env::temp_dir().join(format!("hz-sock-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (mut fits, mut too_long) = (false, false);
+        for len in 1..=150 {
+            let path = dir.join("x".repeat(len));
+            let bound = UnixListener::bind(&path).is_ok();
+            assert_eq!(check_path(&path).is_ok(), bound, "{}", path.display());
+            let _ = std::fs::remove_file(&path);
+            fits |= bound;
+            too_long |= !bound;
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(fits && too_long, "the lengths tried must cross the limit");
+    }
+
+    /// A `.json` endpoint is a file and TCP: the socket limit is not its limit.
+    #[test]
+    fn long_tcp_endpoint_opens() {
+        let dir = std::env::temp_dir().join(format!("hz-long-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("{}.json", "x".repeat(150)));
+        let server = Server::start(&path);
+        assert!(server.is_ok(), "{:?}", server.err());
+        drop(server);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn tcp_endpoint_round_trip() {

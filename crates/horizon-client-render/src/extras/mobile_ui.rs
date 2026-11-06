@@ -9,7 +9,7 @@ pub enum Item {
     Pregen,
     /// Shared PvP & HUD page options, with their upstream translations.
     Pvp(crate::pvp::Opt),
-    CosmeticsAuras,
+    CosmeticsHideFx,
     MusicPage,
     CosmeticsMine,
     CosmeticsOthers,
@@ -103,7 +103,7 @@ pub fn rows() -> Vec<Result<Item, &'static str>> {
             Ok(CosmeticsMine),
             Ok(CosmeticsSolo),
             Ok(CosmeticsOthers),
-            Ok(CosmeticsAuras),
+            Ok(CosmeticsHideFx),
             Ok(HorizonMarks),
             Ok(HorizonMe),
         ]);
@@ -131,7 +131,7 @@ impl Item {
             Self::Pvp(option) => super::desktop_ui::Item::Pvp(option),
             Self::PackBrowser => super::desktop_ui::Item::PackBrowser,
             Self::Pregen => super::desktop_ui::Item::Pregen,
-            Self::CosmeticsAuras => super::desktop_ui::Item::CosmeticsAuras,
+            Self::CosmeticsHideFx => super::desktop_ui::Item::CosmeticsHideFx,
             Self::MusicPage => super::desktop_ui::Item::MusicPage,
             Self::CosmeticsMine => super::desktop_ui::Item::CosmeticsMine,
             Self::CosmeticsOthers => super::desktop_ui::Item::CosmeticsOthers,
@@ -215,7 +215,7 @@ impl Item {
             Item::Pregen => "horizon.extras.pregen.tooltip",
             Item::CosmeticsMine => "horizon.extras.cosmetics_mine.tooltip",
             Item::CosmeticsOthers => "horizon.extras.cosmetics_others.tooltip",
-            Item::CosmeticsAuras => "horizon.extras.cosmetics_auras.tooltip",
+            Item::CosmeticsHideFx => "horizon.extras.cosmetics_hide_fx.tooltip",
             Item::CosmeticsSolo => "horizon.extras.cosmetics_solo.tooltip",
             Item::HorizonMarks => "horizon.extras.horizon_marks.tooltip",
             Item::HorizonMe => "horizon.extras.horizon_me.tooltip",
@@ -228,7 +228,7 @@ impl Item {
             Item::Pvp(_)
             | Item::PackBrowser
             | Item::Pregen
-            | Item::CosmeticsAuras
+            | Item::CosmeticsHideFx
             | Item::MusicPage
             | Item::CosmeticsMine
             | Item::CosmeticsOthers
@@ -277,7 +277,7 @@ impl Item {
             Pvp(option) => return option.parent().map(Pvp),
             ChatIndicator => ChatAnimation,
             HideBlockParticles | UiSoundReserve | ChatAnimation | Splitscreen | PackBrowser
-            | Pregen | CosmeticsAuras | MusicPage | CosmeticsMine | CosmeticsOthers
+            | Pregen | CosmeticsHideFx | MusicPage | CosmeticsMine | CosmeticsOthers
             | CosmeticsSolo | HorizonMarks | HorizonMe | ReproKeys | WheelCyclesSettings => {
                 return None;
             }
@@ -299,7 +299,7 @@ impl Item {
             Item::Pvp(_)
             | Item::PackBrowser
             | Item::Pregen
-            | Item::CosmeticsAuras
+            | Item::CosmeticsHideFx
             | Item::MusicPage
             | Item::CosmeticsMine
             | Item::CosmeticsOthers
@@ -380,7 +380,7 @@ impl Item {
             Item::Pvp(_)
             | Item::PackBrowser
             | Item::Pregen
-            | Item::CosmeticsAuras
+            | Item::CosmeticsHideFx
             | Item::MusicPage
             | Item::CosmeticsMine
             | Item::CosmeticsOthers
@@ -450,7 +450,7 @@ impl Item {
             Item::Pvp(_)
             | Item::PackBrowser
             | Item::Pregen
-            | Item::CosmeticsAuras
+            | Item::CosmeticsHideFx
             | Item::MusicPage
             | Item::CosmeticsMine
             | Item::CosmeticsOthers
@@ -501,6 +501,7 @@ impl Item {
     /// The key name the options screen waits on for a key item.
     pub fn key_name(self) -> Option<&'static str> {
         match self {
+            Item::Pvp(_) => self.shared().unwrap().key_name(),
             Item::ZoomKey => Some(ZOOM_KEY),
             Item::SortKey => Some(SORT_KEY),
             _ => None,

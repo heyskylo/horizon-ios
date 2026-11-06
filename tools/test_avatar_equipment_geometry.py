@@ -166,6 +166,9 @@ def main():
         verify_emotes(json.loads((args.output / 'emotes.json').read_text()))
         verify_emote_visibility(json.loads((args.output / 'emote_visibility.json').read_text()))
         verify_emote_catalogue(json.loads((args.output / 'emote_catalogue.json').read_text()))
+        fx_reset = json.loads((args.output / 'cosmetics_fx_reset.json').read_text())
+        assert fx_reset == {'oldEntityMotionCleared': True, 'trailBudgetBefore': 4, 'trailBudgetAfter': 0,
+                            'cataloguePreserved': True, 'ownedRequestSurvived': True, 'catalogueReceiverSurvived': True}, fx_reset
         print(f'{len(rows)} actual Game world/preview avatar equipment geometry cases, 4 visual-crouch cases and 8 posed-emote/frustum cases passed')
 
 

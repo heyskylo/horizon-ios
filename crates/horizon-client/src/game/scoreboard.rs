@@ -3,6 +3,7 @@
 //! entities, the selector options `scores=`, `team=` and `tag=`, the
 //! commands' [`Env`] and the sidebar.
 use super::{Game, chat::PLAYER_NAME, commands::Target};
+use horizon_client::actions::Action;
 use horizon_client::{
     command::{
         Context,
@@ -818,8 +819,7 @@ impl Game<'_> {
         use horizon_client::tab_list::{self, TabInputs};
         // Skin preparation ran before the frame's optional HUD widgets.
         // This layer may be cancelled without stopping NPC skin progress.
-        let key = self.screen == super::Screen::Playing
-            && self.keys.contains(&winit::keyboard::KeyCode::Tab);
+        let key = self.screen == super::Screen::Playing && self.keys.held(Action::Playerlist);
         let (mut players, online_mode, upside_down) = match self.remote_tab_players() {
             Some(remote) => remote,
             None => {

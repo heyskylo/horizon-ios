@@ -55,8 +55,9 @@ for t in sh bash cat awk sed grep cut head find mkdir mktemp rm mv ln chmod cp b
 done
 # The fake curl: the API address answers with release.json, any other address with the file of that name.
 mkdir "$W/fake"
-cat > "$W/fake/curl" <<'CURL'
-#!/bin/sh
+# Variables belong to the generated script, not this fixture writer.
+# shellcheck disable=SC2016
+printf '%s\n' '#!/bin/sh
 out=; url=
 while [ $# -gt 0 ]; do case "$1" in -o) out=$2; shift 2 ;; -*) shift ;; *) url=$1; shift ;; esac; done
 case "$url" in
@@ -64,14 +65,12 @@ case "$url" in
   *) src=$REL/files/$(basename "$url") ;;
 esac
 [ -f "$src" ] || exit 22
-if [ -n "$out" ]; then cp "$src" "$out"; else cat "$src"; fi
-CURL
+if [ -n "$out" ]; then cp "$src" "$out"; else cat "$src"; fi' > "$W/fake/curl"
 chmod +x "$W/fake/curl"
 # The fixture release is Linux x86-64 regardless of the test host.
-cat > "$W/fake/uname" <<'UNAME'
-#!/bin/sh
-case "$1" in -m) echo x86_64 ;; *) echo Linux ;; esac
-UNAME
+# shellcheck disable=SC2016
+printf '%s\n' '#!/bin/sh
+case "$1" in -m) echo x86_64 ;; *) echo Linux ;; esac' > "$W/fake/uname"
 chmod +x "$W/fake/uname"
 
 # install.sh with the throwaway public key in place of the release key.
@@ -146,7 +145,7 @@ run "$d" "$P" --version v1.2.3; verdict "wrong key refused" 1 "signature doesn't
 d=$W/none; make_release "$d" v1.2.3; with_key "$d"
 run "$d" "$W/nossl" --version v1.2.3; verdict "no OpenSSL: installs, says it was not checked" 0 "OpenSSL isn't installed" "$d"
 printf 'x' >> "$d/files/horizon-server-linux-x86_64.tar.gz"
-d2=$W/none2; cp -r "$d" "$d2"; rm -rf "$d2/inst" "$d2/bin"; edit 's/"digest": "sha256:[0-9a-f]*"/"digest": "sha256:0000"/' "$d2/release.json"
+d2=$W/none2; cp -r "$d" "$d2"; rm -rf "${d2:?}/inst" "${d2:?}/bin"; edit 's/"digest": "sha256:[0-9a-f]*"/"digest": "sha256:0000"/' "$d2/release.json"
 run "$d2" "$W/nossl" --version v1.2.3; verdict "no OpenSSL: a wrong GitHub SHA-256 still refused" 1 "doesn't match its SHA-256" "$d2"
 
 # 8. Old OpenSSL and LibreSSL (macOS): says so, keeps the SHA-256 check.

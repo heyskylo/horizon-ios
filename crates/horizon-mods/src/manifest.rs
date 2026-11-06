@@ -320,18 +320,38 @@ pub struct Package {
     /// None for a content-only mod (capability `registries`, no code).
     pub wasm: Option<Vec<u8>>,
 }
+/// The overflow byte must be rejected for manifests as well as code; never
+/// accept a valid prefix of a truncated oversized TOML document.
+fn read_package_entry(reader: impl Read, name: &str) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+    reader
+        .take(MAX_WASM + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    if bytes.len() as u64 > MAX_WASM {
+        return Err(format!("{name} is over {} MiB", MAX_WASM >> 20));
+    }
+    Ok(bytes)
+}
+
 impl Package {
     /// A `.hmod` (a zip holding `horizon-mod.toml`, `mod.wasm` and, for
     /// content, `assets/` and `data/`) or a folder holding the same.
     pub fn read(path: &Path) -> Result<Self, String> {
         let (toml, wasm) = if path.is_dir() {
-            let toml = std::fs::read_to_string(path.join(MANIFEST));
-            let wasm = path.join(WASM);
-            let wasm = match wasm.exists() {
-                true => Some(std::fs::read(wasm).map_err(|e| format!("{WASM}: {e}"))?),
-                false => None,
+            let read = |name: &str| -> Result<Vec<u8>, String> {
+                let file =
+                    std::fs::File::open(path.join(name)).map_err(|e| format!("{name}: {e}"))?;
+                read_package_entry(file, name)
             };
-            (toml.map_err(|e| format!("{MANIFEST}: {e}"))?, wasm)
+            let toml =
+                String::from_utf8(read(MANIFEST)?).map_err(|_| format!("{MANIFEST}: not UTF-8"))?;
+            let wasm = if path.join(WASM).exists() {
+                Some(read(WASM)?)
+            } else {
+                None
+            };
+            (toml, wasm)
         } else {
             let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
             let mut zip = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
@@ -341,11 +361,7 @@ impl Package {
                     Err(zip::result::ZipError::FileNotFound) => return Ok(None),
                     Err(e) => return Err(format!("{name}: {e}")),
                 };
-                let mut out = Vec::new();
-                f.take(MAX_WASM + 1)
-                    .read_to_end(&mut out)
-                    .map_err(|e| e.to_string())?;
-                Ok(Some(out))
+                read_package_entry(f, name).map(Some)
             };
             let toml = entry(MANIFEST)?.ok_or_else(|| format!("{MANIFEST}: missing"))?;
             let toml = String::from_utf8(toml).map_err(|_| format!("{MANIFEST}: not UTF-8"))?;
@@ -421,6 +437,17 @@ pub fn find(dir: &Path) -> Vec<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn oversized_manifest_prefix_is_rejected_before_toml_parsing() {
+        let prefix = b"id=\"ruby\"\n";
+        let oversized = std::io::Read::chain(
+            &prefix[..],
+            std::io::Read::take(std::io::repeat(b' '), super::MAX_WASM),
+        );
+        let error = super::read_package_entry(oversized, super::MANIFEST).unwrap_err();
+        assert!(error.contains(super::MANIFEST));
+        assert!(error.contains("is over"));
+    }
     use super::*;
 
     const EXAMPLE: &str = r#"

@@ -785,10 +785,7 @@ impl Sprites {
 /// LabPBR maps.
 fn read_rgba(path: &Path) -> Result<(u32, u32, Vec<u8>)> {
     let bytes = horizon_core::prepared_files::read(path)?;
-    let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
-    decoder.ignore_checksums(true);
-    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
-    let mut reader = decoder.read_info()?;
+    let mut reader = crate::hud::resource_png_decoder(&bytes).read_info()?;
     let output_size = reader
         .output_buffer_size()
         .ok_or("sprite exceeds decoder limits")?;
@@ -928,6 +925,40 @@ pub(crate) fn sprite_mipmap_limit(requested: u32, size: u32, minimum: u32, avail
 mod tests {
     use super::*;
     use std::fs::{self, File};
+    #[test]
+    fn unused_png_text_preserves_sprite_pixels_and_mcmeta_animation() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "horizon-text-sprite-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir(&root).unwrap();
+        let path = root.join("sprite.png");
+        fs::write(&path, crate::hud::text_metadata_png_fixture()).unwrap();
+        let (width, height, pixels) = read_rgba(&path).unwrap();
+        assert_eq!((width, height), (2, 2));
+        assert_eq!(pixels, (1u8..=16).collect::<Vec<_>>());
+        let meta = r#"{"animation":{"width":2,"height":1,"frametime":3}}"#;
+        fs::write(path.with_extension("png.mcmeta"), meta).unwrap();
+        let decoded = Sprites::decode_file(&path, "test:strip").unwrap();
+        assert_eq!(decoded.side, 2);
+        assert_eq!(
+            decoded.frames,
+            vec![
+                (1u8..=8).cycle().take(16).collect::<Vec<_>>(),
+                (9u8..=16).cycle().take(16).collect::<Vec<_>>()
+            ]
+        );
+        let animation: serde_json::Value =
+            serde_json::from_str(decoded.animation.as_deref().unwrap()).unwrap();
+        assert_eq!(animation["frametime"], 3);
+        assert_eq!(animation["height"], 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
     /// A tiny valid PNG stream with a large, CRC-correct IHDR. Pixel decode
     /// would fail on its short IDAT; the allocation guard must reject first.
     fn png_with_canvas(color: png::ColorType, width: u32, height: u32) -> Vec<u8> {

@@ -246,7 +246,7 @@ impl Game<'_> {
         let scale = self.touch_batch().map_or(1.0, |b| b.scale);
         let result = due
             .into_iter()
-            .try_for_each(|(button, _)| self.play_mouse(button, false))
+            .try_for_each(|(button, _)| self.mouse_mapping(button, false, Source::Touch))
             .and_then(|()| self.touch_act(out, scale));
         if let Err(e) = result {
             log::warn!("Horizon: touch: {e}");
@@ -269,6 +269,13 @@ impl Game<'_> {
 
     /// The held item is used for as long as the button stays down: something eaten or drunk (its
     /// `consumable` component), or a bow, crossbow, trident, shield, spyglass, goat horn or brush.
+    /// Live touch sources for the shared attack/use mapping. Short taps remain
+    /// held until their delayed release; a long press lives in `holding`.
+    pub(super) fn touch_holds_mouse_mapping(&self, button: MouseButton) -> bool {
+        self.touch.holding == Some(button)
+            || self.touch.late.iter().any(|(held, _)| *held == button)
+    }
+
     fn touch_holds_use(&self) -> bool {
         let Some(stack) = self.held() else {
             return false;
@@ -348,7 +355,7 @@ impl Game<'_> {
                     } else {
                         MouseButton::Right
                     };
-                    self.play_mouse(button, true)?;
+                    self.mouse_mapping(button, true, Source::Touch)?;
                     self.touch.late.push((button, self.ticks));
                 }
                 // Holding still: what the hand holds decides, as in Pocket Edition. Food, potions and the items
@@ -362,11 +369,11 @@ impl Game<'_> {
                         MouseButton::Left
                     };
                     self.touch.holding = Some(button);
-                    self.play_mouse(button, true)?;
+                    self.mouse_mapping(button, true, Source::Touch)?;
                 }
                 Out::MineEnd => {
                     let button = self.touch.holding.take().unwrap_or(MouseButton::Left);
-                    self.play_mouse(button, false)?;
+                    self.mouse_mapping(button, false, Source::Touch)?;
                 }
             }
         }
@@ -487,6 +494,7 @@ impl Game<'_> {
     /// from a tap. Fields retain selection dragging; sliders and slots retain holds.
     fn touch_menu_mode(&self, at: (f32, f32)) -> MenuMode {
         if self.screen == Screen::Inventory
+            || self.hud_editor_drag_target(self.screen_point(at))
             || horizon_client::widgets::last_targets()
                 .iter()
                 .rev()

@@ -7,11 +7,16 @@
 //! service once a run, `OwnerCheck`): anyone else sees a vanilla game and the game asks nothing
 //! about other players, until the player chooses otherwise in the settings.
 
+mod fx;
+
 use super::Game;
 use horizon_client::fast_hash::FxHashMap;
+use horizon_client::mesher::Vertex;
 use horizon_client::mobs::anim::Poses;
 use horizon_client::mobs::{Mob, Part, Polygon};
+use horizon_cosmetics::follow::Follow;
 use horizon_cosmetics::prefs::{self, Others};
+use horizon_cosmetics::trail::{Budget, Emitter};
 use horizon_cosmetics::{Item, Slot};
 use std::cell::{Cell, RefCell};
 use std::sync::Arc;
@@ -68,6 +73,8 @@ pub(super) struct Cosmetics {
     feed: Option<horizon_cosmetics::Feed>,
     /// My emote on its way to the service.
     emote_out: EmoteOut,
+    /// Companions, trails and auras.
+    fx: RefCell<Fx>,
 }
 
 /// The emote the player plays, told to the service: the last wish sent (`Some(None)`: stopped),
@@ -133,6 +140,49 @@ fn load_owned_emotes(
         },
         |path| horizon_cosmetics::Transport::get(service, path),
     )
+}
+
+/// The key of the player's own model in `Fx`'s maps (others go by entity id).
+const OWN: u32 = u32::MAX;
+/// Full light, for what glows.
+const FULL_LIGHT: u32 = 240 | 240 << 8;
+
+/// What companions and trails keep between frames, per wearer (marked with the frame they were
+/// last drawn in; the others are dropped), and the frame's trails and auras, drawn after the
+/// players (`cosmetics_fx_geometry`).
+#[derive(Default)]
+struct Fx {
+    companions: FxHashMap<u32, (Follow, u32)>,
+    trails: FxHashMap<u32, (Emitter, u32)>,
+    budget: Budget,
+    clock: Option<(Instant, Instant)>,
+    /// Ticks since the first frame, and the last frame's length in seconds.
+    now: f64,
+    dt: f32,
+    /// Trails and auras: see-through.
+    clear: Vec<Vertex>,
+}
+
+impl Fx {
+    /// A new frame: the clock moves on and what no frame drew since the last one goes.
+    fn frame(&mut self, frame: u32) {
+        let now = Instant::now();
+        let (start, last) = self.clock.get_or_insert((now, now));
+        self.dt = now.duration_since(*last).as_secs_f32().min(0.25);
+        self.now = now.duration_since(*start).as_secs_f64() * 20.0;
+        *last = now;
+        let seen = |mark: u32| frame.wrapping_sub(mark) <= 1;
+        self.companions.retain(|_, (_, mark)| seen(*mark));
+        let budget = &mut self.budget;
+        self.trails.retain(|_, (e, mark)| {
+            let keep = seen(*mark);
+            if !keep {
+                e.clear(budget);
+            }
+            keep
+        });
+        self.clear.clear();
+    }
 }
 
 /// Whether the signed-in account owns a cosmetic: the answer kept from the last run first
@@ -414,6 +464,8 @@ fn covered(m: &Mob, slot: Slot) -> bool {
             .as_deref()
             .is_some_and(|c| c != "minecraft:elytra"),
         Slot::NameTag | Slot::Emote => true,
+        // On no bone: drawn by a pass of their own, never on the body.
+        Slot::Companion | Slot::Trail | Slot::Aura => true,
     }
 }
 
@@ -438,6 +490,88 @@ fn body_top(
 }
 
 impl Game<'_> {
+    /// Cosmetic motion and particle budgets belong to one client level.
+    pub(super) fn clear_cosmetics_fx(&mut self) {
+        *self.cosmetics.fx.get_mut() = Fx::default();
+    }
+
+    /// Isolated actual-Game regression: a level reset releases cosmetic motion
+    /// and budget, while an owned request and the current catalogue survive.
+    pub(super) fn cosmetics_fx_reset_fixture(
+        &mut self,
+    ) -> horizon_client::Result<serde_json::Value> {
+        use horizon_cosmetics::{From, Trail};
+        use std::sync::mpsc;
+        let item = Arc::new(Item::parse(br#"{"format":1,"id":"kept","slot":"emote","parts":[],"emote":{"length":20,"tracks":[{"part":"head","keys":[{"t":0}]}]}}"#)?);
+        self.emotes.owned = vec![item.clone()];
+        self.emotes.names.insert("kept".into(), Default::default());
+        let kept = self.emotes.catalogue.kept.clone();
+        let (result_tx, result_rx) = mpsc::channel();
+        self.emotes.catalogue.loading = Some(result_rx);
+        let cancel = self.cosmetics.workers.cancellation();
+        let (release, held) = mpsc::channel();
+        let (entered, started) = mpsc::channel();
+        let request = self.cosmetics.workers.spawn(move || {
+            entered.send(()).map_err(|e| e.to_string())?;
+            held.recv().map_err(|e| e.to_string())?;
+            Ok(19)
+        });
+        started.recv_timeout(Duration::from_secs(2))?;
+        let trail = Trail {
+            sprites: 1,
+            rate: 4.0,
+            lifetime: 40,
+            size: [1.0, 1.0],
+            gravity: 0.0,
+            drift: 0.0,
+            spin: 0.0,
+            from: From::Feet,
+            fade: false,
+            glow: false,
+        };
+        *self.cosmetics.fx.get_mut() = Fx::default();
+        let fx = self.cosmetics.fx.get_mut();
+        let mut emitter = Emitter::default();
+        emitter.step(&trail, glam::DVec3::ZERO, true, 0.0, &mut fx.budget);
+        emitter.step(&trail, glam::DVec3::X, true, 1.0, &mut fx.budget);
+        fx.trails.insert(17, (emitter, 1));
+        fx.companions
+            .insert(17, (Follow::at(glam::DVec3::new(4.0, 64.0, 4.0), 90.0), 1));
+        fx.clock = Some((Instant::now(), Instant::now()));
+        assert_eq!(fx.budget.alive, 4);
+        self.clear_entities();
+        let fx = self.cosmetics.fx.borrow();
+        assert!(fx.trails.is_empty() && fx.companions.is_empty() && fx.clock.is_none());
+        assert_eq!(fx.budget.alive, 0);
+        drop(fx);
+        assert!(Arc::ptr_eq(&item, &self.emotes.owned[0]));
+        assert!(self.emotes.names.contains_key("kept"));
+        assert!(Arc::ptr_eq(&kept, &self.emotes.catalogue.kept));
+        assert!(Arc::ptr_eq(&cancel, &self.cosmetics.workers.cancellation()));
+        assert!(!cancel.cancelled() && !self.cosmetics.workers.closed());
+        assert!(matches!(request.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        release.send(())?;
+        assert_eq!(request.recv_timeout(Duration::from_secs(2))?, Ok(19));
+        result_tx
+            .send(Ok(horizon_cosmetics::account::OwnedEmotes {
+                emotes: vec![],
+                complete: true,
+            }))
+            .map_err(|_| "catalogue receiver was dropped")?;
+        assert!(
+            self.emotes
+                .catalogue
+                .loading
+                .take()
+                .unwrap()
+                .try_recv()?
+                .is_ok()
+        );
+        Ok(
+            serde_json::json!({"oldEntityMotionCleared":true,"trailBudgetBefore":4,"trailBudgetAfter":0,"cataloguePreserved":true,"ownedRequestSurvived":true,"catalogueReceiverSurvived":true}),
+        )
+    }
+
     /// Once a frame, before drawing: starts the service's client on first use and puts the
     /// textures the last frame wanted into the atlas.
     pub(super) fn cosmetics_frame(&mut self) {
@@ -460,6 +594,7 @@ impl Game<'_> {
             }
         }
         c.frame.set(c.frame.get().wrapping_add(1));
+        c.fx.get_mut().frame(c.frame.get());
         // Item files from a folder (the art, the bench): shown as to an owner, nothing asked.
         if c.local {
             c.owner.owns = true;
@@ -795,13 +930,15 @@ impl Game<'_> {
 
     /// The cosmetics `m` wears, on its bones. `gpu`: posed on the GPU (the mob pass's skin
     /// frame, begun); the bounds of what went there come back, for culling. Else the vertices
-    /// go to `out`.
+    /// go to `out`. `camera`: where the world view's camera is; None in a picture of the player
+    /// (the inventory), which shows no companion, trail or aura.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn cosmetics_geometry(
         &self,
         m: &Mob,
         own: bool,
         base: glam::Mat4,
+        camera: Option<glam::DVec3>,
         alpha: f32,
         light: u32,
         gpu: bool,
@@ -826,7 +963,6 @@ impl Game<'_> {
         body_poses.reset(body);
         let data = self.res.mob_data();
         anim::setup(m, &anim::state(m, alpha), body_poses, &data.animations);
-        let frame = self.cosmetics.frame.get();
         let mut bounds = None;
         // Items on one bone (a back item, a shoulder pet and a shirt ride the body) share its
         // matrix: the head, the body and the two arms at most.
@@ -836,32 +972,34 @@ impl Game<'_> {
         let worn_items = worn.iter().flat_map(|w| w.iter()).map(|i| (i, None));
         let emote_items = emote.map(|(i, t, w)| (i, Some((t, w))));
         for (item, emoting) in worn_items.chain(emote_items) {
-            if emoting.is_none() && (!bodies || covered(m, item.slot)) {
+            if emoting.is_none() && !bodies {
                 continue;
             }
-            let mut baked = self.cosmetics.baked.borrow_mut();
-            let b = baked
-                .entry(Arc::as_ptr(item) as usize)
-                .or_insert_with(|| Baked::new(item, frame));
-            let Some(rect) = self.gui.atlas.sprites.get(&b.location) else {
-                self.cosmetics.uploads.borrow_mut().push(item.clone());
+            if let (Some(camera), Slot::Companion | Slot::Trail | Slot::Aura) = (camera, item.slot)
+            {
+                // The player's own in first person: only its companion, drawn after the drain
+                // of the first-person model (`cosmetics_fx_geometry`).
+                if !(own && !self.own_body_in_view()) {
+                    let at = fx::Wearer {
+                        m,
+                        own,
+                        key: if own { OWN } else { m.id },
+                        base,
+                        camera,
+                        alpha,
+                        light,
+                    };
+                    bounds = self.cosmetics_fx(&at, item, gpu, bounds, poses, out);
+                }
+                continue;
+            }
+            if emoting.is_none() && covered(m, item.slot) {
+                continue;
+            }
+            let Some((models, uv)) = self.cosmetics_baked(item) else {
                 continue;
             };
-            if b.marked.replace(frame) != frame {
-                self.skin_downloads.borrow_mut().drawn(&b.location);
-            }
-            // The texture fills the top-left of its 64×64 slot.
-            let (w, h) = (
-                item.texture.width as f32 / 64.0,
-                item.texture.height as f32 / 64.0,
-            );
-            let uv = [
-                rect.u0,
-                rect.v0,
-                rect.u0 + (rect.u1 - rect.u0) * w,
-                rect.v0 + (rect.v1 - rect.v0) * h,
-            ];
-            for (bone_of, model) in &b.models {
+            for (bone_of, model) in &models {
                 let known = bones.iter().flatten().find(|(b, _)| b == bone_of);
                 let bone = match known {
                     Some(&(_, matrix)) => matrix,
@@ -887,40 +1025,117 @@ impl Game<'_> {
                         *s *= w;
                     }
                 }
-                if gpu {
-                    let mut models = self.skin_models.borrow_mut();
-                    let mut frame = self.skin_frame.borrow_mut();
-                    let mut skin = horizon_client::mobs::skin::Skin::new(&mut models, &mut frame);
-                    skin.bounds = bounds;
-                    let paint = horizon_client::mobs::skin::Paint {
-                        uv,
-                        scroll: 0.0,
-                        color: 0xFFFF_FFFF,
-                        light,
-                        overlay: 0,
-                    };
-                    if skin.draw(model, bone, poses, paint) {
-                        bounds = skin.bounds;
-                        continue;
-                    }
-                }
-                horizon_client::mobs::render_model(
-                    model,
-                    bone,
-                    &|p: &Part| poses.pose(p),
-                    uv,
-                    light,
-                    0,
-                    out,
-                );
+                bounds = self.cosmetics_model(model, bone, poses, uv, light, gpu, bounds, out);
             }
         }
+        bounds
+    }
+
+    /// An item's models and its texture's corners in the atlas, once its texture is there (it is
+    /// asked for meanwhile).
+    #[allow(clippy::type_complexity)]
+    fn cosmetics_baked(
+        &self,
+        item: &Arc<Item>,
+    ) -> Option<(Vec<(horizon_cosmetics::Bone, Arc<Part>)>, [f32; 4])> {
+        let frame = self.cosmetics.frame.get();
+        let mut baked = self.cosmetics.baked.borrow_mut();
+        let b = baked
+            .entry(Arc::as_ptr(item) as usize)
+            .or_insert_with(|| Baked::new(item, frame));
+        let Some(rect) = self.gui.atlas.sprites.get(&b.location) else {
+            self.cosmetics.uploads.borrow_mut().push(item.clone());
+            return None;
+        };
+        if b.marked.replace(frame) != frame {
+            self.skin_downloads.borrow_mut().drawn(&b.location);
+        }
+        // The texture fills the top-left of its 64×64 slot.
+        let (w, h) = (
+            item.texture.width as f32 / 64.0,
+            item.texture.height as f32 / 64.0,
+        );
+        let uv = [
+            rect.u0,
+            rect.v0,
+            rect.u0 + (rect.u1 - rect.u0) * w,
+            rect.v0 + (rect.v1 - rect.v0) * h,
+        ];
+        Some((b.models.clone(), uv))
+    }
+
+    /// One model at `matrix`, posed by `poses`: on the GPU's skin path when `gpu` (the bounds
+    /// grow to hold it), else its vertices go to `out`.
+    #[allow(clippy::too_many_arguments)]
+    fn cosmetics_model(
+        &self,
+        model: &Arc<Part>,
+        matrix: glam::Mat4,
+        poses: &horizon_client::mobs::anim::Poses,
+        uv: [f32; 4],
+        light: u32,
+        gpu: bool,
+        bounds: Option<(glam::Vec3, glam::Vec3)>,
+        out: &mut Vec<Vertex>,
+    ) -> Option<(glam::Vec3, glam::Vec3)> {
+        if gpu {
+            let mut models = self.skin_models.borrow_mut();
+            let mut frame = self.skin_frame.borrow_mut();
+            let mut skin = horizon_client::mobs::skin::Skin::new(&mut models, &mut frame);
+            skin.bounds = bounds;
+            let paint = horizon_client::mobs::skin::Paint {
+                uv,
+                scroll: 0.0,
+                color: 0xFFFF_FFFF,
+                light,
+                overlay: 0,
+            };
+            if skin.draw(model, matrix, poses, paint) {
+                return skin.bounds;
+            }
+        }
+        horizon_client::mobs::render_model(
+            model,
+            matrix,
+            &|p: &Part| poses.pose(p),
+            uv,
+            light,
+            0,
+            out,
+        );
         bounds
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn retired_trail_emitters_return_their_particles_to_the_shared_budget() {
+        use horizon_cosmetics::{From, Trail};
+        let trail = Trail {
+            sprites: 1,
+            rate: 4.0,
+            lifetime: 40,
+            size: [1.0, 1.0],
+            gravity: 0.0,
+            drift: 0.0,
+            spin: 0.0,
+            from: From::Feet,
+            fade: false,
+            glow: false,
+        };
+        let mut fx = super::Fx::default();
+        let mut emitter = horizon_cosmetics::trail::Emitter::default();
+        emitter.step(&trail, glam::DVec3::ZERO, true, 0.0, &mut fx.budget);
+        emitter.step(&trail, glam::DVec3::X, true, 1.0, &mut fx.budget);
+        assert_eq!(fx.budget.alive, 4);
+        fx.trails.insert(17, (emitter, 1));
+        fx.frame(2);
+        assert_eq!(fx.budget.alive, 4);
+        fx.frame(3);
+        assert!(fx.trails.is_empty());
+        assert_eq!(fx.budget.alive, 0);
+    }
     use super::*;
     use horizon_client::extras::Extras;
     use std::sync::Mutex;

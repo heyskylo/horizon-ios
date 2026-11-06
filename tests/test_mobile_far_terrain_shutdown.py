@@ -28,6 +28,10 @@ STUBS = r'''
 #![allow(dead_code)]
 use std::{cell::RefCell,sync::{Arc,atomic::{AtomicBool,AtomicUsize,Ordering}},time::{Instant,Duration},thread::JoinHandle};
 static READY:AtomicBool=AtomicBool::new(false);
+static REST_READY:AtomicBool=AtomicBool::new(true);
+// The real retirement registry has Rust barrier tests; this endpoint controls
+// its readiness while executing the actual supervisor's all-producer gate.
+fn poll_retired_rest_loaders()->bool{REST_READY.load(Ordering::SeqCst)}
 struct Worker{ready:AtomicBool,stop:AtomicBool}
 impl Worker{fn new()->Self{Self{ready:AtomicBool::new(false),stop:AtomicBool::new(false)}}fn shutdown(&self)->bool{self.stop.store(true,Ordering::SeqCst);self.ready.load(Ordering::SeqCst)}}
 #[derive(Clone)] struct WorkHandle(Arc<Worker>);impl WorkHandle{fn shutdown(&self)->bool{self.0.shutdown()}}
@@ -35,6 +39,7 @@ struct SkinManager(Arc<Worker>);impl SkinManager{fn new(ready:bool)->Self{let wo
 struct Session{cancels:AtomicUsize,recording:Option<WorkHandle>}impl Session{fn recording_work(&self)->Option<WorkHandle>{self.recording.clone()}fn cancel_far_terrain(&self){self.cancels.fetch_add(1,Ordering::SeqCst);}fn disconnect(&mut self){}}
 struct Remote{session:Session}struct Renderer;impl Renderer{fn shutdown_pack_compiler(&mut self)->bool{true}fn clear_lods(&mut self){}}
 struct Rest{handle:JoinHandle<()>}
+impl Rest{fn ready(&self)->std::result::Result<bool,()>{Ok(self.handle.is_finished())}}
 struct Game{remote:Option<Remote>,lod:Option<Worker>,lod_blue_map:Option<Arc<Worker>>,renderer:Option<Renderer>,rest_loader:Option<Rest>,retired_far_terrain:Vec<FarTerrainWorkers>,lod_source_attempted:bool,lod_observe:Vec<()>,far_beacons:Vec<()>,lod_covered_at:Option<()>,splitscreen_guest:Option<Box<Game>>,skin_profiles:RefCell<SkinManager>,skin_downloads:RefCell<SkinManager>,retired_skin_workers:Vec<WorkHandle>,retired_recording_workers:Vec<WorkHandle>,studio_recording_notice_pending:bool}
 impl Game{fn retire_guest_culling_workers(&mut self,_:&mut Game){}fn shutdown_server_pack_worker(&mut self)->bool{true}fn shutdown_culling_workers(&mut self)->bool{true}fn shutdown_integrated_workers(&mut self)->bool{true}fn end_splitscreen(&mut self){}}
 mod shader_packs{pub fn shutdown_parser()->bool{true}}
@@ -51,6 +56,8 @@ fn main(){
  g.lod.as_ref().unwrap().ready.store(true,Ordering::SeqCst);poll(&mut g,&EventLoop);assert!(!READY.load(Ordering::SeqCst),"BlueMap outlived the game readiness gate");
  g.lod_blue_map.as_ref().unwrap().ready.store(true,Ordering::SeqCst);poll(&mut g,&EventLoop);assert!(READY.load(Ordering::SeqCst));
  assert_eq!(g.remote.as_ref().unwrap().session.cancels.load(Ordering::SeqCst),3);
+ REST_READY.store(false,Ordering::SeqCst);READY.store(false,Ordering::SeqCst);poll(&mut g,&EventLoop);assert!(!READY.load(Ordering::SeqCst),"retired resource tail outlived the engine gate");
+ REST_READY.store(true,Ordering::SeqCst);poll(&mut g,&EventLoop);assert!(READY.load(Ordering::SeqCst));
  g.skin_profiles=RefCell::new(SkinManager::new(false));g.skin_downloads=RefCell::new(SkinManager::new(false));READY.store(false,Ordering::SeqCst);poll(&mut g,&EventLoop);assert!(!READY.load(Ordering::SeqCst));assert!(g.skin_downloads.borrow().0.stop.load(Ordering::SeqCst));
  g.skin_profiles.borrow().0.ready.store(true,Ordering::SeqCst);poll(&mut g,&EventLoop);assert!(!READY.load(Ordering::SeqCst));g.skin_downloads.borrow().0.ready.store(true,Ordering::SeqCst);poll(&mut g,&EventLoop);assert!(READY.load(Ordering::SeqCst));
  // An ordinary world/source change retires workers without dropping them

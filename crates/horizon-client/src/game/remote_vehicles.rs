@@ -329,8 +329,7 @@ impl Game<'_> {
             }
             // positionRider: the seat turns with the boat; clampRotation.
             self.yaw += b.delta_rotation;
-            let delta = (self.yaw - b.yaw + 180.0).rem_euclid(360.0) - 180.0;
-            self.yaw += delta.clamp(-105.0, 105.0) - delta;
+            self.yaw = super::boats::clamp_player_yaw(self.yaw, b.yaw);
             self.boats[i] = b;
             // Use the server-assigned seat, including when another player drives.
             Some(self.player_boat_seat(i))
@@ -658,5 +657,121 @@ mod tests {
             S::PlayerCommand(p) => assert_eq!((p.id, p.action, p.data), (42, 3, 75)),
             other => panic!("{other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod native_rider_motion_tests {
+    use super::*;
+    use horizon_client::motion::{MotionWorld, PlayerMotion};
+
+    #[test]
+    #[ignore = "requires prepared resources"]
+    fn seated_player_travels_before_reseating_and_keeps_its_own_collision() {
+        let (mut game, _host) = super::super::lan_actions::vehicle_loot_tests::fixture();
+        game.boats.clear();
+        for x in 6..=10 {
+            for z in 6..=10 {
+                game.set_state_named([x, 64, z], "minecraft:grass_block", &[])
+                    .unwrap();
+            }
+        }
+        // Actual native client snapshots: a boat at y=65 seats the player
+        // at64.5875. The forward trial crosses a grass cell edge near z8.7.
+        for (z, clipped, flying) in [
+            (8.697312593690112, true, false),
+            (8.75, false, false),
+            (8.75, false, true),
+        ] {
+            let start = Vec3::new(8.5, 64.5875, z);
+            let seat = Vec3::new(8.5, 64.5875, 8.9);
+            let mut player = PlayerMotion::new(&game.motion, seat).unwrap();
+            player.yaw = 90.0;
+            player.is_passenger = true;
+            player.flying = flying;
+            player.client_side = true;
+            player.velocity = Vec3::new(3.0, -8.0, 4.0);
+            player.fall_distance = 15.0;
+            player.ticks_frozen = 10;
+            player.item_use_speed = Some(0.2);
+            player.health.advance_clock();
+            let health_tick = player.health.tick_count;
+            let health = player.health.health();
+            let keys = Keys {
+                forward: true,
+                ..Keys::default()
+            };
+            MotionWorld {
+                entities: &[],
+                player: &mut player,
+                scene: &mut game.world,
+                assets: &game.pack.assets,
+                collision_binding: &game.collision,
+                resources: &game.motion,
+                health: &game.health_resources,
+            }
+            .passenger_movement_tick(keys, start, 0.0)
+            .unwrap();
+            assert_eq!(player.collision.horizontal, clipped, "z={z}");
+            assert_eq!(
+                player.position, seat,
+                "reseated after trial from the old position"
+            );
+            assert_eq!(
+                player.yaw, 90.0,
+                "restore positionRider rotation after trial"
+            );
+            assert_eq!(
+                player.velocity.x, 0.0,
+                "trial uses old yaw0, not final yaw90"
+            );
+            assert_eq!(
+                player.velocity.z == 0.0,
+                clipped,
+                "rider velocity is separate from boat"
+            );
+            assert_eq!(player.fall_distance, 0.0);
+            assert!(!player.ground.on_ground);
+            assert_eq!(player.health.health(), health, "no passenger fall damage");
+            assert_eq!(player.steps.movement, 0.0, "no passenger walking emission");
+            assert_eq!(player.auto_jump_time, 0);
+            assert_eq!(player.ticks_frozen, 8, "one block/frost phase");
+            assert_eq!(
+                player.health.tick_count, health_tick,
+                "caller owns health clock"
+            );
+            assert_eq!(
+                player.velocity.y.to_bits(),
+                (-0.0784000015258789f64).to_bits()
+            );
+            if !clipped {
+                assert_eq!(
+                    player.velocity.z.to_bits(),
+                    0.017836000462502232f64.to_bits()
+                );
+            }
+        }
+        // The ordinary local movement path still runs with no passenger.
+        let start = Vec3::new(8.5, 67.0, 8.5);
+        let mut player = PlayerMotion::new(&game.motion, start).unwrap();
+        assert!(!player.is_passenger);
+        player.client_side = true;
+        MotionWorld {
+            entities: &[],
+            player: &mut player,
+            scene: &mut game.world,
+            assets: &game.pack.assets,
+            collision_binding: &game.collision,
+            resources: &game.motion,
+            health: &game.health_resources,
+        }
+        .controlled_simulation_tick(Keys {
+            forward: true,
+            ..Keys::default()
+        })
+        .unwrap();
+        assert!(player.position.z > start.z);
+        assert!(!player.collision.horizontal);
+        assert!(!player.is_passenger);
     }
 }

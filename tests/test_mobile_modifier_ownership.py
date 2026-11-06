@@ -5,6 +5,7 @@ state. Only physical modifier reports and key-binding lookup are endpoints.
 """
 from pathlib import Path
 import shutil
+import re
 import subprocess
 import tempfile
 import unittest
@@ -18,6 +19,7 @@ def program():
     game = (ROOT / 'crates/horizon-client/src/game.rs').read_text()
     modules = '\n'.join(f'#[path="{ROOT / path}"] mod {name};' for name, path in (
         ('held', 'crates/horizon-client-input/src/held.rs'),
+        ('actions', 'crates/horizon-client-input/src/actions.rs'),
         ('keymapping', 'crates/horizon-client-input/src/keymapping.rs'),
     ))
     methods = '\n'.join(method(game, name) for name in ('sync_toggle', 'heal_hold_latches', 'mapped_key'))
@@ -25,15 +27,18 @@ def program():
     arm = touch.index('Out::Press(Control::Sneak) => {')
     sneak = block(touch, touch.index('{', arm))
     methods += '\nfn touch_sneak(&mut self)->Result<()> {' + sneak + ' Ok(()) }'
-    return STUBS + modules + '\nimpl Game {\n' + methods + '\n}\n' + CASES
+    actions = (ROOT / 'crates/horizon-client-input/src/actions.rs').read_text()
+    codes = sorted(set(re.findall(r'KeyCode::(\w+)', actions + methods + STUBS + CASES)))
+    stubs = STUBS.replace('enum KeyCode{KEY_CODES}', 'enum KeyCode{' + ','.join(codes) + '}')
+    return stubs + modules + '\nimpl Game {\n' + methods + '\n}\n' + CASES
 
 
 STUBS = r'''
 #![allow(dead_code)]
 extern crate self as winit;
 extern crate self as horizon_client;
-pub mod keyboard {#[derive(Clone,Copy,Debug,Hash,PartialEq,Eq)]pub enum KeyCode{ShiftLeft,ShiftRight,ControlLeft,ControlRight,KeyA,KeyQ}}
-use keyboard::KeyCode;use held::Source;use keymapping::KeyAction;
+pub mod keyboard {#[derive(Clone,Copy,Debug,Hash,PartialEq,Eq)]pub enum KeyCode{KEY_CODES}}
+use keyboard::KeyCode;use actions::Action;use held::Source;use keymapping::KeyAction;
 type Result<T>=std::result::Result<T,String>;
 #[derive(Clone,Copy)]enum Screen{Playing,Menu}
 fn gameplay_has_keyboard(screen:Screen,title:bool,dialog:bool)->bool{matches!(screen,Screen::Playing)&&!title&&!dialog}

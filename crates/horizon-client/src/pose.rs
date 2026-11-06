@@ -140,7 +140,8 @@ impl MotionWorld<'_, '_, '_> {
     /// LocalPlayer.aiStep computes crouching BEFORE KeyboardInput.tick, using
     /// the old shift input. This is distinct from Entity's current pose.
     pub fn update_local_crouching(&mut self) -> Result<()> {
-        self.player.local_crouching = !self.player.flying
+        self.player.local_crouching = !self.player.is_passenger
+            && !self.player.flying
             && !self.player.swimming
             && self.can_fit_pose(Pose::Crouching)?
             && (self.player.shift_key_down || !self.can_fit_pose(Pose::Standing)?);
@@ -198,6 +199,10 @@ impl MotionWorld<'_, '_, '_> {
     /// allows (the boat the game stores in the player's fluid state), so a boat
     /// afloat keeps the eyes dry.
     pub fn passenger_pose_tick(&mut self) -> Result<()> {
+        self.begin_passenger_tick()?;
+        self.finish_passenger_pose_tick()
+    }
+    pub(super) fn begin_passenger_tick(&mut self) -> Result<()> {
         self.player.fluids.was_eye_in_water = self.player.is_eye_in_fluid(crate::motion::WATER);
         self.update_fluids()?;
         // Player.tick: a passenger is never on the ground (setOnGround(false)
@@ -208,6 +213,9 @@ impl MotionWorld<'_, '_, '_> {
         self.player.swimming = false;
         self.player.fall_flying = false;
         self.player.fall_fly_ticks = 0;
+        Ok(())
+    }
+    pub(super) fn finish_passenger_pose_tick(&mut self) -> Result<()> {
         self.update_player_pose()?;
         // A cushion's seat puts the feet in the support block, so neither
         // standing nor crawling fits and `updatePlayerPose` keeps the old

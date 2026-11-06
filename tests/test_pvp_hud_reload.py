@@ -19,7 +19,7 @@ def program(case):
         declaration = pvp.index(f'struct {name} {{')
         start = pvp.rfind('#[derive(Default)]', 0, declaration)
         end = pvp.index('\n}', declaration) + 2
-        states.append(pvp[start:end].replace('pub(super) ', ''))
+        states.append(pvp[start:end].replace('pub(super) ', '').replace('super::hud_editor::HudEditor', 'HudEditor'))
     state = '\n'.join(states)
     methods = method(options, 'load_language') + method(pvp, 'pvp_effects_shown')
     if 'fn invalidate_pvp_hud(' in pvp:
@@ -37,6 +37,7 @@ static WIDTH:AtomicU32=AtomicU32::new(1);
 mod text{#[derive(Clone,Debug,PartialEq)]pub struct Text(pub String);impl Text{pub fn literal(s:impl Into<String>)->Self{Self(s.into())}pub fn plain(&self)->String{self.0.clone()}}}
 mod lang{pub struct Language(String);impl Language{pub fn load(_:&[&std::path::PathBuf],code:&str)->Self{Self(code.into())}}pub fn set(l:Language){*crate::LANGUAGE.lock().unwrap()=l.0;}}
 #[derive(Default)]struct CrosshairCache;
+struct HudEditor{session:u32}
 #[derive(Clone,Copy)]enum Corner{TopRight}
 #[derive(Clone,Copy)]struct Hud{effects:bool,effects_corner:Corner}
 struct PvpOptions{hud:Hud}struct Extras{pvp:PvpOptions}struct Settings{extras:Extras}
@@ -59,6 +60,7 @@ fn verify(s:&mut PvpState){
  assert!(refresh(&mut s.armour));assert!(refresh(&mut s.effects));assert!(refresh(&mut s.held));assert!(refresh(&mut s.ping));assert!(refresh(&mut s.coords));assert!(refresh(&mut s.server));assert!(refresh(&mut s.combo_count));
  assert!(refresh(&mut s.fps));assert!(refresh(&mut s.cps));assert!(refresh(&mut s.keys.cps));assert!(refresh(&mut s.clock));assert!(refresh(&mut s.reach_shown));assert!(refresh(&mut s.speed_shown));
  assert!(s.keys.labels.is_empty());assert_eq!(s.keys.held,[true;7]);assert_eq!(s.keys.bound[0],"key.keyboard.w");
+ assert_eq!(s.editor.as_ref().unwrap().session,7,"a reload must preserve the active editor session");
  assert_eq!(s.effects.lines[0].text.plain(),"de");
  assert!(s.chat_search);assert_eq!(s.chat_search_aside,"/warp");assert_eq!(s.combo.count(0.1),1);
 }
@@ -67,6 +69,7 @@ fn verify(s:&mut PvpState){
 CACHE_CASE = r'''
 fn main(){
  let mut g=Game::new();*LANGUAGE.lock().unwrap()="en".into();seed(&mut g.pvp);
+ g.pvp.editor=Some(HudEditor{session:7});
  g.pvp.keys.held=[true;7];g.pvp.keys.bound[0]="key.keyboard.w".into();g.pvp.keys.labels.push((Text::literal("Attack"),6.0));
  g.pvp.chat_search=true;g.pvp.chat_search_aside="/warp".into();g.pvp.combo.hurt(7,Some(true),0.0);
  g.load_language("de");verify(&mut g.pvp);

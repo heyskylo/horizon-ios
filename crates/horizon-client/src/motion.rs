@@ -1409,7 +1409,7 @@ impl MotionWorld<'_, '_, '_> {
     /// Player.travel: swim steering, then LivingEntity.travel (fluids first,
     /// then gliding, then air), keeping 0.6 of the vertical speed while flying.
     fn player_travel(&mut self, input: Vec3) -> Result<()> {
-        if self.player.swimming {
+        if self.player.swimming && !self.player.is_passenger {
             let look_y =
                 horizon_world::view_direction::view_vector(self.player.pitch, self.player.yaw).y;
             let near_surface = BlockPos::containing(Vec3::new(
@@ -1425,7 +1425,8 @@ impl MotionWorld<'_, '_, '_> {
                 self.player.velocity.y += (look_y - self.player.velocity.y) * blend;
             }
         }
-        let flying_y = self.player.flying.then_some(self.player.velocity.y);
+        let flying_y =
+            (self.player.flying && !self.player.is_passenger).then_some(self.player.velocity.y);
         if !self.player.flying
             && (self.player.fluids.was_touching_water || self.player.is_in_lava())
         {
@@ -1686,11 +1687,48 @@ impl MotionWorld<'_, '_, '_> {
         }
         Ok(())
     }
-    /// The block effects and the frost of a window's own player while a vehicle carries it. Its
-    /// client does not travel (`passenger_pose_tick` is all it runs), but `LivingEntity.aiStep`
-    /// still applies the effects of the blocks a passenger is in (`applyEffectsFromBlocks`: powder
-    /// snow's FREEZE adds a tick of frost) and thaws it when it is out of powder snow. The
-    /// frostbite overlay reads these ticks. The server's copy does this in `server_block_damage`.
+    /// The motion phase of a local passenger, before the vehicle places it.
+    pub fn passenger_movement_tick(
+        &mut self,
+        keys: crate::sprint::Keys,
+        previous_seat: Vec3,
+        previous_yaw: f32,
+    ) -> Result<()> {
+        let seat = (self.player.position, self.player.yaw);
+        self.player.position = previous_seat;
+        self.player.yaw = previous_yaw;
+        let result = self.passenger_trial_tick(keys);
+        // Restore positionRider's current seat and rotation even if a trial
+        // endpoint failed; the trial's velocity and collision state remain.
+        (self.player.position, self.player.yaw) = seat;
+        self.player.fall_distance = 0.0;
+        result
+    }
+    fn passenger_trial_tick(&mut self, keys: crate::sprint::Keys) -> Result<()> {
+        // Entity.rideTick zeros velocity before the player ticks; the vehicle
+        // places it only after this trial movement and its block effects.
+        self.player.velocity = Vec3::ZERO;
+        self.begin_passenger_tick()?;
+        self.update_local_crouching()?;
+        self.player.shift_key_down = keys.shift;
+        self.player.move_vector = keys.direction();
+        // LocalPlayer.modifyInput exempts passengers from item-use slowing.
+        let direction = crate::input::modify_input(self.player.move_vector, None, None);
+        self.player.applied_input = direction;
+        self.player.old_position = self.player.position;
+        self.player.was_in_powder_snow = self.player.in_powder_snow;
+        self.player.in_powder_snow = false;
+        self.dry_tick(TickInput::PreparedLocal {
+            direction,
+            jumping: keys.jump,
+        })?;
+        self.finish_passenger_pose_tick()?;
+        // Player.aiStep refreshes movement speed after travel.
+        self.player.speed = self.player.attribute("minecraft:movement_speed")? as f32;
+        Ok(())
+    }
+    /// Block-only frost effects for callers whose travel is handled elsewhere.
+    /// The local passenger movement path applies these through dry_tick once.
     pub fn passenger_block_effects_tick(&mut self) -> Result<()> {
         // Entity.baseTick
         self.player.was_in_powder_snow = self.player.in_powder_snow;
@@ -2194,7 +2232,7 @@ impl MotionWorld<'_, '_, '_> {
             p.auto_jump_time,
             p.ground.on_ground,
             p.shift_key_down,
-            false,
+            p.is_passenger,
             p.move_vector,
             1.0,
         );
@@ -2271,7 +2309,7 @@ impl crate::auto_jump::AutoJumpWorld for MotionWorld<'_, '_, '_> {
 impl MovementStatisticsWorld for MotionWorld<'_, '_, '_> {
     type Error = Box<dyn std::error::Error>;
     fn passenger(&mut self) -> Result<bool> {
-        Ok(false)
+        Ok(self.player.is_passenger)
     }
     fn swimming(&mut self) -> Result<bool> {
         Ok(self.player.swimming)
@@ -2536,7 +2574,7 @@ impl EntityMoveWorld for MotionWorld<'_, '_, '_> {
         <Self as MovementEmissionWorld>::movement_emission(self)
     }
     fn passenger(&mut self) -> Result<bool> {
-        Ok(false)
+        Ok(self.player.is_passenger)
     }
     /// `Entity.applyMovementEmissionAndPlaySound`: a footstep (`Emission`)
     /// only once the walked distance passes `nextStep`. Emitting on every
@@ -2831,8 +2869,8 @@ impl LivingAirWorld for MotionWorld<'_, '_, '_> {
         Ok(self.player.attribute("minecraft:movement_speed")? as f32)
     }
     fn flying_speed(&mut self) -> Result<f32> {
-        if self.player.flying {
-            // Player.getFlyingSpeed: abilities speed, doubled when sprinting.
+        if self.player.flying && !self.player.is_passenger {
+            // Player.getFlyingSpeed: abilities speed only off a vehicle, doubled when sprinting.
             return Ok(self.player.flying_speed * if self.player.sprinting { 2.0 } else { 1.0 });
         }
         Ok(if self.player.sprinting {

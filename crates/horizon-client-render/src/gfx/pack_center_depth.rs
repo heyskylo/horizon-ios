@@ -16,14 +16,16 @@ const MAPPED: u8 = 3;
 const ROW: u32 = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
 
 const SHADER: &str = "
-@group(0) @binding(0) var depth: texture_depth_2d;
+// A depth view bound as unfilterable float: naga's GLSL backend cannot
+// `textureLoad` a depth texture, and the texel is the same value.
+@group(0) @binding(0) var depth: texture_2d<f32>;
 @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
     let p = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u));
     return vec4<f32>(p * 2.0 - 1.0, 0.0, 1.0);
 }
 @fragment fn fs() -> @location(0) vec4<f32> {
     let centre = vec2<i32>(textureDimensions(depth) / 2u);
-    return vec4<f32>(textureLoad(depth, centre, 0), 0.0, 0.0, 1.0);
+    return vec4<f32>(textureLoad(depth, centre, 0).r, 0.0, 0.0, 1.0);
 }
 ";
 
@@ -64,7 +66,7 @@ impl CenterDepth {
                 binding: 0,
                 visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Depth,
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
                     view_dimension: wgpu::TextureViewDimension::D2,
                     multisampled: false,
                 },

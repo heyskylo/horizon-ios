@@ -855,7 +855,7 @@ impl Game<'_> {
             if let Some(r) = self.load_mob(rider, Some(id))
                 && let Some(v) = self.mobs.iter_mut().find(|m| m.id == id)
             {
-                v.extra.rider = Some(r);
+                v.extra.rider.get_or_insert(r);
             }
         }
         Some(id)
@@ -886,9 +886,20 @@ impl Game<'_> {
     /// The mobs riding entity `id` under `tag`'s `Passengers`, after the
     /// passengers it kept from loading.
     pub(super) fn put_mob_passengers(&mut self, tag: &mut Tag, id: u32) {
-        let riders: Vec<usize> = (0..self.mobs.len())
+        let mut riders: Vec<usize> = (0..self.mobs.len())
             .filter(|&j| self.mobs[j].extra.mount == Some(id) && self.mobs[j].alive())
             .collect();
+        if let Some(driver) = self
+            .mobs
+            .iter()
+            .find(|m| m.id == id)
+            .and_then(|m| m.extra.rider)
+            && let Some(pos) = riders.iter().position(|&j| self.mobs[j].id == driver)
+            && pos != 0
+        {
+            let d = riders.remove(pos);
+            riders.insert(0, d);
+        }
         let riders: Vec<Tag> = riders.into_iter().map(|j| self.mob_tree_nbt(j)).collect();
         add_passengers(tag, riders);
     }

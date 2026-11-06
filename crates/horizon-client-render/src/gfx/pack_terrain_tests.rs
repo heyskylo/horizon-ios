@@ -771,7 +771,9 @@ fn lighting_pack(old: bool, separate: bool, strength: f32) -> ScratchPack {
     let shaders = pack.0.join("shaders");
     std::fs::write(
         shaders.join("shaders.properties"),
-        format!("shadow.enabled=false\noldLighting={old}\nseparateAo={separate}\n"),
+        // This probe writes interpolated AO into output alpha as data. Disable the
+        // material cutout test so low AO values remain measurable.
+        format!("shadow.enabled=false\nalphaTest.gbuffers_terrain=off\noldLighting={old}\nseparateAo={separate}\n"),
     )
     .unwrap();
     std::fs::write(

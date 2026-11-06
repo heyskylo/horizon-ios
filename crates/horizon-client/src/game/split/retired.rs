@@ -11,6 +11,7 @@ pub(super) fn workers_stopped(game: &mut Game<'_>) -> bool {
     stopped &= game.shutdown_far_terrain();
     stopped &= game.shutdown_skin_workers();
     stopped &= game.cosmetics.shutdown();
+    stopped &= game.shutdown_mod_browser();
     stopped &= game.shutdown_recording_workers();
     if let Some(renderer) = &mut game.renderer {
         stopped &= renderer.shutdown_pack_compiler();
@@ -18,7 +19,7 @@ pub(super) fn workers_stopped(game: &mut Game<'_>) -> bool {
     stopped &= game
         .rest_loader
         .as_ref()
-        .is_none_or(|l| l.handle.is_finished());
+        .is_none_or(|loader| loader.ready().unwrap_or(false));
     stopped &= game.shutdown_integrated_workers();
     if stopped && let Some(loader) = game.rest_loader.take() {
         let _ = loader.finish();

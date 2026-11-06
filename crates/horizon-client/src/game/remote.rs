@@ -10,6 +10,7 @@ pub(super) mod avatar_animation;
 
 use super::remote_chunks::{ChunkDecoder, ChunkFormat, Next};
 use super::{Dim, Game, Mining, Screen};
+use horizon_client::actions::Action;
 use horizon_client::first_person::{Hand, SwingAnimation};
 use horizon_client::{
     Result,
@@ -687,11 +688,15 @@ pub(super) struct Remote {
     /// `ClientLevel.serverSimulationDistance`: from the login or the last
     /// simulation-distance packet.
     pub(super) simulation_distance: i32,
+    /// `BlockStatePredictionHandler.currentSequenceNr`: the level's, so a new level (a login,
+    /// another dimension) counts from 0 again.
     sequence: i32,
     position_sender: horizon_client::player_sync::PositionSender,
     last_input: u8,
     was_sprinting: bool,
-    carried: Option<usize>,
+    /// The slot the server last heard (`MultiPlayerGameMode.carriedIndex`): a cell, so `send` can
+    /// send a new one first (`ensureHasSentCarriedItem`).
+    carried: std::cell::Cell<Option<usize>>,
     /// The last ClientboundPlayerAbilitiesPacket. Vanilla's LocalPlayer
     /// holds its abilities from the login on; here the player is made at
     /// the first teleport, which takes them then.
@@ -1160,6 +1165,7 @@ impl Game<'_> {
         self.craft_size = 2;
         self.player = None;
         self.spawn = None;
+        self.clear_cosmetics_fx();
         self.mobs.clear();
         self.clear_remote_objects();
         self.clear_remote_projectiles();
@@ -1260,7 +1266,7 @@ impl Game<'_> {
             position_sender: Default::default(),
             last_input: 0,
             was_sprinting: false,
-            carried: None,
+            carried: std::cell::Cell::new(None),
             abilities: None,
             loaded_sent: false,
             heard_level: None,
@@ -1485,6 +1491,16 @@ impl Game<'_> {
 
     pub(super) fn send(&self, packet: S) {
         if let Some(r) = &self.remote {
+            // MultiPlayerGameMode's attack, interact, useItem, useItemOn, releaseUsingItem, dropItem and
+            // piercingAttack run ensureHasSentCarriedItem before their packet: a slot the number keys
+            // chose this tick goes out first. A miss, a dig's start or a swap waits for the next tick.
+            if let S::Attack(_) | S::Interact(_) | S::UseItem(_) | S::UseItemOn(_) = &packet {
+                self.remote_send_carried();
+            } else if let S::PlayerAction(a) = &packet
+                && matches!(a.action, 4 | 5 | 6 | 8)
+            {
+                self.remote_send_carried();
+            }
             r.session.send(packet);
         }
     }
@@ -2460,6 +2476,7 @@ impl Game<'_> {
             self.world.game_time = time;
             self.world.day_time = day;
             self.world.weather = weather;
+            self.clear_cosmetics_fx();
             self.mobs.clear();
             self.clear_remote_objects();
             self.clear_remote_projectiles();
@@ -3426,7 +3443,9 @@ impl Game<'_> {
                 self.potions.effects.clear();
                 self.riding = None;
                 if let Some(r) = self.remote.as_mut() {
-                    r.carried = Some(0);
+                    r.carried.set(Some(0));
+                    // handleLogin makes a new ClientLevel: its predictions count from 0.
+                    r.sequence = 0;
                     r.own_invisible = false;
                     r.own_on_fire = false;
                     r.online_mode = p.online_mode;
@@ -3495,6 +3514,13 @@ impl Game<'_> {
                 );
                 if dimension_changed {
                     horizon_client::spans::startup::arm("dimension.change");
+                }
+                // handleRespawn makes a new ClientLevel for another dimension
+                // key (a proxy's server switch too): its predictions count from 0.
+                if let Some(r) = self.remote.as_mut()
+                    && r.level != p.spawn.dimension
+                {
+                    r.sequence = 0;
                 }
                 self.enter_remote_dimension(&p.spawn, true, reason);
                 if dimension_changed {
@@ -6235,13 +6261,8 @@ impl Game<'_> {
         if let Some(id) = self.remote.as_mut().and_then(|r| r.ghast_dismount.take()) {
             self.place_ghast_under(id, position);
         }
-        if let Some(r) = self.remote.as_mut() {
-            // handleMovePlayer does not change LocalPlayer.sendPosition's
-            // baseline: the next tick must still report the corrected state.
-            r.destroying = None;
-            r.is_destroying = false;
-        }
-        self.mining = None;
+        // handleMovePlayer does not change LocalPlayer.sendPosition's baseline:
+        // the next tick must still report the corrected state.
         self.send(S::AcceptTeleportation(play::AcceptTeleportation {
             id: p.teleport,
             x: position.x,
@@ -6250,6 +6271,11 @@ impl Game<'_> {
             yaw,
             pitch,
         }));
+        // Then MultiPlayerGameMode.stopDestroyBlock: a dig the teleport (an
+        // anticheat's setback, a /tp) interrupts is aborted on the wire, and the
+        // attack strength starts again.
+        self.stop_remote_mining();
+        self.mining = None;
         Ok(())
     }
 
@@ -6477,15 +6503,15 @@ impl Game<'_> {
             .as_ref()
             .is_some_and(|r| r.level_load.is_active());
         let playing = self.screen == Screen::Playing && !loading && !self.dialog_open();
-        let held = |k| playing && self.keys.contains(&k);
+        let held = |action| playing && self.keys.held(action);
         let mut keys = Keys {
-            forward: held(KeyCode::KeyW),
-            backward: held(KeyCode::KeyS),
-            left: held(KeyCode::KeyA),
-            right: held(KeyCode::KeyD),
-            jump: held(KeyCode::Space),
-            shift: held(KeyCode::ShiftLeft),
-            sprint: held(KeyCode::ControlLeft),
+            forward: held(Action::Forward),
+            backward: held(Action::Back),
+            left: held(Action::Left),
+            right: held(Action::Right),
+            jump: held(Action::Jump),
+            shift: held(Action::Sneak),
+            sprint: held(Action::Sprint),
             analog: None,
         }
         .with_stick(stick.filter(|_| playing));
@@ -6529,7 +6555,9 @@ impl Game<'_> {
         // (`yRotO`/`xRotO`), as the local tick does; `tick` returns before it
         // reaches its own write when this window is a server client.
         self.rope_rot_old = (self.yaw, self.pitch);
-        // A passenger moves with its vehicle (Entity.rideTick), not by itself.
+        // The vehicle ticks first, but Entity.rideTick trials the player's
+        // own movement from its old seat before positionRider places it anew.
+        let rider_before = (self.player.as_ref().unwrap().position, self.yaw);
         let riding = self.screen != Screen::Dead && self.remote_ride(keys, sprint_window)?;
         // The server sends no passenger's position: they sit where their
         // vehicles are now.
@@ -6547,6 +6575,7 @@ impl Game<'_> {
             return Ok(());
         };
         player.fluids.boat = boat;
+        player.is_passenger = riding;
         if !riding {
             self.previous_position = player.position;
         }
@@ -6618,10 +6647,7 @@ impl Game<'_> {
                     resources: &self.motion,
                     health: &self.health_resources,
                 };
-                passenger.passenger_pose_tick()?;
-                // LivingEntity.aiStep: a passenger freezes in powder snow too, and the
-                // frostbite overlay shows it (#8156).
-                passenger.passenger_block_effects_tick()?;
+                passenger.passenger_movement_tick(keys, rider_before.0, rider_before.1)?;
             }
         }
         // The server decides fire the window cannot predict (blaze fireballs,
@@ -7560,7 +7586,10 @@ impl Game<'_> {
             self.particles.add(&options, p, v);
         }
     }
-    /// LocalPlayer.sendPosition plus input, sprint and held-slot updates.
+    /// The end of the player's tick: `AbstractBoat.tick`'s paddles (the vehicle ticks before its
+    /// passenger's `sendChanges`), then `LocalPlayer.sendChanges`: the input, and a passenger's look,
+    /// vehicle and sprint, or `sendPosition`'s sprint and move. The held slot is not sent here:
+    /// `MultiPlayerGameMode.tick` sends it at the start of the next tick (`remote_handle_input`).
     fn remote_send_state(&mut self, input: u8) {
         let Some(p) = self.player.as_ref() else {
             return;
@@ -7571,42 +7600,49 @@ impl Game<'_> {
             p.collision.horizontal,
             p.sprinting,
         );
-        let (yaw, pitch, selected) = (self.yaw, self.pitch, self.selected);
+        let (yaw, pitch) = (self.yaw, self.pitch);
         let riding = self.riding.is_some();
         let controls_camera = self.controls_camera();
-        let vehicle = self.remote_vehicle_packets();
+        let (paddles, vehicle): (Vec<S>, Vec<S>) = self
+            .remote_vehicle_packets()
+            .into_iter()
+            .partition(|p| matches!(p, S::PaddleBoat(_)));
         let Some(r) = self.remote.as_mut() else {
             return;
         };
-        let mut out = Vec::new();
-        if r.carried != Some(selected) {
-            r.carried = Some(selected);
-            out.push(S::SetCarriedItem(play::SetCarriedItem {
-                slot: selected as i16,
-            }));
-        }
+        let mut out = paddles;
         if input != r.last_input {
             r.last_input = input;
             out.push(S::PlayerInput(play::PlayerInput { flags: input }));
         }
-        if sprinting != r.was_sprinting {
-            r.was_sprinting = sprinting;
-            out.push(S::PlayerCommand(play::PlayerCommand {
-                id: r.entity_id,
-                action: if sprinting { 1 } else { 2 },
-                data: 0,
-            }));
-        }
+        // LocalPlayer.sendIsSprintingIfNeeded.
+        let sprint = |r: &mut Remote, out: &mut Vec<S>| {
+            if sprinting != r.was_sprinting {
+                r.was_sprinting = sprinting;
+                out.push(S::PlayerCommand(play::PlayerCommand {
+                    id: r.entity_id,
+                    action: if sprinting { 1 } else { 2 },
+                    data: 0,
+                }));
+            }
+        };
         if riding {
-            // LocalPlayer.tick: a passenger sends its look, then the vehicle
-            // it controls.
+            // LocalPlayer.sendChanges: a passenger sends its look, then the
+            // vehicle it controls and, only then, its sprint.
             out.push(S::MovePlayerRot(play::MovePlayerRot {
                 yaw,
                 pitch,
                 flags: u8::from(on_ground) | u8::from(collision) << 1,
             }));
-            out.extend(vehicle);
-        } else if controls_camera
+            if !vehicle.is_empty() {
+                out.extend(vehicle);
+                sprint(r, &mut out);
+            }
+        } else {
+            sprint(r, &mut out);
+        }
+        if !riding
+            && controls_camera
             // LocalPlayer.sendPosition: no move while the view is another
             // entity's (the server keeps the player on it).
             && let Some(packet) =
@@ -7984,11 +8020,11 @@ impl Game<'_> {
         if let Some(r) = self.remote.as_mut() {
             r.use_target = None;
         }
-        let sneaking = self.keys.contains(&KeyCode::ShiftLeft);
+        let sneaking = self.keys.held(Action::Sneak);
         // A boat, minecart, item frame, armor stand or painting nearer than
         // any mob: the server uses it (AbstractBoat.interact boards it).
         if let Some(hit) = self.remote_object_hit(false)
-            && self.mob_hit().is_none_or(|(_, d)| hit.distance < d)
+            && self.mob_hit().is_none_or(|(_, d, _)| hit.distance < d)
             && self.before_block(hit.distance)
         {
             // Interaction.interact answers SUCCESS when it responds and
@@ -8072,14 +8108,14 @@ impl Game<'_> {
             }
             return true;
         }
-        if let Some((i, distance)) = self.mob_hit()
+        if let Some((i, distance, location)) = self.mob_hit()
             && self.before_block(distance)
         {
             let id = self.mobs[i].id as i32;
             self.send(S::Interact(play::Interact {
                 id,
                 hand: hand_id(hand),
-                location: [0.0, 1.0, 0.0],
+                location,
                 secondary: sneaking,
             }));
             // Player.interactOn: another player passes, and so does a mob
@@ -8134,7 +8170,7 @@ impl Game<'_> {
             // without predicting the inventory swap or swinging.
             let shelf_reacts = hand == Hand::Main
                 && held.is_some()
-                && !(self.keys.contains(&KeyCode::ShiftLeft)
+                && !(self.keys.held(Action::Sneak)
                     && (self.stack_in(self.selected).is_some() || self.offhand.is_some()))
                 && self.shelf_hit(&hit).is_some();
             let spectator = self.spectator();
@@ -8144,7 +8180,7 @@ impl Game<'_> {
                 // useItemOn runs for the off hand too (useWithoutItem doesn't):
                 // RespawnAnchorBlock.useItemOn charges an anchor with its
                 // glowstone, SUCCESS.
-                let sneaking = self.keys.contains(&KeyCode::ShiftLeft);
+                let sneaking = self.keys.held(Action::Sneak);
                 let hands_full = self.stack_in(self.selected).is_some() || self.offhand.is_some();
                 let charges =
                     !(sneaking && hands_full) && self.anchor_takes(hit.pos, held.as_ref());
@@ -8180,7 +8216,7 @@ impl Game<'_> {
             // candle an empty hand snuffs (CandleBlock.useItemOn) or a lit
             // candle cake (CandleCakeBlock.useItemOn).
             if hand == Hand::Main && !spectator {
-                let sneaking = self.keys.contains(&KeyCode::ShiftLeft);
+                let sneaking = self.keys.held(Action::Sneak);
                 let hands_full = self.stack_in(self.selected).is_some() || self.offhand.is_some();
                 if !(sneaking && hands_full) {
                     self.redstone_ore_particles(hit.pos);
@@ -8499,7 +8535,7 @@ impl Game<'_> {
     ) -> (InteractionResult, DryUse) {
         // Player.isSecondaryUseActive with something in either hand.
         let hands_full = self.stack_in(self.selected).is_some() || self.offhand.is_some();
-        if self.keys.contains(&KeyCode::ShiftLeft) && hands_full {
+        if self.keys.held(Action::Sneak) && hands_full {
             return (InteractionResult::Pass, DryUse::default());
         }
         // AbstractCauldronBlock.useItemOn (CauldronInteractions): a bucket,
@@ -8676,7 +8712,7 @@ impl Game<'_> {
             inside: hit.face == [0; 3],
             yaw: self.yaw,
             pitch: self.pitch,
-            sneaking: self.keys.contains(&KeyCode::ShiftLeft),
+            sneaking: self.keys.held(Action::Sneak),
             item: stack.item.to_string(),
             can_use_game_master_blocks: self.can_use_game_master_blocks(),
         };
@@ -8736,7 +8772,7 @@ impl Game<'_> {
         let pos = horizon_core::position::BlockPos::new(target[0], target[1], target[2]);
         let [x, y, z] = hit.beside();
         let beside = Some(horizon_core::position::BlockPos::new(x, y, z));
-        let sneaking = self.keys.contains(&KeyCode::ShiftLeft);
+        let sneaking = self.keys.held(Action::Sneak);
         let creative = self.creative;
         self.with_level(|b, level, ticks| {
             let mut level = DryLevel::new(level);
@@ -9263,6 +9299,10 @@ impl Game<'_> {
             && self.screen == Screen::Playing
             && self.sleeping.is_none()
             && !self.dialog_open();
+        // MultiPlayerGameMode.tick, first in Minecraft.tick, screen or not: the slot
+        // chosen since the last tick (the wheel, the last tick's number keys, the
+        // server's SetHeldSlot) goes out before anything else of this tick.
+        self.remote_send_carried();
         if stop || !ready {
             self.stop_remote_mining();
         }
@@ -9271,13 +9311,8 @@ impl Game<'_> {
             self.hotbar_presses.clear();
             return;
         }
-        // MultiPlayerGameMode.tick syncs the carried slot before keybinds.
-        self.remote_send_carried();
         let (attack, use_item) = (self.left, self.right);
-        // A tick that clicks, attacks or uses acts with the slot its number
-        // keys select (`ensureHasSentCarriedItem` before the packets).
-        let acts = input.has_clicks() || attack || use_item;
-        input.tick(&mut RemoteInputWorld(self, acts), attack, use_item);
+        input.tick(&mut RemoteInputWorld(self), attack, use_item);
         self.remote_queued_keys();
         if let Some(r) = self.remote.as_mut() {
             r.input = input;
@@ -9286,17 +9321,12 @@ impl Game<'_> {
 
     /// `MultiPlayerGameMode.ensureHasSentCarriedItem`: the server hears of a
     /// new selected slot before anything the slot acts with.
-    fn remote_send_carried(&mut self) {
-        let carried_changed = self.remote.as_mut().is_some_and(|r| {
-            if r.carried == Some(self.selected) {
-                false
-            } else {
-                r.carried = Some(self.selected);
-                true
-            }
-        });
-        if carried_changed {
-            self.send(S::SetCarriedItem(play::SetCarriedItem {
+    fn remote_send_carried(&self) {
+        if let Some(r) = &self.remote
+            && r.carried.get() != Some(self.selected)
+        {
+            r.carried.set(Some(self.selected));
+            r.session.send(S::SetCarriedItem(play::SetCarriedItem {
                 slot: self.selected as i16,
             }));
         }
@@ -9316,10 +9346,13 @@ impl Game<'_> {
                 KeyCode::KeyQ if !self.spectator() => {
                     // Minecraft.hasControlDown: the physical keys, so a toggled
                     // sprint on Left Control does not make Q drop the stack.
-                    let all = self.has_control_down();
+                    let all = self.has_control_down() || std::mem::take(&mut self.pad.drop_stack);
                     self.remote_drop(all);
                 }
-                KeyCode::KeyE if self.riding_mount_with_menu() || self.riding_chest_boat() => {
+                KeyCode::KeyE
+                    if !self.in_portal_transition()
+                        && (self.riding_mount_with_menu() || self.riding_chest_boat()) =>
+                {
                     let id = self.remote.as_ref().map_or(0, |r| r.entity_id);
                     self.send(S::PlayerCommand(play::PlayerCommand {
                         id,
@@ -9382,7 +9415,7 @@ impl Game<'_> {
         // A ghast's fireball or a wind charge nearer than any mob: the
         // server turns it (game/deflect.rs).
         if let Some((i, distance)) = self.redirectable_hit()
-            && self.mob_hit().is_none_or(|(_, d)| distance <= d)
+            && self.mob_hit().is_none_or(|(_, d, _)| distance <= d)
             && self.before_block(distance)
             && self.creatures.projectiles[i].id != 0
         {
@@ -9391,14 +9424,14 @@ impl Game<'_> {
             }));
             self.reset_attack_strength();
         } else if let Some(hit) = self.remote_object_hit(true)
-            && self.mob_hit().is_none_or(|(_, d)| hit.distance < d)
+            && self.mob_hit().is_none_or(|(_, d, _)| hit.distance < d)
             && self.before_block(hit.distance)
         {
             // VehicleEntity.hurtServer, ItemFrame and ArmorStand hurtServer,
             // a painting broken or an EndCrystal hurtServer: the server decides.
             self.send(S::Attack(play::Attack { id: hit.id }));
             self.reset_attack_strength();
-        } else if let Some((i, distance)) = self.mob_hit()
+        } else if let Some((i, distance, _)) = self.mob_hit()
             && self.before_block(distance)
         {
             // Minecraft.startAttack: an item's attack_range must hold the hit.
@@ -9523,6 +9556,10 @@ impl Game<'_> {
             } else {
                 self.native_interaction(0, Hand::Main)
             };
+            if canceled.is_none() && !air {
+                // MultiPlayerGameMode.continueDestroyBlock starts with ensureHasSentCarriedItem.
+                self.remote_send_carried();
+            }
             if let Some(swing) = canceled {
                 if swing {
                     self.swing_arm();
@@ -9586,12 +9623,18 @@ impl Game<'_> {
             // chest boat, the inventory key sends
             // ServerboundPlayerCommandPacket OPEN_INVENTORY.
             KeyCode::KeyE if self.riding_mount_with_menu() || self.riding_chest_boat() => {
+                if self.in_portal_transition() {
+                    return Ok(true);
+                }
                 if let Some(r) = self.remote.as_mut() {
                     r.pending_keys.push(key);
                 }
                 Ok(true)
             }
             KeyCode::KeyE => {
+                if self.in_portal_transition() {
+                    return Ok(true);
+                }
                 // The inventory opens without telling the server.
                 if self.tutorial.open_inventory() {
                     self.persist_tutorial_step();
@@ -9631,9 +9674,7 @@ impl Game<'_> {
         // `KeyMapping.releaseAll` clears key.use; without this the button still
         // reads held and a use would start again on the first tick back.
         self.right = false;
-        horizon_client::interaction_input::release_on_screen_open(&mut RemoteInputWorld(
-            self, false,
-        ));
+        horizon_client::interaction_input::release_on_screen_open(&mut RemoteInputWorld(self));
     }
     /// `MultiPlayerGameMode.releaseUsingItem`: sends `RELEASE_USE_ITEM` and
     /// runs the client half of `Item.releaseUsing` (a Riptide launch moves the
@@ -10702,14 +10743,63 @@ fn menu_items(m: &horizon_client::menu::Menu) -> Vec<Option<ItemStack>> {
 }
 
 /// The slots whose stack is no longer `before`'s (`ItemStack.matches`).
+/// `MultiPlayerGameMode.handleContainerInput`'s changed slots, in the order the packet writes them.
 fn changed_slots(
     before: &[Option<ItemStack>],
     m: &horizon_client::menu::Menu,
 ) -> Vec<(i16, Option<ItemStack>)> {
-    (0..m.slot_count())
+    let changed: Vec<i16> = (0..m.slot_count())
         .filter(|&i| m.slot(i) != before.get(i).and_then(Option::as_ref))
-        .map(|i| (i as i16, m.slot(i).cloned()))
+        .map(|i| i as i16)
+        .collect();
+    open_hash_order(&changed)
+        .into_iter()
+        .map(|i| (i, m.slot(i as usize).cloned()))
         .collect()
+}
+
+/// The order a new fastutil `Int2ObjectOpenHashMap` iterates `keys` put in this order: vanilla
+/// collects a click's changed slots in one and writes them as it iterates. The key 0 comes first,
+/// then the table from its last position down; a key sits at `HashCommon.mix(key) & mask` or the
+/// next free position. The table starts at 32 (16 expected, load factor 0.75) and doubles when an
+/// insert finds it holding 24 (`size++ >= maxFill`), re-inserting from its last position down.
+fn open_hash_order(keys: &[i16]) -> Vec<i16> {
+    fn mix(key: i16) -> usize {
+        let h = i32::from(key).wrapping_mul(0x9E37_79B9_u32 as i32);
+        (h ^ ((h as u32) >> 16) as i32) as u32 as usize
+    }
+    fn put(table: &mut [Option<i16>], key: i16) {
+        let mask = table.len() - 1;
+        let mut pos = mix(key) & mask;
+        while table[pos].is_some() {
+            pos = (pos + 1) & mask;
+        }
+        table[pos] = Some(key);
+    }
+    // HashCommon.maxFill(n, 0.75): min(ceil(n * 0.75), n - 1).
+    let max_fill = |n: usize| (n * 3).div_ceil(4).min(n - 1);
+    let mut table = vec![None; 32];
+    let (mut zero, mut size) = (false, 0);
+    for &key in keys {
+        if key == 0 {
+            zero = true;
+        } else {
+            put(&mut table, key);
+        }
+        size += 1;
+        // `size++ >= maxFill`: the size before this key.
+        if size > max_fill(table.len()) {
+            // HashCommon.arraySize(size + 1, 0.75): the power of two holding size + 1 at that load.
+            let n = ((size + 1) * 4).div_ceil(3).next_power_of_two();
+            let mut grown = vec![None; n];
+            for &key in table.iter().rev().flatten() {
+                put(&mut grown, key);
+            }
+            table = grown;
+        }
+    }
+    let rest = table.iter().rev().flatten().copied();
+    zero.then_some(0).into_iter().chain(rest).collect()
 }
 
 /// ServerboundContainerClickPacket's `ContainerInput` ordinal.
@@ -11007,7 +11097,7 @@ fn synced_local_use(
 }
 
 /// The game as the tick's input sees it, and whether the tick acts.
-struct RemoteInputWorld<'g, 'a>(&'g mut Game<'a>, bool);
+struct RemoteInputWorld<'g, 'a>(&'g mut Game<'a>);
 
 struct RemoteUseWorld<'g, 'a>(&'g mut Game<'a>);
 
@@ -11026,12 +11116,6 @@ impl horizon_client::interaction_input::TargetUseWorld for RemoteUseWorld<'_, '_
 impl horizon_client::interaction_input::InteractionWorld for RemoteInputWorld<'_, '_> {
     fn pick_hit_result(&mut self) {
         self.0.pick_tick_targets();
-        // MultiPlayerGameMode.ensureHasSentCarriedItem: an action this tick
-        // sends the slot the number keys chose first; otherwise the next
-        // tick's MultiPlayerGameMode.tick does.
-        if self.1 {
-            self.0.remote_send_carried();
-        }
     }
     fn release_hit_result(&mut self) {
         self.0.release_tick_targets();
@@ -11322,8 +11406,29 @@ fn client_has_level(logged_in: bool, reconfiguring: Option<u64>) -> bool {
 mod tests {
     use super::{
         boat_interact_passes, client_has_level, hold_server_fire, item_frame_interact_passes,
-        keep_client_state, remote_object_swings, remote_use_swings, synced_local_use,
+        keep_client_state, open_hash_order, remote_object_swings, remote_use_swings,
+        synced_local_use,
     };
+
+    /// The vanilla 26.3 client's ServerboundContainerClickPacket for a shift-click from hotbar slot 37
+    /// into slot 10 listed 37 first (wire stream harness, `inventory`). The key 0 always leads.
+    #[test]
+    fn changed_slots_go_out_in_the_order_vanilla_s_hash_map_iterates() {
+        assert_eq!(open_hash_order(&[10, 37]), [37, 10]);
+        assert_eq!(open_hash_order(&[0, 1, 2, 36, 44]), [0, 2, 1, 36, 44]);
+        // Captured by inserting into the pinned client's actual
+        // Int2ObjectOpenHashMap: collision resolution and the >24-key rehash
+        // must preserve the complete wire order, not only the set of keys.
+        let all: Vec<i16> = (0..46).collect();
+        assert_eq!(
+            open_hash_order(&all),
+            [
+                0, 33, 29, 25, 37, 4, 12, 13, 8, 9, 30, 28, 24, 26, 18, 16, 17, 19, 23, 20, 22, 21,
+                35, 39, 2, 27, 6, 15, 14, 31, 11, 10, 32, 1, 3, 34, 7, 38, 36, 5, 45, 44, 42, 41,
+                40, 43,
+            ]
+        );
+    }
     use horizon_client::{
         containers::{Beacon, BlockEntity},
         items::ItemStack,

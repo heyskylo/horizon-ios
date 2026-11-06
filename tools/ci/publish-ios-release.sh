@@ -28,15 +28,12 @@ if gh release view "$tag" --json isDraft,targetCommitish,assets > release-state.
     exit 0
   fi
 else
-  cat > release-notes.md <<EOF
-🤖 Agent: Automated unsigned iOS build from GitHub Actions.
-
-Horizon $VERSION, build $BUILD, from commit $GITHUB_SHA.
-
-Download the unsigned IPA below and sign it with your own signing service or certificate before installing it on an iPhone or iPad. No signing certificate, provisioning profile, account data, or prepared Minecraft assets are included.
-
-The adjacent .sha256 file verifies the downloaded IPA. This is a prerelease build.
-EOF
+  {
+    printf '%s\n\n' '🤖 Agent: Automated unsigned iOS build from GitHub Actions.'
+    printf 'Horizon %s, build %s, from commit %s.\n\n' "$VERSION" "$BUILD" "$GITHUB_SHA"
+    printf '%s\n\n' 'Download the unsigned IPA below and sign it with your own signing service or certificate before installing it on an iPhone or iPad. No signing certificate, provisioning profile, account data, or prepared Minecraft assets are included.'
+    printf '%s\n' 'The adjacent .sha256 file verifies the downloaded IPA. This is a prerelease build.'
+  } > release-notes.md
   gh release create "$tag" --target "$GITHUB_SHA" --draft --prerelease \
     --title "Horizon iOS $VERSION — build $BUILD" --notes-file release-notes.md
 fi

@@ -318,6 +318,11 @@ impl Game<'_> {
             directory.join("emote_catalogue.json"),
             serde_json::to_vec_pretty(&catalogue)?,
         )?;
+        let fx_reset = self.cosmetics_fx_reset_fixture()?;
+        std::fs::write(
+            directory.join("cosmetics_fx_reset.json"),
+            serde_json::to_vec_pretty(&fx_reset)?,
+        )?;
         std::fs::write(
             directory.join("rust.json"),
             serde_json::to_vec_pretty(&output)?,

@@ -1934,10 +1934,12 @@ impl Hub {
         if ctx.world.light_log.is_none() {
             ctx.world.light_log = Some(Default::default());
         }
-        self.sync_world(ctx);
+        crate::spans::time("lan_sync_world", || self.sync_world(ctx));
         crate::spans::time("lan_chunks", || self.update_chunks(ctx));
-        self.broadcast_light_changes(ctx.world);
-        self.broadcast_block_changes(ctx.world);
+        crate::spans::time("lan_block_changes", || {
+            self.broadcast_light_changes(ctx.world);
+            self.broadcast_block_changes(ctx.world);
+        });
         // ServerGamePacketListenerImpl.tick: the actions handled since the last tick are
         // acknowledged after the block changes they made were sent, so a client's predicted
         // blocks settle on the server's states.
@@ -1947,15 +1949,17 @@ impl Hub {
                 g.send(&C::BlockChangedAck(play::BlockChangedAck { sequence }));
             }
         }
-        self.sync_containers(ctx.world);
+        crate::spans::time("lan_containers", || self.sync_containers(ctx.world));
         self.sync_hidden();
-        self.track_entities(ctx);
-        for i in 0..self.guests.len() {
-            if self.here(&self.guests[i]) {
-                self.sync_player_state(i);
-                self.sync_effects(i);
+        crate::spans::time("lan_track_entities", || self.track_entities(ctx));
+        crate::spans::time("lan_player_state", || {
+            for i in 0..self.guests.len() {
+                if self.here(&self.guests[i]) {
+                    self.sync_player_state(i);
+                    self.sync_effects(i);
+                }
             }
-        }
+        });
         events
     }
 

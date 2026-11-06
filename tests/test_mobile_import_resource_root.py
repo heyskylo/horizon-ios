@@ -57,11 +57,14 @@ fn panic_text(_:&(dyn std::any::Any+Send))->&str{"fixture panic"}
 struct Loading{loaded:Option<std::result::Result<(),String>>,delivered:bool,ui_seen:Vec<usize>,handle:Option<JoinHandle<()>>,progress:Progress,options:Option<Options>,settings:(),vanilla_root:PathBuf,started:Instant,receiver:mpsc::Receiver<LoaderMsg>}
 impl Loading{
  fn set_ui(&mut self,gui:usize,_:PathBuf){self.ui_seen.push(gui);}
+ // Browser polling is a boundary endpoint here; its real ownership has separate Rust tests.
+ fn drive_menu_mod_browser(&mut self){BROWSER_POLLS.fetch_add(1,std::sync::atomic::Ordering::SeqCst);}
  fn restart_menu_resources(&mut self)->Result<()>{Ok(())}
  fn new(base:PathBuf,selected:PathBuf)->Self{Self{loaded:None,delivered:false,ui_seen:vec![],handle:None,progress:Progress,options:Some(Options{resources:selected}),settings:(),vanilla_root:base,started:Instant::now(),receiver:mpsc::channel().1}}
 }
 static CAPTURE:Mutex<Vec<(PathBuf,PathBuf)>>=Mutex::new(Vec::new());
 static READ_BYTES:Mutex<Vec<Vec<u8>>>=Mutex::new(Vec::new());
+static BROWSER_POLLS:std::sync::atomic::AtomicUsize=std::sync::atomic::AtomicUsize::new(0);
 static FAIL_NEXT_SPAWN:std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(false);
 mod startup_menu{
  use super::*;
@@ -104,6 +107,7 @@ fn main(){
  if let Some(handle)=retry.handle.take(){handle.join().unwrap();}
  retry.poll_menu_resources().unwrap();
  assert!(matches!(retry.loaded,Some(Ok(()))));assert_eq!(retry.ui_seen,vec![1,2]);
+ assert!(BROWSER_POLLS.load(std::sync::atomic::Ordering::SeqCst)>=3,"resource polling omitted browser completion delivery");
  }
 
  // Native first-run download completes while waiting in the launcher, with

@@ -95,7 +95,7 @@ impl FocusEditor { fn search_focused(&self)->bool{self.focused} fn text_focused(
  ios: bool, screen: Screen, title: Option<Title>, sign_edit: Option<()>, book: Option<books::BookScreen>,
  debug_options: Option<FocusEditor>, block_editor: Option<FocusEditor>,
  creative_screen: Creative, pad: Pad, window: Option<Window>, ui: Ui, gui: Gui,
- dialog: bool, dialog_text: bool, recipe: bool, station: bool, command: String, submitted: bool, block_typing: bool, key_code_calls: usize, title_text: String,
+ dialog: bool, dialog_text: bool, dialog_lines: bool, recipe: bool, station: bool, command: String, submitted: bool, block_typing: bool, key_code_calls: usize, title_text: String,
 }
 impl Game {
  fn new() -> Self { Self { ios: true, window: Some(Window::default()), ..Self::default() } }
@@ -110,7 +110,10 @@ impl Game {
  fn types_text(&self)->bool{!self.block_typing}
  fn edit_shortcut(&self,_:&KeyEvent)->Option<()>{None}
  fn command_block_key_code(&mut self,k:KeyCode,_:Option<()>,text:Option<&str>){self.key_code_calls+=1;match k {KeyCode::Backspace=>{self.command.pop();},KeyCode::Enter=>{self.submitted=true;self.screen=Screen::Playing;},_=>{if let Some(t)=text{self.command.push_str(t)}}}}
- fn dialog_key(&mut self,_:KeyCode,_:Option<()>,_:Option<&str>){} fn dialog_type(&mut self,_:&str)->bool{false}
+ fn dialog_key(&mut self,k:KeyCode,_:Option<()>,_:Option<&str>)->Result<(),String>{if k==KeyCode::Enter&&self.dialog_lines{self.command.push('\n')}else if k==KeyCode::Backspace{self.command.pop();}Ok(())}
+ fn dialog_type(&mut self,t:&str)->bool{if self.dialog_text{self.command.push_str(t);true}else{false}}
+ fn dialog_typing(&self)->bool{self.dialog&&self.dialog_text}fn dialog_typing_lines(&self)->bool{self.dialog&&self.dialog_lines}
+ fn block_editor_key_code(&mut self,_:KeyCode,_:Option<()>,_:Option<&str>){}fn social_backspace(&mut self){}fn debug_options_backspace(&mut self){}
  fn chat_type(&mut self,_:&str){} fn chat_key_code(&mut self,_:KeyCode,_:Option<()>){}
  fn sign_input(&mut self,_:Option<KeyCode>,_:Option<&str>){} fn book_input(&mut self,_:Option<KeyCode>,_:Option<&str>){}
  fn creative_search_backspace(&mut self,_:bool){} fn creative_search_edit(&mut self,_:Option<&str>){}
@@ -154,6 +157,12 @@ CASES = r'''
 #[test] fn ordinary_chat_and_command_editor_keep_navigation_keys_for_their_text() {
  let mut g=Game::new();
  for screen in [Screen::Chat,Screen::CommandBlock] {g.screen=screen;g.sync_system_keyboard();assert!(g.system_keyboard_up());assert!(g.key_focus_blocked());}
+}
+#[test] fn controller_keyboard_preserves_multiline_dialog_newlines_and_singleline_done() {
+ let mut g=Game::new();g.dialog=true;g.dialog_text=true;g.dialog_lines=true;g.pad.menu.osk=Some(());
+ g.pad_osk_output(osk::Output::Text("line".into()));g.pad_osk_output(osk::Output::Enter);
+ assert_eq!(g.command,"line\n");assert!(g.pad.menu.osk.is_some());
+ g.dialog_lines=false;g.pad_osk_output(osk::Output::Enter);assert!(g.pad.menu.osk.is_none());assert_eq!(g.command,"line\n");
 }
 #[test] fn new_upstream_text_fields_request_the_mobile_keyboard() {
  let mut g=Game::new(); g.screen=Screen::Social; g.sync_system_keyboard(); assert!(g.system_keyboard_up());
@@ -256,7 +265,7 @@ class MobileCommandKeyboardTests(unittest.TestCase):
             self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
             run = subprocess.run([str(binary)], capture_output=True, text=True, timeout=10)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
-            self.assertIn('15 passed', run.stdout)
+            self.assertIn(f'{CASES.count("#[test]")} passed', run.stdout)
 
 
 if __name__ == '__main__':

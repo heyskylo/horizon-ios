@@ -1,11 +1,13 @@
 //! A picture of a player wearing items, drawn on the CPU (the launcher's Wardrobe): the player
 //! model with its skin, at rest or posed, each item on its bone, seen from any angle and distance
 //! (`Camera`). The Wardrobe's live view draws it again only when something changes
-//! (`crate::viewer`).
+//! (`crate::viewer`). A companion floats at its anchor, an aura sits at the feet see-through, and
+//! a trail shows as a few of its particles left behind.
 
 use crate::item::cube_faces;
-use crate::{Item, Part, Texture, pose_matrix};
+use crate::{Face, Item, Part, Slot, Texture, pose_matrix};
 use glam::{Mat4, Vec3, Vec4Swizzles};
+use std::borrow::Cow;
 
 /// RGBA pixels, row by row, straight alpha.
 #[derive(Clone, Debug, PartialEq)]
@@ -186,17 +188,30 @@ impl Camera {
 }
 
 /// One model to draw: its root under `base` (model space, blocks), its parts posed by
-/// `poses` (name → pose; the rest at rest).
+/// `poses` (name → pose; the rest at rest), at `alpha` (1: solid, cut out as entities are).
 pub struct Draw<'a> {
-    pub root: &'a Part,
+    pub root: Cow<'a, Part>,
     pub base: Mat4,
     pub texture: &'a Texture,
     pub poses: Vec<(String, crate::Pose)>,
+    pub alpha: f32,
 }
 
 impl<'a> Draw<'a> {
-    /// `item` on the player model `body` at rest, at `ticks` of its animations: one draw per
-    /// bone it rides (a shirt's sleeves are on the arms).
+    /// `root` at rest, solid, where it is: the player model with its skin, say.
+    pub fn model(root: &'a Part, texture: &'a Texture) -> Self {
+        Self {
+            root: Cow::Borrowed(root),
+            base: Mat4::IDENTITY,
+            texture,
+            poses: Vec::new(),
+            alpha: 1.0,
+        }
+    }
+
+    /// `item` on the player model `body`, at `ticks` of its animations: one draw per bone it
+    /// rides (a shirt's sleeves are on the arms); a companion at its anchor, an aura at the feet,
+    /// a trail as particles left behind.
     pub fn item(item: &'a Item, body: &Part, ticks: f32) -> Vec<Self> {
         Self::item_posed(item, body, &[], ticks)
     }
@@ -211,17 +226,95 @@ impl<'a> Draw<'a> {
     ) -> Vec<Self> {
         let mut poses = Vec::new();
         item.animate(ticks, |name, pose| poses.push((name.to_owned(), pose)));
+        let at = |base: Mat4, alpha: f32| Self {
+            root: Cow::Borrowed(&item.root),
+            base,
+            texture: &item.texture,
+            poses: poses.clone(),
+            alpha,
+        };
+        match item.slot {
+            Slot::Companion => {
+                let anchor = item.companion.as_ref().map_or([0.0; 3], |c| c.anchor);
+                return vec![at(Mat4::from_translation(Vec3::from(anchor) / 16.0), 1.0)];
+            }
+            Slot::Aura => {
+                let alpha = item.aura.as_ref().map_or(1.0, |a| a.alpha);
+                // The middle of the feet: 24 pixels under the neck.
+                return vec![at(Mat4::from_translation(Vec3::Y * 1.5), alpha)];
+            }
+            Slot::Trail => {
+                return trail_part(item)
+                    .map(|root| Self {
+                        root: Cow::Owned(root),
+                        base: Mat4::IDENTITY,
+                        texture: &item.texture,
+                        poses: Vec::new(),
+                        alpha: 1.0,
+                    })
+                    .into_iter()
+                    .collect();
+            }
+            _ => {}
+        }
         item.roots()
             .filter_map(|(bone, root)| {
                 Some(Self {
-                    root,
+                    root: Cow::Borrowed(root),
                     base: posed_matrix(body, Mat4::IDENTITY, bone.part(), body_poses)?,
                     texture: &item.texture,
                     poses: poses.clone(),
+                    alpha: 1.0,
                 })
             })
             .collect()
     }
+}
+
+/// A trail as a still shows it: fourteen of its particles left behind a player walking forward, as
+/// cards facing the front, each older one farther back, fallen (or risen) as far as its age
+/// says and smaller as it fades.
+pub fn trail_part(item: &Item) -> Option<Part> {
+    let t = item.trail.as_ref()?;
+    let n = 14;
+    let hash = |k: u32| ((k.wrapping_mul(2_654_435_761) >> 8) & 0xFFFF) as f32 / 65535.0;
+    let spacing = (16.0 / t.rate).min(2.2);
+    let ground = match t.from {
+        crate::From::Feet => 22.4,
+        crate::From::Body => 9.6,
+    };
+    let faces = (0..n)
+        .map(|k| {
+            let life = t.lifetime as f32;
+            let age = (k as f32 + 0.5) / n as f32 * life;
+            let side = if k % 2 == 0 { 1.0 } else { -1.0 };
+            let x = side * (2.0 + 3.0 * hash(k)) + t.drift * (age * 0.2 + k as f32).sin();
+            let y = (ground + 0.5 * t.gravity * age * age * 16.0).min(24.0);
+            let z = 3.0 + k as f32 * spacing;
+            let mut size = t.size[0] + (t.size[1] - t.size[0]) * hash(k + 7);
+            if t.fade {
+                size *= (3.0 * (1.0 - age / life)).clamp(0.2, 1.0);
+            }
+            let h = size / 2.0;
+            let sprite = (k % t.sprites) as f32;
+            let (u0, u1) = (sprite / t.sprites as f32, (sprite + 1.0) / t.sprites as f32);
+            Face {
+                normal: [0.0, 0.0, -1.0],
+                vertices: [
+                    [x + h, y - h, z, u1, 0.0],
+                    [x - h, y - h, z, u0, 0.0],
+                    [x - h, y + h, z, u0, 1.0],
+                    [x + h, y + h, z, u1, 1.0],
+                ],
+            }
+        })
+        .collect();
+    Some(Part {
+        name: "trail".into(),
+        pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+        faces,
+        children: Vec::new(),
+    })
 }
 
 /// Draws `draws` into a `width`×`height` picture seen from `camera`. At `Camera::HOME`'s zoom
@@ -232,14 +325,20 @@ pub fn render(draws: &[Draw], width: u32, height: u32, camera: &Camera) -> Image
     let mut depth = vec![f32::INFINITY; w * h];
     // Model space has y down and the front at -z: the camera looks along +z from the front.
     let view = camera.view(width, height);
-    for d in draws {
-        let mut stack = vec![(d.root, d.base)];
+    // Solid first; see-through over them, unsorted (an aura is one thin layer).
+    let solid = draws.iter().filter(|d| d.alpha >= 1.0);
+    for d in solid.chain(draws.iter().filter(|d| d.alpha < 1.0)) {
+        let mut stack = vec![(&*d.root, d.base)];
         while let Some((part, parent)) = stack.pop() {
             let m = parent * pose_matrix(pose_of(part, &d.poses));
             let to_screen = view * m;
             let normal = glam::Mat3::from_mat4(view * m);
             for face in &part.faces {
                 let n = (normal * Vec3::from_array(face.normal)).normalize_or_zero();
+                // Seen through, a face turned away would show behind the near one: skip it.
+                if d.alpha < 1.0 && n.z > 0.0 {
+                    continue;
+                }
                 // Faces turned away are hidden by the depth test; the light is vanilla-like:
                 // brighter facing up and toward the viewer.
                 let light = (0.55 + 0.25 * (-n.y).max(0.0) + 0.2 * (-n.z).max(0.0)).min(1.0);
@@ -256,7 +355,7 @@ pub fn render(draws: &[Draw], width: u32, height: u32, camera: &Camera) -> Image
                     raster(
                         [v[tri[0]], v[tri[1]], v[tri[2]]],
                         d.texture,
-                        light,
+                        (light, d.alpha),
                         (w, h),
                         &mut rgba,
                         &mut depth,
@@ -278,7 +377,7 @@ pub fn render(draws: &[Draw], width: u32, height: u32, camera: &Camera) -> Image
 fn raster(
     v: [(Vec3, [f32; 2]); 3],
     tex: &Texture,
-    light: f32,
+    (light, alpha): (f32, f32),
     (w, h): (usize, usize),
     rgba: &mut [u8],
     depth: &mut [f32],
@@ -313,6 +412,19 @@ fn raster(
             let texel = &tex.rgba[(ty * tex.width as usize + tx) * 4..][..4];
             // Cutout, as entity textures draw.
             if texel[3] < 128 {
+                continue;
+            }
+            if alpha < 1.0 {
+                // See-through: over what is there, without hiding what comes behind.
+                let a = alpha * f32::from(texel[3]) / 255.0;
+                let under = f32::from(rgba[i * 4 + 3]) / 255.0;
+                let out = a + under * (1.0 - a);
+                for k in 0..3 {
+                    let over = f32::from(texel[k]) * light;
+                    let was = f32::from(rgba[i * 4 + k]) * under;
+                    rgba[i * 4 + k] = ((over * a + was * (1.0 - a)) / out.max(1e-6)).round() as u8;
+                }
+                rgba[i * 4 + 3] = (out * 255.0).round() as u8;
                 continue;
             }
             depth[i] = z;
@@ -373,12 +485,7 @@ mod tests {
     fn the_front_of_the_head_faces_the_viewer() {
         let body = player_model(false);
         let tex = skin();
-        let draw = Draw {
-            root: &body,
-            base: Mat4::IDENTITY,
-            texture: &tex,
-            poses: Vec::new(),
-        };
+        let draw = Draw::model(&body, &tex);
         let img = render(&[draw], 100, 100, &FRONT);
         // A third of 100 px a block: the head's top at row 20, its bottom (the pivot) at 36.7;
         // its middle at row 28, column 50.
@@ -389,12 +496,7 @@ mod tests {
         assert_eq!(at(&img, 50, 10)[3], 0);
         // Turned round: the back of the head (green region), not the face.
         let back = render(
-            &[Draw {
-                root: &body,
-                base: Mat4::IDENTITY,
-                texture: &tex,
-                poses: Vec::new(),
-            }],
+            &[Draw::model(&body, &tex)],
             100,
             100,
             &Camera {
@@ -417,12 +519,7 @@ mod tests {
         let item = Item::parse(file.as_bytes()).unwrap();
         let body = player_model(false);
         let tex = skin();
-        let mut draws = vec![Draw {
-            root: &body,
-            base: Mat4::IDENTITY,
-            texture: &tex,
-            poses: Vec::new(),
-        }];
+        let mut draws = vec![Draw::model(&body, &tex)];
         let bare = render(&draws, 100, 100, &FRONT);
         draws.extend(Draw::item(&item, &body, 0.0));
         let worn = render(&draws, 100, 100, &FRONT);
@@ -531,5 +628,83 @@ mod tests {
         )];
         let up = wrist(&Draw::item_posed(&item, &body, &raised, 0.0));
         assert!(up.z < -0.5 && (up.y - 2.0 / 16.0).abs() < 1e-4, "{up}");
+    }
+
+    fn worn(file: &str, x: u32, y: u32) -> ([u8; 4], [u8; 4]) {
+        let item = Item::parse(file.as_bytes()).unwrap();
+        let body = player_model(false);
+        let tex = skin();
+        let mut draws = vec![Draw::model(&body, &tex)];
+        let bare = render(&draws, 100, 100, &FRONT);
+        draws.extend(Draw::item(&item, &body, 0.0));
+        let worn = render(&draws, 100, 100, &FRONT);
+        (at(&bare, x, y), at(&worn, x, y))
+    }
+
+    #[test]
+    fn a_companion_floats_at_its_anchor_beside_the_head() {
+        // A 4-pixel cube 14 pixels to the player's right of the neck, 6 up: a third of 100 px a
+        // block, the picture's middle 0.4 blocks under the neck, puts its middle at column
+        // 50 - 0.875 * 33.3 = 20.8, row 50 - (0.375 + 0.4) * 33.3 = 24.2.
+        let file = format!(
+            r#"{{"format": 1, "id": "pal", "slot": "companion", "texture": {{"png": "{}"}},
+              "parts": [{{"name": "c", "cubes": [{{"origin": [-2, -2, -2], "size": [4, 4, 4], "uv": [0, 0]}}]}}],
+              "companion": {{"anchor": [-14, -6, 8]}}}}"#,
+            crate::pose::tests::png(16, 16)
+        );
+        let (bare, worn) = worn(&file, 21, 24);
+        assert_eq!(bare[3], 0);
+        assert_eq!(worn[3], 255);
+    }
+
+    #[test]
+    fn an_aura_at_the_feet_lets_the_legs_show_through() {
+        // A wall 24 pixels wide and 6 high, 12 in front of the feet, at half opacity: rows 74.2
+        // to 86.7 of the picture (1.125 to 1.5 blocks under the neck), columns 25 to 75.
+        let file = format!(
+            r#"{{"format": 1, "id": "glow", "slot": "aura", "texture": {{"png": "{}"}},
+              "parts": [{{"name": "c", "cubes": [{{"origin": [-12, -6, -12], "size": [24, 6, 1], "uv": [0, 0]}}]}}],
+              "aura": {{"at": "feet", "alpha": 0.5}}}}"#,
+            crate::pose::tests::png(64, 16)
+        );
+        // The test texture is grey 200 at 200 of 255 opaque, lit 0.75 facing the viewer: 150,
+        // covering 0.5 * 200 / 255 of what is behind.
+        let a = 0.5 * 200.0 / 255.0;
+        let (bare, aura) = worn(&file, 30, 80);
+        assert_eq!(bare[3], 0);
+        assert_eq!(aura, [150, 150, 150, (a * 255.0_f32).round() as u8]);
+        // Over a leg: the leg's blue (150 lit) still shows through the grey.
+        let (leg, over) = worn(&file, 45, 80);
+        assert_eq!(leg, [0, 0, 150, 255]);
+        assert_eq!(
+            over,
+            [
+                (150.0 * a).round() as u8,
+                (150.0 * a).round() as u8,
+                150,
+                255
+            ]
+        );
+    }
+
+    #[test]
+    fn a_trail_leaves_particles_behind_on_the_ground() {
+        let file = format!(
+            r#"{{"format": 1, "id": "leaves", "slot": "trail", "texture": {{"png": "{}"}}, "parts": [],
+              "trail": {{"sprites": 4, "rate": 2, "lifetime": 30, "size": [2, 3], "gravity": 0.01, "fade": true}}}}"#,
+            crate::pose::tests::png(32, 8)
+        );
+        let item = Item::parse(file.as_bytes()).unwrap();
+        let part = trail_part(&item).unwrap();
+        assert_eq!(part.faces.len(), 14);
+        // Each farther behind than the last (+z), none under the ground (24 pixels down).
+        let z: Vec<f32> = part.faces.iter().map(|f| f.vertices[0][2]).collect();
+        assert!(z.windows(2).all(|w| w[1] > w[0]), "{z:?}");
+        assert!(
+            part.faces
+                .iter()
+                .flat_map(|f| f.vertices)
+                .all(|v| v[1] <= 24.0 + 1.5)
+        );
     }
 }

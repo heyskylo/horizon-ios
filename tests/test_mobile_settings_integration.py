@@ -30,7 +30,7 @@ def program():
     code += OPTIONS_TYPES
     code += 'impl OptionsUi {\n' + '\n'.join(method(options, n) for n in ['page', 'settings_search_active', 'typing', 'focused_rect', 'graphics_page', 'controller_page', 'controller_open', 'video_open']) + '}\n'
     # Exercise the native-only match arm on the host; iOS compilation checks its cfg.
-    code += 'const SORT_KEY:&str="horizon.sort";const ZOOM_KEY:&str="horizon.zoom";\n#[derive(Default)]struct ExtraKeys{sort_key:String,zoom_key:String}\nimpl ExtraKeys{'
+    code += 'const SORT_KEY:&str="horizon.sort";const ZOOM_KEY:&str="horizon.zoom";\n#[derive(Default)]struct ExtraKeys{sort_key:String,zoom_key:String,pvp:pvp::Keys}\nimpl ExtraKeys{'
     code += method(extras, 'set_key').replace('#[cfg(target_os = "ios")]', '') + '}\n'
     return code + CASES
 
@@ -47,6 +47,8 @@ mod lang {
  }
 }
 mod pvp {
+ pub const HUD_EDITOR_KEY:&str="horizon.hudEditor";
+ #[derive(Default)]pub struct Keys{pub editor_key:String}
  #[derive(Clone,Copy,Debug,PartialEq,Eq)]pub enum Opt{Hud}
  impl Opt{pub fn description_key(self)->&'static str{"horizon.pvp.hud.tooltip"}
  pub fn description(self)->&'static str{"HUD fallback"}}
@@ -58,7 +60,7 @@ impl Packs{fn search_focused(&self)->bool{self.focused}fn search_rect(&self)->Op
 
 OPTIONS_TYPES = r'''
 #[derive(Clone,Copy,PartialEq,Default)]enum Page{
- #[default]Main,Language,Packs,Video,Controls,KeyBinds,Graphics,GraphicsAdvanced,GraphicsHdr,Controller,PadBinds,
+ #[default]Main,Language,Packs,Video,Controls,KeyBinds,ModBrowser,Graphics,GraphicsAdvanced,GraphicsHdr,Controller,PadBinds,
 }
 #[derive(Default)]struct OptionsUi{
  stack:Vec<Page>,resource_error:Option<String>,settings_search:EditBox,language_search:EditBox,
@@ -71,6 +73,7 @@ fn main(){
  let mut keys=ExtraKeys::default();
  assert!(keys.set_key("horizon.zoom","key.keyboard.c".into()));assert_eq!(keys.zoom_key,"key.keyboard.c");
  assert!(keys.set_key("horizon.sort","key.keyboard.r".into()));assert_eq!(keys.sort_key,"key.keyboard.r");
+ assert!(keys.set_key(pvp::HUD_EDITOR_KEY,"key.keyboard.h".into()));assert_eq!(keys.pvp.editor_key,"key.keyboard.h");
  assert!(!keys.set_key("key.jump","key.keyboard.space".into()));assert_eq!(keys.zoom_key,"key.keyboard.c");
  use extras::mobile_ui::{Item,rows};
  let rows:Vec<_>=rows().into_iter().filter_map(Result::ok).collect();

@@ -24,7 +24,7 @@ def program(game_source=None):
     a = game.index('struct WorldRestLoader {')
     b = game.index('\nimpl Game', a)
     rest = game[a:b]
-    point = game.index('                    if !loading.drain_cancelled_start()')
+    point = game.index('loading.drain_cancelled_start()')
     a = game.rfind('            App::Loading(loading) => {', 0, point)
     b = game.index('                if loading.error.is_some()', point)
     supervisor = game[a:b] + 'panic!("normal handoff reached during cancellation");}\nApp::Other=>panic!("wrong state"),'
@@ -55,15 +55,19 @@ static PARENT_DONE:AtomicBool=AtomicBool::new(false);
 static TAIL_DONE:AtomicBool=AtomicBool::new(false);
 static PRELOAD_DONE:AtomicBool=AtomicBool::new(false);
 static PREPARED_DONE:AtomicBool=AtomicBool::new(false);
+static BROWSER_DONE:AtomicBool=AtomicBool::new(false);
+static RETIRED_BROWSER_DONE:AtomicBool=AtomicBool::new(false);
 fn trace(s:&'static str){TRACE.lock().unwrap().push(s);}
 #[derive(Clone)]struct DropProbe(Arc<AtomicUsize>);impl Drop for DropProbe{fn drop(&mut self){self.0.fetch_add(1,Ordering::SeqCst);}}
 struct Progress;
 struct Loaded{rest_loader:Option<WorldRestLoader>,_guard:DropProbe}
 enum LoaderMsg{Ui(DropProbe,PathBuf),Done(std::result::Result<Loaded,String>)}
 #[derive(Clone)]struct Options{world:Option<String>,server:Option<String>,resources:PathBuf}
-struct Loading{handle:Option<JoinHandle<()>>,receiver:Receiver<LoaderMsg>,loaded:Option<std::result::Result<Loaded,String>>,delivered:bool,gui:Option<DropProbe>,options:Option<Options>,window:Option<usize>,settings:usize,vanilla_root:PathBuf,error:Option<Box<dyn std::error::Error+Send+Sync>>,name:&'static str}
+struct Loading{handle:Option<JoinHandle<()>>,receiver:Receiver<LoaderMsg>,loaded:Option<std::result::Result<Loaded,String>>,delivered:bool,completed_without_game:bool,gui:Option<DropProbe>,options:Option<Options>,window:Option<usize>,settings:usize,vanilla_root:PathBuf,error:Option<Box<dyn std::error::Error+Send+Sync>>,name:&'static str}
 impl Loading{
- fn idle(options:Options,settings:usize,root:PathBuf)->Self{let(_,receiver)=mpsc::channel();Self{handle:None,receiver,loaded:None,delivered:false,gui:None,options:Some(options),window:None,settings,vanilla_root:root,error:None,name:"idle"}}
+ fn idle(options:Options,settings:usize,root:PathBuf)->Self{let(_,receiver)=mpsc::channel();Self{handle:None,receiver,loaded:None,delivered:false,completed_without_game:false,gui:None,options:Some(options),window:None,settings,vanilla_root:root,error:None,name:"idle"}}
+ // Controlled shutdown endpoints; their actual worker ownership is exercised by Rust Jobs tests.
+ fn shutdown_mod_browser(&mut self)->bool{BROWSER_DONE.load(Ordering::SeqCst)}
  fn poll_launcher(&mut self)->Result<()>{Ok(())}
  fn about_to_wait(&mut self,_:&EventLoop){panic!("normal loading loop ran while canceling");}
  fn set_ui(&mut self,_:DropProbe,_:PathBuf){panic!("canceled UI was uploaded");}
@@ -75,12 +79,13 @@ enum ControlFlow{WaitUntil(Instant)}
 impl EventLoop{fn set_control_flow(&self,_:ControlFlow){self.waits.set(self.waits.get()+1);}fn exit(&self){self.exited.set(true);}}
 fn launcher_loading(options:Options,settings:usize,root:PathBuf,_:Option<()>,_:Instant)->Result<Loading>{assert!(options.world.is_none()&&options.server.is_none());assert_eq!(options.resources,root);trace("replacement_constructed");Ok(Loading::idle(options,settings,root))}
 mod heartbeat{pub fn stop(){super::trace("heartbeat_stopped");}}
+mod mod_browser{pub fn shutdown_workers()->bool{super::RETIRED_BROWSER_DONE.load(super::Ordering::SeqCst)}}
 mod discord_presence{pub enum Status{Off}pub fn set(_:Status){super::trace("presence_off");}}
 pub fn screen(first:bool,second:bool){assert!(!first&&!second);trace("airplay_idle");}
 struct Installed;
 fn wait_for(mut ready:impl FnMut()->bool){let deadline=Instant::now()+Duration::from_secs(3);while !ready(){assert!(Instant::now()<deadline,"worker did not finish");thread::yield_now();}}
 fn reply(label:&str)->horizon_ios_launcher::Request{let label=label.to_owned();horizon_ios_launcher::Request::new(label.clone(),move|json|{
- if json.contains("\"stopped\""){assert!(PARENT_DONE.load(Ordering::SeqCst)&&TAIL_DONE.load(Ordering::SeqCst)&&PRELOAD_DONE.load(Ordering::SeqCst)&&PREPARED_DONE.load(Ordering::SeqCst),"ACK preceded producer shutdown");let t=TRACE.lock().unwrap().clone();let drop=t.iter().position(|s|*s=="old_loading_dropped").expect("ACK preceded state replacement/drop");let release=t.iter().position(|s|*s=="world_data_released").expect("ACK preceded world data release");assert!(drop<release);}
+ if json.contains("\"stopped\""){assert!(PARENT_DONE.load(Ordering::SeqCst)&&TAIL_DONE.load(Ordering::SeqCst)&&PRELOAD_DONE.load(Ordering::SeqCst)&&PREPARED_DONE.load(Ordering::SeqCst)&&BROWSER_DONE.load(Ordering::SeqCst)&&RETIRED_BROWSER_DONE.load(Ordering::SeqCst),"ACK preceded producer shutdown");let t=TRACE.lock().unwrap().clone();let drop=t.iter().position(|s|*s=="old_loading_dropped").expect("ACK preceded state replacement/drop");let release=t.iter().position(|s|*s=="world_data_released").expect("ACK preceded world data release");assert!(drop<release);}
  REPLIES.lock().unwrap().push((label,json.to_owned()));
 })}
 '''
@@ -120,7 +125,7 @@ fn main(){
  let(tail_finished,tail_finished_rx)=mpsc::channel();
  let ui=DropProbe(ui_drops.clone());let loaded=DropProbe(loaded_drops.clone());
  let parent=thread::spawn(move||{let tail=thread::spawn(move||{tail_started.send(()).unwrap();tail_release.recv().unwrap();TAIL_DONE.store(true,Ordering::SeqCst);tail_finished.send(()).unwrap();Ok(())});
- parent_tx.send(LoaderMsg::Ui(ui,PathBuf::from("unused UI"))).unwrap();parent_started.send(()).unwrap();parent_release.recv().unwrap();parent_tx.send(LoaderMsg::Done(Ok(Loaded{rest_loader:Some(WorldRestLoader{progress:Progress,handle:tail}),_guard:loaded}))).unwrap();PARENT_DONE.store(true,Ordering::SeqCst);
+ parent_tx.send(LoaderMsg::Ui(ui,PathBuf::from("unused UI"))).unwrap();parent_started.send(()).unwrap();parent_release.recv().unwrap();parent_tx.send(LoaderMsg::Done(Ok(Loaded{rest_loader:Some(WorldRestLoader{progress:Progress,handle:Some(tail)}),_guard:loaded}))).unwrap();PARENT_DONE.store(true,Ordering::SeqCst);
  });
  parent_started_rx.recv().unwrap();tail_started_rx.recv().unwrap();
  let(release_preload,preload_release)=mpsc::channel();let(preload_finished,preload_finished_rx)=mpsc::channel();
@@ -130,16 +135,20 @@ fn main(){
  horizon_ios_launcher::reset();horizon_ios_launcher::set_covered(true);assert!(horizon_ios_launcher::start_owned(Some("A")));assert_eq!(horizon_ios_launcher::request_cancel("A"),horizon_ios_launcher::CancelDecision::Accepted);
  let(control,import)=launcher::seed();launcher::acknowledge_cancelled_start("unrelated");assert!(REPLIES.lock().unwrap().is_empty());
  let options=Options{world:Some("do not open".into()),server:Some("do not connect".into()),resources:root.join("old-overlay")};
- let loading=Loading{handle:Some(parent),receiver:parent_rx,loaded:None,delivered:false,gui:Some(DropProbe(gui_drops.clone())),options:Some(options),window:Some(99),settings:7,vanilla_root:root.clone(),error:None,name:"old"};
+ let loading=Loading{handle:Some(parent),receiver:parent_rx,loaded:None,delivered:false,completed_without_game:false,gui:Some(DropProbe(gui_drops.clone())),options:Some(options),window:Some(99),settings:7,vanilla_root:root.clone(),error:None,name:"old"};
  let mut app=App::Loading(Box::new(loading));let events=EventLoop::default();
  app.tick(&events);assert!(REPLIES.lock().unwrap().is_empty());assert_eq!(ui_drops.load(Ordering::SeqCst),0);assert!(!path.exists());
  let App::Loading(l)=&app else{panic!()};assert!(!l.delivered&&l.handle.is_some());
  release_parent.send(()).unwrap();wait_for(||match &app{App::Loading(l)=>l.handle.as_ref().unwrap().is_finished(),_=>false});
  app.tick(&events);assert_eq!(ui_drops.load(Ordering::SeqCst),1);assert_eq!(loaded_drops.load(Ordering::SeqCst),0);assert_eq!(gui_drops.load(Ordering::SeqCst),0);assert!(REPLIES.lock().unwrap().is_empty());
- release_tail.send(()).unwrap();tail_finished_rx.recv().unwrap();wait_for(||match &app{App::Loading(l)=>l.loaded.as_ref().unwrap().as_ref().unwrap().rest_loader.as_ref().unwrap().handle.is_finished(),_=>false});
+ release_tail.send(()).unwrap();tail_finished_rx.recv().unwrap();wait_for(||match &app{App::Loading(l)=>l.loaded.as_ref().unwrap().as_ref().unwrap().rest_loader.as_ref().unwrap().ready().unwrap(),_=>false});
  app.tick(&events);let App::Loading(l)=&app else{panic!()};assert!(l.loaded.as_ref().unwrap().as_ref().unwrap().rest_loader.is_none());assert!(REPLIES.lock().unwrap().is_empty());assert_eq!(loaded_drops.load(Ordering::SeqCst),0);
  release_preload.send(()).unwrap();preload_finished_rx.recv().unwrap();app.tick(&events);assert!(REPLIES.lock().unwrap().is_empty());assert!(!world_loading::prepared_empty());assert!(!path.exists());
  release_prepared.send(()).unwrap();wait_for(world_loading::prepared_finished);app.tick(&events);
+ assert!(REPLIES.lock().unwrap().is_empty());assert!(!TRACE.lock().unwrap().contains(&"old_loading_dropped"));
+ BROWSER_DONE.store(true,Ordering::SeqCst);app.tick(&events);
+ assert!(REPLIES.lock().unwrap().is_empty(),"retired browser producer still owns work");
+ RETIRED_BROWSER_DONE.store(true,Ordering::SeqCst);app.tick(&events);
  assert_eq!(ui_drops.load(Ordering::SeqCst),1);assert_eq!(loaded_drops.load(Ordering::SeqCst),1);assert_eq!(gui_drops.load(Ordering::SeqCst),1);assert!(world_loading::prepared_empty());assert_eq!(fs::read(path).unwrap(),b"finished");
  assert!(!events.exited.get());assert!(events.waits.get()>=3);let App::Loading(l)=&app else{panic!()};assert_eq!(l.name,"idle");assert_eq!(l.window,Some(99));
  {let replies=REPLIES.lock().unwrap();assert_eq!(replies.len(),2);assert!(replies.iter().all(|(label,text)|label.starts_with("cancel A")&&text==r#"{"ok":true,"status":"stopped"}"#));}

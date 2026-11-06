@@ -1,6 +1,7 @@
 //! Cosmetic items that Horizon clients draw on players: hats, back items,
-//! shoulder pets, name tag styles, emotes. Only Horizon clients see them; the game protocol carries
-//! nothing about them ([docs/cosmetics.md](../../../docs/cosmetics.md)).
+//! shoulder pets, name tag styles, emotes, companions, trails and auras. Only Horizon clients
+//! see them; the game protocol carries nothing about them
+//! ([docs/cosmetics.md](../../../docs/cosmetics.md)).
 //!
 //! An item is a small model of boxes (Minecraft's box UV, as Blockbench's
 //! "Modded Entity" format), one texture of at most 64×64, the bone of the
@@ -12,11 +13,14 @@ pub mod account;
 mod emote;
 mod feed;
 mod fetch;
+pub mod follow;
+mod fx;
 mod item;
 pub mod mark;
 mod pose;
 pub mod prefs;
 pub mod preview;
+pub mod trail;
 pub mod transport;
 pub mod viewer;
 pub mod workers;
@@ -27,6 +31,11 @@ pub use emote::{
 };
 pub use feed::{Feed, POLL, Seen};
 pub use fetch::{BATCH, Clock, Cosmetics, Frame, Http, Local, Transport, Worn};
+pub use fx::{
+    Aura, Companion, From, HEAD, HEAD_CLEARANCE, MAX_AURA_RADIUS, MAX_COMPANION_ANCHOR,
+    MAX_COMPANION_REACH, MAX_LAG, MAX_PARTICLE_SIZE, MAX_SPRITE, MAX_TRAIL_LIFETIME,
+    MAX_TRAIL_RATE, MAX_TRAIL_SPRITES, Trail,
+};
 pub use item::{
     Animation, Axis, Bone, Error, FORMAT, Face, Item, MAX_MARK, MAX_PARTS, MAX_REACH, MAX_TEXTURE,
     MAX_VERTICES, Motion, Part, Slot, Tag, Texture,
