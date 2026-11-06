@@ -1611,7 +1611,7 @@ where
             &mut NativeProtoChunk {
                 terrain: &mut chunk,
                 biomes: &mut center,
-                data: &**data,
+                data,
                 references: &mut references,
                 own_starts: &mut own_starts,
             },

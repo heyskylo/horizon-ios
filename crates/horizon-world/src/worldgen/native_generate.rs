@@ -249,7 +249,7 @@ pub(super) fn far_column(
     runs.retain(|&(min, max, state)| {
         min < max && data.registry().state(state).is_some() && !states.get(state).is_air()
     });
-    runs.sort_by(|a, b| b.0.cmp(&a.0));
+    runs.sort_by_key(|a| std::cmp::Reverse(a.0));
     // As vanilla's sample reads a column down: the first block without a
     // fluid is its top, and the fluid right over it its water.
     let mut water = None;
