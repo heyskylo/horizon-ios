@@ -443,3 +443,40 @@ fn tooltip_render_pre_intercepts_rendering_and_draws_gui_items() {
         "unhandled stack continues to vanilla tooltip"
     );
 }
+
+#[test]
+fn a_screen_background_hook_can_cancel_vanilla_gradient() {
+    use horizon_client::mod_api::{
+        Flow, Hooks, Host, ScreenTransparentBackgroundEvent, dispatch_screen_transparent_background,
+    };
+    struct TestHost;
+    impl Host for TestHost {}
+    struct BlurMod;
+    impl Hooks for BlurMod {
+        fn screen_transparent_background(
+            &self,
+            _host: &dyn Host,
+            event: &mut ScreenTransparentBackgroundEvent<'_>,
+        ) -> Flow {
+            if event.screen == "inventory" {
+                Flow::Cancel
+            } else {
+                Flow::Continue
+            }
+        }
+    }
+    let mut batch = horizon_client::hud::HudBatch::new([800, 600]);
+    let mut cancel = false;
+    dispatch_screen_transparent_background(&TestHost, &[], "inventory", &mut batch, &mut cancel);
+    assert!(!cancel, "vanilla gradient drawn without mods");
+    let mods: Vec<Box<dyn Hooks>> = vec![Box::new(BlurMod)];
+    let mut cancel = false;
+    dispatch_screen_transparent_background(&TestHost, &mods, "chest", &mut batch, &mut cancel);
+    assert!(!cancel, "other screens keep vanilla background");
+    let mut cancel = false;
+    dispatch_screen_transparent_background(&TestHost, &mods, "inventory", &mut batch, &mut cancel);
+    assert!(
+        cancel,
+        "inventory cancels vanilla gradient for blur/custom draw"
+    );
+}
