@@ -926,6 +926,23 @@ def item_command_damage():
     return ops + setup('/kill @e[tag=item_hurt_actor]', '/scoreboard objectives remove item_hurt', '/tick unfreeze')
 
 
+def snbt_trailing_commas():
+    """SnbtGrammar: a compound, a list and a typed array may end with a comma; an empty one
+    may not hold only a comma, and two commas in a row are an error."""
+    ops = []
+    for value in ('{a:1b,}', '{a:1b,b:"x",}', '[1,2,]', '["a",]', '[{},]', '[I;1,2,]', '[B;1b,]', '[L;1L,]',
+                  '{a:[1,],b:{c:2,},}', '{,}', '[,]', '[I;,]', '{a:1b,,}', '[1,,2]', '{a:1b,}x'):
+        ops += [cmd(f'/data modify storage horizon:snbt v set value {value}'),
+                cmd('/data get storage horizon:snbt v')]
+    # A text component argument reads the same grammar.
+    ops += [cmd('/tellraw @s {text:"comma",color:"red",}'), cmd('/tellraw @s ["a",{text:"b",},]')]
+    ops += [cmd('/summon minecraft:marker 0 200 0 {Tags:["snbt_comma",],}'),
+            cmd('/data get entity @e[type=minecraft:marker,tag=snbt_comma,limit=1] Tags'),
+            cmd('/kill @e[type=minecraft:marker,tag=snbt_comma]'),
+            cmd('/data remove storage horizon:snbt v')]
+    return ops
+
+
 def dragon_command_damage():
     """DamageCommand -> EnderDragon.hurtServer (the body: a quarter plus up to 1, health only
     with a player behind it or #is_explosion, success either way) and EndCrystal.hurtServer
@@ -5888,6 +5905,7 @@ def groups():
         ('mannequin pose anchors', mannequin_pose_anchors()),
         ('item command damage', item_command_damage()),
         ('dragon command damage', dragon_command_damage()),
+        ('SNBT trailing commas', snbt_trailing_commas()),
         ('execute', execute()),
         ('projectile origin', projectile_origin()),
         ('selector missing predicates', selector_missing_predicates()),
