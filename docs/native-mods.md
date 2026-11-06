@@ -2849,6 +2849,45 @@ parsing before (#10461).
   `GameProfileCache`, Bukkit's `getOfflinePlayer` without its network lookup). They ask no profile service and make
   up no offline player; None when nobody is found. Bundles need `"hooks": @API:profile_cache@`.
 
+#### Server hooks for plugin ports: player state
+
+Helpers that read a player's state and write it back, what a mod keeping players in step across servers (a HuskSync
+port) needs. They reach the server's own players, as `native_server_players` lists them: inside a player's turn (their
+hook, their command) only that player, outside one (`native_server_tick`, `native_menu_clicked`) everyone on. A write
+goes through the player's turn as `/effect` and `/attribute` do, and their client follows with the tick's sync. Nothing
+calls them without a mod.
+
+- Helper **`native_player_compound(uuid)`**: the player's compound as the server would save it now
+  (`players/data/<uuid>.dat`, vanilla's `ServerPlayer.saveWithoutId`), with every key Horizon keeps without modelling
+  it. None inside a player's turn (their live state is out of their record) and for a player not on.
+  Bundles need `"hooks": @API:player_compound@`.
+- Helpers **`native_player_food(uuid)`** and **`native_set_player_status(uuid, health, food, xp)`**: the food level,
+  saturation and exhaustion (`FoodData`); and health, food `(level, saturation, exhaustion)` and experience
+  `(level, progress, total)` set, each when given, as Bukkit's `setHealth`, `setFoodLevel`, `setSaturation`,
+  `setExhaustion`, `setLevel`, `setExp` and `setTotalExperience`. Health is capped at the player's maximum; 0 or less
+  kills them as `/kill` does, with the death message "<player> died" (Bukkit's `setHealth(0)`). The mod's food is not
+  heard by `native_food_level_changed`, except inside the player's own turn. False for a player not reached, a dead one,
+  a value that is not a number, a negative level or total, or a progress outside 0 to 1.
+  Bundles need `"hooks": @API:player_status@`.
+- Helpers **`native_effects(uuid)`**, **`native_add_effect(uuid, effect)`**, **`native_remove_effect(uuid, id)`** and
+  **`native_set_effects(uuid, effects)`**: a player's effects as `NativeEffect { id, amplifier, duration, ambient,
+  particles }` (`MobEffectInstance`; duration -1 is infinite); one given as `LivingEntity.addEffect` gives it (Bukkit's
+  `addPotionEffect`: a weaker or shorter one of the kind waits under it), one taken off as `/effect clear` takes it, or
+  all replaced (a saved player's potion effects restored). The client gets `UpdateMobEffect` with the ambient and
+  particle flags. Horizon keeps no hidden-icon flag on an effect, so the icon always shows. Unknown effects and a
+  duration of 0 or below -1 are refused. Bundles need `"hooks": @API:player_effects@`.
+- Helpers **`native_attribute(uuid, attribute)`**, **`native_set_attribute_base(uuid, attribute, base)`** and
+  **`native_set_attributes(uuid, saved)`**: an attribute's base value and its value with every modifier (Bukkit's
+  `AttributeInstance.getBaseValue` and `getValue`); its base set as `/attribute .. base set` does; a saved
+  `attributes` list (the compound's) loaded as `AttributeMap.load` reads a player's file. A lower `max_health` caps the
+  health, and the client gets `UpdateAttributes`. An id without a namespace is `minecraft:`'s.
+  Bundles need `"hooks": @API:player_attributes@`.
+- Helpers **`native_player_persistent_data(uuid)`** and **`native_set_player_persistent_data(uuid, data)`**: the
+  compound mods keep on a player (NeoForge's `Entity.getPersistentData()`, Bukkit's `PersistentDataContainer`), saved in
+  their file as `NeoForgeData`; an empty compound when there is none, and
+  setting an empty one takes it away. Mods share it: keep your keys under your namespace.
+  Bundles need `"hooks": @API:player_persistent_data@`.
+
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a
