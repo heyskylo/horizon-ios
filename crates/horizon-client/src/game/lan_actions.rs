@@ -3649,12 +3649,43 @@ impl Game<'_> {
         let own_banned_ips = std::mem::replace(&mut reg.banned_ips, banned_ips);
         let own_whitelisted = std::mem::replace(&mut reg.whitelisted, whitelisted);
         let parse = d.parse(command, &self.ui.registries);
-        let ((start, end), mut suggestions) =
+        let ((mut start, mut end), mut suggestions) =
             d.suggestions(&parse, command.len(), &self.ui.registries);
+        let (label, rest) = command.split_once(' ').unwrap_or((command, ""));
+        let arguments: Vec<String> = if command.contains(' ') {
+            rest.split(' ').map(str::to_owned).collect()
+        } else {
+            Vec::new()
+        };
+        // A mod's command, which vanilla's tree doesn't know: the word being typed.
+        if let Some(typed) = arguments.last()
+            && Self::native_command_level(host, command).is_some_and(|l| l <= permission)
+        {
+            (start, end) = (command.len() - typed.len(), command.len());
+            let words: Vec<&str> = arguments.iter().map(String::as_str).collect();
+            if super::native_server::completes_player_name(
+                &host.native_usages,
+                permission,
+                label,
+                &words,
+            ) {
+                let mut names = horizon_client::command::SuggestionsBuilder::new(command, start);
+                names.suggest_matching(host.hub.guests.iter().map(|g| g.name.as_str()));
+                suggestions.extend(names.out);
+            }
+        }
         self.native_tab_complete(
             player_uuid,
             &player_name,
             command,
+            [start, end],
+            &mut suggestions,
+        );
+        self.native_tab_complete_v2(
+            player_uuid,
+            &player_name,
+            label,
+            &arguments,
             [start, end],
             &mut suggestions,
         );

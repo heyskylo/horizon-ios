@@ -2510,6 +2510,16 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   gives `teleport`, whose `aliases` hold `tp`). `usages` are the mod's registered usages, or vanilla's one line as
   `/help` gives it; `level` is the operator level a player needs, `vanilla` whether vanilla has it. None when no
   command has that name. Bundles need `"hooks": @API:command_info@`.
+- Argument kinds that ask the server, for `native_register_commands`' usages: `word?` (a word) and `text?` (the rest
+  of the line, last) are sent with vanilla's `ask_server` suggestions, so the player's client asks the server for
+  their completions instead of completing nothing; `player_name` is a word that does the same, any name accepted
+  (offline ones too, unlike `player`), and the server offers the online players' names matching it.
+  **`native_tab_complete_v2(player, name, label, arguments, range, suggestions)`** hears every completion request
+  right after `native_tab_complete`, the command split as Bukkit's `TabCompleter` gets it: `label` is its first word,
+  `arguments` the words after it split at each space, the last the one being typed (empty after a space). For a
+  command a mod registered, `range` is that word, and for `player_name` `suggestions` already holds the names; push
+  yours over `range`. No player's state is swapped in and the server's players are out of reach
+  (`native_server_players` gives none). Bundles need `"hooks": @API:tab_complete_v2@`.
 
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The

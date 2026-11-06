@@ -38,8 +38,8 @@ const SIDEBAR_OBJECTIVE: &str = "horizon:native_sidebar";
 /// The brigadier parser of an argument kind, and its properties.
 fn parser(kind: &str) -> Option<(&'static str, Value)> {
     Some(match kind {
-        "word" => ("brigadier:string", json!({"type": "word"})),
-        "text" => ("brigadier:string", json!({"type": "greedy"})),
+        "word" | "word?" | "player_name" => ("brigadier:string", json!({"type": "word"})),
+        "text" | "text?" => ("brigadier:string", json!({"type": "greedy"})),
         "integer" => ("brigadier:integer", Value::Null),
         "number" => ("brigadier:double", Value::Null),
         "boolean" => ("brigadier:bool", Value::Null),
@@ -52,6 +52,19 @@ fn parser(kind: &str) -> Option<(&'static str, Value)> {
         _ => return None,
     })
 }
+
+/// The custom suggestions of a kind whose completions the player's client
+/// asks the server for (`ask_server`): a mod's `native_tab_complete_v2`
+/// answers, and for `player_name` the server offers the online players' names
+/// too. `lan::commands` sends any of them as `minecraft:ask_server`.
+fn asks_server(kind: &str) -> Option<&'static str> {
+    match kind {
+        "word?" | "text?" => Some("minecraft:ask_server"),
+        "player_name" => Some(PLAYER_NAMES),
+        _ => None,
+    }
+}
+const PLAYER_NAMES: &str = "horizon:player_names";
 
 /// The report's name of an operator level (`commands.json`'s
 /// `permissions`).
@@ -95,10 +108,13 @@ fn usage_nodes(usage: &str) -> Result<Vec<(String, Value, bool)>, String> {
             return Err(format!("`{usage}`: unknown kind `{kind}`"));
         };
         optional_seen |= optional;
-        greedy_seen |= kind == "text";
+        greedy_seen |= properties["type"] == "greedy";
         let mut node = json!({"type": "argument", "parser": parser});
         if !properties.is_null() {
             node["properties"] = properties;
+        }
+        if let Some(suggestions) = asks_server(kind) {
+            node["suggestions"] = suggestions.into();
         }
         out.push((name.to_owned(), node, optional));
     }
@@ -199,6 +215,34 @@ fn finish(children: &mut Value) {
             finish(c);
         }
     }
+}
+
+/// Whether the word being typed, the last of `arguments` (the words after
+/// `label`), goes into a `player_name` argument of one of `label`'s usages
+/// that `level` may run.
+pub(super) fn completes_player_name(
+    commands: &[NativeCommand],
+    level: u8,
+    label: &str,
+    arguments: &[&str],
+) -> bool {
+    let typed = arguments.len().saturating_sub(1);
+    commands
+        .iter()
+        .filter(|c| c.level <= level)
+        .filter_map(|c| usage_nodes(&c.usage).ok())
+        .filter(|nodes| nodes[0].0 == label)
+        .any(|nodes| {
+            let before = arguments[..typed].iter().enumerate().all(|(i, word)| {
+                nodes
+                    .get(i + 1)
+                    .is_some_and(|(name, node, _)| node["type"] != "literal" || name == word)
+            });
+            before
+                && nodes
+                    .get(arguments.len())
+                    .is_some_and(|n| n.1["suggestions"] == PLAYER_NAMES)
+        })
 }
 
 /// Vanilla's root command `label` names in `d`, an alias (a literal that only
@@ -1417,6 +1461,35 @@ mod tests {
         );
         let (none, levels, _) = tree(&[]);
         assert!(none.is_null() && levels.is_empty());
+    }
+
+    #[test]
+    fn kinds_that_ask_the_server_mark_their_nodes() {
+        let commands = [
+            NativeCommand::new("stage go <stage:word?>"),
+            NativeCommand::new("stage say <line:text?>"),
+            NativeCommand::op("stage bring <who:player_name> [where:word]", 2),
+            NativeCommand::new("stage list"),
+        ];
+        let (t, _, problems) = tree(&commands);
+        assert!(problems.is_empty(), "{problems:?}");
+        let stage = &t["children"]["stage"]["children"];
+        let go = &stage["go"]["children"]["stage"];
+        assert_eq!(go["parser"], "brigadier:string");
+        assert_eq!(go["properties"]["type"], "word");
+        assert_eq!(go["suggestions"], "minecraft:ask_server");
+        assert_eq!(stage["say"]["children"]["line"]["properties"]["type"], "greedy");
+        let who = &stage["bring"]["children"]["who"];
+        assert_eq!(who["suggestions"], PLAYER_NAMES);
+        assert!(who["children"]["where"].get("suggestions").is_none());
+        assert_eq!(tree(&[NativeCommand::new("a <x:text?> <y:word>")]).2.len(), 1);
+        let names = |level, words: &[&str]| completes_player_name(&commands, level, "stage", words);
+        assert!(names(2, &["bring", ""]));
+        assert!(names(2, &["bring", "Al"]));
+        assert!(!names(0, &["bring", "Al"]), "the usage's level");
+        assert!(!names(2, &["bring", "Alex", ""]), "the next argument");
+        assert!(!names(2, &["go", ""]));
+        assert!(!names(2, &["bring"]), "the literal itself is being typed");
     }
 
     #[test]
