@@ -150,6 +150,8 @@ mod glowing;
 mod golems;
 mod growth;
 mod hand;
+#[cfg(test)]
+mod mining_component_tests;
 mod headless;
 mod hud_editor;
 mod ime;
@@ -6335,21 +6337,17 @@ impl Game<'_> {
         let Some(stack) = self.inventory[self.selected].clone() else {
             return;
         };
-        let Some((per_block, max)) = self
-            .res
-            .items()
-            .get(&stack.item)
-            .and_then(|i| Some((i.tool_damage_per_block?, i.max_damage)))
-        else {
+        let Some(per_block) = self.items().mining_damage(&stack) else {
             return;
         };
+        let max = self.items().mining_damage_capacity(&stack);
         let wears = if &*stack.item == "minecraft:shears" {
             !self.items().block_in_tag("minecraft:fire", name)
         } else {
             hardness != 0.0
         };
         if wears && per_block > 0 && max > 0 {
-            self.damage_held(per_block);
+            self.damage_held_with_max(per_block, max);
         }
         self.award_stat("used", &stack.item, 1);
     }
@@ -13846,10 +13844,6 @@ impl Game<'_> {
         if self.creative {
             return;
         }
-        let amount = match self.held().cloned() {
-            Some(held) => self.wear(&held, amount),
-            None => amount,
-        };
         let max = self.held().map_or(0, |s| {
             if &*s.item == "minecraft:trident" {
                 self.trident_max_damage(s)
@@ -13857,6 +13851,16 @@ impl Game<'_> {
                 self.items().get(&s.item).map_or(0, |i| i.max_damage)
             }
         });
+        self.damage_held_with_max(amount, max);
+    }
+    fn damage_held_with_max(&mut self, amount: u32, max: u32) {
+        if self.creative {
+            return;
+        }
+        let amount = match self.held().cloned() {
+            Some(held) => self.wear(&held, amount),
+            None => amount,
+        };
         let cell = self.held_mut();
         if let Some(stack) = cell.as_mut()
             && max > 0

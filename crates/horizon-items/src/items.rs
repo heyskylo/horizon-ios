@@ -13,6 +13,10 @@ use std::{
     sync::Arc,
 };
 
+fn tool_number(value: &horizon_world::nbt::Tag) -> Option<f32> {
+    horizon_world::datafix::dynamic::as_number(value).map(|n| n.float_value())
+}
+
 /// A fire starter's use sound: `SoundEvents.FIRECHARGE_USE` or
 /// `FLINTANDSTEEL_USE`.
 pub fn fire_starter_sound(fire_charge: bool) -> &'static str {
@@ -1083,6 +1087,9 @@ impl Items {
         let Some(held) = held.filter(|s| s.count > 0 && &*s.item != "minecraft:air") else {
             return true;
         };
+        if held.data().is_some_and(|d| d.other("!minecraft:tool").is_some()) {
+            return true;
+        }
         if let Some(tool) = held.data().and_then(|d| d.other("minecraft:tool")) {
             return tool
                 .get("can_destroy_blocks_in_creative")
@@ -1097,6 +1104,18 @@ impl Items {
     }
     /// `Tool.getMiningSpeed` for the held item (1.0 without a tool component).
     pub fn mining_speed(&self, held: Option<&ItemStack>, block: &str) -> f32 {
+        let held = held.filter(|s| s.count > 0 && &*s.item != "minecraft:air");
+        if let Some(stack) = held {
+            if stack.data().is_some_and(|d| d.other("!minecraft:tool").is_some()) {
+                return 1.0;
+            }
+            if let Some(tool) = stack.data().and_then(|d| d.other("minecraft:tool")) {
+                return self.stack_tool_rule(tool, block, "speed")
+                    .and_then(tool_number)
+                    .or_else(|| tool.get("default_mining_speed").and_then(tool_number))
+                    .unwrap_or(1.0);
+            }
+        }
         let Some(info) = held.and_then(|s| self.get(&s.item)) else {
             return 1.0;
         };
@@ -1115,6 +1134,16 @@ impl Items {
     }
     /// `Tool.isCorrectForDrops`.
     pub fn correct_for_drops(&self, held: Option<&ItemStack>, block: &str) -> bool {
+        let held = held.filter(|s| s.count > 0 && &*s.item != "minecraft:air");
+        if let Some(stack) = held {
+            if stack.data().is_some_and(|d| d.other("!minecraft:tool").is_some()) {
+                return false;
+            }
+            if let Some(tool) = stack.data().and_then(|d| d.other("minecraft:tool")) {
+                return horizon_world::datafix::dynamic::as_bool(
+                    self.stack_tool_rule(tool, block, "correct_for_drops"), false);
+            }
+        }
         let Some(info) = held.and_then(|s| self.get(&s.item)) else {
             return false;
         };
@@ -1126,6 +1155,59 @@ impl Items {
             }
         }
         false
+    }
+    fn stack_tool_rule<'a>(&self, tool: &'a horizon_world::nbt::Tag, block: &str, field: &str) -> Option<&'a horizon_world::nbt::Tag> {
+        use horizon_world::nbt::Tag;
+        let Tag::List(rules) = tool.get("rules")? else { return None };
+        rules.iter().find_map(|rule| {
+            let value = rule.get(field)?;
+            let matches = |value: &Tag| match value {
+                Tag::String(spec) => spec.to_string().is_ok_and(|s| {
+                    let tag = s.starts_with('#');
+                    let id = s.strip_prefix('#').unwrap_or(&s);
+                    horizon_world::datafix::identifier(id).is_some_and(|(namespace, path)| {
+                        let id = format!("{namespace}:{path}");
+                        if tag { self.block_in_tag(&id, block) } else { id == block }
+                    })
+                }),
+                _ => false,
+            };
+            match rule.get("blocks")? {
+                Tag::List(blocks) if blocks.iter().any(matches) => Some(value),
+                spec if matches(spec) => Some(value),
+                _ => None,
+            }
+        })
+    }
+    /// The stack's TOOL component, including its default mining wear.
+    pub fn mining_damage(&self, stack: &ItemStack) -> Option<u32> {
+        if stack.count == 0 || &*stack.item == "minecraft:air" {
+            return None;
+        }
+        if stack.data().is_some_and(|d| d.other("!minecraft:tool").is_some()) {
+            return None;
+        }
+        if let Some(tool) = stack.data().and_then(|d| d.other("minecraft:tool")) {
+            return Some(horizon_world::datafix::dynamic::as_int(tool.get("damage_per_block"), 1).max(0) as u32);
+        }
+        self.get(&stack.item)?.tool_damage_per_block
+    }
+    /// Mining wear on an already durable item prototype. Custom durability on
+    /// non-durable items needs item-aware DAMAGE-presence decoding first.
+    pub fn mining_damage_capacity(&self, stack: &ItemStack) -> u32 {
+        let prototype_max = self.get(&stack.item).map_or(0, |info| info.max_damage);
+        let component = |id| stack.data().and_then(|d| d.other(id));
+        if prototype_max == 0 || stack.count == 0 || &*stack.item == "minecraft:air"
+            || component("!minecraft:max_damage").is_some()
+            || component("!minecraft:damage").is_some()
+            || component("minecraft:unbreakable").is_some()
+        {
+            return 0;
+        }
+        match component("minecraft:max_damage") {
+            Some(value) => horizon_world::datafix::dynamic::as_int(Some(value), 0).max(0) as u32,
+            _ => prototype_max,
+        }
     }
     /// Whether a loot table (`minecraft:blocks/stone`, ...) exists.
     pub fn has_loot_table(&self, id: &str) -> bool {
@@ -2384,6 +2466,38 @@ mod tests {
     use super::*;
     use horizon_core::random::LegacyRandom;
     use serde_json::json;
+
+    #[test]
+    fn admitted_tool_rules_override_defaults_and_removals_survive_saving() {
+        let root = std::env::temp_dir().join(format!("horizon-tool-components-{}", std::process::id()));
+        fs::create_dir_all(root.join("data/minecraft/loot_table")).unwrap();
+        fs::write(root.join("items.json"), r#"{"minecraft:stick":{},"minecraft:diamond_pickaxe":{"minecraft:max_damage":1561,"minecraft:tool":{"rules":[{"blocks":"minecraft:stone","speed":8.0,"correct_for_drops":true}],"damage_per_block":1}}}"#).unwrap();
+        let items = Items::catalog(&root, &PackOverlay::NONE).unwrap();
+        let mut pick = ItemStack::new("minecraft:diamond_pickaxe", 1);
+        assert_eq!(items.mining_speed(Some(&pick), "minecraft:stone"), 8.0);
+        assert!(items.correct_for_drops(Some(&pick), "minecraft:stone"));
+        let removal = crate::item_data::command_components("[!tool]").unwrap();
+        (pick.damage, pick.extra) = crate::item_data::decode_components(Some(&removal));
+        let restored = crate::item_nbt::item_from_nbt(&crate::item_nbt::item_to_nbt(&pick)).unwrap();
+        assert_eq!(items.mining_speed(Some(&restored), "minecraft:stone"), 1.0);
+        assert!(!items.correct_for_drops(Some(&restored), "minecraft:stone"));
+        assert_eq!(items.mining_damage(&restored), None);
+        let mut stick = ItemStack::new("minecraft:stick", 1);
+        let tool = crate::item_data::command_components(r#"[tool={rules:[{blocks:"stone",correct_for_drops:false},{blocks:["stone","dirt"],speed:7.0f,correct_for_drops:true},{blocks:"stone",speed:90.0f}],default_mining_speed:2.0f,damage_per_block:3}]"#).unwrap();
+        (stick.damage, stick.extra) = crate::item_data::decode_components(Some(&tool));
+        assert_eq!(items.mining_speed(Some(&stick), "minecraft:stone"), 7.0);
+        assert!(!items.correct_for_drops(Some(&stick), "minecraft:stone"));
+        assert_eq!(items.mining_speed(Some(&stick), "minecraft:cobweb"), 2.0);
+        assert_eq!(items.mining_damage(&stick), Some(3));
+        assert_eq!(items.mining_damage_capacity(&stick), 0);
+        stick.data_mut().set_other("minecraft:max_damage", Some(horizon_world::nbt::Tag::Int(20)));
+        assert_eq!(items.mining_damage_capacity(&stick), 0, "MAX_DAMAGE alone does not supply DAMAGE");
+        stick.count = 0;
+        assert_eq!(items.mining_speed(Some(&stick), "minecraft:stone"), 1.0);
+        assert!(!items.correct_for_drops(Some(&stick), "minecraft:stone"));
+        assert_eq!(items.mining_damage(&stick), None);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     /// `LootCommand.dropFishingLoot` carries TOOL even for an inline holder.
     #[test]
