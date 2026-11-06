@@ -334,18 +334,10 @@ impl Game<'_> {
                             table.len() / 3,
                             started_ids.elapsed().as_millis()
                         );
-                        log::info!(
-                            "shader pack {name}: folder `{folder}`, building its pipelines"
-                        );
+                        log::info!("shader pack {name}: folder `{folder}`, building its pipelines");
                         // The driver compiles the programs on a thread of their own; the game
                         // draws without a pack meanwhile, and the next frames pick it up.
-                        renderer.load_shader_pack(
-                            dimension,
-                            post,
-                            table,
-                            name.to_owned(),
-                            started,
-                        );
+                        renderer.load_shader_pack(dimension, post, table, name.to_owned(), started);
                     }
                     Err(e) => {
                         self.pack_ids = None;
