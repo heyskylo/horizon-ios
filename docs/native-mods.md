@@ -2758,6 +2758,47 @@ tick later with a command.
   this tick as before 26.3. Arrows and tridents, which Horizon does not stop at the border, are not heard. No `self`.
   Server-side.
 
+#### Server hooks for plugin ports: Inventories
+
+- **`native_player_launch_projectile_v2(player, name, stack, cancel)`**: a guest is about to throw `stack` (a snowball,
+  an egg, an ender pearl, a mod's thrown item), heard where `ProjectileItem.use` creates the projectile, before it
+  exists (Bukkit's `ProjectileLaunchEvent` for a player). Set `cancel` and nothing is thrown, used or put on cooldown,
+  and `native_player_launch_projectile` (v1, which keeps its signature and firing point) hears nothing of it; the
+  client, which took the item at once, gets its inventory back. The guest's state is swapped in. Not heard: bows,
+  crossbows, tridents, splash and lingering potions, experience bottles, wind charges and fireworks.
+- **`native_inventory_click(player, name, window, slot, button, mode, cancel)`**: a guest's click in their own
+  inventory (`window` 0) or a vanilla menu they have open (a chest, a furnace, a crafting table, a station, a merchant,
+  a mount), heard before it is applied (Bukkit's `InventoryClickEvent`), with the packet's `slot` (the window's
+  numbering, -999 outside), `button` and `mode` (`ClickType`'s id: 0 pickup, 1 quick move, 2 swap, 3 clone, 4 throw,
+  6 pickup all). Drags (mode 5) are heard once, at their end, by `native_inventory_drag`; a mod's own menus are `native_menu_clicked`'s; spectators are not
+  heard. Set `cancel` and nothing moves: the click is handled as one that does nothing, so the client's predicted
+  slots and cursor are answered with the server's. No state is swapped in; the helpers that take a UUID reach them.
+- **`native_inventory_drag(player, name, window, kind, slots, cancel)`**: a guest's drag (quick craft) in their own
+  inventory or a vanilla menu ends, heard before it is applied (Bukkit's `InventoryDragEvent`): `kind` 0 spreads the
+  cursor evenly (left button), 1 puts one in each slot (right), 2 clones (middle, creative), and `slots` are the window
+  slots the client dragged over, in order (the menu still skips those that cannot take the stack). Set `cancel` and
+  nothing moves: the drag ends empty and the client's predicted slots and cursor are answered with the server's.
+- **`native_block_place(player, name, stack, pos, state, cancel)`**: a guest is about to place `stack` as the block
+  `state` at `pos`, heard where `BlockItem.place` has found the position and the state and checked that the block
+  survives there unobstructed, before anything is set (Bukkit's `BlockPlaceEvent`, NeoForge's
+  `BlockEvent.EntityPlaceEvent`). Set `cancel` and nothing is placed or used (a failed placement, so the hand does not
+  swing); the client sees the blocks and its inventory as they are, and `native_place_block` hears nothing. The guest's
+  state is swapped in. `state` is `getStateForPlacement`'s, before the stack's `block_state` component; finding it asks
+  `native_state_for_placement` and `native_can_survive` once more. Unlike claiming `native_use_item_on`, the block's
+  own use (a door, a chest) and the item's other uses are left alone.
+- Helper `native_set_inventory(uuid, kind, slots, selected) -> Result<(), String>`: replaces a player's whole
+  inventory (`Player`: 41 slots in `native_inventory`'s numbering) or ender chest (`Ender`: 27), as Bukkit's
+  `PlayerInventory.setContents` does: live when they are on the server, else in their file, never while they log in,
+  are dead or while a player's state is swapped in (call it from `native_server_tick`). For `Player`,
+  `selected` (0..9) becomes the held hotbar slot, the cursor and the 2x2 crafting grid are emptied, and a player on
+  the server is sent the whole inventory at once. Err for a wrong number of slots.
+- Helpers `native_set_inventory_slot(uuid, kind, slot, expected, new) -> Result<Option<ItemStack>, String>` and
+  `native_take_stacks(uuid, slots) -> Result<Vec<ItemStack>, String>`, checked like `native_move_stack` and live or in
+  the file like it: the first puts `new` in one slot (armour and the off hand too), which must still hold exactly
+  `expected`, and returns what was there (Bukkit's `setItem`); the second takes the stacks out of the given `Player`
+  slots, each of which must still hold exactly its stack, all or none (a stake, a trade, a fine with enchanted gear).
+  A player's screen follows with the tick's sync.
+
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a

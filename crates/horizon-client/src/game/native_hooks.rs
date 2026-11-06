@@ -7062,6 +7062,123 @@ impl Game<'_> {
             collide,
         );
     }
+    /// A guest is about to throw `stack` (a snowball, an egg, an ender pearl,
+    /// a mod's thrown item): where `ProjectileItem.use` creates the projectile,
+    /// before it exists, cancellable (Bukkit's `ProjectileLaunchEvent` for a
+    /// player). Set `cancel` and nothing is thrown, used or put on cooldown,
+    /// and `native_player_launch_projectile` hears nothing of it; the guest's
+    /// client, which took the item at once, gets its inventory back. The
+    /// guest's state is swapped in. Not heard: bows, crossbows, tridents,
+    /// splash potions, experience bottles, wind charges and fireworks.
+    /// Server-side, guests only. @API:player_launch_projectile_v2@.
+    pub(super) fn native_player_launch_projectile_v2(
+        &mut self,
+        player: u128,
+        name: &str,
+        stack: &ItemStack,
+        cancel: &mut bool,
+    ) {
+        mod_api::dispatch_player_launch_projectile_v2(
+            self,
+            mod_api::mods(),
+            player,
+            name,
+            stack,
+            cancel,
+        );
+    }
+    /// A guest's click in their own inventory (`window` 0) or a vanilla menu
+    /// they have open, before it is applied (Bukkit's `InventoryClickEvent`):
+    /// the packet's `slot` (the window's numbering; -999 outside), `button`
+    /// and `mode` (`ClickType`'s id). Drags (mode 5) are heard once, at their
+    /// end, by `native_inventory_drag`; menus a mod opened are
+    /// `native_menu_clicked`'s. Set `cancel` and
+    /// nothing moves: the click is handled as one that does nothing, so the
+    /// client's predicted slots and cursor are answered with the server's.
+    /// No state is swapped in; the helpers that take a UUID reach the player.
+    /// Server-side. @API:inventory_click@.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn native_inventory_click(
+        &mut self,
+        player: u128,
+        name: &str,
+        window: i32,
+        slot: i32,
+        button: i32,
+        mode: i32,
+        cancel: &mut bool,
+    ) {
+        mod_api::dispatch_inventory_click(
+            self,
+            mod_api::mods(),
+            player,
+            name,
+            window,
+            slot,
+            button,
+            mode,
+            cancel,
+        );
+    }
+    /// A guest's drag (quick craft) in their own inventory or a vanilla menu
+    /// ends, before it is applied (Bukkit's `InventoryDragEvent`): `kind` 0
+    /// spreads evenly (left button), 1 puts one in each slot (right), 2
+    /// clones (middle, creative), and `slots` are the window slots the
+    /// client dragged over, in order. Set `cancel` and nothing moves: the
+    /// drag ends empty and the client's predicted slots and cursor are
+    /// answered with the server's. No state is swapped in. Server-side.
+    /// @API:inventory_drag@.
+    pub(super) fn native_inventory_drag(
+        &mut self,
+        player: u128,
+        name: &str,
+        window: i32,
+        kind: i32,
+        slots: &[i32],
+        cancel: &mut bool,
+    ) {
+        mod_api::dispatch_inventory_drag(
+            self,
+            mod_api::mods(),
+            player,
+            name,
+            window,
+            kind,
+            slots,
+            cancel,
+        );
+    }
+    /// A guest is about to place `stack` as the block `state` at `pos`:
+    /// where `BlockItem.place` has found the position and the state and
+    /// checked that the block survives there unobstructed, before anything is
+    /// set (Bukkit's `BlockPlaceEvent`, NeoForge's
+    /// `BlockEvent.EntityPlaceEvent`). Set `cancel` and nothing is placed or
+    /// used (a failed placement): the client sees the blocks and its inventory
+    /// as they are, and `native_place_block` hears nothing. The guest's state
+    /// is swapped in. `state` is `getStateForPlacement`'s, before the stack's
+    /// `block_state` component; finding it asks `native_state_for_placement`
+    /// and `native_can_survive` once more. Server-side, guests only.
+    /// @API:block_place@.
+    pub(super) fn native_block_place(
+        &mut self,
+        player: u128,
+        name: &str,
+        stack: &ItemStack,
+        pos: [i32; 3],
+        state: BlockStateId,
+        cancel: &mut bool,
+    ) {
+        mod_api::dispatch_block_place(
+            self,
+            mod_api::mods(),
+            player,
+            name,
+            stack,
+            pos,
+            state,
+            cancel,
+        );
+    }
     /// A click in a menu a mod opened (`native_open_menu`), which moved
     /// nothing: the menu's `slot` (its own first, then the player's
     /// inventory, `native_menu_inventory_slot`; -999 outside), the `button`

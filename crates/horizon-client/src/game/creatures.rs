@@ -6682,6 +6682,17 @@ impl Game<'_> {
         let Some(eye) = self.eye_position() else {
             return Ok(false);
         };
+        // The mods, before the projectile exists: a canceled throw is a
+        // failed use, and the guest's client gets back the item it took.
+        if let (Some(player), Some(name)) = (self.lan_acting_uuid, self.lan_acting_name.clone()) {
+            let mut cancel = false;
+            self.native_player_launch_projectile_v2(player, &name, stack, &mut cancel);
+            if cancel {
+                self.use_failed = true;
+                self.guest_inventory_resend = true;
+                return Ok(true);
+            }
+        }
         let Some(p) = self.player.as_ref() else {
             return Ok(false);
         };
