@@ -18140,9 +18140,17 @@ impl Game<'_> {
                 self.physical_keys.remove(&key);
             }
         }
+        if matches!(
+            &event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                ..
+            }
+        ) {
+            self.pad.keyboard_took_over = true;
+        }
         if let WindowEvent::MouseInput { state, button, .. } = &event {
             if *state == ElementState::Pressed {
-                self.pad.keyboard_took_over = true;
                 self.physical_buttons.insert(*button);
             } else {
                 self.physical_buttons.remove(button);
