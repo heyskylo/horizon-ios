@@ -41,6 +41,9 @@ mod higher_shadowcolor_tests;
 mod single_side_tests;
 
 #[cfg(test)]
+mod undrawn_terrain_tests;
+
+#[cfg(test)]
 mod shadow_faces_tests;
 
 #[cfg(test)]
@@ -54,6 +57,9 @@ mod custom_type_tests;
 
 #[cfg(test)]
 mod sky_depth_tests;
+
+#[cfg(test)]
+mod translucent_color_tests;
 
 /// The texture behind a pack sampler name.
 #[derive(Clone, Copy, PartialEq)]
@@ -477,7 +483,7 @@ pub(super) struct World<'a> {
     pub lightmap: wgpu::TextureView,
     /// Terrain's geometry, when the pack draws it.
     pub terrain: Option<Geometry<'a>>,
-    /// Of each block sprite layer, `mc_Entity` (id, then 1 for fluids or -1) and `at_midBlock.w`
+    /// Of each block sprite layer, `mc_Entity` (id, then 1 for fluids or 0) and `at_midBlock.w`
     /// (its block's light): three values a layer.
     pub block_ids: &'a [i32],
     /// The atlas of the sun and moon's sprites.
@@ -555,6 +561,10 @@ pub struct PackPost {
     terrain_cutout: Option<Pass>,
     /// What draws translucent terrain (`gbuffers_water` or its fallback), after `deferred`.
     water: Option<Pass>,
+    /// The pack has no program for solid and cutout terrain, or for translucent terrain:
+    /// nothing draws it (`horizon_shaders::Post::terrain_undrawn`).
+    terrain_undrawn: bool,
+    water_undrawn: bool,
     /// What draws the sky (`gbuffers_skybasic` or its fallback), before terrain, and its vertices.
     sky: Option<Sky>,
     /// What draws entities and block entities, after terrain, and their vertices.
@@ -1273,8 +1283,9 @@ fn bindings(
     let mut reads = 0u16;
     let mut shadow_reads = 0u16;
     let watershadow = interface.samplers.iter().any(|s| s.name == "watershadow");
-    // A gbuffers pass draws into its buffers and the depth buffer: reading them as well would
-    // be a feedback loop (undefined in GL, refused by wgpu), so those read a blank texture.
+    // Opaque gbuffers draws cannot sample their own attachments. Translucent draws can
+    // read colortex4 and above from the preceding deferred stage; those reads use a copy
+    // taken before the draw, so the sampled texture is never also an attachment.
     let in_place = match geometry {
         Some(_) => buffers.iter().fold(0u16, |m, &b| m | 1 << b),
         None => 0,
@@ -1384,7 +1395,9 @@ fn bindings(
                     Source::Depth => geometry.is_some(),
                     // Translucent terrain reads the copy; opaque terrain would read itself.
                     Source::Depth1 | Source::Depth2 => group == Group::Gbuffers,
-                    Source::Color(n) => in_place & 1 << n != 0,
+                    Source::Color(n) => {
+                        (group != Group::Translucent || n < 4) && in_place & 1 << n != 0
+                    }
                     _ => false,
                 };
                 let mut sample_type = match src {
@@ -1865,7 +1878,13 @@ fn build_pass(
         ids: geometry.is_some_and(|g| g.ids.is_some()),
         groups: HashMap::new(),
         portal_groups: HashMap::new(),
-        copies: image_buffers(&images) & reads,
+        copies: (image_buffers(&images)
+            | if p.group == Group::Translucent {
+                written
+            } else {
+                0
+            })
+            & reads,
         reads: reads | image_buffers(&images),
         buffers: !interface.buffers.is_empty(),
         images,
@@ -2288,6 +2307,7 @@ impl PackPost {
             cull: g.cull,
         });
         let split = post.terrain.is_some() && post.terrain_cutout.is_some();
+        let (terrain_undrawn, water_undrawn) = (post.terrain_undrawn, post.water_undrawn);
         let mut terrain = post
             .terrain
             .zip(terrain_geometry.as_ref())
@@ -2834,6 +2854,8 @@ impl PackPost {
             terrain,
             terrain_cutout,
             water,
+            terrain_undrawn,
+            water_undrawn,
             sky,
             entities,
             clouds,
@@ -4061,9 +4083,9 @@ impl PackPost {
         })
     }
 
-    /// Whether the pack draws terrain itself.
+    /// Whether the pack draws terrain itself, or has nothing draw it.
     pub fn has_terrain(&self) -> bool {
-        self.terrain.is_some() || self.terrain_cutout.is_some()
+        self.terrain.is_some() || self.terrain_cutout.is_some() || self.terrain_undrawn
     }
 
     /// Whether the pack's shadow pass draws terrain (`shadow_view`).
@@ -4091,7 +4113,7 @@ impl PackPost {
 
     /// Whether the pack draws translucent terrain itself.
     pub fn has_water(&self) -> bool {
-        self.water.is_some()
+        self.water.is_some() || self.water_undrawn
     }
 
     /// The names of the programs that run, in order.

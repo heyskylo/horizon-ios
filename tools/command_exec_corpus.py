@@ -926,6 +926,63 @@ def item_command_damage():
     return ops + setup('/kill @e[tag=item_hurt_actor]', '/scoreboard objectives remove item_hurt', '/tick unfreeze')
 
 
+def dragon_command_damage():
+    """DamageCommand -> EnderDragon.hurtServer (the body: a quarter plus up to 1, health only
+    with a player behind it or #is_explosion, success either way) and EndCrystal.hurtServer
+    (removed unless invulnerable, fire or the dragon's; generic_kill bypasses Invulnerable)."""
+    ops = setup('/forceload add 0 0 63 47', '/tick freeze')
+    ops += [{'op': 'settle'}]
+    dragon = '@e[tag=dmg_dragon,limit=1]'
+    ops += setup('/summon ender_dragon 8.5 160 8.5 {Tags:["dmg_actor","dmg_dragon"],NoAI:1b,DragonPhase:0}')
+    ops += [cmd(f'/execute if entity {dragon}', expect_result=1),
+            cmd(f'/data get entity {dragon} Health', expect_result=200)]
+    for damage, health in (
+        ('8', 200),                         # no player, not an explosion: lands, no health
+        ('8 minecraft:explosion', 197),     # 8 / 4 + 1
+        ('40 minecraft:generic by @s', 189),  # 11 within the cooldown: only the excess over 3
+        ('4 minecraft:in_fire by @s', 189),  # reallyHurt refuses fire; hurt still succeeds
+        ('0', 189),                         # under 0.01: refused, invulnerable
+    ):
+        ops += [cmd(f'/damage {dragon} {damage}'),
+                cmd(f'/data get entity {dragon} Health', expect_result=health)]
+    for i, (label, nbt, hits) in enumerate((
+        ('blast', '', (('1', False),)),
+        ('explosion', '', (('1 minecraft:explosion', False),)),
+        ('fire', '', (('1 minecraft:in_fire', True),)),
+        ('shield', ',Invulnerable:1b', (('1', True), ('1 minecraft:generic_kill', False))),
+        ('by_dragon', '', ((f'1 minecraft:generic by {dragon}', True), ('1', False))),
+    )):
+        crystal = f'@e[tag=dmg_{label},limit=1]'
+        x, z = (40, 56, 40, 56, 40)[i], (8, 8, 24, 24, 40)[i]
+        ops += setup(f'/summon end_crystal {x}.5 160 {z}.5 {{Tags:["dmg_actor","dmg_{label}"],ShowBottom:0b{nbt}}}')
+        ops += [cmd(f'/execute if entity {crystal}', expect_result=1)]
+        for damage, stays in hits:
+            ops += [cmd(f'/damage {crystal} {damage}'),
+                    cmd(f'/execute {"if" if stays else "unless"} entity {crystal}', expect_result=1)]
+    # The dragons are summoned holding their pattern (0): a summoned dragon hovers (10), which
+    # is sitting, and Horizon summons it holding (a separate gap).
+    # One dragon at a time from here. dealDefaultKnockback: fireworks are #is_explosion (the
+    # hit counts) and not #no_knockback, so the dragon is pushed away from the `at` position.
+    knock = '@e[tag=dmg_knock,limit=1]'
+    ops += setup('/kill @e[tag=dmg_dragon]',
+                 '/summon ender_dragon 24.5 160 40.5 {Tags:["dmg_actor","dmg_knock"],NoAI:1b,DragonPhase:0}')
+    ops += [cmd(f'/damage {knock} 10 minecraft:fireworks at 44.5 160 40.5'),
+            cmd(f'/data get entity {knock} Health', expect_result=196),
+            cmd(f'/data get entity {knock} Motion[0] 1000'),
+            cmd(f'/data get entity {knock} Motion[2] 1000')]
+    # AbstractDragonSittingPhase.onHurt: a perched dragon takes nothing from a direct arrow,
+    # so the hit is under 0.01 and refused.
+    perch = '@e[tag=dmg_perch,limit=1]'
+    ops += setup('/kill @e[tag=dmg_knock]',
+                 '/summon ender_dragon 8.5 160 40.5 {Tags:["dmg_actor","dmg_perch"],NoAI:1b,DragonPhase:6}',
+                 '/summon arrow 8.5 170 40.5 {Tags:["dmg_actor","dmg_arrow"],NoGravity:1b}')
+    ops += [cmd(f'/damage {perch} 10 minecraft:arrow by @e[tag=dmg_arrow,limit=1] from @s'),
+            cmd(f'/data get entity {perch} Health', expect_result=200),
+            cmd(f'/damage {perch} 10 minecraft:arrow by @s'),
+            cmd(f'/data get entity {perch} Health', expect_result=196)]  # 196.5
+    return ops + setup('/kill @e[tag=dmg_actor]', '/tick unfreeze', '/forceload remove all')
+
+
 def execute():
     return [
         *setup('/scoreboard objectives add exec dummy', '/scoreboard players set @s exec 4', '/scoreboard players set fake exec 9'),
@@ -2378,6 +2435,48 @@ def ender_dragon():
         *setup('/execute in minecraft:overworld run tp @s 8.5 230 8.5 0 0'),
         {'op': 'settle'},
     ]
+
+
+def summoned_dragon_hovers():
+    """EnderDragon's constructor sets EnderDragonPhase.HOVERING; only EnderDragonFight.createNewDragon
+    moves its dragon to the holding pattern. A dragon from /summon hovers where it was put: the
+    hover phase's target is its own position, and no fight takes it on outside the End."""
+    dragon = '@e[tag=hover_dragon,limit=1]'
+    ops = setup('/forceload add 0 0 31 31')
+    ops += [{'op': 'settle'}]
+    ops += setup('/summon ender_dragon 16.5 160 16.5 {Tags:["hover_dragon"]}')
+    ops += [cmd(f'/data get entity {dragon} DragonPhase', expect_result=10)]
+    for _ in range(6):
+        ops += [{'op': 'tick', 'n': 20},
+                cmd(f'/data get entity {dragon} DragonPhase'),
+                *[cmd(f'/data get entity {dragon} Pos[{i}] 100') for i in range(3)]]
+    # DragonHoverPhase.getFlySpeed is 1: a hovering dragon thrown upwards climbs back to its
+    # target at up to 0.01 a tick (ydd / horizontal distance clamped to the fly speed).
+    rise = '@e[tag=hover_rise,limit=1]'
+    ops += setup('/kill @e[tag=hover_dragon]',
+                 '/summon ender_dragon 16.5 160 16.5 {Tags:["hover_rise"],DragonPhase:10,Motion:[0.0d,0.5d,0.0d]}')
+    for _ in range(4):
+        ops += [{'op': 'tick', 'n': 10},
+                *[cmd(f'/data get entity {rise} Pos[{i}] 1000') for i in range(3)]]
+    return ops + setup('/kill @e[tag=hover_rise]', '/forceload remove all')
+
+
+def dragon_scanning_turn():
+    """DragonSittingScanningPhase: the dragon turns towards the player only while they are more
+    than 10 degrees off its heading. Summoned 6 blocks south of a survival player with yaw 0
+    (looking towards -z, at them), it holds still; one with yaw 90 turns. Its parts are at the
+    origin until its first aiStep, so its first turn aims from there (far away: a small step)."""
+    ops = setup('/gamemode survival', '/execute at @s run forceload add ~-32 ~-32 ~32 ~32')
+    ops += [{'op': 'settle'}]
+    for label, yaw in (('facing', 0), ('away', 90)):
+        dragon = f'@e[tag=scan_{label},limit=1]'
+        ops += setup(f'/execute at @s run summon ender_dragon ~ ~ ~6 {{Tags:["scan_{label}"],DragonPhase:6,Rotation:[{yaw}.0f,0.0f]}}')
+        for _ in range(3):
+            ops += [{'op': 'tick', 'n': 2},
+                    cmd(f'/data get entity {dragon} Rotation[0] 1000'),
+                    cmd(f'/data get entity {dragon} DragonPhase')]
+        ops += setup(f'/kill {dragon}')
+    return ops + setup('/gamemode creative', '/forceload remove all')
 
 
 def place_structure():
@@ -3949,6 +4048,53 @@ def orb_saved_uuid():
     ops += setup('/execute store result score elapsed orb_identity run time query gametime',
                  '/scoreboard players operation elapsed orb_identity -= start orb_identity')
     return ops + [cmd('/scoreboard players get elapsed orb_identity', expect_result=0)]
+
+
+def stand_saved_fall():
+    """Five real tick boundaries; whole bodies remain separate raw diagnostics."""
+    ops = [cmd('/tick freeze'), cmd('/forceload add 0 0 15 15'),
+           {'op': 'settle', 'required_chunks': [[0, 0]]},
+           {'op': 'wait_chunks', 'chunks': [[0, 0]]},
+           cmd('/fill 0 199 0 15 199 15 stone', expect_result=256),
+           cmd('/fill 0 200 0 15 210 15 air'),
+           cmd('/execute if loaded 4 205 4', expect_result=1),
+           cmd('/scoreboard objectives add stand_fall dummy', expect_result=1)]
+    actors = [('0000001c-0000-0000-0000-000000000001', '[I;28,0,0,1]', 4.5, 0),
+              ('0000001c-0000-0000-0000-000000000002', '[I;28,0,0,2]', 12.5, 1)]
+    for uuid, array, x, gravity in actors:
+        cell = int(x)
+        ops += [cmd(f'/execute if block {cell} 199 4 stone', expect_result=1),
+                cmd(f'/execute if block {cell} 205 4 air', expect_result=1),
+                cmd(f'/execute if block {cell} 206 4 air', expect_result=1),
+                cmd(f'/summon armor_stand {x} 205 4.5 {{UUID:{array},Tags:["stand_fall_{gravity}"],Health:20f,NoGravity:{gravity}b,Motion:[0d,0d,0d]}}', expect_result=1),
+                cmd(f'/execute if data entity {uuid} {{Pos:[{x}d,205d,4.5d],Motion:[0d,0d,0d]}}', expect_result=1)]
+    ops += setup('/execute store result score start stand_fall run time query gametime')
+    for ticks, step in [(0, 0), (1, 1), (2, 1), (3, 1), (5, 2)]:
+        if step:
+            ops.append(cmd(f'/tick step {step}'))
+            ops.append({'op': 'tick', 'n': step})
+        ops += setup('/execute store result score elapsed stand_fall run time query gametime',
+                     '/scoreboard players operation elapsed stand_fall -= start stand_fall')
+        ops.append(cmd('/scoreboard players get elapsed stand_fall', expect_result=ticks))
+        for uuid, array, x, gravity in actors:
+            ops += [cmd(f'/execute as {uuid} if entity @s[type=minecraft:armor_stand,tag=stand_fall_{gravity}]', expect_result=1),
+                    cmd(f'/execute if data entity {uuid} {{UUID:{array},Health:20f}}', expect_result=1),
+                    cmd(f'/data get entity {uuid} Pos', expect_result=3),
+                    cmd(f'/data get entity {uuid} Motion', expect_result=3),
+                    cmd(f'/data get entity {uuid} fall_distance', expect_result=0),
+                    cmd(f'/data get entity {uuid} OnGround', expect_result=0)]
+            if gravity:
+                ops.append(cmd(f'/execute if data entity {uuid} {{NoGravity:1b,Pos:[{x}d,205d,4.5d],Motion:[0d,0d,0d],fall_distance:0d}}', expect_result=1))
+            else:
+                ops.append(cmd(f'/execute unless data entity {uuid} {{NoGravity:1b}}', expect_result=1))
+                # Independently measured on Java 26.3; the suffix also checks Double type.
+                distance = {0: '0.0', 1: '0.0', 2: '0.07840000092983246',
+                            3: '0.23363199830055237', 5: '0.7684761881828308'}[ticks]
+                ops.append(cmd(f'/execute if data entity {uuid} {{fall_distance:{distance}d}}', expect_result=1))
+            full = cmd(f'/data get entity {uuid}', record=False)
+            full['trace'] = True
+            ops.append(full)
+    return ops
 
 
 def projectile_saved_uuid():
@@ -5624,7 +5770,8 @@ ISOLATED_RECIPES = frozenset({'crafting recipe priority', 'crafting base recipe 
 ISOLATED_FRAME_MAPS = frozenset({'frame live map detachment'})
 ISOLATED_PICKUP_SAVE = frozenset({'mob saved pickup loot'})
 ISOLATED_ORB_UUID = frozenset({'orb saved UUID'})
-ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID
+ISOLATED_STAND_FALL = frozenset({'stand saved fall distance'})
+ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL
 
 
 def groups():
@@ -5660,6 +5807,7 @@ def groups():
         from item_merge_corpus import stack_limit_merges
     return [
         ('setup', group_setup()),
+        ('stand saved fall distance', stand_saved_fall()),
         ('orb saved UUID', orb_saved_uuid()),
         ('mob saved pickup loot', mob_saved_pickup_loot()),
         ('transmute result patches', transmute_patches(cmd, setup)),
@@ -5739,6 +5887,7 @@ def groups():
         ('large fireball fire', large_fireball_fire()),
         ('mannequin pose anchors', mannequin_pose_anchors()),
         ('item command damage', item_command_damage()),
+        ('dragon command damage', dragon_command_damage()),
         ('execute', execute()),
         ('projectile origin', projectile_origin()),
         ('selector missing predicates', selector_missing_predicates()),
@@ -5781,6 +5930,8 @@ def groups():
         ('creative shulker drops', creative_shulker_drops()),
         ('minecart drag', minecart_drag()),
         ('ender dragon', ender_dragon()),
+        ('summoned dragon hovers', summoned_dragon_hovers()),
+        ('dragon scanning turn', dragon_scanning_turn()),
         ('place structure', place_structure()),
         ('template container loot table', template_container_loot_table()),
         ('tame wolf kills', tame_wolf_kills()),
