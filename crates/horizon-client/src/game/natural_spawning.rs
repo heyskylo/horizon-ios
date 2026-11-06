@@ -844,8 +844,10 @@ impl<'a> Game<'a> {
     /// `NoiseBasedChunkGenerator.spawnOriginalMobs`: creature packs for a
     /// freshly generated chunk, from the biome at its corner column's top,
     /// with the chunk's decoration-seeded random, finalized with the
-    /// region's random as generation adds them (mobs are not generated in
-    /// the End).
+    /// region's random as generation adds them. The settings' own
+    /// `disable_mob_generation` skips the pass, which is how the End's preset
+    /// keeps its chunks empty (the dimension is also checked, as before, so a
+    /// preset that fails to load cannot start filling the End).
     pub(super) fn spawn_generation_creatures(&mut self, cx: i32, cz: i32) {
         if !self.world.chunks.contains_key(&(cx, cz)) || self.dim == Dim::End {
             return;
@@ -855,6 +857,11 @@ impl<'a> Game<'a> {
         };
         // `FlatLevelSource.spawnOriginalMobs` is empty: a superflat world places no packs.
         if terrain.is_flat() {
+            return;
+        }
+        // `NoiseGeneratorSettings.disableMobGeneration`: the shipped End preset
+        // asks for no packs at generation, and so would any dimension using it.
+        if terrain.disable_mob_generation() {
             return;
         }
         let mut region = terrain.region_random(cx, cz);
