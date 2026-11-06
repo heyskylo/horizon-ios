@@ -2341,6 +2341,8 @@ pub fn tnt_to_nbt(
     put(&mut tag, "fuse", Tag::Short(fuse as i16));
     if power != 4.0 {
         put(&mut tag, "explosion_power", Tag::Float(power.to_bits()));
+    } else if let Tag::Compound(map) = &mut tag {
+        map.remove(&"explosion_power".into());
     }
     put(&mut tag, "block_state", block_state);
     if let Some(owner) = owner {
@@ -3744,6 +3746,58 @@ mod tnt_power_tests {
             None,
         );
         assert!(plain.get("explosion_power").is_none());
+    }
+
+    #[test]
+    fn saved_power_uses_the_model_and_omits_stale_defaults() {
+        let block = string("minecraft:stone");
+        let save = |power, raw| {
+            tnt_to_nbt(
+                Vec3::new(1.5, 200.0, 4.5),
+                Vec3::ZERO,
+                false,
+                80,
+                power,
+                block.clone(),
+                [0.0; 2],
+                [91, 0, 0, 1],
+                Some([91, 1, 0, 90]),
+                raw,
+            )
+        };
+        let raw_absent = Tag::compound([("Silent", Tag::Byte(1))]);
+        let raw_default = Tag::compound([
+            ("Silent", Tag::Byte(1)),
+            ("explosion_power", Tag::Float(4.0_f32.to_bits())),
+        ]);
+        let raw_stale = Tag::compound([
+            ("Silent", Tag::Byte(1)),
+            ("explosion_power", Tag::Float(2.0_f32.to_bits())),
+        ]);
+        for raw in [
+            None,
+            Some(&raw_absent),
+            Some(&raw_default),
+            Some(&raw_stale),
+        ] {
+            let saved = save(4.0, raw);
+            assert!(saved.get("explosion_power").is_none(), "stale raw {raw:?}");
+            assert_eq!(saved.get("fuse"), Some(&Tag::Short(80)));
+            assert_eq!(saved.get("block_state"), Some(&block));
+            assert_eq!(saved.get("owner"), Some(&Tag::IntArray(vec![91, 1, 0, 90])));
+            assert_eq!(saved.get("UUID"), Some(&Tag::IntArray(vec![91, 0, 0, 1])));
+            if raw.is_some() {
+                assert_eq!(saved.get("Silent"), Some(&Tag::Byte(1)));
+            }
+        }
+        for power in [0.0, 2.0, 5.0, 128.0] {
+            for raw in [None, Some(&raw_default), Some(&raw_stale)] {
+                assert_eq!(
+                    save(power, raw).get("explosion_power"),
+                    Some(&Tag::Float(power.to_bits()))
+                );
+            }
+        }
     }
 
     /// `EntityReference.store(owner, output, "owner")`: the igniter's UUID as
