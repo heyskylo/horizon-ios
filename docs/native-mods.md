@@ -2159,6 +2159,13 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   `number`, `boolean`, `player`, `item`, `block_pos`. The usages of one command merge into one tree, which every
   player receives after vanilla's (filtered by their level, as vanilla's is), so their chat box completes and colours
   it. A name vanilla has, or a usage that doesn't parse, is left out with a warning in the log.
+- **`native_refresh_commands()`** (`host.refresh_commands()` for trait mods, API @API:refresh_commands@): a helper for
+  a mod whose commands change while the server runs (a plugin host that reloads a plugin, a mod turned on at run time).
+  At the start of the next server tick every mod's `native_register_commands` is asked again, the commands players may
+  run (`native_perform_command`, with their levels) are rebuilt, and every player on the server is sent their tree
+  again, after `native_player_commands_sent`, as vanilla sends `Commands.sendCommands` to each player after `/reload`.
+  Call it after you change what you register; nothing happens where no world is open to players, and a server whose
+  mods never call it is unchanged.
 - **`native_armor_stand_manipulate(player, name, stand_id, slot, cancel)`**: a player takes an item from an armor stand or
   puts one on it, heard after the stand's disabled-slot checks and before anything moves. `slot` is `mainhand`,
   `offhand`, `feet`, `legs`, `chest` or `head`. Set `cancel` and nothing changes (the click is spent). The player's
