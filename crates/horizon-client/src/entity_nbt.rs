@@ -3235,7 +3235,10 @@ pub fn item_frame_from_nbt(tag: &Tag, id: u32) -> Option<ItemFrame> {
         pos,
         facing: number(tag.get("Facing")).unwrap_or(2).clamp(0, 5) as u8,
         glow: kind(tag).as_deref() == Some("minecraft:glow_item_frame"),
-        item: tag.get("Item").and_then(item_from_nbt),
+        item: tag
+            .get("Item")
+            .and_then(item_from_nbt)
+            .map(|s| crate::items::ItemStack { count: 1, ..s }),
         rotation: (number(tag.get("ItemRotation")).unwrap_or(0) & 7) as u8,
         drop_chance: float(tag.get("ItemDropChance")).map_or(1.0, |v| v as f32),
         fixed: flag(tag, "Fixed"),
