@@ -2543,7 +2543,9 @@ struct Game<'a> {
     spawn: Option<Vec3>,
     clock: FixedStep,
     previous_position: Vec3,
-    /// `yRotO` / `xRotO` of the local player: the view at the start of the tick.
+    /// `yRotO` / `xRotO` of the local player: the view at the start of the tick,
+    /// moved by `Entity.turn` and a boat's `clampRotation` as the view is
+    /// (`LocalPlayer.getRopeHoldPosition` eases the held lead from it).
     rope_rot_old: (f32, f32),
     eye: f32,
     previous_eye: f32,

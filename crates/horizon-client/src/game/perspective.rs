@@ -626,6 +626,9 @@ impl Game<'_> {
     pub(super) fn turn_player(&mut self, xo: f64, yo: f64) {
         let pitch_o = self.player_model.as_ref().map(|m| m.previous_head_pitch);
         let rotation = turn_rotation(self.yaw, self.pitch, pitch_o, xo, yo);
+        // The held lead's old look (`LocalPlayer.getRopeHoldPosition`'s
+        // `yRotO`/`xRotO`) turns with the view (#10276).
+        self.rope_rot_old = rope_old_after_turn(self.rope_rot_old, self.yaw, self.pitch, xo, yo);
         self.yaw = rotation.y_rot;
         self.pitch = rotation.x_rot;
         if let Some(m) = self.player_model.as_mut() {
@@ -640,7 +643,10 @@ impl Game<'_> {
             .and_then(|id| self.boats.iter().find(|b| b.id == id))
         {
             let delta = (self.yaw - b.yaw + 180.0).rem_euclid(360.0) - 180.0;
-            self.yaw += delta.clamp(-105.0, 105.0) - delta;
+            let clamped = delta.clamp(-105.0, 105.0) - delta;
+            self.yaw += clamped;
+            // clampRotation moves `yRotO` with the view.
+            self.rope_rot_old.0 += clamped;
         }
     }
     /// What the player rides that sets their body's yaw: a boat's yaw, or a
@@ -1366,6 +1372,22 @@ fn turn_rotation(yaw: f32, pitch: f32, pitch_o: Option<f32>, xo: f64, yo: f64) -
     rotation
 }
 
+/// `Entity.turn` adds the turn to `yRotO` and `xRotO` as well, so the look the
+/// held lead's end eases from (`LocalPlayer.getRopeHoldPosition`'s
+/// `Mth.lerp(partialTick * 0.5F, getYRot(), yRotO)`) follows the mouse at once;
+/// only what the tick itself turned (a boat's `deltaRotation`) eases in. `old`
+/// is `(yRotO, xRotO)`; the result is the pair after the turn (#10276).
+fn rope_old_after_turn(old: (f32, f32), yaw: f32, pitch: f32, xo: f64, yo: f64) -> (f32, f32) {
+    let mut rotation = Rotation {
+        x_rot: pitch,
+        y_rot: yaw,
+        x_rot_o: old.1,
+        y_rot_o: old.0,
+    };
+    rotation.turn(xo, yo);
+    (rotation.y_rot_o, rotation.x_rot_o)
+}
+
 /// `EntityRenderer.getPackedLightCoords` (`Entity.getLightProbePosition`):
 /// the block containing the entity's eye position, undoing
 /// `AvatarRenderer.getRenderOffset`'s 0.125 crouch drop on the model position.
@@ -1490,6 +1512,24 @@ mod preview_tests {
         // Without a model the old pitch is the pitch.
         let r = turn_rotation(0.0, 10.0, None, 0.0, 100.0);
         assert_eq!(r.x_rot_o, r.x_rot);
+    }
+    /// #10276: the lead held in first person eases from `yRotO`/`xRotO`, which
+    /// `Entity.turn` moves with the view: a mouse turn leaves no gap for the
+    /// hand to lag by, while a boat's turn (not a `turn`) still eases in.
+    #[test]
+    fn the_held_leads_old_look_turns_with_the_mouse() {
+        // A tick's snapshot, then a 30 degree mouse turn right and 15 down.
+        let (yaw, pitch) = (40.0_f32, 10.0_f32);
+        let old = (yaw, pitch);
+        let r = turn_rotation(yaw, pitch, None, 200.0, 100.0);
+        let old = rope_old_after_turn(old, yaw, pitch, 200.0, 100.0);
+        assert_eq!(old, (r.y_rot, r.x_rot), "the old look moved by the turn");
+        // The boat turned the view by 5 after the snapshot: that part eases.
+        let old = rope_old_after_turn((yaw, pitch), yaw + 5.0, pitch, 200.0, 0.0);
+        assert!((old.0 - (yaw + 30.0)).abs() < 1e-4, "{old:?}");
+        // xRotO is clamped as xRot is.
+        let old = rope_old_after_turn((0.0, 85.0), 0.0, 85.0, 0.0, 100.0);
+        assert_eq!(old.1, 90.0);
     }
     #[test]
     fn preview_keeps_crossing_faces_depth_and_clips_without_dropping_faces() {
