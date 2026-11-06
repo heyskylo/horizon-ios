@@ -248,6 +248,15 @@ impl PalettedContainer {
     pub fn bits(&self) -> u8 {
         self.bits
     }
+    /// What the stored ids stand for — the values of the list palette, `None`
+    /// for a single value (`uniform()`) and for the global palette, whose
+    /// stored ids are the values.
+    pub fn palette(&self) -> Option<&[u32]> {
+        match &self.palette {
+            Palette::List(list) => Some(list),
+            _ => None,
+        }
+    }
     /// Entries in the palette (the global palette reports its bit capacity).
     #[inline]
     pub fn palette_len(&self) -> usize {
@@ -484,6 +493,36 @@ impl PalettedContainer {
                         *cell = ((word >> (slot * bits)) & m) as u32;
                     }
                 }
+            }
+        }
+    }
+    /// The stored ids through `map`: `out[i] = map[id of entry i]`, in index
+    /// order, the id being a palette id for a list palette and the value
+    /// itself for the global one (see `palette`). A single-value palette
+    /// stores no ids: `out` is left as it is.
+    pub fn unpack_ids_mapped<T: Copy>(&self, out: &mut [T], map: &[T]) {
+        assert_eq!(out.len(), self.strategy.entries());
+        // Four bits a linear palette's usual width: a whole word of them is a
+        // row of 16, and immediate shifts for the compiler to unroll.
+        if self.bits == 4 {
+            for (row, &word) in out.chunks_exact_mut(16).zip(&self.words) {
+                for (x, cell) in row.iter_mut().enumerate() {
+                    *cell = map[((word >> (x * 4)) & 0xF) as usize];
+                }
+            }
+            return;
+        }
+        if self.bits == 0 {
+            return;
+        }
+        let bits = usize::from(self.bits);
+        let per = 64 / bits;
+        let m = mask(self.bits);
+        for (chunk, &word) in out.chunks_mut(per).zip(&self.words) {
+            let mut shift = 0;
+            for cell in chunk {
+                *cell = map[((word >> shift) & m) as usize];
+                shift += bits;
             }
         }
     }
