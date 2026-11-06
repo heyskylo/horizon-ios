@@ -146,6 +146,10 @@ path = "tests/mod_api_hooks.rs"
 name = "native_gui_overlay_probe"
 path = "examples/native_gui_overlay_probe.rs"
 
+[[example]]
+name = "wind_burst_hook_probe"
+path = "examples/wind_burst_hook_probe.rs"
+
 [build-dependencies]
 horizon-mod-api-gen = { path = "../horizon-mod-api-gen" }
 # The build script runs on the host, but embeds resources based on the target OS.
