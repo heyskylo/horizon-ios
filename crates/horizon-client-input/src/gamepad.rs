@@ -786,7 +786,8 @@ pub fn stick_axes(
     {
         // Default map: RightStickX is the stick's Y, LeftZ its X; RightStickY
         // is the right trigger and must not drive look.
-        (left, [left_z, right[0]])
+        // gilrs turns over only the axes it calls Y, and this Y is on one it doesn't.
+        (left, [left_z, -right[0]])
     } else {
         (left, right)
     }
@@ -1820,7 +1821,11 @@ bind_key.hotbar.2:north
             false,
         );
         assert_eq!(left, [0.2, 0.3]);
-        assert_eq!(right, [-0.5, 0.7], "X from LeftZ, Y from RightStickX");
+        assert_eq!(
+            right,
+            [-0.5, -0.7],
+            "X from LeftZ, Y from RightStickX, turned over"
+        );
         let kept = stick_axes(
             [0.2, 0.3],
             [0.7, -0.9],

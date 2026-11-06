@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 mod face_buttons;
 mod hid_layout;
+mod sdl_row;
 mod triggers;
 
 /// The controllers gilrs sees and the DualSense's output.
@@ -162,6 +163,7 @@ impl Pads {
             self.devices.rumbles.clear();
             self.devices.dualsense = false;
             self.devices.output = None;
+            self.devices.shown = None;
         }
     }
 
@@ -202,11 +204,10 @@ impl Pads {
                     }
                 }
                 E::ButtonPressed(..) => self.devices.active = Some(id),
-                E::AxisChanged(_, value, _) | E::ButtonChanged(_, value, _)
-                    if value.abs() > 0.5 =>
-                {
+                E::AxisChanged(axis, value, _) if axis_takes_over(axis, value) => {
                     self.devices.active = Some(id)
                 }
+                E::ButtonChanged(_, value, _) if value > TAKEOVER => self.devices.active = Some(id),
                 _ => {}
             }
         }
@@ -228,6 +229,20 @@ impl Pads {
         self.style = GlyphStyle::of_device(pad.vendor_id(), pad.product_id());
         self.devices.dualsense = is_dualsense(&pad);
         state_of(&pad)
+    }
+}
+
+/// How far a stick or trigger has to go for its pad to become the active one.
+const TAKEOVER: f32 = 0.5;
+
+/// Whether an axis this far along means someone is using its pad. Z and axes gilrs has no name for
+/// can be triggers, which rest at -1, so only their pulled end counts: touching an idle pad's
+/// trigger mustn't take over from the pad in use.
+fn axis_takes_over(axis: gilrs::Axis, value: f32) -> bool {
+    use gilrs::Axis as A;
+    match axis {
+        A::LeftZ | A::RightZ | A::Unknown => value > TAKEOVER,
+        _ => value.abs() > TAKEOVER,
     }
 }
 
@@ -261,6 +276,7 @@ fn state_of(pad: &gilrs::Gamepad) -> PadState {
         pad.product_id(),
         sdl_mapped,
     );
+    let (left, right) = sdl_row::sticks(pad, left, right);
     state.left = left;
     state.right = if hid_layout::right_stick_on_z(pad) {
         hid_layout::right_stick([axis(A::LeftZ), axis(A::RightZ)])
@@ -460,6 +476,7 @@ impl Game<'_> {
             && self.focused
             && self.title.is_none()
             && self.screen == Screen::Playing
+            && !self.screen_over_playing()
             && !self.pause;
         let (using, attacking) = if playing {
             self.trigger_feels()
@@ -723,5 +740,28 @@ mod one_reader_tests {
         };
         router.adopt(&mut pads);
         assert!(pads.devices.gilrs.is_some());
+    }
+}
+
+#[cfg(test)]
+mod takeover_tests {
+    use super::*;
+    use gilrs::Axis as A;
+
+    #[test]
+    fn an_idle_pads_resting_trigger_doesnt_take_over() {
+        for axis in [A::LeftZ, A::RightZ, A::Unknown] {
+            assert!(!axis_takes_over(axis, -0.99), "{axis:?}");
+            assert!(axis_takes_over(axis, 0.9), "{axis:?}");
+        }
+    }
+
+    #[test]
+    fn a_stick_takes_over_in_either_direction() {
+        for axis in [A::LeftStickX, A::LeftStickY, A::RightStickX, A::RightStickY] {
+            assert!(axis_takes_over(axis, -0.9), "{axis:?}");
+            assert!(axis_takes_over(axis, 0.9), "{axis:?}");
+            assert!(!axis_takes_over(axis, 0.2), "{axis:?}");
+        }
     }
 }

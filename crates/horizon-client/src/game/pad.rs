@@ -653,7 +653,8 @@ impl Game<'_> {
     /// playing (a pad lying idle while the mouse plays stays still).
     pub(super) fn pad_rumble(&mut self, rumble: Rumble) {
         let settings = &self.settings.controller;
-        if !settings.enabled || !settings.vibration || !self.pad.in_use {
+        // Not while the player is in another window, as the DualSense's own output isn't.
+        if !settings.enabled || !settings.vibration || !self.pad.in_use || !self.focused {
             return;
         }
         let Some(pulse) = rumble.pulse() else {
@@ -668,6 +669,10 @@ impl Game<'_> {
     /// notice. Nothing here decides what the controller drives; a player who turned controllers
     /// off isn't told about them.
     fn pad_connection_notice(&mut self, change: Connection) {
+        // The pad that was playing is gone: nothing is driving until another is touched.
+        if matches!(change, Connection::Disconnected { active: true }) {
+            self.pad.in_use = false;
+        }
         if !self.settings.controller.enabled {
             return;
         }
