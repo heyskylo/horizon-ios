@@ -2496,6 +2496,17 @@ while no mod asks for it.
   five and fifteen minutes (Bukkit's `Server.getTPS`), measured between the ends of the recorded ticks and averaged
   once a second as a load average is. They start at 20; an idle server reads 20, a sprint more and a server that
   falls behind less. Bundles need `"hooks": @API:tick_times@`.
+- **`native_level_stats(dimension)`**, **`native_level_entities(dimension)`** and
+  **`native_level_block_entities(dimension)`**: what an open level of a server holds (`minecraft:the_nether`; None or
+  empty on a client and for a level that isn't open), as Bukkit's `World.getLoadedChunks`, `getForceLoadedChunks`,
+  `getEntities` and `Chunk.getTileEntities` give it. `NativeLevelStats` counts the loaded chunks, the forced ones
+  (`/forceload` and `native_force_chunk`), the block entities and those that tick, and the entities (players
+  included) and block entities by type, the most first. The entity list gives each entity's id (what events and
+  `native_entity` take), type and position; the block entity list each one's position and type: the vanilla block
+  entity type of its block (`minecraft:barrel`, `minecraft:mob_spawner`), else the block's name. A level not in place
+  is swapped in for the count and back, as `/execute in` does. The players are the hub's, so none are counted inside
+  a player's own hook, where the hub is taken out. Each walks every entity or block entity: call them once a second
+  or less, not every tick. Bundles need `"hooks": @API:level_stats@`.
 
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The

@@ -100,7 +100,7 @@ fn root_id(target: Option<Target>, first: u32, live: impl Fn(u32) -> bool) -> Op
 }
 
 /// The entity id a summoned stack's root is known by.
-fn target_id(t: Target) -> Option<u32> {
+pub(super) fn target_id(t: Target) -> Option<u32> {
     match t {
         Target::Mob(id)
         | Target::Item(id)

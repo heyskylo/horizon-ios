@@ -374,6 +374,27 @@ pub struct NativeZoom {
     pub turn: f32,
 }
 
+/// One open level of a server, counted for a diagnostics mod (`native_level_stats`): Bukkit's
+/// `World.getLoadedChunks`, `getForceLoadedChunks`, `getEntities` and `Chunk.getTileEntities`
+/// in numbers. API @API:level_stats@.
+#[derive(Clone, Debug, Default, PartialEq)]
+#[non_exhaustive]
+pub struct NativeLevelStats {
+    /// The chunks it holds loaded.
+    pub chunks: usize,
+    /// The chunks `/forceload` and mods' tickets (`native_force_chunk`) keep loaded.
+    pub forced_chunks: usize,
+    pub block_entities: usize,
+    /// The block entities that tick (`Level.blockEntityTickers`).
+    pub ticking_block_entities: usize,
+    /// Its entities by type (`minecraft:zombie`), players included, the most first and ties
+    /// by name.
+    pub entities: Vec<(String, usize)>,
+    /// Its block entities by type (`minecraft:chest`, else a mod block's name), in the same
+    /// order.
+    pub block_entity_types: Vec<(String, usize)>,
+}
+
 /// A player on the server, as a server hook sees them.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
