@@ -71,19 +71,6 @@ fn loader(names: &[String]) -> &'static str {
     }
 }
 
-/// Data folders named as before 1.21 (`recipes/`, `loot_tables/`) and none
-/// as 1.21 names them: the game doesn't read them, and the carry upgrades
-/// from 1.21.1 on. (Some jars keep a stale plural folder beside the new one.)
-fn old_layout(names: &[String]) -> bool {
-    let has = |kinds: [&str; 2]| {
-        names.iter().any(|n| {
-            let p: Vec<&str> = n.split('/').collect();
-            p.len() > 3 && p[0] == "data" && kinds.contains(&p[2]) && n.ends_with(".json")
-        })
-    };
-    has(["recipes", "loot_tables"]) && !has(["recipe", "loot_table"])
-}
-
 fn plural(n: usize, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
 }
@@ -140,10 +127,8 @@ pub fn check(jar_path: &Path, out: &Path) -> Result<Check, String> {
         crate::pipeline::write_json(&out.join("check.json"), &check)?;
         Ok(check)
     };
-    if old_layout(&names) {
-        check.summary = "Made for Minecraft 1.20 or older: Horizon ports mods made for 1.21 \
-                         and later."
-            .into();
+    if carry::old_layout(&names) {
+        check.summary = carry::OLD_LAYOUT.into();
         return done(check);
     }
     let alone = |m: &str| m == info.mod_id || m == "minecraft";
