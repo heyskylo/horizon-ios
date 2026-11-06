@@ -9046,10 +9046,15 @@ impl Game<'_> {
         };
         let mut input = std::mem::take(&mut r.input);
         let stop = std::mem::take(&mut r.stop_mining);
+        // Minecraft.tick runs handleKeybinds only while `gui.screen() == null`: a
+        // book, a sign editor, a dialog or a prompt over the world (each a
+        // `Screen` in vanilla) stops the attack and use mappings from acting,
+        // and `KeyMapping.releaseAll` let go of the buttons when it opened
+        // (`track_toggle_screens`), so a dig held into a book ends (#9729).
         let ready = r.loaded_sent
             && self.screen == Screen::Playing
             && self.sleeping.is_none()
-            && !self.dialog_open();
+            && !self.screen_over_playing();
         // MultiPlayerGameMode.tick, first in Minecraft.tick, screen or not: the slot
         // chosen since the last tick (the wheel, the last tick's number keys, the
         // server's SetHeldSlot) goes out before anything else of this tick.

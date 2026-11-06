@@ -8312,7 +8312,7 @@ impl Game<'_> {
                         gameplay_has_keyboard(
                             self.screen,
                             self.title.is_some(),
-                            self.dialog_open(),
+                            self.screen_over_playing(),
                         ),
                         action,
                     ) {
@@ -8357,8 +8357,11 @@ impl Game<'_> {
                 (_, false) => KeyAction::Press,
                 (_, true) => KeyAction::Repeat,
             };
-            let screen_open =
-                !gameplay_has_keyboard(self.screen, self.title.is_some(), self.dialog_open());
+            let screen_open = !gameplay_has_keyboard(
+                self.screen,
+                self.title.is_some(),
+                self.screen_over_playing(),
+            );
             self.toggles.key(slot, action, screen_open, option);
             self.sync_toggle(slot);
             if !pressed {
@@ -8386,7 +8389,11 @@ impl Game<'_> {
     fn track_toggle_screens(&mut self) {
         let dialog = self.dialog_open();
         drop_held_behind_dialog(dialog, &mut self.keys, &mut self.left, &mut self.right);
-        let playing = gameplay_has_keyboard(self.screen, self.title.is_some(), dialog);
+        let playing = gameplay_has_keyboard(
+            self.screen,
+            self.title.is_some(),
+            self.screen_over_playing(),
+        );
         if playing == self.was_playing {
             return;
         }
@@ -22896,10 +22903,13 @@ fn keyboard_button(playing: bool, action: KeyAction) -> Option<bool> {
     playing.then_some(action != KeyAction::Release)
 }
 
-/// Gameplay owns the keyboard: `Screen::Playing`, no title, no server dialog.
-/// Vanilla's `DialogScreen` is a screen, so `KeyMapping.releaseAll` runs.
-fn gameplay_has_keyboard(screen: Screen, title: bool, dialog: bool) -> bool {
-    screen == Screen::Playing && !title && !dialog
+/// Gameplay owns the keyboard: `Screen::Playing`, no title, and nothing open
+/// over the world (`screen_over_playing`: a server dialog, a book or lectern,
+/// a sign editor, a prompt). Each is a `Screen` in vanilla, so `Gui.setScreen`
+/// runs `KeyMapping.releaseAll` and `Minecraft.tick` skips `handleKeybinds`
+/// while it is up: a mouse button held into it is let go of (#9729).
+fn gameplay_has_keyboard(screen: Screen, title: bool, screen_over: bool) -> bool {
+    screen == Screen::Playing && !title && !screen_over
 }
 
 /// A dialog drops held keys and mouse buttons it does not see (#4974).
@@ -23636,8 +23646,10 @@ mod tests {
         }
     }
 
-    /// A server dialog is a screen: held keys and the use button are released
-    /// (`KeyMapping.releaseAll`), and toggled sneak comes back when it closes (#4974).
+    /// A server dialog, a book, a sign editor or a prompt over the world is a
+    /// screen: held keys and the mouse buttons are released
+    /// (`KeyMapping.releaseAll`), and toggled sneak comes back when it closes
+    /// (#4974, #9729).
     #[test]
     fn a_dialog_releases_held_keys_like_a_screen() {
         assert!(gameplay_has_keyboard(Screen::Playing, false, false));
