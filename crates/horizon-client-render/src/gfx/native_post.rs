@@ -1346,7 +1346,7 @@ mod tests {
         frame.pack.still_ticks = Some(47_811);
         frame.pack.eye_light = [0, 15];
         frame.pack.rain = 1.0;
-        frame.pack.frame_timing = Some(FrameTiming::nth(1, 2000));
+        frame.pack.frame_timing = Some(FrameTiming::nth(1, 2000.0));
         let first = native.next_inputs(&frame, [4, 4]);
         assert_eq!(
             (first.time, first.frame_index, first.delta_time),
@@ -1357,7 +1357,7 @@ mod tests {
         assert!(native.take_history_reset());
         native.last.as_mut().unwrap().2 -= std::time::Duration::from_secs(5);
         frame.pack.eye_light = [0, 0];
-        frame.pack.frame_timing = Some(FrameTiming::nth(2, 2000));
+        frame.pack.frame_timing = Some(FrameTiming::nth(2, 2000.0));
         let second = native.next_inputs(&frame, [4, 4]);
         assert_eq!(
             (second.time, second.frame_index, second.delta_time),

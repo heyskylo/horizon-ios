@@ -109,10 +109,10 @@ pub struct FrameTiming {
 }
 
 impl FrameTiming {
-    /// Frame `n` (from 1) of frames `step_ms` milliseconds apart. The elapsed time is worked
-    /// out in f64, so frame 10 000 is as exact as frame 2.
-    pub fn nth(n: u32, step_ms: u32) -> Self {
-        let step = f64::from(step_ms) / 1000.0;
+    /// Frame `n` (from 1) of frames `step_ms` milliseconds apart (`16.666667` for 60 fps). The
+    /// elapsed time is worked out in f64, so frame 10 000 is as exact as frame 2.
+    pub fn nth(n: u32, step_ms: f64) -> Self {
+        let step = step_ms / 1000.0;
         Self {
             counter: n,
             elapsed: (f64::from(n.saturating_sub(1)) * step) as f32,
@@ -2272,7 +2272,7 @@ pub(super) mod initial_history_tests {
             rain: 1.0,
             eye_light: [0, 15],
             still_ticks: Some(47_811),
-            frame_timing: Some(FrameTiming::nth(1, 1000)),
+            frame_timing: Some(FrameTiming::nth(1, 1000.0)),
             ..Default::default()
         };
         u.center_depth_raw = Some(1.0);
@@ -2286,7 +2286,7 @@ pub(super) mod initial_history_tests {
             (2, 120, 1.0 / 1_024.0, 0.965_936_3),
             (3, 60, 1.0 / 1_048_576.0, 0.933_033),
         ] {
-            input.frame_timing = Some(FrameTiming::nth(n, 1000));
+            input.frame_timing = Some(FrameTiming::nth(n, 1000.0));
             u.update(&f, &input, [800, 450]);
             match u.values[index("eyeBrightnessSmooth").unwrap()] {
                 Value::I(v) => assert_eq!(v[1], eye),
@@ -2317,7 +2317,7 @@ pub(super) mod initial_history_tests {
                     let input = PackInputs {
                         rain: if n == 1 { 0.0 } else { 1.0 },
                         still_ticks: Some(47_811),
-                        frame_timing: Some(FrameTiming::nth(n, 1000)),
+                        frame_timing: Some(FrameTiming::nth(n, 1000.0)),
                         ..Default::default()
                     };
                     u.update(&f, &input, [800, 450]);
@@ -2344,7 +2344,7 @@ pub(super) mod initial_history_tests {
     #[test]
     fn the_nth_scripted_frame_counts_from_1() {
         assert_eq!(
-            FrameTiming::nth(1, 50),
+            FrameTiming::nth(1, 50.0),
             FrameTiming {
                 counter: 1,
                 elapsed: 0.0,
@@ -2352,16 +2352,19 @@ pub(super) mod initial_history_tests {
             }
         );
         assert_eq!(
-            FrameTiming::nth(2, 50),
+            FrameTiming::nth(2, 50.0),
             FrameTiming {
                 counter: 2,
                 elapsed: 0.05,
                 delta: 0.05
             }
         );
-        assert_eq!(FrameTiming::nth(64, 50).elapsed, 3.15);
-        assert_eq!(FrameTiming::nth(10_000, 50).elapsed, 499.95);
-        assert_eq!(FrameTiming::nth(3, 1).elapsed, 0.002);
+        assert_eq!(FrameTiming::nth(64, 50.0).elapsed, 3.15);
+        assert_eq!(FrameTiming::nth(10_000, 50.0).elapsed, 499.95);
+        assert_eq!(FrameTiming::nth(3, 1.0).elapsed, 0.002);
+        // 60 fps: frame 61 is one second in, not 61 × 16 ms or 61 × 17 ms.
+        let sixty = FrameTiming::nth(61, 1000.0 / 60.0);
+        assert_eq!((sixty.elapsed, sixty.delta), (1.0, 1.0 / 60.0));
     }
 
     /// Iris 1.11.7 (probe pack): `ambientLight` is the dimension type's (0.1 in the Nether,
