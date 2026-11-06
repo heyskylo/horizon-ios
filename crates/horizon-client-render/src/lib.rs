@@ -97,6 +97,7 @@ pub mod settings;
 pub mod settings_shell;
 pub mod shader_options;
 pub mod shader_pack_list;
+pub mod shader_ui;
 pub mod signs;
 pub mod skins;
 pub mod sound_engine;
