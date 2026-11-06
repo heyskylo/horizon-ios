@@ -991,12 +991,19 @@ fn content_root_is_reused_until_a_mod_changes() {
     let file = fs::File::options().write(true).open(&lang).unwrap();
     file.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(5))
         .unwrap();
-    resource_root(&base, std::slice::from_ref(&m), &cache).unwrap();
-    assert!(!sentinel.exists(), "a changed mod kept the old root");
+    let rebuilt = resource_root(&base, std::slice::from_ref(&m), &cache).unwrap();
+    assert_ne!(rebuilt, root, "a changed mod reused the old root");
+    assert!(
+        fs::read_to_string(rebuilt.join("assets/ruby/lang/en_us.json"))
+            .unwrap()
+            .contains("Ruby Block")
+    );
+    // The root a running game was given is never changed under it.
+    assert!(sentinel.exists(), "a changed mod rebuilt the root in place");
     assert!(
         fs::read_to_string(root.join("assets/ruby/lang/en_us.json"))
             .unwrap()
-            .contains("Ruby Block")
+            .contains("Block of Ruby")
     );
     let _ = fs::remove_dir_all(&scratch);
 }
@@ -3970,10 +3977,14 @@ fn blocks_and_items_declared_in_code_get_ids() {
         resource_root(&base, &mods, &scratch.join("cache")).unwrap(),
         root
     );
+    // Changed declarations build a root of their own: the old one stays as
+    // it was, for a switch back to that set.
     let stamp = fs::read(root.join(STAMP)).unwrap();
     mods[1].content.items[0].max_stack_size = Some(2);
-    resource_root(&base, &mods, &scratch.join("cache")).unwrap();
-    assert_ne!(fs::read(root.join(STAMP)).unwrap(), stamp);
+    let changed = resource_root(&base, &mods, &scratch.join("cache")).unwrap();
+    assert_ne!(changed, root);
+    assert_ne!(fs::read(changed.join(STAMP)).unwrap(), stamp);
+    assert_eq!(fs::read(root.join(STAMP)).unwrap(), stamp);
     let _ = fs::remove_dir_all(&scratch);
 }
 
@@ -4373,4 +4384,193 @@ fn a_symlink_file_is_copied_through() {
     assert!(!fs::symlink_metadata(&at).unwrap().file_type().is_symlink());
     assert_eq!(fs::read(&at).unwrap(), b"real");
     let _ = fs::remove_dir_all(&scratch);
+}
+
+/// A content mod of recipes, a tag and a name, for vanilla's items: what
+/// switches live (docs/design/mod-hotload.md).
+fn glint_mod(dir: &Path) -> ContentMod {
+    folder_mod(
+        dir,
+        &[
+            ("horizon-mod.toml", &manifest("glint", "")),
+            (
+                "data/glint/recipe/diamond_from_dirt.json",
+                r#"{"type": "minecraft:crafting_shapeless", "category": "misc",
+                    "ingredients": ["minecraft:dirt", "minecraft:dirt"],
+                    "result": {"id": "minecraft:diamond"}}"#,
+            ),
+            (
+                "data/c/tags/item/gems/glint.json",
+                r#"{"values": ["minecraft:diamond"]}"#,
+            ),
+            (
+                "assets/glint/lang/en_us.json",
+                r#"{"glint.hello": "Hello"}"#,
+            ),
+        ],
+    )
+}
+
+#[test]
+fn only_assets_and_data_switch_live() {
+    let scratch = std::env::temp_dir().join(format!("horizon-mod-live-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    assert_eq!(
+        live_switch(&glint_mod(&scratch.join("glint")).content),
+        Ok(())
+    );
+    let ruby = ruby_mod(&scratch.join("ruby"));
+    assert_eq!(
+        live_switch(&ruby.content),
+        Err("horizon.mods.switch.registries")
+    );
+    let effect = folder_mod(
+        &scratch.join("fx"),
+        &[
+            ("horizon-mod.toml", &manifest("fx", "")),
+            (
+                "data/fx/horizon/mob_effect/glow.json",
+                r#"{"category": "harmful", "color": 1}"#,
+            ),
+        ],
+    );
+    assert_eq!(
+        live_switch(&effect.content),
+        Err("horizon.mods.switch.registries")
+    );
+    for (id, file, text) in [
+        (
+            "ores",
+            "data/ores/neoforge/biome_modifier/add.json",
+            r#"{"type": "neoforge:none"}"#,
+        ),
+        (
+            "village",
+            "data/minecraft/tags/worldgen/biome/has_structure/village_plains.json",
+            r#"{"values": []}"#,
+        ),
+        (
+            "feat",
+            "data/feat/worldgen/placed_feature/rock.json",
+            r#"{"feature": "minecraft:ore_iron", "placement": []}"#,
+        ),
+    ] {
+        let m = folder_mod(
+            &scratch.join(id),
+            &[("horizon-mod.toml", &manifest(id, "")), (file, text)],
+        );
+        assert_eq!(
+            live_switch(&m.content),
+            Err("horizon.mods.switch.worldgen"),
+            "{file}"
+        );
+    }
+    fs::remove_dir_all(&scratch).unwrap();
+}
+
+/// On, off and on again: each root has what its set of mods has, a switch
+/// never changes a root a game was given, and a set seen before reuses its
+/// root without building it again.
+#[test]
+#[ignore = "full content root: CI and pr_ready run it"]
+fn a_data_mod_loads_unloads_and_loads_again() {
+    let Some(base) = prepared() else {
+        return;
+    };
+    let scratch = std::env::temp_dir().join(format!("horizon-mod-reload-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    let cache = scratch.join("cache");
+    let glint = glint_mod(&scratch.join("glint"));
+    let dirt = || Some(crate::items::ItemStack::new("minecraft:dirt", 1));
+    let grid = [dirt(), dirt(), None, None];
+    // What a world reads from a root: the item tags and the recipes.
+    let tables = |root: &Path| {
+        let assets = Assets::load(root).unwrap();
+        let facts = BlockFacts::load(root, assets.registry).unwrap();
+        let items = Items::load(root, assets.registry, &facts, &PackOverlay::NONE).unwrap();
+        let recipes = crate::crafting::Recipes::load(root, &items, &PackOverlay::NONE).unwrap();
+        let crafted = recipes.find(&grid, 2).map(|(_, out)| out.item.to_string());
+        let tagged = items.item_tag_order.get("c:gems/glint").cloned();
+        (
+            crafted,
+            tagged,
+            root.join("assets/glint/lang/en_us.json").is_file(),
+        )
+    };
+    let loaded = (
+        Some("minecraft:diamond".to_owned()),
+        Some(vec!["minecraft:diamond".to_owned()]),
+        true,
+    );
+
+    let started = std::time::Instant::now();
+    let on = resource_root(&base, std::slice::from_ref(&glint), &cache).unwrap();
+    eprintln!("content root built in {} ms", started.elapsed().as_millis());
+    assert_ne!(on, base);
+    assert_eq!(tables(&on), loaded);
+
+    // Off: the base root, without any of it.
+    let off = resource_root(&base, &[], &cache).unwrap();
+    assert_eq!(off, base);
+    assert_eq!(tables(&off), (None, None, false));
+    assert!(on.join("assets/glint/lang/en_us.json").is_file());
+
+    // On again: the same root, not built again.
+    let sentinel = on.join("sentinel");
+    fs::write(&sentinel, b"").unwrap();
+    let started = std::time::Instant::now();
+    let again = resource_root(&base, std::slice::from_ref(&glint), &cache).unwrap();
+    eprintln!(
+        "content root reused in {} ms",
+        started.elapsed().as_millis()
+    );
+    assert_eq!(again, on);
+    assert!(sentinel.exists());
+    assert_eq!(tables(&again), loaded);
+
+    // Another set of mods builds its own root beside it and leaves this one as it was.
+    let ruby = ruby_mod(&scratch.join("ruby"));
+    let package = horizon_mods::Package::read(&scratch.join("glint")).unwrap();
+    let glint_again = ContentMod {
+        id: "glint".into(),
+        content: Content::read(&scratch.join("glint"), &package.manifest).unwrap(),
+    };
+    let both = resource_root(&base, &[glint_again, ruby], &cache).unwrap();
+    assert_ne!(both, on);
+    assert!(sentinel.exists());
+    assert_eq!(tables(&both).0, loaded.0);
+    fs::remove_dir_all(&scratch).unwrap();
+}
+
+#[test]
+fn roots_unused_for_a_day_are_removed() {
+    let scratch = std::env::temp_dir().join(format!("horizon-mod-prune-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    let roots = scratch.join("mod-content");
+    let root = |name: &str, age_s: u64| {
+        let dir = roots.join(name);
+        fs::create_dir_all(&dir).unwrap();
+        let stamp = dir.join(STAMP);
+        fs::write(&stamp, b"x").unwrap();
+        let file = fs::File::options().write(true).open(&stamp).unwrap();
+        file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(age_s))
+            .unwrap();
+        dir
+    };
+    let current = root("00000000000000aa", 3 * 86400);
+    let recent = root("00000000000000bb", 60);
+    let stale = root("00000000000000cc", 2 * 86400);
+    // Not a root's name: never touched while the folder has no root of the old layout.
+    let other = roots.join("notes");
+    fs::create_dir_all(&other).unwrap();
+    prune_roots(&roots, &current, KEEP_ROOTS);
+    assert!(current.exists() && recent.exists() && other.exists());
+    assert!(!stale.exists());
+    // An older game's single root, built straight in the folder, goes.
+    fs::write(roots.join(STAMP), b"old").unwrap();
+    fs::create_dir_all(roots.join("assets/minecraft")).unwrap();
+    prune_roots(&roots, &current, KEEP_ROOTS);
+    assert!(!roots.join(STAMP).exists() && !roots.join("assets").exists());
+    assert!(current.exists() && recent.exists());
+    fs::remove_dir_all(&scratch).unwrap();
 }

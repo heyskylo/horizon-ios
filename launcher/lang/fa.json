@@ -1220,5 +1220,7 @@
   "{name} was left out: made for another Horizon version": "{name} کنار گذاشته شد: برای نسخهٔ دیگری از Horizon ساخته شده",
   "{name} was left out: clashes with {other}": "{name} کنار گذاشته شد: با {other} تداخل دارد",
   "{name} was left out: it needs {other}, which was left out": "{name} کنار گذاشته شد: به {other} نیاز دارد که کنار گذاشته شد",
-  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "روی Horizonی که بازی می‌کنی ساخته نمی‌شود ({code}): ساخت آن را کنار می‌گذارد تا سازنده‌اش به‌روزش کند"
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "روی Horizonی که بازی می‌کنی ساخته نمی‌شود ({code}): ساخت آن را کنار می‌گذارد تا سازنده‌اش به‌روزش کند",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "در جایی که هستید، مجموعهٔ بنیان‌گذاران از طریق پرداخت رایگان در playhorizon.dev دریافت می‌شود. آن را از فروشگاه دریافت کنید: صفحهٔ پرداخت را برایتان باز می‌کند.",
+  "The founder set can't be claimed from your country.": "مجموعهٔ بنیان‌گذاران از کشور شما قابل دریافت نیست."
 }

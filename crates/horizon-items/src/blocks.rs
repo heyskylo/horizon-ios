@@ -512,9 +512,13 @@ impl BlockFacts {
             extra,
         ))
     }
+    /// A state the registry doesn't have (a server with mods we lack sent it)
+    /// has air's facts.
     #[inline]
     pub fn get(&self, id: BlockStateId) -> &StateFacts {
-        &self.states[id.0 as usize]
+        self.states
+            .get(id.0 as usize)
+            .unwrap_or_else(|| &self.states[self.air.0 as usize])
     }
     /// `SignBlock.getWoodType`'s name for a sign block.
     pub fn wood_type(&self, block: &str) -> Option<&str> {
@@ -522,7 +526,7 @@ impl BlockFacts {
     }
     pub fn is_air(&self, id: BlockStateId) -> bool {
         matches!(
-            &*self.states[id.0 as usize].name,
+            &*self.get(id).name,
             "minecraft:air" | "minecraft:cave_air" | "minecraft:void_air"
         )
     }

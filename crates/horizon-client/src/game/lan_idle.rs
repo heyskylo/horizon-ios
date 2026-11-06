@@ -34,8 +34,9 @@ pub(super) struct IdlePass<'a> {
     /// The level's tracking passes so far (`Hub::tracking_ticks`). An entity
     /// described one pass earlier was in the tracker's last pass.
     now: u32,
-    /// The players in the level (their index), where they are horizontally,
-    /// and their view distance in blocks: the clients that could pair.
+    /// The players the level's tracker runs for (`Hub::watches`: their
+    /// index), where they are horizontally, and their view distance in blocks:
+    /// the clients that could pair.
     viewers: Vec<(usize, [f64; 2], i32)>,
     /// `entity-broadcast-range-percentage`, as the tracker scales ranges.
     percent: i32,
@@ -46,7 +47,7 @@ impl IdleStates {
     pub(super) fn pass(&mut self, hub: &Hub, percent: i32) -> Option<IdlePass<'_>> {
         let now = hub.tracking_ticks()?;
         let viewers = (hub.guests.iter().enumerate())
-            .filter(|(_, g)| hub.here(g))
+            .filter(|(_, g)| hub.watches(g))
             .map(|(i, g)| (i, [g.position[0], g.position[2]], g.view_distance * 16))
             .collect();
         let kept = self.levels.entry(hub.config.dimension.clone()).or_default();

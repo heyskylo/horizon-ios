@@ -155,6 +155,7 @@ expect_seconds = 10          # how long a player the proxy announced is waited f
 max_expect_seconds = 60      # the longest the proxy may ask for
 max_expected = 64            # players waited for at once
 max_freeze_seconds = 30      # the longest a player stays frozen while it is handed over
+max_hold_seconds = 60        # the longest a player arriving from another server is held before it is dropped
 ```
 
 The supervisor passes the section to the engine as `--transfers expect_seconds=10,...`, beside
@@ -186,8 +187,22 @@ table. The player's next login uses the expectation up as it starts, once the ba
 limit let it in, so a login still in configuration when the time runs out (a resource pack prompt) keeps it. A
 login that then fails before it reaches play (its connection drops in configuration, or the client refuses a
 required pack) gives the expectation back with its own deadline, so the proxy's next attempt within that time is
-still expected. An expectation no login used is reported in the log when its time runs out. For now that is all an expectation does:
-the player still logs in as any other.
+still expected. An expectation no login used is reported in the log when its time runs out.
+
+A login that used up an expectation is a *held* player. It gets the whole join sequence and the level around it
+(chunks, block and light changes, entities, the level's broadcasts), and its acknowledgements are handled (teleport,
+chunk batch, loaded, keep-alive, ping, tick end, client information), but it is not placed: no join message, no
+player-list entry for the others, not among the entities they are shown, not simulated, and nothing else it sends is
+acted on. The world is kept loaded, and generated if need be, around a held player as around a placed one, so a
+server with nobody else on it sends a held player its chunks. The log says `<name> is held: it arrives from another
+server` instead of the join line. A held player nobody takes over is dropped after `max_hold_seconds` (1,200 ticks
+by default), with a warning, and its departure is logged as `<name> was dropped while held: <reason>`, with no "left
+the game" line. `player-export` refuses a held player.
+
+`player-drop <uuid>` forgets the player's expectation, and disconnects the held player without a save or a word to
+anyone. The reply is `{"ok": true, "held": true, "expected": false}`: whether a held player was disconnected, and
+whether an expectation was forgotten. It is refused for an id that is neither held nor expected, and leaves a placed
+player alone.
 
 `player-export <uuid> [freeze]` reads a connected player out of the source server. It first closes the player's open
 menu as vanilla does when a menu closes, in the player's own level (the cursor stack, a crafting table's grid and
@@ -234,7 +249,7 @@ kicked for floating. Every later export of that player, with or without `freeze`
 byte for byte, and does not restart the freeze: a proxy that lost the reply asks again. The hand-over ends after
 `max_freeze_seconds` (counted in ticks, 600 by default) with a warning in the log, and the id is then forgotten.
 Without `freeze` the export is a read: `handover` is null and the player goes on. The request is refused for a
-player who is not connected, has not finished joining, is leaving, is riding, is asleep or is dead.
+player who is not connected, is held, has not finished joining, is leaving, is riding, is asleep or is dead.
 
 While frozen, the player takes no damage (as vanilla's `Abilities.invulnerable`: the void and `/kill` still kill)
 and picks nothing up (items, arrows, experience orbs), so its record stays what it is until the release. A player
@@ -252,6 +267,157 @@ player's file here stays as it was. `abort` lifts the freeze, and the player goe
 than the player's current one, and for a player who died while frozen. Once the freeze has run out the hand-over is
 over, and a late `moved` is refused: the player has played on since, and the record the other server has is older.
 The proxy then fails the hand-over on the target (`player-drop`).
+
+`player-import <uuid> <json>` applies a record to the held player `uuid` on the target server, whole or in parts,
+and lets it into the world:
+
+```json
+{"record": { ...the record of player-export... }, "parts": ["inventory", "experience"], "announce": true, "place": true}
+```
+
+`parts` is optional (all of them by default), `announce` is optional (true by default) and `place` is optional (true
+by default; see below). The parts, in the order the reply lists them, and what each sets:
+
+| part | sets |
+| --- | --- |
+| `inventory` | the inventory, armour, off hand and selected slot |
+| `ender_chest` | the ender chest |
+| `experience` | the level, progress, total and seed |
+| `health` | health and absorption, food, saturation, exhaustion and its timer, and the body's air, fire and freezing |
+| `effects` | the active effects |
+| `game_mode` | the game mode, flight and flight speed |
+| `position` | where the player stands, how it looks, whether it is on the ground, its fall and motion, and the vehicle it rode |
+| `spawn_point` | the respawn point |
+| `recipe_book` | the recipe book |
+| `advancements` | the advancements and the statistics |
+
+A part that is not asked for keeps what the held player has, which is what this server loaded for it when it logged
+in: its own file, or a new player's defaults. An imported inventory or ender chest replaces the held player's whole: a
+slot the record leaves empty is empty afterwards. The keys of the compound that Horizon does not model, the values
+mods attached to the player, and the last death, the post effects and the credits, are taken only when every part
+is. Only the compound of the record is read: the fields above it (`position`, `rotation`, `velocity`, `dimension`)
+are for whoever reads the record.
+
+A record is refused, with `{"error": "..."}` and nothing changed, when its `version` is not 1, its `data_version` is
+not this server's, its `uuid` is not the request's, it has no `handover` id (an export without `freeze`), its
+compound is not valid base64 NBT, a part's name is unknown, or the player is not held or is leaving. It is refused
+too when its values are ones no player can have: a position, rotation, motion, health, absorption, saturation,
+experience progress or fall that is not a number, a position farther than 30,000,512 blocks from the origin (20,000,000
+up or down), which vanilla's `Entity.load` would clamp, a health of zero or less, a health over 1,024 or an absorption
+over 2,048 (the bounds of `max_health` and `max_absorption`), a food exhaustion over 40 (`FoodData.addExhaustion`'s)
+or an effect amplifier outside 0 to 255. A stack's count out of vanilla's 1 to 99 is read as 1, as for any item. A record whose position is in
+another dimension than the held player's world is refused when `position` is among the parts: the client is in one
+dimension and only a login changes it.
+
+The record's hand-over is bound to the held player at the import: a second import of the same record is taken (a
+retry), one of another hand-over is refused, and `player-confirm` and `player-drop` name it.
+
+**The commit point.** On success the player is sent what the import changed the way a join sends it (game mode,
+abilities, held slot, a new position to confirm, the effects, with those it had from this server's own file removed,
+inventory, recipe book and the player list as it now is). Then, unless `"place": false`, it is placed as
+`player-confirm` places it: its player file, advancements and statistics are written to disk first, each to a new
+file that is synced and then renamed into place (on Linux and macOS the folder is synced too), then it is placed: simulated, shown to the others and taking part from the next tick, when its first tick sends its
+health, experience and advancements as a new player's does. Everyone gets its player-list entry, since everyone will
+be shown its entity; with `announce` true they also get the join line. The log says `<name> placed: it has arrived
+from another server`, and the join line when it is announced. The reply is `{"ok": true, "handover": "...", "parts":
+[...], "placed": true, "announced": true, "recentered": false}` only once the file is written, so a proxy sends `player-release moved` to
+the source after this reply: from then on a crash of the target, or a power loss, leaves the player's three files there
+as it arrived. When one cannot be written, the reply is an error and the player stays held and imported, to be
+confirmed again or dropped.
+
+**A lost reply after the commit.** A `player-import` or `player-confirm` that names the hand-over of a player already
+placed from it is answered `{"ok": true, "placed": true, ..., "retried": true}`, with nothing done again: a proxy that
+lost the reply asks again and learns the commit happened.
+
+**A refused `moved` after the commit.** The target then has the player placed and on disk, and nothing undoes that:
+`player-drop` takes only a held player. It happens when the freeze ran out between the confirm and the release (the
+proxy was late), or when an operator's `/kill` killed the frozen player (nothing else hurts it, and it does not
+move). The proxy keeps its client on the target and disconnects the source's connection; the source then saves its
+copy of the player as it is, so the two servers' files differ from that moment. To keep clear of the first case, the
+proxy confirms only while the export's `freeze_ticks_left` leaves it time to release, and otherwise drops the arrival
+and aborts.
+
+**Where the player arrives.** Only the compound of the record is read, so to put the player somewhere other than the
+record says (a proxy that knows where its client stands, which the frozen source may not have seen yet), the request
+takes four optional fields, which win over the compound:
+
+```json
+{"record": {...}, "position": [300.5, 64.0, 300.5], "rotation": [90.0, 20.0], "on_ground": false, "velocity": [0.0, -0.08, 0.0]}
+```
+
+`position` is `[x, y, z]`, `rotation` is `[yaw, pitch]` in degrees, `on_ground` is a boolean and `velocity` is
+`[x, y, z]` in blocks a tick. The pitch is taken as vanilla's `Entity.setXRot` takes it: modulo 360, then cut to ±90;
+the yaw is kept as it is. A velocity component over 10 blocks a tick is taken as 0, as `Entity.load` takes a saved
+`Motion`. The velocity is the server's: the arrival's teleport carries no motion, as a vanilla login's does not, so
+the client starts still, and since a player's client moves itself, its first move replaces it. They belong to the `position` part: a
+request that gives one and does not import that part is refused. A position that is not finite, or farther than the
+record's own may be (30,000,512 blocks from the origin, 20,000,000 up or down), is refused, and so is a rotation or a
+velocity that is not finite numbers (a rotation past what a float holds too). A record with a vehicle still to restore
+(`RootVehicle`) puts the player back on it at the vehicle's own place, so a request that names a position for such a
+record is refused. The border, the blocks and the chunks are not checked,
+as a vanilla server does not check the place its player file names. The player is teleported to the position (the
+client confirms a new teleport id), so an anticheat never sees the arrival as a move, however far it is from the
+export.
+
+**The view follows the imported position.** `recentered` says whether the import moved the player to another chunk
+than the one its view was built around (only possible with the `position` part, and only once the player has been sent
+chunks). When it did, the server moves the view at once, before the position the client confirms: it sends
+`SetChunkCacheCenter` for the new chunk and forgets the chunks that are out of reach, as the next tick would have. The
+chunks around the new place are **not** sent yet: they come one batch at a time with the next ticks, and the client
+acknowledges each batch. Whoever reads the player's world (a proxy building a view of it) must therefore wait for new
+chunk batches after a reply with `"recentered": true`, as it waited for the first ones; with `false` the chunks it
+already has are the ones around the player.
+
+**Importing in two steps, so that a hand-over can be cancelled.** With `"place": false` the record is applied and the
+player's client is sent everything the import changed, but the player stays held: not placed, not simulated, not
+shown, not announced, and nothing is written. The reply is `{"ok": true, "handover": "...", "parts": [...], "placed":
+false, "announced": <what announce asked>}`. Then either:
+
+- `player-confirm <uuid> <hand-over>` writes the player's files and places it as `place: true` would have, and
+  announces it if the import's `announce` said so. What the client did since the import was not acted on, so it is
+  sent its position to confirm again and its inventory. Reply `{"ok": true, "placed": true, "announced": true}`. It is
+  refused, with nothing changed, for a player who is not held, is leaving, whose record was not imported, or whose
+  record is of another hand-over.
+- `player-drop <uuid> [hand-over]` cancels the arrival: the connection is closed and nothing is saved or said to
+  anyone (the player was never placed, so the world never knew it). Reply `{"ok": true, "held": true, "expected":
+  false}`. With a hand-over id, it must be the imported record's, so a late drop of an older hand-over leaves a newer
+  one alone; before any import there is no id to name, and the drop goes by the unique id alone (a late drop of
+  that kind can still cut a newer held player that was not imported yet, which loses nothing: the source still has
+  the player frozen, and the proxy aborts there). Once dropped, the player can be neither imported nor confirmed.
+
+A proxy that fails after a successful `player-import` with `place: false`, and before it has sent its client the first
+byte of the hand-over, calls `player-drop` and the target is as it was. A proxy that dies in between leaves a held
+player that is dropped by itself after `max_hold_seconds`, with a warning in the log.
+
+**A hand-over, in order.** A proxy moving a player from server A to server B, without a loading screen. Both run
+with `[transfer]` on and behind the proxy's Velocity forwarding:
+
+1. `player-expect <uuid>` on B: B holds the player's next login.
+2. `player-export <uuid> freeze` on A: the record and its `handover` id, and A stops acting on the player's inputs.
+   A lost reply is asked again: the same record comes back.
+3. The proxy logs the player in to B on its own connection: B sends the held player the world around the place B
+   loaded for it.
+4. `player-import <uuid> <json>` on B with `"place": false` and, if the proxy knows where its client stands, the
+   request's `position`, `rotation`, `on_ground` and `velocity`. With `"recentered": true` the proxy waits for B's
+   next chunk batches.
+5. The proxy switches its client over to B's connection. If anything fails before the client got the first byte of
+   it, `player-drop <uuid> <hand-over>` on B and `player-release <uuid> <hand-over> abort` on A, and the player goes on
+   on A as before.
+6. `player-confirm <uuid> <hand-over>` on B: B writes the player's files, then places it. Only after its `ok`,
+   `player-release <uuid> <hand-over> moved` on A: the player is out of A's world, and A saves nothing of it.
+
+Every step that is not taken in time is undone by itself: an expectation after `expect_seconds`, a held player after
+`max_hold_seconds`, a freeze after `max_freeze_seconds`, each with a warning in the log. A `moved` that comes after
+the freeze ran out is refused, so the proxy must confirm and release within `max_freeze_seconds` of the export.
+
+**In the log.** Each `player-*` request writes one line with what became of it: `INFO` and what it did
+(`player-import Alex (<uuid>): ok, parts inventory,experience, placed false, announced true, recentered false,
+hand-over <id>`), or `WARN` and the reason it was refused (`player-export Alex (<uuid>): refused: that player is
+riding`). The hand-over's id is in the lines of the export, the import, the confirm, the release and a named drop, so
+the lines of one hand-over can be found on both servers. Only the ids, the name when the server knows it, and a few
+words of the outcome are written: never the record or the request's body, which are large and are the player's. A
+held player has its own lines instead of the join and leave ones: `<name> is held: it arrives from another server`,
+`<name> placed: it has arrived from another server` and `<name> was dropped while held: <reason>`.
 
 **The headless engine** comes after perf-ticks-2's work lands: Resources split into shared and per-game, the
 game built in `Game::new`, the integrated server on its own thread. On that base:

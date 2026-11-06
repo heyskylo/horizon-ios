@@ -1220,5 +1220,7 @@
   "{name} was left out: made for another Horizon version": "{name} blev udeladt: lavet til en anden Horizon-version",
   "{name} was left out: clashes with {other}": "{name} blev udeladt: kolliderer med {other}",
   "{name} was left out: it needs {other}, which was left out": "{name} blev udeladt: den kræver {other}, som blev udeladt",
-  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Bygger ikke på den Horizon, du spiller ({code}): et build udelader den, indtil forfatteren opdaterer den"
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Bygger ikke på den Horizon, du spiller ({code}): et build udelader den, indtil forfatteren opdaterer den",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Der hvor du er, får du grundlæggersættet gennem en gratis betaling på playhorizon.dev. Gør krav på det i Butik: den åbner betalingen for dig.",
+  "The founder set can't be claimed from your country.": "Grundlæggersættet kan ikke fås fra dit land."
 }
