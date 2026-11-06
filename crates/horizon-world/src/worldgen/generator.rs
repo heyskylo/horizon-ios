@@ -287,7 +287,7 @@ fn build_tags(
 }
 /// Convert a data-generator `biome_parameters` report into the quantized
 /// preset table format, using vanilla's float `quantizeCoord`.
-fn quantize_parameter_report(json: &str) -> Result<String, GeneratorError> {
+pub(crate) fn quantize_parameter_report(json: &str) -> Result<String, GeneratorError> {
     let report: Value = serde_json::from_str(json)?;
     let float = |v: &Value| -> Result<i64, GeneratorError> {
         let text = v.to_string();
@@ -405,13 +405,16 @@ impl GeneratorData {
                 let Ok(json) = fs::read_to_string(dir.join("blocks/structure-blocks.json")) else {
                     return Ok(None);
                 };
-                Ok(Some(Arc::new(super::structure::StructureResources::new(
-                    registry,
-                    super::structure::StateTransforms::from_json(&json, registry.len())?,
-                    &dir.join("structure"),
-                    read_optional_bundle(&dir, &ov, "processor_lists")?.unwrap_or_default(),
-                    &tags,
-                ))))
+                Ok(Some(Arc::new(
+                    super::structure::StructureResources::new(
+                        registry,
+                        super::structure::StateTransforms::from_json(&json, registry.len())?,
+                        &dir.join("structure"),
+                        read_optional_bundle(&dir, &ov, "processor_lists")?.unwrap_or_default(),
+                        &tags,
+                    )
+                    .with_pack_templates(ov.templates().clone()),
+                )))
             }
         })?;
         let behaviours = loading({

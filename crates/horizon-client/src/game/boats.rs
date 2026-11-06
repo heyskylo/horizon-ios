@@ -934,7 +934,7 @@ impl Game<'_> {
     /// client moves only the boat its player drives.
     fn boat_can_simulate_movement(&self, id: u32) -> bool {
         if self.remote.is_some() {
-            self.riding == Some(id)
+            self.controls_boat(id)
         } else {
             !self.guest_vehicles().contains(&id)
         }

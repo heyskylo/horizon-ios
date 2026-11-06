@@ -1064,6 +1064,7 @@ impl Game<'_> {
                 if page == Page::ShaderPacks {
                     self.settings.shader_packs =
                         horizon_client::shader_pack_list::scan(&Self::shader_packs_dir());
+                    self.open_shader_options();
                 }
                 ok()
             }

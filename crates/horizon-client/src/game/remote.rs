@@ -2013,9 +2013,12 @@ impl Game<'_> {
                     self.send_chat_acknowledgement();
                     self.close_dialogs();
                     // The server configuring us now (a proxy's next one)
-                    // offers its own far terrain, or none.
+                    // offers its own far terrain, or none, and announces its
+                    // own features again (a Horizon server's quiet commands).
                     if let Some(remote) = &mut self.remote {
                         remote.far_terrain = None;
+                        remote.quiet_commands = false;
+                        remote.mod_net = false;
                     }
                     self.clear_lod();
                     if let Some(remote) = &self.remote {
@@ -2253,6 +2256,9 @@ impl Game<'_> {
         let Some(r) = self.remote.as_mut() else {
             return;
         };
+        // A Horizon server's bulk edit sends whole columns with the light
+        // from before its relight; any other server's packet light is final.
+        let relight_resent = r.quiet_commands;
         let dimension = r.registries.dimension(spawn.dimension_type);
         // The server's dimension type gives the level's shape, and its
         // chunks the shape's column.
@@ -2358,6 +2364,7 @@ impl Game<'_> {
                 self.native_client_level_unload(&old);
             }
         }
+        self.streaming.relight_resent = relight_resent;
         let has_sky = self
             .remote
             .as_ref()
@@ -3303,6 +3310,8 @@ impl Game<'_> {
                     false,
                     horizon_client::level_loading::Reason::Other,
                 );
+                // handleLogin: ClientPlayerNetworkEvent.LoggingIn, the new level made.
+                self.native_client_player_network_logging_in();
                 // No ClientInformation here: the configuration phase sent it,
                 // and ClientPacketListener.broadcastClientInformation sends it
                 // again only when an option changes it.
@@ -7492,15 +7501,12 @@ impl Game<'_> {
             }
             return;
         }
-        let facts = self.res.facts().get(state).clone();
         // The server's own getDestroyProgress: under water, off the ground,
-        // with haste, fatigue and efficiency, so the client stops digging
-        // when the server is done too (#1254).
-        let progress = if facts.hardness == 0.0 {
-            1.0
-        } else {
-            self.destroy_progress(hit.pos)
-        };
+        // with haste, fatigue, efficiency and the mods' native_break_speed, so
+        // the client stops digging when the server is done too (#1254). A
+        // block of hardness 0 gives infinity, breaking at once, unless a mod
+        // made the speed 0.
+        let progress = self.destroy_progress(hit.pos);
         // sameDestroyTarget: the same block and still the item the break began with.
         let held = self.main_hand_key();
         let same = self.remote.as_ref().is_some_and(|r| {
