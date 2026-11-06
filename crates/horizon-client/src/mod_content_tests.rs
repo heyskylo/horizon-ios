@@ -2,6 +2,199 @@ use super::*;
 use crate::{assets::Assets, blocks::BlockFacts, items::Items};
 
 #[test]
+#[ignore = "full content root: run explicitly with prepared resources"]
+fn place_block_aliases_keep_the_original_item_in_placement_context() {
+    use horizon_core::{
+        geometry::{Direction, Vec3},
+        position::BlockPos,
+        random::LegacyRandom,
+    };
+    use horizon_mods::content::{Block, Item};
+    use horizon_world::{
+        level::{
+            Behaviours, LevelAccess, LevelEvent, PlaceContext, PlaceOutcome, PlacementContext,
+            Ticks,
+        },
+        loot::PackOverlay,
+        registry::BlockStateId,
+    };
+    use std::{cell::RefCell, collections::HashMap};
+    let Some(base) = std::env::var_os("HORIZON_TEST_RESOURCES")
+        .map(PathBuf::from)
+        .or_else(prepared)
+    else {
+        return;
+    };
+    let scratch =
+        std::env::temp_dir().join(format!("horizon-alias-context-{}", std::process::id()));
+    let mut content = Content::declared("ruby");
+    content
+        .declare(
+            &[Block {
+                id: "ruby:frame".into(),
+                template: "minecraft:stone".into(),
+                item: false,
+                ..Default::default()
+            }],
+            &["empty", "filled"].map(|name| Item {
+                id: format!("ruby:{name}"),
+                template: "minecraft:stick".into(),
+                place_block: Some("ruby:frame".into()),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+    build(
+        &base,
+        &[ContentMod {
+            id: "ruby".into(),
+            content,
+        }],
+        &scratch,
+    )
+    .unwrap();
+    let registry = horizon_world::level::data::load_registry(&scratch).unwrap();
+    let facts = BlockFacts::load(&scratch, &registry).unwrap();
+    let items = Items::load(&scratch, &registry, &facts, &PackOverlay::NONE).unwrap();
+    let b = Behaviours::load(&registry, &scratch).unwrap();
+    let target = registry.default_state("ruby:frame").unwrap();
+    struct Level {
+        air: BlockStateId,
+        blocks: HashMap<BlockPos, BlockStateId>,
+        random: LegacyRandom,
+        asked: RefCell<Vec<String>>,
+        client: bool,
+    }
+    impl LevelAccess for Level {
+        fn block_state(&self, p: BlockPos) -> BlockStateId {
+            self.blocks.get(&p).copied().unwrap_or(self.air)
+        }
+        fn set_raw(&mut self, p: BlockPos, s: BlockStateId) -> Option<BlockStateId> {
+            Some(self.blocks.insert(p, s).unwrap_or(self.air))
+        }
+        fn is_loaded(&self, _: BlockPos) -> bool {
+            true
+        }
+        fn random(&mut self) -> &mut LegacyRandom {
+            &mut self.random
+        }
+        fn game_time(&self) -> i64 {
+            0
+        }
+        fn emit(&mut self, _: LevelEvent) {}
+        fn is_client_side(&self) -> bool {
+            self.client
+        }
+        fn before_state_for_placement(
+            &self,
+            _: BlockStateId,
+            c: &PlacementContext,
+            _: horizon_world::fluid::FluidState,
+            _: &mut Option<Option<BlockStateId>>,
+        ) {
+            self.asked.borrow_mut().push(c.item.clone());
+        }
+    }
+    for client in [false, true] {
+        let mut level = Level {
+            air: facts.air,
+            blocks: HashMap::new(),
+            random: LegacyRandom::new(1),
+            asked: RefCell::default(),
+            client,
+        };
+        for (i, name) in ["ruby:empty", "ruby:filled"].iter().enumerate() {
+            assert_eq!(items.get(name).unwrap().block, Some(target));
+            assert_eq!(b.item_binding(name).unwrap().block, b.block(target));
+            let pos = BlockPos::new(i as i32 * 2, 70, 0);
+            let ctx = PlaceContext {
+                clicked_pos: pos,
+                face: Direction::Up,
+                hit: Vec3::new(f64::from(pos.x) + 0.5, 70.0, 0.5),
+                inside: false,
+                yaw: 0.0,
+                pitch: 0.0,
+                sneaking: false,
+                item: (*name).into(),
+                can_use_game_master_blocks: false,
+            };
+            assert!(
+                matches!(b.place_block(&mut level,&mut Ticks::default(),&ctx),PlaceOutcome::Placed{state,..} if state==target)
+            );
+            assert_eq!(level.asked.borrow().last().map(String::as_str), Some(*name));
+        }
+    }
+    fs::remove_dir_all(scratch).unwrap();
+}
+
+#[test]
+fn place_block_compiles_ordinary_bindings_without_changing_components() {
+    use horizon_mods::content::Item;
+    let (base, mut mods) = block_base(
+        "place-block-bindings",
+        &[r#"{"template":"minecraft:test","item":false}"#],
+    );
+    let item = |id: &str, target: Option<&str>| Item {
+        id: id.into(),
+        template: "minecraft:test".into(),
+        place_block: target.map(str::to_owned),
+        ..Default::default()
+    };
+    mods[0]
+        .content
+        .declare(
+            &[],
+            &[
+                item("testmod:empty", Some("testmod:test")),
+                item("testmod:filled", Some("testmod:test")),
+                item("testmod:vanilla", Some("minecraft:test")),
+                item("testmod:plain", None),
+            ],
+        )
+        .unwrap();
+    let plan = Plan::new(&base, &mods).unwrap();
+    let mut behaviours:J=serde_json::from_str(r#"{"states":[{},{}],"blocks":[],"items":{"minecraft:test":{"class":["Item"],"fields":{}}}}"#).unwrap();
+    plan.json("block-behaviours.json", &mut behaviours).unwrap();
+    let behaviours = serde_json::to_value(behaviours).unwrap();
+    for name in ["empty", "filled", "vanilla"] {
+        let binding = &behaviours["items"][format!("testmod:{name}")];
+        assert_eq!(binding["class"], serde_json::json!(["BlockItem", "Item"]));
+        assert_eq!(
+            binding["fields"]["block"],
+            if name == "vanilla" {
+                "minecraft:test"
+            } else {
+                "testmod:test"
+            }
+        );
+    }
+    assert_eq!(
+        behaviours["items"]["testmod:plain"]["class"],
+        serde_json::json!(["Item"])
+    );
+    let mut components:J=serde_json::from_str(r#"{"minecraft:test":{"minecraft:max_stack_size":16,"minecraft:item_model":"minecraft:test"}}"#).unwrap();
+    plan.json("items.json", &mut components).unwrap();
+    let components = serde_json::to_value(components).unwrap();
+    assert_eq!(components["testmod:empty"]["minecraft:max_stack_size"], 16);
+    assert_eq!(
+        components["testmod:empty"]["minecraft:item_model"],
+        "testmod:empty"
+    );
+    drop(plan);
+    for target in ["testmod:missing", "testmod:plain", "minecraft:missing"] {
+        mods[0].content.items[0].place_block = Some(target.into());
+        assert!(
+            Plan::new(&base, &mods)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("not a block")
+        );
+    }
+    fs::remove_dir_all(base.parent().unwrap()).unwrap();
+}
+
+#[test]
 fn renames_ids_keys_and_states() {
     let mut r = Rename::new("minecraft:iron_block", "ruby:ruby_block");
     r.states = 10..12;
@@ -4573,4 +4766,22 @@ fn roots_unused_for_a_day_are_removed() {
     assert!(!roots.join(STAMP).exists() && !roots.join("assets").exists());
     assert!(current.exists() && recent.exists());
     fs::remove_dir_all(&scratch).unwrap();
+}
+
+/// A mod's features reach the features bundle from 26.3's `feature/` folder
+/// and from the older `configured_feature/` one.
+#[test]
+fn worldgen_entry_reads_both_feature_folders() {
+    for folder in ["feature", "configured_feature"] {
+        let file = format!("data/zinc/worldgen/{folder}/ore_zinc.json");
+        assert_eq!(
+            worldgen_entry(&file),
+            Some(("worldgen/features.json", "zinc:ore_zinc".to_owned())),
+            "{folder}"
+        );
+    }
+    assert_eq!(
+        worldgen_entry("data/zinc/worldgen/nope/ore_zinc.json"),
+        None
+    );
 }

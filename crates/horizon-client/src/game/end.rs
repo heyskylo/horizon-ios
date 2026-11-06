@@ -1210,6 +1210,12 @@ impl Game<'_> {
         };
         let survive = self.world.random.next_int_bound(5).unwrap_or(0) > 0;
         let at = [p.position.x, p.position.y, p.position.z];
+        let ctx = self.player_context(None);
+        self.post_game_event(
+            "minecraft:projectile_shoot",
+            [start.x, start.y, start.z],
+            ctx,
+        );
         let id = self.take_entity_id();
         self.end.eyes.push(EyeOfEnder {
             id,

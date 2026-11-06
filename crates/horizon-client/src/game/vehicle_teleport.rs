@@ -206,20 +206,18 @@ impl Game<'_> {
         let Some(vehicle) = self.mobs.iter().find(|m| m.id == root) else {
             return;
         };
-        let (position, yaw, width, attachment) = (
+        let (position, yaw, width, attachment, vehicle_box) = (
             vehicle.position,
             vehicle.yaw,
             vehicle.width(),
             riders::passenger_attachment(vehicle),
+            vehicle.bounds(),
         );
         let mut children = Vec::new();
         for m in self.mobs.iter_mut().filter(|m| m.extra.mount == Some(root)) {
-            m.position = riders::seat(
-                attachment,
-                riders::vehicle_attachment(m, width),
-                position,
-                yaw,
-            );
+            let offset = riders::vehicle_attachment(m, width);
+            m.seated(root, offset, vehicle_box);
+            m.position = riders::seat(attachment, offset, position, yaw);
             m.previous = m.position;
             children.push(m.id);
         }

@@ -258,19 +258,10 @@ fn root_style(component: &Tag) -> Vec<(&'static str, Tag)> {
         .filter_map(|key| Some((*key, root?.get(key)?.clone())))
         .collect()
 }
-/// Plain text of a stored text component (string, `{text: ...}` or JSON string).
+/// `ComponentSerialization.CODEC`: modern NBT strings are literal text, not JSON.
 fn component_text(tag: &Tag) -> String {
     match tag {
-        Tag::String(s) => {
-            let s = s.to_string_lossy();
-            match serde_json::from_str::<serde_json::Value>(&s) {
-                Ok(serde_json::Value::String(text)) => text,
-                Ok(v) if v.get("text").is_some() => {
-                    v["text"].as_str().unwrap_or_default().to_owned()
-                }
-                _ => s,
-            }
-        }
+        Tag::String(s) => s.to_string_lossy(),
         // Component.getString: translations and key binds resolved.
         Tag::Compound(_) | Tag::List(_) => {
             scoreboard::comp_text(&scoreboard::tag_to_json(tag)).plain()
@@ -322,6 +313,35 @@ mod tests {
         let mut decoded = SignData::default();
         decoded.decode(&tag);
         assert_eq!(decoded, data);
+    }
+    #[test]
+    fn modern_string_messages_keep_literal_quotes_and_json_text() {
+        let lines = [
+            "plain text",
+            "\"quoted text\"",
+            r#"{"text":"literal object","bold":true}"#,
+            "",
+        ];
+        let mut saved = styled_sign();
+        let messages = Tag::List(lines.map(|line| Tag::String(line.into())).to_vec());
+        if let Tag::Compound(front) = saved.get_mut("front_text").unwrap() {
+            front.insert("messages".into(), messages.clone());
+        }
+        let mut data = SignData::default();
+        data.decode(&saved);
+        assert_eq!(data.front.lines, lines.map(str::to_owned));
+        let encoded = Tag::compound(data.encode());
+        assert_eq!(
+            encoded.get("front_text").unwrap().get("messages"),
+            Some(&messages)
+        );
+        let mut copied = SignData::default();
+        copied.decode(&encoded);
+        assert_eq!(copied.front.lines, data.front.lines);
+        assert_eq!(
+            front_messages(&Tag::compound(copied.encode())),
+            front_messages(&encoded)
+        );
     }
     /// A sign as a server sends it: a green "Online" and a plain line, the
     /// way `ComponentSerialization.CODEC` writes them to NBT.
