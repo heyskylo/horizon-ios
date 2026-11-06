@@ -1127,6 +1127,7 @@ impl Game<'_> {
             }
         }
         host.play.insert(conn, play);
+        self.flush_guest_villager_reputation(host);
         for event in turn_events {
             match event {
                 MotionEvent::Health(horizon_client::health::HealthEvent::DamageBroadcast {

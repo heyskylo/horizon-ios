@@ -786,6 +786,7 @@ impl Game<'_> {
                         t.dealt_damage = true;
                         let mut hurt_at = None;
                         let aim = self.attacker_aim(Some(Who::Player));
+                        let attacker_uuid = self.player_uuid_of(t.guest);
                         if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
                             let from = Some([t.position.x, t.position.y, t.position.z]);
                             let hurt = m.damage_projectile(
@@ -795,6 +796,7 @@ impl Game<'_> {
                                     attacker: Some(Who::Player),
                                     from,
                                     attacker_species: None,
+                                    attacker_uuid,
                                 },
                                 aim,
                                 [t.velocity.x, t.velocity.z],
@@ -802,6 +804,9 @@ impl Game<'_> {
                             if hurt {
                                 hurt_at = Some([m.position.x, m.position.y, m.position.z]);
                             }
+                        }
+                        if hurt_at.is_some() {
+                            self.flush_villager_reputation(id);
                         }
                         // ThrownTrident.onHitEntity on a boat or minecart:
                         // VehicleEntity.hurtServer takes the damage.

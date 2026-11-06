@@ -284,8 +284,10 @@ pub struct Ext {
     pub sleeping_pos: Option<[i32; 3]>,
     /// `GOLEM_DETECTED_RECENTLY` expires at this game time.
     pub golem_until: i64,
-    /// The `last_hurt_by_time` of the player's hit already counted.
-    pub hurt_seen: i32,
+    /// Accepted hurts awaiting identity resolution by the owning game.
+    pub hurts: Vec<super::Who>,
+    /// Source identities for applied reputation events awaiting the menu bridge.
+    pub reputation_events: Vec<[i32; 4]>,
     /// A zombie villager's cure under way.
     pub cure: Option<super::zombie_villager::Cure>,
     /// The villager's brain, built at its first tick.
@@ -296,6 +298,14 @@ pub fn ext(m: &Mob) -> Option<&Ext> {
 }
 pub fn ext_mut(m: &mut Mob) -> &mut Ext {
     m.extra.villager.get_or_insert_with(Box::default)
+}
+/// `Villager.onReputationEventFrom`: retain the source identity until the
+/// game can refresh that same player's active merchant menu.
+pub fn reputation_event(m: &mut Mob, uuid: [i32; 4], kind: crate::gossip::GossipType) {
+    let e = ext_mut(m);
+    e.gossips
+        .add(uuid, kind, crate::gossip::REPUTATION_CHANGE_PER_EVENT);
+    e.reputation_events.push(uuid);
 }
 /// The raid where the villager stands (`RAID_NONE` ... `RAID_LOSS`).
 pub fn raid_status(m: &Mob) -> u8 {
@@ -569,6 +579,10 @@ impl Ext {
 /// reads the other villager itself).
 #[derive(Clone, Debug, Default)]
 pub struct Seen {
+    /// Visibility inputs for another villager's noncombat sensor.
+    pub invisible: bool,
+    pub crouching: bool,
+    pub armor: [Option<std::sync::Arc<str>>; 4],
     pub gossips: crate::gossip::Gossips,
     pub last_gossip_time: i64,
     /// `countFoodPointsInInventory`.
@@ -582,6 +596,28 @@ pub struct Seen {
     pub golem_detected: bool,
 }
 impl Seen {
+    /// `LivingEntity.getVisibilityPercent`, for a targeting villager.
+    pub fn visibility(&self, items: Option<&crate::items::Items>) -> f64 {
+        let mut value = if self.crouching { 0.8 } else { 1.0 };
+        if self.invisible {
+            let cover = self.armor.iter().filter(|i| i.is_some()).count() as f32 / 4.0;
+            value *= 0.7 * f64::from(cover).max(0.1);
+        }
+        if let Some(items) = items {
+            for (slot, item) in ["feet", "legs", "chest", "head"]
+                .into_iter()
+                .zip(&self.armor)
+            {
+                if let Some(factor) = item
+                    .as_deref()
+                    .and_then(|i| items.worn_visibility(i, slot, "minecraft:villager"))
+                {
+                    value *= f64::from(factor);
+                }
+            }
+        }
+        if value < 0.0 { 0.0 } else { value.min(10.0) }
+    }
     /// `Villager.wantsToSpawnGolem`.
     pub fn wants_golem(&self, now: i64) -> bool {
         self.last_slept.is_some_and(|t| now - t < 24000) && !self.golem_detected
@@ -596,6 +632,26 @@ pub fn seen(m: &Mob) -> Seen {
     let (interaction_target, path_nodes, golem_detected, last_slept) =
         super::villager_brain::seen_memories(m);
     Seen {
+        invisible: m.is_invisible(),
+        crouching: m.extra.crouching,
+        armor: [
+            m.extra
+                .feet
+                .clone()
+                .or_else(|| m.extra.armor[3].as_ref().map(|s| s.item.clone())),
+            m.extra
+                .legs
+                .clone()
+                .or_else(|| m.extra.armor[2].as_ref().map(|s| s.item.clone())),
+            m.extra
+                .chest
+                .clone()
+                .or_else(|| m.extra.armor[1].as_ref().map(|s| s.item.clone())),
+            m.extra
+                .head
+                .clone()
+                .or_else(|| m.extra.armor[0].as_ref().map(|s| s.item.clone())),
+        ],
         gossips: e.map(|e| e.gossips.clone()).unwrap_or_default(),
         last_gossip_time: e.map_or(0, |e| e.last_gossip_time),
         food_points: e.map_or(0, Ext::food_in_inventory),

@@ -554,6 +554,7 @@ mod invulnerability_tests {
             attacker: Some(Who::Mob(2)),
             from: Some([1.0, 0.0, 0.0]),
             attacker_species: Some(Species::Breeze),
+            attacker_uuid: None,
         };
         assert!(
             !b.damage(3.0, other_breeze_proj),

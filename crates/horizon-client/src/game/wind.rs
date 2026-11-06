@@ -157,6 +157,7 @@ impl Game<'_> {
                     attacker: p.owner,
                     from: Some([p.previous.x, p.previous.y, p.previous.z]),
                     attacker_species: owner_breeze.then_some(Species::Breeze),
+                    attacker_uuid: self.damage_attacker_uuid(p.owner, p.guest),
                 };
                 if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
                     // Breeze.isInvulnerableTo: its own kind's charges.
@@ -173,6 +174,7 @@ impl Game<'_> {
                 if p.owner == Some(Who::Player) {
                     self.last_hurt_by_player.insert(id, self.lan_acting);
                 }
+                self.flush_villager_reputation(id);
             }
         }
     }

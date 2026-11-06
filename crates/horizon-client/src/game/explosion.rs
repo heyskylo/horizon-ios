@@ -649,6 +649,12 @@ impl Game<'_> {
             {
                 let amount = damage(dist, exposure);
                 let entity = with_entity!(self, handle, e => e.id());
+                let attacker_uuid = self.damage_attacker_uuid(
+                    attacker
+                        .as_ref()
+                        .map(|(id, _)| horizon_client::mobs::Who::Mob(*id)),
+                    None,
+                );
                 match handle {
                     EntityHandle::Mob(i) => {
                         let hurtable = teams_allow(self, self.mob_team(self.mobs[i].id));
@@ -667,6 +673,7 @@ impl Game<'_> {
                                 .map(horizon_client::mobs::Who::Mob),
                             from: Some(center),
                             attacker_species: cause,
+                            attacker_uuid,
                         };
                         // `EXPLOSION_KNOCKBACK_RESISTANCE`, not `KNOCKBACK_RESISTANCE`:
                         // its base is 0 for every mob type, so iron golems and
@@ -697,6 +704,9 @@ impl Game<'_> {
                     }
                     // `hurtServer` does nothing to the rest.
                     _ => {}
+                }
+                if matches!(handle, EntityHandle::Mob(_)) {
+                    self.flush_villager_reputation(entity as u32);
                 }
                 let mut velocity = [push.x, push.y, push.z];
                 self.native_explosion_knockback(

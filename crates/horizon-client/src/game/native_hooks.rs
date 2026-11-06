@@ -11467,6 +11467,7 @@ mod tests {
                 attacker,
                 from: None,
                 attacker_species: None,
+                attacker_uuid: None,
             });
             (s.damage_type, s.causing, s.direct)
         };

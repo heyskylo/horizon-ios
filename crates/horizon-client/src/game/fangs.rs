@@ -230,9 +230,13 @@ impl Game<'_> {
         } else {
             Vec::new()
         };
+        let attacker_uuid =
+            self.damage_attacker_uuid(owner.map(horizon_client::mobs::Who::Mob), None);
+        let mut reputation_targets = Vec::new();
         for m in &mut self.mobs {
             let ally = allies.contains(&m.id);
             if m.id != f.owner && !ally && m.alive() && m.bounds().intersects(b) {
+                reputation_targets.push(m.id);
                 m.damage(
                     6.0,
                     horizon_client::mobs::Damage {
@@ -240,9 +244,13 @@ impl Game<'_> {
                         attacker: owner.map(horizon_client::mobs::Who::Mob),
                         from: Some(f.pos),
                         attacker_species: None,
+                        attacker_uuid,
                     },
                 );
             }
+        }
+        for id in reputation_targets {
+            self.flush_villager_reputation(id);
         }
     }
     /// `EvokerFangsRenderer`: the jaws snapping up and closing.

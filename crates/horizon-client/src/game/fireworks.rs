@@ -527,11 +527,14 @@ impl Game<'_> {
             // damageSources().fireworks(this, getOwner()): a guest's rocket
             // hurts as theirs, and the mobs it hit answer to them.
             let owner = r.owner;
+            let attacker_uuid = self.damage_attacker_uuid(owner, r.guest);
             if let Some(conn) = r.guest.filter(|_| owner.is_some())
                 && let Some(mut host) = self.lan.take()
             {
                 let ran = self
-                    .as_guest(&mut host, conn, |g| g.rocket_hurt_mobs(&hits, owner, at))
+                    .as_guest(&mut host, conn, |g| {
+                        g.rocket_hurt_mobs(&hits, owner, at, attacker_uuid)
+                    })
                     .is_some();
                 if ran {
                     for (id, _) in &hits {
@@ -542,10 +545,10 @@ impl Game<'_> {
                 }
                 self.lan = Some(host);
                 if !ran {
-                    self.rocket_hurt_mobs(&hits, owner, at);
+                    self.rocket_hurt_mobs(&hits, owner, at, attacker_uuid);
                 }
             } else {
-                self.rocket_hurt_mobs(&hits, owner, at);
+                self.rocket_hurt_mobs(&hits, owner, at, attacker_uuid);
             }
         }
         let camera = self.eye_position().unwrap_or(at);
@@ -554,7 +557,13 @@ impl Game<'_> {
             .fireworks(at, v, r.explosions.clone(), camera);
         self.native_firework_explode(r.id, at, r.explosions.len());
     }
-    fn rocket_hurt_mobs(&mut self, hits: &[(u32, f32)], attacker: Option<Who>, at: [f64; 3]) {
+    fn rocket_hurt_mobs(
+        &mut self,
+        hits: &[(u32, f32)],
+        attacker: Option<Who>,
+        at: [f64; 3],
+        attacker_uuid: Option<[i32; 4]>,
+    ) {
         let _attacker = self.knockback_scope(if attacker == Some(Who::Player) {
             self.player.as_ref().map_or(0, |p| p.entity_id)
         } else {
@@ -562,7 +571,10 @@ impl Game<'_> {
         });
         for &(id, amount) in hits {
             if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
-                let hurt = m.damage(amount, Damage::fireworks(attacker, at));
+                let hurt = m.damage(
+                    amount,
+                    Damage::fireworks(attacker, at).with_attacker_uuid(attacker_uuid),
+                );
                 // LivingEntity.hurtServer: a player's rocket makes them the
                 // last player to hurt it (`setLastHurtByPlayer`), so its death
                 // message names them and their item.
@@ -570,6 +582,7 @@ impl Game<'_> {
                     self.last_hurt_by_player.insert(id, self.lan_acting);
                 }
             }
+            self.flush_villager_reputation(id);
         }
     }
     /// The owner as `rocket_targets` names it: a guest by their entity id.

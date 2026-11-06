@@ -1585,6 +1585,7 @@ impl Game<'_> {
         source: &Text,
         (owner, guest): (Option<Who>, Option<u32>),
     ) {
+        let attacker_uuid = self.damage_attacker_uuid(owner, guest);
         // `indirectMagic(cloud, owner)` names the cloud in the death message
         // (it gives no kill credit).
         let cloud_owner = PotionOwner {
@@ -1635,7 +1636,8 @@ impl Game<'_> {
                             };
                             if (*id == "instant_damage") != inverted {
                                 // HealOrHarmMobEffect.applyInstantaneousEffect: indirectMagic(cloud, owner).
-                                let source = Damage::indirect_magic(owner, at);
+                                let source = Damage::indirect_magic(owner, at)
+                                    .with_attacker_uuid(attacker_uuid);
                                 if m.damage_by(amount(6), source, "minecraft:area_effect_cloud")
                                     && owner == Some(Who::Player)
                                 {
@@ -1664,6 +1666,7 @@ impl Game<'_> {
                         }
                     }
                 }
+                self.flush_villager_reputation(mob);
             }
         }
     }
@@ -1860,6 +1863,7 @@ impl Game<'_> {
         age: u32,
         owner: &PotionOwner,
     ) {
+        let attacker_uuid = self.damage_attacker_uuid(owner.who(), owner.guest);
         let block = [at.x, at.y, at.z].map(|v| v.floor() as i32);
         if &*stack.item == "minecraft:experience_bottle" {
             // ThrownExperienceBottle.onHit: the water-coloured splash (level
@@ -1877,7 +1881,7 @@ impl Game<'_> {
         if let Some((cell, face)) = hit {
             self.potion_hit_block(stack, cell, face);
         }
-        self.affect_entities_around(stack, at, owner.player);
+        self.affect_entities_around(stack, at, owner.player, attacker_uuid);
         let lingering = &*stack.item == "minecraft:lingering_potion";
         // AbstractThrownPotion.onHit: level event 2007 and sound 1054 for a
         // potion with instant effects, 2002 and 1053 otherwise.
@@ -1997,7 +2001,8 @@ impl Game<'_> {
                 } else if harm {
                     // HealOrHarmMobEffect.applyInstantaneousEffect: indirectMagic(potion, owner).
                     let harm = (intensity * f64::from(6 << amp) + 0.5) as i32 as f32;
-                    let source = Damage::indirect_magic(owner.who(), [at.x, at.y, at.z]);
+                    let source = Damage::indirect_magic(owner.who(), [at.x, at.y, at.z])
+                        .with_attacker_uuid(attacker_uuid);
                     if m.damage_by(harm, source, "minecraft:splash_potion") && owner.player {
                         let id = m.id;
                         self.last_hurt_by_player.insert(id, owner.guest);
@@ -2005,6 +2010,9 @@ impl Game<'_> {
                 } else {
                     m.heal((intensity * f64::from(4 << amp) + 0.5) as i32 as f32);
                 }
+            }
+            if let Some(m) = self.mobs.get(i) {
+                self.flush_villager_reputation(m.id);
             }
         }
     }

@@ -62,6 +62,7 @@ mod tests {
                 attacker,
                 from: None,
                 attacker_species: None,
+                attacker_uuid: None,
             },
             damage: 2.0,
             in_water: false,

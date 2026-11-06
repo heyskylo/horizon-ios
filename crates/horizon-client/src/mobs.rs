@@ -784,14 +784,22 @@ pub struct Damage {
     pub attacker: Option<Who>,
     pub from: Option<[f64; 3]>,
     pub attacker_species: Option<Species>,
+    /// UUID captured from the causing entity before deferred damage is applied.
+    pub attacker_uuid: Option<[i32; 4]>,
 }
 impl Damage {
+    pub fn with_attacker_uuid(mut self, uuid: Option<[i32; 4]>) -> Self {
+        self.attacker_uuid = uuid;
+        self
+    }
+
     pub fn fall() -> Self {
         Self {
             kind: DamageKind::Fall,
             attacker: None,
             from: None,
             attacker_species: None,
+            attacker_uuid: None,
         }
     }
     pub fn of(kind: DamageKind) -> Self {
@@ -800,6 +808,7 @@ impl Damage {
             attacker: None,
             from: None,
             attacker_species: None,
+            attacker_uuid: None,
         }
     }
     pub fn player(from: [f64; 3]) -> Self {
@@ -808,6 +817,7 @@ impl Damage {
             attacker: Some(Who::Player),
             from: Some(from),
             attacker_species: None,
+            attacker_uuid: None,
         }
     }
     /// `DamageSources.mace`: a player's smash attack.
@@ -817,6 +827,7 @@ impl Damage {
             attacker: Some(Who::Player),
             from: Some(from),
             attacker_species: None,
+            attacker_uuid: None,
         }
     }
     /// `DamageSources.spear`: a player's stab with a spear.
@@ -826,6 +837,7 @@ impl Damage {
             attacker: Some(Who::Player),
             from: Some(from),
             attacker_species: None,
+            attacker_uuid: None,
         }
     }
     /// `DamageSources.indirectMagic(potion, owner)`: `attacker` is the owner
@@ -837,6 +849,7 @@ impl Damage {
             attacker,
             from: Some(from),
             attacker_species: None,
+            attacker_uuid: None,
         }
     }
     /// `DamageSources.fireworks(rocket, owner)`: `attacker` is the owner
@@ -848,6 +861,7 @@ impl Damage {
             attacker,
             from: Some(from),
             attacker_species: None,
+            attacker_uuid: None,
         }
     }
     pub fn mob(id: u32, from: [f64; 3]) -> Self {
@@ -856,6 +870,7 @@ impl Damage {
             attacker: Some(Who::Mob(id)),
             from: Some(from),
             attacker_species: None,
+            attacker_uuid: None,
         }
     }
     pub fn with_species(mut self, species: Species) -> Self {
@@ -3346,6 +3361,10 @@ impl Mob {
         armor_effectiveness: Option<&mut dyn FnMut(f32) -> f32>,
         player_uuid: Option<[i32; 4]>,
     ) -> bool {
+        let mut source = source;
+        if source.attacker == Some(Who::Player) && player_uuid.is_some() {
+            source.attacker_uuid = player_uuid;
+        }
         axolotl::before_damage(self, amount, &source);
         raider::note_hurt(self);
         // SulfurCube.hurtServer: the priming and a block's immune knockback
@@ -3539,6 +3558,25 @@ impl Mob {
         if let Some(who) = source.attacker {
             self.ai.last_hurt_by = Some(who);
             self.ai.last_hurt_by_time = self.age as i32;
+            if self.species() == Species::Villager {
+                if let Some(uuid) = source.attacker_uuid {
+                    villager::reputation_event(
+                        self,
+                        uuid,
+                        crate::gossip::GossipType::MinorNegative,
+                    );
+                } else {
+                    villager::ext_mut(self).hurts.push(who);
+                }
+                // Villager.setLastHurtByMob checks health before death protection.
+                if who == Who::Player && self.alive() {
+                    self.outbox.push(MobEvent::EntityEvent {
+                        mob: self.id,
+                        event: 13,
+                        at: [self.position.x, self.position.y, self.position.z],
+                    });
+                }
+            }
             if who == Who::Player {
                 self.ai.last_hurt_by_player = 100;
             }
@@ -5068,6 +5106,7 @@ mod fire_resistance_damage_tests {
             attacker: Some(Who::Player),
             from: None,
             attacker_species: None,
+            attacker_uuid: None,
         };
         assert!(mob.damage(1.0, source));
         assert_eq!(mob.health, 10.0);
@@ -5154,6 +5193,7 @@ mod magic_absorb_tests {
             attacker: Some(Who::Mob(m.id)),
             from: None,
             attacker_species: Some(Species::Witch),
+            attacker_uuid: None,
         };
         m.damage(20.0, own);
         assert_eq!(m.health, 10.0);
@@ -5223,6 +5263,7 @@ mod armor_hurt_tests {
             attacker: None,
             from: None,
             attacker_species: None,
+            attacker_uuid: None,
         };
         let mut m = horse();
         m.extra.body = Some("minecraft:diamond_horse_armor".into());
@@ -5904,6 +5945,120 @@ mod visibility_percent_tests {
         assert_eq!(
             sneaking.visibility_percent(Some("minecraft:skeleton"), Some(&items)),
             0.4
+        );
+    }
+}
+
+#[cfg(test)]
+mod villager_reputation_tests {
+    use super::*;
+
+    fn villager() -> Mob {
+        let mut kind = sensor_scan_tests::kind();
+        let k = Arc::make_mut(&mut kind);
+        k.id = "minecraft:villager".into();
+        k.species = Species::Villager;
+        Mob::new(91, kind, Vec3::ZERO, 0.0)
+    }
+    fn reputation(m: &Mob, uuid: [i32; 4]) -> i32 {
+        villager::ext(m).map_or(0, |e| e.gossips.reputation(uuid))
+    }
+    #[test]
+    #[ignore = "requires actual vanilla reputation oracle output"]
+    fn accepted_reputation_events_match_vanilla() {
+        let path = std::env::var_os("HORIZON_REPUTATION_ORACLE").expect("oracle output");
+        let expected = std::fs::read_to_string(path).unwrap();
+        let mut m = villager();
+        let a = [0, 0, 0, 11];
+        let b = [0, 0, 0, 12];
+        let mob = [0, 0, 0, 19];
+        let source = Damage::player([2.0, 0.0, 0.0]);
+        assert!(m.damage_with_player_uuid(1.0, source, a, None));
+        assert!(m.damage_with_player_uuid(2.0, source, b, None));
+        assert!(m.damage_with_player_uuid(3.0, source, a, None));
+        assert!(
+            m.damage(
+                100.0,
+                Damage::indirect_magic(Some(Who::Mob(19)), [2.0, 0.0, 0.0])
+                    .with_attacker_uuid(Some(mob))
+            )
+        );
+        let angry = m
+            .outbox
+            .iter()
+            .filter(|e| matches!(e, MobEvent::EntityEvent { event: 13, .. }))
+            .count();
+        let actual = format!(
+            "hurt {} {} {} {}",
+            reputation(&m, a),
+            reputation(&m, b),
+            reputation(&m, mob),
+            angry
+        );
+        assert_eq!(expected.lines().next().unwrap(), actual);
+    }
+    #[test]
+    fn accepted_player_hurts_keep_each_uuid_and_same_tick_hit() {
+        let mut m = villager();
+        let a = [1, 2, 3, 4];
+        let b = [5, 6, 7, 8];
+        let source = Damage::player([2.0, 0.0, 0.0]);
+        assert!(m.damage_with_player_uuid(1.0, source, a, None));
+        assert!(m.damage_with_player_uuid(2.0, source, b, None));
+        assert!(m.damage_with_player_uuid(3.0, source, a, None));
+        assert_eq!(reputation(&m, a), -50);
+        assert_eq!(reputation(&m, b), -25);
+        assert!(!m.damage_with_player_uuid(3.0, source, b, None));
+        assert_eq!(
+            reputation(&m, b),
+            -25,
+            "rejected invulnerability hit adds nothing"
+        );
+        assert_eq!(
+            m.outbox
+                .iter()
+                .filter(|e| matches!(e, MobEvent::EntityEvent { event: 13, .. }))
+                .count(),
+            3
+        );
+    }
+    #[test]
+    fn deferred_potion_hurts_use_the_captured_guest_and_mob_uuid() {
+        let mut m = villager();
+        let guest = [11, 12, 13, 14];
+        let zombie = [21, 22, 23, 24];
+        let splash = Damage::indirect_magic(Some(Who::Player), [2.0, 0.0, 0.0])
+            .with_attacker_uuid(Some(guest));
+        assert!(m.damage_by(1.0, splash, "minecraft:splash_potion"));
+        let cloud = Damage::indirect_magic(Some(Who::Player), [2.0, 0.0, 0.0])
+            .with_attacker_uuid(Some(guest));
+        assert!(m.damage_by(2.0, cloud, "minecraft:area_effect_cloud"));
+        assert_eq!(reputation(&m, guest), -50);
+        let mob = Damage::indirect_magic(Some(Who::Mob(19)), [2.0, 0.0, 0.0])
+            .with_attacker_uuid(Some(zombie));
+        assert!(m.damage(100.0, mob));
+        assert_eq!(reputation(&m, zombie), -25);
+        assert_eq!(m.last_damage.unwrap().0.attacker_uuid, Some(zombie));
+        assert!(villager::ext(&m).unwrap().hurts.is_empty());
+        assert_eq!(
+            m.outbox
+                .iter()
+                .filter(|e| matches!(e, MobEvent::EntityEvent { event: 13, .. }))
+                .count(),
+            2,
+            "a nonplayer killing hit emits no angry particle event"
+        );
+    }
+    #[test]
+    fn fatal_hurt_records_reputation_without_angry_particles() {
+        let mut m = villager();
+        let uuid = [1, 2, 3, 4];
+        assert!(m.damage_with_player_uuid(100.0, Damage::player([2.0, 0.0, 0.0]), uuid, None));
+        assert_eq!(reputation(&m, uuid), -25);
+        assert!(
+            !m.outbox
+                .iter()
+                .any(|e| matches!(e, MobEvent::EntityEvent { event: 13, .. }))
         );
     }
 }

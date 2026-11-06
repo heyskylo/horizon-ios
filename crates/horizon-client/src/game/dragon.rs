@@ -539,6 +539,7 @@ fn is_fire(kind: DamageKind) -> bool {
         attacker: None,
         from: None,
         attacker_species: None,
+        attacker_uuid: None,
     };
     source.is_fire()
 }
@@ -1676,6 +1677,7 @@ impl Game<'_> {
                 attacker: by_player.then_some(Who::Player),
                 from: None,
                 attacker_species: None,
+                attacker_uuid: None,
             });
             // `damageSources().explosion(crystal, player)`: the crystal is the direct entity.
             if kind == DamageKind::Explosion {

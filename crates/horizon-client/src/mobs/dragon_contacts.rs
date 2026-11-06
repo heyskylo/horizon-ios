@@ -26,6 +26,7 @@ pub fn contact(m: &mut Mob, f: &Frame, teams_allow: bool) {
         attacker: Some(Who::Mob(f.dragon_id)),
         from: Some([f.origin.x, f.origin.y, f.origin.z]),
         attacker_species: None,
+        attacker_uuid: None,
     };
     for wing in &f.wings {
         if wing.intersects(bounds) {

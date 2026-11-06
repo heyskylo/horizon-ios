@@ -1463,7 +1463,7 @@ impl Game<'_> {
         // neither its owner's heroism nor a murder by them.
         let slain_by_player = by_player && !killed_by_mob(m);
         self.raider_died(m, slain_by_player, killer.flatten());
-        self.villager_murdered(m, slain_by_player, killer.flatten());
+        self.villager_murdered(m);
         let pos = [m.position.x, m.position.y + 0.5, m.position.z];
         let killer_entity = self.killer_loot_entity(killer.flatten());
         // LAST_DAMAGE_PLAYER only while the player-hurt memory lasts
@@ -1786,6 +1786,11 @@ impl Game<'_> {
     }
     /// Melee or ranged damage to another mob; whether the hit landed.
     fn mob_hits_mob(&mut self, target: u32, amount: f32, mut source: Damage) -> bool {
+        if source.attacker_uuid.is_none()
+            && let Some(Who::Mob(id)) = source.attacker
+        {
+            source.attacker_uuid = self.damage_attacker_uuid(Some(Who::Mob(id)), None);
+        }
         if source.attacker_species.is_none()
             && let Some(Who::Mob(id)) = source.attacker
         {
@@ -1841,6 +1846,9 @@ impl Game<'_> {
         }
         if killed && let Some(Who::Mob(killer)) = source.attacker {
             self.zombie_killed(killer, target);
+        }
+        if hurt {
+            self.flush_villager_reputation(target);
         }
         hurt
     }
@@ -2486,6 +2494,7 @@ impl Game<'_> {
                                 attacker: Some(Who::Mob(attacker)),
                                 from: Some(from),
                                 attacker_species: Some(Species::Warden),
+                                attacker_uuid: None,
                             };
                             let hurt = self.mob_hits_mob(id, 10.0, source);
                             let resistance = self
@@ -4682,6 +4691,12 @@ impl Game<'_> {
         }
     }
     pub(super) fn projectile_hit(&mut self, p: &Projectile, hit: Hit) -> Result<()> {
+        let reputation_target = match &hit {
+            Hit::Entity {
+                who: Who::Mob(id), ..
+            } => Some(*id),
+            _ => None,
+        };
         let _attacker = self.knockback_scope_for(p.owner);
         // Projectile.onHitBlock: BlockState.onProjectileHit, for every
         // projectile (a wind charge out of the world's top has no face).
@@ -4858,6 +4873,7 @@ impl Game<'_> {
             attacker: p.owner,
             from: Some([p.previous.x, p.previous.y, p.previous.z]),
             attacker_species,
+            attacker_uuid: self.damage_attacker_uuid(p.owner, p.guest),
         };
         let aim = self.attacker_aim(source.attacker);
         match (&p.kind, hit) {
@@ -5483,6 +5499,9 @@ impl Game<'_> {
                 }
             }
             _ => {}
+        }
+        if let Some(id) = reputation_target {
+            self.flush_villager_reputation(id);
         }
         Ok(())
     }
@@ -8263,6 +8282,7 @@ mod damage_type_tests {
                     attacker,
                     from: None,
                     attacker_species: None,
+                    attacker_uuid: None,
                 }),
                 "example:fan_fire"
             );
@@ -8278,6 +8298,7 @@ mod damage_type_tests {
             attacker,
             from: Some([0.0; 3]),
             attacker_species: None,
+            attacker_uuid: None,
         };
         let creeper = blast(Some(Who::Mob(7)));
         assert_eq!(source_damage_type(creeper), "minecraft:player_explosion");

@@ -200,6 +200,7 @@ impl Game<'_> {
                     attacker: live_owner,
                     from: skull.from,
                     attacker_species: owner_species,
+                    attacker_uuid: self.damage_attacker_uuid(live_owner, p.guest),
                 };
                 let killed = match self.mobs.iter_mut().find(|m| m.id == id) {
                     // `WitherBoss.hurtServer`: nothing from a wither friend.
@@ -222,6 +223,7 @@ impl Game<'_> {
                 if killed {
                     self.heal_skull_owner(p, live_owner);
                 }
+                self.flush_villager_reputation(id);
             }
             None => {}
         }
