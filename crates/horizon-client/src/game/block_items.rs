@@ -81,7 +81,13 @@ impl Game<'_> {
         if let (Some(name), Tag::Compound(map)) = (self.world.block_names.get(&key), &mut tag) {
             map.insert("CustomName".into(), Tag::String(name.as_str().into()));
         }
-        block_entity_nbt::canonical(&tag)
+        if matches!(entity, BlockEntity::Mod(_)) {
+            // The mod owns its serializer; the vanilla canonicalizer only knows
+            // vanilla entity types and must not discard this instance's data.
+            Some(tag)
+        } else {
+            block_entity_nbt::canonical(&tag)
+        }
     }
 
     /// The `CustomName` a block entity loads from `tag`
