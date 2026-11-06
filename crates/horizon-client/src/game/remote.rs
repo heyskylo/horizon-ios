@@ -7220,32 +7220,22 @@ impl Game<'_> {
         }
         // ItemEntity.tick runs on a client too: gravity, collisions and
         // friction move the item between the server's updates (every 20
-        // ticks), and only the server removes it.
-        let (world, registry, facts, collision, border) = (
-            &self.world,
-            self.pack.assets.registry,
-            self.res.facts(),
-            self.collision,
-            Some(self.border.geometry()),
-        );
-        let mut entered = Vec::new();
-        for d in self.dropped.iter_mut().filter(|_| running) {
-            super::entity::tick_item(
-                d,
-                world,
-                registry,
-                facts,
-                collision,
-                &self.res.motion().fluids,
-                false,
-                // The server decides what an item rests on; this copy only moves between updates.
-                &[],
-                border,
-                Some(&self.res.motion().blocks),
-                &mut |splash| entered.push(splash),
-            );
-        }
+        // ticks). Ordinary removal remains server-authoritative. Mods can opt
+        // into predicting consumption at block contact.
         head_lerps.retain(|_, (_, steps)| *steps > 0);
+        let mut entered = Vec::new();
+        if running {
+            let mut items = std::mem::take(&mut self.dropped);
+            items.retain_mut(|item| {
+                // The server decides entity collisions. This copy predicts block movement.
+                let (_, discarded) =
+                    self.tick_item_with_block_contacts(item, false, &[], true, &mut |splash| {
+                        entered.push(splash);
+                    });
+                !discarded
+            });
+            self.restore_item_batch(items);
+        }
         // Entity.doWaterSplashEffect on this window: Level.addParticle draws
         // the bubbles and splashes. ClientLevel.playSeededSound drops
         // Entity.playSound, so the sound stays the server's.
