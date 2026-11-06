@@ -333,7 +333,6 @@
   "horizon.osk.close": "Ябыҡ",
   "horizon.extras.chat_animation.tooltip": "Яңы чат һыҙығы һулдан шыуып инә, ә ул һүнә, урынына бөтөн күренә.",
   "horizon.extras.chat_indicator.tooltip": "Чат һыҙығының һул яғында төҫлө һыҙыҡ.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "Көйләүҙәрҙәге төймә өҫтөндәге прокрутка тәгәрмәсе үҙенең ҡиммәтен үҙгәртә, ванильдәге кеүек. Һүндерелгән, тәгәрмәс исемлекте генә йөрөтә.",
   "horizon.extras.pack_browser.tooltip": "Һайлау ресурс пакеттары ала өҫтәү төймәһе, эҙләү Modrinth һәм һеҙҙең пакеттар папкаһына пакет ҡуя. Һүндерелгән, уйын бер ҡасан да бәйләнешкә инә Modrinth.",
   "horizon.extras.splitscreen.tooltip": "Донъяла, икенсе контроллер яңы уйынсы булараҡ ҡушыла ала: баҫығыҙ А, ҡасан ул һорай, һуңынан профиль һайлап һәм ҡайҙа уйнау.",
   "horizon.splitscreen.setup.monitor": "Монитор %s",

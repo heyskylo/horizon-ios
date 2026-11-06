@@ -318,7 +318,6 @@
   "horizon.osk.close": "Sunmọ",
   "horizon.extras.chat_animation.tooltip": "Laini iwiregbe tuntun kan wa lati apa osi lakoko ti o rọ sinu, dipo ti o farahan ni odindi.",
   "horizon.extras.chat_indicator.tooltip": "Pẹpẹ awọ ni apa osi ti laini iwiregbe.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "Yiyi kẹkẹ lori bọtini kan ninu awọn eto yi awọn oniwe-iye, bi ni fanila. Pa, kẹkẹ nikan yi lọ akojọ.",
   "horizon.extras.pack_browser.tooltip": "Yan Awọn akopọ orisun n gba bọtini Fikun-un ti o wa Modrinth ati fi idii kan sori folda awọn akopọ rẹ. Paa, ere naa ko kan si Modrinth.",
   "horizon.extras.splitscreen.tooltip": "Ni agbaye kan, oludari miiran le darapọ mọ bi oṣere tuntun: tẹ A nigbati o ba beere, lẹhinna mu profaili kan ati ibiti o ti ṣere.",
   "horizon.splitscreen.setup.monitor": "Atẹle %s",

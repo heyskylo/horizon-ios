@@ -320,7 +320,6 @@
   "horizon.osk.close": "Dùin",
   "horizon.extras.chat_animation.tooltip": "Bidh loidhne cabadaich ùr a’ sleamhnachadh a-steach bhon taobh chlì fhad ‘s a tha e a’ seargadh a-steach, an àite a bhith a ’nochdadh slàn.",
   "horizon.extras.chat_indicator.tooltip": "Am bàr dathte air taobh clì loidhne cabadaich.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "Bidh a’ chuibhle scrollaidh thairis air putan anns na roghainnean ag atharrachadh a luach, mar ann am vanilla. Air falbh, cha sgrolaich a’ chuibhle ach an liosta.",
   "horizon.extras.pack_browser.tooltip": "Gheibh Tagh Pacaidean Goireasan putan Cuir ris a nì sgrùdadh air Modrinth agus a chuireas pacaid a-steach don phasgan pacaidean agad. Air falbh, cha chuir an geama fios gu Modrinth a-riamh.",
   "horizon.extras.splitscreen.tooltip": "Ann an saoghal, faodaidh rianadair eile a dhol còmhla mar chluicheadair ùr: brùth A nuair a dh’ iarras e, an uairsin tagh ìomhaigh agus càite an cluich thu.",
   "horizon.splitscreen.setup.monitor_unknown": "sgrùdair",

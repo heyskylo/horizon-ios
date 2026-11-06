@@ -323,7 +323,6 @@
   "horizon.osk.close": "Itxi",
   "horizon.extras.chat_animation.tooltip": "Txat-lerro berri bat ezkerretik sartzen da desagertzen den bitartean, osorik agertu beharrean.",
   "horizon.extras.chat_indicator.tooltip": "Txat-lerro baten ezkerreko koloretako barra.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "Ezarpenetako botoi baten gainean korritzeko gurpilak bere balioa aldatzen du, bainilan bezala. Desaktibatuta, gurpilak zerrendan bakarrik mugitzen du.",
   "horizon.extras.pack_browser.tooltip": "Aukeratu Baliabide Paketeak Gehitu botoi bat lortzen du, Modrinth bilatzen duena eta pakete bat instalatzen du zure paketeen karpetan. Desaktibatuta, jokoa ez da inoiz Modrinth-ekin harremanetan jartzen.",
   "horizon.extras.splitscreen.tooltip": "Mundu batean, beste kontrolagailu bat sar daiteke jokalari berri gisa: sakatu A eskatzen dionean, eta hautatu profil bat eta non jokatu.",
   "horizon.splitscreen.setup.monitor": "Monitorea %s",

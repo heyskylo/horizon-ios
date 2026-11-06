@@ -319,7 +319,6 @@
   "horizon.osk.close": "Mbylle",
   "horizon.extras.chat_animation.tooltip": "Një linjë e re bisede rrëshqet nga e majta ndërsa zbehet, në vend që të shfaqet e plotë.",
   "horizon.extras.chat_indicator.tooltip": "Shiriti me ngjyra në të majtë të një linje bisede.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "Rrota e lëvizjes mbi një buton në cilësimet e ndryshon vlerën e saj, si në vanilje. Fikur, rrota lëviz vetëm në listë.",
   "horizon.extras.pack_browser.tooltip": "Select Resource Packs merr një buton Shto që kërkon Modrinth dhe instalon një paketë në dosjen e paketave tuaja. Jo, loja nuk kontakton kurrë Modrinth.",
   "horizon.extras.splitscreen.tooltip": "Në një botë, një kontrollues tjetër mund të bashkohet si një lojtar i ri: shtypni A kur ju kërkon, më pas zgjidhni një profil dhe ku të luani.",
   "horizon.splitscreen.setup.monitor_unknown": "një monitor",

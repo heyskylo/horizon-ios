@@ -201,9 +201,14 @@ pub fn set_action_glyphs(on: bool) {
     ACTION_GLYPHS.set(on);
 }
 
-/// How much of a declared button's left the glyph takes from its label.
+/// How much of a declared button's left the glyph takes from its label: a face button's, the only
+/// kind declared buttons show, and no family's is wider than its art.
 pub fn action_glyph_room() -> f32 {
-    if ACTION_GLYPHS.get() { 14.0 } else { 0.0 }
+    if ACTION_GLYPHS.get() {
+        crate::pad_glyph::FACE_WIDTH + 3.0
+    } else {
+        0.0
+    }
 }
 
 /// An interactive rectangle (GUI pixels) a controller can focus and click.
@@ -242,6 +247,41 @@ pub fn clip_targets(mark: usize, y0: f32, y1: f32) {
             }
         }
     });
+}
+
+/// How many labelled widgets and targets the frame has so far, for [`clip_frame`].
+pub fn frame_mark() -> (usize, usize) {
+    let labelled = WIDGETS.with_borrow(|(current, _, _)| current.len());
+    (labelled, targets_mark())
+}
+
+/// Drop the labelled widgets and targets since `mark` whose middle isn't in `y0..y1` (GUI pixels):
+/// what a scrolling body clipped away, where a press wouldn't land.
+pub fn clip_frame((labelled, targets): (usize, usize), y0: f32, y1: f32) {
+    let shown = |y: f32, h: f32| (y0..y1).contains(&(y + h / 2.0));
+    WIDGETS.with_borrow_mut(|(current, _, _)| {
+        let mut at = 0;
+        current.retain(|w| {
+            at += 1;
+            at <= labelled || shown(w.y, w.h)
+        });
+    });
+    TARGETS.with_borrow_mut(|(current, _, _)| {
+        let mut at = 0;
+        current.retain(|t| {
+            at += 1;
+            at <= targets || shown(t.rect[1], t.rect[3])
+        });
+    });
+}
+
+/// A prompt comes up over what the frame drew so far: what it covers can't be reached, by the
+/// pointer or a controller, so its widgets, targets, declared buttons and lists go.
+pub fn cover_frame() {
+    WIDGETS.with_borrow_mut(|(current, _, _)| current.clear());
+    TARGETS.with_borrow_mut(|(current, _, _)| current.clear());
+    ACTIONS.with_borrow_mut(|(current, _)| current.clear());
+    SCROLL_AREAS.with_borrow_mut(|(current, _)| current.clear());
 }
 
 /// This frame drew a list with something to scroll, in `rect`, scrolled `amount`
@@ -1348,5 +1388,43 @@ mod tests {
             2,
             "the clipped row is gone, earlier ones stay"
         );
+    }
+
+    #[test]
+    fn a_scrolled_body_loses_what_it_clips_and_nothing_before_it() {
+        let _ = take();
+        target([0.0, 0.0, 5.0, 5.0]);
+        record("warning", [0.0, 0.0, 5.0, 5.0], true);
+        let mark = frame_mark();
+        record("shown", [0.0, 10.0, 5.0, 10.0], true);
+        target([0.0, 10.0, 5.0, 10.0]);
+        // Half in view is still pressed at its middle, which a mouse could reach.
+        record("half", [0.0, 25.0, 5.0, 10.0], true);
+        target([0.0, 25.0, 5.0, 10.0]);
+        record("gone", [0.0, 40.0, 5.0, 10.0], true);
+        target([0.0, 40.0, 5.0, 10.0]);
+        clip_frame(mark, 8.0, 32.0);
+        end_frame(101);
+        let names: Vec<String> = last_labelled().into_iter().map(|w| w.label).collect();
+        assert_eq!(names, ["warning", "shown", "half"]);
+        assert_eq!(last_targets().len(), 3);
+    }
+
+    #[test]
+    fn a_prompt_covers_what_was_drawn_before_it() {
+        let _ = take();
+        record("under", [0.0, 0.0, 5.0, 5.0], true);
+        target([0.0, 10.0, 5.0, 5.0]);
+        declare_action(Action::Done, [0.0, 0.0, 5.0, 5.0], true);
+        scroll_area([0.0, 0.0, 5.0, 5.0], 0.0, 5.0);
+        cover_frame();
+        record("over", [0.0, 20.0, 5.0, 5.0], true);
+        set_action_screen(7);
+        end_frame(102);
+        let names: Vec<String> = last_labelled().into_iter().map(|w| w.label).collect();
+        assert_eq!(names, ["over"]);
+        assert!(last_targets().is_empty());
+        assert!(last_actions(7).is_empty());
+        assert!(last_scroll_areas().is_empty());
     }
 }

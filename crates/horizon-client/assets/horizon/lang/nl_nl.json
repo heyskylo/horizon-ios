@@ -322,7 +322,6 @@
   "horizon.osk.close": "Sluiten",
   "horizon.extras.chat_animation.tooltip": "Een nieuwe chatlijn schuift van links naar binnen terwijl deze invaagt, in plaats van geheel te lijken.",
   "horizon.extras.chat_indicator.tooltip": "De gekleurde balk links van een chatlijn.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "Het scrollwiel boven een knop in de instellingen verandert de waarde, zoals in vanille. Uit: het wiel scrollt alleen door de lijst.",
   "horizon.extras.pack_browser.tooltip": "Select Resource Packs krijgt een knop Toevoegen die Modrinth doorzoekt en een pakket in uw packs-map installeert. Uit: het spel maakt nooit contact met Modrinth.",
   "horizon.extras.splitscreen.tooltip": "In een wereld kan een andere controller meedoen als nieuwe speler: druk op A wanneer dit wordt gevraagd, kies vervolgens een profiel en waar je wilt spelen.",
   "horizon.splitscreen.setup.monitor_unknown": "een monitor",

@@ -306,7 +306,6 @@
   "horizon.osk.close": "Sulje",
   "horizon.extras.chat_animation.tooltip": "Uusi chat-linja liukuu sisään vasemmalta sen häipyessä sen sijaan, että se näyttäisi kokonaisena.",
   "horizon.extras.chat_indicator.tooltip": "Värillinen palkki keskustelupalkin vasemmalla puolella.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "Asetuksissa painikkeen päällä oleva vierityspyörä muuttaa sen arvoa, kuten vaniljassa. Pois päältä, pyörä vain vierittää luetteloa.",
   "horizon.extras.pack_browser.tooltip": "Valitse Resurssipaketit saa Lisää-painikkeen, joka etsii Modrinthista ja asentaa paketin pakettikansioosi. Pois päältä, peli ei koskaan saa yhteyttä Modrinthiin.",
   "horizon.extras.splitscreen.tooltip": "Maailmassa toinen ohjain voi liittyä uutena pelaajana: paina A, kun se pyytää, ja valitse sitten profiili ja pelipaikka.",
   "horizon.splitscreen.setup.monitor": "Monitori %s",

@@ -321,7 +321,6 @@
   "horizon.osk.close": "Serra",
   "horizon.extras.chat_animation.tooltip": "Una nœuva linea de chat scivola denter de sinistra menter la sbiadiss, inveci de cumparir intera.",
   "horizon.extras.chat_indicator.tooltip": "La barra culurada a sinistra de una linea de chat.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "La rœuda de scorriment sü un buttun in di impostaziun cambia el sò valur, cuma in de la vaniglia. Disattiva, la rœuda scorre sultant la lista.",
   "horizon.extras.pack_browser.tooltip": "Seleziuna Pachett de risurs g’he un buttun Aggiungi che cerca Modrinth e instala un pachett in de la cartella di pachett. Off, el giœugh se cuntat mai Modrinth.",
   "horizon.extras.splitscreen.tooltip": "En un mund, un olter cuntroladur pœu entrà denter cuma nœuf giucadur: premet A quand che dumanda, e dopu seleziuna un profil e indué giugar.",
   "horizon.splitscreen.setup.monitor_unknown": "un monitor",
