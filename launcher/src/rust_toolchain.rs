@@ -88,6 +88,25 @@ const HOSTS: &[Host] = &[
         ],
         c_toolchain: None,
     },
+    // Intel Macs (#1161): the same system linker (Command Line Tools) as Apple Silicon.
+    Host {
+        target: "x86_64-apple-darwin",
+        components: &[
+            (
+                "rustc",
+                "dad7c1300549bc846e1f02652fa11d131b86cdbb8288d64da5f62b4504d62a8f",
+            ),
+            (
+                "cargo",
+                "ed05dab7a703d1b4c6fa5cec8e99272cb1c3902a323986c80e0bc57915c85ddd",
+            ),
+            (
+                "rust-std",
+                "5cc4606fdd6c9226be51f59a333942cc8a203e74f7da38d47aaaf44b986bfe3c",
+            ),
+        ],
+        c_toolchain: None,
+    },
     Host {
         target: "x86_64-unknown-linux-gnu",
         components: &[
@@ -156,6 +175,7 @@ const HOSTS: &[Host] = &[
 fn host_for(os: &str, arch: &str) -> Option<&'static Host> {
     let target = match (os, arch) {
         ("macos", "aarch64") => "aarch64-apple-darwin",
+        ("macos", "x86_64") => "x86_64-apple-darwin",
         ("linux", "x86_64") => "x86_64-unknown-linux-gnu",
         ("windows", "x86_64") => WINDOWS_X64_TARGET,
         ("windows", "aarch64") => WINDOWS_ARM64_TARGET,
@@ -869,6 +889,32 @@ mod tests {
         if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
             assert_eq!(host().unwrap().target, "aarch64-apple-darwin");
         }
+        if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
+            assert_eq!(host().unwrap().target, "x86_64-apple-darwin");
+        }
+    }
+
+    #[test]
+    fn every_system_horizon_ships_for_can_build_native_mods() {
+        // An Intel Mac had a game and a launcher but no compiler (#1161): native builds stopped
+        // with "the launcher has none for macos x86_64".
+        for (os, arch, game, _) in backend::PLATFORMS {
+            let host = host_for(os, arch).unwrap_or_else(|| panic!("no Rust for {game}"));
+            let expected_arch = if arch == "aarch64" {
+                "aarch64-"
+            } else {
+                "x86_64-"
+            };
+            assert!(
+                host.target.starts_with(expected_arch),
+                "{game}: {}",
+                host.target
+            );
+        }
+        assert_eq!(
+            host_for("macos", "x86_64").unwrap().target,
+            "x86_64-apple-darwin"
+        );
     }
 
     #[test]

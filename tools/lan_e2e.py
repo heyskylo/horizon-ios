@@ -17,6 +17,8 @@ address. The script then checks, from both sides, what a guest's game used to ge
              leaves the host's screen and mouse look alone;
 - datapack-recipe: (--server-thread) a crafting recipe from the world's data pack shows its result in the
              table of the host's window and of a guest, and taking it crafts (#6733);
+- recipes-hmod: opt-in, requires native Recipes: search original .hmod content, fill the server's
+             crafting grid, consume inputs and preserve both players' output after save/rejoin (#9647);
 - spawned:   the host and a guest new to the world join on different spots (PlayerSpawnFinder), and the
              guest opens a crafting table, a chest, a furnace and a stonecutter where it joined;
 - sign:      a sign the guest places doesn't open a sign editor on the host;
@@ -358,6 +360,7 @@ desktop), or headless (offscreen, no pause) where there is none; on macOS both g
 """
 import argparse
 import hashlib
+import io
 import json
 import math
 import os
@@ -369,6 +372,7 @@ import tempfile
 import threading
 import time
 import zlib
+import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -2237,7 +2241,8 @@ def own_reply(event):
 def server_count(guest, item):
     """How many of `item` the server says the guest has (`clear` with a count of 0 only counts)."""
     since = guest.raw('events')['last']
-    guest('command', command=f'clear @s minecraft:{item} 0')
+    item = item if ':' in item else f'minecraft:{item}'
+    guest('command', command=f'clear @s {item} 0')
     for n in range(0, 65):
         reply = guest.raw('events', '--since', since)
         lines = [e.get('text', '') for e in reply['events'] if own_reply(e)]
@@ -7222,6 +7227,8 @@ def run(ctl, out, resources, checks):
         launch.append('--no-pause')
     results = {}
     try:
+        if 'recipes-hmod' in checks:
+            prepare_recipes_hmod(host, guest)
         host.pid = host.raw(*launch)['pid']
         # Guests' commands need the world's Allow Commands as well as the LAN's (#372): a creative
         # world has them; everyone plays in survival.
@@ -7302,7 +7309,9 @@ def main():
         sys.exit(str(error))
     out = Path(args.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
-    results = run(bins / 'horizon-ctl', out, resources, args.check or CHECKS)
+    # Recipes is an opt-in native mod; this check requires a game built with it.
+    checks = args.check or [name for name in CHECKS if name != 'recipes-hmod']
+    results = run(bins / 'horizon-ctl', out, resources, checks)
     (out / 'results.json').write_text(json.dumps({'checks': results}, indent=2) + '\n')
     print(json.dumps(results, indent=1))
     sys.exit(0 if results and all(r['pass'] for r in results.values()) else 1)
@@ -13187,6 +13196,138 @@ CHECKS += ['pig-saddle-shears']
 CHECK_FNS['pig-saddle-shears'] = check_pig_saddle_shears
 
 
+def prepare_recipes_hmod(*games):
+    """Install the same original content package in both scratch game folders."""
+    fixture = ROOT / 'tools/fixtures/recipes_hmod'
+    package = io.BytesIO()
+    with zipfile.ZipFile(package, 'w', zipfile.ZIP_DEFLATED) as archive:
+        for path in sorted(fixture.rglob('*')):
+            if path.is_file():
+                archive.write(path, path.relative_to(fixture).as_posix())
+    for game in games:
+        mods = game.work / 'horizon-mods'
+        mods.mkdir()
+        (mods / 'recipe_pilot.hmod').write_bytes(package.getvalue())
+        (game.work / 'horizon-mods.txt').write_text('mod.recipe_pilot:true\nmod.recipes:true\n')
+        (game.work / 'options.txt').write_text('lang:en_us\n')
+        settings = mods / '.horizon-mod-data/recipes'
+        settings.mkdir(parents=True)
+        (settings / 'give').write_text('false')
+
+
+def check_recipes_hmod(host, guest, out):
+    """Recipes' real panel -> normal server menu -> custom output -> save/rejoin (#9647).
+
+    Opt in with --check recipes-hmod and --bin-dir pointing at a game compiled with the official
+    native Recipes mod. The fixture is ours; no Java mod, copied assets or synthetic game replies.
+    """
+    item = 'minecraft:echo_shard'
+    recipe = 'recipe_pilot:flint_to_echo_shard'
+    seen = {}
+
+    def widget(game, predicate):
+        matches = [w for w in game.raw('ui')['widgets'] if predicate(w)]
+        assert len(matches) == 1, f'{game.name}: expected one Recipes widget, got {matches}'
+        return matches[0]
+
+    def search(game, text):
+        ui = game.raw('ui')
+        fields = [w for w in ui['widgets'] if w['kind'] == 'field']
+        if not fields:
+            game.shot(out, 'recipes-hmod-no-search')
+            (out / f'{game.name}-recipes-hmod-ui.json').write_text(json.dumps(ui, indent=2))
+        assert fields, f'{game.name}: no Recipes search field (mod absent or empty-search recovery failed)'
+        # The native panel is to the right of the vanilla recipe book's search field.
+        field = max(fields, key=lambda w: w['bounds'][0])
+        x, y, width, height = field['bounds']
+        # Clicking the centre can leave a suffix to the right of the cursor.
+        game.raw('click-at', x + width - 1, y + height / 2)
+        # `key` drives key bindings; `type` drives this focused edit box, including backspace.
+        game.script([r"type '\b'"] * 50 + [f'type {text}'])
+        game.wait(5)
+
+    def page(game):
+        result = widget(game, lambda w: w.get('label') == 'Echo Shard'
+                        and w['kind'] == 'button')
+        game.raw('click', result['id'])
+        game.wait(5)
+        return widget(game, lambda w: (w.get('label') or '').startswith('+ '))
+
+    def contents(game):
+        return {'flint': server_count(game, 'flint'), 'echo_shard': server_count(game, item)}
+
+    for game, supplied in ((host, 4), (guest, 5)):
+        game('command', command='clear @s')
+        server_reply(game, 'recipe take @s *', 'recipe')
+        x, y, z = (math.floor(v) for v in pos_of(game))
+        table = (x, y, z - 2)
+        game('command', command=f'setblock {table[0]} {table[1]} {table[2]} minecraft:crafting_table')
+        game.wait(10)
+        game.raw('interact', *table)
+        game.raw('wait-for', 'screen', 'inventory', '--timeout', 10)
+        assert game('screen').get('craft_size') == 3
+
+        # The output exists in vanilla; its flint recipe is original .hmod content.
+        search(game, 'recipe_pilot:no_such_item')
+        assert not any(w.get('label') == 'Echo Shard' for w in game.raw('ui')['widgets'])
+        search(game, item)
+        game.shot(out, 'recipes-hmod-search')
+        unknown = page(game)
+        assert unknown['enabled'] is False, f'{game.name}: unknown recipe can be placed: {unknown}'
+        game.shot(out, 'recipes-hmod-unknown')
+        assert not any(i for i, _ in grid_of(game, 100, 109).values())
+        assert not result_of(game)[0]
+
+        server_reply(game, f'recipe give @s {recipe}', 'recipe')
+        game.wait(10)
+        back = widget(game, lambda w: w.get('label') == 'Back')
+        game.raw('click', back['id'])
+        game.wait(5)
+        known = page(game)
+        assert known['enabled'] is True, f'{game.name}: learned custom recipe unavailable: {known}'
+        game.raw('click', known['id'])
+        game.wait(10)
+        missing = contents(game)
+        assert missing == {'flint': 0, 'echo_shard': 0}, missing
+        assert not any(i for i, _ in grid_of(game, 100, 109).values())
+        assert not result_of(game)[0], f'{game.name}: missing ingredients fabricated a result'
+        game.shot(out, 'recipes-hmod-missing')
+
+        # Supply the input through the server, then use only the panel's normal + action.
+        game('command', command=f'give @s minecraft:flint {supplied}')
+        game.wait(10)
+        known = widget(game, lambda w: (w.get('label') or '').startswith('+ '))
+        game.raw('click', known['id'])
+        game.until(lambda: result_of(game), lambda r: bool(r[0]))
+        grid = [s for s in grid_of(game, 100, 109).values() if s[0]]
+        result = result_of(game)
+        assert grid == [('minecraft:flint', 1)], f'{game.name}: filled grid {grid}'
+        # Independent expected yield: changing the fixture to yield one must fail here.
+        assert result == (item, 2), f'{game.name}: custom result {result}'
+        game.shot(out, 'recipes-hmod-filled')
+        game.raw('click-slot', 200, 'shift')
+        game.wait(10)
+        assert not result_of(game)[0], f'{game.name}: consumed input left another result'
+        back_to_game(game)
+        crafted = contents(game)
+        assert crafted == {'flint': supplied - 1, 'echo_shard': 2}, crafted
+        seen[game.name] = {'missing': missing, 'grid': grid, 'result': result, 'crafted': crafted}
+        game('command', command=f'setblock {table[0]} {table[1]} {table[2]} minecraft:air')
+
+    save_and_reopen(host, guest)
+    for game in (host, guest):
+        persisted = contents(game)
+        assert persisted == seen[game.name]['crafted'], f'{game.name}: after rejoin {persisted}'
+        seen[game.name]['rejoined'] = persisted
+        game.shot(out, 'recipes-hmod-rejoined')
+    (out / 'recipes-hmod.json').write_text(json.dumps(seen, indent=2) + '\n')
+    return seen
+
+
+CHECKS += ['recipes-hmod']
+CHECK_FNS['recipes-hmod'] = check_recipes_hmod
+
+
 def check_levelup_sounds(host, guest, out):
     """Each server player has its own age and level-up cooldown, including point gains."""
     sound = 'minecraft:entity.player.levelup'
@@ -13235,6 +13376,89 @@ CHECKS += ['levelup-sounds']
 CHECK_FNS['levelup-sounds'] = check_levelup_sounds
 
 
+def check_death_credit(host, guest, out):
+    """ServerPlayer.die for each player (#9955): the death is heard (`gameEvent(ENTITY_DIE)`: a sensor
+    3 blocks away takes frequency 15, which beats the killing blow's `entity_damage`, 7, from the same
+    spot), and the kill credit's type gets a `killed_by` statistic: for a zombie's hit, and for a
+    creeper's blast, which kills inside the explosion while the creeper is still there."""
+    hx, hy, hz = (int(v // 1) for v in pos_of(host))
+    for kind in ('zombie', 'creeper'):
+        host('command', command=f'scoreboard objectives add death_by_{kind} minecraft.killed_by:minecraft.{kind}')
+    for rule in ('keep_inventory true', 'natural_health_regeneration false', 'spawn_mobs false'):
+        host('command', command=f'gamerule {rule}')
+    seen = {}
+
+    def quiet(game, sensor):
+        state, still = None, 0
+        for _ in range(200):
+            game.wait(1)
+            state = game.raw('getblock', *sensor)['block']
+            still = still + 1 if 'sculk_sensor_phase=inactive' in state else 0
+            if still == 10:
+                return
+        raise Failed(f'sensor did not settle: {state}')
+
+    try:
+        for game, dz in ((host, -6), (guest, 6)):
+            x, z = hx + 8, hz + dz
+            sensor = (x + 3, hy, z)
+            host('command', command=f'fill {x - 12} {hy - 1} {z - 2} {x + 4} {hy - 1} {z + 2} minecraft:stone')
+            host('command', command=f'fill {x - 12} {hy} {z - 2} {x + 4} {hy + 3} {z + 2} minecraft:air')
+            # The zombie stands beyond the sensor's 8 blocks, under a roof so that daylight doesn't burn it.
+            host('command', command=f'setblock {x - 10} {hy + 2} {z} minecraft:stone')
+            host('command', command=f'summon minecraft:zombie {x - 9.5} {hy} {z + 0.5} {{NoAI:1b,PersistenceRequired:1b}}')
+            game('command', command='gamemode survival')
+            game('command', command=f'tp @s {x + 0.5} {hy} {z + 0.5} 90 0')
+            game('command', command='effect give @s minecraft:instant_health 1 5 true')
+            host('command', command=f'setblock {sensor[0]} {sensor[1]} {sensor[2]} minecraft:sculk_sensor')
+            quiet(game, sensor)
+            game('command', command='damage @s 1000 minecraft:mob_attack by @e[type=minecraft:zombie,limit=1,sort=nearest]')
+            game.wait(10)
+            heard = command_says(game, f'data get block {sensor[0]} {sensor[1]} {sensor[2]} last_vibration_frequency')
+            by_zombie = command_says(game, 'scoreboard players get @s death_by_zombie')
+            respawn_when_ready(game)
+            game.wait(20)
+            back_to_game(game)
+            # A creeper lit with flint and steel blows up the player, left at one health.
+            host('command', command=f'kill @e[type=minecraft:zombie,x={x - 9.5},y={hy},z={z + 0.5},distance=..2]')
+            host('command', command=f'summon minecraft:creeper {x + 2.5} {hy} {z + 0.5} {{NoAI:1b}}')
+            game('command', command=f'tp @s {x + 0.5} {hy} {z + 0.5} -90 0')
+            game('command', command='effect give @s minecraft:instant_health 1 5 true')
+            game('command', command='give @s minecraft:flint_and_steel')
+            game.wait(10)
+            game.raw('select', 'minecraft:flint_and_steel')
+            game.wait(10)
+            game('command', command='damage @s 19 minecraft:generic')
+            creeper = game.raw('entities', 6, 'minecraft:creeper')['entities'][0]['id']
+            game.raw('interact-entity', creeper)
+            game.wait(60)
+            blown_up = game('state').get('screen')
+            by_creeper = command_says(game, 'scoreboard players get @s death_by_creeper')
+            respawn_when_ready(game)
+            game.wait(20)
+            back_to_game(game)
+            seen[game.name] = {'heard': heard, 'by_zombie': by_zombie, 'blown_up': blown_up, 'by_creeper': by_creeper}
+            host('command', command=f'fill {x - 12} {hy - 1} {z - 2} {x + 4} {hy + 3} {z + 2} minecraft:air')
+    finally:
+        host('command', command='gamerule natural_health_regeneration true')
+        host('command', command='gamerule keep_inventory false')
+        host('command', command='gamerule spawn_mobs true')
+        for kind in ('zombie', 'creeper'):
+            host('command', command=f'scoreboard objectives remove death_by_{kind}')
+        for game in (host, guest):
+            back_to_game(game)
+            game('command', command='clear @s')
+        face_each_other(host, guest)
+    for name, s in seen.items():
+        assert s['heard'].endswith(': 15'), f'{name} death not heard: {seen}'
+        assert ' has 1 ' in s['by_zombie'], f'{name} killed_by zombie: {seen}'
+        assert s['blown_up'] == 'dead', f'{name} survived the creeper: {seen}'
+        assert ' has 1 ' in s['by_creeper'], f'{name} killed_by creeper: {seen}'
+    return seen
+
+
+CHECKS += ['death-credit']
+CHECK_FNS['death-credit'] = check_death_credit
 def set_legacy_rules(game, on):
     """The PvP page's "1.8 combat in worlds you host" switch, as a player flips it."""
     game('options', page='pvp')
