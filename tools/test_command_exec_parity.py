@@ -96,6 +96,8 @@ def main():
     parser.add_argument('--wolf-anger-clock-diagnostic', action='store_true',
                         help='retain the separate loaded-NoAI absolute anger clock diagnostic')
     parser.add_argument('--only', help='run only corpus groups whose name contains this')
+    parser.add_argument('--vehicle-container-diagnostic', action='store_true',
+                        help='retain all vehicle Tags-list and whole-body observations outside the saved-field gate')
     parser.add_argument('--array-storage-diagnostic', action='store_true',
                         help='run all numeric-array edit cases, including the known wildcard/string storage side effects')
     parser.add_argument('--sulfur-power-load-diagnostic', action='store_true',
@@ -169,6 +171,13 @@ def main():
             sys.exit(f'{name} failed ({result.returncode}):\n{tail}')
 
     groups = corpus_module.groups()
+    if args.vehicle_container_diagnostic:
+        try:
+            from .vehicle_container_corpus import vehicle_containers
+        except ImportError:
+            from vehicle_container_corpus import vehicle_containers
+        groups = [(name, vehicle_containers(corpus_module.cmd, diagnostic=True)
+                   if name == 'vehicle container saved fields' else ops) for name, ops in groups]
     if args.stand_fall_fixture or args.only == "stand saved fall distance":
         groups = [(name, ops) for name, ops in groups if name == "stand saved fall distance"]
     elif not args.only:

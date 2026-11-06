@@ -5776,6 +5776,10 @@ ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANG
 
 def groups():
     try:
+        from .vehicle_container_corpus import vehicle_containers
+    except ImportError:
+        from vehicle_container_corpus import vehicle_containers
+    try:
         from .transmute_patch_corpus import cases as transmute_patches
     except ImportError:
         from transmute_patch_corpus import cases as transmute_patches
@@ -5807,6 +5811,7 @@ def groups():
         from item_merge_corpus import stack_limit_merges
     return [
         ('setup', group_setup()),
+        ('vehicle container saved fields', vehicle_containers(cmd)),
         ('stand saved fall distance', stand_saved_fall()),
         ('orb saved UUID', orb_saved_uuid()),
         ('mob saved pickup loot', mob_saved_pickup_loot()),
