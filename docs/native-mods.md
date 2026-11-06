@@ -2529,6 +2529,43 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   each line you hear). Lines the flood limit leaves out are not heard, and a mod that panics in it is not called again.
   Bundles need `"hooks": @API:log_line@`.
 
+#### Server hooks for plugin ports: connection
+
+What a proxy-fronted backend, a plugin channel or a login gate needs, which plugin ports reached with raw injections
+before (#10461).
+
+- **`native_handshake(address, host, intent, cancel, reason)`**: a free function in `horizon_client_lib::lan::conn`,
+  heard on the connection's own thread for each network connection's handshake (`ClientIntentionPacket`), before the
+  server acts on `intent` (1 status, 2 login, 3 transfer). `address` is the peer's (behind a proxy, the proxy's; the
+  forwarded address comes later, with the login), `host` the address the client says it connects to, with whatever a
+  proxy put after it (Floodgate's `\0^Floodgate^...` data). A mod may rewrite `host` (later mods see the new one; the
+  server itself reads nothing from it), or set `cancel` to refuse the connection: a login or a transfer is disconnected
+  with `reason` (a plain "Disconnected" if unset), a status ping is closed unanswered. The legacy `0xFE` ping and an
+  integrated server's own player are not heard. There is no `Game` on this thread, so no helper works and `native_tell`
+  reaches nobody; keep the hook short, the connection waits for it. Bundles need `"hooks": @API:handshake@`.
+  With proxy forwarding on (`forwarding.secret`, offline mode) the server reads the handshake's host up to 32767
+  characters, as Paper does behind a proxy, so a Floodgate player's long data reaches the hook; without forwarding the
+  limit stays vanilla's 255.
+- **`native_custom_payload_from_client(player, channel, data)`**: a player's plugin channel message
+  (`ServerboundCustomPayloadPacket` in play) on any channel that isn't Horizon's own (`horizon:mod_net`,
+  `horizon:quiet_commands`, `horizon:lod`), which vanilla drops: a Simple Voice Chat client's `voicechat:*` requests,
+  a proxy's or a client mod's channels. `data` is the client's bytes, checked by nothing. It runs in the tick after the
+  message arrived, in arrival order, with the hub back and no player's state swapped in, so every helper works; it is
+  heard from a dead player too. Every guest is heard (a single player world's own player sends none). The client side,
+  a window's own plugin channels, is #6774. Bundles need `"hooks": @API:custom_payload_from_client@`.
+- Helper **`native_send_custom_payload_to_player(player, channel, data)`** (`host.send_custom_payload_to_player`):
+  sends `data` on a plugin channel (`namespace:path`, not Horizon's own `horizon:` ones, at most 1 MiB as
+  `ClientboundCustomPayloadPacket` takes) to one player's client, a vanilla client included, as Bukkit's
+  `Player.sendPluginMessage`. It is queued and leaves at the tick's end, so it works from any server hook, a player's
+  own included; `Ok` means queued, and a player who isn't on by then gets nothing. Unlike `native_net_send_to_player`
+  nothing caps or frames it. An error on a client, and for a bad channel or size. Bundles need
+  `"hooks": @API:send_custom_payload_to_player@`.
+- Helper **`native_player_permission(player)`** (`host.player_permission`): the permission level of a player who is on
+  the server or joining it, 0 to 4, an operator's from `ops.json` above 0 (`PlayerList.getProfilePermissions`). It also
+  works inside `native_player_login`, for the player that hook hears (their level is set by then), so a login gate that
+  lets operators through needs no `ops.json` of its own. Inside a player's hook, with the hub out of reach, only that
+  player is found; None for a player who isn't on, and on a client. Bundles need `"hooks": @API:player_permission@`.
+
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a

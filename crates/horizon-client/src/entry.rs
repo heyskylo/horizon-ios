@@ -176,6 +176,16 @@ pub fn main_with(mods: crate::mod_api::Mods) {
         log_line: |level, thread, message, line| {
             crate::mod_api::dispatch_log_line(crate::mod_api::mods(), level, thread, message, line);
         },
+        handshake: |address, host, intent, cancel, reason| {
+            crate::mod_api::dispatch_handshake(
+                crate::mod_api::mods(),
+                address,
+                host,
+                intent,
+                reason,
+                cancel,
+            );
+        },
     })
     .is_err()
     {

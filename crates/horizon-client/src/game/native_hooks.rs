@@ -6627,6 +6627,25 @@ impl Game<'_> {
     ) {
         mod_api::dispatch_console_line(self, mod_api::mods(), source, line, replies, cancel);
     }
+    /// A plugin channel message from a player's client
+    /// (`ServerboundCustomPayloadPacket` in play) on any channel that isn't
+    /// Horizon's own (`horizon:mod_net`, `horizon:quiet_commands`,
+    /// `horizon:lod`), which vanilla drops: `channel` as the client sent it
+    /// (`voicechat:request_secret`), `data` its bytes, checked by nothing.
+    /// Runs in the tick after it arrives, in the order the messages came,
+    /// with the hub back and no player's state swapped in, so every helper
+    /// works; `native_send_custom_payload_to_player` answers on a channel of
+    /// any name. Heard from a dead player too. Server-side, for every guest
+    /// (a single player world's own player sends none). The client side is
+    /// #6774. API @API:custom_payload_from_client@.
+    pub(super) fn native_custom_payload_from_client(
+        &mut self,
+        player: u128,
+        channel: &str,
+        data: &[u8],
+    ) {
+        mod_api::dispatch_custom_payload_from_client(self, mod_api::mods(), player, channel, data);
+    }
     /// A click in a menu a mod opened (`native_open_menu`), which moved
     /// nothing: the menu's `slot` (its own first, then the player's
     /// inventory, `native_menu_inventory_slot`; -999 outside), the `button`
@@ -11303,6 +11322,8 @@ mod tests {
         let chat_hooks = free_hooks(include_str!("../lan/hub/chat.rs"));
         // The mob AI's (`horizon_client_lib::mobs::ai`).
         let mob_hooks = free_hooks(include_str!("../mobs/ai.rs"));
+        // The connections' (`horizon_client_lib::lan::conn`).
+        let conn_hooks = free_hooks(include_str!("../lan/conn.rs"));
         let declared: BTreeSet<_> = section
             .lines()
             .chain(level_section.lines())
@@ -11323,6 +11344,7 @@ mod tests {
             .chain(motion_hooks.iter().copied())
             .chain(chat_hooks.iter().copied())
             .chain(mob_hooks.iter().copied())
+            .chain(conn_hooks.iter().copied())
             .collect();
         let mut names = BTreeSet::new();
         let mut contracts = BTreeSet::new();
@@ -11361,6 +11383,8 @@ mod tests {
                 format!("horizon_client_lib::breathing::native_{name}")
             } else if mob_hooks.contains(name) {
                 format!("horizon_client_lib::mobs::ai::native_{name}")
+            } else if conn_hooks.contains(name) {
+                format!("horizon_client_lib::lan::conn::native_{name}")
             } else if level_hooks.contains(name) {
                 format!("horizon_client::game::native_hooks::GameLevel<'_>::native_{name}")
             } else {
