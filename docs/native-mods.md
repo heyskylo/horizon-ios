@@ -2498,6 +2498,9 @@ before (#10461).
   with `reason` (a plain "Disconnected" if unset), a status ping is closed unanswered. The legacy `0xFE` ping and an
   integrated server's own player are not heard. There is no `Game` on this thread, so no helper works and `native_tell`
   reaches nobody; keep the hook short, the connection waits for it. Bundles need `"hooks": @API:handshake@`.
+  With proxy forwarding on (`forwarding.secret`, offline mode) the server reads the handshake's host up to 32767
+  characters, as Paper does behind a proxy, so a Floodgate player's long data reaches the hook; without forwarding the
+  limit stays vanilla's 255.
 
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
