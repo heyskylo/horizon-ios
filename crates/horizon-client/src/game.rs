@@ -326,6 +326,7 @@ mod ordered_tick;
 mod packs;
 mod pad;
 mod pad_actions;
+mod pad_craft;
 mod pad_menu;
 mod paintings;
 mod pandas;
@@ -9437,6 +9438,7 @@ impl Game<'_> {
     fn inventory_press(&mut self, right: bool) {
         use horizon_client::container_screen::Target;
         use horizon_client::menu::Input;
+        self.direct_craft_stop();
         if self.mod_browser_press(right) {
             return;
         }
@@ -14955,6 +14957,7 @@ impl Game<'_> {
     /// `Screen.keyPressed` hears the raw one, and only a raw key settles what
     /// the container's hotbar keys are now (`checkHotbarKeyPressed`).
     fn key_pressed(&mut self, key: KeyCode, raw: KeyCode) -> Result<()> {
+        self.direct_craft_stop();
         // `CreativeModeInventoryScreen.keyPressed` clears `ignoreTextInput` on
         // every key, before it decides anything.
         self.creative_ignore_text = false;
