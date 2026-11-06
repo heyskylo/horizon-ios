@@ -2493,6 +2493,12 @@ unchanged v1 hook, once per hand vanilla tries: the main hand first, the off han
 nothing. A mod that claims the main hand's click hears one event per click, as Bukkit's `PlayerInteractEntityEvent`
 for `EquipmentSlot.HAND`. A click v1 claimed is not asked again. Bundles need "hooks": @API:interact_entity_v2@.
 
+`native_right_click_block_v2(pos, face, hand, canceled)` is `native_right_click_block` with the hand that clicks
+(NeoForge's `PlayerInteractEvent.RightClickBlock.getHand`), asked right after the unchanged v1 hook, once per hand
+tried. A canceled click does what a v1 cancel does (neither the block nor the item acts, the hand doesn't swing, the
+other hand gets no turn); a click v1 canceled is not asked again. A protection mod refuses an off-hand flint and steel
+or bone meal by its hand. Bundles need "hooks": @API:right_click_block_v2@.
+
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a

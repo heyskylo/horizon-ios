@@ -6698,6 +6698,8 @@ impl Game<'_> {
             let mut canceled = false;
             horizon_client::spans::time("use_mods", || {
                 self.native_right_click_block(hit.pos, hit.face, &mut canceled);
+                let hand = self.hand;
+                self.native_right_click_block_v2(hit.pos, hit.face, hand, &mut canceled);
             });
             if canceled {
                 // Nothing was used, so nothing consumed the action.

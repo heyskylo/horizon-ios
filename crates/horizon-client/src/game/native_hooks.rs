@@ -6550,6 +6550,24 @@ impl Game<'_> {
             claimed,
         );
     }
+    /// `native_right_click_block` with the hand: a player right clicks the block at `pos` with
+    /// `hand` (NeoForge's `PlayerInteractEvent.RightClickBlock.getHand`), `face` the face clicked,
+    /// where `ServerPlayerGameMode.useItemOn` starts, before the block's own use and before
+    /// `native_use_item_on`. Asked right after the unchanged v1 hook, once per hand tried (the
+    /// off hand only when the main hand's turn did nothing). Set `canceled` to stop the click:
+    /// neither the block nor the item acts, the hand doesn't swing, and a guest sees the block as
+    /// it is; that hand's turn ends the click, as a v1 cancel does. A click v1 canceled is not
+    /// asked here. Server-side, for every player of the world (`native_acting_player` says who).
+    /// @API:right_click_block_v2@.
+    pub(super) fn native_right_click_block_v2(
+        &mut self,
+        pos: [i32; 3],
+        face: [i32; 3],
+        hand: Hand,
+        canceled: &mut bool,
+    ) {
+        mod_api::dispatch_right_click_block_v2(self, mod_api::mods(), pos, face, hand, canceled);
+    }
     /// A click in a menu a mod opened (`native_open_menu`), which moved
     /// nothing: the menu's `slot` (its own first, then the player's
     /// inventory, `native_menu_inventory_slot`; -999 outside), the `button`
