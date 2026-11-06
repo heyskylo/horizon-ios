@@ -13,7 +13,7 @@ use crate::{
     heightmap::HeightmapState,
     registry::{BlockRegistry, BlockStateId},
 };
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 /// What a native generator made of a chunk (`native_chunk_generate`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -137,7 +137,7 @@ pub fn native_chunk_generate(
     chunk_out: &mut NativeProtoChunk<'_>,
     generate: &mut NativeGenerate,
 ) {
-    let _ = (dimension, chunk, seed, flat, chunk_out, generate);
+    chunk_generate(dimension, chunk, seed, flat, chunk_out, generate);
 }
 
 /// A far terrain column, as `native_lod_column` sees it.
@@ -183,7 +183,48 @@ pub fn native_lod_column(
     flat: bool,
     column_out: &mut NativeLodColumn<'_>,
 ) {
-    let _ = (dimension, column, seed, flat, column_out);
+    lod_column(dimension, column, seed, flat, column_out);
+}
+
+/// Callbacks into the executable for the generation hooks, installed once
+/// before any level generates, as `native_load_hooks`; without them both hooks
+/// do nothing.
+pub struct NativeGenerateHooks {
+    pub chunk_generate:
+        fn(&str, [i32; 2], i64, bool, &mut NativeProtoChunk<'_>, &mut NativeGenerate),
+    pub lod_column: fn(&str, [i32; 2], i64, bool, &mut NativeLodColumn<'_>),
+}
+
+static HOOKS: OnceLock<NativeGenerateHooks> = OnceLock::new();
+
+/// Install the process-wide callbacks once; a second installation keeps the first.
+pub fn install(hooks: NativeGenerateHooks) -> Result<(), NativeGenerateHooks> {
+    HOOKS.set(hooks)
+}
+
+fn chunk_generate(
+    dimension: &str,
+    chunk: [i32; 2],
+    seed: i64,
+    flat: bool,
+    chunk_out: &mut NativeProtoChunk<'_>,
+    generate: &mut NativeGenerate,
+) {
+    if let Some(hooks) = HOOKS.get() {
+        (hooks.chunk_generate)(dimension, chunk, seed, flat, chunk_out, generate);
+    }
+}
+
+fn lod_column(
+    dimension: &str,
+    column: [i32; 2],
+    seed: i64,
+    flat: bool,
+    column_out: &mut NativeLodColumn<'_>,
+) {
+    if let Some(hooks) = HOOKS.get() {
+        (hooks.lod_column)(dimension, column, seed, flat, column_out);
+    }
 }
 
 /// Ask `native_lod_column` about the far column `[x, z]` and put what a mod

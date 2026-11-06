@@ -81,7 +81,10 @@ pub use horizon_world::{
     loot::{LootStack, NativeLootContext},
     nbt::{Compound, Tag},
     registry::BlockStateId,
-    worldgen::structure::{Mirror, Rotation},
+    worldgen::{
+        native_generate::{NativeGenerate, NativeLodColumn, NativeProtoChunk},
+        structure::{Mirror, Rotation},
+    },
 };
 pub use serde_json;
 use serde_json::{Map, Value};
