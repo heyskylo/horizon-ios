@@ -2507,6 +2507,20 @@ injections before.
   id: forgotten when they leave, and a player who rejoins has another id (hide them again from
   `native_player_logged_in`). Outside a player's hook; false there, when the viewer isn't on and for their own entity.
   Bundles need `"hooks": @API:hide_entity_from@`.
+- Helpers **`native_client_entity_spawn(viewer, kind, pos, yaw, nbt)`**, **`native_client_entity_set(viewer, id, nbt)`**,
+  **`native_client_entity_move(viewer, id, pos, yaw)`**, **`native_client_entity_remove(viewer, ids)`** and
+  **`native_reserve_entity_id()`** (`host.client_entity_spawn`...): an entity shown to one player's client alone, a
+  hologram or a board only its owner sees (Bukkit has no API for it; plugins send the packets). Spawn sends the add and
+  its synched data, encoded from `nbt` as `/summon` reads it: all of a text, item or block display's (`text`,
+  `background`, `billboard`, `transformation`, `item`, `block_state`, `teleport_duration`...), and for any type
+  `CustomName`, `CustomNameVisible`, `Invisible`, `Glowing`, `Silent` and `NoGravity`; other types' own data is not
+  read, and a player is refused. It returns the entity's id, one no server entity takes. No level holds it: it is not
+  simulated, saved, tracked or seen by anyone else, and the client forgets it when the player changes dimension or
+  leaves. `set` gives it the data `nbt` gives its type, what `nbt` leaves out back at its default (pass the whole of what
+  it shows); `move` teleports it (a display eases over its `teleport_duration`); `remove` takes away those of `ids` that
+  are this viewer's client-side entities and leaves other ids alone. `native_reserve_entity_id()` is an id from the
+  server's own counter for a mod's own packets. Outside a player's hook; None or false there, when the viewer isn't on,
+  for an unknown type and for an id that isn't theirs. Bundles need `"hooks": @API:client_entities@`.
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a

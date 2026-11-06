@@ -217,6 +217,7 @@ pub mod native_block_entity_draw;
 mod native_block_sprites;
 mod native_chunk_tickets;
 mod native_claimed_items;
+mod native_client_entities;
 pub mod native_client_services;
 mod native_components;
 mod native_configs;
