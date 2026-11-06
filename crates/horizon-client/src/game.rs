@@ -7532,12 +7532,13 @@ impl Game<'_> {
     /// game event from the player, at its feet.
     pub(super) fn stop_using_item(&mut self, stack: &ItemStack) {
         self.using = None;
-        self.use_vibration(stack);
+        self.use_vibration(stack, "minecraft:item_interact_finish");
     }
-    /// `ItemStack.causeUseVibration` for `stack` used by the player: an
-    /// `ITEM_INTERACT_FINISH` game event from the player, at its feet, when the
-    /// stack's use effects ask for interaction vibrations (the default).
-    pub(super) fn use_vibration(&mut self, stack: &ItemStack) {
+    /// `ItemStack.causeUseVibration` for `stack` used by the player: the
+    /// `event` game event (`ITEM_INTERACT_START` when the use begins,
+    /// `ITEM_INTERACT_FINISH` when it ends) from the player, at its feet, when
+    /// the stack's use effects ask for interaction vibrations (the default).
+    pub(super) fn use_vibration(&mut self, stack: &ItemStack, event: &'static str) {
         if !self
             .items()
             .get(&stack.item)
@@ -7549,7 +7550,7 @@ impl Game<'_> {
             return;
         };
         let ctx = self.player_context(None);
-        self.post_game_event("minecraft:item_interact_finish", [p.x, p.y, p.z], ctx);
+        self.post_game_event(event, [p.x, p.y, p.z], ctx);
     }
     /// `ServerPlayerGameMode.tick` while a player digs: level event 2020 every
     /// fourth tick since the START (the hit sound), else 2019 (the crack only),
