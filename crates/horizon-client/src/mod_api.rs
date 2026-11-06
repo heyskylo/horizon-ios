@@ -57,6 +57,9 @@ pub use horizon_core::{
     position::BlockPos,
     random::{LegacyRandom, RandomSource},
 };
+/// A synched entity data value (`ClientboundSetEntityDataPacket`'s), as `entity_data_to` hands
+/// them over.
+pub use horizon_protocol::entity_data::Value as EntityDataValue;
 /// The server's play packets `client_packet` hands over, decoded.
 pub use horizon_protocol::packets::play::Clientbound as ClientboundPlayPacket;
 /// The play packets a client sends, as `native_send_packet` takes them.

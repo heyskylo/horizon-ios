@@ -2499,6 +2499,16 @@ What packet-level plugins (ProtocolLib, PacketEvents, TAB), plugin channel liste
   (they go out unchanged, as does every packet no mod changed), and a player who isn't a guest (single player's own). It
   runs where the packet is sent, on whichever server thread sends it, with no `self` and no player's state swapped in, once for
   each packet and player: keep it cheap. Bundles need `"hooks": @API:server_packet@`.
+- **`native_entity_data_to(viewer, entity, values)`**: the typed shortcut for one packet, the entity data
+  (`ClientboundSetEntityDataPacket`) the server is about to send the guest `viewer` for the entity with network id
+  `entity`. `values` are its `(index, serializer id, value)` entries (`EntityDataValue`, `SynchedEntityData.DataValue`)
+  in the order sent; change them and only that viewer gets the change, so one viewer can see a player glow (OR `0x40`
+  into the `Byte` of entry 0) or another custom name, while the server and every other viewer keep the real values.
+  Heard just before `native_server_packet` hears the same packet, with the changed values. Switched on by the helper
+  **`native_watch_entity_data()`**, which decodes this packet alone (the other packets keep going out undecoded).
+  Every entity's data reaches a client in this packet, a newly tracked one's first values included; an entity whose
+  values are all defaults is tracked without one, as in vanilla, so there is nothing to change until a value does.
+  The same threads and limits as `native_server_packet`. Bundles need `"hooks": @API:entity_data_to@`.
 
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The

@@ -17,4 +17,15 @@ impl Game<'_> {
         horizon_client::lan::conn::WATCHED
             .fetch_or(horizon_client::lan::conn::WATCH_ALL, Ordering::Relaxed);
     }
+    /// From now on the entity data the server sends each player
+    /// (`ClientboundSetEntityDataPacket`) reaches `native_entity_data_to`,
+    /// until the server stops; only that packet is decoded for it. As
+    /// `native_watch_server_packets`, it cannot be switched off and works
+    /// from any thread. @API:entity_data_to@.
+    pub(super) fn native_watch_entity_data(&self) {
+        horizon_client::lan::conn::WATCHED.fetch_or(
+            horizon_client::lan::conn::WATCH_ENTITY_DATA,
+            Ordering::Relaxed,
+        );
+    }
 }

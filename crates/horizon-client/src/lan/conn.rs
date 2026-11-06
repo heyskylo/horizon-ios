@@ -240,12 +240,20 @@ impl Drop for Holding {
 /// once by the game: the player, the packet (which it may change) and cancel.
 pub type ServerPacketHook = fn(u128, &mut play::Clientbound, &mut bool);
 pub static SERVER_PACKET: std::sync::OnceLock<ServerPacketHook> = std::sync::OnceLock::new();
+/// The game's hook on the entity data a player is sent (`native_entity_data_to`), set once by
+/// the game: the viewer, the entity's network id and its values (which it may change).
+pub type EntityDataHook = fn(u128, i32, &mut Vec<(u8, i32, horizon_protocol::entity_data::Value)>);
+pub static ENTITY_DATA_TO: std::sync::OnceLock<EntityDataHook> = std::sync::OnceLock::new();
 /// What a mod asked to hear of the packets [`PlayerSender::send`] sends
-/// (`native_watch_server_packets`): [`WATCH_ALL`]. Nothing until a mod asks: until then each
-/// packet costs this one load, and its bytes go out untouched.
+/// (`native_watch_server_packets`, `native_watch_entity_data`): [`WATCH_ALL`] and
+/// [`WATCH_ENTITY_DATA`]. Nothing until a mod asks: until then each packet costs this one
+/// load, and its bytes go out untouched.
 pub static WATCHED: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 /// Every play packet reaches [`SERVER_PACKET`].
 pub const WATCH_ALL: u8 = 1;
+/// Each `ClientboundSetEntityDataPacket` reaches [`ENTITY_DATA_TO`], and no other packet is
+/// decoded for it.
+pub const WATCH_ENTITY_DATA: u8 = 2;
 
 /// A body about to be sent to `player`, past the hooks a mod asked for ([`WATCHED`]): None
 /// when one canceled it. Bytes that don't decode, and a packet no hook changed, go out as they
@@ -268,13 +276,21 @@ fn watched_outgoing(player: u128, body: Vec<u8>, watched: u8) -> Option<Vec<u8>>
         return Some(body);
     };
     let all = SERVER_PACKET.get().filter(|_| watched & WATCH_ALL != 0);
-    if all.is_none() {
+    let data = ENTITY_DATA_TO.get().filter(|_| {
+        watched & WATCH_ENTITY_DATA != 0
+            && id == horizon_protocol::ids::play::clientbound::SET_ENTITY_DATA
+    });
+    if all.is_none() && data.is_none() {
         return Some(body);
     }
     let Ok(sent) = play::Clientbound::decode(id, &body[at..]) else {
         return Some(body);
     };
     let mut packet = sent.clone();
+    // The typed shortcut first, so the packet hook sees what the client will get.
+    if let (Some(hook), play::Clientbound::SetEntityData(p)) = (data, &mut packet) {
+        hook(player, p.id, &mut p.values);
+    }
     if let Some(hook) = all {
         let mut cancel = false;
         hook(player, &mut packet, &mut cancel);
