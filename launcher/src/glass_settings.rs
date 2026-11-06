@@ -52,7 +52,7 @@ fn about_tile(lead: AnyElement, title: String, note: String, action: AnyElement)
         .flex()
         .flex_col()
         .flex_1()
-        .min_w_0()
+        .min_w(px(140.))
         .rounded(px(radius::LARGE))
         .bg(white(0.045))
         .p(px(20.))
@@ -99,53 +99,72 @@ impl Launcher {
         let sections = ui::flat_rows(|| self.glass_settings_sections(b, cx));
         let active = self.settings_section(sections.len());
         self.settings_marked = active;
-        let nav =
+        let wide = self.window_width >= 1180.;
+        let items: Vec<_> = SECTIONS
+            .iter()
+            .enumerate()
+            .map(|(i, &(label, icon))| {
+                let on = i == active;
+                keyboard(
+                    div()
+                        .id(SharedString::from(format!("settings-nav-{i}")))
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .gap(px(if wide { 12. } else { 8. }))
+                        .h(px(if wide { 40. } else { 34. }))
+                        .px(px(if wide { 12. } else { 10. }))
+                        .rounded(px(radius::ROW))
+                        .cursor_pointer()
+                        .font_family(horizon_theme::glass::FONT)
+                        .text_size(px(14.))
+                        .when(on, |d| {
+                            d.bg(white(fill::ACTIVE))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(white(ink::FULL))
+                        })
+                        .when(!on, |d| {
+                            d.text_color(white(0.65))
+                                .hover(|s| s.bg(white(0.05)).text_color(white(ink::FULL)))
+                        })
+                        .child(ui::icon(
+                            icon,
+                            17.,
+                            if on {
+                                ui::color(ui::look().accent_soft)
+                            } else {
+                                white(0.65)
+                            },
+                        ))
+                        .child(tr(label).to_string()),
+                    &t,
+                )
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.settings_pane.scroll_to_top_of_item(i);
+                    cx.notify();
+                }))
+            })
+            .collect();
+        let nav = if wide {
             card()
                 .flex_none()
                 .w(px(210.))
                 .gap(px(4.))
-                .children(SECTIONS.iter().enumerate().map(|(i, &(label, icon))| {
-                    let on = i == active;
-                    keyboard(
-                        div()
-                            .id(SharedString::from(format!("settings-nav-{i}")))
-                            .flex()
-                            .items_center()
-                            .gap(px(12.))
-                            .h(px(40.))
-                            .px(px(12.))
-                            .rounded(px(radius::ROW))
-                            .cursor_pointer()
-                            .font_family(horizon_theme::glass::FONT)
-                            .text_size(px(14.))
-                            .when(on, |d| {
-                                d.bg(white(fill::ACTIVE))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(white(ink::FULL))
-                            })
-                            .when(!on, |d| {
-                                d.text_color(white(0.65))
-                                    .hover(|s| s.bg(white(0.05)).text_color(white(ink::FULL)))
-                            })
-                            .child(ui::icon(
-                                icon,
-                                17.,
-                                if on {
-                                    ui::color(ui::look().accent_soft)
-                                } else {
-                                    white(0.65)
-                                },
-                            ))
-                            .child(tr(label).to_string()),
-                        &t,
-                    )
-                    .on_click(cx.listener(
-                        move |this, _: &ClickEvent, _, cx| {
-                            this.settings_pane.scroll_to_top_of_item(i);
-                            cx.notify();
-                        },
-                    ))
-                }));
+                .children(items)
+                .into_any_element()
+        } else {
+            crate::glass::plate(radius::PANEL)
+                .id("settings-nav-strip")
+                .flex_none()
+                .w_full()
+                .flex_row()
+                .overflow_x_scroll()
+                .on_scroll(|_, _, cx| cx.stop_propagation())
+                .gap(px(4.))
+                .p(px(6.))
+                .children(items)
+                .into_any_element()
+        };
         let pane = div()
             .id("settings-pane")
             .flex_1()
@@ -169,6 +188,26 @@ impl Launcher {
             .gap(px(16.))
             .pb(px(8.))
             .children(sections);
+        let content = if wide {
+            div()
+                .flex()
+                .flex_row()
+                .items_start()
+                .gap(px(12.))
+                .flex_1()
+                .min_h_0()
+                .child(nav)
+                .child(pane)
+        } else {
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(12.))
+                .flex_1()
+                .min_h_0()
+                .child(nav)
+                .child(pane)
+        };
         div()
             .flex()
             .flex_col()
@@ -178,16 +217,7 @@ impl Launcher {
                 tr("Settings"),
                 tr("Accounts, updates, and the launcher itself."),
             ))
-            .child(
-                div()
-                    .flex()
-                    .items_start()
-                    .gap(px(12.))
-                    .flex_1()
-                    .min_h_0()
-                    .child(nav)
-                    .child(pane),
-            )
+            .child(content)
     }
 
     /// The section the list marks, from where the pane's sections are now ([`spy`]). A section's
@@ -341,8 +371,11 @@ impl Launcher {
         let open = ui::quiet("about-open-data", tr("Open"), 36., &t)
             .on_click(|_, _, cx| crate::glass_toast::open(cx, &backend::data_dir()))
             .into_any_element();
+        let wide = self.window_width >= 1200.;
         div()
             .flex()
+            .when(wide, |d| d.flex_row())
+            .when(!wide, |d| d.flex_col())
             .gap(px(8.))
             .child(about_tile(
                 self.horizon_mark(42.),
