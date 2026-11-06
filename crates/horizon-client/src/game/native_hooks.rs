@@ -6523,6 +6523,39 @@ impl Game<'_> {
     ) {
         mod_api::dispatch_player_level_change(self, mod_api::mods(), player, name, from, to);
     }
+    /// `native_vehicle_moved` with the vehicle and a say on its move (Bukkit's
+    /// `VehicleMoveEvent` with a teleport of the vehicle): heard right after
+    /// v1, at the same times and with the same state swapped in, and also for
+    /// a mob a server player rides (a horse, a pig, a strider), which v1 does
+    /// not hear. `dimension` is the level the vehicle is in and `vehicle` its
+    /// entity id (`native_teleport_vehicle`). Set `cancel` and the vehicle is
+    /// put back at `from` with its riders; change `to` and it is put there
+    /// instead (not checked against the blocks; a value that is not finite is
+    /// ignored). Either way its riders' clients are told, and the next move
+    /// is heard from there. Mods are asked in order and share `to` and
+    /// `cancel`. Server-side. API @API:vehicle_moved_v2@.
+    pub(super) fn native_vehicle_moved_v2(
+        &mut self,
+        player: Option<u128>,
+        dimension: &str,
+        vehicle: u32,
+        kind: &str,
+        from: [f64; 3],
+        to: &mut [f64; 3],
+        cancel: &mut bool,
+    ) {
+        mod_api::dispatch_vehicle_moved_v2(
+            self,
+            mod_api::mods(),
+            player,
+            dimension,
+            vehicle,
+            kind,
+            from,
+            to,
+            cancel,
+        );
+    }
     /// A click in a menu a mod opened (`native_open_menu`), which moved
     /// nothing: the menu's `slot` (its own first, then the player's
     /// inventory, `native_menu_inventory_slot`; -999 outside), the `button`

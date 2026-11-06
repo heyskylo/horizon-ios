@@ -2519,6 +2519,13 @@ console (which waits for the next tick and does nothing inside a player's hook).
   `native_vehicle_moved_v2` change `to` instead. False inside a player's hook, for no such vehicle here, another
   dimension, a position outside `/tp`'s bounds, and on a client. Server-side. Bundles need
   `"hooks": @API:teleport_vehicle@`.
+- **`native_vehicle_moved_v2(player, dimension, vehicle, kind, from, to, cancel)`**: an additive version of
+  `native_vehicle_moved`, heard right after v1 at the same times and with the same state swapped in, and also for a mob
+  a server player rides (a horse, a pig, a strider), which v1 does not hear. `vehicle` is the entity id and `dimension`
+  its level. Set `cancel` and the vehicle is put back at `from` with its riders; change `to` and it is put there instead
+  (not checked against the blocks; a value that is not finite is ignored), as Bukkit's `VehicleMoveEvent` with
+  `Vehicle.teleport`. Either way its riders' clients are told, and the next move is heard from there. Mods are asked in
+  order and share `to` and `cancel`. Server-side. Bundles need `"hooks": @API:vehicle_moved_v2@`.
 
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
