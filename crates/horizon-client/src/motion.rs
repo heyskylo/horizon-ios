@@ -1875,6 +1875,9 @@ impl MotionWorld<'_, '_, '_> {
                     }
                     _ => {}
                 }
+                // ServerPlayer.onInsideBlock: the server's pass reports it too,
+                // as the enter_block trigger is the server's to fire.
+                self.player.events.push(MotionEvent::EnterBlock { state });
                 if damage_only {
                     continue;
                 }
@@ -1895,8 +1898,6 @@ impl MotionWorld<'_, '_, '_> {
                         .push(MotionEvent::InsidePortal { pos: p }),
                     _ => {}
                 }
-                // ServerPlayer.onInsideBlock
-                self.player.events.push(MotionEvent::EnterBlock { state });
             }
         }
         Ok(iterations + 1)
