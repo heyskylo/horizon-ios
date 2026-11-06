@@ -592,16 +592,19 @@ pub fn is_monster(s: Species) -> bool {
 }
 /// One full entity tick. Returns false when the mob is gone.
 /// `Mob.getTarget` / `Mob.setTarget` (`asValidTarget`): a player in creative
-/// or spectator mode is never a mob's target, however the target was set (an
+/// or spectator mode or in Peaceful is never a mob's target, however the target was set (an
 /// alert from another mob included). A `NeutralMob` angry at that player stops
 /// being angry (`NeutralMob.updatePersistentAnger`).
 fn drop_invalid_player_target(m: &mut Mob, w: &MobWorld) {
     if m.ai.target == Some(Who::Player)
-        && w.player.as_ref().is_some_and(|p| p.creative || p.spectator)
+        && w.player
+            .as_ref()
+            .is_some_and(|p| p.creative || p.spectator || w.difficulty.base == 0)
     {
         m.ai.target = None;
         if matches!(m.species(), Species::ZombifiedPiglin | Species::IronGolem) {
             m.extra.anger = 0;
+            m.ai.last_hurt_by = None;
         }
     }
 }
@@ -4007,6 +4010,29 @@ mod forgiveness_tests {
         let mut t = (*crate::mobs::sensor_scan_tests::kind()).clone();
         t.species = species;
         Mob::new(1, Arc::new(t), Vec3::ZERO, 0.0)
+    }
+
+    #[test]
+    fn peaceful_drops_an_iron_golems_existing_player_target() {
+        crate::mobs::world::with_test_world(&[], |world, _| {
+            let mut world = world.clone();
+            world.player = Some(crate::mobs::world::test_player(Vec3::new(1.0, 0.0, 0.0)));
+            world.difficulty = super::super::spawning::LocalDifficulty::new(0, 18000, 0, 0.0);
+            let mut golem = mob(Species::IronGolem);
+            golem.ai.target = Some(Who::Player);
+            golem.extra.anger = 300;
+            golem.ai.last_hurt_by = Some(Who::Player);
+            let mut events = Vec::new();
+            tick(&mut golem, &world, &mut LegacyRandom::new(0), &mut events);
+            assert_eq!(golem.ai.target, None);
+            assert_eq!(golem.extra.anger, 0);
+            assert_eq!(golem.ai.last_hurt_by, None);
+            assert!(
+                !events
+                    .iter()
+                    .any(|e| matches!(e, MobEvent::AttackPlayer(..)))
+            );
+        });
     }
 
     /// The enderman's and zombified piglin's persistent anger is the target
