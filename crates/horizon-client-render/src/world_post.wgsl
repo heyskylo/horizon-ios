@@ -65,7 +65,11 @@ struct Taa {
     jitter: vec4<f32>,
 };
 @group(0) @binding(2) var history: texture_2d<f32>;
-@group(0) @binding(3) var depth: texture_depth_2d;
+// The world's depth as an unfilterable float texture: naga's GLSL backend
+// cannot emit `textureLoad` from a depth texture, and a depth view bound as
+// `TextureSampleType::Float { filterable: false }` gives the same texel on
+// every backend.
+@group(0) @binding(3) var depth: texture_2d<f32>;
 @group(0) @binding(4) var<uniform> taa: Taa;
 
 // Catmull-Rom over the history in 5 bilinear taps: sharper than one under motion.
@@ -113,7 +117,7 @@ fn sample_history(uv: vec2<f32>) -> vec3<f32> {
             let c = textureLoad(world, q, 0).rgb;
             lo = min(lo, c);
             hi = max(hi, c);
-            near = max(near, textureLoad(depth, q, 0));
+            near = max(near, textureLoad(depth, q, 0).r);
         }
     }
     let ndc = vec2(in.uv.x * 2.0 - 1.0, 1.0 - in.uv.y * 2.0);

@@ -99,30 +99,40 @@ pub fn main() -> Result<()> {
         let case: Value = serde_json::from_str(&line?)?;
         let kind = case["kind"].as_str().unwrap_or("marker");
         // A block's own tick through the whole ClientLevel.animateTick loop,
-        // over a world that is all of it: every particle and sound it asks the
-        // engine for, from the level random seeded by the case.
+        // over a world that is all of it above y = 64 and all of the case's
+        // floor below: every particle and sound it asks the engine for, from the
+        // level random seeded by the case.
         if kind == "tick" {
             let spec = case["state"].as_str().ok_or("state")?.to_owned();
-            if !tick_worlds.contains_key(&spec) {
+            let floor_spec = case["floor"].as_str().unwrap_or(&spec).to_owned();
+            let key = format!("{spec}|{floor_spec}");
+            if !tick_worlds.contains_key(&key) {
                 let state = assets.registry.resolve(&parse_state(&spec))?;
+                let floor = assets.registry.resolve(&parse_state(&floor_spec))?;
                 let mut world = World::new(facts.air, 0);
-                for cz in -2..2 {
-                    for cx in -2..2 {
+                // The loop samples y 32 to 96, reads neighbours one block out
+                // and a stalactite climbs ten blocks to its root, so the
+                // stand-in world has to hold all of that: a case that ends
+                // inside the sample box compares air against the oracle's
+                // unending world.
+                for cz in -3..3 {
+                    for cx in -3..3 {
                         world
                             .chunks
                             .insert((cx, cz), Arc::new(Chunk::empty(cx, cz)));
-                        for y in 33..96 {
+                        for y in 31..=107 {
                             for z in 0..16 {
                                 for x in 0..16 {
-                                    world.set(cx * 16 + x, y, cz * 16 + z, state)?;
+                                    let at = if y < 64 { floor } else { state };
+                                    world.set(cx * 16 + x, y, cz * 16 + z, at)?;
                                 }
                             }
                         }
                     }
                 }
-                tick_worlds.insert(spec.clone(), world);
+                tick_worlds.insert(key.clone(), world);
             }
-            let world = &tick_worlds[&spec];
+            let world = &tick_worlds[&key];
             // A block whose model is jittered per column: the offset the client
             // gives its model, so the oracle's shape moves exactly as the game
             // moves it.

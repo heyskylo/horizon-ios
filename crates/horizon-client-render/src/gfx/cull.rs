@@ -220,7 +220,7 @@ impl Cull {
     /// write storage.
     pub fn supported(adapter: &wgpu::Adapter, device: &wgpu::Device) -> Option<DepthTest> {
         let depth_test = match adapter.get_info().backend {
-            wgpu::Backend::Vulkan
+            wgpu::Backend::Vulkan | wgpu::Backend::Gl
                 if device
                     .features()
                     .contains(wgpu::Features::SHADER_EARLY_DEPTH_TEST) =>
@@ -287,7 +287,7 @@ impl Cull {
                     0,
                     fragment,
                     wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Depth,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
                         view_dimension: wgpu::TextureViewDimension::D2,
                         multisampled: false,
                     },
