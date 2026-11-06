@@ -569,6 +569,16 @@ can't be read, files in `keep_files` (keys or text like `minecraft:overworld 12 
 `x` and `z`), level.dat and player data are never touched; a `keep_files` file that exists but can't be read
 stops the prune before anything is deleted.
 
+Deletion stages each region's terrain, entities and POI together, keeping originals in the dimension's
+`.horizon-prune` folder until it commits. An interrupted region is rolled back before the next server
+start, even though `mode` is now `"off"`; committed earlier regions stay pruned. A failed prune or failed
+recovery stops startup and reports an error instead of reporting planned deletions as successful. Keep
+the recovery folder if recovery fails; do not delete it to force the server to start. Staging retains
+hard links to the originals and needs room for the compacted files of one region group. The three
+folders must support hard links on the same filesystem. Unix flushes files and directories; Windows
+flushes files and uses write-through renames. This does not replace a backup or promise recovery from
+filesystem corruption or storage hardware that ignores flushes.
+
 ### 1.8 combat: `[combat]`
 
 Fights follow 26.3's rules. For 1.8.9's (no attack cooldown or sweep, 1.8 weapon damage, Strength and
