@@ -41,6 +41,10 @@ pub use crate::items::ItemStack;
 pub use crate::merchant::MerchantOffer;
 pub use crate::mesher::TintSource;
 pub use crate::mobs::goals::{Cx, Goal, GoalSelector};
+pub use crate::mobs::model_layers::{
+    CubeDefinition, CubeDeformation, CubeListBuilder, LayerDefinition, MeshDefinition, ModelPart,
+    ModelPolygon, ModelVertex, PartId, PartPose,
+};
 pub use crate::mobs::{Mob, MobWorld};
 pub use crate::music::{Music, MusicLayer};
 pub use crate::particles::{ParticleOptions, ParticleType};
