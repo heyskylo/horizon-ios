@@ -5863,14 +5863,6 @@ ISOLATED_STAND_FALL = frozenset({'stand saved fall distance'})
 ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_MACRO_TYPE | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL
 
 
-def thrown_potion_contents():
-    try:
-        from .thrown_potion_corpus import thrown_contents
-    except ImportError:
-        from thrown_potion_corpus import thrown_contents
-    return thrown_contents(cmd, setup)
-
-
 def groups():
     try:
         from .transmute_patch_corpus import cases as transmute_patches
@@ -6045,6 +6037,5 @@ def groups():
         ('piglin pickups', piglin_pickups()),
         ('experience orb stuck', experience_orb_stuck()),
         ('summoned potions', summoned_potions()),
-        ('thrown potion contents', thrown_potion_contents()),
         ('creeper cloud selectors', creeper_cloud_selectors()),
     ]

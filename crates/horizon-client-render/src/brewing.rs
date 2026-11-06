@@ -57,12 +57,26 @@ pub fn contents_effects(stack: &ItemStack) -> Vec<(&'static str, i32, i32)> {
 pub fn contents_instances(stack: &ItemStack) -> Vec<crate::effects::EffectInstance> {
     use horizon_client_core::nbt_value::{number, text};
     use horizon_world::nbt::Tag;
-    let mut effects: Vec<_> = stack.potion().and_then(potion).map_or(&[][..], |p| p.effects)
-        .iter().map(|(id, duration, amp)| crate::effects::EffectInstance::new(id, *duration, *amp)).collect();
-    if let Some((_, Tag::List(custom))) = stack.data().and_then(|d| d.potion_extra.iter().find(|(k, _)| k == "custom_effects")) {
+    let mut effects: Vec<_> = stack
+        .potion()
+        .and_then(potion)
+        .map_or(&[][..], |p| p.effects)
+        .iter()
+        .map(|(id, duration, amp)| crate::effects::EffectInstance::new(id, *duration, *amp))
+        .collect();
+    if let Some((_, Tag::List(custom))) = stack
+        .data()
+        .and_then(|d| d.potion_extra.iter().find(|(k, _)| k == "custom_effects"))
+    {
         for e in custom {
-            let Some(def) = text(e.get("id")).and_then(|id| effect(&id)) else { continue };
-            let mut instance = crate::effects::EffectInstance::new(def.id, number(e.get("duration")).unwrap_or(0) as i32, number(e.get("amplifier")).unwrap_or(0).clamp(0, 255) as i32);
+            let Some(def) = text(e.get("id")).and_then(|id| effect(&id)) else {
+                continue;
+            };
+            let mut instance = crate::effects::EffectInstance::new(
+                def.id,
+                number(e.get("duration")).unwrap_or(0) as i32,
+                number(e.get("amplifier")).unwrap_or(0).clamp(0, 255) as i32,
+            );
             instance.ambient = number(e.get("ambient")).unwrap_or(0) != 0;
             instance.visible = number(e.get("show_particles")) != Some(0);
             effects.push(instance);
@@ -74,12 +88,20 @@ pub fn contents_instances(stack: &ItemStack) -> Vec<crate::effects::EffectInstan
 /// visible base and custom effects, with their amplifier weights.
 pub fn contents_color(stack: &ItemStack) -> u32 {
     use horizon_client_core::nbt_value::number;
-    if let Some(color) = stack.data().and_then(|d| d.potion_extra.iter().find(|(k, _)| k == "custom_color")).and_then(|(_, v)| number(Some(v))) {
+    if let Some(color) = stack
+        .data()
+        .and_then(|d| d.potion_extra.iter().find(|(k, _)| k == "custom_color"))
+        .and_then(|(_, v)| number(Some(v)))
+    {
         return color as u32;
     }
-    0xFF00_0000 | horizon_client_core::potions::effects_color(
-        contents_instances(stack).iter().filter(|e| e.visible).map(|e| (e.id, e.amplifier)),
-    )
+    0xFF00_0000
+        | horizon_client_core::potions::effects_color(
+            contents_instances(stack)
+                .iter()
+                .filter(|e| e.visible)
+                .map(|e| (e.id, e.amplifier)),
+        )
 }
 /// `PotionContents.equals(EMPTY)`: colour and custom name also make contents
 /// nonempty, even when there is no registered potion or custom effect.

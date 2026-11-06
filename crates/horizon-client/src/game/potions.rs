@@ -1824,9 +1824,7 @@ impl Game<'_> {
                             (intensity * f64::from(duration) * f64::from(duration_scale) + 0.5)
                                 as i32
                         };
-                        if (d == -1 || d > 20)
-                            && brewing::effect(id).is_some()
-                        {
+                        if (d == -1 || d > 20) && brewing::effect(id).is_some() {
                             let mut instance = effect.clone();
                             instance.duration = d;
                             self.add_player_effect(instance);
@@ -1959,8 +1957,15 @@ impl Game<'_> {
                             duration_scale,
                             ..CloudSettings::lingering()
                         },
-                        effects: effects.iter().map(|e| (e.id, e.duration, e.amplifier)).collect(),
-                        hidden: effects.iter().filter(|e| !e.visible).map(|e| e.id).collect(),
+                        effects: effects
+                            .iter()
+                            .map(|e| (e.id, e.duration, e.amplifier))
+                            .collect(),
+                        hidden: effects
+                            .iter()
+                            .filter(|e| !e.visible)
+                            .map(|e| e.id)
+                            .collect(),
                         ambient: effects.iter().filter(|e| e.ambient).map(|e| e.id).collect(),
                         radius_per_tick: -3.0 / 600.0,
                         color,
@@ -2009,7 +2014,13 @@ impl Game<'_> {
                         if (d == -1 || d > 20)
                             && let Some(name) = mob_effect_id(id)
                         {
-                            self.mobs[i].add_effect_with(name, d, amp, effect.ambient, effect.visible);
+                            self.mobs[i].add_effect_with(
+                                name,
+                                d,
+                                amp,
+                                effect.ambient,
+                                effect.visible,
+                            );
                         }
                         continue;
                     }
@@ -2024,14 +2035,17 @@ impl Game<'_> {
                     }
                 } else if harm {
                     // HealOrHarmMobEffect.applyInstantaneousEffect: indirectMagic(potion, owner).
-                    let harm = (intensity * f64::from(6i32.wrapping_shl(amp as u32)) + 0.5) as i32 as f32;
+                    let harm =
+                        (intensity * f64::from(6i32.wrapping_shl(amp as u32)) + 0.5) as i32 as f32;
                     let source = Damage::indirect_magic(owner.who(), [at.x, at.y, at.z]);
                     if m.damage_by(harm, source, "minecraft:splash_potion") && owner.player {
                         let id = m.id;
                         self.last_hurt_by_player.insert(id, owner.guest);
                     }
                 } else {
-                    m.heal((intensity * f64::from(4i32.wrapping_shl(amp as u32)) + 0.5) as i32 as f32);
+                    m.heal(
+                        (intensity * f64::from(4i32.wrapping_shl(amp as u32)) + 0.5) as i32 as f32,
+                    );
                 }
             }
         }
@@ -2378,3 +2392,7 @@ mod tests {
         assert_eq!(ground_cloud[0].radius, 1.0);
     }
 }
+
+#[cfg(test)]
+#[path = "potion_contents_fixture.rs"]
+mod contents_fixture;
