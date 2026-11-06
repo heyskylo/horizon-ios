@@ -384,6 +384,7 @@ impl Game<'_> {
         let Some(prompt) = &self.command_prompt else {
             return;
         };
+        horizon_client::widgets::cover_frame();
         horizon_client::widgets::begin_screen(|| {
             super::screen_info::confirm(
                 "multiplayer/confirm_command",
@@ -412,7 +413,7 @@ impl Game<'_> {
                 &[],
             ),
         ];
-        let layout = self.command_prompt_layout(prompt, (w, h));
+        let mut layout = self.command_prompt_layout(prompt, (w, h));
         layout.declare_no(1);
         layout.draw(batch, atlas, self.cursor, &labels);
     }

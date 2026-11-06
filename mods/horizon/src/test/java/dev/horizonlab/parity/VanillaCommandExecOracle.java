@@ -92,6 +92,17 @@ public final class VanillaCommandExecOracle {
         @Override public void save() {}
     }
 
+    static JsonObject raidActor(net.minecraft.world.entity.LivingEntity entity, ServerLevel level) {
+        JsonObject raw=new JsonObject();UUID u=entity.getUUID();
+        JsonArray words=new JsonArray();for (int w:new int[]{(int)(u.getMostSignificantBits()>>32),(int)u.getMostSignificantBits(),(int)(u.getLeastSignificantBits()>>32),(int)u.getLeastSignificantBits()}) words.add(w);raw.add("uuid",words);
+        raw.addProperty("type",net.minecraft.core.registries.BuiltInRegistries.ENTITY_TYPE.getKey(entity.getType()).toString());raw.addProperty("health",entity.getHealth());
+        JsonArray pos=new JsonArray();pos.add(entity.getX());pos.add(entity.getY());pos.add(entity.getZ());raw.add("pos",pos);
+        raw.addProperty("noai",entity instanceof net.minecraft.world.entity.Mob mob && mob.isNoAi());
+        raw.addProperty("raid_id",entity instanceof net.minecraft.world.entity.raid.Raider r && r.getCurrentRaid()!=null ? level.getRaids().getId(r.getCurrentRaid()).orElse(-1):-1);
+        JsonArray home=new JsonArray();if (entity instanceof net.minecraft.world.entity.npc.villager.Villager v) v.getBrain().getMemory(net.minecraft.world.entity.ai.memory.MemoryModuleType.HOME).ifPresent(p->{home.add(p.pos().getX());home.add(p.pos().getY());home.add(p.pos().getZ());});raw.add("home",home);
+        var output=net.minecraft.world.level.storage.TagValueOutput.createWithContext(net.minecraft.util.ProblemReporter.DISCARDING,level.registryAccess());entity.saveWithoutId(output);raw.addProperty("nbt",output.buildResult().toString());return raw;
+    }
+
     static final class Server extends MinecraftServer {
         final Path script;
         final Path output;
@@ -158,6 +169,359 @@ public final class VanillaCommandExecOracle {
         }
 
         ServerPlayer player;
+
+        // The fallback table has no random_sequence. Use the actual rod item,
+        // so the level-random pitch draw happens at vanilla's real call site.
+        void writeFishingFallbackReference() throws Exception {
+            if (!Boolean.getBoolean("horizon.fishingFallback")) return;
+            var level = this.overworld();
+            var nibble = net.minecraft.world.entity.projectile.FishingHook.class.getDeclaredField("nibble");
+            nibble.setAccessible(true);
+            JsonArray rows = new JsonArray();
+            for (long seed : new long[] {0, 1, 42, 123456789, -1}) {
+                player.setItemInHand(net.minecraft.world.InteractionHand.MAIN_HAND,
+                    new net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.FISHING_ROD));
+                var hook = new net.minecraft.world.entity.projectile.FishingHook(player, level, 0, 0);
+                hook.getRandom().setSeed(seed);
+                nibble.setInt(hook, 10);
+                var area = player.getBoundingBox().inflate(12.0);
+                var before = new java.util.HashSet<java.util.UUID>();
+                for (var entity : level.getEntities((net.minecraft.world.entity.Entity)null, area)) before.add(entity.getUUID());
+                level.getRandom().setSeed(seed);
+                net.minecraft.world.item.Items.FISHING_ROD.use(level, player, net.minecraft.world.InteractionHand.MAIN_HAND);
+                JsonArray items = new JsonArray();
+                JsonArray xp = new JsonArray();
+                for (var entity : level.getEntities((net.minecraft.world.entity.Entity)null, area)) {
+                    if (before.contains(entity.getUUID())) continue;
+                    if (entity instanceof net.minecraft.world.entity.item.ItemEntity item) {
+                        items.add(net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(item.getItem().getItem()).toString());
+                        item.discard();
+                    } else if (entity instanceof net.minecraft.world.entity.ExperienceOrb orb) {
+                        xp.add(orb.getValue());
+                        orb.discard();
+                    }
+                }
+                JsonObject row = new JsonObject();
+                row.addProperty("seed", seed);
+                row.addProperty("level_next", level.getRandom().nextLong());
+                row.add("items", items);
+                row.add("xp", xp);
+                rows.add(row);
+            }
+            Files.writeString(output.resolveSibling("fishing-fallback-reference.json"), rows.toString());
+        }
+
+        void writeHappyGhastLeashReference() throws Exception {
+            if (!Boolean.getBoolean("horizon.happyGhastLeashReference")) return;
+            var level = this.overworld();
+            var fencePos = new net.minecraft.core.BlockPos(0, 64, 0);
+            var oldBlock = level.getBlockState(fencePos);
+            level.setBlockAndUpdate(fencePos, net.minecraft.world.level.block.Blocks.OAK_FENCE.defaultBlockState());
+            JsonArray rows = new JsonArray();
+            for (String kind : new String[] {"adult", "baby", "cow"}) {
+                for (int probe = 0; probe < 12; probe++) {
+                    double slack = kind.equals("cow") ? 6.0 : 10.0;
+                    double snap = kind.equals("cow") ? 12.0 : 16.0;
+                    double distance = probe < 6 ? new int[] {2, 4, 8, 11, 13, 17}[probe]
+                        : (probe < 9 ? slack : snap) + ((probe - 6) % 3 - 1) * 1.0e-6;
+                    String phase = probe < 6 ? "dispatch" : probe < 9 ? "elastic" : "snap";
+                    net.minecraft.world.entity.PathfinderMob mob;
+                    if (kind.equals("cow")) {
+                        mob = new net.minecraft.world.entity.animal.cow.Cow(net.minecraft.world.entity.EntityTypes.COW, level);
+                    } else {
+                        var ghast = new net.minecraft.world.entity.animal.happyghast.HappyGhast(net.minecraft.world.entity.EntityTypes.HAPPY_GHAST, level);
+                        ghast.setAge(kind.equals("baby") ? -24000 : 0);
+                        mob = ghast;
+                    }
+                    var knot = new net.minecraft.world.entity.decoration.LeashFenceKnotEntity(level, fencePos);
+                    if (phase.equals("elastic")) {
+                        mob.setPos(knot.getX() + distance, knot.getY() + knot.getBbHeight() / 2.0 - mob.getBbHeight() / 2.0,
+                            knot.getZ() - mob.getBbWidth() / 2.0);
+                    } else if (phase.equals("snap")) {
+                        var center = knot.getBoundingBox().getCenter();
+                        mob.setPos(center.x + distance, center.y - mob.getBbHeight() / 2.0, center.z);
+                    } else mob.setPos(0.5 + distance, 64, 0.5);
+                    mob.setYRot(0);
+                    mob.setOnGround(false);
+                    mob.setDeltaMovement(net.minecraft.world.phys.Vec3.ZERO);
+                    var marker = new net.minecraft.core.BlockPos(8, 64, 8);
+                    var path = new net.minecraft.world.level.pathfinder.Path(
+                        List.of(new net.minecraft.world.level.pathfinder.Node(8, 64, 8)), marker, true);
+                    if (!mob.getNavigation().moveTo(path, 0.75)) throw new IllegalStateException("marker path rejected");
+                    mob.getMoveControl().setWantedPosition(20, 70, 20, 1.0);
+                    mob.setLeashedTo(knot, false);
+                    net.minecraft.world.entity.Leashable.tickLeash(level, mob);
+                    JsonObject row = new JsonObject();
+                    row.addProperty("kind", kind);
+                    row.addProperty("distance", distance);
+                    row.addProperty("phase", phase);
+                    JsonArray position = new JsonArray();
+                    position.add(mob.getX()); position.add(mob.getY()); position.add(mob.getZ());
+                    row.add("position", position);
+                    row.addProperty("snapped", !mob.isLeashed());
+                    row.addProperty("wanted", mob.getMoveControl().hasWanted());
+                    var currentPath = mob.getNavigation().getPath();
+                    if (currentPath == null) row.add("path", com.google.gson.JsonNull.INSTANCE);
+                    else {
+                        JsonArray target = new JsonArray();
+                        target.add(currentPath.getTarget().getX());
+                        target.add(currentPath.getTarget().getY());
+                        target.add(currentPath.getTarget().getZ());
+                        row.add("path", target);
+                    }
+                    JsonArray velocity = new JsonArray();
+                    var v = mob.getDeltaMovement();
+                    velocity.add(v.x); velocity.add(v.y); velocity.add(v.z);
+                    row.add("velocity", velocity);
+                    rows.add(row);
+                    mob.removeLeash();
+                    mob.discard();
+                    knot.discard();
+                }
+            }
+            level.setBlockAndUpdate(fencePos, oldBlock);
+            Files.writeString(output.resolveSibling("happy-ghast-leash-reference.json"), rows.toString());
+        }
+
+        void writeMountControlReference() throws Exception {
+            if (!Boolean.getBoolean("horizon.mountControlReference")) return;
+            var level = this.overworld();
+            var oldMain = player.getMainHandItem();
+            var oldOff = player.getOffhandItem();
+            var oldPosition = player.position();
+            JsonArray rows = new JsonArray();
+            for (String kind : new String[] {"pig", "strider"}) {
+                for (boolean saddled : new boolean[] {false, true}) {
+                    for (boolean first : new boolean[] {false, true}) {
+                        for (String hand : new String[] {"none", "wrong", "main", "off"}) {
+                            net.minecraft.world.entity.Mob mount = kind.equals("pig")
+                                ? new net.minecraft.world.entity.animal.pig.Pig(net.minecraft.world.entity.EntityTypes.PIG, level)
+                                : new net.minecraft.world.entity.monster.Strider(net.minecraft.world.entity.EntityTypes.STRIDER, level);
+                            mount.setPos(oldPosition);
+                            mount.setItemSlot(net.minecraft.world.entity.EquipmentSlot.SADDLE,
+                                saddled ? new net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.SADDLE)
+                                    : net.minecraft.world.item.ItemStack.EMPTY);
+                            var stick = kind.equals("pig") ? net.minecraft.world.item.Items.CARROT_ON_A_STICK
+                                : net.minecraft.world.item.Items.WARPED_FUNGUS_ON_A_STICK;
+                            var wrong = kind.equals("pig") ? net.minecraft.world.item.Items.WARPED_FUNGUS_ON_A_STICK
+                                : net.minecraft.world.item.Items.CARROT_ON_A_STICK;
+                            player.setItemInHand(net.minecraft.world.InteractionHand.MAIN_HAND,
+                                hand.equals("main") ? new net.minecraft.world.item.ItemStack(stick)
+                                    : hand.equals("wrong") ? new net.minecraft.world.item.ItemStack(wrong)
+                                    : net.minecraft.world.item.ItemStack.EMPTY);
+                            player.setItemInHand(net.minecraft.world.InteractionHand.OFF_HAND,
+                                hand.equals("off") ? new net.minecraft.world.item.ItemStack(stick)
+                                    : net.minecraft.world.item.ItemStack.EMPTY);
+                            var other = new net.minecraft.world.entity.player.Player(level,
+                                new GameProfile(new UUID(0, 2), "OtherRider")) {
+                                public net.minecraft.world.level.GameType gameMode() {
+                                    return net.minecraft.world.level.GameType.SURVIVAL;
+                                }
+                            };
+                            if (!first && !other.startRiding(mount, true, true)) throw new IllegalStateException("first passenger rejected");
+                            if (!player.startRiding(mount, true, true)) throw new IllegalStateException("player passenger rejected");
+                            if ((mount.getFirstPassenger() == player) != first) throw new IllegalStateException("passenger order differs");
+                            var input = mount.getClass().getDeclaredMethod("getRiddenInput", net.minecraft.world.entity.player.Player.class,
+                                net.minecraft.world.phys.Vec3.class);
+                            input.setAccessible(true);
+                            var direction = (net.minecraft.world.phys.Vec3)input.invoke(mount, player, net.minecraft.world.phys.Vec3.ZERO);
+                            JsonObject row = new JsonObject();
+                            row.addProperty("kind", kind);
+                            row.addProperty("saddled", saddled);
+                            row.addProperty("first", first);
+                            row.addProperty("hand", hand);
+                            row.addProperty("controlled", mount.getControllingPassenger() == player);
+                            row.addProperty("server_simulates", mount.canSimulateMovement());
+                            row.addProperty("forward", direction.z);
+                            rows.add(row);
+                            player.stopRiding();
+                            other.stopRiding();
+                            other.discard();
+                            mount.discard();
+                        }
+                    }
+                }
+            }
+            player.setItemInHand(net.minecraft.world.InteractionHand.MAIN_HAND, oldMain);
+            player.setItemInHand(net.minecraft.world.InteractionHand.OFF_HAND, oldOff);
+            player.setPos(oldPosition);
+            Files.writeString(output.resolveSibling("mount-control-reference.json"), rows.toString());
+        }
+
+        // Direct reference for FishingHook.retrieve on a real server player and level.
+        void writeFishingReference() throws Exception {
+            if (!Boolean.getBoolean("horizon.fishingReference")) return;
+            var level = this.overworld();
+            var sequence = net.minecraft.resources.Identifier.parse("minecraft:gameplay/fishing");
+            var nibble = net.minecraft.world.entity.projectile.FishingHook.class.getDeclaredField("nibble");
+            nibble.setAccessible(true);
+            JsonArray rows = new JsonArray();
+            for (long seed : new long[] {0, 1, 42, 123456789, -1}) {
+                this.getRandomSequences().reset(sequence, seed);
+                player.setItemInHand(net.minecraft.world.InteractionHand.MAIN_HAND,
+                    new net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.FISHING_ROD));
+                var hook = new net.minecraft.world.entity.projectile.FishingHook(player, level, 0, 0);
+                hook.getRandom().setSeed(seed);
+                nibble.setInt(hook, 10);
+                var area = player.getBoundingBox().inflate(12.0);
+                var before = new java.util.HashSet<java.util.UUID>();
+                for (var entity : level.getEntities((net.minecraft.world.entity.Entity)null, area)) before.add(entity.getUUID());
+                int damage = hook.retrieve(player.getMainHandItem());
+                JsonArray drops = new JsonArray();
+                for (var entity : level.getEntities((net.minecraft.world.entity.Entity)null, area)) {
+                    if (before.contains(entity.getUUID())) continue;
+                    if (entity instanceof net.minecraft.world.entity.item.ItemEntity item) {
+                        JsonObject drop = new JsonObject();
+                        drop.addProperty("item", net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(item.getItem().getItem()).toString());
+                        drop.addProperty("count", item.getItem().getCount());
+                        drops.add(drop);
+                        item.discard();
+                    } else if (entity instanceof net.minecraft.world.entity.ExperienceOrb orb) {
+                        JsonObject drop = new JsonObject();
+                        drop.addProperty("xp", orb.getValue());
+                        drops.add(drop);
+                        orb.discard();
+                    }
+                }
+                JsonObject row = new JsonObject();
+                row.addProperty("hook_seed", seed);
+                row.addProperty("sequence_seed", seed);
+                row.addProperty("damage", damage);
+                row.addProperty("hook_next", hook.getRandom().nextLong());
+                row.addProperty("sequence_next", this.getRandomSequence(sequence).nextLong());
+                row.add("drops", drops);
+                rows.add(row);
+            }
+            Files.writeString(output.resolveSibling("fishing-reference.json"), rows.toString());
+
+            // Invoke the actual private catchingFish on the real level, above
+            // build height in clear weather: splash checks see air and sky.
+            this.setWeatherParameters(100000, 0, false, false);
+            var hookClass = net.minecraft.world.entity.projectile.FishingHook.class;
+            var lured = hookClass.getDeclaredField("timeUntilLured");
+            var hooked = hookClass.getDeclaredField("timeUntilHooked");
+            var angle = hookClass.getDeclaredField("fishAngle");
+            for (var f : new java.lang.reflect.Field[] {lured, hooked, angle}) f.setAccessible(true);
+            var catching = hookClass.getDeclaredMethod("catchingFish", net.minecraft.core.BlockPos.class);
+            catching.setAccessible(true);
+            JsonArray ticks = new JsonArray();
+            for (long seed : new long[] {0, 1, 42, 123456789, -1}) {
+                for (int phase = 0; phase < 5; phase++) {
+                    var hook = new net.minecraft.world.entity.projectile.FishingHook(player, level, 0, 0);
+                    hook.setPos(0.5, 400, 0.5);
+                    hook.getRandom().setSeed(seed);
+                    nibble.setInt(hook, phase == 4 ? 2 : 0);
+                    lured.setInt(hook, phase == 1 ? 2 : 0);
+                    hooked.setInt(hook, phase == 2 ? 3 : phase == 3 ? 1 : 0);
+                    angle.setFloat(hook, 12.5F);
+                    catching.invoke(hook, new net.minecraft.core.BlockPos(0, 400, 0));
+                    JsonObject row = new JsonObject();
+                    row.addProperty("seed", seed);
+                    row.addProperty("phase", phase);
+                    row.addProperty("nibble", nibble.getInt(hook));
+                    row.addProperty("lured", lured.getInt(hook));
+                    row.addProperty("hooked", hooked.getInt(hook));
+                    row.addProperty("angle_bits", Float.floatToRawIntBits(angle.getFloat(hook)));
+                    row.addProperty("next", hook.getRandom().nextLong());
+                    ticks.add(row);
+                    hook.discard();
+                }
+            }
+            Files.writeString(output.resolveSibling("fishing-ticks-reference.json"), ticks.toString());
+
+            // Undo only the constructor's twelve triangle-related LCG steps.
+            // Entity's earlier UUID draws remain reflected in the recovered seed.
+            var seedField = net.minecraft.world.level.levelgen.LegacyRandomSource.class.getDeclaredField("seed");
+            seedField.setAccessible(true);
+            long multiplier = 0x5deece66dL;
+            long mask = (1L << 48) - 1;
+            long inverse = java.math.BigInteger.valueOf(multiplier)
+                .modInverse(java.math.BigInteger.ONE.shiftLeft(48)).longValue();
+            JsonArray casts = new JsonArray();
+            float originalYaw = player.getYRot(), originalPitch = player.getXRot();
+            for (float[] orientation : new float[][] {{0, 0}, {45, 30}, {-135, -60}, {180, 89}, {12, -89}}) {
+                player.setYRot(orientation[0]);
+                player.setXRot(orientation[1]);
+                var hook = new net.minecraft.world.entity.projectile.FishingHook(player, level, 0, 0);
+                long state = ((java.util.concurrent.atomic.AtomicLong) seedField.get(hook.getRandom())).get();
+                for (int i = 0; i < 12; i++) state = ((state - 11) * inverse) & mask;
+                var velocity = hook.getDeltaMovement();
+                JsonObject row = new JsonObject();
+                row.addProperty("yaw", orientation[0]);
+                row.addProperty("pitch", orientation[1]);
+                row.addProperty("seed", state ^ multiplier);
+                row.addProperty("x_bits", Double.doubleToRawLongBits(velocity.x));
+                row.addProperty("y_bits", Double.doubleToRawLongBits(velocity.y));
+                row.addProperty("z_bits", Double.doubleToRawLongBits(velocity.z));
+                row.addProperty("next", hook.getRandom().nextLong());
+                casts.add(row);
+                hook.discard();
+            }
+            player.setYRot(originalYaw);
+            player.setXRot(originalPitch);
+            Files.writeString(output.resolveSibling("fishing-casts-reference.json"), casts.toString());
+
+            // Actual tick in a single still-water block, before a bite.
+            var waterPos = new net.minecraft.core.BlockPos(0, 300, 0);
+            var oldBlock = level.getBlockState(waterPos);
+            var oldPos = player.position();
+            level.setBlockAndUpdate(waterPos, net.minecraft.world.level.block.Blocks.WATER.defaultBlockState());
+            player.snapTo(0.5, 300.0, -1.5, 0, 0);
+            var stateField = hookClass.getDeclaredField("currentState");
+            stateField.setAccessible(true);
+            Object bobbing = java.util.Arrays.stream(stateField.getType().getEnumConstants())
+                .filter(v -> v.toString().equals("BOBBING")).findFirst().orElseThrow();
+            JsonArray bobs = new JsonArray();
+            for (long seed : new long[] {0, 1, 42, 123456789, -1}) {
+                player.setItemInHand(net.minecraft.world.InteractionHand.MAIN_HAND,
+                    new net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.FISHING_ROD));
+                var hook = new net.minecraft.world.entity.projectile.FishingHook(player, level, 0, 0);
+                hook.setPos(0.5, 300.5, 0.5);
+                hook.setDeltaMovement(0.1, 0.03, -0.2);
+                hook.getRandom().setSeed(seed);
+                stateField.set(hook, bobbing);
+                nibble.setInt(hook, 0);
+                hook.tick();
+                var v = hook.getDeltaMovement();
+                JsonObject row = new JsonObject();
+                row.addProperty("seed", seed);
+                row.addProperty("vx", Double.doubleToRawLongBits(v.x));
+                row.addProperty("vy", Double.doubleToRawLongBits(v.y));
+                row.addProperty("vz", Double.doubleToRawLongBits(v.z));
+                row.addProperty("nibble", nibble.getInt(hook));
+                row.addProperty("next", hook.getRandom().nextLong());
+                bobs.add(row);
+                hook.discard();
+            }
+            // Dry block hits run on both sides: compare the client's movement
+            // prediction with the real hook before and after touching the floor.
+            level.setBlockAndUpdate(waterPos, net.minecraft.world.level.block.Blocks.STONE.defaultBlockState());
+            double[][] motions = {{0.2, -0.4, 0.1}, {-0.2, -0.4, 0.1}, {0.0, -0.6, -0.2}};
+            for (int c = 0; c < motions.length; c++) {
+                var hook = new net.minecraft.world.entity.projectile.FishingHook(player, level, 0, 0);
+                hook.setPos(0.5, 301.1, 0.5);
+                hook.setDeltaMovement(motions[c][0], motions[c][1], motions[c][2]);
+                for (int tick = 0; tick < 5; tick++) {
+                    hook.tick();
+                    var at = hook.position();
+                    var motion = hook.getDeltaMovement();
+                    JsonObject row = new JsonObject();
+                    row.addProperty("case", c);
+                    row.addProperty("tick", tick);
+                    JsonArray position = new JsonArray();
+                    position.add(at.x); position.add(at.y); position.add(at.z);
+                    JsonArray movement = new JsonArray();
+                    movement.add(motion.x); movement.add(motion.y); movement.add(motion.z);
+                    row.add("position", position);
+                    row.add("motion", movement);
+                    bobs.add(row);
+                }
+                hook.discard();
+            }
+            player.snapTo(oldPos.x, oldPos.y, oldPos.z, originalYaw, originalPitch);
+            level.setBlockAndUpdate(waterPos, oldBlock);
+            Files.writeString(output.resolveSibling("fishing-bobbing-reference.json"), bobs.toString());
+        }
 
         // Execute the actual private arithmetic method on unregistered orbs in
         // this real server level. No world tick or live scene actor is added.
@@ -228,6 +592,10 @@ public final class VanillaCommandExecOracle {
                 Files.writeString(output.resolveSibling("client_config.json"), login.toString());
             }
             writeOrbWaterReference();
+            try { writeHappyGhastLeashReference(); } catch (Exception e) { throw new IOException(e); }
+            try { writeMountControlReference(); } catch (Exception e) { throw new IOException(e); }
+            try { writeFishingReference(); } catch (Exception e) { throw new IOException(e); }
+            try { writeFishingFallbackReference(); } catch (Exception e) { throw new IOException(e); }
             StringBuilder out = new StringBuilder();
             Gson gson = new Gson();
             for (String line : Files.readAllLines(script, StandardCharsets.UTF_8)) {
@@ -247,7 +615,7 @@ public final class VanillaCommandExecOracle {
                             results.add(r);
                         });
                         this.getCommands().performPrefixedCommand(source, command);
-                        if (!op.has("record") || op.get("record").getAsBoolean()) {
+                        if (!op.has("record") || op.get("record").getAsBoolean() || (op.has("trace") && op.get("trace").getAsBoolean())) {
                             JsonObject record = new JsonObject();
                             record.addProperty("cmd", command);
                             JsonArray m = new JsonArray();
@@ -256,8 +624,39 @@ public final class VanillaCommandExecOracle {
                             JsonArray r = new JsonArray();
                             results.forEach(r::add);
                             record.add("results", r);
-                            out.append(gson.toJson(record)).append('\n');
+                            if (op.has("trace") && op.get("trace").getAsBoolean()) System.err.println("command trace: " + gson.toJson(record));
+                            if (!op.has("record") || op.get("record").getAsBoolean()) out.append(gson.toJson(record)).append('\n');
                         }
+                    }
+                    case "raid_state" -> {
+                        var raidLevel=player.level(); int id=op.get("id").getAsInt();
+                        var raid=raidLevel.getRaids().get(id);
+                        JsonObject state=new JsonObject(); state.addProperty("id",id); state.addProperty("present",raid!=null);
+                        if (raid!=null) {
+                            var tag=(net.minecraft.nbt.CompoundTag)net.minecraft.world.entity.raid.Raid.MAP_CODEC.codec()
+                                .encodeStart(net.minecraft.nbt.NbtOps.INSTANCE,raid).getOrThrow();
+                            state.addProperty("status",tag.getStringOr("status","missing"));
+                            state.addProperty("started",raid.isStarted());state.addProperty("active",raid.isActive());
+                            state.addProperty("groups_spawned",raid.getGroupsSpawned());
+                            state.add("center",gson.toJsonTree(new int[]{raid.getCenter().getX(),raid.getCenter().getY(),raid.getCenter().getZ()}));
+                            state.addProperty("village",raidLevel.isVillage(raid.getCenter()));
+                            if (op.get("members").getAsBoolean()) state.addProperty("member_present",raid.getAllRaiders().stream().anyMatch(e->e.isAlive() && e.getCurrentRaid()==raid));
+                        }
+                        JsonObject raw=new JsonObject();raw.addProperty("label",op.get("label").getAsString());raw.addProperty("id",id);
+                        var pp=op.getAsJsonArray("poi");var pos=new BlockPos(pp.get(0).getAsInt(),pp.get(1).getAsInt(),pp.get(2).getAsInt());
+                        raw.addProperty("loaded",raidLevel.hasChunkAt(pos));
+                        raw.addProperty("occupied",raidLevel.getPoiManager().getCountInRange(h->h.is(net.minecraft.tags.PoiTypeTags.VILLAGE),pos,0,net.minecraft.world.entity.ai.village.poi.PoiManager.Occupancy.IS_OCCUPIED));
+                        raw.addProperty("poi_type",raidLevel.getPoiManager().getType(pos).map(h->h.unwrapKey().orElseThrow().identifier().toString()).orElse("none"));
+                        raw.addProperty("raid_nbt",net.minecraft.world.entity.raid.Raids.CODEC.encodeStart(net.minecraft.nbt.NbtOps.INSTANCE,raidLevel.getRaids()).getOrThrow().toString());
+                        JsonArray members=new JsonArray();if (raid!=null) for (var entity:raid.getAllRaiders()) members.add(raidActor(entity,raidLevel));raw.add("actors",members);
+                        JsonArray villagers=new JsonArray();for (var uuid:op.getAsJsonArray("villagers")) {
+                            var entity=raidLevel.getEntity(UUID.fromString(uuid.getAsString()));
+                            if (!(entity instanceof net.minecraft.world.entity.npc.villager.Villager)) throw new IllegalStateException("raid fixture villager absent/wrong type");
+                            villagers.add(raidActor((net.minecraft.world.entity.LivingEntity)entity,raidLevel));
+                        }raw.add("villagers",villagers);
+                        System.err.println("raid input raw: "+gson.toJson(raw));
+                        JsonObject row=new JsonObject();row.addProperty("cmd","#raid_state "+op.get("label").getAsString()+" "+id);
+                        row.add("messages",new JsonArray());row.add("results",new JsonArray());row.add("state",state);out.append(gson.toJson(row)).append('\n');
                     }
                     case "mob_anger" -> {
                         try {
@@ -451,6 +850,62 @@ public final class VanillaCommandExecOracle {
                                 0, 0, (byte) 4, true, false, level.dimension()));
                         level.getServer().getDataStorage().saveAndJoin();
                     }
+                    case "frame_map_state" -> {
+                        int id = op.get("id").getAsInt();
+                        var entity = level.getEntity(UUID.fromString(op.get("uuid").getAsString()));
+                        if (!(entity instanceof net.minecraft.world.entity.decoration.ItemFrame frame)
+                            || !net.minecraft.core.registries.BuiltInRegistries.ENTITY_TYPE.getKey(frame.getType())
+                                .toString().equals(op.get("kind").getAsString()))
+                            throw new IllegalStateException("frame map: missing/wrong live frame");
+                        var map = net.minecraft.world.item.MapItem.getSavedData(
+                            new net.minecraft.world.level.saveddata.maps.MapId(id), frame.level());
+                        if (map == null) throw new IllegalStateException("frame map: no backed map");
+                        var saved = (net.minecraft.nbt.CompoundTag)
+                            net.minecraft.world.level.saveddata.maps.MapItemSavedData.CODEC
+                                .encodeStart(net.minecraft.nbt.NbtOps.INSTANCE, map).getOrThrow();
+                        var frames = saved.getList("frames").orElseGet(net.minecraft.nbt.ListTag::new);
+                        net.minecraft.nbt.CompoundTag found = null;
+                        for (var entry : frames) {
+                            if (!(entry instanceof net.minecraft.nbt.CompoundTag tag))
+                                throw new IllegalStateException("frame map: invalid saved frame");
+                            if (tag.getInt("entity_id").orElseThrow() == frame.getId()) found = tag;
+                        }
+                        try {
+                            var field = map.getClass().getDeclaredField("decorations");
+                            field.setAccessible(true);
+                            @SuppressWarnings("unchecked")
+                            var decorations = (java.util.Map<String, net.minecraft.world.level.saveddata.maps.MapDecoration>)field.get(map);
+                            var key = map.getClass().getDeclaredMethod("getFrameKey", int.class);
+                            key.setAccessible(true);
+                            var state = new JsonObject();
+                            state.addProperty("id", id);
+                            state.add("uuid", gson.toJsonTree(UUIDUtil.uuidToIntArray(frame.getUUID())));
+                            state.addProperty("kind", op.get("kind").getAsString());
+                            var p = frame.getPos();
+                            state.add("pos", gson.toJsonTree(new int[]{p.getX(), p.getY(), p.getZ()}));
+                            state.add("center", gson.toJsonTree(new int[]{map.centerX, map.centerZ}));
+                            state.addProperty("scale", map.scale);
+                            state.addProperty("dimension", map.dimension.identifier().toString());
+                            state.addProperty("saved", found != null);
+                            state.add("saved_pos", found == null ? com.google.gson.JsonNull.INSTANCE
+                                : gson.toJsonTree(found.getIntArray("pos").orElseThrow()));
+                            state.add("saved_rotation", found == null ? com.google.gson.JsonNull.INSTANCE
+                                : gson.toJsonTree(found.getInt("rotation").orElseThrow()));
+                            state.addProperty("decoration", decorations.containsKey((String)key.invoke(null, frame.getId())));
+                            state.addProperty("frame_records", frames.size());
+                            state.addProperty("frame_decorations", decorations.values().stream()
+                                .filter(d -> d.type().equals(net.minecraft.world.level.saveddata.maps.MapDecorationTypes.FRAME)).count());
+                            var record = new JsonObject();
+                            record.addProperty("cmd", "#frame_map " + op.get("label").getAsString());
+                            record.add("messages", new JsonArray());
+                            record.add("results", new JsonArray());
+                            record.add("state", state);
+                            out.append(new com.google.gson.GsonBuilder().serializeNulls().create()
+                                .toJson(record)).append('\n');
+                        } catch (ReflectiveOperationException e) {
+                            throw new IllegalStateException(e);
+                        }
+                    }
                     case "map_state" -> {
                         int id = op.get("id").getAsInt();
                         var map = net.minecraft.world.item.MapItem.getSavedData(
@@ -480,6 +935,14 @@ public final class VanillaCommandExecOracle {
                             results.add(value);
                         }
                         record.add("results", results);
+                        out.append(gson.toJson(record)).append('\n');
+                    }
+                    case "close_menu" -> player.closeContainer();
+                    case "menu_state" -> {
+                        int slots = player.containerMenu == player.inventoryMenu ? 0 : player.containerMenu.slots.size() - 36;
+                        JsonObject state = new JsonObject();state.addProperty("own_slots", slots);
+                        JsonObject record = new JsonObject();record.addProperty("cmd", "#menu_state " + op.get("label").getAsString());
+                        record.add("messages", new JsonArray());record.add("results", new JsonArray());record.add("state", state);
                         out.append(gson.toJson(record)).append('\n');
                     }
                     case "use_block" -> {

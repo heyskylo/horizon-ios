@@ -579,8 +579,12 @@ fn java_fp_string(d: f64, sci: String) -> String {
             format!("{sign}0.{zeros}{digits}")
         }
     } else {
+        if digits.len() == 1 {
+            // Select the nearest two-digit decimal, rather than padding the
+            // one-digit round-trip form; Java can choose a different exponent.
+            return format!("{d:.1e}").replace('e', "E");
+        }
         let (first, rest) = digits.split_at(1);
-        let rest = if rest.is_empty() { "0" } else { rest };
         format!("{sign}{first}.{rest}E{exp}")
     }
 }
@@ -633,6 +637,13 @@ mod tests {
     }
     #[test]
     fn java_floating_point_strings() {
+        assert_eq!(java_float_string(f32::from_bits(1)), "1.4E-45");
+        assert_eq!(java_float_string(f32::from_bits(0x8000_0007)), "-9.8E-45");
+        assert_eq!(java_double_string(f64::from_bits(1)), "4.9E-324");
+        assert_eq!(
+            java_double_string(f64::from_bits(0x8000_0000_0000_0002)),
+            "-9.9E-324"
+        );
         assert_eq!(java_double_string(1.0), "1.0");
         assert_eq!(java_double_string(0.001), "0.001");
         assert_eq!(java_double_string(1e7), "1.0E7");

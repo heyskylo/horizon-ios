@@ -17,6 +17,7 @@ use horizon_core::{
     geometry::{Aabb, Axis, Vec3, trig},
     random::{LegacyRandom, RandomSource},
 };
+use horizon_protocol::entity_data::PositionSource;
 use horizon_world::block_collision::BlockCollisionRegistry;
 use std::{
     array,
@@ -50,9 +51,10 @@ pub struct ParticleOptions {
     /// `GeyserParticleOptions.waterBlocks` and `GeyserBaseParticleOptions`'
     /// `waterBlocks` and `burstImpulseBase` (0 where the type has none).
     pub geyser: Option<(i32, f32)>,
-    /// `VibrationParticleOption`: the listener the signal flies to and its
-    /// arrival time in ticks (`ParticleEngine::vibration` is the same particle).
-    pub vibration: Option<([f64; 3], i32)>,
+    /// `VibrationParticleOption`: the listener's `PositionSource`, the point
+    /// the signal flies to and its arrival time in ticks
+    /// (`ParticleEngine::vibration` is the same particle).
+    pub vibration: Option<(PositionSource, [f64; 3], i32)>,
     /// A native mod's own particle type, by its namespaced name (`mymod:spark`):
     /// `SimpleParticleType` plus the provider `particles/<name>.json` names.
     pub mod_particle: Option<String>,
@@ -94,10 +96,11 @@ impl ParticleOptions {
             ..Self::simple(ty)
         }
     }
-    /// `VibrationParticleOption(destination, arrivalInTicks)`.
-    pub fn vibration(dest: [f64; 3], ticks: i32) -> Self {
+    /// `VibrationParticleOption(destination, arrivalInTicks)`: the listener's
+    /// position source and the point this engine flies the signal to.
+    pub fn vibration(source: PositionSource, dest: [f64; 3], ticks: i32) -> Self {
         Self {
-            vibration: Some((dest, ticks)),
+            vibration: Some((source, dest, ticks)),
             ..Self::simple(ParticleType::Vibration)
         }
     }
@@ -2988,8 +2991,8 @@ impl ParticleEngine {
             // the listener the signal flies to and its arrival time; the sprite
             // is the set's own draw from the engine's random.
             T::Vibration => {
-                let (dest, ticks) = o.vibration?;
-                let mut q = Self::vibration_particle(p, dest, ticks);
+                let (_, dest, ticks) = o.vibration.as_ref()?;
+                let mut q = Self::vibration_particle(p, *dest, *ticks);
                 q.set = set;
                 q.sprite = self.sprite_from_set(ty);
                 q
@@ -5644,7 +5647,8 @@ mod tests {
     #[test]
     fn a_vibration_option_makes_the_signal_its_provider_draws() {
         let mut engine = ParticleEngine::new(Path::new(""), &HashMap::new(), &HashSet::new());
-        let options = ParticleOptions::vibration([10.5, 70.5, -3.5], 20);
+        let options =
+            ParticleOptions::vibration(PositionSource::Block([10, 70, -4]), [10.5, 70.5, -3.5], 20);
         // Within the camera's 32 blocks, so only the provider decides.
         engine.add_with(&options, [0.5, 1.5, 0.5], [0.0; 3], false, false);
         assert_eq!(engine.made().get("vibration"), Some(&1));

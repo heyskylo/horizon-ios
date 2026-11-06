@@ -52,6 +52,15 @@ pub struct EntityMemory {
     /// Only filled while a mod is loaded.
     pub(super) live: Vec<(u32, String, bool)>,
 }
+impl EntityMemory {
+    /// The UUID entity `id` was loaded or saved with: what a save writes for a
+    /// field naming that entity (`entity_nbt::mob_to_nbt`'s `uuid_of`). `None`
+    /// for one that has none yet, so no reference is written rather than a
+    /// made-up UUID nothing would answer for.
+    pub(super) fn uuid_of(&self, id: u32) -> Option<[i32; 4]> {
+        self.uuids.get(&id).copied()
+    }
+}
 
 /// The key that marks a compound queued with the chunk loads as a fresh add
 /// (`PersistentEntitySectionManager.addNewEntity`: `/summon`, a portal
@@ -855,7 +864,7 @@ impl Game<'_> {
             if let Some(r) = self.load_mob(rider, Some(id))
                 && let Some(v) = self.mobs.iter_mut().find(|m| m.id == id)
             {
-                v.extra.rider = Some(r);
+                v.extra.rider.get_or_insert(r);
             }
         }
         Some(id)
@@ -886,9 +895,20 @@ impl Game<'_> {
     /// The mobs riding entity `id` under `tag`'s `Passengers`, after the
     /// passengers it kept from loading.
     pub(super) fn put_mob_passengers(&mut self, tag: &mut Tag, id: u32) {
-        let riders: Vec<usize> = (0..self.mobs.len())
+        let mut riders: Vec<usize> = (0..self.mobs.len())
             .filter(|&j| self.mobs[j].extra.mount == Some(id) && self.mobs[j].alive())
             .collect();
+        if let Some(driver) = self
+            .mobs
+            .iter()
+            .find(|m| m.id == id)
+            .and_then(|m| m.extra.rider)
+            && let Some(pos) = riders.iter().position(|&j| self.mobs[j].id == driver)
+            && pos != 0
+        {
+            let d = riders.remove(pos);
+            riders.insert(0, d);
+        }
         let riders: Vec<Tag> = riders.into_iter().map(|j| self.mob_tree_nbt(j)).collect();
         add_passengers(tag, riders);
     }
@@ -1141,11 +1161,20 @@ impl Game<'_> {
         } else {
             None
         };
+        // A mob gets its UUID when it is first saved (`uuid_for`): the anger
+        // target still in the world gets it now, so `uuid_of` can name it.
+        if let Some(horizon_client::mobs::Who::Mob(target)) = self.mobs[i].extra.angry_at
+            && target != 0
+            && self.mobs.iter().any(|m| m.id == target)
+        {
+            self.uuid_for(target);
+        }
         let mut tag = entity_nbt::mob_to_nbt(
             &self.mobs[i],
             uuid,
             self.persist.raw.get(&id),
             Some(self.pack.assets.registry),
+            |other| self.persist.uuid_of(other),
         );
         if horizon_client::mobs::camel::is_camel(self.mobs[i].species())
             && let Tag::Compound(c) = &mut tag
@@ -1153,14 +1182,6 @@ impl Game<'_> {
             let tick =
                 horizon_client::mobs::camel::synced_pose_tick(&self.mobs[i], self.world.game_time);
             c.insert("LastPoseTick".into(), Tag::Long(tick));
-        }
-        // NeutralMob.addPersistentAngerSaveData: anger at a mob names it.
-        if let Some(horizon_client::mobs::Who::Mob(target)) = self.mobs[i].extra.angry_at
-            && target != 0
-            && let Tag::Compound(c) = &mut tag
-        {
-            let uuid = self.uuid_for(target);
-            c.insert("angry_at".into(), Tag::IntArray(uuid.to_vec()));
         }
         self.write_leash(&mut tag, i);
         self.put_mob_passengers(&mut tag, id);
@@ -1275,13 +1296,24 @@ impl Game<'_> {
             join_saved_team(&mut self.score.board, &name, tag);
         }
     }
+    /// The entity a UUID read back from a save names, while it is in the level:
+    /// the player, or a mob loaded or saved with that UUID. `None` for nothing
+    /// loaded (an entity that is not here, or one `Who` cannot carry) - never
+    /// some other entity as a stand-in.
+    pub(super) fn who_by_uuid(&self, uuid: [i32; 4]) -> Option<Who> {
+        let player = if self.player.is_some() {
+            self.level.player_uuid
+        } else {
+            None
+        };
+        entity_nbt::who_by_uuid(&self.persist.uuids, &self.mobs, player, uuid)
+    }
     /// The mob that was loaded or saved with a UUID.
     pub(super) fn mob_by_uuid(&self, uuid: [i32; 4]) -> Option<u32> {
-        self.persist
-            .uuids
-            .iter()
-            .find(|(id, u)| **u == uuid && self.mobs.iter().any(|m| m.id == **id))
-            .map(|(id, _)| *id)
+        match self.who_by_uuid(uuid) {
+            Some(Who::Mob(id)) => Some(id),
+            _ => None,
+        }
     }
     /// A mob's UUID, made up for new ones.
     pub(super) fn mob_uuid(&mut self, id: u32) -> [i32; 4] {
@@ -1799,23 +1831,9 @@ impl Game<'_> {
         i: usize,
         keys: &HashSet<ChunkKey>,
     ) -> Option<(ChunkKey, Tag)> {
-        let (id, at) = (self.tnts[i].id, self.tnts[i].position);
-        keys.contains(&chunk_of(at)).then(|| {
-            let uuid = self.uuid_for(id);
-            let t = &self.tnts[i];
-            let tag = entity_nbt::tnt_to_nbt(
-                t.position,
-                t.velocity,
-                t.on_ground,
-                t.fuse,
-                t.power,
-                t.block_state_nbt(self.pack.assets.registry),
-                t.rotation,
-                uuid,
-                self.persist.raw.get(&id),
-            );
-            (chunk_of(at), tag)
-        })
+        let at = self.tnts[i].position;
+        keys.contains(&chunk_of(at))
+            .then(|| (chunk_of(at), self.tnt_nbt(i)))
     }
     pub(super) fn save_boat(
         &mut self,
@@ -2287,5 +2305,66 @@ mod tests {
         assert!(take_fresh(&mut fresh));
         assert!(!take_fresh(&mut fresh));
         assert_eq!(fresh, Tag::Compound(Default::default()));
+    }
+
+    /// `NeutralMob.addPersistentAngerSaveData` names the mob the anger is at,
+    /// also one never saved yet (a mob gets its UUID when it is first saved).
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn anger_at_a_mob_not_saved_yet_names_it() {
+        use crate::game::{Audio, Options, Progress, Settings, load_resources};
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        let types = game.res.mob_types();
+        let golem = horizon_client::mobs::Mob::new(
+            1,
+            types.get("minecraft:iron_golem").unwrap().clone(),
+            Vec3::ZERO,
+            0.0,
+        );
+        let zombie = horizon_client::mobs::Mob::new(
+            2,
+            types.get("minecraft:zombie").unwrap().clone(),
+            Vec3::new(3.0, 0.0, 0.0),
+            0.0,
+        );
+        game.mobs.push(golem);
+        game.mobs.push(zombie);
+        game.mobs[0].extra.anger = 400;
+        game.mobs[0].extra.angry_at = Some(horizon_client::mobs::Who::Mob(2));
+        assert_eq!(game.persist.uuid_of(2), None);
+        let tag = game.mob_tree_nbt(0);
+        let Some(Tag::IntArray(named)) = tag.get("angry_at") else {
+            panic!("no angry_at in {tag:?}");
+        };
+        assert_eq!(
+            Some(named.as_slice()),
+            game.persist.uuid_of(2).as_ref().map(|u| &u[..])
+        );
     }
 }

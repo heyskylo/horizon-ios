@@ -346,6 +346,30 @@ pub struct Guest {
     /// Its login started while a proxy said it would arrive from another
     /// server, and used that expectation up (`player-expect`).
     pub expected: bool,
+    /// A player arriving from another server (`arrivals`): connected and
+    /// receiving the world, but not placed, so no one else sees, hears or
+    /// hurts it until the hand-over finishes.
+    pub held: bool,
+    /// The hub tick at which it was held, to drop it if its hand-over never comes.
+    pub held_since: u64,
+    /// A held player whose record has been applied but that is not yet let into the world
+    /// (`player-import` with `"place": false`): `player-confirm` places it, `player-drop` removes it.
+    pub imported: bool,
+    /// Whether the others are told when it is placed, as the import asked.
+    pub arrival_announce: bool,
+    /// The hand-over its record came with (`player-import`): `player-confirm` and
+    /// `player-drop` name it, and another hand-over's record is not taken.
+    pub arrival_handover: Option<u128>,
+    /// The import of that hand-over moved the view to another chunk (`recentered` in its reply),
+    /// kept so a retried import or a confirm after it answers the same.
+    pub arrival_recentered: bool,
+    /// Leaving for another server (`player-release moved`) without the "left the
+    /// game" line.
+    pub quiet_leave: bool,
+    /// Taken out of the world because a proxy moved it to another server: the game
+    /// saves neither its player file nor its records, since the other server has the
+    /// player now.
+    pub released: bool,
     /// Root command names the mods took out of this player's command tree
     /// (`native_player_commands_sent`); their tree is sent without them.
     pub hidden_commands: Vec<String>,
@@ -522,6 +546,14 @@ impl Guest {
             placed: false,
             handover: None,
             expected: j.expected,
+            held: false,
+            held_since: 0,
+            imported: false,
+            arrival_announce: true,
+            arrival_handover: None,
+            arrival_recentered: false,
+            quiet_leave: false,
+            released: false,
             hidden_commands: Vec::new(),
             flying_speed: 0.05,
             dimension: "minecraft:overworld".into(),

@@ -30,6 +30,9 @@ Cases:
 - glyph_on_field: A on a focused text field and B on Cancel; A opens one keyboard, which hides them; B closes it.
 - settings_apply: X presses World Options' Apply once something changed.
 - long_label: a label too wide for its button slides, beside its glyph.
+- every_screen_has_targets: the title's submenus and every options page give the focus something to land on.
+- pause_icon: the pause menu's icons are targets, and A presses one.
+- erase_checkbox: the D-pad reaches Optimize World's Erase Cached Data box, and A ticks it.
 Needs built fast binaries (`cargo build --profile fast -p horizon-client -p horizon-client-lib --bins`)
 and prepared resources in .local/horizon-client/26.3. Exit status 0 when every case passes.
 """
@@ -53,6 +56,10 @@ EXE = '.exe' if os.name == 'nt' else ''
 SETTLE = 0.5
 
 
+WINDOW_ASPECT = 16 / 9
+WINDOW_ASPECT_SLACK = 0.1
+
+
 class Game:
     def __init__(self, args, name, world=False, seed=None):
         self.args = args
@@ -73,6 +80,14 @@ class Game:
         if world:
             self.launch += ['--world', 'Menus', '--creative', '--no-pause', '--wait']
         self.ctl(*self.launch, timeout=500)
+        self.warn_if_reshaped()
+
+    def warn_if_reshaped(self):
+        """Hidden or not, a tiling compositor sizes the window, and these cases assume 16:9."""
+        width, height = self.ctl('ui')['gui_size']
+        if abs(width / height - WINDOW_ASPECT) > WINDOW_ASPECT_SLACK:
+            print(f'warning: the window is {width:g}x{height:g} GUI pixels, not 16:9, and cases that scroll will '
+                  "fail. On a tiling compositor, float the app id 'horizon'.", file=sys.stderr, flush=True)
 
     def restart(self):
         """Quit and start again on the same files."""
@@ -145,11 +160,12 @@ class Game:
         # A long list scrolls under the D-pad on the way past.
         for _ in range(60):
             was = self.focus()
-            bounds = next(tuple(w['bounds']) for w in self.widgets() if w['id'] == wanted)
+            # Scrolled out of view, it isn't drawn yet.
+            bounds = next((tuple(w['bounds']) for w in self.widgets() if w['id'] == wanted), None)
             if was == bounds:
                 return
             # In the row of the focus, it's beside it.
-            if was and was[1] == bounds[1] and was[0] < bounds[0]:
+            if bounds and was and was[1] == bounds[1] and was[0] < bounds[0]:
                 self.pad('right')
                 continue
             self.pad('down')
@@ -362,6 +378,20 @@ def lock_question(args, name):
     return check.failures
 
 
+OPTIMIZE_REGIONS = 60000
+
+
+def open_optimize_confirm(game):
+    """From the title, with one saved world, to the screen with the Erase Cached Data box."""
+    game.pad('south')
+    game.pad('south')
+    game.wait_targets()
+    game.pad('down')
+    click_widget(game, game.rows()[0])
+    click_widget(game, next(w for w in game.widgets() if w.get('label') == 'Edit'))
+    click_widget(game, next(w for w in game.widgets() if w.get('label') == 'Optimize World'))
+
+
 def optimize_world(args, name):
     game = Game(args, name, world=True)
     check = Check()
@@ -371,17 +401,12 @@ def optimize_world(args, name):
         click_widget(game, next(w for w in game.widgets() if w.get('label') == 'Save and Quit to Title'))
         game.wait_targets()
         game.title_buttons()
-        # A small world is done in a moment: enough regions to read that it takes a while.
+        # A small world is done in a moment, and a fast machine does thousands of regions in one:
+        # enough to read that it takes a while. Links, as copies this many would take longer than the job.
         source = max((game.game_home / 'saves' / 'Menus').rglob('region/*.mca'), key=lambda f: f.stat().st_size)
-        for i in range(400):
-            shutil.copy(source, source.parent / f'r.{100 + i}.100.mca')
-        game.pad('south')
-        game.pad('south')
-        game.wait_targets()
-        game.pad('down')
-        click_widget(game, game.rows()[0])
-        click_widget(game, next(w for w in game.widgets() if w.get('label') == 'Edit'))
-        click_widget(game, next(w for w in game.widgets() if w.get('label') == 'Optimize World'))
+        for i in range(OPTIMIZE_REGIONS):
+            os.link(source, source.parent / f'r.{100 + i}.100.mca')
+        open_optimize_confirm(game)
         click_widget(game, next(w for w in game.widgets() if w.get('label') == "I Know What I'm Doing!"))
         check(game.widgets()[0].get('label') == 'Cancel', f'not on Optimize World: {labels(game)}')
         game.pad('down')
@@ -695,6 +720,11 @@ def pause_y(args, name):
         game.pad('start')
         game.wait_targets()
         check(game.focus() not in (None, exit_button), f'reopened on {game.focus()}')
+        # X is its Options, declared with a glyph like the others.
+        check(declared(game).get('Options') is True, f'Options is not declared: {declared(game)}')
+        check('West' in glyphs(game), f'no X on Options: {glyphs(game)}')
+        game.pad('west')
+        check(game.ctl('state')['screen'] == 'options', f"X opened {game.ctl('state')['screen']}")
     finally:
         game.quit()
     return check.failures
@@ -887,7 +917,10 @@ def stick_lists(args, name):
 
 def stick_changes_no_value(args, name):
     check = Check()
-    for presses, click, wanted in ((('south', 'south'), None, 'difficulty'), (('west',), 'chat-settings', 'chat')):
+    for presses, click, wanted, in_list in (
+        (('south', 'south'), None, 'difficulty', False),
+        (('west',), 'chat-settings', 'chat', True),
+    ):
         game = Game(args, name)
         try:
             game.press_through(*presses, click=click)
@@ -895,11 +928,19 @@ def stick_changes_no_value(args, name):
             label = game.focused_label()
             game.stick()
             check(game.focused_label() == label, f'{label} is now {game.focused_label()}')
-            # The mouse wheel keeps vanilla's way: it cycles the button under it.
+            # The mouse wheel keeps vanilla's way: it cycles a button of the screen
+            # itself, and a list keeps it to scroll past its rows (#9633).
             x, y, w, h = game.focus()
-            game.ctl('scroll-at', x + w / 2, y + h / 2, -1)
+            # Up in the list: the stick scrolled it down, and the row stays in view.
+            game.ctl('scroll-at', x + w / 2, y + h / 2, 1 if in_list else -1)
             time.sleep(SETTLE)
-            check(game.focused_label() != label, f'the mouse wheel no longer cycles {label}')
+            if in_list:
+                # The row moved with the list, so it is found by its value, not its place.
+                row = next((w for w in game.widgets() if w.get('label') == label), None)
+                check(row is not None, f'the mouse wheel cycled the list row {label}')
+                check(row is None or row['bounds'][1] > y, f'the mouse wheel did not scroll past {label}')
+            else:
+                check(game.focused_label() != label, f'the mouse wheel no longer cycles {label}')
         finally:
             game.quit()
     return check.failures
@@ -1096,7 +1137,7 @@ def stick_keeps_option(game, check):
     check(game.focus()[1] < y, 'the list did not scroll')
 
 
-@options_case('video-settings')
+@options_case('controls')
 def stick_under_keyboard(game, check):
     game.pad('south')
     check(game.menu()['keyboard'], 'A on the search field did not open the on-screen keyboard')
@@ -1107,7 +1148,7 @@ def stick_under_keyboard(game, check):
 
 @options_case('video-settings')
 def stick_leaves_sidebar(game, check):
-    game.ctl('click', 'horizon-graphics')
+    # Video Settings... is the graphics screen.
     game.pad('down')
     game.wait_targets()
     game.focus_on('advanced')
@@ -1237,7 +1278,7 @@ def stick_steps_once(args, name):
 
 @options_case('video-settings')
 def gui_scale_keeps_focus(game, check):
-    # In the right column, beside Reduce fps.
+    # The graphics screen's General page.
     game.focus_on('gui-scale')
     label = game.focused_label() or ''
     check(label.startswith('GUI Scale'), f'never reached GUI Scale: on {label}')
@@ -1282,6 +1323,635 @@ def held_dpad_stops_at_slots(args, name):
 
 
 
+def shot(game, name):
+    """A screenshot, kept when PAD_E2E_SHOTS names a folder."""
+    folder = Path(game.args.shots or os.environ.get('PAD_E2E_SHOTS') or game.home)
+    folder.mkdir(parents=True, exist_ok=True)
+    time.sleep(0.3)
+    game.ctl('screenshot', folder / f'{name}.png', timeout=120)
+
+
+def has_label(game, text):
+    return any(text in label for label in labels(game))
+
+
+def open_controller(game, page=None):
+    """Options by X, Controls by a click, then the pad alone to the controller settings."""
+    game.press_through('west', click='controls')
+    game.focus_on('controller-settings')
+    game.pad('south')
+    game.wait_targets()
+    if page:
+        for _ in range(page):
+            game.pad('rb')
+
+
+def controller_saved(game):
+    path = game.game_home / 'horizon-controller.txt'
+    return path.read_text() if path.exists() else ''
+
+
+def controller_settings_pad(args, name):
+    game = Game(args, name)
+    check = Check()
+    try:
+        open_controller(game)
+        for page in ('General', 'Bindings', 'Device'):
+            check(has_label(game, page), f'no page {page} in {labels(game)}')
+        check(has_label(game, 'Editing:'), 'the screen does not say whose profile it edits')
+        # Exactly: the General page has its Navigation Repeat rows.
+        check('Navigation' not in labels(game), 'a navigation page contradicts menus always focusing')
+        shot(game, 'controller-general')
+        # The D-pad walks the whole list, scrolling it.
+        game.pad('right')
+        reached = {game.focused_label()}
+        for _ in range(24):
+            game.pad('down')
+            reached.add(game.focused_label())
+        for want in ('Controller', 'Look Sensitivity', 'Move Deadzone', 'Trigger Threshold', 'Repeat Interval',
+                     'On-Screen Keyboard'):
+            check(any(want.lower() in (r or '').lower() for r in reached), f'the D-pad never reached {want}: {reached}')
+        # The bumpers change pages.
+        game.pad('rb')
+        check(has_label(game, 'key.') or has_label(game, 'Jump'), f'the bumper did not open Bindings: {labels(game)}')
+        shot(game, 'controller-bindings')
+        # Through every row of Bindings and its reset at the end.
+        game.pad('right')
+        reached = set()
+        # Up to the row that leads the page, then down all of it.
+        for _ in range(6):
+            reached.add(game.focused_label())
+            # Past it the focus leaves the list for the search box and the pages.
+            if 'jump' in (game.focused_label() or '').lower():
+                break
+            game.pad('up')
+        for _ in range(60):
+            reached.add(game.focused_label())
+            game.pad('down')
+        for want in ('Sneak', 'Reset'):
+            check(any(want.lower() in (r or '').lower() for r in reached), f'the D-pad never reached {want}: {reached}')
+        shot(game, 'controller-bindings-end')
+        game.pad('rb')
+        game.pad('right')
+        check(has_label(game, 'Player profile'), f'the bumper did not open Device: {labels(game)}')
+        check(has_label(game, 'Detected glyphs'), 'no detected glyphs on Device')
+        check(has_label(game, 'Button Glyphs'), 'no glyph override on Device')
+        shot(game, 'controller-device')
+        # Vibration changes and saves; Undo appears, X takes it back and it goes.
+        check(not has_label(game, 'Undo'), 'Undo with nothing to undo')
+        for _ in range(16):
+            if 'vibration' in (game.focused_label() or '').lower():
+                break
+            game.pad('down')
+        check('vibration' in (game.focused_label() or '').lower(), f'never reached Vibration: {game.focused_label()}')
+        game.pad('south')
+        check(has_label(game, 'Undo'), 'no Undo after a change')
+        check('vibration:false' in controller_saved(game), f'not saved: {controller_saved(game)}')
+        shot(game, 'controller-pending')
+        game.pad('west')
+        check(not has_label(game, 'Undo'), 'Undo stayed after undoing')
+        check('vibration:false' not in controller_saved(game), 'the undo was not saved')
+        game.pad('east')
+        game.wait_targets()
+        check(not has_label(game, 'Editing:'), 'B did not leave the screen')
+    finally:
+        game.quit()
+    return check.failures
+
+
+def controller_bind(args, name):
+    game = Game(args, name)
+    check = Check()
+    try:
+        open_controller(game, 1)
+        # Right of the page's tab is the row level with it, the second.
+        game.pad('right')
+        for _ in range(8):
+            if 'jump' in (game.focused_label() or '').lower():
+                break
+            game.pad('up')
+        check('jump' in (game.focused_label() or '').lower(), f'never reached Jump: {game.focused_label()}')
+        game.pad('south')
+        check(has_label(game, '> '), f'A did not start the wait: {labels(game)}')
+        game.pad('start')
+        check(not has_label(game, '> '), 'Start did not cancel the wait')
+        check(has_label(game, 'Editing:'), 'Start left the screen instead of cancelling')
+        game.pad('south')
+        game.pad('rs')
+        check('key.jump' in controller_saved(game), f'the binding was not saved: {controller_saved(game)}')
+        shot(game, 'controller-bound')
+        game.pad('right')
+        game.pad('south')
+        check('key.jump' not in controller_saved(game), f'reset did not clear it: {controller_saved(game)}')
+        check((game.menu()['focus'] or {}).get('kind') != 'field', f'reset sent the focus to the search: {game.menu()["focus"]}')
+    finally:
+        game.quit()
+    return check.failures
+
+
+def controller_settings_keys(args, name):
+    # Keys go through `key`, which needs a world open.
+    game = Game(args, name, world=True)
+    check = Check()
+    try:
+        game.ctl('options', 'controller')
+        game.wait_targets()
+        game.ctl('click', 'device')
+        time.sleep(SETTLE)
+        check(has_label(game, 'Player profile'), f'a click did not open Device: {labels(game)}')
+        # Opened afresh, nothing has the focus: the first Tab lands on the search.
+        game.ctl('key', 'esc', 'tap')
+        time.sleep(SETTLE)
+        game.ctl('options', 'controller')
+        game.wait_targets()
+        game.ctl('key', 'tab', 'tap')
+        game.ctl('type', 'rumble')
+        time.sleep(SETTLE)
+        check(has_label(game, 'Vibration'), f'the search did not find Vibration by what it does: {labels(game)}')
+        check(not has_label(game, 'Look Sensitivity'), 'the search kept other rows')
+        # The focus off the field and back: a click at the field's end must not clear it.
+        game.ctl('key', 'down', 'tap')
+        game.ctl('key', 'up', 'tap')
+        time.sleep(SETTLE)
+        check(not has_label(game, 'Look Sensitivity'), 'coming back to the search cleared it')
+        game.ctl('key', 'esc', 'tap')
+        time.sleep(SETTLE)
+        check(not has_label(game, 'Editing:'), 'Escape did not leave the screen')
+    finally:
+        game.quit()
+    return check.failures
+
+
+OPTIONS_PAGES = ('main', 'video', 'sound', 'controls', 'keybinds', 'controller', 'controller-binds', 'mouse', 'chat',
+                 'accessibility', 'language', 'font', 'packs', 'mods', 'shader-packs', 'graphics', 'graphics-advanced',
+                 'graphics-hdr', 'extras', 'pvp', 'credits', 'horizon', 'agent')
+# Screens allowed to draw no target, and why. The pad falls back to the crosshair on these.
+NO_TARGETS = {'studio': 'its buttons and rows only paint, nothing registers them yet'}
+TARGETS_WAIT = 5
+
+
+def check_has_targets(game, check, screen):
+    """A focus-mode screen draws a target soon after it opens; pointer screens (packs) use the crosshair by design."""
+    if screen in NO_TARGETS:
+        return
+    end = time.time() + TARGETS_WAIT
+    while True:
+        menu = game.menu()
+        if menu['mode'] != 'focus' or menu['targets']:
+            return
+        if time.time() > end:
+            check(False, f'{screen} has no targets: a controller is left with the crosshair')
+            return
+        time.sleep(0.2)
+
+
+@title_case
+def every_screen_has_targets(game, check, single, options, quit_game):
+    for screen, steps in (('create world', ['singleplayer']), ('multiplayer warning', ['multiplayer']),
+                          ('multiplayer', ['multiplayer', 'proceed']), ('realms', ['realms'])):
+        for step in steps:
+            click_widget(game, widget(game, step))
+        check(quit_game not in game.rects(), f'{screen} did not open')
+        check_has_targets(game, check, screen)
+        for _ in range(4):
+            if quit_game in game.rects():
+                break
+            # Not the Escape key: horizon-ctl's needs a world open.
+            game.pad('east')
+            time.sleep(SETTLE)
+        else:
+            raise RuntimeError(f'B did not come back to the title from {screen}')
+    game.pad('west')
+    for page in OPTIONS_PAGES:
+        game.ctl('options', page)
+        time.sleep(SETTLE)
+        check_has_targets(game, check, page)
+    game.ctl('options', 'horizon')
+    time.sleep(SETTLE)
+    click_widget(game, widget(game, 'studio'))
+    check_has_targets(game, check, 'studio')
+
+
+def pause_icon(args, name):
+    game = Game(args, name, world=True)
+    check = Check()
+    try:
+        game.ctl('key', 'escape', 'tap')
+        game.wait_targets()
+        # Report Bugs, Feedback and Player Reporting, and Friends when it is live.
+        icons = sorted(r for r in game.rects() if r[2:] == (20, 20))
+        check(len(icons) >= 3, f'pause icons with targets: {icons}')
+        game.focus_on(next(w['id'] for w in game.widgets() if tuple(w['bounds']) == icons[-1]))
+        before = game.rects()
+        game.pad('south')
+        check(game.rects() != before, 'A did not press Player Reporting')
+    finally:
+        game.quit()
+    return check.failures
+
+
+def controller_notices(args, name):
+    game = Game(args, name, world=True)
+    check = Check()
+    notice = lambda: game.ctl('pad', 'status').get('notice')
+    try:
+        for _ in range(10):
+            game.ctl('pad', 'connection', 'disconnected')
+            game.ctl('pad', 'connection', 'connected')
+        game.ctl('pad', 'connection', 'disconnected')
+        time.sleep(1)
+        check(notice() and 'disconnected' in notice()['title'], f'not the latest event: {notice()}')
+        shot(game, 'notice-disconnected')
+        game.ctl('pad', 'connection', 'connected')
+        time.sleep(1)
+        check(notice() and notice()['title'] == 'Controller connected', f'the reconnect did not replace it: {notice()}')
+        shot(game, 'notice-connected')
+        time.sleep(6.5)
+        check(notice() is None, f'the notice outstayed its time: {notice()}')
+    finally:
+        game.quit()
+    return check.failures
+
+
+def erase_checkbox(args, name):
+    game = Game(args, name, world=True)
+    check = Check()
+    try:
+        game.ctl('key', 'escape', 'tap')
+        game.wait_targets()
+        click_widget(game, next(w for w in game.widgets() if w.get('label') == 'Save and Quit to Title'))
+        game.wait_targets()
+        game.title_buttons()
+        open_optimize_confirm(game)
+        box = next(w for w in game.widgets() if 'label' not in w)
+        # The box is the screen's topmost target.
+        for _ in range(4):
+            if game.focus() == tuple(box['bounds']):
+                break
+            game.pad('up')
+        check(game.focus() == tuple(box['bounds']), f"the D-pad stopped on {game.focus()}, not {box['bounds']}")
+        path = game.home / 'box.png'
+
+        def shot():
+            game.ctl('screenshot', path)
+            rows, width, channels = png_rows(path)
+            scale = width / game.ctl('ui')['gui_size'][0]
+            x, y, h = (int(box['bounds'][i] * scale) for i in (0, 1, 3))
+            return [row[x * channels:(x + h) * channels] for row in rows[y:y + h]]
+
+        # Ticked, its sprite changes under the same hover.
+        unticked = shot()
+        game.pad('south')
+        check(shot() != unticked, 'A did not tick Erase Cached Data')
+    finally:
+        game.quit()
+    return check.failures
+
+
+
+def key_row_a_x(args, name):
+    game = Game(args, name)
+    check = Check()
+    try:
+        game.wait_targets()
+        game.title_buttons()
+        game.pad('west')
+        game.ctl('options', 'keybinds')
+        time.sleep(SETTLE)
+        game.wait_targets()
+        game.pad('down')
+        row = next(w for w in game.widgets() if w.get('label') in ('W', 'A', 'S', 'D'))
+        click_widget(game, row)
+        waiting = next(w for w in game.widgets() if w['bounds'] == row['bounds'])['label']
+        check(waiting != row['label'], f"the row isn't waiting: {waiting}")
+        for button in ('south', 'west', 'north', 'rb'):
+            game.pad(button)
+            after = next(w for w in game.widgets() if w['bounds'] == row['bounds'])['label']
+            check(after == waiting, f'{button} left the row on {after}')
+        game.pad('east')
+        after = next(w for w in game.widgets() if w['bounds'] == row['bounds'])['label']
+        check(after not in (waiting, 'Left Button', 'Right Button'), f'B left the row on {after}')
+    finally:
+        game.quit()
+    return check.failures
+
+
+def show_dialog(game, snbt):
+    """A server's dialog over the world, once it is drawn."""
+    game.ctl('command', f'dialog show @s {snbt}')
+    time.sleep(1)
+    check_open = game.ctl('state')['dialog']['open']
+    if not check_open:
+        raise RuntimeError(f'no dialog from {snbt}')
+    game.wait_targets()
+
+
+def dialog_open(game):
+    return game.ctl('state')['dialog']['open'] is not None
+
+
+def prompt_dialog(args, name):
+    game = Game(args, name, world=True)
+    check = Check()
+    try:
+        show_dialog(game, '{type:"minecraft:confirmation",title:"Sure?",yes:{label:"Yes"},no:{label:"No"}}')
+        check(game.ctl('state')['screen'] == 'dialog', f"screen is {game.ctl('state')['screen']}")
+        # The first A only lands the focus, on what answers no.
+        game.pad('south')
+        check(dialog_open(game), 'the first A answered the dialog')
+        check(game.focused_label() == 'No', f'the focus starts on {game.focused_label()}')
+        check(glyphs(game).get('East') is not None, f'no B on No: {glyphs(game)}')
+        # The stick drives the focus: the player stays.
+        before = game.ctl('state')['player']['position']
+        game.ctl('pad', 'stick', 'left', -1, 0)
+        time.sleep(0.6)
+        game.ctl('pad', 'stick', 'left', 0, 0)
+        time.sleep(SETTLE)
+        check(game.ctl('state')['player']['position'] == before, 'the stick walked the player behind the dialog')
+        check(game.focused_label() == 'Yes', f'the stick left the focus on {game.focused_label()}')
+        game.pad('right')
+        check(game.focused_label() == 'No', f'the D-pad left the focus on {game.focused_label()}')
+        # A presses it on the way up.
+        game.ctl('pad', 'south', 'down')
+        time.sleep(SETTLE)
+        check(dialog_open(game), 'A down answered the dialog')
+        game.ctl('pad', 'south', 'up')
+        time.sleep(SETTLE)
+        check(not dialog_open(game), 'A up did not answer the dialog')
+        check(game.ctl('state')['screen'] == 'playing', f"screen is {game.ctl('state')['screen']}")
+        # B answers as Escape does, and doesn't open the pause menu as well.
+        show_dialog(game, '{type:"minecraft:notice",title:"Hello"}')
+        game.pad('east')
+        check(not dialog_open(game), 'B did not close the notice')
+        check(game.ctl('state')['screen'] == 'playing', f"B left the screen on {game.ctl('state')['screen']}")
+        # One that Escape can't close stays, and doesn't pause either; A still answers it.
+        show_dialog(game, '{type:"minecraft:notice",title:"Stay",can_close_with_escape:false}')
+        game.pad('east')
+        game.pad('start')
+        check(dialog_open(game), 'B or Start closed a dialog that Escape cannot')
+        game.pad('south')
+        game.pad('south')
+        check(not dialog_open(game), 'A did not answer it')
+    finally:
+        game.quit()
+    return check.failures
+
+
+def prompt_dialog_field(args, name):
+    game = Game(args, name, world=True)
+    check = Check()
+
+    def typed():
+        return game.ctl('state')['dialog']['open']['inputs'][0]['value']
+
+    try:
+        show_dialog(game, '{type:"minecraft:notice",title:"Name",inputs:[{type:"minecraft:text",key:"who",label:"Name"}]}')
+        game.pad('south')
+        field = next(t for t in game.menu()['targets'] if t['kind'] == 'field')
+        check(game.focus() == tuple(field['rect']), f"the focus starts on {game.focus()}, not {field['rect']}")
+        game.pad('south')
+        check(game.menu()['keyboard'], 'A did not open the keyboard')
+        game.pad('south')
+        check(len(typed()) == 1, f'A on a key typed {typed()!r}')
+        game.pad('south')
+        check(len(typed()) == 2, f'A on a key again typed {typed()!r}')
+        game.pad('west')
+        check(len(typed()) == 1, f'X left {typed()!r}')
+        check(game.menu()['keyboard'], 'typing closed the keyboard')
+        game.pad('start')
+        check(not game.menu()['keyboard'], 'Start did not end the typing')
+        check(dialog_open(game) and len(typed()) == 1, 'Start answered the dialog')
+        game.pad('east')
+        check(not dialog_open(game), 'B did not close the dialog')
+    finally:
+        game.quit()
+    return check.failures
+
+
+def walk_to_field(game, check):
+    """The D-pad, towards the screen's text field."""
+    game.pad('down')
+    field = tuple(next(t for t in game.menu()['targets'] if t['kind'] == 'field')['rect'])
+    for _ in range(40):
+        focus = game.focus()
+        if focus == field:
+            return
+        if focus[1] != field[1]:
+            game.pad('up' if focus[1] > field[1] else 'down')
+        else:
+            game.pad('left' if focus[0] > field[0] else 'right')
+    check(game.focus() == field, f'the D-pad never reached the field {field}: on {game.focus()}')
+
+
+def prompt_keeps_typing(args, name):
+    game = Game(args, name, world=True)
+    check = Check()
+    try:
+        game.pad('up')
+        time.sleep(SETTLE)
+        check(game.ctl('state')['screen'] == 'chat', f"D-pad up left the screen on {game.ctl('state')['screen']}")
+        check(game.menu()['keyboard'], 'the keyboard did not open over chat')
+        show_dialog(game, '{type:"minecraft:notice",title:"Hello"}')
+        check(not game.menu()['keyboard'], 'the keyboard stayed over the dialog')
+        game.pad('east')
+        time.sleep(SETTLE)
+        check(not dialog_open(game), 'B did not close the notice')
+        check(game.menu()['keyboard'], 'the keyboard did not come back over chat')
+        # Closed by B, it stays closed through the next prompt.
+        game.pad('east')
+        time.sleep(SETTLE)
+        check(not game.menu()['keyboard'], 'B did not close the keyboard')
+        show_dialog(game, '{type:"minecraft:notice",title:"Hello"}')
+        game.pad('east')
+        time.sleep(SETTLE)
+        check(not dialog_open(game), 'B did not close the second notice')
+        check(not game.menu()['keyboard'], 'a prompt reopened the keyboard B had closed')
+    finally:
+        game.quit()
+    return check.failures
+
+
+def prompt_keeps_crosshair(args, name):
+    game = Game(args, name, world=True)
+    check = Check()
+    try:
+        game.ctl('command', 'gamemode survival')
+        game.ctl('key', 'e', 'tap')
+        time.sleep(SETTLE)
+        game.wait_targets()
+        screen = game.ctl('state')['screen']
+        game.pad('down')
+        time.sleep(1)
+        was = game.menu()['pointer']
+        show_dialog(game, '{type:"minecraft:notice",title:"Hello"}')
+        time.sleep(SETTLE)
+        check(game.menu()['pointer'] != was, 'the focus on the notice left the pointer on the slot')
+        game.pad('east')
+        time.sleep(1)
+        check(not dialog_open(game), 'B did not close the notice')
+        check(game.ctl('state')['screen'] == screen, f"the notice left the screen on {game.ctl('state')['screen']}")
+        at = game.menu()['pointer']
+        check(max(abs(at[0] - was[0]), abs(at[1] - was[1])) <= 1, f'the crosshair went from {was} to {at}')
+    finally:
+        game.quit()
+    return check.failures
+
+
+def osk_stays_open(game, check, what):
+    """A opens the keyboard on the focused field, and it types and deletes without closing."""
+    game.pad('south')
+    check(game.menu()['keyboard'], f'{what}: A did not open the keyboard')
+    game.pad('south')
+    check(game.menu()['keyboard'], f'{what}: typing closed the keyboard')
+    game.pad('west')
+    check(game.menu()['keyboard'], f'{what}: deleting closed the keyboard')
+
+
+def osk_social(args, name):
+    game = Game(args, name, world=True)
+    check = Check()
+    try:
+        game.ctl('key', 'p', 'tap')
+        time.sleep(1)
+        game.wait_targets()
+        walk_to_field(game, check)
+        osk_stays_open(game, check, 'social')
+        game.pad('start')
+        check(not game.menu()['keyboard'], 'Start did not end the typing')
+        check(game.ctl('state')['screen'] == 'social', f"Start left {game.ctl('state')['screen']}")
+    finally:
+        game.quit()
+    return check.failures
+
+
+def osk_debug_options(args, name):
+    game = Game(args, name, world=True)
+    check = Check()
+    try:
+        game.ctl('key', 'f3', 'down')
+        game.ctl('key', 'f6', 'tap')
+        game.ctl('key', 'f3', 'up')
+        time.sleep(1)
+        check(game.ctl('state')['screen'] == 'debug-options', f"screen is {game.ctl('state')['screen']}")
+        game.wait_targets()
+        walk_to_field(game, check)
+        rows = len(game.rects())
+        game.pad('south')
+        check(game.menu()['keyboard'], 'A did not open the keyboard')
+        # Few of the options have the first key's letter in them.
+        game.pad('south')
+        check(game.menu()['keyboard'], 'typing closed the keyboard')
+        check(len(game.rects()) < rows, f'the search kept {len(game.rects())} of {rows} targets')
+        game.pad('west')
+        check(len(game.rects()) == rows, f'deleting left {len(game.rects())} of {rows} targets')
+    finally:
+        game.quit()
+    return check.failures
+
+
+def osk_block(block, screen):
+    def case(args, name):
+        game = Game(args, name, world=True)
+        check = Check()
+        try:
+            # In front of the eyes, looking east.
+            game.ctl('command', f'setblock ~1 ~1 ~ {block}')
+            game.ctl('look', -90, 0)
+            time.sleep(1)
+            game.ctl('mouse', 'right', 'click')
+            time.sleep(1)
+            check(game.ctl('state')['screen'] == screen, f"screen is {game.ctl('state')['screen']}")
+            game.wait_targets()
+            walk_to_field(game, check)
+            osk_stays_open(game, check, screen)
+            # Enter is the screen's Done, as on the keyboard.
+            game.pad('start')
+            check(game.ctl('state')['screen'] == 'playing', f"Start left {game.ctl('state')['screen']}")
+            check(not game.menu()['keyboard'], 'the keyboard stayed after its screen closed')
+        finally:
+            game.quit()
+        return check.failures
+    return case
+
+
+osk_command_block = osk_block('command_block', 'command-block')
+
+
+osk_jigsaw = osk_block('jigsaw', 'block-editor')
+
+
+def seed_controller(text):
+    def seed(game_home):
+        (game_home / 'horizon-controller.txt').write_text(text)
+    return seed
+
+
+def glyph_art(args, name):
+    check = Check()
+    for style, west, east in (('xbox', 'xb_x', 'xb_b'), ('playstation', 'psx_square', 'psx_circle'), ('nintendo', 'nx_y', 'nx_a')):
+        game = Game(args, f'{name}-{style}', seed=seed_controller(f'glyphs:{style}\n'))
+        try:
+            game.wait_targets()
+            _, options, quit_game = game.title_buttons()
+            game.pad('down')
+            shown = {g['button']: g for g in game.menu()['glyphs']}
+            for button, art, widget in (('West', west, options), ('East', east, quit_game)):
+                glyph = shown.get(button)
+                check(glyph is not None, f'{style}: no {button} glyph in {shown}')
+                if glyph:
+                    sprite = art and f'horizon:gui/controller/{art}'
+                    check(glyph['sprite'] == sprite, f"{style} {button}: {glyph['sprite']}, not {sprite}")
+                    x, y, w, h = glyph['rect']
+                    bx, by, bw, bh = widget
+                    check(bx <= x and by <= y and x + w <= bx + bw and y + h <= by + bh,
+                          f'{style} {button}: {glyph["rect"]} is not inside its button {widget}')
+            shot(game, f'glyph_art_{style}_title')
+        finally:
+            game.quit()
+    return check.failures
+
+
+def glyph_art_world(args, name):
+    check = Check()
+    for style in ('xbox', 'playstation'):
+        game = Game(args, f'{name}-{style}', world=True, seed=seed_controller(f'glyphs:{style}\nbindLayout:1\n'))
+        try:
+            game.ctl('key', 'e', 'tap')
+            time.sleep(SETTLE)
+            game.wait_targets()
+            game.pad('down')
+            check(game.menu()['pointer'] is not None, f'{style}: no crosshair in the inventory')
+            shot(game, f'glyph_art_{style}_crosshair')
+        finally:
+            game.quit()
+    return check.failures
+
+
+def controller_trigger_threshold(args, name):
+    game = Game(args, name)
+    check = Check()
+    try:
+        open_controller(game)
+        game.pad('right')
+        for _ in range(24):
+            if 'trigger threshold' in (game.focused_label() or '').lower():
+                break
+            game.pad('down')
+        check('40%' in (game.focused_label() or ''), f'not on its default: {game.focused_label()}')
+        # A step of the D-pad is a pixel of the slider, which can be less than a percent.
+        for _ in range(6):
+            game.pad('right')
+            if '40%' not in (game.focused_label() or ''):
+                break
+        check('40%' not in (game.focused_label() or ''), f'right left it on {game.focused_label()}')
+        saved = next((line for line in controller_saved(game).splitlines() if line.startswith('triggerThreshold:')), '')
+        check(saved and float(saved.split(':')[1]) > 0.4, f'not saved: {saved}')
+    finally:
+        game.quit()
+    return check.failures
+
+
+
 CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': release, 'move_cancels': move_cancels,
          'pad_release': pad_release, 'pause_y': pause_y, 'settings': settings, 'create_world': create_world,
          'world_options': world_options, 'key_row_b': key_row_b, 'lock_question': lock_question,
@@ -1308,7 +1978,26 @@ CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': releas
          'stick_steps_once': stick_steps_once,
          'gui_scale_keeps_focus': gui_scale_keeps_focus,
          'held_dpad_stops_at_slots': held_dpad_stops_at_slots,
-         'flat_rows_select': flat_rows_select}
+         'flat_rows_select': flat_rows_select,
+         'controller_settings_pad': controller_settings_pad,
+         'controller_bind': controller_bind,
+         'controller_settings_keys': controller_settings_keys,
+         'controller_notices': controller_notices,
+         'every_screen_has_targets': every_screen_has_targets,
+         'pause_icon': pause_icon,
+         'erase_checkbox': erase_checkbox,
+         'glyph_art': glyph_art,
+         'glyph_art_world': glyph_art_world,
+         'key_row_a_x': key_row_a_x,
+         'prompt_dialog': prompt_dialog,
+         'prompt_dialog_field': prompt_dialog_field,
+         'prompt_keeps_typing': prompt_keeps_typing,
+         'prompt_keeps_crosshair': prompt_keeps_crosshair,
+         'osk_social': osk_social,
+         'osk_debug_options': osk_debug_options,
+         'osk_command_block': osk_command_block,
+         'osk_jigsaw': osk_jigsaw,
+         'controller_trigger_threshold': controller_trigger_threshold}
 
 
 def main():
@@ -1317,6 +2006,7 @@ def main():
     parser.add_argument('--ctl', type=Path, default=lab.cargo_target() / f'fast/horizon-ctl{EXE}')
     parser.add_argument('--resources', type=Path, default=ROOT / '.local/horizon-client/26.3')
     parser.add_argument('--only', nargs='*', choices=sorted(CASES), help='run only these cases')
+    parser.add_argument('--shots', type=Path, help='keep screenshots in this folder')
     args = parser.parse_args()
     args.game, args.ctl, args.resources = args.game.resolve(), args.ctl.resolve(), args.resources.resolve()
     failed = []

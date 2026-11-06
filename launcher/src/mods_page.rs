@@ -52,6 +52,9 @@ pub(super) enum Event {
     About(HashMap<String, Vec<String>>),
     /// Registry files taken down that the launcher turned off.
     TakenDown(Vec<String>),
+    /// What the automatic updates did (`horizon::auto`), and the instances (ids) whose native
+    /// mods moved on: their game is built again before it plays.
+    AutoUpdated(Vec<String>, Vec<String>),
     /// A project page's part, an image or a filter's values (`mods_project`).
     Loaded(super::mods_project::Loaded),
     /// The palette's registry mods for its search of that number.
@@ -99,6 +102,10 @@ pub(super) struct Mods {
     pub(super) message: Option<Result<String, String>>,
     pub(super) updates: HashMap<(SourceId, String), String>,
     confirm_remove: Option<String>,
+    /// Instances (ids) whose native mods the automatic update moved on: Play builds their game
+    /// first (`build_native`), then plays it when `play_after_build` is set.
+    pub(super) rebuild: Vec<String>,
+    pub(super) play_after_build: bool,
     /// The project the glass look's detail card shows; the first result when none is.
     pub(super) picked: Option<String>,
     /// The project the glass detail card showed last.
@@ -194,6 +201,8 @@ impl Mods {
             native_files: Default::default(),
             updates: HashMap::new(),
             confirm_remove: None,
+            rebuild: Vec::new(),
+            play_after_build: false,
             picked: None,
             shown: None,
             checks: HashMap::new(),
@@ -391,6 +400,14 @@ impl Launcher {
                     m.about.extend(about);
                     m.results_list.reset();
                 }
+                Event::AutoUpdated(lines, rebuild) => {
+                    m.rebuild.extend(rebuild);
+                    if !lines.is_empty() {
+                        m.message = Some(Ok(lines.join("\n")));
+                        m.installed = installed::Installed::load(&m.home()).entries;
+                        m.installed_list.reset();
+                    }
+                }
                 Event::TakenDown(lines) => {
                     m.message = Some(Ok(lines.join("\n")));
                     m.installed = installed::Installed::load(&m.home()).entries;
@@ -399,8 +416,14 @@ impl Launcher {
             }
         }
         // `HORIZON_LAUNCHER_PROJECT=<slug>` (with `HORIZON_LAUNCHER_PAGE=mods`): opens that
-        // project's page once a search finds it, for screenshots.
-        if self.mods.browse.open.is_none() {
+        // project's page once a search finds it, for screenshots. Once per run, kept in a flag
+        // rather than by removing the variable: `remove_var` races `getenv` on the download, check
+        // and keyring threads running by now (unsound, and `unsafe` from edition 2024).
+        static PROJECT_OPENED: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        if self.mods.browse.open.is_none()
+            && !PROJECT_OPENED.load(std::sync::atomic::Ordering::Relaxed)
+        {
             if let Ok(want) = std::env::var("HORIZON_LAUNCHER_PROJECT") {
                 if let Some(p) = self
                     .mods
@@ -409,7 +432,7 @@ impl Launcher {
                     .find(|p| p.id == want || p.slug == want)
                     .cloned()
                 {
-                    std::env::remove_var("HORIZON_LAUNCHER_PROJECT");
+                    PROJECT_OPENED.store(true, std::sync::atomic::Ordering::Relaxed);
                     self.mods_open(p);
                 }
             }
@@ -468,10 +491,16 @@ impl Launcher {
                 .ok_or_else(|| format!("{} isn't set up.", source.label()))
                 .and_then(|s| s.search(&query));
             let about: HashMap<String, Vec<String>> = match (&result, source) {
-                (Ok(found), SourceId::Horizon) => found
-                    .iter()
-                    .map(|p| (p.id.clone(), horizon::trust_and_capabilities(&p.id)))
-                    .collect(),
+                (Ok(found), SourceId::Horizon) => {
+                    let instance = horizon_launcher::instances::selected();
+                    found
+                        .iter()
+                        .map(|p| {
+                            let lines = horizon::trust_and_capabilities(&p.id, Some(&instance));
+                            (p.id.clone(), lines)
+                        })
+                        .collect()
+                }
                 _ => HashMap::new(),
             };
             let _ = tx.send(Event::Found(search, offset, result));
@@ -505,10 +534,40 @@ impl Launcher {
         });
     }
 
+    /// At start, with the setting on: every Horizon instance's registry projects update on a
+    /// thread ([`auto_update`]), the selected instance's list read again after.
+    pub(super) fn mods_auto_update(&mut self) {
+        if !self.settings.auto_updates_mods() {
+            return;
+        }
+        let list: Vec<AutoTarget> = self
+            .instances
+            .list
+            .iter()
+            .map(|i| AutoTarget {
+                level: self.version_of(i).map(|tag| backend::mod_api_level(tag)),
+                natives: !pinned_to_nightly(i),
+                instance: i.clone(),
+            })
+            .collect();
+        let tx = self.mods.tx.clone();
+        std::thread::spawn(move || {
+            let (lines, rebuild) = auto_update(&list);
+            if !lines.is_empty() || !rebuild.is_empty() {
+                let _ = tx.send(Event::AutoUpdated(lines, rebuild));
+            }
+        });
+    }
+
     /// Turns a Horizon mod the browser installed on or off, as the game's Options > Mods does;
     /// in a Java instance, renames its file.
     pub(super) fn mods_switch(&mut self, e: &installed::Entry) {
         let home = self.mods.home();
+        // An update holds the folder: the window doesn't wait for it.
+        let Some(_lock) = browser::try_lock_home(&home) else {
+            self.mods.message = Some(Err(tr("Wait for the current operation to finish.").into()));
+            return;
+        };
         if self.mods.java.is_some() {
             let on = !java_instance::is_on(&home, e);
             self.mods.message = Some(java_instance::set_on(&home, e, on).map(|()| {
@@ -971,6 +1030,12 @@ impl Launcher {
     /// The project `id` leaves the selected instance now; what happened, for the page's notice.
     pub(super) fn mods_remove(&mut self, id: &str) -> Result<String, String> {
         let home = self.mods.home();
+        let Some(_lock) = browser::try_lock_home(&home) else {
+            let busy: Result<String, String> =
+                Err(tr("Wait for the current operation to finish.").into());
+            self.mods.message = Some(busy.clone());
+            return busy;
+        };
         let removed = match self.mods.java {
             Some(_) => java_instance::remove(&home, id),
             None => installed::remove(&home, id),
@@ -1414,21 +1479,24 @@ impl Launcher {
             let detail = div()
                 .flex()
                 .flex_col()
-                .child(format!(
-                    "{}{} · {}{} · {}",
+                .child({
+                    let from = e
+                        .source
+                        .shown_for(&e.project)
+                        .map(|s| trf("from {source}", &[("source", s)]));
+                    let needed = e
+                        .dependency
+                        .then(|| tr("needed by another pack").to_string());
+                    let origin: Vec<String> = from.into_iter().chain(needed).collect();
                     e.verdict
-                        .as_ref()
-                        .map(|v| format!("{} · ", tr(v)))
-                        .unwrap_or_default(),
-                    e.number,
-                    trf("from {source}", &[("source", e.source.label())]),
-                    if e.dependency {
-                        format!(", {}", tr("needed by another pack"))
-                    } else {
-                        String::new()
-                    },
-                    e.file
-                ))
+                        .iter()
+                        .map(|v| tr(v).to_string())
+                        .chain([e.number.clone()])
+                        .chain((!origin.is_empty()).then(|| origin.join(", ")))
+                        .chain([e.file.clone()])
+                        .collect::<Vec<_>>()
+                        .join(" · ")
+                })
                 .children(instance.as_ref().filter(|_| is_native).map(|name| {
                     div()
                         .text_color(t.ink)
@@ -1604,6 +1672,9 @@ impl Launcher {
                 ),
             };
             detail = detail.child(div().text_color(t.muted).child(said));
+            for left in &build.left_out {
+                detail = detail.child(div().text_color(t.warn).child(left.label()));
+            }
         }
         if self.native_step.is_some() && !mine {
             let other = self
@@ -1806,7 +1877,9 @@ impl Launcher {
                 by.push(trf("by {author}", &[("author", &p.author)]));
             }
             by.push(trf("{count} downloads", &[("count", &count(p.downloads))]));
-            by.push(trf("from {source}", &[("source", p.source.label())]));
+            if let Some(source) = p.source.shown_for(&p.id) {
+                by.push(trf("from {source}", &[("source", source)]));
+            }
             if !p.license.is_empty() {
                 by.push(p.license.clone());
             }
@@ -1870,6 +1943,50 @@ impl Launcher {
         }
         out
     }
+}
+
+/// An instance whose registry projects may update: the mod API level of the game it plays, and
+/// whether its native mods may (`horizon::auto::Context`).
+pub(super) struct AutoTarget {
+    pub(super) instance: instances::Instance,
+    pub(super) level: Option<u32>,
+    pub(super) natives: bool,
+}
+
+/// Whether `instance` keeps a Nightly, or a native build made on one: its native mods stay as
+/// they are, built for that Horizon.
+pub(super) fn pinned_to_nightly(instance: &instances::Instance) -> bool {
+    let nightly = |v: &str| v.starts_with("nightly-");
+    instance
+        .version
+        .as_deref()
+        .is_some_and(|v| nightly(v) || native_mods::about(v).is_some_and(|a| nightly(&a.base)))
+}
+
+/// Updates the registry projects of `targets`: Horizon's own instances only, never a modpack's
+/// profile, whose pack pins its mods. What happened, for the page's notice, and the instances
+/// whose native mods were updated.
+pub(super) fn auto_update(targets: &[AutoTarget]) -> (Vec<String>, Vec<String>) {
+    let (mut lines, mut rebuild) = (Vec::new(), Vec::new());
+    for t in targets {
+        let i = &t.instance;
+        let pack = i.id.starts_with("pack:") || i.id.starts_with("port:");
+        let (false, None, Some(level)) = (pack, &i.java, t.level) else {
+            continue;
+        };
+        let ctx = horizon::auto::Context {
+            in_pack: horizon::auto::in_pack(&i.home),
+            level,
+            natives: t.natives,
+        };
+        if let Some(report) = horizon::auto::run(&i.home, &ctx, &|_, _| {}) {
+            lines.extend(report.lines());
+            if report.rebuild {
+                rebuild.push(i.id.clone());
+            }
+        }
+    }
+    (lines, rebuild)
 }
 
 /// Where a kind's tab searches first: Horizon's registry for mods and shader packs, Modrinth for

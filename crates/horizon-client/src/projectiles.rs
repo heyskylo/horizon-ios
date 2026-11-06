@@ -366,6 +366,18 @@ impl crate::entity_rules::EntityRules for Projectile {
         }
     }
 }
+/// `AbstractHurtingProjectile.applyInertia` / `ThrowableProjectile.applyInertia`:
+/// four bubble particles at `position - movement * 0.25`, moving with `movement`.
+pub fn water_bubble_at(position: [f64; 3], movement: [f64; 3]) -> ([f64; 3], [f64; 3]) {
+    (
+        [
+            position[0] - movement[0] * 0.25,
+            position[1] - movement[1] * 0.25,
+            position[2] - movement[2] * 0.25,
+        ],
+        movement,
+    )
+}
 impl Projectile {
     /// `Entity.getBoundingBox`: its type's square box standing on its position.
     pub fn bounds(&self) -> Aabb {
@@ -622,11 +634,27 @@ impl Projectile {
     }
     /// `EntityRenderer.getPackedLightCoords` lights an entity from the block
     /// its `getLightProbePosition` is in, which is `getEyePosition`: the eye
-    /// height of its box, not the cell its feet rest in.
-    pub fn light_probe_y(&self) -> f64 {
-        self.position.y + self.kind.eye_height()
+    /// height of its box over `getPosition(partialTick)`, so the frame's
+    /// position rather than this tick's, and not the cell its feet rest in.
+    pub fn light_probe_y(&self, partial: f64) -> f64 {
+        self.previous.y + (self.position.y - self.previous.y) * partial + self.kind.eye_height()
     }
     pub fn water_bubbles(&self) -> Option<([f64; 3], [f64; 3])> {
+        if !self.touching_water {
+            return None;
+        }
+        // ThrowableProjectile.tick applies gravity, then applyInertia reads
+        // that movement. AbstractHurtingProjectile.applyInertia reads the
+        // movement it already has: fireballs, wither skulls and wind charges
+        // have no gravity step before the bubbles.
+        let hurting = matches!(
+            self.kind,
+            ProjectileKind::SmallFireball
+                | ProjectileKind::LargeFireball { .. }
+                | ProjectileKind::WitherSkull { .. }
+                | ProjectileKind::WindCharge
+                | ProjectileKind::BreezeWindCharge
+        );
         let throwable = matches!(
             self.kind,
             ProjectileKind::Snowball
@@ -636,22 +664,19 @@ impl Projectile {
                 | ProjectileKind::ExperienceBottle
                 | ProjectileKind::Thrown(_)
         );
-        if !throwable || !self.touching_water {
-            return None;
-        }
-        let v = Vec3::new(
-            self.velocity.x,
-            self.velocity.y - self.get_gravity(),
-            self.velocity.z,
-        );
-        Some((
+        let movement = if hurting {
+            [self.velocity.x, self.velocity.y, self.velocity.z]
+        } else if throwable {
             [
-                self.position.x - v.x * 0.25,
-                self.position.y - v.y * 0.25,
-                self.position.z - v.z * 0.25,
-            ],
-            [v.x, v.y, v.z],
-        ))
+                self.velocity.x,
+                self.velocity.y - self.get_gravity(),
+                self.velocity.z,
+            ]
+        } else {
+            return None;
+        };
+        let at = [self.position.x, self.position.y, self.position.z];
+        Some(water_bubble_at(at, movement))
     }
     /// Projectile.shoot: normalized direction plus triangular noise, times speed.
     pub fn shoot(
@@ -1418,12 +1443,39 @@ mod tests {
                 critical: false,
                 effect: None,
             },
-            ProjectileKind::SmallFireball,
             ProjectileKind::LlamaSpit,
         ] {
             let mut other = Projectile::new(kind, Vec3::new(0.5, 60.0, 0.5), None);
             other.touching_water = true;
             assert_eq!(other.water_bubbles(), None);
+        }
+    }
+    /// `AbstractHurtingProjectile.applyInertia`: four bubbles on the motion
+    /// the projectile already has, with no gravity taken off first.
+    #[test]
+    fn hurting_projectiles_in_water_bubble_along_their_motion() {
+        let expected_at = [0.25, 59.875, 1.0];
+        let expected_speed = [1.0, 0.5, -2.0];
+        for kind in [
+            ProjectileKind::SmallFireball,
+            ProjectileKind::LargeFireball { power: 1 },
+            ProjectileKind::WitherSkull { dangerous: true },
+            ProjectileKind::WindCharge,
+            ProjectileKind::BreezeWindCharge,
+        ] {
+            let label = format!("{kind:?}");
+            let mut p = Projectile::new(kind, Vec3::new(0.5, 60.0, 0.5), None);
+            p.velocity = Vec3::new(1.0, 0.5, -2.0);
+            assert_eq!(p.water_bubbles(), None, "{label} in air leaves no trail");
+            p.touching_water = true;
+            let (at, speed) = p.water_bubbles().expect("bubbles in water");
+            for i in 0..3 {
+                assert!((at[i] - expected_at[i]).abs() < 1e-12, "{label} {at:?}");
+                assert!(
+                    (speed[i] - expected_speed[i]).abs() < 1e-12,
+                    "{label} {speed:?}"
+                );
+            }
         }
     }
     /// A wall of blocks across x = 1.
@@ -1982,16 +2034,38 @@ mod render_light_tests {
             effect: None,
         });
         arrow.position = Vec3::new(0.5, 64.9, 0.5);
-        assert_eq!(arrow.light_probe_y().floor(), 65.0);
+        assert_eq!(arrow.light_probe_y(1.0).floor(), 65.0);
         assert_eq!(arrow.position.y.floor(), 64.0);
         // A wind charge's entity type declares no eye height, so it keeps its feet.
         let mut wind = shot(ProjectileKind::WindCharge);
         wind.position = Vec3::new(0.5, 64.9, 0.5);
-        assert_eq!(wind.light_probe_y(), 64.9);
+        assert_eq!(wind.light_probe_y(1.0), 64.9);
         // A snowball's box is a quarter block: the eye is 0.2125 up.
         let mut ball = shot(ProjectileKind::Snowball);
         ball.position = Vec3::new(0.5, 64.8, 0.5);
-        assert!((ball.light_probe_y() - 64.8 - 0.85 * 0.25).abs() < 1e-6);
+        assert!((ball.light_probe_y(1.0) - 64.8 - 0.85 * 0.25).abs() < 1e-6);
+    }
+
+    /// `getEyePosition(partialTick)` reads `getPosition(partialTick)`: an arrow
+    /// falling from 64 to 65 is probed at 64.63 for the first half of the frame
+    /// (the cell at 64) and only reaches the cell at 65 when the frame ends.
+    /// Horizon read the tick's own position, so the light popped a frame early.
+    #[test]
+    fn a_projectile_probe_follows_the_frame() {
+        let mut arrow = shot(ProjectileKind::Arrow {
+            base_damage: 2.0,
+            critical: false,
+            effect: None,
+        });
+        arrow.previous = Vec3::new(0.5, 64.0, 0.5);
+        arrow.position = Vec3::new(0.5, 65.0, 0.5);
+        assert!((arrow.light_probe_y(0.0) - 64.13).abs() < 1e-6);
+        assert_eq!(arrow.light_probe_y(0.0).floor(), 64.0);
+        assert_eq!(arrow.light_probe_y(0.5).floor(), 64.0);
+        assert!((arrow.light_probe_y(0.5) - 64.63).abs() < 1e-6);
+        assert_eq!(arrow.light_probe_y(1.0).floor(), 65.0);
+        // The old probe, this tick's position, was 65.0 for every frame.
+        assert_eq!((arrow.position.y + arrow.kind.eye_height()).floor(), 65.0);
     }
 }
 crate::impl_joined!(Projectile);

@@ -573,6 +573,7 @@ impl Local {
         for file in files {
             if let Some(item) = std::fs::read(&file).ok().and_then(|b| Item::parse(&b).ok())
                 && !slots.contains(&item.slot)
+                && item.slot != crate::Slot::Emote
                 && file.file_stem().is_some_and(|s| *s == *item.id)
             {
                 slots.push(item.slot);
