@@ -141,9 +141,19 @@ fn prune_chunks(shared: &Arc<Shared>, dir: &Path, config: &Config) -> Result<(),
 
 /// Run before every engine start, not only when the one-shot prune setting is still enabled.
 fn prepare_world(shared: &Arc<Shared>, dir: &Path, config: &Config) -> Result<(), String> {
-    crate::prune::recover(&dir.join(&config.world.name))?;
-    if config.prune_chunks.mode != crate::prune::Mode::Off {
-        prune_chunks(shared, dir, config)?;
+    let world = dir.join(&config.world.name);
+    crate::prune::recover(&world)?;
+    if config.prune_chunks.mode != crate::prune::Mode::Off
+        && let Err(e) = prune_chunks(shared, dir, config)
+    {
+        // A failed region rolls itself back: with no journal left, the world is whole (the regions
+        // pruned before it stay pruned) and the server starts. Only a pending recovery stops it.
+        crate::prune::recover(&world)?;
+        note(
+            shared,
+            "WARN",
+            &format!("Chunk prune failed, the server starts without the rest of it: {e}"),
+        );
     }
     Ok(())
 }
@@ -856,6 +866,27 @@ fn send_stop(stdin: &mut Option<std::process::ChildStdin>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_prune_that_rolled_back_still_lets_the_server_start() {
+        let (dir, ow) = crate::prune::tests::world("supervisor-rolled-back");
+        // The kept entity record of r.2.0 can't be read: that region fails and rolls back.
+        let entity = ow.join("entities/r.2.0.mca");
+        let mut broken = std::fs::read(&entity).unwrap();
+        broken[8192..8196].copy_from_slice(&u32::MAX.to_be_bytes());
+        std::fs::write(&entity, &broken).unwrap();
+        let terrain = std::fs::read(ow.join("region/r.2.0.mca")).unwrap();
+        std::fs::write(dir.join("server.toml"), crate::config::TEMPLATE).unwrap();
+        let mut config = Config::load(&dir).unwrap();
+        config.prune_chunks.mode = crate::prune::Mode::Delete;
+        config.prune_chunks.spawn_radius = 4;
+        let shared = Shared::with_install(&dir, None);
+        prepare_world(&shared, &dir, &config).unwrap();
+        assert_eq!(std::fs::read(ow.join("region/r.2.0.mca")).unwrap(), terrain);
+        assert_eq!(std::fs::read(&entity).unwrap(), broken);
+        assert!(!ow.join(".horizon-prune").exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn an_unrecoverable_prune_blocks_start_even_with_mode_off() {

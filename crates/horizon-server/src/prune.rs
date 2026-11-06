@@ -871,7 +871,7 @@ pub fn write_report(dir: &Path, outcome: &Outcome) -> io::Result<PathBuf> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use horizon_core::position::ChunkPos;
     use horizon_world::{compression::Compression, nbt::NamedTag};
@@ -966,7 +966,7 @@ mod tests {
     }
 
     /// Overworld region r.2.0 (chunks 64..95, 0..31), far from the spawn at 0 0.
-    fn world(name: &str) -> (PathBuf, PathBuf) {
+    pub(crate) fn world(name: &str) -> (PathBuf, PathBuf) {
         let dir = temp(name);
         let world = dir.join("world");
         let ow = world.join("dimensions/minecraft/overworld");
