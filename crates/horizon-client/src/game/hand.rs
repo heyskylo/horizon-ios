@@ -130,7 +130,7 @@ impl Game<'_> {
             self.pack
                 .item_renderer
                 .models
-                .components(&horizon_client::item_render::stack_view(stack))
+                .components_view(&horizon_client::item_render::stack_view(stack))
                 .get("minecraft:attack_range")
                 .cloned()
         });
@@ -237,7 +237,7 @@ impl Game<'_> {
             self.pack
                 .item_renderer
                 .models
-                .components(&horizon_client::item_render::stack_view(stack))
+                .components_view(&horizon_client::item_render::stack_view(stack))
                 .get("minecraft:attack_range")
                 .cloned()
         });
@@ -253,7 +253,7 @@ impl Game<'_> {
         self.pack
             .item_renderer
             .models
-            .components(&horizon_client::item_render::stack_view(active))
+            .components_view(&horizon_client::item_render::stack_view(active))
             .get("minecraft:attack_range")
             .cloned()
     }
@@ -546,7 +546,7 @@ impl Game<'_> {
             self.pack
                 .item_renderer
                 .models
-                .components(&horizon_client::item_render::stack_view(stack))
+                .components_view(&horizon_client::item_render::stack_view(stack))
                 .get("minecraft:attack_range")
                 .cloned()
         });
