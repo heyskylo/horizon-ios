@@ -7545,11 +7545,8 @@ impl Game<'_> {
     /// `ITEM_INTERACT_FINISH` when it ends) from the player, at its feet, when
     /// the stack's use effects ask for interaction vibrations (the default).
     pub(super) fn use_vibration(&mut self, stack: &ItemStack, event: &'static str) {
-        if !self
-            .items()
-            .get(&stack.item)
-            .is_some_and(|i| i.interact_vibrations)
-        {
+        let default = self.items().get(&stack.item).map(|i| i.interact_vibrations);
+        if !item_use::interact_vibrations(stack, default) {
             return;
         }
         let Some(p) = self.player.as_ref().map(|p| p.position) else {
