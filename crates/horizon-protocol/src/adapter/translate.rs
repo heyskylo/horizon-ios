@@ -129,14 +129,22 @@ pub fn clientbound(
                 if Some(e.kind) == falling_block {
                     e.data = ids.block_state.up(e.data).unwrap_or(0);
                 }
-                e.kind = ids.entity_type.up(e.kind).unwrap_or(e.kind);
+                // An unknown server type may name an unrelated mob in the pinned registry.
+                let Some(kind) = ids.entity_type.up(e.kind) else {
+                    return Ok(None);
+                };
+                e.kind = kind;
             }
             strip_id(p.encode())
         }
         (State::Play, cb::BLOCK_ENTITY_DATA) => {
             let mut p = decode_play(ids, id, payload)?;
             if let play::Clientbound::BlockEntityData(b) = &mut p {
-                b.kind = ids.block_entity_type.up(b.kind).unwrap_or(b.kind);
+                // Match the chunk path: the block still draws without an unsupported block entity.
+                let Some(kind) = ids.block_entity_type.up(b.kind) else {
+                    return Ok(None);
+                };
+                b.kind = kind;
             }
             strip_id(p.encode())
         }
@@ -1069,6 +1077,82 @@ mod v26_1 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_1_21_11_unknown_entity_is_dropped_and_vanilla_entities_are_remapped() {
+        let session = Session::new(ServerVersion::V1_21_11);
+        for (kind, data, expected) in [
+            (157, 0, None),
+            (0, 0, Some((0, 0))),
+            (51, 27, Some((52, 28))), // falling block, with a state whose id changed
+        ] {
+            let packet = play::Clientbound::AddEntity(play::AddEntity {
+                id: 7,
+                uuid: 1,
+                kind,
+                position: [0.0; 3],
+                velocity: [0.0; 3],
+                pitch: 0,
+                yaw: 0,
+                head_yaw: 0,
+                data,
+            });
+            let body = strip_id(packet.encode());
+            let translated = clientbound(
+                &session,
+                State::Play,
+                packet_ids::play::clientbound::ADD_ENTITY,
+                &body,
+            )
+            .unwrap();
+            match expected {
+                None => assert!(translated.is_none()),
+                Some(expected) => {
+                    let (id, body) = translated.unwrap();
+                    assert_eq!(id, packet_ids::play::clientbound::ADD_ENTITY);
+                    let p = play::Clientbound::decode(id, &body.unwrap()).unwrap();
+                    let play::Clientbound::AddEntity(e) = p else {
+                        panic!("{p:?}");
+                    };
+                    assert_eq!((e.kind, e.data), expected);
+                    assert_eq!(e.id, 7);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_1_21_11_unknown_block_entity_update_is_dropped() {
+        let session = Session::new(ServerVersion::V1_21_11);
+        for (kind, expected) in [(49, None), (1, Some(1))] {
+            let packet = play::Clientbound::BlockEntityData(play::BlockEntityData {
+                pos: [1, 2, 3],
+                kind,
+                tag: horizon_world::nbt::Tag::Compound(Default::default()),
+            });
+            let body = strip_id(packet.encode());
+            let translated = clientbound(
+                &session,
+                State::Play,
+                packet_ids::play::clientbound::BLOCK_ENTITY_DATA,
+                &body,
+            )
+            .unwrap();
+            match expected {
+                None => assert!(translated.is_none()),
+                Some(expected) => {
+                    let (id, body) = translated.unwrap();
+                    assert_eq!(id, packet_ids::play::clientbound::BLOCK_ENTITY_DATA);
+                    let p = play::Clientbound::decode(id, &body.unwrap()).unwrap();
+                    let play::Clientbound::BlockEntityData(b) = p else {
+                        panic!("{p:?}");
+                    };
+                    assert_eq!(b.kind, expected);
+                    assert_eq!(b.pos, [1, 2, 3]);
+                }
+            }
+        }
+    }
 
     fn ids() -> &'static Ids {
         super::super::ServerVersion::V26_2.ids().unwrap()

@@ -1,0 +1,12 @@
+{
+  "hooks": [
+    {
+      "name": "item_interact_mob",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_item_interact_mob",
+      "side": "server",
+      "mod_api": {"contract": "replace", "out": "swing"}
+    }
+  ],
+  "rust_summary": "an item fallback after a native mob's ordinary interaction passed.",
+  "doc_summary": "`native_item_interact_mob(entity, kind, stack, swing)` runs after ordinary entity interactions pass, for an alive native Mob selected by the exact packet ID or unobstructed crosshair. First `Some(true)` owns and swings once; `Some(false)` owns without a swing; `None` passes. The nonempty stack belongs to the acting hand. Armor stands, other real players and dragon-part tables are not covered. Bundles need \"hooks\": @API:item_interact_mob@."
+}

@@ -1,0 +1,11 @@
+{
+  "hooks": [
+    {
+      "name": "block_clone_item",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_block_clone_item",
+      "mod_api": {"contract": "replace", "out": "stack"}
+    }
+  ],
+  "rust_summary": "state-dependent block clone items before Ctrl+Pick data.",
+  "doc_summary": "`native_block_clone_item` supplies a block's clone stack from its actual state before ordinary Ctrl+Pick block-entity component copying. First response owns the result; no response retains vanilla. An empty or unregistered response suppresses picking. Bundles need \"hooks\": @API:block_clone_item@."
+}
