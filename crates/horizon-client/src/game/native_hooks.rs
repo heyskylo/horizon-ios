@@ -6551,8 +6551,9 @@ impl Game<'_> {
     /// A guest's click in their own inventory (`window` 0) or a vanilla menu
     /// they have open, before it is applied (Bukkit's `InventoryClickEvent`):
     /// the packet's `slot` (the window's numbering; -999 outside), `button`
-    /// and `mode` (`ClickType`'s id). Drags (mode 5) are not heard here, and
-    /// menus a mod opened are `native_menu_clicked`'s. Set `cancel` and
+    /// and `mode` (`ClickType`'s id). Drags (mode 5) are heard once, at their
+    /// end, by `native_inventory_drag`; menus a mod opened are
+    /// `native_menu_clicked`'s. Set `cancel` and
     /// nothing moves: the click is handled as one that does nothing, so the
     /// client's predicted slots and cursor are answered with the server's.
     /// No state is swapped in; the helpers that take a UUID reach the player.
@@ -6577,6 +6578,34 @@ impl Game<'_> {
             slot,
             button,
             mode,
+            cancel,
+        );
+    }
+    /// A guest's drag (quick craft) in their own inventory or a vanilla menu
+    /// ends, before it is applied (Bukkit's `InventoryDragEvent`): `kind` 0
+    /// spreads evenly (left button), 1 puts one in each slot (right), 2
+    /// clones (middle, creative), and `slots` are the window slots the
+    /// client dragged over, in order. Set `cancel` and nothing moves: the
+    /// drag ends empty and the client's predicted slots and cursor are
+    /// answered with the server's. No state is swapped in. Server-side.
+    /// @API:inventory_drag@.
+    pub(super) fn native_inventory_drag(
+        &mut self,
+        player: u128,
+        name: &str,
+        window: i32,
+        kind: i32,
+        slots: &[i32],
+        cancel: &mut bool,
+    ) {
+        mod_api::dispatch_inventory_drag(
+            self,
+            mod_api::mods(),
+            player,
+            name,
+            window,
+            kind,
+            slots,
             cancel,
         );
     }

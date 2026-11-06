@@ -2497,9 +2497,14 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   inventory (`window` 0) or a vanilla menu they have open (a chest, a furnace, a crafting table, a station, a merchant,
   a mount), heard before it is applied (Bukkit's `InventoryClickEvent`), with the packet's `slot` (the window's
   numbering, -999 outside), `button` and `mode` (`ClickType`'s id: 0 pickup, 1 quick move, 2 swap, 3 clone, 4 throw,
-  6 pickup all). Drags (mode 5) are not heard here; a mod's own menus are `native_menu_clicked`'s; spectators are not
+  6 pickup all). Drags (mode 5) are heard once, at their end, by `native_inventory_drag`; a mod's own menus are `native_menu_clicked`'s; spectators are not
   heard. Set `cancel` and nothing moves: the click is handled as one that does nothing, so the client's predicted
   slots and cursor are answered with the server's. No state is swapped in; the helpers that take a UUID reach them.
+- **`native_inventory_drag(player, name, window, kind, slots, cancel)`**: a guest's drag (quick craft) in their own
+  inventory or a vanilla menu ends, heard before it is applied (Bukkit's `InventoryDragEvent`): `kind` 0 spreads the
+  cursor evenly (left button), 1 puts one in each slot (right), 2 clones (middle, creative), and `slots` are the window
+  slots the client dragged over, in order (the menu still skips those that cannot take the stack). Set `cancel` and
+  nothing moves: the drag ends empty and the client's predicted slots and cursor are answered with the server's.
 
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The

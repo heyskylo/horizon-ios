@@ -137,6 +137,9 @@ pub(super) struct GuestPlay {
     /// What `ServerPlayer` last recorded for the guest's scoreboard criteria
     /// (`lastRecordedHealthAndAbsorption` and the others).
     score_recorded: super::scoreboard::Recorded,
+    /// The window slots of the drag the guest is making, for
+    /// `native_inventory_drag` at its end.
+    drag_heard: Option<Vec<i32>>,
 }
 
 /// A guest's command waiting for the hub (`LanHost::commands`).
@@ -1829,11 +1832,12 @@ impl Game<'_> {
     }
 
     /// The mods hear a guest's click in their own inventory or a vanilla
-    /// menu they have open (`native_inventory_click`) before any handler
-    /// does. A canceled click becomes a drag start of no type, which every
-    /// menu takes as `resetQuickCraft` and nothing else, so it moves nothing
-    /// and the client's predicted slots and cursor are answered as for any
-    /// click the server refused.
+    /// menu they have open (`native_inventory_click`, and a drag's end
+    /// `native_inventory_drag`) before any handler does. A canceled click
+    /// becomes a drag start of no type, which every menu takes as
+    /// `resetQuickCraft` and nothing else, so it moves nothing and the
+    /// client's predicted slots and cursor are answered as for any click the
+    /// server refused.
     fn lan_inventory_click_hooks(
         &mut self,
         host: &mut LanHost,
@@ -1852,19 +1856,46 @@ impl Game<'_> {
             return;
         }
         let (uuid, name) = (g.uuid, g.name.clone());
-        if p.input == 5 {
-            return;
-        }
+        let play = host.play.entry(conn).or_default();
         let mut cancel = false;
-        self.native_inventory_click(
-            uuid,
-            &name,
-            p.container,
-            i32::from(p.slot),
-            i32::from(p.button),
-            p.input,
-            &mut cancel,
-        );
+        if p.input == 5 {
+            // A drag is heard once, at its end, with the slots it went over.
+            match p.button & 3 {
+                0 => play.drag_heard = Some(Vec::new()),
+                1 => {
+                    let slot = i32::from(p.slot);
+                    if let Some(slots) = play.drag_heard.as_mut()
+                        && !slots.contains(&slot)
+                    {
+                        slots.push(slot);
+                    }
+                }
+                _ => {
+                    if let Some(slots) = play.drag_heard.take() {
+                        let kind = i32::from(p.button >> 2) & 3;
+                        self.native_inventory_drag(
+                            uuid,
+                            &name,
+                            p.container,
+                            kind,
+                            &slots,
+                            &mut cancel,
+                        );
+                    }
+                }
+            }
+        } else {
+            play.drag_heard = None;
+            self.native_inventory_click(
+                uuid,
+                &name,
+                p.container,
+                i32::from(p.slot),
+                i32::from(p.button),
+                p.input,
+                &mut cancel,
+            );
+        }
         if cancel {
             (p.slot, p.button, p.input) = (-999, 3 << 2, 5);
         }
