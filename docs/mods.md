@@ -431,7 +431,7 @@ A pool addition holds `"elements"` as a pool does, a processor list addition `"p
 Lithostitched's `add_structure_set_entries`, `add_template_pool_elements` and `add_processor_list_processors` modifiers
 do on NeoForge and Fabric, and `horizon-port-pack carry` writes the last two from those.
 
-A mod's own configured and placed features (`data/<ns>/worldgen/configured_feature/`, `placed_feature/`) and mob spawn
+A mod's own configured and placed features (`data/<ns>/worldgen/feature/`, 26.3's folder, or the older `configured_feature/`; `placed_feature/`) and mob spawn
 changes reach biomes it does not own (vanilla's) through NeoForge's biome modifiers, files in
 `data/<ns>/neoforge/biome_modifier/` (older Forge mods: `data/<ns>/forge/biome_modifier/`, `forge:` types).
 `add_features` appends its `features` to one generation `step` of every biome in `biomes`; `remove_features` takes them

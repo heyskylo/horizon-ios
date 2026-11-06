@@ -4574,3 +4574,21 @@ fn roots_unused_for_a_day_are_removed() {
     assert!(current.exists() && recent.exists());
     fs::remove_dir_all(&scratch).unwrap();
 }
+
+/// A mod's features reach the features bundle from 26.3's `feature/` folder
+/// and from the older `configured_feature/` one.
+#[test]
+fn worldgen_entry_reads_both_feature_folders() {
+    for folder in ["feature", "configured_feature"] {
+        let file = format!("data/zinc/worldgen/{folder}/ore_zinc.json");
+        assert_eq!(
+            worldgen_entry(&file),
+            Some(("worldgen/features.json", "zinc:ore_zinc".to_owned())),
+            "{folder}"
+        );
+    }
+    assert_eq!(
+        worldgen_entry("data/zinc/worldgen/nope/ore_zinc.json"),
+        None
+    );
+}
