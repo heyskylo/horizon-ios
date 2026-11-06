@@ -6492,6 +6492,9 @@ impl Renderer {
         }
         if let Some(native) = &mut self.native {
             native.frame.reset_history();
+            if let Some(post) = &mut native.post {
+                post.reset_history();
+            }
         }
     }
     /// Drops the running shader pack, of either kind.
