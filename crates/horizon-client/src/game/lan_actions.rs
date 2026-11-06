@@ -3944,8 +3944,11 @@ impl Game<'_> {
                 continue;
             }
             // Native mods, at the start of ServerPlayer.tick: before the
-            // player's digging, item use and cooldowns.
-            self.as_guest(host, conn, |g| g.native_player_tick_pre());
+            // player's digging, item use and cooldowns. Swapping the guest in
+            // costs a player's state each tick: only when a mod can listen.
+            if !horizon_client::mod_api::mods().is_empty() {
+                self.as_guest(host, conn, |g| g.native_player_tick_pre());
+            }
             let play = host.play.entry(conn).or_default();
             // ServerGamePacketListenerImpl.tick's dropSpamThrottler.
             play.creative_drops = play.creative_drops.saturating_sub(1);
