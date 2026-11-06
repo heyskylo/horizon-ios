@@ -1364,6 +1364,11 @@ pub fn mob_to_nbt(
                 }
             }
         }
+        // LivingEntity saves the actual saddle equipment even on a mob whose
+        // Survival interaction does not offer saddling (for example a husk).
+        if let Some(saddle) = m.saddle_item() {
+            equipment.insert("saddle".into(), crate::save::item_to_nbt(&saddle));
+        }
         // A happy ghast wears its harness in the body slot (and a nautilus
         // its armour, a sulfur cube its swallowed block, a wolf its armor,
         // with the durability it lost).
