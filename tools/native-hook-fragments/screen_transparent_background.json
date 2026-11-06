@@ -1,0 +1,35 @@
+{
+  "hooks": [
+    {
+      "name": "screen_transparent_background",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_screen_transparent_background",
+      "neoforge": "ScreenEvent.Render.Pre (transparent background)",
+      "side": "client",
+      "cancellable": true,
+      "mod_api": {
+        "contract": "cancel",
+        "out": "canceled"
+      }
+    }
+  ],
+  "helpers": [
+    {
+      "name": "apply_screen_blur",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_apply_screen_blur"
+    },
+    {
+      "name": "menu_blur_radius",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_menu_blur_radius"
+    },
+    {
+      "name": "draw_menu_background",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_draw_menu_background"
+    },
+    {
+      "name": "tiled_sprite",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_tiled_sprite"
+    }
+  ],
+  "rust_summary": "transparent background rendering behind in-game screens (`native_screen_transparent_background`), menu background blur (`native_apply_screen_blur`, `native_menu_blur_radius`) and tiled menu backgrounds (`native_draw_menu_background`, `native_tiled_sprite`).",
+  "doc_summary": "`native_screen_transparent_background(screen, batch, canceled)` (`Screen.renderTransparentBackground`) runs before drawing the translucent dark background behind in-game screens (inventory, containers, creative, books, signs, editors); set `canceled` to suppress the vanilla dark gradient. `apply_screen_blur()` requests vanilla's menu background blur for this frame, with a per-frame guard so blur applies at most once. `menu_blur_radius()` answers the configured `menuBackgroundBlurriness` option. `draw_menu_background(batch, rect, in_world)` draws the tiled 32x32 menu background across `rect`. `tiled_sprite(batch, sprite, rect, size, argb)` tiles an atlas sprite. Bundles need \"hooks\": @API:screen_transparent_background@."
+}

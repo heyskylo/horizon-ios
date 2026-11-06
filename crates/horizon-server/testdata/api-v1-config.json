@@ -21,6 +21,7 @@
         "panel": {"allow_public": false, "bind": "127.0.0.1:8130"},
         "properties": {},
         "server": {
+          "accept_older_clients": false,
           "admin_feedback_to_ops": true,
           "bind": "",
           "enforce_whitelist": false,
@@ -38,7 +39,8 @@
           "expect_seconds": 10,
           "max_expect_seconds": 60,
           "max_expected": 64,
-          "max_freeze_seconds": 30
+          "max_freeze_seconds": 30,
+          "max_hold_seconds": 60
         },
         "updates": {"keep": 1},
         "world": {
