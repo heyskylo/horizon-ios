@@ -326,7 +326,8 @@ impl Game<'_> {
                 let tags = self.tags_of(t);
                 for (tag, negated) in &s.tags {
                     let has = if tag.is_empty() {
-                        !tags.is_empty()
+                        // EntitySelectorOptions' empty-name predicate (lambda$bootStrap$43).
+                        tags.is_empty()
                     } else {
                         tags.contains(tag)
                     };
@@ -822,7 +823,14 @@ impl Game<'_> {
             |r| r.listed_player_count(),
         );
         let has_objective = self.score.board.display_objective(sb::SLOT_LIST).is_some();
-        let shown = tab_list::visible(key, self.has_singleplayer_server(), count, has_objective);
+        let shown = tab_list::visible(
+            // `Hud.extractRenderState` draws the list inside `if (!isHidden)`.
+            !self.ui.hide_gui,
+            key,
+            self.has_singleplayer_server(),
+            count,
+            has_objective,
+        );
         let changed = self.tab_list.set_visible(shown);
         if !tab_players_needed(shown, changed) {
             // World skins still need download polling and atlas residency checks.
@@ -901,13 +909,13 @@ fn tab_players_needed(shown: bool, changed: bool) -> bool {
 fn hidden_tab_skips_players_except_for_visibility_narration() {
     use horizon_client::tab_list;
     for count in [1, 150, 1000] {
-        let shown = tab_list::visible(false, false, count, false);
+        let shown = tab_list::visible(true, false, false, count, false);
         assert!(!tab_players_needed(shown, false));
         assert!(
             tab_players_needed(shown, true),
             "closing narration needs names"
         );
-        let shown = tab_list::visible(true, false, count, false);
+        let shown = tab_list::visible(true, true, false, count, false);
         assert!(tab_players_needed(shown, false));
     }
 }
@@ -1023,7 +1031,7 @@ mod tab_list_tests {
         let mut guests = vec![guest(2, "Alex")];
         let players = local_tab_players(me.clone(), &guests);
         assert_eq!(players.as_slice(), std::slice::from_ref(&me));
-        assert!(!tab_list::visible(true, true, players.len(), false));
+        assert!(!tab_list::visible(true, true, true, players.len(), false));
 
         guests[0].placed = true;
         let players = local_tab_players(me.clone(), &guests);
@@ -1031,14 +1039,18 @@ mod tab_list_tests {
         assert_eq!(players[0], me);
         assert_eq!(players[1].uuid, 2);
         assert_eq!(players[1].name, "Alex");
-        assert!(tab_list::visible(true, true, players.len(), false));
-        assert!(!tab_list::visible(false, true, players.len(), false));
+        assert!(tab_list::visible(true, true, true, players.len(), false));
+        assert!(!tab_list::visible(true, false, true, players.len(), false));
 
         guests.clear();
         let players = local_tab_players(me, &guests);
         assert_eq!(players.len(), 1);
-        assert!(!tab_list::visible(true, true, players.len(), false));
-        assert!(tab_list::visible(true, true, players.len(), true));
+        assert!(!tab_list::visible(true, true, true, players.len(), false));
+        assert!(tab_list::visible(true, true, true, players.len(), true));
+        // F1 (`Hud.isHidden`) takes the list away: `extractRenderState` draws
+        // it inside `if (!isHidden)`, the key and the objective aside.
+        assert!(!tab_list::visible(false, true, true, players.len(), true));
+        assert!(!tab_list::visible(false, true, false, 2, false));
     }
 
     #[test]
@@ -1152,3 +1164,6 @@ mod team_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod empty_tag_tests;

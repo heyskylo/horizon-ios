@@ -21,6 +21,7 @@
         "panel": {"allow_public": false, "bind": "127.0.0.1:8130"},
         "properties": {},
         "server": {
+          "accept_older_clients": false,
           "admin_feedback_to_ops": true,
           "bind": "",
           "enforce_whitelist": false,
