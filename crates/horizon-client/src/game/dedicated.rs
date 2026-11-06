@@ -1343,6 +1343,14 @@ impl Game<'_> {
             {
                 self.finish_report(recording, state.view, state.max_players);
             }
+            if horizon_client::spans::trace::due()
+                && let Some(events) = horizon_client::spans::trace::stop()
+            {
+                log(
+                    "INFO",
+                    &format!("Trace written: {events} events (reports/)"),
+                );
+            }
             // DedicatedServer.sendLowDiskSpaceWarning: the operators hear of it
             // (no window drains the toasts here).
             if horizon_client::chunk_io::take().low_disk_space
@@ -1643,6 +1651,38 @@ impl Game<'_> {
                             &format!("Recording a performance report for {seconds} s (reports/)"),
                         );
                     }
+                }
+            }
+            // Horizon's own, on the console only: every thread's spans as a timeline (report.rs).
+            "horizon-trace" if rest.first() == Some(&"stop") => {
+                match horizon_client::spans::trace::stop() {
+                    Some(events) => log("INFO", &format!("Trace stopped: {events} events written")),
+                    None => log("INFO", "No trace is being written"),
+                }
+            }
+            "horizon-trace" => {
+                let seconds = match rest.first().map(|s| s.parse::<u32>()) {
+                    None => Some(30),
+                    Some(Ok(s)) if (1..=report::TRACE_MAX_SECONDS).contains(&s) => Some(s),
+                    Some(_) => None,
+                };
+                match seconds.map(report::start_trace) {
+                    None => log(
+                        "INFO",
+                        &format!(
+                            "horizon-trace [SECONDS | stop]: 1 to {} seconds, 30 by default",
+                            report::TRACE_MAX_SECONDS
+                        ),
+                    ),
+                    Some(Ok(path)) => log(
+                        "INFO",
+                        &format!(
+                            "Writing a trace for {} s to {} (open it in ui.perfetto.dev)",
+                            seconds.unwrap_or_default(),
+                            path.display()
+                        ),
+                    ),
+                    Some(Err(e)) => log("ERROR", &format!("Could not start a trace: {e}")),
                 }
             }
             "save-all" => {

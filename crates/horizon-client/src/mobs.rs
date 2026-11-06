@@ -1317,6 +1317,39 @@ impl Extra {
     }
 }
 
+/// How far the boxes of a set of mobs reach from their positions: the widest half width and the
+/// tallest height among them. A box query over many mobs (a vehicle's, against every mob of the
+/// level) tests each mob's position against this first, and works out the box ([`Mob::bounds`],
+/// which reads the mob's whole size) only for the mobs whose position comes close.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BoxReach {
+    half_width: f64,
+    height: f64,
+}
+impl BoxReach {
+    pub fn of(mobs: &[Mob]) -> Self {
+        mobs.iter().fold(Self::default(), |r, m| {
+            let (width, height, _) = m.dims();
+            Self {
+                half_width: r.half_width.max(width / 2.0),
+                height: r.height.max(height),
+            }
+        })
+    }
+    /// Whether the box of `m`, one of the mobs this was worked out for, can meet `area`: a
+    /// superset, the caller still tests the box.
+    #[inline]
+    pub fn may_meet(self, m: &Mob, area: Aabb) -> bool {
+        let (lo, hi, p) = (area.min_position(), area.max_position(), m.position);
+        p.x - self.half_width <= hi.x
+            && p.x + self.half_width >= lo.x
+            && p.z - self.half_width <= hi.z
+            && p.z + self.half_width >= lo.z
+            && p.y <= hi.y
+            && p.y + self.height >= lo.y
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Mob {
     /// When it joined its list ([`crate::join_seq`]); set by the list, not by the spawn site.
