@@ -289,8 +289,13 @@ fn fill(
                     child["properties"].clone(),
                 )
             }),
+            // A server mod's node with custom suggestions (the report has none)
+            // asks the server.
             suggestions: if argument {
-                suggestions.get(path.join(" ").as_str()).copied()
+                suggestions
+                    .get(path.join(" ").as_str())
+                    .copied()
+                    .or(child["suggestions"].is_string().then_some("minecraft:ask_server"))
             } else {
                 None
             },
@@ -501,16 +506,21 @@ mod tests {
         .unwrap();
         let mods: Value = serde_json::from_str(
             r#"{"type":"root","children":{"beacon":{"type":"literal","executable":true,"children":{
-                "height":{"type":"argument","parser":"brigadier:integer","properties":{"min":1,"max":64},"executable":true}}}}}"#,
+                "height":{"type":"argument","parser":"brigadier:integer","properties":{"min":1,"max":64},"executable":true},
+                "who":{"type":"argument","parser":"brigadier:string","properties":{"type":"word"},"suggestions":"horizon:player_names","executable":true}}}}}"#,
         )
         .unwrap();
         let tree = CommandTree { root: report };
         let packet = tree.packet_with(0, true, &Builtin::default(), &mods);
         let names: Vec<_> = packet.nodes.iter().map(|n| n.name.as_str()).collect();
-        assert_eq!(names, ["", "me", "beacon", "action", "height"]);
+        assert_eq!(names, ["", "me", "beacon", "action", "height", "who"]);
+        // A mod's node with custom suggestions asks the server; vanilla's own keep theirs.
+        assert_eq!(packet.nodes[5].suggestions.as_deref(), Some("minecraft:ask_server"));
+        assert_eq!(packet.nodes[4].suggestions, None);
+        assert_eq!(packet.nodes[3].suggestions, None);
         let beacon = &packet.nodes[2];
         assert!(beacon.executable && !beacon.restricted);
-        assert_eq!(beacon.children, [4]);
+        assert_eq!(beacon.children, [4, 5]);
         let height = packet.nodes[4].parser.as_ref().unwrap();
         assert_eq!(height.1, vec![3, 0, 0, 0, 1, 0, 0, 0, 64]);
         // No mods: vanilla's tree as it is.

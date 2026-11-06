@@ -3539,12 +3539,21 @@ impl Game<'_> {
     /// One guest's command as that guest, its feedback sent to them; false
     /// when it failed (or the guest is gone).
     pub(super) fn run_guest_command(&mut self, c: GuestCommand) -> bool {
+        self.run_guest_command_told(c).is_some_and(|(ok, _)| ok)
+    }
+
+    /// `run_guest_command`, with the lines it sent the guest; None when the
+    /// guest is gone.
+    pub(super) fn run_guest_command_told(
+        &mut self,
+        c: GuestCommand,
+    ) -> Option<(bool, Vec<horizon_client::text::Text>)> {
         let Some(mut host) = self.lan.take() else {
-            return false;
+            return None;
         };
         let Some(swap) = self.enter_guest(&mut host, c.conn, self.dim) else {
             self.lan = Some(host);
-            return false;
+            return None;
         };
         self.lan = Some(host);
         self.chat_capture = Some(Vec::new());
@@ -3572,7 +3581,7 @@ impl Game<'_> {
         }
         // What the command earned is announced before its feedback.
         self.announce_guest_advancements(&mut host);
-        for line in lines {
+        for line in &lines {
             host.hub.send_to(
                 c.conn,
                 &C::SystemChat(play::SystemChat {
@@ -3584,7 +3593,7 @@ impl Game<'_> {
         // The other operators hear of it; never the player whose command it was.
         self.send_admin_feedback(&mut host, Some(c.conn));
         self.lan = Some(host);
-        ok
+        Some((ok, lines))
     }
 
     /// The `broadcastToAdmins` lines a command queued (`source`: the guest
@@ -3689,12 +3698,43 @@ impl Game<'_> {
         let own_banned_ips = std::mem::replace(&mut reg.banned_ips, banned_ips);
         let own_whitelisted = std::mem::replace(&mut reg.whitelisted, whitelisted);
         let parse = d.parse(command, &self.ui.registries);
-        let ((start, end), mut suggestions) =
+        let ((mut start, mut end), mut suggestions) =
             d.suggestions(&parse, command.len(), &self.ui.registries);
+        let (label, rest) = command.split_once(' ').unwrap_or((command, ""));
+        let arguments: Vec<String> = if command.contains(' ') {
+            rest.split(' ').map(str::to_owned).collect()
+        } else {
+            Vec::new()
+        };
+        // A mod's command, which vanilla's tree doesn't know: the word being typed.
+        if let Some(typed) = arguments.last()
+            && Self::native_command_level(host, command).is_some_and(|l| l <= permission)
+        {
+            (start, end) = (command.len() - typed.len(), command.len());
+            let words: Vec<&str> = arguments.iter().map(String::as_str).collect();
+            if super::native_server::completes_player_name(
+                &host.native_usages,
+                permission,
+                label,
+                &words,
+            ) {
+                let mut names = horizon_client::command::SuggestionsBuilder::new(command, start);
+                names.suggest_matching(host.hub.guests.iter().map(|g| g.name.as_str()));
+                suggestions.extend(names.out);
+            }
+        }
         self.native_tab_complete(
             player_uuid,
             &player_name,
             command,
+            [start, end],
+            &mut suggestions,
+        );
+        self.native_tab_complete_v2(
+            player_uuid,
+            &player_name,
+            label,
+            &arguments,
             [start, end],
             &mut suggestions,
         );

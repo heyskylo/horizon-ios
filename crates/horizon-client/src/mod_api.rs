@@ -411,7 +411,10 @@ pub struct NativeServerPlayer {
 /// `pay <player:player> <amount:integer>`, `balance [player:player]`,
 /// `eco give <player:player> <amount:integer>`. Kinds: `word`, `text` (the
 /// rest of the line, last), `integer`, `number`, `boolean`, `player`,
-/// `item`, `block_pos`. Usages of one command share their words; the
+/// `item`, `block_pos`; and the kinds whose completions the player's client
+/// asks the server for (`native_tab_complete_v2`): `word?`, `text?` and
+/// `player_name` (a word, any name accepted, that the server completes with
+/// the online players' names). Usages of one command share their words; the
 /// server merges them into one tree.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -452,6 +455,38 @@ impl NativeCommand {
         self.permission = Some(node.to_owned());
         self
     }
+}
+
+/// What a command a mod ran did (`native_run_command_captured`): whether it
+/// ran without failing, its result and the lines it answered with, in order.
+#[derive(Clone, Debug, Default, PartialEq)]
+#[non_exhaustive]
+pub struct NativeCommandResult {
+    pub ran: bool,
+    /// Vanilla's `CommandResultCallback` value: the sum of the successful
+    /// results (one for a plain command, one per fork of `execute as @a run`),
+    /// 0 when it failed (`execute if entity` of nobody). A mod's command gives
+    /// 1 when a mod ran it.
+    pub result: i32,
+    pub output: Vec<Text>,
+}
+
+/// A command of the server (`native_command_info`): vanilla's or one a mod
+/// registered.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct NativeCommandInfo {
+    /// Its own name, an alias resolved (`teleport` for `tp`).
+    pub name: String,
+    /// The other names that run it (`tp` for `teleport`).
+    pub aliases: Vec<String>,
+    /// Its usages: vanilla's one line, as `/help` gives it, or each usage a
+    /// mod registered.
+    pub usages: Vec<String>,
+    /// The operator level a player needs to run it (0: everyone).
+    pub level: u8,
+    /// Whether vanilla has it; false for a mod's.
+    pub vanilla: bool,
 }
 
 /// Which `Game` observes the phase; a mirror `Game` never fires.

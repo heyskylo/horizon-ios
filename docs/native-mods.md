@@ -2685,6 +2685,42 @@ server's command tree ask. Without such a mod every answer is the operator level
   (calling it from the commands-sent hooks themselves would send the tree every tick). True when the player is on;
   false for anyone else and on a client. Bundles need `"hooks": @API:resend_commands@`.
 
+#### Running commands from mods
+
+- `native_run_command_captured(line) -> NativeCommandResult`: `native_run_command` with the answer kept (vanilla's
+  `CommandSourceStack.withCallback` on a source that keeps what it is sent). `line` (a leading slash allowed) runs as
+  the console; a command a mod registered goes to the mods (`native_perform_console_command`), anything else to
+  vanilla's. `ran` says it ran without failing, `result` is vanilla's result value (the sum of the successful results,
+  one per fork of `execute as @a run ...`; 0 for a failed `execute if entity`; 1 for a mod's command a mod ran), and
+  `output` holds the lines it answered with, which reach no one else, operators included. Where `native_run_command`
+  runs (no player swapped in); inside a player's hook nothing runs. Bundles need `"hooks": @API:run_command_captured@`.
+- `native_run_command_as(player, line) -> NativeCommandResult`: `line` runs as that player typing it would (Bukkit's
+  `Player.performCommand`): their source, operator level and position, so `/gamemode creative` for a level-0 player
+  is refused with vanilla's error; a command a mod registered goes to the mods when their level allows it. The answer
+  is sent to them as their own command's, and the same lines come back in `output`. `native_player_command` doesn't
+  hear it. Where `native_run_command` runs, or inside that player's own hook (`native_perform_command`: the lines
+  join its feedback); for anyone else, or a player not on the server, nothing runs. Bundles need
+  `"hooks": @API:run_command_as@`.
+- `native_run_mod_command(line) -> bool`: `native_run_command` that reaches the mods' commands too (Bukkit's
+  `Bukkit.dispatchCommand` from the console): a command a mod registered goes to the mods
+  (`native_perform_console_command`), anything else to vanilla's. True when a mod took it or vanilla's ran without
+  failing; no output. Bundles need `"hooks": @API:run_mod_command@`.
+- `native_command_info(label) -> Option<NativeCommandInfo>`: the server's command `label` names (Bukkit's
+  `CommandMap.getCommand`), a leading slash allowed: one a mod registered, else vanilla's with an alias resolved (`tp`
+  gives `teleport`, whose `aliases` hold `tp`). `usages` are the mod's registered usages, or vanilla's one line as
+  `/help` gives it; `level` is the operator level a player needs, `vanilla` whether vanilla has it. None when no
+  command has that name. Bundles need `"hooks": @API:command_info@`.
+- Argument kinds that ask the server, for `native_register_commands`' usages: `word?` (a word) and `text?` (the rest
+  of the line, last) are sent with vanilla's `ask_server` suggestions, so the player's client asks the server for
+  their completions instead of completing nothing; `player_name` is a word that does the same, any name accepted
+  (offline ones too, unlike `player`), and the server offers the online players' names matching it.
+  **`native_tab_complete_v2(player, name, label, arguments, range, suggestions)`** hears every completion request
+  right after `native_tab_complete`, the command split as Bukkit's `TabCompleter` gets it: `label` is its first word,
+  `arguments` the words after it split at each space, the last the one being typed (empty after a space). For a
+  command a mod registered, `range` is that word, and for `player_name` `suggestions` already holds the names; push
+  yours over `range`. No player's state is swapped in and the server's players are out of reach
+  (`native_server_players` gives none). Bundles need `"hooks": @API:tab_complete_v2@`.
+
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a

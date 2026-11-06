@@ -7,10 +7,16 @@
 //! player's plain items: count, take, give. They act on the server's own
 //! players (the hub's: a dedicated server's, a LAN host's, single player's
 //! server thread's), never on a client's.
-use super::{Dim, Game, commands::execute, lan::LanHost};
+use super::{Dim, Game, commands::execute, lan::LanHost, lan_actions::GuestCommand};
 // Their old home, for mixin code that names them here.
 pub(crate) use horizon_client::mod_api::{NativeCommand, NativeServerPlayer};
-use horizon_client::{items::ItemStack, lan::data::component_nbt, text::Text};
+use horizon_client::{
+    command::{Dispatcher, vanilla},
+    items::ItemStack,
+    lan::data::component_nbt,
+    mod_api::{NativeCommandInfo, NativeCommandResult},
+    text::Text,
+};
 use horizon_protocol::packets::play::{self, Clientbound as C};
 use serde_json::{Map, Value, json};
 use std::{collections::HashMap, path::PathBuf};
@@ -32,8 +38,8 @@ const SIDEBAR_OBJECTIVE: &str = "horizon:native_sidebar";
 /// The brigadier parser of an argument kind, and its properties.
 fn parser(kind: &str) -> Option<(&'static str, Value)> {
     Some(match kind {
-        "word" => ("brigadier:string", json!({"type": "word"})),
-        "text" => ("brigadier:string", json!({"type": "greedy"})),
+        "word" | "word?" | "player_name" => ("brigadier:string", json!({"type": "word"})),
+        "text" | "text?" => ("brigadier:string", json!({"type": "greedy"})),
         "integer" => ("brigadier:integer", Value::Null),
         "number" => ("brigadier:double", Value::Null),
         "boolean" => ("brigadier:bool", Value::Null),
@@ -46,6 +52,19 @@ fn parser(kind: &str) -> Option<(&'static str, Value)> {
         _ => return None,
     })
 }
+
+/// The custom suggestions of a kind whose completions the player's client
+/// asks the server for (`ask_server`): a mod's `native_tab_complete_v2`
+/// answers, and for `player_name` the server offers the online players' names
+/// too. `lan::commands` sends any of them as `minecraft:ask_server`.
+fn asks_server(kind: &str) -> Option<&'static str> {
+    match kind {
+        "word?" | "text?" => Some("minecraft:ask_server"),
+        "player_name" => Some(PLAYER_NAMES),
+        _ => None,
+    }
+}
+const PLAYER_NAMES: &str = "horizon:player_names";
 
 /// The report's name of an operator level (`commands.json`'s
 /// `permissions`).
@@ -89,10 +108,13 @@ fn usage_nodes(usage: &str) -> Result<Vec<(String, Value, bool)>, String> {
             return Err(format!("`{usage}`: unknown kind `{kind}`"));
         };
         optional_seen |= optional;
-        greedy_seen |= kind == "text";
+        greedy_seen |= properties["type"] == "greedy";
         let mut node = json!({"type": "argument", "parser": parser});
         if !properties.is_null() {
             node["properties"] = properties;
+        }
+        if let Some(suggestions) = asks_server(kind) {
+            node["suggestions"] = suggestions.into();
         }
         out.push((name.to_owned(), node, optional));
     }
@@ -193,6 +215,60 @@ fn finish(children: &mut Value) {
             finish(c);
         }
     }
+}
+
+/// Whether the word being typed, the last of `arguments` (the words after
+/// `label`), goes into a `player_name` argument of one of `label`'s usages
+/// that `level` may run.
+pub(super) fn completes_player_name(
+    commands: &[NativeCommand],
+    level: u8,
+    label: &str,
+    arguments: &[&str],
+) -> bool {
+    let typed = arguments.len().saturating_sub(1);
+    commands
+        .iter()
+        .filter(|c| c.level <= level)
+        .filter_map(|c| usage_nodes(&c.usage).ok())
+        .filter(|nodes| nodes[0].0 == label)
+        .any(|nodes| {
+            let before = arguments[..typed].iter().enumerate().all(|(i, word)| {
+                nodes
+                    .get(i + 1)
+                    .is_some_and(|(name, node, _)| node["type"] != "literal" || name == word)
+            });
+            before
+                && nodes
+                    .get(arguments.len())
+                    .is_some_and(|n| n.1["suggestions"] == PLAYER_NAMES)
+        })
+}
+
+/// Vanilla's root command `label` names in `d`, an alias (a literal that only
+/// redirects to another root command, `tp`) resolved to its target.
+fn vanilla_command_info(d: &Dispatcher, label: &str) -> Option<NativeCommandInfo> {
+    let roots = &d.nodes[0].children;
+    let mut node = d.find(label)?;
+    if let Some(target) = d.nodes[node].redirect.filter(|t| roots.contains(t)) {
+        node = target;
+    }
+    Some(NativeCommandInfo {
+        name: d.nodes[node].name().to_owned(),
+        aliases: roots
+            .iter()
+            .filter(|&&c| c != node && d.nodes[c].redirect == Some(node))
+            .map(|&c| d.nodes[c].name().to_owned())
+            .collect(),
+        usages: d
+            .smart_usage(0, 4)
+            .into_iter()
+            .filter(|(c, _)| *c == node)
+            .map(|(_, usage)| usage)
+            .collect(),
+        level: d.nodes[node].permission,
+        vanilla: true,
+    })
 }
 
 /// Helpers for server mods, kept as stable as the hook points.
@@ -512,6 +588,144 @@ impl Game<'_> {
         let ok = self.as_console(|g| g.run_command(line));
         self.command_source = outer;
         ok
+    }
+    /// `native_run_command` with its answer kept, as vanilla's
+    /// `CommandSourceStack.withCallback` on a source that keeps what it is
+    /// sent: `line` (a leading slash allowed) runs as the console, a command a
+    /// mod registered going to the mods (`native_perform_console_command`),
+    /// anything else to vanilla's. The lines it answers with come back in
+    /// `output` and reach no one else, operators included. Only where
+    /// `native_run_command` runs: inside a player's hook nothing runs. API
+    /// @API:run_command_captured@.
+    pub(super) fn native_run_command_captured(&mut self, line: &str) -> NativeCommandResult {
+        let mut out = NativeCommandResult::default();
+        if self.lan_acting.is_some() || self.lan.is_none() {
+            return out;
+        }
+        let line = line.strip_prefix('/').unwrap_or(line);
+        let outer_lines = self.chat_capture.replace(Vec::new());
+        let outer_results = self.cmds.results.replace(Vec::new());
+        let admins = self.admin_feedback.len();
+        let modded = self
+            .lan
+            .as_ref()
+            .is_some_and(|host| Self::native_command_level(host, line).is_some());
+        if modded {
+            self.native_perform_console_command(line, &mut out.ran);
+            if !out.ran {
+                self.native_feedback(
+                    Text::translate("command.unknown.command", &[])
+                        .with_color(horizon_client::text::RED),
+                );
+            }
+        } else {
+            out.ran = self.native_run_command(line);
+        }
+        self.admin_feedback.truncate(admins);
+        out.output = std::mem::replace(&mut self.chat_capture, outer_lines).unwrap_or_default();
+        let results = std::mem::replace(&mut self.cmds.results, outer_results).unwrap_or_default();
+        out.result = if modded {
+            i32::from(out.ran)
+        } else {
+            results.iter().filter(|r| r.0).map(|r| r.1).sum()
+        };
+        out
+    }
+    /// `native_run_command` that reaches the mods' commands too (Bukkit's
+    /// `Bukkit.dispatchCommand` from the console): a command a mod registered
+    /// goes to the mods (`native_perform_console_command`), anything else to
+    /// vanilla's. Whether it ran: a mod took it, or vanilla's ran without
+    /// failing. No output, as `native_run_command`. API @API:run_mod_command@.
+    pub(super) fn native_run_mod_command(&mut self, line: &str) -> bool {
+        self.native_run_command_captured(line).ran
+    }
+    /// The server's command `label` names (Bukkit's `CommandMap.getCommand`):
+    /// one a mod registered (`native_register_commands`), else vanilla's, an
+    /// alias resolved (`tp` gives `teleport`). None when there is none.
+    /// API @API:command_info@.
+    pub(super) fn native_command_info(&self, label: &str) -> Option<NativeCommandInfo> {
+        let label = label.strip_prefix('/').unwrap_or(label);
+        if let Some(host) = &self.lan
+            && let Some(&level) = host.native_commands.as_ref().and_then(|c| c.get(label))
+        {
+            return Some(NativeCommandInfo {
+                name: label.to_owned(),
+                aliases: Vec::new(),
+                usages: host
+                    .native_usages
+                    .iter()
+                    .filter(|c| c.usage.split_whitespace().next() == Some(label))
+                    .map(|c| c.usage.clone())
+                    .collect(),
+                level,
+                vanilla: false,
+            });
+        }
+        let d = vanilla::game_dispatcher_with_features(&self.level.enabled_features);
+        vanilla_command_info(d, label)
+    }
+    /// Runs `line` (a leading slash allowed) as the player `uuid` typing it
+    /// would (Bukkit's `Player.performCommand`): their source, operator level
+    /// and position, a command a mod registered going to the mods
+    /// (`native_perform_command`) when their level allows it. Its answer is
+    /// sent to them as their own command's, and its lines also come back in
+    /// `output`. `native_player_command` doesn't hear it. Where
+    /// `native_run_command` runs, or inside that player's own hook (then the
+    /// lines join the hook's feedback); elsewhere, or for a player not on the
+    /// server, nothing runs. API @API:run_command_as@.
+    pub(super) fn native_run_command_as(&mut self, uuid: u128, line: &str) -> NativeCommandResult {
+        let mut out = NativeCommandResult::default();
+        let line = line.strip_prefix('/').unwrap_or(line).to_owned();
+        let outer_results = self.cmds.results.replace(Vec::new());
+        if self.lan_acting.is_some() {
+            if let (Some(conn), Some(permission), true) = (
+                self.lan_acting,
+                self.lan_acting_permission,
+                self.lan_acting_uuid == Some(uuid),
+            ) {
+                let outer = self.chat_capture.replace(Vec::new());
+                let level = std::mem::replace(&mut self.ui.registries.permission, permission);
+                out.ran = self.perform_native_command(conn, permission, &line)
+                    || self.run_command(&line);
+                self.ui.registries.permission = level;
+                out.output = std::mem::replace(&mut self.chat_capture, outer).unwrap_or_default();
+                for line in &out.output {
+                    self.native_feedback(line.clone());
+                }
+            }
+        } else if let Some(host) = &self.lan
+            && let Some(g) = host.hub.guests.iter().find(|g| g.placed && g.uuid == uuid)
+        {
+            let integrated = host.hub.config.integrated;
+            let allowed = self.options.dedicated.is_some() || self.allow_commands();
+            let modded = Self::native_command_level(host, &line).is_some();
+            let command = GuestCommand {
+                conn: g.conn,
+                command: line,
+                permission: g.permission,
+                integrated,
+                quiet: false,
+            };
+            if !modded && !integrated && (!host.settings.guest_commands || !allowed) {
+                // `guest_command`'s answer where guests may not run commands.
+                let unknown = Text::translate("command.unknown.command", &[]);
+                self.native_tell(uuid, unknown.clone());
+                out.output.push(unknown);
+            } else {
+                let outer = self.chat_capture.take();
+                if let Some((ran, lines)) = self.run_guest_command_told(command) {
+                    (out.ran, out.output) = (ran, lines);
+                }
+                self.chat_capture = outer;
+            }
+        }
+        let results = std::mem::replace(&mut self.cmds.results, outer_results).unwrap_or_default();
+        out.result = if results.is_empty() {
+            i32::from(out.ran)
+        } else {
+            results.iter().filter(|r| r.0).map(|r| r.1).sum()
+        };
+        out
     }
     /// The open world's folder (`world/`, beside its `level.dat`): a server
     /// mod keeps its data in a folder of its own there, so the world's
@@ -975,6 +1189,12 @@ impl Game<'_> {
                     .push((root.to_owned(), node.clone()));
             }
         }
+        host.native_usages = commands
+            .into_iter()
+            .filter(|c| {
+                usage_nodes(&c.usage).is_ok_and(|nodes| levels.contains_key(nodes[0].0.as_str()))
+            })
+            .collect();
         host.native_commands = Some(levels);
     }
 
@@ -1323,5 +1543,49 @@ mod tests {
         );
         let (none, levels, _) = tree(&[]);
         assert!(none.is_null() && levels.is_empty());
+    }
+
+    #[test]
+    fn kinds_that_ask_the_server_mark_their_nodes() {
+        let commands = [
+            NativeCommand::new("stage go <stage:word?>"),
+            NativeCommand::new("stage say <line:text?>"),
+            NativeCommand::op("stage bring <who:player_name> [where:word]", 2),
+            NativeCommand::new("stage list"),
+        ];
+        let (t, _, problems) = tree(&commands);
+        assert!(problems.is_empty(), "{problems:?}");
+        let stage = &t["children"]["stage"]["children"];
+        let go = &stage["go"]["children"]["stage"];
+        assert_eq!(go["parser"], "brigadier:string");
+        assert_eq!(go["properties"]["type"], "word");
+        assert_eq!(go["suggestions"], "minecraft:ask_server");
+        assert_eq!(stage["say"]["children"]["line"]["properties"]["type"], "greedy");
+        let who = &stage["bring"]["children"]["who"];
+        assert_eq!(who["suggestions"], PLAYER_NAMES);
+        assert!(who["children"]["where"].get("suggestions").is_none());
+        assert_eq!(tree(&[NativeCommand::new("a <x:text?> <y:word>")]).2.len(), 1);
+        let names = |level, words: &[&str]| completes_player_name(&commands, level, "stage", words);
+        assert!(names(2, &["bring", ""]));
+        assert!(names(2, &["bring", "Al"]));
+        assert!(!names(0, &["bring", "Al"]), "the usage's level");
+        assert!(!names(2, &["bring", "Alex", ""]), "the next argument");
+        assert!(!names(2, &["go", ""]));
+        assert!(!names(2, &["bring"]), "the literal itself is being typed");
+    }
+
+    #[test]
+    fn vanilla_commands_are_looked_up_through_their_aliases() {
+        let d = horizon_client::command::vanilla::dispatcher();
+        let tp = vanilla_command_info(d, "tp").unwrap();
+        assert_eq!(tp, vanilla_command_info(d, "teleport").unwrap());
+        assert_eq!((tp.name.as_str(), tp.level, tp.vanilla), ("teleport", 2, true));
+        assert_eq!(tp.aliases, ["tp"]);
+        assert_eq!(tp.usages.len(), 1);
+        assert!(tp.usages[0].starts_with("teleport "), "{:?}", tp.usages);
+        let msg = vanilla_command_info(d, "w").unwrap();
+        assert_eq!((msg.name.as_str(), msg.level), ("msg", 0));
+        assert_eq!(msg.aliases, ["tell", "w"]);
+        assert!(vanilla_command_info(d, "nosuchcommand").is_none());
     }
 }
