@@ -4211,19 +4211,23 @@ impl Level {
                     self.active_effects
                         .iter()
                         .map(|(id, duration, amplifier, ambient, particles)| {
-                            Tag::compound([
-                                ("id", string(id)),
-                                ("duration", Tag::Int(*duration)),
+                            let mut effect =
+                                vec![("id", string(id)), ("duration", Tag::Int(*duration))];
+                            // MobEffectInstance.Details: amplifier defaults to zero.
+                            if *amplifier != 0 {
                                 // Same unsigned byte the codec writes:
                                 // `Mth.clamp` to 0..=255, then `byteValue`.
-                                (
+                                effect.push((
                                     "amplifier",
                                     Tag::Byte((*amplifier).clamp(0, 255) as u8 as i8),
-                                ),
+                                ));
+                            }
+                            effect.extend([
                                 ("ambient", Tag::Byte(i8::from(*ambient))),
                                 ("show_particles", Tag::Byte(i8::from(*particles))),
                                 ("show_icon", Tag::Byte(i8::from(*particles))),
-                            ])
+                            ]);
+                            Tag::compound(effect)
                         })
                         .collect(),
                 ),
@@ -7148,6 +7152,73 @@ mod tests {
         level.player_extra = Some(loaded);
         level.active_effects.clear();
         assert!(level.player_tag().get("active_effects").is_none());
+    }
+
+    #[test]
+    fn effect_amplifier_default_is_omitted_from_saved_players() {
+        let effects = vec![
+            ("minecraft:luck".into(), -1, 0, false, false),
+            ("minecraft:speed".into(), 200, 1, true, false),
+            ("minecraft:regeneration".into(), 40, 128, false, true),
+            ("minecraft:strength".into(), -1, 255, false, true),
+        ];
+        for raw in [
+            None,
+            Some(Tag::compound([
+                ("H100Keep", Tag::Int(7)),
+                (
+                    "active_effects",
+                    Tag::List(vec![Tag::compound([
+                        ("id", string("minecraft:luck")),
+                        ("amplifier", Tag::Byte(42)),
+                    ])]),
+                ),
+            ])),
+        ] {
+            let level = Level {
+                active_effects: effects.clone(),
+                player_extra: raw.clone(),
+                ..Level::default()
+            };
+            let saved = level.player_tag();
+            let Some(Tag::List(entries)) = saved.get("active_effects") else {
+                panic!("modeled live effects must be saved even without raw input")
+            };
+            assert_eq!(entries.len(), 4);
+            assert_eq!(
+                entries
+                    .iter()
+                    .map(|e| e.get("amplifier").cloned())
+                    .collect::<Vec<_>>(),
+                vec![
+                    None,
+                    Some(Tag::Byte(1)),
+                    Some(Tag::Byte(-128)),
+                    Some(Tag::Byte(-1))
+                ],
+            );
+            for (entry, (id, duration, _, ambient, particles)) in entries.iter().zip(&effects) {
+                assert_eq!(entry.get("id"), Some(&string(id)));
+                assert_eq!(entry.get("duration"), Some(&Tag::Int(*duration)));
+                assert_eq!(entry.get("ambient"), Some(&Tag::Byte(i8::from(*ambient))));
+                assert_eq!(
+                    entry.get("show_particles"),
+                    Some(&Tag::Byte(i8::from(*particles)))
+                );
+                assert_eq!(
+                    entry.get("show_icon"),
+                    Some(&Tag::Byte(i8::from(*particles)))
+                );
+            }
+            assert_eq!(
+                level.active_effects, effects,
+                "saving must not mutate live state"
+            );
+            assert_eq!(
+                saved.get("H100Keep"),
+                raw.as_ref().and_then(|t| t.get("H100Keep"))
+            );
+        }
     }
 
     #[test]
