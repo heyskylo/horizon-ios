@@ -1204,3 +1204,19 @@ mod tests {
         assert_eq!(action(3), Some(2)); // stop destroying: 3 in 26.3, 2 in 26.2
     }
 }
+
+/// 26.2's readers, for the tests of the layout written for a 26.2 client (`layout_26_2`).
+#[cfg(test)]
+pub(super) mod tests_support {
+    use super::*;
+
+    pub fn login_26_2(payload: &[u8]) -> Result<Vec<u8>> {
+        login(payload)
+    }
+    pub fn respawn_26_2(payload: &[u8]) -> Result<Vec<u8>> {
+        respawn(payload)
+    }
+    pub fn advancements_26_2(ids: &'static Ids, payload: &[u8]) -> Result<Vec<u8>> {
+        advancements(ids, payload)
+    }
+}
