@@ -156,36 +156,47 @@ pub fn set_owner_slots(g: &mut Guest, ender: bool, mut s: Vec<Option<ItemStack>>
     g.inventory = s;
 }
 
-/// What the input slots of a native menu held as it closed, for the game to
-/// hand the mods (`native_menu_input_closed`) and then the player.
+/// What a native menu with a store (`Guest::native_store`) leaves as it
+/// closes, for the game to hand the mods (`native_menu_input_closed`) and then
+/// the player (`AbstractContainerMenu.removed`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct NativeReturn {
     pub conn: u32,
     pub uuid: u128,
     pub window: i32,
-    /// The input slots, in order.
-    pub slots: Vec<Option<ItemStack>>,
+    /// The input slots, in order, of a menu that had them.
+    pub slots: Option<Vec<Option<ItemStack>>>,
+    /// The stack on the cursor, when the hub closed the menu on its own
+    /// (the game's own closes put it back themselves).
+    pub cursor: Option<ItemStack>,
     /// The mods have heard it; what is left waits for the player's level.
     pub heard: bool,
 }
 
 impl NativeReturn {
     /// The guest's native menu goes as it closes (`Guest::native_menu` and
-    /// `native_store` empty): what its input slots held, if it had any.
-    pub fn take(guest: &mut Guest, window: i32) -> Option<Self> {
+    /// `native_store` empty): what its input slots held, and the cursor's
+    /// stack when `cursor`, for a menu with a store; None for one without, or
+    /// with nothing to give back.
+    pub fn take(guest: &mut Guest, window: i32, cursor: bool) -> Option<Self> {
         let store = guest.native_store.take();
         let mut menu = std::mem::take(&mut guest.native_menu);
-        let Some(NativeStore::Input(range)) = store else {
-            return None;
+        let store = store?;
+        let cursor = if cursor { guest.carried.take() } else { None };
+        let slots = match store {
+            NativeStore::Input(range) => Some(
+                range
+                    .map(|k| menu.get_mut(k).and_then(Option::take))
+                    .collect(),
+            ),
+            NativeStore::Inventory { .. } => None,
         };
-        let slots = range
-            .map(|k| menu.get_mut(k).and_then(Option::take))
-            .collect();
-        Some(Self {
+        (slots.is_some() || cursor.is_some()).then(|| Self {
             conn: guest.conn,
             uuid: guest.uuid,
             window,
             slots,
+            cursor,
             heard: false,
         })
     }
@@ -1430,22 +1441,27 @@ mod tests {
         assert!((4..11).all(|k| view.get(k).is_none()));
         g.native_menu = menu;
         g.native_store = Some(store);
-        let back = NativeReturn::take(&mut g, 7).unwrap();
+        g.carried = Some(ItemStack::new("minecraft:dirt", 3));
+        let back = NativeReturn::take(&mut g, 7, false).unwrap();
         assert_eq!(
             (back.conn, back.uuid, back.window, back.heard),
             (2, 2, 7, false)
         );
         assert_eq!(
             back.slots,
-            vec![
+            Some(vec![
                 Some(ItemStack::new("minecraft:stone", 64)),
                 Some(ItemStack::new("minecraft:stone", 10)),
-            ]
+            ])
         );
+        // The game's own closes put the cursor back themselves.
+        assert_eq!(back.cursor, None);
+        assert!(g.carried.is_some());
         assert!(g.native_menu.is_empty() && g.native_store.is_none());
         // A menu without input slots hands nothing back.
         g.native_menu = vec![Some(ItemStack::new("minecraft:paper", 1))];
-        assert_eq!(NativeReturn::take(&mut g, 8), None);
+        assert_eq!(NativeReturn::take(&mut g, 8, true), None);
+        assert!(g.carried.is_some());
         assert!(g.native_menu.is_empty());
     }
 
@@ -1480,7 +1496,20 @@ mod tests {
         // Its slots are the owner's: nothing comes back on closing.
         g.native_store = Some(store);
         g.native_menu = vec![Some(ItemStack::new("minecraft:stone", 5))];
-        assert_eq!(NativeReturn::take(&mut g, 3), None);
+        assert_eq!(NativeReturn::take(&mut g, 3, false), None);
+        // The cursor comes back when the hub closes it on its own.
+        g.native_store = Some(NativeStore::Inventory {
+            owner: NativeOwner::Online(5),
+            ender: true,
+            layout: vec![Some(0)],
+        });
+        g.carried = Some(ItemStack::new("minecraft:dirt", 1));
+        let back = NativeReturn::take(&mut g, 3, true).unwrap();
+        assert_eq!(
+            (back.slots, back.cursor),
+            (None, Some(ItemStack::new("minecraft:dirt", 1)))
+        );
+        assert_eq!(g.carried, None);
     }
 
     struct SwapRules;

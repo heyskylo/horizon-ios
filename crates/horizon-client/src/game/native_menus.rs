@@ -507,13 +507,15 @@ impl Game<'_> {
         }
         // The mods hear the others' now, even while their items wait.
         for i in 0..host.hub.native_menu_returns.len() {
-            if !host.hub.native_menu_returns[i].heard {
-                let back = &mut host.hub.native_menu_returns[i];
-                back.heard = true;
-                let (uuid, window, mut slots) =
-                    (back.uuid, back.window, std::mem::take(&mut back.slots));
+            let back = &mut host.hub.native_menu_returns[i];
+            if back.heard {
+                continue;
+            }
+            back.heard = true;
+            let (uuid, window) = (back.uuid, back.window);
+            if let Some(mut slots) = back.slots.take() {
                 self.native_menu_input_closed(uuid, window, &mut slots);
-                host.hub.native_menu_returns[i].slots = slots;
+                host.hub.native_menu_returns[i].slots = Some(slots);
             }
         }
     }
@@ -529,14 +531,17 @@ impl Game<'_> {
             uuid,
             window,
             mut slots,
+            cursor,
             heard,
         } = back;
-        if !heard {
-            self.native_menu_input_closed(uuid, window, &mut slots);
+        // Only a menu with input slots is heard.
+        if let Some(slots) = slots.as_mut().filter(|_| !heard) {
+            self.native_menu_input_closed(uuid, window, slots);
         }
-        let stacks: Vec<ItemStack> = slots
+        // `removed`: the cursor first, then `clearContainer`'s slots.
+        let stacks: Vec<ItemStack> = cursor
             .into_iter()
-            .flatten()
+            .chain(slots.into_iter().flatten().flatten())
             .filter(|s| s.count > 0)
             .collect();
         if stacks.is_empty() {

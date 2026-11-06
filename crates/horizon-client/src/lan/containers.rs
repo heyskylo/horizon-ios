@@ -544,8 +544,10 @@ impl Hub {
             }));
             if menu.slots == Slots::Native {
                 let (uuid, window) = (g.uuid, menu.window);
-                // The input slots' items go to the mods, then the player.
-                if let Some(back) = NativeReturn::take(g, window) {
+                // The input slots' items go to the mods, then the player, and
+                // so does the cursor's (`removed`): not every close here has
+                // the game's own after it.
+                if let Some(back) = NativeReturn::take(g, window, true) {
                     self.native_menu_returns.push(back);
                 }
                 self.native_menu_events
@@ -572,7 +574,7 @@ impl Hub {
             let native = g.menu.take().is_some_and(|m| m.slots == Slots::Native);
             if native {
                 let uuid = g.uuid;
-                let back = NativeReturn::take(g, window);
+                let back = NativeReturn::take(g, window, false);
                 self.native_menu_returns.extend(back);
                 self.native_menu_events
                     .push(NativeMenuEvent::Closed { uuid, window });
