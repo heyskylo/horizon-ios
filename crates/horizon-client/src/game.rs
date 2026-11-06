@@ -215,6 +215,7 @@ mod narrator;
 mod native_biome_colors;
 pub mod native_block_entity_draw;
 mod native_block_sprites;
+mod native_chunk_snapshot;
 mod native_chunk_tickets;
 mod native_claimed_items;
 pub mod native_client_services;
@@ -450,6 +451,7 @@ use horizon_world::{
 pub use machines::native_fluids::NativeFluidTank;
 pub use maps::{NativeMapDecoration, NativeMapInfo};
 pub use native_block_entity_draw::BlockEntityDraw;
+pub use native_chunk_snapshot::NativeChunkSnapshot;
 pub use native_claimed_items::{NativeHeldItem, NativeHit, NativeModEvent};
 pub use native_components::NativeComponentError;
 pub use native_configs::{NativeConfig, NativeConfigFile, NativeConfigKind};

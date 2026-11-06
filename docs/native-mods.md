@@ -2511,6 +2511,16 @@ server only.
   `native_player_view_distance(uuid)` is the distance the player has now. Both answer false/None for a player not online
   and inside a guest's packet hook, where the hub is taken out: call them from a tick or console hook. API
   @API:player_view_distance@.
+- **`native_chunk_snapshot(dimension, [x, z])`** (`native_chunk_snapshot.rs`): a `NativeChunkSnapshot` of a loaded
+  chunk of a level that is open (in place or with nobody in it), None for a chunk not loaded (nothing is loaded for
+  it). It shares the chunk's sections until the level changes them, so it is cheap to take on the server thread and
+  can be read later on another one. It reads `block_state(x, y, z)` (a `BlockStateId`, for `native_state_block` and the
+  state helpers), `surface(x, z)` (`WORLD_SURFACE`), `noise_biome(qx, qy, qz)` and `biome_cell(x, y, z)` (the quart
+  cell vanilla's fuzzy biome zoom reads for a block, which can lie in a neighbouring chunk), `height()` and
+  `has_ceiling()`, in the level's block coordinates; outside the chunk it answers None. To draw it:
+  `native_block_map_color(state)` is `(MapColor id, MapColor.col)`, `native_biome_name(biome)` the biome's name and
+  `native_biome_tint(biome, x, z)` its grass (with the dark forest and swamp modifiers), foliage, dry foliage and water
+  colours (`BiomeColors`, after `native_biome_colors`, not blended). API @API:chunk_snapshot@.
 
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
