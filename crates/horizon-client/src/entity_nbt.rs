@@ -7257,7 +7257,7 @@ mod pickup_loot_save_tests {
                         live
                     };
                     for input in [None, Some(&raw)] {
-                        let saved = mob_to_nbt(&mob, [46, 0, 0, 1], input, None);
+                        let saved = mob_to_nbt(&mob, [46, 0, 0, 1], input, None, |_| None);
                         assert_eq!(
                             saved.get("CanPickUpLoot"),
                             Some(&Tag::Byte(i8::from(expected))),
