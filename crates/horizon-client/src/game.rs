@@ -3176,6 +3176,10 @@ struct Game<'a> {
     pause_menu: bool,
     pause_focus: Option<u8>,
     death_focus: Option<u8>,
+    /// The screen ([`Game::key_screen`]) the menu focus belongs to. Another
+    /// screen in front drops it, as `Gui.setScreen` drops the focus of the
+    /// screen it leaves (`Screen.clearFocus`).
+    focus_screen: u64,
     /// MultiPlayerGameMode.previousLocalPlayerMode (F3+N goes back to it).
     previous_mode: Option<horizon_client::command::args::GameMode>,
     gamemode_switcher: Option<horizon_client::game_mode_switcher::GameModeSwitcher>,
@@ -16223,6 +16227,9 @@ impl Game<'_> {
             self.apply_ui_settings();
         }
         self.observe_screen();
+        // `Gui.setScreen` clears the focus of the screen it leaves: a menu
+        // that comes back starts with no widget highlighted.
+        self.drop_left_screen_focus();
         // Minecraft.doWorldLoad: the LevelLoadingScreen while single player's
         // server starts, with the server's chunk map and progress.
         if let Some(starting) = &self.integrated_starting {
@@ -20181,6 +20188,7 @@ impl<'a> Game<'a> {
             pause_menu: true,
             pause_focus: None,
             death_focus: None,
+            focus_screen: 0,
             previous_mode: None,
             gamemode_switcher: None,
             clipboard: Default::default(),
