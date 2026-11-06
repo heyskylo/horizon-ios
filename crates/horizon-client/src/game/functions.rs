@@ -1014,7 +1014,19 @@ impl Game<'_> {
                 .ok_or_else(|| err("argument.predicate.unknown", &[&id]))?
         };
         let source = self.command_source.unwrap_or_else(|| self.player_source());
-        let view = source.entity.map(|t| self.entity_view_asked(t, &json));
+        let view = source.entity.map(|t| {
+            let scores = self.holder_name(t).map(|holder| {
+                self.score
+                    .board
+                    .holder_scores(&holder)
+                    .into_iter()
+                    .map(|(objective, value)| (objective.name.clone(), value))
+                    .collect()
+            });
+            let mut view = self.entity_view_asked(t, &json);
+            view.scores = scores;
+            view
+        });
         Ok(self.conditions_hold(&json, view.as_ref(), source.pos))
     }
 }
@@ -1231,5 +1243,111 @@ mod tests {
             content_overlay(&dir, std::path::Path::new(""), true, &[])
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod entity_score_tests {
+    use super::*;
+    use crate::game::{Audio, Options, Progress, Settings, commands::Target, load_resources};
+    use horizon_world::nbt::Tag;
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn named_scores_follow_the_registered_target_holder_and_mutations() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+
+        game.set_allow_commands(true);
+        game.ensure_datapacks();
+        game.fns.store.predicates.insert(
+            "h270:min2".into(),
+            serde_json::json!({
+                "type": "minecraft:entity_scores", "entity": "this", "scores": {"pts": {"min": 2}}
+            }),
+        );
+        assert!(game.run_command("scoreboard objectives add pts dummy"));
+        let mut actors = Vec::new();
+        for (index, score) in [Some(0), Some(2), None].into_iter().enumerate() {
+            let uuid = [270, 1, 0, index as i32 + 1];
+            let tag = Tag::compound([
+                ("id", Tag::String("minecraft:pig".into())),
+                ("UUID", Tag::IntArray(uuid.to_vec())),
+                (
+                    "Pos",
+                    Tag::List(vec![
+                        Tag::Double((3.5 + index as f64).to_bits()),
+                        Tag::Double(200.0_f64.to_bits()),
+                        Tag::Double(4.5_f64.to_bits()),
+                    ]),
+                ),
+                ("Health", Tag::Float(10.0_f32.to_bits())),
+                ("NoAI", Tag::Byte(1)),
+                ("NoGravity", Tag::Byte(1)),
+            ]);
+            let id = game.load_mob(tag, None).unwrap();
+            assert_eq!(game.persist.uuids.get(&id), Some(&uuid));
+            let holder = game.holder_name(Target::Mob(id)).unwrap();
+            assert_eq!(holder, horizon_client::save::uuid_text(uuid));
+            if let Some(score) = score {
+                assert!(game.run_command(&format!("scoreboard players set {holder} pts {score}")));
+            }
+            assert_eq!(
+                game.score.board.score(&holder, "pts").map(|s| s.value),
+                score
+            );
+            actors.push((id, holder));
+        }
+        let time = game.world.game_time;
+        let matches = |game: &mut Game<'_>, id| {
+            let mut source = game.player_source();
+            source.entity = Some(Target::Mob(id));
+            source.pos = game.target_position(Target::Mob(id)).unwrap();
+            game.command_source = Some(source);
+            let result = game.check_predicate("h270:min2").unwrap();
+            game.command_source = None;
+            result
+        };
+        assert!(!matches(&mut game, actors[0].0));
+        assert!(matches(&mut game, actors[1].0));
+        assert!(!matches(&mut game, actors[2].0));
+        for (index, score, expected) in [(0, 3, true), (1, 1, false)] {
+            let (id, holder) = &actors[index];
+            assert!(game.run_command(&format!("scoreboard players set {holder} pts {score}")));
+            assert_eq!(
+                game.score.board.score(holder, "pts").map(|s| s.value),
+                Some(score)
+            );
+            assert_eq!(matches(&mut game, *id), expected);
+        }
+        assert!(!matches(&mut game, actors[2].0));
+        assert!(game.score.board.score(&actors[2].1, "pts").is_none());
+        assert_eq!(game.world.game_time, time);
     }
 }
