@@ -3,7 +3,17 @@
 //! injections before. The packet hooks themselves run where the hub sends
 //! (`horizon_client::lan::conn`), with no `Game`; the helpers here switch them on.
 use super::{Game, lan::LanHost};
+use horizon_client::{lan::data::component_nbt, text::Text};
+use horizon_protocol::packets::{
+    configuration::{ResourcePackPop, ResourcePackPush},
+    play::Clientbound as C,
+};
 use std::sync::atomic::Ordering;
+
+/// `ClientboundResourcePackPushPacket.MAX_HASH_LENGTH`.
+const MAX_PACK_HASH: usize = 40;
+/// The longest URL the push's `STRING_UTF8` takes, in characters.
+const MAX_PACK_URL: usize = 32767;
 
 impl Game<'_> {
     /// A `minecraft:register` (`register`) or `minecraft:unregister` message from the guest at
@@ -84,5 +94,47 @@ impl Game<'_> {
             .find(|g| g.uuid == player)
             .map(|g| g.channels.clone())
             .unwrap_or_default()
+    }
+    /// Offers `player`'s client the resource pack at `url` (Bukkit's
+    /// `Player.addResourcePack`): `ClientboundResourcePackPushPacket` with the
+    /// pack's own `id` (a UUID the mod picks, so it can pop that pack again and
+    /// match the answers `native_resource_pack_status_v2` gets), `sha1` its
+    /// lowercase hex hash (empty: the client doesn't check it), the prompt's
+    /// extra line and whether the client calls it required. A pack with an id
+    /// the client already has replaces it. Vanilla kicks a player who declines
+    /// only when the server's own pack (`require-resource-pack`) is required,
+    /// whichever pack they declined; anything else is the mod's to decide from
+    /// the answer. False when the player isn't on, on a client, for an empty
+    /// URL, one past 32767 characters or a hash past 40. Works from
+    /// `native_server_tick` and the player's own hooks, as `native_send`.
+    /// @API:resource_packs@.
+    pub(super) fn native_send_resource_pack(
+        &mut self,
+        player: u128,
+        id: u128,
+        url: &str,
+        sha1: &str,
+        prompt: Option<&Text>,
+        required: bool,
+    ) -> bool {
+        if url.is_empty() || url.chars().count() > MAX_PACK_URL || sha1.len() > MAX_PACK_HASH {
+            return false;
+        }
+        let push = ResourcePackPush {
+            id,
+            url: url.to_owned(),
+            hash: sha1.to_owned(),
+            required,
+            prompt: prompt.map(|text| component_nbt(&text.component())),
+        };
+        self.native_send(player, C::ResourcePackPush(push))
+    }
+    /// Takes the pack `id` away from `player`'s client, or every server pack it
+    /// has for None (`ClientboundResourcePackPopPacket`, Bukkit's
+    /// `Player.removeResourcePack` and `removeResourcePacks`); the client
+    /// reloads without it. False when the player isn't on or on a client, as
+    /// `native_send`. @API:resource_packs@.
+    pub(super) fn native_pop_resource_pack(&mut self, player: u128, id: Option<u128>) -> bool {
+        self.native_send(player, C::ResourcePackPop(ResourcePackPop { id }))
     }
 }

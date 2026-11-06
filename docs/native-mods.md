@@ -2520,6 +2520,17 @@ What packet-level plugins (ProtocolLib, PacketEvents, TAB), plugin channel liste
   nothing, is not heard. The helper **`native_player_channels(player)`** lists the channels a player has, in the order
   registered (Bukkit's `Player.getListeningPluginChannels`); it reads the hub, so it is empty inside a player's own
   hook. Bundles need `"hooks": @API:player_channels@`.
+- Helpers **`native_send_resource_pack(player, id, url, sha1, prompt, required)`** and
+  **`native_pop_resource_pack(player, id)`**: a mod's own resource packs for one player's client, as Bukkit's
+  `Player.addResourcePack` and `removeResourcePack(s)`. The push (`ClientboundResourcePackPushPacket`) carries the
+  mod's own `id`, a UUID it picks, so it can take that pack away again and tell its answers from other packs' with
+  `native_resource_pack_status_v2`; `sha1` is the pack's lowercase hex hash (empty: unchecked), `prompt` an extra line
+  on the client's prompt, `required` how the prompt words it. A pack whose id the client already has is replaced.
+  As in vanilla, a player who declines is kicked only when the server's own pack (`require-resource-pack`) is
+  required, whatever pack they declined; anything else is the mod's to decide. `native_pop_resource_pack(player, None)`
+  takes away every server pack the client has. Both send as `native_send` does (from `native_server_tick` and from the
+  player's own hooks) and are false when the player isn't on, on a client, and for an empty URL, a URL past 32767
+  characters or a hash past 40. Bundles need `"hooks": @API:resource_packs@`.
 
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
