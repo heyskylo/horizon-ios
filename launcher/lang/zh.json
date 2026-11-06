@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "如州政府征收，将加收美国销售税。",
   "VAT included where it applies.": "适用时已含增值税。",
   "In a set in your basket": "已在购物篮的套装中",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "请在浏览器中完成付款。物品稍后会出现在衣橱中。"
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "请在浏览器中完成付款。物品稍后会出现在衣橱中。",
+  "{name} was left out: made for another Horizon version": "已略过 {name}：它是为其他版本的 Horizon 制作的",
+  "{name} was left out: clashes with {other}": "已略过 {name}：与 {other} 冲突",
+  "{name} was left out: it needs {other}, which was left out": "已略过 {name}：它需要 {other}，而后者已被略过",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "无法在你玩的 Horizon 上构建（{code}）：在作者更新之前，构建会略过它",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "在你所在的地区，创始者套装需通过 playhorizon.dev 上的免费结账领取。请在商店中领取：商店会为你打开结账页面。",
+  "The founder set can't be claimed from your country.": "你所在的国家无法领取创始者套装。"
 }

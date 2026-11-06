@@ -119,7 +119,15 @@ tag `nightly-source/<date>-<short>` ([release-flow.md](release-flow.md#nightly-c
 builds after its Nightly is replaced. When the mods of one build pin different commits, the launcher says which
 mod pins which and the commit the build would use, the newest of them, and builds only after the player chooses
 **Build anyway** (`native-build --allow-version-mismatch`): such mods often still apply and compile. A failed build
-then says the mods were made for other versions. Their horizon-mixins pins may differ too: the build uses the
+then says the mods were made for other versions. A mod that doesn't fit the build's Horizon doesn't stop the others: when
+horizon-mixins refuses it (a function it hooks, the file it adds a module to or a named hook point this Horizon
+doesn't have: `E_TARGET_NOT_FOUND`, `E_MODULE`, `E_HOOK_CATALOG`; a module named like one of Horizon's or another
+mod's: `E_MODULE_CONFLICT`), or the compiler's errors are in its helpers, the build runs again without it and without
+the mods that need it ([dependencies](#dependencies-between-trait-mods)), at most three more compiles. The build's steps
+and the Mods page say which mods were left out and why ("X was left out: made for another Horizon version", "…:
+clashes with Y", "…: it needs Y, which was left out"); `native-mods.json` keeps them (`left_out`), so the build is up
+to date with the same mods turned on, and a new version of a left-out mod asks for a build again. A server engine
+(`--server-output`) leaves nothing out: it fails instead. Their horizon-mixins pins may differ too: the build uses the
 newest of them and the launcher's own, never one older than a mod was made with. A bundle with no pin builds on
 the commit of the installed version the build starts from. A pin chooses the commit even when the player picked another
 version: the Mods page then says which mods pinned the commit the build compiled, and **Rebuild on Horizon**
@@ -506,7 +514,12 @@ are compiled into `horizon-client`; a stable API crate for mods' own crates is #
 
 **Dependencies come from Horizon's `Cargo.lock`.** A crate names registry crates by version requirement
 (`crc32fast = "1"`, `{ version, features, default-features, optional }`); each must already be in Horizon's lock
-file in a version that matches, and builds in exactly that version. The lock file is the allow list: horizon-mixins
+file in a version that matches, and builds in exactly that version. The crates that are there only for mods are listed in
+`crates/horizon-mod-deps/Cargo.toml` (optional dependencies, with the features mods may turn on; nothing builds them):
+`mysql` 27 (blocking MariaDB/MySQL client, `minimal-rust` + `rustls-tls-ring`, no default features), `redis` 1 (blocking,
+no default features), `tungstenite` 0.30 (websocket over a stream the mod opens, no default features) and `rusty-opus` 1
+(Opus encoder and decoder). A feature of theirs that turns on a dependency not listed there is refused.
+The lock file is the allow list: horizon-mixins
 refuses a crate the lock lacks (`E_CRATE_DEPENDENCY`) and writes the mod's crates into the staged lock without
 changing any other byte, so the game still builds with `--locked`. The launcher checks it again (every downloaded
 package of the staged lock as in Horizon's: name, version, source, checksum), and a feature that turns on a

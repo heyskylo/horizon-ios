@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "Taksa amerikane e shitjes shtohet aty ku e mbledh një shtet.",
   "VAT included where it applies.": "TVSH e përfshirë aty ku zbatohet.",
   "In a set in your basket": "Në një set në shportën tënde",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Përfundo pagesën në shfletues. Sendet të vijnë në Garderobë pas pak."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Përfundo pagesën në shfletues. Sendet të vijnë në Garderobë pas pak.",
+  "{name} was left out: made for another Horizon version": "{name} u la jashtë: bërë për një version tjetër të Horizon",
+  "{name} was left out: clashes with {other}": "{name} u la jashtë: përplaset me {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} u la jashtë: i duhet {other}, që u la jashtë",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Nuk ndërtohet në Horizon-in që luan ({code}): ndërtimi e lë jashtë derisa autori ta përditësojë",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Atje ku jeni, seti i themeluesve merret me një pagesë falas në playhorizon.dev. Merreni nga Dyqani: ai jua hap pagesën.",
+  "The founder set can't be claimed from your country.": "Seti i themeluesve nuk mund të merret nga vendi juaj."
 }
