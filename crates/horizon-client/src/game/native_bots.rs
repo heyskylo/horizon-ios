@@ -42,9 +42,8 @@ fn sprints(input: &NativePlayerInput) -> bool {
 
 /// A box from `[min_x, min_y, min_z, max_x, max_y, max_z]`, when its corners are numbers in order.
 fn aabb_of(b: [f64; 6]) -> Option<Aabb> {
-    (b.iter().all(|v| v.is_finite()) && b[0] <= b[3] && b[1] <= b[4] && b[2] <= b[5]).then(|| {
-        Aabb::new(Vec3::new(b[0], b[1], b[2]), Vec3::new(b[3], b[4], b[5]))
-    })
+    (b.iter().all(|v| v.is_finite()) && b[0] <= b[3] && b[1] <= b[4] && b[2] <= b[5])
+        .then(|| Aabb::new(Vec3::new(b[0], b[1], b[2]), Vec3::new(b[3], b[4], b[5])))
 }
 
 fn corners(b: Aabb) -> [f64; 6] {
@@ -202,7 +201,10 @@ mod tests {
     fn keys_follow_the_signs() {
         let k = input_keys(&input(1.0, -1.0)).unwrap();
         assert!(k.forward && !k.backward && k.right && !k.left);
-        assert!(k.analog.is_none(), "full keys use the keyboard's own vector");
+        assert!(
+            k.analog.is_none(),
+            "full keys use the keyboard's own vector"
+        );
         let k = input_keys(&input(-1.0, 0.0)).unwrap();
         assert!(k.backward && !k.forward && !k.left && !k.right);
     }
