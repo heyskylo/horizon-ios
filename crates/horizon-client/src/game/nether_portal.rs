@@ -272,7 +272,17 @@ fn arrival_from_tag(a: &Tag) -> Option<Arrival> {
 impl Game<'_> {
     /// The world border's extent.
     pub(super) fn border_bounds(&self) -> BorderBounds {
-        let [min_x, min_z, max_x, max_z] = self.border.bounds();
+        self.border_bounds_of(self.dim)
+    }
+    /// The extent of `dim`'s own border (`ServerLevel.getWorldBorder`), the level in place or a
+    /// parked one.
+    fn border_bounds_of(&self, dim: Dim) -> BorderBounds {
+        let border = if dim == self.dim {
+            &self.border
+        } else {
+            self.levels.parked_border(dim).unwrap_or(&self.border)
+        };
+        let [min_x, min_z, max_x, max_z] = border.bounds();
         BorderBounds {
             min_x,
             min_z,
@@ -328,7 +338,10 @@ impl Game<'_> {
         };
         Plan {
             dim: target,
-            approximate: self.border_bounds().clamp(at.x * scale, at.y, at.z * scale),
+            // getPortalDestination clamps to the border of the level it leads to.
+            approximate: self
+                .border_bounds_of(target)
+                .clamp(at.x * scale, at.y, at.z * scale),
             entry_x_axis,
             offset,
             width,

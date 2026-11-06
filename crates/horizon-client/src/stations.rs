@@ -347,6 +347,31 @@ pub fn anvil_result(
         only_renaming,
     }
 }
+impl AnvilResult {
+    /// NeoForge's `CommonHooks.onAnvilUpdate` once the mods answered
+    /// `AnvilUpdateEvent` about this result (vanilla's): a cancel leaves no
+    /// result and both costs at 0. Otherwise their output, their level cost
+    /// through `AnvilMenu.setCost` (a negative one is 0) and their material
+    /// cost, where 0 or less is vanilla's 0 (`onTake` takes the whole right
+    /// stack, unless the anvil only renames). `only_renaming` stays vanilla's.
+    pub fn answer_update(
+        &mut self,
+        canceled: bool,
+        output: Option<ItemStack>,
+        xp_cost: i32,
+        material_cost: i32,
+    ) {
+        if canceled {
+            self.result = None;
+            self.cost = 0;
+            self.repair_item_count_cost = 0;
+            return;
+        }
+        self.result = output;
+        self.cost = xp_cost.max(0);
+        self.repair_item_count_cost = u32::try_from(material_cost).unwrap_or(0);
+    }
+}
 
 // ---------------------------------------------------------------- grindstone
 
@@ -814,6 +839,50 @@ mod tests {
             apply_enchantment(&e, &items, 99, 2, 30, &ItemStack::new("minecraft:book", 1)).unwrap();
         assert_eq!(&*books.item, "minecraft:enchanted_book");
         assert!(!books.stored_enchantments().is_empty());
+    }
+
+    /// The mods' answer to `AnvilUpdateEvent` replaces vanilla's result as
+    /// `CommonHooks.onAnvilUpdate` sets it: a cancel empties the result and
+    /// both costs, `AnvilMenu.setCost` keeps the level cost at 0 or more, and
+    /// a material cost below 1 is vanilla's 0. The rename flag stays vanilla's.
+    #[test]
+    fn an_anvil_update_answer_replaces_vanillas_result() {
+        let vanilla = AnvilResult {
+            result: Some(ItemStack::new("minecraft:diamond_sword", 1)),
+            cost: 3,
+            repair_item_count_cost: 2,
+            only_renaming: true,
+        };
+        let emerald = Some(ItemStack::new("minecraft:emerald", 1));
+        let mut r = vanilla.clone();
+        r.answer_update(false, emerald.clone(), 7, 4);
+        assert_eq!(
+            r,
+            AnvilResult {
+                result: emerald.clone(),
+                cost: 7,
+                repair_item_count_cost: 4,
+                only_renaming: true,
+            }
+        );
+        let mut r = vanilla.clone();
+        r.answer_update(false, emerald.clone(), -5, -1);
+        assert_eq!((r.cost, r.repair_item_count_cost), (0, 0));
+        // Unchanged values give vanilla's result back.
+        let mut r = vanilla.clone();
+        r.answer_update(false, vanilla.result.clone(), 3, 2);
+        assert_eq!(r, vanilla);
+        let mut r = vanilla.clone();
+        r.answer_update(true, emerald, 7, 4);
+        assert_eq!(
+            r,
+            AnvilResult {
+                result: None,
+                cost: 0,
+                repair_item_count_cost: 0,
+                only_renaming: true,
+            }
+        );
     }
 
     #[test]

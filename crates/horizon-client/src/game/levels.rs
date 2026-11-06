@@ -92,6 +92,10 @@ pub(super) struct Parked {
     spawn_scratch: super::natural_spawning::SpawnScratch,
     /// Server ticks since a player was last in the level.
     idle: u32,
+    /// The level's own world border (`ServerLevel.getWorldBorder`), and what its players were
+    /// last told of it (`LanHost::border_sent`).
+    border: horizon_client::worldborder::WorldBorder,
+    border_sent: Option<horizon_client::lan::border::Sent>,
 }
 
 /// Which passes of the server tick the level in place runs: the first
@@ -141,6 +145,14 @@ impl Levels {
     }
 
     /// The worlds of the levels not in place.
+    /// A parked level's world border.
+    pub(super) fn parked_border(
+        &self,
+        dim: Dim,
+    ) -> Option<&horizon_client::worldborder::WorldBorder> {
+        self.parked.get(&dim).map(|level| &level.border)
+    }
+
     pub(super) fn parked_worlds(&self) -> impl Iterator<Item = &World> {
         self.parked.values().map(|level| &level.world)
     }
@@ -276,6 +288,8 @@ impl Game<'_> {
             creaking: Default::default(),
             spawn_scratch: Default::default(),
             idle: 0,
+            border: self.load_border(dim),
+            border_sent: None,
         })
     }
 
@@ -342,6 +356,7 @@ impl Game<'_> {
         self.sculk.swap_level(&mut p.sculk);
         self.creaking.swap_level(&mut p.creaking);
         swap(&mut self.spawn_scratch, &mut p.spawn_scratch);
+        swap(&mut self.border, &mut p.border);
         // What only the client draws starts over.
         self.particles.clear();
         self.pickups.clear();
@@ -383,6 +398,14 @@ impl Game<'_> {
             };
             if let Some(states) = states {
                 std::mem::swap(states, &mut p.lan_states);
+            }
+            match host.as_deref_mut() {
+                Some(h) => std::mem::swap(&mut h.border_sent, &mut p.border_sent),
+                None => {
+                    if let Some(h) = self.lan.as_mut() {
+                        std::mem::swap(&mut h.border_sent, &mut p.border_sent);
+                    }
+                }
             }
             p.idle = 0;
             let left = std::mem::replace(&mut self.dim, target);
@@ -824,5 +847,47 @@ mod tests {
         levels.clear();
         assert!(levels.heard_open.is_empty());
         assert!(levels.parked.is_empty());
+    }
+
+    /// `ServerLevel.getWorldBorder`: `/worldborder` in one level leaves the others' alone.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn each_level_keeps_its_own_world_border() {
+        use crate::game::{Audio, Options, Progress, Settings, load_resources};
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        assert!(game.run_command("worldborder set 1000"));
+        assert!(game.run_command("execute in minecraft:the_nether run worldborder set 100"));
+        assert_eq!(game.dim, Dim::Overworld);
+        assert_eq!(game.border.size(), 1000.0);
+        let nether = game.levels.parked_border(Dim::Nether).unwrap();
+        assert_eq!(nether.size(), 100.0);
     }
 }

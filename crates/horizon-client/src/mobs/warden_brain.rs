@@ -902,7 +902,7 @@ impl B {
                 let in_reach = mem(m).visible_mobs.present()
                     && visible_contains(m, w, target)
                     && w.target_info(target)
-                        .is_some_and(|t| m.within_melee_range(&t));
+                        .is_some_and(|t| m.within_melee_range(w, &t));
                 let mm = mem(m);
                 if in_reach {
                     mm.walk_target.clear();
@@ -957,7 +957,7 @@ impl B {
                 let Some(info) = w.target_info(target) else {
                     return false;
                 };
-                if !(m.within_melee_range(&info) && visible_contains(m, w, target)) {
+                if !(m.within_melee_range(w, &info) && visible_contains(m, w, target)) {
                     return false;
                 }
                 mem(m).look_target.set(Tracker::Entity(target, true));
