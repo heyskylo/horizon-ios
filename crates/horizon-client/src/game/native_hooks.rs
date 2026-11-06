@@ -6523,6 +6523,27 @@ impl Game<'_> {
     ) {
         mod_api::dispatch_player_level_change(self, mod_api::mods(), player, name, from, to);
     }
+    /// The stack an SNBT item compound stands for, as `/give` and the data
+    /// packs write one (`{id:"minecraft:diamond_sword",count:1,components:
+    /// {"minecraft:damage":5}}`): vanilla's `TagParser`, then
+    /// `ItemStack.CODEC`. None when the text is not one compound (whitespace
+    /// around it aside), for air, and for an item this world does not have.
+    /// Works on a client and a server alike. API @API:item_from_snbt@.
+    #[allow(dead_code)]
+    pub(super) fn native_item_from_snbt(&self, snbt: &str) -> Option<ItemStack> {
+        let (tag, read) = horizon_world::nbt::parse_snbt(snbt).ok()?;
+        if !snbt.get(read..).is_some_and(|rest| rest.trim().is_empty()) {
+            return None;
+        }
+        let horizon_world::nbt::Tag::Compound(compound) = &tag else {
+            return None;
+        };
+        let stack = ItemStack::from_nbt(compound)?;
+        world_items!(self)
+            .get(&stack.item)
+            .is_some()
+            .then_some(stack)
+    }
     /// A click in a menu a mod opened (`native_open_menu`), which moved
     /// nothing: the menu's `slot` (its own first, then the player's
     /// inventory, `native_menu_inventory_slot`; -999 outside), the `button`

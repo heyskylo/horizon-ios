@@ -2484,6 +2484,16 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
 - **`native_player_jump(player, name)`**: accepted guest movement made the server player jump from the ground, after movement simulation finishes. The guest's state is swapped in.
 - **`native_player_kicked(player, name, reason)`**: a guest was kicked after the hub recorded the rendered disconnect reason and sent the disconnect. The guest's state is swapped in, unless the guest was already removed in the same poll (a kick and the disconnect arriving together): the hook still fires, without it.
 - **`native_player_level_change(player, name, from, to)`**: a server player's experience change altered their level, after the new level was applied. The guest's state is swapped in when the player is a guest.
+
+#### Server hooks for plugin ports: Menus, items and maps
+
+- Helper `native_item_from_snbt(snbt) -> Option<ItemStack>`: the stack an SNBT item compound stands for, as `/give`
+  and the data packs write one (`{id:"minecraft:diamond_sword",count:1,components:{"minecraft:damage":5}}`), read as
+  vanilla's `TagParser` and `ItemStack.CODEC` do (Bukkit's `ItemFactory.createItemStack`). None when the text is not
+  one compound (whitespace around it aside), for air, and for an item the world does not have. `ItemStack::from_nbt`
+  reads a stack from a compound without asking the registry, and `mod_api::parse_snbt` is the SNBT reader itself (the
+  tag and the bytes it read), so a mod that keeps items as text needs neither the game's internal `item_data` module
+  nor a `summon` command to make them. Bundles need `"hooks": @API:item_from_snbt@`.
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a
