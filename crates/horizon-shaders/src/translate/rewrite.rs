@@ -949,19 +949,24 @@ fn depth_call(callee: &str, parameter: bool) -> Option<&'static str> {
 /// A shadow depth read through a plain sampler, filtered as a filtering sampler reads a colour
 /// texture when `l` is 1 (0: the nearest texel): the four texels around the point gathered, at
 /// the corner they share so the hardware's choice of texels can't differ from ours, and blended
-/// bilinearly. wgpu filters a depth format only in a comparison. The depth has one level, so a
-/// level, bias or gradients change nothing; offsets and projection apply. `l` is -1 for any other
-/// texture passed to a parameter that also takes a depth: then the built-in the pack called. A
-/// texel offset must be a constant, which a helper's parameter is not, so the offset helpers serve
-/// only the samplers themselves (`depth_call`).
+/// bilinearly. wgpu filters a depth format only in a comparison. The weights are whole 256ths,
+/// as Iris 1.11.7's reads on our NVIDIA GPU fit (#8464; a fit to our probe packs' readings, not
+/// Iris's code): the point's place between texels rounded half up to a 256th on each axis, the
+/// far corner's weight `wx × wy / 256` rounded half up, the others what is left of each axis.
+/// The depth has one level, so a level, bias or gradients change nothing; offsets and projection
+/// apply. `l` is -1 for any other texture passed to a parameter that also takes a depth: then the
+/// built-in the pack called. A texel offset must be a constant, which a helper's parameter is
+/// not, so the offset helpers serve only the samplers themselves (`depth_call`).
 const DEPTH_FILTER: &str = "vec4 hz_depthRead(texture2D t, sampler s, float l, vec2 p) {\n\
     \x20   if (l == 0.0) return textureLod(sampler2D(t, s), p, 0.0);\n\
     \x20   vec2 size = vec2(textureSize(sampler2D(t, s), 0));\n\
     \x20   vec2 x = p * size - 0.5;\n\
     \x20   vec2 i = floor(x);\n\
-    \x20   vec2 f = x - i;\n\
+    \x20   vec2 f = floor((x - i) * 256.0 + 0.5);\n\
+    \x20   float f11 = floor(f.x * f.y / 256.0 + 0.5);\n\
     \x20   vec4 g = textureGather(sampler2D(t, s), (i + 1.0) / size);\n\
-    \x20   return vec4(mix(mix(g.w, g.z, f.x), mix(g.x, g.y, f.x), f.y), 0.0, 0.0, 1.0);\n}\n\
+    \x20   float d = (g.z - g.w) * (f.x - f11) + (g.x - g.w) * (f.y - f11) + (g.y - g.w) * f11;\n\
+    \x20   return vec4(g.w + d / 256.0, 0.0, 0.0, 1.0);\n}\n\
     vec2 hz_depthOffset(texture2D t, sampler s, ivec2 o) { return vec2(o) / vec2(textureSize(sampler2D(t, s), 0)); }\n\
     vec4 hz_depthTexture(texture2D t, sampler s, float l, vec2 p) {\n\
     \x20   if (l < 0.0) return texture(sampler2D(t, s), p);\n\

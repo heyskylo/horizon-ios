@@ -67,6 +67,12 @@ esac
 if [ -n "$out" ]; then cp "$src" "$out"; else cat "$src"; fi
 CURL
 chmod +x "$W/fake/curl"
+# The fake uname: install.sh picks the Linux x86-64 archive, the one these releases hold, on any machine.
+cat > "$W/fake/uname" <<'UNAME'
+#!/bin/sh
+case "$1" in -m) echo x86_64 ;; *) echo Linux ;; esac
+UNAME
+chmod +x "$W/fake/uname"
 
 # install.sh with the throwaway public key in place of the release key.
 with_key() {  # dir -> prints path of the patched copy
@@ -86,7 +92,9 @@ edit() {  # sed-expression file
   sed "$1" "$2" > "$2.tmp" && mv "$2.tmp" "$2"
 }
 mkdir -p "$W/home"
-P=/usr/bin:/bin
+# The cases get the OpenSSL 3 checked above, wherever it is: macOS's /usr/bin has LibreSSL.
+mkdir "$W/ssl"; ln -s "$(command -v openssl)" "$W/ssl/openssl"
+P=$W/ssl:/usr/bin:/bin
 
 # 1. Good signature, a Nightly: SHA256SUMS.v2.sig signed for the version its title names.
 NIGHTLY=nightly-2026-11-03-0c02067

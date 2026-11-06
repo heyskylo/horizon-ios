@@ -70,6 +70,7 @@ Hud.extractHotbarAndDecorations	port	crates/horizon-client-render/src/hud_layout
 Hud.<init>	skip:java		constructor state setup
 Hud.extractSubtitleOverlay	port	crates/horizon-client-render/src/hud_overlays.rs::SubtitleOverlay::extract	
 Hud.extractChat	port	crates/horizon-client-render/src/chat.rs::Chat::layout	
+Hud.extractTabList	port	crates/horizon-client-render/src/tab_list.rs::visible	only inside `if (!isHidden)`, so F1 takes the list away; the list key, the local server and a `list` objective decide the rest
 Hud.getMobEffectSprite	port	crates/horizon-client/src/game/potions.rs::Game::draw_effect_icons	sprite lookup is inside the effect icon draw
 Hud.extractDemoOverlay	skip:other		Horizon has no demo mode, so there is no demo timer overlay
 Hud.getCameraPlayer	missing		minor: unsure: no camera-entity lookup found; the HUD always uses the local player
