@@ -685,6 +685,23 @@ fn authenticate(
     }
 }
 
+/// A joining player's profile, on the connection's own thread, once the server has let them in (the name,
+/// whitelist, ban and server-full checks have passed) and before it sends `LoginFinished`: `properties` are
+/// what the session service (online mode) or the proxy (forwarding) gave, none in offline mode. A mod may
+/// change, add or remove them (a skin's `textures`), within `GameProfile`'s limits (a name of up to 64
+/// characters, a signature of up to 1024): the player's own client and every player list then get the new
+/// ones. Once for each player who logs in over the network, the integrated server's own player excepted.
+/// There is no `Game` on this thread: no helper works. The hook may block for a lookup (a database's); the
+/// login waits for it, but a vanilla client gives up after 30 s of silence. API @API:player_profile@.
+#[inline(never)]
+pub fn native_player_profile(
+    player: u128,
+    name: &str,
+    properties: &mut Vec<horizon_protocol::packets::login::Property>,
+) {
+    crate::native_client_hooks::player_profile(player, name, properties);
+}
+
 fn serve_login(
     mut c: Connection,
     address: std::net::SocketAddr,
@@ -731,7 +748,7 @@ fn serve_login(
         .forwarding_secret
         .as_deref()
         .filter(|_| online.is_none() && !c.is_memory());
-    let (uuid, properties) = match (online, forwarding) {
+    let (uuid, mut properties) = match (online, forwarding) {
         (Some(online), _) => {
             match authenticate(&mut c, shared, online, &hello.name, address, &user) {
                 Ok(Ok(profile)) => profile,
@@ -784,6 +801,10 @@ fn serve_login(
         let text = refuse(&mut c, shared, "Server thread", &user, &reason);
         lost(shared, &user, &text);
         return Ok(());
+    }
+    // The mods may change the profile's properties before anyone is sent them.
+    if !c.is_memory() {
+        native_player_profile(uuid, &name, &mut properties);
     }
     // A player a proxy said would arrive (`player-expect`) uses the expectation up
     // here, as the login starts: one that ran out while the player was still in

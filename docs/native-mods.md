@@ -2484,6 +2484,21 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
 - **`native_player_jump(player, name)`**: accepted guest movement made the server player jump from the ground, after movement simulation finishes. The guest's state is swapped in.
 - **`native_player_kicked(player, name, reason)`**: a guest was kicked after the hub recorded the rendered disconnect reason and sent the disconnect. The guest's state is swapped in, unless the guest was already removed in the same poll (a kick and the disconnect arriving together): the hook still fires, without it.
 - **`native_player_level_change(player, name, from, to)`**: a server player's experience change altered their level, after the new level was applied. The guest's state is swapped in when the player is a guest.
+#### Server hooks for plugin ports: login and profiles
+
+What a skin, login or profile mod needs, which plugin ports reached with raw injections or their own `usercache.json`
+parsing before (#10461).
+
+- **`native_player_profile(player, name, properties)`**: a free function in `horizon_client_lib::lan::conn`, heard on
+  the connection's own thread once the server has let a player in (name, whitelist, bans and player limit checked) and
+  before it sends `LoginFinished` (Velocity's `GameProfileRequestEvent`). `properties` are the profile's, as the session
+  service (online mode) or the proxy (forwarding) gave them, none in offline mode. A mod may change, add or remove them,
+  within `GameProfile`'s limits (names up to 64 characters, signatures up to 1024): the player's own client and every
+  player list get the new ones, so a skin mod sets a stored `textures` here before anyone sees the old one. The
+  integrated server's own player is not heard. There is no `Game` on this thread, so no helper works; the hook may block
+  for a lookup, the login waits for it (a vanilla client gives up after 30 s of silence). Bundles need
+  `"hooks": @API:player_profile@`.
+
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a
