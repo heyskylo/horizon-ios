@@ -471,11 +471,9 @@ pub struct Post {
     pub clouds: Option<PostProgram>,
     /// What draws lines (the block outline), with the pack's own transform and look.
     pub lines: Option<PostProgram>,
-    /// What draws rain and snow, after deferred.
+    /// What draws rain and snow, after deferred. They never write depth, whatever `rain.depth`
+    /// says: Iris 1.11.7 left none of either in `depthtex0` (probe packs of ours, #10492).
     pub weather: Option<PostProgram>,
-    /// `rain.depth`: whether rain and snow write depth. Without an explicit false, retain
-    /// Horizon's existing writes; the inspected packs do not establish the external default.
-    pub rain_depth: bool,
     /// What draws the first-person hand and held items.
     pub hand: Option<PostProgram>,
     /// What draws their translucent parts (stained glass, ice...), after deferred and blended.
@@ -680,9 +678,6 @@ pub fn load_post(
         clouds: None,
         lines: None,
         weather: None,
-        rain_depth: properties
-            .get("rain.depth")
-            .is_none_or(|v| v.trim() != "false"),
         hand: None,
         hand_water: None,
         clouds_off: false,
@@ -2813,8 +2808,10 @@ blend.composite1.colortex3 = ONE ONE ONE ONE
         assert!(off.clouds.is_none() && off.clouds_off);
     }
 
+    /// Without `gbuffers_weather` or the textured programs, rain and snow draw with
+    /// `gbuffers_basic`, blended, whatever `rain.depth` says.
     #[test]
-    fn rain_depth_follows_live_properties_independently_of_weather_fallback() {
+    fn weather_falls_back_to_basic_whatever_rain_depth_says() {
         let pack = Pack::from_zip_bytes(
             "original-weather-depth",
             crate::pack::tests::zip(&[
@@ -2834,23 +2831,9 @@ blend.composite1.colortex3 = ONE ONE ONE ONE
             weather: Some(GbuffersInputs::default()),
             ..Default::default()
         };
-        for (text, writes) in [
-            ("rain.depth = true", true),
-            ("rain.depth = false", false),
-            (
-                "#if 0\nrain.depth=true\n#else\nrain.depth = false\n#endif",
-                false,
-            ),
-            ("rain.depth=true\nrain.depth=false", false),
-            ("rain.depth=false\nrain.depth=true", true),
-            // These defaults preserve accepted main as a compatibility choice, not a claim
-            // about the external default contract, which the permitted packs don't establish.
-            ("", true),
-            ("rain.depth=invalid", true),
-        ] {
+        for text in ["", "rain.depth = true", "rain.depth = false"] {
             let properties = Properties::parse(text, &macros);
             let post = load_post(&pack, "", &properties, &macros, &inputs);
-            assert_eq!(post.rain_depth, writes, "{text:?}");
             let weather = post.weather.expect("weather fallback loads");
             assert_eq!(weather.name, "gbuffers_basic");
             assert_eq!(weather.group, Group::Translucent);
