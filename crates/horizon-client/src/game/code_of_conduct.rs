@@ -169,6 +169,7 @@ impl Game<'_> {
         let Some(prompt) = &self.code_of_conduct else {
             return;
         };
+        horizon_client::widgets::cover_frame();
         // CodeOfConductScreen: WarningScreen's narration, the title and the
         // text on the next line.
         horizon_client::widgets::begin_screen(|| {
@@ -218,6 +219,7 @@ impl Game<'_> {
 
         let [x, y, cw, ch] = layout.check;
         let hover = ui::hovered(cursor, x, y, cw, ch);
+        horizon_client::widgets::record(&layout.label.plain(), layout.check, true);
         horizon_client::widgets::narratable(|| {
             horizon_client::widgets::Narratable::new(
                 horizon_client::widgets::What::Checkbox {
