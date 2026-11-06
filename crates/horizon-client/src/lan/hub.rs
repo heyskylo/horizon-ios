@@ -3901,7 +3901,8 @@ impl Hub {
                 // handlePlayerAbilities: the client flies only if it may.
                 S::PlayerAbilities(p) => {
                     let g = &mut self.guests[i];
-                    let flying = p.flags & 2 != 0 && (g.creative() || g.spectator());
+                    let flying =
+                        p.flags & 2 != 0 && (g.creative() || g.spectator() || g.allow_flight);
                     // The change is the game's to announce (the mods may refuse it).
                     if flying != g.flying {
                         g.flying = flying;
@@ -4326,6 +4327,7 @@ impl Hub {
                 && !g.spectator()
                 && !self.config.allow_flight
                 && !g.creative()
+                && !g.allow_flight
                 && g.effects.get("levitation").is_none()
                 && !g.fall_flying
                 && !g
@@ -4648,6 +4650,24 @@ impl Hub {
         g.send(&g.abilities());
     }
 
+    /// Let a guest fly in any game mode, or not (`Abilities.mayfly`), and set
+    /// whether they fly now (`Abilities.flying`), then tell them
+    /// (`onUpdateAbilities`). Creative and spectator fly whatever `allow` is;
+    /// a player who may not fly does not fly.
+    pub fn set_flight(&mut self, conn: u32, allow: bool, flying: bool) {
+        let Some(g) = self.guest_mut(conn) else {
+            return;
+        };
+        g.allow_flight = allow && !g.creative() && !g.spectator();
+        let may = g.allow_flight || g.creative() || g.spectator();
+        g.flying = g.spectator() || (flying && may);
+        if let Some(motion) = g.motion.as_mut() {
+            motion.may_fly = may;
+            motion.flying = g.flying;
+        }
+        g.send(&g.abilities());
+    }
+
     pub fn disconnect_all(&mut self) {
         let reason = translatable("multiplayer.disconnect.server_shutdown", &[]);
         for g in &self.guests {
@@ -4744,6 +4764,8 @@ impl Hub {
         // reports it loaded.
         g.load_timeout = super::guest::CLIENT_LOADED_TIMEOUT;
         g.loading = true;
+        // ServerPlayer.restoreFrom: the new player's abilities are its mode's.
+        g.allow_flight = false;
         // ServerLevel.removePlayerImmediately: the dead player's
         // Entity.setRemoved (KILLED) stops its riding; the new player rides
         // nothing.

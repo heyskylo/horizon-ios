@@ -2418,6 +2418,14 @@ impl Game<'_> {
                 .take()
                 .expect("the hub is back after the menu events");
         }
+        if !self.native_moves.is_empty() {
+            self.lan = Some(host);
+            horizon_client::spans::time("lan_native_moves", || self.run_native_moves());
+            host = self
+                .lan
+                .take()
+                .expect("the hub is back after the mods' moves");
+        }
         host.states = entities;
         self.level_pass.packets_drained = true;
         drop(holding);

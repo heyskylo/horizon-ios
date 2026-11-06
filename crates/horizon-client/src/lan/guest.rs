@@ -382,6 +382,10 @@ pub struct Guest {
     /// `Abilities.flyingSpeed`: vanilla's 0.05, unless a server mod set
     /// another (`native_set_flying_speed`). Saved with the player.
     pub flying_speed: f32,
+    /// `Abilities.mayfly` in a mode that does not give it: a server mod let the
+    /// player fly (`native_set_flight`), until their game mode changes or they
+    /// respawn. Not saved.
+    pub allow_flight: bool,
     /// The level the player is in (`ServerPlayer.level().dimension()`): the
     /// hub's level passes only reach the players in theirs.
     pub dimension: String,
@@ -564,6 +568,7 @@ impl Guest {
             hidden_commands: Vec::new(),
             granted_commands: Vec::new(),
             flying_speed: 0.05,
+            allow_flight: false,
             dimension: "minecraft:overworld".into(),
             menu: None,
             next_window: 0,
@@ -704,6 +709,8 @@ impl Guest {
         if mode != self.game_mode {
             self.previous_game_mode = Some(self.game_mode);
             self.game_mode = mode;
+            // GameType.updatePlayerAbilities sets mayfly for the new mode.
+            self.allow_flight = false;
         }
     }
     pub fn spectator(&self) -> bool {
@@ -718,7 +725,7 @@ impl Guest {
         if self.flying || self.spectator() {
             f |= 2;
         }
-        if self.creative() || self.spectator() {
+        if self.creative() || self.spectator() || self.allow_flight {
             f |= 4;
         }
         if self.creative() {

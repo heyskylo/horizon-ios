@@ -2888,6 +2888,56 @@ calls them without a mod.
   setting an empty one takes it away. Mods share it: keep your keys under your namespace.
   Bundles need `"hooks": @API:player_persistent_data@`.
 
+#### Server hooks for plugin ports: Moving players and vehicles
+
+Helpers that move a server player or a vehicle from a mod, so a port no longer runs `execute in .. run tp` from the
+console (which waits for the next tick and does nothing inside a player's hook).
+
+- Helper **`native_teleport_player(uuid, dimension, pos, yaw, pitch)`** (`host.teleport_player`): teleports a server
+  player to `pos` in `dimension` (`minecraft:the_nether`), facing `yaw` and `pitch`, as `/tp` does (Bukkit's
+  `Player.teleport`): they leave their vehicle, lose their motion and fall, and their client is told. Callable from any
+  server hook. Within their level it is done at once when they are the acting player or nobody's state is swapped in
+  (a tick hook); inside another player's hook it is done after the players' packets of the server tick (the same tick
+  when the hook heard a packet). Into another level it happens when the tick's level teleports run, as a command's.
+  True when done or queued; false for a player not on the server or dead (where that can be seen), another dimension
+  than the three, a position outside `/tp`'s bounds, an angle that is not finite, and on a client. Server-side.
+  Bundles need `"hooks": @API:teleport_player@`.
+- Helper **`native_teleport_vehicle(dimension, id, pos)`** (`host.teleport_vehicle`): teleports the boat, minecart or
+  mob a rider sits on (a horse, a pig) with entity id `id`, of the level in place, to `pos` with its riders, as `/tp`
+  does a vehicle (Bukkit's `Vehicle.teleport`): they stay seated and move by the same offset, and a server player riding
+  it is told, as their client drives the vehicle itself. Only where nobody's state is swapped in (a tick hook); inside
+  `native_vehicle_moved_v2` change `to` instead. False inside a player's hook, for no such vehicle here, another
+  dimension, a position outside `/tp`'s bounds, and on a client. Server-side. Bundles need
+  `"hooks": @API:teleport_vehicle@`.
+- **`native_vehicle_moved_v2(player, dimension, vehicle, kind, from, to, cancel)`**: an additive version of
+  `native_vehicle_moved`, heard right after v1 at the same times and with the same state swapped in, and also for a mob
+  a server player rides (a horse, a pig, a strider), which v1 does not hear. `vehicle` is the entity id and `dimension`
+  its level. Set `cancel` and the vehicle is put back at `from` with its riders; change `to` and it is put there instead
+  (not checked against the blocks; a value that is not finite is ignored), as Bukkit's `VehicleMoveEvent` with
+  `Vehicle.teleport`. Either way its riders' clients are told, and the next move is heard from there. Mods are asked in
+  order and share `to` and `cancel`. Server-side. Bundles need `"hooks": @API:vehicle_moved_v2@`.
+- Helpers **`native_mount(entity, vehicle)`**, **`native_dismount(entity)`** and **`native_eject_passengers(vehicle)`**
+  (`host.mount`, `host.dismount`, `host.eject_passengers`), by entity id in the level in place: seat a server player or
+  a mob on a boat, minecart or mob, as `/ride <entity> mount <vehicle>` does with its checks (neither rides already, no
+  loop, a free seat, minecarts carry players only); take one off what it rides, as `/ride <entity> dismount`, landing
+  beside the vehicle; or take every server player and mob off a vehicle (Bukkit's `addPassenger`, `leaveVehicle`,
+  `eject`). `native_entity_mount` may refuse each. Inside a player's hook only the acting player and mobs are reached.
+  True when it rides, got off, or one got off; false otherwise and on a client. Server-side. Bundles need
+  `"hooks": @API:mount@`.
+- Helper **`native_set_flight(uuid, allow, flying)`** (`host.set_flight`): lets a server player fly in any game mode
+  (`allow`) or not, and sets whether they fly now (`flying`), as Bukkit's `Player.setAllowFlight` and `setFlying`
+  (`Abilities.mayfly` and `flying`); their client is told, and the server's flying check no longer kicks them. A player
+  who may not fly does not fly; creative and spectator players fly whatever `allow` is. Kept until their game mode
+  changes, they respawn or they leave (vanilla sets it for the mode then); not saved. Done at once where nobody's state
+  is swapped in, else after the players' packets of the server tick. True when done or queued; false for a player not
+  on the server (where that can be seen) and on a client. Server-side. Bundles need `"hooks": @API:set_flight@`.
+- Helper **`native_respawn_player(uuid)`** (`host.respawn_player`): respawns a dead server player as their client's
+  Respawn click does (`ClientCommand` `PERFORM_RESPAWN`; Spigot's `player.spigot().respawn()`): at their bed, anchor or
+  the world spawn, with the respawn hooks, without waiting for the click. Done after the players' packets of the server
+  tick (the same tick from a packet's hook or the tick's start, else the next). True when queued; false for a player
+  seen not on the server or alive (inside another player's hook nobody else can be seen: it is queued and does nothing
+  for a living player), and on a client. Server-side. Bundles need `"hooks": @API:respawn_player@`.
+
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a

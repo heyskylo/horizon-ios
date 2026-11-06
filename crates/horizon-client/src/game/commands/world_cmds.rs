@@ -1451,6 +1451,20 @@ impl Game<'_> {
             return Ok(0);
         };
         let vehicle_name = self.target_name(vehicle);
+        self.ride_mount(target, vehicle)?;
+        self.feedback(Text::translate(
+            "commands.ride.mount.success",
+            &[name, vehicle_name],
+        ));
+        Ok(1)
+    }
+
+    /// `RideCommand.mount` once the targets are known: `target` (the player
+    /// in place or a mob) rides `vehicle`, as `startRiding(vehicle, true,
+    /// true)` forces it (also for `native_mount`).
+    pub(in crate::game) fn ride_mount(&mut self, target: Target, vehicle: Target) -> R<()> {
+        let name = self.target_name(target);
+        let vehicle_name = self.target_name(vehicle);
         if let Some(current) = self.ride_vehicle(target) {
             let current = self.target_name(current);
             return Err(err(
@@ -1516,11 +1530,7 @@ impl Game<'_> {
                     // sendEventAndTriggers: START_RIDING_TRIGGER.
                     self.start_riding(id);
                 }
-                self.feedback(Text::translate(
-                    "commands.ride.mount.success",
-                    &[name, vehicle_name],
-                ));
-                return Ok(1);
+                return Ok(());
             }
             Target::Cart(id) => {
                 if target != Target::Player
@@ -1530,11 +1540,7 @@ impl Game<'_> {
                     return Err(generic());
                 }
                 self.start_riding(id);
-                self.feedback(Text::translate(
-                    "commands.ride.mount.success",
-                    &[name, vehicle_name],
-                ));
-                return Ok(1);
+                return Ok(());
             }
             _ => {}
         }
@@ -1550,11 +1556,7 @@ impl Game<'_> {
             if !self.try_mount_mob(rider, mob_id) {
                 return Err(generic());
             }
-            self.feedback(Text::translate(
-                "commands.ride.mount.success",
-                &[name, vehicle_name],
-            ));
-            return Ok(1);
+            return Ok(());
         }
         if !self.native_may_board(mob_id) {
             return Err(generic());
@@ -1567,11 +1569,7 @@ impl Game<'_> {
         self.mount.jump_ticks = 0;
         self.mount.jump_scale = 0.0;
         self.start_riding(mob_id);
-        self.feedback(Text::translate(
-            "commands.ride.mount.success",
-            &[name, vehicle_name],
-        ));
-        Ok(1)
+        Ok(())
     }
 
     /// Entity.getVehicle: the player's mount, or a mob's.
