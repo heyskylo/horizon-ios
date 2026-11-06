@@ -908,7 +908,9 @@ impl Game<'_> {
             if in_water {
                 a.enchantment_fall_distance = 0.0;
             } else {
-                a.enchantment_fall_distance += (a.previous.y - a.position.y).max(0.0);
+                // Entity.checkFallDamage narrows each movement before adding to the double.
+                a.enchantment_fall_distance +=
+                    f64::from((a.previous.y - a.position.y).max(0.0) as f32);
             }
             let landed = a.on_ground && a.enchantment_fall_distance > 0.0;
             if a.on_ground {
