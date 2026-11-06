@@ -2476,11 +2476,13 @@ impl Game<'_> {
                     // EndCrystal's constructor takes an id from the entity
                     // counter, and the crystal is shown with its base.
                     self.next_entity += 1;
+                    let at = Vec3::new(pos[0], pos[1], pos[2]);
+                    let drawn = self.world.random.next_int_bound(100_000).unwrap_or(0);
                     self.crystals.push(super::dragon::Crystal {
                         id: self.next_entity,
-                        position: Vec3::new(pos[0], pos[1], pos[2]),
+                        position: at,
                         show_bottom: true,
-                        time: self.world.random.next_int_bound(100_000).unwrap_or(0),
+                        time: super::dragon::Crystal::start_time(at, drawn, self.clock.still()),
                         beam: None,
                         invulnerable: false,
                     });

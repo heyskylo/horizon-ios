@@ -745,8 +745,9 @@ impl Game<'_> {
 
     /// A saved end crystal.
     pub(super) fn load_crystal(&mut self, tag: Tag, uuid: Option<[i32; 4]>) {
-        let time = self.world.random.next_int_bound(100_000).unwrap_or(0);
-        if let Some(mut c) = super::dragon::Crystal::from_nbt(&tag, time) {
+        let drawn = self.world.random.next_int_bound(100_000).unwrap_or(0);
+        if let Some(mut c) = super::dragon::Crystal::from_nbt(&tag, drawn) {
+            c.time = super::dragon::Crystal::start_time(c.position, drawn, self.clock.still());
             // EndCrystal's constructor takes an id from the
             // entity counter.
             self.next_entity += 1;

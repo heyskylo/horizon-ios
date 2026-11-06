@@ -191,6 +191,20 @@ pub(super) struct Crystal {
     pub invulnerable: bool,
 }
 impl Crystal {
+    /// The start of `time` (the spin and bob) for a crystal at `position`: the random draw
+    /// vanilla makes, or under `HORIZON_STILL` one seeded from the position alone. Which crystal
+    /// gets which draw, and a server's entity ids, follow the order chunks load in, which differs
+    /// between launches; the position is the same in every copy of the world. The draw is made
+    /// either way, so the random stays where it would be.
+    pub(super) fn start_time(position: Vec3, drawn: i32, still: bool) -> i32 {
+        if still {
+            horizon_client::mobs::entity_random(0, position)
+                .next_int_bound(100_000)
+                .unwrap_or(0)
+        } else {
+            drawn
+        }
+    }
     /// `EntityType.END_CRYSTAL`: 2 x 2.
     pub(super) fn bounds(&self) -> Aabb {
         let p = self.position;
@@ -1260,7 +1274,8 @@ impl Game<'_> {
             {
                 continue;
             }
-            let time = self.world.random.next_int_bound(100_000).unwrap_or(0);
+            let drawn = self.world.random.next_int_bound(100_000).unwrap_or(0);
+            let time = Crystal::start_time(at, drawn, self.clock.still());
             // EndCrystal's constructor takes an id from the entity counter.
             self.next_entity += 1;
             self.crystals.push(Crystal {
@@ -3881,15 +3896,17 @@ impl Game<'_> {
             return false;
         }
         // EndCrystal's constructor: `this.random.nextInt(100000)`, the crystal's own random.
-        let time = super::dispenser::entity_random()
+        let drawn = super::dispenser::entity_random()
             .next_int_bound(100_000)
             .unwrap_or(0);
+        let at = Vec3::new(x + 0.5, y, z + 0.5);
+        let time = Crystal::start_time(at, drawn, self.clock.still());
         // EndCrystal's constructor takes an id from the entity counter, so
         // the crystal is an entity a command can name (`@e[type=end_crystal]`).
         self.next_entity += 1;
         self.crystals.push(Crystal {
             id: self.next_entity,
-            position: Vec3::new(x + 0.5, y, z + 0.5),
+            position: at,
             show_bottom: false,
             time,
             beam: None,
@@ -4178,7 +4195,8 @@ impl Game<'_> {
         let at = Vec3::new(f64::from(cx) + 0.5, f64::from(h + 1), f64::from(cz) + 0.5);
         self.crystals
             .retain(|c| c.position.distance_squared(at) > 0.01);
-        let time = self.world.random.next_int_bound(100_000).unwrap_or(0);
+        let drawn = self.world.random.next_int_bound(100_000).unwrap_or(0);
+        let time = Crystal::start_time(at, drawn, self.clock.still());
         self.crystals.push(Crystal {
             id: 0,
             position: at,
@@ -4829,6 +4847,31 @@ mod tests {
         )
     }
 
+    /// Under `HORIZON_STILL` a crystal's spin and bob start from its position, whichever order
+    /// the crystals load in; without it each takes the next draw, as vanilla's do.
+    #[test]
+    fn a_still_crystal_starts_from_its_position_in_any_load_order() {
+        let spikes = [Vec3::new(42.5, 77.0, 0.5), Vec3::new(-33.5, 95.0, 24.5)];
+        let starts = |order: [usize; 2], still: bool| {
+            let mut random = LegacyRandom::new(5);
+            let mut times = [0; 2];
+            for i in order {
+                let drawn = random.next_int_bound(100_000).unwrap();
+                times[i] = Crystal::start_time(spikes[i], drawn, still);
+            }
+            times
+        };
+        let still = starts([0, 1], true);
+        assert_eq!(still, starts([1, 0], true));
+        assert_ne!(still[0], still[1], "each crystal keeps its own phase");
+        let first = LegacyRandom::new(5).next_int_bound(100_000).unwrap();
+        assert_eq!(starts([0, 1], false)[0], first);
+        assert_eq!(
+            starts([1, 0], false)[1],
+            first,
+            "the first loaded takes the first draw"
+        );
+    }
     /// `Mth.wrapDegrees`: `% 360` then one step of 360, exact for a negative angle
     /// (a remainder made positive and back again loses the float's low bits).
     #[test]
