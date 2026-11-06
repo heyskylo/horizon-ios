@@ -653,8 +653,15 @@ impl Component {
             }
             Self::TooltipDisplay { hide, hidden } => {
                 w.bool(*hide);
-                w.varint(hidden.len() as i32);
-                hidden.iter().for_each(|h| w.varint(ids::component(*h)));
+                // Without the components an older client being written for lacks.
+                let kept = || {
+                    hidden
+                        .iter()
+                        .map(|h| ids::component(*h))
+                        .filter(|h| *h >= 0)
+                };
+                w.varint(kept().count() as i32);
+                kept().for_each(|h| w.varint(h));
             }
             Self::Stacks(stacks) => {
                 w.varint(stacks.len() as i32);
@@ -974,21 +981,29 @@ impl Codec<Option<Stack>> for Slot {
         read_stack(r, false)
     }
     fn write(v: &Option<Stack>, w: &mut Writer) {
-        let Some(s) = v else {
+        // An item an older client has no stand-in for reaches it as nothing.
+        let item = v.as_ref().map_or(-1, |s| ids::item(s.item));
+        let Some(s) = v.as_ref().filter(|_| item >= 0) else {
             w.varint(0);
             return;
         };
         w.varint(s.count);
-        w.varint(ids::item(s.item));
-        w.varint(s.added.len() as i32);
-        w.varint(s.removed.len() as i32);
-        for (kind, c) in &s.added {
-            w.varint(ids::component(*kind));
-            c.write(*kind, w);
-        }
-        for kind in &s.removed {
-            w.varint(ids::component(*kind));
-        }
+        w.varint(item);
+        write_patch(s, w);
+    }
+}
+
+/// A stack's components, without those an older client being written for lacks.
+fn write_patch(s: &Stack, w: &mut Writer) {
+    let has = |kind: i32| ids::component(kind) >= 0;
+    w.varint(s.added.iter().filter(|(k, _)| has(*k)).count() as i32);
+    w.varint(s.removed.iter().filter(|k| has(**k)).count() as i32);
+    for (kind, c) in s.added.iter().filter(|(k, _)| has(*k)) {
+        w.varint(ids::component(*kind));
+        c.write(*kind, w);
+    }
+    for kind in s.removed.iter().filter(|k| has(**k)) {
+        w.varint(ids::component(*kind));
     }
 }
 
@@ -1110,15 +1125,7 @@ impl Codec<Stack> for Template {
     fn write(s: &Stack, w: &mut Writer) {
         w.varint(ids::item(s.item));
         w.varint(s.count);
-        w.varint(s.added.len() as i32);
-        w.varint(s.removed.len() as i32);
-        for (kind, c) in &s.added {
-            w.varint(ids::component(*kind));
-            c.write(*kind, w);
-        }
-        for kind in &s.removed {
-            w.varint(ids::component(*kind));
-        }
+        write_patch(s, w);
     }
 }
 
