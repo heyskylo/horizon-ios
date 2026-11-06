@@ -2484,6 +2484,20 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
 - **`native_player_jump(player, name)`**: accepted guest movement made the server player jump from the ground, after movement simulation finishes. The guest's state is swapped in.
 - **`native_player_kicked(player, name, reason)`**: a guest was kicked after the hub recorded the rendered disconnect reason and sent the disconnect. The guest's state is swapped in, unless the guest was already removed in the same poll (a kick and the disconnect arriving together): the hook still fires, without it.
 - **`native_player_level_change(player, name, from, to)`**: a server player's experience change altered their level, after the new level was applied. The guest's state is swapped in when the player is a guest.
+#### Server hooks for plugin ports: vanish and per-viewer visuals
+
+What a vanish, a per-player hologram or a Tab list plugin needs, which plugin ports reached with raw packets or
+injections before.
+
+- **`native_living_change_target(dimension, entity, kind, target, target_mob, cancel)`**: a mob's target changed
+  (NeoForge's `LivingChangeTargetEvent`, Bukkit's `EntityTargetEvent`): mob `entity` of type `kind` now targets the
+  player `target` (a UUID) or the mob `target_mob`, or lets go (both None). Heard once per change, after the mob's
+  tick that made it (its target goals or brain; a creative player it drops), or, when another mob's tick changed it
+  (`HurtByTargetGoal`'s alert), once every mob has ticked. Set `cancel` and the mob keeps the target it had, and what
+  its tick did to the new one (a melee hit, a sting, a sonic boom) is not dealt; it may pick the same target on a
+  later tick, which is heard again, so a vanish mod cancels every time the target is a vanished player. A target that
+  is neither a player nor a mob is not heard. No `self` (the mobs are out of the game while they tick), so a mod
+  decides from its own state. Server-side. Bundles need `"hooks": @API:living_change_target@`.
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a

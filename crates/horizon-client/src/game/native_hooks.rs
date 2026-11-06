@@ -6523,6 +6523,38 @@ impl Game<'_> {
     ) {
         mod_api::dispatch_player_level_change(self, mod_api::mods(), player, name, from, to);
     }
+    /// A mob's target changed (NeoForge's `LivingChangeTargetEvent`, Bukkit's
+    /// `EntityTargetEvent`, vanilla's `Mob.setTarget`): mob `entity` of type
+    /// `kind` in `dimension` now targets the player `target` (a UUID) or the
+    /// mob `target_mob` (its id), or lets go (both None). Heard once per
+    /// change: after the mob's own tick that made it (its target goals, its
+    /// brain, a creative player dropped), or, for a change made while other
+    /// mobs ticked (`HurtByTargetGoal.alertOthers`), once every mob ticked.
+    /// Set `cancel` and it keeps the target it had: what its tick did to the
+    /// new target (a melee hit, a sting, a sonic boom) is not dealt. It may
+    /// pick the same target again on a later tick, which is heard again. A
+    /// target that is neither a player nor a mob is not heard. Like
+    /// `native_living_incoming_damage` there is no `self`: the mobs are out
+    /// of the game while they tick. Server-side, on the thread that ticks the
+    /// world. API @API:living_change_target@.
+    pub(super) fn native_living_change_target(
+        dimension: &str,
+        entity: u32,
+        kind: &str,
+        target: Option<u128>,
+        target_mob: Option<u32>,
+        cancel: &mut bool,
+    ) {
+        mod_api::dispatch_living_change_target(
+            mod_api::mods(),
+            dimension,
+            entity,
+            kind,
+            target,
+            target_mob,
+            cancel,
+        );
+    }
     /// A click in a menu a mod opened (`native_open_menu`), which moved
     /// nothing: the menu's `slot` (its own first, then the player's
     /// inventory, `native_menu_inventory_slot`; -999 outside), the `button`
