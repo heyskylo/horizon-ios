@@ -257,6 +257,7 @@ impl IntLit {
     }
 }
 
+/// `FloatTag.valueOf` / `DoubleTag.valueOf`: either zero sign uses the zero tag.
 fn float_tag(text: &str, ty: Option<TypeSuffix>, state: &mut State<SV>) -> Option<Tag> {
     match ty {
         Some(TypeSuffix::Float) => {
@@ -265,7 +266,7 @@ fn float_tag(text: &str, ty: Option<TypeSuffix>, state: &mut State<SV>) -> Optio
                 state.store_at_mark(delayed("snbt.parser.infinity_not_allowed"));
                 return None;
             }
-            Some(Tag::Float(v.to_bits()))
+            Some(Tag::Float(if v == 0.0 { 0 } else { v.to_bits() }))
         }
         None | Some(TypeSuffix::Double) => {
             let v: f64 = text.parse().unwrap_or(f64::NAN);
@@ -273,7 +274,7 @@ fn float_tag(text: &str, ty: Option<TypeSuffix>, state: &mut State<SV>) -> Optio
                 state.store_at_mark(delayed("snbt.parser.infinity_not_allowed"));
                 return None;
             }
-            Some(Tag::Double(v.to_bits()))
+            Some(Tag::Double(if v == 0.0 { 0 } else { v.to_bits() }))
         }
         _ => {
             state.store_at_mark(delayed("snbt.parser.expected_float_type"));
@@ -1027,5 +1028,84 @@ mod tests {
             );
         }
         assert!(parse_fully(&item).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod floating_zero_tests {
+    use super::*;
+    use horizon_world::nbt::{Limits, read_network};
+
+    fn cases() -> Vec<(&'static str, Tag)> {
+        vec![
+            ("0.0f", Tag::Float(0)),
+            ("-0.0f", Tag::Float(0)),
+            ("0e0f", Tag::Float(0)),
+            ("-0e0f", Tag::Float(0)),
+            ("0.0d", Tag::Double(0)),
+            ("-0.0d", Tag::Double(0)),
+            ("0e0d", Tag::Double(0)),
+            ("-0e0d", Tag::Double(0)),
+            ("0.0", Tag::Double(0)),
+            ("-0.0", Tag::Double(0)),
+            ("0e0", Tag::Double(0)),
+            ("-0e0", Tag::Double(0)),
+            ("1.25f", Tag::Float(0x3fa0_0000)),
+            ("-1.25f", Tag::Float(0xbfa0_0000)),
+            ("1.25d", Tag::Double(0x3ff4_0000_0000_0000)),
+            ("-1.25d", Tag::Double(0xbff4_0000_0000_0000)),
+            ("1e-45f", Tag::Float(1)),
+            ("-1e-45f", Tag::Float(0x8000_0001)),
+            ("5e-324d", Tag::Double(1)),
+            ("-5e-324d", Tag::Double(0x8000_0000_0000_0001)),
+            ("-0", Tag::Int(0)),
+        ]
+    }
+    #[test]
+    fn command_text_keeps_tag_factory_zero_and_nonzero_bits() {
+        for (text, expected) in cases() {
+            assert_eq!(parse_fully(text).unwrap(), expected, "{text}");
+        }
+    }
+    #[test]
+    fn world_text_keeps_tag_factory_zero_and_nonzero_bits() {
+        for (text, expected) in cases() {
+            let (actual, used) = horizon_world::nbt::parse_snbt(text).unwrap();
+            assert_eq!(used, text.len(), "{text}");
+            assert_eq!(actual, expected, "{text}");
+        }
+    }
+    #[test]
+    fn binary_decode_already_canonicalizes_only_zero() {
+        for (bits, expected) in [
+            (0u32, 0),
+            (0x8000_0000, 0),
+            (1, 1),
+            (0x8000_0001, 0x8000_0001),
+            (0x3fa0_0000, 0x3fa0_0000),
+            (0xbfa0_0000, 0xbfa0_0000),
+        ] {
+            let mut bytes = vec![5];
+            bytes.extend(bits.to_be_bytes());
+            assert_eq!(
+                read_network(&bytes, Limits::default()).unwrap(),
+                (Tag::Float(expected), bytes.len())
+            );
+        }
+        for (bits, expected) in [
+            (0u64, 0),
+            (0x8000_0000_0000_0000, 0),
+            (1, 1),
+            (0x8000_0000_0000_0001, 0x8000_0000_0000_0001),
+            (0x3ff4_0000_0000_0000, 0x3ff4_0000_0000_0000),
+            (0xbff4_0000_0000_0000, 0xbff4_0000_0000_0000),
+        ] {
+            let mut bytes = vec![6];
+            bytes.extend(bits.to_be_bytes());
+            assert_eq!(
+                read_network(&bytes, Limits::default()).unwrap(),
+                (Tag::Double(expected), bytes.len())
+            );
+        }
     }
 }
