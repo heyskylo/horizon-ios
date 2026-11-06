@@ -6568,6 +6568,23 @@ impl Game<'_> {
     ) {
         mod_api::dispatch_right_click_block_v2(self, mod_api::mods(), pos, face, hand, canceled);
     }
+    /// `native_player_fish` with the hand: the server player's fishing rod in `hand`, with
+    /// `state` as v1 has it (0 the cast, 1 a bite, 2 to 4 the reel-ins). The cast and the
+    /// reel-ins name the hand the rod is used with (Bukkit's `PlayerFishEvent.getHand`); a bite
+    /// has none of its own and names the hand holding the rod, the main hand first, as
+    /// `FishingHook.shouldStopFishing` looks. Asked right after the unchanged v1 hook with the
+    /// same `cancel`, which does what v1's does; one v1 set is not asked here. The player's state
+    /// is swapped in. @API:player_fish_v2@.
+    pub(super) fn native_player_fish_v2(
+        &mut self,
+        player: u128,
+        name: &str,
+        state: i32,
+        hand: Hand,
+        cancel: &mut bool,
+    ) {
+        mod_api::dispatch_player_fish_v2(self, mod_api::mods(), player, name, state, hand, cancel);
+    }
     /// A click in a menu a mod opened (`native_open_menu`), which moved
     /// nothing: the menu's `slot` (its own first, then the player's
     /// inventory, `native_menu_inventory_slot`; -999 outside), the `button`

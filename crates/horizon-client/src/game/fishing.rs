@@ -408,6 +408,8 @@ impl Game<'_> {
             };
             let mut cancel = false;
             self.native_player_fish(uuid, &name, state, &mut cancel);
+            let hand = self.hand;
+            self.native_player_fish_v2(uuid, &name, state, hand, &mut cancel);
             if cancel {
                 return true;
             }
@@ -760,6 +762,17 @@ impl Game<'_> {
                 {
                     let mut cancel = false;
                     self.native_player_fish(uuid, &name, 1, &mut cancel);
+                    // A bite has no hand of its own: the one holding the rod, the main
+                    // hand first, as `FishingHook.shouldStopFishing` looks.
+                    let hand = if self
+                        .stack_in(self.selected)
+                        .is_some_and(|s| &*s.item == "minecraft:fishing_rod")
+                    {
+                        horizon_client::first_person::Hand::Main
+                    } else {
+                        horizon_client::first_person::Hand::Off
+                    };
+                    self.native_player_fish_v2(uuid, &name, 1, hand, &mut cancel);
                     if cancel {
                         h.time_until_lured = 0;
                         h.time_until_hooked = 0;

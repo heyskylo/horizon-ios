@@ -2499,6 +2499,12 @@ tried. A canceled click does what a v1 cancel does (neither the block nor the it
 other hand gets no turn); a click v1 canceled is not asked again. A protection mod refuses an off-hand flint and steel
 or bone meal by its hand. Bundles need "hooks": @API:right_click_block_v2@.
 
+`native_player_fish_v2(player, name, state, hand, cancel)` is `native_player_fish` with the rod's hand: the cast and the
+reel-ins (states 0 and 2 to 4) name the hand the rod is used with, as Bukkit's `PlayerFishEvent.getHand`; a bite
+(state 1) names the hand holding the rod, the main hand first. It is asked right after v1 with the same `cancel`; one
+v1 set is not asked again. A stasis or power rod in the off hand is seen, and read from that hand's stack. Bundles
+need "hooks": @API:player_fish_v2@.
+
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a
