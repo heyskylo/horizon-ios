@@ -98,6 +98,7 @@ struct Shared<'a> {
     entity_types: &'a HashSet<String>,
 }
 struct World<'a> {
+    border: horizon_core::geometry::border::BorderGeometry,
     s: &'a Shared<'a>,
     blocks: Vec<(Bx, BlockStateId)>,
     lights: Vec<(Bx, i32, i32)>,
@@ -158,6 +159,10 @@ impl World<'_> {
     }
 }
 impl SpawnLevel for World<'_> {
+    fn within_world_border(&self, x: i32, z: i32) -> bool {
+        self.border
+            .is_within_bounds(f64::from(x), f64::from(z), 0.0)
+    }
     fn state(&self, x: i32, y: i32, z: i32) -> BlockStateId {
         if let Some((_, s)) = self
             .placed
@@ -316,6 +321,8 @@ impl NaturalLevel for World<'_> {
     }
     fn can_spawn_in_chunk(&self, cx: i32, cz: i32) -> bool {
         !self.unloaded.contains(&(cx, cz))
+            && self.within_world_border(cx << 4, cz << 4)
+            && self.within_world_border((cx << 4).wrapping_add(15), (cz << 4).wrapping_add(15))
     }
     fn no_collision(&self, bounds: Aabb) -> bool {
         let lookup = |x: i32, y: i32, z: i32| self.state(x, y, z);
@@ -709,6 +716,11 @@ pub fn main() -> horizon_client::Result<()> {
             ));
         }
         let world = World {
+            border: horizon_core::geometry::border::BorderGeometry::new(
+                [get("borderx", "0").parse()?, get("borderz", "0").parse()?],
+                get("bordersize", "59999968").parse()?,
+                29_999_984,
+            )?,
             s: &shared,
             blocks,
             lights,
@@ -885,15 +897,17 @@ pub fn main() -> horizon_client::Result<()> {
                 let categories = state
                     .filtered_categories(get("enemies", "1") == "1", get("persistent", "1") == "1");
                 trace(Event::Categories(categories.clone()));
-                spawn_selection::spawn_for_chunk(
-                    &world,
-                    &mut random,
-                    &mut state,
-                    &categories,
-                    chunk,
-                    &mut spawn,
-                    &mut trace,
-                );
+                if mode != "tick_chunk" || world.can_spawn_in_chunk(chunk.0, chunk.1) {
+                    spawn_selection::spawn_for_chunk(
+                        &world,
+                        &mut random,
+                        &mut state,
+                        &categories,
+                        chunk,
+                        &mut spawn,
+                        &mut trace,
+                    );
+                }
             }
             log.push(format!("next {}", random.next_int_bound(1000).unwrap_or(0)));
         }

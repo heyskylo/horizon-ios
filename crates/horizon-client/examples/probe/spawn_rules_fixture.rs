@@ -24,6 +24,7 @@ use std::{
 };
 
 struct Column<'a> {
+    border: horizon_core::geometry::border::BorderGeometry,
     facts: &'a BlockFacts,
     data: &'a MobData,
     block_tags: &'a HashMap<String, HashSet<String>>,
@@ -46,6 +47,10 @@ struct Column<'a> {
     player: Option<([f64; 3], bool)>,
 }
 impl SpawnLevel for Column<'_> {
+    fn within_world_border(&self, x: i32, z: i32) -> bool {
+        self.border
+            .is_within_bounds(f64::from(x), f64::from(z), 0.0)
+    }
     fn state(&self, x: i32, y: i32, z: i32) -> BlockStateId {
         if x != self.x0 || z != self.z0 {
             return self.air;
@@ -190,6 +195,11 @@ pub fn main() -> horizon_client::Result<()> {
             )
         });
         let level = Column {
+            border: horizon_core::geometry::border::BorderGeometry::new(
+                [get("borderx", "0").parse()?, get("borderz", "0").parse()?],
+                get("bordersize", "59999968").parse()?,
+                29_999_984,
+            )?,
             facts: &facts,
             data: &data,
             block_tags: &items.block_tags,

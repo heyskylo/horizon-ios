@@ -66,6 +66,11 @@ impl Dimension {
 
 /// What spawn checks read from a level.
 pub trait SpawnLevel {
+    /// `WorldBorder.isWithinBounds(BlockPos)`. Unbounded test levels allow all positions.
+    fn within_world_border(&self, _x: i32, _z: i32) -> bool {
+        true
+    }
+
     fn state(&self, x: i32, y: i32, z: i32) -> BlockStateId;
     fn facts(&self) -> &BlockFacts;
     fn mob_data(&self) -> &data::MobData;
@@ -253,7 +258,11 @@ pub fn is_valid_empty_spawn<L: SpawnLevel>(s: Species, l: &L, x: i32, y: i32, z:
 }
 /// `SpawnPlacements.isSpawnPositionOk`.
 pub fn is_spawn_position_ok<L: SpawnLevel>(s: Species, l: &L, x: i32, y: i32, z: i32) -> bool {
-    match l.mob_data().species_placement(s) {
+    let placement = l.mob_data().species_placement(s);
+    if placement != data::Placement::NoRestrictions && !l.within_world_border(x, z) {
+        return false;
+    }
+    match placement {
         data::Placement::OnGround => {
             is_valid_spawn(s, l, x, y - 1, z)
                 && is_valid_empty_spawn(s, l, x, y, z)
@@ -556,6 +565,10 @@ fn slime_rules<L: SpawnLevel>(
 }
 
 impl SpawnLevel for super::MobWorld<'_> {
+    fn within_world_border(&self, x: i32, z: i32) -> bool {
+        self.border
+            .is_none_or(|border| border.is_within_bounds(f64::from(x), f64::from(z), 0.0))
+    }
     fn state(&self, x: i32, y: i32, z: i32) -> BlockStateId {
         self.world.block(x, y, z)
     }
