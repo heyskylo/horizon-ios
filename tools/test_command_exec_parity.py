@@ -141,6 +141,7 @@ def main():
     parser.add_argument('--map-decoration-patch-fixture', action='store_true')
     parser.add_argument('--map-decoration-removal-diagnostic', action='store_true')
     parser.add_argument("--selector-bounds-fixture", action="store_true")
+    parser.add_argument("--macro-source-type-fixture", action="store_true")
     parser.add_argument("--stand-fall-fixture", action="store_true")
     parser.add_argument('--orb-uuid-fixture', action='store_true')
     parser.add_argument("--mob-pickup-save-fixture", action="store_true")
@@ -169,6 +170,10 @@ def main():
             sys.exit(f'{name} failed ({result.returncode}):\n{tail}')
 
     groups = corpus_module.groups()
+    if args.macro_source_type_fixture or args.only == "macro source type error":
+        groups = [(name, ops) for name, ops in groups if name == "macro source type error"]
+    elif not args.only:
+        groups = [(name, ops) for name, ops in groups if name not in corpus_module.ISOLATED_MACRO_TYPE]
     if args.stand_fall_fixture or args.only == "stand saved fall distance":
         groups = [(name, ops) for name, ops in groups if name == "stand saved fall distance"]
     elif not args.only:

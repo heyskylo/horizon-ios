@@ -1917,6 +1917,11 @@ def function_return_fixtures(group_names):
         except ImportError:
             from wolf_anger_corpus import functions as anger_functions
         functions.update(anger_functions())
+    if 'macro source type error' in group_names:
+        functions.update({'command_macro:apply': '$scoreboard players add #hits macro_error $(amount)\n',
+                          'command_macro:admit': 'scoreboard players add #admit macro_error 1\n',
+                          'command_macro:fail': 'return fail\n',
+                          'command_macro:zero': 'return 0\n'})
     if 'function return feedback' in group_names:
         functions.update({'parity:fail': 'return fail\n', 'parity:zero': 'return 0\n',
                           'parity:value': 'return 7\n', 'parity:empty': '# no commands\n',
@@ -1930,6 +1935,52 @@ def function_return_fixtures(group_names):
                           'h291:nested': 'scoreboard players add @s reward_nested 1\n',
                           'minecraft:h291_alias': 'scoreboard players add @s reward_alias 1\n'})
     return functions
+
+
+def macro_source_type_error():
+    ops = [cmd('/tick freeze'), cmd('/datapack list enabled'),
+           cmd('/scoreboard objectives add macro_error dummy', expect_result=1),
+           cmd('/scoreboard players set #hits macro_error 0', expect_result=0),
+           cmd('/scoreboard players set #admit macro_error 0', expect_result=0),
+           cmd('/data modify storage command_macro:args number set value 7', expect_result=1),
+           cmd('/data modify storage command_macro:args text set value "seven"', expect_result=1),
+           cmd('/data modify storage command_macro:args valid set value {amount:2}', expect_result=1),
+           cmd('/data get storage command_macro:args number', expect_result=7),
+           cmd('/data get storage command_macro:args text', expect_result=5),
+           cmd('/execute if data storage command_macro:args {number:7,text:"seven",valid:{amount:2}}', expect_result=1),
+           cmd('/function command_macro:admit'),
+           cmd('/scoreboard players get #admit macro_error', expect_result=1)]
+    ops += setup('/execute store result score #clock macro_error run time query gametime')
+    count = 0
+    for path in ['valid', 'number', 'text', 'missing']:
+        call = f'function command_macro:apply with storage command_macro:args {path}'
+        direct = cmd('/' + call)
+        if path != 'valid':
+            direct['expect_callback'] = [False, 0]
+        ops.append(direct)
+        count += 2 if path == 'valid' else 0
+        ops += [cmd('/scoreboard players get #hits macro_error', expect_result=count),
+                cmd('/scoreboard players set #r macro_error 31', expect_result=31),
+                cmd('/scoreboard players set #s macro_error 17', expect_result=17),
+                cmd('/execute store result score #r macro_error store success score #s macro_error run ' + call),
+                # Independently measured: no return leaves sentinels; errors store failure.
+                cmd('/scoreboard players get #r macro_error', expect_result=31 if path == 'valid' else 0),
+                cmd('/scoreboard players get #s macro_error', expect_result=17 if path == 'valid' else 0)]
+        count += 2 if path == 'valid' else 0
+        ops.append(cmd('/scoreboard players get #hits macro_error', expect_result=count))
+    for name in ['fail', 'zero']:
+        call = cmd(f'/function command_macro:{name}')
+        call['expect_callback'] = [name == 'zero', 0]
+        ops += [call,
+                cmd('/scoreboard players set #r macro_error 31', expect_result=31),
+                cmd('/scoreboard players set #s macro_error 17', expect_result=17),
+                cmd(f'/execute store result score #r macro_error store success score #s macro_error run function command_macro:{name}'),
+                cmd('/scoreboard players get #r macro_error', expect_result=0),
+                cmd('/scoreboard players get #s macro_error', expect_result=int(name == 'zero')),
+                cmd('/scoreboard players get #hits macro_error', expect_result=count)]
+    ops += setup('/execute store result score #elapsed macro_error run time query gametime',
+                 '/scoreboard players operation #elapsed macro_error -= #clock macro_error')
+    return ops + [cmd('/scoreboard players get #elapsed macro_error', expect_result=0)]
 
 
 def function_return_feedback():
@@ -5785,10 +5836,11 @@ ISOLATED_REINFORCEMENTS = frozenset({'command zombie reinforcements', 'command r
 # These overlays replace built-in recipes, never beside the corpus's fixed vanilla recipe-count controls.
 ISOLATED_RECIPES = frozenset({'crafting recipe priority', 'crafting base recipe control', 'transmute result patches'})
 ISOLATED_FRAME_MAPS = frozenset({'frame live map detachment'})
+ISOLATED_MACRO_TYPE = frozenset({'macro source type error'})
 ISOLATED_PICKUP_SAVE = frozenset({'mob saved pickup loot'})
 ISOLATED_ORB_UUID = frozenset({'orb saved UUID'})
 ISOLATED_STAND_FALL = frozenset({'stand saved fall distance'})
-ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL
+ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_MACRO_TYPE | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL
 
 
 def groups():
@@ -5824,6 +5876,7 @@ def groups():
         from item_merge_corpus import stack_limit_merges
     return [
         ('setup', group_setup()),
+        ('macro source type error', macro_source_type_error()),
         ('stand saved fall distance', stand_saved_fall()),
         ('orb saved UUID', orb_saved_uuid()),
         ('mob saved pickup loot', mob_saved_pickup_loot()),
