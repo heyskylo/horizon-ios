@@ -6523,6 +6523,25 @@ impl Game<'_> {
     ) {
         mod_api::dispatch_player_level_change(self, mod_api::mods(), player, name, from, to);
     }
+    /// Once a server tick, after `ServerTickEnd`, the play packets one
+    /// player's connection sent (`outbound`) or received since the last tick
+    /// while a mod counts them (`native_count_packets(true)`; off, nothing is
+    /// kept and this never fires): each as (packet id, body bytes) in order,
+    /// the id of `horizon_protocol::ids::play` as the server sent or read it
+    /// (before an older client's renumbering, keep-alives and the disconnect
+    /// included) and the bytes of id and payload, before compression and
+    /// encryption, as PacketEvents counts them. Called at most twice a tick
+    /// per player, only with packets; a stalled tick keeps at most 65536 each
+    /// way. PacketEvents' send and receive events, batched. API
+    /// @API:server_packets@.
+    pub(super) fn native_server_packets(
+        &mut self,
+        player: u128,
+        packets: &[(i32, usize)],
+        outbound: bool,
+    ) {
+        mod_api::dispatch_server_packets(self, mod_api::mods(), player, packets, outbound);
+    }
     /// A click in a menu a mod opened (`native_open_menu`), which moved
     /// nothing: the menu's `slot` (its own first, then the player's
     /// inventory, `native_menu_inventory_slot`; -999 outside), the `button`

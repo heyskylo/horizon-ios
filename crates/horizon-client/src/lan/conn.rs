@@ -274,6 +274,15 @@ impl PlayerSender {
             )
         })
     }
+    /// The play packets sent to and received from the client since the last call while
+    /// [`count_packets`] is on, each as (packet id, body bytes): those sent, then those
+    /// received. Empty for a test's channel.
+    pub fn take_packets(&self) -> [Vec<(i32, usize)>; 2] {
+        match &self.to {
+            To::Pool(outbox, _) => outbox.take_packets(),
+            To::Channel(_) => Default::default(),
+        }
+    }
     /// Whether the client has answered no keep-alive for too long.
     pub fn timed_out(&self) -> bool {
         matches!(&self.to, To::Pool(_, watch) if watch.timed_out())
@@ -335,6 +344,17 @@ impl PlayerSender {
             }
         }
     }
+}
+
+/// Keep (or stop keeping) every play connection's packet ids and sizes on the network threads,
+/// for [`PlayerSender::take_packets`]: `native_server_packets`. Off, a packet costs one relaxed
+/// load.
+pub fn count_packets(on: bool) {
+    io_pool::count_packets(on);
+}
+/// Whether [`count_packets`] is on.
+pub fn counting_packets() -> bool {
+    io_pool::counting_packets()
 }
 
 /// Hand every player's held packets to their network threads, waking each

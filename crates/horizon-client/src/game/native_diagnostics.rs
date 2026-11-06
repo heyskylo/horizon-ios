@@ -1,7 +1,7 @@
 //! What a server's diagnostics mod reads (docs/native-mods.md, "Server hooks
 //! for plugin ports: diagnostics"): the tick clock as vanilla and Bukkit
-//! report it, and what each open level holds. Reads only; nothing here
-//! changes what the server does.
+//! report it, what each open level holds and the packets each player's
+//! connection carries. Reads only; nothing here changes what the server does.
 use super::{Dim, Game, commands::Target, native_entities::target_id};
 use horizon_client::{mod_api::NativeLevelStats, world::World};
 use std::collections::BTreeMap;
@@ -80,6 +80,41 @@ impl Game<'_> {
             None => None,
         };
         world.map_or_else(Vec::new, |world| self.block_entity_types(world))
+    }
+
+    /// Keep (or stop keeping) every player's play packets for
+    /// `native_server_packets`, from now on: while on, each packet costs the
+    /// network thread a lock and a list entry, so turn it on for a session
+    /// and off after. Off drops what is kept. A switch for the whole server,
+    /// shared by every mod. API @API:server_packets@.
+    pub(super) fn native_count_packets(&self, on: bool) {
+        horizon_client::lan::conn::count_packets(on);
+        if !on {
+            for g in self.lan.iter().flat_map(|h| h.hub.guests.iter()) {
+                g.sender.take_packets();
+            }
+        }
+    }
+    /// The end of a server tick: each player's packets kept since the last
+    /// one go to `native_server_packets`. One relaxed load while nobody counts.
+    pub(super) fn diagnostics_packets_tick(&mut self) {
+        if !horizon_client::lan::conn::counting_packets() {
+            return;
+        }
+        let kept: Vec<_> = self
+            .lan
+            .iter()
+            .flat_map(|h| h.hub.guests.iter())
+            .map(|g| (g.uuid, g.sender.take_packets()))
+            .collect();
+        for (player, [sent, received]) in kept {
+            if !sent.is_empty() {
+                self.native_server_packets(player, &sent, true);
+            }
+            if !received.is_empty() {
+                self.native_server_packets(player, &received, false);
+            }
+        }
     }
 
     /// The open level `dimension` names, on a server.

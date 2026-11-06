@@ -2507,6 +2507,14 @@ while no mod asks for it.
   is swapped in for the count and back, as `/execute in` does. The players are the hub's, so none are counted inside
   a player's own hook, where the hub is taken out. Each walks every entity or block entity: call them once a second
   or less, not every tick. Bundles need `"hooks": @API:level_stats@`.
+- **`native_server_packets(player, packets, outbound)`** and **`native_count_packets(on)`**: the play packets each
+  player's connection carries, by type, as PacketEvents' send and receive events count them. Nothing is kept until a
+  mod calls `native_count_packets(true)` (one switch for the server, shared by every mod; off drops what is kept, and
+  a packet costs one relaxed load); while on, once a server tick after `ServerTickEnd` each player's packets since the
+  last tick arrive, those sent (`outbound`) and those received, each as (packet id, body bytes) in order. The id is
+  `horizon_protocol::ids::play`'s as the server sent or read it (before an older client's renumbering; keep-alives
+  and the disconnect included), the bytes are id and payload before compression and encryption. A tick stalled for
+  long keeps at most 65536 packets each way. Bundles need `"hooks": @API:server_packets@`.
 
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
