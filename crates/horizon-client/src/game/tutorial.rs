@@ -34,6 +34,20 @@ pub(super) enum Hint {
     CraftPlanks,
     SocialInteractions,
 }
+impl Hint {
+    /// The hint's name, as in its `tutorial.<name>.title` key.
+    fn name(self) -> &'static str {
+        match self {
+            Hint::Move => "move",
+            Hint::Look => "look",
+            Hint::FindTree => "find_tree",
+            Hint::PunchTree => "punch_tree",
+            Hint::OpenInventory => "open_inventory",
+            Hint::CraftPlanks => "craft_planks",
+            Hint::SocialInteractions => "socialInteractions",
+        }
+    }
+}
 
 /// The observations needed on the first tick of each step.
 #[derive(Default)]
@@ -248,7 +262,7 @@ impl super::Game<'_> {
     }
 
     pub(super) fn tick_tutorial(&mut self) {
-        use winit::keyboard::KeyCode;
+        use horizon_client::actions::Action;
         if self.title.is_some()
             || self.player.is_none()
             || self.options.dedicated.is_some()
@@ -261,8 +275,12 @@ impl super::Game<'_> {
         if !self.settings.file.bool("joinedFirstServer")
             && (!self.has_singleplayer_server() || self.is_published())
         {
-            let toast = self.tutorial_toast(Hint::SocialInteractions, Some(0.0));
-            self.tutorial_toasts.push(toast);
+            // ToastManager.addToast: a mod may cancel it; the hint is still
+            // spent (`joinedFirstServer`), as vanilla sets it either way.
+            if self.toast_allowed("tutorial", Hint::SocialInteractions.name()) {
+                let toast = self.tutorial_toast(Hint::SocialInteractions, Some(0.0));
+                self.tutorial_toasts.push(toast);
+            }
             self.settings.file.set(
                 "joinedFirstServer",
                 horizon_client::options_file::V::Bool(true),
@@ -271,14 +289,14 @@ impl super::Game<'_> {
         }
         if self.screen == super::Screen::Playing
             && ([
-                KeyCode::KeyW,
-                KeyCode::KeyA,
-                KeyCode::KeyS,
-                KeyCode::KeyD,
-                KeyCode::Space,
+                Action::Forward,
+                Action::Left,
+                Action::Back,
+                Action::Right,
+                Action::Jump,
             ]
-            .iter()
-            .any(|key| self.keys.contains(key))
+            .into_iter()
+            .any(|action| self.keys.held(action))
                 || self
                     .pad_move()
                     .is_some_and(|[left, forward]| left.abs() > 0.3 || forward.abs() > 0.3))
@@ -352,6 +370,9 @@ pub(super) struct HintToast {
     slot: Option<usize>,
     slots: usize,
     slide: horizon_client::toasts::Slide,
+    /// A mod cancelled it (`ToastAddEvent`): it never takes a slot, and
+    /// stays only so the hint isn't offered again while it lasts.
+    cancelled: bool,
 }
 
 impl super::Game<'_> {
@@ -462,6 +483,7 @@ impl super::Game<'_> {
             slot: None,
             slots,
             slide: Default::default(),
+            cancelled: false,
         }
     }
 
@@ -486,12 +508,13 @@ impl super::Game<'_> {
                 .iter()
                 .any(|t| t.wanted && t.hint == hint)
         {
+            let cancelled = !self.toast_allowed("tutorial", hint.name());
             let toast = self.tutorial_toast(hint, progress);
-            self.tutorial_toasts.push(toast);
+            self.tutorial_toasts.push(HintToast { cancelled, ..toast });
         }
         let mut used = self.toast_slots_used();
         for t in &mut self.tutorial_toasts {
-            if t.slot.is_none() && t.wanted && t.slots <= Self::TOAST_SLOTS {
+            if t.slot.is_none() && t.wanted && !t.cancelled && t.slots <= Self::TOAST_SLOTS {
                 let mask = (1u32 << t.slots) - 1;
                 if let Some(slot) =
                     (0..=Self::TOAST_SLOTS - t.slots).find(|s| used & (mask << s) == 0)

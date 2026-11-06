@@ -1,11 +1,17 @@
 //! Controllers: Horizon's own feature (vanilla 26.3 has no gamepad input).
-//! The default layout is Bedrock Edition's; see docs/controllers.md.
+//! Its default buttons are Horizon's own; analog walking and toggle sneak follow Bedrock Edition on
+//! consoles. See docs/controllers.md.
 //!
 //! This module is the backend-free part: positional buttons, the action
 //! bindings, deadzones and the look curve, button edges from successive pad
 //! states, and `horizon-controller.txt`, kept next to `options.txt` so that
 //! file stays exactly vanilla's. The game reads the pads with gilrs.
-use std::{collections::BTreeMap, fs, path::Path};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::Path,
+    time::{Duration, Instant},
+};
 
 pub const FILE: &str = "horizon-controller.txt";
 
@@ -296,7 +302,7 @@ pub const HOTBAR_NEXT: &str = "pad.hotbarNext";
 /// always pause / back and isn't listed.
 pub const ACTIONS: &[(&str, Option<Button>)] = &[
     ("key.jump", Some(Button::South)),
-    ("key.drop", Some(Button::East)),
+    ("key.drop", Some(Button::DPadDown)),
     ("key.swapOffhand", Some(Button::West)),
     ("key.inventory", Some(Button::North)),
     (HOTBAR_PREVIOUS, Some(Button::LeftBumper)),
@@ -305,15 +311,31 @@ pub const ACTIONS: &[(&str, Option<Button>)] = &[
     ("key.attack", Some(Button::RightTrigger)),
     ("key.sprint", Some(Button::LeftStick)),
     ("key.sneak", Some(Button::RightStick)),
-    ("key.togglePerspective", Some(Button::DPadUp)),
+    ("key.togglePerspective", Some(Button::Select)),
     ("key.pickItem", Some(Button::DPadLeft)),
-    ("key.chat", Some(Button::DPadRight)),
-    ("key.advancements", Some(Button::DPadDown)),
-    ("key.playerlist", Some(Button::Select)),
+    ("key.chat", Some(Button::DPadUp)),
+    ("key.advancements", None),
+    ("key.playerlist", None),
     ("key.command", None),
     ("key.screenshot", None),
     ("key.toggleGui", None),
     ("key.smoothCamera", None),
+    // Horizon's emote wheel: no button is free by default; the stick's cursor picks.
+    ("key.emote", None),
+    ("key.fullscreen", None),
+    ("key.socialInteractions", None),
+    ("key.quickActions", None),
+    ("key.saveToolbarActivator", None),
+    ("key.loadToolbarActivator", None),
+    ("key.hotbar.1", None),
+    ("key.hotbar.2", None),
+    ("key.hotbar.3", None),
+    ("key.hotbar.4", None),
+    ("key.hotbar.5", None),
+    ("key.hotbar.6", None),
+    ("key.hotbar.7", None),
+    ("key.hotbar.8", None),
+    ("key.hotbar.9", None),
 ];
 
 /// How a bindable action reaches the game: one of its own handlers, shared
@@ -328,6 +350,10 @@ pub enum Route {
     Sneak,
     Screenshot,
     SmoothCamera,
+    Fullscreen,
+    /// Does nothing by itself: what reads it asks whether the button is held
+    /// (`Minecraft.handleKeybinds`' toolbar keys, held with a hotbar key).
+    Held,
     Key(winit::keyboard::KeyCode),
     Mouse(winit::event::MouseButton),
 }
@@ -340,6 +366,8 @@ pub fn route(action: &str) -> Option<Route> {
         "key.sneak" => Some(Route::Sneak),
         "key.screenshot" => Some(Route::Screenshot),
         "key.smoothCamera" => Some(Route::SmoothCamera),
+        "key.fullscreen" => Some(Route::Fullscreen),
+        "key.saveToolbarActivator" | "key.loadToolbarActivator" => Some(Route::Held),
         _ => {
             let default = crate::keybinds::KeyBinds::default_of(action);
             crate::keybinds::mouse_button(default)
@@ -356,6 +384,46 @@ pub fn action_caption(action: &str) -> &str {
         HOTBAR_PREVIOUS => "Hotbar: Previous Slot",
         HOTBAR_NEXT => "Hotbar: Next Slot",
         other => other,
+    }
+}
+
+/// How long a held drop button throws single items before it throws the rest of the stack.
+pub const DROP_STACK_HOLD: Duration = Duration::from_secs(1);
+
+/// What a held drop button does now, past its press.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DropStep {
+    /// Held key.drop (a repeat reaches `KeyMapping.click` as a press).
+    One,
+    /// Control + key.drop: a pad has no Control to hold, so holding on is how it asks.
+    Stack,
+}
+
+/// A held drop button's repeats: a tap throws one item, as Q does; held, it repeats at the pad's
+/// repeat delay and interval; and held for [`DROP_STACK_HOLD`] it throws what's left.
+#[derive(Clone, Copy, Debug)]
+pub struct HeldDrop {
+    since: Instant,
+    next: Instant,
+}
+impl HeldDrop {
+    pub fn new(now: Instant, delay: Duration) -> Self {
+        Self {
+            since: now,
+            next: now + delay,
+        }
+    }
+    /// The step due at `now`, if any; at most one per call.
+    pub fn due(&mut self, now: Instant, interval: Duration) -> Option<DropStep> {
+        if now < self.next {
+            return None;
+        }
+        self.next = now + interval;
+        Some(if now.duration_since(self.since) >= DROP_STACK_HOLD {
+            DropStep::Stack
+        } else {
+            DropStep::One
+        })
     }
 }
 
@@ -402,13 +470,21 @@ impl GlyphStyle {
         GlyphStyle::PlayStation,
         GlyphStyle::Nintendo,
     ];
-    /// The style for a pad by its USB vendor (Sony, Nintendo; Microsoft,
-    /// Valve's Steam Deck and Steam Input's virtual pad, and everything else
-    /// look like Xbox).
-    pub fn of_vendor(vendor: Option<u16>) -> Self {
-        match vendor {
-            Some(0x054c) => GlyphStyle::PlayStation,
-            Some(0x057e) => GlyphStyle::Nintendo,
+    /// The style for a pad by its USB ids: Sony's and Nintendo's own, and a few officially licensed
+    /// third-party pads made for their consoles. Microsoft, Valve's Steam Deck and Steam Input's
+    /// virtual pad, and everything else look like Xbox.
+    pub fn of_device(vendor: Option<u16>, product: Option<u16>) -> Self {
+        match (vendor, product) {
+            (Some(0x054c), _) => GlyphStyle::PlayStation,
+            (Some(0x057e), _) => GlyphStyle::Nintendo,
+            // HORIPAD 4 FPS and FPS Plus; Razer Raiju; Nacon Revolution Pro.
+            (Some(0x0f0d), Some(0x0055 | 0x0066))
+            | (Some(0x1532), Some(0x1000))
+            | (Some(0x146b), Some(0x0d01)) => GlyphStyle::PlayStation,
+            // HORIPAD for Nintendo Switch; PowerA Wired Plus; PDP Faceoff Wired Pro.
+            (Some(0x0f0d), Some(0x00c1))
+            | (Some(0x20d6), Some(0xa711))
+            | (Some(0x0e6f), Some(0x0180)) => GlyphStyle::Nintendo,
             _ => GlyphStyle::Xbox,
         }
     }
@@ -591,6 +667,24 @@ impl PadSettings {
                 }
             }
         }
+        // A file from before these defaults: its player's buttons stay where they were.
+        if !text.is_empty() && !text.lines().any(|line| line.starts_with("bindLayout:")) {
+            for (action, button) in [
+                ("key.drop", Button::East),
+                ("key.togglePerspective", Button::DPadUp),
+                ("key.chat", Button::DPadRight),
+                ("key.playerlist", Button::Select),
+                ("key.advancements", Button::DPadDown),
+            ] {
+                // A button saved by hand stays, even one that's now this action's default.
+                if !text
+                    .lines()
+                    .any(|line| line.starts_with(&format!("bind_{action}:")))
+                {
+                    s.bindings.entry(action).or_insert(Some(button));
+                }
+            }
+        }
         s
     }
     pub fn serialize(&self) -> String {
@@ -621,6 +715,7 @@ impl PadSettings {
                 button.map_or("none", Button::name)
             ));
         }
+        text.push_str("bindLayout:1\n");
         text
     }
     pub fn default_of(action: &str) -> Option<Button> {
@@ -697,6 +792,29 @@ pub fn stick_axes(
     }
 }
 
+/// The tilt from which a stick holds a key in [`eight_direction_keys`]: holding one is full speed,
+/// so the small tilts past the deadzone stay still.
+const KEY_TILT: f32 = 0.3;
+/// tan(22.5 degrees): where one of the 8 sectors meets the next.
+const SECTOR_EDGE: f32 = 0.414_213_57;
+
+/// The movement keys (forward, backward, left, right) a move vector (`[left, forward]`) holds: the
+/// one of the 8 headings it is nearest, so it is at most 22.5 degrees off. An edge goes to the
+/// straight heading.
+pub fn eight_direction_keys([left, forward]: [f32; 2]) -> [bool; 4] {
+    if length([left, forward]) < KEY_TILT {
+        return [false; 4];
+    }
+    let along = forward.abs() > SECTOR_EDGE * left.abs();
+    let across = left.abs() > SECTOR_EDGE * forward.abs();
+    [
+        along && forward > 0.0,
+        along && forward < 0.0,
+        across && left > 0.0,
+        across && left < 0.0,
+    ]
+}
+
 /// A radial deadzone: inside it the stick is centred; beyond it the rest of
 /// the travel is rescaled to 0..1 in the same direction, so diagonals aren't
 /// clipped and the first movement past the deadzone is small.
@@ -743,15 +861,6 @@ pub fn look_delta(
         x * YAW_SPEED * speed * seconds,
         -y * PITCH_SPEED * speed * seconds,
     )
-}
-
-/// The hotbar slot after a bumper: one step with wrap-around.
-pub fn hotbar_step(selected: usize, forward: bool) -> usize {
-    if forward {
-        (selected + 1) % 9
-    } else {
-        (selected + 8) % 9
-    }
 }
 
 /// Menu cursor speed in GUI pixels per second at full tilt.
@@ -1461,6 +1570,52 @@ mod tests {
     }
 
     #[test]
+    fn a_held_drop_repeats_then_throws_the_stack() {
+        let t = Instant::now();
+        let at = |ms: u64| t + Duration::from_millis(ms);
+        let (delay, interval) = (Duration::from_millis(350), Duration::from_millis(90));
+        let mut held = HeldDrop::new(t, delay);
+        assert_eq!(held.due(at(100), interval), None, "a tap is one item");
+        assert_eq!(held.due(at(349), interval), None);
+        assert_eq!(held.due(at(350), interval), Some(DropStep::One));
+        assert_eq!(held.due(at(400), interval), None, "not before the interval");
+        assert_eq!(held.due(at(440), interval), Some(DropStep::One));
+        assert_eq!(held.due(at(999), interval), Some(DropStep::One));
+        assert_eq!(held.due(at(1000), interval), None);
+        assert_eq!(held.due(at(1100), interval), Some(DropStep::Stack));
+        assert_eq!(held.due(at(1200), interval), Some(DropStep::Stack));
+        assert_eq!(held.due(at(1201), interval), None);
+    }
+
+    #[test]
+    fn the_later_actions_have_no_default_button_and_leave_saved_bindings() {
+        let defaults = PadSettings::default();
+        for action in [
+            "key.fullscreen",
+            "key.socialInteractions",
+            "key.quickActions",
+            "key.saveToolbarActivator",
+            "key.loadToolbarActivator",
+            "key.hotbar.1",
+            "key.hotbar.9",
+        ] {
+            assert_eq!(defaults.binding(action), None, "{action}");
+        }
+        let read = PadSettings::parse(
+            "bindLayout:1
+bind_key.jump:east
+bind_key.hotbar.2:north
+",
+        );
+        assert_eq!(read.binding("key.jump"), Some(Button::East));
+        assert_eq!(read.binding("key.inventory"), Some(Button::North));
+        assert_eq!(
+            read.actions_of(Button::North),
+            ["key.inventory", "key.hotbar.2"]
+        );
+    }
+
+    #[test]
     fn navigation_preferences_migrate_and_stay_with_each_player() {
         let dir = std::env::temp_dir().join(format!(
             "horizon-pad-{}-{}",
@@ -1579,7 +1734,7 @@ mod tests {
     }
 
     #[test]
-    fn defaults_follow_bedrock() {
+    fn every_action_has_its_default() {
         let s = PadSettings::default();
         assert_eq!(s.actions_of(Button::South), ["key.jump"]);
         assert_eq!(s.actions_of(Button::RightTrigger), ["key.attack"]);
@@ -1587,14 +1742,44 @@ mod tests {
         assert_eq!(s.actions_of(Button::North), ["key.inventory"]);
         assert_eq!(s.actions_of(Button::RightBumper), [HOTBAR_NEXT]);
         assert!(s.actions_of(Button::Start).is_empty());
-        // Every default action names a vanilla mapping or a pad action.
+        // Every default action names a key mapping or a pad action.
         for (action, _) in ACTIONS {
             assert!(
                 action.starts_with("pad.")
-                    || crate::keybinds::MAPPINGS.iter().any(|m| m.0 == *action),
+                    || crate::keybinds::all_mappings().any(|m| m.0 == *action),
                 "{action}"
             );
         }
+    }
+
+    #[test]
+    fn a_file_from_before_these_defaults_keeps_its_buttons() {
+        // Saved settings that never bound D-pad down: it stays on the advancements.
+        let s = PadSettings::parse("vibration:false\nbind_key.chat:up\n");
+        assert_eq!(s.binding("key.advancements"), Some(Button::DPadDown));
+        assert_eq!(s.binding("key.chat"), Some(Button::DPadUp));
+        assert_eq!(s.binding("key.drop"), Some(Button::East));
+        assert_eq!(s.binding("key.togglePerspective"), Some(Button::DPadUp));
+        assert_eq!(s.binding("key.playerlist"), Some(Button::Select));
+        assert!(!s.conflicts("key.advancements"));
+        // Advancements moved by hand stays moved, and the file stays this way from then on.
+        let s = PadSettings::parse("bind_key.advancements:left\nbind_key.drop:down\n");
+        assert_eq!(s.binding("key.advancements"), Some(Button::DPadLeft));
+        assert_eq!(s.binding("key.drop"), Some(Button::DPadDown));
+        assert_eq!(PadSettings::parse(&s.serialize()), s);
+    }
+
+    #[test]
+    fn a_new_player_drops_on_d_pad_down_and_chats_on_d_pad_up() {
+        for s in [PadSettings::default(), PadSettings::parse("")] {
+            assert_eq!(s.binding("key.drop"), Some(Button::DPadDown));
+            assert_eq!(s.binding("key.chat"), Some(Button::DPadUp));
+            assert_eq!(s.binding("key.togglePerspective"), Some(Button::Select));
+            assert_eq!(s.binding("key.playerlist"), None);
+            assert_eq!(s.binding("key.advancements"), None);
+        }
+        let s = PadSettings::parse(&PadSettings::default().serialize());
+        assert_eq!(s, PadSettings::default());
     }
 
     #[test]
@@ -1618,8 +1803,9 @@ mod tests {
         assert_eq!(back.binding("key.drop"), None);
         assert_eq!(back.actions_of(Button::East), ["key.jump"]);
         // Garbage keeps the defaults.
-        let odd =
-            PadSettings::parse("lookSensitivity:NaN\nbind_key.nope:south\nbind_key.jump:x9\n");
+        let odd = PadSettings::parse(
+            "lookSensitivity:NaN\nbind_key.nope:south\nbind_key.jump:x9\nbindLayout:1\n",
+        );
         assert_eq!(odd, PadSettings::default());
     }
 
@@ -1674,6 +1860,63 @@ mod tests {
         assert_eq!(Button::East.by_letter().label(GlyphStyle::Nintendo), "B");
         assert_eq!(Button::West.by_letter().label(GlyphStyle::Nintendo), "X");
         assert_eq!(Button::North.by_letter().label(GlyphStyle::Nintendo), "Y");
+    }
+
+    #[test]
+    fn a_stick_holds_the_keys_of_its_nearest_heading() {
+        // Forward, backward, left, right, by the heading counted from forward toward left.
+        let headings = [
+            [true, false, false, false],
+            [true, false, true, false],
+            [false, false, true, false],
+            [false, true, true, false],
+            [false, true, false, false],
+            [false, true, false, true],
+            [false, false, false, true],
+            [true, false, false, true],
+        ];
+        for tenth in 0..3600 {
+            let degrees = tenth as f32 / 10.0;
+            if degrees % 45.0 == 22.5 {
+                continue;
+            }
+            for tilt in [0.31, 0.5, 1.0] {
+                let (s, c) = degrees.to_radians().sin_cos();
+                let keys = eight_direction_keys([tilt * s, tilt * c]);
+                let sector = ((degrees / 45.0).round() as usize) % 8;
+                assert_eq!(keys, headings[sector], "{degrees} at {tilt}");
+                let [left, forward] =
+                    crate::input::keyboard_direction(keys[0], keys[1], keys[2], keys[3]);
+                let off = (left.atan2(forward).to_degrees() - degrees).rem_euclid(360.0);
+                assert!(off.min(360.0 - off) <= 22.5 + 1e-3, "{degrees}: {off}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_sector_edge_goes_to_the_straight_heading() {
+        assert_eq!(
+            eight_direction_keys([0.414_213_57, 1.0]),
+            [true, false, false, false]
+        );
+        assert_eq!(
+            eight_direction_keys([0.4143, 1.0]),
+            [true, false, true, false]
+        );
+        assert_eq!(
+            eight_direction_keys([1.0, 0.414_213_57]),
+            [false, false, true, false]
+        );
+    }
+
+    #[test]
+    fn a_small_tilt_holds_no_key() {
+        assert_eq!(eight_direction_keys([0.0, 0.0]), [false; 4]);
+        assert_eq!(eight_direction_keys([0.2, 0.2]), [false; 4]);
+        assert_eq!(
+            eight_direction_keys([0.0, 0.31]),
+            [true, false, false, false]
+        );
     }
 
     #[test]
@@ -2206,12 +2449,27 @@ mod tests {
     }
 
     #[test]
-    fn hotbar_wraps_and_glyphs_follow_the_vendor() {
-        assert_eq!(hotbar_step(8, true), 0);
-        assert_eq!(hotbar_step(0, false), 8);
-        assert_eq!(hotbar_step(3, true), 4);
-        assert_eq!(GlyphStyle::of_vendor(Some(0x054c)), GlyphStyle::PlayStation);
-        assert_eq!(GlyphStyle::of_vendor(Some(0x28de)), GlyphStyle::Xbox);
-        assert_eq!(GlyphStyle::of_vendor(None), GlyphStyle::Xbox);
+    fn glyphs_follow_the_vendor() {
+        let of = |vendor, product| GlyphStyle::of_device(Some(vendor), Some(product));
+        // Any product of the consoles' makers.
+        assert_eq!(of(0x054c, 0x0ce6), GlyphStyle::PlayStation);
+        assert_eq!(of(0x054c, 0x0001), GlyphStyle::PlayStation);
+        assert_eq!(of(0x057e, 0x2009), GlyphStyle::Nintendo);
+        // A pad made for a console by another maker, and that maker's others.
+        assert_eq!(of(0x0f0d, 0x0066), GlyphStyle::PlayStation);
+        assert_eq!(of(0x0f0d, 0x00c1), GlyphStyle::Nintendo);
+        assert_eq!(of(0x0f0d, 0x0067), GlyphStyle::Xbox);
+        assert_eq!(of(0x20d6, 0xa711), GlyphStyle::Nintendo);
+        // Valve's virtual pad, Microsoft's, nothing known, nothing reported.
+        assert_eq!(of(0x28de, 0x11ff), GlyphStyle::Xbox);
+        assert_eq!(of(0x045e, 0x0b12), GlyphStyle::Xbox);
+        assert_eq!(of(0x1234, 0x5678), GlyphStyle::Xbox);
+        assert_eq!(GlyphStyle::of_device(None, None), GlyphStyle::Xbox);
+        // A vendor alone is enough only for the consoles' makers.
+        assert_eq!(
+            GlyphStyle::of_device(Some(0x054c), None),
+            GlyphStyle::PlayStation
+        );
+        assert_eq!(GlyphStyle::of_device(Some(0x0f0d), None), GlyphStyle::Xbox);
     }
 }

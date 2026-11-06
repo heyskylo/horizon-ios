@@ -20,7 +20,11 @@ impl Game<'_> {
         let mut near = super::item_areas::ItemAreas::default();
         for i in 0..self.mobs.len() {
             let m = &self.mobs[i];
-            if m.species() != Species::Fox || !m.alive() || m.removed {
+            if m.species() != Species::Fox
+                || !m.alive()
+                || m.removed
+                || !self.creatures.ticked.contains(&m.id)
+            {
                 continue;
             }
             // `Mob.aiStep`: the items in the box grown by (1, 0, 1), in order.
@@ -82,7 +86,11 @@ impl Game<'_> {
         let mut near = super::item_areas::ItemAreas::default();
         for i in 0..self.mobs.len() {
             let m = &self.mobs[i];
-            if m.species() != Species::Dolphin || !m.alive() || m.removed {
+            if m.species() != Species::Dolphin
+                || !m.alive()
+                || m.removed
+                || !self.creatures.ticked.contains(&m.id)
+            {
                 continue;
             }
             // `Mob.aiStep`: the items in the box grown by (1, 0, 1); `Dolphin.pickUpItem`

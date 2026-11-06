@@ -612,9 +612,11 @@ impl Launcher {
                 ),
             );
         }
-        // `min-w-0 xl:shrink-0`: under 1280 px the pages give way to the buttons on the right
-        // and scroll sideways, as the mockup's `Tabs` (`overflow-x-auto`).
-        let wide = self.window_width >= 1280.;
+        // `min-w-0 xl:shrink-0`: under 1380 px the pages give way to the buttons on the right
+        // and scroll sideways, as the mockup's `Tabs` (`overflow-x-auto`). Non-English locales
+        // with wider labels (and the build log button) require ~1300+ px, so 1380 px ensures
+        // the action buttons (Microsoft sign-in, Settings) are never pushed off-screen (#9902).
+        let wide = self.window_width >= 1380.;
         let strip = crate::glass::plate(radius::LARGE)
             .p(px(4.))
             .min_w_0()
@@ -876,8 +878,8 @@ impl Launcher {
         ))
     }
 
-    /// The ⋮ menu of a sidebar row, beside it: Edit…, Duplicate…, Open folder, Export…, the
-    /// desktop shortcut, then Delete… (asked twice). Each acts on that instance.
+    /// The ⋮ menu of a sidebar row, beside it: Edit…, Duplicate…, Open folder, Export…,
+    /// launch settings, the desktop shortcut, then Delete… (asked twice). Each acts on that instance.
     pub(super) fn row_menu(
         &mut self,
         window: &Window,
@@ -904,7 +906,8 @@ impl Launcher {
             this.select_instance(i);
             this.go(Page::Play);
         };
-        let (edit, copy, export, shortcut) = (
+        let (edit, copy, export, launch, shortcut) = (
+            instance.clone(),
             instance.clone(),
             instance.clone(),
             instance.clone(),
@@ -959,6 +962,18 @@ impl Launcher {
                         if this.export.is_none() {
                             this.toggle_export();
                         }
+                        cx.notify();
+                    },
+                )),
+            )
+            .child(
+                item("launch", "sliders-horizontal", tr("Launch…").into()).on_click(cx.listener(
+                    move |this, _: &ClickEvent, _, cx| {
+                        pick(this, &launch);
+                        this.home_tab = home_tabs::HomeTab::Overview;
+                        // A panel left open for another instance must not turn this into Close.
+                        this.launch = None;
+                        this.toggle_launch();
                         cx.notify();
                     },
                 )),

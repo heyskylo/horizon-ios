@@ -496,10 +496,18 @@ impl Game<'_> {
         if &*stack.item != "minecraft:armor_stand" {
             return false;
         }
-        let Some((pos, stand)) = self.armor_stand_spawn(hit, stack) else {
+        let Some((pos, mut stand)) = self.armor_stand_spawn(hit, stack) else {
             return false;
         };
+        // EntityType.create(.., tryMoveDown, movedUp): the new stand falls onto what is under it,
+        // up to two blocks (a bottom slab, the block under replaced grass).
+        let drop = self.drop_offset_from(0.5, 1.975, (pos[0], pos[1], pos[2]), true);
+        stand.position.y = f64::from(pos[1]) + drop;
+        stand.previous = stand.position;
         let foot = stand.position;
+        // EntityType.create's spawn yaw, `level.getRandom().nextFloat() * 360`, before
+        // ArmorStandItem.useOn turns the stand to face the player.
+        self.world.random.next_float();
         self.next_entity += 1;
         self.audio.play(
             "minecraft:entity.armor_stand.place",
@@ -507,11 +515,16 @@ impl Game<'_> {
             0.75,
             0.8,
         );
+        // ArmorStandItem.useOn: the stand's ENTITY_PLACE, by the player.
+        let ctx = self.player_context(None);
+        self.post_game_event("minecraft:entity_place", [foot.x, foot.y, foot.z], ctx);
         self.world.modified.insert((pos[0] >> 4, pos[2] >> 4));
         self.armor_stands.push(stand);
         if !self.creative {
             self.consume_held();
         }
+        // ItemStack.useOn counts the use.
+        self.award_stat("used", &stack.item, 1);
         // ArmorStandItem.useOn returns SUCCESS: the hand swings.
         self.swing_arm();
         true
@@ -856,6 +869,8 @@ impl Game<'_> {
             let a = &mut self.armor_stands[i];
             a.previous = a.position;
             a.previous_yaw = a.yaw;
+            // Entity.baseTick clears firstTick only when the entity actually ticks.
+            a.first_tick = false;
             // aiStep's freezing step (removeFrost) makes the speed instance.
             a.speed_instance = true;
             let (water_height, lava_height) =
@@ -895,7 +910,9 @@ impl Game<'_> {
             if in_water {
                 a.enchantment_fall_distance = 0.0;
             } else {
-                a.enchantment_fall_distance += (a.previous.y - a.position.y).max(0.0);
+                // Entity.checkFallDamage narrows each movement before adding to the double.
+                a.enchantment_fall_distance +=
+                    f64::from((a.previous.y - a.position.y).max(0.0) as f32);
             }
             let landed = a.on_ground && a.enchantment_fall_distance > 0.0;
             if a.on_ground {
@@ -909,7 +926,9 @@ impl Game<'_> {
             }
             self.armor_stand_turtle_eggs(i, landed)?;
             if landed {
-                self.post_landing_event(self.armor_stands[i].position, true);
+                let stand = &self.armor_stands[i];
+                let (position, bounds) = (stand.position, stand.bounds());
+                self.post_landing_event(position, bounds, true);
             }
             self.armor_stands[i].apply_honey_slide(&self.world, self.res.facts());
             let a = &self.armor_stands[i];
@@ -1091,12 +1110,13 @@ impl Game<'_> {
                 )
                 * glam::Mat4::from_scale(glam::Vec3::new(-1.0, -1.0, 1.0))
                 * glam::Mat4::from_translation(glam::Vec3::new(0.0, -1.501, 0.0));
-            let light = self.world.light(
-                at.x.floor() as i32,
-                (at.y + 0.5).floor() as i32,
-                at.z.floor() as i32,
-            );
-            let packed = (u32::from(light >> 4) * 16) | ((u32::from(light & 15) * 16) << 8);
+            // `EntityRenderer.getPackedLightCoords`: the block
+            // `ArmorStand.getLightProbePosition` gives - the brightest cell of a
+            // marker's own box, else the stand's eye - at 15 block light while
+            // it burns.
+            let probe = a.light_probe(alpha, |x, y, z| self.world.light(x, y, z));
+            let light = self.world.light(probe[0], probe[1], probe[2]);
+            let packed = a.render_light(light);
             let skinned = if skinning {
                 let mut models = self.skin_models.borrow_mut();
                 let mut frame = self.skin_frame.borrow_mut();
@@ -1610,8 +1630,8 @@ impl Game<'_> {
                 .extra
                 .as_deref()
                 .and_then(|d| d.other.iter().find(|(k, _)| k == "minecraft:profile"))
-                .map(|(_, t)| horizon_client::scoreboard::tag_to_json(t))
-                .unwrap_or(serde_json::Value::Null);
+                .map(|(_, t)| self.skin_profiles.borrow_mut().head_profile_nbt(t))
+                .unwrap_or_else(|| std::sync::Arc::new(serde_json::Value::Null));
             self.pack.item_renderer.submit_special(
                 &special,
                 &profile,

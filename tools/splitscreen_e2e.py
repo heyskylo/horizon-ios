@@ -38,6 +38,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import zipfile
 from pathlib import Path
 
 try:
@@ -461,7 +462,7 @@ def scenario_setup():
     print('setup: preview, Revert, Apply, Done, and solo return while the page stays open')
     g = Game(2, saved_split=True)
     def labels():
-        return [w['label'] for w in g.ctl(1, 'ui')['widgets']]
+        return [w.get('label', '') for w in g.ctl(1, 'ui')['widgets']]
     def enabled(label):
         return next(w['enabled'] for w in g.ctl(1, 'ui')['widgets'] if w['label'] == label)
     def page():
@@ -652,6 +653,37 @@ def scenario_live():
         check('on again: P1 still renders the whole window', tuple(status['renderer']['size']),
               (2 * half[0], half[1]))
         check('on again: frames keep coming', status['fps'] > 10, True)
+    finally:
+        g.quit()
+
+
+def scenario_pause():
+    print('pause: the game runs on while one player sits behind a pause menu')
+    g = Game(2)
+    try:
+        g.ctl(1, 'key', 'esc', 'tap')
+        g.wait(lambda: g.ctl(1, 'ui').get('screen') == 'paused', "P1's pause menu", seconds=5)
+        time.sleep(0.5)  # let the frames settle on the new pause state before measuring
+        before = [g.ctl(n, 'status')['ticks'] for n in (1, 2)]
+        time.sleep(1.0)
+        after = [g.ctl(n, 'status')['ticks'] for n in (1, 2)]
+        # The world runs for the other player, so P1's own client must tick too: its
+        # ticks counter keeps advancing behind the menu (issue #9718 stopped it).
+        check('P1 behind its menu: its client keeps ticking', after[0] - before[0] > 10, True)
+        check('P2: ticks on as ever', after[1] - before[1] > 10, True)
+        g.close_page(1)
+    finally:
+        g.quit()
+    # Alone the same menu does stop the game: the splitscreen exemption must not leak.
+    g = Game(1)
+    try:
+        g.ctl(1, 'key', 'esc', 'tap')
+        g.wait(lambda: g.ctl(1, 'ui').get('screen') == 'paused', "P1's pause menu", seconds=5)
+        time.sleep(0.5)
+        before = g.ctl(1, 'status')['ticks']
+        time.sleep(1.0)
+        check('alone: the pause menu still stops the ticks',
+              g.ctl(1, 'status')['ticks'] - before < 5, True)
     finally:
         g.quit()
 
@@ -986,6 +1018,37 @@ def scenario_packs():
     finally:
         files.shutdown()
         shutil.rmtree(folder, ignore_errors=True)
+
+def scenario_pack_overlay():
+    print("pack_overlay: a player's pack reload leaves P1's selected pack and vanilla's files in place")
+
+    def seed(home):
+        (home / 'resourcepacks').mkdir()
+        meta = {'pack': {'pack_format': 9999, 'supported_formats': {'min_inclusive': 6, 'max_inclusive': 9999},
+                         'description': 'pack_overlay'}}
+        with zipfile.ZipFile(home / 'resourcepacks/overlay.zip', 'w') as z:
+            z.writestr('pack.mcmeta', json.dumps(meta))
+        (home / 'options.txt').write_text('resourcePacks:["vanilla","file/overlay.zip"]\n')
+        (home / 'shaderpacks').mkdir()
+        with zipfile.ZipFile(home / 'shaderpacks/shader.zip', 'w') as z:
+            z.writestr('shaders/final.fsh', 'void main() {}\n')
+
+    g = Game(2, seed=seed, args=('--offscreen',))
+    try:
+        log = g.home / 'logs/latest.log'
+        stone = 'assets/minecraft/textures/block/stone.png'
+        overlays = [d for d in (g.home / '.horizon-cache/resourcepacks').iterdir() if d.is_dir()]
+        check('one overlay for the selection', len(overlays), 1)
+        check("vanilla's stone in it before", (overlays[0] / stone).exists(), True)
+        # The first shader pack of a session turns material maps on, which reloads the packs.
+        g.ctl(2, 'options', 'shader-packs')
+        g.press(2, 'shader.zip')
+        g.wait(lambda: 'shader pack shader.zip' in log.read_text(errors='replace'), "P2's shader pack", seconds=60)
+        check("vanilla's stone in it after", (overlays[0] / stone).exists(), True)
+        check('the reload succeeded', 'resource reload failed' in log.read_text(errors='replace'), False)
+    finally:
+        g.quit()
+
 
 def scenario_server():
     print('server: P1 on a dedicated server; the others join it, a kicked one drops out, all leave with P1')
@@ -1338,6 +1401,7 @@ SCENARIOS = {
     'controls': scenario_controls,
     'three': scenario_three,
     'live': scenario_live,
+    'pause': scenario_pause,
     'profile_availability': scenario_profile_availability,
     'gui_scales': scenario_gui_scales,
     'fullscreen': scenario_fullscreen,
@@ -1351,6 +1415,7 @@ SCENARIOS = {
     'pausemenu': scenario_pausemenu,
     'server': scenario_server,
     'packs': scenario_packs,
+    'pack_overlay': scenario_pack_overlay,
     'dedicated_profiles': scenario_dedicated_profiles,
     'integrated_profiles': scenario_integrated_profiles,
     'launcher': scenario_launcher,

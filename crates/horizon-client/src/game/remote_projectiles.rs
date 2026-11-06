@@ -771,6 +771,18 @@ impl Game<'_> {
                 ))
                 .fluid
                 == horizon_client::blocks::Fluid::Water;
+            if water {
+                // applyInertia, before the move: four bubbles on the motion
+                // the fireball already has.
+                let (at, speed) = horizon_client::projectiles::water_bubble_at(
+                    [at.x, at.y, at.z],
+                    [b.velocity.x, b.velocity.y, b.velocity.z],
+                );
+                let bubble = ParticleOptions::simple(ParticleType::Bubble);
+                for _ in 0..4 {
+                    self.particles.add(&bubble, at, speed);
+                }
+            }
             b.remote_step(water);
             let p = b.position;
             self.particles.add(&trail, [p.x, p.y + 0.5, p.z], [0.0; 3]);

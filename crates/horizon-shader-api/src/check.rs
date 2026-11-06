@@ -164,7 +164,8 @@ pub fn check(pack: &Pack) -> Result<Report, Vec<Problem>> {
         .chain(m.vertex.iter().map(|s| (StageKind::Vertex, s)))
         .chain(m.material.iter().map(|s| (StageKind::Material, s)))
         .chain(m.weather.iter().map(|s| (StageKind::Weather, s)))
-        .chain(m.post.iter().map(|s| (StageKind::Post, s)));
+        .chain(m.post.iter().map(|s| (StageKind::Post, s)))
+        .chain(m.tonemap.iter().map(|s| (StageKind::Tonemap, s)));
     let (mut checked, mut problems) = (Vec::new(), Vec::new());
     for (kind, stage) in stages {
         match check_stage(pack, kind, &stage.file) {

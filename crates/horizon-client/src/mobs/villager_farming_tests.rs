@@ -89,6 +89,7 @@ fn mod_farmland_is_a_secondary_site_and_farming_target() {
         resources(),
         &[],
         true,
+        true,
         |world, reg| {
             put(world, 0, 0, reg.default_state("fieldtest:soil").unwrap());
         },
@@ -125,6 +126,7 @@ fn mod_crops_are_harvested_only_at_their_vanilla_templates_max_age() {
     assert!(super::super::world::with_resource_test_world(
         resources(),
         &[],
+        true,
         true,
         |world, reg| {
             for (x, block, age) in [
@@ -186,6 +188,7 @@ fn farming_uses_the_first_tagged_block_item_and_consumes_one_seed() {
     assert!(super::super::world::with_resource_test_world(
         resources(),
         &[],
+        true,
         true,
         |world, reg| {
             for x in 0..=1 {
