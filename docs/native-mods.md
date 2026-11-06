@@ -2509,6 +2509,17 @@ What packet-level plugins (ProtocolLib, PacketEvents, TAB), plugin channel liste
   Every entity's data reaches a client in this packet, a newly tracked one's first values included; an entity whose
   values are all defaults is tracked without one, as in vanilla, so there is nothing to change until a value does.
   The same threads and limits as `native_server_packet`. Bundles need `"hooks": @API:entity_data_to@`.
+- **`native_player_register_channels(player, name, channels, register)`**: a guest's client registered plugin channels
+  (`minecraft:register`, `register` true) or unregistered them (`minecraft:unregister`), NUL-separated names as Bukkit's
+  and Fabric's clients and proxies send them; vanilla reads neither message (Bukkit's `PlayerRegisterChannelEvent` and
+  `PlayerUnregisterChannelEvent`). `channels` are the names that changed, after Horizon applied them. What a client
+  registered during its configuration, before it joined, is heard once as one registration right after
+  `native_player_logged_in`, with the hub in place; a message in play is heard as it is handled, from a dead player too,
+  with the player's state swapped in, so `native_tell` answers them, and then goes on to wherever it went before. Horizon
+  keeps at most 128 names of at most 256 bytes, printable ASCII with a `:`; a name past that, or one that changes
+  nothing, is not heard. The helper **`native_player_channels(player)`** lists the channels a player has, in the order
+  registered (Bukkit's `Player.getListeningPluginChannels`); it reads the hub, so it is empty inside a player's own
+  hook. Bundles need `"hooks": @API:player_channels@`.
 
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The

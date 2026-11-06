@@ -4960,6 +4960,7 @@ mod tests {
                 latency: std::sync::Arc::new(std::sync::atomic::AtomicI32::new(0)),
                 address: "127.0.0.1:25565".parse().unwrap(),
                 expected: false,
+                configured: Default::default(),
             },
             1,
             [0.5, 64.0, 0.5],

@@ -113,6 +113,9 @@ pub struct Guest {
     pub latency: Arc<AtomicI32>,
     pub info: ClientInformation,
     pub brand: String,
+    /// The plugin channels the client registered (`minecraft:register`), in configuration and
+    /// in play, in order (`super::apply_channels`).
+    pub channels: Vec<String>,
     /// The chunk radius this client is sent.
     pub view_distance: i32,
     pub position: [f64; 3],
@@ -435,6 +438,7 @@ impl Guest {
             view_distance: i32::from(j.info.view_distance).max(2).min(view_distance),
             info: j.info,
             brand: j.brand,
+            channels: j.configured.channels,
             position,
             previous_position: position,
             yaw: 0.0,
@@ -1577,6 +1581,7 @@ mod tests {
                 latency: Arc::new(AtomicI32::new(0)),
                 address: "127.0.0.1:1".parse().unwrap(),
                 expected: false,
+                configured: Default::default(),
             },
             1,
             position,

@@ -957,6 +957,17 @@ struct Parts {
     properties: Vec<login::Property>,
     info: ClientInformation,
     brand: String,
+    configured: super::Configured,
+}
+
+/// A configuration packet that registers or unregisters plugin channels, kept for the game
+/// (`super::Configured`); vanilla reads none of them.
+fn note_channels(configured: &mut super::Configured, packet: &cfg::Serverbound) {
+    if let cfg::Serverbound::CustomPayload(p) = packet
+        && let Some(register) = super::channel_registration(&p.channel)
+    {
+        super::apply_channels(&mut configured.channels, &p.data, register);
+    }
 }
 
 fn login_and_configure(
@@ -1042,9 +1053,12 @@ fn login_and_configure(
     )?;
     let mut info = ClientInformation::new(10);
     let mut brand = String::from("vanilla");
+    let mut configured = super::Configured::default();
     let known_pack = loop {
         let (id, payload) = c.recv().map_err(e)?;
-        match decode_config(id, &payload).map_err(e)? {
+        let packet = decode_config(id, &payload).map_err(e)?;
+        note_channels(&mut configured, &packet);
+        match packet {
             cfg::Serverbound::ClientInformation(i) => info = i,
             cfg::Serverbound::CustomPayload(p) if p.channel == "minecraft:brand" => {
                 brand = horizon_protocol::buf::Reader::new(&p.data)
@@ -1141,7 +1155,9 @@ fn login_and_configure(
         let mut client_mods = Vec::new();
         loop {
             let (id, payload) = c.recv().map_err(e)?;
-            match decode_config(id, &payload).map_err(e)? {
+            let packet = decode_config(id, &payload).map_err(e)?;
+            note_channels(&mut configured, &packet);
+            match packet {
                 cfg::Serverbound::CustomPayload(p)
                     if p.channel == horizon_protocol::mod_list::CHANNEL =>
                 {
@@ -1177,7 +1193,9 @@ fn login_and_configure(
         let mut content_match = false;
         loop {
             let (id, payload) = c.recv().map_err(e)?;
-            match decode_config(id, &payload).map_err(e)? {
+            let packet = decode_config(id, &payload).map_err(e)?;
+            note_channels(&mut configured, &packet);
+            match packet {
                 cfg::Serverbound::CustomPayload(p)
                     if p.channel == crate::content_identity::CHANNEL =>
                 {
@@ -1209,10 +1227,10 @@ fn login_and_configure(
     if let Some(text) =
         super::code_of_conduct::pick(&shared.config.code_of_conducts, &info.language)
     {
-        accept_code_of_conduct(c, text, &mut info)?;
+        accept_code_of_conduct(c, text, &mut info, &mut configured)?;
     }
     if let Some(pack) = &shared.config.resource_pack
-        && let Some(rejected) = offer_pack(c, pack, &mut info)?
+        && let Some(rejected) = offer_pack(c, pack, &mut info, &mut configured)?
     {
         let (reason, text) = pack_rejected(shared, name, rejected);
         let _ = send(c, cfg::Clientbound::Disconnect(cfg::Disconnect { reason }));
@@ -1222,7 +1240,9 @@ fn login_and_configure(
     send(c, cfg::Clientbound::FinishConfiguration(Empty))?;
     loop {
         let (id, payload) = c.recv().map_err(e)?;
-        match decode_config(id, &payload).map_err(e)? {
+        let packet = decode_config(id, &payload).map_err(e)?;
+        note_channels(&mut configured, &packet);
+        match packet {
             cfg::Serverbound::FinishConfiguration(_) => break,
             cfg::Serverbound::ClientInformation(i) => info = i,
             _ => {}
@@ -1234,6 +1254,7 @@ fn login_and_configure(
         properties,
         info,
         brand,
+        configured,
     }))
 }
 
@@ -1283,6 +1304,7 @@ fn offer_pack(
     c: &mut Connection,
     pack: &crate::server::properties::ResourcePackInfo,
     info: &mut ClientInformation,
+    configured: &mut super::Configured,
 ) -> Result<Option<u128>, String> {
     let e = |e: horizon_protocol::Error| e.to_string();
     let push = cfg::ResourcePackPush {
@@ -1303,7 +1325,10 @@ fn offer_pack(
             *info = i;
             None
         }
-        Ok(_) => None,
+        Ok(packet) => {
+            note_channels(configured, &packet);
+            None
+        }
         Err(err) => Some(Err(err)),
     })
 }
@@ -1317,6 +1342,7 @@ fn accept_code_of_conduct(
     c: &mut Connection,
     text: &str,
     info: &mut ClientInformation,
+    configured: &mut super::Configured,
 ) -> Result<(), String> {
     let e = |e: horizon_protocol::Error| e.to_string();
     c.send(&cfg::Clientbound::CodeOfConduct(cfg::CodeOfConduct { text: text.into() }).encode())
@@ -1330,7 +1356,10 @@ fn accept_code_of_conduct(
             *info = i;
             None
         }
-        Ok(_) => None,
+        Ok(packet) => {
+            note_channels(configured, &packet);
+            None
+        }
         Err(err) => Some(Err(err)),
     })
 }
@@ -1429,6 +1458,7 @@ fn play(
         latency,
         address,
         expected,
+        configured: parts.configured,
     };
     let mut session = Box::new(session);
     if shared

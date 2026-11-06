@@ -6566,6 +6566,26 @@ impl Game<'_> {
     ) {
         let _ = (viewer, entity, values);
     }
+    /// `player`'s client registered plugin channels (`minecraft:register`, `register`) or
+    /// unregistered them (`minecraft:unregister`, not `register`): `channels` are the names that
+    /// changed, in the message's order, after Horizon applied them (Bukkit's
+    /// `PlayerRegisterChannelEvent` and `PlayerUnregisterChannelEvent`; vanilla reads neither
+    /// message). What a client registered during its configuration, before it joined, is heard
+    /// once, as one registration, right after `native_player_logged_in`, with the hub in place
+    /// and no player's state swapped in; a registration in play is heard as the packet is
+    /// handled, from a dead player too, with the player's state swapped in, so `native_tell`
+    /// answers them. A name already registered, not registered, past 128 kept or not printable
+    /// ASCII with a `:` changes nothing and is not heard; `native_player_channels` lists them
+    /// all. It only hears. Server-side, for every guest. @API:player_channels@.
+    pub(super) fn native_player_register_channels(
+        &mut self,
+        player: u128,
+        name: &str,
+        channels: &[String],
+        register: bool,
+    ) {
+        let _ = (player, name, channels, register);
+    }
     /// A click in a menu a mod opened (`native_open_menu`), which moved
     /// nothing: the menu's `slot` (its own first, then the player's
     /// inventory, `native_menu_inventory_slot`; -999 outside), the `button`
