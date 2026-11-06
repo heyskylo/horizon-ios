@@ -363,6 +363,17 @@ impl ItemStack {
     pub fn custom_name(&self) -> Option<String> {
         self.data()?.custom_name_plain()
     }
+    /// Non-empty slots of a `minecraft:container` component.
+    pub fn container(&self) -> &[(u8, ItemStack)] {
+        self.data().map_or(&[], |d| &d.container)
+    }
+    /// The `minecraft:custom_data` compound if present.
+    pub fn custom_data(&self) -> Option<&horizon_world::nbt::Compound> {
+        match self.data()?.other("minecraft:custom_data")? {
+            Tag::Compound(map) => Some(map),
+            _ => None,
+        }
+    }
     /// `ResolvableProfile.name`: a bare profile string or its `name` field.
     pub fn profile_name(&self) -> Option<String> {
         let profile = self.data()?.other("minecraft:profile")?;

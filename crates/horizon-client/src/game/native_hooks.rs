@@ -6590,6 +6590,18 @@ impl Game<'_> {
     ) {
         mod_api::dispatch_tooltip_component_draw(self, mod_api::mods(), stack, batch, origin, size);
     }
+    /// Intercept item tooltip rendering before geometry calculation and drawing.
+    /// Setting `cancel` to true suppresses vanilla tooltip rendering.
+    pub(super) fn native_tooltip_render_pre(
+        &mut self,
+        stack: &ItemStack,
+        batch: &mut HudBatch,
+        x: f32,
+        y: f32,
+        cancel: &mut bool,
+    ) {
+        mod_api::dispatch_tooltip_render_pre(self, mod_api::mods(), stack, batch, x, y, cancel);
+    }
 
     /// The small bar `GuiGraphicsExtractor.itemDecorations` draws under an
     /// item, wherever the game shows one: `bar` arrives holding vanilla's value
