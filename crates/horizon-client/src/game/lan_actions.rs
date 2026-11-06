@@ -1087,7 +1087,15 @@ impl Game<'_> {
                     passengers: Vec::new(),
                 }));
             }
+            // What moved them in their turn, for `native_player_teleport`.
+            let cause = horizon_client::lan::hub::teleport_cause(None);
             if g.vehicle.is_none() && (moved > 0.0001 || turned || teleported) {
+                let other = if left_vehicle.is_some() {
+                    "dismount"
+                } else {
+                    "unknown"
+                };
+                horizon_client::lan::hub::teleport_cause(Some(cause.unwrap_or(other)));
                 host.hub.teleport(i, Some(at));
             } else if teleported {
                 // ServerPlayer.startRiding and an asPassenger transition also
@@ -3006,6 +3014,7 @@ impl Game<'_> {
                     at,
                     rotation: Some([yaw, pitch]),
                     vehicle: None,
+                    cause: Some("spectate"),
                 });
             return;
         }
@@ -3014,6 +3023,7 @@ impl Game<'_> {
         // A new body there: no fall distance or motion carried over, but the
         // player's attributes (ServerPlayer.teleport keeps the entity).
         g.new_body(true);
+        horizon_client::lan::hub::teleport_cause(Some("spectate"));
         host.hub.teleport(gi, Some(at));
     }
     fn guest_tick_death(&mut self, host: &mut LanHost, gi: usize) {

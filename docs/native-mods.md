@@ -2495,6 +2495,15 @@ tick later with a command.
   player is sent back to `from`; change `to` and they are put there instead (not checked against the blocks) and their
   client gets a teleport there. Not heard: riders, sleepers, moves while a teleport waits for its answer, teleports.
   Once a move, inside the packet's handling: keep it cheap. No `self`, no state swapped in. Server-side.
+- **`native_player_teleport(player, name, cause, from_dimension, from, to_dimension, to, relative, cancel)`**: a server
+  player is about to be teleported, before their client hears it (Bukkit's `PlayerTeleportEvent`, NeoForge's
+  `EntityTeleportEvent`). `cause` is `command`, `ender_pearl`, `chorus_fruit`, `spectate` (the spectator teleport
+  menu), `dismount` or `unknown` (another server move of the player). `to_dimension` differs from `from_dimension` only
+  for a `command` or `spectate` teleport into another level. Change `to` and they go there instead; set `cancel` and
+  they stay where they are. Within a level `relative` is the position packet's flags: a mod may set or clear the look and motion bits (8, 16,
+  32, 64, 128, 256; 0x1f8 keeps a pearl's speed as 26.2 did), the position bits are ignored; into another level it is
+  not used. Not heard: portals and End gateways (their own hooks), respawns, a rider its vehicle carries, waking from a
+  bed, a move the server's checks send back, the spectator camera. No `self`, no state swapped in. Server-side.
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a

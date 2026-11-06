@@ -6556,6 +6556,46 @@ impl Game<'_> {
             cancel,
         );
     }
+    /// A server player is about to be teleported (Bukkit's `PlayerTeleportEvent`, NeoForge's
+    /// `EntityTeleportEvent`), before the move reaches their client. `cause` is `command`
+    /// (`/tp`, `/teleport`), `ender_pearl`, `chorus_fruit`, `spectate` (a spectator's teleport
+    /// menu), `dismount` (put beside the vehicle they left) or `unknown` (another server move of
+    /// the player). `from` is their feet in `from_dimension`, `to` where they go in
+    /// `to_dimension` (the same level, but for a `command` or `spectate` teleport into another).
+    /// `relative` is the position packet's flags (vanilla's `Relative`: 8 and 16 keep the look,
+    /// 32, 64 and 128 the motion, 256 turns the motion with the look); within a level a mod may
+    /// set or clear those bits, so a pearl can keep the player's speed (0x1f8), while the
+    /// position bits are ignored, and into another level the flags are not used. Change `to`
+    /// (a value that is not finite is ignored) or set `cancel` and the player stays where they
+    /// are. Not heard: portals and End gateways (`native_player_portal`,
+    /// `native_player_teleport_end_gateway`), respawns (`native_player_respawn_position`), a
+    /// rider carried by its vehicle, waking from a bed, a moved player sent back by the server's
+    /// checks, and a spectator's camera. There is no `self` and no player's state is swapped in:
+    /// the game is in the middle of the teleport. Server-side. @API:player_teleport@.
+    pub(super) fn native_player_teleport(
+        player: u128,
+        name: &str,
+        cause: &str,
+        from_dimension: &str,
+        from: [f64; 3],
+        to_dimension: &str,
+        to: &mut [f64; 3],
+        relative: &mut u32,
+        cancel: &mut bool,
+    ) {
+        mod_api::dispatch_player_teleport(
+            mod_api::mods(),
+            player,
+            name,
+            cause,
+            from_dimension,
+            from,
+            to_dimension,
+            to,
+            relative,
+            cancel,
+        );
+    }
     /// A click in a menu a mod opened (`native_open_menu`), which moved
     /// nothing: the menu's `slot` (its own first, then the player's
     /// inventory, `native_menu_inventory_slot`; -999 outside), the `button`

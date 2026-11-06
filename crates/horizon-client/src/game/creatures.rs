@@ -5251,6 +5251,9 @@ impl Game<'_> {
                         pl.fall_distance = 0.0;
                         pl.teleported = true;
                     }
+                    if self.lan_acting.is_some() {
+                        horizon_client::lan::hub::teleport_cause(Some("ender_pearl"));
+                    }
                     self.previous_position = to;
                     if damage > 0.0 {
                         self.hurt_player_by("minecraft:ender_pearl", damage);
