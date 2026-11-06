@@ -6818,10 +6818,10 @@ impl Game<'_> {
         let native = &mut self.bosses.native;
         match bar {
             Some(bar) => {
-                if !(0.0..=1.0).contains(&bar.progress)
-                    || !(0..=6).contains(&bar.color)
-                    || !(0..=4).contains(&bar.overlay)
-                {
+                let valid = (0.0..=1.0).contains(&bar.progress)
+                    && (0..=6).contains(&bar.color)
+                    && (0..=4).contains(&bar.overlay);
+                if !valid {
                     return false;
                 }
                 let bars = native.entry(uuid).or_default();
