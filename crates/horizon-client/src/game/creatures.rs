@@ -1316,7 +1316,6 @@ impl Game<'_> {
             }
         }
         laps.lap("creature_retain");
-        self.tick_boarding();
         self.sync_riders();
         self.tick_skeleton_traps();
         self.tick_apparition();
