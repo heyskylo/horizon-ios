@@ -2520,6 +2520,14 @@ parsing before (#10461).
   `native_server_tick` included; true does not mean the player was found. Bundles need
   `"hooks": @API:profile_refresh@`.
 
+- Helpers **`native_player_textures(uuid)`** (`host.player_textures`) and **`native_player_head(uuid)`**
+  (`host.player_head`): the `textures` property of a player who is on, its value and signature as their player list
+  entry carries it (Paper's `Player.getPlayerProfile`), and a `minecraft:player_head` stack of any player (Bukkit's
+  `SkullMeta.setOwningPlayer`) whose `minecraft:profile` holds their id, plus their name and skin when they are on,
+  so it shows the skin at once (a profile of an id alone the client resolves itself). Where the hub is out of reach
+  (inside a player's own hook) the textures are None and the head carries the id only. Bundles need
+  `"hooks": @API:player_textures@`.
+
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a

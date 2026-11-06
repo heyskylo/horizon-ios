@@ -2,6 +2,7 @@
 //! profiles"): a player's profile properties changed while they are on, and the player shown again
 //! with them (#10461).
 use super::{Game, lan::LanHost};
+use horizon_client::items::ItemStack;
 use horizon_protocol::packets::login::Property;
 
 /// What the profile helpers left for the hub: edits made where it was out of reach, and the players
@@ -127,5 +128,50 @@ impl Game<'_> {
             host.hub
                 .change_level(i, at, yaw, Some(pitch), false, cooldown, &ctx);
         }
+    }
+
+    /// The name and profile properties of a player who is on, where the hub is in reach.
+    fn online_profile(&self, uuid: u128) -> Option<(String, Vec<Property>)> {
+        let host = self.lan.as_ref()?;
+        let g = host.hub.guests.iter().find(|g| g.uuid == uuid)?;
+        Some((g.name.clone(), g.properties.clone()))
+    }
+
+    /// The `textures` property of a player who is on (Paper's `Player.getPlayerProfile`): its
+    /// value (base64 JSON naming the skin and cape) and signature (None unsigned), as their player
+    /// list entry carries it, `native_set_profile_property`'s edits included. None for a player who
+    /// isn't on or has none (offline mode without a skin mod), on a client, and where the hub is
+    /// out of reach (inside a player's own hook). API @API:player_textures@.
+    pub(super) fn native_player_textures(&self, uuid: u128) -> Option<(String, Option<String>)> {
+        let (_, properties) = self.online_profile(uuid)?;
+        properties
+            .into_iter()
+            .find(|p| p.name == "textures")
+            .map(|p| (p.value, p.signature))
+    }
+
+    /// A player head of the player `uuid` (Bukkit's `SkullMeta.setOwningPlayer`): its
+    /// `minecraft:profile` holds their id, and their name and properties (the skin) when they are
+    /// on and the hub is in reach, so it shows their skin at once; a profile of an id alone the
+    /// client resolves itself. API @API:player_textures@.
+    pub(super) fn native_player_head(&self, uuid: u128) -> ItemStack {
+        let (name, properties) = self
+            .online_profile(uuid)
+            .map_or((None, Vec::new()), |(name, p)| (Some(name), p));
+        let profile = horizon_protocol::item::Profile {
+            name,
+            id: Some(uuid),
+            properties: properties
+                .into_iter()
+                .map(|p| (p.name, p.value, p.signature))
+                .collect(),
+            skin: Default::default(),
+        };
+        let mut head = ItemStack::new("minecraft:player_head", 1);
+        head.data_mut().set_other(
+            "minecraft:profile",
+            Some(horizon_client::item_sync::profile_tag(&profile)),
+        );
+        head
     }
 }
