@@ -2504,6 +2504,12 @@ tick later with a command.
   32, 64, 128, 256; 0x1f8 keeps a pearl's speed as 26.2 did), the position bits are ignored; into another level it is
   not used. Not heard: portals and End gateways (their own hooks), respawns, a rider its vehicle carries, waking from a
   bed, a move the server's checks send back, the spectator camera. No `self`, no state swapped in. Server-side.
+- **`native_player_respawn_position(player, name, dimension, pos, yaw, pitch)`**: a dead player is about to respawn
+  (NeoForge's `PlayerRespawnPositionEvent`, Bukkit's `PlayerRespawnEvent.setRespawnLocation`), before they are placed:
+  their respawn point (a bed or anchor block's top, a forced point, else the world spawn) and the look they get (0, 0).
+  Left alone, the point is resolved as vanilla's is (the spot beside the bed, the world spawn's free column). Change the
+  dimension or position and they are placed exactly there, no bed or anchor used; an unknown dimension or a non-finite
+  value leaves that part as it was. On a LAN host's world the level stays the Overworld. No state swapped in.
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a

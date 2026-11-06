@@ -6596,6 +6596,38 @@ impl Game<'_> {
             cancel,
         );
     }
+    /// A dead server player is about to respawn (NeoForge's `PlayerRespawnPositionEvent`,
+    /// Bukkit's `PlayerRespawnEvent.setRespawnLocation`), once the Respawn click came and before
+    /// they are placed: `dimension` (`minecraft:overworld`...) and `pos` are their respawn point
+    /// (their bed or anchor block's top, a forced point, else the world spawn) and `yaw`,
+    /// `pitch` the look they get (0, 0). A point the mods leave alone is resolved as vanilla's
+    /// is: the free spot beside the bed or anchor, the world spawn's free column, in another
+    /// level once it has loaded. Change the dimension or the position and the player is placed
+    /// exactly there, with no bed or anchor used and no spot looked for; a dimension the server
+    /// does not have, or a position that is not finite, leaves that part as it was. On a LAN
+    /// host's world (not a dedicated server) the level is the Overworld whatever is set. No
+    /// player's state is swapped in, and the hub is out of `self.lan`, so `native_tell` reaches
+    /// nobody here. Server-side. @API:player_respawn_position@.
+    pub(super) fn native_player_respawn_position(
+        &mut self,
+        player: u128,
+        name: &str,
+        dimension: &mut String,
+        pos: &mut [f64; 3],
+        yaw: &mut f32,
+        pitch: &mut f32,
+    ) {
+        mod_api::dispatch_player_respawn_position(
+            self,
+            mod_api::mods(),
+            player,
+            name,
+            dimension,
+            pos,
+            yaw,
+            pitch,
+        );
+    }
     /// A click in a menu a mod opened (`native_open_menu`), which moved
     /// nothing: the menu's `slot` (its own first, then the player's
     /// inventory, `native_menu_inventory_slot`; -999 outside), the `button`
