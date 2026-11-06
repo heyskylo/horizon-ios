@@ -702,6 +702,12 @@ pub fn tick(
         if horse {
             super::equine::tail_tick(m);
         }
+        // LivingEntity.aiStep: without AI there is no serverAiStep and no
+        // travel, but the motion below 0.003 is still dropped and
+        // pushEntities still runs, so a NoAI mob pushes what it overlaps
+        // (and is pushed back by its own push).
+        drop_tiny_motion(m);
+        push_entities(m, w, events);
         ageable_step(m, w, level_random, events);
         animal_step(m, events);
         if m.species() == Species::Chicken {
@@ -1596,12 +1602,7 @@ fn ai_step(m: &mut Mob, w: &MobWorld, level_random: &mut LegacyRandom, events: &
     if m.ai.no_jump_delay > 0 {
         m.ai.no_jump_delay -= 1;
     }
-    let v = m.velocity;
-    m.velocity = Vec3::new(
-        if v.x.abs() < 0.003 { 0.0 } else { v.x },
-        if v.y.abs() < 0.003 { 0.0 } else { v.y },
-        if v.z.abs() < 0.003 { 0.0 } else { v.z },
-    );
+    drop_tiny_motion(m);
     m.ai.xxa *= 0.98;
     m.ai.zza *= 0.98;
     // LivingEntity.isImmobile: no goals or input (a biting, stunned or
@@ -1695,6 +1696,16 @@ fn root_vehicle(w: &MobWorld, id: u32, vehicle: Option<u32>) -> u32 {
         next = w.seen(v).and_then(|s| s.vehicle);
     }
     root
+}
+/// `LivingEntity.aiStep`, with or without AI: a mob's motion below 0.003 on an
+/// axis stops.
+fn drop_tiny_motion(m: &mut Mob) {
+    let v = m.velocity;
+    m.velocity = Vec3::new(
+        if v.x.abs() < 0.003 { 0.0 } else { v.x },
+        if v.y.abs() < 0.003 { 0.0 } else { v.y },
+        if v.z.abs() < 0.003 { 0.0 } else { v.z },
+    );
 }
 /// LivingEntity.pushEntities: every pushable entity overlapping the box is
 /// pushed apart from this one (`doPush(e)` = `e.push(this)`); pushes of other
@@ -2006,7 +2017,7 @@ fn species_ai_step(
         Species::Wolf => super::tame::ai_step(m, w, events),
         Species::Cat => super::tame::cat_ai_step(m, events),
         Species::Blaze => super::nether::blaze_ai_step(m, events),
-        Species::IronGolem => super::golem::iron_ai_step(m),
+        Species::IronGolem => super::golem::iron_ai_step(m, w),
         Species::Piglin | Species::PiglinBrute | Species::Hoglin => {
             super::piglin::ai_step(m, w, level_random, events)
         }
@@ -2606,16 +2617,12 @@ pub fn after_hurt(m: &mut Mob, source: &Damage) {
         | Species::Drowned
         | Species::ZombieVillager
         | Species::ZombifiedPiglin => super::undead::after_hurt(m, source),
-        // NeutralMob: an iron golem hit by the player stays angry a while.
         // PiglinAi.wasHurtBy: drop what is being admired, no admiring for
         // a while after a player's hit, and anger.
         Species::Piglin if source.attacker == Some(Who::Player) => {
             super::piglin::stop_admiring(m);
             m.extra.egg_time = 400;
             m.extra.anger = 600;
-        }
-        Species::IronGolem if source.attacker == Some(Who::Player) => {
-            m.extra.anger = 400 + m.random.next_int_bound(380).unwrap_or(0);
         }
         _ => {}
     }
@@ -2826,16 +2833,9 @@ pub fn forgive_dead_player(m: &mut Mob) {
                 m.ai.target = None;
             }
         }
-        // The iron golem keeps a timer and its target (the hurt-by goal
-        // after a player's hit).
-        Species::IronGolem => {
-            if m.extra.anger > 0 && m.ai.target == Some(Who::Player) {
-                m.ai.last_hurt_by = None;
-                m.ai.last_hurt_by_time = m.age as i32;
-                m.extra.anger = 0;
-                m.ai.target = None;
-            }
-        }
+        // The iron golem keeps its anger's target as a wolf does
+        // (`tame::update_persistent_anger`): `playerDied` ends the anger at
+        // that player whether or not it is the golem's target now.
         _ => super::tame::forgive_dead_player(m),
     }
 }
@@ -4209,20 +4209,26 @@ mod forgiveness_tests {
     }
 
     /// The iron golem's anger is a timer and its target: the dying player
-    /// they were hurt by ends both, and anger at another mob stays.
+    /// it is angry at ends both (`NeutralMob.playerDied`), even once the golem
+    /// has lost sight of them, and anger at another mob stays.
     #[test]
     fn an_iron_golems_timer_and_target_end_together() {
-        let mut golem = mob(Species::IronGolem);
-        golem.extra.anger = 300;
-        golem.ai.target = Some(Who::Player);
-        golem.ai.last_hurt_by = Some(Who::Player);
-        forgive_dead_player(&mut golem);
-        assert_eq!(golem.extra.anger, 0);
-        assert_eq!(golem.ai.target, None);
-        assert_eq!(golem.ai.last_hurt_by, None);
+        for target in [Some(Who::Player), None] {
+            let mut golem = mob(Species::IronGolem);
+            golem.extra.anger = 300;
+            golem.extra.angry_at = Some(Who::Player);
+            golem.ai.target = target;
+            golem.ai.last_hurt_by = Some(Who::Player);
+            forgive_dead_player(&mut golem);
+            assert_eq!(golem.extra.anger, 0, "{target:?}");
+            assert_eq!(golem.extra.angry_at, None, "{target:?}");
+            assert_eq!(golem.ai.target, None, "{target:?}");
+            assert_eq!(golem.ai.last_hurt_by, None, "{target:?}");
+        }
 
         let mut golem = mob(Species::IronGolem);
         golem.extra.anger = 300;
+        golem.extra.angry_at = Some(Who::Mob(7));
         golem.ai.target = Some(Who::Mob(7));
         forgive_dead_player(&mut golem);
         assert_eq!(golem.extra.anger, 300, "anger at another mob stays");

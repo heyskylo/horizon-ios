@@ -343,8 +343,32 @@ impl<const N: usize> Codec<String> for StrN<N> {
         w.string(v)
     }
 }
-/// Identifier.STREAM_CODEC: a resource location string.
-pub type Ident = StrN<32767>;
+/// Identifier.STREAM_CODEC: a validated resource location, with the default namespace.
+pub struct Ident;
+impl Codec<String> for Ident {
+    fn read(r: &mut Reader) -> Result<String> {
+        let value = r.string(32767)?;
+        let (namespace, path) = value.split_once(':').unwrap_or(("", &value));
+        let namespace = if namespace.is_empty() {
+            "minecraft"
+        } else {
+            namespace
+        };
+        if !namespace
+            .bytes()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"_.-".contains(&c))
+            || !path
+                .bytes()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"/_.-".contains(&c))
+        {
+            return Err(Error::new("invalid resource identifier"));
+        }
+        Ok(format!("{namespace}:{path}"))
+    }
+    fn write(v: &String, w: &mut Writer) {
+        w.string(v)
+    }
+}
 /// VarInt-prefixed bytes.
 pub struct Bytes;
 impl Codec<Vec<u8>> for Bytes {

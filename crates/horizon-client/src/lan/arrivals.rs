@@ -2,7 +2,8 @@
 //! player read out of this one and sent away: the control endpoint's
 //! `player-expect`, `player-drop`, `player-export`, `player-release` and
 //! `player-confirm` (`game/dedicated/transfer.rs` runs them; `player-import` is
-//! `import.rs`'s).
+//! `import.rs`'s), and `transfer-status`, the counts a proxy reads before it sends
+//! players here.
 //!
 //! A proxy that moves a player between two servers first tells the target
 //! server who is coming (`player-expect <uuid>`); the player's next login is then
@@ -214,6 +215,14 @@ impl Expectations {
     /// yet swept).
     pub fn len(&self) -> usize {
         self.until.len()
+    }
+
+    /// How many expectations are still alive at `now`, without sweeping the others.
+    pub fn alive(&self, now: Instant) -> usize {
+        self.until
+            .values()
+            .filter(|deadline| now < **deadline)
+            .count()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -541,6 +550,29 @@ pub fn expect_request(hub: &mut Hub, args: &str, now: Instant) -> serde_json::Va
         }),
         Err(ExpectError::Full) => error("too many players are expected at once"),
     }
+}
+
+/// `transfer-status`: what a proxy reads before it sends players here. The players placed, held
+/// and expected, the hand-overs under way, the places taken (what the player limit counts: the
+/// placed, the held and the logins still joining) and the limit, and whether a login would be
+/// refused as full. Counts only: no name, no unique id.
+pub fn status_request(hub: &Hub, now: Instant) -> serde_json::Value {
+    let Some(transfers) = &hub.transfers else {
+        return error(OFF);
+    };
+    let count =
+        |keep: fn(&super::guest::Guest) -> bool| hub.guests.iter().filter(|g| keep(g)).count();
+    let (online, max_players) = (hub.lan.shared.online(), hub.lan.shared.max_players());
+    serde_json::json!({
+        "ok": true,
+        "players": count(|g| g.placed && !g.released),
+        "held": count(|g| g.held),
+        "expected": transfers.table().alive(now),
+        "frozen": count(|g| g.handover.is_some() && !g.released),
+        "online": online,
+        "max_players": max_players,
+        "full": online >= max_players,
+    })
 }
 
 /// `player-drop <uuid> [hand-over]`: forgets the expectation of that player, and
@@ -1289,6 +1321,72 @@ mod hub_tests {
             None
         );
         assert_eq!(super::parse_uuid(""), None);
+    }
+
+    /// `transfer-status` counts each kind of player once, takes the places from the player limit's
+    /// own count, and says the server is full once every place is taken.
+    #[test]
+    fn transfer_status_counts_the_players_and_the_places() {
+        let mut hub = hub();
+        let now = Instant::now();
+        assert_eq!(
+            super::status_request(&hub, now),
+            serde_json::json!({"ok": true, "players": 0, "held": 0, "expected": 0, "frozen": 0,
+                "online": 0, "max_players": 4, "full": false})
+        );
+        let (mut placed, _a) = guest(1, 1, "Placed");
+        placed.placed = true;
+        let (mut frozen, _b) = guest(2, 2, "Frozen");
+        frozen.placed = true;
+        frozen.handover = Some(super::Handover {
+            id: 7,
+            since: 0,
+            record: serde_json::Value::Null,
+        });
+        let (mut held, _c) = guest(3, 3, "Held");
+        held.held = true;
+        // Moved to another server, and on its way out.
+        let (mut gone, _d) = guest(4, 4, "Gone");
+        gone.placed = true;
+        gone.released = true;
+        hub.guests.extend([placed, frozen, held, gone]);
+        table(&hub).expect(5, Duration::from_secs(10), now).unwrap();
+        // A login takes its place on the network thread (`try_admit`): three logins here.
+        let address = "127.0.0.1:25565".parse().unwrap();
+        for uuid in 1..=3 {
+            assert!(hub.lan.shared.try_admit(address, uuid, "p").is_none());
+        }
+        assert_eq!(
+            super::status_request(&hub, now),
+            serde_json::json!({"ok": true, "players": 2, "held": 1, "expected": 1, "frozen": 1,
+                "online": 3, "max_players": 4, "full": false})
+        );
+        assert!(hub.lan.shared.try_admit(address, 6, "p").is_none());
+        let status = super::status_request(&hub, now);
+        assert_eq!(status["online"], 4);
+        assert_eq!(status["full"], true);
+        // An expectation past its time is not counted, though nothing swept it yet.
+        let later = super::status_request(&hub, now + Duration::from_secs(11));
+        assert_eq!(later["expected"], 0);
+        assert_eq!(table(&hub).len(), 1);
+    }
+
+    /// With `[transfer]` off it is refused like every request of a proxy, and its answer never
+    /// names a player.
+    #[test]
+    fn transfer_status_names_no_player_and_is_off_with_transfers() {
+        let mut hub = hub();
+        let (mut alex, _rx) = guest(1, UUID_N, "Alex");
+        alex.placed = true;
+        hub.guests.push(alex);
+        let text = super::status_request(&hub, Instant::now()).to_string();
+        let uuid = horizon_protocol::crypto::uuid_string(UUID_N);
+        assert!(!text.contains("Alex") && !text.contains(&uuid), "{text}");
+        hub.transfers = None;
+        assert_eq!(
+            super::status_request(&hub, Instant::now()),
+            serde_json::json!({ "error": super::OFF })
+        );
     }
 
     #[test]

@@ -380,6 +380,7 @@ impl Game<'_> {
                         | "minecraft:small_fireball"
                         | "minecraft:wind_charge"
                         | "minecraft:breeze_wind_charge"
+                        | "minecraft:wither_skull"
                         | "minecraft:snowball"
                         | "minecraft:egg"
                         | "minecraft:ender_pearl"
@@ -893,11 +894,16 @@ impl Game<'_> {
         }
         riders
     }
-    /// The mobs riding entity `id` under `tag`'s `Passengers`, after the
-    /// passengers it kept from loading.
+    /// `Entity.shouldBeSaved`: the mobs riding entity `id` under `tag`'s
+    /// `Passengers`, after the passengers it kept from loading. Discarded
+    /// passengers cannot save even before their list entry is swept.
     pub(super) fn put_mob_passengers(&mut self, tag: &mut Tag, id: u32) {
         let mut riders: Vec<usize> = (0..self.mobs.len())
-            .filter(|&j| self.mobs[j].extra.mount == Some(id) && self.mobs[j].alive())
+            .filter(|&j| {
+                self.mobs[j].extra.mount == Some(id)
+                    && self.mobs[j].alive()
+                    && !self.mobs[j].removed
+            })
             .collect();
         if let Some(driver) = self
             .mobs
@@ -1162,9 +1168,12 @@ impl Game<'_> {
             -1
         };
         self.mobs[i].extra.angry_at = if anger > 0 {
-            // A wolf keeps its anger's target itself, also once the target
-            // is gone (`tame::update_persistent_anger`).
-            if self.mobs[i].species() == horizon_client::mobs::Species::Wolf {
+            // A wolf and an iron golem keep their anger's target themselves,
+            // also once the target is gone (`tame::update_persistent_anger`).
+            if matches!(
+                self.mobs[i].species(),
+                horizon_client::mobs::Species::Wolf | horizon_client::mobs::Species::IronGolem
+            ) {
                 self.mobs[i].extra.angry_at
             } else {
                 self.mobs[i].ai.target
@@ -1172,6 +1181,14 @@ impl Game<'_> {
         } else {
             None
         };
+        // A mob gets its UUID when it is first saved (`uuid_for`): the anger
+        // target still in the world gets it now, so `uuid_of` can name it.
+        if let Some(horizon_client::mobs::Who::Mob(target)) = self.mobs[i].extra.angry_at
+            && target != 0
+            && self.mobs.iter().any(|m| m.id == target)
+        {
+            self.uuid_for(target);
+        }
         let mut tag = entity_nbt::mob_to_nbt(
             &self.mobs[i],
             uuid,
@@ -2308,6 +2325,67 @@ mod tests {
         assert!(take_fresh(&mut fresh));
         assert!(!take_fresh(&mut fresh));
         assert_eq!(fresh, Tag::Compound(Default::default()));
+    }
+
+    /// `NeutralMob.addPersistentAngerSaveData` names the mob the anger is at,
+    /// also one never saved yet (a mob gets its UUID when it is first saved).
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn anger_at_a_mob_not_saved_yet_names_it() {
+        use crate::game::{Audio, Options, Progress, Settings, load_resources};
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        let types = game.res.mob_types();
+        let golem = horizon_client::mobs::Mob::new(
+            1,
+            types.get("minecraft:iron_golem").unwrap().clone(),
+            Vec3::ZERO,
+            0.0,
+        );
+        let zombie = horizon_client::mobs::Mob::new(
+            2,
+            types.get("minecraft:zombie").unwrap().clone(),
+            Vec3::new(3.0, 0.0, 0.0),
+            0.0,
+        );
+        game.mobs.push(golem);
+        game.mobs.push(zombie);
+        game.mobs[0].extra.anger = 400;
+        game.mobs[0].extra.angry_at = Some(horizon_client::mobs::Who::Mob(2));
+        assert_eq!(game.persist.uuid_of(2), None);
+        let tag = game.mob_tree_nbt(0);
+        let Some(Tag::IntArray(named)) = tag.get("angry_at") else {
+            panic!("no angry_at in {tag:?}");
+        };
+        assert_eq!(
+            Some(named.as_slice()),
+            game.persist.uuid_of(2).as_ref().map(|u| &u[..])
+        );
     }
 }
 #[cfg(test)]
