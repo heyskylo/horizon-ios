@@ -525,6 +525,118 @@ fn tooltip_render_pre_intercepts_rendering_and_draws_gui_items() {
     );
 }
 
+/// #10563: a right-click on an entity hears the point clicked before the
+/// entity's own interact; a claim ends it before the mods after.
+#[test]
+fn entity_interact_specific_hears_the_click_point_and_a_claim_ends_it() {
+    use horizon_client::items::ItemStack;
+    use horizon_client::mod_api::{
+        EntityInteractSpecificEvent, Flow, dispatch_entity_interact_specific,
+    };
+    use std::sync::{Arc, Mutex};
+
+    struct TestHost;
+    impl Host for TestHost {}
+
+    #[derive(Default)]
+    struct Log {
+        calls: Vec<(String, i32, String, [f64; 3])>,
+    }
+
+    struct Recorder {
+        name: String,
+        log: Arc<Mutex<Log>>,
+    }
+    impl Hooks for Recorder {
+        fn entity_interact_specific(
+            &self,
+            _host: &mut dyn Host,
+            event: &mut EntityInteractSpecificEvent<'_>,
+        ) -> Flow {
+            self.log.lock().unwrap().calls.push((
+                self.name.clone(),
+                event.entity,
+                event.kind.to_string(),
+                event.location,
+            ));
+            Flow::Continue
+        }
+    }
+
+    struct Claims;
+    impl Hooks for Claims {
+        fn entity_interact_specific(
+            &self,
+            _host: &mut dyn Host,
+            _event: &mut EntityInteractSpecificEvent<'_>,
+        ) -> Flow {
+            Flow::Cancel
+        }
+    }
+
+    let held = ItemStack::new("minecraft:stick", 1);
+
+    // No claim: both mods hear the call in order, and the second sees the
+    // entity, kind and point the caller passed.
+    let log = Arc::new(Mutex::new(Log::default()));
+    let mods: Vec<Box<dyn Hooks>> = vec![
+        Box::new(Recorder {
+            name: "first".into(),
+            log: log.clone(),
+        }),
+        Box::new(Recorder {
+            name: "second".into(),
+            log: log.clone(),
+        }),
+    ];
+    let mut host = TestHost;
+    let mut claimed = false;
+    dispatch_entity_interact_specific(
+        &mut host,
+        &mods,
+        7,
+        "minecraft:cow",
+        Some(&held),
+        [0.25, 1.5, -0.125],
+        &mut claimed,
+    );
+    assert!(!claimed, "no mod claimed the click");
+    let calls = log.lock().unwrap();
+    assert_eq!(calls.calls.len(), 2, "both mods heard the click");
+    assert_eq!(calls.calls[0].0.as_str(), "first");
+    assert_eq!(calls.calls[1].0.as_str(), "second");
+    assert_eq!(calls.calls[1].1, 7);
+    assert_eq!(calls.calls[1].2.as_str(), "minecraft:cow");
+    assert_eq!(calls.calls[1].3, [0.25, 1.5, -0.125]);
+    drop(calls);
+
+    // A claim stops later mods and sets `claimed`.
+    let log = Arc::new(Mutex::new(Log::default()));
+    let mods: Vec<Box<dyn Hooks>> = vec![
+        Box::new(Claims),
+        Box::new(Recorder {
+            name: "second".into(),
+            log: log.clone(),
+        }),
+    ];
+    let mut host = TestHost;
+    let mut claimed = false;
+    dispatch_entity_interact_specific(
+        &mut host,
+        &mods,
+        7,
+        "minecraft:cow",
+        Some(&held),
+        [0.25, 1.5, -0.125],
+        &mut claimed,
+    );
+    assert!(claimed, "the first mod claimed the click");
+    assert!(
+        log.lock().unwrap().calls.is_empty(),
+        "the second mod was skipped"
+    );
+}
+
 #[test]
 fn a_screen_background_hook_can_cancel_vanilla_gradient() {
     use horizon_client::mod_api::{
