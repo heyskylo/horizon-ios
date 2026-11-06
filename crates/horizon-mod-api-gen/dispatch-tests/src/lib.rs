@@ -64,6 +64,11 @@ mod tests {
         pub(super) struct ModContainer;
         pub(super) struct MerchantOffer;
         pub(super) struct ModFluidTanks;
+        #[derive(Clone, Copy)]
+        pub(super) struct NativeFluidAction;
+        pub(super) struct NativeFluidDrain;
+        pub(super) struct NativeFluidStack;
+        pub(super) struct NativeFluidTankView;
         pub(super) struct ModEnergyBuffer;
         pub(super) struct Mob;
         pub(super) struct LootStack;
