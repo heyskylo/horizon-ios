@@ -120,7 +120,13 @@ mod drop_motion_tests {
                 [
                     -4627867408251048793,
                     4597245257657090048,
-                    4597448471913462163,
+                    // Vanilla's `Math.sin` is HotSpot's intrinsic, which rounds this
+                    // one a bit lower on AArch64 than on x86-64 (`jmath`).
+                    if cfg!(target_arch = "aarch64") {
+                        4597448471913462162
+                    } else {
+                        4597448471913462163
+                    },
                 ],
             ),
             (
