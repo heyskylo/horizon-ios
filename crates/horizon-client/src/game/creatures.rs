@@ -863,6 +863,7 @@ impl Game<'_> {
             others_grid: None,
             others_index: None,
             others_villagers: None,
+            others_solid: None,
             daylight: self.dim != Dim::Nether && self.sky_darken() < 4,
             // day.json: false from tick 12542, true from 23460 (a step track).
             monsters_burn: self.dim == Dim::Overworld
@@ -1075,10 +1076,14 @@ impl Game<'_> {
             // id answers, as a scan would.
             let mut index = horizon_client::fast_hash::FxHashMap::<u32, u32>::default();
             let mut villager_slots = Vec::new();
+            let mut solid_slots = Vec::new();
             for (i, s) in snapshot.iter().enumerate() {
                 index.entry(s.id).or_insert(i as u32);
                 if s.species == horizon_client::mobs::Species::Villager {
                     villager_slots.push(i as u32);
+                }
+                if s.may_block_mobs() {
+                    solid_slots.push(i as u32);
                 }
             }
             laps.lap("creature_prepare");
@@ -1118,6 +1123,7 @@ impl Game<'_> {
                         others_grid: Some(&grid),
                         others_index: Some(&index),
                         others_villagers: Some(&villager_slots),
+                        others_solid: Some(&solid_slots),
                         nearest_player,
                         player: None,
                         teams: std::sync::Arc::clone(&base.teams),
@@ -1181,6 +1187,7 @@ impl Game<'_> {
                     others_grid: Some(&grid),
                     others_index: Some(&index),
                     others_villagers: Some(&villager_slots),
+                    others_solid: Some(&solid_slots),
                     difficulty,
                     nearest_player,
                     player: active_player,
@@ -8360,6 +8367,7 @@ mod pearl_tests {
             others_grid: None,
             others_index: None,
             others_villagers: None,
+            others_solid: None,
             daylight: true,
             monsters_burn: false,
             game_time: 1000,
