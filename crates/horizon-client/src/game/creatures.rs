@@ -124,6 +124,17 @@ pub(super) struct Creatures {
     /// Particles from a guest's turn, waiting for it to end.
     pub lan_particles: Vec<super::lan_particles::QueuedParticle>,
 }
+/// Whether `p`'s next step goes from inside the world border (`bounds`: [minX, minZ, maxX,
+/// maxZ]) to outside it, as `clip_including_border` would stop it.
+fn border_crossing(p: &Projectile, bounds: Option<[f64; 4]>) -> bool {
+    let Some([min_x, min_z, max_x, max_z]) = bounds else {
+        return false;
+    };
+    let within = |x: f64, z: f64| x >= min_x && x < max_x && z >= min_z && z < max_z;
+    let (at, v) = (p.position, p.velocity);
+    within(at.x, at.z) && !within(at.x + v.x, at.z + v.z)
+}
+
 pub(super) struct ProjWorld<'a, 'w> {
     pub w: &'a MobWorld<'w>,
     pub targets: Vec<(Who, Aabb)>,
@@ -4053,6 +4064,7 @@ impl Game<'_> {
                 Vec::new()
             };
             let border = Some(self.border.bounds());
+            let dimension = self.dim.id();
             let pw = ProjWorld {
                 w: &w,
                 targets,
@@ -4097,6 +4109,23 @@ impl Game<'_> {
                     keep_flags[i] = false;
                     continue;
                 }
+                // MC-310476: the mods may let a thrown projectile through the world border.
+                let through = p.arrow.is_none() && !p.stuck && border_crossing(p, border) && {
+                    let (at, v) = (p.position, p.velocity);
+                    let (mut pos, mut velocity) = ([at.x, at.y, at.z], [v.x, v.y, v.z]);
+                    let mut collide = true;
+                    let kind = p.kind.id();
+                    let (vel, c) = (&mut velocity, &mut collide);
+                    Self::native_projectile_world_border(dimension, p.id, kind, &mut pos, vel, c);
+                    if pos.iter().chain(&velocity).all(|v| v.is_finite())
+                        && (pos != [at.x, at.y, at.z] || velocity != [v.x, v.y, v.z])
+                    {
+                        p.position = Vec3::new(pos[0], pos[1], pos[2]);
+                        p.velocity = Vec3::new(velocity[0], velocity[1], velocity[2]);
+                        p.needs_sync = true;
+                    }
+                    !collide
+                };
                 // The projectile as it was, to fly on if a mod cancels its impact.
                 let before = (hear && !p.stuck).then(|| p.clone());
                 let mob_shot = !matches!(p.owner, Some(Who::Player));
@@ -4127,6 +4156,16 @@ impl Game<'_> {
                         targets.extend(winds);
                         horizon_client::arrows::tick(p, &scene, &targets)
                     }
+                    // Through the border: this tick's ray does not stop on it.
+                    (false, with_guests, true) if through => p.tick(&ProjWorld {
+                        w: pw.w,
+                        targets: if with_guests {
+                            pw_guests.targets.clone()
+                        } else {
+                            pw.targets.clone()
+                        },
+                        border: None,
+                    }),
                     (false, false, true) => p.tick(&pw),
                     (false, true, true) => p.tick(&pw_guests),
                     (false, pvp_shot, false) => {
@@ -4139,7 +4178,7 @@ impl Game<'_> {
                         p.tick(&ProjWorld {
                             w: if pvp_shot { pw_guests.w } else { pw.w },
                             targets,
-                            border,
+                            border: border.filter(|_| !through),
                         })
                     }
                 };
@@ -5261,6 +5300,9 @@ impl Game<'_> {
                         pl.velocity = Vec3::ZERO;
                         pl.fall_distance = 0.0;
                         pl.teleported = true;
+                    }
+                    if self.lan_acting.is_some() {
+                        horizon_client::lan::hub::teleport_cause(Some("ender_pearl"));
                     }
                     self.previous_position = to;
                     if damage > 0.0 {

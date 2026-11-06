@@ -1087,7 +1087,15 @@ impl Game<'_> {
                     passengers: Vec::new(),
                 }));
             }
+            // What moved them in their turn, for `native_player_teleport`.
+            let cause = horizon_client::lan::hub::teleport_cause(None);
             if g.vehicle.is_none() && (moved > 0.0001 || turned || teleported) {
+                let other = if left_vehicle.is_some() {
+                    "dismount"
+                } else {
+                    "unknown"
+                };
+                horizon_client::lan::hub::teleport_cause(Some(cause.unwrap_or(other)));
                 host.hub.teleport(i, Some(at));
             } else if teleported {
                 // ServerPlayer.startRiding and an asPassenger transition also
@@ -3045,6 +3053,7 @@ impl Game<'_> {
                     at,
                     rotation: Some([yaw, pitch]),
                     vehicle: None,
+                    cause: Some("spectate"),
                 });
             return;
         }
@@ -3053,6 +3062,7 @@ impl Game<'_> {
         // A new body there: no fall distance or motion carried over, but the
         // player's attributes (ServerPlayer.teleport keeps the entity).
         g.new_body(true);
+        horizon_client::lan::hub::teleport_cause(Some("spectate"));
         host.hub.teleport(gi, Some(at));
     }
     fn guest_tick_death(&mut self, host: &mut LanHost, gi: usize) {
@@ -3813,11 +3823,11 @@ impl Game<'_> {
             .respawn_elsewhere
             .as_ref()
             .map(RespawnConfig::from_saved);
-        let elsewhere = own.filter(|_| server);
+        let mut elsewhere = own.filter(|_| server);
         // In the window's world a guest has no level of its own to wait in:
         // its bed is resolved at once when its chunk is there, else it
         // comes back on the bed.
-        let in_frame_bed = own.filter(|c| !server && c.dim == super::Dim::Overworld);
+        let mut in_frame_bed = own.filter(|c| !server && c.dim == super::Dim::Overworld);
         let spawn = in_frame_bed.map_or(spawn, |c| {
             [
                 f64::from(c.pos[0]) + 0.5,
@@ -3825,14 +3835,34 @@ impl Game<'_> {
                 f64::from(c.pos[2]) + 0.5,
             ]
         });
-        let level = elsewhere.map_or(super::Dim::Overworld, |c| c.dim);
-        let spawn = elsewhere.map_or(spawn, |c| {
+        let mut level = elsewhere.map_or(super::Dim::Overworld, |c| c.dim);
+        let mut spawn = elsewhere.map_or(spawn, |c| {
             [
                 f64::from(c.pos[0]) + 0.5,
                 f64::from(c.pos[1]),
                 f64::from(c.pos[2]) + 0.5,
             ]
         });
+        // PlayerRespawnPositionEvent: a point the mods choose is taken as it is.
+        let (mut dimension, mut at, mut rotation) = (level.id().to_owned(), spawn, [0.0f32; 2]);
+        let (uuid, name) = (host.hub.guests[i].uuid, host.hub.guests[i].name.clone());
+        let [yaw, pitch] = &mut rotation;
+        self.native_player_respawn_position(uuid, &name, &mut dimension, &mut at, yaw, pitch);
+        let known = super::Dim::from_id(&dimension).id() == dimension;
+        let moved = at != spawn && at.iter().all(|v| v.is_finite());
+        let chosen = (known && dimension != level.id()) || moved;
+        if chosen {
+            (elsewhere, in_frame_bed) = (None, None);
+            if known && server {
+                level = super::Dim::from_id(&dimension);
+            }
+            if moved {
+                spawn = at;
+            }
+        }
+        if !rotation.iter().all(|v| v.is_finite()) {
+            rotation = [0.0; 2];
+        }
         let back = self.dim;
         let left = super::Dim::from_id(&host.hub.guests[i].dimension);
         let away = server && host.hub.guests[i].dimension != level.id();
@@ -3888,7 +3918,7 @@ impl Game<'_> {
             border: &self.border,
             streaming: Some(&self.streaming),
         };
-        host.hub.respawn(i, spawn, &ctx);
+        host.hub.respawn(i, spawn, rotation, &ctx);
         // ServerGamePacketListenerImpl.handleClientCommand: a hardcore world's
         // respawned player only watches.
         if self.level.hardcore {
@@ -3907,7 +3937,7 @@ impl Game<'_> {
         }
         if let Some(config) = elsewhere {
             self.respawn_trip(conn, config);
-        } else if in_frame_bed.is_none() && host.hub.guests[i].spawn.is_none() {
+        } else if !chosen && in_frame_bed.is_none() && host.hub.guests[i].spawn.is_none() {
             // TeleportTransition.createDefault: no point of its own, so the
             // world spawn's free column once its chunks have loaded.
             self.world_spawn_trip(conn);

@@ -2721,6 +2721,43 @@ server's command tree ask. Without such a mod every answer is the operator level
   yours over `range`. No player's state is swapped in and the server's players are out of reach
   (`native_server_players` gives none). Bundles need `"hooks": @API:tab_complete_v2@`.
 
+#### Server hooks for plugin ports: Movement and teleports
+
+Hooks before players and projectiles move, so a port can stop or redirect a move instead of sending the player back a
+tick later with a command.
+
+- **`native_player_move(player, name, from, to, yaw, pitch, on_ground, cancel)`**: a server player's position or look
+  packet that changed either and passed the server's checks (moved too quickly, moved wrongly, the anticheat), before
+  it is applied (Bukkit's `PlayerMoveEvent`). `from` and `to` are the feet before and after. Set `cancel` and the
+  player is sent back to `from`; change `to` and they are put there instead (not checked against the blocks) and their
+  client gets a teleport there. Not heard: riders, sleepers, moves while a teleport waits for its answer, teleports.
+  Once a move, inside the packet's handling: keep it cheap. No `self`, no state swapped in. Server-side.
+- **`native_player_teleport(player, name, cause, from_dimension, from, to_dimension, to, relative, cancel)`**: a server
+  player is about to be teleported, before their client hears it (Bukkit's `PlayerTeleportEvent`, NeoForge's
+  `EntityTeleportEvent`). `cause` is `command`, `ender_pearl`, `chorus_fruit`, `spectate` (the spectator teleport
+  menu), `dismount` or `unknown` (another server move of the player). `to_dimension` differs from `from_dimension` only
+  for a `command` or `spectate` teleport into another level. Change `to` and they go there instead; set `cancel` and
+  they stay where they are. Within a level `relative` is the position packet's flags: a mod may set or clear the look and motion bits (8, 16,
+  32, 64, 128, 256; 0x1f8 keeps a pearl's speed as 26.2 did), the position bits are ignored; into another level it is
+  not used. Not heard: portals and End gateways (their own hooks), respawns, a rider its vehicle carries, waking from a
+  bed, a move the server's checks send back, the spectator camera. No `self`, no state swapped in. Server-side.
+- **`native_player_respawn_position(player, name, dimension, pos, yaw, pitch)`**: a dead player is about to respawn
+  (NeoForge's `PlayerRespawnPositionEvent`, Bukkit's `PlayerRespawnEvent.setRespawnLocation`), before they are placed:
+  their respawn point (a bed or anchor block's top, a forced point, else the world spawn) and the look they get (0, 0).
+  Left alone, the point is resolved as vanilla's is (the spot beside the bed, the world spawn's free column). Change the
+  dimension or position and they are placed exactly there, no bed or anchor used; an unknown dimension or a non-finite
+  value leaves that part as it was. On a LAN host's world the level stays the Overworld. No state swapped in.
+- **`native_trample(dimension, entity, kind, pos, fall_distance, cancel)`**: a player or mob (`entity` its network id,
+  `kind` its type) that fell `fall_distance` onto the farmland at `pos` is about to turn it to dirt, past vanilla's
+  chance and checks (NeoForge's `FarmlandTrampleEvent`, Bukkit's `PlayerInteractEvent` `PHYSICAL` and
+  `EntityInteractEvent`). Set `cancel` and the farmland and its crop stay; the fall damage is taken either way. Pressure
+  plates, tripwires and other blocks a player sets off by touching them are not heard yet. No `self`. Server-side.
+- **`native_projectile_world_border(dimension, entity, kind, pos, velocity, collide)`**: a thrown projectile (pearl,
+  snowball, egg, potion...) inside the world border whose next step would end outside it, before 26.3 stops it on the
+  border like a wall (MC-310476). A mod may change `pos` and `velocity`, or set `collide` false and it flies through
+  this tick as before 26.3. Arrows and tridents, which Horizon does not stop at the border, are not heard. No `self`.
+  Server-side.
+
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a

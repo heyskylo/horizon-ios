@@ -99,6 +99,29 @@ pub struct BodyFlags {
     pub glowing: bool,
 }
 
+/// The game's native movement hook (`native_player_move`), set once by the game: player, name,
+/// from, to (which it may change), yaw, pitch, on_ground and cancel.
+pub type MoveHook = fn(u128, &str, [f64; 3], &mut [f64; 3], f32, f32, bool, &mut bool);
+pub static PLAYER_MOVE: std::sync::OnceLock<MoveHook> = std::sync::OnceLock::new();
+
+/// The game's native teleport hook (`native_player_teleport`), set once by the game: player,
+/// name, cause, from dimension, from, to dimension, to, relative flags and cancel.
+pub type TeleportHook =
+    fn(u128, &str, &str, &str, [f64; 3], &str, &mut [f64; 3], &mut u32, &mut bool);
+pub static PLAYER_TELEPORT: std::sync::OnceLock<TeleportHook> = std::sync::OnceLock::new();
+
+thread_local! {
+    static TELEPORT_CAUSE: std::cell::Cell<Option<&'static str>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Names the cause (`command`, `ender_pearl`...) of the next [`Hub::teleport`] or
+/// [`Hub::teleport_keeping_motion`] on this thread, which `native_player_teleport` then hears,
+/// and gives the one named before. A teleport sent with no cause named is not heard.
+pub fn teleport_cause(cause: Option<&'static str>) -> Option<&'static str> {
+    TELEPORT_CAUSE.replace(cause)
+}
+
 /// Everything the hub needs from the game for one tick.
 pub struct TickCtx<'a> {
     pub world: &'a mut World,
@@ -1882,9 +1905,62 @@ impl Hub {
 
     /// ServerGamePacketListenerImpl.teleport: move the client and wait for its confirmation.
     pub fn teleport(&mut self, i: usize, position: Option<[f64; 3]>) {
+        let Some((position, relatives)) = self.heard_teleport(i, position, 0) else {
+            return;
+        };
         // ServerPlayer.teleportTo: resetFlyingTicks.
         self.guests[i].above_ground_ticks = 0;
-        self.teleport_relative(i, position, 0);
+        self.teleport_relative(i, position, relatives);
+    }
+
+    /// `native_player_teleport` for a teleport of guest `i` whose cause was named
+    /// ([`teleport_cause`]): where it goes and with which relative flags, none when a mod
+    /// canceled it. A rider is not heard: its vehicle carries it.
+    fn heard_teleport(
+        &mut self,
+        i: usize,
+        position: Option<[f64; 3]>,
+        relatives: i32,
+    ) -> Option<(Option<[f64; 3]>, i32)> {
+        let cause = TELEPORT_CAUSE.take();
+        let (Some(cause), Some(hook)) = (cause, PLAYER_TELEPORT.get()) else {
+            return Some((position, relatives));
+        };
+        let g = &self.guests[i];
+        if g.vehicle.is_some() {
+            return Some((position, relatives));
+        }
+        let (from, dimension) = (g.position, g.dimension.as_str());
+        let (mut to, mut relative, mut cancel) =
+            (position.unwrap_or(from), relatives as u32, false);
+        hook(
+            g.uuid,
+            &g.name,
+            cause,
+            dimension,
+            from,
+            dimension,
+            &mut to,
+            &mut relative,
+            &mut cancel,
+        );
+        let at = if cancel {
+            from
+        } else if to.iter().all(|v| v.is_finite()) {
+            to
+        } else {
+            position.unwrap_or(from)
+        };
+        // The body the game moved goes where the player ends up.
+        if at != position.unwrap_or(from)
+            && let Some(m) = self.guests[i].motion.as_mut()
+        {
+            m.position = Vec3::new(at[0], at[1], at[2]);
+        }
+        // Only the look and the motion may be kept: the position is absolute.
+        use play::relative::{DELTA_X, DELTA_Y, DELTA_Z, ROTATE_DELTA, X_ROT, Y_ROT};
+        let kept = (Y_ROT | X_ROT | DELTA_X | DELTA_Y | DELTA_Z | ROTATE_DELTA) as u32;
+        (!cancel).then_some((Some(at), (relative & kept) as i32))
     }
 
     /// `ServerGamePacketListenerImpl.teleport` alone (a refused or too fast
@@ -1896,10 +1972,13 @@ impl Hub {
     /// A teleport to `position` that keeps the player's motion and look
     /// (`Relative.DELTA` and `Relative.ROTATION`: an End gateway's).
     pub fn teleport_keeping_motion(&mut self, i: usize, position: [f64; 3]) {
-        self.guests[i].above_ground_ticks = 0;
         use play::relative::{DELTA_X, DELTA_Y, DELTA_Z, ROTATE_DELTA, X_ROT, Y_ROT};
         let relatives = Y_ROT | X_ROT | DELTA_X | DELTA_Y | DELTA_Z | ROTATE_DELTA;
-        self.teleport_relative(i, Some(position), relatives);
+        let Some((position, relatives)) = self.heard_teleport(i, Some(position), relatives) else {
+            return;
+        };
+        self.guests[i].above_ground_ticks = 0;
+        self.teleport_relative(i, position, relatives);
     }
 
     /// A rider's own teleport when its vehicle is teleported
@@ -4208,6 +4287,33 @@ impl Hub {
                 None => {}
             }
         }
+        // Bukkit's PlayerMoveEvent: the mods hear a move that passed the checks. Canceled, the
+        // player is sent back; moved elsewhere, they are put there and their client told.
+        let (mut to, mut placed) = (to, false);
+        if let Some(hook) = PLAYER_MOVE.get() {
+            let g = &self.guests[i];
+            if to != start || (yaw, pitch) != (g.yaw, g.pitch) {
+                let (mut there, mut cancel) = (to, false);
+                let on_ground = flags & 1 != 0;
+                hook(
+                    g.uuid,
+                    &g.name,
+                    start,
+                    &mut there,
+                    yaw,
+                    pitch,
+                    on_ground,
+                    &mut cancel,
+                );
+                if cancel {
+                    self.resend_teleport(i, Some(start));
+                    return;
+                }
+                if there != to && there.iter().all(|v| v.is_finite()) {
+                    (to, placed) = (there, true);
+                }
+            }
+        }
         // clientIsFloating, from the move that is accepted: no upward-or-level
         // step onto something, nothing but air around the body, and nothing
         // that lets the player hover (the server's allow-flight, mayfly,
@@ -4253,6 +4359,9 @@ impl Hub {
         g.head_yaw = g.yaw;
         g.on_ground = flags & 1 != 0;
         g.ticks = g.ticks.max(1);
+        if placed {
+            self.resend_teleport(i, None);
+        }
     }
 
     /// `ServerGamePacketListenerImpl.noBlocksAround`: every block of the
@@ -4595,7 +4704,8 @@ impl Hub {
     /// PlayerList.respawn: back to `at` with a fresh start. The vanilla client waits on its
     /// level loading screen from the Respawn packet until the level info's "level chunks load
     /// start" event and the chunk under the player, so the packets follow vanilla's order.
-    pub fn respawn(&mut self, i: usize, at: [f64; 3], ctx: &TickCtx) {
+    /// `rotation` is the yaw and pitch they face (vanilla's 0, 0 unless a mod chose others).
+    pub fn respawn(&mut self, i: usize, at: [f64; 3], rotation: [f32; 2], ctx: &TickCtx) {
         let info = self.spawn_info(i, 0);
         self.close_container_for(i);
         let g = &mut self.guests[i];
@@ -4627,8 +4737,7 @@ impl Hub {
         // ServerPlayer.restoreFrom: the game mode again (onUpdateAbilities).
         g.send(&g.abilities());
         // The new player faces the level's respawn direction (snapTo).
-        g.yaw = 0.0;
-        g.pitch = 0.0;
+        [g.yaw, g.pitch] = rotation;
         g.position = at;
         g.previous_position = at;
         g.send(&C::Respawn(play::Respawn {

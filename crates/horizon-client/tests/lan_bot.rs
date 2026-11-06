@@ -1694,7 +1694,7 @@ fn a_respawned_guest_is_immune_until_its_client_loads_the_world() {
         border: &border,
         streaming: None,
     };
-    s.hub.respawn(0, at, &ctx);
+    s.hub.respawn(0, at, [0.0; 2], &ctx);
     assert!(
         !s.hub.guests[0].client_loaded(),
         "a respawn unloads the client"

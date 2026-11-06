@@ -6902,6 +6902,166 @@ impl Game<'_> {
             suggestions,
         );
     }
+    /// A server player's move is about to be applied (Bukkit's `PlayerMoveEvent`): a position
+    /// or look packet that changed either and passed the server's checks (moved too quickly,
+    /// moved wrongly, the anticheat), so `from` and `to` are their feet before and after and
+    /// `yaw`, `pitch` and `on_ground` what the client sent. Set `cancel` and the player is sent
+    /// back to `from` (the client gets a teleport there, as for a refused move). Change `to` and
+    /// they are put there instead, not checked against the blocks, and their client gets a
+    /// teleport there; a value that is not finite is ignored. Not heard: a rider (its vehicle
+    /// moves it), a sleeper, moves before the client loaded the level or while a teleport waits
+    /// for its answer, and teleports. It runs inside the server's handling of the packet, once
+    /// a move, so it should be cheap; there is no `self` and no player's state is swapped in.
+    /// Server-side. @API:player_move@.
+    pub(super) fn native_player_move(
+        player: u128,
+        name: &str,
+        from: [f64; 3],
+        to: &mut [f64; 3],
+        yaw: f32,
+        pitch: f32,
+        on_ground: bool,
+        cancel: &mut bool,
+    ) {
+        mod_api::dispatch_player_move(
+            mod_api::mods(),
+            player,
+            name,
+            from,
+            to,
+            yaw,
+            pitch,
+            on_ground,
+            cancel,
+        );
+    }
+    /// A server player is about to be teleported (Bukkit's `PlayerTeleportEvent`, NeoForge's
+    /// `EntityTeleportEvent`), before the move reaches their client. `cause` is `command`
+    /// (`/tp`, `/teleport`), `ender_pearl`, `chorus_fruit`, `spectate` (a spectator's teleport
+    /// menu), `dismount` (put beside the vehicle they left) or `unknown` (another server move of
+    /// the player). `from` is their feet in `from_dimension`, `to` where they go in
+    /// `to_dimension` (the same level, but for a `command` or `spectate` teleport into another).
+    /// `relative` is the position packet's flags (vanilla's `Relative`: 8 and 16 keep the look,
+    /// 32, 64 and 128 the motion, 256 turns the motion with the look); within a level a mod may
+    /// set or clear those bits, so a pearl can keep the player's speed (0x1f8), while the
+    /// position bits are ignored, and into another level the flags are not used. Change `to`
+    /// (a value that is not finite is ignored) or set `cancel` and the player stays where they
+    /// are. Not heard: portals and End gateways (`native_player_portal`,
+    /// `native_player_teleport_end_gateway`), respawns (`native_player_respawn_position`), a
+    /// rider carried by its vehicle, waking from a bed, a moved player sent back by the server's
+    /// checks, and a spectator's camera. There is no `self` and no player's state is swapped in:
+    /// the game is in the middle of the teleport. Server-side. @API:player_teleport@.
+    pub(super) fn native_player_teleport(
+        player: u128,
+        name: &str,
+        cause: &str,
+        from_dimension: &str,
+        from: [f64; 3],
+        to_dimension: &str,
+        to: &mut [f64; 3],
+        relative: &mut u32,
+        cancel: &mut bool,
+    ) {
+        mod_api::dispatch_player_teleport(
+            mod_api::mods(),
+            player,
+            name,
+            cause,
+            from_dimension,
+            from,
+            to_dimension,
+            to,
+            relative,
+            cancel,
+        );
+    }
+    /// A dead server player is about to respawn (NeoForge's `PlayerRespawnPositionEvent`,
+    /// Bukkit's `PlayerRespawnEvent.setRespawnLocation`), once the Respawn click came and before
+    /// they are placed: `dimension` (`minecraft:overworld`...) and `pos` are their respawn point
+    /// (their bed or anchor block's top, a forced point, else the world spawn) and `yaw`,
+    /// `pitch` the look they get (0, 0). A point the mods leave alone is resolved as vanilla's
+    /// is: the free spot beside the bed or anchor, the world spawn's free column, in another
+    /// level once it has loaded. Change the dimension or the position and the player is placed
+    /// exactly there, with no bed or anchor used and no spot looked for; a dimension the server
+    /// does not have, or a position that is not finite, leaves that part as it was. On a LAN
+    /// host's world (not a dedicated server) the level is the Overworld whatever is set. No
+    /// player's state is swapped in, and the hub is out of `self.lan`, so `native_tell` reaches
+    /// nobody here. Server-side. @API:player_respawn_position@.
+    pub(super) fn native_player_respawn_position(
+        &mut self,
+        player: u128,
+        name: &str,
+        dimension: &mut String,
+        pos: &mut [f64; 3],
+        yaw: &mut f32,
+        pitch: &mut f32,
+    ) {
+        mod_api::dispatch_player_respawn_position(
+            self,
+            mod_api::mods(),
+            player,
+            name,
+            dimension,
+            pos,
+            yaw,
+            pitch,
+        );
+    }
+    /// An entity is about to trample farmland (NeoForge's `FarmlandTrampleEvent`, Bukkit's
+    /// `PlayerInteractEvent` with `Action.PHYSICAL` for a player and `EntityInteractEvent` for
+    /// a mob): `entity` (its network id; a player's is the one their client knows) of type
+    /// `kind` (`minecraft:player`, `minecraft:zombie`...) fell `fall_distance` blocks onto the
+    /// farmland at `pos` in `dimension`, and vanilla's checks have let it (`FarmlandBlock.fallOn`:
+    /// the chance from the fall, a living entity big enough, `mob_griefing` for a mob). Set
+    /// `cancel` and the farmland stays, the crop on it too; the fall damage is taken either
+    /// way. There is no `self`: the game is in the middle of the entity's move. Server-side.
+    /// @API:trample@.
+    pub(super) fn native_trample(
+        dimension: &str,
+        entity: i32,
+        kind: &str,
+        pos: [i32; 3],
+        fall_distance: f64,
+        cancel: &mut bool,
+    ) {
+        mod_api::dispatch_trample(
+            mod_api::mods(),
+            dimension,
+            entity,
+            kind,
+            pos,
+            fall_distance,
+            cancel,
+        );
+    }
+    /// A thrown projectile is about to cross the world border this tick (26.3's
+    /// `Projectile` border collision, MC-310476: a pearl, snowball, egg or potion that would
+    /// leave it stops on the border and hits it like a wall). `entity` is its network id and
+    /// `kind` its type (`minecraft:ender_pearl`...); `pos` and `velocity` are where it is and how
+    /// fast it goes before its move. A mod may change them (a value that is not finite is
+    /// ignored), and set `collide` false to let it fly through the border this tick as before
+    /// 26.3. Heard once a tick for each projectile inside the border whose next step would
+    /// end outside it (a step that drag then keeps inside is heard too); arrows and tridents,
+    /// which Horizon does not stop at the border, are not. No `self`: the projectiles are being
+    /// ticked. Server-side. @API:projectile_world_border@.
+    pub(super) fn native_projectile_world_border(
+        dimension: &str,
+        entity: u32,
+        kind: &str,
+        pos: &mut [f64; 3],
+        velocity: &mut [f64; 3],
+        collide: &mut bool,
+    ) {
+        mod_api::dispatch_projectile_world_border(
+            mod_api::mods(),
+            dimension,
+            entity,
+            kind,
+            pos,
+            velocity,
+            collide,
+        );
+    }
     /// A click in a menu a mod opened (`native_open_menu`), which moved
     /// nothing: the menu's `slot` (its own first, then the player's
     /// inventory, `native_menu_inventory_slot`; -999 outside), the `button`
