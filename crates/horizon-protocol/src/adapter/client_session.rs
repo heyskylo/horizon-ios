@@ -3,13 +3,16 @@
 //! reads it; what the server sends is renumbered to the client's, registry ids included, with a stand-in
 //! ([`ids::Substitutes`]) for a block, item, entity, particle or sound the client's version lacks.
 //!
-//! This layer maps ids only: a packet whose layout changed between the client's release and the pinned one
-//! passes in the pinned layout (the mirror of `translate`'s readers comes next).
+//! This layer maps ids; the world packets whose layout changed between 26.2 and the pinned release are
+//! written in 26.2's layout by [`world`]. Other packets whose layout changed still pass in the pinned
+//! layout (the rest of the mirror of `translate`'s readers comes next).
 //!
 //! The states change where vanilla's server-side `Connection` switches its codecs, after the handshake the
 //! server read itself: `login_acknowledged` and `login_finished` move each direction to configuration,
 //! `finish_configuration` to play, and `configuration_acknowledged` / `start_configuration` back.
 use std::sync::atomic::{AtomicU8, Ordering};
+
+mod world;
 
 use super::{
     ServerVersion,
@@ -120,6 +123,20 @@ impl ClientSession {
             _ => state,
         };
         self.writing.store(to_u8(next), Ordering::Release);
+        // 26.2 has no swing_animation: its hands swing through animate (world.rs).
+        if state == State::Play
+            && id == packet_ids::play::clientbound::SWING_ANIMATION
+            && self.version.ids().is_some()
+        {
+            let animate = packet_ids::play::clientbound::ANIMATE;
+            let Some(mapped) = self.version.clientbound_id_down(state, animate) else {
+                return Ok(None);
+            };
+            let mut w = Writer::new();
+            w.varint(mapped);
+            w.bytes(&world::swing(payload)?);
+            return Ok(Some(w.data));
+        }
         let Some(mapped) = self.version.clientbound_id_down(state, id) else {
             return Ok(None);
         };
@@ -195,6 +212,10 @@ fn down(ids: &'static Ids, state: State, id: i32, payload: &[u8]) -> Result<Sent
     }
     if state != State::Play {
         return Ok(Sent::AsIs);
+    }
+    // Packets whose layout 26.2 has differently (world.rs).
+    if let Some(sent) = world::down(ids, id, payload)? {
+        return Ok(sent);
     }
     match id {
         cb::UPDATE_TAGS
