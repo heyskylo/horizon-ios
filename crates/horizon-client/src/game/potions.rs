@@ -72,6 +72,9 @@ pub(super) struct ThrownPotion {
     left_owner: bool,
     /// `Projectile.lastDeflectedBy`: a mob deflects it once in a row.
     last_deflected_by: Option<u32>,
+    /// `Entity.random`: `ProjectileDeflection.REVERSE` draws from the
+    /// projectile's own source, not the level's.
+    random: LegacyRandom,
 }
 /// The player (not one of `skip`, the thrower and who rides with them before
 /// it has left them) whose box, grown by `margin` (`ProjectileUtil.computeMargin`),
@@ -416,6 +419,7 @@ impl Game<'_> {
             owner,
             left_owner: false,
             last_deflected_by: None,
+            random: LegacyRandom::new(i64::from(id)),
         });
     }
 }
@@ -501,6 +505,7 @@ impl PotionState {
             guest: None,
             left_owner: false,
             last_deflected_by: None,
+            random: LegacyRandom::new(i64::from(id)),
         });
     }
     /// ThrowableItemProjectile.DATA_ITEM_STACK: the potion it shows.
@@ -1272,6 +1277,7 @@ impl Game<'_> {
             let margin = thrown_margin(t.age);
             let steps = 4;
             let mut hit = None;
+            let mut deflect_stop = false;
             for i in 1..=steps {
                 let f = f64::from(i) / f64::from(steps);
                 let p = Vec3::new(
@@ -1302,7 +1308,7 @@ impl Game<'_> {
                     {
                         if t.last_deflected_by != Some(m.id) {
                             // ProjectileDeflection.REVERSE.
-                            let _ = self.world.random.next_float();
+                            let _ = t.random.next_float();
                             t.velocity = Vec3::new(
                                 t.velocity.x * -0.5,
                                 t.velocity.y * -0.5,
@@ -1311,6 +1317,11 @@ impl Game<'_> {
                             t.last_deflected_by = Some(m.id);
                             deflected.push(m.id);
                         }
+                        // ThrowableProjectile.tick: `setPos(hitResult.getLocation())`
+                        // before the deflection, so it does not step on past the
+                        // breeze this tick.
+                        t.position = p;
+                        deflect_stop = true;
                         break;
                     }
                     // A block hit has the face it came in by
@@ -1338,6 +1349,9 @@ impl Game<'_> {
                     t.guest,
                 ));
                 return false;
+            }
+            if deflect_stop {
+                return t.age < 1200 && t.position.y > -128.0;
             }
             t.position = next;
             let bounds = Aabb::new(
