@@ -2513,6 +2513,9 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   which keeps its signature and firing point and hears nothing of a pickup canceled here.
 - **`native_item_dropped_v2(player, stack)`**: an additive version of `native_item_dropped` with the whole `ItemStack`
   thrown, heard just before v1, which keeps its signature and firing point.
+- **`native_creative_slot_v2(player, name, slot, stack, cancel)`**: an additive version of `native_creative_slot` with
+  the whole `ItemStack` put in the slot (none for an emptied one), heard just before v1, which keeps its signature and
+  firing point and hears nothing of a packet canceled here. The player's state is swapped in, as for v1.
 
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The

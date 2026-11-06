@@ -2939,7 +2939,10 @@ impl Game<'_> {
         let (item, count) = stack.map_or(("minecraft:air", 0), |s| (&*s.item, s.count as i32));
         let mut cancel = false;
         let mut hook = |game: &mut Self| {
-            game.native_creative_slot(uuid, &name, slot, item, count, &mut cancel)
+            game.native_creative_slot_v2(uuid, &name, slot, stack, &mut cancel);
+            if !cancel {
+                game.native_creative_slot(uuid, &name, slot, item, count, &mut cancel);
+            }
         };
         // The guest whose turn it is is in place already.
         if self.lan_acting == Some(conn) {

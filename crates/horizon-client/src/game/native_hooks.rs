@@ -6621,6 +6621,29 @@ impl Game<'_> {
     pub(super) fn native_item_dropped_v2(&mut self, player: u128, stack: &ItemStack) {
         mod_api::dispatch_item_dropped_v2(self, mod_api::mods(), player, stack);
     }
+    /// `native_creative_slot` with the whole stack put there (its components: enchantments,
+    /// a custom name, unbreakable, attribute modifiers, a container's contents...), none for an
+    /// emptied slot. Heard just before `native_creative_slot`, which hears nothing of a packet
+    /// canceled here. Set `cancel` and the packet is ignored. The player's state is swapped in,
+    /// as for v1. Server-side. @API:creative_slot_v2@.
+    pub(super) fn native_creative_slot_v2(
+        &mut self,
+        player: u128,
+        name: &str,
+        slot: i32,
+        stack: Option<&ItemStack>,
+        cancel: &mut bool,
+    ) {
+        mod_api::dispatch_creative_slot_v2(
+            self,
+            mod_api::mods(),
+            player,
+            name,
+            slot,
+            stack,
+            cancel,
+        );
+    }
     /// A click in a menu a mod opened (`native_open_menu`), which moved
     /// nothing: the menu's `slot` (its own first, then the player's
     /// inventory, `native_menu_inventory_slot`; -999 outside), the `button`
