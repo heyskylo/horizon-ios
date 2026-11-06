@@ -552,7 +552,12 @@ fn invert_generic(m: Mat4) -> Mat4 {
 
 /// `shadow_camera`'s view and projection in wgpu's clip space (depth 0..1), for culling.
 pub fn shadow_culling(frame: &Frame, shadow: &Shadow) -> Mat4 {
-    let (view, gl) = shadow_camera(shadow_light(frame, shadow), frame.camera, shadow);
+    shadow_culling_at(shadow_light(frame, shadow), frame.camera, shadow)
+}
+
+/// `shadow_culling` for the direction toward the light and the camera's position.
+pub fn shadow_culling_at(light: Vec3, camera: DVec3, shadow: &Shadow) -> Mat4 {
+    let (view, gl) = shadow_camera(light, camera, shadow);
     // GL's depth -w..w to wgpu's 0..w.
     let depth = Mat4::from_cols(
         Vec4::X,

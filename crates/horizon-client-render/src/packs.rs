@@ -899,9 +899,24 @@ fn merge(kind: Merge, layers: &[Vec<u8>]) -> Option<Vec<u8>> {
         .iter()
         // SoundManager skips a sounds.json Gson rejects, whole.
         .filter(|b| kind != Merge::Sounds || crate::sound_events::is_valid_file(b))
-        .filter_map(|b| match serde_json::from_slice(b) {
-            Ok(Value::Object(m)) => Some(m),
-            _ => None,
+        .filter_map(|b| {
+            match serde_json::from_slice(b) {
+                Ok(Value::Object(m)) => Some(m),
+                // `Language.loadFromJson` reads with Gson's lenient reader, so
+                // a lang file with `#` comments still counts; a file that
+                // strict JSON accepts keeps its bytes as they are.
+                _ if kind == Merge::Lang => {
+                    let mut strings = std::collections::HashMap::new();
+                    horizon_client_core::lang::read_lang_file(b, &mut strings);
+                    Some(
+                        strings
+                            .into_iter()
+                            .map(|(k, v)| (k, Value::String(v)))
+                            .collect(),
+                    )
+                }
+                _ => None,
+            }
         })
         .collect();
     let list = |key: &str, layers: &mut dyn Iterator<Item = &Map<String, Value>>| {
@@ -1423,6 +1438,18 @@ mod tests {
         assert_eq!(
             parse(lang.unwrap()),
             serde_json::json!({"a":"vanilla a","b":"pack b"})
+        );
+        // A layer with `#` comments is read leniently, not dropped.
+        let lenient = merge(
+            Merge::Lang,
+            &[
+                json(r#"{"a":"vanilla a"}"#),
+                json("# a pack comment\n{\"b\":\"pack b\", # trailing\n\"a\":\"pack a\"}"),
+            ],
+        );
+        assert_eq!(
+            parse(lenient.unwrap()),
+            serde_json::json!({"a":"pack a","b":"pack b"})
         );
         // SoundManager: sounds add up; `replace` starts the event over.
         let sounds = merge(

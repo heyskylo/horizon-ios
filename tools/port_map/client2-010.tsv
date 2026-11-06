@@ -64,7 +64,7 @@ ContainerObjectSelectionList.Entry.updateNarration	port	crates/horizon-client/sr
 CycleButton.extractContents	port	crates/horizon-client-render/src/options_ui.rs::OptionsUi::draw	option button sprite and its label
 CycleButton.onPress	port	crates/horizon-client-render/src/options_ui.rs::Opt::cycle	click cycles forward; the back flag comes from the caller
 CycleButton.getCycledValue	skip:other		only feeds the narration of the next value
-CycleButton.mouseScrolled	port	crates/horizon-client-render/src/options_ui.rs::OptionsUi::wheel	the wheel over a cycle button takes its step (up goes back) and the list stays put; a blocked row falls through to the page
+CycleButton.mouseScrolled	port	crates/horizon-client-render/src/options_ui.rs::OptionsUi::wheel	the wheel over a cycle button outside a list takes its step (up goes back); a list keeps the wheel (AbstractScrollArea.mouseScrolled) unless the Horizon extra is on
 CycleButton.updateValue	inline	crates/horizon-client-render/src/options_ui.rs::Opt::cycle	labels are read live from Settings (Opt::label), so no cached message needs updating
 CycleButton.createLabelForValue	port	crates/horizon-client-render/src/options_ui.rs::Opt::label	value label or full name, from the setting
 CycleButton.updateWidgetNarration	inline	crates/horizon-client/src/screen_narrator.rs::narrate	narrate's cycle arm: gui.narrate.button(name: value), then narration.cycle_button.usage.{focused,hovered} with the value a click moves to

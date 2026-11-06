@@ -25,6 +25,29 @@ use std::{borrow::Cow, collections::HashMap, fs, path::Path};
 
 pub use crate::biome::{SpawnCost, parse_costs, parse_entries};
 
+thread_local! {
+    static ATTEMPT_COUNTS: std::cell::Cell<[u64; 2]> = const { std::cell::Cell::new([0; 2]) };
+}
+/// Reset or publish once per natural-spawn tick, not once per chunk.
+pub fn attempt_counters(publish: bool) {
+    if !crate::spans::enabled() {
+        return;
+    }
+    let counts = ATTEMPT_COUNTS.with(|c| c.replace([0; 2]));
+    if publish {
+        crate::spans::counters(&[("sa_attempts", counts[0]), ("sa_spawns", counts[1])]);
+    }
+}
+fn attempt_count(index: usize) {
+    if crate::spans::enabled() {
+        ATTEMPT_COUNTS.with(|c| {
+            let mut counts = c.get();
+            counts[index] += 1;
+            c.set(counts);
+        });
+    }
+}
+
 /// `MobCategory`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Category {
@@ -1111,6 +1134,7 @@ pub fn spawn_category_for_position<L: NaturalLevel, R: RandomSource>(
             z += random.next_int_bound(6).unwrap_or(0) - random.next_int_bound(6).unwrap_or(0);
             let (xx, zz) = (f64::from(x) + 0.5, f64::from(z) + 0.5);
             trace(Event::Try(x, z));
+            attempt_count(0);
             let Some(distance) = nearest.distance_sqr(l, xx, f64::from(y), zz) else {
                 continue;
             };
@@ -1177,6 +1201,7 @@ pub fn spawn_category_for_position<L: NaturalLevel, R: RandomSource>(
             let Some(result) = spawn(l, &request) else {
                 continue;
             };
+            attempt_count(1);
             group_index += 1;
             spawned.push(result.bounds);
             cluster += 1;

@@ -113,7 +113,7 @@ ArmorStand.setBit	skip:other		packed-flag helper; Horizon keeps separate bools a
 ArmorStand.skipAttackInteraction	missing		minor: adventure-mode protection on stand hits is not checked
 ArmorStand.onSyncedDataUpdated	skip:other		client refresh when flags sync; bounds are computed on demand
 ArmorStand.getDimensionsMarker	inline	crates/horizon-client/src/game/armor_stands.rs::Game::armor_stand_hit	marker stands are skipped, so they have no box
-ArmorStand.getLightProbePosition	skip:ui		render light probe for markers; drawing only
+ArmorStand.getLightProbePosition	port	crates/horizon-client/src/entities.rs::ArmorStand::light_probe	a marker walks the cells of its non-marker box (BlockPos.betweenClosed, x fastest) for a brightness-15 cell, else the brightest; any other stand is lit from its eye (eyeHeight 1.7775, 0.9875 small)
 ArmorStand.setArmorStandPose	port	crates/horizon-client/src/entity_nbt.rs::armor_stand_from_nbt	Pose tag read into the six pose parts
 ArmorStand.getArmorStandPose	port	crates/horizon-client/src/entity_nbt.rs::armor_stand_to_nbt	Pose tag written from the six pose parts
 BlockAttachedEntity.skipAttackInteraction	inline	crates/horizon-client/src/game/cushions.rs::Game::attack_cushion	the mayInteract gate and the break; frames and paintings keep their own copies
