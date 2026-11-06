@@ -8415,8 +8415,16 @@ impl Game<'_> {
         stack: &ItemStack,
     ) -> (bool, Option<DryChanges>, Vec<DrySound>) {
         // `BucketItem.use`: `level.mayInteract` and `mayUseItemAt`.
+        // `Player.mayUseItemAt` tests the clicked block against `can_place_on`.
         if !self.may_build() {
-            return (false, None, Vec::new());
+            let aim = if &*stack.item == "minecraft:bucket" {
+                self.bucket_hit()
+            } else {
+                self.pick()
+            };
+            if !aim.is_some_and(|hit| self.can_place_on_in_adventure(hit.pos)) {
+                return (false, None, Vec::new());
+            }
         }
         if &*stack.item == "minecraft:bucket" {
             let Some(hit) = self.bucket_hit() else {
