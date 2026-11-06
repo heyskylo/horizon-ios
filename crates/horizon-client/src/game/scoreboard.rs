@@ -1175,6 +1175,6 @@ mod team_tests {
     }
 }
 
+mod empty_tag_tests;
 #[cfg(test)]
 mod guest_advancement_tests;
-mod empty_tag_tests;
