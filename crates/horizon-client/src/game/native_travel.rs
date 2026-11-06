@@ -96,6 +96,44 @@ impl Game<'_> {
         self.native_teleport_now(uuid, dim, pos, rotation)
     }
 
+    /// Teleports the vehicle `id` of the level in place, `dimension` (a boat, a minecart, or a
+    /// mob a rider sits on: a horse, a pig), to `pos` with its riders, as `/tp` does a vehicle
+    /// (Bukkit's `Vehicle.teleport`, vanilla's `Entity.teleportSameDimension`): they stay
+    /// seated and move by the same offset, and a server player riding it is told, as their
+    /// client drives the vehicle itself. A mob that rides something itself leaves it. Only
+    /// where nobody's state is swapped in (a tick hook, a vehicle's hook nobody rides; inside
+    /// `native_vehicle_moved_v2` a mod changes `to` instead): false inside a player's hook, for
+    /// no such vehicle here, another dimension, a position outside `/tp`'s bounds, and on a
+    /// client. API @API:teleport_vehicle@.
+    pub(super) fn native_teleport_vehicle(&mut self, dimension: &str, id: u32, pos: [f64; 3]) -> bool {
+        if !self.native_serves()
+            || dimension != self.dim.id()
+            || !teleportable(pos)
+            || self.lan_acting.is_some()
+            || self.lan.is_none()
+        {
+            return false;
+        }
+        let Some(vehicle) = self.native_vehicle_target(id) else {
+            return false;
+        };
+        self.teleport_to_in_level(vehicle, pos, None, false);
+        true
+    }
+
+    /// The boat, minecart or living mob `id` of the level in place.
+    pub(super) fn native_vehicle_target(&self, id: u32) -> Option<Target> {
+        if self.boats.iter().any(|b| b.id == id) {
+            Some(Target::Boat(id))
+        } else if self.carts.iter().any(|c| c.id == id) {
+            Some(Target::Cart(id))
+        } else if self.mobs.iter().any(|m| m.id == id && !m.removed && m.alive()) {
+            Some(Target::Mob(id))
+        } else {
+            None
+        }
+    }
+
     /// The teleport of a server player while nobody's state is swapped in.
     fn native_teleport_now(
         &mut self,

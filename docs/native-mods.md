@@ -2512,6 +2512,13 @@ console (which waits for the next tick and does nothing inside a player's hook).
   True when done or queued; false for a player not on the server or dead (where that can be seen), another dimension
   than the three, a position outside `/tp`'s bounds, an angle that is not finite, and on a client. Server-side.
   Bundles need `"hooks": @API:teleport_player@`.
+- Helper **`native_teleport_vehicle(dimension, id, pos)`** (`host.teleport_vehicle`): teleports the boat, minecart or
+  mob a rider sits on (a horse, a pig) with entity id `id`, of the level in place, to `pos` with its riders, as `/tp`
+  does a vehicle (Bukkit's `Vehicle.teleport`): they stay seated and move by the same offset, and a server player riding
+  it is told, as their client drives the vehicle itself. Only where nobody's state is swapped in (a tick hook); inside
+  `native_vehicle_moved_v2` change `to` instead. False inside a player's hook, for no such vehicle here, another
+  dimension, a position outside `/tp`'s bounds, and on a client. Server-side. Bundles need
+  `"hooks": @API:teleport_vehicle@`.
 
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
