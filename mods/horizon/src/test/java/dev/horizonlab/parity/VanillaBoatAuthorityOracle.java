@@ -36,6 +36,7 @@ public final class VanillaBoatAuthorityOracle {
         Lvl() { super(null, null, null, null, null, null, false, 0L, List.of(), false); }
         @Override public boolean isClientSide() { return true; }
         @Override public int getNextEntityId() { return next++; }
+        @Override public void gameEvent(net.minecraft.core.Holder<net.minecraft.world.level.gameevent.GameEvent> event, Vec3 position, net.minecraft.world.level.gameevent.GameEvent.Context context) {}
         @Override public void sendPacketToServer(net.minecraft.network.protocol.Packet<?> packet) {}
         @Override public RegistryAccess registryAccess() { return ParityData.access; }
         @Override public BlockState getBlockState(BlockPos pos) { return Blocks.AIR.defaultBlockState(); }
@@ -58,6 +59,14 @@ public final class VanillaBoatAuthorityOracle {
         @Override public net.minecraft.world.scores.PlayerTeam getTeam() { return null; }
     }
 
+    static JsonArray bits(Vec3 velocity) {
+        JsonArray result = new JsonArray();
+        for (double value : new double[]{velocity.x, velocity.y, velocity.z}) {
+            result.add(String.format("%016x", Double.doubleToRawLongBits(value)));
+        }
+        return result;
+    }
+
     public static void main(String[] args) throws Exception {
         ParityData.init();
         VanillaVehicleContainerOracle.reflect();
@@ -76,6 +85,49 @@ public final class VanillaBoatAuthorityOracle {
                 JsonArray velocity = c.getAsJsonArray("velocity");
                 boat.setDeltaMovement(new Vec3(velocity.get(0).getAsDouble(), velocity.get(1).getAsDouble(), velocity.get(2).getAsDouble()));
                 spin.setFloat(boat, c.get("spin").getAsFloat());
+                if (c.has("attack")) {
+                    JsonObject attack = c.getAsJsonObject("attack");
+                    var u = Class.forName("sun.misc.Unsafe");
+                    VanillaRemoteAttackOracle.unsafe = VanillaRemoteAttackOracle.field(u, "theUnsafe").get(null);
+                    VanillaRemoteAttackOracle.allocate = u.getMethod("allocateInstance", Class.class);
+                    var client = VanillaRemoteAttackOracle.make(VanillaRemoteAttackOracle.Client.class);
+                    client.registries = ParityData.access;
+                    client.sources = new net.minecraft.world.damagesource.DamageSources(ParityData.access);
+                    var player = VanillaRemoteAttackOracle.entity(VanillaRemoteAttackOracle.Attacker.class, EntityTypes.PLAYER, client);
+                    VanillaRemoteAttackOracle.field(net.minecraft.world.entity.player.Player.class, "abilities")
+                        .set(player, new net.minecraft.world.entity.player.Abilities());
+                    VanillaRemoteAttackOracle.field(net.minecraft.world.entity.LivingEntity.class, "activeEffects")
+                        .set(player, new java.util.HashMap<>());
+                    player.map = new net.minecraft.world.entity.ai.attributes.AttributeMap(
+                        net.minecraft.world.entity.player.Player.createAttributes().build());
+                    player.hand = net.minecraft.world.item.ItemStack.EMPTY;
+                    VanillaRemoteAttackOracle.field(net.minecraft.world.entity.LivingEntity.class, "attackStrengthTicker")
+                        .setInt(player, attack.get("ticks").getAsInt());
+                    player.sprint = attack.get("sprint").getAsBoolean();
+                    player.setYRot(attack.get("yaw").getAsFloat());
+                    var pv = attack.getAsJsonArray("player_velocity");
+                    player.setDeltaMovement(new Vec3(pv.get(0).getAsDouble(), pv.get(1).getAsDouble(), pv.get(2).getAsDouble()));
+                    // Player.attack adds 0.5 only to a charged sprint hit.
+                    float strength = Math.min(1.0f, (attack.get("ticks").getAsInt() + 0.5f) / 5.0f);
+                    float amount = (player.sprint && strength > 0.9f ? 0.5f : 0.0f)
+                        + attack.get("knockback").getAsFloat() / 2.0f;
+                    if (attack.get("knockback").getAsInt() == 0 && !attack.get("creative").getAsBoolean()) {
+                        player.attack(boat);
+                    } else {
+                        // Enchanted/creative controls isolate causeExtraKnockback;
+                        // server enchantment lookup and hurt/removal are not simulated here.
+                        player.causeExtraKnockback(boat, amount, boat.getDeltaMovement(), null, 1.0f, true);
+                    }
+                    JsonObject result = new JsonObject();
+                    result.add("name", c.get("name"));
+                    boolean destroyed = attack.get("creative").getAsBoolean();
+                    result.add("velocity", destroyed ? com.google.gson.JsonNull.INSTANCE : bits(boat.getDeltaMovement()));
+                    result.addProperty("destroyed", destroyed);
+                    result.add("player_velocity", bits(player.getDeltaMovement()));
+                    result.addProperty("sprint", player.sprint);
+                    output.add(result);
+                    continue;
+                }
                 JsonArray steps = new JsonArray();
                 if (c.has("paddles")) {
                     JsonObject paddles = c.getAsJsonObject("paddles");

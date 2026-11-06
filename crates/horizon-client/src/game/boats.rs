@@ -1439,16 +1439,40 @@ impl Game<'_> {
         if !self.before_block(d) || self.mob_hit().is_some_and(|m| m.1 < d) {
             return false;
         }
+        self.strike_boat(i);
+        self.swing_arm();
+        true
+    }
+    /// The accepted boat target, shared by aimed attacks and headless parity.
+    pub(super) fn strike_boat(&mut self, i: usize) {
         let area = self.boats[i].bounds();
         // Player.attack's full damage against the boat's entity type.
         let (kind, id) = (self.boats[i].entity_type(), self.boats[i].id as i32);
-        let (damage, _, _, magic) = self.melee_damage(&kind, false);
-        self.hurt_boat(i, damage, self.creative);
+        let (damage, scale, _, magic) = self.melee_damage(&kind, false);
+        let hurt = self.hurt_boat_result(i, damage, self.creative);
         self.vehicle_attack_sounds(area, magic.then_some(id));
+        if damage > 0.0
+            && let Some(destroyed) = hurt
+        {
+            let (knockback, _) = self.extra_knockback(&kind, scale);
+            if knockback > 0.0 {
+                // Player.causeExtraKnockback uses Entity.push for a boat,
+                // not LivingEntity.knockback (no resistance or velocity halving).
+                if !destroyed {
+                    let (x, z) = self.extra_knockback_direction();
+                    self.boats[i].velocity.x += f64::from(-(x as f32) * knockback);
+                    self.boats[i].velocity.y += 0.1;
+                    self.boats[i].velocity.z += f64::from(-(z as f32) * knockback);
+                }
+                if let Some(player) = self.player.as_mut() {
+                    player.velocity.x *= horizon_client::attack_strength::ATTACKER_SLOWDOWN;
+                    player.velocity.z *= horizon_client::attack_strength::ATTACKER_SLOWDOWN;
+                }
+                self.stop_sprint_after_extra_knockback();
+            }
+        }
         // Player.onAttack: the hit starts the attack strength again.
         self.attack_ticks = 0;
-        self.swing_arm();
-        true
     }
     /// `VehicleEntity.hurtServer`: wobble, add the damage and break past 40
     /// (`creative`: a creative player's hit discards it straight away).
@@ -1456,11 +1480,15 @@ impl Game<'_> {
     /// reason that destroys the boat (DISCARDED included), while the boat item
     /// itself only drops on the death path (`VehicleEntity.destroy`), not when
     /// a creative hit discards it. True when the boat was removed.
-    pub(super) fn hurt_boat(&mut self, i: usize, mut damage: f32, creative: bool) -> bool {
+    pub(super) fn hurt_boat(&mut self, i: usize, damage: f32, creative: bool) -> bool {
+        self.hurt_boat_result(i, damage, creative).unwrap_or(false)
+    }
+    /// None means a canceled hit; Some records whether an accepted hit destroyed it.
+    fn hurt_boat_result(&mut self, i: usize, mut damage: f32, creative: bool) -> Option<bool> {
         let mut cancel = false;
         self.native_vehicle_damage("boat", &mut damage, &mut cancel);
         if cancel {
-            return false;
+            return None;
         }
         let b = &mut self.boats[i];
         b.hurt_dir = -b.hurt_dir;
@@ -1499,7 +1527,7 @@ impl Game<'_> {
                 );
             }
         }
-        destroyed
+        Some(destroyed)
     }
     /// AbstractBoatRenderer.
     pub(super) fn boat_geometry(&self, camera: glam::DVec3, alpha: f64, out: &mut Vec<Vertex>) {
