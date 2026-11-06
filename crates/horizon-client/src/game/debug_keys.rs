@@ -67,9 +67,6 @@ impl Game<'_> {
     /// own handling. Returns true when it is used up (a debug combination,
     /// F3 itself, F3+Escape).
     pub(super) fn debug_key(&mut self, key: KeyCode, action: KeyAction) -> bool {
-        if self.title.is_some() {
-            return false;
-        }
         let Some(name) = keybinds::key_name(key) else {
             return false;
         };
@@ -713,6 +710,9 @@ impl Game<'_> {
                 self.debug_charts.toggle_lightmap(&mut self.debug);
                 true
             }
+            // The debug options screen is not wired over the title screen yet:
+            // leave F6 unhandled there rather than half-open it.
+            DebugAction::DebugOptions if self.title.is_some() => false,
             DebugAction::DebugOptions => {
                 self.toggle_debug_options();
                 true

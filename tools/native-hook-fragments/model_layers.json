@@ -1,0 +1,23 @@
+{
+  "hooks": [
+    {
+      "name": "layer_definitions",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_layer_definitions",
+      "neoforge": "EntityRenderersEvent.RegisterLayerDefinitions",
+      "side": "client",
+      "mod_api": {
+        "contract": "collect",
+        "out": "layers"
+      }
+    }
+  ],
+  "helpers": [
+    {"name": "bake_layer", "target": "horizon_client::game::native_block_entity_draw::Game<'_>::native_bake_layer"},
+    {"name": "draw_model_part", "target": "horizon_client::game::native_block_entity_draw::Game<'_>::native_draw_model_part"}
+  ],
+  "rust_summary": "entity model layers built in code (`native_layer_definitions`, NeoForge's `EntityRenderersEvent.RegisterLayerDefinitions`), baked with `native_bake_layer` and drawn with `native_draw_model_part`.",
+  "doc_summary": "Entity model layers built in code, as vanilla's `LayerDefinition` builders build them (`MeshDefinition`, `CubeListBuilder`, `CubeDeformation`, `PartPose`): `native_layer_definitions(layers)` registers a mod's by id (`mymod:golem#main`, NeoForge's `EntityRenderersEvent.RegisterLayerDefinitions`), `native_bake_layer(layer)` bakes one of them or a vanilla layer (`minecraft:zombie#main`) into a `ModelPart` tree (`EntityModelSet.bakeLayer`), and `native_draw_model_part(draw, part, sprite, tint)` draws the tree, its parts posed as the mod set them, under a mob's or a block entity's frame (`ModelPart.render`). Bundles need \"hooks\": @API:model_layers@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_block_entity_draw.rs"
+  ]
+}

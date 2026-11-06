@@ -103,6 +103,7 @@ import net.minecraft.world.phys.Vec3;
  * player's lines to OUT. {@code boats on|off} records boat paddle metadata;
  * {@code hooks on|off} records the entity a fishing bobber hooks, by type;
  * {@code paddle NAME LEFT RIGHT} sends the two boolean paddle states;
+ * {@code sounds on|off} records typed sound packets and their complete payloads;
  * {@code events on|off} records each level event: its id, block and data;
  * {@code spawns on|off} records each entity other than a player added to the
  * level, by type and position.
@@ -115,6 +116,7 @@ public final class LocatorBarClient {
     private static volatile boolean boats;
     private static volatile boolean hooks;
     private static volatile boolean state;
+    private static volatile boolean sounds;
     private static volatile boolean events;
     private static volatile boolean spawns;
     private static volatile boolean menus;
@@ -202,6 +204,7 @@ public final class LocatorBarClient {
                             Boolean.parseBoolean(sides[0]), Boolean.parseBoolean(sides[1])));
                     }
                     case "state" -> state = w[1].equals("on");
+                    case "sounds" -> sounds = w[1].equals("on");
                     case "events" -> events = w[1].equals("on");
                     case "spawns" -> spawns = w[1].equals("on");
                     case "end" -> {
@@ -548,6 +551,22 @@ public final class LocatorBarClient {
                     if (tickSteps && p instanceof net.minecraft.network.protocol.game.ClientboundBlockEventPacket e
                         && e.getPos().equals(new net.minecraft.core.BlockPos(0, 80, 0)))
                         record("piston-event " + e.getB0() + " " + e.getB1());
+                    if (sounds && p instanceof net.minecraft.network.protocol.game.ClientboundSoundPacket sound) {
+                        com.google.gson.JsonObject j = new com.google.gson.JsonObject();
+                        j.addProperty("event", sound.getSound().value().location().toString());
+                        j.addProperty("source", sound.getSource().ordinal());
+                        j.addProperty("source_name", sound.getSource().name());
+                        com.google.gson.JsonArray at = new com.google.gson.JsonArray();
+                        at.add(sound.getX()); at.add(sound.getY()); at.add(sound.getZ());
+                        j.add("position", at);
+                        j.addProperty("volume", sound.getVolume());
+                        j.addProperty("pitch", sound.getPitch());
+                        j.addProperty("volume_bits", Float.floatToRawIntBits(sound.getVolume()));
+                        j.addProperty("pitch_bits", Float.floatToRawIntBits(sound.getPitch()));
+                        j.addProperty("seed", sound.getSeed());
+                        j.addProperty("payload_hex", java.util.HexFormat.of().formatHex(r.payload));
+                        record("sound-wire " + j);
+                    }
                     if (state) recordState(p);
                     if (menus) recordMenu(p, r.payload);
                     if (hooks && p instanceof net.minecraft.network.protocol.game.ClientboundAddEntityPacket a) {
