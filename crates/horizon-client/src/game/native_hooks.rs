@@ -9297,7 +9297,7 @@ impl Game<'_> {
         let &(_, key) = MAPPINGS.iter().find(|m| m.0 == name)?;
         let label = keybinds::display_name(self.settings.keys.get(name)).plain();
         let down = match key {
-            Some(k) => self.keys.contains(&k),
+            Some(k) => self.movement_key_held(k),
             None => self.mouse_reading().1[usize::from(name == "key.use")],
         };
         Some((down, label))

@@ -1132,11 +1132,12 @@ impl Game<'_> {
             log(
                 "INFO",
                 &format!(
-                    "Transfers on (server.toml [transfer]): players expected for {} s ({} s at most, {} at once), frozen for {} ticks at most",
+                    "Transfers on (server.toml [transfer]): players expected for {} s ({} s at most, {} at once), frozen for {} ticks and held for {} ticks at most",
                     s.expect.as_secs(),
                     s.max_expect.as_secs(),
                     s.max_expected,
-                    s.max_freeze_ticks
+                    s.max_freeze_ticks,
+                    s.max_hold_ticks
                 ),
             );
             host.hub.transfers = Some(transfers);
@@ -1270,9 +1271,16 @@ impl Game<'_> {
             let ticked =
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     match &mut state.report {
-                        Some(recording) => self.tick_server_spans(paused, |wall, cpu, spans| {
-                            recording.add(wall, cpu, spans)
-                        }),
+                        Some(recording) => {
+                            let sampled = recording.sample_next();
+                            super::tick_profile::set_sampling(sampled);
+                            let ticked =
+                                self.tick_server_spans(paused, |wall, cpu, spans, recorded| {
+                                    recording.add(wall, cpu, spans, recorded, sampled)
+                                });
+                            super::tick_profile::set_sampling(false);
+                            ticked
+                        }
                         None => self.tick_server_timed(paused),
                     }
                 }));
@@ -1385,11 +1393,12 @@ impl Game<'_> {
     pub(super) fn update_dedicated_streaming(&mut self) {
         let rule = self.ui.rules.bool("spectators_generate_chunks");
         let guest = self.lan.as_ref().and_then(|h| {
+            // A held player (arriving from another server) is sent the level too, so it
+            // holds the world loaded around it as a placed player does.
             h.hub
-                .guests
-                .iter()
-                .find(|g| h.hub.here(g) && super::game_mode::loads_chunks(rule, g.spectator()))
-                .map(|g| g.chunk())
+                .loading_chunks(|g| super::game_mode::loads_chunks(rule, g.spectator()))
+                .first()
+                .copied()
         });
         if self.standalone_server() {
             self.streaming.radius = if guest.is_some() {
@@ -1552,6 +1561,17 @@ impl Game<'_> {
                 state.lists.lock().unwrap().stop = true;
             }
             // Horizon's own, on the console only: a performance report (report.rs).
+            "horizon-report" if rest.first() == Some(&"stop") => match state.report.take() {
+                Some(recording) => {
+                    log("INFO", "Stopping the performance report: writing it now");
+                    self.finish_report(recording, state.view, state.max_players);
+                }
+                None => log("INFO", "No performance report is being recorded"),
+            },
+            "horizon-report" if rest.first() == Some(&"status") => match &state.report {
+                Some(recording) => log("INFO", &recording.status()),
+                None => log("INFO", "No performance report is being recorded"),
+            },
             "horizon-report" => {
                 let seconds = match rest.first().map(|s| s.parse::<u32>()) {
                     None => Ok(60),
@@ -1562,7 +1582,7 @@ impl Game<'_> {
                     (Err(()), _) => log(
                         "INFO",
                         &format!(
-                            "horizon-report [SECONDS]: 1 to {} seconds, 60 by default",
+                            "horizon-report [SECONDS | stop | status]: 1 to {} seconds, 60 by default",
                             report::MAX_SECONDS
                         ),
                     ),
@@ -1570,7 +1590,7 @@ impl Game<'_> {
                         log("INFO", "A performance report is already being recorded")
                     }
                     (Ok(seconds), None) => {
-                        state.report = Some(report::Recording::start(seconds));
+                        state.report = Some(report::Recording::start(seconds, self.wire_bytes()));
                         log(
                             "INFO",
                             &format!("Recording a performance report for {seconds} s (reports/)"),

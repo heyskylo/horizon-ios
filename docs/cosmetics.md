@@ -41,8 +41,9 @@ y points down, as in vanilla's `ModelPart`s and Blockbench's "Modded Entity" mod
 }
 ```
 
-- `slot`: `head`, `back`, `torso`, `shoulder`, `name_tag` or `emote` (below); a player wears at
-  most one item per slot, and plays emotes. A `torso` item is hidden under a chestplate (not an elytra).
+- `slot`: `head`, `back`, `torso`, `shoulder`, `name_tag`, `emote`, `companion`, `trail` or
+  `aura` (the last four below); a player wears at most one item per slot, and plays emotes. A
+  `torso` item is hidden under a chestplate (not an elytra).
 - `bone`: the player model part the item follows (`head`, `body`, `left_arm`, `right_arm`,
   `left_leg`, `right_leg`; `head` if left out). The item sits at the bone's matrix times `attach` (offset in pixels,
   rotation in degrees, a uniform scale in (0, 2]).
@@ -75,6 +76,53 @@ Limits, checked when an item is read (`Item::parse`); an item past one is refuse
 | Reach | 24 pixels from the bone's pivot, animations included | items stay near their wearer |
 
 Unknown fields are refused, so a file never carries anything the game would silently ignore.
+
+### Companions, trails and auras (`fx.rs`)
+
+Three kinds ride no bone (no `bone` for the item or a part), so each goes with any other item, a
+shoulder pet included. Like everything else they are worn (`PUT /v1/equipped`), reach other players
+through `/v1/worn`, and change nothing in the game: no entity, no collision, no packet.
+
+- **A companion** (`"slot": "companion"`): a small model floating beside the player. Its block says
+  where it floats at rest (`anchor`: pixels from the neck in the wearer's body space, y down, +x the
+  wearer's left, +z behind), how slowly it catches up when the player moves (`lag`, the follow's
+  time constant, 1 to 40 ticks; 6 if left out) and which part, if any, turns to look where the
+  wearer looks (`look`); `glow` draws it at full light. Idle motion is the usual `animations` (a
+  `bob`, a wing's `swing`).
+
+  ```json
+  "companion": { "anchor": [-14, -6, 8], "lag": 8, "look": "head", "glow": false }
+  ```
+
+- **A trail** (`"slot": "trail"`): particles left behind while the player moves, no model (`parts`
+  stays empty). The texture is a row of `sprites` square sprites of at most 16 texels; each
+  particle shows one. `rate` is particles per block moved, `lifetime` ticks each lives, `size` its
+  smallest and largest side in pixels, `gravity` blocks per tick² (negative rises, as embers),
+  `drift` how far it sways sideways (pixels), `spin` degrees a tick, `from` `feet` (the default) or
+  `body`, `fade` fades it over its last third, `glow` draws it at full light.
+
+  ```json
+  "trail": { "sprites": 4, "rate": 2, "lifetime": 30, "size": [1.5, 3], "gravity": 0.01,
+             "drift": 1.5, "spin": 8, "from": "feet", "fade": true, "glow": false }
+  ```
+
+- **An aura** (`"slot": "aura"`): a see-through model whose origin is the middle of the player's
+  feet (y down, so up is negative), `at` the `feet` or the `body`, drawn at `alpha`, at full
+  light with `glow`.
+
+  ```json
+  "aura": { "at": "feet", "alpha": 0.5, "glow": true }
+  ```
+
+Their limits, on top of the vertices, texture and parts above:
+
+| Limit | Value | Why |
+|---|---|---|
+| Companion size | 8 pixels from its origin, animations included | a small creature, not a second player |
+| Companion anchor | 28 pixels from the neck at most; from the head's centre, 11 plus its size at least | it floats near the player and never over their face |
+| Trail particles | `rate` ≤ 4 per block, `lifetime` ≤ 40 ticks, `size` ≤ 4 pixels, `gravity` within 0.04, `drift` ≤ 4, `spin` ≤ 20 | a short trail of small particles |
+| Aura reach | 14 pixels sideways from the feet's middle; 6 pixels up at the feet, 30 around the body; 1 below | it frames the player without hiding anyone near them |
+| Aura opacity | 0.6 at the feet, 0.35 around the body | a player inside one is as easy to see and hit |
 
 ## Emotes (`horizon_cosmetics::Emote`)
 
@@ -249,7 +297,8 @@ same cached `/v1/worn` answers as what they wear (no request of its own, nothing
     answer that says owns shows others' at once, without a restart. Only one of the sign-ins (this,
     *My cosmetics*, *Show me as Horizon*) runs at a time (Mojang keeps one joined server id per
     account). `HORIZON_COSMETICS_LOCAL` counts as owning.
-  - *Others' auras and trails*, off by default (no item of that kind exists yet).
+  - *Hide other players' trails and auras*, off by default (`cosmeticsHideFx`): their trails
+    and auras stay hidden, their other cosmetics (companions included) still show.
   - *In single player*, off by default, the game's only (`cosmeticsSolo`). The
     window's own server names the player by their offline profile, which the service doesn't
     know, so in single player (open to LAN too) the game draws and asks nothing for the player's
@@ -270,6 +319,38 @@ same cached `/v1/worn` answers as what they wear (no request of its own, nothing
   player model (the CPU path where that is off), lit and culled with the player. A helmet hides a
   head item, an elytra or cape a back item. The third person view and the
   inventory's player preview show your own.
+- **Companions, trails and auras** (`game/cosmetics/fx.rs`), drawn only by the game, never sent to
+  a server, never an entity: nothing collides with them or can be hit through them.
+  - A *companion* is posed on no bone. Each frame its place moves toward the anchor (in the
+    wearer's model space, turned with the body) by `follow::Follow::step`, a lag of `lag` ticks
+    that doesn't depend on the frame rate; it jumps there when 8 blocks away (a teleport). It faces
+    the wearer's head yaw and its `look` part turns with their pitch (60 %, ±30°). It is drawn with
+    the wearer's items, lit where the wearer stands (`glow`: full bright). It never comes nearer
+    the head than 11 pixels plus its size, and the player's own companion, in first person, never
+    enters the 35° cone around the crosshair (`follow::out_of_view`); it is drawn after the
+    first-person body goes to the shadow pass only.
+  - A *trail*'s particles (`trail::Emitter`) are spawned only by distance walked (`rate` per
+    block, none standing, sneaking or asleep, none after a jump of 4 blocks or more), live their
+    `lifetime` exactly and are placed from their age alone (fall, sway, spin, fade): nothing is
+    stepped per tick. 24 per player and 512 in all (`trail::Budget`); past them none spawn until
+    some die. The player's own trail is never drawn in first person (their body isn't).
+  - An *aura* is a model at the feet or round the body, its texels' alpha times `alpha`, its
+    faces turned away from the camera dropped (`mesher::SHADED_CULL_W`) so nothing in it is drawn
+    twice: it never shows more than `alpha`. None while the wearer flies with an elytra, swims or
+    sleeps.
+  - None is drawn for a wearer farther than 48 blocks from the camera (a few pixels across), and
+    none for one outside the view (they are drawn with the wearer, after its frustum test).
+  - Trails and auras of every player go in one see-through span after the players (shader packs
+    see it as `minecraft:player`, translucent). Others' are hidden by *Hide other players' trails
+    and auras*, and with every other cosmetic by *Name tags only* and *Hidden*.
+- **Cost of companions, trails and auras**: the work of `horizon-cosmetics` per frame
+  (`examples/fx_bench.rs`, items at the format's limits: a 504-vertex companion and aura and the
+  densest trail; release build on an i7-7500U) is 3.6 µs for 1 wearer in view, 58 µs for 16 and
+  189 µs for 64 (trails stop growing at the 512-particle budget). The game spends more: posing,
+  the aura's vertices built on the CPU and their copy into the frame. On that laptop (Intel HD 620,
+  `HORIZON_COSMETICS_LOCAL` mannequins wearing all three and walking in view), the frame's
+  `prepare` phase grows by about 0.6 ms with 16 wearers and 1 to 2.4 ms with 64, mostly the auras.
+  None in view: nothing.
 - **Cost**: a player with nothing to wear adds one cache lookup; with no cosmetic in view the frame
   does no cosmetics work beyond that. The bench scene `stress_avatars` (300 mannequins, 20×15)
   measures the cost with `HORIZON_COSMETICS=1 HORIZON_COSMETICS_LOCAL=…` against the same run off.
@@ -351,9 +432,9 @@ page stays hidden.
   doesn't sell (`Claim::here`) stays here too: the site sends those players to the Wardrobe, since
   only the launcher can prove the account with Mojang. **Your purchases** lists the account's orders (date, item, price, state, order number).
 - **Three switches**: *Show my cosmetics* (the account's, on the service: off, everyone sees you
-  without them), *Hide other players' cosmetics* and *Show other players' auras and trails* (off by
+  without them), *Hide other players' cosmetics* and *Hide other players' trails and auras* (off by
   default). The last two are lines of the game's `horizon-extras.txt` (`horizon_cosmetics::prefs`:
-  `cosmeticsOthers` = `shown`, `name_tags` or `hidden`, `cosmeticsAuras`), the same ones the
+  `cosmeticsOthers` = `shown`, `name_tags` or `hidden`, `cosmeticsHideFx`), the same ones the
   game's settings change. With no `cosmeticsOthers` line, *Hide other players' cosmetics* shows
   what the game does: on unless the account owns something. Each answer of the service also
   notes the account's ownership in the game's `cosmetics-owned.txt`.

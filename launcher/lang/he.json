@@ -264,7 +264,7 @@
   "Backups": "גיבויים",
   "Nothing found.": "שום דבר לא נמצא.",
   "The source at commit {commit}.": "המקור ב-commit {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "הורדות, כניסות ועדכונים עוברים דרך פרוקסי HTTP זה (http://host:port). ריק פירושו אין: HTTPS_PROXY משמש במקום זאת כאשר המשגר הופעל עם אחד.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "הורדות, כניסות ועדכונים עוברים דרך פרוקסי זה (http://host:port, socks5://host:port). ריק פירושו אין: HTTPS_PROXY משמש במקום זאת כאשר המשגר הופעל עם אחד.",
   "Beta": "בטא",
   "Benchmark uploads": "העלאות בנצ'מרק",
   "Saved: the next Play {what}.": "נשמר: ההפעלה הבאה {what}.",
@@ -960,6 +960,9 @@
   "Reset view": "איפוס התצוגה",
   "Drag to turn, scroll to zoom.": "גררו כדי לסובב, גללו כדי להתקרב.",
   "Shoulder pet": "חיית מחמד כתף",
+  "Companion": "בן לוויה",
+  "Trail": "שובל",
+  "Aura": "הילה",
   "Name tag": "תג שם",
   "Launcher theme": "נושא המשגר",
   "Couldn't sync your outfit. It'll try again when you're online.": "לא ניתן היה לסנכרן את התלבושת שלך. זה ינסה שוב כשתהיה מקוון.",
@@ -986,7 +989,7 @@
   "Off: everyone sees you without them.": "כבוי: כולם רואים אותך בלעדיהם.",
   "Hide other players' cosmetics": "הסתר מוצרי קוסמטיקה של שחקנים אחרים",
   "Others look like plain players to you. Also in the game's Horizon settings.": "אחרים נראים לך כמו שחקנים פשוטים. גם בהגדרות Horizon של המשחק.",
-  "Show other players' auras and trails": "הראה את ההילות והשבילים של שחקנים אחרים",
+  "Hide other players' trails and auras": "הסתרת שבילים והילות של שחקנים אחרים",
   "Off by default. Also in the game's Horizon settings.": "כבוי כברירת מחדל. גם בהגדרות Horizon של המשחק.",
   "Friend": "חבר",
   "Friends on the same Wi-Fi: Multiplayer, Add server, paste.": "חברים באותו Wi-Fi: מרובה משתתפים, הוסף שרת, הדבק.",
@@ -1213,5 +1216,9 @@
   "US sales tax is added where a state charges it.": "מס מכירה אמריקאי מתווסף היכן שמדינה גובה אותו.",
   "VAT included where it applies.": "מע״מ כלול היכן שהוא חל.",
   "In a set in your basket": "בתוך סט בסל שלך",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "סיימו לשלם בדפדפן. הפריטים יגיעו לארון הבגדים בעוד רגע."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "סיימו לשלם בדפדפן. הפריטים יגיעו לארון הבגדים בעוד רגע.",
+  "{name} was left out: made for another Horizon version": "{name} הושמט: נוצר לגרסה אחרת של Horizon",
+  "{name} was left out: clashes with {other}": "{name} הושמט: מתנגש עם {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} הושמט: הוא צריך את {other}, שהושמט",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "לא נבנה על ה-Horizon שבו אתה משחק ({code}): בנייה משמיטה אותו עד שהיוצר יעדכן אותו"
 }

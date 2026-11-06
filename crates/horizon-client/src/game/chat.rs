@@ -1223,6 +1223,7 @@ impl Game<'_> {
         let Some(url) = &self.link_prompt else {
             return;
         };
+        horizon_client::widgets::cover_frame();
         // ConfirmLinkScreen: the question and the link (its warning is a
         // widget of its own, not narrated).
         horizon_client::widgets::begin_screen(|| {
@@ -1240,7 +1241,7 @@ impl Game<'_> {
             Text::translate("chat.copy", &[]),
             Text::translate("gui.no", &[]),
         ];
-        let layout = self.link_prompt_layout(url, (w, h));
+        let mut layout = self.link_prompt_layout(url, (w, h));
         layout.declare_no(2);
         layout.draw(batch, atlas, self.cursor, &labels);
     }

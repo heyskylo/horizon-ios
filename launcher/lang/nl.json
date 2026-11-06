@@ -264,7 +264,7 @@
   "Backups": "Back-ups",
   "Nothing found.": "Niets gevonden.",
   "The source at commit {commit}.": "De bron bij commit {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Downloads, aanmeldingen en updates verlopen via deze HTTP-proxy (http://host:port). Leeg betekent geen: HTTPS_PROXY wordt in plaats daarvan gebruikt wanneer het opstartprogramma met één werd gestart.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Downloads, aanmeldingen en updates verlopen via deze proxy (http://host:port, socks5://host:port). Leeg betekent geen: HTTPS_PROXY wordt in plaats daarvan gebruikt wanneer het opstartprogramma met één werd gestart.",
   "Beta": "Bèta",
   "Benchmark uploads": "Benchmark-uploads",
   "Saved: the next Play {what}.": "Opgeslagen: de volgende Play {what}.",
@@ -960,6 +960,9 @@
   "Reset view": "Weergave herstellen",
   "Drag to turn, scroll to zoom.": "Sleep om te draaien, scroll om te zoomen.",
   "Shoulder pet": "Schouder huisdier",
+  "Companion": "Metgezel",
+  "Trail": "Spoor",
+  "Aura": "Aura",
   "Name tag": "Naamplaatje",
   "Launcher theme": "Launcher-thema",
   "Couldn't sync your outfit. It'll try again when you're online.": "Kan je outfit niet synchroniseren. Wanneer u online bent, wordt het opnieuw geprobeerd.",
@@ -986,7 +989,7 @@
   "Off: everyone sees you without them.": "Uit: iedereen ziet je zonder hen.",
   "Hide other players' cosmetics": "Verberg de cosmetica van andere spelers",
   "Others look like plain players to you. Also in the game's Horizon settings.": "Anderen zien er voor jou uit als gewone spelers. Ook in de Horizon-instellingen van de game.",
-  "Show other players' auras and trails": "Toon de aura's en sporen van andere spelers",
+  "Hide other players' trails and auras": "Sporen en aura's van andere spelers verbergen",
   "Off by default. Also in the game's Horizon settings.": "Standaard uitgeschakeld. Ook in de Horizon-instellingen van de game.",
   "Friend": "Vriend",
   "Friends on the same Wi-Fi: Multiplayer, Add server, paste.": "Vrienden op dezelfde Wi-Fi: Multiplayer, Server toevoegen, plakken.",
@@ -1213,5 +1216,9 @@
   "US sales tax is added where a state charges it.": "Amerikaanse omzetbelasting komt erbij waar een staat die heft.",
   "VAT included where it applies.": "Btw inbegrepen waar die geldt.",
   "In a set in your basket": "In een set in je mandje",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Rond de betaling af in je browser. Je items komen even later in de Kledingkast."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Rond de betaling af in je browser. Je items komen even later in de Kledingkast.",
+  "{name} was left out: made for another Horizon version": "{name} is weggelaten: gemaakt voor een andere Horizon-versie",
+  "{name} was left out: clashes with {other}": "{name} is weggelaten: botst met {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} is weggelaten: het heeft {other} nodig, dat is weggelaten",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Bouwt niet op de Horizon die je speelt ({code}): een build laat het weg tot de maker het bijwerkt"
 }

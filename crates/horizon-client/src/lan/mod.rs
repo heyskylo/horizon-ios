@@ -25,6 +25,7 @@ pub mod forwarding;
 pub mod guest;
 pub mod handoff;
 pub mod hub;
+pub mod import;
 mod io_pool;
 pub mod menu;
 pub mod playerdata;

@@ -264,7 +264,7 @@
   "Backups": "Sauvagardas",
   "Nothing found.": "Res trobat.",
   "The source at commit {commit}.": "La font a commit {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Los telecargaments, las connexions e las mesas a jorn passan per aqueste mandatari HTTP (http://host:port). Vuèg significa pas cap : HTTPS_PROXY es utilizat a la plaça quand lo lançaire foguèt aviat amb un.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Los telecargaments, las connexions e las mesas a jorn passan per aqueste mandatari (http://host:port, socks5://host:port). Vuèg significa pas cap : HTTPS_PROXY es utilizat a la plaça quand lo lançaire foguèt aviat amb un.",
   "Beta": "Beta",
   "Benchmark uploads": "Los enviaments de referéncia",
   "Saved: the next Play {what}.": "Enregistrat: lo pròplèu Jogar {what}.",
@@ -960,6 +960,9 @@
   "Reset view": "Reïnicializar la vista",
   "Drag to turn, scroll to zoom.": "Lisatz per virar, desfilatz per zoomar.",
   "Shoulder pet": "Mascota d'espatla",
+  "Companion": "Companh",
+  "Trail": "Traça",
+  "Aura": "Aura",
   "Name tag": "Etiqueta de nom",
   "Launcher theme": "Tèma del lançaire",
   "Couldn't sync your outfit. It'll try again when you're online.": "Poguèt pas sincronizar vòstre vestit. Ensajarà tornarmai quand seràs en linha.",
@@ -986,7 +989,7 @@
   "Off: everyone sees you without them.": "Apagat: tot lo monde te vei sens eles.",
   "Hide other players' cosmetics": "Amagar los cosmetics dels autres jogaires",
   "Others look like plain players to you. Also in the game's Horizon settings.": "D'autres vos semblan de jogaires simples. Tanben dins los paramètres Horizon del jòc.",
-  "Show other players' auras and trails": "Mostrar las auras e las pistas dels autres jogaires",
+  "Hide other players' trails and auras": "Amagar las traças e las auras dels autres jogaires",
   "Off by default. Also in the game's Horizon settings.": "Desactivat per defaut. Tanben dins los paramètres Horizon del jòc.",
   "Friend": "Amic",
   "Friends on the same Wi-Fi: Multiplayer, Add server, paste.": "Amics sul meteis Wi-Fi : Multijogaire, Apondre servidor, pegar.",
@@ -1213,5 +1216,9 @@
   "US sales tax is added where a state charges it.": "La taxa de venda americana s'apond ont un estat la percep.",
   "VAT included where it applies.": "TVA inclusa ont s'aplica.",
   "In a set in your basket": "Dins un set de vòstre panièr",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Acabatz lo pagament dins lo navegador. Vòstres objèctes arriban a la Garda-rauba un momenton aprèp."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Acabatz lo pagament dins lo navegador. Vòstres objèctes arriban a la Garda-rauba un momenton aprèp.",
+  "{name} was left out: made for another Horizon version": "{name} es estat daissat de caire: fach per una autra version d'Horizon",
+  "{name} was left out: clashes with {other}": "{name} es estat daissat de caire: en conflicte amb {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} es estat daissat de caire: a besonh de {other}, daissat de caire",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Se compila pas sus l'Horizon que i jogas ({code}): una compilacion lo daissa de caire fins que son autor lo mete a jorn"
 }

@@ -263,7 +263,7 @@
   "Backups": "Backups",
   "Nothing found.": "Ez da ezer aurkitu.",
   "The source at commit {commit}.": "Konpromisoko iturria {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Deskargak, saioak eta eguneratzeak HTTP proxy honen bidez egiten dira (http://host:port). Hutsik ez dagoela esan nahi du: HTTPS_PROXY erabiltzen da abiarazlea batekin abiarazten zenean.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Deskargak, saioak eta eguneratzeak proxy honen bidez egiten dira (http://host:port, socks5://host:port). Hutsik ez dagoela esan nahi du: HTTPS_PROXY erabiltzen da abiarazlea batekin abiarazten zenean.",
   "Beta": "Beta",
   "Benchmark uploads": "Erreferentziazko igoerak",
   "Saved: the next Play {what}.": "Gorde: hurrengo Play {what}.",
@@ -958,6 +958,9 @@
   "Reset view": "Berrezarri ikuspegia",
   "Drag to turn, scroll to zoom.": "Arrastatu biratzeko, korritu zooma egiteko.",
   "Shoulder pet": "Sorbaldako maskota",
+  "Companion": "Laguna",
+  "Trail": "Arrastoa",
+  "Aura": "Aura",
   "Name tag": "Izena etiketa",
   "Launcher theme": "Abiarazlearen gaia",
   "Couldn't sync your outfit. It'll try again when you're online.": "Ezin izan da zure jantzia sinkronizatu. Berriro saiatuko da konektatuta zaudenean.",
@@ -984,7 +987,7 @@
   "Off: everyone sees you without them.": "Off: denek ikusten zaituzte haiek gabe.",
   "Hide other players' cosmetics": "Ezkutatu beste jokalarien kosmetikoak",
   "Others look like plain players to you. Also in the game's Horizon settings.": "Beste batzuk jokalari arruntak iruditzen zaizkizu. Jokoaren Horizon ezarpenetan ere.",
-  "Show other players' auras and trails": "Erakutsi beste jokalarien aura eta ibilbideak",
+  "Hide other players' trails and auras": "Ezkutatu beste jokalarien arrastoak eta aurak",
   "Off by default. Also in the game's Horizon settings.": "Desaktibatuta lehenespenez. Jokoaren Horizon ezarpenetan ere.",
   "Friend": "Laguna",
   "Friends on the same Wi-Fi: Multiplayer, Add server, paste.": "Wi-Fi berean dauden lagunak: Jokalari anitzeko, Gehitu zerbitzaria, itsatsi.",
@@ -1213,5 +1216,9 @@
   "US sales tax is added where a state charges it.": "AEBetako salmenta-zerga gehitzen da estatu batek kobratzen duen lekuan.",
   "VAT included where it applies.": "BEZ barne, aplikatzen den lekuan.",
   "In a set in your basket": "Zure saskiko multzo batean",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Amaitu ordainketa nabigatzailean. Zure elementuak Armairura iritsiko dira une batean."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Amaitu ordainketa nabigatzailean. Zure elementuak Armairura iritsiko dira une batean.",
+  "{name} was left out: made for another Horizon version": "{name} kanpoan utzi da: Horizonen beste bertsio baterako egina",
+  "{name} was left out: clashes with {other}": "{name} kanpoan utzi da: {other}(r)ekin talka egiten du",
+  "{name} was left out: it needs {other}, which was left out": "{name} kanpoan utzi da: {other} behar du, eta hura kanpoan utzi da",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Ez da eraikitzen jokatzen duzun Horizonen ({code}): eraikuntzak kanpoan uzten du egileak eguneratu arte"
 }

@@ -263,7 +263,7 @@
   "Backups": "Cúltacaí",
   "Nothing found.": "Ní bhfuarthas aon rud.",
   "The source at commit {commit}.": "An fhoinse ag gealltanas {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Téann íoslódálacha, síniú isteach agus nuashonruithe tríd an seachfhreastalaí HTTP seo (http://host:port). Ní chiallaíonn folamh aon cheann: úsáidtear HTTPS_PROXY ina ionad sin nuair a cuireadh tús leis an tosaitheoir le ceann amháin.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Téann íoslódálacha, síniú isteach agus nuashonruithe tríd an seachfhreastalaí seo (http://host:port, socks5://host:port). Ní chiallaíonn folamh aon cheann: úsáidtear HTTPS_PROXY ina ionad sin nuair a cuireadh tús leis an tosaitheoir le ceann amháin.",
   "Beta": "Béite",
   "Benchmark uploads": "Uaslódálacha tagarmhairc",
   "Saved: the next Play {what}.": "Sábháilte: an chéad Imirt eile {what}.",
@@ -958,6 +958,9 @@
   "Reset view": "Athshocraigh an t-amharc",
   "Drag to turn, scroll to zoom.": "Tarraing chun casadh, scrollaigh chun súmáil.",
   "Shoulder pet": "Peataí ghualainn",
+  "Companion": "Compánach",
+  "Trail": "Rian",
+  "Aura": "Aura",
   "Name tag": "Ainm chlib",
   "Launcher theme": "Téama tosaitheoir",
   "Couldn't sync your outfit. It'll try again when you're online.": "Níorbh fhéidir do chulaith a shioncronú. Bainfidh sé triail eile as nuair a bhíonn tú ar líne.",
@@ -984,7 +987,7 @@
   "Off: everyone sees you without them.": "Amach: feiceann gach duine tú gan iad.",
   "Hide other players' cosmetics": "Folaigh cosmaidí imreoirí eile",
   "Others look like plain players to you. Also in the game's Horizon settings.": "Breathnaíonn daoine eile cosúil le himreoirí simplí duit. Chomh maith leis sin i socruithe Horizon an chluiche.",
-  "Show other players' auras and trails": "Taispeáin auras agus rianta imreoirí eile",
+  "Hide other players' trails and auras": "Folaigh rianta agus aurataí imreoirí eile",
   "Off by default. Also in the game's Horizon settings.": "Off de réir réamhshocraithe. Chomh maith leis sin i socruithe Horizon an chluiche.",
   "Friend": "Cara",
   "Friends on the same Wi-Fi: Multiplayer, Add server, paste.": "Cairde ar an Wi-Fi céanna: Multiplayer, Cuir freastalaí, greamaigh.",
@@ -1213,5 +1216,9 @@
   "US sales tax is added where a state charges it.": "Cuirtear cáin díolacháin SAM leis nuair a ghearrann stát í.",
   "VAT included where it applies.": "CBL san áireamh nuair is infheidhme.",
   "In a set in your basket": "I sraith i do chiseán",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Críochnaigh an íocaíocht i do bhrabhsálaí. Tiocfaidh do mhíreanna chuig an Vardrús i gceann nóiméid."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Críochnaigh an íocaíocht i do bhrabhsálaí. Tiocfaidh do mhíreanna chuig an Vardrús i gceann nóiméid.",
+  "{name} was left out: made for another Horizon version": "Fágadh {name} amach: déanta do leagan eile de Horizon",
+  "{name} was left out: clashes with {other}": "Fágadh {name} amach: tagann sé salach ar {other}",
+  "{name} was left out: it needs {other}, which was left out": "Fágadh {name} amach: tá {other} ag teastáil uaidh, agus fágadh é sin amach",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Ní thógtar é ar an Horizon a imríonn tú ({code}): fágann tógáil amach é go dtí go nuashonraíonn a údar é"
 }

@@ -119,7 +119,15 @@ tag `nightly-source/<date>-<short>` ([release-flow.md](release-flow.md#nightly-c
 builds after its Nightly is replaced. When the mods of one build pin different commits, the launcher says which
 mod pins which and the commit the build would use, the newest of them, and builds only after the player chooses
 **Build anyway** (`native-build --allow-version-mismatch`): such mods often still apply and compile. A failed build
-then says the mods were made for other versions. Their horizon-mixins pins may differ too: the build uses the
+then says the mods were made for other versions. A mod that doesn't fit the build's Horizon doesn't stop the others: when
+horizon-mixins refuses it (a function it hooks, the file it adds a module to or a named hook point this Horizon
+doesn't have: `E_TARGET_NOT_FOUND`, `E_MODULE`, `E_HOOK_CATALOG`; a module named like one of Horizon's or another
+mod's: `E_MODULE_CONFLICT`), or the compiler's errors are in its helpers, the build runs again without it and without
+the mods that need it ([dependencies](#dependencies-between-trait-mods)), at most three more compiles. The build's steps
+and the Mods page say which mods were left out and why ("X was left out: made for another Horizon version", "…:
+clashes with Y", "…: it needs Y, which was left out"); `native-mods.json` keeps them (`left_out`), so the build is up
+to date with the same mods turned on, and a new version of a left-out mod asks for a build again. A server engine
+(`--server-output`) leaves nothing out: it fails instead. Their horizon-mixins pins may differ too: the build uses the
 newest of them and the launcher's own, never one older than a mod was made with. A bundle with no pin builds on
 the commit of the installed version the build starts from. A pin chooses the commit even when the player picked another
 version: the Mods page then says which mods pinned the commit the build compiled, and **Rebuild on Horizon**
@@ -3385,6 +3393,12 @@ into a generated game executable and calls `hooks()` in dependency order (a mod 
 depends on, else in bundle order). The package is not a
 `[[crate]]`: it depends on the game instead of the game depending on it. A bundle with no
 injections, state, bridges, modules, mixin crates or post-build steps skips horizon-mixins.
+
+Turning a trait mod off in Options > Mods takes effect at once: the game skips its `Hooks` from the next dispatch on,
+on the server thread and in the window alike, and turning it on again resumes it, with no rebuild while it is still in
+the build. It stays loaded and keeps what it holds; what it registered at start (blocks, items, component types)
+stays registered, and its `RenderHooks` keep drawing until a restart. Mixin code is not switched: it checks
+`native_on` itself, as before ([design/mod-hotload.md](design/mod-hotload.md)).
 
 ### Dependencies between trait mods
 

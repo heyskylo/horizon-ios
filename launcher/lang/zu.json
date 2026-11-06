@@ -263,7 +263,7 @@
   "Backups": "Izipele",
   "Nothing found.": "Akukho okutholiwe.",
   "The source at commit {commit}.": "Umthombo wokuzibophezela {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Ukulanda, ukungena ngemvume nezibuyekezo kungena kulo mmeleli we-HTTP (http://host:port). Ukungenalutho kusho ukuthi akukho: I-HTTPS_PROXY isetshenziswa esikhundleni lapho isiqalisi siqalwa ngaso.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Ukulanda, ukungena ngemvume nezibuyekezo kungena kulo mmeleli we-(http://host:port, socks5://host:port). Ukungenalutho kusho ukuthi akukho: I-HTTPS_PROXY isetshenziswa esikhundleni lapho isiqalisi siqalwa ngaso.",
   "Beta": "I-Beta",
   "Benchmark uploads": "Ukulayishwa kwebhentshimakhi",
   "Saved: the next Play {what}.": "Ilondoloziwe: Ukudlala okulandelayo {what}.",
@@ -958,6 +958,9 @@
   "Reset view": "Setha kabusha ukubuka",
   "Drag to turn, scroll to zoom.": "Hudula ukuze uphendule, skrola ukuze usondeze.",
   "Shoulder pet": "Isilwane esifuywayo esisemahlombe",
+  "Companion": "Umngane",
+  "Trail": "Umzila",
+  "Aura": "I-aura",
   "Name tag": "Ithegi yegama",
   "Launcher theme": "Itimu yesiqalisi",
   "Couldn't sync your outfit. It'll try again when you're online.": "Ayikwazanga ukuvumelanisa ingubo yakho. Izozama futhi uma uku-inthanethi.",
@@ -984,7 +987,7 @@
   "Off: everyone sees you without them.": "Valiwe: wonke umuntu uyakubona ngaphandle kwabo.",
   "Hide other players' cosmetics": "Fihla izimonyo zabanye abadlali",
   "Others look like plain players to you. Also in the game's Horizon settings.": "Abanye babukeka njengabadlali abalula kuwe. Futhi kuzilungiselelo zegeyimu Horizon.",
-  "Show other players' auras and trails": "Bonisa ama-auras nezindlela zabanye abadlali",
+  "Hide other players' trails and auras": "Fihla imizila nama-aura abanye abadlali",
   "Off by default. Also in the game's Horizon settings.": "Vala ngokuzenzakalelayo. Futhi kuzilungiselelo zegeyimu Horizon.",
   "Friend": "Umngane",
   "Friends on the same Wi-Fi: Multiplayer, Add server, paste.": "Abangane ku-Wi-Fi efanayo: Abadlali abaningi, Engeza iseva, namathisela.",
@@ -1213,5 +1216,9 @@
   "US sales tax is added where a state charges it.": "Intela yokuthengisa yase-US yengezwa lapho isifundazwe siyiqoqa khona.",
   "VAT included where it applies.": "I-VAT ifakiwe lapho isebenza khona.",
   "In a set in your basket": "Kusethi esebhasikidini lakho",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Qedela ukukhokha kusiphequluli sakho. Izinto zakho zizofika eKhabetheni maduze."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Qedela ukukhokha kusiphequluli sakho. Izinto zakho zizofika eKhabetheni maduze.",
+  "{name} was left out: made for another Horizon version": "I-{name} ishiywe ngaphandle: yenzelwe enye inguqulo ye-Horizon",
+  "{name} was left out: clashes with {other}": "I-{name} ishiywe ngaphandle: ingqubuzana ne-{other}",
+  "{name} was left out: it needs {other}, which was left out": "I-{name} ishiywe ngaphandle: idinga i-{other}, eshiywe ngaphandle",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Ayakhiwa ku-Horizon oyidlalayo ({code}): ukwakha kuyayishiya ngaphandle kuze kube umbhali wayo uyayibuyekeza"
 }

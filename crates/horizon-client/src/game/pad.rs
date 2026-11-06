@@ -5,6 +5,7 @@
 //! injects a virtual pad on top of the real one.
 use super::event_loop::EventLoopCtl;
 use super::{Game, Screen};
+use horizon_client::actions::Action;
 use horizon_client::held::Source;
 use horizon_client::{
     Result,
@@ -14,7 +15,8 @@ use horizon_client::{
     keymapping::SNEAK,
 };
 use serde_json::{Value, json};
-use std::time::Instant;
+use std::time::{Duration, Instant};
+use winit::event::MouseButton;
 use winit::keyboard::KeyCode;
 
 pub(super) const HELP: &[&str] = &[
@@ -69,6 +71,11 @@ pub(super) struct Pads {
     pub(super) menu: super::pad_menu::MenuCursor,
     /// The last vibration asked for, for `pad status`.
     last_rumble: Option<(&'static str, gamepad::Pulse)>,
+    /// The drop button, while it is held in play.
+    held_drop: Option<gamepad::HeldDrop>,
+    /// The drop about to happen is the pad's stack form: it has no Control for `drop_whole_stack`.
+    /// On a server the drop waits for the tick.
+    pub(super) drop_stack: bool,
     /// The player's health between polls (a drop is damage taken).
     health: HealthWatch,
 }
@@ -142,6 +149,7 @@ mod hardware {
         }
         pub(in crate::game) fn lend_output(&mut self, _: &mut Pads, _: PadId) {}
         pub(in crate::game) fn reclaim_output(&mut self, _: &mut Pads) {}
+        pub(in crate::game) fn report_status(&self, _: &mut Pads, _: Option<PadId>) {}
         pub(in crate::game) fn connected(&self, _: PadId) -> bool {
             false
         }
@@ -323,6 +331,7 @@ impl Game<'_> {
             self.pad.in_use = true;
         }
         self.pad.state = state;
+        self.pad_drop_frame();
         self.pad_output_frame();
         // Damage from any source, here or on a server; nothing counts on
         // the title screen.
@@ -468,8 +477,8 @@ impl Game<'_> {
         };
         match route {
             Route::HotbarStep { next } => {
-                if down && self.screen == Screen::Playing {
-                    self.selected = gamepad::hotbar_step(self.selected, next);
+                if down {
+                    self.hotbar_step(next);
                 }
                 Ok(())
             }
@@ -483,10 +492,10 @@ impl Game<'_> {
                     return Ok(());
                 }
                 let screen_open = self.screen != Screen::Playing || self.title.is_some();
-                let was = self.keys.contains(&KeyCode::ShiftLeft);
+                let was = self.keys.held(Action::Sneak);
                 self.toggles.pad_toggle(SNEAK, screen_open);
                 self.sync_toggle(SNEAK);
-                if !was && self.keys.contains(&KeyCode::ShiftLeft) {
+                if !was && self.keys.held(Action::Sneak) {
                     // The pad's latch: a keyboard handoff leaves it.
                     self.keys.press(KeyCode::ShiftLeft, Source::Pad);
                     self.keys.release(&KeyCode::ShiftLeft, Source::Keyboard);
@@ -512,18 +521,65 @@ impl Game<'_> {
                 }
                 Ok(())
             }
-            Route::Mouse(button) => {
-                if !down || (self.title.is_none() && self.screen == Screen::Playing) {
-                    self.play_mouse(button, down)?;
+            Route::Fullscreen => {
+                if down {
+                    self.toggle_fullscreen();
                 }
                 Ok(())
+            }
+            Route::Held => Ok(()),
+            Route::Mouse(button) => {
+                let playing = self.title.is_none() && self.screen == Screen::Playing;
+                // What the window path tells mods and the click counters. Pick block isn't one
+                // they count.
+                if playing
+                    && matches!(button, MouseButton::Left | MouseButton::Right)
+                    && (down || !self.mouse_mapping_held_elsewhere(button, Source::Pad))
+                {
+                    self.extras_mouse(button, down);
+                }
+                if !down || playing {
+                    self.mouse_mapping(button, down, Source::Pad)?;
+                }
+                Ok(())
+            }
+            Route::Key(KeyCode::KeyQ) => {
+                self.pad.drop_stack = false;
+                self.pad.held_drop = down.then(|| {
+                    let delay = self.settings.controller.repeat_delay;
+                    gamepad::HeldDrop::new(Instant::now(), Duration::from_secs_f32(delay))
+                });
+                self.mapped_key(KeyCode::KeyQ, down, false, KeyCode::KeyQ, Source::Pad)
             }
             Route::Key(key) => self.mapped_key(key, down, false, key, Source::Pad),
         }
     }
 
+    /// Each poll: a held drop button, as a held Q's key repeats reach the mapping.
+    fn pad_drop_frame(&mut self) {
+        if self.pad_in_menu() || self.screen_over_playing() {
+            return;
+        }
+        let interval = Duration::from_secs_f32(self.settings.controller.repeat_interval);
+        let step = self
+            .pad
+            .held_drop
+            .as_mut()
+            .and_then(|held| held.due(Instant::now(), interval));
+        let Some(step) = step else {
+            return;
+        };
+        self.pad.drop_stack = step == gamepad::DropStep::Stack;
+        if let Err(e) = self.mapped_key(KeyCode::KeyQ, true, true, KeyCode::KeyQ, Source::Pad) {
+            log::warn!("Horizon: controller drop: {e}");
+        }
+    }
+
     /// B and Start: what Escape does where the pad is.
     pub(super) fn pad_back(&mut self) -> Result<()> {
+        if self.prompt_open() {
+            return self.pad_prompt_back();
+        }
         // The options open over the title screen too: they come first, as
         // for the keyboard's Escape.
         if self.screen == Screen::Options {
@@ -552,6 +608,26 @@ impl Game<'_> {
             return None;
         }
         gamepad::move_vector(self.pad.state.left, settings.move_deadzone)
+    }
+
+    /// Whether `key` is held, a movement key by the left stick too: as the keys the stick holds
+    /// (`eight_direction_keys`), whatever moves the player. For readers of the keys that aren't
+    /// the movement itself.
+    pub(super) fn movement_key_held(&self, key: KeyCode) -> bool {
+        if self.keys.raw(&key) {
+            return true;
+        }
+        let Some(stick) = self.pad_move() else {
+            return false;
+        };
+        let [forward, backward, left, right] = gamepad::eight_direction_keys(stick);
+        match key {
+            KeyCode::KeyW => forward,
+            KeyCode::KeyS => backward,
+            KeyCode::KeyA => left,
+            KeyCode::KeyD => right,
+            _ => false,
+        }
     }
 
     /// The right stick turns the view, once per frame (`Entity.turn`).

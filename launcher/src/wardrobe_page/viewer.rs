@@ -140,10 +140,8 @@ impl Viewer {
             return;
         };
         let mut draws = vec![preview::Draw {
-            root: body,
-            base: Default::default(),
-            texture: &outfit.skin,
             poses: shot.body.clone(),
+            ..preview::Draw::model(body, &outfit.skin)
         }];
         for item in &outfit.items {
             draws.extend(preview::Draw::item_posed(

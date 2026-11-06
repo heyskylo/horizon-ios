@@ -263,7 +263,7 @@
   "Backups": "Резерв копийӗсем",
   "Nothing found.": "Нимӗн те тупӑнман.",
   "The source at commit {commit}.": "Ҫӑлкуҫ коммит {commit} ҫинче.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Скачатьсем, логинсем тата ҫӗнетӳсем ҫак HTTP прокси урлӑ (http://host:port) пыраҫҫӗ. Пушӑ тени ҫук тенине пӗлтерет: HTTPS_PROXY ун вырӑнне лаунчера пӗрпе пуҫланӑ чухне усӑ кураҫҫӗ.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Скачатьсем, логинсем тата ҫӗнетӳсем ҫак прокси урлӑ (http://host:port, socks5://host:port) пыраҫҫӗ. Пушӑ тени ҫук тенине пӗлтерет: HTTPS_PROXY ун вырӑнне лаунчера пӗрпе пуҫланӑ чухне усӑ кураҫҫӗ.",
   "Beta": "Бета",
   "Benchmark uploads": "Бенчмарк ҫӗклемӗсем",
   "Saved: the next Play {what}.": "Упраннӑ: тепӗр Play {what}.",
@@ -958,6 +958,9 @@
   "Reset view": "Курăнăва каялла тавăр",
   "Drag to turn, scroll to zoom.": "Ҫавăрма туртăр, ҫывхартма кустăрмана ҫавăрăр.",
   "Shoulder pet": "Хулпуҫҫи чӗрчунӗ",
+  "Companion": "Юлташ",
+  "Trail": "Йӗр",
+  "Aura": "Аура",
   "Name tag": "Ят палли",
   "Launcher theme": "Лаунчер теми",
   "Couldn't sync your outfit. It'll try again when you're online.": "Сирӗн тумтирӗре синхронизацилеме май килмерӗ. Эсир интернетра пулсан, вӑл тепӗр хут хӑтланса пӑхӗ.",
@@ -984,7 +987,7 @@
   "Off: everyone sees you without them.": "Офф: пурте сана вӗсемсӗр кураҫҫӗ.",
   "Hide other players' cosmetics": "Ытти вылякансен косметикине пытарӑр",
   "Others look like plain players to you. Also in the game's Horizon settings.": "Ыттисем сирӗншӗн ахаль вылякансем пек курӑнаҫҫӗ. Ҫавӑн пекех вӑйӑн Horizon настройкисенче.",
-  "Show other players' auras and trails": "Ытти вылякансен аурине тата йӗрӗсене кӑтартӑр",
+  "Hide other players' trails and auras": "Ытти вӑййисен йӗрӗсене тата аурисене пытар",
   "Off by default. Also in the game's Horizon settings.": "Выключен по умолчанию. Ҫавӑн пекех вӑйӑн Horizon настройкисенче.",
   "Friend": "Тус",
   "Friends on the same Wi-Fi: Multiplayer, Add server, paste.": "Пӗр Wi-Fi ҫинчи туссем: Мультиплеер, Сервер хушасси, ҫыпӑҫтарасси.",
@@ -1213,5 +1216,9 @@
   "US sales tax is added where a state charges it.": "АПШ сутă налукне штат ыйтнă çĕрте хушаççĕ.",
   "VAT included where it applies.": "НДС кĕрет, вăл ĕçленĕ çĕрте.",
   "In a set in your basket": "Корзинкăри комплектра",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Тӳлеве браузерта вĕçлĕр. Япаласем Гардероба часах килĕç."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Тӳлеве браузерта вĕçлĕр. Япаласем Гардероба часах килĕç.",
+  "{name} was left out: made for another Horizon version": "{name} кӗртмен: Horizon-ӑн урӑх версийӗ валли тунӑ",
+  "{name} was left out: clashes with {other}": "{name} кӗртмен: {other} мод-па килӗшмест",
+  "{name} was left out: it needs {other}, which was left out": "{name} кӗртмен: ӑна {other} кирлӗ, ӑна та кӗртмен",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Эсӗ вылякан Horizon-ра пуҫтарӑнмасть ({code}): авторӗ ҫӗнетмесен, пуҫтару ӑна кӗртмест"
 }

@@ -263,7 +263,7 @@
   "Backups": "სარეზერვო ასლები",
   "Nothing found.": "ვერაფერი მოიძებნა.",
   "The source at commit {commit}.": "წყარო ვალდებულებაში {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "ჩამოტვირთვები, შესვლა და განახლებები გადის ამ HTTP პროქსის მეშვეობით (http://host:port). ცარიელი ნიშნავს არცერთს: ამის ნაცვლად გამოიყენება HTTPS_PROXY, როდესაც გამშვები დაიწყო ერთით.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "ჩამოტვირთვები, შესვლა და განახლებები გადის ამ პროქსის მეშვეობით (http://host:port, socks5://host:port). ცარიელი ნიშნავს არცერთს: ამის ნაცვლად გამოიყენება HTTPS_PROXY, როდესაც გამშვები დაიწყო ერთით.",
   "Beta": "ბეტა",
   "Benchmark uploads": "საორიენტაციო ატვირთვები",
   "Saved: the next Play {what}.": "შენახულია: შემდეგი თამაში {what}.",
@@ -958,6 +958,9 @@
   "Reset view": "ხედის აღდგენა",
   "Drag to turn, scroll to zoom.": "გადაათრიეთ შესატრიალებლად, გადაახვიეთ გასადიდებლად.",
   "Shoulder pet": "მხრის შინაური ცხოველი",
+  "Companion": "თანამგზავრი",
+  "Trail": "კვალი",
+  "Aura": "აურა",
   "Name tag": "სახელის ნიშანი",
   "Launcher theme": "გამშვების თემა",
   "Couldn't sync your outfit. It'll try again when you're online.": "თქვენი სამოსის სინქრონიზაცია ვერ მოხერხდა. ის ხელახლა ეცდება, როცა ონლაინ იქნებით.",
@@ -984,7 +987,7 @@
   "Off: everyone sees you without them.": "გამორთულია: ყველა გხედავს მათ გარეშე.",
   "Hide other players' cosmetics": "დამალეთ სხვა მოთამაშეების კოსმეტიკა",
   "Others look like plain players to you. Also in the game's Horizon settings.": "სხვები შენთვის უბრალო მოთამაშეებად გამოიყურებიან. ასევე თამაშის Horizon პარამეტრებში.",
-  "Show other players' auras and trails": "აჩვენეთ სხვა მოთამაშეების აურა და ბილიკები",
+  "Hide other players' trails and auras": "სხვა მოთამაშეების კვალისა და აურების დამალვა",
   "Off by default. Also in the game's Horizon settings.": "ნაგულისხმევად გამორთულია. ასევე თამაშის Horizon პარამეტრებში.",
   "Friend": "მეგობარი",
   "Friends on the same Wi-Fi: Multiplayer, Add server, paste.": "მეგობრები იმავე Wi-Fi-ზე: Multiplayer, სერვერის დამატება, ჩასმა.",
@@ -1213,5 +1216,9 @@
   "US sales tax is added where a state charges it.": "აშშ-ის გაყიდვების გადასახადი ემატება იქ, სადაც შტატი იღებს.",
   "VAT included where it applies.": "დღგ შედის იქ, სადაც მოქმედებს.",
   "In a set in your basket": "თქვენი კალათის ნაკრებში",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "დაასრულეთ გადახდა ბრაუზერში. ნივთები გარდერობში ცოტა ხანში მოვა."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "დაასრულეთ გადახდა ბრაუზერში. ნივთები გარდერობში ცოტა ხანში მოვა.",
+  "{name} was left out: made for another Horizon version": "{name} გამოტოვებულია: შექმნილია Horizon-ის სხვა ვერსიისთვის",
+  "{name} was left out: clashes with {other}": "{name} გამოტოვებულია: კონფლიქტშია {other}-თან",
+  "{name} was left out: it needs {other}, which was left out": "{name} გამოტოვებულია: მას სჭირდება {other}, რომელიც გამოტოვებულია",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "არ იგება შენს Horizon-ზე ({code}): აწყობა მას გამოტოვებს, სანამ ავტორი არ განაახლებს"
 }

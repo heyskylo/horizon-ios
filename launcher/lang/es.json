@@ -264,7 +264,7 @@
   "Backups": "Copias de seguridad",
   "Nothing found.": "No se encontró nada.",
   "The source at commit {commit}.": "El código fuente en el commit {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Las descargas, inicios de sesión y actualizaciones pasarán por este proxy HTTP (http://host:puerto). En blanco significa ninguno: se usará HTTPS_PROXY si el iniciador se arrancó con él.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Las descargas, inicios de sesión y actualizaciones pasarán por este proxy (http://host:puerto, socks5://host:puerto). En blanco significa ninguno: se usará HTTPS_PROXY si el iniciador se arrancó con él.",
   "Beta": "Beta",
   "Benchmark uploads": "Subidas de benchmarks",
   "Saved: the next Play {what}.": "Guardado: la próxima vez que pulses Jugar {what}.",
@@ -960,6 +960,9 @@
   "Reset view": "Restablecer vista",
   "Drag to turn, scroll to zoom.": "Arrastra para girar, desplaza para hacer zoom.",
   "Shoulder pet": "Mascota de hombro",
+  "Companion": "Compañero",
+  "Trail": "Estela",
+  "Aura": "Aura",
   "Name tag": "Etiqueta de nombre",
   "Launcher theme": "Tema del launcher",
   "Couldn't sync your outfit. It'll try again when you're online.": "No se pudo sincronizar tu atuendo. Se volverá a intentar cuando tengas conexión.",
@@ -986,7 +989,7 @@
   "Off: everyone sees you without them.": "Desactivado: todos te ven sin ellos.",
   "Hide other players' cosmetics": "Ocultar los cosméticos de otros jugadores",
   "Others look like plain players to you. Also in the game's Horizon settings.": "Los demás te parecerán jugadores normales. También en los ajustes de Horizon del juego.",
-  "Show other players' auras and trails": "Mostrar auras y estelas de otros jugadores",
+  "Hide other players' trails and auras": "Ocultar las estelas y auras de otros jugadores",
   "Off by default. Also in the game's Horizon settings.": "Desactivado por defecto. También en los ajustes de Horizon del juego.",
   "Friend": "Amigo",
   "Friends on the same Wi-Fi: Multiplayer, Add server, paste.": "Amigos en la misma Wi-Fi: Multijugador, Añadir servidor, pegar.",
@@ -1213,5 +1216,9 @@
   "US sales tax is added where a state charges it.": "Se añade el impuesto sobre las ventas de EE. UU. donde un estado lo cobra.",
   "VAT included where it applies.": "IVA incluido donde corresponde.",
   "In a set in your basket": "En un conjunto de tu cesta",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Termina el pago en tu navegador. Tus objetos llegan al Armario un momento después."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Termina el pago en tu navegador. Tus objetos llegan al Armario un momento después.",
+  "{name} was left out: made for another Horizon version": "Se dejó fuera {name}: hecho para otra versión de Horizon",
+  "{name} was left out: clashes with {other}": "Se dejó fuera {name}: choca con {other}",
+  "{name} was left out: it needs {other}, which was left out": "Se dejó fuera {name}: necesita {other}, que se dejó fuera",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "No se compila en el Horizon que juegas ({code}): la compilación lo deja fuera hasta que su autor lo actualice"
 }

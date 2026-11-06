@@ -263,7 +263,7 @@
   "Backups": "באַקקופּס",
   "Nothing found.": "גאָרנישט געפונען.",
   "The source at commit {commit}.": "דער מקור אין יבערגעבן {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "דאַונלאָודז, צייכן-ינס און דערהייַנטיקונגען גיין דורך דעם הטטפּ פראקסי (הטטפּ: // האָסט: פּאָרט). ליידיק מיטל גאָרניט: HTTPS_PROXY איז געוויינט אַנשטאָט ווען די לאָנטשער איז סטאַרטעד מיט איין.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "דאַונלאָודז, צייכן-ינס און דערהייַנטיקונגען גיין דורך דעם פראקסי (http://host:port, socks5://host:port). ליידיק מיטל גאָרניט: HTTPS_PROXY איז געוויינט אַנשטאָט ווען די לאָנטשער איז סטאַרטעד מיט איין.",
   "Beta": "ביתא",
   "Benchmark uploads": "בענטשמאַרק ופּלאָאַדס",
   "Saved: the next Play {what}.": "געראטעוועט: דער ווייַטער שפּיל {what}.",
@@ -958,6 +958,9 @@
   "Reset view": "צוריקשטעלן דעם בליק",
   "Drag to turn, scroll to zoom.": "שלעפּט צו דרייען, סקראָלט צו פֿאַרגרעסערן.",
   "Shoulder pet": "אַקסל ליבלינג",
+  "Companion": "באַגלייטער",
+  "Trail": "שפּור",
+  "Aura": "אָראַ",
   "Name tag": "נאָמען קוויטל",
   "Launcher theme": "לאַונטשער טעמע",
   "Couldn't sync your outfit. It'll try again when you're online.": "קען נישט סינק דיין גאַרניטער. עס וועט פּרובירן ווידער ווען איר זענט אָנליין.",
@@ -984,7 +987,7 @@
   "Off: everyone sees you without them.": "אַוועק: אַלעמען זעט איר אָן זיי.",
   "Hide other players' cosmetics": "באַהאַלטן די קאָסמעטיקס פון אנדערע פּלייַערס",
   "Others look like plain players to you. Also in the game's Horizon settings.": "אנדערע קוקן פֿאַר איר ווי פּשוט פּלייַערס. אויך אין די Horizon סעטטינגס פון די שפּיל.",
-  "Show other players' auras and trails": "ווייַזן אנדערע פּלייַערס 'אַוראַס און טריילז",
+  "Hide other players' trails and auras": "באַהאַלטן די שפּורן און אָראַס פֿון אַנדערע שפּילער",
   "Off by default. Also in the game's Horizon settings.": "אַוועק דורך פעליקייַט. אויך אין די Horizon סעטטינגס פון די שפּיל.",
   "Friend": "פריינט",
   "Friends on the same Wi-Fi: Multiplayer, Add server, paste.": "פרענדז אויף דער זעלביקער Wi-Fi: מולטיפּלייַער, לייגן סערווער, פּאַפּ.",
@@ -1213,5 +1216,9 @@
   "US sales tax is added where a state charges it.": "אַמעריקאַנער פֿאַרקויף־שטײַער ווערט צוגעלייגט וווּ אַ שטאַט נעמט אים.",
   "VAT included where it applies.": "מע״מ אַרײַנגערעכנט וווּ ער גילט.",
   "In a set in your basket": "אין אַ סעט אין דיין קאָרב",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "ענדיקט די צאָלונג אין בלעטערער. אײַערע זאַכן קומען אין גאַרדעראָב אַ רגע שפּעטער."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "ענדיקט די צאָלונג אין בלעטערער. אײַערע זאַכן קומען אין גאַרדעראָב אַ רגע שפּעטער.",
+  "{name} was left out: made for another Horizon version": "{name} איז אויסגעלאָזט געוואָרן: געמאַכט פֿאַר אַן אַנדער ווערסיע פֿון Horizon",
+  "{name} was left out: clashes with {other}": "{name} איז אויסגעלאָזט געוואָרן: שטויסט זיך מיט {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} איז אויסגעלאָזט געוואָרן: עס דאַרף {other}, וואָס איז אויסגעלאָזט געוואָרן",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "בויט זיך נישט אויף דעם Horizon וואָס דו שפּילסט ({code}): אַ בוי לאָזט עס אויס ביז דער מחבר דערהייַנטיקט עס"
 }

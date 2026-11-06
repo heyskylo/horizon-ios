@@ -1709,6 +1709,37 @@ impl Game<'_> {
                 .write(&super::stats::player_json(&self.world_root, "stats", uuid));
         }
     }
+    /// The advancements and statistics files of a held arrival, before it is placed
+    /// (`player-confirm`): each through a new file, synced and renamed into place
+    /// (`save::write_durable`), so the reply's `ok` means both are on the disk whole.
+    pub(super) fn write_arrival_records(
+        &self,
+        host: &LanHost,
+        guest: &horizon_client::lan::guest::Guest,
+    ) -> std::result::Result<(), String> {
+        if self.adv.tree.list.is_empty() {
+            return Ok(());
+        }
+        let Some(uuid) = self.records_uuid(host, guest.uuid) else {
+            return Ok(());
+        };
+        let write = |dir: &str, json: &serde_json::Value| {
+            let path = super::stats::player_json(&self.world_root, dir, uuid);
+            let text = serde_json::to_string_pretty(json).map_err(|e| e.to_string())?;
+            horizon_client::save::write_durable(&path, text.as_bytes())
+                .map_err(|e| format!("{} is not saved: {e}", path.display()))
+        };
+        write(
+            "advancements",
+            &guest
+                .advancements
+                .to_json(&self.adv.tree, horizon_world::DATA_VERSION),
+        )?;
+        if let Some(play) = host.play.get(&guest.conn) {
+            write("stats", &play.stats.to_json())?;
+        }
+        Ok(())
+    }
     /// `PlayerAdvancements.load` and `ServerStatsCounter.parseLocal` of a
     /// network player who joined; every statistic goes out on the first
     /// request (`PlayerList.placeNewPlayer`'s `markAllDirty`).
@@ -2048,10 +2079,18 @@ impl Game<'_> {
                                 super::dedicated::java_double(z)
                             ),
                         );
-                        super::dedicated::log(
-                            "INFO",
-                            &format!("System chat: {} joined the game", g.name),
-                        );
+                        // A held player is not announced: it is not in the world yet.
+                        if g.held {
+                            super::dedicated::log(
+                                "INFO",
+                                &horizon_client::lan::arrivals::held_line(&g.name),
+                            );
+                        } else {
+                            super::dedicated::log(
+                                "INFO",
+                                &format!("System chat: {} joined the game", g.name),
+                            );
+                        }
                     } else if self.player.is_some()
                         && let Some(g) = host.hub.guest(conn)
                         && g.placed
@@ -2102,20 +2141,33 @@ impl Game<'_> {
                     self.guest_attachments.remove(&guest.uuid);
                     host.play.remove(&guest.conn);
                     self.guest_combat.remove(&guest.conn);
-                    if self.options.dedicated.is_some() && guest.placed {
+                    // A held player was recorded as joined at its login: it leaves too.
+                    if self.options.dedicated.is_some() && (guest.placed || guest.held) {
                         super::dedicated::events::record(
                             "leave",
                             &guest.name,
                             guest.uuid,
                             serde_json::json!({ "reason": guest.left_reason }),
                         );
-                        super::dedicated::log(
-                            "INFO",
-                            &format!("{} lost connection: {}", guest.name, guest.left_reason),
-                        );
+                        if guest.held && !guest.placed {
+                            // Never announced, so no "left the game" either.
+                            super::dedicated::log(
+                                "INFO",
+                                &horizon_client::lan::arrivals::dropped_line(
+                                    &guest.name,
+                                    &guest.left_reason,
+                                ),
+                            );
+                        } else {
+                            super::dedicated::log(
+                                "INFO",
+                                &format!("{} lost connection: {}", guest.name, guest.left_reason),
+                            );
+                        }
                         // A player moved to another server without `announce` was not
-                        // announced as leaving, so the line is not logged either.
-                        if !guest.quiet_leave {
+                        // announced as leaving, so the line is not logged either; a held
+                        // player was never announced at all.
+                        if guest.placed && !guest.quiet_leave {
                             super::dedicated::log(
                                 "INFO",
                                 &format!("System chat: {} left the game", guest.name),
@@ -2460,7 +2512,7 @@ impl Game<'_> {
         // this tick to their clients. Otherwise a newly broken block and its
         // drops remain absent from the snapshot until the following tick.
         if !paused {
-            self.tick_guests(&mut host);
+            horizon_client::spans::time("lan_guests", || self.tick_guests(&mut host));
             // The vehicles the guests just moved enter their portals now.
             let ridden: Vec<u32> = host.hub.guests.iter().filter_map(|g| g.vehicle).collect();
             self.find_ridden_vehicle_portals(&ridden);
@@ -2485,9 +2537,11 @@ impl Game<'_> {
                     .filter_map(|g| Some((g.vehicle?, g.entity_id)))
                     .collect();
                 self.lan_riding(&guests, &mut host.hub.riding);
-                self.lan_entities(&host.mob_players, &mut host.hub, &mut states, true, 0);
-                self.lan_hook_states(&host.play, &host.hub, &mut states);
-                self.lan_entity_uuids(&mut states);
+                horizon_client::spans::time("lan_entity_states", || {
+                    self.lan_entities(&host.mob_players, &mut host.hub, &mut states, true, 0);
+                    self.lan_hook_states(&host.play, &host.hub, &mut states);
+                    self.lan_entity_uuids(&mut states);
+                });
                 host.states_next_entity = Some(self.next_entity);
             } else {
                 host.states_next_entity = None;
@@ -2585,14 +2639,19 @@ impl Game<'_> {
                 if !pass.packets_drained {
                     events.extend(host.hub.drain_packets(&mut ctx));
                 }
-                events.extend(host.hub.tick_level(&mut ctx));
+                events.extend(horizon_client::spans::time("lan_tick_level", || {
+                    host.hub.tick_level(&mut ctx)
+                }));
                 if pass.last {
-                    host.hub.end_tick();
+                    horizon_client::spans::time("lan_end_tick", || host.hub.end_tick());
                 }
                 events
             };
             self.wake_woken_guests(&mut host);
-            let Some(back) = self.lan_process_events(host, events, entities, spawn) else {
+            let processed = horizon_client::spans::time("lan_process_events", || {
+                self.lan_process_events(host, events, entities, spawn)
+            });
+            let Some(back) = processed else {
                 return;
             };
             host = back;
@@ -3099,12 +3158,12 @@ impl Game<'_> {
         // distance + 1) and those chunks' lit neighbours.
         let radius = host.hub.config.view_distance + 1;
         let rule = self.ui.rules.bool("spectators_generate_chunks");
+        // The held players are sent the level, so their chunks are kept as the placed ones'.
         self.streaming.extra = host
             .hub
-            .guests
-            .iter()
-            .filter(|g| host.hub.here(g) && super::game_mode::loads_chunks(rule, g.spectator()))
-            .map(|g| (g.chunk(), radius))
+            .loading_chunks(|g| super::game_mode::loads_chunks(rule, g.spectator()))
+            .into_iter()
+            .map(|chunk| (chunk, radius))
             .chain(
                 self.arrival_chunks(self.dim)
                     .into_iter()

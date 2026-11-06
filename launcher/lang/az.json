@@ -263,7 +263,7 @@
   "Backups": "Yedəkləmələr",
   "Nothing found.": "Heç nə tapılmadı.",
   "The source at commit {commit}.": "Tövsiyə olunan mənbə {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Endirmələr, girişlər və yeniləmələr bu HTTP proksisindən keçir (http://host:port). Boş heç biri deməkdir: Başlatıcı biri ilə işə salındıqda əvəzinə HTTPS_PROXY istifadə olunur.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Endirmələr, girişlər və yeniləmələr bu proksisindən keçir (http://host:port, socks5://host:port). Boş heç biri deməkdir: Başlatıcı biri ilə işə salındıqda əvəzinə HTTPS_PROXY istifadə olunur.",
   "Beta": "Beta",
   "Benchmark uploads": "Benchmark yükləmələri",
   "Saved: the next Play {what}.": "Yadda saxlandı: növbəti Play {what}.",
@@ -958,6 +958,9 @@
   "Reset view": "Görünüşü sıfırla",
   "Drag to turn, scroll to zoom.": "Döndürmək üçün sürükləyin, yaxınlaşdırmaq üçün sürüşdürün.",
   "Shoulder pet": "Çiyin ev heyvanı",
+  "Companion": "Yoldaş",
+  "Trail": "İz",
+  "Aura": "Aura",
   "Name tag": "Ad etiketi",
   "Launcher theme": "Başlatıcı mövzu",
   "Couldn't sync your outfit. It'll try again when you're online.": "Geyiminizi sinxronlaşdırmaq mümkün olmadı. Siz onlayn olanda yenidən cəhd edəcək.",
@@ -984,7 +987,7 @@
   "Off: everyone sees you without them.": "Off: onlarsız hamı səni görür.",
   "Hide other players' cosmetics": "Digər oyunçuların kosmetikasını gizlədin",
   "Others look like plain players to you. Also in the game's Horizon settings.": "Digərləri sizə sadə oyunçu kimi görünür. Həmçinin oyunun Horizon parametrlərində.",
-  "Show other players' auras and trails": "Digər oyunçuların auralarını və cığırlarını göstərin",
+  "Hide other players' trails and auras": "Digər oyunçuların izlərini və auralarını gizlət",
   "Off by default. Also in the game's Horizon settings.": "Defolt olaraq söndürülür. Həmçinin oyunun Horizon parametrlərində.",
   "Friend": "dost",
   "Friends on the same Wi-Fi: Multiplayer, Add server, paste.": "Eyni Wi-Fi-da dostlar: Multiplayer, Server əlavə edin, yapışdırın.",
@@ -1213,5 +1216,9 @@
   "US sales tax is added where a state charges it.": "ABŞ satış vergisi ştatın tələb etdiyi yerdə əlavə olunur.",
   "VAT included where it applies.": "ƏDV tətbiq olunduğu yerdə daxildir.",
   "In a set in your basket": "Səbətinizdəki dəstdə",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Ödənişi brauzerinizdə bitirin. Əşyalarınız bir azdan Qarderoba gələcək."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Ödənişi brauzerinizdə bitirin. Əşyalarınız bir azdan Qarderoba gələcək.",
+  "{name} was left out: made for another Horizon version": "{name} kənarda qaldı: başqa Horizon versiyası üçün hazırlanıb",
+  "{name} was left out: clashes with {other}": "{name} kənarda qaldı: {other} ilə toqquşur",
+  "{name} was left out: it needs {other}, which was left out": "{name} kənarda qaldı: ona {other} lazımdır, o da kənarda qaldı",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Oynadığın Horizon-da qurulmur ({code}): müəllifi yeniləyənə qədər quraşdırma onu kənarda saxlayır"
 }

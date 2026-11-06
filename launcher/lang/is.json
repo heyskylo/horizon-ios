@@ -263,7 +263,7 @@
   "Backups": "Öryggisafrit",
   "Nothing found.": "Ekkert fannst.",
   "The source at commit {commit}.": "Heimildin við commit {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Niðurhal, innskráningar og uppfærslur fara í gegnum þennan HTTP proxy (http://host:port). Tómt þýðir ekkert: HTTPS_PROXY er notað í staðinn þegar ræsiforritið var ræst með einum.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Niðurhal, innskráningar og uppfærslur fara í gegnum þennan proxy (http://host:port, socks5://host:port). Tómt þýðir ekkert: HTTPS_PROXY er notað í staðinn þegar ræsiforritið var ræst með einum.",
   "Beta": "Beta",
   "Benchmark uploads": "Viðmiðunarupphleðslur",
   "Saved: the next Play {what}.": "Vistað: næsta Play {what}.",
@@ -958,6 +958,9 @@
   "Reset view": "Endurstilla sýn",
   "Drag to turn, scroll to zoom.": "Dragðu til að snúa, skrunaðu til að þysja.",
   "Shoulder pet": "Öxl gæludýr",
+  "Companion": "Félagi",
+  "Trail": "Slóð",
+  "Aura": "Ára",
   "Name tag": "Nafnamerki",
   "Launcher theme": "Sjósetja þema",
   "Couldn't sync your outfit. It'll try again when you're online.": "Ekki tókst að samstilla búninginn þinn. Það mun reyna aftur þegar þú ert nettengdur.",
@@ -984,7 +987,7 @@
   "Off: everyone sees you without them.": "Slökkt: allir sjá þig án þeirra.",
   "Hide other players' cosmetics": "Fela snyrtivörur annarra leikmanna",
   "Others look like plain players to you. Also in the game's Horizon settings.": "Aðrir líta út eins og venjulegir leikmenn fyrir þér. Einnig í Horizon stillingum leiksins.",
-  "Show other players' auras and trails": "Sýndu aura og slóð annarra leikmanna",
+  "Hide other players' trails and auras": "Fela slóðir og árur annarra leikmanna",
   "Off by default. Also in the game's Horizon settings.": "Slökkt sjálfgefið. Einnig í Horizon stillingum leiksins.",
   "Friend": "Vinur",
   "Friends on the same Wi-Fi: Multiplayer, Add server, paste.": "Vinir á sama Wi-Fi: Multiplayer, Bæta við netþjóni, líma.",
@@ -1213,5 +1216,9 @@
   "US sales tax is added where a state charges it.": "Bandarískur söluskattur bætist við þar sem ríki innheimtir hann.",
   "VAT included where it applies.": "VSK innifalinn þar sem hann á við.",
   "In a set in your basket": "Í setti í körfunni þinni",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Ljúktu greiðslunni í vafranum. Hlutirnir koma í Fataskápinn augnabliki síðar."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Ljúktu greiðslunni í vafranum. Hlutirnir koma í Fataskápinn augnabliki síðar.",
+  "{name} was left out: made for another Horizon version": "{name} var sleppt: gert fyrir aðra útgáfu af Horizon",
+  "{name} was left out: clashes with {other}": "{name} var sleppt: rekst á {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} var sleppt: það þarf {other}, sem var sleppt",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Byggist ekki á þeirri Horizon sem þú spilar ({code}): smíði sleppir því þar til höfundurinn uppfærir það"
 }

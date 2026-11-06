@@ -263,7 +263,7 @@
   "Backups": "Rugsteun",
   "Nothing found.": "Niks gevind nie.",
   "The source at commit {commit}.": "Die bron by commit {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Aflaaie, aanmeldings en opdaterings gaan deur hierdie HTTP-instaanbediener (http://gasheer:poort). Leeg beteken geen: HTTPS_PROXY word eerder gebruik wanneer die lanseerder met een begin is.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Aflaaie, aanmeldings en opdaterings gaan deur hierdie instaanbediener (http://gasheer:poort, socks5://gasheer:poort). Leeg beteken geen: HTTPS_PROXY word eerder gebruik wanneer die lanseerder met een begin is.",
   "Beta": "Beta",
   "Benchmark uploads": "Benchmark-oplaaie",
   "Saved: the next Play {what}.": "Gestoor: die volgende Speel {what}.",
@@ -958,6 +958,9 @@
   "Reset view": "Herstel aansig",
   "Drag to turn, scroll to zoom.": "Sleep om te draai, rol om te zoem.",
   "Shoulder pet": "Skouer troeteldier",
+  "Companion": "Metgesel",
+  "Trail": "Spoor",
+  "Aura": "Aura",
   "Name tag": "Naamplaatjie",
   "Launcher theme": "Launcher tema",
   "Couldn't sync your outfit. It'll try again when you're online.": "Kon nie jou uitrusting sinkroniseer nie. Dit sal weer probeer wanneer jy aanlyn is.",
@@ -984,7 +987,7 @@
   "Off: everyone sees you without them.": "Af: almal sien jou sonder hulle.",
   "Hide other players' cosmetics": "Versteek ander spelers se skoonheidsmiddels",
   "Others look like plain players to you. Also in the game's Horizon settings.": "Ander lyk vir jou soos gewone spelers. Ook in die speletjie se Horizon-instellings.",
-  "Show other players' auras and trails": "Wys ander spelers se aura's en roetes",
+  "Hide other players' trails and auras": "Versteek ander spelers se spore en auras",
   "Off by default. Also in the game's Horizon settings.": "Af by verstek. Ook in die speletjie se Horizon-instellings.",
   "Friend": "Vriend",
   "Friends on the same Wi-Fi: Multiplayer, Add server, paste.": "Vriende op dieselfde Wi-Fi: Multiplayer, Voeg bediener by, plak.",
@@ -1213,5 +1216,9 @@
   "US sales tax is added where a state charges it.": "VS-verkoopsbelasting word bygevoeg waar 'n staat dit hef.",
   "VAT included where it applies.": "BTW ingesluit waar dit geld.",
   "In a set in your basket": "In 'n stel in jou mandjie",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Voltooi die betaling in jou blaaier. Jou items kom 'n oomblik later in die Klerekas."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Voltooi die betaling in jou blaaier. Jou items kom 'n oomblik later in die Klerekas.",
+  "{name} was left out: made for another Horizon version": "{name} is weggelaat: gemaak vir 'n ander Horizon-weergawe",
+  "{name} was left out: clashes with {other}": "{name} is weggelaat: bots met {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} is weggelaat: dit het {other} nodig, wat weggelaat is",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Bou nie op die Horizon wat jy speel nie ({code}): 'n bou laat dit weg totdat die outeur dit bywerk"
 }

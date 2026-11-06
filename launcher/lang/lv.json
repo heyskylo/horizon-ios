@@ -263,7 +263,7 @@
   "Backups": "Dublējumkopijas",
   "Nothing found.": "Nekas netika atrasts.",
   "The source at commit {commit}.": "Avots pie commit {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Lejupielādes, pierakstīšanās un atjauninājumi tiek veikti, izmantojot šo HTTP starpniekserveri (http://host:port). Tukšs nozīmē, ka nav: tā vietā tiek izmantots HTTPS_PROXY, kad palaišanas programma tika startēta ar vienu.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Lejupielādes, pierakstīšanās un atjauninājumi tiek veikti, izmantojot šo starpniekserveri (http://host:port, socks5://host:port). Tukšs nozīmē, ka nav: tā vietā tiek izmantots HTTPS_PROXY, kad palaišanas programma tika startēta ar vienu.",
   "Beta": "Beta",
   "Benchmark uploads": "Etalona augšupielādes",
   "Saved: the next Play {what}.": "Saglabāts: nākamā atskaņošana {what}.",
@@ -958,6 +958,9 @@
   "Reset view": "Atiestatīt skatu",
   "Drag to turn, scroll to zoom.": "Velciet, lai pagrieztu, ritiniet, lai tuvinātu.",
   "Shoulder pet": "Plecu mājdzīvnieks",
+  "Companion": "Pavadonis",
+  "Trail": "Pēdas",
+  "Aura": "Aura",
   "Name tag": "Vārda zīme",
   "Launcher theme": "Palaišanas programmas tēma",
   "Couldn't sync your outfit. It'll try again when you're online.": "Nevarēja sinhronizēt jūsu apģērbu. Tas mēģinās vēlreiz, kad būsit tiešsaistē.",
@@ -984,7 +987,7 @@
   "Off: everyone sees you without them.": "Izslēgts: visi jūs redz bez viņiem.",
   "Hide other players' cosmetics": "Slēpt citu spēlētāju kosmētiku",
   "Others look like plain players to you. Also in the game's Horizon settings.": "Citi jums šķiet vienkārši spēlētāji. Arī spēles Horizon iestatījumos.",
-  "Show other players' auras and trails": "Parādiet citu spēlētāju auru un takas",
+  "Hide other players' trails and auras": "Slēpt citu spēlētāju pēdas un auras",
   "Off by default. Also in the game's Horizon settings.": "Pēc noklusējuma izslēgts. Arī spēles Horizon iestatījumos.",
   "Friend": "Draugs",
   "Friends on the same Wi-Fi: Multiplayer, Add server, paste.": "Draugi tajā pašā Wi-Fi tīklā: vairāku spēlētāju režīms, pievienojiet serveri, ielīmējiet.",
@@ -1213,5 +1216,9 @@
   "US sales tax is added where a state charges it.": "ASV tirdzniecības nodoklis tiek pievienots, kur to iekasē štats.",
   "VAT included where it applies.": "PVN iekļauts, kur tas attiecas.",
   "In a set in your basket": "Komplektā jūsu grozā",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Pabeidziet maksājumu pārlūkā. Jūsu priekšmeti pēc brīža nonāks Garderobē."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Pabeidziet maksājumu pārlūkā. Jūsu priekšmeti pēc brīža nonāks Garderobē.",
+  "{name} was left out: made for another Horizon version": "{name} tika izlaists: veidots citai Horizon versijai",
+  "{name} was left out: clashes with {other}": "{name} tika izlaists: konfliktē ar {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} tika izlaists: tam vajag {other}, kas tika izlaists",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Neveidojas uz Horizon, ko tu spēlē ({code}): būvējums to izlaiž, līdz autors to atjaunina"
 }
