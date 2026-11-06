@@ -20,4 +20,3 @@ def gateway_item_motion(cmd, setup):
                  '/execute in minecraft:overworld run tp @s 8.5 230 8.5')
     ops.append({'op': 'settle'})
     return ops
-
