@@ -340,6 +340,9 @@ pub struct Hub {
     /// (`native_set_display_name`), by UUID, as component JSON: they take
     /// a nickname's place in `player_display_name`.
     pub display_names: std::collections::HashMap<u128, serde_json::Value>,
+    /// The names a server mod shows over players' heads
+    /// (`native_set_name_tag`), by UUID: their list entries' profile name.
+    pub name_tags: std::collections::HashMap<u128, String>,
     last_clock: i64,
     last_rate: f32,
     ticking: (f32, bool),
@@ -696,6 +699,7 @@ impl Hub {
             nicknames: std::collections::HashMap::new(),
             list_names: std::collections::HashMap::new(),
             display_names: std::collections::HashMap::new(),
+            name_tags: std::collections::HashMap::new(),
         }
     }
 
@@ -1211,6 +1215,8 @@ impl Hub {
 
     fn player_info(&self, uuid: u128, name: &str, mode: i32, latency: i32) -> play::PlayerInfo {
         let guest = self.guests.iter().find(|g| g.uuid == uuid);
+        // A mod's name tag is the profile name clients put over the head.
+        let name = self.name_tags.get(&uuid).map_or(name, String::as_str);
         play::PlayerInfo {
             uuid,
             name: Some(name.to_owned()),
@@ -4510,6 +4516,48 @@ impl Hub {
                 ..Default::default()
             }],
         }));
+    }
+
+    /// A player's name tag changed (None: their name again): kept by UUID as
+    /// the profile name of their list entries. A client reads a player's
+    /// profile when it adds their entity, so each other player who has them
+    /// loses their entity and entry, gets the entry again, and is paired with
+    /// the entity again on the next tick.
+    pub fn set_name_tag(&mut self, uuid: u128, tag: Option<String>) {
+        match tag {
+            Some(t) => self.name_tags.insert(uuid, t),
+            None => self.name_tags.remove(&uuid),
+        };
+        let Some(g) = self.guests.iter().find(|g| g.placed && g.uuid == uuid) else {
+            return;
+        };
+        let entity = g.entity_id;
+        let entry = self.player_info(
+            uuid,
+            &g.name,
+            g.game_mode,
+            g.latency.load(Ordering::Relaxed),
+        );
+        let gone = C::RemoveEntities(play::RemoveEntities { ids: vec![entity] });
+        let removed = C::PlayerInfoRemove(play::PlayerInfoRemove { uuids: vec![uuid] });
+        let added = C::PlayerInfoUpdate(play::PlayerInfoUpdate {
+            actions: Self::INFO_ACTIONS,
+            entries: vec![entry],
+        });
+        for o in self
+            .guests
+            .iter_mut()
+            .filter(|o| (o.placed || o.held) && o.uuid != uuid)
+        {
+            if o.tracker.forget(entity) {
+                o.send(&gone);
+            }
+            if !o.tab_hidden.contains(&uuid) {
+                o.send(&removed);
+                o.send(&added);
+            }
+            o.moved = true;
+        }
     }
 
     /// Set a guest's flying speed and tell it (`Abilities.setFlyingSpeed`, then

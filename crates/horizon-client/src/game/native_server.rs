@@ -472,6 +472,35 @@ impl Game<'_> {
         };
         true
     }
+    /// Shows `tag` over that player's head for everyone else in place of
+    /// their name (a nickname over the head); None shows their name again.
+    /// A client puts a player's profile name there, so this is the profile
+    /// name their player list entries carry: plain, 1 to 16 ASCII letters,
+    /// digits or symbols, no spaces (no colours: a team's still apply only
+    /// while the team lists the shown name). The others' clients get their
+    /// entry and entity again at once (a blink), and their Tab list shows
+    /// the tag unless a list name or nickname covers it; their own client
+    /// reads it from their next join. Everything else keeps the real name:
+    /// chat, commands, selectors, the log, the server's events. Kept until a
+    /// mod sets it again or the server stops, also if they leave and come
+    /// back. Only where no player's state is swapped in, as
+    /// `native_run_command`; false there, when they aren't on and for a tag
+    /// that isn't one. API @API:set_name_tag@.
+    pub(super) fn native_set_name_tag(&mut self, uuid: u128, tag: Option<&str>) -> bool {
+        if tag.is_some_and(|t| {
+            t.is_empty() || t.len() > 16 || !t.bytes().all(|b| b.is_ascii_graphic())
+        }) {
+            return false;
+        }
+        let Some(host) = &mut self.lan else {
+            return false;
+        };
+        if !host.hub.guests.iter().any(|g| g.placed && g.uuid == uuid) {
+            return false;
+        }
+        host.hub.set_name_tag(uuid, tag.map(str::to_owned));
+        true
+    }
     /// Whether the server's chat filter (`server.toml` `[chat_filter]`)
     /// lets `text` through: true without a filter, None inside a player's
     /// hook (where the server is out of reach). API 62.

@@ -2535,6 +2535,14 @@ injections before.
   commands and selectors. The Tab list keeps `native_set_list_name`'s or the nickname. Kept by UUID until a mod sets
   it again or the server stops. Outside a player's hook; false there and when they aren't on. Bundles need
   `"hooks": @API:set_display_name@`.
+- Helper **`native_set_name_tag(uuid, tag)`** (`host.set_name_tag`): a plain name over that player's head for everyone
+  else in place of theirs, a nickname above the head; None shows their name again. A client puts a player's profile
+  name there, so the tag is the profile name of their list entries: 1 to 16 ASCII letters, digits or symbols, no
+  spaces, no colours (a team's formatting applies only while the team lists the shown name). The other players'
+  clients get their entry and entity again at once (a blink), and their Tab list shows the tag unless a list name or
+  nickname covers it; their own client reads it from their next join. Chat, commands, selectors, the log and the
+  server's events keep the real name. Kept by UUID until a mod sets it again or the server stops. Outside a player's
+  hook; false there, when they aren't on and for a tag that isn't one. Bundles need `"hooks": @API:set_name_tag@`.
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a
