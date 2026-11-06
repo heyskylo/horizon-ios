@@ -565,7 +565,8 @@ impl Game<'_> {
     pub(super) fn load_falling(&mut self, tag: Tag, uuid: Option<[i32; 4]>) {
         if let Some((state, position, velocity, age, fall_distance)) =
             entity_nbt::falling_block_from_nbt(&tag)
-            && let Some(state) = self.state_from_nbt(&state)
+            && let Some(state) =
+                entity_nbt::falling_state_from_nbt(self.pack.assets.registry, &state)
         {
             let (no_gravity, drop_item) = entity_nbt::falling_block_flags(&tag);
             self.next_entity += 1;

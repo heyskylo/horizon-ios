@@ -3112,12 +3112,29 @@ pub fn falling_block_to_nbt(
 /// (block state tag, position, motion, time, fall distance)
 pub fn falling_block_from_nbt(tag: &Tag) -> Option<(Tag, Vec3, Vec3, i32, f64)> {
     Some((
-        tag.get("BlockState")?.clone(),
+        tag.get("BlockState")
+            .cloned()
+            .unwrap_or_else(|| string("minecraft:sand")),
         position(tag)?,
         motion(tag),
         number(tag.get("Time")).unwrap_or(0) as i32,
         float(tag.get("fall_distance")).unwrap_or(0.0),
     ))
+}
+
+/// FallingBlockEntity.readAdditionalSaveData uses the modern state codec.
+pub fn falling_state_from_nbt(registry: &BlockRegistry, tag: &Tag) -> Option<BlockStateId> {
+    BlockState::from_nbt(tag)
+        .ok()
+        .and_then(|mut state| {
+            state.name = horizon_world::identifier::Identifier::parse(&state.name)
+                .ok()?
+                .to_string();
+            registry
+                .id(&state)
+                .or_else(|| registry.default_state(&state.name))
+        })
+        .or_else(|| registry.default_state("minecraft:sand"))
 }
 
 /// `NoGravity` and `DropItem` (true when absent) of a saved falling block.
@@ -4338,6 +4355,94 @@ mod tests {
         let cleared = armor_stand_to_nbt(&a, [0; 4], Some(&saved));
         assert!(cleared.get("NoGravity").is_none());
         assert!(!armor_stand_from_nbt(&cleared, 7).unwrap().no_gravity);
+    }
+
+    fn falling_decode_registry() -> BlockRegistry {
+        BlockRegistry::from_nbt(&Tag::compound([
+            ("DataVersion", Tag::Int(horizon_world::DATA_VERSION)),
+            (
+                "states",
+                Tag::List(
+                    ["minecraft:air", "minecraft:sand", "minecraft:gravel"]
+                        .into_iter()
+                        .map(string)
+                        .collect(),
+                ),
+            ),
+            (
+                "defaults",
+                Tag::compound([
+                    ("minecraft:air", Tag::Int(0)),
+                    ("minecraft:sand", Tag::Int(1)),
+                    ("minecraft:gravel", Tag::Int(2)),
+                ]),
+            ),
+        ]))
+        .unwrap()
+    }
+
+    fn falling_decode_input() -> Tag {
+        horizon_world::nbt::parse_snbt(
+            "{Pos:[3.5d,200d,4.5d],Motion:[0d,0d,0d],Time:10,DropItem:0b,NoGravity:1b}",
+        )
+        .unwrap()
+        .0
+    }
+
+    fn falling_decode_save(registry: &BlockRegistry, input: &Tag) -> Tag {
+        let (state, pos, motion, time, distance) =
+            falling_block_from_nbt(input).expect("absent BlockState is valid input");
+        let actual = falling_state_from_nbt(registry, &state).unwrap();
+        assert_eq!(falling_block_flags(input), (true, false));
+        // Save only the decoded concrete model; no original source compound.
+        let saved = falling_block_to_nbt(
+            state_to_nbt(registry, actual),
+            pos,
+            motion,
+            time,
+            false,
+            crate::falling_block::Damage::default(),
+            distance,
+            [0.0, 0.0],
+            [96, 0, 0, 1],
+        );
+        assert_eq!(saved.get("Pos"), input.get("Pos"));
+        assert_eq!(saved.get("Motion"), input.get("Motion"));
+        assert_eq!(saved.get("Time"), Some(&Tag::Int(10)));
+        assert_eq!(saved.get("DropItem"), Some(&Tag::Byte(0)));
+        saved
+    }
+
+    #[test]
+    fn falling_decode_absent_state_saves_actual_sand_without_raw() {
+        let registry = falling_decode_registry();
+        let saved = falling_decode_save(&registry, &falling_decode_input());
+        assert_eq!(saved.get("BlockState"), Some(&string("minecraft:sand")));
+    }
+
+    #[test]
+    fn falling_decode_modern_boundary_keeps_shared_legacy_reader() {
+        let registry = falling_decode_registry();
+        let legacy = Tag::compound([("Name", string("minecraft:gravel"))]);
+        assert_eq!(
+            state_from_nbt(&registry, &legacy),
+            registry.default_state("minecraft:gravel")
+        );
+        for (state, expected) in [
+            (string("minecraft:sand"), "minecraft:sand"),
+            (
+                Tag::compound([("id", string("minecraft:gravel"))]),
+                "minecraft:gravel",
+            ),
+            (string("minecraft:air"), "minecraft:air"),
+            (legacy, "minecraft:sand"),
+            (Tag::Compound(Default::default()), "minecraft:sand"),
+        ] {
+            let mut input = falling_decode_input();
+            put(&mut input, "BlockState", state);
+            let saved = falling_decode_save(&registry, &input);
+            assert_eq!(saved.get("BlockState"), Some(&string(expected)));
+        }
     }
 
     #[test]
