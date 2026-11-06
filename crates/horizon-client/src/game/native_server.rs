@@ -11,7 +11,11 @@ use super::{Dim, Game, commands::execute, lan::LanHost, lan_actions::GuestComman
 // Their old home, for mixin code that names them here.
 pub(crate) use horizon_client::mod_api::{NativeCommand, NativeServerPlayer};
 use horizon_client::{
-    items::ItemStack, lan::data::component_nbt, mod_api::NativeCommandResult, text::Text,
+    command::{Dispatcher, vanilla},
+    items::ItemStack,
+    lan::data::component_nbt,
+    mod_api::{NativeCommandInfo, NativeCommandResult},
+    text::Text,
 };
 use horizon_protocol::packets::play::{self, Clientbound as C};
 use serde_json::{Map, Value, json};
@@ -195,6 +199,32 @@ fn finish(children: &mut Value) {
             finish(c);
         }
     }
+}
+
+/// Vanilla's root command `label` names in `d`, an alias (a literal that only
+/// redirects to another root command, `tp`) resolved to its target.
+fn vanilla_command_info(d: &Dispatcher, label: &str) -> Option<NativeCommandInfo> {
+    let roots = &d.nodes[0].children;
+    let mut node = d.find(label)?;
+    if let Some(target) = d.nodes[node].redirect.filter(|t| roots.contains(t)) {
+        node = target;
+    }
+    Some(NativeCommandInfo {
+        name: d.nodes[node].name().to_owned(),
+        aliases: roots
+            .iter()
+            .filter(|&&c| c != node && d.nodes[c].redirect == Some(node))
+            .map(|&c| d.nodes[c].name().to_owned())
+            .collect(),
+        usages: d
+            .smart_usage(0, 4)
+            .into_iter()
+            .filter(|(c, _)| *c == node)
+            .map(|(_, usage)| usage)
+            .collect(),
+        level: d.nodes[node].permission,
+        vanilla: true,
+    })
 }
 
 /// Helpers for server mods, kept as stable as the hook points.
@@ -540,6 +570,31 @@ impl Game<'_> {
     /// failing. No output, as `native_run_command`. API @API:run_mod_command@.
     pub(super) fn native_run_mod_command(&mut self, line: &str) -> bool {
         self.native_run_command_captured(line).ran
+    }
+    /// The server's command `label` names (Bukkit's `CommandMap.getCommand`):
+    /// one a mod registered (`native_register_commands`), else vanilla's, an
+    /// alias resolved (`tp` gives `teleport`). None when there is none.
+    /// API @API:command_info@.
+    pub(super) fn native_command_info(&self, label: &str) -> Option<NativeCommandInfo> {
+        let label = label.strip_prefix('/').unwrap_or(label);
+        if let Some(host) = &self.lan
+            && let Some(&level) = host.native_commands.as_ref().and_then(|c| c.get(label))
+        {
+            return Some(NativeCommandInfo {
+                name: label.to_owned(),
+                aliases: Vec::new(),
+                usages: host
+                    .native_usages
+                    .iter()
+                    .filter(|c| c.usage.split_whitespace().next() == Some(label))
+                    .map(|c| c.usage.clone())
+                    .collect(),
+                level,
+                vanilla: false,
+            });
+        }
+        let d = vanilla::game_dispatcher_with_features(&self.level.enabled_features);
+        vanilla_command_info(d, label)
     }
     /// Runs `line` (a leading slash allowed) as the player `uuid` typing it
     /// would (Bukkit's `Player.performCommand`): their source, operator level
@@ -1056,6 +1111,12 @@ impl Game<'_> {
                 .any(|c| c.usage.split(' ').next() == Some(name.as_str()))
         });
         host.hub.set_mod_commands(0, tree);
+        host.native_usages = commands
+            .into_iter()
+            .filter(|c| {
+                usage_nodes(&c.usage).is_ok_and(|nodes| levels.contains_key(nodes[0].0.as_str()))
+            })
+            .collect();
         host.native_commands = Some(levels);
     }
 
@@ -1356,5 +1417,20 @@ mod tests {
         );
         let (none, levels, _) = tree(&[]);
         assert!(none.is_null() && levels.is_empty());
+    }
+
+    #[test]
+    fn vanilla_commands_are_looked_up_through_their_aliases() {
+        let d = horizon_client::command::vanilla::dispatcher();
+        let tp = vanilla_command_info(d, "tp").unwrap();
+        assert_eq!(tp, vanilla_command_info(d, "teleport").unwrap());
+        assert_eq!((tp.name.as_str(), tp.level, tp.vanilla), ("teleport", 2, true));
+        assert_eq!(tp.aliases, ["tp"]);
+        assert_eq!(tp.usages.len(), 1);
+        assert!(tp.usages[0].starts_with("teleport "), "{:?}", tp.usages);
+        let msg = vanilla_command_info(d, "w").unwrap();
+        assert_eq!((msg.name.as_str(), msg.level), ("msg", 0));
+        assert_eq!(msg.aliases, ["tell", "w"]);
+        assert!(vanilla_command_info(d, "nosuchcommand").is_none());
     }
 }

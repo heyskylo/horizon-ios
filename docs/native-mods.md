@@ -2505,6 +2505,11 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   `Bukkit.dispatchCommand` from the console): a command a mod registered goes to the mods
   (`native_perform_console_command`), anything else to vanilla's. True when a mod took it or vanilla's ran without
   failing; no output. Bundles need `"hooks": @API:run_mod_command@`.
+- `native_command_info(label) -> Option<NativeCommandInfo>`: the server's command `label` names (Bukkit's
+  `CommandMap.getCommand`), a leading slash allowed: one a mod registered, else vanilla's with an alias resolved (`tp`
+  gives `teleport`, whose `aliases` hold `tp`). `usages` are the mod's registered usages, or vanilla's one line as
+  `/help` gives it; `level` is the operator level a player needs, `vanilla` whether vanilla has it. None when no
+  command has that name. Bundles need `"hooks": @API:command_info@`.
 
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
