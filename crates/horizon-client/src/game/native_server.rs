@@ -448,6 +448,30 @@ impl Game<'_> {
             .set_list_name(uuid, name.map(|t| component_nbt(&t.component())));
         true
     }
+    /// Shows `name` (styled text) for that player in chat in place of their
+    /// nickname or name, as Bukkit's `Player.setDisplayName`: their chat
+    /// messages, `/me`, `/msg` both ways, and the lines that they joined or
+    /// left; None shows their nickname or name again. Their team's prefix,
+    /// suffix and colour still go around it, and hovering it gives the real
+    /// name, which `/tell` is suggested with and which stays in the log,
+    /// commands and selectors. The Tab list keeps `native_set_list_name`'s
+    /// or the nickname. Kept until a mod sets it again or the server stops,
+    /// also if they leave and come back. Only where no player's state is
+    /// swapped in, as `native_run_command`; false there and when they aren't
+    /// on. API @API:set_display_name@.
+    pub(super) fn native_set_display_name(&mut self, uuid: u128, name: Option<&Text>) -> bool {
+        let Some(host) = &mut self.lan else {
+            return false;
+        };
+        if !host.hub.guests.iter().any(|g| g.placed && g.uuid == uuid) {
+            return false;
+        }
+        match name {
+            Some(t) => host.hub.display_names.insert(uuid, t.component()),
+            None => host.hub.display_names.remove(&uuid),
+        };
+        true
+    }
     /// Whether the server's chat filter (`server.toml` `[chat_filter]`)
     /// lets `text` through: true without a filter, None inside a player's
     /// hook (where the server is out of reach). API 62.

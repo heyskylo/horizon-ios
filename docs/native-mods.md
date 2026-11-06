@@ -2528,6 +2528,13 @@ injections before.
   again), and kept by UUID until a mod sets it again or the server stops, also if they leave and come back, so a Tab
   plugin needs no per-tick diff. Outside a player's hook; false there and when they aren't on. Bundles need
   `"hooks": @API:set_list_name@`.
+- Helper **`native_set_display_name(uuid, name)`** (`host.set_display_name`): styled text for that player in chat in
+  place of their nickname or name, as Bukkit's `Player.setDisplayName`: their chat messages, `/me`, `/msg` both ways
+  and the lines that they joined or left; None shows the nickname or name again. Their team's prefix, suffix and colour
+  still go around it; hovering it gives the real name, which `/tell` is suggested with and which stays in the log,
+  commands and selectors. The Tab list keeps `native_set_list_name`'s or the nickname. Kept by UUID until a mod sets
+  it again or the server stops. Outside a player's hook; false there and when they aren't on. Bundles need
+  `"hooks": @API:set_display_name@`.
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a
