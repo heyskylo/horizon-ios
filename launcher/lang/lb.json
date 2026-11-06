@@ -263,7 +263,7 @@
   "Backups": "Backups",
   "Nothing found.": "Näischt fonnt.",
   "The source at commit {commit}.": "D'Quell bei engagéieren {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Downloads, Umeldungen an Updates ginn duerch dësen HTTP Proxy (http://host:port). Eidel heescht keen: HTTPS_PROXY gëtt amplaz benotzt wann de Launcher mat engem gestart gouf.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Downloads, Umeldungen an Updates ginn duerch dësen Proxy (http://host:port, socks5://host:port). Eidel heescht keen: HTTPS_PROXY gëtt amplaz benotzt wann de Launcher mat engem gestart gouf.",
   "Beta": "Beta",
   "Benchmark uploads": "Benchmark eropluede",
   "Saved: the next Play {what}.": "Gespäichert: dat nächst Spill {what}.",
@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "US-Verkafssteier kënnt dobäi, wou e Bundesstaat se erhieft.",
   "VAT included where it applies.": "TVA abegraff, wou se gëllt.",
   "In a set in your basket": "An engem Set an dengem Kuerf",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Maach d'Bezuelung am Browser fäerdeg. Deng Saachen kommen e Moment duerno an d'Garderob."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Maach d'Bezuelung am Browser fäerdeg. Deng Saachen kommen e Moment duerno an d'Garderob.",
+  "{name} was left out: made for another Horizon version": "{name} gouf ewechgelooss: fir eng aner Horizon-Versioun gemaach",
+  "{name} was left out: clashes with {other}": "{name} gouf ewechgelooss: kollidéiert mat {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} gouf ewechgelooss: brauch {other}, dat ewechgelooss gouf",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Baut net op dem Horizon, deen s du spills ({code}): e Build léisst et ewech, bis säin Auteur et aktualiséiert",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Do wou s du bass, gëtt de Grënner-Set iwwer eng gratis Bezuelung op playhorizon.dev gefuerdert. Fuerder en am Buttek: hien mécht d'Bezuelung fir dech op.",
+  "The founder set can't be claimed from your country.": "De Grënner-Set kann net aus dengem Land gefuerdert ginn."
 }

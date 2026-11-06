@@ -264,7 +264,7 @@
   "Backups": "Reservekopie",
   "Nothing found.": "Niks gevoonde.",
   "The source at commit {commit}.": "De bron bij commit {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Downloads, inlogs en updates gaon via deze HTTP-proxy (http://host:port). Leeg beteikent gein: HTTPS_PROXY weurt in plaots daovaan gebruuk es de launcher mit ein woort gestart.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Downloads, inlogs en updates gaon via deze proxy (http://host:port, socks5://host:port). Leeg beteikent gein: HTTPS_PROXY weurt in plaots daovaan gebruuk es de launcher mit ein woort gestart.",
   "Beta": "Beta",
   "Benchmark uploads": "Benchmark-uploads",
   "Saved: the next Play {what}.": "Opgeslage: de volgende Play {what}.",
@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "Amerikaanse verkoupbelasting kump drbie wo 'ne staot die hèf.",
   "VAT included where it applies.": "Btw inbegrepe wo die geldj.",
   "In a set in your basket": "In e set in diech mendje",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Maak de betaling aaf in diene browser. Dien items koume get later in de Kleijerkas."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Maak de betaling aaf in diene browser. Dien items koume get later in de Kleijerkas.",
+  "{name} was left out: made for another Horizon version": "{name} is weggelaote: gemaak veur 'n anger Horizon-versie",
+  "{name} was left out: clashes with {other}": "{name} is weggelaote: bots mit {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} is weggelaote: 't haet {other} nóddig, wat weggelaote is",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Bouwt neet op de Horizon die se speuls ({code}): 'ne bouw laot 't weg tot de maker 't biewerk",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Wo se bis, wurt de oprichtersset geclaimd via 'n gratis betaling op playhorizon.dev. Claim 'm in de Winkel: dae maak de betaling veur dich aope.",
+  "The founder set can't be claimed from your country.": "De oprichtersset kin neet oet dien land geclaimd waere."
 }

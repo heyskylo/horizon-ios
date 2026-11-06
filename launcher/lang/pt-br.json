@@ -532,7 +532,7 @@
   "The everyday build for playing with mods": "A build do dia a dia para jogar com mods",
   "For developing a mod: about 6× faster to rebuild a mod edit, game logic up to about twice as slow": "Para desenvolver um mod: alterações no mod recompilam cerca de 6× mais rápido, a lógica do jogo fica até cerca de duas vezes mais lenta",
   "Builds from GitHub. Each one installs into its own folder.": "Builds do GitHub. Cada uma é instalada na própria pasta.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Downloads, logins e atualizações passam por este proxy HTTP (http://host:porta). Vazio significa nenhum: o HTTPS_PROXY é usado no lugar quando o launcher foi iniciado com um.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Downloads, logins e atualizações passam por este proxy (http://host:porta, socks5://host:porta). Vazio significa nenhum: o HTTPS_PROXY é usado no lugar quando o launcher foi iniciado com um.",
   "Extra arguments for the game, passed through as-is (quotes group a word with spaces). Applies the next time the game starts.": "Argumentos extras para o jogo, repassados como estão (aspas agrupam uma palavra com espaços). Vale na próxima vez que o jogo iniciar.",
   "For example --server-thread": "Por exemplo --server-thread",
   "For example http://127.0.0.1:7890": "Por exemplo http://127.0.0.1:7890",
@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "O imposto sobre vendas dos EUA é somado onde um estado o cobra.",
   "VAT included where it applies.": "IVA incluído onde se aplica.",
   "In a set in your basket": "Em um conjunto no seu carrinho",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Termine o pagamento no navegador. Seus itens chegam ao Guarda-roupa logo depois."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Termine o pagamento no navegador. Seus itens chegam ao Guarda-roupa logo depois.",
+  "{name} was left out: made for another Horizon version": "{name} ficou de fora: feito para outra versão do Horizon",
+  "{name} was left out: clashes with {other}": "{name} ficou de fora: entra em conflito com {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} ficou de fora: precisa de {other}, que ficou de fora",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Não compila no Horizon que você joga ({code}): a compilação o deixa de fora até que o autor o atualize",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Onde você está, o conjunto fundador é resgatado por um checkout gratuito em playhorizon.dev. Resgate na Loja: ela abre o checkout para você.",
+  "The founder set can't be claimed from your country.": "O conjunto fundador não pode ser resgatado no seu país."
 }

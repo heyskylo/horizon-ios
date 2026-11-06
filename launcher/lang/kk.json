@@ -263,7 +263,7 @@
   "Backups": "Сақтық көшірмелер",
   "Nothing found.": "Ештеңе табылмады.",
   "The source at commit {commit}.": "Орындаудағы дереккөз {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Жүктеп алулар, кірулер және жаңартулар осы HTTP проксиі (http://host:port) арқылы өтеді. Бос ешбір дегенді білдіреді: HTTPS_PROXY оның орнына іске қосу құралы біреуімен іске қосылғанда пайдаланылады.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Жүктеп алулар, кірулер және жаңартулар осы проксиі (http://host:port, socks5://host:port) арқылы өтеді. Бос ешбір дегенді білдіреді: HTTPS_PROXY оның орнына іске қосу құралы біреуімен іске қосылғанда пайдаланылады.",
   "Beta": "Бета",
   "Benchmark uploads": "Эталондық жүктеп салулар",
   "Saved: the next Play {what}.": "Сақталған: келесі Ойнату {what}.",
@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "АҚШ сату салығы штат алатын жерде қосылады.",
   "VAT included where it applies.": "ҚҚС қолданылатын жерде қосылған.",
   "In a set in your basket": "Себетіңіздегі жиынтықта",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Төлемді браузерде аяқтаңыз. Заттарыңыз Гардеробқа сәлден соң келеді."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Төлемді браузерде аяқтаңыз. Заттарыңыз Гардеробқа сәлден соң келеді.",
+  "{name} was left out: made for another Horizon version": "{name} алынып тасталды: Horizon-ның басқа нұсқасына жасалған",
+  "{name} was left out: clashes with {other}": "{name} алынып тасталды: {other} модымен қайшылықта",
+  "{name} was left out: it needs {other}, which was left out": "{name} алынып тасталды: оған {other} керек, ол алынып тасталды",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Сен ойнайтын Horizon-да жиналмайды ({code}): авторы жаңартқанша жинау оны алып тастайды",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Сіз тұрған жерде негізін қалаушылар жиынтығы playhorizon.dev сайтындағы тегін төлем арқылы алынады. Оны Дүкеннен алыңыз: ол төлемді сізге ашып береді.",
+  "The founder set can't be claimed from your country.": "Негізін қалаушылар жиынтығын сіздің еліңізден алу мүмкін емес."
 }

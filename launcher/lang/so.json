@@ -263,7 +263,7 @@
   "Backups": "Kaabta",
   "Nothing found.": "Waxba lama helin",
   "The source at commit {commit}.": "Isha ballan {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Soo dejinta, gelista iyo cusboonaysiinta waxay maraan wakiilkan HTTP (http://host:port). Madhan macneheedu waa maya: HTTPS_PROXY waxa la istcmaalaa bedelkii markii wax soo saaruhu lagu bilaabay mid.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Soo dejinta, gelista iyo cusboonaysiinta waxay maraan wakiilkan (http://host:port, socks5://host:port). Madhan macneheedu waa maya: HTTPS_PROXY waxa la istcmaalaa bedelkii markii wax soo saaruhu lagu bilaabay mid.",
   "Beta": "Beta",
   "Benchmark uploads": "Soo gelinta Benchmark",
   "Saved: the next Play {what}.": "La kaydiyay: ciyaarta soo socota {what}.",
@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "Canshuurta iibka Maraykanka waa lagu daraa meesha gobol ka qaado.",
   "VAT included where it applies.": "VAT waa ku jirtaa meesha ay khuseyso.",
   "In a set in your basket": "Qayb ka mid ah set dambiishaada ku jira",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Ku dhammee lacag bixinta biraawsarka. Alaabtaadu waxay gaari doontaa Armaajada wax yar kadib."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Ku dhammee lacag bixinta biraawsarka. Alaabtaadu waxay gaari doontaa Armaajada wax yar kadib.",
+  "{name} was left out: made for another Horizon version": "{name} waa laga reebay: waxaa loo sameeyay nooc kale oo Horizon ah",
+  "{name} was left out: clashes with {other}": "{name} waa laga reebay: wuxuu ku dhacaa {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} waa laga reebay: wuxuu u baahan yahay {other}, oo laga reebay",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Kuma dhismo Horizon-ka aad ciyaarto ({code}): dhismuhu wuu ka reebayaa ilaa qoraagiisu cusboonaysiiyo",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Meesha aad joogto, xirmada aasaasayaasha waxaa lagu helaa lacag-bixin bilaash ah oo ku taal playhorizon.dev. Ka qaado Dukaanka: wuxuu kuu furayaa lacag-bixinta.",
+  "The founder set can't be claimed from your country.": "Xirmada aasaasayaasha lagama heli karo dalkaaga."
 }

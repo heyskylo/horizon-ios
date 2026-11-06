@@ -263,7 +263,7 @@
   "Backups": "Резерв күсермәләр",
   "Nothing found.": "Бер нәмә лә табылмаған.",
   "The source at commit {commit}.": "{commit} коммитта сығанаҡ.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Скачивания, логин һәм яңыртыуҙар был HTTP прокси аша үтә (http://host:port). Буш тигәнде аңлата бер ниндәй ҙә: HTTPS_PROXY урынына ҡулланыла, ҡасан стартер бер менән башланды.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Скачивания, логин һәм яңыртыуҙар был прокси аша үтә (http://host:port, socks5://host:port). Буш тигәнде аңлата бер ниндәй ҙә: HTTPS_PROXY урынына ҡулланыла, ҡасан стартер бер менән башланды.",
   "Beta": "Бета",
   "Benchmark uploads": "Эталон тейәүҙәре",
   "Saved: the next Play {what}.": "Һаҡланған: киләһе Уйын {what}.",
@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "АҠШ һатыу һалымы штат талап иткән урында өҫтәлә.",
   "VAT included where it applies.": "ҠӨҺ ҡулланылған урында индерелгән.",
   "In a set in your basket": "Кәрзинегеҙҙәге йыйылмала",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Түләүҙе браузерҙа тамамлағыҙ. Әйберҙәрегеҙ бер аҙҙан Гардеробҡа килә."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Түләүҙе браузерҙа тамамлағыҙ. Әйберҙәрегеҙ бер аҙҙан Гардеробҡа килә.",
+  "{name} was left out: made for another Horizon version": "{name} төшөрөп ҡалдырылды: Horizon-дың башҡа версияһы өсөн эшләнгән",
+  "{name} was left out: clashes with {other}": "{name} төшөрөп ҡалдырылды: {other} менән бәрелешә",
+  "{name} was left out: it needs {other}, which was left out": "{name} төшөрөп ҡалдырылды: уға {other} кәрәк, ә ул төшөрөп ҡалдырылды",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Һин уйнаған Horizon-да йыйылмай ({code}): авторы яңыртмайынса, йыйыу уны төшөрөп ҡалдыра",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Һеҙ булған ерҙә нигеҙләүселәр йыйылмаһы playhorizon.dev сайтында бушлай түләү аша алына. Уны Магазиндан алығыҙ: ул түләү битен үҙе аса.",
+  "The founder set can't be claimed from your country.": "Нигеҙләүселәр йыйылмаһын һеҙҙең илдән алып булмай."
 }

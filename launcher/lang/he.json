@@ -264,7 +264,7 @@
   "Backups": "גיבויים",
   "Nothing found.": "שום דבר לא נמצא.",
   "The source at commit {commit}.": "המקור ב-commit {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "הורדות, כניסות ועדכונים עוברים דרך פרוקסי HTTP זה (http://host:port). ריק פירושו אין: HTTPS_PROXY משמש במקום זאת כאשר המשגר הופעל עם אחד.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "הורדות, כניסות ועדכונים עוברים דרך פרוקסי זה (http://host:port, socks5://host:port). ריק פירושו אין: HTTPS_PROXY משמש במקום זאת כאשר המשגר הופעל עם אחד.",
   "Beta": "בטא",
   "Benchmark uploads": "העלאות בנצ'מרק",
   "Saved: the next Play {what}.": "נשמר: ההפעלה הבאה {what}.",
@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "מס מכירה אמריקאי מתווסף היכן שמדינה גובה אותו.",
   "VAT included where it applies.": "מע״מ כלול היכן שהוא חל.",
   "In a set in your basket": "בתוך סט בסל שלך",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "סיימו לשלם בדפדפן. הפריטים יגיעו לארון הבגדים בעוד רגע."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "סיימו לשלם בדפדפן. הפריטים יגיעו לארון הבגדים בעוד רגע.",
+  "{name} was left out: made for another Horizon version": "{name} הושמט: נוצר לגרסה אחרת של Horizon",
+  "{name} was left out: clashes with {other}": "{name} הושמט: מתנגש עם {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} הושמט: הוא צריך את {other}, שהושמט",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "לא נבנה על ה-Horizon שבו אתה משחק ({code}): בנייה משמיטה אותו עד שהיוצר יעדכן אותו",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "במקום שבו אתה נמצא, את ערכת המייסדים מקבלים דרך תשלום חינמי ב-playhorizon.dev. קבל אותה מהחנות: היא פותחת לך את התשלום.",
+  "The founder set can't be claimed from your country.": "אי אפשר לקבל את ערכת המייסדים מהמדינה שלך."
 }

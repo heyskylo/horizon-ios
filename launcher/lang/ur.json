@@ -264,7 +264,7 @@
   "Backups": "بیک اپس",
   "Nothing found.": "کچھ نہیں ملا۔",
   "The source at commit {commit}.": "کمٹ {commit} پر ذریعہ۔",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "ڈاؤن لوڈ، سائن ان اور اپ ڈیٹ اس HTTP پراکسی (http://host:port) سے ہوتے ہیں۔ خالی کا مطلب کوئی نہیں: HTTPS_PROXY اس کے بجائے استعمال کیا جاتا ہے جب لانچر ایک کے ساتھ شروع کیا گیا تھا۔",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "ڈاؤن لوڈ، سائن ان اور اپ ڈیٹ اس پراکسی (http://host:port, socks5://host:port) سے ہوتے ہیں۔ خالی کا مطلب کوئی نہیں: HTTPS_PROXY اس کے بجائے استعمال کیا جاتا ہے جب لانچر ایک کے ساتھ شروع کیا گیا تھا۔",
   "Beta": "بیٹا",
   "Benchmark uploads": "بینچ مارک اپ لوڈز",
   "Saved: the next Play {what}.": "محفوظ کیا گیا: اگلا پلے {what}۔",
@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "جہاں ریاست لیتی ہے وہاں امریکی سیلز ٹیکس شامل کیا جاتا ہے۔",
   "VAT included where it applies.": "جہاں لاگو ہو وہاں VAT شامل ہے۔",
   "In a set in your basket": "آپ کی ٹوکری کے ایک سیٹ میں",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "براؤزر میں ادائیگی مکمل کریں۔ آپ کی چیزیں تھوڑی دیر میں الماری میں آ جائیں گی۔"
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "براؤزر میں ادائیگی مکمل کریں۔ آپ کی چیزیں تھوڑی دیر میں الماری میں آ جائیں گی۔",
+  "{name} was left out: made for another Horizon version": "{name} چھوڑ دیا گیا: Horizon کے کسی اور ورژن کے لیے بنا ہے",
+  "{name} was left out: clashes with {other}": "{name} چھوڑ دیا گیا: {other} سے ٹکراتا ہے",
+  "{name} was left out: it needs {other}, which was left out": "{name} چھوڑ دیا گیا: اسے {other} چاہیے، جو چھوڑ دیا گیا",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "آپ جو Horizon کھیلتے ہیں اس پر نہیں بنتا ({code}): بلڈ اسے تب تک چھوڑ دیتا ہے جب تک اس کا مصنف اسے اپڈیٹ نہ کرے",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "آپ جہاں ہیں، وہاں بانیوں کا سیٹ playhorizon.dev پر مفت چیک آؤٹ کے ذریعے لیا جاتا ہے۔ اسے دکان سے لیں: وہ آپ کے لیے چیک آؤٹ کھول دیتی ہے۔",
+  "The founder set can't be claimed from your country.": "بانیوں کا سیٹ آپ کے ملک سے نہیں لیا جا سکتا۔"
 }

@@ -263,7 +263,7 @@
   "Backups": "Mga backup",
   "Nothing found.": "Walang nahanap.",
   "The source at commit {commit}.": "Ang pinagmulan sa commit {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Ang mga pag-download, pag-sign-in at pag-update ay dumadaan sa HTTP proxy na ito (http://host:port). Ang walang laman ay nangangahulugang wala: HTTPS_PROXY ang ginagamit sa halip kapag sinimulan ang launcher gamit ang isa.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Ang mga pag-download, pag-sign-in at pag-update ay dumadaan sa proxy na ito (http://host:port, socks5://host:port). Ang walang laman ay nangangahulugang wala: HTTPS_PROXY ang ginagamit sa halip kapag sinimulan ang launcher gamit ang isa.",
   "Beta": "Beta",
   "Benchmark uploads": "Mga pag-upload ng benchmark",
   "Saved: the next Play {what}.": "Nai-save: ang susunod na Play {what}.",
@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "Idinadagdag ang US sales tax kung saan sinisingil ito ng estado.",
   "VAT included where it applies.": "Kasama ang VAT kung saan ito ipinapataw.",
   "In a set in your basket": "Nasa isang set sa basket mo",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Tapusin ang pagbabayad sa browser mo. Darating ang mga item mo sa Wardrobe pagkaraan ng ilang sandali."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Tapusin ang pagbabayad sa browser mo. Darating ang mga item mo sa Wardrobe pagkaraan ng ilang sandali.",
+  "{name} was left out: made for another Horizon version": "Hindi isinama ang {name}: ginawa para sa ibang bersyon ng Horizon",
+  "{name} was left out: clashes with {other}": "Hindi isinama ang {name}: sumasalungat sa {other}",
+  "{name} was left out: it needs {other}, which was left out": "Hindi isinama ang {name}: kailangan nito ang {other}, na hindi isinama",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Hindi nabubuo sa Horizon na nilalaro mo ({code}): hindi ito isasama ng build hangga't hindi ito ina-update ng may-akda",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Kung nasaan ka, kinukuha ang founder set sa pamamagitan ng libreng checkout sa playhorizon.dev. I-claim ito sa Shop: bubuksan nito ang checkout para sa iyo.",
+  "The founder set can't be claimed from your country.": "Hindi makukuha ang founder set mula sa iyong bansa."
 }

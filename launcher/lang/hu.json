@@ -264,7 +264,7 @@
   "Backups": "Biztonsági mentések",
   "Nothing found.": "Nem találtunk semmit.",
   "The source at commit {commit}.": "A forrás a véglegesítésnél {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "A letöltések, bejelentkezések és frissítések ezen a HTTP-proxyn (http://host:port) keresztül mennek keresztül. Az üres azt jelenti, hogy nincs: ehelyett a HTTPS_PROXY használatos, amikor az indítót eggyel indították.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "A letöltések, bejelentkezések és frissítések ezen a proxyn (http://host:port, socks5://host:port) keresztül mennek keresztül. Az üres azt jelenti, hogy nincs: ehelyett a HTTPS_PROXY használatos, amikor az indítót eggyel indították.",
   "Beta": "Beta",
   "Benchmark uploads": "Feltöltések összehasonlítása",
   "Saved: the next Play {what}.": "Mentve: a következő lejátszás {what}.",
@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "Az amerikai forgalmi adó ott adódik hozzá, ahol egy állam felszámítja.",
   "VAT included where it applies.": "Az áfa benne van, ahol érvényes.",
   "In a set in your basket": "Egy készletben a kosaradban",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Fejezd be a fizetést a böngészőben. A tárgyaid kicsit később megjelennek a Ruhatárban."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Fejezd be a fizetést a böngészőben. A tárgyaid kicsit később megjelennek a Ruhatárban.",
+  "{name} was left out: made for another Horizon version": "{name} kimaradt: a Horizon egy másik verziójához készült",
+  "{name} was left out: clashes with {other}": "{name} kimaradt: ütközik ezzel: {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} kimaradt: szüksége van erre: {other}, ami kimaradt",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Nem fordul le azon a Horizonon, amellyel játszol ({code}): a fordítás kihagyja, amíg a szerzője nem frissíti",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Ahol vagy, az alapítói szettet egy ingyenes fizetéssel lehet igényelni a playhorizon.dev oldalon. Igényeld a Boltban: megnyitja neked a fizetést.",
+  "The founder set can't be claimed from your country.": "Az alapítói szett nem igényelhető az országodból."
 }

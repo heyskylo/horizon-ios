@@ -263,7 +263,7 @@
   "Backups": "Backups",
   "Nothing found.": "Xejn misjub.",
   "The source at commit {commit}.": "Is-sors f'kommit {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "It-tniżżil, id-dħul u l-aġġornamenti jgħaddu minn dan il-proxy HTTP (http://host:port). Vojta tfisser xejn: HTTPS_PROXY jintuża minflok meta l-lanċjar inbeda b'wieħed.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "It-tniżżil, id-dħul u l-aġġornamenti jgħaddu minn dan il-proxy (http://host:port, socks5://host:port). Vojta tfisser xejn: HTTPS_PROXY jintuża minflok meta l-lanċjar inbeda b'wieħed.",
   "Beta": "Beta",
   "Benchmark uploads": "Benchmark uploads",
   "Saved: the next Play {what}.": "Salvat: il-Play li jmiss {what}.",
@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "It-taxxa tal-bejgħ tal-Istati Uniti tiżdied fejn stat jitlobha.",
   "VAT included where it applies.": "VAT inkluża fejn tapplika.",
   "In a set in your basket": "F'sett fil-basket tiegħek",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Lesti l-ħlas fil-browser. L-oġġetti tiegħek jaslu fil-Gwardarobba ftit wara."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Lesti l-ħlas fil-browser. L-oġġetti tiegħek jaslu fil-Gwardarobba ftit wara.",
+  "{name} was left out: made for another Horizon version": "{name} tħalla barra: magħmul għal verżjoni oħra ta' Horizon",
+  "{name} was left out: clashes with {other}": "{name} tħalla barra: jaħbat ma' {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} tħalla barra: jeħtieġ {other}, li tħalla barra",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Ma jinbeniex fuq il-Horizon li qed tilgħab ({code}): bini jħallih barra sakemm l-awtur jaġġornah",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Fejn int, is-sett tal-fundaturi jintalab permezz ta' ħlas b'xejn fuq playhorizon.dev. Itolbu mill-Ħanut: jiftaħlek il-ħlas.",
+  "The founder set can't be claimed from your country.": "Is-sett tal-fundaturi ma jistax jintalab minn pajjiżek."
 }

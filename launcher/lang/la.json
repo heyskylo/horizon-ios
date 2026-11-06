@@ -263,7 +263,7 @@
   "Backups": "Tergum",
   "Nothing found.": "Nihil inveni.",
   "The source at commit {commit}.": "Fons in committere{commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Download, signum-ins et updates per hoc procuratorem HTTP (http://host:port). Inanis significat nullum: HTTPS_PROXY loco adhibetur cum launcher ab uno inchoatum est.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Download, signum-ins et updates per hoc procuratorem (http://host:port, socks5://host:port). Inanis significat nullum: HTTPS_PROXY loco adhibetur cum launcher ab uno inchoatum est.",
   "Beta": "Beta",
   "Benchmark uploads": "Probatio uploads",
   "Saved: the next Play {what}.": "Servata est altera Play {what}.",
@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "Vectigal venditionis Americanum additur ubi civitas id exigit.",
   "VAT included where it applies.": "VAT inclusum ubi valet.",
   "In a set in your basket": "In collectione in corbe tua",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Solutionem in navigatro perfice. Res tuae paulo post in Vestiarium venient."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Solutionem in navigatro perfice. Res tuae paulo post in Vestiarium venient.",
+  "{name} was left out: made for another Horizon version": "{name} omissus est: factus ad aliam versionem Horizontis",
+  "{name} was left out: clashes with {other}": "{name} omissus est: cum {other} confligit",
+  "{name} was left out: it needs {other}, which was left out": "{name} omissus est: {other} eget, qui omissus est",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "In Horizonte quo ludis non construitur ({code}): constructio eum omittit donec auctor eum renovet",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Ubi es, copia conditorum per solutionem gratuitam in playhorizon.dev petitur. Pete eam ex Taberna: ea solutionem tibi aperit.",
+  "The founder set can't be claimed from your country.": "Copia conditorum ex patria tua peti non potest."
 }

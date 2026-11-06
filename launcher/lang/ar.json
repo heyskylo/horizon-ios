@@ -264,7 +264,7 @@
   "Backups": "النسخ الاحتياطي",
   "Nothing found.": "لم يتم العثور على شيء.",
   "The source at commit {commit}.": "المصدر عند الالتزام (Commit) {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.",
   "Beta": "نسخة تجريبية (Beta)",
   "Benchmark uploads": "رفع نتائج اختبار الأداء",
   "Saved: the next Play {what}.": "تم الحفظ: التشغيل التالي {what}.",
@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "تُضاف ضريبة المبيعات الأمريكية حيث تفرضها الولاية.",
   "VAT included where it applies.": "ضريبة القيمة المضافة مشمولة حيث تنطبق.",
   "In a set in your basket": "ضمن مجموعة في سلتك",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "أكمل الدفع في متصفحك. تصل عناصرك إلى خزانة الملابس بعد لحظة."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "أكمل الدفع في متصفحك. تصل عناصرك إلى خزانة الملابس بعد لحظة.",
+  "{name} was left out: made for another Horizon version": "تم استبعاد {name}: صُنع لإصدار آخر من Horizon",
+  "{name} was left out: clashes with {other}": "تم استبعاد {name}: يتعارض مع {other}",
+  "{name} was left out: it needs {other}, which was left out": "تم استبعاد {name}: يحتاج إلى {other}، الذي تم استبعاده",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "لا يُبنى على إصدار Horizon الذي تلعبه ({code}): يستبعده البناء حتى يحدّثه مؤلفه",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "في بلدك، يُستلَم طقم المؤسسين عبر عملية دفع مجانية على playhorizon.dev. استلمه من المتجر: سيفتح لك صفحة الدفع.",
+  "The founder set can't be claimed from your country.": "لا يمكن استلام طقم المؤسسين من بلدك."
 }

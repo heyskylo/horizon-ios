@@ -264,7 +264,7 @@
   "Backups": "Sauvegardes",
   "Nothing found.": "Aucun résultat.",
   "The source at commit {commit}.": "Le code source au commit {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Les téléchargements, connexions et mises à jour passent par ce proxy HTTP (http://hôte:port). Laisser vide pour aucun : HTTPS_PROXY est utilisé à la place si le lanceur a été démarré avec.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Les téléchargements, connexions et mises à jour passent par ce proxy (http://hôte:port, socks5://hôte:port). Laisser vide pour aucun : HTTPS_PROXY est utilisé à la place si le lanceur a été démarré avec.",
   "Beta": "Bêta",
   "Benchmark uploads": "Téléversements de benchmarks",
   "Saved: the next Play {what}.": "Enregistré : au prochain lancement {what}.",
@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "La taxe de vente américaine s'ajoute là où un État la perçoit.",
   "VAT included where it applies.": "TVA incluse là où elle s'applique.",
   "In a set in your basket": "Dans un set de votre panier",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Terminez le paiement dans votre navigateur. Vos objets arrivent dans la Garde-robe un instant plus tard."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Terminez le paiement dans votre navigateur. Vos objets arrivent dans la Garde-robe un instant plus tard.",
+  "{name} was left out: made for another Horizon version": "{name} a été laissé de côté : fait pour une autre version de Horizon",
+  "{name} was left out: clashes with {other}": "{name} a été laissé de côté : en conflit avec {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} a été laissé de côté : il a besoin de {other}, laissé de côté",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Ne se compile pas sur le Horizon auquel vous jouez ({code}) : une compilation le laisse de côté jusqu'à ce que son auteur le mette à jour",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Là où vous êtes, le set fondateur se réclame par un paiement gratuit sur playhorizon.dev. Réclamez-le depuis la Boutique : elle ouvre le paiement pour vous.",
+  "The founder set can't be claimed from your country.": "Le set fondateur ne peut pas être réclamé depuis votre pays."
 }

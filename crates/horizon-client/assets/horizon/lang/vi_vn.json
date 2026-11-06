@@ -329,7 +329,6 @@
   "horizon.osk.close": "Đóng",
   "horizon.extras.chat_animation.tooltip": "Một dòng trò chuyện mới trượt vào từ bên trái trong khi nó mờ dần thay vì xuất hiện nguyên vẹn.",
   "horizon.extras.chat_indicator.tooltip": "Thanh màu ở bên trái dòng trò chuyện.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "Con lăn qua một nút trong cài đặt sẽ thay đổi giá trị của nó, như trong vanilla. Tắt, bánh xe chỉ cuộn danh sách.",
   "horizon.extras.pack_browser.tooltip": "Chọn Gói tài nguyên sẽ có nút Thêm để tìm kiếm Modrinth và cài đặt gói vào thư mục gói của bạn. Tắt, trò chơi không bao giờ liên lạc với Modrinth.",
   "horizon.extras.splitscreen.tooltip": "Trong một thế giới, một bộ điều khiển khác có thể tham gia với tư cách là người chơi mới: nhấn A khi được yêu cầu, sau đó chọn hồ sơ và nơi chơi.",
   "horizon.splitscreen.setup.monitor": "Giám sát %s",

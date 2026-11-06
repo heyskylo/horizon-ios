@@ -307,7 +307,6 @@
   "horizon.osk.close": "Zavrieť",
   "horizon.extras.chat_animation.tooltip": "Nový riadok rozhovoru sa posúva zľava, zatiaľ čo mizne, namiesto toho, aby sa javil celý.",
   "horizon.extras.chat_indicator.tooltip": "Farebný pruh naľavo od linky rozhovoru.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "Rolovacie koliesko nad tlačidlom v nastaveniach mení jeho hodnotu, ako vo vanilke. Vypnuté koliesko iba posúva zoznam.",
   "horizon.extras.pack_browser.tooltip": "Vyberte balíky zdrojov získa tlačidlo Pridať, ktoré vyhľadá Modrinth a nainštaluje balík do priečinka balíkov. Vypnuté, hra nikdy nekontaktuje Modrintha.",
   "horizon.extras.splitscreen.tooltip": "Vo svete sa môže ako nový hráč pripojiť ďalší ovládač: stlačte tlačidlo A, keď sa opýta, potom vyberte profil a miesto, kde chcete hrať.",
   "horizon.splitscreen.setup.monitor_unknown": "monitor",

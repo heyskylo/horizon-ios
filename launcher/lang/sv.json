@@ -264,7 +264,7 @@
   "Backups": "Säkerhetskopieringar",
   "Nothing found.": "Inget hittades.",
   "The source at commit {commit}.": "Källan vid commit {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Nedladdningar, inloggningar och uppdateringar går via denna HTTP-proxy (http://host:port). Tom betyder ingen: HTTPS_PROXY används istället när startprogrammet startades med en.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Nedladdningar, inloggningar och uppdateringar går via denna proxy (http://host:port, socks5://host:port). Tom betyder ingen: HTTPS_PROXY används istället när startprogrammet startades med en.",
   "Beta": "Beta",
   "Benchmark uploads": "Benchmark-uppladdningar",
   "Saved: the next Play {what}.": "Sparad: nästa Play {what}.",
@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "Amerikansk försäljningsskatt läggs till där en delstat tar ut den.",
   "VAT included where it applies.": "Moms ingår där den gäller.",
   "In a set in your basket": "I ett set i din korg",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Slutför betalningen i webbläsaren. Dina saker kommer till Garderoben strax därefter."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Slutför betalningen i webbläsaren. Dina saker kommer till Garderoben strax därefter.",
+  "{name} was left out: made for another Horizon version": "{name} utelämnades: gjord för en annan Horizon-version",
+  "{name} was left out: clashes with {other}": "{name} utelämnades: krockar med {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} utelämnades: den behöver {other}, som utelämnades",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Bygger inte på den Horizon du spelar ({code}): ett bygge utelämnar den tills författaren uppdaterar den",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Där du är får du grundarsetet genom en gratis kassa på playhorizon.dev. Gör anspråk på det i Butik: den öppnar kassan åt dig.",
+  "The founder set can't be claimed from your country.": "Grundarsetet kan inte fås från ditt land."
 }

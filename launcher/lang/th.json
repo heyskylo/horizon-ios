@@ -264,7 +264,7 @@
   "Backups": "การสำรองข้อมูล",
   "Nothing found.": "ไม่พบอะไรเลย",
   "The source at commit {commit}.": "แหล่งที่มาที่กระทำ {commit}",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "การดาวน์โหลด การลงชื่อเข้าใช้ และการอัปเดตต้องดำเนินการผ่านพร็อกซี HTTP นี้ (http://host:port) ว่างเปล่าหมายความว่าไม่มี: ใช้ HTTPS_PROXY แทนเมื่อตัวเรียกใช้งานเริ่มต้นด้วยอันหนึ่ง",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "การดาวน์โหลด การลงชื่อเข้าใช้ และการอัปเดตต้องดำเนินการผ่านพร็อกซี นี้ (http://host:port, socks5://host:port) ว่างเปล่าหมายความว่าไม่มี: ใช้ HTTPS_PROXY แทนเมื่อตัวเรียกใช้งานเริ่มต้นด้วยอันหนึ่ง",
   "Beta": "เบต้า",
   "Benchmark uploads": "การอัปโหลดเกณฑ์มาตรฐาน",
   "Saved: the next Play {what}.": "บันทึกแล้ว: เล่นครั้งต่อไป {what}",
@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "เพิ่มภาษีการขายของสหรัฐฯ ในรัฐที่เรียกเก็บ",
   "VAT included where it applies.": "รวม VAT แล้วในที่ที่ใช้",
   "In a set in your basket": "อยู่ในชุดในตะกร้าของคุณ",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "ชำระเงินให้เสร็จในเบราว์เซอร์ ไอเทมจะเข้าตู้เสื้อผ้าในอีกสักครู่"
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "ชำระเงินให้เสร็จในเบราว์เซอร์ ไอเทมจะเข้าตู้เสื้อผ้าในอีกสักครู่",
+  "{name} was left out: made for another Horizon version": "ไม่ได้รวม {name}: สร้างมาสำหรับ Horizon เวอร์ชันอื่น",
+  "{name} was left out: clashes with {other}": "ไม่ได้รวม {name}: ขัดแย้งกับ {other}",
+  "{name} was left out: it needs {other}, which was left out": "ไม่ได้รวม {name}: ต้องใช้ {other} ซึ่งไม่ได้รวมไว้",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "สร้างบน Horizon ที่คุณเล่นไม่ได้ ({code}): การสร้างจะไม่รวมไว้จนกว่าผู้สร้างจะอัปเดต",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "ในพื้นที่ของคุณ ชุดผู้ก่อตั้งต้องรับผ่านการชำระเงินฟรีบน playhorizon.dev รับได้จากร้านค้า: ร้านค้าจะเปิดหน้าชำระเงินให้คุณ",
+  "The founder set can't be claimed from your country.": "ไม่สามารถรับชุดผู้ก่อตั้งจากประเทศของคุณได้"
 }

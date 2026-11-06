@@ -263,7 +263,7 @@
   "Backups": "Còpies de seguretat",
   "Nothing found.": "No s'ha trobat res.",
   "The source at commit {commit}.": "La font a la confirmació {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Les baixades, els inicis de sessió i les actualitzacions passen per aquest servidor intermediari HTTP (http://host:port). Buit significa cap: HTTPS_PROXY s'utilitza en el seu lloc quan el llançador es va iniciar amb un.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Les baixades, els inicis de sessió i les actualitzacions passen per aquest servidor intermediari (http://host:port, socks5://host:port). Buit significa cap: HTTPS_PROXY s'utilitza en el seu lloc quan el llançador es va iniciar amb un.",
   "Beta": "Beta",
   "Benchmark uploads": "Càrregues de referència",
   "Saved: the next Play {what}.": "Desat: la propera reproducció {what}.",
@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "S'afegeix l'impost de vendes dels EUA on un estat el cobra.",
   "VAT included where it applies.": "IVA inclòs on s'aplica.",
   "In a set in your basket": "En un conjunt de la teva cistella",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Acaba el pagament al navegador. Els objectes arriben a l'Armari un moment després."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Acaba el pagament al navegador. Els objectes arriben a l'Armari un moment després.",
+  "{name} was left out: made for another Horizon version": "S'ha deixat fora {name}: fet per a una altra versió d'Horizon",
+  "{name} was left out: clashes with {other}": "S'ha deixat fora {name}: entra en conflicte amb {other}",
+  "{name} was left out: it needs {other}, which was left out": "S'ha deixat fora {name}: necessita {other}, que s'ha deixat fora",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "No es compila a l'Horizon que jugues ({code}): la compilació el deixa fora fins que el seu autor l'actualitzi",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "On ets, el conjunt de fundadors es reclama amb un pagament gratuït a playhorizon.dev. Reclama'l des de la Botiga: t'obre el pagament.",
+  "The founder set can't be claimed from your country.": "El conjunt de fundadors no es pot reclamar des del teu país."
 }

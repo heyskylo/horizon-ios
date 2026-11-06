@@ -263,7 +263,7 @@
   "Backups": "Öryggisafrit",
   "Nothing found.": "Ekkert fannst.",
   "The source at commit {commit}.": "Heimildin við commit {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Niðurhal, innskráningar og uppfærslur fara í gegnum þennan HTTP proxy (http://host:port). Tómt þýðir ekkert: HTTPS_PROXY er notað í staðinn þegar ræsiforritið var ræst með einum.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Niðurhal, innskráningar og uppfærslur fara í gegnum þennan proxy (http://host:port, socks5://host:port). Tómt þýðir ekkert: HTTPS_PROXY er notað í staðinn þegar ræsiforritið var ræst með einum.",
   "Beta": "Beta",
   "Benchmark uploads": "Viðmiðunarupphleðslur",
   "Saved: the next Play {what}.": "Vistað: næsta Play {what}.",
@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "Bandarískur söluskattur bætist við þar sem ríki innheimtir hann.",
   "VAT included where it applies.": "VSK innifalinn þar sem hann á við.",
   "In a set in your basket": "Í setti í körfunni þinni",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Ljúktu greiðslunni í vafranum. Hlutirnir koma í Fataskápinn augnabliki síðar."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Ljúktu greiðslunni í vafranum. Hlutirnir koma í Fataskápinn augnabliki síðar.",
+  "{name} was left out: made for another Horizon version": "{name} var sleppt: gert fyrir aðra útgáfu af Horizon",
+  "{name} was left out: clashes with {other}": "{name} var sleppt: rekst á {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} var sleppt: það þarf {other}, sem var sleppt",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Byggist ekki á þeirri Horizon sem þú spilar ({code}): smíði sleppir því þar til höfundurinn uppfærir það",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Þar sem þú ert færðu stofnendasettið með ókeypis greiðslu á playhorizon.dev. Gerðu tilkall til þess í Versluninni: hún opnar greiðsluna fyrir þig.",
+  "The founder set can't be claimed from your country.": "Ekki er hægt að gera tilkall til stofnendasettsins frá þínu landi."
 }

@@ -263,7 +263,7 @@
   "Backups": "ಬ್ಯಾಕಪ್‌ಗಳು",
   "Nothing found.": "ಏನೂ ಸಿಗಲಿಲ್ಲ.",
   "The source at commit {commit}.": "ಕಮಿಟ್ {commit} ನಲ್ಲಿನ ಮೂಲ.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "ಡೌನ್‌ಲೋಡ್‌ಗಳು, ಸೈನ್-ಇನ್‌ಗಳು ಮತ್ತು ನವೀಕರಣಗಳು ಈ HTTP ಪ್ರಾಕ್ಸಿ (http://host:port) ಮೂಲಕ ಹೋಗುತ್ತವೆ. ಖಾಲಿ ಎಂದರೆ ಯಾವುದೂ ಇಲ್ಲ: ಲಾಂಚರ್ ಒಂದನ್ನು ಪ್ರಾರಂಭಿಸಿದಾಗ HTTPS_PROXY ಅನ್ನು ಬಳಸಲಾಗುತ್ತದೆ.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "ಡೌನ್‌ಲೋಡ್‌ಗಳು, ಸೈನ್-ಇನ್‌ಗಳು ಮತ್ತು ನವೀಕರಣಗಳು ಈ ಪ್ರಾಕ್ಸಿ (http://host:port, socks5://host:port) ಮೂಲಕ ಹೋಗುತ್ತವೆ. ಖಾಲಿ ಎಂದರೆ ಯಾವುದೂ ಇಲ್ಲ: ಲಾಂಚರ್ ಒಂದನ್ನು ಪ್ರಾರಂಭಿಸಿದಾಗ HTTPS_PROXY ಅನ್ನು ಬಳಸಲಾಗುತ್ತದೆ.",
   "Beta": "ಬೀಟಾ",
   "Benchmark uploads": "ಬೆಂಚ್‌ಮಾರ್ಕ್ ಅಪ್‌ಲೋಡ್‌ಗಳು",
   "Saved: the next Play {what}.": "ಉಳಿಸಲಾಗಿದೆ: ಮುಂದಿನ ಪ್ಲೇ {what}.",
@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "ರಾಜ್ಯ ವಿಧಿಸುವಲ್ಲಿ ಅಮೆರಿಕದ ಮಾರಾಟ ತೆರಿಗೆ ಸೇರುತ್ತದೆ.",
   "VAT included where it applies.": "ಅನ್ವಯಿಸುವಲ್ಲಿ VAT ಸೇರಿದೆ.",
   "In a set in your basket": "ನಿಮ್ಮ ಬುಟ್ಟಿಯ ಸೆಟ್‌ನಲ್ಲಿ",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "ಬ್ರೌಸರ್‌ನಲ್ಲಿ ಪಾವತಿ ಮುಗಿಸಿ. ನಿಮ್ಮ ವಸ್ತುಗಳು ಸ್ವಲ್ಪ ಹೊತ್ತಿನಲ್ಲಿ ವಾರ್ಡ್‌ರೋಬ್‌ಗೆ ಬರುತ್ತವೆ."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "ಬ್ರೌಸರ್‌ನಲ್ಲಿ ಪಾವತಿ ಮುಗಿಸಿ. ನಿಮ್ಮ ವಸ್ತುಗಳು ಸ್ವಲ್ಪ ಹೊತ್ತಿನಲ್ಲಿ ವಾರ್ಡ್‌ರೋಬ್‌ಗೆ ಬರುತ್ತವೆ.",
+  "{name} was left out: made for another Horizon version": "{name} ಅನ್ನು ಬಿಡಲಾಗಿದೆ: Horizon ನ ಬೇರೆ ಆವೃತ್ತಿಗಾಗಿ ಮಾಡಲಾಗಿದೆ",
+  "{name} was left out: clashes with {other}": "{name} ಅನ್ನು ಬಿಡಲಾಗಿದೆ: {other} ಜೊತೆ ಘರ್ಷಿಸುತ್ತದೆ",
+  "{name} was left out: it needs {other}, which was left out": "{name} ಅನ್ನು ಬಿಡಲಾಗಿದೆ: ಇದಕ್ಕೆ {other} ಬೇಕು, ಅದನ್ನು ಬಿಡಲಾಗಿದೆ",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "ನೀವು ಆಡುವ Horizon ನಲ್ಲಿ ಬಿಲ್ಡ್ ಆಗುವುದಿಲ್ಲ ({code}): ಅದರ ಲೇಖಕರು ನವೀಕರಿಸುವವರೆಗೆ ಬಿಲ್ಡ್ ಅದನ್ನು ಬಿಡುತ್ತದೆ",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "ನೀವು ಇರುವಲ್ಲಿ, ಸ್ಥಾಪಕರ ಸೆಟ್ ಅನ್ನು playhorizon.dev ನಲ್ಲಿ ಉಚಿತ ಚೆಕ್‌ಔಟ್ ಮೂಲಕ ಪಡೆಯಲಾಗುತ್ತದೆ. ಅಂಗಡಿಯಿಂದ ಪಡೆಯಿರಿ: ಅದು ನಿಮಗಾಗಿ ಚೆಕ್‌ಔಟ್ ತೆರೆಯುತ್ತದೆ.",
+  "The founder set can't be claimed from your country.": "ನಿಮ್ಮ ದೇಶದಿಂದ ಸ್ಥಾಪಕರ ಸೆಟ್ ಪಡೆಯಲು ಸಾಧ್ಯವಿಲ್ಲ."
 }

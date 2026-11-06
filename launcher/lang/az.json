@@ -263,7 +263,7 @@
   "Backups": "Yedəkləmələr",
   "Nothing found.": "Heç nə tapılmadı.",
   "The source at commit {commit}.": "Tövsiyə olunan mənbə {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Endirmələr, girişlər və yeniləmələr bu HTTP proksisindən keçir (http://host:port). Boş heç biri deməkdir: Başlatıcı biri ilə işə salındıqda əvəzinə HTTPS_PROXY istifadə olunur.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Endirmələr, girişlər və yeniləmələr bu proksisindən keçir (http://host:port, socks5://host:port). Boş heç biri deməkdir: Başlatıcı biri ilə işə salındıqda əvəzinə HTTPS_PROXY istifadə olunur.",
   "Beta": "Beta",
   "Benchmark uploads": "Benchmark yükləmələri",
   "Saved: the next Play {what}.": "Yadda saxlandı: növbəti Play {what}.",
@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "ABŞ satış vergisi ştatın tələb etdiyi yerdə əlavə olunur.",
   "VAT included where it applies.": "ƏDV tətbiq olunduğu yerdə daxildir.",
   "In a set in your basket": "Səbətinizdəki dəstdə",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Ödənişi brauzerinizdə bitirin. Əşyalarınız bir azdan Qarderoba gələcək."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Ödənişi brauzerinizdə bitirin. Əşyalarınız bir azdan Qarderoba gələcək.",
+  "{name} was left out: made for another Horizon version": "{name} kənarda qaldı: başqa Horizon versiyası üçün hazırlanıb",
+  "{name} was left out: clashes with {other}": "{name} kənarda qaldı: {other} ilə toqquşur",
+  "{name} was left out: it needs {other}, which was left out": "{name} kənarda qaldı: ona {other} lazımdır, o da kənarda qaldı",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Oynadığın Horizon-da qurulmur ({code}): müəllifi yeniləyənə qədər quraşdırma onu kənarda saxlayır",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Olduğunuz yerdə qurucu dəsti playhorizon.dev saytında pulsuz ödəniş vasitəsilə alınır. Onu Mağazadan alın: ödəniş səhifəsini sizin üçün açacaq.",
+  "The founder set can't be claimed from your country.": "Qurucu dəsti sizin ölkənizdən alına bilməz."
 }

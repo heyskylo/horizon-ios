@@ -264,7 +264,7 @@
   "Backups": "Backup",
   "Nothing found.": "Niente trovato.",
   "The source at commit {commit}.": "La fonte a commit {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "I scaricamenti, i sign-in e i ajornamenti i va atraverso sto proxy HTTP (http://host:port). Vodo vol dir gnente: HTTPS_PROXY el vien doparà invese quando el lansador el xe stà scominsià co uno.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "I scaricamenti, i sign-in e i ajornamenti i va atraverso sto proxy (http://host:port, socks5://host:port). Vodo vol dir gnente: HTTPS_PROXY el vien doparà invese quando el lansador el xe stà scominsià co uno.",
   "Beta": "Beta",
   "Benchmark uploads": "Caricamenti de riferimento",
   "Saved: the next Play {what}.": "Salvato: la prossima Play {what}.",
@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "La tasa so le vendite dei USA la se zonta onde che un stato la ciama.",
   "VAT included where it applies.": "IVA inclusa onde che la se aplica.",
   "In a set in your basket": "In un set inte'l to caveo",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Finisi el pagamento inte'l browser. I to ogeti i riva inte'l Guardaroba un momento dopo."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Finisi el pagamento inte'l browser. I to ogeti i riva inte'l Guardaroba un momento dopo.",
+  "{name} was left out: made for another Horizon version": "{name} el xe stà lasà fora: fato par n'altra version de Horizon",
+  "{name} was left out: clashes with {other}": "{name} el xe stà lasà fora: el va in conflito co {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} el xe stà lasà fora: el ga bisogno de {other}, che el xe stà lasà fora",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "No'l se compila sul Horizon che te zughi ({code}): na compilazion lo lasa fora fin che el so autor no lo ajorna",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Dove che te si, el set dei fondadori se lo riscata co un pagamento gratis su playhorizon.dev. Riscatelo dal Negozio: el te verze el pagamento.",
+  "The founder set can't be claimed from your country.": "El set dei fondadori no se pol riscatarlo dal to paese."
 }

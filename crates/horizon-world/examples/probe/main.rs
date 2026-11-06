@@ -86,6 +86,7 @@ mod feature_placement_fixture;
 mod feature_region_fixture;
 mod feature_sort_fixture;
 mod fill_layer_fixture;
+mod float_text_fixture;
 mod fluid_box_fixture;
 mod fluid_fixture;
 mod fluid_flow_fixture;
@@ -147,6 +148,7 @@ mod player_hurt_fixture;
 mod player_inventory_fixture;
 mod player_travel_fixture;
 mod portal_travel_fixture;
+mod redstone_catalog_fixture;
 mod registered_player_combat_fixture;
 mod registry_collision_scan_fixture;
 mod registry_fall_ray_fixture;
@@ -261,6 +263,7 @@ probes! {
     fill_layer_fixture,
     fluid_box_fixture,
     fluid_fixture,
+    float_text_fixture,
     fluid_flow_fixture,
     fluid_occupancy_fixture,
     fluid_shape_fixture,
@@ -320,6 +323,7 @@ probes! {
     player_inventory_fixture,
     player_travel_fixture,
     portal_travel_fixture,
+    redstone_catalog_fixture,
     registered_player_combat_fixture,
     registry_collision_scan_fixture,
     registry_fall_ray_fixture,

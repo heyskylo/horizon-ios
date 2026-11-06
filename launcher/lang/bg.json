@@ -264,7 +264,7 @@
   "Backups": "Архивиране",
   "Nothing found.": "Нищо не е намерено.",
   "The source at commit {commit}.": "Източникът при ангажимент {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Изтеглянията, влизанията и актуализациите преминават през този HTTP прокси (http://host:port). Празно означава, че няма: HTTPS_PROXY се използва вместо това, когато стартовият панел е стартиран с такъв.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Изтеглянията, влизанията и актуализациите преминават през този прокси (http://host:port, socks5://host:port). Празно означава, че няма: HTTPS_PROXY се използва вместо това, когато стартовият панел е стартиран с такъв.",
   "Beta": "Бета",
   "Benchmark uploads": "Сравнителни качвания",
   "Saved: the next Play {what}.": "Запазено: следващото възпроизвеждане {what}.",
@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "Данък върху продажбите в САЩ се добавя, където щатът го налага.",
   "VAT included where it applies.": "ДДС е включен, където се прилага.",
   "In a set in your basket": "В комплект в кошницата ви",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Завършете плащането в браузъра. Предметите ще се появят в Гардероба след миг."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Завършете плащането в браузъра. Предметите ще се появят в Гардероба след миг.",
+  "{name} was left out: made for another Horizon version": "{name} е пропуснат: направен за друга версия на Horizon",
+  "{name} was left out: clashes with {other}": "{name} е пропуснат: конфликтира с {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} е пропуснат: нуждае се от {other}, който е пропуснат",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Не се компилира на Horizon, който играете ({code}): компилацията го пропуска, докато авторът не го обнови",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Там, където сте, комплектът на основателите се взема чрез безплатно плащане на playhorizon.dev. Вземете го от Магазина: той ще отвори плащането вместо вас.",
+  "The founder set can't be claimed from your country.": "Комплектът на основателите не може да бъде взет от вашата държава."
 }

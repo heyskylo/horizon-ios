@@ -263,7 +263,7 @@
   "Backups": "Varukoopiad",
   "Nothing found.": "Midagi ei leitud.",
   "The source at commit {commit}.": "Allikas sissekandmisel {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Allalaadimised, sisselogimised ja värskendused läbivad selle HTTP-puhverserveri (http://host:port). Tühi tähendab, et puudub: kui käivitaja käivitati ühega, kasutatakse selle asemel HTTPS_PROXY-d.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Allalaadimised, sisselogimised ja värskendused läbivad selle puhverserveri (http://host:port, socks5://host:port). Tühi tähendab, et puudub: kui käivitaja käivitati ühega, kasutatakse selle asemel HTTPS_PROXY-d.",
   "Beta": "Beeta",
   "Benchmark uploads": "Üleslaadimiste võrdlusuuringud",
   "Saved: the next Play {what}.": "Salvestatud: järgmine esitus {what}.",
@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "USA müügimaks lisandub seal, kus osariik seda nõuab.",
   "VAT included where it applies.": "Käibemaks sisaldub seal, kus see kehtib.",
   "In a set in your basket": "Komplektis sinu ostukorvis",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Lõpeta makse brauseris. Esemed jõuavad Garderoobi hetke pärast."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Lõpeta makse brauseris. Esemed jõuavad Garderoobi hetke pärast.",
+  "{name} was left out: made for another Horizon version": "{name} jäeti välja: tehtud teise Horizoni versiooni jaoks",
+  "{name} was left out: clashes with {other}": "{name} jäeti välja: on vastuolus modiga {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} jäeti välja: vajab modi {other}, mis jäeti välja",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Ei ehitu Horizonil, mida mängid ({code}): ehitus jätab selle välja, kuni autor seda uuendab",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Seal, kus sa oled, saab asutajate komplekti tasuta makse kaudu saidil playhorizon.dev. Nõua seda Poest: see avab makse sinu eest.",
+  "The founder set can't be claimed from your country.": "Asutajate komplekti ei saa sinu riigist nõuda."
 }

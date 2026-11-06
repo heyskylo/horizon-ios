@@ -263,7 +263,7 @@
   "Backups": "Backups",
   "Nothing found.": "Non se atopou nada.",
   "The source at commit {commit}.": "A fonte en commit {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "As descargas, os inicios de sesión e as actualizacións pasan a través deste proxy HTTP (http://host:port). Baleiro significa ningún: HTTPS_PROXY utilízase cando se iniciou o iniciador cun.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "As descargas, os inicios de sesión e as actualizacións pasan a través deste proxy (http://host:port, socks5://host:port). Baleiro significa ningún: HTTPS_PROXY utilízase cando se iniciou o iniciador cun.",
   "Beta": "Beta",
   "Benchmark uploads": "Cargas de referencia",
   "Saved: the next Play {what}.": "Gardado: a seguinte reprodución {what}.",
@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "Engádese o imposto sobre vendas dos EUA onde un estado o cobra.",
   "VAT included where it applies.": "IVE incluído onde se aplica.",
   "In a set in your basket": "Nun conxunto da túa cesta",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Remata o pagamento no navegador. Os teus obxectos chegan ao Armario un momento despois."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Remata o pagamento no navegador. Os teus obxectos chegan ao Armario un momento despois.",
+  "{name} was left out: made for another Horizon version": "Deixouse fóra {name}: feito para outra versión de Horizon",
+  "{name} was left out: clashes with {other}": "Deixouse fóra {name}: choca con {other}",
+  "{name} was left out: it needs {other}, which was left out": "Deixouse fóra {name}: precisa de {other}, que se deixou fóra",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Non se compila no Horizon ao que xogas ({code}): a compilación déixao fóra ata que o seu autor o actualice",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Onde estás, o conxunto de fundadores reclámase cun pagamento gratuíto en playhorizon.dev. Reclámao desde a Tenda: ábreche o pagamento.",
+  "The founder set can't be claimed from your country.": "O conxunto de fundadores non se pode reclamar desde o teu país."
 }

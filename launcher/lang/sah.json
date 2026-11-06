@@ -264,7 +264,7 @@
   "Backups": "Резервнай копиялар",
   "Nothing found.": "Туох да табыллыбатах.",
   "The source at commit {commit}.": "Коммитка баар источник {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Скачиваниелар, киириилэр уонна саҥардыылар бу HTTP прокси нөҥүө бараллар (http://host:port). Кураанах диэн суох диэн суолталаах: HTTPS_PROXY ол оннугар лаунчер бииртэн саҕаламмытыгар туттуллар.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Скачиваниелар, киириилэр уонна саҥардыылар бу прокси нөҥүө бараллар (http://host:port, socks5://host:port). Кураанах диэн суох диэн суолталаах: HTTPS_PROXY ол оннугар лаунчер бииртэн саҕаламмытыгар туттуллар.",
   "Beta": "Бета",
   "Benchmark uploads": "Бенчмарк ыытыылара",
   "Saved: the next Play {what}.": "Харыстаммыт: кэлэр Оонньуу {what}.",
@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "АХШ атыы нолуога штат ылар сиригэр эбиллэр.",
   "VAT included where it applies.": "НДС киирэр, туттуллар сиригэр.",
   "In a set in your basket": "Корзинаҕар баар комплекка",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Төлөбүрү браузерга бүтэр. Маллара Гардеробка сотору кэлиэхтэрэ."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Төлөбүрү браузерга бүтэр. Маллара Гардеробка сотору кэлиэхтэрэ.",
+  "{name} was left out: made for another Horizon version": "{name} киллэриллибэтэ: Horizon атын барылыатыгар оҥоһуллубут",
+  "{name} was left out: clashes with {other}": "{name} киллэриллибэтэ: {other} кытта мөккүһэр",
+  "{name} was left out: it needs {other}, which was left out": "{name} киллэриллибэтэ: кини {other} наада, ол эмиэ киллэриллибэтэ",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Эн оонньуур Horizon-ҥар хомуллубат ({code}): ааптар саҥардыар диэри хомуйуу киниэхэ киллэрбэт",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Эһиги баар сиргитигэр төрдүттэр иинэ playhorizon.dev сайтка босхо төлөбүр нөҥүө ылыллар. Кинини Маҕаһыынтан ылыҥ: төлөбүрү бэйэтэ арыйыа.",
+  "The founder set can't be claimed from your country.": "Төрдүттэр иинин эһиги дойдугуттан ылар кыах суох."
 }

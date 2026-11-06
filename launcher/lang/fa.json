@@ -264,7 +264,7 @@
   "Backups": "پشتیبان گیری",
   "Nothing found.": "چیزی پیدا نشد",
   "The source at commit {commit}.": "منبع در commit {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "دانلودها، ورود به سیستم و به‌روزرسانی‌ها از طریق این پروکسی HTTP (http://host:port) انجام می‌شود. خالی به معنای هیچ: HTTPS_PROXY زمانی استفاده می‌شود که راه‌انداز با یکی شروع شود.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "دانلودها، ورود به سیستم و به‌روزرسانی‌ها از طریق این پروکسی (http://host:port, socks5://host:port) انجام می‌شود. خالی به معنای هیچ: HTTPS_PROXY زمانی استفاده می‌شود که راه‌انداز با یکی شروع شود.",
   "Beta": "بتا",
   "Benchmark uploads": "بارگذاری های معیار",
   "Saved: the next Play {what}.": "ذخیره شده: بازی بعدی {what}.",
@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "مالیات فروش آمریکا هر جا ایالتی آن را بگیرد اضافه می‌شود.",
   "VAT included where it applies.": "مالیات بر ارزش افزوده هر جا لازم باشد گنجانده شده است.",
   "In a set in your basket": "در یک مجموعه در سبد شما",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "پرداخت را در مرورگر تمام کنید. آیتم‌هایتان کمی بعد به کمد لباس می‌رسند."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "پرداخت را در مرورگر تمام کنید. آیتم‌هایتان کمی بعد به کمد لباس می‌رسند.",
+  "{name} was left out: made for another Horizon version": "{name} کنار گذاشته شد: برای نسخهٔ دیگری از Horizon ساخته شده",
+  "{name} was left out: clashes with {other}": "{name} کنار گذاشته شد: با {other} تداخل دارد",
+  "{name} was left out: it needs {other}, which was left out": "{name} کنار گذاشته شد: به {other} نیاز دارد که کنار گذاشته شد",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "روی Horizonی که بازی می‌کنی ساخته نمی‌شود ({code}): ساخت آن را کنار می‌گذارد تا سازنده‌اش به‌روزش کند",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "در جایی که هستید، مجموعهٔ بنیان‌گذاران از طریق پرداخت رایگان در playhorizon.dev دریافت می‌شود. آن را از فروشگاه دریافت کنید: صفحهٔ پرداخت را برایتان باز می‌کند.",
+  "The founder set can't be claimed from your country.": "مجموعهٔ بنیان‌گذاران از کشور شما قابل دریافت نیست."
 }

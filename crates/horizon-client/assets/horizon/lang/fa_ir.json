@@ -322,7 +322,6 @@
   "horizon.osk.close": "بستن",
   "horizon.extras.chat_animation.tooltip": "یک خط چت جدید به جای اینکه کامل نشان داده شود، از سمت چپ وارد می شود و در حالی که محو می شود.",
   "horizon.extras.chat_indicator.tooltip": "نوار رنگی در سمت چپ یک خط چت.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "چرخ اسکرول روی یک دکمه در تنظیمات مقدار آن را تغییر می دهد، مانند وانیل. خاموش، چرخ فقط فهرست را پیمایش می کند.",
   "horizon.extras.pack_browser.tooltip": "Select Resource Packs یک دکمه Add دریافت می کند که Modrinth را جستجو می کند و یک بسته را در پوشه بسته های شما نصب می کند. خاموش، بازی هرگز با Modrinth تماس نمی گیرد.",
   "horizon.extras.splitscreen.tooltip": "در یک دنیا، کنترل‌کننده دیگری می‌تواند به‌عنوان یک بازیکن جدید ملحق شود: وقتی A را درخواست کرد، A را فشار دهید، سپس یک نمایه و مکان بازی را انتخاب کنید.",
   "horizon.splitscreen.setup.monitor": "مانیتور %s",

@@ -263,7 +263,7 @@
   "Backups": "காப்புப்பிரதிகள்",
   "Nothing found.": "எதுவும் கிடைக்கவில்லை.",
   "The source at commit {commit}.": "உறுதி {commit} இல் உள்ள ஆதாரம்.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "பதிவிறக்கங்கள், உள்நுழைவுகள் மற்றும் புதுப்பிப்புகள் இந்த HTTP ப்ராக்ஸி (http://host:port) மூலம் செல்கின்றன. வெறுமை என்றால் எதுவுமில்லை: லாஞ்சர் ஒன்றைத் தொடங்கும் போது அதற்குப் பதிலாக HTTPS_PROXY பயன்படுத்தப்பட்டது.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "பதிவிறக்கங்கள், உள்நுழைவுகள் மற்றும் புதுப்பிப்புகள் இந்த ப்ராக்ஸி (http://host:port, socks5://host:port) மூலம் செல்கின்றன. வெறுமை என்றால் எதுவுமில்லை: லாஞ்சர் ஒன்றைத் தொடங்கும் போது அதற்குப் பதிலாக HTTPS_PROXY பயன்படுத்தப்பட்டது.",
   "Beta": "பீட்டா",
   "Benchmark uploads": "பெஞ்ச்மார்க் பதிவேற்றங்கள்",
   "Saved: the next Play {what}.": "சேமிக்கப்பட்டது: அடுத்த நாடகம் {what}.",
@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "மாநிலம் வசூலிக்கும் இடத்தில் அமெரிக்க விற்பனை வரி சேர்க்கப்படும்.",
   "VAT included where it applies.": "பொருந்தும் இடத்தில் VAT சேர்க்கப்பட்டுள்ளது.",
   "In a set in your basket": "உங்கள் கூடையில் உள்ள தொகுப்பில்",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "உலாவியில் கட்டணத்தை முடியுங்கள். உங்கள் பொருட்கள் சிறிது நேரத்தில் அலமாரிக்கு வரும்."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "உலாவியில் கட்டணத்தை முடியுங்கள். உங்கள் பொருட்கள் சிறிது நேரத்தில் அலமாரிக்கு வரும்.",
+  "{name} was left out: made for another Horizon version": "{name} விடப்பட்டது: Horizon இன் வேறு பதிப்புக்காக உருவாக்கப்பட்டது",
+  "{name} was left out: clashes with {other}": "{name} விடப்பட்டது: {other} உடன் முரண்படுகிறது",
+  "{name} was left out: it needs {other}, which was left out": "{name} விடப்பட்டது: இதற்கு {other} தேவை, அது விடப்பட்டது",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "நீங்கள் விளையாடும் Horizon இல் உருவாகாது ({code}): அதன் ஆசிரியர் புதுப்பிக்கும் வரை உருவாக்கம் அதை விடுகிறது",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "நீங்கள் இருக்கும் இடத்தில், நிறுவனர் தொகுப்பு playhorizon.dev இல் இலவச செக்அவுட் மூலம் பெறப்படுகிறது. அதைக் கடையிலிருந்து பெறுங்கள்: அது உங்களுக்காக செக்அவுட்டைத் திறக்கும்.",
+  "The founder set can't be claimed from your country.": "உங்கள் நாட்டிலிருந்து நிறுவனர் தொகுப்பைப் பெற முடியாது."
 }

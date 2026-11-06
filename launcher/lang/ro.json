@@ -264,7 +264,7 @@
   "Backups": "Backup-uri",
   "Nothing found.": "Nu s-a găsit nimic.",
   "The source at commit {commit}.": "Sursa de la commit {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Descărcările, conectările și actualizările trec prin acest proxy HTTP (http://host:port). Golit înseamnă că nu există: HTTPS_PROXY este folosit atunci când lansatorul a fost pornit cu unul.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Descărcările, conectările și actualizările trec prin acest proxy (http://host:port, socks5://host:port). Golit înseamnă că nu există: HTTPS_PROXY este folosit atunci când lansatorul a fost pornit cu unul.",
   "Beta": "Beta",
   "Benchmark uploads": "Încărcări de referință",
   "Saved: the next Play {what}.": "Salvat: următoarea redare {what}.",
@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "Taxa pe vânzări din SUA se adaugă acolo unde un stat o percepe.",
   "VAT included where it applies.": "TVA inclus acolo unde se aplică.",
   "In a set in your basket": "Într-un set din coșul tău",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Termină plata în browser. Obiectele ajung în Garderobă puțin mai târziu."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Termină plata în browser. Obiectele ajung în Garderobă puțin mai târziu.",
+  "{name} was left out: made for another Horizon version": "{name} a fost omis: făcut pentru altă versiune de Horizon",
+  "{name} was left out: clashes with {other}": "{name} a fost omis: intră în conflict cu {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} a fost omis: are nevoie de {other}, care a fost omis",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Nu se compilează pe Horizon-ul pe care îl joci ({code}): compilarea îl omite până când autorul îl actualizează",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Acolo unde ești, setul fondatorilor se revendică printr-o plată gratuită pe playhorizon.dev. Revendică-l din Magazin: îți deschide plata.",
+  "The founder set can't be claimed from your country.": "Setul fondatorilor nu poate fi revendicat din țara ta."
 }

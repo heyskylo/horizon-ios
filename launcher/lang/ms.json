@@ -263,7 +263,7 @@
   "Backups": "Sandaran",
   "Nothing found.": "Tiada apa yang ditemui.",
   "The source at commit {commit}.": "Sumber di commit {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Muat turun, log masuk dan kemas kini melalui proksi HTTP ini (http://host:port). Kosong bermakna tiada: HTTPS_PROXY sebaliknya digunakan apabila pelancar dimulakan dengan satu.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Muat turun, log masuk dan kemas kini melalui proksi ini (http://host:port, socks5://host:port). Kosong bermakna tiada: HTTPS_PROXY sebaliknya digunakan apabila pelancar dimulakan dengan satu.",
   "Beta": "Beta",
   "Benchmark uploads": "Muat naik penanda aras",
   "Saved: the next Play {what}.": "Disimpan: Play seterusnya {what}.",
@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "Cukai jualan AS ditambah di mana negeri mengenakannya.",
   "VAT included where it applies.": "VAT termasuk di mana berkenaan.",
   "In a set in your basket": "Dalam set dalam bakul anda",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Selesaikan pembayaran dalam pelayar. Item anda sampai ke Almari sebentar lagi."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Selesaikan pembayaran dalam pelayar. Item anda sampai ke Almari sebentar lagi.",
+  "{name} was left out: made for another Horizon version": "{name} ditinggalkan: dibuat untuk versi Horizon lain",
+  "{name} was left out: clashes with {other}": "{name} ditinggalkan: bercanggah dengan {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} ditinggalkan: ia memerlukan {other}, yang ditinggalkan",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Tidak dibina pada Horizon yang anda mainkan ({code}): binaan meninggalkannya sehingga pengarangnya mengemas kininya",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Di tempat anda, set pengasas dituntut melalui pembayaran percuma di playhorizon.dev. Tuntut dari Kedai: ia membuka pembayaran untuk anda.",
+  "The founder set can't be claimed from your country.": "Set pengasas tidak boleh dituntut dari negara anda."
 }

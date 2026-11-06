@@ -119,7 +119,15 @@ tag `nightly-source/<date>-<short>` ([release-flow.md](release-flow.md#nightly-c
 builds after its Nightly is replaced. When the mods of one build pin different commits, the launcher says which
 mod pins which and the commit the build would use, the newest of them, and builds only after the player chooses
 **Build anyway** (`native-build --allow-version-mismatch`): such mods often still apply and compile. A failed build
-then says the mods were made for other versions. Their horizon-mixins pins may differ too: the build uses the
+then says the mods were made for other versions. A mod that doesn't fit the build's Horizon doesn't stop the others: when
+horizon-mixins refuses it (a function it hooks, the file it adds a module to or a named hook point this Horizon
+doesn't have: `E_TARGET_NOT_FOUND`, `E_MODULE`, `E_HOOK_CATALOG`; a module named like one of Horizon's or another
+mod's: `E_MODULE_CONFLICT`), or the compiler's errors are in its helpers, the build runs again without it and without
+the mods that need it ([dependencies](#dependencies-between-trait-mods)), at most three more compiles. The build's steps
+and the Mods page say which mods were left out and why ("X was left out: made for another Horizon version", "…:
+clashes with Y", "…: it needs Y, which was left out"); `native-mods.json` keeps them (`left_out`), so the build is up
+to date with the same mods turned on, and a new version of a left-out mod asks for a build again. A server engine
+(`--server-output`) leaves nothing out: it fails instead. Their horizon-mixins pins may differ too: the build uses the
 newest of them and the launcher's own, never one older than a mod was made with. A bundle with no pin builds on
 the commit of the installed version the build starts from. A pin chooses the commit even when the player picked another
 version: the Mods page then says which mods pinned the commit the build compiled, and **Rebuild on Horizon**
@@ -506,7 +514,12 @@ are compiled into `horizon-client`; a stable API crate for mods' own crates is #
 
 **Dependencies come from Horizon's `Cargo.lock`.** A crate names registry crates by version requirement
 (`crc32fast = "1"`, `{ version, features, default-features, optional }`); each must already be in Horizon's lock
-file in a version that matches, and builds in exactly that version. The lock file is the allow list: horizon-mixins
+file in a version that matches, and builds in exactly that version. The crates that are there only for mods are listed in
+`crates/horizon-mod-deps/Cargo.toml` (optional dependencies, with the features mods may turn on; nothing builds them):
+`mysql` 27 (blocking MariaDB/MySQL client, `minimal-rust` + `rustls-tls-ring`, no default features), `redis` 1 (blocking,
+no default features), `tungstenite` 0.30 (websocket over a stream the mod opens, no default features) and `rusty-opus` 1
+(Opus encoder and decoder). A feature of theirs that turns on a dependency not listed there is refused.
+The lock file is the allow list: horizon-mixins
 refuses a crate the lock lacks (`E_CRATE_DEPENDENCY`) and writes the mod's crates into the staged lock without
 changing any other byte, so the game still builds with `--locked`. The launcher checks it again (every downloaded
 package of the staged lock as in Horizon's: name, version, source, checksum), and a feature that turns on a
@@ -1792,6 +1805,10 @@ trusting native code is the player's decision, never an agent's.
 4. **Mixins.** The bundles are copied first, so the build and its key use that copy whatever happens to the
    folder meanwhile. `horizon-mixins apply` stages the modded source; the launcher copies only the files that
    changed into `native/stage/`, so Cargo, which goes by file times, recompiles only the crates the mods touch.
+   Each file written gets the current time, never the archive's (the commit's) or the copy's original: on
+   Windows and macOS a copy keeps it, and a file older than the last build reads as already compiled, so
+   switching Nightlies linked the previous one's crates (#10421). A stage from before that fix is written again
+   once (`native/stage.stamped` marks it).
    With mods' crates, their dependencies are checked against Horizon's `Cargo.lock` ("The mod's crate").
 5. **Compile**: `cargo build --locked --profile <fast|release> [--config ...] [--features horizon-client/mods] -p
    horizon-client`, into `native/target/`, with one of three build profiles:
@@ -2806,6 +2823,32 @@ items are left out (NeoForge's `RenderLivingEvent.Pre`, cancelled); its name tag
   after its vanilla model and layers, in the same frame (not for one a mod drew itself); `who` is set for a player. The
   geometry hangs from the entity's frame, not from a model bone: place a hat from `head_yaw`, `pitch` and the entity type's
   eye height.
+- A model built in code, as a NeoForge mod's `createBodyLayer()` builds it, is an entity model layer (API
+  @API:model_layers@). `native_layer_definitions(layers)` (`EntityRenderersEvent.RegisterLayerDefinitions`, asked once at
+  start) takes a mod's layers by id, `<mod id>:<model>#<layer>`. Each is a `LayerDefinition`: a `MeshDefinition` whose
+  named parts hold `CubeListBuilder` boxes at a `PartPose`, on a texture of a given size. A box takes its faces from the
+  texture as vanilla's do (`tex_offs`, `mirror`), and a `CubeDeformation` grows it over the same texels.
+  `native_bake_layer(layer)` (`EntityModelSet.bakeLayer`) bakes one of them, or a vanilla layer by its
+  `entity-models.json` name (`minecraft:zombie#main`), into a `ModelPart` tree. Bake it once and keep it. Each frame,
+  `reset_all_poses` and set the parts' `x_rot`, `y_rot`, `z_rot` and place, as `setupAnim` does, then draw the tree
+  with `native_draw_model_part(draw, part, sprite, tint)` (`ModelPart.render`). A mob's model is in the model's own
+  frame, +y down with its front towards -z: turn the mob's frame into it first, as `LivingEntityRenderer` does.
+
+  ```rust
+  fn layer_definitions(&self, event: &mut LayerDefinitionsEvent<'_>) {
+      let mut mesh = MeshDefinition::new();
+      let root = mesh.root();
+      let body = CubeListBuilder::create().tex_offs(0, 16).add_box([-4.0, 0.0, -2.0], [8.0, 12.0, 4.0]);
+      let body = mesh.add_or_replace_child(root, "body", body, PartPose::offset(0.0, 0.0, 0.0));
+      let head = CubeListBuilder::create().tex_offs(0, 0).add_box([-4.0, -8.0, -4.0], [8.0, 8.0, 8.0]);
+      mesh.add_or_replace_child(body, "head", head, PartPose::ZERO);
+      event.layers.push(("mymod:golem#main".into(), LayerDefinition::create(mesh, 64, 64)));
+  }
+  // In mob_submit, with `model` from host.bake_layer("mymod:golem#main"):
+  draw.scale([1.0, -1.0, -1.0]);
+  draw.translate([0.0, -1.501, 0.0]);
+  host.draw_model_part(draw, &model, "mymod:entity/golem", 0xFFFFFF);
+  ```
 
 ### Advancement triggers
 

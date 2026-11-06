@@ -264,7 +264,7 @@
   "Backups": "Back-ups",
   "Nothing found.": "Niets gevonden.",
   "The source at commit {commit}.": "De bron bij commit {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Downloads, aanmeldingen en updates verlopen via deze HTTP-proxy (http://host:port). Leeg betekent geen: HTTPS_PROXY wordt in plaats daarvan gebruikt wanneer het opstartprogramma met één werd gestart.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Downloads, aanmeldingen en updates verlopen via deze proxy (http://host:port, socks5://host:port). Leeg betekent geen: HTTPS_PROXY wordt in plaats daarvan gebruikt wanneer het opstartprogramma met één werd gestart.",
   "Beta": "Bèta",
   "Benchmark uploads": "Benchmark-uploads",
   "Saved: the next Play {what}.": "Opgeslagen: de volgende Play {what}.",
@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "Amerikaanse omzetbelasting komt erbij waar een staat die heft.",
   "VAT included where it applies.": "Btw inbegrepen waar die geldt.",
   "In a set in your basket": "In een set in je mandje",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Rond de betaling af in je browser. Je items komen even later in de Kledingkast."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Rond de betaling af in je browser. Je items komen even later in de Kledingkast.",
+  "{name} was left out: made for another Horizon version": "{name} is weggelaten: gemaakt voor een andere Horizon-versie",
+  "{name} was left out: clashes with {other}": "{name} is weggelaten: botst met {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} is weggelaten: het heeft {other} nodig, dat is weggelaten",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Bouwt niet op de Horizon die je speelt ({code}): een build laat het weg tot de maker het bijwerkt",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Waar jij bent, claim je de founder-set via een gratis checkout op playhorizon.dev. Claim hem in de Winkel: die opent de checkout voor je.",
+  "The founder set can't be claimed from your country.": "De founder-set kan niet vanuit jouw land worden geclaimd."
 }

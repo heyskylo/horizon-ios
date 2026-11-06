@@ -323,7 +323,6 @@
   "horizon.osk.close": "Uždaryti",
   "horizon.extras.chat_animation.tooltip": "Nauja pokalbio linija slenka iš kairės, kol ji išnyksta, o ne atrodo visa.",
   "horizon.extras.chat_indicator.tooltip": "Spalvota juosta pokalbio linijos kairėje.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "Slinkties ratukas virš mygtuko nustatymuose keičia jo reikšmę, kaip ir vanilės atveju. Išjungtas, ratas tik slenka sąrašu.",
   "horizon.extras.pack_browser.tooltip": "Pasirinkite Išteklių paketai gauna mygtuką Pridėti, kuris ieško Modrinth ir įdiegia paketą į jūsų paketų aplanką. Išjungtas, žaidimas niekada nesusisiekia su Modrinth.",
   "horizon.extras.splitscreen.tooltip": "Pasaulyje kitas valdiklis gali prisijungti kaip naujas žaidėjas: paspauskite A, kai jis paprašys, tada pasirinkite profilį ir kur žaisti.",
   "horizon.splitscreen.setup.monitor": "Monitorius %s",

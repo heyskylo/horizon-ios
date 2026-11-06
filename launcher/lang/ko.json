@@ -264,7 +264,7 @@
   "Backups": "백업",
   "Nothing found.": "검색 결과가 없습니다.",
   "The source at commit {commit}.": "커밋 {commit}의 소스 코드입니다.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "다운로드, 로그인 및 업데이트는 지정된 HTTP 프록시(http://host:port)를 거칩니다. 비워두면 프록시를 사용하지 않으며, 런처가 시작될 때 설정된 경우 HTTPS_PROXY가 대신 사용됩니다.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "다운로드, 로그인 및 업데이트는 지정된 프록시(http://host:port, socks5://host:port)를 거칩니다. 비워두면 프록시를 사용하지 않으며, 런처가 시작될 때 설정된 경우 HTTPS_PROXY가 대신 사용됩니다.",
   "Beta": "베타",
   "Benchmark uploads": "벤치마크 업로드",
   "Saved: the next Play {what}.": "저장됨: 다음 플레이 시 {what}.",
@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "주에서 부과하는 경우 미국 판매세가 추가됩니다.",
   "VAT included where it applies.": "해당하는 경우 VAT가 포함됩니다.",
   "In a set in your basket": "장바구니의 세트에 포함됨",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "브라우저에서 결제를 마치세요. 아이템은 잠시 후 옷장에 들어옵니다."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "브라우저에서 결제를 마치세요. 아이템은 잠시 후 옷장에 들어옵니다.",
+  "{name} was left out: made for another Horizon version": "{name}이(가) 제외되었습니다: 다른 Horizon 버전용입니다",
+  "{name} was left out: clashes with {other}": "{name}이(가) 제외되었습니다: {other}와(과) 충돌합니다",
+  "{name} was left out: it needs {other}, which was left out": "{name}이(가) 제외되었습니다: 제외된 {other}이(가) 필요합니다",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "플레이 중인 Horizon에서 빌드되지 않습니다 ({code}): 제작자가 업데이트할 때까지 빌드에서 제외됩니다",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "현재 지역에서는 창립자 세트를 playhorizon.dev의 무료 결제로 받습니다. 상점에서 받으세요. 결제 화면을 열어 드립니다.",
+  "The founder set can't be claimed from your country.": "현재 국가에서는 창립자 세트를 받을 수 없습니다."
 }

@@ -263,7 +263,7 @@
   "Backups": "Нөөцлөлт",
   "Nothing found.": "Юу ч олдсонгүй.",
   "The source at commit {commit}.": "Үйлдлийн эх сурвалж {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Татаж авах, нэвтрэх болон шинэчлэлтүүд нь энэ HTTP прокси (http://host:port)-оор дамждаг. Хоосон гэдэг нь байхгүй гэсэн үг: Эхлүүлэгчийг нэгээр эхлүүлсэн үед оронд нь HTTPS_PROXY-г ашигладаг.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Татаж авах, нэвтрэх болон шинэчлэлтүүд нь энэ прокси (http://host:port, socks5://host:port)-оор дамждаг. Хоосон гэдэг нь байхгүй гэсэн үг: Эхлүүлэгчийг нэгээр эхлүүлсэн үед оронд нь HTTPS_PROXY-г ашигладаг.",
   "Beta": "Бета",
   "Benchmark uploads": "Жишиг байршуулалт",
   "Saved: the next Play {what}.": "Хадгалсан: дараагийн Play {what}.",
@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "Муж авдаг газарт АНУ-ын борлуулалтын татвар нэмэгдэнэ.",
   "VAT included where it applies.": "НӨАТ хамаарах газарт багтсан.",
   "In a set in your basket": "Таны сагсан дахь багцад",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Төлбөрөө хөтөч дээр дуусгаарай. Таны зүйлс хувцасны шүүгээнд удахгүй ирнэ."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Төлбөрөө хөтөч дээр дуусгаарай. Таны зүйлс хувцасны шүүгээнд удахгүй ирнэ.",
+  "{name} was left out: made for another Horizon version": "{name}-г хассан: Horizon-ын өөр хувилбарт зориулагдсан",
+  "{name} was left out: clashes with {other}": "{name}-г хассан: {other}-тэй зөрчилддөг",
+  "{name} was left out: it needs {other}, which was left out": "{name}-г хассан: түүнд {other} хэрэгтэй, тэр нь хасагдсан",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Таны тоглодог Horizon дээр бүтэхгүй ({code}): зохиогч нь шинэчлэх хүртэл бүтээлт үүнийг хасна",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Таны байгаа газарт үүсгэн байгуулагчдын иж бүрдлийг playhorizon.dev дээрх үнэгүй төлбөрөөр авдаг. Үүнийг Дэлгүүрээс аваарай: төлбөрийг танд нээж өгнө.",
+  "The founder set can't be claimed from your country.": "Үүсгэн байгуулагчдын иж бүрдлийг таны улсаас авах боломжгүй."
 }

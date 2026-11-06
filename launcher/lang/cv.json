@@ -263,7 +263,7 @@
   "Backups": "Резерв копийӗсем",
   "Nothing found.": "Нимӗн те тупӑнман.",
   "The source at commit {commit}.": "Ҫӑлкуҫ коммит {commit} ҫинче.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Скачатьсем, логинсем тата ҫӗнетӳсем ҫак HTTP прокси урлӑ (http://host:port) пыраҫҫӗ. Пушӑ тени ҫук тенине пӗлтерет: HTTPS_PROXY ун вырӑнне лаунчера пӗрпе пуҫланӑ чухне усӑ кураҫҫӗ.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Скачатьсем, логинсем тата ҫӗнетӳсем ҫак прокси урлӑ (http://host:port, socks5://host:port) пыраҫҫӗ. Пушӑ тени ҫук тенине пӗлтерет: HTTPS_PROXY ун вырӑнне лаунчера пӗрпе пуҫланӑ чухне усӑ кураҫҫӗ.",
   "Beta": "Бета",
   "Benchmark uploads": "Бенчмарк ҫӗклемӗсем",
   "Saved: the next Play {what}.": "Упраннӑ: тепӗр Play {what}.",
@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "АПШ сутă налукне штат ыйтнă çĕрте хушаççĕ.",
   "VAT included where it applies.": "НДС кĕрет, вăл ĕçленĕ çĕрте.",
   "In a set in your basket": "Корзинкăри комплектра",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Тӳлеве браузерта вĕçлĕр. Япаласем Гардероба часах килĕç."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Тӳлеве браузерта вĕçлĕр. Япаласем Гардероба часах килĕç.",
+  "{name} was left out: made for another Horizon version": "{name} кӗртмен: Horizon-ӑн урӑх версийӗ валли тунӑ",
+  "{name} was left out: clashes with {other}": "{name} кӗртмен: {other} мод-па килӗшмест",
+  "{name} was left out: it needs {other}, which was left out": "{name} кӗртмен: ӑна {other} кирлӗ, ӑна та кӗртмен",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Эсӗ вылякан Horizon-ра пуҫтарӑнмасть ({code}): авторӗ ҫӗнетмесен, пуҫтару ӑна кӗртмест",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Эсир пур вырӑнта никӗслекен пуххине playhorizon.dev сайтӑнче тӳлевсӗр тӳлев урлӑ илеҫҫӗ. Ӑна Лавккаран илӗр: вӑл тӳлеве хӑех уҫать.",
+  "The founder set can't be claimed from your country.": "Никӗслекен пуххине сирӗн ҫӗршывран илме ҫук."
 }

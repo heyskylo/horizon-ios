@@ -263,7 +263,7 @@
   "Backups": "Рэзервовыя копіі",
   "Nothing found.": "Нічога не знойдзена.",
   "The source at commit {commit}.": "Крыніца ў фіксацыі {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Спампоўкі, уваходы і абнаўленні праходзяць праз гэты HTTP-проксі (http://host:port). Пусты азначае, што няма: замест яго выкарыстоўваецца HTTPS_PROXY, калі праграма запуску запускалася з ім.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Спампоўкі, уваходы і абнаўленні праходзяць праз гэты проксі (http://host:port, socks5://host:port). Пусты азначае, што няма: замест яго выкарыстоўваецца HTTPS_PROXY, калі праграма запуску запускалася з ім.",
   "Beta": "Бэта-версія",
   "Benchmark uploads": "Эталонныя загрузкі",
   "Saved: the next Play {what}.": "Захавана: наступная гульня {what}.",
@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "Падатак з продажаў ЗША дадаецца там, дзе штат яго бярэ.",
   "VAT included where it applies.": "ПДВ уключаны там, дзе ён ужываецца.",
   "In a set in your basket": "У наборы ў вашым кошыку",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Завяршыце аплату ў браўзеры. Рэчы з'явяцца ў Гардэробе праз хвіліну."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Завяршыце аплату ў браўзеры. Рэчы з'явяцца ў Гардэробе праз хвіліну.",
+  "{name} was left out: made for another Horizon version": "{name} прапушчаны: зроблены для іншай версіі Horizon",
+  "{name} was left out: clashes with {other}": "{name} прапушчаны: канфліктуе з {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} прапушчаны: яму патрэбны {other}, які прапушчаны",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Не збіраецца на Horizon, у які вы гуляеце ({code}): зборка прапусціць яго, пакуль аўтар не абновіць",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Там, дзе вы, набор заснавальніка атрымліваюць праз бясплатную аплату на playhorizon.dev. Атрымайце яго ў Краме: яна сама адкрые старонку аплаты.",
+  "The founder set can't be claimed from your country.": "Набор заснавальніка нельга атрымаць з вашай краіны."
 }

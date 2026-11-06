@@ -264,7 +264,7 @@
   "Backups": "बैकअप",
   "Nothing found.": "कुछ नहीं मिला।",
   "The source at commit {commit}.": "कमिट {commit} पर स्रोत।",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "डाउनलोड, साइन-इन और अपडेट इस HTTP प्रॉक्सी (http://host:port) के माध्यम से जाते हैं। खाली का मतलब कुछ नहीं: जब लॉन्चर को किसी एक के साथ शुरू किया गया था तो इसके बजाय HTTPS_PROXY का उपयोग किया जाता है।",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "डाउनलोड, साइन-इन और अपडेट इस प्रॉक्सी (http://host:port, socks5://host:port) के माध्यम से जाते हैं। खाली का मतलब कुछ नहीं: जब लॉन्चर को किसी एक के साथ शुरू किया गया था तो इसके बजाय HTTPS_PROXY का उपयोग किया जाता है।",
   "Beta": "बीटा",
   "Benchmark uploads": "बेंचमार्क अपलोड",
   "Saved: the next Play {what}.": "सहेजा गया: अगली बार {what} खेलें।",
@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "जहाँ कोई राज्य लेता है, वहाँ अमेरिकी बिक्री कर जोड़ा जाता है।",
   "VAT included where it applies.": "जहाँ लागू हो, वहाँ VAT शामिल है।",
   "In a set in your basket": "आपकी टोकरी के एक सेट में",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "ब्राउज़र में भुगतान पूरा करें। आपकी चीज़ें थोड़ी देर में वार्डरोब में आ जाएँगी।"
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "ब्राउज़र में भुगतान पूरा करें। आपकी चीज़ें थोड़ी देर में वार्डरोब में आ जाएँगी।",
+  "{name} was left out: made for another Horizon version": "{name} छोड़ दिया गया: Horizon के किसी दूसरे संस्करण के लिए बना है",
+  "{name} was left out: clashes with {other}": "{name} छोड़ दिया गया: {other} से टकराता है",
+  "{name} was left out: it needs {other}, which was left out": "{name} छोड़ दिया गया: इसे {other} चाहिए, जो छोड़ दिया गया",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "आप जो Horizon खेलते हैं उस पर नहीं बनता ({code}): बिल्ड इसे तब तक छोड़ देता है जब तक इसका लेखक इसे अपडेट न करे",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "आप जहाँ हैं, वहाँ संस्थापक सेट playhorizon.dev पर मुफ़्त चेकआउट से लिया जाता है। इसे दुकान से लें: वह आपके लिए चेकआउट खोल देती है।",
+  "The founder set can't be claimed from your country.": "संस्थापक सेट आपके देश से नहीं लिया जा सकता।"
 }

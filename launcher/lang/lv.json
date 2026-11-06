@@ -263,7 +263,7 @@
   "Backups": "Dublējumkopijas",
   "Nothing found.": "Nekas netika atrasts.",
   "The source at commit {commit}.": "Avots pie commit {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Lejupielādes, pierakstīšanās un atjauninājumi tiek veikti, izmantojot šo HTTP starpniekserveri (http://host:port). Tukšs nozīmē, ka nav: tā vietā tiek izmantots HTTPS_PROXY, kad palaišanas programma tika startēta ar vienu.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Lejupielādes, pierakstīšanās un atjauninājumi tiek veikti, izmantojot šo starpniekserveri (http://host:port, socks5://host:port). Tukšs nozīmē, ka nav: tā vietā tiek izmantots HTTPS_PROXY, kad palaišanas programma tika startēta ar vienu.",
   "Beta": "Beta",
   "Benchmark uploads": "Etalona augšupielādes",
   "Saved: the next Play {what}.": "Saglabāts: nākamā atskaņošana {what}.",
@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "ASV tirdzniecības nodoklis tiek pievienots, kur to iekasē štats.",
   "VAT included where it applies.": "PVN iekļauts, kur tas attiecas.",
   "In a set in your basket": "Komplektā jūsu grozā",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Pabeidziet maksājumu pārlūkā. Jūsu priekšmeti pēc brīža nonāks Garderobē."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Pabeidziet maksājumu pārlūkā. Jūsu priekšmeti pēc brīža nonāks Garderobē.",
+  "{name} was left out: made for another Horizon version": "{name} tika izlaists: veidots citai Horizon versijai",
+  "{name} was left out: clashes with {other}": "{name} tika izlaists: konfliktē ar {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} tika izlaists: tam vajag {other}, kas tika izlaists",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Neveidojas uz Horizon, ko tu spēlē ({code}): būvējums to izlaiž, līdz autors to atjaunina",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Tur, kur jūs esat, dibinātāju komplektu saņem ar bezmaksas apmaksu vietnē playhorizon.dev. Saņemiet to Veikalā: tas jums atvērs apmaksu.",
+  "The founder set can't be claimed from your country.": "Dibinātāju komplektu nevar saņemt no jūsu valsts."
 }

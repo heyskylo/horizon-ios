@@ -263,7 +263,7 @@
   "Backups": "Varnostne kopije",
   "Nothing found.": "Nič najdenega.",
   "The source at commit {commit}.": "Vir pri potrditvi {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Prenosi, prijave in posodobitve potekajo prek tega proxyja HTTP (http://host:port). Prazno pomeni nič: namesto tega se uporabi HTTPS_PROXY, ko je bil zaganjalnik zagnan z eno.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Prenosi, prijave in posodobitve potekajo prek tega proxyja (http://host:port, socks5://host:port). Prazno pomeni nič: namesto tega se uporabi HTTPS_PROXY, ko je bil zaganjalnik zagnan z eno.",
   "Beta": "Beta",
   "Benchmark uploads": "Primerjalna nalaganja",
   "Saved: the next Play {what}.": "Shranjeno: naslednja igra {what}.",
@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "Ameriški prometni davek se doda, kjer ga zvezna država pobira.",
   "VAT included where it applies.": "DDV vključen, kjer velja.",
   "In a set in your basket": "V kompletu v vaši košarici",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Dokončajte plačilo v brskalniku. Predmeti pridejo v Garderobo čez trenutek."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Dokončajte plačilo v brskalniku. Predmeti pridejo v Garderobo čez trenutek.",
+  "{name} was left out: made for another Horizon version": "{name} je bil izpuščen: narejen za drugo različico Horizona",
+  "{name} was left out: clashes with {other}": "{name} je bil izpuščen: je v sporu z {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} je bil izpuščen: potrebuje {other}, ki je bil izpuščen",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Se ne zgradi na Horizonu, ki ga igraš ({code}): gradnja ga izpusti, dokler ga avtor ne posodobi",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Tam, kjer ste, se komplet ustanoviteljev prevzame z brezplačnim plačilom na playhorizon.dev. Prevzemite ga v Trgovini: odpre vam plačilo.",
+  "The founder set can't be claimed from your country.": "Kompleta ustanoviteljev ni mogoče prevzeti iz vaše države."
 }

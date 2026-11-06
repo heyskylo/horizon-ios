@@ -264,7 +264,7 @@
   "Backups": "Kopije zapasowe",
   "Nothing found.": "Nic niy znojdziōno.",
   "The source at commit {commit}.": "Zdrzōdło przi zatwierdzyniu {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Pobrania, zalogowanie i aktualizacyje przechodzōm bez tyn proxy HTTP (http://host:port). Prōżne ôznaczo żodne: HTTPS_PROXY je używane zamiast tego, kej ôdpalacz bōł uruchomiōny z jednym.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Pobrania, zalogowanie i aktualizacyje przechodzōm bez tyn proxy (http://host:port, socks5://host:port). Prōżne ôznaczo żodne: HTTPS_PROXY je używane zamiast tego, kej ôdpalacz bōł uruchomiōny z jednym.",
   "Beta": "Beta",
   "Benchmark uploads": "Przesyłania ôdniesiynio",
   "Saved: the next Play {what}.": "Zapisane: dalsze Ôdtworzynie {what}.",
@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "Amerykański podatek ôd przedaży je doliczany tam, kaj go bierze sztat.",
   "VAT included where it applies.": "VAT wliczōny tam, kaj ôbowiōnzuje.",
   "In a set in your basket": "We zestawie we twojim koszyku",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Skōńcz płacynie we przeglōndarce. Rzeczy przidōm do Garderoby za chwila."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Skōńcz płacynie we przeglōndarce. Rzeczy przidōm do Garderoby za chwila.",
+  "{name} was left out: made for another Horizon version": "{name} zostoł pominiynty: zrobiōny do inkszyj wersyje Horizona",
+  "{name} was left out: clashes with {other}": "{name} zostoł pominiynty: koliduje ze {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} zostoł pominiynty: potrzebuje {other}, kery zostoł pominiynty",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Niy buduje sie na Horizōnie, w kery grosz ({code}): budowanie go pomijo, aże autor go zaktualizuje",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Kaj ty żeś je, zestŏw zôłożycieli dostŏwŏ sie bez darmowõ płatność na playhorizon.dev. Weź go we Sklepie: ôn ôtworzi ci płatność.",
+  "The founder set can't be claimed from your country.": "Zestŏwu zôłożycieli niy idzie dostać z twojigo krajū."
 }

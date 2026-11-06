@@ -263,7 +263,7 @@
   "Backups": "ຂໍ້ມູນສຳຮອງ",
   "Nothing found.": "ບໍ່ພົບຫຍັງ.",
   "The source at commit {commit}.": "ແຫຼ່ງທີ່ commit {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "ການດາວໂຫຼດ, ເຂົ້າສູ່ລະບົບ ແລະອັບເດດຜ່ານພຣັອກຊີ HTTP ນີ້ (http://host:port). ຫວ່າງເປົ່າຫມາຍຄວາມວ່າບໍ່ມີ: HTTPS_PROXY ຖືກນໍາໃຊ້ແທນໃນເວລາທີ່ launcher ໄດ້ເລີ່ມຕົ້ນດ້ວຍອັນຫນຶ່ງ.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "ການດາວໂຫຼດ, ເຂົ້າສູ່ລະບົບ ແລະອັບເດດຜ່ານພຣັອກຊີ ນີ້ (http://host:port, socks5://host:port). ຫວ່າງເປົ່າຫມາຍຄວາມວ່າບໍ່ມີ: HTTPS_PROXY ຖືກນໍາໃຊ້ແທນໃນເວລາທີ່ launcher ໄດ້ເລີ່ມຕົ້ນດ້ວຍອັນຫນຶ່ງ.",
   "Beta": "ເບຕ້າ",
   "Benchmark uploads": "ການອັບໂຫລດມາດຕະຖານ",
   "Saved: the next Play {what}.": "ບັນທຶກແລ້ວ: ການຫຼິ້ນຄັ້ງຕໍ່ໄປ {what}.",
@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "ພາສີການຂາຍຂອງສະຫະລັດຖືກເພີ່ມບ່ອນທີ່ລັດເກັບ.",
   "VAT included where it applies.": "ລວມ VAT ບ່ອນທີ່ໃຊ້ໄດ້.",
   "In a set in your basket": "ຢູ່ໃນຊຸດໃນກະຕ່າຂອງທ່ານ",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "ຈ່າຍເງິນໃຫ້ແລ້ວໃນບຣາວເຊີ. ສິ່ງຂອງຂອງທ່ານຈະມາຮອດຕູ້ເສື້ອຜ້າໃນອີກບໍ່ດົນ."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "ຈ່າຍເງິນໃຫ້ແລ້ວໃນບຣາວເຊີ. ສິ່ງຂອງຂອງທ່ານຈະມາຮອດຕູ້ເສື້ອຜ້າໃນອີກບໍ່ດົນ.",
+  "{name} was left out: made for another Horizon version": "{name} ຖືກປະໄວ້: ສ້າງມາສຳລັບ Horizon ລຸ້ນອື່ນ",
+  "{name} was left out: clashes with {other}": "{name} ຖືກປະໄວ້: ຂັດກັບ {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} ຖືກປະໄວ້: ມັນຕ້ອງການ {other} ເຊິ່ງຖືກປະໄວ້",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "ບໍ່ສາມາດສ້າງໃນ Horizon ທີ່ທ່ານຫຼິ້ນ ({code}): ການສ້າງຈະປະມັນໄວ້ຈົນກວ່າຜູ້ສ້າງຈະອັບເດດ",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "ຢູ່ບ່ອນທີ່ທ່ານຢູ່, ຊຸດຜູ້ກໍ່ຕັ້ງຮັບໄດ້ຜ່ານການຊຳລະເງິນຟຣີທີ່ playhorizon.dev. ຮັບມັນຈາກຮ້ານ: ມັນຈະເປີດການຊຳລະເງິນໃຫ້ທ່ານ.",
+  "The founder set can't be claimed from your country.": "ບໍ່ສາມາດຮັບຊຸດຜູ້ກໍ່ຕັ້ງຈາກປະເທດຂອງທ່ານໄດ້."
 }

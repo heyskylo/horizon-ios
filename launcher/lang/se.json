@@ -264,7 +264,7 @@
   "Backups": "Backups",
   "Nothing found.": "Ii mihkkege gávdnon.",
   "The source at commit {commit}.": "Gáldu lea commit {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Neahttasiiddut, sisaloggemat ja ođasmahttimat mannet dán HTTP-proksi bokte (http://host:port). Empty mearkkaša ii mihkkege: HTTPS_PROXY geavahuvvo dan sadjái go álggaheaddji álggahuvvui ovttain.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Neahttasiiddut, sisaloggemat ja ođasmahttimat mannet dán proksi bokte (http://host:port, socks5://host:port). Empty mearkkaša ii mihkkege: HTTPS_PROXY geavahuvvo dan sadjái go álggaheaddji álggahuvvui ovttain.",
   "Beta": "Beta",
   "Benchmark uploads": "Mihttomearri lasáhusat",
   "Saved: the next Play {what}.": "Seailluhuvvon: boahtte Speallu {what}.",
@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "USA vuovdinvearru lasihuvvo gos stáhta dan gáibida.",
   "VAT included where it applies.": "MVA lea fárus gos dat guoská.",
   "In a set in your basket": "Seahtas du gorris",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Gearggat máksima neahttalohkkiin. Du ávnnasat bohtet Gárvoskáhppái veaháš maŋŋil."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Gearggat máksima neahttalohkkiin. Du ávnnasat bohtet Gárvoskáhppái veaháš maŋŋil.",
+  "{name} was left out: made for another Horizon version": "{name} guđđojuvvui olggobeallái: dahkkon eará Horizon-veršuvdnii",
+  "{name} was left out: clashes with {other}": "{name} guđđojuvvui olggobeallái: riidalda {other} mielde",
+  "{name} was left out: it needs {other}, which was left out": "{name} guđđojuvvui olggobeallái: dat dárbbaša {other}, mii guđđojuvvui olggobeallái",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Ii huksejuvvo Horizonis man speallat ({code}): huksen guođđá dan olggobeallái dassážii go dahkki ođasmahttá dan",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Doppe gos don leat, vuođđudeaddjiid sátta oažžu nuvttá máksima bokte playhorizon.dev:s. Gáibit dan Gávpis: dat rahpá máksima dutnje.",
+  "The founder set can't be claimed from your country.": "Vuođđudeaddjiid sáttá ii sáhte gáibidit du riikkas."
 }

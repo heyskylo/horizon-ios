@@ -264,7 +264,7 @@
   "Backups": "Backup",
   "Nothing found.": "Niente trovato.",
   "The source at commit {commit}.": "La fonte al commit {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Download, accessi e aggiornamenti passano attraverso questo proxy HTTP (http://host:port). Vuoto significa nessuno: HTTPS_PROXY viene invece utilizzato quando il programma di avvio è stato avviato con uno.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Download, accessi e aggiornamenti passano attraverso questo proxy (http://host:port, socks5://host:port). Vuoto significa nessuno: HTTPS_PROXY viene invece utilizzato quando il programma di avvio è stato avviato con uno.",
   "Beta": "Beta",
   "Benchmark uploads": "Caricamenti di benchmark",
   "Saved: the next Play {what}.": "Salvato: la prossima riproduzione {what}.",
@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "L'imposta sulle vendite USA si aggiunge dove uno stato la applica.",
   "VAT included where it applies.": "IVA inclusa dove si applica.",
   "In a set in your basket": "In un set nel tuo carrello",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Completa il pagamento nel browser. I tuoi oggetti arrivano nel Guardaroba poco dopo."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Completa il pagamento nel browser. I tuoi oggetti arrivano nel Guardaroba poco dopo.",
+  "{name} was left out: made for another Horizon version": "{name} è stato escluso: fatto per un'altra versione di Horizon",
+  "{name} was left out: clashes with {other}": "{name} è stato escluso: va in conflitto con {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} è stato escluso: richiede {other}, che è stato escluso",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Non si compila sull'Horizon a cui giochi ({code}): una compilazione lo esclude finché il suo autore non lo aggiorna",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Dove ti trovi, il set dei fondatori si riscatta con un pagamento gratuito su playhorizon.dev. Riscattalo dal Negozio: apre il pagamento per te.",
+  "The founder set can't be claimed from your country.": "Il set dei fondatori non può essere riscattato dal tuo paese."
 }

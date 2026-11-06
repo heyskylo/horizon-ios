@@ -263,7 +263,7 @@
   "Backups": "Trygdarrit",
   "Nothing found.": "Einki funnið.",
   "The source at commit {commit}.": "Keldan við binda {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Niðurtøkur, innritanir og dagføringar fara gjøgnum hetta HTTP umboð (http://vertur:portur). Tómt merkir einki: HTTPS_PROXY verður brúkt ístaðin tá sjósetingin varð byrjað við einum.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Niðurtøkur, innritanir og dagføringar fara gjøgnum hetta umboð (http://vertur:portur, socks5://vertur:portur). Tómt merkir einki: HTTPS_PROXY verður brúkt ístaðin tá sjósetingin varð byrjað við einum.",
   "Beta": "Beta",
   "Benchmark uploads": "Samanberingar upplesingar",
   "Saved: the next Play {what}.": "Goymt: næsta Spælið {what}.",
@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "Amerikanskur søluskattur verður lagdur afturat, har ein statur krevur hann.",
   "VAT included where it applies.": "MVG íroknað, har tað er galdandi.",
   "In a set in your basket": "Í einum setti í tínum kurvi",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Ger gjaldingina lidna í kaganum. Lutirnir koma í Klæðaskápið eina løtu seinni."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Ger gjaldingina lidna í kaganum. Lutirnir koma í Klæðaskápið eina løtu seinni.",
+  "{name} was left out: made for another Horizon version": "{name} varð útihildin: gjørd til eina aðra útgávu av Horizon",
+  "{name} was left out: clashes with {other}": "{name} varð útihildin: stríðist við {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} varð útihildin: hon tørvar {other}, sum varð útihildin",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Byggir ikki á tí Horizon, tú spælir ({code}): ein bygging heldur hana úti, til høvundurin dagførir hana",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Har tú ert, fæst stovnarasettið gjøgnum ein ókeypis gjalding á playhorizon.dev. Krev tað í Handlinum: hann letur gjaldingina upp fyri teg.",
+  "The founder set can't be claimed from your country.": "Stovnarasettið kann ikki krevjast úr tínum landi."
 }

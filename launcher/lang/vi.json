@@ -264,7 +264,7 @@
   "Backups": "Sao lưu",
   "Nothing found.": "Không tìm thấy gì.",
   "The source at commit {commit}.": "Nguồn tại cam kết {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Việc tải xuống, đăng nhập và cập nhật đều thông qua proxy HTTP này (http://host:port). Trống có nghĩa là không có: HTTPS_PROXY được sử dụng thay thế khi trình khởi chạy được khởi động bằng một.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Việc tải xuống, đăng nhập và cập nhật đều thông qua proxy này (http://host:port, socks5://host:port). Trống có nghĩa là không có: HTTPS_PROXY được sử dụng thay thế khi trình khởi chạy được khởi động bằng một.",
   "Beta": "bản thử nghiệm",
   "Benchmark uploads": "Tải lên điểm chuẩn",
   "Saved: the next Play {what}.": "Đã lưu: Lần chơi tiếp theo {what}.",
@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "Thuế bán hàng Hoa Kỳ được cộng thêm ở nơi tiểu bang thu.",
   "VAT included where it applies.": "Đã gồm VAT ở nơi áp dụng.",
   "In a set in your basket": "Nằm trong một bộ trong giỏ của bạn",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Hoàn tất thanh toán trong trình duyệt. Vật phẩm sẽ vào Tủ đồ sau giây lát."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Hoàn tất thanh toán trong trình duyệt. Vật phẩm sẽ vào Tủ đồ sau giây lát.",
+  "{name} was left out: made for another Horizon version": "Đã bỏ qua {name}: được làm cho phiên bản Horizon khác",
+  "{name} was left out: clashes with {other}": "Đã bỏ qua {name}: xung đột với {other}",
+  "{name} was left out: it needs {other}, which was left out": "Đã bỏ qua {name}: cần {other}, mà {other} đã bị bỏ qua",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Không build được trên Horizon bạn đang chơi ({code}): bản build sẽ bỏ qua nó cho đến khi tác giả cập nhật",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Ở nơi bạn sống, bộ người sáng lập được nhận qua một lần thanh toán miễn phí trên playhorizon.dev. Hãy nhận nó trong Cửa hàng: cửa hàng sẽ mở trang thanh toán cho bạn.",
+  "The founder set can't be claimed from your country.": "Không thể nhận bộ người sáng lập từ quốc gia của bạn."
 }

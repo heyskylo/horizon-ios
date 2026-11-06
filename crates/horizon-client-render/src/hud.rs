@@ -1314,12 +1314,13 @@ impl HudAtlas {
             edition.3 = pixels;
         }
         images.push(("horizon/white".into(), 4, 4, vec![255; 64]));
-        images.push((
-            crate::pad_cursor::SPRITE.into(),
-            crate::pad_cursor::SIZE,
-            crate::pad_cursor::SIZE,
-            crate::pad_cursor::pixels(),
-        ));
+        // The controller's art, unless a pack brought its own (walked above, as a mod's GUI
+        // textures are).
+        for image in crate::pad_glyph::images() {
+            if !images.iter().any(|i| i.0 == image.0) {
+                images.push(image);
+            }
+        }
         if full {
             Self::slots(&mut images, crate::trims::slot_size(root), mod_image);
             // MissingTextureAtlasSprite.generateMissingImage: 16x16, magenta

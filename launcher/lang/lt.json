@@ -264,7 +264,7 @@
   "Backups": "Atsarginės kopijos",
   "Nothing found.": "Nieko nerasta.",
   "The source at commit {commit}.": "Įsipareigojimo šaltinis {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Atsisiuntimai, prisijungimai ir naujinimai vyksta per šį HTTP tarpinį serverį (http://host:port). Tuščia reiškia, kad nėra: vietoj to naudojamas HTTPS_PROXY, kai paleidimo priemonė buvo paleista naudojant vieną.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Atsisiuntimai, prisijungimai ir naujinimai vyksta per šį tarpinį serverį (http://host:port, socks5://host:port). Tuščia reiškia, kad nėra: vietoj to naudojamas HTTPS_PROXY, kai paleidimo priemonė buvo paleista naudojant vieną.",
   "Beta": "Beta",
   "Benchmark uploads": "Įkėlimų palyginimas",
   "Saved: the next Play {what}.": "Išsaugota: kitas paleidimas {what}.",
@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "JAV pardavimo mokestis pridedamas ten, kur jį renka valstija.",
   "VAT included where it applies.": "PVM įskaičiuotas ten, kur taikomas.",
   "In a set in your basket": "Rinkinyje jūsų krepšelyje",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Užbaikite mokėjimą naršyklėje. Daiktai atkeliaus į Drabužinę po akimirkos."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Užbaikite mokėjimą naršyklėje. Daiktai atkeliaus į Drabužinę po akimirkos.",
+  "{name} was left out: made for another Horizon version": "{name} praleistas: sukurtas kitai Horizon versijai",
+  "{name} was left out: clashes with {other}": "{name} praleistas: konfliktuoja su {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} praleistas: jam reikia {other}, kuris praleistas",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Nesukompiliuojamas tavo žaidžiamame Horizon ({code}): kompiliavimas jį praleidžia, kol autorius jo neatnaujins",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Ten, kur esate, įkūrėjų rinkinys gaunamas per nemokamą apmokėjimą playhorizon.dev svetainėje. Gaukite jį Parduotuvėje: ji atidarys apmokėjimą už jus.",
+  "The founder set can't be claimed from your country.": "Įkūrėjų rinkinio negalima gauti iš jūsų šalies."
 }

@@ -264,7 +264,7 @@
   "Backups": "Copi di backup",
   "Nothing found.": "Nissune robe cjatade.",
   "The source at commit {commit}.": "La font al impegn {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "I scaricaments, i autenticazions e i agjiornaments a passin traviers di chest proxy HTTP (http://ospit:port). Vueit al vûl dî nissun: HTTPS_PROXY al è doprât invezit cuant che il lançadôr al è scomençât cuntun.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "I scaricaments, i autenticazions e i agjiornaments a passin traviers di chest proxy (http://ospit:port, socks5://ospit:port). Vueit al vûl dî nissun: HTTPS_PROXY al è doprât invezit cuant che il lançadôr al è scomençât cuntun.",
   "Beta": "Beta",
   "Benchmark uploads": "Caricaments di riferiment",
   "Saved: the next Play {what}.": "Salvât: la prossime Riproduzion {what}.",
@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "La tasse su lis venditis dai USA e ven zontade dulà che un stât le domande.",
   "VAT included where it applies.": "IVA includude dulà che si aplche.",
   "In a set in your basket": "Intun set te tô çeste",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Finìs il paiament tal navigadôr. I tiei ogjets a rivin tal Vistiari dopo un moment."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Finìs il paiament tal navigadôr. I tiei ogjets a rivin tal Vistiari dopo un moment.",
+  "{name} was left out: made for another Horizon version": "{name} al è stât lassât fûr: fat par une altre version di Horizon",
+  "{name} was left out: clashes with {other}": "{name} al è stât lassât fûr: al va in conflit cun {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} al è stât lassât fûr: i covente {other}, che al è stât lassât fûr",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Nol ven compilât su la version di Horizon che tu zuiis ({code}): une compilazion lu lasse fûr fin che il so autôr no lu inzorne",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Li che tu sês, il set dai fondadôrs si lu rivendiche cuntun paiament di bant su playhorizon.dev. Rivendichilu de Buteghe: e vierç il paiament par te.",
+  "The founder set can't be claimed from your country.": "Il set dai fondadôrs nol pues jessi rivendicât dal to paîs."
 }

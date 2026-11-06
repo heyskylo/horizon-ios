@@ -264,7 +264,7 @@
   "Backups": "Sauvagardas",
   "Nothing found.": "Res trobat.",
   "The source at commit {commit}.": "La font a commit {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Los telecargaments, las connexions e las mesas a jorn passan per aqueste mandatari HTTP (http://host:port). Vuèg significa pas cap : HTTPS_PROXY es utilizat a la plaça quand lo lançaire foguèt aviat amb un.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Los telecargaments, las connexions e las mesas a jorn passan per aqueste mandatari (http://host:port, socks5://host:port). Vuèg significa pas cap : HTTPS_PROXY es utilizat a la plaça quand lo lançaire foguèt aviat amb un.",
   "Beta": "Beta",
   "Benchmark uploads": "Los enviaments de referéncia",
   "Saved: the next Play {what}.": "Enregistrat: lo pròplèu Jogar {what}.",
@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "La taxa de venda americana s'apond ont un estat la percep.",
   "VAT included where it applies.": "TVA inclusa ont s'aplica.",
   "In a set in your basket": "Dins un set de vòstre panièr",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Acabatz lo pagament dins lo navegador. Vòstres objèctes arriban a la Garda-rauba un momenton aprèp."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Acabatz lo pagament dins lo navegador. Vòstres objèctes arriban a la Garda-rauba un momenton aprèp.",
+  "{name} was left out: made for another Horizon version": "{name} es estat daissat de caire: fach per una autra version d'Horizon",
+  "{name} was left out: clashes with {other}": "{name} es estat daissat de caire: en conflicte amb {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} es estat daissat de caire: a besonh de {other}, daissat de caire",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Se compila pas sus l'Horizon que i jogas ({code}): una compilacion lo daissa de caire fins que son autor lo mete a jorn",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Ont sètz, lo lòt dels fondadors se reclama amb un pagament gratuit sus playhorizon.dev. Reclamatz-lo dins la Botiga: vos dobrís lo pagament.",
+  "The founder set can't be claimed from your country.": "Lo lòt dels fondadors se pòt pas reclamar dempuèi vòstre país."
 }

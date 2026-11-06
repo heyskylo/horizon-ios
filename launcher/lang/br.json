@@ -263,7 +263,7 @@
   "Backups": "Enrolladennoù",
   "Nothing found.": "Netra bet kavet.",
   "The source at commit {commit}.": "Ar vammenn e commit {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Ar pellgargadennoù, an enskrivadurioù hag an hizivadurioù a dremen dre ar proksi HTTP-mañ (http://host:port). Goullo a dalv hini ebet : arveret e vez HTTPS_PROXY e-lec'h pa oa bet kroget al lañser gant unan.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Ar pellgargadennoù, an enskrivadurioù hag an hizivadurioù a dremen dre ar proksi mañ (http://host:port, socks5://host:port). Goullo a dalv hini ebet : arveret e vez HTTPS_PROXY e-lec'h pa oa bet kroget al lañser gant unan.",
   "Beta": "Beta",
   "Benchmark uploads": "Pellgargadennoù benchmark",
   "Saved: the next Play {what}.": "Enrollet : ar C'hoari da zont {what}.",
@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "Ouzhpennet e vez tailh gwerzhañ SUA el lec'h ma vez goulennet gant ur stad.",
   "VAT included where it applies.": "TVA enlakaet el lec'h ma talvez.",
   "In a set in your basket": "En ur strollad en ho poutailh",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Echuit ar paeamant en ho merdeer. Erruout a raio hoc'h elfennoù er Wiskamant a-benn ur pennadig."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Echuit ar paeamant en ho merdeer. Erruout a raio hoc'h elfennoù er Wiskamant a-benn ur pennadig.",
+  "{name} was left out: made for another Horizon version": "{name} a zo bet lezet a-gostez: graet evit ur stumm all eus Horizon",
+  "{name} was left out: clashes with {other}": "{name} a zo bet lezet a-gostez: en em stok a ra gant {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} a zo bet lezet a-gostez: ezhomm en deus eus {other}, a zo bet lezet a-gostez",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Ne vez ket savet war an Horizon a c'hoarit ({code}): ur sevel a lez anezhañ a-gostez betek ma vo hizivaet gant e aozer",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "El lec'h m'emaoc'h, e vez goulennet ar sagad krouer dre ur paeañ digoust war playhorizon.dev. Goulennit anezhañ er Stal: digeriñ a ra ar paeañ evidoc'h.",
+  "The founder set can't be claimed from your country.": "N'haller ket goulenn ar sagad krouer eus ho pro."
 }

@@ -262,7 +262,7 @@ impl super::Game<'_> {
     }
 
     pub(super) fn tick_tutorial(&mut self) {
-        use winit::keyboard::KeyCode;
+        use horizon_client::actions::Action;
         if self.title.is_some()
             || self.player.is_none()
             || self.options.dedicated.is_some()
@@ -289,14 +289,14 @@ impl super::Game<'_> {
         }
         if self.screen == super::Screen::Playing
             && ([
-                KeyCode::KeyW,
-                KeyCode::KeyA,
-                KeyCode::KeyS,
-                KeyCode::KeyD,
-                KeyCode::Space,
+                Action::Forward,
+                Action::Left,
+                Action::Back,
+                Action::Right,
+                Action::Jump,
             ]
-            .iter()
-            .any(|key| self.keys.contains(key))
+            .into_iter()
+            .any(|action| self.keys.held(action))
                 || self
                     .pad_move()
                     .is_some_and(|[left, forward]| left.abs() > 0.3 || forward.abs() > 0.3))

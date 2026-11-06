@@ -263,7 +263,7 @@
   "Backups": "Awọn afẹyinti",
   "Nothing found.": "Ko si ohun ti a ri.",
   "The source at commit {commit}.": "Orisun ni ifaramo {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Awọn igbasilẹ, awọn ifilọlẹ ati awọn imudojuiwọn lọ nipasẹ aṣoju HTTP yii (http://host:port). Ofo tumọ si pe ko si: HTTPS_PROXY ni a lo dipo nigbati ifilọlẹ bẹrẹ pẹlu ọkan.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Awọn igbasilẹ, awọn ifilọlẹ ati awọn imudojuiwọn lọ nipasẹ aṣoju yii (http://host:port, socks5://host:port). Ofo tumọ si pe ko si: HTTPS_PROXY ni a lo dipo nigbati ifilọlẹ bẹrẹ pẹlu ọkan.",
   "Beta": "Beta",
   "Benchmark uploads": "Awọn ìrùsókè ala",
   "Saved: the next Play {what}.": "Ti a fipamọ: Ere atẹle {what}.",
@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "A máa fi owó-orí títà US kún un níbi tí ìpínlẹ̀ bá ń gbà á.",
   "VAT included where it applies.": "VAT wà nínú rẹ̀ níbi tí ó bá kan.",
   "In a set in your basket": "Nínú àkójọ kan nínú agbọ̀n rẹ",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Parí ìsanwó nínú aṣàwákiri rẹ. Àwọn ohun rẹ yóò dé Kọ́ọ̀bù aṣọ láìpẹ́."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Parí ìsanwó nínú aṣàwákiri rẹ. Àwọn ohun rẹ yóò dé Kọ́ọ̀bù aṣọ láìpẹ́.",
+  "{name} was left out: made for another Horizon version": "A fi {name} sílẹ̀: a ṣe é fún ẹ̀yà Horizon mìíràn",
+  "{name} was left out: clashes with {other}": "A fi {name} sílẹ̀: ó ń kọlu {other}",
+  "{name} was left out: it needs {other}, which was left out": "A fi {name} sílẹ̀: ó nílò {other}, tí a fi sílẹ̀",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Kò kọ́ lórí Horizon tí o ń ṣe ({code}): ìkọ́ yóò fi sílẹ̀ títí òǹkọ̀wé rẹ̀ yóò fi ṣe àtúnṣe",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Níbi tí o wà, a máa ń gba àpapọ̀ olùdásílẹ̀ nípasẹ̀ ìsanwó ọ̀fẹ́ lórí playhorizon.dev. Gbà á láti Ṣọ́ọ̀bù: ó máa ṣí ìsanwó náà fún ọ.",
+  "The founder set can't be claimed from your country.": "A kò lè gba àpapọ̀ olùdásílẹ̀ láti orílẹ̀-èdè rẹ."
 }

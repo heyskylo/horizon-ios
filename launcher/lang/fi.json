@@ -264,7 +264,7 @@
   "Backups": "Varmuuskopiot",
   "Nothing found.": "Mitään ei löytynyt.",
   "The source at commit {commit}.": "Lähde commitissa {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Lataukset, sisäänkirjautumiset ja päivitykset kulkevat tämän HTTP-välityspalvelimen (http://host:port) kautta. Tyhjä tarkoittaa ei mitään: HTTPS_PROXY:tä käytetään sen sijaan, kun käynnistysohjelma käynnistettiin yhdellä.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Lataukset, sisäänkirjautumiset ja päivitykset kulkevat tämän välityspalvelimen (http://host:port, socks5://host:port) kautta. Tyhjä tarkoittaa ei mitään: HTTPS_PROXY:tä käytetään sen sijaan, kun käynnistysohjelma käynnistettiin yhdellä.",
   "Beta": "Beta",
   "Benchmark uploads": "Vertailulataukset",
   "Saved: the next Play {what}.": "Tallennettu: seuraava toisto {what}.",
@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "Yhdysvaltain myyntivero lisätään, jos osavaltio perii sen.",
   "VAT included where it applies.": "ALV sisältyy, missä sitä sovelletaan.",
   "In a set in your basket": "Korisi setissä",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Viimeistele maksu selaimessa. Esineet saapuvat Vaatekaappiin hetken kuluttua."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Viimeistele maksu selaimessa. Esineet saapuvat Vaatekaappiin hetken kuluttua.",
+  "{name} was left out: made for another Horizon version": "{name} jätettiin pois: tehty toiselle Horizon-versiolle",
+  "{name} was left out: clashes with {other}": "{name} jätettiin pois: törmää modin {other} kanssa",
+  "{name} was left out: it needs {other}, which was left out": "{name} jätettiin pois: se tarvitsee modin {other}, joka jätettiin pois",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Ei käänny pelaamallasi Horizonilla ({code}): käännös jättää sen pois, kunnes tekijä päivittää sen",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Siellä missä olet, perustajasetti lunastetaan ilmaisella kassalla osoitteessa playhorizon.dev. Lunasta se Kaupasta: se avaa kassan puolestasi.",
+  "The founder set can't be claimed from your country.": "Perustajasettiä ei voi lunastaa maastasi."
 }

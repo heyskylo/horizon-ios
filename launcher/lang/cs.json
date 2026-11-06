@@ -264,7 +264,7 @@
   "Backups": "Zálohy",
   "Nothing found.": "Nic nenalezeno.",
   "The source at commit {commit}.": "Zdroj v potvrzení {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Stahování, přihlášení a aktualizace procházejí přes tento HTTP proxy (http://hostitel:port). Prázdné znamená žádné: místo toho se použije HTTPS_PROXY, když byl spouštěč spuštěn s jedním.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Stahování, přihlášení a aktualizace procházejí přes tento proxy (http://hostitel:port, socks5://hostitel:port). Prázdné znamená žádné: místo toho se použije HTTPS_PROXY, když byl spouštěč spuštěn s jedním.",
   "Beta": "Beta",
   "Benchmark uploads": "Srovnávací nahrávání",
   "Saved: the next Play {what}.": "Uloženo: další přehrávání {what}.",
@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "Americká daň z prodeje se přičítá tam, kde ji stát vybírá.",
   "VAT included where it applies.": "DPH zahrnuta tam, kde se uplatňuje.",
   "In a set in your basket": "V sadě ve vašem košíku",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Dokončete platbu v prohlížeči. Předměty dorazí do Šatníku za chvíli."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Dokončete platbu v prohlížeči. Předměty dorazí do Šatníku za chvíli.",
+  "{name} was left out: made for another Horizon version": "{name} byl vynechán: vytvořen pro jinou verzi Horizonu",
+  "{name} was left out: clashes with {other}": "{name} byl vynechán: koliduje s {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} byl vynechán: potřebuje {other}, který byl vynechán",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Nesestaví se na Horizonu, který hraješ ({code}): sestavení ho vynechá, dokud ho autor neaktualizuje",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Tam, kde jste, se zakladatelská sada získává přes bezplatnou pokladnu na playhorizon.dev. Získejte ji v Obchodě: pokladnu vám otevře sám.",
+  "The founder set can't be claimed from your country.": "Zakladatelskou sadu nelze získat z vaší země."
 }

@@ -264,7 +264,7 @@
   "Backups": "Резервные копии",
   "Nothing found.": "Ничего не найдено.",
   "The source at commit {commit}.": "Исходный код на коммите {commit}.",
-  "Downloads, sign-ins and updates go through this HTTP proxy (http://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Загрузки, вход в аккаунт и обновления проходят через этот HTTP-прокси (http://host:port). Пустое поле означает отсутствие: вместо этого используется HTTPS_PROXY, если лаунчер был запущен с ним.",
+  "Downloads, sign-ins and updates go through this proxy (http://host:port, socks5://host:port). Empty means none: HTTPS_PROXY is used instead when the launcher was started with one.": "Загрузки, вход в аккаунт и обновления проходят через этот прокси (http://host:port, socks5://host:port). Пустое поле означает отсутствие: вместо этого используется HTTPS_PROXY, если лаунчер был запущен с ним.",
   "Beta": "Бета",
   "Benchmark uploads": "Benchmark uploads",
   "Saved: the next Play {what}.": "Сохранено: при следующем запуске {what}.",
@@ -1216,5 +1216,11 @@
   "US sales tax is added where a state charges it.": "Налог с продаж США добавляется там, где его берёт штат.",
   "VAT included where it applies.": "НДС включён там, где он применяется.",
   "In a set in your basket": "В наборе в вашей корзине",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Завершите оплату в браузере. Предметы появятся в Гардеробе через мгновение."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Завершите оплату в браузере. Предметы появятся в Гардеробе через мгновение.",
+  "{name} was left out: made for another Horizon version": "{name} пропущен: сделан для другой версии Horizon",
+  "{name} was left out: clashes with {other}": "{name} пропущен: конфликтует с {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} пропущен: ему нужен {other}, который пропущен",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Не собирается на Horizon, в который вы играете ({code}): сборка пропустит его, пока автор не обновит",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "В вашей стране набор основателя получают через бесплатное оформление на playhorizon.dev. Получите его в Магазине: он сам откроет оформление.",
+  "The founder set can't be claimed from your country.": "Набор основателя нельзя получить из вашей страны."
 }

@@ -592,18 +592,49 @@ impl Game<'_> {
                 }
                 true
             }
-            Slot::Stand(id, i) => match self
-                .armor_stands
-                .iter_mut()
-                .find(|a| a.id == *id)
-                .and_then(|a| a.equipment.get_mut(*i))
-            {
-                Some(slot) => {
-                    *slot = stack;
-                    true
+            Slot::Stand(id, i) => {
+                // LivingEntity.onEquipItem: all stand slots emit; the new
+                // stack's EQUIPPABLE presence chooses equip versus unequip.
+                let equippable = stack.as_ref().is_some_and(|s| {
+                    let data = s.data();
+                    !data.is_some_and(|d| d.other("!minecraft:equippable").is_some())
+                        && (data.is_some_and(|d| d.other("minecraft:equippable").is_some())
+                            || self
+                                .items()
+                                .get(&s.item)
+                                .is_some_and(|i| i.equip_slot.is_some()))
+                });
+                let Some(a) = self.armor_stands.iter_mut().find(|a| a.id == *id) else {
+                    return false;
+                };
+                let Some(slot) = a.equipment.get_mut(*i) else {
+                    return false;
+                };
+                let same = match (slot.as_ref(), stack.as_ref()) {
+                    (None, None) => true,
+                    (Some(old), Some(new)) => old.same_item_same_components(new),
+                    _ => false,
+                };
+                let emit = !a.first_tick && !same;
+                let at = a.position;
+                *slot = stack;
+                if emit && self.remote.is_none() {
+                    self.post_game_event(
+                        if equippable {
+                            "minecraft:equip"
+                        } else {
+                            "minecraft:unequip"
+                        },
+                        [at.x, at.y, at.z],
+                        horizon_client::sculk::Context {
+                            source: Some(horizon_client::mobs::Who::Mob(*id)),
+                            living: true,
+                            ..Default::default()
+                        },
+                    );
                 }
-                None => false,
-            },
+                true
+            }
             Slot::Frame(id) => match self.item_frames.iter_mut().find(|f| f.id == *id) {
                 Some(f) => {
                     f.item = stack;
@@ -1389,4 +1420,106 @@ fn list_operation(m: &serde_json::Value, old: Vec<Tag>, new: Vec<Tag>) -> Vec<Ta
     };
     out.truncate(256);
     out
+}
+
+#[cfg(test)]
+mod stand_equip_event_tests {
+    use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+    use horizon_client::{chunk::Chunk, containers::BlockEntity, mobs::Who, sculk::Info};
+    use horizon_core::position::ChunkPos;
+    use std::sync::Arc;
+
+    fn candidate(game: &Game<'_>) -> Option<Info> {
+        let Some(BlockEntity::Sculk(sensor)) = game.world.block_entities.get(&(9, 200, 10)) else {
+            panic!("actual sensor must be registered")
+        };
+        sensor.vibration.selector.current.map(|(info, _)| info)
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn commands_post_stand_equipment_events_after_its_first_tick() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.game_dir =
+            Some(std::env::temp_dir().join(format!("horizon-h130-unit-{}", std::process::id())));
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        let registry = game.pack.assets.registry;
+        let sensor = registry.default_state("minecraft:sculk_sensor").unwrap();
+        let mut chunk = Chunk::empty(0, 0);
+        chunk.set(9, 200, 10, sensor.0);
+        game.world.chunks.insert((0, 0), Arc::new(chunk));
+        game.block_ticks
+            .add_empty_chunk(ChunkPos::new(0, 0))
+            .unwrap();
+        assert!(game.run_command("forceload add 0 0"));
+        assert!(game.run_command("summon armor_stand 6.5 200 10.5 {UUID:[I;130,0,0,1],NoGravity:1b,attributes:[{id:\"minecraft:movement_speed\",base:0.1d}]}"));
+        let id = game.armor_stands[0].id;
+        assert_eq!(game.uuid_for(id), [130, 0, 0, 1]);
+        assert!(
+            game.armor_stands[0].speed_instance,
+            "a loaded attribute is not firstTick"
+        );
+        game.sculk_prepare();
+        game.sculk_sync_index();
+        assert!(candidate(&game).is_none());
+        let prefix = "item replace entity 00000082-0000-0000-0000-000000000001 ";
+        for item in ["iron_helmet", "air"] {
+            assert!(game.run_command(&format!("{prefix}armor.head with {item}")));
+            assert!(candidate(&game).is_none(), "first-tick suppression");
+        }
+        game.tick_armor_stands().unwrap();
+        assert!(
+            game.run_command(
+                "data merge entity 00000082-0000-0000-0000-000000000001 {ShowArms:1b}"
+            )
+        );
+        for (slot, item, event) in [
+            ("armor.head", "iron_helmet", Some("minecraft:equip")),
+            ("armor.head", "iron_helmet", None),
+            ("armor.head", "air", Some("minecraft:unequip")),
+            ("armor.head", "air", None),
+            ("weapon.mainhand", "stick", Some("minecraft:unequip")),
+        ] {
+            let Some(BlockEntity::Sculk(sensor)) = game.world.block_entities.get_mut(&(9, 200, 10))
+            else {
+                unreachable!()
+            };
+            sensor.vibration = Default::default();
+            assert!(game.run_command(&format!("{prefix}{slot} with {item}")));
+            let heard = candidate(&game);
+            assert_eq!(heard.map(|info| info.event), event, "{slot} -> {item}");
+            if let Some(info) = heard {
+                assert_eq!(info.source, Some(Who::Mob(id)));
+                assert_eq!(info.pos, [6.5, 200.0, 10.5]);
+                assert!(info.owner.is_none());
+            }
+        }
+    }
 }
