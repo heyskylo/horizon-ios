@@ -2819,6 +2819,32 @@ items are left out (NeoForge's `RenderLivingEvent.Pre`, cancelled); its name tag
   after its vanilla model and layers, in the same frame (not for one a mod drew itself); `who` is set for a player. The
   geometry hangs from the entity's frame, not from a model bone: place a hat from `head_yaw`, `pitch` and the entity type's
   eye height.
+- A model built in code, as a NeoForge mod's `createBodyLayer()` builds it, is an entity model layer (API
+  @API:model_layers@). `native_layer_definitions(layers)` (`EntityRenderersEvent.RegisterLayerDefinitions`, asked once at
+  start) takes a mod's layers by id, `<mod id>:<model>#<layer>`. Each is a `LayerDefinition`: a `MeshDefinition` whose
+  named parts hold `CubeListBuilder` boxes at a `PartPose`, on a texture of a given size. A box takes its faces from the
+  texture as vanilla's do (`tex_offs`, `mirror`), and a `CubeDeformation` grows it over the same texels.
+  `native_bake_layer(layer)` (`EntityModelSet.bakeLayer`) bakes one of them, or a vanilla layer by its
+  `entity-models.json` name (`minecraft:zombie#main`), into a `ModelPart` tree. Bake it once and keep it. Each frame,
+  `reset_all_poses` and set the parts' `x_rot`, `y_rot`, `z_rot` and place, as `setupAnim` does, then draw the tree
+  with `native_draw_model_part(draw, part, sprite, tint)` (`ModelPart.render`). A mob's model is in the model's own
+  frame, +y down with its front towards -z: turn the mob's frame into it first, as `LivingEntityRenderer` does.
+
+  ```rust
+  fn layer_definitions(&self, event: &mut LayerDefinitionsEvent<'_>) {
+      let mut mesh = MeshDefinition::new();
+      let root = mesh.root();
+      let body = CubeListBuilder::create().tex_offs(0, 16).add_box([-4.0, 0.0, -2.0], [8.0, 12.0, 4.0]);
+      let body = mesh.add_or_replace_child(root, "body", body, PartPose::offset(0.0, 0.0, 0.0));
+      let head = CubeListBuilder::create().tex_offs(0, 0).add_box([-4.0, -8.0, -4.0], [8.0, 8.0, 8.0]);
+      mesh.add_or_replace_child(body, "head", head, PartPose::ZERO);
+      event.layers.push(("mymod:golem#main".into(), LayerDefinition::create(mesh, 64, 64)));
+  }
+  // In mob_submit, with `model` from host.bake_layer("mymod:golem#main"):
+  draw.scale([1.0, -1.0, -1.0]);
+  draw.translate([0.0, -1.501, 0.0]);
+  host.draw_model_part(draw, &model, "mymod:entity/golem", 0xFFFFFF);
+  ```
 
 ### Advancement triggers
 
