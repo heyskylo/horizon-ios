@@ -435,6 +435,42 @@ impl Game<'_> {
                 }
                 set_key(&mut tag, "UUID", Tag::IntArray(uuid.to_vec()));
             }
+            Target::Falling(id) => {
+                // Use load_falling's existing converters, but mutate the resident
+                // instance: loading/spawning would allocate a new id and join.
+                let (state, position, velocity, age, fall_distance) =
+                    entity_nbt::falling_block_from_nbt(&tag).ok_or_else(stale)?;
+                let state = self.state_from_nbt(&state).ok_or_else(stale)?;
+                let (no_gravity, drop_item) = entity_nbt::falling_block_flags(&tag);
+                let damage = horizon_client::falling_block::Damage::from_nbt(
+                    &tag,
+                    self.res.facts().get(state).name.ends_with("anvil"),
+                );
+                let uuid = self.uuid_for(id);
+                let falling = self
+                    .falling
+                    .iter_mut()
+                    .find(|f| f.id == id)
+                    .ok_or_else(stale)?;
+                falling.state = state;
+                falling.position = position;
+                falling.previous = position;
+                falling.velocity = velocity;
+                falling.rotation = entity_nbt::rotation(&tag);
+                falling.age = age;
+                falling.no_gravity = no_gravity;
+                falling.drop_item = drop_item;
+                falling.fall_distance = fall_distance;
+                falling.damage = damage;
+                // Keep id/join, start_pos, portal state and stuck multiplier.
+                set_key(&mut tag, "UUID", Tag::IntArray(uuid.to_vec()));
+                set_key(
+                    &mut tag,
+                    "id",
+                    Tag::String("minecraft:falling_block".into()),
+                );
+                falling.saved = Some(Box::new((uuid, tag.clone())));
+            }
             Target::Tnt(id) => {
                 // Entity.load and PrimedTnt.readAdditionalSaveData mutate the
                 // resident instance; load_tnt would allocate another id/join.
@@ -1647,5 +1683,149 @@ mod arrow_owner_tests {
                 assert_eq!(game.world.game_time, time);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod falling_live_adoption_tests {
+    use crate::game::{Audio, Game, Options, Progress, Settings, commands::Target, load_resources};
+    use horizon_client::chunk::Chunk;
+    use horizon_core::{
+        geometry::Vec3,
+        position::{BlockPos, ChunkPos},
+    };
+    use horizon_world::nbt::Tag;
+    use std::sync::Arc;
+    fn with_game(test: impl FnOnce(&mut Game<'_>)) {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.game_dir = Some(
+            std::path::PathBuf::from(std::env::var_os("HORIZON_HOME").unwrap())
+                .join(format!("h098-{:?}", std::thread::current().id())),
+        );
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+
+        game.world
+            .chunks
+            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        game.block_ticks
+            .add_empty_chunk(ChunkPos::new(0, 0))
+            .unwrap();
+        assert!(game.run_command("difficulty normal"));
+        if !game.streaming.forced.contains(&(0, 0)) {
+            assert!(game.run_command("forceload add 0 0"));
+        }
+        test(&mut game);
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn commands_mutate_the_resident_falling_model_without_rejoining() {
+        with_game(|game| {
+            let uuid = "000003d4-0000-0000-0000-000000000001";
+            assert!(game.run_command("summon falling_block 4.5 200 5.5 {UUID:[I;980,0,0,1],BlockState:\"minecraft:gravel\",Time:5,DropItem:1b,NoGravity:1b,Motion:[0d,0d,0d],Tags:[keep],Silent:1b}"));
+            assert!(game.run_command(&format!(
+                "execute as {uuid} if entity @s[type=falling_block]"
+            )));
+            let index = game
+                .falling
+                .iter()
+                .position(|f| game.persist.uuid_of(f.id) == Some([980, 0, 0, 1]))
+                .unwrap();
+            game.falling[index].start_pos = BlockPos::new(9, 201, 11);
+            game.falling[index].stuck = Vec3::new(0.2, 0.3, 0.4);
+            game.falling[index].portal.cooldown = 17;
+            game.falling[index].portal.process = Some(horizon_client::nether_portal::Process {
+                entry: BlockPos::new(8, 199, 8),
+                time: 7,
+                inside: true,
+            });
+            let before = game.falling[index].clone();
+            assert!(before.join.is_joined());
+            assert_eq!((before.age, before.drop_item), (5, true));
+            let next_id = game.next_entity;
+            let clock = game.world.game_time;
+            assert!(!game.run_command(&format!("data merge entity {uuid} {{Time:5}}")));
+            assert!(
+                game.run_command(&format!("data merge entity {uuid} {{Time:12}}")),
+                "valid Time update must reach model"
+            );
+            assert_eq!(game.falling[index].age, 12);
+            assert!(game.run_command(&format!("data merge entity {uuid} {{DropItem:0b}}")));
+            assert!(!game.falling[index].drop_item);
+            let f = &game.falling[index];
+            assert_eq!(
+                (f.id, f.join, f.start_pos, f.stuck),
+                (before.id, before.join, before.start_pos, before.stuck)
+            );
+            assert_eq!(
+                (
+                    f.position,
+                    f.previous,
+                    f.velocity,
+                    f.rotation,
+                    f.state,
+                    f.no_gravity,
+                    f.damage,
+                    f.fall_distance
+                ),
+                (
+                    before.position,
+                    before.position,
+                    before.velocity,
+                    before.rotation,
+                    before.state,
+                    before.no_gravity,
+                    before.damage,
+                    before.fall_distance
+                )
+            );
+            assert_eq!(f.portal.cooldown, before.portal.cooldown);
+            let (a, b) = (f.portal.process.unwrap(), before.portal.process.unwrap());
+            assert_eq!((a.entry, a.time, a.inside), (b.entry, b.time, b.inside));
+            assert_eq!(f.saved.as_ref().unwrap().0, [980, 0, 0, 1]);
+            assert_eq!(game.persist.uuid_of(f.id), Some([980, 0, 0, 1]));
+            let saved = game.entity_nbt(Target::Falling(f.id)).unwrap();
+            assert_eq!(saved.get("Time"), Some(&Tag::Int(12)));
+            assert_eq!(saved.get("DropItem"), Some(&Tag::Byte(0)));
+            assert_eq!(
+                saved.get("BlockState"),
+                Some(&Tag::String("minecraft:gravel".into()))
+            );
+            assert_eq!(
+                saved.get("Tags"),
+                Some(&Tag::List(vec![Tag::String("keep".into())]))
+            );
+            assert_eq!(saved.get("Silent"), Some(&Tag::Byte(1)));
+            assert_eq!(game.falling.len(), 1);
+            assert_eq!(game.next_entity, next_id);
+            assert_eq!(game.world.game_time, clock);
+        });
     }
 }
