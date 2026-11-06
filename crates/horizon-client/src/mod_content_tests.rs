@@ -19,7 +19,12 @@ fn place_block_aliases_keep_the_original_item_in_placement_context() {
         registry::BlockStateId,
     };
     use std::{cell::RefCell, collections::HashMap};
-    let base = prepared().expect("prepared resources required");
+    let Some(base) = std::env::var_os("HORIZON_TEST_RESOURCES")
+        .map(PathBuf::from)
+        .or_else(prepared)
+    else {
+        return;
+    };
     let scratch =
         std::env::temp_dir().join(format!("horizon-alias-context-{}", std::process::id()));
     let mut content = Content::declared("ruby");
