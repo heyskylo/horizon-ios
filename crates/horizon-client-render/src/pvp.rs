@@ -751,6 +751,16 @@ impl ChatOptions {
     }
 }
 
+/// Combat feel (`docs/pvp.md`): how fights look. Legacy draws them as 1.8.9 did; what the
+/// game sends to a server never changes, so a vanilla server and its anticheat see 26.3.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Combat {
+    /// Legacy (1.8.9) instead of Modern.
+    pub legacy: bool,
+    /// Keep the attack indicator under Legacy (1.8.9 had none).
+    pub indicator: bool,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Pvp {
     pub crosshair: Crosshair,
@@ -763,6 +773,7 @@ pub struct Pvp {
     pub layout: crate::pvp_hud::Layout,
     /// The key that opens the HUD editor from the game (unbound at first).
     pub editor_key: String,
+    pub combat: Combat,
 }
 /// The HUD editor key's name for the controls (`Extras::set_key`).
 pub const HUD_EDITOR_KEY: &str = "horizon.hud_editor";
@@ -777,6 +788,7 @@ impl Default for Pvp {
             chat: ChatOptions::default(),
             layout: crate::pvp_hud::Layout::default(),
             editor_key: "key.keyboard.unknown".into(),
+            combat: Combat::default(),
         }
     }
 }
@@ -877,6 +889,12 @@ impl Pvp {
             "chatCompact" => self.chat.compact = flag(value, self.chat.compact),
             "chatCopy" => self.chat.copy = flag(value, self.chat.copy),
             "chatSearch" => self.chat.search = flag(value, self.chat.search),
+            "combatFeel" => match value {
+                "legacy" => self.combat.legacy = true,
+                "modern" => self.combat.legacy = false,
+                _ => {}
+            },
+            "combatIndicator" => self.combat.indicator = flag(value, self.combat.indicator),
             "viewTime" => {
                 t.time = match value {
                     "off" => None,
@@ -1001,6 +1019,9 @@ impl Pvp {
             "chatTimestamps:{}\nchatCompact:{}\nchatCopy:{}\nchatSearch:{}\n",
             c.timestamps, c.compact, c.copy, c.search,
         );
+        let c = &self.combat;
+        let feel = if c.legacy { "legacy" } else { "modern" };
+        let _ = write!(out, "combatFeel:{feel}\ncombatIndicator:{}\n", c.indicator);
     }
 }
 
@@ -1139,6 +1160,10 @@ opts! {
         "Clicking a message in the open chat copies its text, unless the click does something else.";
     ChatSearch, "chat_search", "Chat search",
         "Ctrl+F in the open chat: what you type shows only the messages holding it. Enter or Ctrl+F again stops.";
+    CombatFeel, "combat_feel", "Combat feel",
+        "Legacy draws fights as 1.8.9 did: the item in your hand, its swing, eating, the bow and a sword held up while you hold use, without the dip after each hit or the attack indicator. Only the look: what you send a server stays the same.";
+    CombatIndicator, "combat_indicator", "Attack indicator in Legacy",
+        "Keeps the attack indicator under Legacy, which 1.8.9 didn't have.";
 }
 /// The PvP & HUD page: headers (language keys) and options.
 pub fn rows() -> Vec<Result<Opt, &'static str>> {
@@ -1218,6 +1243,8 @@ pub fn rows() -> Vec<Result<Opt, &'static str>> {
     rows.extend([ViewTime, ViewWeather].map(Ok));
     rows.push(Err("horizon.pvp.header.chat"));
     rows.extend([ChatTimestamps, ChatCompact, ChatCopy, ChatSearch].map(Ok));
+    rows.push(Err("horizon.pvp.header.combat"));
+    rows.extend([CombatFeel, CombatIndicator].map(Ok));
     rows
 }
 impl Opt {
@@ -1241,6 +1268,7 @@ impl Opt {
             FireLower | ShieldSize | TotemSize | GlintColour | ClearWater | ClearLava => None,
             ViewTime | ViewWeather => None,
             ChatTimestamps | ChatCompact | ChatCopy | ChatSearch => None,
+            CombatFeel | CombatIndicator => None,
             HudPingCorner => Some(HudPing),
             HudCoordsCorner => Some(HudCoords),
             HudServerCorner => Some(HudServer),
@@ -1282,6 +1310,7 @@ impl Opt {
             Opt::ChatCompact => p.chat.compact,
             Opt::ChatCopy => p.chat.copy,
             Opt::ChatSearch => p.chat.search,
+            Opt::CombatIndicator => p.combat.indicator,
             _ => return None,
         })
     }
@@ -1332,6 +1361,10 @@ impl Opt {
             Opt::GlintColour => match p.tweaks.glint {
                 Some(colour) => colour.label(),
                 None => crate::lang::get_or("Off", "Off"),
+            },
+            Opt::CombatFeel => match p.combat.legacy {
+                true => crate::lang::get_or("horizon.pvp.combat_feel.legacy", "Legacy (1.8.9)"),
+                false => crate::lang::get_or("horizon.pvp.combat_feel.modern", "Modern"),
             },
             Opt::ViewTime => p.tweaks.time.map_or_else(world_label, ViewTime::label),
             Opt::ViewWeather => p
@@ -1432,6 +1465,8 @@ impl Opt {
             Opt::ChatCompact => p.chat.compact = !p.chat.compact,
             Opt::ChatCopy => p.chat.copy = !p.chat.copy,
             Opt::ChatSearch => p.chat.search = !p.chat.search,
+            Opt::CombatFeel => p.combat.legacy = !p.combat.legacy,
+            Opt::CombatIndicator => p.combat.indicator = !p.combat.indicator,
             Opt::ViewWeather => {
                 let all: Vec<_> = std::iter::once(None)
                     .chain(ViewWeather::ALL.map(Some))
