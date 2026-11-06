@@ -1965,6 +1965,13 @@ impl Game<'_> {
         let Some(gi) = host.hub.guests.iter().position(|g| g.conn == conn) else {
             return;
         };
+        // Plugin channels a client registers in play (minecraft:register), from a dead player
+        // too; the packet goes on as before.
+        if let S::CustomPayload(p) = &packet
+            && let Some(register) = horizon_client::lan::channel_registration(&p.channel)
+        {
+            self.guest_channels(host, gi, &p.data, register);
+        }
         // A dead player acts no more, but the death screen still respawns and chats: its
         // commands run as anyone's (ServerGamePacketListenerImpl.handleChatCommand doesn't
         // look at the player's health).
@@ -2560,6 +2567,7 @@ impl Game<'_> {
             S::ResourcePack(r) => {
                 let (uuid, name) = (host.hub.guests[gi].uuid, host.hub.guests[gi].name.clone());
                 self.as_guest(host, conn, |g| {
+                    g.native_resource_pack_status_v2(uuid, &name, r.id, r.action);
                     g.native_resource_pack_status(uuid, &name, r.action);
                 });
             }

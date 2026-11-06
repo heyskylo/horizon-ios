@@ -236,9 +236,80 @@ impl Drop for Holding {
     }
 }
 
+/// The game's hook on every play packet the server sends a player (`native_server_packet`), set
+/// once by the game: the player, the packet (which it may change) and cancel.
+pub type ServerPacketHook = fn(u128, &mut play::Clientbound, &mut bool);
+pub static SERVER_PACKET: std::sync::OnceLock<ServerPacketHook> = std::sync::OnceLock::new();
+/// The game's hook on the entity data a player is sent (`native_entity_data_to`), set once by
+/// the game: the viewer, the entity's network id and its values (which it may change).
+pub type EntityDataHook = fn(u128, i32, &mut Vec<(u8, i32, horizon_protocol::entity_data::Value)>);
+pub static ENTITY_DATA_TO: std::sync::OnceLock<EntityDataHook> = std::sync::OnceLock::new();
+/// What a mod asked to hear of the packets [`PlayerSender::send`] sends
+/// (`native_watch_server_packets`, `native_watch_entity_data`): [`WATCH_ALL`] and
+/// [`WATCH_ENTITY_DATA`]. Nothing until a mod asks: until then each packet costs this one
+/// load, and its bytes go out untouched.
+pub static WATCHED: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+/// Every play packet reaches [`SERVER_PACKET`].
+pub const WATCH_ALL: u8 = 1;
+/// Each `ClientboundSetEntityDataPacket` reaches [`ENTITY_DATA_TO`], and no other packet is
+/// decoded for it.
+pub const WATCH_ENTITY_DATA: u8 = 2;
+
+/// A body about to be sent to `player`, past the hooks a mod asked for ([`WATCHED`]): None
+/// when one canceled it. Bytes that don't decode, and a packet no hook changed, go out as they
+/// were; a changed one is encoded again.
+fn outgoing(player: u128, body: Vec<u8>) -> Option<Vec<u8>> {
+    let watched = WATCHED.load(Ordering::Relaxed);
+    if watched == 0 {
+        return Some(body);
+    }
+    watched_outgoing(player, body, watched)
+}
+
+#[cold]
+fn watched_outgoing(player: u128, body: Vec<u8>, watched: u8) -> Option<Vec<u8>> {
+    let head = {
+        let mut r = horizon_protocol::buf::Reader::new(&body);
+        r.varint().ok().map(|id| (id, r.position()))
+    };
+    let Some((id, at)) = head else {
+        return Some(body);
+    };
+    let all = SERVER_PACKET.get().filter(|_| watched & WATCH_ALL != 0);
+    let data = ENTITY_DATA_TO.get().filter(|_| {
+        watched & WATCH_ENTITY_DATA != 0
+            && id == horizon_protocol::ids::play::clientbound::SET_ENTITY_DATA
+    });
+    if all.is_none() && data.is_none() {
+        return Some(body);
+    }
+    let Ok(sent) = play::Clientbound::decode(id, &body[at..]) else {
+        return Some(body);
+    };
+    let mut packet = sent.clone();
+    // The typed shortcut first, so the packet hook sees what the client will get.
+    if let (Some(hook), play::Clientbound::SetEntityData(p)) = (data, &mut packet) {
+        hook(player, p.id, &mut p.values);
+    }
+    if let Some(hook) = all {
+        let mut cancel = false;
+        hook(player, &mut packet, &mut cancel);
+        if cancel {
+            return None;
+        }
+    }
+    Some(if packet == sent {
+        body
+    } else {
+        packet.encode()
+    })
+}
+
 /// The sending half given to the game thread.
 #[derive(Clone)]
 pub struct PlayerSender {
+    /// The player it sends to, for the hooks on what it sends ([`outgoing`]); 0 for a test's.
+    player: u128,
     /// The bytes of the bodies sent and not framed yet.
     pub pending: Arc<AtomicUsize>,
     held: Arc<Mutex<Vec<Vec<u8>>>>,
@@ -258,6 +329,7 @@ impl PlayerSender {
     /// A sender whose packets go to `tx` (a test's).
     pub fn new(tx: Sender<Out>, pending: Arc<AtomicUsize>) -> Self {
         Self {
+            player: 0,
             pending,
             held: Arc::default(),
             to: To::Channel(tx),
@@ -288,6 +360,9 @@ impl PlayerSender {
         self.held.lock().unwrap_or_else(PoisonError::into_inner)
     }
     pub fn send(&self, body: Vec<u8>) {
+        let Some(body) = outgoing(self.player, body) else {
+            return;
+        };
         self.pending.fetch_add(body.len(), Ordering::Relaxed);
         if HOLDING.get() {
             self.held().push(body);
@@ -302,7 +377,8 @@ impl PlayerSender {
     /// Several packets in order, as [`Self::send`] each: under one lock
     /// while the tick holds them.
     pub fn send_many(&self, bodies: impl IntoIterator<Item = Vec<u8>>) {
-        if !HOLDING.get() {
+        // A mod hearing what is sent (`outgoing`) does so outside the lock.
+        if !HOLDING.get() || WATCHED.load(Ordering::Relaxed) != 0 {
             bodies.into_iter().for_each(|body| self.send(body));
             return;
         }
@@ -881,6 +957,17 @@ struct Parts {
     properties: Vec<login::Property>,
     info: ClientInformation,
     brand: String,
+    configured: super::Configured,
+}
+
+/// A configuration packet that registers or unregisters plugin channels, kept for the game
+/// (`super::Configured`); vanilla reads none of them.
+fn note_channels(configured: &mut super::Configured, packet: &cfg::Serverbound) {
+    if let cfg::Serverbound::CustomPayload(p) = packet
+        && let Some(register) = super::channel_registration(&p.channel)
+    {
+        super::apply_channels(&mut configured.channels, &p.data, register);
+    }
 }
 
 fn login_and_configure(
@@ -966,9 +1053,12 @@ fn login_and_configure(
     )?;
     let mut info = ClientInformation::new(10);
     let mut brand = String::from("vanilla");
+    let mut configured = super::Configured::default();
     let known_pack = loop {
         let (id, payload) = c.recv().map_err(e)?;
-        match decode_config(id, &payload).map_err(e)? {
+        let packet = decode_config(id, &payload).map_err(e)?;
+        note_channels(&mut configured, &packet);
+        match packet {
             cfg::Serverbound::ClientInformation(i) => info = i,
             cfg::Serverbound::CustomPayload(p) if p.channel == "minecraft:brand" => {
                 brand = horizon_protocol::buf::Reader::new(&p.data)
@@ -1065,7 +1155,9 @@ fn login_and_configure(
         let mut client_mods = Vec::new();
         loop {
             let (id, payload) = c.recv().map_err(e)?;
-            match decode_config(id, &payload).map_err(e)? {
+            let packet = decode_config(id, &payload).map_err(e)?;
+            note_channels(&mut configured, &packet);
+            match packet {
                 cfg::Serverbound::CustomPayload(p)
                     if p.channel == horizon_protocol::mod_list::CHANNEL =>
                 {
@@ -1101,7 +1193,9 @@ fn login_and_configure(
         let mut content_match = false;
         loop {
             let (id, payload) = c.recv().map_err(e)?;
-            match decode_config(id, &payload).map_err(e)? {
+            let packet = decode_config(id, &payload).map_err(e)?;
+            note_channels(&mut configured, &packet);
+            match packet {
                 cfg::Serverbound::CustomPayload(p)
                     if p.channel == crate::content_identity::CHANNEL =>
                 {
@@ -1133,10 +1227,10 @@ fn login_and_configure(
     if let Some(text) =
         super::code_of_conduct::pick(&shared.config.code_of_conducts, &info.language)
     {
-        accept_code_of_conduct(c, text, &mut info)?;
+        accept_code_of_conduct(c, text, &mut info, &mut configured)?;
     }
     if let Some(pack) = &shared.config.resource_pack
-        && let Some(rejected) = offer_pack(c, pack, &mut info)?
+        && let Some(rejected) = offer_pack(c, pack, &mut info, &mut configured)?
     {
         let (reason, text) = pack_rejected(shared, name, rejected);
         let _ = send(c, cfg::Clientbound::Disconnect(cfg::Disconnect { reason }));
@@ -1146,7 +1240,9 @@ fn login_and_configure(
     send(c, cfg::Clientbound::FinishConfiguration(Empty))?;
     loop {
         let (id, payload) = c.recv().map_err(e)?;
-        match decode_config(id, &payload).map_err(e)? {
+        let packet = decode_config(id, &payload).map_err(e)?;
+        note_channels(&mut configured, &packet);
+        match packet {
             cfg::Serverbound::FinishConfiguration(_) => break,
             cfg::Serverbound::ClientInformation(i) => info = i,
             _ => {}
@@ -1158,6 +1254,7 @@ fn login_and_configure(
         properties,
         info,
         brand,
+        configured,
     }))
 }
 
@@ -1207,6 +1304,7 @@ fn offer_pack(
     c: &mut Connection,
     pack: &crate::server::properties::ResourcePackInfo,
     info: &mut ClientInformation,
+    configured: &mut super::Configured,
 ) -> Result<Option<u128>, String> {
     let e = |e: horizon_protocol::Error| e.to_string();
     let push = cfg::ResourcePackPush {
@@ -1219,7 +1317,12 @@ fn offer_pack(
     c.send(&cfg::Clientbound::ResourcePackPush(push).encode())
         .map_err(e)?;
     wait_alive(c, |packet| match packet {
-        Ok(cfg::Serverbound::ResourcePack(r)) if !matches!(r.action, 3 | 4) => {
+        // Every answer is kept for the mods (native_resource_pack_status_v2).
+        Ok(cfg::Serverbound::ResourcePack(r)) => {
+            configured.pack_answers.push((r.id, r.action));
+            if matches!(r.action, 3 | 4) {
+                return None;
+            }
             let rejected = r.action == PACK_DECLINED && pack.required;
             Some(Ok(rejected.then_some(r.id)))
         }
@@ -1227,7 +1330,10 @@ fn offer_pack(
             *info = i;
             None
         }
-        Ok(_) => None,
+        Ok(packet) => {
+            note_channels(configured, &packet);
+            None
+        }
         Err(err) => Some(Err(err)),
     })
 }
@@ -1241,6 +1347,7 @@ fn accept_code_of_conduct(
     c: &mut Connection,
     text: &str,
     info: &mut ClientInformation,
+    configured: &mut super::Configured,
 ) -> Result<(), String> {
     let e = |e: horizon_protocol::Error| e.to_string();
     c.send(&cfg::Clientbound::CodeOfConduct(cfg::CodeOfConduct { text: text.into() }).encode())
@@ -1254,7 +1361,10 @@ fn accept_code_of_conduct(
             *info = i;
             None
         }
-        Ok(_) => None,
+        Ok(packet) => {
+            note_channels(configured, &packet);
+            None
+        }
         Err(err) => Some(Err(err)),
     })
 }
@@ -1318,6 +1428,7 @@ fn play(
         alive: Arc::new(AtomicI64::new(-1)),
     });
     let sender = PlayerSender {
+        player: parts.uuid,
         pending,
         held: Arc::default(),
         to: To::Pool(outbox.clone(), watch.clone()),
@@ -1352,6 +1463,7 @@ fn play(
         latency,
         address,
         expected,
+        configured: parts.configured,
     };
     let mut session = Box::new(session);
     if shared

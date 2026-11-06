@@ -246,6 +246,7 @@ mod native_mobs;
 mod native_motion;
 mod native_mounts;
 mod native_net;
+mod native_packets;
 mod native_panel;
 mod native_panel_recipes;
 mod native_player_fx;
@@ -3084,6 +3085,8 @@ struct Game<'a> {
     native_net: native_net::NativeNet,
     /// What native mods send one player, waiting for the hub (`game/native_player_fx.rs`).
     native_player_fx: native_player_fx::NativePlayerFx,
+    /// Native mods' kicks waiting for the tick's end (`game/native_packets.rs`).
+    native_packets: native_packets::NativePackets,
     /// The mod whose own screen is open (`Screen::Mod`).
     native_mod_screen: Option<String>,
     /// Meshed sections waiting for an upload budget (Horizon settings).
@@ -20192,6 +20195,7 @@ impl<'a> Game<'a> {
             native_configs: Default::default(),
             native_net: Default::default(),
             native_player_fx: Default::default(),
+            native_packets: Default::default(),
             native_mod_screen: None,
             sky_darken_memo: Default::default(),
             water_plane_memo: Default::default(),
@@ -22636,6 +22640,9 @@ pub fn run_with() -> Result<()> {
     {
         return Ok(());
     }
+    // The packets the server sends its players reach the mods that ask (native_packets.rs).
+    let _ = horizon_client::lan::conn::SERVER_PACKET.set(Game::native_server_packet);
+    let _ = horizon_client::lan::conn::ENTITY_DATA_TO.set(Game::native_entity_data_to);
     let _ = horizon_client::health::HURT_SERVER.set(native_hooks::hurt_server);
     let _ = horizon_client::health::DAMAGE_PRE.set(native_hooks::damage_pre);
     let _ = horizon_client::health::DAMAGE_POST.set(native_hooks::damage_post);

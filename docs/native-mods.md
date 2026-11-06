@@ -2558,6 +2558,69 @@ per-player helpers for these (a NeoForge mod sends `ServerPlayer.connection.send
   compass and a recovery compass keep their own targets. Queued as `native_play_sound_to`, with the same answers; also
   false for a dimension that isn't a namespaced id or a position a block position can't carry. Bundles need
   `"hooks": @API:compass_target@`.
+
+#### Server hooks for plugin ports: packets
+
+What packet-level plugins (ProtocolLib, PacketEvents, TAB), plugin channel listeners, resource pack plugins and
+`/kick` replacements need, which plugin ports reached with raw packets and injections before.
+
+- **`native_server_packet(player, packet, cancel)`**: each play packet the server is about to send one guest's
+  client, decoded (`ClientboundPlayPacket`), in the order they leave; a broadcast is heard once for each player it
+  reaches, so a mod can answer each viewer differently (ProtocolLib's and PacketEvents' outgoing listeners; there is no
+  NeoForge or Bukkit event). Change `packet` and that client gets the changed packet, encoded again; set `cancel` and
+  it gets nothing. It is heard only after a mod called the helper **`native_watch_server_packets()`** (any thread,
+  any time; it cannot be switched off again): until then the server neither decodes nor copies what it sends, and each
+  packet costs one atomic load. Not heard: the configuration phase, the disconnect a kick sends, bytes that don't decode
+  (they go out unchanged, as does every packet no mod changed), and a player who isn't a guest (single player's own). It
+  runs where the packet is sent, on whichever server thread sends it, with no `self` and no player's state swapped in, once for
+  each packet and player: keep it cheap. Bundles need `"hooks": @API:server_packet@`.
+- **`native_entity_data_to(viewer, entity, values)`**: the typed shortcut for one packet, the entity data
+  (`ClientboundSetEntityDataPacket`) the server is about to send the guest `viewer` for the entity with network id
+  `entity`. `values` are its `(index, serializer id, value)` entries (`EntityDataValue`, `SynchedEntityData.DataValue`)
+  in the order sent; change them and only that viewer gets the change, so one viewer can see a player glow (OR `0x40`
+  into the `Byte` of entry 0) or another custom name, while the server and every other viewer keep the real values.
+  Heard just before `native_server_packet` hears the same packet, with the changed values. Switched on by the helper
+  **`native_watch_entity_data()`**, which decodes this packet alone (the other packets keep going out undecoded).
+  Every entity's data reaches a client in this packet, a newly tracked one's first values included; an entity whose
+  values are all defaults is tracked without one, as in vanilla, so there is nothing to change until a value does.
+  The same threads and limits as `native_server_packet`. Bundles need `"hooks": @API:entity_data_to@`.
+- **`native_player_register_channels(player, name, channels, register)`**: a guest's client registered plugin channels
+  (`minecraft:register`, `register` true) or unregistered them (`minecraft:unregister`), NUL-separated names as Bukkit's
+  and Fabric's clients and proxies send them; vanilla reads neither message (Bukkit's `PlayerRegisterChannelEvent` and
+  `PlayerUnregisterChannelEvent`). `channels` are the names that changed, after Horizon applied them. What a client
+  registered during its configuration, before it joined, is heard once as one registration right after
+  `native_player_logged_in`, with the hub in place; a message in play is heard as it is handled, from a dead player too,
+  with the player's state swapped in, so `native_tell` answers them, and then goes on to wherever it went before. Horizon
+  keeps at most 128 names of at most 256 bytes, printable ASCII with a `:`; a name past that, or one that changes
+  nothing, is not heard. The helper **`native_player_channels(player)`** lists the channels a player has, in the order
+  registered (Bukkit's `Player.getListeningPluginChannels`); it reads the hub, so it is empty inside a player's own
+  hook. Bundles need `"hooks": @API:player_channels@`.
+- Helpers **`native_send_resource_pack(player, id, url, sha1, prompt, required)`** and
+  **`native_pop_resource_pack(player, id)`**: a mod's own resource packs for one player's client, as Bukkit's
+  `Player.addResourcePack` and `removeResourcePack(s)`. The push (`ClientboundResourcePackPushPacket`) carries the
+  mod's own `id`, a UUID it picks, so it can take that pack away again and tell its answers from other packs' with
+  `native_resource_pack_status_v2`; `sha1` is the pack's lowercase hex hash (empty: unchecked), `prompt` an extra line
+  on the client's prompt, `required` how the prompt words it. A pack whose id the client already has is replaced.
+  As in vanilla, a player who declines is kicked only when the server's own pack (`require-resource-pack`) is
+  required, whatever pack they declined; anything else is the mod's to decide. `native_pop_resource_pack(player, None)`
+  takes away every server pack the client has. Both send as `native_send` does (from `native_server_tick` and from the
+  player's own hooks) and are false when the player isn't on, on a client, and for an empty URL, a URL past 32767
+  characters or a hash past 40. Bundles need `"hooks": @API:resource_packs@`.
+- **`native_resource_pack_status_v2(player, name, pack, status)`**: an additive version of
+  `native_resource_pack_status` with the answered pack's id (`ServerboundResourcePackPacket.id`, Bukkit's
+  `PlayerResourcePackStatusEvent.getID`), so a mod hears its own pack's answers apart from every other pack's;
+  `status` is the same `Action` number. In play it is heard just before v1, with the player's state swapped in. The
+  answers to the server's own pack (`resource-pack` in `server.properties`), given during the configuration and never
+  heard by v1, are heard here in order once the player has logged in, right after `native_player_logged_in`, with the
+  hub in place; a player disconnected for declining a required pack never logs in. v1 keeps its signature and firing
+  point. It only hears. Bundles need `"hooks": @API:resource_pack_status_v2@`.
+- Helper **`native_kick(player, reason)`**: disconnects a player with `reason`, a whole `Text` in its colours and
+  translations (Adventure's `Player.kick(Component)`; `/kick` takes one line of plain text), as `/kick` does: the
+  client shows it, the log's "lost connection" line names it and `native_player_kicked` hears it. The kick happens at
+  the tick's end, with the mod messages, so it works from any server hook, the kicked player's own included. True when
+  it is queued; false on a client, in a world nobody else can join, and for a player who isn't on when the hub can tell
+  (a player gone by the tick's end isn't kicked either). Bundles need `"hooks": @API:kick@`.
+
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a

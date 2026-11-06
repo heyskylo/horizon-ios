@@ -995,6 +995,7 @@ use super::{
     native_world_draw::NativeWorldDraw,
 };
 use horizon_assets::item_model::StackView;
+use horizon_client::mod_api::EntityDataValue;
 use horizon_client::mod_api::{
     self, NativeBossBar, NativeCamera, NativeCommand, NativeDispensed, NativeLifecycleContext,
     NativeNoteBlockChange, NativeServerPlayer, RecipeBookCategory, ServerTickPhase, WorldPhase,
@@ -6846,6 +6847,88 @@ impl Game<'_> {
         );
         self.queue_native_player_fx(uuid, super::native_player_fx::PlayerFx::Compass(target));
         true
+    }
+    /// A play packet the server is about to send `player`'s client (ProtocolLib's and
+    /// PacketEvents' outgoing packet listener; there is no NeoForge or Bukkit event): every
+    /// packet the server sends a guest in play, a broadcast once for each of its players, in
+    /// the order they are sent, decoded (`ClientboundPlayPacket`). Change `packet` and the
+    /// client gets the changed one instead, encoded again; set `cancel` and that client gets
+    /// nothing. Heard only after a mod called `native_watch_server_packets`: until then the
+    /// server neither decodes nor copies what it sends. Not heard: the configuration phase,
+    /// the disconnect a kick sends, a packet whose bytes don't decode (it goes out as it was),
+    /// and a player who isn't a guest (single player's own). It runs where the packet is sent, on
+    /// whichever server thread sends it, once a packet and player, so it should be cheap;
+    /// there is no `self` and no player's state is swapped in. Server-side.
+    /// @API:server_packet@.
+    pub(super) fn native_server_packet(
+        player: u128,
+        packet: &mut ClientboundPlayPacket,
+        cancel: &mut bool,
+    ) {
+        let _ = (player, packet, cancel);
+    }
+    /// The entity data (`ClientboundSetEntityDataPacket`) the server is about to send the guest
+    /// `viewer` for the entity with network id `entity`: `values` are its entries as
+    /// `(index, serializer id, value)` (`SynchedEntityData.DataValue`), in the order sent. Change
+    /// them and that viewer alone gets the changed values, so a mod can OR the glowing bit
+    /// (0x40) into entry 0 of one player for one viewer, or give one viewer another custom
+    /// name; leave them and the packet goes out as it was. An emptied list still sends the
+    /// packet, with no entries. A typed shortcut of `native_server_packet`, heard just before it
+    /// for the same packet (which then carries the changed values), and only after a mod called
+    /// `native_watch_entity_data`: until then nothing is decoded for it, and with that switch
+    /// alone no other packet is. Every entity's data reaches a client this way, a newly
+    /// tracked entity's first values included (`AddEntity` carries none); an entity whose
+    /// values are all their defaults is tracked without this packet, as in vanilla
+    /// (`getNonDefaultValues`), so there is nothing to change until one changes. Not heard: a player
+    /// who isn't a guest (single player's own). It runs where the packet is sent, on whichever
+    /// server thread sends it, with no `self` and no player's state swapped in. Server-side.
+    /// @API:entity_data_to@.
+    pub(super) fn native_entity_data_to(
+        viewer: u128,
+        entity: i32,
+        values: &mut Vec<(u8, i32, EntityDataValue)>,
+    ) {
+        let _ = (viewer, entity, values);
+    }
+    /// `player`'s client registered plugin channels (`minecraft:register`, `register`) or
+    /// unregistered them (`minecraft:unregister`, not `register`): `channels` are the names that
+    /// changed, in the message's order, after Horizon applied them (Bukkit's
+    /// `PlayerRegisterChannelEvent` and `PlayerUnregisterChannelEvent`; vanilla reads neither
+    /// message). What a client registered during its configuration, before it joined, is heard
+    /// once, as one registration, right after `native_player_logged_in`, with the hub in place
+    /// and no player's state swapped in; a registration in play is heard as the packet is
+    /// handled, from a dead player too, with the player's state swapped in, so `native_tell`
+    /// answers them. A name already registered, not registered, past 128 kept or not printable
+    /// ASCII with a `:` changes nothing and is not heard; `native_player_channels` lists them
+    /// all. It only hears. Server-side, for every guest. @API:player_channels@.
+    pub(super) fn native_player_register_channels(
+        &mut self,
+        player: u128,
+        name: &str,
+        channels: &[String],
+        register: bool,
+    ) {
+        let _ = (player, name, channels, register);
+    }
+    /// `native_resource_pack_status` with the answered pack's id (`pack`,
+    /// `ServerboundResourcePackPacket.id`, Bukkit's `PlayerResourcePackStatusEvent.getID`), so a
+    /// mod that offered its own pack (`native_send_resource_pack`) hears only that pack's
+    /// answers; `status` is the same `Action` number. In play it is heard just before v1, the
+    /// player's state swapped in, as for v1. The answers to the server's own pack
+    /// (`resource-pack` in `server.properties`), given during the configuration before the
+    /// player joined, which v1 never hears, are heard here once the player has logged in, in
+    /// order, right after `native_player_logged_in`, with the hub in place and no player's state
+    /// swapped in (a player disconnected for declining a required pack never logs in and is not
+    /// heard). It only hears: a declined required pack is handled as before. Server-side.
+    /// @API:resource_pack_status_v2@.
+    pub(super) fn native_resource_pack_status_v2(
+        &mut self,
+        player: u128,
+        name: &str,
+        pack: u128,
+        status: i32,
+    ) {
+        let _ = (player, name, pack, status);
     }
     /// A click in a menu a mod opened (`native_open_menu`), which moved
     /// nothing: the menu's `slot` (its own first, then the player's
