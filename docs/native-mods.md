@@ -2521,6 +2521,15 @@ button is held. A bobber can be removed for the player in place (inside their ho
 included), and outside a guest's turn for any player of the level; it ends as a bobber that goes by itself, and the
 rod takes no wear. False for another dimension or no such entity. Bundles need "hooks": @API:remove_projectiles@.
 
+`native_block_redstone(dimension, pos, old, new)` (a `GameLevel` hook) is asked when a button, lever or pressure plate
+is about to change its signal from `old` to `new`, 0 to 15, as Bukkit's `BlockRedstoneEvent`: a button pressed by a
+hand or an arrow or let go by its release tick, a lever pulled, a plate's weight checked. Change `new` and the
+component takes that signal (clamped to 0 to 15; an on-or-off component is on for anything above 0). One equal to
+`old` keeps it as it is, without a sound: a held button's release is scheduled again and asked again, a plate held on
+is checked again, a lever stays. A mod holds a power rod's button or plate on with no 1-tick gap. Not heard yet:
+redstone wire, torches, repeaters, comparators, observers, detector rails, tripwire hooks, daylight detectors and the
+other sources. Server-side. Bundles need "hooks": @API:block_redstone@.
+
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a
