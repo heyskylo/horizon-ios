@@ -222,6 +222,7 @@ impl Game<'_> {
         let _ = std::fs::write(self.datapack_settings_path(), json.to_string());
     }
     pub(super) fn sync_function_registries(&mut self) {
+        self.sync_enchantment_registries();
         let reg = &mut self.ui.registries;
         reg.functions = self.fns.store.functions.keys().cloned().collect();
         reg.function_tags = self.fns.store.function_tags.keys().cloned().collect();
