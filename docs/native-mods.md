@@ -2652,6 +2652,30 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   whenever that block is not its target, since a block that refuses the fluid passes it there; the fluid may still
   stay in the target.
 
+#### Server hooks for plugin ports: player bots
+
+Helpers for server mods whose bots are server players driven by the mod (a fake client that sends its own moves, as a
+PvP bot plugin's), in `crates/horizon-client/src/game/native_bots.rs`, on a server only. Nothing runs unless a mod
+calls them, and neither changes the player or the level. API @API:player_bots@.
+
+- **`native_simulate_player_move(uuid, NativePlayerInput) -> Option<NativeSimulatedMove>`** plays one tick of the
+  server player's own movement from a bot's keys, with the client movement code the server's movement prediction
+  replays a client tick with (`LocalPlayer.aiStep` and `Player.travel`): `forward` and `strafe` (-1..1; a value in
+  between is a stick's partial push), `jump`, `sneak` (slower, held at edges), `sprint` (only with a forward input),
+  `yaw` and `pitch` in degrees. Gravity, friction, block speed factors, stepping up, swimming and climbing follow. It
+  starts where the player is now, with `velocity` when given, else the server's copy: the server doesn't keep a bot's
+  momentum, so pass back the `velocity` of the last answer each tick. The answer is the `position`, `velocity`,
+  `on_ground`, `horizontal_collision` and `sprinting` after the tick; the player stays where they are until the mod
+  moves them (its bot's move packet, `native_teleport_player`). Entities don't block it (a boat, a shulker). None off
+  a server, for a player in another level than the one in place, a guest out of reach inside another player's hook
+  (the hub is taken out), dead, a spectator or riding, and for an input that is not a number.
+- **`native_collision_boxes(dimension, aabb) -> Vec<[f64; 6]>`** lists the block collision boxes that share volume
+  with `aabb` (`[min_x, min_y, min_z, max_x, max_y, max_z]`) in the level `dimension`, in world space, as
+  `Level.getBlockCollisions(null, aabb)` gives them under the empty collision context (a stair gives two boxes, a
+  fence its post): for a bot's own collision checks and pathfinding. Entities and the world border aren't in it.
+  Empty off a server, for another level than the one in place, a box whose corners are not numbers or out of order,
+  and a box over about a million blocks.
+
 ### Mobs
 
 API 37, `crates/horizon-client/src/game/native_mobs.rs`: helpers for server mods, for the level in place, on a server only (on a
