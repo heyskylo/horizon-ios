@@ -266,12 +266,7 @@ pub fn serverbound(
         (State::Play, sb::PUNCH) => {
             let mut w = Writer::new();
             w.varint(0);
-            let swing = if session.version.at_most(ServerVersion::V1_21_11) {
-                v1_21_11::SWING
-            } else {
-                V26_2_SWING
-            };
-            Ok(Some((swing, w.data)))
+            Ok(Some((swing_id(session.version), w.data)))
         }
         (State::Play, sb::SET_CREATIVE_MODE_SLOT | sb::CONTAINER_CLICK) => {
             let p = play::Serverbound::decode(id, payload)?;
@@ -287,6 +282,15 @@ pub fn serverbound(
 
 /// 26.2's serverbound `swing` (play), which 26.3 replaced with `punch`.
 const V26_2_SWING: i32 = 63;
+
+/// The id an older `version` numbers its serverbound `swing` (play) by.
+pub(super) fn swing_id(version: ServerVersion) -> i32 {
+    if version.at_most(ServerVersion::V1_21_11) {
+        v1_21_11::SWING
+    } else {
+        V26_2_SWING
+    }
+}
 
 /// A play packet decoded with the older version's ids renumbered as they are read.
 fn decode_play(ids: &'static Ids, id: i32, payload: &[u8]) -> Result<play::Clientbound> {

@@ -3,18 +3,25 @@
 //! reads it; what the server sends is renumbered to the client's, registry ids included, with a stand-in
 //! ([`ids::Substitutes`]) for a block, item, entity, particle or sound the client's version lacks.
 //!
-//! This layer maps ids only: a packet whose layout changed between the client's release and the pinned one
-//! passes in the pinned layout (the mirror of `translate`'s readers comes next).
+//! Ids are mapped for every packet. Of the serverbound packets whose layout changed, 26.2's
+//! `accept_teleportation`, `player_action` and `swing` are read as 26.3's (the mirror of `translate`'s
+//! writers); other packets whose layout changed pass in the pinned layout.
 //!
 //! The states change where vanilla's server-side `Connection` switches its codecs, after the handshake the
 //! server read itself: `login_acknowledged` and `login_finished` move each direction to configuration,
 //! `finish_configuration` to play, and `configuration_acknowledged` / `start_configuration` back.
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::{
+    collections::VecDeque,
+    sync::{
+        Mutex,
+        atomic::{AtomicU8, Ordering},
+    },
+};
 
 use super::{
     ServerVersion,
     ids::{self, Ids, Way, down_or_substitute},
-    translate::packet_ids_entity::FALLING_BLOCK,
+    translate::{packet_ids_entity::FALLING_BLOCK, swing_id},
 };
 use crate::{
     Result, State,
@@ -50,6 +57,58 @@ pub struct ClientSession {
     reading: AtomicU8,
     /// What the server sends.
     writing: AtomicU8,
+    /// Where the client last said or was told it is, for the place 26.3's `accept_teleportation` states and
+    /// 26.2's leaves out.
+    place: Mutex<Place>,
+    /// Teleports (`player_position`) sent and not yet accepted, oldest first.
+    teleports: Mutex<VecDeque<Teleport>>,
+}
+
+/// A position, yaw and pitch.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Place {
+    position: [f64; 3],
+    yaw: f32,
+    pitch: f32,
+}
+
+/// A `player_position` the server sent.
+#[derive(Clone, Copy, Debug)]
+struct Teleport {
+    id: i32,
+    to: Place,
+    relatives: i32,
+}
+
+impl Teleport {
+    /// Where a client at `from` is once it took this teleport, as `LocalPlayer` applies
+    /// `ClientboundPlayerPositionPacket`'s relative flags.
+    fn applied(&self, from: Place) -> Place {
+        use play::relative as rel;
+        let pick = |bit: i32, base: f64, v: f64| {
+            if self.relatives & bit != 0 {
+                base + v
+            } else {
+                v
+            }
+        };
+        let angle = |bit: i32, base: f32, v: f32| {
+            if self.relatives & bit != 0 {
+                base + v
+            } else {
+                v
+            }
+        };
+        Place {
+            position: [
+                pick(rel::X, from.position[0], self.to.position[0]),
+                pick(rel::Y, from.position[1], self.to.position[1]),
+                pick(rel::Z, from.position[2], self.to.position[2]),
+            ],
+            yaw: angle(rel::Y_ROT, from.yaw, self.to.yaw),
+            pitch: angle(rel::X_ROT, from.pitch, self.to.pitch).clamp(-90.0, 90.0),
+        }
+    }
 }
 
 impl ClientSession {
@@ -59,6 +118,8 @@ impl ClientSession {
             version,
             reading: AtomicU8::new(to_u8(State::Login)),
             writing: AtomicU8::new(to_u8(State::Login)),
+            place: Mutex::new(Place::default()),
+            teleports: Mutex::new(VecDeque::new()),
         }
     }
     pub fn reading(&self) -> State {
@@ -69,9 +130,14 @@ impl ClientSession {
     }
 
     /// A packet the client sent, with the id the pinned version knows it by. `None` drops it: the pinned
-    /// version has no such packet (26.2's `swing`).
+    /// version has no such packet.
     pub fn serverbound(&self, id: i32, payload: Vec<u8>) -> Result<Option<(i32, Vec<u8>)>> {
         let state = self.reading();
+        // 26.3's punch took over the older swing of the main hand; an off-hand swing has no packet there.
+        if state == State::Play && id == swing_id(self.version) {
+            let hand = Reader::new(&payload).varint()?;
+            return Ok((hand == 0).then_some((packet_ids::play::serverbound::PUNCH, Vec::new())));
+        }
         let Some(pinned) = self.version.serverbound_id_up(state, id) else {
             return Ok(None);
         };
@@ -85,10 +151,27 @@ impl ClientSession {
             _ => state,
         };
         self.reading.store(to_u8(next), Ordering::Release);
+        use packet_ids::play::serverbound as sb;
+        let payload = match (state, pinned) {
+            (State::Play, sb::ACCEPT_TELEPORTATION) => self.accept_teleport(&payload)?,
+            // 26.3 inserted CHANGE_DESTROY_DIRECTION at 1: 26.2's actions past 0 are one up.
+            (State::Play, sb::PLAYER_ACTION) => {
+                let mut r = Reader::new(&payload);
+                let action = r.varint()?;
+                let mut w = Writer::new();
+                w.varint(if action == 0 { 0 } else { action + 1 });
+                w.bytes(r.rest());
+                w.data
+            }
+            (State::Play, sb::MOVE_PLAYER_POS | sb::MOVE_PLAYER_POS_ROT | sb::MOVE_PLAYER_ROT) => {
+                self.moved(pinned, &payload)?;
+                payload
+            }
+            _ => payload,
+        };
         let Some(ids) = self.version.ids() else {
             return Ok(Some((pinned, payload)));
         };
-        use packet_ids::play::serverbound as sb;
         let payload = match (state, pinned) {
             // The stacks a client names carry its item and component ids.
             (State::Play, sb::SET_CREATIVE_MODE_SLOT | sb::CONTAINER_CLICK) => {
@@ -120,6 +203,9 @@ impl ClientSession {
             _ => state,
         };
         self.writing.store(to_u8(next), Ordering::Release);
+        if (state, id) == (State::Play, packet_ids::play::clientbound::PLAYER_POSITION) {
+            self.teleporting(payload)?;
+        }
         let Some(mapped) = self.version.clientbound_id_down(state, id) else {
             return Ok(None);
         };
@@ -140,6 +226,63 @@ impl ClientSession {
         w.varint(mapped);
         w.bytes(rewritten.as_deref().unwrap_or(payload));
         Ok(Some(w.data))
+    }
+}
+
+impl ClientSession {
+    /// A `player_position` on its way: the client accepts it later by its id alone.
+    fn teleporting(&self, payload: &[u8]) -> Result<()> {
+        let mut r = Reader::new(payload);
+        let id = r.varint()?;
+        let position = [r.f64()?, r.f64()?, r.f64()?];
+        let _delta = [r.f64()?, r.f64()?, r.f64()?];
+        let to = Place {
+            position,
+            yaw: r.f32()?,
+            pitch: r.f32()?,
+        };
+        let relatives = r.i32()?;
+        self.teleports
+            .lock()
+            .unwrap()
+            .push_back(Teleport { id, to, relatives });
+        Ok(())
+    }
+
+    /// A move the client reports (`move_player_pos`, `_pos_rot`, `_rot`): where it now is.
+    fn moved(&self, pinned: i32, payload: &[u8]) -> Result<()> {
+        use packet_ids::play::serverbound as sb;
+        let mut r = Reader::new(payload);
+        let mut place = self.place.lock().unwrap();
+        if pinned != sb::MOVE_PLAYER_ROT {
+            place.position = [r.f64()?, r.f64()?, r.f64()?];
+        }
+        if pinned != sb::MOVE_PLAYER_POS {
+            place.yaw = r.f32()?;
+            place.pitch = r.f32()?;
+        }
+        Ok(())
+    }
+
+    /// 26.2's `accept_teleportation` (the teleport's id) as 26.3's, which also states where the client
+    /// now is: the teleport it accepts, and any sent before it, applied in order to where it was.
+    fn accept_teleport(&self, payload: &[u8]) -> Result<Vec<u8>> {
+        let id = Reader::new(payload).varint()?;
+        let mut place = self.place.lock().unwrap();
+        let mut teleports = self.teleports.lock().unwrap();
+        if let Some(i) = teleports.iter().position(|t| t.id == id) {
+            for t in teleports.drain(..=i) {
+                *place = t.applied(*place);
+            }
+        }
+        let mut w = Writer::new();
+        w.varint(id);
+        for v in place.position {
+            w.f64(v);
+        }
+        w.f32(place.yaw);
+        w.f32(place.pitch);
+        Ok(w.data)
     }
 }
 
@@ -386,12 +529,97 @@ mod tests {
         // add_transient_block (37) is new in 26.3: not sent.
         let transient = packet_ids::play::clientbound::ADD_TRANSIENT_BLOCK;
         assert_eq!(s.clientbound(&body(transient, &[0; 9])).unwrap(), None);
-        // 26.2's resource_pack (49) is 26.3's 50; its swing (63) has no pinned packet.
+        // 26.2's resource_pack (49) is 26.3's 50.
         assert_eq!(
             s.serverbound(49, vec![7]).unwrap(),
             Some((packet_ids::play::serverbound::RESOURCE_PACK, vec![7]))
         );
-        assert_eq!(s.serverbound(63, vec![0]).unwrap(), None);
+    }
+
+    #[test]
+    fn a_26_2_main_hand_swing_is_a_punch_and_an_off_hand_one_nothing() {
+        let s = in_play();
+        // swing: 63 in 26.2, its hand a VarInt (0 main, 1 off); 26.3's punch has no payload.
+        assert_eq!(
+            s.serverbound(63, vec![0]).unwrap(),
+            Some((packet_ids::play::serverbound::PUNCH, Vec::new()))
+        );
+        assert_eq!(s.serverbound(63, vec![1]).unwrap(), None);
+    }
+
+    #[test]
+    fn a_26_2_digging_action_past_0_is_one_up() {
+        let s = in_play();
+        let action = |n: i32| {
+            let mut w = Writer::new();
+            w.varint(n);
+            w.i64(crate::buf::pack_block_pos([1, 2, 3]));
+            w.u8(1);
+            w.varint(9);
+            // player_action: 41 in both.
+            let (id, payload) = s.serverbound(41, w.data).unwrap().unwrap();
+            assert_eq!(id, packet_ids::play::serverbound::PLAYER_ACTION);
+            match play::Serverbound::decode(id, &payload).unwrap() {
+                play::Serverbound::PlayerAction(p) => {
+                    assert_eq!((p.pos, p.direction, p.sequence), ([1, 2, 3], 1, 9));
+                    p.action
+                }
+                other => panic!("{other:?}"),
+            }
+        };
+        assert_eq!(action(0), 0); // start destroying
+        assert_eq!(action(1), 2); // abort: 1 in 26.2, 2 in 26.3
+        assert_eq!(action(2), 3); // stop destroying
+        assert_eq!(action(6), 7); // swap held items
+    }
+
+    #[test]
+    fn a_26_2_teleport_confirmation_states_where_the_teleport_put_the_client() {
+        use play::relative as rel;
+        let s = in_play();
+        let teleport = |id: i32, position: [f64; 3], yaw: f32, relatives: i32| {
+            let p = play::Clientbound::PlayerPosition(play::PlayerPosition {
+                teleport: id,
+                position,
+                delta: [0.0; 3],
+                yaw,
+                pitch: 30.0,
+                relatives,
+            });
+            s.clientbound(&p.encode()).unwrap().unwrap();
+        };
+        let accept = |id: i32| {
+            let mut w = Writer::new();
+            w.varint(id);
+            // accept_teleportation: 0 in both.
+            let (pinned, payload) = s.serverbound(0, w.data).unwrap().unwrap();
+            assert_eq!(pinned, packet_ids::play::serverbound::ACCEPT_TELEPORTATION);
+            match play::Serverbound::decode(pinned, &payload).unwrap() {
+                play::Serverbound::AcceptTeleportation(p) => {
+                    assert_eq!(p.id, id);
+                    ([p.x, p.y, p.z], p.yaw, p.pitch)
+                }
+                other => panic!("{other:?}"),
+            }
+        };
+        teleport(1, [8.5, -60.0, 8.5], 90.0, 0);
+        assert_eq!(accept(1), ([8.5, -60.0, 8.5], 90.0, 30.0));
+        // The client walks (move_player_pos: 30 in both), then is moved by (1, 2, 3) and turned by 10.
+        let mut w = Writer::new();
+        for v in [10.0, -60.0, 10.0] {
+            w.f64(v);
+        }
+        w.u8(1);
+        s.serverbound(30, w.data).unwrap().unwrap();
+        teleport(
+            2,
+            [1.0, 2.0, 3.0],
+            10.0,
+            rel::X | rel::Y | rel::Z | rel::Y_ROT,
+        );
+        assert_eq!(accept(2), ([11.0, -58.0, 13.0], 100.0, 30.0));
+        // An unknown id: where the client last was.
+        assert_eq!(accept(7), ([11.0, -58.0, 13.0], 100.0, 30.0));
     }
 
     #[test]
