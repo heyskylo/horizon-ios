@@ -18,7 +18,9 @@ use horizon_core::{
     geometry::{Aabb, Axis, Vec3, VoxelShape},
     position::BlockPos,
 };
-use horizon_world::{collision_context::CollisionContext, registry::BlockStateId};
+use horizon_world::{
+    collision_context::CollisionContext, level::data::state_flags, registry::BlockStateId,
+};
 
 /// `ServerPlayer.RespawnConfig`: a respawn point other than the world spawn
 /// that the game resolves through its block (a respawn anchor).
@@ -410,10 +412,11 @@ impl Game<'_> {
     fn possible_to_respawn_in(&self, state: BlockStateId) -> bool {
         let f = self.res.facts().get(state);
         let name = &*f.name;
+        let liquid = self.res.behaviours().facts(state).flags & state_flags::LIQUID != 0;
         name.ends_with("_banner")
             || f.sign_form().is_some()
             || name.ends_with("_pressure_plate")
-            || !(f.legacy_solid || matches!(name, "minecraft:water" | "minecraft:lava"))
+            || !(f.legacy_solid || liquid)
     }
     /// `RespawnAnchorBlock.findStandUpPosition`: a safe spot around the
     /// anchor, else any spot.
