@@ -2382,6 +2382,8 @@ pub struct Seen {
     pub player_rep: i32,
     /// `isPushable` and pushed by others (`Entity.push(Entity)` moves it).
     pub pushable: bool,
+    /// A sleeping villager, wandering trader or fox vetoes its own `push(Entity)`.
+    pub sleeping: bool,
     /// A cold strider (`Strider.isSuffocating`).
     pub cold_strider: bool,
     /// `MobCategory` (`monster`, `creature`, ...).
@@ -2588,6 +2590,8 @@ impl Mob {
                 _ => 0,
             },
             pushable: m.pushable(),
+            sleeping: villager::sleeping(m)
+                || (m.species() == Species::Fox && fox::flag(m, fox::SLEEPING)),
             cold_strider: strider::suffocating(m),
             category: m.category(),
             potential_job: villager_brain::potential_job_site(m),
