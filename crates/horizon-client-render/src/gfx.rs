@@ -287,12 +287,34 @@ fn world_pass_after_culling<'e>(
     view: &wgpu::TextureView,
     depth: &wgpu::TextureView,
     keep_depth: bool,
-    timing: Option<&mut pack_timing::PassTiming>,
+    mut timing: Option<&mut pack_timing::PassTiming>,
     name: &str,
+    pixels: u64,
+) -> pack_timing::CountedPass<'e> {
+    let pass = after_culling_pass(
+        encoder,
+        view,
+        depth,
+        keep_depth,
+        timing.as_deref_mut().and_then(|t| t.writes(name)),
+    );
+    pack_timing::counted(timing, pass, pixels, "before translucent")
+}
+/// The pixels of a depth attachment, for `fragments_per_pixel`.
+fn pixel_count(depth: &wgpu::TextureView) -> u64 {
+    let texture = depth.texture();
+    u64::from(texture.width()) * u64::from(texture.height())
+}
+fn after_culling_pass<'e>(
+    encoder: &'e mut wgpu::CommandEncoder,
+    view: &wgpu::TextureView,
+    depth: &wgpu::TextureView,
+    keep_depth: bool,
+    timestamp_writes: Option<wgpu::RenderPassTimestampWrites<'_>>,
 ) -> wgpu::RenderPass<'e> {
     encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("Horizon world, after culling"),
-        timestamp_writes: timing.and_then(|t| t.writes(name)),
+        timestamp_writes,
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
             view,
             resolve_target: None,
@@ -9880,7 +9902,8 @@ impl Renderer {
                     store: wgpu::StoreOp::Store,
                 },
             })];
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            let world_pixels = pixel_count(world_depth);
+            let first_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Horizon world"),
                 timestamp_writes: self.own_timing.as_mut().and_then(|t| t.writes("World")),
                 color_attachments: &attachments,
@@ -9900,6 +9923,12 @@ impl Renderer {
                 }),
                 ..Default::default()
             });
+            let mut pass = pack_timing::counted(
+                self.own_timing.as_mut(),
+                first_pass,
+                world_pixels,
+                "before translucent",
+            );
             pass.set_bind_group(0, &self.group, &[]);
             pack_frame(&mut pass);
             if frame.title || (sky_visible && (frame.skybox || frame.end_sky)) {
@@ -9978,16 +10007,15 @@ impl Renderer {
                         .forget_lifetime();
                     pass.set_bind_group(0, &self.group, &[]);
                     pack_frame(&mut pass);
-                    pass
+                    pack_timing::CountedPass::plain(pass)
                 };
             // The occlusion test's pipeline draws into the world's colour alone.
             let plain_pass = |encoder: &mut wgpu::CommandEncoder| {
-                let mut pass =
-                    world_pass_after_culling(encoder, world_view, world_depth, true, None, "")
-                        .forget_lifetime();
+                let mut pass = after_culling_pass(encoder, world_view, world_depth, true, None)
+                    .forget_lifetime();
                 pass.set_bind_group(0, &self.group, &[]);
                 pack_frame(&mut pass);
-                pass
+                pack_timing::CountedPass::plain(pass)
             };
             if let Some(surface) = &surface {
                 drop(pass);
@@ -10041,6 +10069,7 @@ impl Renderer {
                         keep_depth,
                         self.own_timing.as_mut(),
                         "World after visibility buffer",
+                        world_pixels,
                     );
                     pass.set_bind_group(0, &self.group, &[]);
                     pack_frame(&mut pass);
@@ -10082,6 +10111,7 @@ impl Renderer {
                                 drop(pass);
                                 pass = plain_pass(&mut encoder);
                             }
+                            pass.split(self.own_timing.as_mut(), "occlusion boxes");
                             cull.test(&mut pass);
                             drop(pass);
                             cull.test_pass(&mut encoder, self.own_timing.as_mut());
@@ -10095,6 +10125,7 @@ impl Renderer {
                                     keep_depth,
                                     self.own_timing.as_mut(),
                                     "World after culling",
+                                    world_pixels,
                                 ),
                             };
                             pass.set_bind_group(0, &self.group, &[]);
@@ -10157,6 +10188,7 @@ impl Renderer {
                                 drop(pass);
                                 pass = plain_pass(&mut encoder);
                             }
+                            pass.split(self.own_timing.as_mut(), "occlusion boxes");
                             cull.test(&mut pass);
                             drop(pass);
                             cull.test_pass(&mut encoder, self.own_timing.as_mut());
@@ -10169,6 +10201,7 @@ impl Renderer {
                                     keep_depth,
                                     self.own_timing.as_mut(),
                                     "World after culling",
+                                    world_pixels,
                                 ),
                             };
                             pass.set_bind_group(0, &self.group, &[]);
@@ -10225,6 +10258,7 @@ impl Renderer {
                                     drop(pass);
                                     pass = plain_pass(&mut encoder);
                                 }
+                                pass.split(self.own_timing.as_mut(), "occlusion boxes");
                                 gpu.test(&mut pass);
                                 drop(pass);
                                 gpu.compact(&mut encoder, self.own_timing.as_mut());
@@ -10237,6 +10271,7 @@ impl Renderer {
                                         keep_depth,
                                         self.own_timing.as_mut(),
                                         "World after culling",
+                                        world_pixels,
                                     ),
                                 };
                                 pass.set_bind_group(0, &self.group, &[]);
@@ -10519,6 +10554,7 @@ impl Renderer {
                     keep_depth,
                     self.own_timing.as_mut(),
                     "World after copy",
+                    world_pixels,
                 );
                 pass.set_bind_group(0, &self.group, &[]);
                 pack_frame(&mut pass);
@@ -10690,6 +10726,7 @@ impl Renderer {
                         true,
                         self.own_timing.as_mut(),
                         "World after OIT",
+                        world_pixels,
                     );
                     pass.set_bind_group(0, &self.group, &[]);
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
@@ -10725,6 +10762,7 @@ impl Renderer {
                     self.mark_translucent_terrain(&mut pass, flat, solid_draws, translucent_draws);
                 }
                 Some(flat) => {
+                    pass.split(self.own_timing.as_mut(), "translucent terrain");
                     pass.set_pipeline(pack_flat.map_or(&flat.translucent, |p| &p.1));
                     flat.draw(
                         &mut pass,
@@ -10739,8 +10777,10 @@ impl Renderer {
                         solid_draws,
                         translucent_draws,
                     );
+                    pass.split(self.own_timing.as_mut(), "after translucent");
                 }
                 None => {
+                    pass.split(self.own_timing.as_mut(), "translucent terrain");
                     pass.set_pipeline(translucent_pipeline);
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                     pass.set_vertex_buffer(1, self.instances.slice(..));
@@ -10752,6 +10792,7 @@ impl Renderer {
                         translucent_draws,
                     );
                     self.mark_translucent_terrain(&mut pass, None, solid_draws, translucent_draws);
+                    pass.split(self.own_timing.as_mut(), "after translucent");
                 }
             }
             // LevelRenderer.executeTranslucentAfterTerrain: vanilla's

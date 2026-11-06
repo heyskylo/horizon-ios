@@ -18,6 +18,15 @@ const REPORT: usize = 30;
 const CAPACITY: u32 = 96;
 const TIMESTAMP_BYTES: u64 = CAPACITY as u64 * 16;
 const _: () = assert!(TIMESTAMP_BYTES.is_multiple_of(wgpu::QUERY_RESOLVE_BUFFER_ALIGNMENT));
+/// Pipeline statistics queries per frame at most: a counted pass or a segment of one takes one.
+const STATS_CAPACITY: u32 = 32;
+const STAT_FLAGS: wgpu::PipelineStatisticsTypes =
+    wgpu::PipelineStatisticsTypes::VERTEX_SHADER_INVOCATIONS
+        .union(wgpu::PipelineStatisticsTypes::CLIPPER_INVOCATIONS)
+        .union(wgpu::PipelineStatisticsTypes::CLIPPER_PRIMITIVES_OUT)
+        .union(wgpu::PipelineStatisticsTypes::FRAGMENT_SHADER_INVOCATIONS);
+const STAT_BYTES: u64 = 32;
+const BUFFER_BYTES: u64 = TIMESTAMP_BYTES + STATS_CAPACITY as u64 * STAT_BYTES;
 /// Timed frames each pass's median is taken over.
 const WINDOW: usize = 15;
 
@@ -42,6 +51,40 @@ pub struct DetailSupport {
 enum FrameKind {
     Plain,
     Parts,
+    /// Counts instead of timing: its times are thrown away.
+    Counters,
+}
+
+/// What a counted pass or a segment of one shaded and sent through the pipeline.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Counters {
+    pub vertex_shader_invocations: u64,
+    pub clipper_invocations: u64,
+    pub clipper_primitives_out: u64,
+    /// Pixels on NVIDIA, 2x2 quads on RADV.
+    pub fragment_shader_invocations: u64,
+}
+
+/// A counted pass: its totals, the pixels of its depth attachment, and its segments when it has two or more.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PassCounters {
+    pub total: Counters,
+    pub pixels: u64,
+    pub parts: Vec<(String, Counters)>,
+}
+
+/// One statistics query: a stretch of the pass `owner`.
+struct Segment {
+    owner: usize,
+    part: String,
+    pixels: u64,
+}
+
+struct CounterSamples {
+    pass: String,
+    pixels: u64,
+    total: VecDeque<Counters>,
+    parts: Vec<(String, VecDeque<Counters>)>,
 }
 
 /// A timed span: a pass, or a part of one.
@@ -84,6 +127,12 @@ pub struct PassTiming {
     counters: bool,
     want_detail: bool,
     kind: FrameKind,
+    /// Created by the first `set_detail(true)` on a device with pipeline statistics.
+    stats: Option<wgpu::QuerySet>,
+    /// The statistics queries of the timed frame, in query order.
+    segments: Vec<Segment>,
+    /// Each counted pass's last `WINDOW` counters frames.
+    counter_samples: Vec<CounterSamples>,
     /// Each pass's last `WINDOW` times, in milliseconds.
     samples: Vec<(String, VecDeque<f32>)>,
     /// Each part's last `WINDOW` times, by (pass, part).
@@ -106,7 +155,7 @@ impl PassTiming {
         if !has.contains(wgpu::Features::TIMESTAMP_QUERY) {
             return None;
         }
-        let size = TIMESTAMP_BYTES;
+        let size = BUFFER_BYTES;
         let buffer = |label, usage| {
             device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(label),
@@ -143,6 +192,9 @@ impl PassTiming {
             counters: has.contains(wgpu::Features::PIPELINE_STATISTICS_QUERY),
             want_detail: false,
             kind: FrameKind::Plain,
+            stats: None,
+            segments: Vec::new(),
+            counter_samples: Vec::new(),
             samples: Vec::new(),
             part_samples: Vec::new(),
             log: Self::logging(),
@@ -184,6 +236,7 @@ impl PassTiming {
     pub fn set_detail(&mut self, on: bool) {
         if !on {
             self.part_samples.clear();
+            self.counter_samples.clear();
         }
         self.want_detail = on;
     }
@@ -191,6 +244,11 @@ impl PassTiming {
     /// Whether the frame being recorded records parts.
     pub fn parts_frame(&self) -> bool {
         self.recording() && self.kind == FrameKind::Parts
+    }
+
+    /// Whether the frame being recorded counts.
+    pub fn counters_frame(&self) -> bool {
+        self.recording() && self.kind == FrameKind::Counters
     }
 
     /// Whether `HORIZON_GPU_PASS_DETAIL` asks for dispatch parts with pass timing.
@@ -212,9 +270,14 @@ impl PassTiming {
             // A timed frame that was never submitted: time this one instead.
             Stage::Recording => self.stage = Stage::Idle,
             Stage::Running(done) if done.load(Ordering::Acquire) => {
-                let bytes = u64::from(self.stamps_used) * 16;
+                let mut bytes = u64::from(self.stamps_used) * 16;
                 let mut encoder = device.create_command_encoder(&Default::default());
                 encoder.resolve_query_set(&self.queries, 0..self.stamps_used * 2, &self.resolve, 0);
+                let stats_used = self.segments.len() as u32;
+                if let Some(stats) = self.stats.as_ref().filter(|_| stats_used > 0) {
+                    encoder.resolve_query_set(stats, 0..stats_used, &self.resolve, TIMESTAMP_BYTES);
+                    bytes = TIMESTAMP_BYTES + u64::from(stats_used) * STAT_BYTES;
+                }
                 encoder.copy_buffer_to_buffer(&self.resolve, 0, &self.read, 0, bytes);
                 queue.submit([encoder.finish()]);
                 let mapped = Arc::new(AtomicBool::new(false));
@@ -233,16 +296,24 @@ impl PassTiming {
             }
             _ => {}
         }
+        if self.want_detail && self.counters && self.stats.is_none() {
+            self.stats = Some(device.create_query_set(&wgpu::QuerySetDescriptor {
+                label: Some("Pass pipeline statistics"),
+                ty: wgpu::QueryType::PipelineStatistics(STAT_FLAGS),
+                count: STATS_CAPACITY,
+            }));
+        }
         if matches!(self.stage, Stage::Idle)
             && self.timed_at.is_none_or(|at| at.elapsed() >= self.gap)
         {
             self.entries.clear();
+            self.segments.clear();
             self.stamps_used = 0;
             self.last_pass = None;
-            self.kind = if self.want_detail {
-                FrameKind::Parts
-            } else {
-                FrameKind::Plain
+            self.kind = match (self.want_detail, self.kind, self.stats.is_some()) {
+                (false, ..) => FrameKind::Plain,
+                (true, FrameKind::Parts, true) => FrameKind::Counters,
+                (true, ..) => FrameKind::Parts,
             };
             self.stage = Stage::Recording;
             self.timed_at = Some(Instant::now());
@@ -294,6 +365,19 @@ impl PassTiming {
             stamp,
         });
         Some(self.entries.len() - 1)
+    }
+
+    /// The statistics query index of a new segment of the pass `owner`; `None` when out of queries.
+    fn open_segment(&mut self, owner: usize, part: &str, pixels: u64) -> Option<u32> {
+        if self.segments.len() as u32 >= STATS_CAPACITY {
+            return None;
+        }
+        self.segments.push(Segment {
+            owner,
+            part: part.to_owned(),
+            pixels,
+        });
+        Some(self.segments.len() as u32 - 1)
     }
 
     /// Starts an encoder-level span `name` (a parts frame, on a device that can); give the result to `encoder_end`.
@@ -385,6 +469,12 @@ impl PassTiming {
             .collect();
         drop(data);
         self.read.unmap();
+        if self.kind == FrameKind::Counters {
+            if self.want_detail {
+                self.collect_counters(&stamps);
+            }
+            return;
+        }
         let layout: Vec<_> = self.entries.iter().map(|e| (e.stamp, e.parent)).collect();
         let times = entry_times(&stamps, &layout, self.period_ns);
         for (entry, ms) in self.entries.iter().zip(times) {
@@ -440,6 +530,82 @@ impl PassTiming {
         }
     }
 
+    /// Files the counters of the counters frame just read (`words` are the whole readback).
+    fn collect_counters(&mut self, words: &[u64]) {
+        let first = (TIMESTAMP_BYTES / 8) as usize;
+        let mut seen: Vec<(usize, Counters, Vec<(String, Counters)>, u64)> = Vec::new();
+        for (i, seg) in self.segments.iter().enumerate() {
+            let Some(w) = words.get(first + 4 * i..first + 4 * i + 4) else {
+                continue;
+            };
+            let c = Counters {
+                vertex_shader_invocations: w[0],
+                clipper_invocations: w[1],
+                clipper_primitives_out: w[2],
+                fragment_shader_invocations: w[3],
+            };
+            match seen.iter_mut().find(|s| s.0 == seg.owner) {
+                Some(s) => {
+                    s.1 = s.1.plus(c);
+                    s.2.push((seg.part.clone(), c));
+                }
+                None => seen.push((seg.owner, c, vec![(seg.part.clone(), c)], seg.pixels)),
+            }
+        }
+        for (owner, total, parts, pixels) in seen {
+            let name = &self.entries[owner].name;
+            let i = match self.counter_samples.iter().position(|s| s.pass == *name) {
+                Some(i) => i,
+                None => {
+                    self.counter_samples.push(CounterSamples {
+                        pass: name.clone(),
+                        pixels,
+                        total: VecDeque::new(),
+                        parts: Vec::new(),
+                    });
+                    self.counter_samples.len() - 1
+                }
+            };
+            let samples = &mut self.counter_samples[i];
+            samples.pixels = pixels;
+            window_push(&mut samples.total, total);
+            for (part, c) in parts {
+                let j = match samples.parts.iter().position(|p| p.0 == part) {
+                    Some(j) => j,
+                    None => {
+                        samples.parts.push((part, VecDeque::new()));
+                        samples.parts.len() - 1
+                    }
+                };
+                window_push(&mut samples.parts[j].1, c);
+            }
+        }
+    }
+
+    /// Each counted pass's counters (medians over its last counters frames), in first-run order.
+    pub fn counter_medians(&self) -> Vec<(String, PassCounters)> {
+        self.counter_samples
+            .iter()
+            .filter(|s| !s.total.is_empty())
+            .map(|s| {
+                let parts = if s.parts.len() >= 2 {
+                    s.parts
+                        .iter()
+                        .map(|(n, v)| (n.clone(), median_counters(v)))
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                let counted = PassCounters {
+                    total: median_counters(&s.total),
+                    pixels: s.pixels,
+                    parts,
+                };
+                (s.pass.clone(), counted)
+            })
+            .collect()
+    }
+
     /// Each top-level pass's median ms over its last timed frames, in first-run order.
     pub fn medians(&self) -> Vec<(String, f32)> {
         self.samples
@@ -463,11 +629,37 @@ impl PassTiming {
     }
 }
 
-fn window_push(window: &mut VecDeque<f32>, ms: f32) {
+fn window_push<T>(window: &mut VecDeque<T>, value: T) {
     if window.len() == WINDOW {
         window.pop_front();
     }
-    window.push_back(ms);
+    window.push_back(value);
+}
+
+impl Counters {
+    fn plus(self, o: Self) -> Self {
+        Self {
+            vertex_shader_invocations: self.vertex_shader_invocations + o.vertex_shader_invocations,
+            clipper_invocations: self.clipper_invocations + o.clipper_invocations,
+            clipper_primitives_out: self.clipper_primitives_out + o.clipper_primitives_out,
+            fragment_shader_invocations: self.fragment_shader_invocations
+                + o.fragment_shader_invocations,
+        }
+    }
+}
+
+fn median_counters(window: &VecDeque<Counters>) -> Counters {
+    let field = |f: fn(&Counters) -> u64| {
+        let mut v: Vec<u64> = window.iter().map(f).collect();
+        v.sort_unstable();
+        v[v.len() / 2]
+    };
+    Counters {
+        vertex_shader_invocations: field(|c| c.vertex_shader_invocations),
+        clipper_invocations: field(|c| c.clipper_invocations),
+        clipper_primitives_out: field(|c| c.clipper_primitives_out),
+        fragment_shader_invocations: field(|c| c.fragment_shader_invocations),
+    }
 }
 
 fn median(window: &VecDeque<f32>) -> f32 {
@@ -532,6 +724,79 @@ pub fn compute_parts(
             }
         }
     }
+}
+
+/// A render pass whose open statistics query ends when it drops, so none is left open at the pass's end.
+pub struct CountedPass<'e> {
+    pass: wgpu::RenderPass<'e>,
+    counting: bool,
+    owner: Option<usize>,
+    pixels: u64,
+}
+
+impl<'e> std::ops::Deref for CountedPass<'e> {
+    type Target = wgpu::RenderPass<'e>;
+    fn deref(&self) -> &Self::Target {
+        &self.pass
+    }
+}
+
+impl std::ops::DerefMut for CountedPass<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.pass
+    }
+}
+
+impl Drop for CountedPass<'_> {
+    fn drop(&mut self) {
+        if self.counting {
+            self.pass.end_pipeline_statistics_query();
+        }
+    }
+}
+
+impl<'e> CountedPass<'e> {
+    /// A pass that never counts.
+    pub fn plain(pass: wgpu::RenderPass<'e>) -> Self {
+        Self {
+            pass,
+            counting: false,
+            owner: None,
+            pixels: 0,
+        }
+    }
+
+    /// Ends the open query, if any, and counts the rest of the pass as the segment `part`.
+    pub fn split(&mut self, timing: Option<&mut PassTiming>, part: &str) {
+        if self.counting {
+            self.pass.end_pipeline_statistics_query();
+            self.counting = false;
+        }
+        if let (Some(t), Some(owner)) = (timing, self.owner)
+            && t.counters_frame()
+            && let Some(i) = t.open_segment(owner, part, self.pixels)
+            && let Some(stats) = &t.stats
+        {
+            self.pass.begin_pipeline_statistics_query(stats, i);
+            self.counting = true;
+        }
+    }
+}
+
+/// Counts `pass` as the segment `first` of the pass the timer's last `writes` made, in a counters frame.
+pub fn counted<'e>(
+    timing: Option<&mut PassTiming>,
+    pass: wgpu::RenderPass<'e>,
+    pixels: u64,
+    first: &str,
+) -> CountedPass<'e> {
+    let mut counted = CountedPass::plain(pass);
+    counted.pixels = pixels;
+    if let Some(t) = timing {
+        counted.owner = t.last_pass.take();
+        counted.split(Some(t), first);
+    }
+    counted
 }
 
 /// Pass `i`'s beginning and end timestamps.
@@ -602,7 +867,7 @@ fn entry_times(
 
 #[cfg(test)]
 mod tests {
-    use super::{PartsMode, PassTiming, compute_parts, entry_times};
+    use super::{PartsMode, PassTiming, compute_parts, counted, entry_times};
 
     fn interleave(pairs: &[(f32, f32)]) -> Vec<u64> {
         let ns = |ms: f32| (ms * 1e6) as u64;
@@ -786,5 +1051,253 @@ mod tests {
             assert!(parent >= sum * 0.95, "{mode:?} {parent} < {parts:?}");
             eprintln!("{mode:?}: parent {parent:.4} ms, parts {parts:?}");
         }
+    }
+
+    const QUADS: &str = "
+@vertex fn vs(@builtin(vertex_index) v: u32, @builtin(instance_index) k: u32) -> @builtin(position) vec4<f32> {
+    var xy = array<vec2<f32>, 6>(vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(1.0, 1.0), vec2(-1.0, -1.0), vec2(1.0, 1.0), vec2(-1.0, 1.0));
+    return vec4<f32>(xy[v], f32(k + 1u) / 9.0, 1.0);
+}
+@early_depth_test(force)
+@fragment fn fs() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }";
+    const QUAD_COUNT: u32 = 8;
+    const SIDE: u32 = 64;
+
+    fn stats_device() -> Option<(wgpu::Device, wgpu::Queue)> {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter = pollster::block_on(instance.request_adapter(&Default::default())).ok()?;
+        let needed = wgpu::Features::TIMESTAMP_QUERY
+            | wgpu::Features::PIPELINE_STATISTICS_QUERY
+            | wgpu::Features::SHADER_EARLY_DEPTH_TEST;
+        if adapter.get_info().backend != wgpu::Backend::Vulkan
+            || !adapter.features().contains(needed)
+        {
+            return None;
+        }
+        eprintln!("pass counters on {}", adapter.get_info().name);
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            required_features: needed,
+            ..Default::default()
+        }))
+        .ok()
+    }
+
+    struct Scene {
+        color: wgpu::TextureView,
+        depth: wgpu::TextureView,
+        pipeline: wgpu::RenderPipeline,
+    }
+
+    impl Scene {
+        fn new(device: &wgpu::Device) -> Self {
+            let target = |format, label| {
+                device
+                    .create_texture(&wgpu::TextureDescriptor {
+                        label: Some(label),
+                        size: wgpu::Extent3d {
+                            width: SIDE,
+                            height: SIDE,
+                            depth_or_array_layers: 1,
+                        },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format,
+                        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                        view_formats: &[],
+                    })
+                    .create_view(&Default::default())
+            };
+            let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: None,
+                source: wgpu::ShaderSource::Wgsl(QUADS.into()),
+            });
+            let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: None,
+                layout: None,
+                vertex: wgpu::VertexState {
+                    module: &module,
+                    entry_point: Some("vs"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: Default::default(),
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::Less),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &module,
+                    entry_point: Some("fs"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::TextureFormat::Rgba8Unorm.into())],
+                }),
+                multiview_mask: None,
+                cache: None,
+            });
+            Self {
+                color: target(wgpu::TextureFormat::Rgba8Unorm, "color"),
+                depth: target(wgpu::TextureFormat::Depth32Float, "depth"),
+                pipeline,
+            }
+        }
+
+        fn pass<'e>(
+            &self,
+            encoder: &'e mut wgpu::CommandEncoder,
+            timestamp_writes: Option<wgpu::RenderPassTimestampWrites<'_>>,
+        ) -> wgpu::RenderPass<'e> {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                timestamp_writes,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.color,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Discard,
+                    }),
+                    stencil_ops: None,
+                }),
+                ..Default::default()
+            });
+            pass.set_pipeline(&self.pipeline);
+            pass
+        }
+    }
+
+    fn near_first(pass: &mut wgpu::RenderPass<'_>) {
+        for k in 0..QUAD_COUNT {
+            pass.draw(0..6, k..k + 1);
+        }
+    }
+
+    fn far_first(pass: &mut wgpu::RenderPass<'_>) {
+        for k in (0..QUAD_COUNT).rev() {
+            pass.draw(0..6, k..k + 1);
+        }
+    }
+
+    /// Starts the next frame of the wanted kind (frames alternate), and returns it recording.
+    fn frame_of_kind(
+        timing: &mut PassTiming,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        counts: bool,
+    ) {
+        for _ in 0..6 {
+            timing.begin(device, queue);
+            if timing.recording() && (timing.counters_frame() == counts) {
+                return;
+            }
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        }
+        panic!("no frame of the wanted kind");
+    }
+
+    fn finish(
+        timing: &mut PassTiming,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: wgpu::CommandEncoder,
+    ) {
+        queue.submit([encoder.finish()]);
+        timing.submitted(queue);
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+    }
+
+    #[test]
+    fn counters_see_the_overdraw_that_draw_order_makes() {
+        let Some((device, queue)) = stats_device() else {
+            eprintln!("no GPU with pipeline statistics: skipped");
+            return;
+        };
+        device.on_uncaptured_error(std::sync::Arc::new(|e| panic!("{e}")));
+        let scene = Scene::new(&device);
+        let mut timing = PassTiming::new(&device, &queue).unwrap();
+        timing.set_detail(true);
+        let pixels = u64::from(SIDE * SIDE);
+
+        // Out of its frame, a counted pass counts nothing and still ends cleanly.
+        frame_of_kind(&mut timing, &device, &queue, false);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        let pass = scene.pass(&mut encoder, timing.writes("parts frame"));
+        let mut pass = counted(Some(&mut timing), pass, pixels, "all");
+        assert!(!pass.counting);
+        near_first(&mut pass);
+        drop(pass);
+        finish(&mut timing, &device, &queue, encoder);
+
+        frame_of_kind(&mut timing, &device, &queue, true);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        let pass = scene.pass(&mut encoder, timing.writes("near first"));
+        let mut pass = counted(Some(&mut timing), pass, pixels, "all");
+        assert!(pass.counting);
+        near_first(&mut pass);
+        drop(pass);
+        let pass = scene.pass(&mut encoder, timing.writes("far first"));
+        let mut pass = counted(Some(&mut timing), pass, pixels, "all");
+        far_first(&mut pass);
+        drop(pass);
+        let pass = scene.pass(&mut encoder, timing.writes("split"));
+        let mut pass = counted(Some(&mut timing), pass, pixels, "a");
+        far_first(&mut pass);
+        pass.split(Some(&mut timing), "b");
+        drop(pass);
+        finish(&mut timing, &device, &queue, encoder);
+        for _ in 0..4 {
+            timing.begin(&device, &queue);
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        }
+
+        let counters = timing.counter_medians();
+        let get = |name: &str| {
+            let found = counters.iter().find(|c| c.0 == name);
+            &found
+                .unwrap_or_else(|| panic!("{name} missing from {counters:?}"))
+                .1
+        };
+        let (near, far, split) = (get("near first"), get("far first"), get("split"));
+        eprintln!("near first {near:?}\nfar first {far:?}\nsplit {split:?}");
+        // RADV counts shaded 2x2 quads (1056 per full-screen layer here), NVIDIA counts pixels.
+        let full = u64::from(QUAD_COUNT) * pixels / 4;
+        assert!(far.total.fragment_shader_invocations >= full, "{far:?}");
+        assert!(
+            near.total.fragment_shader_invocations <= 2 * pixels,
+            "{near:?}"
+        );
+        assert!(
+            far.total.fragment_shader_invocations
+                >= near.total.fragment_shader_invocations * u64::from(QUAD_COUNT) / 2
+        );
+        assert_eq!(
+            near.total.vertex_shader_invocations,
+            far.total.vertex_shader_invocations
+        );
+        assert_eq!(
+            near.total.clipper_primitives_out,
+            far.total.clipper_primitives_out
+        );
+        assert!(near.total.clipper_primitives_out >= 2 * u64::from(QUAD_COUNT));
+        assert_eq!((near.pixels, near.parts.len()), (pixels, 0));
+        let [(a, a_count), (b, b_count)] = &split.parts[..] else {
+            panic!("two segments expected: {split:?}");
+        };
+        assert_eq!((a.as_str(), b.as_str()), ("a", "b"));
+        assert!(a_count.fragment_shader_invocations >= full);
+        assert_eq!(b_count.fragment_shader_invocations, 0);
+        assert_eq!(split.total, *a_count);
     }
 }
