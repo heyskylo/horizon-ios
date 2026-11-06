@@ -525,12 +525,25 @@ impl Logger {
     }
 }
 
+/// The `latest.log` this run writes, once `init` opened it.
+static LATEST_PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// The `latest.log` this run writes, absolute; None before `init` and when it logs to the
+/// terminal only.
+pub fn latest_path() -> Option<PathBuf> {
+    LATEST_PATH.get().cloned()
+}
+
 /// Starts the log in `home/logs`. The main thread shows as `main_thread` in it. Messages are
 /// still printed when the file cannot be opened.
 pub fn init(home: &Path, main_thread: &'static str) {
     let dir = logs_dir(home);
     let file = match open_latest(&dir) {
-        Ok(Some(latest)) => Some(latest),
+        Ok(Some(latest)) => {
+            let path = dir.join("latest.log");
+            let _ = LATEST_PATH.set(std::path::absolute(&path).unwrap_or(path));
+            Some(latest)
+        }
         Ok(None) => {
             eprintln!(
                 "Horizon: another game is writing {}; this one logs to the terminal only",

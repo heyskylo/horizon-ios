@@ -271,6 +271,40 @@ fn vanilla_command_info(d: &Dispatcher, label: &str) -> Option<NativeCommandInfo
     })
 }
 
+/// A guest as server hooks see them, from the hub's record.
+fn server_player(host: &LanHost, g: &horizon_client::lan::guest::Guest) -> NativeServerPlayer {
+    // Abilities.invulnerable, flying and mayfly, as `ServerPlayer.onUpdateAbilities` sends them.
+    let abilities = g.ability_flags();
+    NativeServerPlayer {
+        uuid: g.uuid,
+        name: g.name.clone(),
+        permission: g.permission,
+        dimension: g.dimension.clone(),
+        position: g.position,
+        game_mode: g.game_mode,
+        health: g.health,
+        yaw: g.yaw,
+        pitch: g.pitch,
+        entity_id: g.entity_id,
+        address: g.address.ip().to_string(),
+        latency: g.latency.load(std::sync::atomic::Ordering::Relaxed),
+        protocol: horizon_protocol::PROTOCOL_VERSION,
+        xp_level: g.xp_level,
+        xp_progress: g.xp_progress,
+        on_ground: g.on_ground,
+        flying: abilities & 2 != 0,
+        may_fly: abilities & 4 != 0,
+        invulnerable: abilities & 1 != 0,
+        walk_speed: 0.1,
+        fly_speed: g.flying_speed,
+        sneaking: g.sneaking,
+        eye_height: g.eye_height() as f32,
+        selected_slot: g.selected as u8,
+        nickname: host.hub.nicknames.get(&g.uuid).cloned(),
+        hidden: host.hub.hidden.get(&g.uuid).copied(),
+    }
+}
+
 /// Helpers for server mods, kept as stable as the hook points.
 // Native mods use these; nothing in Horizon does.
 #[allow(dead_code)]
@@ -285,19 +319,7 @@ impl Game<'_> {
             .guests
             .iter()
             .filter(|g| g.placed)
-            .map(|g| NativeServerPlayer {
-                uuid: g.uuid,
-                name: g.name.clone(),
-                permission: g.permission,
-                dimension: g.dimension.clone(),
-                position: g.position,
-                game_mode: g.game_mode,
-                health: g.health,
-                yaw: g.yaw,
-                pitch: g.pitch,
-                entity_id: g.entity_id,
-                address: g.address.ip().to_string(),
-            })
+            .map(|g| server_player(host, g))
             .collect()
     }
     /// A system line in that player's chat, also inside a player's hook for
@@ -518,9 +540,19 @@ impl Game<'_> {
     /// The player whose action or command a hook hears, as their state is
     /// swapped in (`native_perform_command`, `native_right_click_block`,
     /// `native_use_item_on`, `native_destroy_block`...): None outside such a
-    /// hook. API 21.
+    /// hook. API 21. What the hub keeps of them alone (`latency`, `nickname`, `hidden`,
+    /// `address`) reads as 0 or None while the hub is out of reach.
     pub(super) fn native_acting_player(&self) -> Option<NativeServerPlayer> {
         let p = self.player.as_ref()?;
+        // Their record in the hub, where it is in reach: its body is the one swapped in here.
+        let hub = self.lan.as_ref().and_then(|host| {
+            let g = host
+                .hub
+                .guests
+                .iter()
+                .find(|g| Some(g.uuid) == self.lan_acting_uuid)?;
+            Some(server_player(host, g))
+        });
         Some(NativeServerPlayer {
             uuid: self.lan_acting_uuid?,
             name: self.lan_acting_name.clone()?,
@@ -532,17 +564,22 @@ impl Game<'_> {
             yaw: p.yaw,
             pitch: p.pitch,
             entity_id: self.native_acting_entity() as i32,
-            address: self
-                .lan
-                .as_ref()
-                .and_then(|host| {
-                    host.hub
-                        .guests
-                        .iter()
-                        .find(|g| Some(g.uuid) == self.lan_acting_uuid)
-                })
-                .map(|g| g.address.ip().to_string())
-                .unwrap_or_default(),
+            latency: hub.as_ref().map_or(0, |h| h.latency),
+            protocol: horizon_protocol::PROTOCOL_VERSION,
+            xp_level: self.experience.level,
+            xp_progress: self.experience.progress,
+            on_ground: p.ground.on_ground,
+            flying: p.flying,
+            may_fly: p.may_fly,
+            invulnerable: p.invulnerable,
+            walk_speed: 0.1,
+            fly_speed: p.flying_speed,
+            sneaking: self.native_sneaking(),
+            eye_height: self.eye,
+            selected_slot: self.selected as u8,
+            nickname: hub.as_ref().and_then(|h| h.nickname.clone()),
+            hidden: hub.as_ref().and_then(|h| h.hidden),
+            address: hub.map(|h| h.address).unwrap_or_default(),
         })
     }
     /// The permission level of a player who is on the server or joining it:
@@ -1309,17 +1346,8 @@ impl Game<'_> {
             return false;
         }
         let player = NativeServerPlayer {
-            uuid: g.uuid,
-            name: g.name.clone(),
             permission,
-            dimension: g.dimension.clone(),
-            position: g.position,
-            game_mode: g.game_mode,
-            health: g.health,
-            yaw: g.yaw,
-            pitch: g.pitch,
-            entity_id: g.entity_id,
-            address: g.address.ip().to_string(),
+            ..server_player(host, g)
         };
         let mut ran = false;
         self.native_perform_command(&player, line, &mut ran);

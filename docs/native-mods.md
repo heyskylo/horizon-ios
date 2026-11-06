@@ -2938,6 +2938,45 @@ console (which waits for the next tick and does nothing inside a player's hook).
   seen not on the server or alive (inside another player's hook nobody else can be seen: it is queued and does nothing
   for a living player), and on a client. Server-side. Bundles need `"hooks": @API:respawn_player@`.
 
+#### Server hooks for plugin ports: Reading players
+
+What a server mod reads about a player besides their position and health. These helpers find the acting player
+(whose state a player's hook swaps in) and every player the hub holds; inside another player's hook, where the hub
+is out of reach, only the acting player is found and the others read as None. Server-side: on a client they give
+None.
+
+- **`NativeServerPlayer`**, as `native_server_players()` and `native_acting_player()` give it, also carries
+  `latency` (the round-trip in ms, as the player list shows it), `protocol`, `xp_level` and `xp_progress`,
+  `on_ground`, the abilities the client is told (`flying`, `may_fly`, `invulnerable`, `walk_speed`, `fly_speed`),
+  `sneaking`, `eye_height` in the current pose (1.62 standing, 1.27 crouching), `selected_slot`, and the `nickname`
+  and `hidden` level server mods set (Bukkit's `getPing`, `isOnGround`, `getAllowFlight`, `isFlying`,
+  `isSneaking`, `getEyeHeight`, `getDisplayName`). For the acting player, `latency`, `nickname`, `hidden` and
+  `address` read 0 or None while the hub is out of reach. Bundles need `"hooks": @API:server_player_state@`.
+- Helper **`native_player_client(uuid) -> Option<NativeClientInfo>`** (`host.player_client`): the client's brand,
+  language, the view distance it asks for, chat visibility, main hand and particle setting, the chunks the server
+  sent it and its wire bytes in and out (Paper's `getClientBrandName`, `locale`, `getClientViewDistance`). It
+  reads the hub, so it is None inside a player's hook while the hub is out of reach, the acting player's too.
+  Bundles need `"hooks": @API:player_client@`.
+- Helpers **`native_player_stats(uuid)`**, **`native_player_stat(uuid, stat_type, key)`** and
+  **`native_set_player_stats(uuid, stats)`** (`host.player_stats`, ...): the player's statistics as vanilla's
+  `players/stats/<uuid>.json` holds them (`{"stats": {"minecraft:custom": {"minecraft:jump": 3}}, "DataVersion":
+  ..}`), one counter of them (0 when never counted; `custom`, `jump` mean `minecraft:custom`,
+  `minecraft:jump`), and their replacement from that JSON (a HuskSync restore). Replaced statistics are saved with
+  the player and all go to the client at its next request; scoreboard objectives that count one are not told.
+  **`native_player_advancements(uuid)`** and **`native_set_player_advancements(uuid, advancements)`** do the same
+  for `players/advancements/<uuid>.json` (each advancement's criteria with their dates, and `done`); advancements
+  this server lacks are dropped as when the file loads, and the client gets every advancement's progress again
+  with the player's next tick (one newly done shows its toast, as a grant would, with no rewards). The setters say whether the player was found. Bundles need
+  `"hooks": @API:player_records@`.
+- Helpers **`native_max_players()`** (`max-players`, as `/list` shows it; None while the hub is out of reach),
+  **`native_server_dir()`** (a dedicated server's folder, absolute; None elsewhere) and **`native_log_file()`** (the
+  `logs/latest.log` this run writes, absolute; None when it logs to the terminal only), as Bukkit's
+  `Server.getMaxPlayers` and a plugin's server folder. Bundles need `"hooks": @API:server_files@`.
+- Helpers **`native_held_stack(uuid)`** and **`native_player_equipment(uuid, slot)`** (`host.held_stack`,
+  `host.player_equipment`): the whole stack, components included, in a player's main hand or `EquipmentSlot`, from
+  any server hook and for any player, not only the acting one (Bukkit's `getEquipment().getItemInMainHand()` and
+  `getItem(slot)`). None for an empty slot and for `Body` and `Saddle`. Bundles need `"hooks": @API:player_equipment@`.
+
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a
