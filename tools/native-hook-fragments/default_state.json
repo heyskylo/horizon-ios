@@ -1,0 +1,12 @@
+{
+  "hooks": [],
+  "helpers": [
+    {
+      "name": "default_state",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_default_state"
+    }
+  ],
+  "rust_summary": "a block's default state by name (`native_default_state`).",
+  "doc_summary": "`native_default_state(block)`, the default state of a block by name (`Block.defaultBlockState`), what `native_set_block` takes, so a machine can clear or place a block without reaching into the registry. Bundles that use it need \"hooks\": @API:default_state@.",
+  "comments": []
+}

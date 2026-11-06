@@ -1184,10 +1184,11 @@ impl Mob {
             self.fall_to_passengers(distance, modifier, events);
         }
         if damage > 0.0 {
-            // Llama.causeFallDamage: only a fall of six blocks or more hurts the
-            // llama and its riders.
+            // Llama.causeFallDamage: shorter damaging falls play the block
+            // sound but do not hurt the llama or its riders.
             if super::llama::is_llama(self.species()) && distance < 6.0 {
-                return false;
+                self.block_fall_sound(contact, events);
+                return true;
             }
             let at = [self.position.x, self.position.y, self.position.z];
             // Monster.getFallSounds: the hostile pair.
@@ -1201,14 +1202,38 @@ impl Mob {
             // Horses thud and llamas make no generic fall sound.
             if !horse {
                 events.push(MobEvent::Sound(sound, at, 1.0, 1.0));
+                self.block_fall_sound(contact, events);
             }
             self.damage(damage as f32, super::Damage::of(source));
             if horse {
                 self.fall_to_passengers(distance, modifier, events);
+                self.block_fall_sound(contact, events);
             }
             return true;
         }
         false
+    }
+    /// `LivingEntity.playBlockFallSound`: the block 0.2 below the feet plays
+    /// its fall sound at half its volume and three quarters of its pitch,
+    /// unless the mob is silent or the block is air.
+    fn block_fall_sound(&self, contact: Option<(&MobWorld, [i32; 3])>, events: &mut Vec<MobEvent>) {
+        if self.silent {
+            return;
+        }
+        if let Some((w, _)) = contact {
+            let pos = self.on_pos(0.2);
+            let state = w.world.block(pos[0], pos[1], pos[2]);
+            if !w.facts.is_air(state) {
+                let sounds = &w.facts.get(state).sounds;
+                let at = [self.position.x, self.position.y, self.position.z];
+                events.push(MobEvent::SoundId(
+                    sounds.fall.to_string(),
+                    at,
+                    sounds.volume * 0.5,
+                    sounds.pitch * 0.75,
+                ));
+            }
+        }
     }
     /// `Entity.propagateFallToPassengers`: the game gives the fall to each
     /// passenger (`causeFallDamage`), a mob or a player, for this mob is
@@ -2617,6 +2642,43 @@ mod tests {
             }
         });
     }
+    #[test]
+    fn damaging_mob_fall_plays_block_fall_sound() {
+        let ran = crate::mobs::world::with_built_test_world(
+            &[],
+            |world, registry| {
+                world.chunks.insert(
+                    (0, 0),
+                    std::sync::Arc::new(crate::chunk::Chunk::empty(0, 0)),
+                );
+                for (x, block) in [(0, "minecraft:stone"), (1, "minecraft:oak_planks")] {
+                    world
+                        .set(x, 0, 0, registry.default_state(block).unwrap())
+                        .unwrap();
+                }
+            },
+            |w, types| {
+                for (x, block_sound) in [
+                    (0.5, "minecraft:block.stone.fall"),
+                    (1.5, "minecraft:block.wood.fall"),
+                ] {
+                    let kind = std::sync::Arc::new(types.types["minecraft:zombie"].clone());
+                    let mut mob = Mob::new(1, kind, Vec3::new(x, 1.0, 0.5), 0.0);
+                    mob.fall_distance = 5.0;
+                    let mut events = Vec::new();
+                    mob.fall_on_block(w, &mut events);
+                    assert!(
+                        matches!(events.as_slice(), [MobEvent::Sound("entity.hostile.small_fall", _, 1.0, 1.0), MobEvent::SoundId(id, _, 0.5, 0.75), ..] if id == block_sound),
+                        "{events:?}"
+                    );
+                }
+            },
+        );
+        // Without the vanilla data under .local/horizon-client the world
+        // cannot be built: the test has nothing to check.
+        let _ = ran;
+    }
+
     /// `Entity.applyMovementEmissionAndPlaySound` asks `getMovementEmission`:
     /// a squid, a glow squid and a bat answer `EVENTS`, so a beached squid
     /// flopping across stone sends the `minecraft:step` game event and no

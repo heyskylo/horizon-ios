@@ -214,10 +214,12 @@ impl Launcher {
                     })),
             )
             .child(self.field(Field::AccentHex, "#6b4bff", 96., cx).ml(px(4.)));
+        let wide = self.window_width >= 1280.;
         let control = div()
             .flex()
             .flex_col()
-            .items_end()
+            .when(wide, |d| d.items_end())
+            .when(!wide, |d| d.items_start())
             .gap(px(10.))
             .child(row)
             .when(self.accent_strip, |d| {
@@ -229,17 +231,18 @@ impl Launcher {
                         .overflow_hidden(),
                 )
             });
-        ui::setting_row(
-            tr("Accent colour"),
-            Some(
-                div()
-                    .child(tr(
-                        "Colours the buttons, the switches and the sky. Pick one, or type any hex colour.",
-                    ))
-                    .into_any_element(),
-            ),
-            Some(control.into_any_element()),
-        )
+        let note = Some(
+            div()
+                .child(tr(
+                    "Colours the buttons, the switches and the sky. Pick one, or type any hex colour.",
+                ))
+                .into_any_element(),
+        );
+        if wide {
+            ui::setting_row(tr("Accent colour"), note, Some(control.into_any_element()))
+        } else {
+            ui::setting_row_stacked(tr("Accent colour"), note, control.into_any_element())
+        }
     }
 
     /// The Glass or Blur row: the mockup's slider (a 4 px track filled in the soft accent, a
