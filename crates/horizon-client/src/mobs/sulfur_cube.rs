@@ -811,7 +811,7 @@ pub fn tick_fuse(m: &mut Mob, events: &mut Vec<MobEvent>) {
     {
         // With `tnt_explodes` off the cube still goes, without a blast.
         if TNT_EXPLODES.get() {
-            // `level.explode(this, ...)`: the cube is the blast's source and its
+            // `level.explode(this, ..., TNT)`: the cube is the blast's source and its
             // causing entity, so its entity query leaves it out.
             let name = match &m.custom_name {
                 Some(name) => crate::text::Text::literal(name.clone()),

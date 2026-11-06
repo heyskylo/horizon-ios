@@ -14,7 +14,10 @@ pub mod images;
 pub mod installed;
 pub mod java;
 pub mod java_instance;
+pub mod lock;
 pub mod modrinth;
+
+pub use lock::{lock_home, try_lock_home, HomeLockGuard};
 
 use serde::{Deserialize, Serialize};
 
@@ -83,6 +86,16 @@ impl SourceId {
             SourceId::Modrinth => "Modrinth",
             SourceId::CurseForge => "CurseForge",
             SourceId::Horizon => "Horizon",
+        }
+    }
+
+    /// The source a list names after the author ("from {source}") for project `id`: Modrinth and
+    /// CurseForge always, Horizon's registry only for Horizon's own projects
+    /// ([`horizon::official`]), so a contributor's project reads "by <author>" alone.
+    pub fn shown_for(self, id: &str) -> Option<&'static str> {
+        match self {
+            SourceId::Horizon if !horizon::is_official(id) => None,
+            _ => Some(self.label()),
         }
     }
 }

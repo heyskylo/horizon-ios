@@ -75,6 +75,20 @@ fn only_horizons_own_projects_go_without_the_not_endorsed_line() {
 }
 
 #[test]
+fn only_horizons_own_projects_say_they_come_from_horizon() {
+    let mut index = sample();
+    let id = index.projects[0].id.clone();
+    index.projects[0].authors = vec!["levzzz5154".into()];
+    index.projects[0].source = "https://github.com/levzzz5154/horizon-mod-zoom".into();
+    assert!(!official_in(Some(&index), &id), "a contributor's project");
+    index.projects[0].authors = vec!["Horizon".into()];
+    index.projects[0].source = "https://github.com/horizon-rust/horizon-mod-zoom".into();
+    assert!(official_in(Some(&index), &id));
+    assert!(!official_in(Some(&index), "not_listed"));
+    assert!(!official_in(None, &id), "no index read yet");
+}
+
+#[test]
 fn searches_by_kind_and_words() {
     let index = sample();
     let found = |text: &str, kind| -> Vec<String> {
@@ -156,12 +170,46 @@ fn searches_by_category_and_tag() {
     );
     assert_eq!(found("sunset", &[]), ["glow"], "tags are searched");
     assert!(found("dawn", &[]).is_empty());
+    let tagged = |tags: &[&str]| -> Vec<String> {
+        let mut q = Query::new("", Kind::Shader);
+        q.filters.tags = tags.iter().map(|t| t.to_string()).collect();
+        search(&index, &q).into_iter().map(|p| p.id).collect()
+    };
+    assert_eq!(tagged(&["sunset"]), ["glow"]);
+    assert!(tagged(&["sunset", "dawn"]).is_empty(), "every tag asked");
     // The filter offers the kind's own list: a resolution for resource packs, not for shaders.
     let shader = Registry.tags(Kind::Shader).unwrap().categories;
     assert!(shader.iter().any(|c| c.name == "path-tracing"));
     let packs = Registry.tags(Kind::ResourcePack).unwrap().categories;
     assert!(packs.iter().any(|c| c.name == "16x"));
     assert!(!shader.iter().any(|c| c.name == "16x"));
+}
+
+#[test]
+fn the_tag_filter_offers_the_kinds_tags_most_used_first() {
+    let mut index = sample();
+    let at = |index: &Index, id: &str| index.projects.iter().position(|p| p.id == id).unwrap();
+    let glow = at(&index, "glow");
+    index.projects[glow].tags = vec![
+        "sunset".into(),
+        "cozy".into(),
+        "sunset".into(),
+        "Not Plain".into(),
+    ];
+    assert_eq!(
+        tags_of(&index, Kind::Shader),
+        ["cozy", "sunset"],
+        "ties by name"
+    );
+    let mut dusk = index.projects[glow].clone();
+    dusk.id = "dusk".into();
+    dusk.tags = vec!["sunset".into()];
+    index.projects.push(dusk);
+    let hud = at(&index, "coords_hud");
+    index.projects[hud].tags = vec!["pvp".into()];
+    assert_eq!(tags_of(&index, Kind::Shader), ["sunset", "cozy"]);
+    assert_eq!(tags_of(&index, Kind::Mod), ["pvp"], "each kind its own");
+    assert!(tags_of(&index, Kind::DataPack).is_empty());
 }
 
 /// A data pack zip with one function, and the registry project that lists it.
@@ -480,4 +528,39 @@ fn ratings_keep_only_what_is_well_formed() {
         rate_url("zoom"),
         "https://playhorizon.dev/api/mods/auth/login?back=/mods/zoom"
     );
+}
+
+#[test]
+fn a_project_is_starred_on_the_repository_its_source_is_in() {
+    let repo = |s: &str| github_repo(s);
+    let daybreak = Some("https://github.com/hildlabs/horizon-shaders".to_owned());
+    // A folder of it, a trailing slash, `.git`, a query or an anchor: the same repository.
+    for source in [
+        "https://github.com/hildlabs/horizon-shaders",
+        "https://github.com/hildlabs/horizon-shaders/tree/main/pack",
+        "https://github.com/hildlabs/horizon-shaders/",
+        "https://github.com/hildlabs/horizon-shaders.git",
+        "https://github.com/hildlabs/horizon-shaders?tab=readme",
+        "https://github.com/hildlabs/horizon-shaders#readme",
+    ] {
+        assert_eq!(repo(source), daybreak, "{source:?}");
+    }
+    assert_eq!(
+        repo("https://github.com/horizon-rust/horizon.v2_mods"),
+        Some("https://github.com/horizon-rust/horizon.v2_mods".to_owned())
+    );
+    // Not GitHub, no repository, or a name GitHub doesn't allow: no star button.
+    for source in [
+        "https://gitlab.com/hildlabs/horizon-shaders",
+        "http://github.com/hildlabs/horizon-shaders",
+        "https://github.com.evil.example/hildlabs/horizon-shaders",
+        "https://github.com/hildlabs",
+        "https://github.com/hildlabs/",
+        "https://github.com/-hildlabs/horizon-shaders",
+        "https://github.com/hildlabs/..",
+        "https://github.com/hildlabs/horizon shaders",
+        "",
+    ] {
+        assert_eq!(repo(source), None, "{source:?}");
+    }
 }
