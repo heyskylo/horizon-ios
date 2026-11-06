@@ -321,7 +321,7 @@ the large one; there are no game-mode images yet.
 
 ### Play on another of your machines
 
-Horizon targets Linux and Windows desktop platforms (see [Windows ARM64](windows-arm64.md)).
+Horizon targets desktop Linux, macOS and Windows (see [Windows ARM64](windows-arm64.md)).
 To play on another machine without Rust, JDK or prepared resources,
 package a release build where they exist:
 
