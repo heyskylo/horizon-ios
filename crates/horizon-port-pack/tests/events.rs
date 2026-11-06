@@ -98,6 +98,7 @@ const LABELS: &str = r#"{"hooks": [
     {"name": "open_menu", "neoforge": "IPlayerExtension.openMenu(MenuProvider)"},
     {"name": "block_entity_container", "neoforge": "Capabilities.Item.BLOCK"},
     {"name": "recipes_received", "neoforge": "RecipesReceivedEvent"},
+    {"name": "standalone_models", "neoforge": "ModelEvent.RegisterStandalone"},
     {"name": "hud"}
 ]}"#;
 
@@ -147,6 +148,13 @@ fn labels_give_counterparts_phases_notes_and_new_names() {
         (
             Status::Hooked(hooks(&["recipes_received"])),
             Some("RecipesReceivedEvent".to_owned())
+        )
+    );
+    assert_eq!(
+        c.status("ModelEvent.RegisterAdditional"),
+        (
+            Status::Hooked(hooks(&["standalone_models"])),
+            Some("ModelEvent.RegisterStandalone".to_owned())
         )
     );
     for missing in [

@@ -24,10 +24,14 @@ pub const CATALOG: &str = include_str!("../../../native-hooks.json");
 /// 1.21.1's documentation doesn't name it, only that the client has "a full
 /// copy of the `RecipeManager`". 26.1's client gets just the recipe types a
 /// mod asks for (`OnDatapackSyncEvent#sendRecipes`), in `RecipesReceivedEvent`.
-const RENAMED: [(&str, &str); 4] = [
+const RENAMED: [(&str, &str); 5] = [
     ("Capabilities.ItemHandler.", "Capabilities.Item."),
     ("Capabilities.EnergyStorage.", "Capabilities.Energy."),
     ("AddReloadListenerEvent", "AddServerReloadListenersEvent"),
+    (
+        "ModelEvent.RegisterAdditional",
+        "ModelEvent.RegisterStandalone",
+    ),
     ("RecipesUpdatedEvent", "RecipesReceivedEvent"),
 ];
 
