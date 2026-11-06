@@ -1514,10 +1514,13 @@ fn block_animate_tick(
             }
         }
         Animate::Beehive => {
-            // BeehiveBlock.animateTick: nextInt(1) + 1 attempts.
-            let attempts = next_int(engine.random(), 1) + 1;
-            for _ in 0..attempts {
+            // BeehiveBlock.animateTick: `for (i = 0; i < random.nextInt(1) + 1; i++)`
+            // re-reads its bound on every trip, so the level random is asked
+            // once before the attempt and once more to end the loop.
+            let mut attempt = 0;
+            while attempt < next_int(engine.random(), 1) + 1 {
                 beehive_drip(tables, engine, ctx, state, pos);
+                attempt += 1;
             }
         }
         Animate::RedstoneOre => {

@@ -379,6 +379,21 @@ impl Game<'_> {
         }
         true
     }
+    /// `ItemFrame.setItem(stack, true)`: keeps one item, plays the add sound
+    /// for a non-empty stack and updates the comparators.
+    pub(super) fn set_frame_item(&mut self, i: usize, stack: Option<ItemStack>) {
+        let f = &mut self.item_frames[i];
+        f.item = stack.map(|s| ItemStack { count: 1, ..s });
+        let (pos, filled) = (f.pos, f.item.is_some());
+        if filled {
+            let (name, at) = (
+                sound(&self.item_frames[i], "add_item"),
+                center(&self.item_frames[i]),
+            );
+            self.audio.play(&name, Some(at), 1.0, 1.0);
+        }
+        self.frame_output_changed(pos);
+    }
     /// `ItemFrame.setItem` / `setRotation`: `updateNeighbourForOutputSignal`, so
     /// the comparators reading the frame take its new signal.
     fn frame_output_changed(&mut self, pos: [i32; 3]) {
