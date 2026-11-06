@@ -20,8 +20,43 @@ use horizon_core::{geometry::Vec3, random::RandomSource};
 pub(super) fn golem_prey(s: &super::Seen) -> bool {
     s.hostile && s.species != Species::Creeper
 }
-/// `IronGolem.registerGoals`, without `ResetUniversalAngerTargetGoal` (that
-/// goal is not ported).
+/// `ResetUniversalAngerTargetGoal` with `alertOthersOfSameType` false (the
+/// iron golem's): with the `universal_anger` rule on, a golem whose latest
+/// attacker is a player, hit after the one it last handled, forgets its
+/// target and starts its anger timer over.
+#[derive(Clone, Debug, Default)]
+pub struct ResetUniversalAnger {
+    /// `lastHurtByPlayerTimestamp`.
+    timestamp: i32,
+}
+impl Goal for ResetUniversalAnger {
+    goal_clone!();
+    fn name(&self) -> &'static str {
+        "ResetUniversalAngerTargetGoal"
+    }
+    fn flags(&self) -> u8 {
+        0
+    }
+    /// The rule and `wasHurtByPlayer`.
+    fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
+        cx.w.universal_anger
+            && m.ai.last_hurt_by == Some(Who::Player)
+            && m.ai.last_hurt_by_time > self.timestamp
+    }
+    /// `NeutralMob.forgetCurrentTargetAndRefreshUniversalAnger`:
+    /// `stopBeingAngry`, then `startPersistentAngerTimer`.
+    fn start(&mut self, m: &mut Mob, _: &mut Cx) {
+        self.timestamp = m.ai.last_hurt_by_time;
+        // setLastHurtByMob(null) also stamps the time.
+        m.ai.last_hurt_by = None;
+        m.ai.last_hurt_by_time = m.age as i32;
+        m.ai.target = None;
+        m.extra.angry_at = None;
+        // `TimeUtil.rangeOfSeconds(20, 39)`.
+        m.extra.anger = 400 + m.random.next_int_bound(381).unwrap_or(0);
+    }
+}
+/// `IronGolem.registerGoals`.
 pub fn register_iron(m: &mut Mob) {
     let g = &mut m.ai.goals;
     g.add(1, MeleeAttack::new(1.0, true));
@@ -67,6 +102,7 @@ pub fn register_iron(m: &mut Mob) {
         3,
         NearestTarget::new(Prey::Filter(golem_prey), false).interval(5),
     );
+    m.ai.targets.add(4, ResetUniversalAnger::default());
 }
 /// `SectionPos.of`: the section a position is in.
 fn section_of(p: Vec3) -> [i32; 3] {
@@ -632,6 +668,46 @@ mod tests {
                 "the spot is toward the target"
             );
         });
+    }
+
+    /// `ResetUniversalAngerTargetGoal`: with the rule on, a golem hurt by a
+    /// player forgets its target once and not again until hurt again; with
+    /// the rule off it does nothing.
+    #[test]
+    fn a_golem_hurt_by_a_player_forgets_its_target_once_under_universal_anger() {
+        for rule in [true, false] {
+            with_test_world(&[], |w, _| {
+                let mut w = w.clone();
+                w.universal_anger = rule;
+                let mut golem = mob(1, Species::IronGolem, Vec3::new(0.5, 64.0, 0.5));
+                golem.age = 50;
+                golem.ai.target = Some(Who::Mob(2));
+                golem.extra.anger = 5;
+                golem.ai.last_hurt_by = Some(Who::Player);
+                golem.ai.last_hurt_by_time = 10;
+                let mut goal = ResetUniversalAnger::default();
+                let mut events = Vec::new();
+                let mut lr = horizon_core::random::LegacyRandom::new(0);
+                let mut cx = Cx {
+                    w: &w,
+                    lr: &mut lr,
+                    events: &mut events,
+                };
+                assert_eq!(goal.can_use(&mut golem, &mut cx), rule);
+                if !rule {
+                    return;
+                }
+                goal.start(&mut golem, &mut cx);
+                assert_eq!(golem.ai.target, None);
+                assert_eq!(golem.ai.last_hurt_by, None);
+                assert!((400..=780).contains(&golem.extra.anger));
+                assert!(!goal.can_use(&mut golem, &mut cx), "not again");
+                // Hurt again: a newer hit by the player.
+                golem.ai.last_hurt_by = Some(Who::Player);
+                golem.ai.last_hurt_by_time = 60;
+                assert!(goal.can_use(&mut golem, &mut cx));
+            });
+        }
     }
 
     /// `IronGolem.canAttack` refuses creepers, and `HurtByTargetGoal.canUse`
