@@ -2508,6 +2508,12 @@ per-player helpers for these (a NeoForge mod sends `ServerPlayer.connection.send
   particles need `state`, item, trail and vibration particles aren't sent, a mod's own type
   (`ParticleOptions::named`) reaches only a Horizon client. Queued as `native_play_sound_to`, with the same answers.
   Bundles need `"hooks": @API:send_particles_to@`.
+- Helper **`native_title(uuid, title, subtitle, fade_in, stay, fade_out)`** (`host.title`): a title and subtitle in
+  the middle of that player's screen, as `/title` and Adventure's `showTitle`: the times (in ticks; vanilla's default
+  is 10, 70, 20), the subtitle and the title, in that order, replacing a title shown before; an empty subtitle shows
+  none. Sent at once, as `native_tell`: also inside a player's hook for the acting player, whose packets go after the
+  hook. False on a client, for a negative time, and for a player who isn't on or can't be reached from here (another
+  player inside a player's hook). Bundles need `"hooks": @API:title@`.
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a
