@@ -5,8 +5,9 @@
 //! player's hook, only the acting player is found.
 use super::{Game, lan::LanHost};
 use horizon_client::{
+    items::ItemStack,
     lan::guest::Guest,
-    mod_api::NativeClientInfo,
+    mod_api::{EquipmentSlot, NativeClientInfo},
 };
 use std::path::PathBuf;
 
@@ -170,6 +171,37 @@ impl Game<'_> {
     /// absolute; None when it logs to the terminal only. API @API:server_files@.
     pub(super) fn native_log_file(&self) -> Option<PathBuf> {
         horizon_client::logging::latest_path()
+    }
+
+    /// The stack in the player's main hand, components and all (Bukkit's
+    /// `getEquipment().getItemInMainHand()`). None for an empty hand, a player who is not on
+    /// and on a client. API @API:player_equipment@.
+    pub(super) fn native_held_stack(&self, uuid: u128) -> Option<ItemStack> {
+        self.native_player_equipment(uuid, EquipmentSlot::MainHand)
+    }
+
+    /// The stack in one of the player's equipment slots (`LivingEntity.getItemBySlot`), from
+    /// any server hook, the acting player's or another's. None for an empty slot, for `Body`
+    /// and `Saddle`, for a player who is not on and on a client. API @API:player_equipment@.
+    pub(super) fn native_player_equipment(
+        &self,
+        uuid: u128,
+        slot: EquipmentSlot,
+    ) -> Option<ItemStack> {
+        if self.acting(uuid) {
+            return self.native_equipment(slot);
+        }
+        let (_, g) = self.hub_guest(uuid)?;
+        match slot {
+            EquipmentSlot::MainHand => g.inventory.get(g.selected).cloned().flatten(),
+            EquipmentSlot::OffHand => g.offhand.clone(),
+            EquipmentSlot::Head => g.armor[0].clone(),
+            EquipmentSlot::Chest => g.armor[1].clone(),
+            EquipmentSlot::Legs => g.armor[2].clone(),
+            EquipmentSlot::Feet => g.armor[3].clone(),
+            EquipmentSlot::Body | EquipmentSlot::Saddle => None,
+        }
+        .filter(|stack| stack.count > 0)
     }
 }
 

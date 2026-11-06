@@ -2518,6 +2518,10 @@ None.
   **`native_server_dir()`** (a dedicated server's folder, absolute; None elsewhere) and **`native_log_file()`** (the
   `logs/latest.log` this run writes, absolute; None when it logs to the terminal only), as Bukkit's
   `Server.getMaxPlayers` and a plugin's server folder. Bundles need `"hooks": @API:server_files@`.
+- Helpers **`native_held_stack(uuid)`** and **`native_player_equipment(uuid, slot)`** (`host.held_stack`,
+  `host.player_equipment`): the whole stack, components included, in a player's main hand or `EquipmentSlot`, from
+  any server hook and for any player, not only the acting one (Bukkit's `getEquipment().getItemInMainHand()` and
+  `getItem(slot)`). None for an empty slot and for `Body` and `Saddle`. Bundles need `"hooks": @API:player_equipment@`.
 
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
