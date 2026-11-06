@@ -544,6 +544,12 @@ pub struct Streaming {
     /// Chunks come from a server (`insert_remote`/`forget`): nothing is
     /// generated and columns are only unloaded when the server says so.
     pub remote: bool,
+    /// This server sends bulk block edits as whole columns whose light is
+    /// from before its relight (a Horizon server): a resent resident column
+    /// is lit here. Any other server's packet carries the light vanilla
+    /// applies, so it is not lit again (a proxy's next server resends its
+    /// whole world at the same coordinates).
+    pub relight_resent: bool,
     /// More areas to keep loaded (centre chunk, radius), e.g. around the
     /// players of a server. Each is a square, like vanilla's ticket levels:
     /// chunks finish out to `radius + 1` (Chebyshev) and generation reaches
@@ -1108,6 +1114,7 @@ impl Streaming {
             generated_total: 0,
             meshed_total: 0,
             remote: false,
+            relight_resent: false,
             extra: Vec::new(),
             cover: None,
             mesh: true,
@@ -1154,14 +1161,15 @@ impl Streaming {
     }
     /// A resident column a server sent again whole (it changed it in bulk):
     /// its new blocks taken, the sections that did not change kept as they
-    /// were, and its light and its neighbours' worked out again here, off
-    /// the game thread, as light is for the blocks a server changes one at a
-    /// time; the sections that changed remesh (with theirs) once lit. Until
-    /// then the sections that changed show the light the packet carried (a
-    /// Horizon server sends the light from before its relight, then the
-    /// new light; another server's is already right, which matters where
-    /// the neighbours this light needs aren't all here).
-    pub fn replace_remote(&mut self, world: &mut World, mut chunk: Chunk) {
+    /// were, and (for a Horizon server's bulk edit) its light and its
+    /// neighbours' worked out again here, off the game thread, as light is for
+    /// the blocks a server changes one at a time; the sections that changed
+    /// remesh (with theirs) once lit. Until then the sections that changed
+    /// show the light the packet carried (a Horizon server sends the light
+    /// from before its relight, then the new light; another server's is already
+    /// right, which matters where the neighbours this light needs aren't all
+    /// here).
+    pub fn replace_remote(&mut self, world: &mut World, chunk: Chunk) {
         let key = (chunk.x, chunk.z);
         let Some(old) = world.chunks.get(&key).cloned() else {
             return self.insert_remote(world, chunk);
@@ -1169,34 +1177,7 @@ impl Streaming {
         if !self.lit.contains(&key) {
             return self.insert_remote(world, chunk);
         }
-        // The cells whose blocks changed, by section: they remesh with the neighbours within a block of them (as
-        // vanilla's `setBlocksDirty`), not every section round each section changed (which, for the few blocks a
-        // section often changes in a bulk edit, is mostly sections that did not).
-        let mut cells = crate::light::LightChanges::default();
-        cells.keyed(world.layout());
-        let kept = keep_unchanged_sections(&old, &mut chunk, &mut cells);
-        chunk.light_loaded = old.light_loaded;
-        chunk.lit = true;
-        world.chunks.insert(key, Arc::new(chunk));
-        world.revision = world.revision.wrapping_add(1);
-        // A section with new biomes and the same blocks remeshes now (its tint), with its neighbours, whose tint
-        // blends across the border: above and below too, as a block's tint can sample the biome quart of the
-        // section next to it (`BiomeManager.getBiome`'s zoom reaches a quart beyond the block).
-        Self::light_updated(world, key.0, key.1, &kept.biomes);
-        // A section with the same blocks and new light takes the packet's light (vanilla's
-        // `handleLevelChunkWithLight` always applies it) and remeshes as a light update would.
-        Self::light_updated(world, key.0, key.1, &kept.light);
-        if !kept.blocks {
-            return;
-        }
-        for dz in -1..=1 {
-            for dx in -1..=1 {
-                world.dirty_light.insert((key.0 + dx, key.1 + dz));
-            }
-        }
-        cells.dirty_sections(|section| {
-            world.dirty_sections.insert(section);
-        });
+        take_resent_column(world, key, &old, chunk, self.relight_resent);
     }
     /// A server's light update for a resident column: the sections whose
     /// light changed and their neighbours remesh
@@ -3046,6 +3027,51 @@ fn keep_unchanged_sections(
     }
     out
 }
+/// Takes the server's new `chunk` over the resident column `old`: the sections
+/// whose blocks did not change keep `old`'s (with `chunk`'s biomes and light),
+/// and the sections whose blocks changed remesh. `relight` says the packet's
+/// light is from before the server's relight (a Horizon server's bulk edit), so
+/// the column and its neighbours are lit here; another server's packet already
+/// carries the light vanilla applies, so no light job is queued for it.
+fn take_resent_column(
+    world: &mut World,
+    key: (i32, i32),
+    old: &Chunk,
+    mut chunk: Chunk,
+    relight: bool,
+) {
+    // The cells whose blocks changed, by section: they remesh with the neighbours within a block of them (as
+    // vanilla's `setBlocksDirty`), not every section round each section changed (which, for the few blocks a
+    // section often changes in a bulk edit, is mostly sections that did not).
+    let mut cells = crate::light::LightChanges::default();
+    cells.keyed(world.layout());
+    let kept = keep_unchanged_sections(old, &mut chunk, &mut cells);
+    chunk.light_loaded = old.light_loaded;
+    chunk.lit = true;
+    world.chunks.insert(key, Arc::new(chunk));
+    world.revision = world.revision.wrapping_add(1);
+    // A section with new biomes and the same blocks remeshes now (its tint), with its neighbours, whose tint
+    // blends across the border: above and below too, as a block's tint can sample the biome quart of the
+    // section next to it (`BiomeManager.getBiome`'s zoom reaches a quart beyond the block).
+    Streaming::light_updated(world, key.0, key.1, &kept.biomes);
+    // A section with the same blocks and new light takes the packet's light (vanilla's
+    // `handleLevelChunkWithLight` always applies it) and remeshes as a light update would.
+    Streaming::light_updated(world, key.0, key.1, &kept.light);
+    if !kept.blocks {
+        return;
+    }
+    if relight {
+        for dz in -1..=1 {
+            for dx in -1..=1 {
+                world.dirty_light.insert((key.0 + dx, key.1 + dz));
+            }
+        }
+    }
+    cells.dirty_sections(|section| {
+        world.dirty_sections.insert(section);
+    });
+}
+
 /// Whether two sections' packed light (4,096 cells) holds the same values.
 fn same_light(a: &crate::chunk::Light, b: &crate::chunk::Light) -> bool {
     a.same_as(b)
@@ -4213,6 +4239,42 @@ mod tests {
                 40 + dx,
                 -40 + dz
             );
+        }
+    }
+
+    fn resident_column(world: &mut World, light: u8) -> Chunk {
+        let mut chunk = Chunk::empty(2, -3);
+        chunk.set(1, 10, 1, 1);
+        Arc::make_mut(&mut chunk.sections[0]).light = crate::chunk::Light::Uniform(light);
+        chunk.lit = true;
+        world.chunks.insert((2, -3), Arc::new(chunk.clone()));
+        chunk
+    }
+
+    /// A server's resent column uses the light in its packet, as vanilla's
+    /// `handleLevelChunkWithLight` does: only a Horizon server's bulk edit,
+    /// whose packet light is from before its relight, is relit here. A proxy's
+    /// next server resends its whole world at the same coordinates, and
+    /// relighting every column and its neighbours is work that world never
+    /// asked for (#10273).
+    #[test]
+    fn a_resent_column_is_relit_only_for_a_horizon_servers_bulk_edit() {
+        for relight in [false, true] {
+            let mut world = World::new(horizon_world::registry::BlockStateId(0), 0);
+            let old = resident_column(&mut world, 0x50);
+            let mut new = old.clone();
+            new.set(1, 10, 1, 2);
+            Arc::make_mut(&mut new.sections[0]).light = crate::chunk::Light::Uniform(0xF0);
+            take_resent_column(&mut world, (2, -3), &old, new, relight);
+            let chunk = &world.chunks[&(2, -3)];
+            assert_eq!(chunk.block(1, 10, 1).0, 2);
+            // The packet's light is what the column shows.
+            assert_eq!(chunk.sections[0].light.get(0), 0xF0);
+            // The changed section remeshes either way.
+            assert!(world.dirty_sections.contains(&(2, 0, -3)));
+            // Only a Horizon bulk edit queues light work, for the column and
+            // its eight neighbours.
+            assert_eq!(world.dirty_light.len(), if relight { 9 } else { 0 });
         }
     }
 }

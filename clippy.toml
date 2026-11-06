@@ -1,0 +1,5 @@
+# `keys.contains(&KeyCode::ShiftLeft)` reads a mapping by its default key: ask by `Action`, so the
+# mapping is named and every device that can hold it counts.
+disallowed-methods = [
+    { path = "horizon_client_input::held::HeldKeys::contains", reason = "use `held(Action::..)`, or `raw` for a key that is no mapping's default", allow-invalid = true },
+]

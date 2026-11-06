@@ -4,9 +4,11 @@ use horizon_client::{
     collisions::SceneCollisions,
     hud::{HudBatch, rgba},
     hud_layout::GuiDraw,
+    items::ItemStack,
     mod_api::Text,
 };
 use horizon_core::geometry::Vec3;
+use winit::keyboard::KeyCode;
 
 /// This window's state; unavailable on a server or before a window is attached.
 #[derive(Clone, Debug, Default)]
@@ -290,5 +292,41 @@ impl Game<'_> {
         if self.native_window() {
             self.titles.set_overlay(text, animate);
         }
+    }
+    /// Draw an item stack with its default decorations at `at` in GUI units.
+    pub(super) fn native_gui_draw_item(
+        &self,
+        batch: &mut HudBatch,
+        stack: &ItemStack,
+        at: [f32; 2],
+    ) {
+        self.draw_item(batch, stack, at[0], at[1]);
+    }
+    /// Draw an item stack with custom count/decoration text (or None) at `at` in GUI units.
+    pub(super) fn native_gui_draw_item_with(
+        &self,
+        batch: &mut HudBatch,
+        stack: &ItemStack,
+        at: [f32; 2],
+        text: Option<&str>,
+    ) {
+        self.draw_item_model(batch, stack, at[0], at[1]);
+        self.draw_item_decorations(batch, stack, at[0], at[1], text.map(str::to_owned));
+    }
+    /// Whether Shift is pressed (live modifier state).
+    pub(super) fn native_has_shift_down(&self) -> bool {
+        self.has_shift_down()
+    }
+    /// Whether Control is pressed (live modifier state).
+    pub(super) fn native_has_control_down(&self) -> bool {
+        self.has_control_down()
+    }
+    /// Whether Alt is pressed (live modifier state).
+    pub(super) fn native_has_alt_down(&self) -> bool {
+        self.has_alt_down()
+    }
+    /// Whether a specific key is currently held down.
+    pub(super) fn native_is_key_down(&self, key: KeyCode) -> bool {
+        self.physical_keys.contains(&key)
     }
 }
