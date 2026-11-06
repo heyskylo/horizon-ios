@@ -1131,6 +1131,104 @@ mod tests {
         Some(game)
     }
 
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn live_data_commands_adopt_into_the_existing_tnt() {
+        use crate::game::commands::Target;
+        use horizon_world::nbt::Tag;
+        let mut game = server_game().expect("prepared Game resources are required");
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.block_ticks
+            .add_empty_chunk(horizon_core::position::ChunkPos::new(0, 0))
+            .unwrap();
+        assert!(game.streaming.forced.contains(&(0, 0)));
+        // The existing unit helper supplies a resident column. The paired
+        // runtime harness separately admits actual ticket/streaming readiness.
+        assert!(game.world.chunks.contains_key(&(0, 0)));
+        assert!(game.run_command(
+            "summon pig 8.5 200 5.5 {UUID:[I;89,0,0,3],Health:10f,NoAI:1b,NoGravity:1b}"
+        ));
+        assert!(game.run_command("summon tnt 5.5 200 5.5 {UUID:[I;89,0,0,1],fuse:40s,Motion:[0d,0d,0d],NoGravity:1b,explosion_power:2f,owner:[I;89,0,0,3],Tags:[keep],Silent:1b}"));
+        let pig = game
+            .mobs
+            .iter()
+            .find(|m| game.persist.uuid_of(m.id) == Some([89, 0, 0, 3]))
+            .unwrap()
+            .id;
+        assert_eq!(
+            game.mobs.iter().find(|m| m.id == pig).unwrap().kind.id,
+            "minecraft:pig"
+        );
+        assert_eq!(game.tnts.len(), 1);
+        let id = game.tnts[0].id;
+        assert_eq!(game.persist.uuid_of(id), Some([89, 0, 0, 1]));
+        assert_eq!(game.tnts[0].fuse, 40);
+        assert_eq!(game.tnts[0].velocity, Vec3::ZERO);
+        assert!(game.tnts[0].no_gravity);
+        // Preserve a live owner referencing an actually registered mob.
+        game.tnts[0].owner = Some(Who::Mob(pig));
+        let before = game.tnts[0].clone();
+        let next_id = game.next_entity;
+        let clock = game.world.game_time;
+        assert!(before.join.is_joined());
+        let reference = Target::Tnt(id);
+        let saved_before = game.entity_nbt(reference).unwrap();
+        assert_eq!(saved_before.get("NoGravity"), Some(&Tag::Byte(1)));
+        assert_eq!(
+            saved_before.get("owner"),
+            Some(&Tag::IntArray(vec![89, 0, 0, 3]))
+        );
+        assert!(
+            !game.run_command("data merge entity 00000059-0000-0000-0000-000000000001 {fuse:40s}")
+        );
+        assert!(game.run_command("data merge entity 00000059-0000-0000-0000-000000000001 {fuse:60s,Motion:[0.125d,0d,-0.25d],Tags:[adopted]}"), "valid TNT data must reach the existing live instance");
+        assert_eq!(
+            game.next_entity, next_id,
+            "adoption must not spawn another entity"
+        );
+        assert_eq!(game.tnts.len(), 1);
+        let live = game.tnts.iter().find(|t| t.id == id).unwrap();
+        assert_eq!(live.fuse, 60, "the actual modeled counter changes");
+        assert_eq!(live.velocity, Vec3::new(0.125, 0.0, -0.25));
+        assert_eq!(live.position, before.position);
+        assert_eq!(live.previous, live.position);
+        assert_eq!(live.rotation, before.rotation);
+        assert_eq!(live.join, before.join);
+        assert_eq!(live.owner, before.owner);
+        assert_eq!(live.guest, before.guest);
+        assert_eq!(live.power, before.power);
+        assert_eq!(live.no_gravity, before.no_gravity);
+        assert_eq!(game.world.game_time, clock);
+        assert_eq!(game.persist.uuid_of(id), Some([89, 0, 0, 1]));
+        let saved = game.entity_nbt(reference).unwrap();
+        assert_eq!(saved.get("fuse"), Some(&Tag::Short(60)));
+        assert_eq!(
+            saved.get("Tags"),
+            Some(&Tag::List(vec![Tag::String("adopted".into())]))
+        );
+        for field in [
+            "UUID",
+            "Pos",
+            "NoGravity",
+            "Rotation",
+            "owner",
+            "block_state",
+            "explosion_power",
+            "Silent",
+        ] {
+            assert!(
+                saved_before.get(field).is_some(),
+                "positive saved {field} control"
+            );
+            assert_eq!(
+                saved.get(field),
+                saved_before.get(field),
+                "retained {field}"
+            );
+        }
+    }
+
     /// #10063: TNT lit between level ticks (flint and steel, a command) has its
     /// first tick in the next level tick, so its fuse reads 79 after it, and it
     /// explodes on the 80th (`PrimedTnt.tick`). Horizon held every TNT that
