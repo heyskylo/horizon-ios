@@ -4661,7 +4661,11 @@ mod tests {
             .set_modified(commit)
             .unwrap();
         fs::create_dir_all(to.join("crates/horizon-core/src")).unwrap();
-        fs::write(to.join("crates/horizon-core/src/storage.rs"), "pub fn unpack() {}").unwrap();
+        fs::write(
+            to.join("crates/horizon-core/src/storage.rs"),
+            "pub fn unpack() {}",
+        )
+        .unwrap();
         // The older Nightly's build: Cargo records when it started.
         let built = SystemTime::now();
         std::thread::sleep(Duration::from_millis(20));
