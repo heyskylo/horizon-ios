@@ -66,9 +66,11 @@
               libxrender
               libxxf86vm
 
-              # Audio, udev
+              # Audio, udev & dev packages for native builds
               udev
+              udev.dev
               alsa-lib
+              alsa-lib.dev
 
               # Desktop integration, fonts, keyring
               fontconfig
@@ -83,6 +85,11 @@
 
               # Gamemode support
               gamemode
+
+              # Build environment for native mods
+              gcc
+              glibc.dev
+              pkg-config
             ];
 
             runScript = "${unwrapped}/bin/horizon-launcher";
@@ -90,6 +97,7 @@
             profile = ''
               export HORIZON_LAUNCHER_NO_SELF_UPDATE=1
               export HORIZON_LAUNCHER_DESKTOP_EXEC="''${HORIZON_LAUNCHER_DESKTOP_EXEC:-${pname}}"
+              export PKG_CONFIG_PATH="/usr/lib/pkgconfig:/usr/share/pkgconfig:''${PKG_CONFIG_PATH:-}"
             '';
 
             extraInstallCommands = ''
