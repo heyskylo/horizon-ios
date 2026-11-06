@@ -134,10 +134,12 @@ impl Game<'_> {
     /// Spawns an entity of `kind` (`minecraft:item_display`) at `pos` in the
     /// level in place, `dimension`, from `nbt` (its compound, as `/summon
     /// <kind> <pos> <nbt>` takes it; passengers included): its id. None on a
-    /// client's copy of the world, for another dimension, a position outside
+    /// client's copy of the world, for a position outside
     /// `/summon`'s bounds, a chunk that isn't loaded, a kind Horizon can't
     /// load, or one a mod kept out (`native_entity_join_level`). API
-    /// 59.
+    /// 59. Since API @API:npc_any_level@, `dimension` may be any level the
+    /// server has loaded, which is put in place for the summon (`execute in
+    /// <dimension> run summon`); a level not loaded is refused.
     pub(super) fn native_summon(
         &mut self,
         dimension: &str,
@@ -145,6 +147,13 @@ impl Game<'_> {
         pos: [f64; 3],
         nbt: Compound,
     ) -> Option<u32> {
+        if (self.serving.is_some() || self.options.dedicated.is_some())
+            && dimension != self.dim.id()
+        {
+            return self
+                .npc_in_level(dimension, |g| g.native_summon(dimension, kind, pos, nbt))
+                .flatten();
+        }
         if !self.native_simulates_level(dimension) || !position_ok(pos) {
             return None;
         }

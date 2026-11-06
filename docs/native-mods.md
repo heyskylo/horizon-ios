@@ -2680,6 +2680,56 @@ injections before.
   nickname covers it; their own client reads it from their next join. Chat, commands, selectors, the log and the
   server's events keep the real name. Kept by UUID until a mod sets it again or the server stops. Outside a player's
   hook; false there, when they aren't on and for a tag that isn't one. Bundles need `"hooks": @API:set_name_tag@`.
+
+#### Server hooks for plugin ports: NPCs
+
+Helpers for server mods that spawn and drive NPCs (an NPC library, guards that fight, a stage that places actors),
+in `crates/horizon-client/src/game/native_npcs.rs`, on a server only (on a client they do nothing and the readers give
+nothing). Each names its level by `dimension` (`minecraft:the_nether`) and reaches any level the server has loaded,
+not only the one in place: that level is put in place for the call and the one that was is put back, as `execute in`
+does, so they work from `native_server_tick` too. A level the server hasn't loaded is refused, and a level nobody is
+in has only the chunks something holds loaded. While a level ticks its mobs they are out of it, so from a hook inside
+that tick the other mobs of that level read as gone.
+
+- **`native_spawn_mob(dimension, kind, pos, &NativeSpawn)`** and **`native_summon(dimension, kind, pos, nbt)`**
+  ([Mobs](#mobs), [Entities](#entities)) spawn into any loaded level, as `execute in <dimension> run summon` does,
+  where they were refused for any level but the one in place. Their other refusals stay. API @API:npc_any_level@.
+- **`native_entity_by_uuid(uuid)`** finds the entity with that UUID in any loaded level, as Bukkit's
+  `Server.getEntity(UUID)` does: `(dimension, id, kind)`, so a stage plugin that keeps its actors by UUID reaches them
+  wherever they are, without `/tp`, `/data` or `/kill` by UUID on the console. A server's player is found too
+  (`minecraft:player`, in its level), except while a guest's packet is handled, where the hub is taken out.
+  **`native_merge_entity_nbt(dimension, id, nbt)`** is `native_entity_merge_nbt` ([Entity and level
+  handles](#entity-and-level-handles)) for any loaded level, as `execute in <dimension> run data merge entity` does,
+  with the same refusals (a player, a kind Horizon can't reload yet, data that changes nothing). API
+  @API:npc_entity_by_uuid@.
+- **`native_set_entity_rotation(dimension, id, yaw, pitch, head_yaw)`** turns an entity without moving it, as
+  `/rotate` does (`Entity.forceSetRotation`): its yaw and pitch in degrees (pitch clamped to -90..90), with its body and
+  head; `Some(head_yaw)` then turns a mob's head alone (`setYHeadRot`), so an NPC looks over its shoulder. It takes
+  mobs (mannequins too), armor stands, boats, minecarts, evoker fangs, and displays and the other entities Horizon
+  keeps without simulating them; a player is turned by teleporting them. A mob whose AI runs turns back by its own
+  look and body control on its next tick: for one that looks around, use `native_mob_look_at` each tick, or spawn it
+  with `no_ai`. False for no such entity, another kind, or an angle that isn't finite. API @API:npc_entity_rotation@.
+- **`native_mob_navigate(dimension, mob, to, reach, speed)`** walks a mob with the engine's pathfinding, as
+  `PathNavigation.moveTo(x, y, z, reach, speed)` does: round walls and through doors as its own navigation allows (a
+  walker's target is the ground below `to`), done within `reach` blocks, at `speed` times its movement speed. True
+  when a path was found within the mob's follow range. **`native_mob_follow(dimension, mob, target, speed)`** walks it
+  to where an entity of its level stands now (`moveTo(entity, speed)`; a player by their entity id): call it again as
+  the target moves, as vanilla's follow and attack goals do. **`native_mob_stop(dimension, mob)`** stops the walk
+  (`stop`), **`native_mob_navigating(dimension, mob)`** says whether one is in progress (`isInProgress`: false once
+  it arrived, got stuck or was stopped), and **`native_mob_look_at(dimension, mob, at)`** turns its head towards a
+  point at its own head speeds for its next tick (`LookControl.setLookAt`), its body following. These drive the mob
+  as vanilla's goals do, so its own goals may take the navigation or the look over on a later tick: an NPC library
+  asks again each tick, or gives its mobs goals of their own (`native_register_goals`). A mob with `no_ai` keeps a path
+  but doesn't walk it, and doesn't turn its head (`native_set_entity_rotation` turns it). False for no such living mob
+  or a value that isn't finite. API @API:npc_mob_navigation@.
+- **`native_mob_attack(dimension, mob, target)`** has a mob strike an entity with its own attack, as
+  `Mob.doHurtTarget` does: its attack damage, held weapon and enchantments, knockback, the species' extras (a cave
+  spider's poison, a husk's hunger) and its attack sound, dealt as any mob's hit is, so the damage hooks hear it.
+  `target` is a living mob or a server's player of the same level, by entity id; the player is hit as when a mob that
+  sees them strikes in its tick, whichever player the mob sees. There is no reach or sight check and no swing, as in
+  vanilla, where the attack goal checks and swings first. True when the blow was dealt (whether it hurt, a shield or
+  creative mode aside, is the damage hooks' to tell); false for no such living mob or target, the mob itself, and a
+  player while a guest's packet is handled, where the hub is taken out. API @API:npc_mob_attack@.
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a
@@ -2809,7 +2859,8 @@ client they do nothing, and the readers give nothing). Each takes the `dimension
 `native_set_block` does, and is refused when another level is in place. The per-level tick hooks (API 23) run with a defined level in
 place; `native_server_tick` does not define one, so name the dimension and expect a refusal there.
 
-- `native_spawn_mob(dimension, kind, pos, &NativeSpawn)` spawns a mob and returns its id. `NativeSpawn` holds an optional name and health, and the
+- `native_spawn_mob(dimension, kind, pos, &NativeSpawn)` spawns a mob and returns its id, in any loaded level since API
+  @API:npc_any_level@ ([NPCs](#server-hooks-for-plugin-ports-npcs)). `NativeSpawn` holds an optional name and health, and the
   `no_ai`, `invisible`, `silent`, `invulnerable` and `no_gravity` flags; its default is a plain mob. The mob is finalized as a natural spawn
   is, and kept when its chunk unloads. Nothing is spawned outside `/summon`'s bounds, in a chunk that isn't loaded, or a monster on peaceful.
 - `native_mob(dimension, id)` and `native_mobs(dimension)` read the living mobs: id, dimension, kind, position, yaw, health and maximum health.
@@ -2922,7 +2973,8 @@ During a machine's own tick its block entity is out of the world, so these answe
 names the level it means by its `dimension` (`minecraft:overworld`), as `native_set_block` does.
 
 - `native_summon(dimension, kind, pos, nbt)` spawns an entity of `kind` from its compound, as `/summon <kind> <pos> <nbt>`
-  does (passengers included), and returns its id. None on a client, for another dimension, a position outside `/summon`'s
+  does (passengers included), and returns its id, in any loaded level since API @API:npc_any_level@
+  ([NPCs](#server-hooks-for-plugin-ports-npcs)). None on a client, for a level not loaded, a position outside `/summon`'s
   bounds, a chunk that isn't loaded, a kind Horizon can't load, or one a mod kept out with `native_entity_join_level`.
 - `native_move_entity(dimension, id, pos, yaw, pitch)` moves an entity Horizon keeps without simulating it (a display, a
   marker, an interaction); a display eases there over its teleport duration. Mobs move with `native_teleport_mob`.
