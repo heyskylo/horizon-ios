@@ -492,8 +492,19 @@ pub fn mob_to_nbt(
                 -1
             }),
         );
-        if let Some(uuid) = m.extra.angry_at.and_then(|who| who_uuid(who, &mut uuid_of)) {
-            put(&mut tag, "angry_at", Tag::IntArray(uuid.to_vec()));
+        // `angry_at` only while there is an anger target: the UUID of the one
+        // the level has (`uuid_of`). A mob target read from the save that is
+        // not in the world (`Who::Mob(0)`) keeps the loaded UUID.
+        match m.extra.angry_at {
+            Some(crate::mobs::Who::Mob(0)) => {}
+            target => match target.and_then(|who| who_uuid(who, &mut uuid_of)) {
+                Some(uuid) => put(&mut tag, "angry_at", Tag::IntArray(uuid.to_vec())),
+                None => {
+                    if let Tag::Compound(map) = &mut tag {
+                        map.remove(&"angry_at".into());
+                    }
+                }
+            },
         }
     }
     // `Mannequin.addAdditionalSaveData`: the profile whose skin it wears, whether it
@@ -1750,12 +1761,13 @@ pub fn mob_from_nbt(
     // target come back with the mob.
     if persistent_anger(m.species()) {
         m.extra.anger_end = number(tag.get("anger_end_time")).unwrap_or(-1);
-        if tag
-            .get("angry_at")
-            .is_some_and(|t| uuid_from_tag(Some(t)) == Some(player_uuid()))
-        {
-            m.extra.angry_at = Some(crate::mobs::Who::Player);
-        }
+        // Anger at an entity other than the player is anger at a mob that may
+        // not be here (`EntityReference`): it still is not `isAngryAtAllPlayers`.
+        m.extra.angry_at = match uuid_from_tag(tag.get("angry_at")) {
+            Some(uuid) if uuid == player_uuid() => Some(crate::mobs::Who::Player),
+            Some(_) => Some(crate::mobs::Who::Mob(0)),
+            None => None,
+        };
     }
     // `Mannequin.readAdditionalSaveData`: the profile comes back with the skin, then
     // validated pose, `immovable`, `hide_description` and `description` (`updateDescription`).
@@ -7335,6 +7347,28 @@ mod neutral_anger_tests {
         let back = mob_from_nbt(&tag, &types, 2, None).unwrap();
         assert_eq!(back.extra.anger_end, 3000);
         assert_eq!(back.extra.angry_at, Some(crate::mobs::Who::Player));
+        // An iron golem angry at a monster: the target's UUID comes back as
+        // anger at a mob (not at every player under universal_anger), and is
+        // written back as it was read.
+        let mut golem = Mob::new(4, types["minecraft:iron_golem"].clone(), Vec3::ZERO, 0.0);
+        golem.extra.anger = 400;
+        golem.extra.anger_end = 3000;
+        let mut raw = mob_to_nbt(&golem, [1, 2, 3, 6], None, None, |_| None);
+        if let Tag::Compound(map) = &mut raw {
+            map.insert("angry_at".into(), Tag::IntArray(vec![9, 8, 7, 6]));
+        }
+        let back = mob_from_nbt(&raw, &types, 5, None).unwrap();
+        assert_eq!(back.extra.angry_at, Some(crate::mobs::Who::Mob(0)));
+        let again = mob_to_nbt(&back, [1, 2, 3, 6], Some(&raw), None, |_| None);
+        assert_eq!(
+            crate::save::uuid_from_tag(again.get("angry_at")),
+            Some([9, 8, 7, 6])
+        );
+        // Once the anger is over (`stopBeingAngry`), the loaded target goes.
+        let mut calm = back.clone();
+        calm.extra.angry_at = None;
+        let again = mob_to_nbt(&calm, [1, 2, 3, 6], Some(&raw), None, |_| None);
+        assert!(again.get("angry_at").is_none());
         // A mob that is no NeutralMob writes no anger.
         let pig = Mob::new(3, types["minecraft:pig"].clone(), Vec3::ZERO, 0.0);
         let tag = mob_to_nbt(&pig, [1, 2, 3, 5], None, None, |_| None);
