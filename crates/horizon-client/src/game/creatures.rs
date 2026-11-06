@@ -2662,6 +2662,10 @@ impl Game<'_> {
                         thrown.thrower = Some(thrower);
                     }
                 }
+                MobEvent::DropStack { mob, stack, at } => {
+                    self.native_entity_drop_item(mob, &stack.item, stack.count as i32, at);
+                    self.spawn_item(stack, at, dispenser::new_item_motion(), 10);
+                }
                 MobEvent::DropItem {
                     mob,
                     item,

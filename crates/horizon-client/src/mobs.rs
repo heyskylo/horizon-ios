@@ -1955,6 +1955,12 @@ pub enum MobEvent {
         count: u32,
         at: [f64; 3],
     },
+    /// `Entity.spawnAtLocation` with the complete stack and its components.
+    DropStack {
+        mob: u32,
+        stack: crate::items::ItemStack,
+        at: [f64; 3],
+    },
     /// `new ItemEntity(.., stack)` thrown by `mob` (`setThrower`): `Dolphin.ItemGoal.drop`.
     ThrowItem {
         mob: u32,
