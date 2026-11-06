@@ -1252,7 +1252,10 @@ impl Game<'_> {
             boat = boat.with_chest();
         }
         self.world.modified.insert((front.0 >> 4, front.2 >> 4));
+        let (id, kind) = (boat.id, boat.entity_type());
         self.boats.push(boat);
+        // BoatDispenseItemBehavior: createDefaultStackConfig with no user.
+        self.apply_vehicle_stack_config(super::commands::Target::Boat(id), &kind, &stack, false);
         if self.serving.is_some() || self.options.dedicated.is_some() {
             let boat = self.boats.last().unwrap();
             self.native_vehicle_create(
@@ -1299,6 +1302,14 @@ impl Game<'_> {
         );
         self.world.modified.insert((front.0 >> 4, front.2 >> 4));
         self.carts.push(cart);
+        // AbstractMinecart.createMinecart: createDefaultStackConfig with no user.
+        let id = self.next_entity;
+        self.apply_vehicle_stack_config(
+            super::commands::Target::Cart(id),
+            kind.id(),
+            &stack,
+            false,
+        );
         if self.serving.is_some() || self.options.dedicated.is_some() {
             let cart = self.carts.last().unwrap();
             self.native_vehicle_create(

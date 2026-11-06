@@ -1256,7 +1256,9 @@ impl Game<'_> {
             boat.position.z.floor() as i32 >> 4,
         );
         self.world.modified.insert(key);
+        let (id, kind) = (boat.id, boat.entity_type());
         self.boats.push(boat);
+        self.apply_vehicle_stack_config(super::commands::Target::Boat(id), &kind, stack, true);
         if self.serving.is_some() || self.options.dedicated.is_some() {
             self.native_vehicle_create(
                 self.boats.last().unwrap().entity_type().as_str(),

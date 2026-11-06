@@ -2046,6 +2046,40 @@ impl Game<'_> {
         }
     }
     /// `MinecartItem.useOn`: a cart on the clicked rail.
+    /// `EntityType.createDefaultStackConfig` on a vehicle an item made: the
+    /// item's custom name (`applyComponentsFromItemStack`), then its
+    /// `minecraft:entity_data` loaded over the vehicle (`updateCustomEntityTag`)
+    /// when it names this type. An op-only type (command block and spawner
+    /// minecarts) takes it from an op player only, never from a dispenser
+    /// (`by_player` false).
+    pub(super) fn apply_vehicle_stack_config(
+        &mut self,
+        target: super::commands::Target,
+        kind: &str,
+        stack: &ItemStack,
+        by_player: bool,
+    ) {
+        use horizon_world::nbt::Tag;
+        let name = stack.data().and_then(|d| d.custom_name.clone());
+        let op = by_player && self.acting_player_is_op();
+        let data =
+            horizon_client::block_entity_item::spawn_egg_entity_data(stack, kind, op).cloned();
+        if name.is_none() && data.is_none() {
+            return;
+        }
+        let Some(mut own) = self.entity_nbt(target) else {
+            return;
+        };
+        if let (Some(name), Tag::Compound(map)) = (name, &mut own) {
+            map.insert("CustomName".into(), name);
+        }
+        let tag = match &data {
+            Some(data) => horizon_client::data_cmd::merged(&own, data),
+            None => own,
+        };
+        // The vehicle's own compound, its name and data merged in: it loads back.
+        let _ = self.apply_entity_nbt(target, tag);
+    }
     pub(super) fn place_minecart(&mut self, hit: &Hit, stack: &ItemStack) -> bool {
         let Some(kind) = CartKind::from_id(&stack.item) else {
             return false;
@@ -2065,6 +2099,8 @@ impl Game<'_> {
             .modified
             .insert((hit.pos[0] >> 4, hit.pos[2] >> 4));
         self.carts.push(cart);
+        let id = self.next_entity;
+        self.apply_vehicle_stack_config(super::commands::Target::Cart(id), kind.id(), stack, true);
         if self.serving.is_some() || self.options.dedicated.is_some() {
             let cart = self.carts.last().unwrap();
             self.native_vehicle_create(
