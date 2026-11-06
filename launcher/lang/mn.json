@@ -1220,5 +1220,7 @@
   "{name} was left out: made for another Horizon version": "{name}-г хассан: Horizon-ын өөр хувилбарт зориулагдсан",
   "{name} was left out: clashes with {other}": "{name}-г хассан: {other}-тэй зөрчилддөг",
   "{name} was left out: it needs {other}, which was left out": "{name}-г хассан: түүнд {other} хэрэгтэй, тэр нь хасагдсан",
-  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Таны тоглодог Horizon дээр бүтэхгүй ({code}): зохиогч нь шинэчлэх хүртэл бүтээлт үүнийг хасна"
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Таны тоглодог Horizon дээр бүтэхгүй ({code}): зохиогч нь шинэчлэх хүртэл бүтээлт үүнийг хасна",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Таны байгаа газарт үүсгэн байгуулагчдын иж бүрдлийг playhorizon.dev дээрх үнэгүй төлбөрөөр авдаг. Үүнийг Дэлгүүрээс аваарай: төлбөрийг танд нээж өгнө.",
+  "The founder set can't be claimed from your country.": "Үүсгэн байгуулагчдын иж бүрдлийг таны улсаас авах боломжгүй."
 }
