@@ -5,6 +5,7 @@ Build `cargo build -p horizon-client --example wind_burst_hook_probe`, then pass
 --binary and --resources. Uses only temporary synthetic fixture worlds.
 """
 import argparse
+from contextlib import nullcontext
 import json
 import os
 from pathlib import Path
@@ -26,7 +27,7 @@ def state(facts, name, **properties):
     raise ValueError((name, properties))
 
 
-def check(binary, resources):
+def check(binary, resources, timeout=600, evidence=None):
     facts = Facts(resources)
     cells = [
         [0, 100, 0, state(facts, 'lever', face='floor', powered='false')],
@@ -40,7 +41,10 @@ def check(binary, resources):
         cases.append(dict(seed=123, cells=cells, pos=[0, 100, 0],
                           rules={'mob_griefing': griefing},
                           wind_burst=dict(center=[0.5, 100.5, 0.5], radius=3.0, breeze=breeze)))
-    with tempfile.TemporaryDirectory(prefix='hz-wind-hook-') as folder:
+    if evidence is not None:
+        evidence.mkdir(parents=True, exist_ok=True)
+    context = nullcontext(evidence) if evidence is not None else tempfile.TemporaryDirectory(prefix='hz-wind-hook-')
+    with context as folder:
         work = Path(folder)
         inputs = work / 'cases.jsonl'
         inputs.write_text(''.join(json.dumps(case) + '\n' for case in cases))
@@ -55,7 +59,7 @@ def check(binary, resources):
             elif mode == 'protect':
                 env['HORIZON_WIND_PROTECT'] = '1'
             run_game([str(binary), '--headless', '--resources', str(resources)],
-                     cwd=work, env=env, check=True, timeout=120)
+                     cwd=work, env=env, check=True, timeout=timeout)
             text = output.read_text()
             assert 'failed ' not in text, text
             results[mode] = [part.splitlines() for part in text.split('case ')[1:]]
@@ -81,8 +85,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', type=Path, required=True)
     parser.add_argument('--resources', type=Path, required=True)
+    parser.add_argument('--timeout', type=float, default=600,
+                        help='per-process timeout in seconds; debug resource startup can be slow')
+    parser.add_argument('--evidence-dir', type=Path,
+                        help='retain exact cases and all native outputs, including on assertion failure')
     args = parser.parse_args()
-    check(args.binary.resolve(), args.resources.resolve())
+    if args.timeout <= 0:
+        parser.error('--timeout must be positive')
+    check(args.binary.resolve(), args.resources.resolve(), args.timeout,
+          args.evidence_dir.resolve() if args.evidence_dir else None)
 
 
 if __name__ == '__main__':
