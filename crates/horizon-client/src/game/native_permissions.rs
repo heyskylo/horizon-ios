@@ -24,6 +24,25 @@ impl Game<'_> {
     ) -> bool {
         self.has_permission_at(player, node, default_level, self.permission_level(player))
     }
+    /// Sends a player their command tree again, the mods asked anew
+    /// (`native_player_commands_sent`, its v2 and the permission nodes of
+    /// the mods' commands), as Bukkit's `Player.updateCommands`: after a
+    /// permissions mod changed what they may use. It goes in the next server
+    /// tick, so it works from any server hook, the player's own included
+    /// (from the commands-sent hooks themselves it would send it every tick).
+    /// True when the player is on (or is the acting player); false for
+    /// anyone else and on a client. API @API:resend_commands@.
+    pub(super) fn native_resend_commands(&mut self, player: u128) -> bool {
+        let on = self.lan_acting_uuid == Some(player)
+            || self
+                .lan
+                .as_ref()
+                .is_some_and(|host| host.hub.guests.iter().any(|g| g.placed && g.uuid == player));
+        if on && !self.native_resend_trees.contains(&player) {
+            self.native_resend_trees.push(player);
+        }
+        on
+    }
 }
 
 impl Game<'_> {
@@ -39,6 +58,24 @@ impl Game<'_> {
         let mut result = None;
         self.native_permission_check(player, node, default_level, &mut result);
         result.unwrap_or(level >= default_level)
+    }
+
+    /// The command trees `native_resend_commands` asked for, sent from the
+    /// server's tick with no player's state swapped in.
+    pub(super) fn resend_native_trees(&mut self, host: &mut super::lan::LanHost) {
+        for player in std::mem::take(&mut self.native_resend_trees) {
+            let Some(conn) = host
+                .hub
+                .guests
+                .iter()
+                .find(|g| g.placed && g.uuid == player)
+                .map(|g| g.conn)
+            else {
+                continue;
+            };
+            self.native_filter_commands(host, Some(conn));
+            host.hub.send_commands_to(conn);
+        }
     }
 
     /// The operator level of a player who is on or joining (the acting

@@ -2539,6 +2539,12 @@ server's command tree ask. Without such a mod every answer is the operator level
   a player allowed it), `/list`, the chat filter's and Horizon's `/tempban` commands, nor a mod's quiet commands, and a LAN world without Allow Commands still refuses its guests' vanilla
   commands. The hub is out of reach and no player's state is swapped in: answer from the mod's own data. Server-side.
   Bundles need `"hooks": @API:player_command_level@`.
+- Helper **`native_resend_commands(player)`** (`host.resend_commands`): sends a player their command tree again, with
+  `native_player_commands_sent`, its v2 and the permission nodes of the mods' commands asked anew, as Bukkit's
+  `Player.updateCommands`: after a permissions mod changed what they may use (a `/lp` edit, a sync from another
+  server). The tree goes out in the next server tick, so it works from any server hook, the player's own included
+  (calling it from the commands-sent hooks themselves would send the tree every tick). True when the player is on;
+  false for anyone else and on a client. Bundles need `"hooks": @API:resend_commands@`.
 
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
