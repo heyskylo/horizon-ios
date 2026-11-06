@@ -247,7 +247,10 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         && m.bounds().intersects(p.bounds.inflate(Vec3::new(1.0, 0.5, 1.0)))
     {
         // isWithinMeleeAttackRange, with what the cube holds.
-        if m.melee_reaches(p.bounds) && m.sees(w, Who::Player) {
+        if w.target_info(Who::Player)
+            .is_some_and(|t| m.melee_reaches(w, t.hitbox))
+            && m.sees(w, Who::Player)
+        {
             events.push(MobEvent::CubeHurtPlayer {
                 cube: m.id,
                 amount: attack_damage(m),
@@ -289,7 +292,7 @@ fn hurt_touching_golems(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
                 && o.species == Species::IronGolem
                 && o.alive
                 && o.bounds.intersects(bounds)
-                && m.melee_reaches(o.bounds)
+                && m.melee_reaches(w, o.hitbox)
                 && crate::scoreboard::pushable_by(theirs, own, pushable)
                 && crate::scoreboard::teams_allow_damage(own, theirs)
         })

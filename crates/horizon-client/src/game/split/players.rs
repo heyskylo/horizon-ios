@@ -480,6 +480,7 @@ impl Split<'_> {
                 None,
                 Some(settings),
                 None,
+                None,
             )
         })?;
         guest.renderer = Some(build_renderer(
