@@ -178,10 +178,11 @@ fn calibration_nits(p: vec2<f32>, size: vec2<f32>) -> f32 {
     var lifted = false;
     let shows = params.world > 0.5 && params.peak > 1.0
         && (hand || (!covered && shows_world(f.rgb, w.rgb)));
-    // Light over 1 (a float frame's) shows only where the world does, up to the
-    // peak; under the HUD and menus, and with HDR Lighting off, it clips at white as
-    // a unorm frame does.
-    let c = select(min(f.rgb, vec3(1.0)), f.rgb, shows);
+    // Light over 1 (a float frame's) shows only where the world does and carries
+    // no mark (alpha 1), up to the peak: light written as light. Marked pixels clip
+    // at white before their lift, as on a unorm frame, so light sources, the sun and
+    // HDR lighting look as they do there; so do the HUD, menus and HDR Lighting off.
+    let c = select(min(f.rgb, vec3(1.0)), f.rgb, shows && w.a == 1.0);
     // Gamma 2.2, as SDR displays and the compositors' SDR paths decode it.
     var light = pow(c, vec3(2.2));
     // HDR lighting: alpha between 0.76 and 1 is how much of it the surface gets. Vanilla's

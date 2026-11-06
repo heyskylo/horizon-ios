@@ -3794,7 +3794,7 @@ impl Renderer {
             &device,
             Some(&entity_layout),
             &entity_shader,
-            config.format.remove_srgb_suffix(),
+            frame_format,
         );
         // RenderPipelines.ENTITY_SOLID: a surface of an entity that is coplanar with
         // terrain wins the tie in vanilla (the boat's floor over the trapdoor on the
