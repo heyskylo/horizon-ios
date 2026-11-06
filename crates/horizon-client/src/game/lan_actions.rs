@@ -310,6 +310,25 @@ fn direction(face: i32) -> [i32; 3] {
     }
 }
 
+/// The windows a guest has open besides their inventory: the block or mod
+/// container, the crafting table, a station, a lectern, a merchant, a mount.
+fn guest_open_windows(host: &LanHost, conn: u32) -> Vec<i32> {
+    let mut windows: Vec<i32> = host
+        .hub
+        .guest(conn)
+        .and_then(|g| g.menu.as_ref().map(|m| m.window))
+        .into_iter()
+        .collect();
+    if let Some(p) = host.play.get(&conn) {
+        windows.extend(p.crafting.table.as_ref().map(|t| t.0));
+        windows.extend(p.station.as_ref().map(|s| s.window));
+        windows.extend(p.lectern.as_ref().map(|l| l.window));
+        windows.extend(p.merchant.as_ref().map(|m| m.window));
+        windows.extend(p.mount_window.as_ref().map(|m| m.window));
+    }
+    windows
+}
+
 /// The hub's current bodies, across dimensions. A borrowed ancestor's
 /// live body takes precedence over this saved state until its turn returns.
 fn building_players(host: &LanHost) -> Vec<BuildingPlayer> {
@@ -1801,23 +1820,53 @@ impl Game<'_> {
         if self.guest_menu_still_valid(host, conn) {
             return;
         }
-        let mut windows: Vec<i32> = host
-            .hub
-            .guest(conn)
-            .and_then(|g| g.menu.as_ref().map(|m| m.window))
-            .into_iter()
-            .collect();
-        if let Some(p) = host.play.get(&conn) {
-            windows.extend(p.crafting.table.as_ref().map(|t| t.0));
-            windows.extend(p.station.as_ref().map(|s| s.window));
-            windows.extend(p.lectern.as_ref().map(|l| l.window));
-            windows.extend(p.merchant.as_ref().map(|m| m.window));
-            windows.extend(p.mount_window.as_ref().map(|m| m.window));
-        }
+        let windows = guest_open_windows(host, conn);
         self.guest_close_all(host, conn);
         for container in windows {
             host.hub
                 .send_to(conn, &C::ContainerClose(play::ContainerClose { container }));
+        }
+    }
+
+    /// The mods hear a guest's click in their own inventory or a vanilla
+    /// menu they have open (`native_inventory_click`) before any handler
+    /// does. A canceled click becomes a drag start of no type, which every
+    /// menu takes as `resetQuickCraft` and nothing else, so it moves nothing
+    /// and the client's predicted slots and cursor are answered as for any
+    /// click the server refused.
+    fn lan_inventory_click_hooks(
+        &mut self,
+        host: &mut LanHost,
+        conn: u32,
+        p: &mut play::ContainerClick,
+    ) {
+        let Some(g) = host.hub.guest(conn).filter(|g| !g.spectator()) else {
+            return;
+        };
+        // A mod's own menu is `native_menu_clicked`'s.
+        if g.menu
+            .as_ref()
+            .is_some_and(|m| m.window == p.container && m.slots == Slots::Native)
+            || (p.container != 0 && !guest_open_windows(host, conn).contains(&p.container))
+        {
+            return;
+        }
+        let (uuid, name) = (g.uuid, g.name.clone());
+        if p.input == 5 {
+            return;
+        }
+        let mut cancel = false;
+        self.native_inventory_click(
+            uuid,
+            &name,
+            p.container,
+            i32::from(p.slot),
+            i32::from(p.button),
+            p.input,
+            &mut cancel,
+        );
+        if cancel {
+            (p.slot, p.button, p.input) = (-999, 3 << 2, 5);
         }
     }
 
@@ -1971,6 +2020,13 @@ impl Game<'_> {
         ) {
             self.guest_validate_menu(host, conn);
         }
+        let mut packet = packet;
+        if let S::ContainerClick(p) = &mut packet {
+            self.lan_inventory_click_hooks(host, conn, p);
+        }
+        let Some(gi) = host.hub.guests.iter().position(|g| g.conn == conn) else {
+            return;
+        };
         let spectator = host.hub.guests[gi].spectator();
         match packet {
             S::PlayerAction(a) => match a.action {
