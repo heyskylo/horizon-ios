@@ -2691,7 +2691,7 @@ impl OptionsUi {
         rows
     }
     /// The row that reaches the Zoom mod that replaced the extra: its switch and settings page
-    /// when it is built in, else the Mods page where it is installed (Options > Mods). Zoom
+    /// when it is built in, else a note saying where it is installed (Options > Mods). Zoom
     /// became an official native mod, so Extras has no setting of its own for it (#8713).
     fn zoom_mod_row(s: &Settings) -> Row {
         let Some(i) = s
@@ -2700,16 +2700,9 @@ impl OptionsUi {
             .iter()
             .position(|m| m.id == "zoom" && m.native.is_some())
         else {
-            return Row::Buttons(
-                button(
-                    0.0,
-                    0.0,
-                    310.0,
-                    tr("horizon.extras.zoom_mod_install"),
-                    Act::Push(Page::Mods),
-                ),
-                None,
-            );
+            // A note, not a button: Options > Mods already has the one way into the Mods page
+            // (`every_setting_and_page_is_reached_from_one_place`).
+            return Row::Note(lang::get("horizon.extras.zoom_mod_install"));
         };
         let label = || Text::option_name_value(tr("horizon.extras.zoom"), on_off(s.mods.is_on(i)));
         let toggle = |width| button(0.0, 0.0, width, label(), Act::ToggleMod(i));
@@ -6684,18 +6677,15 @@ mod tests {
         let mut ui = OptionsUi::default();
         ui.show(Page::Extras);
         let english = || lang::Language::load(&[], "en_us");
-        // Without the mod, Extras points to the Mods page where it is installed.
+        // Without the mod, Extras says where it is installed (a note, not a second way into
+        // Options > Mods).
         let (widgets, _, _, _) = lang::scoped(english(), || ui.layout(&s, 480.0, 4000.0)).0;
         assert!(
             widgets.iter().any(|w| matches!(
                 &w.kind,
-                WKind::Button {
-                    act: Act::Push(Page::Mods),
-                    label,
-                    ..
-                } if label.plain() == "Zoom: install from Mods"
+                WKind::Text { text, .. } if text.plain() == "Zoom: install from Mods"
             )),
-            "Extras has no way to the Zoom mod"
+            "Extras has no hint for the Zoom mod"
         );
         // Built in, Zoom's settings live on its page: Extras opens that page.
         s.mods.installed.push(crate::mod_list::Installed {
