@@ -41,6 +41,9 @@ mod higher_shadowcolor_tests;
 mod single_side_tests;
 
 #[cfg(test)]
+mod sky_disc_blend_tests;
+
+#[cfg(test)]
 mod undrawn_terrain_tests;
 
 #[cfg(test)]
@@ -372,6 +375,9 @@ struct Pass {
     name: String,
     group: Group,
     pipeline: Pipeline,
+    /// The same program as vanilla blends the sky's parts (`PostProgram::vanilla_sky_blends`):
+    /// without blending for the disc and the void, then with `STARS_BLEND` for the stars.
+    sky_parts: Option<[wgpu::RenderPipeline; 2]>,
     layout: wgpu::BindGroupLayout,
     ubo: wgpu::Buffer,
     block: Vec<u8>,
@@ -1681,6 +1687,9 @@ fn build_pass(
     let mut writes = Vec::new();
     // Outputs into a buffer of a small packed format, and the bits it keeps.
     let mut packed_outputs = Vec::new();
+    // Each output's own `blend.<program>.<buffer>`, and whether its buffer blends at all: what
+    // the sky's part pipelines keep (`PostProgram::vanilla_sky_blends`).
+    let mut own_blends: Vec<(Option<wgpu::BlendState>, bool)> = Vec::new();
     for &location in &interface.outputs {
         let l = location as usize;
         if targets.len() <= l {
@@ -1699,19 +1708,21 @@ fn build_pass(
             {
                 t.write_mask = wgpu::ColorWrites::COLOR;
             }
-            if let (Some(t), Some(b)) = (
-                &mut state,
-                p.buffer_blends
-                    .iter()
-                    .find(|(n, _)| *n == buffer)
-                    .map_or(p.blend, |(_, b)| *b),
-            ) && format
+            let own = p.buffer_blends.iter().find(|(n, _)| *n == buffer);
+            let blendable = format
                 .guaranteed_format_features(features)
                 .flags
-                .contains(wgpu::TextureFormatFeatureFlags::BLENDABLE)
+                .contains(wgpu::TextureFormatFeatureFlags::BLENDABLE);
+            if let (Some(t), Some(b)) = (&mut state, own.map_or(p.blend, |(_, b)| *b))
+                && blendable
             {
                 t.blend = Some(blend_state(b));
             }
+            if own_blends.len() <= l {
+                own_blends.resize(l + 1, (None, false));
+            }
+            let own = own.and_then(|(_, b)| *b).filter(|_| blendable);
+            own_blends[l] = (own.map(blend_state), blendable);
             if !p.group.shadow()
                 && let Some(bits) = pack.packed[buffer as usize]
             {
@@ -1779,54 +1790,74 @@ fn build_pass(
         let mut fragment = program.fragment;
         packed::quantise_outputs(&mut fragment, &packed_outputs);
         let (vs, fs) = (module(program.vertex), module(fragment));
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some(&p.name),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &vs,
-                entry_point: Some("main"),
-                compilation_options: Default::default(),
-                // A geometry stage reads its vertices itself.
-                buffers: geometry
-                    .filter(|_| p.geometry_triangles == 0)
-                    .map_or(&[], |g| g.buffers),
-            },
-            // Rows flipped to GL's turn front faces clockwise.
-            primitive: wgpu::PrimitiveState {
-                front_face: wgpu::FrontFace::Cw,
-                cull_mode: geometry
-                    .filter(|g| g.cull && p.geometry_triangles == 0)
-                    .map(|_| wgpu::Face::Back),
-                ..Default::default()
-            },
-            depth_stencil: geometry.map(|g| wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: Some(g.depth_write),
-                depth_compare: Some(wgpu::CompareFunction::LessEqual),
-                stencil: Default::default(),
-                bias: if p.name == "gbuffers_damagedblock" {
-                    wgpu::DepthBiasState {
-                        constant: -10,
-                        slope_scale: -1.0,
-                        clamp: 0.0,
-                    }
-                } else {
-                    Default::default()
+        let descriptor = |targets: &[Option<wgpu::ColorTargetState>]| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(&p.name),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &vs,
+                    entry_point: Some("main"),
+                    compilation_options: Default::default(),
+                    // A geometry stage reads its vertices itself.
+                    buffers: geometry
+                        .filter(|_| p.geometry_triangles == 0)
+                        .map_or(&[], |g| g.buffers),
                 },
-            }),
-            multisample: Default::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &fs,
-                entry_point: Some("main"),
-                compilation_options: Default::default(),
-                targets: &targets,
-            }),
-            multiview_mask: None,
-            cache: None,
+                // Rows flipped to GL's turn front faces clockwise.
+                primitive: wgpu::PrimitiveState {
+                    front_face: wgpu::FrontFace::Cw,
+                    cull_mode: geometry
+                        .filter(|g| g.cull && p.geometry_triangles == 0)
+                        .map(|_| wgpu::Face::Back),
+                    ..Default::default()
+                },
+                depth_stencil: geometry.map(|g| wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: Some(g.depth_write),
+                    depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                    stencil: Default::default(),
+                    bias: if p.name == "gbuffers_damagedblock" {
+                        wgpu::DepthBiasState {
+                            constant: -10,
+                            slope_scale: -1.0,
+                            clamp: 0.0,
+                        }
+                    } else {
+                        Default::default()
+                    },
+                }),
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &fs,
+                    entry_point: Some("main"),
+                    compilation_options: Default::default(),
+                    targets,
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let pipeline = descriptor(&targets);
+        // The program's own blend replaced by vanilla's for the part; a buffer's own
+        // `blend.<program>.<buffer>` still applies (Iris 1.11.7 blended the sky disc into that
+        // buffer only, with a probe pack of ours).
+        let sky_parts = p.vanilla_sky_blends.then(|| {
+            [None, Some(blend_state(horizon_shaders::STARS_BLEND))].map(|part| {
+                let targets: Vec<_> = (targets.iter().enumerate())
+                    .map(|(l, t)| {
+                        let (own, blendable) = own_blends.get(l).copied().unwrap_or((None, false));
+                        t.clone().map(|t| wgpu::ColorTargetState {
+                            blend: own.or(part.filter(|_| blendable)),
+                            ..t
+                        })
+                    })
+                    .collect();
+                descriptor(&targets)
+            })
         });
-        (layout, pipeline)
+        (layout, pipeline, sky_parts)
     });
-    let (layout, pipeline) = match created {
+    let (layout, pipeline, sky_parts) = match created {
         Ok(created) => created,
         Err(e) => {
             notes.push(format!("{}: skipped: {e}", p.name));
@@ -1864,6 +1895,7 @@ fn build_pass(
         name: p.name,
         group: p.group,
         pipeline: Pipeline::Render(pipeline),
+        sky_parts,
         layout,
         samplers,
         writes,
@@ -2002,6 +2034,7 @@ fn build_compute(
             render: c.work_groups_render,
             local,
         },
+        sky_parts: None,
         layout,
         samplers,
         writes: Vec::new(),
@@ -3500,6 +3533,16 @@ impl PackPost {
                 open.as_mut().expect("open").1 = i;
             }
             let rp = &mut open.as_mut().expect("open").0;
+            // Each part with vanilla's blend for it: one program, three pipelines.
+            let part_pipeline =
+                pass.sky_parts
+                    .as_ref()
+                    .and_then(|[plain, stars]| match part.stage {
+                        "SKY" | "VOID" => Some(plain),
+                        "STARS" => Some(stars),
+                        _ => None,
+                    });
+            rp.set_pipeline(part_pipeline.unwrap_or(pass.render()));
             if pass.draw {
                 self.draws.bind(rp, part.stage);
             }
