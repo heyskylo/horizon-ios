@@ -2168,6 +2168,16 @@ def gameplay_guide_boat_and_keys(args, name):
         check(guide(game) == ([], []), f'the guide stayed up after a key: {guide(game)}')
         game.pad('lb')
         check(guide(game) != ([], []), 'the pad did not bring the guide back')
+
+        # The pad's own click isn't the mouse: back to the game from the pause menu.
+        game.pad('start')
+        time.sleep(SETTLE)
+        game.wait_targets()
+        game.pad('south')
+        game.pad('south')
+        time.sleep(SETTLE)
+        check(game.ctl('state')['screen'] == 'playing', f"still on {game.ctl('state')['screen']}")
+        check(guide(game) != ([], []), "the pad's own click hid the guide")
     finally:
         game.quit()
     return check.failures

@@ -429,7 +429,7 @@ Controller settings are Horizon's own: **Options → Controls → Controller
 Settings...** (or **Options → Horizon Settings... → Controller Settings...**),
 a screen in the graphics settings' style with a search field and General, Bindings and Device pages. Bindings
 is a list like the key binds screen (pick an action, press a button; conflicts marked as vanilla does), and
-Reset. General's Play group has the **Gameplay Guide** switch and **Trigger Threshold**, how far a trigger is pulled before it counts as pressed:
+Reset. General's Play group has the **Gameplay Guide** setting (Full, Basic or Off) and **Trigger Threshold**, how far a trigger is pulled before it counts as pressed:
 0.1 to 0.9, by default 0.4, which also places a DualSense's catch (see "Adaptive triggers"). The screen
 names the player whose profile it edits and the controller the game sees; Device also shows its vendor and
 product ids, the detected glyph family and the override. Changes apply at once; **Undo** (X) is there only
@@ -451,7 +451,7 @@ triggerThreshold:0.4
 toggleSneak:true
 glyphs:auto
 bind_key.jump:south
-gameplayGuide:true
+gameplayGuide:full
 bind_pad.hotbarNext:rb
 bindLayout:1
 ```

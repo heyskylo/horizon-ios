@@ -283,6 +283,8 @@ pub enum Under {
         item: bool,
         same: bool,
         result: bool,
+        /// The carried stack can go here.
+        accepts: bool,
     },
     Recipe {
         direct_craft: bool,
@@ -313,12 +315,15 @@ pub fn resolve_menu(f: &MenuFacts) -> Guide {
     const TAKE: &str = "horizon.controller.guide.take";
     const MOVE: &str = "horizon.controller.guide.quick_move";
     let under = match f.under {
+        // A result takes only into empty hands or the same stack.
         Under::Slot {
             item: true,
             result: true,
+            same,
             ..
-        } => vec![Row::new(South, TAKE), Row::new(North, MOVE)],
+        } if !f.carrying || same => vec![Row::new(South, TAKE), Row::new(North, MOVE)],
         Under::Slot { result: true, .. } => Vec::new(),
+        Under::Slot { accepts: false, .. } if f.carrying => Vec::new(),
         Under::Slot { item, same, .. } if f.carrying => vec![
             Row::new(
                 South,
@@ -793,7 +798,12 @@ mod tests {
                 ..MenuFacts::default()
             })
         };
-        let slot = |item, same, result| Under::Slot { item, same, result };
+        let slot = |item, same, result| Under::Slot {
+            item,
+            same,
+            result,
+            accepts: true,
+        };
         let close_only = ["close"];
         let empty: [&str; 0] = [];
         for quiet in [Under::Nothing, slot(false, false, false)] {
@@ -910,5 +920,43 @@ mod detail_tests {
         assert_eq!(GuideDetail::parse("true"), GuideDetail::Full);
         assert_eq!(GuideDetail::parse("false"), GuideDetail::Off);
         assert_eq!(GuideDetail::parse("basic"), GuideDetail::Basic);
+    }
+}
+
+#[cfg(test)]
+mod slot_tests {
+    use super::*;
+
+    /// The rows for the slot: South or West, whichever column they're in.
+    fn rows(item: bool, same: bool, result: bool, accepts: bool, carrying: bool) -> usize {
+        let guide = resolve_menu(&MenuFacts {
+            under: Under::Slot {
+                item,
+                same,
+                result,
+                accepts,
+            },
+            carrying,
+            ..MenuFacts::default()
+        });
+        [guide.left, guide.right]
+            .iter()
+            .flatten()
+            .filter(|row| matches!(row.button, Button::South | Button::West))
+            .count()
+    }
+
+    #[test]
+    fn a_slot_that_refuses_the_carried_stack_offers_nothing() {
+        assert_eq!(rows(false, false, false, false, true), 0);
+        assert_eq!(rows(true, true, false, false, true), 0);
+        assert!(rows(false, false, false, true, true) > 0);
+    }
+
+    #[test]
+    fn a_result_is_taken_only_into_empty_hands_or_the_same_stack() {
+        assert!(rows(true, false, true, true, false) > 0);
+        assert!(rows(true, true, true, true, true) > 0);
+        assert_eq!(rows(true, false, true, true, true), 0);
     }
 }

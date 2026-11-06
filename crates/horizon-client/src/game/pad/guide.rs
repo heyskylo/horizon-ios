@@ -22,6 +22,9 @@ pub(in crate::game) struct Shown {
     rect: Rect,
 }
 
+/// A drawn quad covering this much of the view is the screen's dimming, not something to avoid.
+const GUIDE_BACKDROP_SHARE: f32 = 0.9;
+
 impl Game<'_> {
     /// The guide shows while the pad plays: not over a menu, a prompt, the debug screen or a sleeping
     /// or missing player, not once the mouse or keyboard took over, and not when the setting is off.
@@ -84,7 +87,8 @@ impl Game<'_> {
                 );
                 [x0, y0, x1 - x0, y1 - y0]
             })
-            .filter(|r| r[2] * r[3] < w * h / 2.0)
+            // Not the screen's dimming, but a panel that fills a small view is still in the way.
+            .filter(|r| r[2] * r[3] < w * h * GUIDE_BACKDROP_SHARE)
             .collect()
     }
 
@@ -95,6 +99,7 @@ impl Game<'_> {
         if !settings.enabled
             || settings.guide_detail == GuideDetail::Off
             || !self.pad.in_use
+            || self.pad.keyboard_took_over
             || self.prompt_open()
             || self.title.is_some()
             || self.pad.menu.osk.is_some()
@@ -124,13 +129,31 @@ impl Game<'_> {
             Under::Control
         } else if let Some(slot) = self.slot_at(batch, self.cursor.0, self.cursor.1) {
             let stack = self.slot_view(slot);
-            Under::Slot {
-                item: stack.is_some(),
-                same: match (&stack, &self.carried) {
-                    (Some(a), Some(b)) => a.item == b.item,
-                    _ => false,
-                },
-                result: slot == 200,
+            let same = match (&stack, &self.carried) {
+                (Some(a), Some(b)) => a.same_item_same_components(b),
+                _ => false,
+            };
+            let crafter = slot == 309
+                && matches!(
+                    self.container_kind(),
+                    Some(horizon_client::containers::BlockEntity::Crafter(..))
+                );
+            let furnace_output = slot == 302
+                && matches!(
+                    self.container_kind(),
+                    Some(horizon_client::containers::BlockEntity::Furnace(..))
+                );
+            if crafter {
+                // NonInteractiveResultSlot.
+                Under::Nothing
+            } else {
+                let accepts = self.pad_guide_slot_accepts(slot, stack.as_ref());
+                Under::Slot {
+                    item: stack.is_some(),
+                    same,
+                    result: slot == 200 || furnace_output,
+                    accepts,
+                }
             }
         } else {
             Under::Nothing
@@ -408,6 +431,13 @@ impl Game<'_> {
         {
             return None;
         }
+        // ItemFrame.interact: a fixed frame, or an empty one with nothing to put in it, passes.
+        if let Some(frame) = self.item_frames.iter().find(|f| f.id as i32 == id) {
+            let held = self.held().is_some() || self.offhand.is_some();
+            if frame.fixed || (frame.item.is_none() && !held) {
+                return None;
+            }
+        }
         Some(Verb::Use)
     }
 
@@ -429,6 +459,10 @@ impl Game<'_> {
         Some(if m.kind.food.iter().any(|f| f.as_str() == item) {
             Verb::Feed
         } else if matches!(species, Species::Villager | Species::WanderingTrader) {
+            // A baby only shakes its head.
+            if m.is_baby() {
+                return None;
+            }
             Verb::Trade
         } else if !m.is_baby()
             && (equine::is_equine(species)
@@ -506,9 +540,20 @@ impl Game<'_> {
                     Verb::Load
                 }
             }
-            "trident" | "snowball" | "egg" | "blue_egg" | "brown_egg" | "ender_pearl"
-            | "ender_eye" | "wind_charge" | "splash_potion" | "lingering_potion"
-            | "experience_bottle" => Verb::Throw,
+            "trident" => {
+                // TridentItem.use: not about to break, and Riptide needs water or rain.
+                let riptide = stack.enchantment_level("minecraft:riptide") > 0;
+                if stack.damage >= self.trident_max_damage(&stack).saturating_sub(1)
+                    || (riptide && !self.in_water_or_rain())
+                {
+                    return None;
+                }
+                Verb::Throw
+            }
+            "snowball" | "egg" | "blue_egg" | "brown_egg" | "ender_pearl" | "ender_eye"
+            | "wind_charge" | "splash_potion" | "lingering_potion" | "experience_bottle" => {
+                Verb::Throw
+            }
             "fishing_rod" => Verb::Fish,
             "spyglass" => Verb::Zoom,
             // They need a block or fluid the click's own ray finds.
@@ -527,10 +572,36 @@ impl Game<'_> {
                     _ => Verb::Use,
                 }
             }
-            _ if info.equip_slot.is_some() => Verb::Equip,
+            // Equippable.swapWithEquipmentSlot: only what can be swapped onto the armour slots.
+            _ if info.swappable
+                && matches!(
+                    info.equip_slot.as_deref(),
+                    Some("head" | "chest" | "legs" | "feet")
+                ) =>
+            {
+                Verb::Equip
+            }
             _ if super::super::remote::item_has_use(&info) => Verb::Use,
             _ => return None,
         })
+    }
+
+    /// Whether the carried stack can go in `slot`, which holds `there`.
+    fn pad_guide_slot_accepts(&self, slot: usize, there: Option<&ItemStack>) -> bool {
+        let Some(carried) = &self.carried else {
+            return true;
+        };
+        if self.refuses(slot, carried) {
+            return false;
+        }
+        let info = self.items().get(&carried.item);
+        if (500..504).contains(&slot) {
+            const ARMOR: [&str; 4] = ["head", "chest", "legs", "feet"];
+            return info.is_some_and(|i| i.equip_slot.as_deref() == Some(ARMOR[slot - 500]));
+        }
+        // A full stack of the same thing has no room, and a click does nothing.
+        let max = info.map_or(64, |i| i.max_stack);
+        !there.is_some_and(|s| s.same_item_same_components(carried) && s.count >= max)
     }
 
     /// `Player.getProjectile`, or a creative player's arrow.

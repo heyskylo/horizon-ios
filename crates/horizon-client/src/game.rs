@@ -18146,7 +18146,8 @@ impl Game<'_> {
                 state: ElementState::Pressed,
                 ..
             }
-        ) {
+        ) && !self.pad.menu.synthetic
+        {
             self.pad.keyboard_took_over = true;
         }
         if let WindowEvent::MouseInput { state, button, .. } = &event {
@@ -18234,8 +18235,16 @@ impl Game<'_> {
             return;
         }
         // Fullscreen is a window shortcut, before screens consume keyboard input.
+        // Not Alt or Super on their own: leaving the window isn't playing with the keyboard.
         if let WindowEvent::KeyboardInput { event, .. } = &event
             && event.state == ElementState::Pressed
+            && !event.repeat
+            && !matches!(
+                event.physical_key,
+                PhysicalKey::Code(
+                    KeyCode::AltLeft | KeyCode::AltRight | KeyCode::SuperLeft | KeyCode::SuperRight
+                )
+            )
         {
             self.pad.keyboard_took_over = true;
         }

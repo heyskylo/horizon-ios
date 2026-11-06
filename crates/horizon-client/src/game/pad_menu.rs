@@ -161,7 +161,7 @@ pub(super) struct MenuCursor {
     /// A shortcut put the focus here: not where the screen reopens.
     shortcut_focus: Option<Rect>,
     /// A pointer event the pad or the keyboard sends is being handled.
-    synthetic: bool,
+    pub(super) synthetic: bool,
     /// Where the real mouse last moved the pointer (window pixels).
     real_pointer: Option<PhysicalPosition<f64>>,
     /// The screen the keyboard's focus is on (`Game::key_screen`), and the
