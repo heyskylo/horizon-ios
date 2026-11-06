@@ -11140,6 +11140,133 @@ mod tests {
         out.sort_unstable();
         assert_eq!(out, all);
     }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn place_block_alias_survival_consumption_and_client_prediction() {
+        use crate::game::{Audio, Game, Options, Progress, Settings, World, load_resources};
+        use horizon_client::{
+            chunk::Chunk,
+            items::ItemStack,
+            mod_content::{ContentMod, build},
+        };
+        use horizon_mods::content::{Block, Content, Item};
+        use std::{path::PathBuf, sync::Arc};
+        let base = PathBuf::from(
+            std::env::var_os("HORIZON_TEST_RESOURCES").expect("prepared resources required"),
+        );
+        let root = std::env::temp_dir().join(format!("horizon-alias-game-{}", std::process::id()));
+        let mut content = Content::declared("ruby");
+        content
+            .declare(
+                &[Block {
+                    id: "ruby:frame".into(),
+                    template: "minecraft:stone".into(),
+                    item: false,
+                    ..Default::default()
+                }],
+                &["empty", "filled"].map(|name| Item {
+                    id: format!("ruby:{name}"),
+                    template: "minecraft:stick".into(),
+                    place_block: Some("ruby:frame".into()),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        build(
+            &base,
+            &[ContentMod {
+                id: "ruby".into(),
+                content,
+            }],
+            &root,
+        )
+        .unwrap();
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.world = World::new(game.res.facts().air, 1);
+        for x in -1..=1 {
+            for z in -1..=1 {
+                game.world
+                    .chunks
+                    .insert((x, z), Arc::new(Chunk::empty(x, z)));
+            }
+        }
+        game.sync_tick_chunks();
+        game.set_mode_id(0);
+        game.player = None;
+        game.selected = 0;
+        let target = game
+            .pack
+            .assets
+            .registry
+            .default_state("ruby:frame")
+            .unwrap();
+        for (i, name) in ["ruby:empty", "ruby:filled"].iter().enumerate() {
+            let pos = [i as i32 * 2, 70, 0];
+            let hit = crate::game::Hit {
+                pos,
+                face: [0, 1, 0],
+                point: [f64::from(pos[0]) + 0.5, 70.0, 0.5],
+            };
+            let stack = ItemStack::new(name, 2);
+            assert_eq!(game.items().get(name).unwrap().block, Some(target));
+            let preview = game
+                .remote_can_place(&hit, &stack)
+                .expect("client predicts the alias");
+            assert_eq!([preview.0.x, preview.0.y, preview.0.z], pos);
+            assert_eq!(
+                game.world.block(pos[0], pos[1], pos[2]),
+                game.res.facts().air,
+                "prediction is dry"
+            );
+            *game.held_mut() = Some(stack);
+            assert!(game.use_hand(Some(&hit)).unwrap());
+            assert_eq!(game.world.block(pos[0], pos[1], pos[2]), target);
+            let held = game.held().unwrap();
+            assert_eq!((&*held.item, held.count), (*name, 1));
+        }
+        let blocked = crate::game::Hit {
+            pos: [0, 70, 0],
+            face: [0, 1, 0],
+            point: [0.5, 71.0, 0.5],
+        };
+        game.set_mode_id(2);
+        let before = game.held().cloned();
+        game.use_hand(Some(&blocked)).unwrap();
+        assert_eq!(
+            game.held(),
+            before.as_ref(),
+            "adventure refusal keeps the alias stack"
+        );
+        drop(game);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     use horizon_client::{
         containers::{Beacon, BlockEntity},
         items::ItemStack,

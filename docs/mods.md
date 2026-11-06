@@ -223,6 +223,14 @@ gets its own damage and durability, or a tool its mining speed:
     "!minecraft:repairable": {} } }
 ```
 
+An item may set `"place_block": "ruby:frame"` to place an ordinary block while retaining its
+own item ID. The target must exist and be a vanilla block or a block in the item's namespace;
+it may have `"item": false`. Multiple items can place the same block. Components still come
+from the item template; specialized behavior such as a sign or bucket item's placement is not
+copied. The compiled binding is used by server placement and client prediction. Placement
+contexts receive the original item ID, and survival placement consumes that item's stack.
+Without `place_block`, template behavior is unchanged.
+
 Native mods can register component types before content loads. A content item
 can set a registered type with a JSON value, such as `"sample:charge": {"charge": 42}`.
 JSON values become NBT values. Values must fit the network NBT limits and
