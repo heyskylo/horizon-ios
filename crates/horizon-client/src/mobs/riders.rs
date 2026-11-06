@@ -60,6 +60,7 @@ pub fn happy_ghast_attachment(index: usize) -> [f64; 3] {
     let [x, y, z] = SEATS[index.min(SEATS.len() - 1)];
     pt(x, y, z)
 }
+/// `Pig.getDefaultDimensions` and other species' age-specific passenger attachments.
 fn base_attachment(v: &Mob) -> [f64; 3] {
     let baby = v.is_baby();
     // Players and mannequins have no `passengerAttachments`: their box top.
@@ -74,6 +75,7 @@ fn base_attachment(v: &Mob) -> [f64; 3] {
         Species::Donkey => up(1.1125),
         Species::Mule => up(1.2125),
         Species::SkeletonHorse | Species::ZombieHorse => up(1.31875),
+        Species::Pig if baby => up(0.5),
         Species::Pig => up(0.86875),
         // `Hoglin.BABY_DIMENSIONS` and `EntityType.HOGLIN`.
         Species::Hoglin if baby => up(0.875),
@@ -572,6 +574,35 @@ mod tests {
             1.312_500_059_604_645
         ));
     }
+    /// `Pig.getDefaultDimensions`: BABY_DIMENSIONS overrides PASSENGER.
+    #[test]
+    fn a_baby_pig_uses_its_own_passenger_attachment() {
+        let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
+        kind.id = "minecraft:pig".into();
+        kind.species = Species::Pig;
+        let kind = std::sync::Arc::new(kind);
+        let mut vehicle = Mob::new(1, kind.clone(), Vec3::new(4.5, 200.0, 4.5), 0.0);
+        let rider = Mob::new(2, kind, Vec3::ZERO, 0.0);
+        for (scale, baby_y, adult_y) in [
+            (0.0, 0.5, 0.868_749_976_158_142_1),
+            (1.0, 0.5, 0.868_749_976_158_142_1),
+            (2.0, 1.0, 1.737_499_952_316_284_2),
+        ] {
+            vehicle.extra.model_scale = scale;
+            for (age, expected) in [(-24000, baby_y), (-1, baby_y), (0, adult_y), (42, adult_y)] {
+                vehicle.extra.age = age;
+                let attachment = passenger_attachment(&vehicle);
+                assert_eq!(attachment, [0.0, expected, 0.0], "age={age}, scale={scale}");
+                let offset = vehicle_attachment(&rider, vehicle.width());
+                assert_eq!(offset, 0.0);
+                assert_eq!(
+                    seat(attachment, offset, vehicle.position, vehicle.yaw),
+                    Vec3::new(4.5, 200.0 + expected, 4.5)
+                );
+            }
+        }
+    }
+
     #[test]
     fn archers_keep_their_distance_and_brawlers_close_in() {
         assert!(ranged(Species::Skeleton) && ranged(Species::Pillager));
