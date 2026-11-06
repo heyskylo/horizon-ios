@@ -119,8 +119,8 @@ fn light_update(payload: &[u8]) -> Result<Vec<u8>> {
 }
 
 /// A particle in 26.2's numbering, its block state too, or its stand-in; `None` when 26.2 has neither (a
-/// native mod's particle). The stand-ins 26.2 has (`copper_fire_flame` and kin as `soul_fire_flame`)
-/// carry no options, as the particles they stand for.
+/// native mod's particle). The options stay: the stand-ins in the 26.2 tables (pinned 43..=45 as 41)
+/// carry none, as the particles they stand for; a stand-in with other options would need them rebuilt.
 fn particle_down(ids: &Ids, p: &Particle) -> Option<Particle> {
     let mut p = p.clone();
     p.id = down_or_substitute(ids.particle_type, ids.substitutes.particle_type, p.id)?;
