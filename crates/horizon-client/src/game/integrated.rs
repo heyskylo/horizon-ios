@@ -234,6 +234,11 @@ impl Integrated {
             Err(RecvTimeoutError::Disconnected) => None,
         }
     }
+    /// `execute`: run `f` on the server thread between two ticks, without
+    /// waiting for it. False once the server has stopped.
+    pub fn post(&self, f: impl FnOnce(&mut Game<'_>) + Send + 'static) -> bool {
+        self.tasks.send(Box::new(f)).is_ok()
+    }
     /// `IntegratedServer.halt(true)`: returns once the world is saved and let go.
     pub fn stop(mut self) -> Result<()> {
         self.halt()

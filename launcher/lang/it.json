@@ -1216,5 +1216,9 @@
   "US sales tax is added where a state charges it.": "L'imposta sulle vendite USA si aggiunge dove uno stato la applica.",
   "VAT included where it applies.": "IVA inclusa dove si applica.",
   "In a set in your basket": "In un set nel tuo carrello",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Completa il pagamento nel browser. I tuoi oggetti arrivano nel Guardaroba poco dopo."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Completa il pagamento nel browser. I tuoi oggetti arrivano nel Guardaroba poco dopo.",
+  "{name} was left out: made for another Horizon version": "{name} è stato escluso: fatto per un'altra versione di Horizon",
+  "{name} was left out: clashes with {other}": "{name} è stato escluso: va in conflitto con {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} è stato escluso: richiede {other}, che è stato escluso",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Non si compila sull'Horizon a cui giochi ({code}): una compilazione lo esclude finché il suo autore non lo aggiorna"
 }

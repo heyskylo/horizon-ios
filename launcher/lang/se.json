@@ -1216,5 +1216,9 @@
   "US sales tax is added where a state charges it.": "USA vuovdinvearru lasihuvvo gos stáhta dan gáibida.",
   "VAT included where it applies.": "MVA lea fárus gos dat guoská.",
   "In a set in your basket": "Seahtas du gorris",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Gearggat máksima neahttalohkkiin. Du ávnnasat bohtet Gárvoskáhppái veaháš maŋŋil."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Gearggat máksima neahttalohkkiin. Du ávnnasat bohtet Gárvoskáhppái veaháš maŋŋil.",
+  "{name} was left out: made for another Horizon version": "{name} guđđojuvvui olggobeallái: dahkkon eará Horizon-veršuvdnii",
+  "{name} was left out: clashes with {other}": "{name} guđđojuvvui olggobeallái: riidalda {other} mielde",
+  "{name} was left out: it needs {other}, which was left out": "{name} guđđojuvvui olggobeallái: dat dárbbaša {other}, mii guđđojuvvui olggobeallái",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Ii huksejuvvo Horizonis man speallat ({code}): huksen guođđá dan olggobeallái dassážii go dahkki ođasmahttá dan"
 }

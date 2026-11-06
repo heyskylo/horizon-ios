@@ -1216,5 +1216,9 @@
   "US sales tax is added where a state charges it.": "АПШ сутă налукне штат ыйтнă çĕрте хушаççĕ.",
   "VAT included where it applies.": "НДС кĕрет, вăл ĕçленĕ çĕрте.",
   "In a set in your basket": "Корзинкăри комплектра",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Тӳлеве браузерта вĕçлĕр. Япаласем Гардероба часах килĕç."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Тӳлеве браузерта вĕçлĕр. Япаласем Гардероба часах килĕç.",
+  "{name} was left out: made for another Horizon version": "{name} кӗртмен: Horizon-ӑн урӑх версийӗ валли тунӑ",
+  "{name} was left out: clashes with {other}": "{name} кӗртмен: {other} мод-па килӗшмест",
+  "{name} was left out: it needs {other}, which was left out": "{name} кӗртмен: ӑна {other} кирлӗ, ӑна та кӗртмен",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Эсӗ вылякан Horizon-ра пуҫтарӑнмасть ({code}): авторӗ ҫӗнетмесен, пуҫтару ӑна кӗртмест"
 }

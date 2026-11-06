@@ -751,7 +751,7 @@ impl ChatOptions {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Pvp {
     pub crosshair: Crosshair,
     pub outline: Outline,
@@ -761,6 +761,24 @@ pub struct Pvp {
     pub chat: ChatOptions,
     /// Where each HUD widget sits and its size.
     pub layout: crate::pvp_hud::Layout,
+    /// The key that opens the HUD editor from the game (unbound at first).
+    pub editor_key: String,
+}
+/// The HUD editor key's name for the controls (`Extras::set_key`).
+pub const HUD_EDITOR_KEY: &str = "horizon.hud_editor";
+impl Default for Pvp {
+    fn default() -> Self {
+        Self {
+            crosshair: Crosshair::default(),
+            outline: Outline::default(),
+            hit: Hit::default(),
+            hud: Hud::default(),
+            tweaks: Tweaks::default(),
+            chat: ChatOptions::default(),
+            layout: crate::pvp_hud::Layout::default(),
+            editor_key: "key.keyboard.unknown".into(),
+        }
+    }
 }
 fn flag(value: &str, d: bool) -> bool {
     match value {
@@ -822,6 +840,7 @@ impl Pvp {
             }
             "hudShadow" => u.shadow = flag(value, u.shadow),
             "hudPlace" => self.layout.parse(value),
+            "hudEditorKey" if value.starts_with("key.") => self.editor_key = value.to_owned(),
             "hudPing" => u.ping = flag(value, u.ping),
             "hudPingCorner" => u.ping_corner = Corner::parse(value, u.ping_corner),
             "hudCoords" => u.coords = flag(value, u.coords),
@@ -957,6 +976,7 @@ impl Pvp {
             u.shadow,
         );
         self.layout.serialize(out);
+        let _ = writeln!(out, "hudEditorKey:{}", self.editor_key);
         let t = &self.tweaks;
         let _ = write!(
             out,
@@ -1093,6 +1113,8 @@ opts! {
     HudTextColour, "hud_text_colour", "Text colour",
         "The widgets' text colour. Durability keeps its green to red.";
     HudShadow, "hud_shadow", "Text shadow", "A shadow under the widgets' text, as vanilla's HUD text has.";
+    HudEditorKey, "hud_editor_key", "HUD editor key",
+        "Opens the HUD editor from the game. Click, then press a key; Escape unbinds it.";
     NumericEnchants, "numeric_enchants", "Enchantment levels as numbers",
         "Tooltips and the enchanting table show Sharpness 5 instead of Sharpness V.";
     FireLower, "fire_lower", "Lower fire",
@@ -1183,6 +1205,7 @@ pub fn rows() -> Vec<Result<Opt, &'static str>> {
             HudOpacity,
             HudTextColour,
             HudShadow,
+            HudEditorKey,
         ]
         .map(Ok),
     );
@@ -1207,7 +1230,7 @@ impl Opt {
             HitColour | HitOpacity => Some(Hit),
             HudArmour | HudEffects | HudHeld | HudPing | HudCoords | HudServer | HudCombo
             | HudFps | HudCps | HudKeys | HudClock | HudReach | HudSpeed | HudBackground
-            | HudTextColour | HudShadow | NumericEnchants => None,
+            | HudTextColour | HudShadow | HudEditorKey | NumericEnchants => None,
             HudOpacity => Some(HudBackground),
             HudFpsCorner => Some(HudFps),
             HudCpsCorner => Some(HudCps),
@@ -1299,6 +1322,7 @@ impl Opt {
             Opt::HudSpeedCorner => corner_label(p.hud.speed_corner),
             Opt::HudOpacity => format!("{}%", p.hud.opacity),
             Opt::HudTextColour => p.hud.text.label(),
+            Opt::HudEditorKey => crate::keybinds::display_name(&p.editor_key).plain(),
             Opt::FireLower => match p.tweaks.fire_lower {
                 0 => crate::lang::get_or("Off", "Off"),
                 v => format!("{v}%"),
@@ -1369,6 +1393,8 @@ impl Opt {
             Opt::HudOpacity => u.opacity = step_by(u.opacity, HUD_OPACITIES, 10, back),
             Opt::HudTextColour => u.text = u.text.step_solid(back),
             Opt::HudShadow => u.shadow = !u.shadow,
+            // Bound through the controls' key capture (`Item::key_name`).
+            Opt::HudEditorKey => {}
             Opt::HudPing => u.ping = !u.ping,
             Opt::HudPingCorner => u.ping_corner = corner(u.ping_corner),
             Opt::HudCoords => u.coords = !u.coords,

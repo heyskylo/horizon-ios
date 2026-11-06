@@ -1216,5 +1216,9 @@
   "US sales tax is added where a state charges it.": "Pajak penjualan AS ditambahkan jika negara bagian memungutnya.",
   "VAT included where it applies.": "PPN sudah termasuk jika berlaku.",
   "In a set in your basket": "Dalam set di keranjangmu",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Selesaikan pembayaran di browser. Itemmu masuk ke Lemari sebentar lagi."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Selesaikan pembayaran di browser. Itemmu masuk ke Lemari sebentar lagi.",
+  "{name} was left out: made for another Horizon version": "{name} tidak disertakan: dibuat untuk versi Horizon lain",
+  "{name} was left out: clashes with {other}": "{name} tidak disertakan: bentrok dengan {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} tidak disertakan: membutuhkan {other}, yang tidak disertakan",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Tidak bisa dibangun di Horizon yang kamu mainkan ({code}): build tidak menyertakannya sampai pembuatnya memperbaruinya"
 }

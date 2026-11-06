@@ -1216,5 +1216,9 @@
   "US sales tax is added where a state charges it.": "مالیات فروش آمریکا هر جا ایالتی آن را بگیرد اضافه می‌شود.",
   "VAT included where it applies.": "مالیات بر ارزش افزوده هر جا لازم باشد گنجانده شده است.",
   "In a set in your basket": "در یک مجموعه در سبد شما",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "پرداخت را در مرورگر تمام کنید. آیتم‌هایتان کمی بعد به کمد لباس می‌رسند."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "پرداخت را در مرورگر تمام کنید. آیتم‌هایتان کمی بعد به کمد لباس می‌رسند.",
+  "{name} was left out: made for another Horizon version": "{name} کنار گذاشته شد: برای نسخهٔ دیگری از Horizon ساخته شده",
+  "{name} was left out: clashes with {other}": "{name} کنار گذاشته شد: با {other} تداخل دارد",
+  "{name} was left out: it needs {other}, which was left out": "{name} کنار گذاشته شد: به {other} نیاز دارد که کنار گذاشته شد",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "روی Horizonی که بازی می‌کنی ساخته نمی‌شود ({code}): ساخت آن را کنار می‌گذارد تا سازنده‌اش به‌روزش کند"
 }

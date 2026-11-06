@@ -1216,5 +1216,9 @@
   "US sales tax is added where a state charges it.": "Amerikaanse verkoupbelasting kump drbie wo 'ne staot die hèf.",
   "VAT included where it applies.": "Btw inbegrepe wo die geldj.",
   "In a set in your basket": "In e set in diech mendje",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Maak de betaling aaf in diene browser. Dien items koume get later in de Kleijerkas."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Maak de betaling aaf in diene browser. Dien items koume get later in de Kleijerkas.",
+  "{name} was left out: made for another Horizon version": "{name} is weggelaote: gemaak veur 'n anger Horizon-versie",
+  "{name} was left out: clashes with {other}": "{name} is weggelaote: bots mit {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} is weggelaote: 't haet {other} nóddig, wat weggelaote is",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Bouwt neet op de Horizon die se speuls ({code}): 'ne bouw laot 't weg tot de maker 't biewerk"
 }

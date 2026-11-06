@@ -1216,5 +1216,9 @@
   "US sales tax is added where a state charges it.": "АҚШ сату салығы штат алатын жерде қосылады.",
   "VAT included where it applies.": "ҚҚС қолданылатын жерде қосылған.",
   "In a set in your basket": "Себетіңіздегі жиынтықта",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Төлемді браузерде аяқтаңыз. Заттарыңыз Гардеробқа сәлден соң келеді."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Төлемді браузерде аяқтаңыз. Заттарыңыз Гардеробқа сәлден соң келеді.",
+  "{name} was left out: made for another Horizon version": "{name} алынып тасталды: Horizon-ның басқа нұсқасына жасалған",
+  "{name} was left out: clashes with {other}": "{name} алынып тасталды: {other} модымен қайшылықта",
+  "{name} was left out: it needs {other}, which was left out": "{name} алынып тасталды: оған {other} керек, ол алынып тасталды",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Сен ойнайтын Horizon-да жиналмайды ({code}): авторы жаңартқанша жинау оны алып тастайды"
 }

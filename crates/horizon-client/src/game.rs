@@ -150,6 +150,7 @@ mod golems;
 mod growth;
 mod hand;
 mod headless;
+mod hud_editor;
 mod ime;
 mod initial_spawn;
 mod input_trace;
@@ -354,6 +355,7 @@ mod test_instance_edit;
 mod test_instances;
 mod text_displays;
 mod tick_profile;
+mod tick_script;
 mod titles;
 mod tnt;
 mod totem;
@@ -883,6 +885,8 @@ enum Screen {
     /// A screen of a native mod's own (`native_mod_screen_open`): it draws and
     /// takes its input through the screen hooks.
     Mod,
+    /// PvP & HUD's widget editor (game/hud_editor.rs).
+    HudEditor,
 }
 impl Screen {
     /// The id native mods see for this screen (`NativeScreenView.id`, the
@@ -912,6 +916,7 @@ impl Screen {
             Screen::Win => "win",
             Screen::DebugOptions => "debug_options",
             Screen::Mod => "mod",
+            Screen::HudEditor => "hud_editor",
         }
     }
 }
@@ -3095,6 +3100,8 @@ struct Game<'a> {
     input_trace: input_trace::InputTrace,
     /// A repro recording, export or replay (game/repro.rs).
     repro: repro::Repro,
+    /// `HORIZON_TICK_SCRIPT`'s scenario (game/tick_script.rs).
+    tick_script: tick_script::TickScript,
     /// The overworld's last `sky_darken` and its inputs (time, rain, thunder).
     sky_darken_memo: std::cell::Cell<Option<((i64, u32, u32), i32)>>,
     /// The last water plane `water_plane` found, kept while none is in reach.
@@ -3452,6 +3459,13 @@ fn ray_box(eye: [f64; 3], dir: [f64; 3], reach: f64, b: Aabb) -> Option<f64> {
     }
     (t0 <= t1).then_some(t0)
 }
+/// `Entity.calculateViewVector`, which `GameRenderer.pick` aims with: float radians through `Mth.sin` and
+/// `Mth.cos`, vanilla's 65536-entry table. A placement's cursor and an interaction's point come from this ray, and
+/// the exact trigonometry below moved them by up to ~1e-4 of a block.
+fn pick_view_vector(yaw: f32, pitch: f32) -> [f64; 3] {
+    let v = horizon_world::view_direction::view_vector(pitch, yaw);
+    [v.x, v.y, v.z]
+}
 fn view_vector(yaw: f32, pitch: f32) -> [f64; 3] {
     let (y, p) = (f64::from(yaw).to_radians(), f64::from(pitch).to_radians());
     [-y.sin() * p.cos(), -p.sin(), y.cos() * p.cos()]
@@ -3527,10 +3541,10 @@ impl Game<'_> {
         if let Some(m) = self.camera_mob() {
             return Some((
                 [m.position.x, m.eye_y(), m.position.z],
-                view_vector(m.head_yaw, m.head_pitch),
+                pick_view_vector(m.head_yaw, m.head_pitch),
             ));
         }
-        Some((self.eye_position()?, view_vector(self.yaw, self.pitch)))
+        Some((self.eye_position()?, pick_view_vector(self.yaw, self.pitch)))
     }
     /// `Player.blockInteractionRange`: the block pick's and mining's reach.
     fn reach(&self) -> f64 {
@@ -8338,6 +8352,7 @@ impl Game<'_> {
                     | Screen::DialogWarning
                     | Screen::CommandBlock
                     | Screen::DebugOptions
+                    | Screen::HudEditor
             ) || self.book.is_some()
                 || self.win_screen_pauses())
     }
@@ -9152,6 +9167,7 @@ impl Game<'_> {
             Screen::CommandBlock => self.draw_command_block(&mut batch),
             Screen::BlockEditor => self.draw_block_editor(&mut batch),
             Screen::DebugOptions => self.draw_debug_options(&mut batch),
+            Screen::HudEditor => self.draw_hud_editor(&mut batch),
             Screen::Inventory => {
                 self.draw_inventory(&mut batch);
                 self.draw_mod_browser(&mut batch);
@@ -16870,7 +16886,11 @@ impl Game<'_> {
             }
             return Ok(());
         }
-        if self.sort_key_press(key) || self.hdr_key_press(key) {
+        if self.sort_key_press(key)
+            || self.hdr_key_press(key)
+            || horizon_client::keybinds::key_name(key)
+                .is_some_and(|name| self.hud_editor_key_press(name))
+        {
             return Ok(());
         }
         if self.remote.is_some() && self.remote_key(key)? {
@@ -16920,6 +16940,7 @@ impl Game<'_> {
                 Screen::Win => self.close_win_screen()?,
                 Screen::DebugOptions => self.close_debug_options(),
                 Screen::Mod => self.close_mod_screen(),
+                Screen::HudEditor => self.close_hud_editor(),
             },
             // `checkHotbarKeyPressed`: the keys the controls bind to the off
             // hand and the hotbar slots, so a rebound key swaps instead of
@@ -18334,6 +18355,9 @@ impl Game<'_> {
                         if self.screen == Screen::DebugOptions {
                             self.debug_options_drag();
                         }
+                        if self.screen == Screen::HudEditor {
+                            self.hud_editor_drag();
+                        }
                         if self.screen == Screen::WorldOptions {
                             self.world_options_drag();
                         }
@@ -18485,6 +18509,9 @@ impl Game<'_> {
                     if self.screen == Screen::DebugOptions && d != 0.0 {
                         self.debug_options_scroll(d);
                     }
+                    if self.screen == Screen::HudEditor && d != 0.0 {
+                        self.hud_editor_scroll(f64::from(d));
+                    }
                     if self.screen == Screen::Advancements {
                         self.advancements_scroll(scaled(raw_x) as f32, d);
                     }
@@ -18627,7 +18654,13 @@ impl Game<'_> {
                         // Neither edge of a bound button is an ordinary slot click.
                         return Ok(());
                     }
-                    if pressed && (self.sort_mouse_press(button) || self.hdr_mouse_press(button)) {
+                    if pressed
+                        && (self.sort_mouse_press(button)
+                            || self.hdr_mouse_press(button)
+                            || self.hud_editor_key_press(&horizon_client::keybinds::mouse_name(
+                                button,
+                            )))
+                    {
                         return Ok(());
                     }
                     match self.screen {
@@ -18715,6 +18748,15 @@ impl Game<'_> {
                         }
                         Screen::DebugOptions if button == MouseButton::Left => {
                             self.debug_options_release()
+                        }
+                        Screen::HudEditor
+                            if pressed
+                                && matches!(button, MouseButton::Left | MouseButton::Right) =>
+                        {
+                            self.hud_editor_press(button == MouseButton::Right)
+                        }
+                        Screen::HudEditor if button == MouseButton::Left => {
+                            self.hud_editor_release()
                         }
                         Screen::ConfirmLink if pressed && button == MouseButton::Left => {
                             self.confirm_link_click()
@@ -19104,6 +19146,9 @@ impl Game<'_> {
                     for _ in 0..steps {
                         let started = Instant::now();
                         if self.title.is_none() && !self.pause {
+                            if self.tick_script.armed() {
+                                self.tick_script_step(event_loop);
+                            }
                             horizon_client::spans::time("tick", || self.tick())?;
                             // Cave mood (a shader pack's playerMood) samples on a random
                             // seeded from the clock: under `HORIZON_STILL` it waits for the
@@ -19868,6 +19913,7 @@ impl<'a> Game<'a> {
             events: Default::default(),
             input_trace: Default::default(),
             repro: Default::default(),
+            tick_script: tick_script::TickScript::from_env(),
             agent: agent::Agent::default(),
             view_frustum: None,
             entity_section_visibility_valid: false,
@@ -20379,7 +20425,9 @@ impl Game<'_> {
             &self.motion.health
         };
         let health = base.with_packs(root, &overlay, reload)?;
-        if files.is_empty() {
+        // With no pack, `res` holds the tables, unless content mods switched
+        // live since it was loaded: their data is in the new root.
+        if files.is_empty() && !self.mods.data_switched {
             return Ok((None, health));
         }
         let mut items = Items::load(root, self.pack.assets.registry, self.res.facts(), &overlay)?;
