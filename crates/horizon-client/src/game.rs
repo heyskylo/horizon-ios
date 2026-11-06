@@ -2979,8 +2979,8 @@ struct Game<'a> {
     /// 3D skin layers: each player's outer layer as one slab per painted
     /// texel, built once per (skin, slim) (`mobs::skin_layers`).
     skin_3d: RefCell<skin_models::SkinModels>,
-    /// Atlas trim slots in use: (sprite name, slot), least recently drawn first.
-    trim_slots: Vec<(String, usize)>,
+    /// Runtime trim slots and the last completed preparation for this atlas.
+    trim_slots: horizon_client::trims::TrimSlots,
     cart_models: minecarts::CartModels,
     /// The boat the player rides.
     riding: Option<u32>,
@@ -14929,6 +14929,7 @@ impl Game<'_> {
         self.renderer = Some(renderer);
         self.skin_slots.forget();
         self.maps.slots.forget();
+        self.trim_slots.forget();
         self.map_patches.clear();
         self.kept_block_entities.get_mut().clear();
         horizon_client::ui_theme::reset_atlas();
@@ -20009,7 +20010,7 @@ impl<'a> Game<'a> {
             emotes: Default::default(),
             emote_wheel: Default::default(),
             skin_3d: Default::default(),
-            trim_slots: Vec::new(),
+            trim_slots: Default::default(),
             cart_models: prepared.cart_models,
             riding: None,
             started_riding: Vec::new(),
