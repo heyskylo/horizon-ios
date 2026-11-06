@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod tests {
+    include!("state_block_entity_tests.rs");
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 

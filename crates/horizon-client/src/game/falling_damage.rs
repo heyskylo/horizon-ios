@@ -133,10 +133,14 @@ impl Game<'_> {
             let name = self.res.facts().get(state).name.clone();
             // LevelChunk.setBlockState creates the new block entity even when
             // the falling entity has no supplied data.
-            if let Some(entity) = self.new_block_entity(&name) {
-                let key = (pos[0], pos[1], pos[2]);
-                let mut tag = horizon_client::save::encode_block_entity(key, &entity, &name);
+            let key = (pos[0], pos[1], pos[2]);
+            if !self.world.block_entities.stateful_entity(state.0)
+                && let Some(entity) = self.new_block_entity_for_state(state)
+            {
                 self.world.block_entities.insert(key, entity);
+            }
+            if let Some(entity) = self.world.block_entities.get(&key) {
+                let mut tag = horizon_client::save::encode_block_entity(key, entity, &name);
                 // FallingBlockEntity.tick copies each supplied field over the
                 // new block entity's saved defaults before loadWithComponents.
                 if let Some(horizon_world::nbt::Tag::Compound(carried)) = block
