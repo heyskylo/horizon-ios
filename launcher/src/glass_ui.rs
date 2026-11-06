@@ -102,8 +102,10 @@ pub fn setting_row(
 ) -> Div {
     div()
         .flex()
+        .flex_wrap()
         .items_center()
-        .gap(px(40.))
+        .justify_between()
+        .gap(px(16.))
         .px(px(16.))
         .py(px(16.))
         .rounded(px(radius::LARGE))
@@ -112,7 +114,7 @@ pub fn setting_row(
                 .flex()
                 .flex_col()
                 .flex_1()
-                .min_w_0()
+                .min_w(px(240.))
                 .gap(px(4.))
                 .child(
                     text(15., FontWeight::SEMIBOLD, ink::FULL)

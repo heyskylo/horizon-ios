@@ -601,22 +601,25 @@ impl Launcher {
     /// Settings (`px-8 pt-3.5`).
     pub(super) fn glass_topbar(&mut self, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
-        let mut tabs = div().flex().items_center().gap(px(4.)).min_w_0();
+        let wide = self.window_width >= 1380.;
+        let compact = self.window_width < 1180.;
+        let mut tabs = div()
+            .flex()
+            .items_center()
+            .gap(px(if compact { 2. } else { 4. }))
+            .min_w_0();
         for (page, label, _) in Page::in_top_bar(self.wardrobe_shown()) {
+            let mut item = ui::tab(format!("nav-{label}"), tr(label), self.page == page, &t);
+            if compact {
+                item = item.px(px(8.));
+            }
             tabs = tabs.child(
-                ui::tab(format!("nav-{label}"), tr(label), self.page == page, &t).on_click(
-                    cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.go(page);
-                        cx.notify();
-                    }),
-                ),
+                item.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.go(page);
+                    cx.notify();
+                })),
             );
         }
-        // `min-w-0 xl:shrink-0`: under 1380 px the pages give way to the buttons on the right
-        // and scroll sideways, as the mockup's `Tabs` (`overflow-x-auto`). Non-English locales
-        // with wider labels (and the build log button) require ~1300+ px, so 1380 px ensures
-        // the action buttons (Microsoft sign-in, Settings) are never pushed off-screen (#9902).
-        let wide = self.window_width >= 1380.;
         let strip = crate::glass::plate(radius::LARGE)
             .p(px(4.))
             .min_w_0()
@@ -657,18 +660,18 @@ impl Launcher {
                     div()
                         .flex()
                         .flex_col()
-                        .max_w(px(150.))
+                        .max_w(px(if compact { 100. } else { 150. }))
                         .child(
                             ui::text(14., FontWeight::SEMIBOLD, ink::FULL)
                                 .line_height(px(17.))
                                 .truncate()
                                 .child(name),
                         )
-                        .child(
+                        .children((!compact).then(|| {
                             ui::text(12., FontWeight::NORMAL, ink::QUIET)
                                 .line_height(px(15.))
-                                .child(how),
-                        ),
+                                .child(how)
+                        })),
                 )
                 .child(
                     ui::icon("arrow-down-01", 16., white(ink::FAINT))
