@@ -53,6 +53,7 @@ pub struct StateModels {
     choices: Vec<CompiledChoices<u32>>,
     /// By state id: its definition in `choices` and the models it selects.
     states: Vec<Option<(usize, SelectedModels)>>,
+    single_models: Vec<Option<u32>>,
     /// Every transformed model once, with the variant it was baked from.
     baked: Vec<(Variant, BakedModel)>,
     /// Standalone models by id: their index in `baked`.
@@ -354,10 +355,18 @@ impl StateModels {
             baked.push((variant, model));
         }
         // Every variant of every definition was baked above.
-        let choices = choices.iter().map(|c| c.map(|v| index[&key(v)])).collect();
+        let choices: Vec<_> = choices.iter().map(|c| c.map(|v| index[&key(v)])).collect();
+        let single_models = states
+            .iter()
+            .map(|state| {
+                let (choice, selected) = state.as_ref()?;
+                choices[*choice].single_variant(selected).copied()
+            })
+            .collect();
         Ok(Self {
             choices,
             states,
+            single_models,
             baked,
             standalone: BTreeMap::new(),
         })
@@ -452,6 +461,10 @@ impl StateModels {
         out: &mut Vec<&'a BakedModel>,
     ) -> Result<()> {
         out.clear();
+        if let Some(Some(model)) = self.single_models.get(state.0 as usize) {
+            out.push(&self.baked[*model as usize].1);
+            return Ok(());
+        }
         self.each_seeded(state, position_seed(position), |(_, model)| out.push(model))
     }
     fn each_seeded<'a>(
