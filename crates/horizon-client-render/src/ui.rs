@@ -134,6 +134,9 @@ fn scaling(sprite: &str, r: &Rect) -> NineSlice {
         width: r.w,
         height: r.h,
         border: match sprite {
+            "horizon/jei/button_enabled_v2"
+            | "horizon/jei/button_disabled_v2"
+            | "horizon/jei/button_highlight_v2" => [6; 4],
             "horizon/jei/search_background_v2" => [6; 4],
             "gui/sprites/widget/button"
             | "gui/sprites/widget/button_highlighted"

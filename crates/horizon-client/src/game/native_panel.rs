@@ -140,6 +140,16 @@ pub(super) struct Layout {
     pub(super) search: [f32; 4],
 }
 impl Layout {
+    fn browser_arrow_rects(&self, square: bool) -> [[f32; 4]; 2] {
+        if square {
+            return [
+                [self.grid.0, self.arrows_y, 20.0, 20.0],
+                [self.grid.0 + self.width() - 20.0, self.arrows_y, 20.0, 20.0],
+            ];
+        }
+        self.arrows().map(|(x, y)| [x, y, 12.0, 17.0])
+    }
+
     fn per_page(&self) -> usize {
         self.columns * self.rows
     }
@@ -316,42 +326,91 @@ impl Game<'_> {
         search
     }
 
-    /// The items' page arrows and grid.
-    fn draw_browser_items(&mut self, batch: &mut HudBatch, layout: &Layout) {
-        let pages = self.browser_pages(layout);
-        self.panel.page = self.panel.page.min(pages - 1);
-        let page = self.panel.page;
-        let cursor = self.cursor;
-        if pages > 1 {
-            let labels = [
-                self.translate("gui.recipebook.previous_page", "Previous Page"),
-                self.translate("gui.recipebook.next_page", "Next Page"),
-            ];
-            let shown = [page > 0, page + 1 < pages];
-            let atlas = &self.gui.atlas;
-            for (((x, y), name), (label, shown)) in layout
-                .arrows()
-                .into_iter()
-                .zip(["page_backward", "page_forward"])
-                .zip(labels.iter().zip(shown))
-            {
-                if !shown {
-                    continue;
-                }
-                let hover = inside(cursor, [x, y, 12.0, 17.0]);
-                let suffix = if hover { "_highlighted" } else { "" };
+    fn draw_item_browser_arrows(
+        &self,
+        batch: &mut HudBatch,
+        rects: [[f32; 4]; 2],
+        labels: &[String; 2],
+        enabled: [bool; 2],
+        square: bool,
+    ) {
+        let atlas = &self.gui.atlas;
+        for (i, (rect @ [x, y, w, h], on)) in rects.into_iter().zip(enabled).enumerate() {
+            let hovered = inside(self.cursor, rect);
+            if square {
+                let background = match (on, hovered) {
+                    (false, _) => "horizon/jei/button_disabled_v2",
+                    (true, false) => "horizon/jei/button_enabled_v2",
+                    (true, true) => "horizon/jei/button_highlight_v2",
+                };
+                horizon_client::ui::nine_slice(batch, atlas, background, x, y, w, h, u32::MAX);
+                let arrow = [
+                    "horizon/jei/icons/arrow_previous_v2",
+                    "horizon/jei/icons/arrow_next_v2",
+                ][i];
+                batch.sprite(atlas, arrow, x + 5.0, y + 6.0);
+            } else if on {
+                let name = ["page_backward", "page_forward"][i];
+                let suffix = if hovered { "_highlighted" } else { "" };
                 batch.sprite(
                     atlas,
                     &format!("gui/sprites/recipe_book/{name}{suffix}"),
                     x,
                     y,
                 );
-                horizon_client::widgets::record(label, [x, y, 12.0, 17.0], true);
+            } else {
+                continue;
             }
+            horizon_client::widgets::record(&labels[i], rect, on);
+        }
+    }
+
+    /// The items' page arrows and grid.
+    fn draw_browser_items(&mut self, batch: &mut HudBatch, layout: &Layout) {
+        let pages = self.browser_pages(layout);
+        self.panel.page = self.panel.page.min(pages - 1);
+        let page = self.panel.page;
+        let cursor = self.cursor;
+        let square = self
+            .panel
+            .of
+            .as_ref()
+            .is_some_and(|(owner, _)| owner.native_id() == "recipes");
+        if pages > 1 || (square && !self.panel.stacks.is_empty()) {
+            let labels = [
+                self.translate("gui.recipebook.previous_page", "Previous Page"),
+                self.translate("gui.recipebook.next_page", "Next Page"),
+            ];
+            let shown = [page > 0, page + 1 < pages];
+            let atlas = &self.gui.atlas;
+            if square {
+                batch.fill(
+                    atlas,
+                    layout.grid.0,
+                    layout.arrows_y,
+                    layout.width(),
+                    20.0,
+                    rgba(10, 14, 20, 42),
+                );
+            }
+            self.draw_item_browser_arrows(
+                batch,
+                layout.browser_arrow_rects(square),
+                &labels,
+                shown,
+                square,
+            );
             let text = format!("{}/{pages}", page + 1);
             let w = HudBatch::text_width(atlas, &text);
             let x = (layout.grid.0 + (layout.width() - w) / 2.0).floor();
-            batch.text(atlas, &text, x, layout.arrows_y + 5.0, u32::MAX, true);
+            batch.text(
+                atlas,
+                &text,
+                x,
+                layout.arrows_y + if square { 6.0 } else { 5.0 },
+                u32::MAX,
+                true,
+            );
         }
         let first = page * layout.per_page();
         for n in 0..layout.per_page() {
@@ -455,13 +514,10 @@ impl Game<'_> {
         }
         let pages = self.browser_pages(&layout);
         let page = self.panel.page;
-        let [back, forward] = layout.arrows();
-        let step = if pages > 1 && page > 0 && inside(cursor, [back.0, back.1, 12.0, 17.0]) {
+        let [back, forward] = layout.browser_arrow_rects(owner.native_id() == "recipes");
+        let step = if pages > 1 && page > 0 && inside(cursor, back) {
             Some(page - 1)
-        } else if pages > 1
-            && page + 1 < pages
-            && inside(cursor, [forward.0, forward.1, 12.0, 17.0])
-        {
+        } else if pages > 1 && page + 1 < pages && inside(cursor, forward) {
             Some(page + 1)
         } else {
             None
