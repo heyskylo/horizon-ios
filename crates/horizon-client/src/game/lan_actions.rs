@@ -3913,6 +3913,9 @@ impl Game<'_> {
                 self.guest_die(host, gi, conn);
                 continue;
             }
+            // Native mods, at the start of ServerPlayer.tick: before the
+            // player's digging, item use and cooldowns.
+            self.as_guest(host, conn, |g| g.native_player_tick_pre());
             let play = host.play.entry(conn).or_default();
             // ServerGamePacketListenerImpl.tick's dropSpamThrottler.
             play.creative_drops = play.creative_drops.saturating_sub(1);

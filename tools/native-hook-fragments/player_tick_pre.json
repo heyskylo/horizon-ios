@@ -1,0 +1,16 @@
+{
+  "hooks": [
+    {
+      "name": "player_tick_pre",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_player_tick_pre",
+      "neoforge": "PlayerTickEvent.Pre",
+      "side": "server",
+      "cancellable": false,
+      "mod_api": {
+        "contract": "listen"
+      }
+    }
+  ],
+  "rust_summary": "the start of a player's server tick (`native_player_tick_pre`).",
+  "doc_summary": "the start of a player's server tick: `native_player_tick_pre` runs once a tick for every living player in the world, at the start of their `ServerPlayer.tick`, before their digging, item use and cooldowns, as NeoForge's `PlayerTickEvent.Pre`. `native_player_tick` (API 31, `PlayerTickEvent.Post`) ends the same tick. The helpers read that player. Players still tick while the game is frozen (`/tick freeze`), and a dead player isn't called. Bundles need \"hooks\": @API:player_tick_pre@."
+}

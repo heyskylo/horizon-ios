@@ -2587,6 +2587,15 @@ impl Game<'_> {
     ) {
         mod_api::dispatch_left_click_block(self, mod_api::mods(), pos, face, state, canceled);
     }
+    /// A living player's server tick starts (NeoForge's `PlayerTickEvent.Pre`,
+    /// the top of `ServerPlayer.tick`): once a tick for every player in the
+    /// world, before their digging, item use and cooldowns, and before the
+    /// `native_player_tick` that ends the same tick. The helpers read that
+    /// player. Players still tick under `/tick freeze`; a dead player
+    /// doesn't. API @API:player_tick_pre@.
+    pub(super) fn native_player_tick_pre(&mut self) {
+        mod_api::dispatch_player_tick_pre(self, mod_api::mods());
+    }
     /// A living player's server tick ends (`ServerPlayer.tick`): once a tick
     /// for every player in the world, after their digging, item use,
     /// cooldowns, statistics and advancements. The helpers read that player.
