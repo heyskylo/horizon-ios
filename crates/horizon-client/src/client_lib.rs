@@ -17,8 +17,8 @@ pub use horizon_client_render::{
     hdr_calibration, hud, hud_layout, hud_overlays, inventory_effects, java_text, jigsaw_block,
     json_folder, level_loading, light, lod, logging, menu_blur, mesher, minimap, mipmap,
     mod_browser, mod_list, model_library, models, multiline_edit, native_emissive, options_file,
-    options_fixes, options_ui, overlay, pack_browser, pack_screen, packs, pad_cursor, par,
-    particles, poi_sections, post_chain, potent_sulfur, preedit, providers, pvp, pvp_hud,
+    options_fixes, options_ui, overlay, pack_browser, pack_screen, packs, pad_cursor, pad_glyph,
+    par, particles, poi_sections, post_chain, potent_sulfur, preedit, providers, pvp, pvp_hud,
     screen_draw, screen_effects, sculk, section_mask, server_terrain, settings, shader_options,
     shader_pack_list, signs, skins, sound_engine, sound_events, sound_preview, spans, split_layout,
     split_map, split_profiles, sprites, streaming, structure_block, tab_list, telemetry,
@@ -84,6 +84,7 @@ pub mod item_tooltip;
 pub mod join_seq;
 pub mod lan;
 pub mod landing;
+pub mod legacy_combat;
 pub mod locator_bar;
 pub mod lod_net;
 pub mod menu;
@@ -158,6 +159,7 @@ pub use horizon_client_core::nbt_path;
 pub use horizon_client_core::scoreboard;
 pub use horizon_client_core::snbt;
 pub use horizon_client_core::text;
+pub use horizon_client_input::actions;
 pub use horizon_client_input::clipboard;
 pub use horizon_client_input::gamepad;
 pub use horizon_client_input::held;
