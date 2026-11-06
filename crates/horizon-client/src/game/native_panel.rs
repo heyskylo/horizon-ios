@@ -642,7 +642,10 @@ impl Game<'_> {
     /// A key `key` (`key.keyboard.r`) went down: over an item on a container
     /// screen, a native mod's panel hears it as a `Key` event.
     pub(super) fn native_panel_key(&mut self, key: &str) {
-        if self.screen != Screen::Inventory || self.title.is_some() || self.mod_browser_typing() {
+        if !matches!(self.screen, Screen::Inventory | Screen::Creative)
+            || self.title.is_some()
+            || self.mod_browser_typing()
+        {
             return;
         }
         let Some(owner) = self.browser_sync() else {
