@@ -376,6 +376,25 @@ pub struct NativeZoom {
     pub turn: f32,
 }
 
+/// A boss bar a server mod shows one player (`native_boss_bar`), as Bukkit's
+/// `BossBar` holds it. API @API:boss_bar@.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NativeBossBar {
+    pub name: Text,
+    /// How full the bar is, 0 to 1.
+    pub progress: f32,
+    /// `BossBarColor`'s ordinal: 0 pink, 1 blue, 2 red, 3 green, 4 yellow,
+    /// 5 purple, 6 white.
+    pub color: i32,
+    /// `BossBarOverlay`'s ordinal: 0 progress (no notches), 1 six notches,
+    /// 2 ten, 3 twelve, 4 twenty.
+    pub overlay: i32,
+    /// `BossEvent`'s flags: the sky darkens, boss music plays, fog thickens.
+    pub darken: bool,
+    pub music: bool,
+    pub fog: bool,
+}
+
 /// A player on the server, as a server hook sees them.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]

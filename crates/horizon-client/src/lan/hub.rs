@@ -333,6 +333,9 @@ pub struct Hub {
     /// (`native_set_nickname`), by UUID. Their real name stays everywhere
     /// else: the log, commands, the hover of the shown name.
     pub nicknames: std::collections::HashMap<u128, String>,
+    /// Where a server mod points a player's compass (`native_set_compass_target`), by UUID,
+    /// while they are on: sent in place of the world spawn whenever the world spawn is.
+    pub compass_targets: std::collections::HashMap<u128, play::GlobalPos>,
     last_clock: i64,
     last_rate: f32,
     ticking: (f32, bool),
@@ -682,6 +685,7 @@ impl Hub {
             hidden: Default::default(),
             teams: Vec::new(),
             nicknames: std::collections::HashMap::new(),
+            compass_targets: std::collections::HashMap::new(),
         }
     }
 
@@ -1876,8 +1880,16 @@ impl Hub {
     }
 
     /// ClientboundSetDefaultSpawnPositionPacket for the level's respawn data
-    /// (the world spawn, in the Overworld wherever the player is).
-    fn default_spawn(&self, spawn: [f64; 3]) -> C {
+    /// (the world spawn, in the Overworld wherever the player is), or the
+    /// compass target a mod set for that player (`compass_targets`).
+    pub fn default_spawn(&self, uuid: u128, spawn: [f64; 3]) -> C {
+        if let Some(target) = self.compass_targets.get(&uuid) {
+            return C::SetDefaultSpawnPosition(play::SetDefaultSpawnPosition {
+                pos: target.clone(),
+                yaw: 0.0,
+                pitch: 0.0,
+            });
+        }
         C::SetDefaultSpawnPosition(play::SetDefaultSpawnPosition {
             pos: play::GlobalPos {
                 dimension: "minecraft:overworld".into(),
@@ -1907,7 +1919,7 @@ impl Hub {
         }
         g.send(&C::InitializeBorder(super::border::initialize(ctx.border)));
         g.send(&self.time_packet(ctx.world, ctx.clock_rate));
-        g.send(&self.default_spawn(spawn));
+        g.send(&self.default_spawn(g.uuid, spawn));
         let w = &ctx.world.weather;
         if w.raining {
             g.send(&C::GameEvent(play::GameEvent {
@@ -2276,6 +2288,11 @@ impl Hub {
 
     pub(super) fn remove_guest(&mut self, i: usize, reason: &str) -> Guest {
         let mut g = self.guests.remove(i);
+        // A compass target lasts while the player is on, as the world spawn
+        // is sent again when they come back.
+        if !self.guests.iter().any(|o| o.uuid == g.uuid) {
+            self.compass_targets.remove(&g.uuid);
+        }
         if let Some(m) = g
             .menu
             .as_ref()
@@ -4587,7 +4604,7 @@ impl Hub {
         g.far_queue.clear();
         g.tracker.clear();
         self.resend_teleport(i, None);
-        let spawn = self.default_spawn(ctx.spawn);
+        let spawn = self.default_spawn(self.guests[i].uuid, ctx.spawn);
         let g = &mut self.guests[i];
         g.send(&spawn);
         g.send(&C::ChangeDifficulty(play::ChangeDifficulty {

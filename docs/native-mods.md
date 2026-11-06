@@ -2511,6 +2511,53 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
 - **`native_player_jump(player, name)`**: accepted guest movement made the server player jump from the ground, after movement simulation finishes. The guest's state is swapped in.
 - **`native_player_kicked(player, name, reason)`**: a guest was kicked after the hub recorded the rendered disconnect reason and sent the disconnect. The guest's state is swapped in, unless the guest was already removed in the same poll (a kick and the disconnect arriving together): the hook still fires, without it.
 - **`native_player_level_change(player, name, from, to)`**: a server player's experience change altered their level, after the new level was applied. The guest's state is swapped in when the player is a guest.
+#### Server hooks for plugin ports: per-player feedback
+
+What Bukkit's and Adventure's `Player` methods send one player, which plugin ports built as raw packets through
+`native_send` before: a sound, particles, a title, boss bars and the compass target. Only
+that player is sent anything; the world, its `/bossbar` bars and the other players are untouched. NeoForge has no
+per-player helpers for these (a NeoForge mod sends `ServerPlayer.connection.send` itself), so none is named.
+
+- Helper **`native_play_sound_to(uuid, sound, category, at, volume, pitch)`** (`host.play_sound_to`): a
+  `ClientboundSoundPacket` to that player alone, as Bukkit's `Player.playSound`, at `at` in their level or, with None,
+  where they stand when it leaves. `category` is a `SoundSource` name (`master`, `music`, `record`, `weather`, `block`,
+  `hostile`, `neutral`, `player`, `ambient`, `voice`, `ui`). As for `GameLevel::native_play_sound`, an unknown
+  `minecraft:` event is dropped and another namespace's event goes by name (a client hears it if its resources define
+  it). No range applies: their client fades it with distance as any sound. It leaves at the tick's end, so it works
+  from any server hook, a player's own included; true means queued. False on a client, for a bad name, category,
+  position, volume or pitch, and for a player who isn't on (inside another player's hook, where the players are out of
+  reach, that player then gets nothing). Bundles need `"hooks": @API:play_sound_to@`.
+- Helper **`native_send_particles_to(uuid, options, state, at, spread, speed, count, force)`**
+  (`host.send_particles_to`): particles for that player alone, as vanilla's `ServerLevel.sendParticles(player, ...)`
+  (`/particle ... normal|force <player>`) and Bukkit's `Player.spawnParticle`: sent when `at` is within 32 blocks of
+  the centre of their block, 512 with `force`, which also sets the packet's `overrideLimiter` (the client draws them
+  whatever its Particles option says). Options and their checks are `GameLevel::native_send_particles`'s: block
+  particles need `state`, item, trail and vibration particles aren't sent, a mod's own type
+  (`ParticleOptions::named`) reaches only a Horizon client. Queued as `native_play_sound_to`, with the same answers.
+  Bundles need `"hooks": @API:send_particles_to@`.
+- Helper **`native_title(uuid, title, subtitle, fade_in, stay, fade_out)`** (`host.title`): a title and subtitle in
+  the middle of that player's screen, as `/title` and Adventure's `showTitle`: the times (in ticks; vanilla's default
+  is 10, 70, 20), the subtitle and the title, in that order, replacing a title shown before; an empty subtitle shows
+  none. Sent at once, as `native_tell`: also inside a player's hook for the acting player, whose packets go after the
+  hook. False on a client, for a negative time, and for a player who isn't on or can't be reached from here (another
+  player inside a player's hook). Bundles need `"hooks": @API:title@`.
+- Helper **`native_boss_bar(uuid, id, bar)`** (`host.boss_bar`): shows that player the boss bar `id` (a UUID the mod
+  picks; a random one keeps clear of the world's) as a `NativeBossBar` (`name`, `progress` 0 to 1, `color` and
+  `overlay` as `BossBarColor` and `BossBarOverlay` ordinals, the `darken`, `music` and `fog` flags), changes it, or
+  takes it away with None, as Bukkit's `BossBar.addPlayer`/`removePlayer`. The game's boss bar update sends it with the
+  world's bars (`ServerBossEvent`'s packets: a change is one packet, a new bar is added under the mod's earlier ones,
+  after the `/bossbar` bars and before a boss's). By UUID: kept for a player who is off, who sees it again when they
+  come back, until a mod takes it away or the server stops. Works from any server hook. False on a client, and for a
+  progress outside 0 to 1 or a colour or overlay `BossEvent` hasn't. Bundles need `"hooks": @API:boss_bar@`.
+- Helper **`native_set_compass_target(uuid, target)`** (`host.set_compass_target`): points that player's compass at
+  `Some((dimension, pos))`, or at the world spawn again with None, as Bukkit's `Player.setCompassTarget`. The
+  `ClientboundSetDefaultSpawnPositionPacket` they are sent carries the target in place of the world spawn, now and
+  every time the server sends the world spawn again (a respawn, a trip to another level), until a mod sets it again or
+  they leave. A compass points there only in that dimension (elsewhere it spins, as for the world spawn; a Horizon client so far
+  keeps only an Overworld target, `remote.rs`); a lodestone
+  compass and a recovery compass keep their own targets. Queued as `native_play_sound_to`, with the same answers; also
+  false for a dimension that isn't a namespaced id or a position a block position can't carry. Bundles need
+  `"hooks": @API:compass_target@`.
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a

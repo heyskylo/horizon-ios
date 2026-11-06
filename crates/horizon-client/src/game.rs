@@ -248,6 +248,7 @@ mod native_mounts;
 mod native_net;
 mod native_panel;
 mod native_panel_recipes;
+mod native_player_fx;
 mod native_projectiles;
 mod native_quick_move;
 mod native_recipes;
@@ -3081,6 +3082,8 @@ struct Game<'a> {
     native_configs: native_configs::NativeConfigs,
     /// Native mods' messages waiting (`game/native_net.rs`).
     native_net: native_net::NativeNet,
+    /// What native mods send one player, waiting for the hub (`game/native_player_fx.rs`).
+    native_player_fx: native_player_fx::NativePlayerFx,
     /// The mod whose own screen is open (`Screen::Mod`).
     native_mod_screen: Option<String>,
     /// Meshed sections waiting for an upload budget (Horizon settings).
@@ -20188,6 +20191,7 @@ impl<'a> Game<'a> {
             native_lifecycle: Default::default(),
             native_configs: Default::default(),
             native_net: Default::default(),
+            native_player_fx: Default::default(),
             native_mod_screen: None,
             sky_darken_memo: Default::default(),
             water_plane_memo: Default::default(),
