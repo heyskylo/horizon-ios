@@ -2383,7 +2383,33 @@ def summoned_dragon_hovers():
         ops += [{'op': 'tick', 'n': 20},
                 cmd(f'/data get entity {dragon} DragonPhase'),
                 *[cmd(f'/data get entity {dragon} Pos[{i}] 100') for i in range(3)]]
-    return ops + setup('/kill @e[tag=hover_dragon]', '/forceload remove all')
+    # DragonHoverPhase.getFlySpeed is 1: a hovering dragon thrown upwards climbs back to its
+    # target at up to 0.01 a tick (ydd / horizontal distance clamped to the fly speed).
+    rise = '@e[tag=hover_rise,limit=1]'
+    ops += setup('/kill @e[tag=hover_dragon]',
+                 '/summon ender_dragon 16.5 160 16.5 {Tags:["hover_rise"],DragonPhase:10,Motion:[0.0d,0.5d,0.0d]}')
+    for _ in range(4):
+        ops += [{'op': 'tick', 'n': 10},
+                *[cmd(f'/data get entity {rise} Pos[{i}] 1000') for i in range(3)]]
+    return ops + setup('/kill @e[tag=hover_rise]', '/forceload remove all')
+
+
+def dragon_scanning_turn():
+    """DragonSittingScanningPhase: the dragon turns towards the player only while they are more
+    than 10 degrees off its heading. Summoned 6 blocks south of a survival player with yaw 0
+    (looking towards -z, at them), it holds still; one with yaw 90 turns. Its parts are at the
+    origin until its first aiStep, so its first turn aims from there (far away: a small step)."""
+    ops = setup('/gamemode survival', '/execute at @s run forceload add ~-32 ~-32 ~32 ~32')
+    ops += [{'op': 'settle'}]
+    for label, yaw in (('facing', 0), ('away', 90)):
+        dragon = f'@e[tag=scan_{label},limit=1]'
+        ops += setup(f'/execute at @s run summon ender_dragon ~ ~ ~6 {{Tags:["scan_{label}"],DragonPhase:6,Rotation:[{yaw}.0f,0.0f]}}')
+        for _ in range(3):
+            ops += [{'op': 'tick', 'n': 2},
+                    cmd(f'/data get entity {dragon} Rotation[0] 1000'),
+                    cmd(f'/data get entity {dragon} DragonPhase')]
+        ops += setup(f'/kill {dragon}')
+    return ops + setup('/gamemode creative', '/forceload remove all')
 
 
 def place_structure():
@@ -5698,6 +5724,7 @@ def groups():
         ('minecart drag', minecart_drag()),
         ('ender dragon', ender_dragon()),
         ('summoned dragon hovers', summoned_dragon_hovers()),
+        ('dragon scanning turn', dragon_scanning_turn()),
         ('place structure', place_structure()),
         ('tame wolf kills', tame_wolf_kills()),
         ('experience orb fall', experience_orb_fall()),

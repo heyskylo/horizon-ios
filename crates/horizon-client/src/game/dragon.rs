@@ -352,6 +352,8 @@ impl Phase {
         match self {
             Self::Landing { .. } => 1.5,
             Self::Charging { .. } | Self::Dying { .. } => 3.0,
+            // DragonHoverPhase.getFlySpeed.
+            Self::Hover { .. } => 1.0,
             _ => 0.6,
         }
     }
@@ -532,7 +534,9 @@ impl Dragon {
             ticks: 0,
             history: [(position.y, yaw); 64],
             head: 0,
-            parts: [(position, position); 8],
+            // The parts are entities of their own, at the origin until the first
+            // `aiStep` places them (`tickPart`).
+            parts: [(Vec3::ZERO, Vec3::ZERO); 8],
             nodes: None,
             nearest_crystal: None,
             strafe_request: None,
@@ -858,13 +862,27 @@ fn hurt_source(
         direct: if melee { causing } else { 0 },
     }
 }
+/// `Mth.wrapDegrees(float)`: Java's `%` (truncating, as Rust's), then one step of 360.
 fn wrap(d: f32) -> f32 {
-    let r = d.rem_euclid(360.0);
-    if r >= 180.0 { r - 360.0 } else { r }
+    let mut r = d % 360.0;
+    if r >= 180.0 {
+        r -= 360.0;
+    }
+    if r < -180.0 {
+        r += 360.0;
+    }
+    r
 }
+/// `Mth.wrapDegrees(double)`.
 fn wrap64(d: f64) -> f64 {
-    let r = d.rem_euclid(360.0);
-    if r >= 180.0 { r - 360.0 } else { r }
+    let mut r = d % 360.0;
+    if r >= 180.0 {
+        r -= 360.0;
+    }
+    if r < -180.0 {
+        r += 360.0;
+    }
+    r
 }
 impl Game<'_> {
     fn fight_path(&self) -> std::path::PathBuf {
@@ -1885,8 +1903,9 @@ impl Game<'_> {
                 if sees {
                     *charge += 1;
                     let d = self.dragon.as_ref().expect("dragon");
-                    let r = d.yaw.to_radians();
-                    let dir = glam::DVec2::new(f64::from(r.sin()), f64::from(-r.cos())).normalize();
+                    let r = f64::from(d.yaw * trig::DEG_TO_RAD);
+                    let dir = glam::DVec2::new(f64::from(trig::sin(r)), f64::from(-trig::cos(r)))
+                        .normalize();
                     let aim = glam::DVec2::new(pp.x - pos.x, pp.z - pos.z).normalize_or_zero();
                     let angle = dir.dot(aim).clamp(-1.0, 1.0).acos().to_degrees() + 0.5;
                     if *charge >= 5 && (0.0..10.0).contains(&angle) {
@@ -1997,15 +2016,33 @@ impl Game<'_> {
                         next = Some(Phase::Attacking { ticks: 0 });
                     } else {
                         let d = self.dragon.as_mut().expect("dragon");
-                        let head = d.parts[0].0;
-                        let (xd, zd) = (pp.x - head.x, pp.z - head.z);
-                        let delta = wrap64(180.0 - xd.atan2(zd).to_degrees() - f64::from(d.yaw))
+                        // It turns only while the player is more than 10 degrees off its
+                        // heading (`Math.acos` of the float dot, in degrees, plus 0.5).
+                        let aim = vanilla_normalize(glam::DVec3::new(
+                            pp.x - d.position.x,
+                            0.0,
+                            pp.z - d.position.z,
+                        ));
+                        let r = f64::from(d.yaw * trig::DEG_TO_RAD);
+                        let dir = vanilla_normalize(glam::DVec3::new(
+                            f64::from(trig::sin(r)),
+                            0.0,
+                            f64::from(-trig::cos(r)),
+                        ));
+                        let dot = dir.dot(aim) as f32;
+                        let angle = (f64::from(dot).acos() * 57.2957763671875) as f32 + 0.5;
+                        if angle < 0.0 || angle > 10.0 {
+                            let head = d.parts[0].0;
+                            let (xd, zd) = (pp.x - head.x, pp.z - head.z);
+                            let delta = wrap64(
+                                180.0 - trig::atan2(xd, zd) * 57.2957763671875 - f64::from(d.yaw),
+                            )
                             .clamp(-100.0, 100.0);
-                        d.yaw_accel *= 0.8;
-                        let dist = (xd.hypot(zd) as f32 + 1.0).min(40.0);
-                        let rot = xd.hypot(zd) as f32 + 1.0;
-                        d.yaw_accel += delta as f32 * (0.7 / dist / rot);
-                        d.yaw += d.yaw_accel;
+                            d.yaw_accel *= 0.8;
+                            let dist = ((xd * xd + zd * zd).sqrt() as f32 + 1.0).min(40.0);
+                            d.yaw_accel += delta as f32 * (0.7 / dist / dist);
+                            d.yaw += d.yaw_accel;
+                        }
                     }
                 } else if *time >= 100 {
                     // CHARGE_TARGETING: within 150 blocks.
@@ -2191,10 +2228,11 @@ impl Game<'_> {
         }
         let d = self.dragon.as_mut().expect("dragon");
         // Flapping, growls and the flap sound.
-        let flap_was = (d.old_flap * std::f32::consts::TAU).cos();
+        // Mth.cos(flapTime * 6.2831855F); flapSpeed's `(float) Math.pow(2.0, movement.y)`.
+        let flap_was = trig::cos(f64::from(d.old_flap * std::f32::consts::TAU));
         let v = d.velocity;
-        let mut flap_speed = 0.2 / ((v.x.hypot(v.z) as f32) * 10.0 + 1.0);
-        flap_speed *= 2f32.powf(v.y as f32);
+        let mut flap_speed = 0.2 / (((v.x * v.x + v.z * v.z).sqrt() as f32) * 10.0 + 1.0);
+        flap_speed *= 2f64.powf(v.y) as f32;
         d.flap += if d.phase.sitting() {
             0.1
         } else if d.in_wall {
@@ -2202,7 +2240,7 @@ impl Game<'_> {
         } else {
             flap_speed
         };
-        let flap_now = (d.flap * std::f32::consts::TAU).cos();
+        let flap_now = trig::cos(f64::from(d.flap * std::f32::consts::TAU));
         let at = [d.position.x, d.position.y, d.position.z];
         if flap_was <= -0.3 && flap_now >= -0.3 {
             let pitch = 0.8 + self.world.random.next_float() * 0.3;
@@ -2315,11 +2353,13 @@ impl Game<'_> {
         let Some(d) = self.dragon.as_mut() else {
             return;
         };
-        let tilt =
-            ((d.sample(5).0 - d.sample(10).0) * 10.0) as f32 * (std::f32::consts::PI / 180.0);
-        let (ct, st) = (tilt.cos(), tilt.sin());
-        let r1 = d.yaw.to_radians();
-        let (s1, c1) = (r1.sin(), r1.cos());
+        // Mth.sin / Mth.cos on floats, as EnderDragon.aiStep places them.
+        let msin = |a: f32| trig::sin(f64::from(a));
+        let mcos = |a: f32| trig::cos(f64::from(a));
+        let tilt = (d.sample(5).0 - d.sample(10).0) as f32 * 10.0 * trig::DEG_TO_RAD;
+        let (ct, st) = (mcos(tilt), msin(tilt));
+        let r1 = d.yaw * trig::DEG_TO_RAD;
+        let (s1, c1) = (msin(r1), mcos(r1));
         let p = d.position;
         let set = |d: &mut Dragon, i: usize, x: f32, y: f64, z: f32| {
             d.parts[i].0 = Vec3::new(p.x + f64::from(x), p.y + y, p.z + f64::from(z));
@@ -2327,8 +2367,8 @@ impl Game<'_> {
         set(d, 2, s1 * 0.5, 0.0, -c1 * 0.5);
         set(d, 6, c1 * 4.5, 2.0, s1 * 4.5);
         set(d, 7, c1 * -4.5, 2.0, s1 * -4.5);
-        let r2 = d.yaw.to_radians() - d.yaw_accel * 0.01;
-        let (s2, c2) = (r2.sin(), r2.cos());
+        let r2 = d.yaw * trig::DEG_TO_RAD - d.yaw_accel * 0.01;
+        let (s2, c2) = (msin(r2), mcos(r2));
         let y_off = if d.phase.sitting() {
             -1.0
         } else {
@@ -2351,8 +2391,8 @@ impl Game<'_> {
         let p1 = d.sample(5);
         for i in 0..3 {
             let p0 = d.sample(12 + i * 2);
-            let rot = d.yaw.to_radians() + wrap(p0.1 - p1.1).to_radians();
-            let (ss, cc) = (rot.sin(), rot.cos());
+            let rot = d.yaw * trig::DEG_TO_RAD + wrap(p0.1 - p1.1) * trig::DEG_TO_RAD;
+            let (ss, cc) = (msin(rot), mcos(rot));
             let dd = (i as f32 + 1.0) * 2.0;
             let x = -(s1 * 1.5 + ss * dd) * ct;
             let y = p0.0 - p1.0 - f64::from((dd + 1.5) * st) + 1.5;
@@ -4223,7 +4263,6 @@ impl Game<'_> {
         self.next_entity += 9;
         let id = dragon.id;
         self.dragon = Some(dragon);
-        self.place_dragon_parts();
         Some(id)
     }
 
@@ -4389,12 +4428,13 @@ impl Game<'_> {
             return;
         }
         // processFlappingMovement and onFlap: its wing beats, and their sound.
-        let flap_was = (d.old_flap * std::f32::consts::TAU).cos();
+        // Mth.cos(flapTime * 6.2831855F); flapSpeed's `(float) Math.pow(2.0, movement.y)`.
+        let flap_was = trig::cos(f64::from(d.old_flap * std::f32::consts::TAU));
         let v = d.velocity;
-        let mut flap_speed = 0.2 / ((v.x.hypot(v.z) as f32) * 10.0 + 1.0);
-        flap_speed *= 2f32.powf(v.y as f32);
+        let mut flap_speed = 0.2 / (((v.x * v.x + v.z * v.z).sqrt() as f32) * 10.0 + 1.0);
+        flap_speed *= 2f64.powf(v.y) as f32;
         d.flap += if d.phase.sitting() { 0.1 } else { flap_speed };
-        let flap_now = (d.flap * std::f32::consts::TAU).cos();
+        let flap_now = trig::cos(f64::from(d.flap * std::f32::consts::TAU));
         let at = [d.position.x, d.position.y, d.position.z];
         if flap_was <= -0.3 && flap_now >= -0.3 {
             let pitch = 0.8 + self.world.random.next_float() * 0.3;
@@ -4618,6 +4658,21 @@ mod tests {
 
     /// `EnderDragon.tickDeath` roars (`globalLevelEvent(1028)`) only when
     /// `!isSilent()`; `Silent` is saved only when set, as a byte.
+    /// `Mth.wrapDegrees`: `% 360` then one step of 360, exact for a negative angle
+    /// (a remainder made positive and back again loses the float's low bits).
+    #[test]
+    fn wrap_is_mth_wrap_degrees() {
+        for (d, wrapped) in [
+            (-10.123456_f32, -10.123456_f32),
+            (190.0, -170.0),
+            (-190.0, 170.0),
+            (540.25, 180.25 - 360.0),
+            (-0.0001, -0.0001),
+        ] {
+            assert_eq!(wrap(d), wrapped, "{d}");
+        }
+        assert_eq!(wrap64(-10.123456789), -10.123456789);
+    }
     #[test]
     fn a_dragon_is_silent_only_with_a_set_silent_byte() {
         use horizon_world::nbt::{Compound, Tag};
