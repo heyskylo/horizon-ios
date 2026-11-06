@@ -827,6 +827,8 @@
   "horizon.pvp.header.combat": "Combat feel",
   "horizon.pvp.combat_sounds": "1.8 hit sounds",
   "horizon.pvp.combat_sounds.tooltip": "Under Legacy, leaves out the attack sounds 1.9 added (strong, weak, sweep, critical...). Hurt sounds stay.",
+  "horizon.pvp.combat_rules": "1.8 combat in worlds you host",
+  "horizon.pvp.combat_rules.tooltip": "Single player and the worlds you open to LAN fight by 1.8.9's rules: no attack cooldown or sweep, 1.8 weapon damage, Strength, Sharpness and critical hits. Servers you join keep their own rules.",
   "Bindings": "Bindings",
   "Play": "Play",
   "Device": "Device",
