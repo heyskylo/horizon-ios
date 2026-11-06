@@ -8,6 +8,8 @@ mod navigation;
 
 use super::event_loop::EventLoopCtl;
 use super::{Game, Screen};
+use horizon_client::actions::Action;
+use horizon_client::held::Source;
 use horizon_client::{
     Result,
     block_entity_anim::Ticker,
@@ -435,6 +437,7 @@ impl Game<'_> {
             Screen::Win => "win",
             Screen::DebugOptions => "debug-options",
             Screen::Mod => "mod",
+            Screen::HudEditor => "hud-editor",
         }
     }
     pub(super) fn inventory_counts(&self) -> BTreeMap<String, i64> {
@@ -487,7 +490,7 @@ impl Game<'_> {
                 "on_ground": p.ground.on_ground,
                 "flying": p.flying,
                 "fall_flying": p.fall_flying,
-                "sneaking": self.keys.contains(&KeyCode::ShiftLeft),
+                "sneaking": self.keys.held(Action::Sneak),
                 "sprinting": p.sprinting,
                 "fov_modifier": self.view.fov_modifier,
                 "health": p.health.health(),
@@ -896,11 +899,11 @@ impl Game<'_> {
 
     /// A left or right click, as the mouse would.
     fn agent_mouse(&mut self, button: MouseButton, pressed: bool) -> Result<()> {
-        self.play_mouse(button, pressed)
+        self.mouse_mapping(button, pressed, Source::Agent)
     }
     fn release_agent_keys(&mut self) {
         for k in MOVE_KEYS {
-            self.keys.remove(&k);
+            self.keys.release(&k, Source::Agent);
         }
         if self.left {
             let _ = self.agent_mouse(MouseButton::Left, false);
@@ -1155,7 +1158,7 @@ impl Game<'_> {
                     keys.push(KeyCode::Space);
                 }
                 for &k in &keys {
-                    self.keys.insert(k);
+                    self.keys.press(k, Source::Agent);
                 }
                 let from = self.player.as_ref().map_or(Vec3::ZERO, |p| p.position);
                 let until = Instant::now() + Duration::from_secs_f64(seconds);
@@ -1168,7 +1171,7 @@ impl Game<'_> {
             }
             "jump" => {
                 self.playing()?;
-                self.keys.insert(KeyCode::Space);
+                self.keys.press(KeyCode::Space, Source::Agent);
                 let from_y = self.player.as_ref().map_or(0.0, |p| p.position.y);
                 let release_tick = self.ticks + 3;
                 self.start_task(
@@ -1894,7 +1897,7 @@ impl Game<'_> {
                     return Some(json!({ "error": why, "position": self.position() }));
                 }
                 for &k in keys.iter() {
-                    self.keys.insert(k);
+                    self.keys.press(k, Source::Agent);
                 }
                 if Instant::now() < *until && !timed_out {
                     return None;
@@ -1921,7 +1924,7 @@ impl Game<'_> {
                 from_y,
             } => {
                 if self.ticks >= *release_tick || timed_out {
-                    self.keys.remove(&KeyCode::Space);
+                    self.keys.release(&KeyCode::Space, Source::Agent);
                     let on_ground = self.player.as_ref().is_some_and(|p| p.ground.on_ground);
                     if on_ground || timed_out {
                         return Some(
@@ -2089,9 +2092,9 @@ impl Game<'_> {
         if d[0].abs() + d[1].abs() > 1e-3 {
             self.yaw = (-d[0]).atan2(d[1]).to_degrees() as f32;
         }
-        self.keys.insert(KeyCode::KeyW);
+        self.keys.press(KeyCode::KeyW, Source::Agent);
         if g.sprint {
-            self.keys.insert(KeyCode::ControlLeft);
+            self.keys.press(KeyCode::ControlLeft, Source::Agent);
         }
         // Step up onto the next block, or out of water.
         let in_water = {
@@ -2106,9 +2109,9 @@ impl Game<'_> {
             g.jump_until = self.ticks + 4;
         }
         if self.ticks < g.jump_until || in_water {
-            self.keys.insert(KeyCode::Space);
+            self.keys.press(KeyCode::Space, Source::Agent);
         } else {
-            self.keys.remove(&KeyCode::Space);
+            self.keys.release(&KeyCode::Space, Source::Agent);
         }
         None
     }

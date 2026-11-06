@@ -2703,7 +2703,10 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
 }
 
 /// The root to load: `base` itself with no content, else the mods' overlay
-/// over it, built in `cache/mod-content`.
+/// over it, built in `cache/mod-content/<stamp>`: one folder per mod set, so
+/// a running game keeps reading the root it was given while a switch builds
+/// another (docs/design/mod-hotload.md). Roots of other sets unused for a day
+/// are removed.
 ///
 /// The root is built once and kept: later starts with the same build, base
 /// and mod files reuse it. With ATM10's carried mods a build takes about
@@ -2715,19 +2718,104 @@ pub fn resource_root(base: &Path, mods: &[ContentMod], cache: &Path) -> Result<P
     {
         return Ok(base.to_owned());
     }
-    let out = cache.join("mod-content");
     let stamp = stamp(base, mods)?;
+    let roots = cache.join("mod-content");
+    let out = roots.join(&stamp[..ROOT_NAME]);
     if fs::read(out.join(STAMP)).is_ok_and(|s| s == stamp.as_bytes()) {
         // A reused root warns as the build did.
         let warnings = fs::read_to_string(out.join(WARNINGS)).unwrap_or_default();
         warnings.lines().for_each(|w| log::warn!("Horizon: {w}"));
+        // Used again: kept another day.
+        let _ = fs::write(out.join(STAMP), &stamp);
         return Ok(out);
     }
     for warning in build(base, mods, &out)? {
         log::warn!("Horizon: {warning}");
     }
     fs::write(out.join(STAMP), stamp)?;
+    prune_roots(&roots, &out, KEEP_ROOTS);
     Ok(out)
+}
+
+/// The length of a root's folder name: the start of its stamp.
+const ROOT_NAME: usize = 16;
+/// How long a root no start or switch used is kept.
+const KEEP_ROOTS: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+
+/// Removes from `roots` the roots other than `current` whose stamp is older
+/// than `keep`, and what an older game left there (one root built straight in
+/// the folder). A game still running on a removed root was started more than
+/// `keep` ago and reads its tables already; only the folders' own names are
+/// touched.
+fn prune_roots(roots: &Path, current: &Path, keep: std::time::Duration) {
+    let Ok(entries) = fs::read_dir(roots) else {
+        return;
+    };
+    let old_layout = roots.join(STAMP).exists();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path == current {
+            continue;
+        }
+        let name = entry.file_name();
+        let is_root = name.len() == ROOT_NAME
+            && name
+                .to_string_lossy()
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit())
+            && path.is_dir();
+        let stale = match is_root {
+            true => fs::metadata(path.join(STAMP))
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_none_or(|age| age > keep),
+            // The old single root's files and folders.
+            false => old_layout,
+        };
+        if !stale {
+            continue;
+        }
+        let removed = match path.is_dir() {
+            true => fs::remove_dir_all(&path),
+            false => fs::remove_file(&path),
+        };
+        if let Err(e) = removed {
+            log::warn!(
+                "Horizon: an old mod content root stays: {}: {e}",
+                path.display()
+            );
+        }
+    }
+}
+
+/// Whether turning a content mod on or off can apply in a running game
+/// (docs/design/mod-hotload.md): its assets and data can, through the
+/// resource reload and the server's data reload. What a world numbers or
+/// generates from cannot yet: then the translation key of why.
+pub fn live_switch(content: &Content) -> std::result::Result<(), &'static str> {
+    if !content.blocks.is_empty()
+        || !content.items.is_empty()
+        || !content.effects.is_empty()
+        || !content.entity_types.is_empty()
+        || !content.menu_types.is_empty()
+        || !content.creative_tabs.is_empty()
+    {
+        return Err("horizon.mods.switch.registries");
+    }
+    let worldgen = |file: &&String| {
+        let mut parts = file.split('/');
+        parts.next() == Some("data")
+            && parts.nth(1).is_some_and(|folder| {
+                matches!(folder, "worldgen" | "dimension" | "dimension_type")
+                    || folder == "tags" && file.contains("/tags/worldgen/")
+                    || matches!(folder, "neoforge" | "forge") && file.contains("/biome_modifier/")
+            })
+    };
+    if content.files.iter().any(|f| worldgen(&f)) {
+        return Err("horizon.mods.switch.worldgen");
+    }
+    Ok(())
 }
 
 /// In a root built by [`build`]: its warnings, one per line.
