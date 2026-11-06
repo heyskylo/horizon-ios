@@ -115,12 +115,11 @@ impl<'a> Reader<'a> {
     /// String (UTF-16 units: a character outside the BMP counts twice).
     pub fn string(&mut self, max: usize) -> Result<String> {
         let len = self.count(max.saturating_mul(3))?;
-        let s = std::str::from_utf8(self.bytes(len)?)
-            .map_err(|e| Error::new(format!("bad UTF-8: {e}")))?;
+        let s = packet_utf8(self.bytes(len)?);
         if s.encode_utf16().count() > max {
             return Err(Error::new(format!("string longer than {max} chars")));
         }
-        Ok(s.to_owned())
+        Ok(s)
     }
     pub fn byte_array(&mut self, max: usize) -> Result<Vec<u8>> {
         let len = self.count(max)?;
@@ -149,6 +148,41 @@ impl<'a> Reader<'a> {
             return Err(Error::new("fixed long array past the end"));
         }
         (0..n).map(|_| self.i64()).collect()
+    }
+}
+
+/// Java's UTF-8 replacement decoder, as used by Utf8String.read. Most malformed
+/// sequences have Rust's maximal-subpart grouping, but Java consumes an encoded
+/// surrogate (including its truncated two-byte prefix) as one replacement.
+fn packet_utf8(mut bytes: &[u8]) -> String {
+    let mut output = String::with_capacity(bytes.len());
+    loop {
+        match std::str::from_utf8(bytes) {
+            Ok(valid) => {
+                output.push_str(valid);
+                return output;
+            }
+            Err(error) => {
+                let (valid, rest) = bytes.split_at(error.valid_up_to());
+                output.push_str(std::str::from_utf8(valid).expect("validated UTF-8 prefix"));
+                bytes = rest;
+                let surrogate = bytes[0] == 0xed
+                    && bytes
+                        .get(1)
+                        .is_some_and(|byte| (0xa0..=0xbf).contains(byte));
+                let consumed = if surrogate {
+                    if bytes.get(2).is_some_and(|byte| byte & 0xc0 == 0x80) {
+                        3
+                    } else {
+                        2
+                    }
+                } else {
+                    error.error_len().unwrap_or(bytes.len())
+                };
+                output.push('\u{fffd}');
+                bytes = &bytes[consumed..];
+            }
+        }
     }
 }
 
@@ -674,6 +708,47 @@ mod tests {
         round::<Option<i32>, OptVarInt>(Some(0));
         round::<Vec<i32>, List<VarInt>>(vec![1, 300, -1]);
         round::<u128, Uuid>(0x0123_4567_89ab_cdef_0011_2233_4455_6677);
+    }
+
+    #[test]
+    fn packet_strings_replace_malformed_utf8_like_java() {
+        // Captured from the pinned Utf8String.read, including Java's grouping
+        // of encoded surrogates (different from String::from_utf8_lossy).
+        for (bytes, expected) in [
+            (&b"\xff"[..], "\u{fffd}"),
+            (&b"\xed\xa0\x80"[..], "\u{fffd}"),
+            (&b"\xed\xa0"[..], "\u{fffd}"),
+            (&b"\xe0\x80\x80"[..], "\u{fffd}\u{fffd}\u{fffd}"),
+            (&b"\xe2\x82A"[..], "\u{fffd}A"),
+            (&b"\xf0\x9f\x98"[..], "\u{fffd}"),
+        ] {
+            let mut packet = Writer::new();
+            packet.byte_array(bytes);
+            packet.u8(42);
+            let mut reader = Reader::new(&packet.data);
+            assert_eq!(reader.string(16).unwrap(), expected, "{bytes:x?}");
+            assert_eq!(reader.u8().unwrap(), 42);
+        }
+    }
+
+    #[test]
+    fn replacement_strings_keep_the_length_limits_and_cursor() {
+        // Three bytes decode to one replacement, so they fit a one-unit limit.
+        let mut reader = Reader::new(b"\x03\xed\xa0\x80");
+        assert_eq!(reader.string(1).unwrap(), "\u{fffd}");
+        assert_eq!(reader.position(), 4);
+        // Two invalid bytes produce two replacements: the decoded limit fails
+        // after consuming the string, as Utf8String.read does.
+        let mut reader = Reader::new(b"\x02\xff\xff*");
+        assert!(reader.string(1).is_err());
+        assert_eq!(reader.position(), 3);
+        assert_eq!(reader.u8().unwrap(), 42);
+        // Encoded length and truncation failures leave the body unread.
+        for bytes in [&b"\x04\xff\xff\xff\xff"[..], &b"\x02\xff"[..]] {
+            let mut reader = Reader::new(bytes);
+            assert!(reader.string(1).is_err());
+            assert_eq!(reader.position(), 1);
+        }
     }
 
     #[test]
