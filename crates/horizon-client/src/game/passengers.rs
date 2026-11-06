@@ -338,7 +338,7 @@ impl Game<'_> {
 
     /// `Entity.getPassengerRidingPosition` of a vehicle: where the feet of a
     /// passenger whose own vehicle attachment is 0 land.
-    fn passenger_riding_position(
+    pub(super) fn passenger_riding_position(
         &self,
         vehicle: u32,
         me: Option<u32>,
