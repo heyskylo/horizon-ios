@@ -22,7 +22,7 @@ TEST = 'game::nether_portal::cooldown_tests::portal_contact_and_waiting_handoff_
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--work-dir', type=Path)
-    parser.add_argument('--resources', type=Path)
+    parser.add_argument('--resources', type=Path, default=lab.RESOURCES)
     parser.add_argument('--reference-only', action='store_true')
     args = parser.parse_args()
     build = args.work_dir or lab.LOCAL / 'rust-portal-cooldown-parity'
@@ -49,8 +49,6 @@ def main():
     print('Actual vanilla methods: 4 classes, 20 guarded observations', flush=True)
     if args.reference_only:
         return
-    if args.resources is None:
-        parser.error('--resources is required for the focused native fixture')
     inherited = dict(os.environ)
     for key in ('HORIZON_HOME', 'HORIZON_LAUNCHER_HOME', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME'):
         inherited.pop(key, None)
