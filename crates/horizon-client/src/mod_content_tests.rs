@@ -189,7 +189,6 @@ fn place_block_compiles_ordinary_bindings_without_changing_components() {
     fs::remove_dir_all(base.parent().unwrap()).unwrap();
 }
 
-
 #[test]
 fn renames_ids_keys_and_states() {
     let mut r = Rename::new("minecraft:iron_block", "ruby:ruby_block");
