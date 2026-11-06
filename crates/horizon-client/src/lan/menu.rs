@@ -191,7 +191,7 @@ impl NativeReturn {
             ),
             NativeStore::Inventory { .. } => None,
         };
-        (slots.is_some() || cursor.is_some()).then(|| Self {
+        (slots.is_some() || cursor.is_some()).then_some(Self {
             conn: guest.conn,
             uuid: guest.uuid,
             window,
