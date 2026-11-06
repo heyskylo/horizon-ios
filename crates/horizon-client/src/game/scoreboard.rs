@@ -813,6 +813,31 @@ impl Game<'_> {
         // slots: a new frame, with what the last one drew.
         self.flush_skin_slots();
         let key = self.screen == super::Screen::Playing && self.keys.held(Action::Playerlist);
+        let count = self.remote.as_ref().map_or_else(
+            || {
+                1 + self
+                    .lan
+                    .as_ref()
+                    .map_or(0, |h| h.hub.guests.iter().filter(|g| g.placed).count())
+            },
+            |r| r.listed_player_count(),
+        );
+        let has_objective = self.score.board.display_objective(sb::SLOT_LIST).is_some();
+        let shown = tab_list::visible(
+            // `Hud.extractRenderState` draws the list inside `if (!isHidden)`.
+            !self.ui.hide_gui,
+            key,
+            self.has_singleplayer_server(),
+            count,
+            has_objective,
+        );
+        let changed = self.tab_list.set_visible(shown);
+        if !tab_players_needed(shown, changed) {
+            // World skins still need download polling and atlas residency checks.
+            self.update_remote_skins();
+            self.publish_tab_object_skins();
+            return;
+        }
         let (mut players, online_mode, upside_down) = match self.remote_tab_players() {
             Some(remote) => remote,
             None => {
@@ -834,16 +859,7 @@ impl Game<'_> {
                 (players, true, upside_down)
             }
         };
-        let has_objective = self.score.board.display_objective(sb::SLOT_LIST).is_some();
-        let shown = tab_list::visible(
-            // `Hud.extractRenderState` draws the list inside `if (!isHidden)`.
-            !self.ui.hide_gui,
-            key,
-            self.has_singleplayer_server(),
-            players.len(),
-            has_objective,
-        );
-        if self.tab_list.set_visible(shown) {
+        if changed {
             // PlayerTabOverlay.setVisible: the names, said as the list comes up.
             self.say_system_now(&tab_list::narration(&players, &self.score.board));
         }
@@ -851,11 +867,12 @@ impl Game<'_> {
             return;
         }
         // The faces of the players the list shows.
-        let faces: std::collections::HashSet<u128> =
-            tab_list::sorted_players(&players, &self.score.board)
-                .iter()
-                .map(|p| p.uuid)
-                .collect();
+        let faces: std::collections::HashSet<u128> = self
+            .tab_list
+            .displayed_ids(&players, &self.score.board)
+            .iter()
+            .copied()
+            .collect();
         for p in players.iter_mut().filter(|p| faces.contains(&p.uuid)) {
             p.skin = self.face_skin(p.uuid, &p.skin);
         }
@@ -882,6 +899,25 @@ impl Game<'_> {
         };
         let draws = self.tab_list.layout(&inputs, &self.gui.atlas.font);
         horizon_client::hud_layout::paint(batch, &self.gui.atlas, &draws);
+    }
+}
+
+fn tab_players_needed(shown: bool, changed: bool) -> bool {
+    shown || changed
+}
+
+#[test]
+fn hidden_tab_skips_players_except_for_visibility_narration() {
+    use horizon_client::tab_list;
+    for count in [1, 150, 1000] {
+        let shown = tab_list::visible(true, false, false, count, false);
+        assert!(!tab_players_needed(shown, false));
+        assert!(
+            tab_players_needed(shown, true),
+            "closing narration needs names"
+        );
+        let shown = tab_list::visible(true, true, false, count, false);
+        assert!(tab_players_needed(shown, false));
     }
 }
 
