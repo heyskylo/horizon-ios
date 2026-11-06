@@ -211,7 +211,7 @@ impl Game<'_> {
         if passengers.contains(&me) {
             if self.riding != Some(vehicle_id) {
                 self.riding = Some(vehicle_id);
-                // 🤖 Agent: ClientPacketListener.handleSetEntityPassengersPacket: boarding says how to get off,
+                // ClientPacketListener.handleSetEntityPassengersPacket: boarding says how to get off,
                 // on the overlay and to the narrator.
                 let key = if self.cushions.iter().any(|c| c.id == vehicle_id) {
                     "mount.sit"
