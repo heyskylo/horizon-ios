@@ -130,6 +130,10 @@ pub fn apply(guest: &mut Guest, level: &Level) {
     guest.pitch = level.rotation[1];
     guest.head_yaw = guest.yaw;
     guest.on_ground = level.on_ground;
+    // LivingEntity.readAdditionalSaveData: a saved FallFlying sets shared
+    // flag 7, so a player saved mid-glide (#11193) lands gliding; its next
+    // `updateFallFlying` ends the glide if it can't go on.
+    guest.fall_flying = level.fall_flying;
     guest.health = level.health;
     guest.saved_absorption = Some(level.absorption);
     guest.food = level.food;
@@ -423,6 +427,8 @@ pub fn store(guest: &Guest, level: &mut Level, vehicle: Option<Tag>) {
     level.spawn = guest.spawn.map(|s| [s[0] - 0.5, s[1], s[2] - 0.5]);
     level.respawn_elsewhere = guest.respawn_elsewhere.clone();
     level.on_ground = guest.on_ground;
+    // LivingEntity.addAdditionalSaveData: FallFlying is isFallFlying().
+    level.fall_flying = guest.fall_flying;
     level.seen_credits = guest.seen_credits;
     level.post_effects.clone_from(&guest.post_effects);
     level.last_death = guest.last_death.clone();
@@ -879,6 +885,34 @@ mod tests {
         let mut back = guest();
         apply(&mut back, &read);
         (tag, back)
+    }
+
+    /// #11193: a player who saved while gliding comes back gliding, as
+    /// LivingEntity.addAdditionalSaveData's FallFlying and the flag
+    /// readAdditionalSaveData sets from it have it.
+    #[test]
+    fn a_saved_glide_comes_back() {
+        let mut g = guest();
+        g.fall_flying = true;
+        let (tag, back) = round_trip(&g);
+        assert_eq!(tag.get("FallFlying"), Some(&Tag::Byte(1)));
+        assert!(back.fall_flying);
+        let (tag, back) = round_trip(&guest());
+        assert_eq!(tag.get("FallFlying"), Some(&Tag::Byte(0)));
+        assert!(!back.fall_flying);
+    }
+
+    /// `getBooleanOr` takes any numeric tag: an int `FallFlying` from
+    /// another writer still starts the glide.
+    #[test]
+    fn a_numeric_fall_flying_reads_as_a_glide() {
+        let mut level = Level::default();
+        store(&guest(), &mut level, None);
+        let mut tag = level.player_tag();
+        put(&mut tag, "FallFlying", Tag::Int(1));
+        let mut read = Level::default();
+        read.read_player(&tag);
+        assert!(read.fall_flying);
     }
 
     #[test]
