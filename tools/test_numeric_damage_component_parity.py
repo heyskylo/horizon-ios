@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 import sys
 
+import harness_args
 import test_command_exec_parity as driver
 
 # Number.intValue: float/double truncate, long narrows; validation stays upstream.
@@ -103,9 +104,7 @@ def main():
         i = sys.argv.index('--reference')
         reference = Path(sys.argv[i + 1]).resolve()
         del sys.argv[i:i + 2]
-    if '--work-dir' not in sys.argv:
-        sys.argv += ['--work-dir', str(driver.lab.LOCAL / 'numeric-damage-component-parity')]
-    build = Path(sys.argv[sys.argv.index('--work-dir') + 1]).resolve()
+    build = harness_args.ensure_work_dir(driver.lab.LOCAL / 'numeric-damage-component-parity').resolve()
     reference_bytes = reference.read_bytes() if reference else None
     assert reference is None or reference != build / 'vanilla.jsonl'
     ops = program(full)
