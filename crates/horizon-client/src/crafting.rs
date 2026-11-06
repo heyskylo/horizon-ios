@@ -9,8 +9,8 @@ use crate::{
     items::{ItemStack, Items},
     particles::{DYE_FIREWORK_COLORS, FireworkExplosion, FireworkShape},
 };
-use horizon_world::loot::PackOverlay;
-use horizon_world::nbt::Tag;
+use horizon_world::nbt::{JavaString, Tag};
+use horizon_world::{component_patch::Patch, loot::PackOverlay};
 use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet},
@@ -273,6 +273,8 @@ pub struct Template {
     pub count: u32,
     pub damage: u32,
     pub extra: Option<Box<StackData>>,
+    /// Result patch before decoding defaults, including explicit removals/zeroes.
+    pub components: Option<Tag>,
 }
 /// `ItemStackTemplate.CODEC` count: absent means 1, present must be an
 /// integer in `1..=99` (`ExtraCodecs.intRange(1, 99)`), else the recipe is
@@ -288,15 +290,14 @@ pub(crate) fn template_count(v: &Value) -> Option<u32> {
 }
 impl Template {
     fn parse(v: &Value) -> Option<Self> {
-        let (damage, extra) = match v.get("components") {
-            Some(c) => crate::item_data::decode_components(Some(&json_tag(c))),
-            None => (0, None),
-        };
+        let components = v.get("components").map(json_tag);
+        let (damage, extra) = crate::item_data::decode_components(components.as_ref());
         Some(Self {
             item: horizon_world::loot::recipe_result_id(v).map(Arc::from),
             count: template_count(v)?,
             damage,
             extra,
+            components,
         })
     }
     /// `ItemStackTemplate.create`.
@@ -314,56 +315,65 @@ impl Template {
     /// `TransmuteRecipe.createWithOriginalComponents`: the input's component
     /// patch on the result item, then the template's own components over it.
     fn over(&self, input: &ItemStack, extra_count: u32) -> ItemStack {
+        let original = assembly_components(input);
+        let result = self
+            .components
+            .clone()
+            .unwrap_or_else(|| assembly_components(&self.create()));
+        // ItemStackTemplate.apply: the second patch wins for each component;
+        // a removal replaces a value rather than coexisting with it.
+        let entries = |tag: Tag| match tag {
+            Tag::Compound(map) => map
+                .into_iter()
+                .map(|(key, value)| {
+                    let key = key.to_string_lossy();
+                    match key.strip_prefix('!') {
+                        Some(key) => (key.to_owned(), None),
+                        None => (key.to_owned(), Some(value)),
+                    }
+                })
+                .collect::<Vec<_>>(),
+            _ => Vec::new(),
+        };
+        let patch = Patch::new(entries(original).into_iter().chain(entries(result)));
+        let components = Tag::compound(patch.entries().iter().map(|(key, value)| match value {
+            Some(value) => (JavaString::from(key.as_str()), value.clone()),
+            None => (
+                JavaString::from(format!("!{key}").as_str()),
+                Tag::Compound(Default::default()),
+            ),
+        }));
+        let (damage, extra) = crate::item_data::decode_components(Some(&components));
         let mut out = ItemStack {
             item: self.item.clone().unwrap_or_else(|| input.item.clone()),
             count: self.count + extra_count,
-            damage: input.damage,
-            extra: input.extra.clone(),
+            damage,
+            extra,
         };
-        if self.damage > 0 {
-            out.damage = self.damage;
-        }
-        if let Some(over) = &self.extra {
-            overlay(out.data_mut(), over);
+        if let Some(input) = input.data() {
+            // Runtime-only stack bookkeeping is not a saved component patch.
+            let data = out.data_mut();
+            data.wire = input.wire.clone();
+            data.bundle_selected = input.bundle_selected;
         }
         out.tidy();
         out
     }
 }
-/// `DataComponentPatch` application: every component the overlay sets wins.
-fn overlay(dst: &mut StackData, src: &StackData) {
-    let none = StackData::default();
-    macro_rules! field {
-        ($($f:ident),*) => {$(
-            if src.$f != none.$f {
-                dst.$f = src.$f.clone();
-            }
-        )*};
+/// Assembly also carries the transient map postprocess component; the saved
+/// ItemStack codec deliberately omits it. Do not turn it into saved data.
+fn assembly_components(stack: &ItemStack) -> Tag {
+    let mut components = match crate::item_data::encode_components(stack) {
+        Some(Tag::Compound(map)) => map,
+        _ => Default::default(),
+    };
+    if let Some(postprocess) = stack.data().and_then(|d| d.map_post_processing) {
+        components.insert(
+            "minecraft:map_post_processing".into(),
+            Tag::Int(i32::from(postprocess)),
+        );
     }
-    field!(
-        enchantments,
-        stored_enchantments,
-        repair_cost,
-        custom_name,
-        potion,
-        trim,
-        container,
-        charged,
-        fireworks,
-        map_id,
-        writable_pages,
-        written,
-        banner_patterns,
-        base_color,
-        ominous_banner,
-        ominous_amplifier,
-        dyed_color,
-        firework_explosion,
-        pot_decorations,
-        bundle_contents,
-        stew_effects,
-        map_post_processing
-    );
+    Tag::Compound(components)
 }
 /// A JSON recipe value as the NBT a component codec reads.
 fn json_tag(v: &Value) -> Tag {
@@ -1988,6 +1998,70 @@ mod tests {
     use super::*;
     use crate::banner::BannerLayer;
     use std::fs;
+
+    /// ItemStackTemplate.apply applies the result patch after the input patch.
+    #[test]
+    fn transmute_result_patch_preserves_inheritance_and_explicit_removals() {
+        let input_tag = json_tag(&serde_json::json!({
+            "minecraft:damage": 5, "minecraft:lore": ["Old"]
+        }));
+        let (damage, extra) = crate::item_data::decode_components(Some(&input_tag));
+        let input = ItemStack {
+            item: "minecraft:wooden_sword".into(),
+            count: 1,
+            damage,
+            extra,
+        };
+        for (components, expected_damage, removed) in [
+            (
+                serde_json::json!({"minecraft:custom_name": "Kept"}),
+                5,
+                false,
+            ),
+            (
+                serde_json::json!({"minecraft:custom_name": "Up", "!minecraft:damage": {}}),
+                0,
+                true,
+            ),
+            (
+                serde_json::json!({"minecraft:custom_name": "Zero", "minecraft:damage": 0}),
+                0,
+                false,
+            ),
+        ] {
+            let template = Template::parse(&serde_json::json!({
+                "id": "minecraft:stone_sword", "components": components
+            }))
+            .unwrap();
+            let output = template.over(&input, 0);
+            assert_eq!(output.item.as_ref(), "minecraft:stone_sword");
+            assert_eq!(output.damage, expected_damage);
+            let encoded = crate::item_data::encode_components(&output).unwrap();
+            assert_eq!(
+                encoded.get("minecraft:lore"),
+                input_tag.get("minecraft:lore")
+            );
+            assert_eq!(
+                encoded.get("minecraft:custom_name"),
+                Some(&json_tag(&components["minecraft:custom_name"]))
+            );
+            assert_eq!(encoded.get("!minecraft:damage").is_some(), removed);
+            if expected_damage == 0 {
+                assert!(encoded.get("minecraft:damage").is_none());
+            }
+        }
+        let mut map = input.clone();
+        map.data_mut().map_post_processing = Some(1);
+        let template = Template::parse(&serde_json::json!({"id": "minecraft:filled_map"})).unwrap();
+        let output = template.over(&map, 0);
+        assert_eq!(output.data().unwrap().map_post_processing, Some(1));
+        assert!(
+            crate::item_data::encode_components(&output)
+                .unwrap()
+                .get("minecraft:map_post_processing")
+                .is_none()
+        );
+    }
 
     #[test]
     fn result_count_is_bounded_like_vanilla() {
