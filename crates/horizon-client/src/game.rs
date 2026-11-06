@@ -5065,10 +5065,12 @@ impl Game<'_> {
     /// (`ServerChunkCache.tick`'s broadcast), before the block events and the
     /// block entities ran.
     fn tick_blocks(&mut self) -> Result<Option<usize>> {
+        let mut laps = horizon_client::spans::laps();
         // ServerChunkCache.tick: the tickets that time out.
         self.tickets.tick_portal();
         self.sync_tick_chunks();
         self.start_ticking_chunks();
+        laps.lap("tb_tickets");
         let levels = self.tickets.levels();
         let bounds = levels.random_tick_bounds();
         // Keep the world map's chunk order, including empty chunks
@@ -5087,6 +5089,7 @@ impl Game<'_> {
                 levels.random_ticking(x, z) && ticking_chunk(&self.world, x, z)
             })
             .collect();
+        laps.lap("tb_chunks");
         // Entity.checkInsideBlocks for the plates, tripwires, detector rails and
         // buttons under the players (the host and the LAN guests), the minecarts
         // and the arrows (the mobs and other entities are added in `with_level`
@@ -5260,6 +5263,7 @@ impl Game<'_> {
             }
         });
         self.process_level_events()?;
+        laps.lap("tb_entity_inside");
         // ServerLevel.tick: a Debug world runs no scheduled block or fluid ticks, and
         // ServerChunkCache.tickChunks no random ticks.
         let debug = self.world_debug;
@@ -5300,12 +5304,17 @@ impl Game<'_> {
                 }
             });
         });
+        laps = horizon_client::spans::laps();
         let sent = self.lan_broadcast_changes();
+        laps.lap("tb_broadcast");
         self.with_level(|b, level, ticks| {
             b.run_block_events(level, ticks);
         });
+        laps.lap("tb_block_events");
         self.process_level_events()?;
+        laps.lap("tb_level_events");
         self.sync_moving_pistons();
+        laps.lap("tb_pistons");
         Ok(sent)
     }
     /// `ServerLevel.tick`: moving block entities push after entity travel.
@@ -5348,7 +5357,10 @@ impl Game<'_> {
     /// events) happen before the next tick runs, as they do inline in vanilla.
     pub(super) fn tick_scheduled(&mut self) -> Result<()> {
         for fluids in [false, true] {
+            let mut laps = horizon_client::spans::laps();
+            let name = if fluids { "tb_fluids" } else { "tb_scheduled" };
             if !self.with_level(|b, level, ticks| b.scheduled_begin(level, ticks, fluids)) {
+                laps.lap(name);
                 continue;
             }
             loop {
@@ -5371,6 +5383,7 @@ impl Game<'_> {
                 }
             }
             self.with_level(|b, _, ticks| b.scheduled_finish(ticks, fluids));
+            laps.lap(name);
         }
         Ok(())
     }
