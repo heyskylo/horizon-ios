@@ -16,6 +16,7 @@
 use super::{Game, Keys, ray_box};
 use crate::Result;
 use horizon_client::mobs::{Mob, equine, happy_ghast};
+use horizon_client::{keybinds, text::Text};
 use horizon_core::geometry::{Aabb, Vec3};
 use horizon_protocol::packets::play::{self, Serverbound as S};
 
@@ -210,6 +211,19 @@ impl Game<'_> {
         if passengers.contains(&me) {
             if self.riding != Some(vehicle_id) {
                 self.riding = Some(vehicle_id);
+                // ClientPacketListener.handleSetEntityPassengersPacket: boarding says how to get off,
+                // on the overlay and to the narrator.
+                let key = if self.cushions.iter().any(|c| c.id == vehicle_id) {
+                    "mount.sit"
+                } else {
+                    "mount.onboard"
+                };
+                let message = Text::translate(
+                    key,
+                    &[keybinds::display_name(self.settings.keys.get("key.sneak"))],
+                );
+                self.say_system_now(&message);
+                self.titles.set_overlay(message, false);
                 if let Some(c) = self.carts.iter_mut().find(|c| c.id == vehicle_id) {
                     c.passenger_yaw_delta = 0.0;
                 }
