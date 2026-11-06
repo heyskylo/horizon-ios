@@ -6994,7 +6994,11 @@ mod shulker_bullet_nbt_tests {
             ]);
             let p = spit_or_bullet_from_nbt(&tag, None, None).unwrap();
             let (_, d, s, _) = bullet_kind(&p);
-            assert_eq!((d, s), (Some(expected.0), expected.1), "Dir {dir}, Steps {steps}");
+            assert_eq!(
+                (d, s),
+                (Some(expected.0), expected.1),
+                "Dir {dir}, Steps {steps}"
+            );
         }
     }
 
