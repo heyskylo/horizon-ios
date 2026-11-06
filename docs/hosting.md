@@ -569,6 +569,19 @@ can't be read, files in `keep_files` (keys or text like `minecraft:overworld 12 
 `x` and `z`), level.dat and player data are never touched; a `keep_files` file that exists but can't be read
 stops the prune before anything is deleted.
 
+### 1.8 combat: `[combat]`
+
+Fights follow 26.3's rules. For 1.8.9's (no attack cooldown or sweep, 1.8 weapon damage, Strength and
+Sharpness; the list is in [pvp.md](pvp.md#18-combat-in-worlds-you-host-combatrules-default-off)), add to
+`server.toml`, then restart:
+
+```toml
+[combat]
+legacy = true
+```
+
+Players join with any vanilla 26.3 client: only the server decides the damage.
+
 ## 8. Start it with the computer
 
 ```sh

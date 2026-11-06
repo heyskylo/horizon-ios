@@ -168,8 +168,9 @@ knockback, no damage); hurt sounds and crit particles stay. `pvp::Combat`.
 ## 1.8 combat in worlds you host (`combatRules`, default off)
 
 The other options only change the look; this one changes the rules, so it applies only where Horizon is the
-server: single player (its server thread) and the worlds you open to LAN, at once when switched. Servers you join
-keep their own rules. Melee hits follow 1.8.9's `EntityPlayer.attackTargetEntityWithCurrentItem`:
+server: single player (its server thread) and the worlds you open to LAN, at once when switched, and a dedicated
+server whose `server.toml` has `[combat]` `legacy = true` ([hosting.md](hosting.md)). Servers you join keep their
+own rules. Melee hits follow 1.8.9's `EntityPlayer.attackTargetEntityWithCurrentItem`:
 
 - no attack cooldown (every hit is full strength) and no sweep;
 - weapon damage as in 1.8.9: base 1, plus 4 for a sword, 3 for an axe, 2 for a pickaxe, 1 for a shovel, plus the
