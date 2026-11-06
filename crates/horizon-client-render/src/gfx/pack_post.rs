@@ -3035,6 +3035,15 @@ impl PackPost {
         })
     }
 
+    /// `Renderer::finish_sequence_frame`: the centre depth the finished frame copied.
+    pub fn take_center_depth(&mut self, device: &wgpu::Device) -> Result<(), String> {
+        self.center_depth
+            .as_mut()
+            .ok_or("the shader pack copied no centre depth")?
+            .take_completed(device)
+            .map(|_| ())
+    }
+
     /// Forgets what the pack kept from earlier frames, so the next frame draws as a freshly
     /// loaded pack's first: buffers, images, storage buffers and shadow maps start over (made
     /// again at their sizes when next drawn), the frame uniforms' history, the custom uniforms
