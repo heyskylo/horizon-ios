@@ -1220,5 +1220,7 @@
   "{name} was left out: made for another Horizon version": "{name} прапушчаны: зроблены для іншай версіі Horizon",
   "{name} was left out: clashes with {other}": "{name} прапушчаны: канфліктуе з {other}",
   "{name} was left out: it needs {other}, which was left out": "{name} прапушчаны: яму патрэбны {other}, які прапушчаны",
-  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Не збіраецца на Horizon, у які вы гуляеце ({code}): зборка прапусціць яго, пакуль аўтар не абновіць"
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Не збіраецца на Horizon, у які вы гуляеце ({code}): зборка прапусціць яго, пакуль аўтар не абновіць",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Там, дзе вы, набор заснавальніка атрымліваюць праз бясплатную аплату на playhorizon.dev. Атрымайце яго ў Краме: яна сама адкрые старонку аплаты.",
+  "The founder set can't be claimed from your country.": "Набор заснавальніка нельга атрымаць з вашай краіны."
 }

@@ -4,7 +4,10 @@
 //!
 //! GPUI's `img(path)` keeps every picture it ever drew, at full size, until the launcher quits,
 //! in RAM and in its sprite atlas: one 32768 × 16384 screenshot is 2 GiB, and Overview draws the
-//! three newest as soon as Home opens (24 GiB reported on Linux, 2026-11-05).
+//! three newest as soon as Home opens (24 GiB reported on Linux, 2026-11-05). And a picture
+//! wider than the GPU's texture limit made GPUI's atlas add a max-size texture on every frame.
+//! Pictures are therefore made at the size the screen shows them, never above that limit
+//! (`pictures::drawn_side`, `pictures::gpu_limit`).
 use super::*;
 use gpui::RenderImage;
 use horizon_launcher::pictures::{self, Lru};
@@ -12,12 +15,10 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-/// A screenshot tile (196 to 335 px wide, twice that on a Retina screen).
-pub(super) const THUMB: u32 = 640;
-/// The viewer and the background: a 4K screen.
-pub(super) const FULL: u32 = 3840;
+/// A screenshot tile's widest (Overview's first), in points; made at this times the screen's scale.
+const THUMB_POINTS: f32 = 360.;
 /// What the made pictures may take together, unless more than that is on screen at once.
-const BUDGET: u64 = 256 << 20;
+const BUDGET: u64 = 384 << 20;
 /// A picture drawn this recently is on screen: it stays even over the budget.
 const GRACE: Duration = Duration::from_secs(2);
 /// Pictures made at the same time; the others wait for the next frame.
@@ -73,6 +74,21 @@ impl Pictures {
 }
 
 impl Launcher {
+    /// The side to make a screenshot tile at, for this screen.
+    pub(super) fn thumb_side(&self) -> u32 {
+        pictures::drawn_side(THUMB_POINTS, self.scale_factor, pictures::gpu_limit())
+    }
+
+    /// The side to make a picture filling the window at (the viewer, the background): every
+    /// pixel the screen can show, even on an 8K one, within the GPU's limit.
+    pub(super) fn window_side(&self) -> u32 {
+        pictures::drawn_side(
+            self.window_long_side,
+            self.scale_factor,
+            pictures::gpu_limit(),
+        )
+    }
+
     /// The picture at `path` as `look`; None while it is being made, or when it can't be read
     /// (draw a plain fill then).
     pub(super) fn picture(
@@ -119,7 +135,8 @@ fn make(path: &Path, look: Look) -> Option<Arc<RenderImage>> {
     match look {
         Look::Blurred => glass_shot_blur::blurred(path),
         Look::Fit(max) => {
-            let mut image = pictures::load_fitted(path, max).ok()?;
+            // Never above the GPU's limit, whatever the caller asked: GPUI's atlas can't hold it.
+            let mut image = pictures::load_fitted(path, max.min(pictures::gpu_limit())).ok()?;
             for p in image.pixels_mut() {
                 p.0.swap(0, 2);
             }
