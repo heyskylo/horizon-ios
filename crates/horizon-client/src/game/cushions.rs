@@ -7,11 +7,11 @@
 //! only an entity whose `Pos` is the click point's height. Placement uses
 //! outline bounds, collision shapes and suffocation predicates.
 use super::{Game, Hit, InteractTarget, Keys, entity_culling::default_range, ray_box};
+use horizon_client::actions::Action;
 use horizon_client::entities::{Cushion, dye_index};
 use horizon_client::items::ItemStack;
 use horizon_client::mobs::anim::Poses;
 use horizon_core::geometry::{Aabb, Vec3};
-use winit::keyboard::KeyCode;
 
 /// `Direction.fromYRot(yaw).toYRot()`: the nearest 90 degree step.
 pub(crate) fn snap_yaw(yaw: f32) -> f32 {
@@ -324,7 +324,7 @@ impl Game<'_> {
             return false;
         }
         // isSecondaryUseActive.
-        if self.keys.contains(&KeyCode::ShiftLeft) {
+        if self.keys.held(Action::Sneak) {
             return false;
         }
         let id = self.cushions[i].id;
@@ -517,6 +517,31 @@ impl Game<'_> {
             p.position = at;
             p.velocity = Vec3::ZERO;
             p.fall_distance = 0.0;
+        }
+    }
+
+    /// `Entity.positionRider` for the mobs (and other players) sitting on a
+    /// cushion: its passenger attachment `(0, 0.25, 0)`, less the rider's own
+    /// vehicle attachment. A server sends no position for a passenger, so
+    /// every client seats it here.
+    pub(super) fn seat_cushion_mobs(&mut self, riding: &super::passengers::Riders) {
+        for c in &self.cushions {
+            let Some(js) = riding.get(&c.id) else {
+                continue;
+            };
+            for &j in js {
+                let m = &mut self.mobs[j];
+                // Cushion's box is 1 wide.
+                let offset = horizon_client::mobs::riders::vehicle_attachment(m, 1.0);
+                let at = Vec3::new(c.position.x, c.position.y + 0.25 - offset, c.position.z);
+                m.position = at;
+                m.previous = at;
+                m.velocity = Vec3::ZERO;
+                m.fall_distance = 0.0;
+                m.on_ground = false;
+                m.extra.passenger = true;
+                m.ai.nav.stop();
+            }
         }
     }
 

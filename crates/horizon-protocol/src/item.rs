@@ -88,6 +88,10 @@ pub mod component {
     pub const WRITTEN_BOOK_CONTENT: i32 = 57;
     pub const TRIM: i32 = 58;
     pub const INSTRUMENT: i32 = 63;
+    pub const PROVIDES_TRIM_MATERIAL: i32 = 64;
+    pub const DAMAGE_TYPE: i32 = 8;
+    pub const CHICKEN_VARIANT: i32 = 104;
+    pub const ZOMBIE_NAUTILUS_VARIANT: i32 = 106;
     pub const LODESTONE_TRACKER: i32 = 69;
     pub const FIREWORK_EXPLOSION: i32 = 70;
     pub const FIREWORKS: i32 = 71;
@@ -649,8 +653,15 @@ impl Component {
             }
             Self::TooltipDisplay { hide, hidden } => {
                 w.bool(*hide);
-                w.varint(hidden.len() as i32);
-                hidden.iter().for_each(|h| w.varint(ids::component(*h)));
+                // Without the components an older client being written for lacks.
+                let kept = || {
+                    hidden
+                        .iter()
+                        .map(|h| ids::component(*h))
+                        .filter(|h| *h >= 0)
+                };
+                w.varint(kept().count() as i32);
+                kept().for_each(|h| w.varint(h));
             }
             Self::Stacks(stacks) => {
                 w.varint(stacks.len() as i32);
@@ -799,10 +810,17 @@ fn older_layout(kind: i32, r: &mut Reader) -> Result<Older> {
     use component::*;
     let quirks = ids::quirks();
     Ok(match kind {
-        // EitherHolder.streamCodec: ByteBufCodecs.either(the song's holder, its ResourceKey), a flag set
-        // for the holder. A key names a song of the server's registry that the pinned holder can't point
-        // to without its numbering.
-        JUKEBOX_PLAYABLE if quirks.either_holder_song_and_tag_resistance => {
+        // EitherHolder.streamCodec: ByteBufCodecs.either(the holder, its ResourceKey), a flag set for the
+        // holder, which then reads as the pinned one does. A key names an entry of the server's registry
+        // that the pinned holder can't point to without its numbering.
+        DAMAGE_TYPE
+        | INSTRUMENT
+        | PROVIDES_TRIM_MATERIAL
+        | JUKEBOX_PLAYABLE
+        | CHICKEN_VARIANT
+        | ZOMBIE_NAUTILUS_VARIANT
+            if quirks.either_holders_and_tag_resistance =>
+        {
             if r.bool()? {
                 Older::Pinned
             } else {
@@ -811,7 +829,7 @@ fn older_layout(kind: i32, r: &mut Reader) -> Result<Older> {
             }
         }
         // TagKey.streamCodec: the tag's id. A HolderSet names a tag behind a 0.
-        DAMAGE_RESISTANT if quirks.either_holder_song_and_tag_resistance => {
+        DAMAGE_RESISTANT if quirks.either_holders_and_tag_resistance => {
             let tag = r.string(32767)?;
             let mut w = Writer::new();
             w.varint(0);
@@ -963,21 +981,29 @@ impl Codec<Option<Stack>> for Slot {
         read_stack(r, false)
     }
     fn write(v: &Option<Stack>, w: &mut Writer) {
-        let Some(s) = v else {
+        // An item an older client has no stand-in for reaches it as nothing.
+        let item = v.as_ref().map_or(-1, |s| ids::item(s.item));
+        let Some(s) = v.as_ref().filter(|_| item >= 0) else {
             w.varint(0);
             return;
         };
         w.varint(s.count);
-        w.varint(ids::item(s.item));
-        w.varint(s.added.len() as i32);
-        w.varint(s.removed.len() as i32);
-        for (kind, c) in &s.added {
-            w.varint(ids::component(*kind));
-            c.write(*kind, w);
-        }
-        for kind in &s.removed {
-            w.varint(ids::component(*kind));
-        }
+        w.varint(item);
+        write_patch(s, w);
+    }
+}
+
+/// A stack's components, without those an older client being written for lacks.
+fn write_patch(s: &Stack, w: &mut Writer) {
+    let has = |kind: i32| ids::component(kind) >= 0;
+    w.varint(s.added.iter().filter(|(k, _)| has(*k)).count() as i32);
+    w.varint(s.removed.iter().filter(|k| has(**k)).count() as i32);
+    for (kind, c) in s.added.iter().filter(|(k, _)| has(*k)) {
+        w.varint(ids::component(*kind));
+        c.write(*kind, w);
+    }
+    for kind in s.removed.iter().filter(|k| has(**k)) {
+        w.varint(ids::component(*kind));
     }
 }
 
@@ -1099,15 +1125,7 @@ impl Codec<Stack> for Template {
     fn write(s: &Stack, w: &mut Writer) {
         w.varint(ids::item(s.item));
         w.varint(s.count);
-        w.varint(s.added.len() as i32);
-        w.varint(s.removed.len() as i32);
-        for (kind, c) in &s.added {
-            w.varint(ids::component(*kind));
-            c.write(*kind, w);
-        }
-        for kind in &s.removed {
-            w.varint(ids::component(*kind));
-        }
+        write_patch(s, w);
     }
 }
 
@@ -1542,6 +1560,47 @@ mod tests {
             let mut w = Writer::new();
             Slot::write(&stack, &mut w);
             assert_eq!(w.data, bytes, "component {kind}");
+        }
+    }
+
+    #[test]
+    fn negative_holder_ids_and_holder_set_sizes_are_refused() {
+        // Vanilla 26.3's ByteBufCodecs.holder looks a nonzero id up with
+        // `byIdOrThrow(id - 1)`, and holderSet sizes its list with `new ArrayList(size)`:
+        // neither takes a negative value. `1` is a valid value at the same place.
+        let slot = |kind: i32, component: &[u8]| {
+            // Count 1, item 1, one added component, none removed.
+            let mut w = Writer::new();
+            for v in [1, 1, 1, 0, kind] {
+                w.varint(v);
+            }
+            w.data.extend_from_slice(component);
+            let mut r = Reader::new(&w.data);
+            Slot::read(&mut r).map(|stack| (stack, r.remaining()))
+        };
+        for (value, valid) in [(1, true), (-1, false), (i32::MIN, false)] {
+            let mut v = Writer::new();
+            v.varint(value);
+            // kinetic_weapon: default fields, then a sound holder (`value`) and no hit sound.
+            let mut kinetic = vec![10, 0, 0, 0, 0, 0, 0, 0, 0, 0x3f, 0x80, 0, 0, 1];
+            kinetic.extend_from_slice(&v.data);
+            kinetic.push(0);
+            // can_break: one predicate whose blocks are a holder set (`value`, an empty
+            // list when 1), with no properties, NBT or component matchers.
+            let mut can_break = vec![1, 1];
+            can_break.extend_from_slice(&v.data);
+            can_break.extend([0, 0, 0, 0]);
+            for (kind, bytes) in [(39, kinetic), (component::CAN_BREAK, can_break)] {
+                let read = slot(kind, &bytes);
+                if valid {
+                    assert!(
+                        matches!(read, Ok((Some(_), 0))),
+                        "component {kind}: {read:?}"
+                    );
+                } else {
+                    assert!(read.is_err(), "component {kind} with {value}: {read:?}");
+                }
+            }
         }
     }
 

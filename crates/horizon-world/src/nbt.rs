@@ -791,7 +791,14 @@ impl Snbt<'_> {
             self.expect(b':')?;
             map.insert(JavaString::from(key.as_str()), self.value()?);
             match self.peek() {
-                Some(b',') => self.i += 1,
+                // SnbtGrammar: an entry may be followed by a comma before the brace.
+                Some(b',') => {
+                    self.i += 1;
+                    if self.peek() == Some(b'}') {
+                        self.i += 1;
+                        return Ok(Tag::Compound(map));
+                    }
+                }
                 Some(b'}') => {
                     self.i += 1;
                     return Ok(Tag::Compound(map));
@@ -814,7 +821,13 @@ impl Snbt<'_> {
             loop {
                 items.push(self.value()?);
                 match self.peek() {
-                    Some(b',') => self.i += 1,
+                    // SnbtGrammar: a list or array may end with a comma.
+                    Some(b',') => {
+                        self.i += 1;
+                        if self.peek() == Some(b']') {
+                            break;
+                        }
+                    }
                     Some(b']') => break,
                     _ => return Err(format!("expected ',' or ']' at {}", self.i)),
                 }
@@ -873,6 +886,19 @@ impl Snbt<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// SnbtGrammar: a compound, list or typed array may end with one comma; a
+    /// comma alone or two in a row are errors.
+    #[test]
+    fn snbt_takes_one_trailing_comma() {
+        let parse = |s: &str| parse_snbt(s).map(|(t, _)| t);
+        assert_eq!(parse("{a:1b,}"), parse("{a:1b}"));
+        assert_eq!(parse("[1, 2 ,]"), parse("[1,2]"));
+        assert_eq!(parse("[I;1,2,]"), parse("[I;1,2]"));
+        assert_eq!(parse("{a:[{},],}"), parse("{a:[{}]}"));
+        for bad in ["{,}", "[,]", "[I;,]", "{a:1b,,}", "[1,,2]", "[1,,]"] {
+            assert!(parse(bad).is_err(), "{bad}");
+        }
+    }
     /// `NbtIo.write` (`StringFallbackDataOutput`) writes a string too long for
     /// modified UTF-8 empty and goes on (#5064); the network writer refuses
     /// it. Vanilla 26.3's bytes for `{s: 32768 x U+0000}` (65536 encoded).

@@ -121,6 +121,8 @@ pub enum Screen {
     /// Join a friend's world with its invite code (Horizon's own, behind the
     /// title screen's Friends button).
     Friend {
+        /// The title and server list both open this page; cancellation returns to its parent.
+        from_title: bool,
         code: String,
         /// The relay for short codes (optional; saved on Join).
         relay: String,
@@ -1037,6 +1039,14 @@ impl Screen {
                     parts.push(names.join(", "));
                 }
             }
+            Some(Ping::Incompatible { motd, version, .. }) => {
+                parts.push(t("multiplayer.status.incompatible", &[]));
+                parts.push(t(
+                    "multiplayer.status.version.narration",
+                    &[&version.plain()],
+                ));
+                parts.push(t("multiplayer.status.motd.narration", &[&motd.plain()]));
+            }
             Some(Ping::Failed(_)) => parts.push(t("multiplayer.status.no_connection", &[])),
             _ => parts.push(t("multiplayer.status.pinging", &[])),
         }
@@ -1425,7 +1435,9 @@ impl Screen {
                     centered(batch, &line.plain(), top + 17.0 + i as f32 * 9.0, u32::MAX);
                 }
             }
-            Self::Friend { code, relay, focus } => {
+            Self::Friend {
+                code, relay, focus, ..
+            } => {
                 centered(
                     batch,
                     &crate::lang::get_or("horizon.multiplayer.join_friend", "Join a Friend"),
@@ -1535,7 +1547,7 @@ impl Screen {
                     address: String::new(),
                 }
             }
-            (Self::List { .. }, Some(47)) => *self = Self::friend(),
+            (Self::List { .. }, Some(47)) => *self = Self::friend(false),
             (Self::List { .. }, Some(42)) => {
                 *self = Self::Edit {
                     index: None,
@@ -1708,6 +1720,12 @@ impl Screen {
                 let _ = servers::save(&servers_file(saves), &list);
                 *self = Self::list(saves);
             }
+            (
+                Self::Friend {
+                    from_title: true, ..
+                },
+                Some(57),
+            ) => return Outcome::Back,
             (
                 Self::Edit { .. }
                 | Self::Direct { .. }
@@ -1884,8 +1902,9 @@ impl Screen {
         }
     }
     /// Join a friend, with the relay the player set before.
-    pub fn friend() -> Self {
+    pub fn friend(from_title: bool) -> Self {
         Self::Friend {
+            from_title,
             code: String::new(),
             relay: crate::net::friends_relay_setting().unwrap_or_default(),
             focus: 0,
@@ -1990,7 +2009,10 @@ impl Screen {
     /// Escape: back to the list, or out of it (true).
     pub fn escape(&mut self, saves: &Path) -> bool {
         match self {
-            Self::List { .. } => true,
+            Self::List { .. }
+            | Self::Friend {
+                from_title: true, ..
+            } => true,
             // ConfirmScreen.keyPressed: Escape answers no.
             Self::ConfirmDelete { list, .. } => {
                 let list = std::mem::replace(
@@ -2084,6 +2106,57 @@ mod tests {
             servers_file_of(Some(Path::new("/games/players/alex")), saves),
             Path::new("/games/players/alex/servers.dat")
         );
+    }
+
+    #[test]
+    fn incompatible_server_narration_matches_vanilla_order() {
+        struct Vanilla;
+        impl crate::lang::ResourceSource for Vanilla {
+            fn read(&self, path: &str) -> Option<Vec<u8>> {
+                (path == "assets/minecraft/lang/en_us.json").then(|| {
+                    br#"{
+                        "narrator.select": "Select %s",
+                        "multiplayer.status.incompatible": "Incompatible version",
+                        "multiplayer.status.version.narration": "Version %s",
+                        "multiplayer.status.motd.narration": "MOTD %s"
+                    }"#
+                    .to_vec()
+                })
+            }
+            fn namespaces(&self) -> Vec<String> {
+                vec!["minecraft".into()]
+            }
+        }
+
+        crate::lang::scoped(crate::lang::Language::load(&[&Vanilla], "en_us"), || {
+            let entry = ServerEntry::new("Vanilla Legacy", "127.0.0.1:25565");
+            let ping = Ping::Incompatible {
+                motd: Text::literal("A Server"),
+                players: None,
+                player_list: Vec::new(),
+                version: Text::literal("1.12.2"),
+            };
+            let narration = Screen::server_narration(&entry, Some(&ping));
+            assert!(narration.contains("Vanilla Legacy"));
+            assert!(narration.contains("1.12.2"));
+            assert!(narration.contains("A Server"));
+            assert!(narration.contains("Incompatible version"));
+            // Vanilla: name -> incompatible -> version -> motd
+            let select = crate::screen_narrator::translate("narrator.select", &["Vanilla Legacy"]);
+            let incomp = crate::screen_narrator::translate("multiplayer.status.incompatible", &[]);
+            let version = crate::screen_narrator::translate(
+                "multiplayer.status.version.narration",
+                &["1.12.2"],
+            );
+            let motd = crate::screen_narrator::translate(
+                "multiplayer.status.motd.narration",
+                &["A Server"],
+            );
+            assert_eq!(
+                narration,
+                crate::widgets::join_for_narration(&[&select, &incomp, &version, &motd])
+            );
+        });
     }
 
     #[test]
@@ -2212,6 +2285,7 @@ mod tests {
         assert_eq!(at(&direct, 427.0, 334.0), [(113.0, 191.0), (113.0, 215.0)]);
         assert_eq!(at(&direct, 320.0, 240.0), [(60.0, 168.0), (60.0, 192.0)]);
         let friend = Screen::Friend {
+            from_title: false,
             code: String::new(),
             relay: String::new(),
             focus: 0,

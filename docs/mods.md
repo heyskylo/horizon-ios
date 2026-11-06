@@ -14,14 +14,19 @@ Mods are **off by default**. A fresh install has no `horizon-mods` folder and pl
 
 ## Playing with mods
 
-1. Install a mod from the launcher's Mods page ([mod-browser.md](mod-browser.md)), or put its files by hand in the
+1. Install a mod from the launcher's Mods page ([mod-browser.md](mod-browser.md)) or from the game (Options > Mods >
+   **Browse Mods**: Horizon's registry, checked as the launcher checks it), or put its files by hand in the
    game folder (the one holding `options.txt`): a content mod's `.hmod` (or a folder holding `horizon-mod.toml`) in
    `horizon-mods/`. Native mods go in `horizon-native-mods/`, and the launcher builds them
    ([native-mods.md](native-mods.md)).
 2. Options > **Mods** lists them with what each may do ("May add blocks, items, mob effects and entity types to your
    worlds") and a switch. They start off. The choice is kept in `horizon-mods.txt` (`mod.<id>:true`).
-3. A content mod's blocks, items, mob effects and entity types load once, when the game starts: restart the game after
-   a switch.
+3. A switch applies at once when the mod has only assets and data (textures, models, sounds, languages, recipes, tags,
+   loot tables, advancements, functions): the game reloads its resources, then the world's data as `/reload` does,
+   and the players of a world open to LAN get the new data. A mod that adds blocks, items, mob effects, entity or menu
+   types, or changes world generation, still loads only when the game starts: the Mods page says to restart, and its
+   switch waits outside a world. On another server's world every content mod's switch waits: the server owns its
+   data ([design/mod-hotload.md](design/mod-hotload.md)).
 4. A mod that can't load shows why, in red, on its row.
 
 Two turned-on content mods never own the same namespace: the first by file name loads, and the other stays out with
@@ -426,7 +431,7 @@ A pool addition holds `"elements"` as a pool does, a processor list addition `"p
 Lithostitched's `add_structure_set_entries`, `add_template_pool_elements` and `add_processor_list_processors` modifiers
 do on NeoForge and Fabric, and `horizon-port-pack carry` writes the last two from those.
 
-A mod's own configured and placed features (`data/<ns>/worldgen/configured_feature/`, `placed_feature/`) and mob spawn
+A mod's own configured and placed features (`data/<ns>/worldgen/feature/`, 26.3's folder, or the older `configured_feature/`; `placed_feature/`) and mob spawn
 changes reach biomes it does not own (vanilla's) through NeoForge's biome modifiers, files in
 `data/<ns>/neoforge/biome_modifier/` (older Forge mods: `data/<ns>/forge/biome_modifier/`, `forge:` types).
 `add_features` appends its `features` to one generation `step` of every biome in `biomes`; `remove_features` takes them

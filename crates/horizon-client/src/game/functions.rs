@@ -24,6 +24,16 @@ pub(super) struct Scheduled {
     pub time: i64,
     pub seq: u64,
 }
+impl FnState {
+    /// The file `path` of the highest enabled pack that has it.
+    pub(super) fn pack_file(&self, path: &str) -> Option<Vec<u8>> {
+        self.enabled
+            .iter()
+            .rev()
+            .filter_map(|id| self.packs.iter().find(|p| &p.id == id))
+            .find_map(|pack| pack.read(path))
+    }
+}
 #[derive(Default)]
 pub(super) struct FnState {
     pub store: DataStore,
@@ -554,9 +564,14 @@ impl Game<'_> {
                 _ => data,
             };
             if !matches!(tag, Tag::Compound(_)) {
+                // FunctionCommand.getArgumentTag uses TagType.getName, not the tag's value.
+                let names = [
+                    "END", "BYTE", "SHORT", "INT", "LONG", "FLOAT", "DOUBLE", "BYTE[]", "STRING",
+                    "LIST", "COMPOUND", "INT[]", "LONG[]",
+                ];
                 return Err(err(
                     "commands.function.error.argument_not_compound",
-                    &[&"tag"],
+                    &[&names[usize::from(tag.id())]],
                 ));
             }
             Some(tag)
@@ -1015,6 +1030,95 @@ const FEATURE_PACKS: &[(&str, &str)] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn unless_function_keeps_a_fallthrough_after_running_it_once() {
+        use crate::game::{Audio, Options, Settings, load_resources};
+        use horizon_client::datapack::FunctionLine;
+        use std::time::Instant;
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            Instant::now(),
+            false,
+            true,
+            &crate::game::Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.fns.loaded = true;
+        let run = |game: &mut Game<'_>, line: &str| {
+            game.exec = ExecState::default();
+            let source = game.player_source();
+            game.execute_line(line, source).unwrap();
+        };
+        run(&mut game, "scoreboard objectives add h154 dummy");
+        let clock = game.world.game_time;
+        for (name, tail) in [
+            ("counter", None),
+            ("zero", Some("return 0")),
+            ("five", Some("return 5")),
+            ("fail", Some("return fail")),
+        ] {
+            let id = format!("h154:{name}");
+            let mut lines = vec![FunctionLine::Command(
+                "scoreboard players add #calls h154 1".into(),
+            )];
+            if let Some(tail) = tail {
+                lines.push(FunctionLine::Command(tail.into()));
+            }
+            game.fns.store.functions.insert(
+                id.clone(),
+                Function {
+                    id,
+                    lines,
+                    parameters: Vec::new(),
+                },
+            );
+        }
+        // Explicit returns establish both signs before the old fallthrough
+        // failure. The commands run through the actual function/execute route.
+        for name in ["zero", "five", "fail", "counter"] {
+            for sign in ["if", "unless"] {
+                run(&mut game, "scoreboard players set #calls h154 0");
+                run(&mut game, "scoreboard players set #out h154 99");
+                run(
+                    &mut game,
+                    &format!(
+                        "execute {sign} function h154:{name} run scoreboard players set #out h154 7"
+                    ),
+                );
+                assert_eq!(game.score.board.score("#calls", "h154").unwrap().value, 1);
+                let keep = (name == "five") == (sign == "if");
+                assert_eq!(
+                    game.score.board.score("#out", "h154").unwrap().value,
+                    if keep { 7 } else { 99 },
+                    "{sign} {name}"
+                );
+            }
+        }
+        assert_eq!(game.world.game_time, clock);
+    }
 
     /// Two packs override the same recipe: the later one in the selected
     /// (`datapacks.json`) order wins, not the later one alphabetically.
