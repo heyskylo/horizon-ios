@@ -5824,6 +5824,59 @@ impl Game<'_> {
     ) {
         mod_api::dispatch_prepare_anvil(self, mod_api::mods(), player, name, pos, cost, result);
     }
+    /// NeoForge's `AnvilUpdateEvent`: the anvil result of `player` (`name`),
+    /// where `AnvilMenu.createResult` ends, once vanilla worked it out from the
+    /// inputs `left` and `right` (none when that slot is empty) and the rename
+    /// box's `item_name` (NeoForge's `getName`: none until the client sent
+    /// one, empty to clear a custom name). `vanilla_output`, `vanilla_xp_cost`
+    /// and `vanilla_material_cost` are vanilla's result (`getVanillaResult`).
+    /// `output`, `xp_cost` (the level cost) and `material_cost` (how many of
+    /// `right` the take uses) start as vanilla's, and every mod is called in
+    /// turn and may change them. Set `canceled` to leave the anvil with no
+    /// result and both costs at 0: later mods aren't called. A negative level
+    /// cost becomes 0 (`AnvilMenu.setCost`), and a result that costs 0 levels
+    /// can't be taken. A material cost of 0 or less, or one above what `right`
+    /// holds, takes the whole stack (none when the anvil only renames). Asked
+    /// whenever the inputs or the name change while the left slot holds an
+    /// item, on the `Game` that works out the result: a host's (single
+    /// player's server thread, a LAN or dedicated host) for each player's
+    /// menu, and the window's own, so a mod answers alike on both sides to
+    /// keep the window in step with the server. The window works its result
+    /// out again after each click in the menu, so it may ask about the same
+    /// inputs again: a mod should answer from what it is told. On the host,
+    /// `native_prepare_anvil` comes after it. API @API:anvil_update@.
+    pub(super) fn native_anvil_update(
+        &mut self,
+        player: u128,
+        name: &str,
+        left: &ItemStack,
+        right: Option<&ItemStack>,
+        item_name: Option<&str>,
+        vanilla_output: Option<&ItemStack>,
+        vanilla_xp_cost: i32,
+        vanilla_material_cost: i32,
+        output: &mut Option<ItemStack>,
+        xp_cost: &mut i32,
+        material_cost: &mut i32,
+        canceled: &mut bool,
+    ) {
+        mod_api::dispatch_anvil_update(
+            self,
+            mod_api::mods(),
+            player,
+            name,
+            left,
+            right,
+            item_name,
+            vanilla_output,
+            vanilla_xp_cost,
+            vanilla_material_cost,
+            output,
+            xp_cost,
+            material_cost,
+            canceled,
+        );
+    }
     /// A player took an anvil's result at `pos` (`AnvilCraftEvent.Pre`), before the levels are charged, the inputs used up and the anvil worn. `craft` holds the inputs and the result as they were before. Set `cancel` to refuse the take: the result stays in its slot and the inputs, levels, inventory and cursor are as before the click. 328.
     pub(super) fn native_anvil_craft_pre(
         &mut self,
