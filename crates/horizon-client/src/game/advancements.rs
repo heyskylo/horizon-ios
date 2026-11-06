@@ -393,8 +393,8 @@ impl Game<'_> {
         self.adv.progress = progress;
         self.ui.registries.advancements = tree.list.iter().map(|a| a.id.clone()).collect();
         // `PlayerAdvancements.checkForAutomaticTriggers`: an advancement with no
-        // criteria is done from the moment the progress loads, so its rewards
-        // are granted here. Vanilla's `award(holder, "")` finds no `""`
+        // criteria is never done (`AdvancementRequirements.test` is false), but
+        // its rewards are granted as the progress loads. Vanilla's `award(holder, "")` finds no `""`
         // criterion to grant and so returns without a toast or an announcement;
         // the reward grant is the whole effect, and it happens again on the next
         // load because there is no criterion to record it.
