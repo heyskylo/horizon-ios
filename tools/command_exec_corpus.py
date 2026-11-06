@@ -1755,6 +1755,16 @@ def world_misc():
     ]
 
 
+def template_container_loot_table():
+    """A template's chest keeps its loot table (`RandomizableContainer.tryLoadLootTable`)."""
+    return [
+        *setup('/forceload add 0 0 15 15'),
+        cmd('/place template minecraft:village/plains/houses/plains_small_house_7 0 200 0'),
+        cmd('/data get block 4 201 5 LootTable'),
+        *setup('/fill 0 200 0 15 215 15 minecraft:air', '/forceload remove 0 0 15 15'),
+    ]
+
+
 def progression():
     return [
         *setup('/gamemode survival', '/experience set @s 0 levels', '/experience set @s 0 points'),
@@ -2386,6 +2396,18 @@ def place_structure():
         # One chest between y 0 and 120 of chunk (0, 0): the piece's column is
         # inside that chunk whatever height its dig reached.
         cmd('/fill 0 0 0 15 120 15 minecraft:air replace minecraft:chest'),
+    ]
+
+
+def forceload_loads_the_chunk():
+    """`ServerLevel.setChunkForced` loads a newly forced chunk before the next command."""
+    return [
+        cmd('/execute if loaded 4000 200 4000'),
+        cmd('/forceload add 4000 4000'),
+        cmd('/execute if loaded 4000 200 4000'),
+        cmd('/setblock 4000 200 4000 minecraft:stone'),
+        cmd('/execute if block 4000 200 4000 minecraft:stone'),
+        *setup('/setblock 4000 200 4000 minecraft:air', '/forceload remove 4000 4000'),
     ]
 
 
@@ -5809,7 +5831,9 @@ def groups():
         ('minecart drag', minecart_drag()),
         ('ender dragon', ender_dragon()),
         ('place structure', place_structure()),
+        ('template container loot table', template_container_loot_table()),
         ('tame wolf kills', tame_wolf_kills()),
+        ('forceload loads the chunk', forceload_loads_the_chunk()),
         ('experience orb fall', experience_orb_fall()),
         ('piglin pickups', piglin_pickups()),
         ('experience orb stuck', experience_orb_stuck()),
