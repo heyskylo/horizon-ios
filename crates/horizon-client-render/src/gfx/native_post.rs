@@ -512,26 +512,36 @@ impl NativeFrame {
 
     /// Writes this frame's inputs, for a world of `size`.
     pub fn write(&mut self, queue: &wgpu::Queue, frame: &Frame, size: [u32; 2]) {
+        let inputs = self.next_inputs(frame, size);
+        queue.write_buffer(&self.buffer, 0, bytemuck::bytes_of(&inputs));
+    }
+
+    /// This frame's inputs, moving the eased values and the frame count on.
+    fn next_inputs(&mut self, frame: &Frame, size: [u32; 2]) -> FrameInputs {
         // Under `HORIZON_STILL` the world's ticks are the clock (`PackInputs::still_ticks`), and
         // eased values sit at their targets.
-        let still = frame.pack.still_ticks;
-        let seconds = still.map_or_else(
-            || self.start.elapsed().as_secs_f32() % 3600.0,
-            |ticks| (ticks as f32 / 20.0) % 3600.0,
-        );
+        // A scripted clock (`PackInputs::frame_timing`) comes first, and eased values
+        // move by its delta.
         let now = std::time::Instant::now();
-        let since = match still {
-            Some(_) => f32::INFINITY,
-            None => self.wetness.1.map_or(0.0, |t| (now - t).as_secs_f32()),
+        let timing = frame.pack.frame_timing;
+        // Seconds, frame index, and the seconds eased values move by when not the
+        // measured ones.
+        let (seconds, index, step) = match (timing, frame.pack.still_ticks) {
+            (Some(t), _) => (t.elapsed, t.counter, Some(t.delta)),
+            (None, Some(ticks)) => (
+                (ticks as f32 / 20.0) % 3600.0,
+                ticks as u32,
+                Some(f32::INFINITY),
+            ),
+            (None, None) => (
+                self.start.elapsed().as_secs_f32() % 3600.0,
+                self.frames,
+                None,
+            ),
         };
+        let since = step.unwrap_or_else(|| self.wetness.1.map_or(0.0, |t| (now - t).as_secs_f32()));
         self.wetness = (wetness(self.wetness.0, frame.pack.rain, since), Some(now));
-        let mut inputs = frame_inputs(
-            frame,
-            size,
-            seconds,
-            still.map_or(self.frames, |ticks| ticks as u32),
-            self.shadow_camera.as_ref(),
-        );
+        let mut inputs = frame_inputs(frame, size, seconds, index, self.shadow_camera.as_ref());
         inputs.wetness = self.wetness.0;
         if !self.reflects {
             inputs.has_reflection = 0;
@@ -542,8 +552,11 @@ impl NativeFrame {
         inputs.previous_view_projection = view_proj;
         // `write` skips title frames, so a gap means a pause or another world: the frame
         // before says nothing about this one, and the eased values start over.
+        // A scripted clock's frames follow each other however long one takes to draw.
         match self.last {
-            Some((previous, camera, time)) if (now - time).as_secs_f32() < MAX_FRAME_GAP => {
+            Some((previous, camera, time))
+                if timing.is_some() || (now - time).as_secs_f32() < MAX_FRAME_GAP =>
+            {
                 inputs.previous_view_projection = previous;
                 inputs.camera_motion = (frame.camera - camera).as_vec3().to_array();
                 inputs.delta_time = (now - time).as_secs_f32();
@@ -562,12 +575,11 @@ impl NativeFrame {
             (f32::from(u8::from(inputs.eye_in == 1)), 0.25),
             (f32::from(u8::from(inputs.eye_in == 2)), 0.25),
         ];
-        let dt = match still {
-            Some(_) => {
-                inputs.delta_time = 0.05;
-                f32::INFINITY
-            }
-            None => inputs.delta_time,
+        let dt = step.unwrap_or(inputs.delta_time);
+        inputs.delta_time = match (timing, step) {
+            (Some(t), _) => t.delta,
+            (None, Some(_)) => 0.05,
+            (None, None) => inputs.delta_time,
         };
         for (value, (target, half_life)) in self.eye.iter_mut().zip(targets) {
             *value = eased(*value, target, half_life, dt);
@@ -577,7 +589,7 @@ impl NativeFrame {
         inputs.in_water = water;
         inputs.in_lava = lava;
         self.frames = self.frames.wrapping_add(1);
-        queue.write_buffer(&self.buffer, 0, bytemuck::bytes_of(&inputs));
+        inputs
     }
 
     /// Takes the post stage's pending history reset. It stays pending if post rendering is
@@ -1318,6 +1330,48 @@ mod tests {
         assert_eq!(wetness(0.0, 1.0, 30.0), 0.5);
         assert_eq!(wetness(1.0, 0.0, 10.0), 0.5);
         assert_eq!(wetness(0.25, 0.25, 5.0), 0.25);
+    }
+
+    /// A scripted clock comes before STILL's ticks, eased values and wetness move by its
+    /// delta, and a long wait between its frames is not a gap that starts them over.
+    #[test]
+    fn a_scripted_clock_drives_time_frame_index_and_eased_values() {
+        use crate::gfx::pack_uniforms::FrameTiming;
+        let Some((device, _)) = device() else {
+            return;
+        };
+        let hud = crate::hud::HudBatch::new([4, 4]);
+        let mut frame = crate::gfx::pack_uniforms::initial_history_tests::frame(&hud);
+        let mut native = NativeFrame::new(&device, None, Vec::new(), Default::default(), None);
+        frame.pack.still_ticks = Some(47_811);
+        frame.pack.eye_light = [0, 15];
+        frame.pack.rain = 1.0;
+        frame.pack.frame_timing = Some(FrameTiming::nth(1, 2000.0));
+        let first = native.next_inputs(&frame, [4, 4]);
+        assert_eq!(
+            (first.time, first.frame_index, first.delta_time),
+            (0.0, 1, 0.0)
+        );
+        // Wetness starts dry, as on a fresh pack; frame 1's delta of 0 leaves it there.
+        assert_eq!((first.eye_light_smooth[1], first.wetness), (1.0, 0.0));
+        assert!(native.take_history_reset());
+        native.last.as_mut().unwrap().2 -= std::time::Duration::from_secs(5);
+        frame.pack.eye_light = [0, 0];
+        frame.pack.frame_timing = Some(FrameTiming::nth(2, 2000.0));
+        let second = native.next_inputs(&frame, [4, 4]);
+        assert_eq!(
+            (second.time, second.frame_index, second.delta_time),
+            (2.0, 2, 2.0)
+        );
+        // Two seconds: the eye light's 2 s half-life halves it, and wetness rises
+        // by 1 - 0.5^(2/30) (a 30 s half-life while it rains harder).
+        assert_eq!(second.eye_light_smooth[1], 0.5);
+        assert!(
+            (second.wetness - 0.045_158_4).abs() < 1e-6,
+            "{}",
+            second.wetness
+        );
+        assert!(!native.take_history_reset());
     }
 
     fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
