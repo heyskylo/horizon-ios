@@ -408,6 +408,19 @@ pub(super) fn preflight(options: &mut Options) -> Result<bool> {
         horizon_client::command::vanilla::set_horizon_commands(true);
     }
     props.store(&settings)?;
+    // `RegionFileVersion.configure`: the compression every region file this
+    // server writes uses, from `region-file-compression`. An unknown name is
+    // logged with the ones there are, and the default (deflate) stays.
+    if !horizon_world::compression::Compression::configure(&props.region_file_compression) {
+        log(
+            "ERROR",
+            &format!(
+                "Invalid `region-file-compression` value `{}` in server.properties. Please use one of: {}",
+                props.region_file_compression,
+                horizon_world::compression::REGION_FILE_NAMES.join(",")
+            ),
+        );
+    }
     let eula_file = PathBuf::from("eula.txt");
     let agreed = match eula::agreed(&eula_file) {
         Ok(a) => a,
