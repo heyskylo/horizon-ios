@@ -35,6 +35,13 @@ const RENAMED: [(&str, &str); 5] = [
     ("RecipesUpdatedEvent", "RecipesReceivedEvent"),
 ];
 
+/// Events that are only a parent of the events NeoForge documents under
+/// them (its config page: "the `ModConfigEvent.Loading`,
+/// `ModConfigEvent.Reloading`, and `ModConfigEvent.Unloading` events"). A
+/// mod that listens to the parent hears each of them, so the parent is
+/// hooked when every one of them is.
+const PARENTS: [(&str, &[&str]); 1] = [("ModConfigEvent", &["Loading", "Reloading", "Unloading"])];
+
 /// The catalog's NeoForge names: the hooks that are each name's
 /// counterpart, and the hooks whose `none (…)` label mentions it.
 #[derive(Debug, Default)]
@@ -46,7 +53,8 @@ pub struct Catalog {
 /// How the catalog answers one name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Status {
-    /// The hooks whose counterpart it is.
+    /// The hooks whose counterpart it is (for a parent in `PARENTS`, the
+    /// hooks of all its events).
     Hooked(Vec<String>),
     /// The hooks of another phase (`.Post` for `.Pre`), or of the events
     /// nested in it (`ModConfigEvent.Loading` for `ModConfigEvent`).
@@ -100,6 +108,16 @@ impl Catalog {
     fn lookup(&self, name: &str) -> Status {
         if let Some(hooks) = self.exact.get(name) {
             return Status::Hooked(hooks.clone());
+        }
+        if let Some((_, events)) = PARENTS.iter().find(|(parent, _)| *parent == name) {
+            let hooks: Option<Vec<&Vec<String>>> = events
+                .iter()
+                .map(|event| self.exact.get(&format!("{name}.{event}")))
+                .collect();
+            if let Some(hooks) = hooks {
+                let hooks: BTreeSet<&String> = hooks.into_iter().flatten().collect();
+                return Status::Hooked(hooks.into_iter().cloned().collect());
+            }
         }
         let phase = |s: &str| s == "Pre" || s == "Post";
         let related = |k: &str| {

@@ -167,6 +167,27 @@ fn labels_give_counterparts_phases_notes_and_new_names() {
 }
 
 #[test]
+fn a_parent_is_hooked_when_each_of_its_events_is() {
+    let all = r#"{"hooks": [
+        {"name": "config_loading", "neoforge": "ModConfigEvent.Loading"},
+        {"name": "config_reloading", "neoforge": "ModConfigEvent.Reloading"},
+        {"name": "config_unloading", "neoforge": "ModConfigEvent.Unloading"}
+    ]}"#;
+    let c = Catalog::parse(all).unwrap();
+    assert_eq!(
+        c.status("ModConfigEvent"),
+        (
+            Status::Hooked(hooks(&[
+                "config_loading",
+                "config_reloading",
+                "config_unloading"
+            ])),
+            None
+        )
+    );
+}
+
+#[test]
 fn the_built_in_catalog_parses() {
     let c = Catalog::parse(events::CATALOG).unwrap();
     let (Status::Hooked(hooks), None) = c.status("LivingDeathEvent") else {
