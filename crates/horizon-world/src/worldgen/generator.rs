@@ -31,7 +31,7 @@ use super::{
     material_extensions::{ExtensionBlocks, ExtensionNoises, MaterialExtensions},
     material_stage::{SurfaceInputs, TopMaterialInputs, build_surface_shared},
     material_surface::{ClayBandBlocks, MaterialSurface},
-    native_generate::{NativeGenerate, NativeProtoChunk, native_chunk_generate},
+    native_generate::{NativeGenerate, NativeProtoChunk, far_column, native_chunk_generate},
     overrides::{self, WorldgenOverrides},
     router::{NoiseRouter, RouterField, RouterSamplers},
     settings::NoiseSettings,
@@ -2479,6 +2479,8 @@ trait SeededPipeline: Send + Sync {
         region: &mut [ProtoChunk; 9],
     ) -> Result<DecorateStats, GeneratorError>;
     fn data(&self) -> &Arc<GeneratorData>;
+    /// The dimension, seed and superflat flag native generators are told.
+    fn native_context(&self) -> (&str, i64, bool);
     /// What the shared caches hold, for `horizon-ctl memory`.
     fn cache_census(&self) -> CacheCensus {
         CacheCensus::default()
@@ -2600,6 +2602,9 @@ where
     }
     fn data(&self) -> &Arc<GeneratorData> {
         &self.data
+    }
+    fn native_context(&self) -> (&str, i64, bool) {
+        (&self.dimension, self.seed, self.flat.is_some())
     }
     fn release_caches(&self) {
         // Taken out under the lock, dropped after it.
@@ -3745,7 +3750,16 @@ impl GeneratorWorker {
     }
     /// Noise/aquifer surface and its material rule, without chunks, structures or features.
     pub fn surface_sample(&mut self, x: i32, z: i32) -> Option<SurfaceSample> {
-        self.pipeline.surface_sample(&mut self.state, x, z, None)
+        let mut sample = self.pipeline.surface_sample(&mut self.state, x, z, None);
+        let pipeline = &*self.pipeline;
+        far_column(
+            pipeline.native_context(),
+            pipeline.data(),
+            [x, z],
+            &mut sample,
+            None,
+        );
+        sample
     }
     /// Noise/aquifer material runs, excluding air; bounds are half-open.
     /// Features and carvers still require generated chunks.
@@ -3755,9 +3769,17 @@ impl GeneratorWorker {
         z: i32,
     ) -> (Option<SurfaceSample>, Vec<(i32, i32, BlockStateId)>) {
         let mut spans = Vec::new();
-        let surface = self
+        let mut surface = self
             .pipeline
             .surface_sample(&mut self.state, x, z, Some(&mut spans));
+        let pipeline = &*self.pipeline;
+        far_column(
+            pipeline.native_context(),
+            pipeline.data(),
+            [x, z],
+            &mut surface,
+            Some(&mut spans),
+        );
         (surface, spans)
     }
     /// `/locate structure`: the nearest start of one of `names`.
@@ -3795,8 +3817,24 @@ impl GeneratorWorker {
         side: usize,
         approximate: bool,
     ) -> Result<Vec<LodColumn>, GeneratorError> {
-        self.pipeline
-            .lod_grid(&mut self.state, x, z, width, side, approximate)
+        let mut columns =
+            self.pipeline
+                .lod_grid(&mut self.state, x, z, width, side, approximate)?;
+        let pipeline = &*self.pipeline;
+        for (index, (sample, spans)) in columns.iter_mut().enumerate() {
+            let column = [
+                x + (index % side) as i32 * width,
+                z + (index / side) as i32 * width,
+            ];
+            far_column(
+                pipeline.native_context(),
+                pipeline.data(),
+                column,
+                sample,
+                Some(spans),
+            );
+        }
+        Ok(columns)
     }
     pub fn noise_biomes(&mut self, quarts: &[[i32; 3]]) -> Vec<Option<String>> {
         self.pipeline.noise_biomes(&mut self.state, quarts)

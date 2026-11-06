@@ -2507,6 +2507,14 @@ biomes) in some chunks or all of them, as Bukkit's `ChunkGenerator` does.
   threads and never on the server thread, so no `Game` helper works there; a chunk can be asked again (a proto chunk
   saved unfinished, the neighbours of a finished one, the far terrain's decoration), so answer the same each time. Also
   where single player and the far terrain generate. API @API:chunk_generate@.
+- **`native_lod_column(dimension, column, seed, flat, column_out)`** (`horizon_world::worldgen::native_generate`): the
+  far terrain samples block column `[x, z]` where no chunk is generated yet, from vanilla's noise and surface rule
+  (`GeneratorWorker::lod_grid`, `surface_sample`). A mod whose `native_chunk_generate` builds that chunk calls
+  `column_out.replace(spans, biome)` with the column's blocks, runs `(lowest y, highest y + 1, state)` in any order, and
+  the biome its top shows (None keeps vanilla's): the far terrain then draws them, its top, the water right over it and
+  the spans a cliff shows, until the chunk itself is generated. Left alone, the column is vanilla's. It is asked for each
+  far column, many per tile, on the far terrain's workers, several at once: answer from the terrain function alone,
+  without building the chunk. Like vanilla's, a far column shows no carver's caves. API @API:lod_column@.
 
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The

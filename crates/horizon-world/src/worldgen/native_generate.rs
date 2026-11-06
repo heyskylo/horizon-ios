@@ -4,12 +4,15 @@
 use super::{
     biome::BiomeId,
     biome_chunk::BiomeChunk,
-    generator::{GenBlockStates, GeneratorData},
+    generator::{GenBlockStates, GeneratorData, SurfaceSample},
     generator_structures::Starts,
     structure::start::StructureStart,
     terrain::TerrainChunk,
 };
-use crate::registry::{BlockRegistry, BlockStateId};
+use crate::{
+    heightmap::HeightmapState,
+    registry::{BlockRegistry, BlockStateId},
+};
 use std::sync::Arc;
 
 /// What a native generator made of a chunk (`native_chunk_generate`).
@@ -135,4 +138,104 @@ pub fn native_chunk_generate(
     generate: &mut NativeGenerate,
 ) {
     let _ = (dimension, chunk, seed, flat, chunk_out, generate);
+}
+
+/// A far terrain column, as `native_lod_column` sees it.
+pub struct NativeLodColumn<'a> {
+    data: &'a GeneratorData,
+    replaced: Option<(Vec<(i32, i32, BlockStateId)>, Option<BiomeId>)>,
+}
+impl NativeLodColumn<'_> {
+    /// The block states (`default_state("minecraft:stone")`).
+    pub fn registry(&self) -> &'static BlockRegistry {
+        self.data.registry()
+    }
+    /// A biome's id (`minecraft:plains`); None for a biome the world lacks.
+    pub fn biome_id(&self, biome: &str) -> Option<BiomeId> {
+        self.data.biome_id(biome)
+    }
+    /// Show the column as the mod's chunk will have it: `spans` are its
+    /// blocks, runs `(lowest y, highest y + 1, state)` in any order (air
+    /// between them), and `biome` the biome its top shows (None: vanilla's).
+    pub fn replace(&mut self, spans: Vec<(i32, i32, BlockStateId)>, biome: Option<BiomeId>) {
+        self.replaced = Some((spans, biome));
+    }
+}
+
+/// A native mod's hook point (docs/native-mods.md), listed in
+/// `native-hooks.json` with the game's: the far terrain samples the block
+/// column `[x, z]` of the level `dimension` that is not generated yet
+/// (vanilla's noise surface, its top state painted by the surface rule).
+/// A mod whose `native_chunk_generate` builds that chunk calls
+/// `column_out.replace` with the column's blocks, and the far terrain shows
+/// those until the chunk is generated (its top and the water over it, the
+/// spans of a cliff); left alone, the column is vanilla's. `seed` and
+/// `flat` are as for `native_chunk_generate`. Asked for each far column,
+/// many per tile, on the far terrain's workers, several at once and never
+/// on the server thread: answer from the terrain function alone, quickly,
+/// without building the chunk. Wherever far terrain is sampled (a client's
+/// own far terrain, single player). @API:lod_column@.
+#[inline(never)]
+pub fn native_lod_column(
+    dimension: &str,
+    column: [i32; 2],
+    seed: i64,
+    flat: bool,
+    column_out: &mut NativeLodColumn<'_>,
+) {
+    let _ = (dimension, column, seed, flat, column_out);
+}
+
+/// Ask `native_lod_column` about the far column `[x, z]` and put what a mod
+/// answers in place of vanilla's `sample` and `spans` (top down). Nothing
+/// changes when no mod answers.
+pub(super) fn far_column(
+    (dimension, seed, flat): (&str, i64, bool),
+    data: &GeneratorData,
+    column: [i32; 2],
+    sample: &mut Option<SurfaceSample>,
+    spans: Option<&mut Vec<(i32, i32, BlockStateId)>>,
+) {
+    let mut out = NativeLodColumn {
+        data,
+        replaced: None,
+    };
+    native_lod_column(dimension, column, seed, flat, &mut out);
+    let Some((mut runs, biome)) = out.replaced else {
+        return;
+    };
+    let states = data.block_states();
+    runs.retain(|&(min, max, state)| {
+        min < max && data.registry().state(state).is_some() && !states.get(state).is_air()
+    });
+    runs.sort_by(|a, b| b.0.cmp(&a.0));
+    // As vanilla's sample reads a column down: the first block without a
+    // fluid is its top, and the fluid right over it its water.
+    let mut water = None;
+    let mut above = None;
+    let mut top = None;
+    for &(min, max, state) in &runs {
+        if above != Some(max) {
+            water = None;
+        }
+        above = Some(min);
+        if states.get(state).has_fluid() {
+            water.get_or_insert((max, state));
+        } else {
+            top = Some((max, state));
+            break;
+        }
+    }
+    let biome = biome
+        .or(sample.as_ref().map(|s| s.biome))
+        .unwrap_or(BiomeId(0));
+    *sample = top.map(|(height, state)| SurfaceSample {
+        height,
+        state,
+        water,
+        biome,
+    });
+    if let Some(spans) = spans {
+        *spans = runs;
+    }
 }
