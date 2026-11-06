@@ -257,6 +257,7 @@ mod native_shaders;
 mod native_structures;
 mod native_ticks;
 mod native_visuals;
+mod native_world_border;
 mod native_world_columns;
 pub mod native_world_draw;
 mod native_world_edit;

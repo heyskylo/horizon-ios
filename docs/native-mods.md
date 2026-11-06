@@ -2496,6 +2496,12 @@ server only.
   pre-generator walks the Nether and the End from any server hook (a console command, `native_level_tick_pre` of the
   Overworld) with nobody there. False for a dimension other than the Overworld, the Nether and the End. API
   @API:chunk_tickets_in_level@.
+- **`native_world_border(dimension)`** (`native_world_border.rs`): the level's world border as the server enforces it,
+  `[min_x, min_z, max_x, max_z]` in blocks (the previous size while it moves), for a web map's border line or a
+  pre-generator's `worldborder` selection. Vanilla 26.3 keeps a border per level (`ServerLevel.getWorldBorder`, each
+  level's `data/minecraft/world_border.dat`, `/worldborder` changing the level it runs in); Horizon keeps one for every
+  level today, so the three levels answer the same bounds until that is fixed, and the helper then answers each level's
+  own. None for another dimension. API @API:world_border@.
 
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
