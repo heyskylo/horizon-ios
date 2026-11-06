@@ -485,10 +485,13 @@ impl Creative {
             self.page = t.page;
         }
         self.scroll = 0.0;
-        if self.tab().search {
-            self.search.focused = true;
+        // The search box is shown, focused and impossible to unfocus only on
+        // its own tab; another tab hides it and takes the focus away.
+        let search = self.tab().search;
+        if search {
             self.search.reset_blink();
         }
+        self.search.focused = search;
     }
     /// How many pages of tabs there are (1 without mods' tabs).
     pub fn pages(&self) -> u32 {
@@ -1555,6 +1558,26 @@ mod tests {
         c.selected = 0;
         assert!(c.press_scrollbar(180.0, 60.0, &names));
         assert!(!c.scrolling);
+    }
+
+    /// `CreativeModeInventoryScreen.selectTab`: the search box is focused on
+    /// its own tab and loses the focus when another tab is shown (and, hidden,
+    /// is no longer the field a key types into).
+    #[test]
+    fn the_search_box_loses_the_focus_with_its_tab() {
+        let mut c = creative(0);
+        let search = c
+            .tabs
+            .iter()
+            .position(|t| t.search)
+            .expect("the fixture has a search tab");
+        c.select(search);
+        assert!(c.search.focused);
+        c.select(0);
+        assert!(!c.search.focused, "another tab takes the focus away");
+        assert!(!c.tab().search);
+        c.select(search);
+        assert!(c.search.focused, "and the search tab takes it back");
     }
 
     #[test]
