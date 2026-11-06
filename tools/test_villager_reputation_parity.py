@@ -31,6 +31,8 @@ def main():
                lab.ROOT / 'crates/horizon-client/src/mobs/villager_brain.rs',
                lab.ROOT / 'crates/horizon-client/src/game/villagers.rs',
                lab.ROOT / 'crates/horizon-client/src/game/villager_reputation_tests.rs',
+               lab.ROOT / 'crates/horizon-client/src/game/villager_reputation_fixture.rs',
+               lab.ROOT / 'crates/horizon-client/src/game/villager_reputation_baseline_tests.rs',
                lab.ROOT / 'crates/horizon-client/src/game/lan_actions.rs',
                lab.ROOT / 'crates/horizon-client/src/game/trading.rs',
                lab.ROOT / 'crates/horizon-client/src/game/lan_trading.rs',
@@ -59,6 +61,9 @@ def main():
                         '--', '--include-ignored', '--nocapture'], env=env, check=True)
     subprocess.run(['cargo', 'test', '--locked', '-p', 'horizon-client', '--lib',
                     'game::villagers::reputation_tests', '--', '--include-ignored', '--nocapture'],
+                   env=env, check=True)
+    subprocess.run(['cargo', 'test', '--locked', '-p', 'horizon-client', '--lib',
+                    'game::lan::reputation_baseline_tests', '--', '--include-ignored', '--nocapture'],
                    env=env, check=True)
     base.ensure_sources_unchanged(sources, hashes)
     lab.write_json(build / 'report.json', {'minecraft': lock['minecraft']['version'],

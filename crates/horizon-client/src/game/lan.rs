@@ -276,34 +276,11 @@ pub(super) struct LanHost {
 }
 
 #[cfg(test)]
-pub(super) fn reputation_test_host(hub: Hub) -> LanHost {
-    LanHost {
-        hub,
-        players_told_left: false,
-        settings: LanSettings {
-            port: 0,
-            guest_commands: true,
-            force_game_mode: false,
-        },
-        play: Default::default(),
-        broken: Vec::new(),
-        mob_state: Default::default(),
-        poses: Default::default(),
-        mob_players: Default::default(),
-        owner: None,
-        waypoints: Default::default(),
-        waypoint_dead: Default::default(),
-        border_sent: None,
-        commands: Vec::new(),
-        quiet: Default::default(),
-        far: None,
-        native_commands: None,
-        sleep_ignored: Default::default(),
-        states: Default::default(),
-        states_next_entity: None,
-        idle_states: Default::default(),
-    }
-}
+#[path = "villager_reputation_baseline_tests.rs"]
+mod reputation_baseline_tests;
+#[cfg(test)]
+#[path = "villager_reputation_fixture.rs"]
+pub(super) mod reputation_fixture;
 
 impl Game<'_> {
     /// `PlayerList.remove`: `player.awardStat(Stats.LEAVE_GAME)` before the
