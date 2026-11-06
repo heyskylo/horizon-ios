@@ -2529,6 +2529,16 @@ server's command tree ask. Without such a mod every answer is the operator level
   hears a command its node refuses in `names_hidden` and one it grants in `names`. A command's node is the first one
   its usages give. A dedicated server's console runs every registered command without asking. Bundles need
   `"hooks": @API:command_permission@`.
+- **`native_player_command_level(player, name, command, level)`**: the operator level one typed command of a player
+  runs at, before the server checks it (Paper's `VanillaCommandWrapper`, which asks `minecraft.command.<name>` instead
+  of the level). `level` comes in as the player's own; raise it to grant this command (`/gamemode` at 2 for a player of
+  level 0) or lower it to refuse one; above 4 counts as 4. `command` is the line without its slash. The command then
+  runs at that level: a vanilla one through its own checks, a mod's against its level (one with a permission node asks
+  the node, with this level as the fallback). Heard after `native_player_command` for the commands vanilla's and the
+  mods' dispatch run; not for the chat commands the server answers itself (`/me`, `/msg` and its aliases, `/say` from
+  a player allowed it), `/list`, the chat filter's and Horizon's `/tempban` commands, nor a mod's quiet commands, and a LAN world without Allow Commands still refuses its guests' vanilla
+  commands. The hub is out of reach and no player's state is swapped in: answer from the mod's own data. Server-side.
+  Bundles need `"hooks": @API:player_command_level@`.
 
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The

@@ -6580,6 +6580,32 @@ impl Game<'_> {
             names,
         );
     }
+    /// The operator level one typed command of a player runs at, before the
+    /// server checks it (Paper's `VanillaCommandWrapper` asking a
+    /// `minecraft.command.<name>` node instead of the level): `level` comes
+    /// in as the player's own (`ops.json`), and a mod may raise it to grant
+    /// this command (`/gamemode` at 2 for a player of level 0) or lower it
+    /// to refuse one. `command` is the line without its slash. The command
+    /// then runs at that level, a vanilla one through its own checks, a
+    /// mod's against its level (a mod command with a permission node asks
+    /// the node, with this level as the fallback); above 4 counts as 4.
+    /// Heard after `native_player_command`, for the commands vanilla's and
+    /// the mods' dispatch run, not for the chat commands the server answers
+    /// itself (`/me`, `/msg` and its aliases, `/say` from a player allowed
+    /// it), `/list`, the chat filter's and Horizon's `/tempban` commands, nor
+    /// for a mod's quiet commands; a LAN world without Allow Commands still
+    /// refuses its guests' vanilla commands. The hub is out of reach here and
+    /// no player's state is swapped in: answer from the mod's own data.
+    /// Server-side. API @API:player_command_level@.
+    pub(super) fn native_player_command_level(
+        &mut self,
+        player: u128,
+        name: &str,
+        command: &str,
+        level: &mut u8,
+    ) {
+        mod_api::dispatch_player_command_level(self, mod_api::mods(), player, name, command, level);
+    }
     /// A click in a menu a mod opened (`native_open_menu`), which moved
     /// nothing: the menu's `slot` (its own first, then the player's
     /// inventory, `native_menu_inventory_slot`; -999 outside), the `button`
