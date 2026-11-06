@@ -5525,7 +5525,7 @@ def command_zombie_reinforcements(once=False, raw=False, legacy=False):
 ISOLATED_REINFORCEMENTS = frozenset({'command zombie reinforcements', 'command reinforcement once'})
 # These overlays replace built-in recipes, never beside the corpus's fixed vanilla recipe-count controls.
 ISOLATED_RECIPES = frozenset({'crafting recipe priority', 'crafting base recipe control', 'transmute result patches'})
-ISOLATED_FRAME_MAPS = frozenset({'frame live map detachment'})
+ISOLATED_FRAME_MAPS = frozenset({'frame live map detachment', 'treasure map copies'})
 ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS
 
 
@@ -5539,7 +5539,7 @@ def groups():
     except ImportError:
         from mob_effect_predicate_corpus import cases as mob_effect_predicates
     try:
-        from .frame_map_corpus import frame_maps
+        from .frame_map_corpus import frame_maps, treasure_map_copies
         from .allay_damage_corpus import allay_player_damage
         from .wolf_anger_corpus import groups as wolf_anger_groups
         from .allay_healing_corpus import allay_healing
@@ -5550,7 +5550,7 @@ def groups():
         from .gateway_passenger_corpus import gateway_passengers
         from .item_merge_corpus import stack_limit_merges
     except ImportError:
-        from frame_map_corpus import frame_maps
+        from frame_map_corpus import frame_maps, treasure_map_copies
         from allay_damage_corpus import allay_player_damage
         from wolf_anger_corpus import groups as wolf_anger_groups
         from allay_healing_corpus import allay_healing
@@ -5565,6 +5565,7 @@ def groups():
         ('transmute result patches', transmute_patches(cmd, setup)),
         ('mob effect predicate view', mob_effect_predicates(cmd, setup)),
         ('frame live map detachment', frame_maps(cmd, setup)),
+        ('treasure map copies', treasure_map_copies(cmd, setup)),
         ('allay player damage immunity', allay_player_damage(cmd, setup)),
         *wolf_anger_groups(cmd, setup),
         ('allay passive healing', allay_healing(cmd, setup)),
