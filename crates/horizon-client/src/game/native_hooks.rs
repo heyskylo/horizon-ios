@@ -6552,6 +6552,34 @@ impl Game<'_> {
             result,
         );
     }
+    /// `native_player_commands_sent` with what the player's level leaves
+    /// out: heard right after v1, at the same times, with `names` as v1 left
+    /// it. `names_hidden` are the root commands an operator of level 4 would
+    /// get that this player's level hides (`gamemode`, `op`, a mod's command
+    /// above their level). Put one of them into `names` and the player's
+    /// tree has it with everything under it, as an operator of its level
+    /// gets it (Paper's `PlayerCommandSendEvent` after a permission check
+    /// passed), so their client completes and highlights it; take a name out
+    /// of `names` and it is hidden, as with v1. This changes only the tree
+    /// the client gets: running a granted vanilla command still needs its
+    /// level (`native_player_command_level`). Mods are asked in order and
+    /// share both lists. API @API:player_commands_sent_v2@.
+    pub(super) fn native_player_commands_sent_v2(
+        &mut self,
+        player: u128,
+        name: &str,
+        names: &mut Vec<String>,
+        names_hidden: &mut Vec<String>,
+    ) {
+        mod_api::dispatch_player_commands_sent_v2(
+            self,
+            mod_api::mods(),
+            player,
+            name,
+            names_hidden,
+            names,
+        );
+    }
     /// A click in a menu a mod opened (`native_open_menu`), which moved
     /// nothing: the menu's `slot` (its own first, then the player's
     /// inventory, `native_menu_inventory_slot`; -999 outside), the `button`

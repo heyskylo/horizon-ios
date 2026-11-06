@@ -2513,6 +2513,14 @@ server's command tree ask. Without such a mod every answer is the operator level
   `native_permission_check`, and when no mod answers, whether the player's operator level is `default_level` or above.
   The level is the server's for a player who is on or joining, the acting player's inside their hook; anyone else, and
   every player on a client, counts as level 0. Bundles need `"hooks": @API:permission_check@`.
+- **`native_player_commands_sent_v2(player, name, names, names_hidden)`**: an additive version of
+  `native_player_commands_sent`, heard right after v1 at the same times (join, a change of level, a resend) with
+  `names` as v1 left it. `names_hidden` lists the root commands an operator of level 4 would get that this player's
+  level hides (`gamemode`, `op`, a mod's command above their level). Move one into `names` and the player's tree has it
+  with everything under it, as an operator of its level gets it (Paper's `PlayerCommandSendEvent` after a permission
+  check passed), so their client completes and highlights it; take a name out of `names` to hide it, as with v1. Only
+  the tree changes: running a granted vanilla command still needs its level (`native_player_command_level`). Mods are
+  asked in order and share both lists. Bundles need `"hooks": @API:player_commands_sent_v2@`.
 
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The

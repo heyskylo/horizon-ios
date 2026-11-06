@@ -945,9 +945,9 @@ impl Game<'_> {
     }
 
     /// Asks the mods what root commands each player's tree keeps
-    /// (`native_player_commands_sent`) and stores the answer in the hub,
-    /// which sends the trees without what the mods took out: for `only`, or
-    /// for every placed player.
+    /// (`native_player_commands_sent` and its v2) and stores the answer in
+    /// the hub, which sends the trees without what the mods took out and with
+    /// what they put back: for `only`, or for every placed player.
     pub(super) fn native_filter_commands(&mut self, host: &mut LanHost, only: Option<u32>) {
         let players: Vec<(u32, u128, String)> = host
             .hub
@@ -958,22 +958,37 @@ impl Game<'_> {
             .collect();
         for (conn, uuid, name) in players {
             let names = host.hub.command_names(conn);
+            let above = host.hub.command_names_above(conn);
             let mut kept = names.clone();
+            let mut hidden = above.clone();
             let placed = host.hub.guest(conn).is_some_and(|g| g.placed);
             if !placed {
                 // A joining player has no world yet: nothing can be told them.
-                self.native_player_commands_sent(uuid, &name, &mut kept);
+                self.ask_commands_sent(uuid, &name, &mut kept, &mut hidden);
             } else if self.lan_acting == Some(conn) {
-                self.native_player_commands_sent(uuid, &name, &mut kept);
+                self.ask_commands_sent(uuid, &name, &mut kept, &mut hidden);
             } else {
                 self.as_guest(host, conn, |g| {
-                    g.native_player_commands_sent(uuid, &name, &mut kept);
+                    g.ask_commands_sent(uuid, &name, &mut kept, &mut hidden);
                 });
             }
             if let Some(g) = host.hub.guest_mut(conn) {
+                g.granted_commands = above.into_iter().filter(|n| kept.contains(n)).collect();
                 g.hidden_commands = names.into_iter().filter(|n| !kept.contains(n)).collect();
             }
         }
+    }
+
+    /// Both versions of the commands-sent hook, v1 first, sharing `names`.
+    fn ask_commands_sent(
+        &mut self,
+        uuid: u128,
+        name: &str,
+        names: &mut Vec<String>,
+        hidden: &mut Vec<String>,
+    ) {
+        self.native_player_commands_sent(uuid, name, names);
+        self.native_player_commands_sent_v2(uuid, name, names, hidden);
     }
 
     /// `Hub::resend_commands` with the mods' say on each tree.
