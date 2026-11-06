@@ -5865,6 +5865,10 @@ ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANG
 
 def groups():
     try:
+        from .trader_llama_delay_corpus import llama_delay
+    except ImportError:
+        from trader_llama_delay_corpus import llama_delay
+    try:
         from .transmute_patch_corpus import cases as transmute_patches
     except ImportError:
         from transmute_patch_corpus import cases as transmute_patches
@@ -5898,7 +5902,7 @@ def groups():
         from passenger_teleport_corpus import passenger_teleports
         from gateway_passenger_corpus import gateway_passengers
         from item_merge_corpus import stack_limit_merges
-    return [
+    result = [
         ('setup', group_setup()),
         ('macro source type error', macro_source_type_error()),
         ('stand saved fall distance', stand_saved_fall()),
@@ -6039,3 +6043,5 @@ def groups():
         ('summoned potions', summoned_potions()),
         ('creeper cloud selectors', creeper_cloud_selectors()),
     ]
+    result.insert(1, ('trader llama NoAI delay', llama_delay(cmd)))
+    return result
