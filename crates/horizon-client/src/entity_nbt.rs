@@ -7269,7 +7269,11 @@ mod shulker_bullet_nbt_tests {
             ]);
             let p = spit_or_bullet_from_nbt(&tag, None, None).unwrap();
             let (_, d, s, _) = bullet_kind(&p);
-            assert_eq!((d, s), (Some(expected.0), expected.1), "Dir {dir}, Steps {steps}");
+            assert_eq!(
+                (d, s),
+                (Some(expected.0), expected.1),
+                "Dir {dir}, Steps {steps}"
+            );
         }
     }
 
@@ -7822,7 +7826,7 @@ mod pickup_loot_save_tests {
                         live
                     };
                     for input in [None, Some(&raw)] {
-                        let saved = mob_to_nbt(&mob, [46, 0, 0, 1], input, None);
+                        let saved = mob_to_nbt(&mob, [46, 0, 0, 1], input, None, |_| None);
                         assert_eq!(
                             saved.get("CanPickUpLoot"),
                             Some(&Tag::Byte(i8::from(expected))),
