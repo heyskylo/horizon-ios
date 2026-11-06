@@ -2349,7 +2349,7 @@ impl Game<'_> {
                 } => {
                     self.spawn_creeper_cloud(at, effects, hidden, ambient, color);
                 }
-                MobEvent::Explode(at, radius, species) => {
+                MobEvent::Explode(at, radius, species, silent) => {
                     // The exploding mob causes the damage (Creeper.explodeCreeper).
                     let noted = self.combat.explosion_source.is_some();
                     let source_mob = self.combat.explosion_source.or_else(|| {
@@ -2378,12 +2378,13 @@ impl Game<'_> {
                     // Only a creeper or a wither empties the hives it blows up.
                     // The creeper is already gone from the list, so the event
                     // carries its kind. A sulfur cube's blast is TNT's.
+                    let source = super::explosion::ExplosionSource::default().with_silence(silent);
                     let result = match species {
                         Species::Creeper | Species::Wither => {
-                            self.with_hive_emptying_blast(|g| g.explode(at, radius))
+                            self.with_hive_emptying_blast(|g| g.explode(at, radius, source))
                         }
-                        Species::SulfurCube => self.explode_sulfur_cube(at, radius),
-                        _ => self.explode(at, radius),
+                        Species::SulfurCube => self.explode_sulfur_cube(at, radius, source),
+                        _ => self.explode(at, radius, source),
                     };
                     self.combat.explosion_source = None;
                     self.combat.explosion_source_named = false;
@@ -5372,7 +5373,13 @@ impl Game<'_> {
                 // LargeFireball.onHit: both fire and MOB block destruction
                 // follow mob_griefing; other mob explosions keep their default.
                 let fire = self.ui.rules.bool("mob_griefing");
-                let result = self.explode_mob(atp, *power as f32, fire);
+                let result = self.explode_mob(
+                    atp,
+                    *power as f32,
+                    fire,
+                    super::explosion::ExplosionSource::default()
+                        .with_silence(self.entity_silent(p.id)),
+                );
                 self.set_blast_by_player(false);
                 self.combat.explosion_owner = None;
                 self.combat.explosion_in_water = false;
@@ -5413,7 +5420,15 @@ impl Game<'_> {
                     _ => None,
                 };
                 let owner = self.potion_owner(p.owner);
-                self.splash(stack, at, mob, block, p.age, &owner);
+                self.splash(
+                    stack,
+                    at,
+                    mob,
+                    block,
+                    p.age,
+                    &owner,
+                    self.entity_silent(p.id),
+                );
                 if stack.item.as_ref() != "minecraft:experience_bottle" {
                     let item = stack.item.to_string();
                     self.native_potion_splash(&item, [at.x, at.y, at.z]);

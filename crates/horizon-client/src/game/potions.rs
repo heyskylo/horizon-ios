@@ -1316,6 +1316,7 @@ impl Game<'_> {
                     t.age,
                     t.owner.clone(),
                     t.guest,
+                    self.entity_silent(t.id),
                 ));
                 return false;
             }
@@ -1328,7 +1329,7 @@ impl Game<'_> {
             t.age < 1200 && t.position.y > -128.0
         });
         self.potions.thrown = thrown;
-        for (stack, at, mob, block, age, owner, guest) in landed {
+        for (stack, at, mob, block, age, owner, guest, silent) in landed {
             // Projectile.onHit (super.onHit of AbstractThrownPotion): a block
             // is heard at its centre, an entity at the hit.
             let heard = if mob.is_some() {
@@ -1346,7 +1347,7 @@ impl Game<'_> {
                 attacker: None,
                 guest,
             };
-            self.splash(&stack, at, mob, block, age, &owner);
+            self.splash(&stack, at, mob, block, age, &owner, silent);
             if item != "minecraft:experience_bottle" {
                 self.native_potion_splash(&item, [at.x, at.y, at.z]);
             }
@@ -1859,13 +1860,16 @@ impl Game<'_> {
         hit: Option<([i32; 3], Direction)>,
         age: u32,
         owner: &PotionOwner,
+        silent: bool,
     ) {
         let block = [at.x, at.y, at.z].map(|v| v.floor() as i32);
         if &*stack.item == "minecraft:experience_bottle" {
             // ThrownExperienceBottle.onHit: the water-coloured splash (level
             // event 2002, its sound 1053) and 3 to 11 experience.
             self.level_event_at(2002, block, 0xFF38_5DC6u32 as i32);
-            self.level_event_at(1053, block, 0);
+            if !silent {
+                self.level_event_at(1053, block, 0);
+            }
             let r = &mut self.world.random;
             let value = 3 + r.next_int_bound(5).unwrap_or(0) + r.next_int_bound(5).unwrap_or(0);
             self.spawn_orbs([at.x, at.y, at.z], value as u32);
@@ -1889,7 +1893,9 @@ impl Game<'_> {
         });
         let color = brewing::potion_color(stack.potion());
         self.level_event_at(if instant { 2007 } else { 2002 }, block, color as i32);
-        self.level_event_at(if instant { 1054 } else { 1053 }, block, 0);
+        if !silent {
+            self.level_event_at(if instant { 1054 } else { 1053 }, block, 0);
+        }
         // AbstractThrownPotion.affectEntitiesAround: a water potion (the only
         // #rehydrates_axolotls) refills the air of the axolotls in the
         // projectile's box inflated by 4, 2 and 4 (Axolotl.rehydrate, 1800).

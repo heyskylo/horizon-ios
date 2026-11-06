@@ -1256,6 +1256,19 @@ impl Game<'_> {
             self.persist.raw.insert(id, Tag::Compound(map));
         }
     }
+    /// `Entity.isSilent`: mobs model it directly; other entities retain it
+    /// in their saved fields, including command changes to `Silent`.
+    pub(super) fn entity_silent(&self, id: u32) -> bool {
+        self.mobs.iter().find(|m| m.id == id).map_or_else(
+            || {
+                self.persist
+                    .raw
+                    .get(&id)
+                    .is_some_and(|tag| horizon_client::entity_nbt::flag(tag, "Silent"))
+            },
+            |m| m.silent,
+        )
+    }
     /// The `Tags` of the projectile `add_projectile` just pushed.
     fn remember_last_projectile_tags(&mut self, tag: &Tag) {
         if let Some(id) = self.creatures.projectiles.last().map(|p| p.id) {
