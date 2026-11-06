@@ -92,6 +92,17 @@ public final class VanillaCommandExecOracle {
         @Override public void save() {}
     }
 
+    static JsonObject raidActor(net.minecraft.world.entity.LivingEntity entity, ServerLevel level) {
+        JsonObject raw=new JsonObject();UUID u=entity.getUUID();
+        JsonArray words=new JsonArray();for (int w:new int[]{(int)(u.getMostSignificantBits()>>32),(int)u.getMostSignificantBits(),(int)(u.getLeastSignificantBits()>>32),(int)u.getLeastSignificantBits()}) words.add(w);raw.add("uuid",words);
+        raw.addProperty("type",net.minecraft.core.registries.BuiltInRegistries.ENTITY_TYPE.getKey(entity.getType()).toString());raw.addProperty("health",entity.getHealth());
+        JsonArray pos=new JsonArray();pos.add(entity.getX());pos.add(entity.getY());pos.add(entity.getZ());raw.add("pos",pos);
+        raw.addProperty("noai",entity instanceof net.minecraft.world.entity.Mob mob && mob.isNoAi());
+        raw.addProperty("raid_id",entity instanceof net.minecraft.world.entity.raid.Raider r && r.getCurrentRaid()!=null ? level.getRaids().getId(r.getCurrentRaid()).orElse(-1):-1);
+        JsonArray home=new JsonArray();if (entity instanceof net.minecraft.world.entity.npc.villager.Villager v) v.getBrain().getMemory(net.minecraft.world.entity.ai.memory.MemoryModuleType.HOME).ifPresent(p->{home.add(p.pos().getX());home.add(p.pos().getY());home.add(p.pos().getZ());});raw.add("home",home);
+        var output=net.minecraft.world.level.storage.TagValueOutput.createWithContext(net.minecraft.util.ProblemReporter.DISCARDING,level.registryAccess());entity.saveWithoutId(output);raw.addProperty("nbt",output.buildResult().toString());return raw;
+    }
+
     static final class Server extends MinecraftServer {
         final Path script;
         final Path output;
@@ -543,6 +554,36 @@ public final class VanillaCommandExecOracle {
                             if (op.has("trace") && op.get("trace").getAsBoolean()) System.err.println("command trace: " + gson.toJson(record));
                             if (!op.has("record") || op.get("record").getAsBoolean()) out.append(gson.toJson(record)).append('\n');
                         }
+                    }
+                    case "raid_state" -> {
+                        var raidLevel=player.level(); int id=op.get("id").getAsInt();
+                        var raid=raidLevel.getRaids().get(id);
+                        JsonObject state=new JsonObject(); state.addProperty("id",id); state.addProperty("present",raid!=null);
+                        if (raid!=null) {
+                            var tag=(net.minecraft.nbt.CompoundTag)net.minecraft.world.entity.raid.Raid.MAP_CODEC.codec()
+                                .encodeStart(net.minecraft.nbt.NbtOps.INSTANCE,raid).getOrThrow();
+                            state.addProperty("status",tag.getStringOr("status","missing"));
+                            state.addProperty("started",raid.isStarted());state.addProperty("active",raid.isActive());
+                            state.addProperty("groups_spawned",raid.getGroupsSpawned());
+                            state.add("center",gson.toJsonTree(new int[]{raid.getCenter().getX(),raid.getCenter().getY(),raid.getCenter().getZ()}));
+                            state.addProperty("village",raidLevel.isVillage(raid.getCenter()));
+                            if (op.get("members").getAsBoolean()) state.addProperty("member_present",raid.getAllRaiders().stream().anyMatch(e->e.isAlive() && e.getCurrentRaid()==raid));
+                        }
+                        JsonObject raw=new JsonObject();raw.addProperty("label",op.get("label").getAsString());raw.addProperty("id",id);
+                        var pp=op.getAsJsonArray("poi");var pos=new BlockPos(pp.get(0).getAsInt(),pp.get(1).getAsInt(),pp.get(2).getAsInt());
+                        raw.addProperty("loaded",raidLevel.hasChunkAt(pos));
+                        raw.addProperty("occupied",raidLevel.getPoiManager().getCountInRange(h->h.is(net.minecraft.tags.PoiTypeTags.VILLAGE),pos,0,net.minecraft.world.entity.ai.village.poi.PoiManager.Occupancy.IS_OCCUPIED));
+                        raw.addProperty("poi_type",raidLevel.getPoiManager().getType(pos).map(h->h.unwrapKey().orElseThrow().identifier().toString()).orElse("none"));
+                        raw.addProperty("raid_nbt",net.minecraft.world.entity.raid.Raids.CODEC.encodeStart(net.minecraft.nbt.NbtOps.INSTANCE,raidLevel.getRaids()).getOrThrow().toString());
+                        JsonArray members=new JsonArray();if (raid!=null) for (var entity:raid.getAllRaiders()) members.add(raidActor(entity,raidLevel));raw.add("actors",members);
+                        JsonArray villagers=new JsonArray();for (var uuid:op.getAsJsonArray("villagers")) {
+                            var entity=raidLevel.getEntity(UUID.fromString(uuid.getAsString()));
+                            if (!(entity instanceof net.minecraft.world.entity.npc.villager.Villager)) throw new IllegalStateException("raid fixture villager absent/wrong type");
+                            villagers.add(raidActor((net.minecraft.world.entity.LivingEntity)entity,raidLevel));
+                        }raw.add("villagers",villagers);
+                        System.err.println("raid input raw: "+gson.toJson(raw));
+                        JsonObject row=new JsonObject();row.addProperty("cmd","#raid_state "+op.get("label").getAsString()+" "+id);
+                        row.add("messages",new JsonArray());row.add("results",new JsonArray());row.add("state",state);out.append(gson.toJson(row)).append('\n');
                     }
                     case "mob_anger" -> {
                         try {
