@@ -10,6 +10,16 @@ use horizon_client::{
 use horizon_core::geometry::Vec3;
 use winit::keyboard::KeyCode;
 
+/// HUD and first-person hand visibility. Other hand-render restrictions still apply.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HudMode {
+    #[default]
+    AllVisible,
+    /// Hide the HUD while allowing the first-person hands and held items.
+    NoHud,
+    AllHidden,
+}
+
 /// This window's state; unavailable on a server or before a window is attached.
 #[derive(Clone, Debug, Default)]
 #[non_exhaustive]

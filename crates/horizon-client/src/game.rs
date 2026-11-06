@@ -14634,17 +14634,16 @@ impl Game<'_> {
     fn hand_geometry(&mut self, alpha: f64) -> (Vec<Vertex>, Vec<(u32, i32)>) {
         let mut out = Vec::new();
         let mut runs = Vec::new();
-        // GameRenderer.renderItemInHand: F1 hides the hand with the HUD.
-        if self.spectator()
-            || self.ui.hide_gui
-            || self.sleeping.is_some()
-            || !self.camera_type.first_person()
-            || self
-                .player
+        // F1 hides both; a native HUD mode may keep the hands visible.
+        if !self.ui.hands_drawn(
+            self.spectator(),
+            self.sleeping.is_some(),
+            self.camera_type.first_person(),
+            self.player
                 .as_ref()
-                .is_none_or(|p| p.health.dead_or_dying())
-            || self.screen == Screen::Dead
-        {
+                .is_some_and(|p| !p.health.dead_or_dying()),
+            self.screen == Screen::Dead,
+        ) {
             return (out, runs);
         }
         let a = alpha as f32;
