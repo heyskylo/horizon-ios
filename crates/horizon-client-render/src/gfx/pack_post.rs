@@ -4601,10 +4601,8 @@ impl PackPost {
             .get_or_insert_with(|| super::pack_center_depth::CenterDepth::new(device))
             .collect(device);
         self.uniforms.update(frame, inputs, size);
-        // Until the camera's biome is known, `smooth` waits for the world's values.
-        if !inputs.biome_known {
-            self.custom.restart_smoothing();
-        }
+        // `smooth` starts on the first frame that knows the camera's biome.
+        self.custom.world_frame(inputs.biome_known);
         self.uniforms.eval_custom(&mut self.custom);
         if self.targets.is_none() {
             return;
