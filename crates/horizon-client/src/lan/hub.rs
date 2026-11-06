@@ -1130,17 +1130,27 @@ impl Hub {
     /// player loses the players hidden from it (ClientboundPlayerInfoRemove)
     /// and gets back those it sees again (an ADD_PLAYER entry). A change
     /// checks the client's entity pairs again, so the tracker follows too.
-    /// Nothing runs while nobody is hidden.
+    /// Nothing runs while nobody is hidden. A player whose entity a native
+    /// mod hid from one player (`Tracker.hidden`) leaves that player's list
+    /// too.
     fn sync_hidden(&mut self) {
-        if self.hidden.is_empty() && self.guests.iter().all(|g| g.tab_hidden.is_empty()) {
+        if self.hidden.is_empty()
+            && self
+                .guests
+                .iter()
+                .all(|g| g.tab_hidden.is_empty() && g.tracker.hidden.is_empty())
+        {
             return;
         }
         let candidates: Vec<usize> = (0..self.guests.len())
             .filter(|&j| {
-                let u = self.guests[j].uuid;
+                let (u, id) = (self.guests[j].uuid, self.guests[j].entity_id);
                 self.guests[j].placed
                     && (self.hidden.contains_key(&u)
-                        || self.guests.iter().any(|g| g.tab_hidden.contains(&u)))
+                        || self
+                            .guests
+                            .iter()
+                            .any(|g| g.tab_hidden.contains(&u) || g.tracker.hidden.contains(&id)))
             })
             .collect();
         for i in 0..self.guests.len() {
@@ -1152,7 +1162,8 @@ impl Hub {
                 if i == j {
                     continue;
                 }
-                let hide = !self.sees(viewer.permission, other.uuid);
+                let hide = !self.sees(viewer.permission, other.uuid)
+                    || viewer.tracker.hidden.contains(&other.entity_id);
                 if hide == viewer.tab_hidden.contains(&other.uuid) {
                     continue;
                 }

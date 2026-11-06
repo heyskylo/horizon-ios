@@ -384,6 +384,50 @@ impl Game<'_> {
         host.hub.set_nickname(uuid, nickname.map(str::to_owned));
         true
     }
+    /// Hides the entity `entity` (its network id: a mob's, a display's, a
+    /// player's `NativeServerPlayer.entity_id`) from the player `viewer`
+    /// alone, or shows it again (`hidden` false), as Bukkit's
+    /// `Player.hideEntity` and `showEntity` (`hidePlayer` for a player): from
+    /// the next tick their client stops tracking it, so it disappears there,
+    /// and is paired again, as it is then, once shown. A player hidden so
+    /// also leaves that viewer's Tab list, and the viewer doesn't read them
+    /// leave. Everyone else still sees it (`native_hide_player` hides a
+    /// player from permission levels). Kept while `viewer` is on, for that
+    /// id: forgotten when they leave, and a player who rejoins comes with
+    /// another id (hide them again from `native_player_logged_in`). Only
+    /// where no player's state is swapped in, as `native_run_command`; false
+    /// there, when `viewer` isn't on and for their own entity. API
+    /// @API:hide_entity_from@.
+    pub(super) fn native_hide_entity_from(
+        &mut self,
+        viewer: u128,
+        entity: u32,
+        hidden: bool,
+    ) -> bool {
+        let Some(host) = &mut self.lan else {
+            return false;
+        };
+        let Some(g) = host
+            .hub
+            .guests
+            .iter_mut()
+            .find(|g| g.placed && g.uuid == viewer)
+        else {
+            return false;
+        };
+        let id = entity as i32;
+        if g.entity_id == id {
+            return false;
+        }
+        let changed = if hidden {
+            g.tracker.hidden.insert(id)
+        } else {
+            g.tracker.hidden.remove(&id)
+        };
+        // Its pairs are checked again on the next tick.
+        g.moved |= changed;
+        true
+    }
     /// Whether the server's chat filter (`server.toml` `[chat_filter]`)
     /// lets `text` through: true without a filter, None inside a player's
     /// hook (where the server is out of reach). API 62.

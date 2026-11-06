@@ -2498,6 +2498,15 @@ injections before.
   later tick, which is heard again, so a vanish mod cancels every time the target is a vanished player. A target that
   is neither a player nor a mob is not heard. No `self` (the mobs are out of the game while they tick), so a mod
   decides from its own state. Server-side. Bundles need `"hooks": @API:living_change_target@`.
+- Helper **`native_hide_entity_from(viewer, entity, hidden)`** (`host.hide_entity_from`): hides the entity with
+  network id `entity` (a mob, a display, another player's `NativeServerPlayer.entity_id`) from the player `viewer`
+  alone, or shows it again, as Bukkit's `Player.hideEntity`/`showEntity` (`hidePlayer` for a player). From the next
+  tick the viewer's client stops tracking it, so it disappears there, and once shown it is paired again as it is then;
+  a hidden player also leaves the viewer's Tab list, and the viewer doesn't read them leave. Everyone else still sees
+  it; `native_hide_player` stays the way to hide a player from permission levels. Kept while the viewer is on, for that
+  id: forgotten when they leave, and a player who rejoins has another id (hide them again from
+  `native_player_logged_in`). Outside a player's hook; false there, when the viewer isn't on and for their own entity.
+  Bundles need `"hooks": @API:hide_entity_from@`.
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a
