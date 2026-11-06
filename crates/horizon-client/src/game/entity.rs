@@ -272,6 +272,11 @@ pub(super) trait Entity: EntityRules {
         let position = self.position_mut();
         *position = position.add_vector(movement);
     }
+    /// Bounds for `AbstractArrow.shouldFall` after a non-SELF piston move.
+    fn piston_release_bounds(&self) -> Option<Aabb> {
+        None
+    }
+    fn release_after_piston(&mut self, _no_block_collision: bool) {}
     /// `PistonMovingBlockEntity.causeBounce`: a slime block sets the velocity
     /// along the movement axis.
     fn piston_slime_bounce(&mut self, movement: Direction) {
@@ -1671,6 +1676,12 @@ impl Entity for Projectile {
     fn move_by_piston(&mut self, movement: Vec3) {
         Projectile::move_by_piston(self, movement);
     }
+    fn piston_release_bounds(&self) -> Option<Aabb> {
+        Projectile::piston_release_bounds(self)
+    }
+    fn release_after_piston(&mut self, no_block_collision: bool) {
+        Projectile::release_after_piston(self, no_block_collision);
+    }
     fn piston_slime_bounce(&mut self, movement: Direction) {
         Projectile::piston_slime_bounce(self, movement);
     }
@@ -1797,6 +1808,12 @@ impl Entity for ThrownTrident {
     }
     fn move_by_piston(&mut self, movement: Vec3) {
         ThrownTrident::move_by_piston(self, movement);
+    }
+    fn piston_release_bounds(&self) -> Option<Aabb> {
+        ThrownTrident::piston_release_bounds(self)
+    }
+    fn release_after_piston(&mut self, no_block_collision: bool) {
+        ThrownTrident::release_after_piston(self, no_block_collision);
     }
     fn piston_slime_bounce(&mut self, movement: Direction) {
         ThrownTrident::piston_slime_bounce(self, movement);

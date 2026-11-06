@@ -6050,8 +6050,10 @@ impl Game<'_> {
             self.border.tick();
         }
         self.player_border();
-        // Keep predicted piston pushes in the same phase as the server's
-        // piston pushes, before the client advances its entities/projectiles.
+        // ClientLevel.tickEntities runs before Level.tickBlockEntities. This
+        // lets entities capture their tick-start positions before a piston
+        // moves them, matching the server's update order.
+        self.tick_remote_entities(running);
         // Level.tickBlockEntities: a frozen level ticks no block entities.
         if running {
             self.with_level(|b, level, ticks| {
@@ -6061,7 +6063,6 @@ impl Game<'_> {
             self.push_piston_entities(pushes);
             self.sync_moving_pistons();
         }
-        self.tick_remote_entities(running);
         self.tick_random_textures();
         if running {
             self.tick_breeze_effects();

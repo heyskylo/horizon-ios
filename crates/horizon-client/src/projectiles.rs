@@ -804,6 +804,25 @@ impl Projectile {
         self.position = self.position.add_vector(movement);
         self.needs_sync = true;
     }
+    pub(crate) fn piston_release_bounds(&self) -> Option<Aabb> {
+        let arrow = self.arrow.as_ref()?;
+        if !arrow.in_ground || arrow.no_physics {
+            return None;
+        }
+        Some(Aabb::new(self.position, self.position).inflate(Vec3::new(0.06, 0.06, 0.06)))
+    }
+    pub(crate) fn release_after_piston(&mut self, no_block_collision: bool) {
+        let Some(arrow) = self.arrow.as_mut() else {
+            return;
+        };
+        if arrow.in_ground && !arrow.no_physics && no_block_collision {
+            self.velocity = crate::arrows::start_falling_velocity(self.velocity, &mut arrow.random);
+            arrow.in_ground = false;
+            arrow.life = 0;
+            self.stuck = false;
+            self.needs_sync = true;
+        }
+    }
     /// Slime piston bounce launches an embedded arrow on this tick.
     pub fn piston_slime_bounce(&mut self, movement: Direction) {
         self.velocity = horizon_world::piston_push::bounce_velocity(movement, self.velocity);
@@ -1339,6 +1358,38 @@ mod tests {
             &self.0
         }
     }
+    #[test]
+    fn piston_move_releases_a_stuck_arrow_with_start_falling_velocity() {
+        let mut p = Projectile::new(
+            ProjectileKind::Arrow {
+                base_damage: 2.0,
+                critical: false,
+                effect: None,
+            },
+            Vec3::new(0.5, 100.0, 0.5),
+            None,
+        );
+        p.velocity = Vec3::new(1.0, -2.0, 3.0);
+        p.stuck = true;
+        p.arrow.as_mut().unwrap().in_ground = true;
+        let mut random = p.arrow.as_ref().unwrap().random.clone();
+        let expected = crate::arrows::start_falling_velocity(p.velocity, &mut random);
+
+        p.move_by_piston(Vec3::new(0.5, 0.0, 0.0));
+        assert!(p.piston_release_bounds().is_some());
+        p.release_after_piston(false);
+        assert!(p.arrow.as_ref().unwrap().in_ground);
+        assert_eq!(p.velocity, Vec3::new(1.0, -2.0, 3.0));
+
+        p.release_after_piston(true);
+        let arrow = p.arrow.as_ref().unwrap();
+        assert!(!arrow.in_ground);
+        assert_eq!(p.velocity, expected);
+        assert!(!p.stuck);
+        assert!(p.needs_sync);
+        assert!(p.piston_release_bounds().is_none());
+    }
+
     #[test]
     fn first_tick_shoot_event_uses_base_tick_position_and_saved_flag() {
         let w = Empty(vec![]);

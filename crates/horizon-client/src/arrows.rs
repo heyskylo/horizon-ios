@@ -715,7 +715,7 @@ impl Ticker<'_, '_, '_, '_> {
             self.st.clear_fire();
         }
         if self.st.in_ground && physics {
-            if self.st.last_state != Some(state) && self.should_fall() {
+            if !self.client && self.st.last_state != Some(state) && self.should_fall() {
                 self.start_falling();
             } else {
                 if !self.client {
