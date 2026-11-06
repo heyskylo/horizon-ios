@@ -1,5 +1,6 @@
-//! The totem of undying (`LivingEntity.checkTotemDeathProtection` with the
-//! totem's `death_protection` component, entity event 35 on the client).
+//! The totem of undying (`LivingEntity.checkTotemDeathProtection`: a hand's
+//! item carrying the `death_protection` component, whatever item it is, and
+//! entity event 35 on the client).
 use super::Game;
 use horizon_assets::item_model::DisplayContext;
 use horizon_client::{
@@ -16,18 +17,33 @@ const TOTEM: &str = "minecraft:totem_of_undying";
 pub(super) const TOTEM_EVENT: i8 = 35;
 
 impl Game<'_> {
-    /// Whether either hand holds a totem, for the next hurt: the window's
-    /// player once a tick, a server's player for each of its turns.
+    /// Whether the stack has `DataComponents.DEATH_PROTECTION`, whatever
+    /// item it is: the totem of undying is only one item that carries it.
+    fn has_death_protection(&self, s: &ItemStack) -> bool {
+        self.pack
+            .item_renderer
+            .models
+            .components(&horizon_client::item_render::stack_view(s))
+            .get("minecraft:death_protection")
+            .is_some()
+    }
+    /// Whether either hand holds a death-protection item, for the next hurt:
+    /// the window's player once a tick, a server's player for each of its
+    /// turns.
     pub(super) fn update_totem_ready(&mut self) {
-        let ready = self.held().is_some_and(|s| &*s.item == TOTEM)
-            || self.offhand.as_ref().is_some_and(|s| &*s.item == TOTEM);
+        let ready = self.held().is_some_and(|s| self.has_death_protection(s))
+            || self
+                .offhand
+                .as_ref()
+                .is_some_and(|s| self.has_death_protection(s));
         if let Some(p) = self.player.as_mut() {
             p.health.totem_ready = ready;
         }
     }
     /// The server's half once a totem fired: use it up (main hand first),
     /// count it, set health to 1, then clear and apply its effects. Returns
-    /// the player's body, for entity event 35, which the caller broadcasts.
+    /// the player's body, for entity event 35, which the caller broadcasts,
+    /// with the protector copy the activation animation shows.
     pub(super) fn apply_totem(&mut self) -> Option<Body> {
         if !self.player.as_ref()?.health.totem_used {
             return None;
@@ -43,27 +59,30 @@ impl Game<'_> {
             at: [p.position.x, p.position.y, p.position.z],
             width: f64::from(p.dimensions.width),
             height: f64::from(p.dimensions.height),
+            protector: None,
         };
-        let slot = if self.held().is_some_and(|s| &*s.item == TOTEM) {
-            Some(self.selected)
+        // `checkTotemDeathProtection`: the selected slot first, then the
+        // offhand. The copy of that stack is the protector (`protectionItem`)
+        // the use is counted and the activation animation shown with, taken
+        // before the use takes one off the stack.
+        let main = self.held().is_some_and(|s| self.has_death_protection(s));
+        let cell = if main {
+            &mut self.inventory[self.selected]
         } else {
-            None
+            &mut self.offhand
         };
-        let cell = match slot {
-            Some(i) => &mut self.inventory[i],
-            None => &mut self.offhand,
-        };
+        let protector = cell
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| ItemStack::new(TOTEM, 1));
         if let Some(s) = cell.as_mut() {
             s.count -= 1;
             if s.count == 0 {
                 *cell = None;
             }
         }
-        self.award_stat("used", TOTEM, 1);
-        self.trigger_item(
-            "minecraft:used_totem",
-            &horizon_client::items::ItemStack::new(TOTEM, 1),
-        );
+        self.award_stat("used", &protector.item, 1);
+        self.trigger_item("minecraft:used_totem", &protector);
         // ItemStack.causeUseVibration: the totem's use effects make one.
         let ctx = self.player_context(None);
         self.post_game_event("minecraft:item_interact_finish", body.at, ctx);
@@ -78,7 +97,10 @@ impl Game<'_> {
                 self.add_player_effect(EffectInstance::new(e.id, ticks, amp));
             }
         }
-        Some(body)
+        Some(Body {
+            protector: Some(protector),
+            ..body
+        })
     }
     /// The window's player's totem: the server's half, then the event to
     /// the guests and to this window's own client.
@@ -97,12 +119,14 @@ impl Game<'_> {
                 at: [p.position.x, p.position.y, p.position.z],
                 width: f64::from(p.dimensions.width),
                 height: f64::from(p.dimensions.height),
+                protector: None,
             })
         } else {
             self.mobs.iter().find(|m| m.id == id as u32).map(|m| Body {
                 at: [m.position.x, m.position.y, m.position.z],
                 width: f64::from(m.width()),
                 height: f64::from(m.height()),
+                protector: None,
             })
         };
         if let Some(body) = body {
@@ -126,8 +150,10 @@ impl Game<'_> {
             self.pad_rumble(horizon_client::gamepad::Rumble::Totem);
             // findTotem, then LocalPlayer.displayItemActivation. The offsets
             // come from the player's own random in vanilla, not the level's:
-            // the client-only particle random stands in for it.
-            let totem = self.find_totem();
+            // the client-only particle random stands in for it. The server
+            // half hands over the stack it used up; only an event from a
+            // remote server, whose item is still in the hand, looks one up.
+            let totem = body.protector.unwrap_or_else(|| self.find_totem());
             self.item_activation
                 .activate(totem, self.particles.random());
         }
@@ -136,16 +162,10 @@ impl Game<'_> {
     /// `death_protection`, else a new totem (a used single totem is gone by
     /// the time the event arrives).
     fn find_totem(&self) -> ItemStack {
-        let models = &self.pack.item_renderer.models;
         [self.held(), self.offhand.as_ref()]
             .into_iter()
             .flatten()
-            .find(|s| {
-                models
-                    .components(&horizon_client::item_render::stack_view(s))
-                    .get("minecraft:death_protection")
-                    .is_some()
-            })
+            .find(|s| self.has_death_protection(s))
             .cloned()
             .unwrap_or_else(|| ItemStack::new(TOTEM, 1))
     }
@@ -190,10 +210,13 @@ impl Game<'_> {
     }
 }
 
-/// Where an entity event's entity stands and its size.
-#[derive(Clone, Copy)]
+/// Where an entity event's entity stands and its size, and, for the event
+/// this window's own player fires after the server half used a stack up, the
+/// protector copy the activation animation shows.
+#[derive(Clone)]
 pub(super) struct Body {
     pub at: [f64; 3],
     width: f64,
     height: f64,
+    protector: Option<ItemStack>,
 }
