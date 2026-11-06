@@ -8,6 +8,7 @@ use crate::{
     arrows::Pickup,
     entities::{ArmorStand, Cushion, ExperienceOrb, ItemEntity, ItemFrame, Painting},
     mobs::{Mob, MobType, Who},
+    nbt_path::int_value,
     projectiles::{Projectile, ProjectileKind},
     save::{
         doubles, float, floats, item_from_nbt, item_to_nbt, number, put, read_doubles, text,
@@ -1700,12 +1701,12 @@ pub fn mob_from_nbt(
         m.extra.drop_chances = Some(Box::new(chances));
     }
     if saves_age(m.species()) {
-        m.extra.age = number(tag.get("Age")).unwrap_or(0) as i32;
-        m.extra.forced_age = number(tag.get("ForcedAge")).unwrap_or(0) as i32;
+        m.extra.age = tag.get("Age").and_then(int_value).unwrap_or(0);
+        m.extra.forced_age = tag.get("ForcedAge").and_then(int_value).unwrap_or(0);
         m.extra.age_locked = flag(tag, "AgeLocked");
     }
     if is_animal(&m.kind.id) {
-        m.extra.in_love = number(tag.get("InLove")).unwrap_or(0) as i32;
+        m.extra.in_love = tag.get("InLove").and_then(int_value).unwrap_or(0);
         // Animal.readAdditionalSaveData: the player who fed it into love.
         m.extra.love_cause = crate::save::uuid_from_tag(tag.get("LoveCause"));
     }
@@ -4353,6 +4354,81 @@ mod tests {
         let cleared = item_entity_to_nbt(&cleared, [1, 2, 3, 4], Some(&tag));
         assert!(cleared.get("Thrower").is_none());
     }
+    #[test]
+    fn animal_integer_loads_save_modeled_values_without_raw_source() {
+        let mut kind = crate::mobs::sensor_scan_tests::kind();
+        let def = Arc::make_mut(&mut kind);
+        def.id = "minecraft:pig".into();
+        def.species = crate::mobs::Species::Pig;
+        let types = [("minecraft:pig".into(), kind)].into();
+        for (input, expected) in [
+            (None, 0),
+            (Some(Tag::Int(0)), 0),
+            (Some(Tag::Byte(-7)), -7),
+            (Some(Tag::Short(13)), 13),
+            (Some(Tag::Int(i32::MIN)), i32::MIN),
+            (Some(Tag::Int(i32::MAX)), i32::MAX),
+            (Some(Tag::Long(2147483648)), i32::MIN),
+            (Some(Tag::Long(-2147483649)), i32::MAX),
+            (Some(Tag::Long(4294967296)), 0),
+            (Some(Tag::Long(i64::MAX)), -1),
+            (Some(Tag::Long(i64::MIN)), 0),
+            (Some(Tag::Float(2.5f32.to_bits())), 2),
+            (Some(Tag::Float((-2.5f32).to_bits())), -3),
+            (Some(Tag::Double(2.5f64.to_bits())), 2),
+            (Some(Tag::Double((-2.5f64).to_bits())), -3),
+            (Some(Tag::Float(2147483520f32.to_bits())), 2147483520),
+            (Some(Tag::Float(2147483648f32.to_bits())), i32::MAX),
+            (Some(Tag::Float((-2147483648f32).to_bits())), i32::MIN),
+            (Some(Tag::Float((-2147483904f32).to_bits())), i32::MIN),
+            (Some(Tag::Double(2147483647.75f64.to_bits())), i32::MAX),
+            (Some(Tag::Double(2147483648f64.to_bits())), i32::MAX),
+            (Some(Tag::Double((-2147483647.5f64).to_bits())), i32::MIN),
+            (Some(Tag::Double((-2147483648.5f64).to_bits())), i32::MIN),
+            (Some(Tag::Double(1e20f64.to_bits())), i32::MAX),
+            (Some(Tag::Double((-1e20f64).to_bits())), i32::MIN),
+            (Some(Tag::Float(1e20f32.to_bits())), i32::MAX),
+            (Some(Tag::Float((-1e20f32).to_bits())), i32::MIN),
+        ] {
+            let mut raw = Tag::compound([
+                ("id", string("minecraft:pig")),
+                ("Pos", doubles(&[4.5, 200.0, 4.5])),
+                ("NoAI", Tag::Byte(1)),
+                ("NoGravity", Tag::Byte(1)),
+                ("AgeLocked", Tag::Byte(1)),
+                ("Unrelated", string("keep")),
+            ]);
+            if let Some(value) = input.as_ref() {
+                for key in ["Age", "ForcedAge", "InLove"] {
+                    put(&mut raw, key, value.clone());
+                }
+            }
+            let mob = mob_from_nbt(&raw, &types, 1, None).unwrap();
+            assert_eq!(
+                (mob.extra.age, mob.extra.forced_age, mob.extra.in_love),
+                (expected, expected, expected),
+                "{input:?}"
+            );
+            assert!(mob.no_ai && mob.no_gravity && mob.extra.age_locked);
+            for source in [None, Some(&raw)] {
+                let saved = mob_to_nbt(&mob, [0, 0, 0, 55], source, None);
+                for key in ["Age", "ForcedAge", "InLove"] {
+                    assert_eq!(
+                        saved.get(key),
+                        Some(&Tag::Int(expected)),
+                        "{key}: {input:?}"
+                    );
+                }
+                assert_eq!(saved.get("NoAI"), Some(&Tag::Byte(1)));
+                assert_eq!(saved.get("AgeLocked"), Some(&Tag::Byte(1)));
+                assert_eq!(
+                    saved.get("Unrelated"),
+                    source.and_then(|tag| tag.get("Unrelated"))
+                );
+            }
+        }
+    }
+
     #[test]
     fn animal_nbt_preserves_signed_integer_in_love_and_defaults_after_removal() {
         let mut kind = crate::mobs::sensor_scan_tests::kind();
