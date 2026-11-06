@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare 54 full mob-tick wet-fire observations against the pinned vanilla server.
+"""Compare 82 full mob-tick wet-fire observations against the pinned vanilla server.
 
 Requires prepared resources via HORIZON_TEST_RESOURCES. Does not start a server,
 open a window, or modify the resource root. The Java fixture fixes movement and
@@ -55,6 +55,9 @@ def main():
     classes.mkdir(exist_ok=True)
     dependencies = os.pathsep.join(map(str, [jars["server"], *libraries]))
     source = lab.ROOT / "mods/horizon/src/test/java/dev/horizonlab/parity/VanillaWetFireOracle.java"
+    sources = [Path(__file__), source, lab.ROOT / "crates/horizon-client/src/mobs/ai.rs",
+               lab.ROOT / "crates/horizon-client/src/mobs/wet_fire_tests.rs"]
+    hashes = base.source_hashes(sources)
     oracle_harness.run_logged(["javac", "--release", lock["minecraft"]["java_major"],
         "-proc:none", "-sourcepath", lab.ROOT / "mods/horizon/src/test/java", "-cp",
         dependencies, "-d", classes, source], build, "compile-java")
@@ -67,9 +70,16 @@ def main():
     # Sort by labels, retaining repeated transition labels and their tick order.
     expected.sort(key=lambda row: row[0])
     actual.sort(key=lambda row: row[0])
-    assert len(expected) == len(actual) == 54, (len(expected), len(actual))
-    assert actual == expected, "Full mob-tick wet-fire observations differ; see .local/wet-fire-parity"
-    print("54 full mob-tick wet-fire observations match vanilla 26.3")
+    assert len(expected) == len(actual) == 82, (len(expected), len(actual))
+    differences = [(want, got) for want, got in zip(expected, actual) if want != got]
+    assert not differences, f"Full mob-tick wet-fire observations differ: {differences}; see .local/wet-fire-parity"
+    base.ensure_sources_unchanged(sources, hashes)
+    lab.write_json(build / "report.json", dict(
+        minecraft=lock["minecraft"]["version"], sources_sha256=hashes,
+        server_jar_sha256=lab.digest(jars["server"], "sha256"),
+        matched_observations=len(actual),
+        scope="Full stationary Mob.tick: health, fire timer and extinguish sounds; native contact-boundary RNG assertions. No full movement or rendering."))
+    print("82 full mob-tick wet-fire observations match vanilla 26.3")
 
 
 if __name__ == "__main__":

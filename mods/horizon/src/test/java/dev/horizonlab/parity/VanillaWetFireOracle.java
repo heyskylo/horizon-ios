@@ -17,7 +17,7 @@ import net.minecraft.tags.TagKey;
 public final class VanillaWetFireOracle {
     static MinecraftServer SERVER;
     static class Scene extends ServerLevel {
-        boolean water, rain;
+        boolean water, rain, lava, fire;
         int sounds;
         net.minecraft.world.level.chunk.ProtoChunk chunk;
         int next;
@@ -26,12 +26,17 @@ public final class VanillaWetFireOracle {
         @Override public RegistryAccess registryAccess() { return ParityData.access; }
         @Override public MinecraftServer getServer() { return SERVER; }
         @Override public boolean isClientSide() { return false; }
-        @Override public BlockState getBlockState(BlockPos p) { return water ? Blocks.WATER.defaultBlockState() : Blocks.AIR.defaultBlockState(); }
+        @Override public BlockState getBlockState(BlockPos p) { return water ? Blocks.WATER.defaultBlockState() : lava ? Blocks.LAVA.defaultBlockState() : fire ? Blocks.FIRE.defaultBlockState() : Blocks.AIR.defaultBlockState(); }
         @Override public FluidState getFluidState(BlockPos p) { return getBlockState(p).getFluidState(); }
         @Override public net.minecraft.world.level.chunk.ChunkAccess getChunk(int x,int z,net.minecraft.world.level.chunk.status.ChunkStatus status,boolean create) { return chunk; }
         @Override public boolean hasChunkAt(BlockPos p) { return true; }
         @Override public boolean hasChunk(int x, int z) { return true; }
         @Override public boolean isRainingAt(BlockPos p) { return rain; }
+        @Override public DamageSources damageSources() { return new DamageSources(ParityData.access); }
+        @Override public net.minecraft.world.attribute.EnvironmentAttributeSystem environmentAttributes() {
+            return net.minecraft.world.attribute.EnvironmentAttributeSystem.builder()
+                .addConstantLayer(net.minecraft.world.attribute.EnvironmentAttributes.FAST_LAVA, previous -> false).build();
+        }
         @Override public int getMinY() { return -64; }
         @Override public net.minecraft.world.Difficulty getDifficulty() { return net.minecraft.world.Difficulty.NORMAL; }
         @Override public java.util.List<Entity> getEntities(Entity except, AABB bounds, java.util.function.Predicate<? super Entity> predicate) { return List.of(); }
@@ -39,8 +44,8 @@ public final class VanillaWetFireOracle {
         @Override public void gameEvent(Holder<net.minecraft.world.level.gameevent.GameEvent> event, Vec3 pos, net.minecraft.world.level.gameevent.GameEvent.Context context) {}
         @Override public void broadcastEntityEvent(Entity entity, byte event) {}
         @Override public void broadcastDamageEvent(Entity entity, DamageSource source) {}
-        @Override public void playSound(Entity except, double x, double y, double z, SoundEvent sound, net.minecraft.sounds.SoundSource source, float volume, float pitch) { sounds++; }
-        @Override public void playSound(Entity except, double x, double y, double z, Holder<SoundEvent> sound, net.minecraft.sounds.SoundSource source, float volume, float pitch) { sounds++; }
+        @Override public void playSound(Entity except, double x, double y, double z, SoundEvent sound, net.minecraft.sounds.SoundSource source, float volume, float pitch) { if(sound == net.minecraft.sounds.SoundEvents.GENERIC_EXTINGUISH_FIRE) sounds++; }
+        @Override public void playSound(Entity except, double x, double y, double z, Holder<SoundEvent> sound, net.minecraft.sounds.SoundSource source, float volume, float pitch) { if(sound.value() == net.minecraft.sounds.SoundEvents.GENERIC_EXTINGUISH_FIRE) sounds++; }
     }
     static net.minecraft.world.entity.ai.navigation.PathNavigation NAV;
     static class Nav extends net.minecraft.world.entity.ai.navigation.GroundPathNavigation {
@@ -61,7 +66,7 @@ public final class VanillaWetFireOracle {
         @Override public void checkBelowWorld() {}
         @Override public void travel(Vec3 input) {}
         @Override protected void pushEntities() {}
-        @Override public boolean isInLava() { return false; }
+        @Override public boolean isInLava() { return scene.lava; }
         @Override public DamageSources damageSources() { return sources; }
         @Override public boolean hurtServer(ServerLevel level, DamageSource source, float amount) { damage += (int)amount; return super.hurtServer(level,source,amount); }
         @Override public void playSound(SoundEvent sound, float volume, float pitch) { sounds++; }
@@ -101,6 +106,21 @@ public final class VanillaWetFireOracle {
             var actor=new Actor(scene);actor.immune=true;actor.setPos(0.5,64,0.5);actor.setNoAi(noAi);actor.setRemainingFireTicks(20);actor.getRandom().setSeed(1);
             actor.tick();
             System.out.println("IMMUNE "+noAi+" "+wet+" health="+actor.getHealth()+" damage="+actor.damage+" fire="+actor.getRemainingFireTicks()+" sounds="+scene.sounds);
+        }
+        for(boolean noAi:new boolean[]{true,false}) {
+            for(String environment:new String[]{"lava_dry","lava_rain","fire_dry","fire_rain"}) for(int fire:new int[]{0,1,20}) {
+                scene.water=false;scene.rain=environment.endsWith("_rain");scene.lava=environment.startsWith("lava_");scene.fire=environment.startsWith("fire_");scene.sounds=0;
+                var actor=new Actor(scene);actor.setPos(0.5,64.2,0.5);actor.setNoAi(noAi);actor.setRemainingFireTicks(fire);actor.getRandom().setSeed(1);
+                actor.tick();
+                System.out.println("RESULT "+noAi+" "+environment+" "+fire+" health="+actor.getHealth()+" fire="+actor.getRemainingFireTicks()+" sounds="+scene.sounds);
+            }
+            scene.lava=true;scene.fire=false;scene.rain=true;scene.sounds=0;
+            var actor=new Actor(scene);actor.setPos(0.5,64.2,0.5);actor.setNoAi(noAi);actor.setRemainingFireTicks(0);actor.getRandom().setSeed(1);
+            for(int tick=0;tick<2;tick++) {
+                scene.sounds=0;actor.tick();
+                System.out.println("RESULT "+noAi+" lava_rain_repeat 0 health="+actor.getHealth()+" fire="+actor.getRemainingFireTicks()+" sounds="+scene.sounds);
+            }
+            scene.lava=false;scene.fire=false;
         }
     }
 }
