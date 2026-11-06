@@ -224,3 +224,5 @@ LingeringPotionItem.createPotion	port	crates/horizon-client/src/game/potions.rs:
 LingeringPotionItem.use	inline	crates/horizon-client/src/game/potions.rs::Game::use_potion_item	lingering potion throw
 NameTagItem.interactLivingEntity	port	crates/horizon-client/src/game/names.rs::Game::name_mob	a tag with a custom name names the mob under the crosshair, makes it persistent and is used up, in creative too
 PlaceOnWaterBlockItem.use	inline	crates/horizon-client/src/game/block_items.rs::Game::apply_placed_item	placed by generic block placement; the water rule is not checked here
+Pillager.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	modeled occupied Inventory list, including empty; inherited Raider fields separate
+Pillager.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	Inventory adoption into five-slot occupied-stack model; gap: aggregation and existing pickup-flag load remain separate

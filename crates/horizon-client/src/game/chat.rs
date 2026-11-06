@@ -541,6 +541,25 @@ impl Game<'_> {
         self.ui.registries.permission = level;
         out
     }
+    /// Active enchantment registry snapshot for command codecs and completions.
+    /// Replace both ID views; keep the existing registry tags intact.
+    pub(super) fn sync_enchantment_registries(&mut self) {
+        let mut ids: Vec<String> = self
+            .enchantments()
+            .list
+            .iter()
+            .map(|entry| entry.id.to_string())
+            .collect();
+        ids.sort();
+        ids.dedup();
+        self.ui.registries.enchantments = ids.clone();
+        self.ui
+            .registries
+            .by_registry
+            .entry("minecraft:enchantment".into())
+            .or_default()
+            .ids = ids;
+    }
     /// Registry contents for argument parsing (built when a world opens).
     pub(super) fn build_registries(&mut self) {
         let permission = owner_permission(self.allow_commands());
@@ -665,6 +684,7 @@ impl Game<'_> {
             .filter(|(_, m)| m.show)
             .map(|(k, _)| k.clone())
             .collect();
+        self.sync_enchantment_registries();
     }
     /// The block the player is looking at, for coordinate suggestions, and
     /// the entity, for entity arguments (ClientSuggestionProvider).
@@ -2065,5 +2085,132 @@ mod tests {
             |from: [f32; 4], button| focus_step_strict(from, button, &rects).map(|i| targets[i]);
         assert_eq!(step(field.rect, Button::DPadUp), Some(bed));
         assert_eq!(step(bed.rect, Button::DPadDown), Some(field));
+    }
+}
+
+#[cfg(test)]
+mod enchantment_snapshot_tests {
+    use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn synchronized_definitions_refresh_existing_enchantment_views() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+
+        let dir =
+            std::path::PathBuf::from(std::env::var_os("HORIZON_HOME").unwrap()).join("h024-model");
+        let pack = dir.join("datapacks/model");
+        let tags = pack.join("data/h024/tags/enchantment");
+        std::fs::create_dir_all(&tags).unwrap();
+        std::fs::write(pack.join("pack.mcmeta"), "{}").unwrap();
+        std::fs::write(tags.join("empty.json"), r#"{"values":[]}"#).unwrap();
+        std::fs::write(
+            dir.join("datapacks.json"),
+            r#"{"enabled":["file/model"],"disabled":[]}"#,
+        )
+        .unwrap();
+        game.world_root = dir;
+        game.world_tables = game.build_world_tables(false, &[]).unwrap().0;
+        assert!(
+            game.world_tables.is_some(),
+            "the real active table container must be available"
+        );
+        let base = game.stations().enchantments.clone();
+        assert!(base.get("minecraft:sharpness").is_some());
+        // Same definition independently admitted by fresh Java. This is controlled
+        // synchronized model input, NOT a world-pack or packet-delivery claim.
+        let definition = serde_json::json!({"description":"H024 audit","supported_items":"minecraft:diamond_sword",
+            "weight":1,"max_level":1,"min_cost":{"base":1,"per_level_above_first":0},
+            "max_cost":{"base":1,"per_level_above_first":0},"anvil_cost":1,"slots":["mainhand"],"effects":{}});
+        let synced = std::sync::Arc::new(base.with_entries([("h024:audit", &definition)]).unwrap());
+        game.world_tables.as_mut().unwrap().stations.enchantments = synced.clone();
+        game.world_tables.as_mut().unwrap().items.enchantments = synced;
+        assert!(
+            game.enchantments().get("h024:audit").is_some(),
+            "actual authority adopts the definition first"
+        );
+        let tags = vec!["h024:retained_tag".to_owned()];
+        game.ui
+            .registries
+            .by_registry
+            .entry("minecraft:enchantment".into())
+            .or_default()
+            .tags = tags.clone();
+        let item_ids = game.ui.registries.ids("minecraft:item").to_vec();
+        let effects = game.ui.registries.effects.clone();
+        game.sync_function_registries();
+        for phase in [0, 1] {
+            if phase == 1 {
+                game.build_registries();
+            }
+            let reg = &game.ui.registries;
+            assert!(
+                reg.ids("minecraft:enchantment")
+                    .contains(&"h024:audit".to_owned()),
+                "active custom ID reaches actual Game sync/build snapshot"
+            );
+            assert!(
+                reg.ids("minecraft:enchantment")
+                    .contains(&"minecraft:sharpness".to_owned())
+            );
+            assert!(
+                !reg.ids("minecraft:enchantment")
+                    .contains(&"h024:missing".to_owned())
+            );
+            assert_eq!(
+                reg.ids("minecraft:enchantment"),
+                reg.enchantments.as_slice()
+            );
+            assert_eq!(reg.by_registry["minecraft:enchantment"].tags, tags);
+            assert_eq!(reg.ids("minecraft:item"), item_ids);
+            assert_eq!(reg.effects, effects);
+        }
+        game.world_tables.as_mut().unwrap().stations.enchantments = base.clone();
+        game.world_tables.as_mut().unwrap().items.enchantments = base;
+        assert!(game.enchantments().get("h024:audit").is_none());
+        game.sync_function_registries();
+        assert!(
+            !game
+                .ui
+                .registries
+                .ids("minecraft:enchantment")
+                .contains(&"h024:audit".to_owned()),
+            "refresh replaces rather than accumulating stale IDs"
+        );
+        assert_eq!(
+            game.ui.registries.ids("minecraft:enchantment"),
+            game.ui.registries.enchantments.as_slice()
+        );
+        assert_eq!(
+            game.ui.registries.by_registry["minecraft:enchantment"].tags,
+            tags
+        );
     }
 }

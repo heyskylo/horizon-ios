@@ -1207,11 +1207,11 @@ impl Game<'_> {
     pub(super) fn draw_book(&self, batch: &mut HudBatch) {
         let Some(book) = &self.book else { return };
         let atlas = &self.gui.atlas;
-        let (w, h) = (batch.width, batch.height);
+        let w = batch.width;
         let (mx, my) = self.cursor;
         let hover =
             |x: f32, y: f32, bw: f32, bh: f32| mx >= x && my >= y && mx < x + bw && my < y + bh;
-        batch.fill(atlas, 0.0, 0.0, w, h, rgba(16, 16, 16, 160));
+        self.render_transparent_background("book", batch);
         let left = ((w - 192.0) / 2.0).floor();
         let top = 2.0;
         if let Some(mut r) = atlas.sprites.get("gui/book").copied() {
