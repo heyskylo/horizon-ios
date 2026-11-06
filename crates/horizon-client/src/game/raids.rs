@@ -1559,6 +1559,7 @@ impl Game<'_> {
                 uuid,
                 self.persist.raw.get(&m.id),
                 Some(self.pack.assets.registry),
+                |_| None,
             );
             Ok(json!({"uuid":uuid,"type":m.kind.id,"health":m.health,
                 "pos":[m.position.x,m.position.y,m.position.z],"noai":m.no_ai,
