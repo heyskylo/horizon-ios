@@ -2520,6 +2520,19 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   all dropped at them when they left), so no item is lost or made. It runs where the menu closed, so the hub may be
   out of the game's hands and a player's state swapped in: answer through `slots`. Bundles need
   `"hooks": @API:menu_input@`.
+- Helper `native_open_inventory_menu(viewer, rows, title, (target, kind), layout) -> Option<i32>`: another player's
+  inventory (`Player`, 41 slots in `native_inventory`'s numbering) or ender chest (`Ender`, 27) in a server menu, for
+  an operator's `/invsee` (Bukkit's `openInventory(target.getInventory())`). Menu slot `k` shows the target's slot
+  `layout[k]`; a `None` (or a slot past the layout) stays the mod's to show with `native_set_menu_items`, its clicks
+  heard by `native_menu_clicked`. Clicks on the shown slots move the target's own items by vanilla's click rules, as in
+  a chest (pickup, split, shift-click, number keys, drags, double-click, throw), so a split stack really splits; an
+  armour or off-hand slot takes any stack, as that Bukkit view does. A target on the server is read before each click
+  and each tick and changed in the same step, so their own screen follows with the tick's sync and nothing is copied
+  or lost; a target away is their file (`players/data/<uuid>.dat`), read again before each click and written after one
+  that changes it (a click whose write fails is taken back whole). The menu closes once the target leaves, dies or,
+  away, comes back. None for a viewer not here, the target being the viewer, logging in, dead or never seen here, a
+  layout longer than the rows' slots, a slot past the inventory or shown twice, and inside a player's turn. A mixin
+  helper, not on `Host` (it takes `NativeInventoryKind`). Bundles need `"hooks": @API:inventory_menu@`.
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a

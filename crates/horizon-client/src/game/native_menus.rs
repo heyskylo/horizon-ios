@@ -116,7 +116,7 @@ fn exchange(
 /// `native_menu_clicked` or `native_server_tick`).
 #[allow(dead_code)]
 impl Game<'_> {
-    fn native_conn(&self, uuid: u128) -> Option<u32> {
+    pub(super) fn native_conn(&self, uuid: u128) -> Option<u32> {
         let host = self.lan.as_ref()?;
         let g = host
             .hub

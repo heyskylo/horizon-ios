@@ -2595,6 +2595,8 @@ impl Game<'_> {
                 }
             }
             S::ContainerClick(p) => {
+                // A mod's menu on an away player's file: read before the click.
+                let away = self.away_menu_click_start(host, gi, p.container);
                 let rules = ItemRules(world_items!(self));
                 let slots = host.hub.guests[gi]
                     .menu
@@ -2603,6 +2605,10 @@ impl Game<'_> {
                     .map(|m| m.slots);
                 let before = slots.and_then(|s| s.read(&self.world, &host.hub.guests[gi]));
                 let drops = host.hub.container_click(conn, &p, &mut self.world, &rules);
+                let drops = match away {
+                    Some(click) => self.away_menu_click_end(host, gi, click, drops),
+                    None => drops,
+                };
                 // A click that changed the container's slots: BlockEntity.setChanged,
                 // so comparators read it again (a double chest's other half follows).
                 if let Some(Slots::Block(key) | Slots::Double(key, _)) = slots

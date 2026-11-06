@@ -2,7 +2,9 @@
 //! level events, animations and block containers with their clicks.
 use super::{
     hub::Hub,
-    menu::{self, Menu, NativeMenuEvent, NativeReturn, NativeStore, Rules, Slots, View},
+    menu::{
+        self, Menu, NativeMenuEvent, NativeOwner, NativeReturn, NativeStore, Rules, Slots, View,
+    },
 };
 use crate::{containers::BlockEntity, items::ItemStack, world::World};
 use horizon_core::random::RandomSource;
@@ -650,6 +652,12 @@ impl Hub {
                 self.resend_menu(conn, p.container, world);
                 return Vec::new();
             }
+            // Another player's inventory is read again first, so the click
+            // moves what is there now; a menu whose owner went closes.
+            if !self.refresh_native_store(i) {
+                self.close_container_at(i);
+                return Vec::new();
+            }
         }
         // A menu that is no longer valid takes no clicks.
         if let Some(m) = self.guests[i].menu.as_ref().filter(|_| in_menu)
@@ -713,6 +721,9 @@ impl Hub {
             }
         } else {
             self.guests[i].drag = drag;
+        }
+        if in_menu && source == Some(Slots::Native) {
+            self.store_native_click(i);
         }
         self.answer_click(i, p, world, &changed);
         drops
@@ -790,6 +801,79 @@ impl Hub {
             Some(c) => self.hashed_matches(c, &view(slot)),
             None => !changed.contains(&slot),
         })
+    }
+
+    /// The slots of guest `i`'s native menu that show another player's
+    /// inventory (`NativeStore::Inventory`) read it again: false when that
+    /// player is no longer on the server or is dead (`Online`), or is back
+    /// (`Away`: the game must stop writing their file), and the menu must
+    /// close. True for any other menu.
+    fn refresh_native_store(&mut self, i: usize) -> bool {
+        let updates: Vec<(usize, Option<ItemStack>)> = {
+            let Some(NativeStore::Inventory {
+                owner,
+                ender,
+                layout,
+            }) = &self.guests[i].native_store
+            else {
+                return true;
+            };
+            match *owner {
+                NativeOwner::Away(uuid) => return !self.guests.iter().any(|g| g.uuid == uuid),
+                NativeOwner::Online(conn) => {
+                    let Some(o) = self
+                        .guests
+                        .iter()
+                        .find(|o| o.conn == conn && o.placed && !o.dead)
+                    else {
+                        return false;
+                    };
+                    let slots = menu::owner_slots(o, *ender);
+                    layout
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(k, at)| Some((k, slots.get((*at)?)?.clone())))
+                        .collect()
+                }
+            }
+        };
+        let g = &mut self.guests[i];
+        for (k, stack) in updates {
+            if let Some(slot) = g.native_menu.get_mut(k) {
+                *slot = stack;
+            }
+        }
+        true
+    }
+
+    /// What a click left in the slots of guest `i`'s native menu that show
+    /// an online player's inventory goes back into it, in the same step.
+    fn store_native_click(&mut self, i: usize) {
+        let Some(NativeStore::Inventory {
+            owner: NativeOwner::Online(conn),
+            ender,
+            layout,
+        }) = &self.guests[i].native_store
+        else {
+            return;
+        };
+        let (conn, ender) = (*conn, *ender);
+        let menu_slots = &self.guests[i].native_menu;
+        let writes: Vec<(usize, Option<ItemStack>)> = layout
+            .iter()
+            .enumerate()
+            .filter_map(|(k, at)| Some(((*at)?, menu_slots.get(k)?.clone())))
+            .collect();
+        let Some(o) = self.guests.iter_mut().find(|o| o.conn == conn) else {
+            return;
+        };
+        let mut slots = menu::owner_slots(o, ender);
+        for (at, stack) in writes {
+            if let Some(s) = slots.get_mut(at) {
+                *s = stack;
+            }
+        }
+        menu::set_owner_slots(o, ender, slots);
     }
 
     /// After a click: tell the client about every slot it got wrong, or that
@@ -965,6 +1049,12 @@ impl Hub {
                 continue;
             };
             let (size, window, slots) = (menu.size, menu.window, menu.slots);
+            // A native menu showing another player's inventory follows it,
+            // and closes once its owner is gone, dead or back.
+            if slots == Slots::Native && !self.refresh_native_store(i) {
+                self.close_container_at(i);
+                continue;
+            }
             if !slots.valid(world) {
                 self.close_container_at(i);
                 continue;

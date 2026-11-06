@@ -92,6 +92,15 @@ pub enum NativeStore {
     /// them back; when the menu closes, what is left goes to the mods and then
     /// back to the player (`clearContainer`).
     Input(std::ops::Range<usize>),
+    /// The menu shows another player's inventory, live: menu slot `k` is
+    /// slot `layout[k]` of it (`owner_slots`' numbering; None, or past the
+    /// layout, the mod's to show), and a click moves the owner's own items.
+    Inventory {
+        owner: NativeOwner,
+        /// The ender chest's 27 slots, else the inventory's 41.
+        ender: bool,
+        layout: Vec<Option<usize>>,
+    },
 }
 
 impl NativeStore {
@@ -99,8 +108,52 @@ impl NativeStore {
     pub fn holds(&self, slot: usize) -> bool {
         match self {
             Self::Input(range) => range.contains(&slot),
+            Self::Inventory { layout, .. } => layout.get(slot).is_some_and(Option::is_some),
         }
     }
+}
+
+/// Whose inventory a native menu shows (`NativeStore::Inventory`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeOwner {
+    /// A player on the server, by connection: the hub reads their slots
+    /// before each click and sync, and writes a click's changes back.
+    Online(u32),
+    /// A player away, by UUID: the game reads and writes their file around
+    /// each click; the menu closes once they are back.
+    Away(u128),
+}
+
+/// A player's inventory as native mods number it (`native_inventory`): 41
+/// slots, 0..9 the hotbar, 9..36 the rest, 36..40 the armour (feet, legs,
+/// chest, head), 40 the off hand; or, `ender`, the ender chest's 27.
+pub fn owner_slots(g: &Guest, ender: bool) -> Vec<Option<ItemStack>> {
+    if ender {
+        let mut s = g.ender_items.clone();
+        s.resize(27, None);
+        return s;
+    }
+    let mut s = g.inventory.clone();
+    s.resize(36, None);
+    // `armor` is head first.
+    s.extend([3, 2, 1, 0].map(|i| g.armor[i].clone()));
+    s.push(g.offhand.clone());
+    s
+}
+
+/// Stores what `owner_slots` read, changed.
+pub fn set_owner_slots(g: &mut Guest, ender: bool, mut s: Vec<Option<ItemStack>>) {
+    if ender {
+        g.ender_items = s;
+        return;
+    }
+    s.resize(41, None);
+    g.offhand = s.pop().flatten();
+    for (k, i) in [3, 2, 1, 0].into_iter().enumerate() {
+        g.armor[i] = s[36 + k].take();
+    }
+    s.truncate(36);
+    g.inventory = s;
 }
 
 /// What the input slots of a native menu held as it closed, for the game to
@@ -1394,6 +1447,40 @@ mod tests {
         g.native_menu = vec![Some(ItemStack::new("minecraft:paper", 1))];
         assert_eq!(NativeReturn::take(&mut g, 8), None);
         assert!(g.native_menu.is_empty());
+    }
+
+    /// Another player's 41 slots read and stored back unchanged, and a
+    /// layout's gaps are the mod's to show.
+    #[test]
+    fn an_owners_slots_round_trip_and_a_layout_holds_only_its_slots() {
+        let mut g = guest();
+        g.inventory[0] = Some(ItemStack::new("minecraft:stone", 5));
+        g.armor[0] = Some(ItemStack::new("minecraft:iron_helmet", 1));
+        g.offhand = Some(ItemStack::new("minecraft:shield", 1));
+        let slots = owner_slots(&g, false);
+        assert_eq!(slots.len(), 41);
+        assert_eq!(slots[39], g.armor[0]);
+        assert_eq!(slots[40], g.offhand);
+        let mut moved = slots.clone();
+        moved.swap(0, 1);
+        set_owner_slots(&mut g, false, moved);
+        assert_eq!(g.inventory[0], None);
+        assert_eq!(g.inventory[1], Some(ItemStack::new("minecraft:stone", 5)));
+        assert_eq!(g.armor[0], Some(ItemStack::new("minecraft:iron_helmet", 1)));
+        assert_eq!(owner_slots(&g, true).len(), 27);
+        let store = NativeStore::Inventory {
+            owner: NativeOwner::Away(9),
+            ender: false,
+            layout: vec![Some(36), None, Some(0)],
+        };
+        assert_eq!(
+            (0..5).map(|k| store.holds(k)).collect::<Vec<_>>(),
+            [true, false, true, false, false]
+        );
+        // Its slots are the owner's: nothing comes back on closing.
+        g.native_store = Some(store);
+        g.native_menu = vec![Some(ItemStack::new("minecraft:stone", 5))];
+        assert_eq!(NativeReturn::take(&mut g, 3), None);
     }
 
     struct SwapRules;
