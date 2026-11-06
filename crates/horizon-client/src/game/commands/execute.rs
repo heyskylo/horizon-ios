@@ -946,16 +946,17 @@ impl Game<'_> {
         let (matched, count) = self.condition_matches(c)?;
         Ok((matched == want, count))
     }
-    /// `if function`/`unless function`: the source stays when a function
-    /// returns a non-zero (`if`) or zero (`unless`) value; one that does not
-    /// return leaves it out either way.
+    /// `FallthroughTask.execute`: a fallthrough supplies failure/zero to the
+    /// function-condition continuation. Preserve explicit-result decisions
+    /// and direct function callbacks.
     fn condition_function(&mut self, c: &Context, want: bool) -> R<(bool, i32)> {
         let Some(Arg::Resource(name)) = c.get("name").cloned() else {
             return Ok((false, 0));
         };
         let results = self.call_function_ref(&name, None)?;
         let keep = results.iter().any(|r| r.is_some_and(|v| (v != 0) == want));
-        Ok((keep, 0))
+        let fallthrough = !results.is_empty() && results.iter().all(Option::is_none);
+        Ok((keep || (!want && fallthrough), 0))
     }
     /// `ExecuteCommand.isChunkLoaded`: an entity-ticking loading status and
     /// completed entity loading, rather than merely a retained lit column.
