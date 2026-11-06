@@ -533,10 +533,12 @@ fn fetch_address(
 }
 
 /// `RealmsPdpScreen`'s list: the trial header (no picture) and the three features, each
-/// with its 80x45 picture and the text beside it.
+/// with its 80x45 picture and the text beside it. The header has no subtitle: Horizon does
+/// not ask `trialAvailabilityTask`, and vanilla shows the trial description only when a
+/// trial is available (its footer then offers the trial instead of Buy).
 fn pdp_entries() -> [(&'static str, &'static str, &'static [&'static str]); 4] {
     [
-        ("", "mco.pdp.trial.title", &["mco.pdp.trial.description"]),
+        ("", "mco.pdp.trial.title", &[]),
         (
             "gui/realms/friends",
             "mco.pdp.friends.title",
