@@ -2499,6 +2499,18 @@ parsing before (#10461).
   for a lookup, the login waits for it (a vanilla client gives up after 30 s of silence). Bundles need
   `"hooks": @API:player_profile@`.
 
+- Helpers **`native_set_profile_property(player, name, value)`** (`host.set_profile_property`) and
+  **`native_refresh_player(player)`** (`host.refresh_player`): a skin changed while the player is on (Paper's
+  `Player.setPlayerProfile`, then `hidePlayer`/`showPlayer`). The first sets the property `name` of an online player's
+  profile to `value` (its value and signature, None unsigned) or removes it with None; every player list entry of
+  theirs carries it from then on, but nothing is sent. False on a client and past `GameProfile`'s limits (64, 32767
+  and 1024 characters). Where the hub is out of reach (inside a player's own hook) the change applies at the tick's
+  end. The second shows the player again, at the end of their level's pass: everyone who sees them gets their list
+  entry anew and their entity again, and the player is respawned in place into the level they are in, all state kept,
+  so their own client draws the new skin too (a dead player only to the others). Both work from any server hook,
+  `native_server_tick` included; true does not mean the player was found. Bundles need
+  `"hooks": @API:profile_refresh@`.
+
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a

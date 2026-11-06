@@ -23,6 +23,8 @@ pub(super) const PER_TICK: u32 = 32;
 /// The messages waiting, and what each player used of this tick's allowance.
 #[derive(Default)]
 pub(super) struct NativeNet {
+    /// What the profile helpers left for the hub (`native_profiles`).
+    pub(super) profiles: super::native_profiles::PendingProfiles,
     from_players: Vec<(u128, Message)>,
     from_counts: HashMap<u128, u32>,
     to_players: Vec<(u128, Vec<u8>)>,
@@ -73,6 +75,7 @@ impl Game<'_> {
 
     /// What the mods sent this tick leaves; the tick's allowances start over.
     pub(super) fn flush_native_net(&mut self, host: &mut LanHost) {
+        self.flush_native_profiles(host);
         for (player, data) in std::mem::take(&mut self.native_net.to_players) {
             if let Some(g) = host
                 .hub
