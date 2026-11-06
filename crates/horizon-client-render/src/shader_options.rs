@@ -242,8 +242,13 @@ impl ShaderOptions {
         )
     }
 
+    /// Option `name`'s caption in the pack's words.
+    pub fn option_name(&self, name: &str) -> Text {
+        self.named(&format!("option.{name}"), name)
+    }
+
     /// The value of option `name` as the pack names it, yellow when it is not the default.
-    fn value_text(&self, name: &str) -> Text {
+    pub fn value_text(&self, name: &str) -> Text {
         let Some(option) = self.options.get(name) else {
             return Text::literal(String::new());
         };
