@@ -420,6 +420,16 @@ pub fn display_name(uuid: u128, name: &str) -> Tag {
     ])
 }
 
+/// `ChunkMap.getPlayerViewDistance`: `Mth.clamp(requested, 2, server)` (Java's max then min
+/// order also handles a management value below two without panicking when the bounds cross),
+/// under a native mod's limit for the player.
+fn guest_view(requested: i8, server: i32, limit: Option<i32>) -> i32 {
+    i32::from(requested)
+        .max(2)
+        .min(server)
+        .min(limit.unwrap_or(i32::MAX))
+}
+
 /// `LivingEntity.DATA_ARROW_COUNT_ID` (12) and `DATA_STINGER_COUNT_ID` (13):
 /// the counts of what is stuck in a player, 0 by default.
 fn stuck_meta(state: &mut EntityState, (arrows, stingers): (i32, i32)) {
@@ -795,16 +805,43 @@ impl Hub {
     /// (ChunkMap.getPlayerViewDistance).
     pub fn set_view_distance(&mut self, distance: i32) {
         self.config.view_distance = distance;
-        let distance = self.chunk_radius();
-        self.broadcast(&C::SetChunkCacheRadius(play::Distance { distance }));
+        for g in self.guests.iter().filter(|g| g.placed) {
+            let distance = self.told_radius(g);
+            g.send(&C::SetChunkCacheRadius(play::Distance { distance }));
+        }
         for g in &mut self.guests {
-            // Mth.clamp(requested, 2, serverViewDistance): Java's max then min order also
-            // handles a management value below two without panicking when the bounds cross.
-            g.view_distance = i32::from(g.info.view_distance)
-                .max(2)
-                .min(self.config.view_distance);
+            g.view_distance = guest_view(
+                g.info.view_distance,
+                self.config.view_distance,
+                g.view_limit,
+            );
             g.center = None;
         }
+    }
+    /// A native mod's view distance for one player (`native_set_player_view_distance`): `limit`
+    /// (2 to 32) caps what the player `uuid` is sent and tracks below the server's view distance,
+    /// None gives it the server's again. The player is told its radius and its chunks follow on
+    /// its next view update. False for no such player.
+    pub fn set_guest_view_limit(&mut self, uuid: u128, limit: Option<i32>) -> bool {
+        let Some(i) = self.guests.iter().position(|g| g.uuid == uuid) else {
+            return false;
+        };
+        let server = self.config.view_distance;
+        let g = &mut self.guests[i];
+        g.view_limit = limit.map(|l| l.clamp(2, 32));
+        g.view_distance = guest_view(g.info.view_distance, server, g.view_limit);
+        g.center = None;
+        let g = &self.guests[i];
+        if g.placed {
+            let distance = self.told_radius(g);
+            g.send(&C::SetChunkCacheRadius(play::Distance { distance }));
+        }
+        true
+    }
+    /// The radius `g` is told: the server's (`chunk_radius`), under its own limit.
+    fn told_radius(&self, g: &Guest) -> i32 {
+        let radius = self.chunk_radius();
+        g.view_limit.map_or(radius, |l| l.min(radius))
     }
     /// The radius the players are told (Login, SetChunkCacheRadius): with the far ring on, its
     /// `max_view_distance`, so that a client keeps and draws what it is sent past the view.
@@ -818,6 +855,7 @@ impl Hub {
         self.far.as_ref().map_or(g.view_distance, |far| {
             i32::from(g.info.view_distance)
                 .min(far.max)
+                .min(g.view_limit.unwrap_or(i32::MAX))
                 .max(g.view_distance)
         })
     }
@@ -3881,9 +3919,8 @@ impl Hub {
                     let old_language = g.info.language.clone();
                     // PlayerModelPart.HAT (bit 6): the tab list shows the hat layer.
                     let was_hat = g.info.model_customisation & 0x40 != 0;
-                    g.view_distance = i32::from(info.view_distance)
-                        .max(2)
-                        .min(self.config.view_distance);
+                    g.view_distance =
+                        guest_view(info.view_distance, self.config.view_distance, g.view_limit);
                     g.info = info;
                     if g.info.main_hand != old_main_hand {
                         events.push(HostEvent::MainHandChanged(conn, g.info.main_hand == 0));

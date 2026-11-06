@@ -1,0 +1,11 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "force_chunk_in", "target": "horizon_client::game::native_chunk_tickets::Game<'_>::native_force_chunk_in"}
+  ],
+  "rust_summary": "chunk tickets in a level nobody is in (`native_force_chunk_in`).",
+  "doc_summary": "`native_force_chunk_in(owner, dimension, chunk, hold)`, `native_force_chunk` for a named level, which opens and ticks a level not open yet, so a mod can pre-generate the Nether and the End with nobody there. Bundles need \"hooks\": @API:chunk_tickets_in_level@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_chunk_tickets.rs"
+  ]
+}

@@ -2600,6 +2600,43 @@ before (#10461).
   the whole `ItemStack` put in the slot (none for an emptied one), heard just before v1, which keeps its signature and
   firing point and hears nothing of a packet canceled here. The player's state is swapped in, as for v1.
 
+#### Server hooks for plugin ports: world
+
+Helpers for server mods that work on the levels as a whole (a pre-generator, a web map, a view distance tuner), on a
+server only.
+
+- **`native_force_chunk_in(owner, dimension, [x, z], hold)`** (`native_chunk_tickets.rs`): `native_force_chunk`
+  ([Chunk tickets](#chunk-tickets)) for the level `dimension` (`minecraft:the_nether`), whichever level is in place. A
+  level nobody is in, or one not open yet, opens at the next server tick and ticks while a ticket holds it, so a
+  pre-generator walks the Nether and the End from any server hook (a console command, `native_level_tick_pre` of the
+  Overworld) with nobody there. False for a dimension other than the Overworld, the Nether and the End. API
+  @API:chunk_tickets_in_level@.
+- **`native_world_border(dimension)`** (`native_world_border.rs`): the level's world border as the server enforces it,
+  `[min_x, min_z, max_x, max_z]` in blocks (the previous size while it moves), for a web map's border line or a
+  pre-generator's `worldborder` selection. Vanilla 26.3 keeps a border per level (`ServerLevel.getWorldBorder`, each
+  level's `data/minecraft/world_border.dat`, `/worldborder` changing the level it runs in); Horizon keeps one for every
+  level today, so the three levels answer the same bounds until that is fixed, and the helper then answers each level's
+  own. None for another dimension. API @API:world_border@.
+- **`native_set_player_view_distance(uuid, distance)`** (`native_view_distance.rs`): limits one player's view distance
+  to `distance` chunks (2 to 32), None gives it the server's again. The player's distance is the smallest of the
+  server's, what its client asked for and the limit; only that player is told its radius (`SetChunkCacheRadius`), and
+  from its next view update it is sent, keeps and tracks chunks and entities within it, the others as before. The
+  server still loads its own view distance round every player, so the limit can only lower a player's distance (raise
+  the server's and limit the others to give one player more). It lasts until the player leaves.
+  `native_player_view_distance(uuid)` is the distance the player has now. Both answer false/None for a player not online
+  and inside a guest's packet hook, where the hub is taken out: call them from a tick or console hook. API
+  @API:player_view_distance@.
+- **`native_chunk_snapshot(dimension, [x, z])`** (`native_chunk_snapshot.rs`): a `NativeChunkSnapshot` of a loaded
+  chunk of a level that is open (in place or with nobody in it), None for a chunk not loaded (nothing is loaded for
+  it). It shares the chunk's sections until the level changes them, so it is cheap to take on the server thread and
+  can be read later on another one. It reads `block_state(x, y, z)` (a `BlockStateId`, for `native_state_block` and the
+  state helpers), `surface(x, z)` (`WORLD_SURFACE`), `noise_biome(qx, qy, qz)` and `biome_cell(x, y, z)` (the quart
+  cell vanilla's fuzzy biome zoom reads for a block, which can lie in a neighbouring chunk), `height()` and
+  `has_ceiling()`, in the level's block coordinates; outside the chunk it answers None. To draw it:
+  `native_block_map_color(state)` is `(MapColor id, MapColor.col)`, `native_biome_name(biome)` the biome's name and
+  `native_biome_tint(biome, x, z)` its grass (with the dark forest and swamp modifiers), foliage, dry foliage and water
+  colours (`BiomeColors`, after `native_biome_colors`, not blended). API @API:chunk_snapshot@.
+
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a

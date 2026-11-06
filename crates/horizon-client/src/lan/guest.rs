@@ -115,6 +115,9 @@ pub struct Guest {
     pub brand: String,
     /// The chunk radius this client is sent.
     pub view_distance: i32,
+    /// A native mod's limit on `view_distance` for this player alone
+    /// (`native_set_player_view_distance`); None: the server's.
+    pub view_limit: Option<i32>,
     pub position: [f64; 3],
     pub previous_position: [f64; 3],
     pub yaw: f32,
@@ -433,6 +436,7 @@ impl Guest {
             sender: j.sender,
             latency: j.latency,
             view_distance: i32::from(j.info.view_distance).max(2).min(view_distance),
+            view_limit: None,
             info: j.info,
             brand: j.brand,
             position,
