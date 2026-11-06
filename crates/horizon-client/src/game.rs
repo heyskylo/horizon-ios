@@ -200,6 +200,8 @@ mod maps;
 mod memory;
 mod minecarts;
 mod mob_blocks;
+#[cfg(test)]
+mod mob_discard_tests;
 mod mob_gear;
 mod mob_index;
 mod mob_looting;

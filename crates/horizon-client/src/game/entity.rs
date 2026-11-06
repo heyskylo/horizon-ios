@@ -1018,8 +1018,10 @@ impl Entity for Mob {
     fn can_use_portal(&self, game: &Game<'_>) -> bool {
         game.mob_can_use_portal(self)
     }
+    /// `PersistentEntitySectionManager.Callback.onRemove`: discard stops
+    /// section enumeration immediately, before the entity list is swept.
     fn selector_target(&self) -> Option<Target> {
-        (self.death_time == 0).then_some(Target::Mob(self.id))
+        (!self.removed && self.death_time == 0).then_some(Target::Mob(self.id))
     }
     fn bounds(&self) -> Aabb {
         Mob::bounds(self)
