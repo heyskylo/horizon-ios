@@ -134,6 +134,115 @@ impl Game<'_> {
         }
     }
 
+    /// Seats the entity `entity` (a server player or a mob) on the vehicle `vehicle` (a boat, a
+    /// minecart or a mob), as `/ride <entity> mount <vehicle>` does (Bukkit's
+    /// `Entity.addPassenger`), with its checks: neither rides already, no loop, a free seat,
+    /// minecarts carry players only, and `native_entity_mount` may refuse. Both in the level in
+    /// place. Inside a player's hook only the acting player and mobs are reached. True when it
+    /// rides now; false otherwise and on a client. API @API:mount@.
+    pub(super) fn native_mount(&mut self, entity: u32, vehicle: u32) -> bool {
+        if !self.native_serves() {
+            return false;
+        }
+        let (Some(rider), Some(vehicle)) = (self.native_rider(entity), self.native_vehicle_target(vehicle))
+        else {
+            return false;
+        };
+        match rider {
+            Target::Guest(_) => self
+                .for_player(rider, |g| g.ride_mount(Target::Player, vehicle).is_ok())
+                .unwrap_or(false),
+            _ => self.ride_mount(rider, vehicle).is_ok(),
+        }
+    }
+
+    /// Takes the entity `entity` (a server player or a mob) off what it rides, as `/ride
+    /// <entity> dismount` does (Bukkit's `Entity.leaveVehicle`): it lands beside the vehicle,
+    /// and `native_entity_mount` may refuse. In the level in place; inside a player's hook only
+    /// the acting player and mobs are reached. True when it got off; false when it rode
+    /// nothing, was not reached, and on a client. API @API:mount@.
+    pub(super) fn native_dismount(&mut self, entity: u32) -> bool {
+        if !self.native_serves() {
+            return false;
+        }
+        match self.native_rider(entity) {
+            Some(rider @ (Target::Player | Target::Guest(_))) => {
+                self.for_player(rider, |g| {
+                    if g.riding.is_none() {
+                        return false;
+                    }
+                    g.stop_riding();
+                    g.riding.is_none()
+                })
+                .unwrap_or(false)
+            }
+            Some(Target::Mob(id)) => {
+                let rides = |g: &Self| g.mobs.iter().any(|m| m.id == id && m.extra.mount.is_some());
+                if !rides(self) {
+                    return false;
+                }
+                self.dismount_mob(id);
+                !rides(self)
+            }
+            _ => false,
+        }
+    }
+
+    /// Takes every rider off the vehicle `vehicle` (a boat, a minecart or a mob), as
+    /// `native_dismount` does each (Bukkit's `Entity.eject`): the server players and mobs on it.
+    /// In the level in place; inside a player's hook only the acting player and mobs are
+    /// reached. True when one got off; false otherwise and on a client. API @API:mount@.
+    pub(super) fn native_eject_passengers(&mut self, vehicle: u32) -> bool {
+        if !self.native_serves() || self.native_vehicle_target(vehicle).is_none() {
+            return false;
+        }
+        let mut riders: Vec<u32> = self
+            .mobs
+            .iter()
+            .filter(|m| m.extra.mount == Some(vehicle))
+            .map(|m| m.id)
+            .collect();
+        if self.lan_acting.is_some() && self.riding == Some(vehicle) {
+            riders.push(self.native_acting_entity());
+        }
+        if self.lan_acting.is_none()
+            && let Some(host) = &self.lan
+        {
+            riders.extend(
+                host.hub
+                    .guests
+                    .iter()
+                    .filter(|g| g.placed && g.vehicle == Some(vehicle))
+                    .map(|g| g.entity_id as u32),
+            );
+        }
+        let mut any = false;
+        for rider in riders {
+            any |= self.native_dismount(rider);
+        }
+        any
+    }
+
+    /// The rider an entity id names in the level in place: the acting player, a server player
+    /// out of their turn (only while nobody's is swapped in), or a living mob.
+    fn native_rider(&self, entity: u32) -> Option<Target> {
+        if self.lan_acting.is_some() && self.native_acting_entity() == entity {
+            return Some(Target::Player);
+        }
+        if self.lan_acting.is_none()
+            && let Some(host) = &self.lan
+            && let Some(g) = host.hub.guests.iter().find(|g| {
+                g.placed && !g.dead && g.entity_id as u32 == entity && g.dimension == self.dim.id()
+            })
+        {
+            return Some(Target::Guest(g.conn));
+        }
+        self.mobs
+            .iter()
+            .any(|m| m.id == entity && !m.removed && m.alive())
+            .then_some(Target::Mob(entity))
+    }
+
     /// The teleport of a server player while nobody's state is swapped in.
     fn native_teleport_now(
         &mut self,

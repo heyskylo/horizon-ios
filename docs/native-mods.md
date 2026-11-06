@@ -2526,6 +2526,14 @@ console (which waits for the next tick and does nothing inside a player's hook).
   (not checked against the blocks; a value that is not finite is ignored), as Bukkit's `VehicleMoveEvent` with
   `Vehicle.teleport`. Either way its riders' clients are told, and the next move is heard from there. Mods are asked in
   order and share `to` and `cancel`. Server-side. Bundles need `"hooks": @API:vehicle_moved_v2@`.
+- Helpers **`native_mount(entity, vehicle)`**, **`native_dismount(entity)`** and **`native_eject_passengers(vehicle)`**
+  (`host.mount`, `host.dismount`, `host.eject_passengers`), by entity id in the level in place: seat a server player or
+  a mob on a boat, minecart or mob, as `/ride <entity> mount <vehicle>` does with its checks (neither rides already, no
+  loop, a free seat, minecarts carry players only); take one off what it rides, as `/ride <entity> dismount`, landing
+  beside the vehicle; or take every server player and mob off a vehicle (Bukkit's `addPassenger`, `leaveVehicle`,
+  `eject`). `native_entity_mount` may refuse each. Inside a player's hook only the acting player and mobs are reached.
+  True when it rides, got off, or one got off; false otherwise and on a client. Server-side. Bundles need
+  `"hooks": @API:mount@`.
 
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
