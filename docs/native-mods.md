@@ -2484,6 +2484,19 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
 - **`native_player_jump(player, name)`**: accepted guest movement made the server player jump from the ground, after movement simulation finishes. The guest's state is swapped in.
 - **`native_player_kicked(player, name, reason)`**: a guest was kicked after the hub recorded the rendered disconnect reason and sent the disconnect. The guest's state is swapped in, unless the guest was already removed in the same poll (a kick and the disconnect arriving together): the hook still fires, without it.
 - **`native_player_level_change(player, name, from, to)`**: a server player's experience change altered their level, after the new level was applied. The guest's state is swapped in when the player is a guest.
+#### Server hooks for plugin ports: player state
+
+Helpers that read a player's state and write it back, what a mod keeping players in step across servers (a HuskSync
+port) needs. They reach the server's own players, as `native_server_players` lists them: inside a player's turn (their
+hook, their command) only that player, outside one (`native_server_tick`, `native_menu_clicked`) everyone on. A write
+goes through the player's turn as `/effect` and `/attribute` do, and their client follows with the tick's sync. Nothing
+calls them without a mod.
+
+- Helper **`native_player_compound(uuid)`**: the player's compound as the server would save it now
+  (`players/data/<uuid>.dat`, vanilla's `ServerPlayer.saveWithoutId`), with every key Horizon keeps without modelling
+  it. None inside a player's turn (their live state is out of their record) and for a player not on.
+  Bundles need `"hooks": @API:player_compound@`.
+
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a
