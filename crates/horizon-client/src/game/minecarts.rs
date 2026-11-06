@@ -1762,6 +1762,7 @@ impl Game<'_> {
                 continue;
             };
             let (pos, prev) = (self.carts[i].position, self.carts[i].previous);
+            let cart_box = self.carts[i].bounds();
             let seats: Vec<(usize, f64)> = js
                 .iter()
                 // Minecart's box is 0.98 wide.
@@ -1769,6 +1770,7 @@ impl Game<'_> {
                 .collect();
             for (j, offset) in seats {
                 let m = &mut self.mobs[j];
+                m.seated(id, offset, cart_box);
                 m.position = cart_seat(pos, offset);
                 m.previous = cart_seat(prev, offset);
                 m.velocity = Vec3::ZERO;
@@ -2166,12 +2168,7 @@ impl Game<'_> {
                 let id = self.carts[i].id;
                 // isVehicle: a mob already sits in it.
                 let has_mob = self.mobs.iter().any(|m| m.extra.mount == Some(id));
-                if sneaking
-                    || self.riding.is_some()
-                    || !self.may_board()
-                    || self.ridden_by_guest(id)
-                    || has_mob
-                {
+                if sneaking || self.riding.is_some() || self.ridden_by_guest(id) || has_mob {
                     return false;
                 }
                 if !self.native_may_board(id) {
@@ -2360,8 +2357,14 @@ impl Game<'_> {
     pub(super) fn hurt_cart(&mut self, i: usize, damage: f32, creative: bool, fire: bool) {
         self.hurt_cart_result(i, damage, creative, fire);
     }
-    /// Whether hurtServer accepted this hit; removal is still a successful hurt.
-    fn hurt_cart_result(&mut self, i: usize, mut damage: f32, creative: bool, fire: bool) -> bool {
+    /// Accepted damage is distinct from survival, destruction, or TNT priming.
+    pub(super) fn hurt_cart_result(
+        &mut self,
+        i: usize,
+        mut damage: f32,
+        creative: bool,
+        fire: bool,
+    ) -> bool {
         let kind = self.carts[i].kind.id();
         let mut cancel = false;
         self.native_vehicle_damage(kind, &mut damage, &mut cancel);

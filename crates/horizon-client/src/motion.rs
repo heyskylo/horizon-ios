@@ -3021,19 +3021,23 @@ fn fly_into_wall_damage(before: f64, after: f64) -> f32 {
 /// `Entity.getBlockSpeedFactor` for a kind that keeps no motion world of its
 /// own (mobs, boats): the factor of the block at `position`, else of the one
 /// below it, through the same port the player's move uses.
+struct MovementBlocks<'a>(&'a World);
+impl MovementBlockProvider for MovementBlocks<'_> {
+    type Error = std::convert::Infallible;
+    fn movement_block_state(
+        &mut self,
+        p: BlockPos,
+    ) -> std::result::Result<BlockStateId, Self::Error> {
+        Ok(self.0.block(p.x, p.y, p.z))
+    }
+}
+
 pub fn block_speed_factor_at(
     world: &World,
     properties: &BoundMovementProperties,
     position: Vec3,
     supporting_block: Option<BlockPos>,
 ) -> f32 {
-    struct Blocks<'a>(&'a World);
-    impl MovementBlockProvider for Blocks<'_> {
-        type Error = ();
-        fn movement_block_state(&mut self, p: BlockPos) -> std::result::Result<BlockStateId, ()> {
-            Ok(self.0.block(p.x, p.y, p.z))
-        }
-    }
     let location = movement_support::MovementLocation {
         position,
         block_position: BlockPos::new(
@@ -3043,7 +3047,7 @@ pub fn block_speed_factor_at(
         ),
         supporting_block,
     };
-    let mut view = Blocks(world);
+    let mut view = MovementBlocks(world);
     movement_support::block_speed_factor(
         &mut RegistryMovementWorld {
             properties,
@@ -3052,6 +3056,25 @@ pub fn block_speed_factor_at(
         location,
     )
     .unwrap_or(1.0)
+}
+
+/// `Entity.getOnPosLegacy` with the world's bound fence and wall tags.
+pub(crate) fn legacy_block_support_at(
+    world: &World,
+    properties: &BoundMovementProperties,
+    position: Vec3,
+    supporting_block: Option<BlockPos>,
+) -> BlockPos {
+    movement_support::support_position(
+        &mut RegistryMovementWorld {
+            properties,
+            world: &mut MovementBlocks(world),
+        },
+        position,
+        supporting_block,
+        movement_support::LEGACY_SUPPORT_OFFSET,
+    )
+    .expect("loaded world block reads are infallible")
 }
 
 #[cfg(test)]
