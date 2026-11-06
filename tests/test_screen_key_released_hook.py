@@ -47,7 +47,7 @@ struct Settings { keys: Bindings }
 struct Game { keys: HashSet<i32>, settings: Settings, screen: bool, title: Option<()>, modifiers: u32,
     open: bool, cancel: bool, calls: Cell<usize>, handled: usize, released: Vec<(bool, i32)> }
 impl Game {
-    fn dialog_open(&self) -> bool { false }
+    fn screen_over_playing(&self) -> bool { false }
     fn screen_view_now(&self) -> Option<&'static str> { self.open.then_some("options") }
     fn native_screen_key_released_pre(&self, screen: &&str, name: &str, modifiers: u32, canceled: &mut bool) {
         assert_eq!((*screen, name, modifiers), ("options", "key.keyboard.a", 5));

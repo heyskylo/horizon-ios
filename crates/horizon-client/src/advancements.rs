@@ -656,12 +656,19 @@ pub struct EntityView {
     pub variant: Option<String>,
     /// The data components the entity reports (`Entity.get`): id and value.
     pub components: Vec<(String, String)>,
+    /// `Entity.get(CUSTOM_NAME)`: the live Text component, preserving styles
+    /// and siblings rather than treating its contents as a registry id.
+    pub custom_name: Option<Value>,
     /// The entity as saved (`NbtPredicate.getEntityTagToCompare`), for
     /// `minecraft:nbt`; built only when a criterion may ask (`Tree::tests_nbt`).
     pub nbt: Option<horizon_world::nbt::Tag>,
     /// `Entity.getTeam().getName()` (a tamed pet answers its owner's team);
     /// `None` without a team or where the identity is not bound.
     pub team: Option<String>,
+    /// Existing objective scores for the bound command source holder. `None`
+    /// means this context did not bind a scoreboard holder; an empty map is a
+    /// real holder without scores. Named predicates snapshot current values.
+    pub scores: Option<BTreeMap<String, i32>>,
 }
 /// What `PlayerPredicate` reads of a player beyond its entity. Each part is
 /// filled only when a criterion may ask for it (`Tree::player_facts_asked`);
@@ -931,12 +938,20 @@ pub fn location(v: &Value, p: [f64; 3], w: &dyn World) -> bool {
 }
 /// `DataComponentExactPredicate.test` on an entity: every expected
 /// component equals what the entity reports (absent ones never match).
-fn components(expected: &Value, have: &[(String, String)]) -> bool {
+fn components(expected: &Value, entity: &EntityView) -> bool {
     expected.as_object().is_some_and(|o| {
         o.iter().all(|(id, want)| {
             let id = full(id);
+            if id == "minecraft:custom_name" {
+                return entity.custom_name.as_ref().is_some_and(|have| {
+                    crate::scoreboard::canonical_component(have)
+                        == crate::scoreboard::canonical_component(want)
+                });
+            }
             want.as_str().is_some_and(|want| {
-                have.iter()
+                entity
+                    .components
+                    .iter()
                     .any(|(k, v)| full(k) == id && full(v) == full(want))
             })
         })
@@ -1043,7 +1058,7 @@ pub fn entity(v: &Value, e: &EntityView, w: &dyn World, origin: [f64; 3]) -> boo
             "minecraft:type_specific/fishing_hook" => p["in_open_water"]
                 .as_bool()
                 .is_none_or(|want| e.fishing_open_water == Some(want)),
-            "minecraft:components" => components(p, &e.components),
+            "minecraft:components" => components(p, e),
             // `TeamPredicate.matches`: a non-null effective team whose name
             // equals the string exactly.
             "minecraft:team" => {
@@ -1343,6 +1358,30 @@ pub fn conditions(v: &Value, ctx: &Entities, w: &dyn World) -> bool {
                 .and_then(Value::as_str)
                 .unwrap_or("");
             match &*full(ty) {
+                // EntityHasScoreCondition.test/hasScore: missing objective or
+                // score fails; this bounded path supports constant integer ranges.
+                "minecraft:entity_scores" if v["entity"].as_str() == Some("this") => {
+                    let scores = ctx.this.and_then(|e| e.scores.as_ref());
+                    v["scores"].as_object().is_some_and(|tests| {
+                        scores.is_some_and(|scores| {
+                            tests.iter().all(|(objective, range)| {
+                                // Do not treat unsupported number providers as
+                                // absent min/max bounds in the shared range helper.
+                                let numeric = range.as_i64().is_some()
+                                    || range.as_object().is_some_and(|bounds| {
+                                        bounds.iter().all(|(key, value)| {
+                                            matches!(key.as_str(), "min" | "max")
+                                                && value.as_i64().is_some()
+                                        })
+                                    });
+                                numeric
+                                    && scores
+                                        .get(objective)
+                                        .is_some_and(|score| range_i(range, i64::from(*score)))
+                            })
+                        })
+                    })
+                }
                 "minecraft:entity_properties" => ctx
                     .this
                     .is_some_and(|e| entity(&v["predicate"], e, w, ctx.origin)),
