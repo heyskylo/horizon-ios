@@ -6523,6 +6523,35 @@ impl Game<'_> {
     ) {
         mod_api::dispatch_player_level_change(self, mod_api::mods(), player, name, from, to);
     }
+    /// Whether a player has the permission node `node` (`essentials.tpa`,
+    /// `minecraft.command.gamemode`), as Bukkit's `Permissible.hasPermission`
+    /// and NeoForge's `PermissionAPI.getPermission` ask it: a permissions mod
+    /// sets `result`, and the first mod that sets it decides. Left None, the
+    /// answer is the player's operator level against `default_level`
+    /// (`ops.json`; 0 lets everyone). `native_has_permission` asks it, for
+    /// every mod and for the server's own checks of nodes (a mod command's
+    /// `NativeCommand::permission`), so one mod answers for all of them. It
+    /// is asked through `&self`: a provider reads what it knows and changes
+    /// nothing. `player` may be on the server, joining, or unknown to it; it
+    /// is often asked with the hub out of reach, so answer from the mod's own
+    /// data. Calling `native_has_permission` from inside it asks again.
+    /// Server-side. API @API:permission_check@.
+    pub(super) fn native_permission_check(
+        &self,
+        player: u128,
+        node: &str,
+        default_level: u8,
+        result: &mut Option<bool>,
+    ) {
+        mod_api::dispatch_permission_check(
+            self,
+            mod_api::mods(),
+            player,
+            node,
+            default_level,
+            result,
+        );
+    }
     /// A click in a menu a mod opened (`native_open_menu`), which moved
     /// nothing: the menu's `slot` (its own first, then the player's
     /// inventory, `native_menu_inventory_slot`; -999 outside), the `button`

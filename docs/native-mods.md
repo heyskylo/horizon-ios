@@ -2498,6 +2498,22 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
 - **`native_player_jump(player, name)`**: accepted guest movement made the server player jump from the ground, after movement simulation finishes. The guest's state is swapped in.
 - **`native_player_kicked(player, name, reason)`**: a guest was kicked after the hub recorded the rendered disconnect reason and sent the disconnect. The guest's state is swapped in, unless the guest was already removed in the same poll (a kick and the disconnect arriving together): the hook still fires, without it.
 - **`native_player_level_change(player, name, from, to)`**: a server player's experience change altered their level, after the new level was applied. The guest's state is swapped in when the player is a guest.
+#### Server hooks for plugin ports: permission nodes
+
+Permission nodes beyond operator levels: a permissions mod (a LuckPerms port) answers, every other mod and the
+server's command tree ask. Without such a mod every answer is the operator level, as before.
+
+- **`native_permission_check(player, node, default_level, result)`**: whether a player has the permission node `node`
+  (`essentials.tpa`, `minecraft.command.gamemode`), as Bukkit's `Permissible.hasPermission` and NeoForge's
+  `PermissionAPI.getPermission` ask it. A permissions mod sets `result`; the first mod that sets it decides. Left None,
+  the answer is the player's operator level against `default_level` (0 lets everyone). It is asked through `&self`
+  (a provider reads what it knows) and often with the hub out of reach, for players on the server, joining or unknown
+  to it, so answer from the mod's own data. Server-side. Bundles need `"hooks": @API:permission_check@`.
+- Helper **`native_has_permission(player, node, default_level)`** (`host.has_permission`): asks
+  `native_permission_check`, and when no mod answers, whether the player's operator level is `default_level` or above.
+  The level is the server's for a player who is on or joining, the acting player's inside their hook; anyone else, and
+  every player on a client, counts as level 0. Bundles need `"hooks": @API:permission_check@`.
+
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a
