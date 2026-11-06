@@ -656,6 +656,9 @@ pub struct EntityView {
     pub variant: Option<String>,
     /// The data components the entity reports (`Entity.get`): id and value.
     pub components: Vec<(String, String)>,
+    /// `Entity.get(CUSTOM_NAME)`: the live Text component, preserving styles
+    /// and siblings rather than treating its contents as a registry id.
+    pub custom_name: Option<Value>,
     /// The entity as saved (`NbtPredicate.getEntityTagToCompare`), for
     /// `minecraft:nbt`; built only when a criterion may ask (`Tree::tests_nbt`).
     pub nbt: Option<horizon_world::nbt::Tag>,
@@ -931,12 +934,20 @@ pub fn location(v: &Value, p: [f64; 3], w: &dyn World) -> bool {
 }
 /// `DataComponentExactPredicate.test` on an entity: every expected
 /// component equals what the entity reports (absent ones never match).
-fn components(expected: &Value, have: &[(String, String)]) -> bool {
+fn components(expected: &Value, entity: &EntityView) -> bool {
     expected.as_object().is_some_and(|o| {
         o.iter().all(|(id, want)| {
             let id = full(id);
+            if id == "minecraft:custom_name" {
+                return entity.custom_name.as_ref().is_some_and(|have| {
+                    crate::scoreboard::canonical_component(have)
+                        == crate::scoreboard::canonical_component(want)
+                });
+            }
             want.as_str().is_some_and(|want| {
-                have.iter()
+                entity
+                    .components
+                    .iter()
                     .any(|(k, v)| full(k) == id && full(v) == full(want))
             })
         })
@@ -1043,7 +1054,7 @@ pub fn entity(v: &Value, e: &EntityView, w: &dyn World, origin: [f64; 3]) -> boo
             "minecraft:type_specific/fishing_hook" => p["in_open_water"]
                 .as_bool()
                 .is_none_or(|want| e.fishing_open_water == Some(want)),
-            "minecraft:components" => components(p, &e.components),
+            "minecraft:components" => components(p, e),
             // `TeamPredicate.matches`: a non-null effective team whose name
             // equals the string exactly.
             "minecraft:team" => {
