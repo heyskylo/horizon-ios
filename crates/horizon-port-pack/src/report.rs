@@ -68,6 +68,10 @@ pub struct Row {
     /// Unported dependencies, kept apart so the launcher can translate the fixed sentence.
     #[serde(default)]
     pub waiting: usize,
+    /// Made for 1.20 or older (data folders named as before 1.21): not carried, and not one
+    /// Port can carry over either.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub old_layout: bool,
 }
 
 impl Row {
@@ -194,6 +198,14 @@ fn plain_not_needed(class: &str) -> &'static str {
     }
 }
 
+/// Whether the carry found the mod made for 1.20 or older ([`crate::carry::old_layout`]).
+fn old_layout(work: &Path, key: &str) -> bool {
+    std::fs::read(work.join("mods").join(key).join("carry-report.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        .is_some_and(|c| c["old_layout"] == true)
+}
+
 /// A carried-over mod: ported when its harness passes with nothing left
 /// out and nothing the templates miss; else partial, with what is missing.
 fn carried(work: &Path, key: &str) -> Option<(Status, String)> {
@@ -304,6 +316,7 @@ fn resource_row(path: &str, outcome: Option<&Outcome>, record: Option<&Record>) 
             Status::NotYet
         },
         waiting: 0,
+        old_layout: false,
         plain: match (shader, outcome.map(|o| o.state)) {
             (true, _) => "Shader packs are not converted yet.",
             (false, Some(State::Available)) => "Copied as a resource pack; Horizon has not checked how it renders. Turn it on in the game's Resource Packs screen.",
@@ -332,12 +345,18 @@ pub fn build(records: &[Record], work: &Path) -> Vec<Row> {
             if r.path.starts_with("resourcepacks/") || r.path.starts_with("shaderpacks/") {
                 return resource_row(&r.path, resourcepacks.files.get(&r.path), Some(r));
             }
+            let old = old_layout(work, &r.key);
             let (status, reason) = if r.class == "unknown" {
                 let why =
                     "unclassified: its jar (mods.toml, file census) or a reviewed row decides";
                 (Status::NotYet, why.to_owned())
             } else if r.tier == "none" || matches!(r.class.as_str(), "library" | "performance") {
                 (Status::NotNeeded, not_needed(&r.class).to_owned())
+            } else if old {
+                let why = "made for Minecraft 1.20 or older: its data folders (recipes/, \
+                           loot_tables/, tags/blocks/...) are named as before 1.21, which 26.3 \
+                           does not read; not carried";
+                (Status::NotYet, why.to_owned())
             } else if let Some(c) = carried(work, &r.key) {
                 c
             } else {
@@ -360,7 +379,9 @@ pub fn build(records: &[Record], work: &Path) -> Vec<Row> {
                 status,
                 reason,
                 waiting: 0,
+                old_layout: old,
                 plain: match status {
+                    Status::NotYet if old => crate::carry::OLD_LAYOUT,
                     Status::NotYet => plain_not_yet(r),
                     Status::NotNeeded => plain_not_needed(&r.class),
                     carried => carried.meaning(),
@@ -422,6 +443,8 @@ pub fn summary(rows: &[Row]) -> Summary {
             Status::NotNeeded => continue,
             Status::Ported => s.carried += 1,
             Status::Partial => (s.carried, s.partial) = (s.carried + 1, s.partial + 1),
+            // Not one port can carry over: the 1.20 data would not load.
+            Status::NotYet if r.old_layout => s.later += 1,
             Status::NotYet if r.class == "content" && r.tier == "data" => s.ready += 1,
             Status::NotYet
                 if r.class != "unknown"

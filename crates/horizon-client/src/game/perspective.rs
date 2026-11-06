@@ -227,6 +227,20 @@ enum RiddenBody {
     Living(f32),
 }
 
+/// Whether a shadow pass that draws the player (`shadow_draws_player`: shadowPlayer, or a
+/// native pack's shadow) takes the player's own model in first person. A shader pack's shadow
+/// pass does, except for a spectator: in our probe packs' readings of Iris 1.11.7's shadow map
+/// in spectator mode, the texels at the first-person camera hold the terrain below it, where
+/// Horizon drew the spectator's model (vanilla's `PlayerModel` hides a spectator's body:
+/// `showBody = !state.isSpectator`). A native pack's shadow keeps it.
+fn shadow_pass_takes_own_model(
+    shadow_draws_player: bool,
+    shader_pack: bool,
+    spectator: bool,
+) -> bool {
+    shadow_draws_player && !(shader_pack && spectator)
+}
+
 /// `LivingEntityRenderer.solveBodyRot` for the rider of a living vehicle: the
 /// body faces the vehicle's body, the head turning at most 85 degrees from it,
 /// and past 50 degrees the body turns a fifth of the head's offset along.
@@ -654,8 +668,12 @@ impl Game<'_> {
     /// Whether the player's own model shows in the world view (its body or,
     /// while invisible, only its armour and held items).
     pub(super) fn player_model_shown(&self) -> bool {
-        // A shader pack's shadow pass draws the player in first person too (shadowPlayer).
-        (self.own_body_in_view() || self.pack_shadow_casters.1)
+        (self.own_body_in_view()
+            || shadow_pass_takes_own_model(
+                self.pack_shadow_casters.1,
+                self.pack_ids.is_some(),
+                self.spectator(),
+            ))
             && self
                 .player
                 .as_ref()
@@ -1390,6 +1408,17 @@ fn player_walk_distance(from: Vec3, to: Vec3) -> f32 {
 #[cfg(test)]
 mod preview_tests {
     use super::*;
+    #[test]
+    fn a_spectators_own_model_stays_out_of_a_shader_packs_shadow_pass() {
+        // First person, a shader pack whose shadow pass draws the player: a spectator's head
+        // isn't in Iris's map (#8464); the other game modes keep the model, as before.
+        assert!(!shadow_pass_takes_own_model(true, true, true));
+        assert!(shadow_pass_takes_own_model(true, true, false));
+        // A native pack's shadow keeps the first-person model, a spectator's too.
+        assert!(shadow_pass_takes_own_model(true, false, true));
+        // No shadow pass that draws the player: nothing to take.
+        assert!(!shadow_pass_takes_own_model(false, true, false));
+    }
     #[test]
     fn the_player_model_rises_with_the_camera_at_levitation_255() {
         // LivingEntity.travel at Levitation 255: 0.05 * 255 blocks a tick.
