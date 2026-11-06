@@ -221,6 +221,7 @@ pub mod native_client_services;
 mod native_components;
 mod native_configs;
 mod native_criteria;
+mod native_damage;
 mod native_data_maps;
 mod native_entities;
 mod native_entity_data;

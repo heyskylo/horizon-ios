@@ -6633,6 +6633,43 @@ impl Game<'_> {
             face,
         );
     }
+    /// `native_living_incoming_damage` with who the hit names (NeoForge's
+    /// `LivingIncomingDamageEvent`, Bukkit's `EntityDamageEvent` and `EntityDamageByEntityEvent`):
+    /// `LivingEntity.hurtServer`, past its guards, is about to hurt `victim` (its entity id) of
+    /// type `kind` by `amount` of `damage_type`. `victim_uuid` is a player victim's UUID (a mob's
+    /// is none: look it up by id). `attacker` is the causing entity (`DamageSource.getEntity`),
+    /// where v1 leaves 0: the mob of a mob's melee, the player of a player's melee or of the
+    /// synchronous attack in progress; `attacker_uuid` is a player attacker's UUID; `direct` is the
+    /// direct entity (`getDirectEntity`, the arrow) when known. Each is none when Horizon does not
+    /// know it, and an attacker that is the victim itself is none. Fires everywhere v1 fires,
+    /// right after it with the amount v1 left: change `amount` or set `cancel`, which does what a
+    /// v1 cancel does; a hit v1 canceled is not asked here. A player is named once they acted on
+    /// the server (their first turn). No `self`, like v1: the game is in the middle of the hit.
+    /// It runs on the server thread. @API:living_incoming_damage_v3@.
+    pub(super) fn native_living_incoming_damage_v3(
+        victim: u32,
+        victim_uuid: Option<u128>,
+        kind: &str,
+        attacker: Option<u32>,
+        attacker_uuid: Option<u128>,
+        direct: Option<u32>,
+        damage_type: &str,
+        amount: &mut f32,
+        cancel: &mut bool,
+    ) {
+        mod_api::dispatch_living_incoming_damage_v3(
+            mod_api::mods(),
+            victim,
+            victim_uuid,
+            kind,
+            attacker,
+            attacker_uuid,
+            direct,
+            damage_type,
+            amount,
+            cancel,
+        );
+    }
     /// A click in a menu a mod opened (`native_open_menu`), which moved
     /// nothing: the menu's `slot` (its own first, then the player's
     /// inventory, `native_menu_inventory_slot`; -999 outside), the `button`
@@ -8338,6 +8375,12 @@ pub(super) fn block_contact(
 /// `native_living_incoming_damage` for the damage code (`health::HURT_SERVER`): whether
 /// it canceled the hit. Its one caller.
 pub(super) fn hurt_server(hurting: Hurting<'_>, amount: &mut f32) -> bool {
+    // Who the hit names, for v3: only while a native mod listens.
+    let parties = if mod_api::mods().is_empty() {
+        None
+    } else {
+        Some(super::native_damage::parties(&hurting))
+    };
     let (entity, kind, source) = hurt_server_args(hurting);
     let HurtSource {
         damage_type,
@@ -8354,6 +8397,19 @@ pub(super) fn hurt_server(hurting: Hurting<'_>, amount: &mut f32) -> bool {
         amount,
         &mut canceled,
     );
+    if let Some(parties) = parties {
+        Game::native_living_incoming_damage_v3(
+            entity as u32,
+            parties.victim_uuid,
+            kind,
+            parties.attacker,
+            parties.attacker_uuid,
+            parties.direct,
+            damage_type,
+            amount,
+            &mut canceled,
+        );
+    }
     canceled
 }
 /// `native_living_incoming_damage`'s entity, entity type and source for a hit.

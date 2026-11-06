@@ -2487,6 +2487,20 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
 
 #### Server hooks for plugin ports: damage, hands, fishing and redstone
 
+`native_living_incoming_damage_v3(victim, victim_uuid, kind, attacker, attacker_uuid, direct, damage_type, amount,
+cancel)` is `native_living_incoming_damage` with who the hit names (NeoForge's `LivingIncomingDamageEvent`, Bukkit's
+`EntityDamageEvent`). It fires everywhere v1 fires (players, mobs and the dragon; melee, projectiles, the environment),
+right after v1 with the amount v1 left: change `amount` or set `cancel`, which does what a v1 cancel does; a hit v1
+canceled is not asked. `victim_uuid` is a player victim's UUID (a player is known from their first turn on the server;
+a mob's UUID is looked up by its id). `attacker` is the causing entity where v1 has 0 for it: a mob's melee names the
+mob, a player's melee the player, and a source naming no entity falls back to the synchronous attack in progress, as
+`native_living_knockback_v2` does; `attacker_uuid` is a player attacker's UUID and `direct` the direct entity (the
+arrow). Each is none when Horizon does not know it, and an attacker that is the victim itself is none. No `self`, like
+v1: the victim is borrowed out of the game during the hit, so the entity helpers can't be called here; a mod keeps
+what it needs and acts in its next tick hook. Bukkit's damage modifier breakdown (armour, blocking, resistance,
+absorption as separate values) is not offered: the reductions are applied after this hook. Bundles need "hooks":
+@API:living_incoming_damage_v3@.
+
 `native_interact_entity_v2(entity, kind, hand, stack, claimed)` is `native_interact_entity` with the hand that clicks
 (`Hand::Main` or `Hand::Off`, NeoForge's `PlayerInteractEvent.EntityInteract.getHand`). It is asked right after the
 unchanged v1 hook, once per hand vanilla tries: the main hand first, the off hand only when the main hand's turn did
