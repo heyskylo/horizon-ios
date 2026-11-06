@@ -28,6 +28,9 @@ pub(super) struct NativeNet {
     to_players: Vec<(u128, Vec<u8>)>,
     to_counts: HashMap<u128, u32>,
     pub(super) to_server: u32,
+    /// Plugin channel messages from players on channels that aren't Horizon's own, for
+    /// `native_custom_payload_from_client`: player, channel, data.
+    payloads_from: Vec<(u128, String, Vec<u8>)>,
 }
 
 /// A message's payload as `native_net_send_*` check it.
@@ -59,15 +62,32 @@ impl Game<'_> {
         }
     }
 
+    /// A plugin channel message from `conn` on a channel that isn't Horizon's own: queued for
+    /// `run_native_net`, which hands it to `native_custom_payload_from_client`.
+    pub(super) fn guest_custom_payload(
+        &mut self,
+        host: &LanHost,
+        conn: u32,
+        channel: String,
+        data: Vec<u8>,
+    ) {
+        if let Some(player) = host.hub.guest(conn).map(|g| g.uuid) {
+            self.native_net.payloads_from.push((player, channel, data));
+        }
+    }
+
     /// Whether messages from players wait for `run_native_net`.
     pub(super) fn native_net_waiting(&self) -> bool {
-        !self.native_net.from_players.is_empty()
+        !self.native_net.from_players.is_empty() || !self.native_net.payloads_from.is_empty()
     }
 
     /// The waiting messages reach the mods, with the hub back in the game.
     pub(super) fn run_native_net(&mut self) {
         for (player, m) in std::mem::take(&mut self.native_net.from_players) {
             self.native_net_from_client(player, &m.channel, &m.data);
+        }
+        for (player, channel, data) in std::mem::take(&mut self.native_net.payloads_from) {
+            self.native_custom_payload_from_client(player, &channel, &data);
         }
     }
 

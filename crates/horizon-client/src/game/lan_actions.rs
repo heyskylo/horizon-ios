@@ -1943,6 +1943,20 @@ impl Game<'_> {
         let Some(gi) = host.hub.guests.iter().position(|g| g.conn == conn) else {
             return;
         };
+        // A plugin channel's message on a channel that isn't one of Horizon's own (the match below
+        // takes those) is for the mods, from a dead player too: vanilla's handleCustomPayload doesn't
+        // look at health.
+        let packet = match packet {
+            S::CustomPayload(p)
+                if p.channel != horizon_protocol::quiet::CHANNEL
+                    && p.channel != horizon_protocol::mod_net::CHANNEL
+                    && p.channel != horizon_client::lod_net::CHANNEL =>
+            {
+                self.guest_custom_payload(host, conn, p.channel, p.data);
+                return;
+            }
+            packet => packet,
+        };
         // A dead player acts no more, but the death screen still respawns and chats: its
         // commands run as anyone's (ServerGamePacketListenerImpl.handleChatCommand doesn't
         // look at the player's health).

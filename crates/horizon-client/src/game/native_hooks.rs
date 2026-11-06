@@ -6512,6 +6512,25 @@ impl Game<'_> {
     ) {
         mod_api::dispatch_player_level_change(self, mod_api::mods(), player, name, from, to);
     }
+    /// A plugin channel message from a player's client
+    /// (`ServerboundCustomPayloadPacket` in play) on any channel that isn't
+    /// Horizon's own (`horizon:mod_net`, `horizon:quiet_commands`,
+    /// `horizon:lod`), which vanilla drops: `channel` as the client sent it
+    /// (`voicechat:request_secret`), `data` its bytes, checked by nothing.
+    /// Runs in the tick after it arrives, in the order the messages came,
+    /// with the hub back and no player's state swapped in, so every helper
+    /// works; `native_send_custom_payload_to_player` answers on a channel of
+    /// any name. Heard from a dead player too. Server-side, for every guest
+    /// (a single player world's own player sends none). The client side is
+    /// #6774. API @API:custom_payload_from_client@.
+    pub(super) fn native_custom_payload_from_client(
+        &mut self,
+        player: u128,
+        channel: &str,
+        data: &[u8],
+    ) {
+        mod_api::dispatch_custom_payload_from_client(self, mod_api::mods(), player, channel, data);
+    }
     /// A click in a menu a mod opened (`native_open_menu`), which moved
     /// nothing: the menu's `slot` (its own first, then the player's
     /// inventory, `native_menu_inventory_slot`; -999 outside), the `button`

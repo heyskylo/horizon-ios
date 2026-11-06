@@ -2501,6 +2501,13 @@ before (#10461).
   With proxy forwarding on (`forwarding.secret`, offline mode) the server reads the handshake's host up to 32767
   characters, as Paper does behind a proxy, so a Floodgate player's long data reaches the hook; without forwarding the
   limit stays vanilla's 255.
+- **`native_custom_payload_from_client(player, channel, data)`**: a player's plugin channel message
+  (`ServerboundCustomPayloadPacket` in play) on any channel that isn't Horizon's own (`horizon:mod_net`,
+  `horizon:quiet_commands`, `horizon:lod`), which vanilla drops: a Simple Voice Chat client's `voicechat:*` requests,
+  a proxy's or a client mod's channels. `data` is the client's bytes, checked by nothing. It runs in the tick after the
+  message arrived, in arrival order, with the hub back and no player's state swapped in, so every helper works; it is
+  heard from a dead player too. Every guest is heard (a single player world's own player sends none). The client side,
+  a window's own plugin channels, is #6774. Bundles need `"hooks": @API:custom_payload_from_client@`.
 
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
