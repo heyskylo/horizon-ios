@@ -1328,6 +1328,17 @@ pub struct Extra {
     /// (`LivingEntity.lastEquipmentItems`, empty at first), by
     /// `EquipmentSlot` ordinal: see `Mob::equipment_stacks`.
     pub equipment_heard: Option<Box<[Option<crate::items::ItemStack>; 8]>>,
+    /// What the game last read from the hands' `minecraft:death_protection`
+    /// components (`game/totem.rs`); `None` until it has, when the totem's id
+    /// stands in for the component.
+    pub hand_protection: Option<HandProtection>,
+}
+/// The `death_effects` of the `death_protection` component each hand's stack
+/// carries; `None` for a hand without the component.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct HandProtection {
+    pub main: Option<Vec<crate::items::ConsumeEffect>>,
+    pub off: Option<Vec<crate::items::ConsumeEffect>>,
 }
 impl Extra {
     pub fn set_main_hand(&mut self, item: Option<Arc<str>>) {
@@ -1347,6 +1358,30 @@ impl Extra {
         self.main_hand_stack = None;
         self.main_hand.take()
     }
+}
+
+/// `DeathProtection.TOTEM_EFFECTS`: clear, then regeneration II, absorption II
+/// and fire resistance.
+fn totem_death_effects() -> Vec<crate::items::ConsumeEffect> {
+    use crate::items::{ConsumeEffect, ConsumeEffectSpec};
+    let spec = |id: &str, duration, amplifier| ConsumeEffectSpec {
+        id: id.to_owned(),
+        duration,
+        amplifier,
+        ambient: false,
+        show_particles: true,
+    };
+    vec![
+        ConsumeEffect::ClearAllEffects,
+        ConsumeEffect::ApplyEffects {
+            effects: vec![
+                spec("minecraft:regeneration", 900, 1),
+                spec("minecraft:absorption", 100, 1),
+                spec("minecraft:fire_resistance", 800, 0),
+            ],
+            probability: 1.0,
+        },
+    ]
 }
 
 /// How far the boxes of a set of mobs reach from their positions: the widest half width and the
@@ -4003,34 +4038,52 @@ impl Mob {
         through
     }
     /// `LivingEntity.checkTotemDeathProtection`: the first hand with a
-    /// `death_protection` item uses it up, the mob survives at 1 health with
-    /// the totem's effects, and entity event 35 tells the clients.
+    /// `death_protection` stack uses one item up, the mob survives at 1 health
+    /// with that component's `death_effects`, and entity event 35 tells the
+    /// clients.
     fn use_death_protection(&mut self, source: &Damage) -> bool {
         // `DamageTypeTags.BYPASSES_INVULNERABILITY`: the void and /kill take it.
         if source.kind.bypasses_invulnerability() {
             return false;
         }
-        // `getItemInHand`: the main hand first. The totem is the only item in
-        // the shipped data with `minecraft:death_protection`.
+        // `getItemInHand`: the main hand first. The game reads the components
+        // (`hand_protection`); before it has, the totem is the only item in the
+        // shipped data with `minecraft:death_protection`.
         const TOTEM: &str = "minecraft:totem_of_undying";
-        let main = self.extra.main_hand.as_deref() == Some(TOTEM);
-        let off = !main && self.extra.off_hand.as_deref() == Some(TOTEM);
-        if !main && !off {
-            return false;
-        }
-        if main {
-            self.extra.set_main_hand(None);
-        } else {
+        let (main, off) = match self.extra.hand_protection.clone() {
+            Some(h) => (h.main, h.off),
+            None => {
+                let totem = || Some(totem_death_effects());
+                (
+                    (self.extra.main_hand.as_deref() == Some(TOTEM))
+                        .then(totem)
+                        .flatten(),
+                    (self.extra.off_hand.as_deref() == Some(TOTEM))
+                        .then(totem)
+                        .flatten(),
+                )
+            }
+        };
+        // `itemStack.shrink(1)`: a held stack of several keeps the rest.
+        let effects = if let Some(effects) = main {
+            match self.extra.main_hand_stack.as_mut() {
+                Some(s) if s.count > 1 && self.extra.main_hand.as_ref() == Some(&s.item) => {
+                    s.count -= 1;
+                }
+                _ => self.extra.set_main_hand(None),
+            }
+            effects
+        } else if let Some(effects) = off {
             self.extra.off_hand = None;
-        }
-        // `setHealth(1.0F)`, then `DeathProtection.TOTEM_EFFECTS`.
+            effects
+        } else {
+            return false;
+        };
+        self.extra.hand_protection = None;
+        // `setHealth(1.0F)`, then `DeathProtection.applyEffects`.
         self.health = 1.0;
-        for (effect, ticks, amplifier) in [
-            ("regeneration", 900, 1),
-            ("absorption", 100, 1),
-            ("fire_resistance", 800, 0),
-        ] {
-            self.add_effect(effect, ticks, amplifier);
+        for effect in &effects {
+            self.apply_death_effect(effect);
         }
         let at = [self.position.x, self.position.y, self.position.z];
         self.outbox.push(MobEvent::EntityEvent {
@@ -4039,6 +4092,57 @@ impl Mob {
             at,
         });
         true
+    }
+    /// One `ConsumeEffect` of a `death_protection` component on the mob.
+    /// Teleporting, sounds and a mod's own kinds are not applied to mobs.
+    fn apply_death_effect(&mut self, effect: &crate::items::ConsumeEffect) {
+        use crate::items::ConsumeEffect;
+        match effect {
+            // `LivingEntity.removeAllEffects`: the absorption hearts go with it.
+            ConsumeEffect::ClearAllEffects => {
+                for e in std::mem::take(&mut self.extra.effects) {
+                    if e.0 == "minecraft:absorption" {
+                        self.absorption = (self.absorption - 4.0 * (e.2 + 1) as f32).max(0.0);
+                    }
+                }
+            }
+            ConsumeEffect::RemoveEffects(ids) => {
+                self.extra.effects.retain(|e| {
+                    let held = e.0.trim_start_matches("minecraft:");
+                    !ids.iter()
+                        .any(|id| id.trim_start_matches("minecraft:") == held)
+                });
+            }
+            // `ApplyStatusEffectsConsumeEffect.apply`: one random draw, even at
+            // probability 1.
+            ConsumeEffect::ApplyEffects {
+                effects,
+                probability,
+            } => {
+                if self.random.next_float() >= *probability {
+                    return;
+                }
+                for spec in effects {
+                    let Some(def) = horizon_client_core::potions::effect(&spec.id) else {
+                        continue;
+                    };
+                    if def.instant {
+                        match def.id {
+                            "instant_damage" | "instant_health" => self.apply_heal_or_harm(
+                                def.id == "instant_damage",
+                                self.kind.flags.undead,
+                                spec.amplifier,
+                                1.0,
+                            ),
+                            _ => {}
+                        }
+                    } else {
+                        self.add_effect(def.id, spec.duration, spec.amplifier);
+                    }
+                }
+            }
+            _ => {}
+        }
     }
     /// `LivingEntity.heal`, with the native heal hook.
     pub fn heal(&mut self, mut amount: f32) {
