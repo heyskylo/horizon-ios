@@ -18877,6 +18877,9 @@ impl Game<'_> {
                         }
                         return Ok(());
                     }
+                    if self.recipe_fuel_scroll(d) {
+                        return Ok(());
+                    }
                     let stick_scroll = self.pad_stick_scroll();
                     let step_scroll = self.pad_step_scroll();
                     if let Some(title) = &mut self.title

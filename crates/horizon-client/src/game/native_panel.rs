@@ -69,6 +69,7 @@ pub(super) struct Panel {
     searching: bool,
     /// The recipes shown instead of the items.
     pub(super) recipes: Option<super::native_panel_recipes::Pages>,
+    pub(super) fuel_popup: Option<super::native_panel_recipes::FuelPopup>,
 }
 
 impl Panel {
@@ -116,6 +117,7 @@ impl Panel {
     /// nothing, except while filtering the item list with a non-empty query.
     fn native_changed(&mut self, keep_search: bool) {
         self.versions += 1;
+        self.fuel_popup = None;
         if let Some(shown) = self.native.as_mut() {
             shown.version = self.versions;
             if shown.items.is_empty() && shown.recipes.is_none() && !keep_search {
@@ -177,6 +179,7 @@ impl Game<'_> {
         let disabled = &self.settings.mods.disabled;
         let Some(shown) = self.panel.shown(|id| !disabled.contains(id)) else {
             self.panel.of = None;
+            self.panel.fuel_popup = None;
             self.panel.stacks.clear();
             return None;
         };
@@ -192,9 +195,15 @@ impl Game<'_> {
             self.panel.stacks = stacks;
             // The same title again (the mod updating its buttons) keeps the page.
             let old = self.panel.recipes.take();
-            self.panel.recipes = shown
-                .as_ref()
-                .map(|shown| super::native_panel_recipes::Pages::new(items, shown, old));
+            self.panel.recipes = shown.as_ref().map(|shown| {
+                super::native_panel_recipes::Pages::new(
+                    items,
+                    self.res.providers(),
+                    shown,
+                    old,
+                    of.0.native_id() == "recipes",
+                )
+            });
             self.panel.of = Some(of.clone());
         }
         Some(of.0)
@@ -365,6 +374,9 @@ impl Game<'_> {
         let mut search = search.clone();
         search.draw(batch, &self.gui.atlas, None);
         self.panel.search = Some(search);
+        if self.carried.is_none() && self.draw_recipe_fuels(batch, &layout) {
+            return;
+        }
         if self.carried.is_some() {
             self.draw_carried(batch);
         } else if let Some(stack) = self.browser_pointed_stack(&layout) {
@@ -387,6 +399,9 @@ impl Game<'_> {
         let Some(layout) = self.browser_layout(&batch) else {
             return false;
         };
+        if self.recipe_fuel_press(&owner, right) {
+            return true;
+        }
         let cursor = self.cursor;
         let shift = self.has_shift_down();
         let atlas = &self.gui.atlas;
@@ -499,6 +514,7 @@ impl Game<'_> {
     }
     /// The container screen closed: the search box lets go of the keys.
     pub(super) fn mod_browser_closed(&mut self) {
+        self.panel.fuel_popup = None;
         if let Some(search) = self.panel.search.as_mut() {
             search.focused = false;
         }
