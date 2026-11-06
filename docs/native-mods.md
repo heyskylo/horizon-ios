@@ -2503,6 +2503,17 @@ None.
   sent it and its wire bytes in and out (Paper's `getClientBrandName`, `locale`, `getClientViewDistance`). It
   reads the hub, so it is None inside a player's hook while the hub is out of reach, the acting player's too.
   Bundles need `"hooks": @API:player_client@`.
+- Helpers **`native_player_stats(uuid)`**, **`native_player_stat(uuid, stat_type, key)`** and
+  **`native_set_player_stats(uuid, stats)`** (`host.player_stats`, ...): the player's statistics as vanilla's
+  `players/stats/<uuid>.json` holds them (`{"stats": {"minecraft:custom": {"minecraft:jump": 3}}, "DataVersion":
+  ..}`), one counter of them (0 when never counted; `custom`, `jump` mean `minecraft:custom`,
+  `minecraft:jump`), and their replacement from that JSON (a HuskSync restore). Replaced statistics are saved with
+  the player and all go to the client at its next request; scoreboard objectives that count one are not told.
+  **`native_player_advancements(uuid)`** and **`native_set_player_advancements(uuid, advancements)`** do the same
+  for `players/advancements/<uuid>.json` (each advancement's criteria with their dates, and `done`); advancements
+  this server lacks are dropped as when the file loads, and the client gets every advancement's progress again
+  with the player's next tick (one newly done shows its toast, as a grant would, with no rewards). The setters say whether the player was found. Bundles need
+  `"hooks": @API:player_records@`.
 
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
