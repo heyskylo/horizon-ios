@@ -1,6 +1,12 @@
 //! Read triggers from mapped buttons, or the conventional unmapped Linux axes.
+use super::hid_layout;
 use gilrs::{Axis, Button, Gamepad, MappingSource};
 use horizon_client::gamepad::BITDO_ULTIMATE2_VID_PID;
+
+/// Linux's event type for absolute axes, and its codes for an Xbox Bluetooth pad's triggers.
+const EV_ABS: u16 = 0x03;
+const ABS_GAS: u16 = 0x09;
+const ABS_BRAKE: u16 = 0x0a;
 
 pub(super) fn triggers(pad: &Gamepad) -> [f32; 2] {
     let axes = cfg!(target_os = "linux")
@@ -27,11 +33,15 @@ pub(super) fn triggers(pad: &Gamepad) -> [f32; 2] {
             .map(|button| pad.button_code(button).is_some()),
             (pad.vendor_id(), pad.product_id()),
         );
+    let on_gas_and_brake = hid_layout::right_stick_on_z(pad);
     [
-        (Button::LeftTrigger2, Axis::LeftZ),
-        (Button::RightTrigger2, Axis::RightZ),
+        (Button::LeftTrigger2, Axis::LeftZ, ABS_BRAKE),
+        (Button::RightTrigger2, Axis::RightZ, ABS_GAS),
     ]
-    .map(|(button, axis)| {
+    .map(|(button, axis, absolute)| {
+        if on_gas_and_brake && let Some(value) = unnamed_axis(pad, absolute) {
+            return trigger_value(false, None, false, Some(value));
+        }
         trigger_value(
             pad.button_code(button).is_some(),
             pad.button_data(button).map(|data| data.value()),
@@ -40,6 +50,16 @@ pub(super) fn triggers(pad: &Gamepad) -> [f32; 2] {
                 .flatten(),
         )
     })
+}
+
+/// gilrs' default mapping has no name for these, and those pads also list trigger buttons that
+/// never fire, so an axis that has moved wins.
+fn unnamed_axis(pad: &Gamepad, absolute: u16) -> Option<f32> {
+    let code = (u32::from(EV_ABS) << 16) | u32::from(absolute);
+    pad.state()
+        .axes()
+        .find(|(axis, _)| axis.into_u32() == code)
+        .map(|(_, data)| data.value())
 }
 
 fn axis_triggers(

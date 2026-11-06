@@ -10,6 +10,9 @@ pub const FILE: &str = "horizon-extras.txt";
 pub const SORT_KEY: &str = "horizon.sort";
 /// The 3D skin layers line, here and in the `options.txt` that held it first.
 const SKIN_LAYERS_KEY: &str = "threeDSkinLayers";
+/// The emote wheel's key, here and in the `key_key.emote` line #10092 wrote to `options.txt`.
+const EMOTE_KEY: &str = "emoteKey";
+const OLD_EMOTE_LINE: &str = "key_key.emote";
 
 /// The minimap's sizes in GUI pixels, and its zooms in blocks per pixel.
 pub const MINIMAP_SIZES: [(u8, &str); 3] = [(64, "Small"), (96, "Medium"), (128, "Large")];
@@ -126,6 +129,10 @@ pub struct Extras {
     pub sort: bool,
     /// A vanilla key name: sorts the part under the cursor.
     pub sort_key: String,
+    /// The emote wheel's key (`key.emote`), as the game last saved it. The live binding is
+    /// `Settings::keys`, bound in Controls with the vanilla ones; it is only kept in this file
+    /// so that `options.txt` stays vanilla's (`Settings::load` hands it over, `save` takes it back).
+    pub emote_key: String,
     /// A new chat line slides in from the left while it fades in (`Chat::layout`).
     pub chat_animation: bool,
     /// The indicator bar at the left of a chat line (on by default, as vanilla).
@@ -220,6 +227,7 @@ impl Default for Extras {
             mouse_tweaks_wheel: true,
             sort: false,
             sort_key: "key.keyboard.unknown".into(),
+            emote_key: crate::keybinds::KeyBinds::default_of("key.emote").into(),
             chat_animation: false,
             chat_indicator: true,
             no_ai: false,
@@ -230,7 +238,7 @@ impl Default for Extras {
             splitscreen_two: 0,
             splitscreen_three: 0,
             splitscreen_names: true,
-            wheel_cycles_settings: true,
+            wheel_cycles_settings: false,
             music_off: Vec::new(),
             music_page: false,
             cosmetics_mine: true,
@@ -324,6 +332,7 @@ impl Extras {
                 "mouseTweaksWheel" => e.mouse_tweaks_wheel = flag(e.mouse_tweaks_wheel),
                 "sort" => e.sort = flag(e.sort),
                 "sortKey" if value.starts_with("key.") => e.sort_key = value.to_owned(),
+                EMOTE_KEY if value.starts_with("key.") => e.emote_key = value.to_owned(),
                 "chatAnimation" => e.chat_animation = flag(e.chat_animation),
                 "chatIndicator" => e.chat_indicator = flag(e.chat_indicator),
                 horizon_core::no_ai::KEY => e.no_ai = flag(e.no_ai),
@@ -334,7 +343,11 @@ impl Extras {
                 "splitscreenTwo" => e.splitscreen_two = value.parse().unwrap_or(0).min(2),
                 "splitscreenThree" => e.splitscreen_three = value.parse().unwrap_or(0).min(2),
                 "splitscreenNames" => e.splitscreen_names = flag(e.splitscreen_names),
-                "wheelCyclesSettings" => e.wheel_cycles_settings = flag(e.wheel_cycles_settings),
+                // A new name: `wheelCyclesSettings` was written as true by every
+                // install while it was the default, so it says nothing of a choice.
+                "wheelCyclesListSettings" => {
+                    e.wheel_cycles_settings = flag(e.wheel_cycles_settings)
+                }
                 "musicOff" => {
                     e.music_off = value
                         .split(',')
@@ -363,7 +376,7 @@ impl Extras {
     }
     pub fn serialize(&self) -> String {
         let mut text = format!(
-            "packBrowser:{}\npregen:{}\nfullbright:{}\ndynamicLights:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nlodZoomDetail:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nuiSoundReserve:{}\nownNameTag:{}\nhideBlockParticles:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\nchatAnimation:{}\nchatIndicator:{}\n{}:{}\nagentControl:{}\nreproKeys:{}\ndiscordPresence:{}\nsplitscreen:{}\nsplitscreenTwo:{}\nsplitscreenThree:{}\nsplitscreenNames:{}\nwheelCyclesSettings:{}\nmusicOff:{}\nmusicPage:{}\ncosmeticsMine:{}\n{}cosmeticsHideFx:{}\ncosmeticsSolo:{}\n{}:{}\n{}:{}\n{}:{}\n",
+            "packBrowser:{}\npregen:{}\nfullbright:{}\ndynamicLights:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nlodZoomDetail:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nuiSoundReserve:{}\nownNameTag:{}\nhideBlockParticles:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\nchatAnimation:{}\nchatIndicator:{}\n{}:{}\nagentControl:{}\nreproKeys:{}\ndiscordPresence:{}\nsplitscreen:{}\nsplitscreenTwo:{}\nsplitscreenThree:{}\nsplitscreenNames:{}\nwheelCyclesListSettings:{}\nmusicOff:{}\nmusicPage:{}\ncosmeticsMine:{}\n{}cosmeticsHideFx:{}\ncosmeticsSolo:{}\n{}:{}\n{}:{}\n{}:{}\n",
             bool_text(self.pack_browser),
             bool_text(self.pregen),
             bool_text(self.fullbright),
@@ -426,25 +439,36 @@ impl Extras {
             SKIN_LAYERS_KEY,
             bool_text(self.three_d_skin_layers),
         );
+        text.push_str(&format!("{EMOTE_KEY}:{}\n", self.emote_key));
         self.pvp.serialize(&mut text);
         text
     }
     /// Adopts the settings `options.txt` held before they moved here, while
-    /// this file (`own`) has no line of its own: 3D skin layers was an
-    /// `options.txt` line. Vanilla's `Options.save` drops lines it doesn't
+    /// this file (`own`) has no line of its own: 3D skin layers and the emote key were
+    /// `options.txt` lines. Vanilla's `Options.save` drops lines it doesn't
     /// know, so it is read there once, the first start after the update.
     pub fn read_old_options(&mut self, own: &str, options_txt: &str) {
-        fn line(text: &str) -> Option<&str> {
+        fn line<'a>(text: &'a str, name: &str) -> Option<&'a str> {
             text.lines().find_map(|l| {
                 l.split_once(':')
-                    .filter(|(key, _)| *key == SKIN_LAYERS_KEY)
+                    .filter(|(key, _)| *key == name)
                     .map(|(_, value)| value)
             })
         }
-        if line(own).is_none()
-            && let Some(value) = line(options_txt)
+        if line(own, SKIN_LAYERS_KEY).is_none()
+            && let Some(value) = line(options_txt, SKIN_LAYERS_KEY)
         {
             self.three_d_skin_layers = value == "true";
+        }
+        // The emote key was a `key_key.emote` line of options.txt (#10092): a rebound key is kept.
+        if line(own, EMOTE_KEY).is_none()
+            && let Some(value) = line(options_txt, OLD_EMOTE_LINE).map(str::trim)
+            && value.starts_with("key.")
+            && (value == "key.keyboard.unknown"
+                || crate::keybinds::key_code(value).is_some()
+                || crate::keybinds::mouse_button(value).is_some())
+        {
+            self.emote_key = value.to_owned();
         }
     }
     /// Binds the extra key `name` (`SORT_KEY`); false for
@@ -452,6 +476,7 @@ impl Extras {
     pub fn set_key(&mut self, name: &str, value: String) -> bool {
         match name {
             SORT_KEY => self.sort_key = value,
+            crate::pvp::HUD_EDITOR_KEY => self.pvp.editor_key = value,
             _ => return false,
         }
         true
@@ -700,7 +725,7 @@ impl Item {
             Item::Splitscreen => "horizon.extras.splitscreen.tooltip",
             Item::ChatAnimation => "horizon.extras.chat_animation.tooltip",
             Item::ChatIndicator => "horizon.extras.chat_indicator.tooltip",
-            Item::WheelCyclesSettings => "horizon.extras.wheel_cycles_settings.tooltip",
+            Item::WheelCyclesSettings => "horizon.extras.wheel_cycles_list_settings.tooltip",
             Item::PackBrowser => "horizon.extras.pack_browser.tooltip",
             Item::Pregen => "horizon.extras.pregen.tooltip",
             Item::CosmeticsMine => "horizon.extras.cosmetics_mine.tooltip",
@@ -981,6 +1006,7 @@ impl Item {
     pub fn key_name(self) -> Option<&'static str> {
         match self {
             Item::SortKey => Some(SORT_KEY),
+            Item::Pvp(crate::pvp::Opt::HudEditorKey) => Some(crate::pvp::HUD_EDITOR_KEY),
             _ => None,
         }
     }
@@ -1058,6 +1084,16 @@ mod tests {
     }
 
     #[test]
+    fn a_saved_wheel_setting_from_before_the_default_changed_is_dropped() {
+        assert!(!Extras::parse("wheelCyclesSettings:true\n").wheel_cycles_settings);
+        let on = Extras {
+            wheel_cycles_settings: true,
+            ..Extras::default()
+        };
+        assert!(Extras::parse(&on.serialize()).wheel_cycles_settings);
+    }
+
+    #[test]
     fn everything_is_off_by_default_and_round_trips() {
         let d = Extras::default();
         assert!(!d.fullbright && !d.dynamic_lights);
@@ -1065,7 +1101,7 @@ mod tests {
         assert!(!d.mouse_tweaks && !d.sort && !d.own_name_tag && !d.ui_sound_reserve);
         assert!(!d.hide_block_particles && !d.pregen);
         assert!(!d.music_page && d.music_off.is_empty());
-        assert!(d.discord_presence && d.wheel_cycles_settings);
+        assert!(d.discord_presence && !d.wheel_cycles_settings);
         assert_eq!(Extras::parse(""), d);
         assert_eq!(Extras::parse(&d.serialize()), d);
         let mut e = d.clone();
@@ -1109,7 +1145,7 @@ mod tests {
         Item::Splitscreen.cycle(&mut e, false);
         assert_eq!(Item::Splitscreen.switch(&e), Some(true));
         Item::WheelCyclesSettings.cycle(&mut e, false);
-        assert_eq!(Item::WheelCyclesSettings.switch(&e), Some(false));
+        assert_eq!(Item::WheelCyclesSettings.switch(&e), Some(true));
         e.music_off = vec![
             "minecraft:music/game/calm1".into(),
             "minecraft:music.menu".into(),
