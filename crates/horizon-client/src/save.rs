@@ -4222,11 +4222,16 @@ impl Level {
                                     Tag::Byte((*amplifier).clamp(0, 255) as u8 as i8),
                                 ));
                             }
-                            effect.extend([
-                                ("ambient", Tag::Byte(i8::from(*ambient))),
-                                ("show_particles", Tag::Byte(i8::from(*particles))),
-                                ("show_icon", Tag::Byte(i8::from(*particles))),
-                            ]);
+                            // optionalFieldOf("ambient", false) and
+                            // ("show_particles", true): defaults are not written;
+                            // show_icon is always written.
+                            if *ambient {
+                                effect.push(("ambient", Tag::Byte(1)));
+                            }
+                            if !*particles {
+                                effect.push(("show_particles", Tag::Byte(0)));
+                            }
+                            effect.push(("show_icon", Tag::Byte(i8::from(*particles))));
                             Tag::compound(effect)
                         })
                         .collect(),
@@ -7200,11 +7205,12 @@ mod tests {
             for (entry, (id, duration, _, ambient, particles)) in entries.iter().zip(&effects) {
                 assert_eq!(entry.get("id"), Some(&string(id)));
                 assert_eq!(entry.get("duration"), Some(&Tag::Int(*duration)));
-                assert_eq!(entry.get("ambient"), Some(&Tag::Byte(i8::from(*ambient))));
-                assert_eq!(
-                    entry.get("show_particles"),
-                    Some(&Tag::Byte(i8::from(*particles)))
-                );
+                // MobEffectInstance.Details.MAP_CODEC leaves out ambient false
+                // and show_particles true.
+                let ambient_tag = ambient.then_some(Tag::Byte(1));
+                assert_eq!(entry.get("ambient"), ambient_tag.as_ref());
+                let particles_tag = (!*particles).then_some(Tag::Byte(0));
+                assert_eq!(entry.get("show_particles"), particles_tag.as_ref());
                 assert_eq!(
                     entry.get("show_icon"),
                     Some(&Tag::Byte(i8::from(*particles)))

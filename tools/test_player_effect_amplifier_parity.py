@@ -85,7 +85,11 @@ def main():
         i = sys.argv.index('--reference'); reference = Path(sys.argv[i+1]).resolve()
         del sys.argv[i:i+2]
     if '--work-dir' not in sys.argv:
-        raise SystemExit('a fresh --work-dir is required')
+        # tools/parity.py runs every harness with no arguments: a fresh folder under .local.
+        import shutil
+        default = Path(__file__).resolve().parents[1] / '.local' / 'player-effect-amplifier-parity'
+        shutil.rmtree(default, ignore_errors=True)
+        sys.argv += ['--work-dir', str(default)]
     build = Path(sys.argv[sys.argv.index('--work-dir')+1]).resolve()
     assert not build.exists(), 'preserve earlier attempts; use a fresh directory'
     build.mkdir(parents=True)
