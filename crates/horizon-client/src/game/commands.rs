@@ -4457,6 +4457,48 @@ mod teleport_rider_tests {
         let rider = game.mobs.iter().find(|m| m.id == 43).unwrap();
         assert_eq!(rider.extra.mount, None, "the teleported rider dismounted");
         assert_eq!(rider.position, Vec3::new(0.0, 64.0, 0.0));
+        // #9335 (2): a rider keeps its angle to the vehicle through an
+        // absolute turn, and a relative turn adds the delta: a villager 30
+        // degrees off a horse turning 0 -> 40 ends at 70.
+        let horse2 = game.res.mob_types().get("minecraft:horse").unwrap().clone();
+        let villager2 = game
+            .res
+            .mob_types()
+            .get("minecraft:villager")
+            .unwrap()
+            .clone();
+        game.mobs.push(horizon_client::mobs::Mob::new(
+            50,
+            horse2,
+            Vec3::new(10.0, 64.0, 10.0),
+            0.0,
+        ));
+        let mut rider2 =
+            horizon_client::mobs::Mob::new(51, villager2, Vec3::new(10.0, 64.5, 10.0), 30.0);
+        rider2.extra.mount = Some(50);
+        game.mobs.push(rider2);
+        // Absolute turn: vehicle 0 -> 40, rider keeps its 30-degree offset.
+        game.teleport_to_in_level(Target::Mob(50), [10.0, 64.0, 10.0], Some([40.0, 0.0]), true);
+        let rider2 = game.mobs.iter().find(|m| m.id == 51).unwrap();
+        assert_eq!(
+            rider2.yaw, 70.0,
+            "absolute turn keeps the rider's angle to the vehicle"
+        );
+        // Relative turn (~10 on the vehicle): the transition carries the
+        // 10-degree delta and the rider adds it to its own angle (70 -> 80).
+        game.teleport_to_in_level(Target::Mob(50), [10.0, 64.0, 10.0], Some([50.0, 0.0]), true);
+        let rider2 = game.mobs.iter().find(|m| m.id == 51).unwrap();
+        assert_eq!(
+            rider2.yaw, 80.0,
+            "relative turn shifts the rider by the delta"
+        );
+        // `facing` (turn_riders = false) leaves the rider's angle alone.
+        game.teleport_to_in_level(Target::Mob(50), [10.0, 64.0, 10.0], Some([0.0, 0.0]), false);
+        let rider2 = game.mobs.iter().find(|m| m.id == 51).unwrap();
+        assert_eq!(
+            rider2.yaw, 80.0,
+            "a vehicle turned by `facing` leaves its rider"
+        );
     }
 }
 
