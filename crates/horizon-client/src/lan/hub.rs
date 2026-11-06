@@ -267,6 +267,9 @@ fn take_tracking(
 pub struct Hub {
     /// Clicks on and closings of native mods' menus, for the game.
     pub native_menu_events: Vec<super::menu::NativeMenuEvent>,
+    /// What the input slots of closed native menus held, for the game to
+    /// hand the mods and then the players (`NativeReturn`).
+    pub native_menu_returns: Vec<super::menu::NativeReturn>,
     /// Kicks waiting for the game thread to notify native mods.
     pending_kicks: Vec<HostEvent>,
     /// `[transfer]` on (a dedicated server's `--transfers`): the players a proxy
@@ -690,6 +693,7 @@ impl Hub {
             entity_gone: Vec::new(),
             mod_commands: (serde_json::Value::Null, None),
             native_menu_events: Vec::new(),
+            native_menu_returns: Vec::new(),
             pending_kicks: Vec::new(),
             transfers: None,
             native_tracking: Vec::new(),

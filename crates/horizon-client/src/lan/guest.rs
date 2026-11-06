@@ -291,6 +291,9 @@ pub struct Guest {
     pub ender_items: Vec<Option<ItemStack>>,
     /// What a native mod's menu shows (`Slots::Native`), while one is open.
     pub native_menu: Vec<Option<ItemStack>>,
+    /// The slots of that menu that hold items clicks move, when the mod gave
+    /// it any (`menu::NativeStore`).
+    pub native_store: Option<super::menu::NativeStore>,
     pub health: f32,
     /// The saved `AbsorptionAmount`, until the player's first body on the
     /// server takes it (the body holds the live amount).
@@ -526,6 +529,7 @@ impl Guest {
             craft_result: None,
             ender_items: vec![None; 27],
             native_menu: Vec::new(),
+            native_store: None,
             health: 20.0,
             saved_absorption: None,
             food: 20,

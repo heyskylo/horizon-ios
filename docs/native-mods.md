@@ -2800,6 +2800,55 @@ an invulnerable, dead or creative target, another dimension, an entity that is n
 isn't there, or an amount that is not a finite number. An NPC's own hit needs no `damage` command and no UUID lookup.
 Bundles need "hooks": @API:hurt_entity@.
 
+
+#### Server hooks for plugin ports: Menus, items and maps
+
+- Helper `native_item_from_snbt(snbt) -> Option<ItemStack>`: the stack an SNBT item compound stands for, as `/give`
+  and the data packs write one (`{id:"minecraft:diamond_sword",count:1,components:{"minecraft:damage":5}}`), read as
+  vanilla's `TagParser` and `ItemStack.CODEC` do (Bukkit's `ItemFactory.createItemStack`). None when the text is not
+  one compound (whitespace around it aside), for air, and for an item the world does not have. `ItemStack::from_nbt`
+  reads a stack from a compound without asking the registry, and `mod_api::parse_snbt` is the SNBT reader itself (the
+  tag and the bytes it read), so a mod that keeps items as text needs neither the game's internal `item_data` module
+  nor a `summon` command to make them. Bundles need `"hooks": @API:item_from_snbt@`.
+- Helpers `native_new_map(dimension, colors) -> Option<i32>` and `native_paint_map(map_id, colors) -> bool`: maps a
+  server mod draws that the world keeps (Bukkit's `Server.createMap` and a `MapCanvas` drawn for everyone). `colors`
+  is the 128 x 128 picture, row by row, each byte a `MapColor` id times 4 plus its shade, as `native_send_map` takes.
+  `native_new_map` makes a locked map (as a cartography table locks one: no exploring draws over it, no player
+  markers) of the level `dimension`, scale 0, under the world's next map id, so it never meets an id the game hands
+  out; give a `minecraft:filled_map` with that `minecraft:map_id`. `native_paint_map` replaces the whole picture of a
+  map the world made or saved (false otherwise); an unlocked map is still drawn over where its holders explore. Both
+  are saved with the world's maps (`data/minecraft/maps/<id>.dat`) and sent like vanilla map data to whoever carries
+  the map or sees it framed, players who join later included, so the mod never resends them. None and false on a
+  client of a server. Bundles need `"hooks": @API:new_map@`.
+- Helper `native_open_menu_with_input(uuid, rows, title, items, input) -> Option<i32>`: a server menu (see "Server
+  menus") whose slots in the range `input` hold items as a chest's do (Bukkit's custom inventory with storage slots):
+  the player puts stacks in and takes them out by vanilla's click rules (pickup, split, shift-click from their
+  inventory, number keys, drags, double-click), while the menu's other slots stay the mod's to show and their clicks
+  still reach `native_menu_clicked`, moving nothing. `items` fills both; `native_set_menu_items` changes only the shown
+  slots. None for a player not here, or `input` empty or past the rows' slots. Helpers `native_menu_contents(uuid)`
+  (every slot of the player's open server menu, input slots included; None while none is open) and
+  `native_menu_cursor(uuid)` (the stack on the cursor; inside `native_menu_clicked`, the one the player held as they
+  made that click, so a kit editor can copy it into a slot).
+- **`native_menu_input_closed(uuid, window, slots)`**: a menu with input slots closed, for any reason (the player, the
+  server, a mod, another menu, death, leaving), heard before `native_menu_closed` for the same window. `slots` are
+  its input slots as the player left them: take what the mod keeps, and what stays goes back to the player as
+  vanilla's `AbstractContainerMenu.clearContainer` gives a crafting grid back (into the inventory, the rest dropped;
+  all dropped at them when they left), so no item is lost or made. It runs where the menu closed, so the hub may be
+  out of the game's hands and a player's state swapped in: answer through `slots`. Bundles need
+  `"hooks": @API:menu_input@`.
+- Helper `native_open_inventory_menu(viewer, rows, title, (target, kind), layout) -> Option<i32>`: another player's
+  inventory (`Player`, 41 slots in `native_inventory`'s numbering) or ender chest (`Ender`, 27) in a server menu, for
+  an operator's `/invsee` (Bukkit's `openInventory(target.getInventory())`). Menu slot `k` shows the target's slot
+  `layout[k]`; a `None` (or a slot past the layout) stays the mod's to show with `native_set_menu_items`, its clicks
+  heard by `native_menu_clicked`. Clicks on the shown slots move the target's own items by vanilla's click rules, as in
+  a chest (pickup, split, shift-click, number keys, drags, double-click, throw), so a split stack really splits; an
+  armour or off-hand slot takes any stack, as that Bukkit view does. A target on the server is read before each click
+  and each tick and changed in the same step, so their own screen follows with the tick's sync and nothing is copied
+  or lost; a target away is their file (`players/data/<uuid>.dat`), read again before each click and written after one
+  that changes it (a click whose write fails is taken back whole). The menu closes once the target leaves, dies or,
+  away, comes back. None for a viewer not here, the target being the viewer, logging in, dead or never seen here, a
+  layout longer than the rows' slots, a slot past the inventory or shown twice, and inside a player's turn. A mixin
+  helper, not on `Host` (it takes `NativeInventoryKind`). Bundles need `"hooks": @API:inventory_menu@`.
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a

@@ -66,6 +66,9 @@ pub use horizon_protocol::packets::play::Clientbound as ClientboundPlayPacket;
 /// The play packets a client sends, as `native_send_packet` takes them.
 pub use horizon_protocol::packets::play::Serverbound as ServerboundPlayPacket;
 pub use horizon_world::consumable::UseAnimation;
+/// Vanilla's `TagParser`: the tag an SNBT text holds and the bytes it read
+/// (`ItemStack::from_nbt` reads an item from it). API @API:item_from_snbt@.
+pub use horizon_world::nbt::parse_snbt;
 pub use horizon_world::player_inventory::EquipmentSlot;
 pub use horizon_world::{
     attachments::{
@@ -80,6 +83,9 @@ pub use horizon_world::{
 };
 pub use serde_json;
 use serde_json::{Map, Value};
+/// The slot range a menu's input slots take (`native_open_menu_with_input`).
+/// API @API:menu_input@.
+pub use std::ops::Range;
 use std::time::Duration;
 /// The window events `input_key` hands over (`winit::event::KeyEvent`) and their key types.
 pub use winit;
