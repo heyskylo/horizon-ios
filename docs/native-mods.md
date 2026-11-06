@@ -2484,6 +2484,20 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
 - **`native_player_jump(player, name)`**: accepted guest movement made the server player jump from the ground, after movement simulation finishes. The guest's state is swapped in.
 - **`native_player_kicked(player, name, reason)`**: a guest was kicked after the hub recorded the rendered disconnect reason and sent the disconnect. The guest's state is swapped in, unless the guest was already removed in the same poll (a kick and the disconnect arriving together): the hook still fires, without it.
 - **`native_player_level_change(player, name, from, to)`**: a server player's experience change altered their level, after the new level was applied. The guest's state is swapped in when the player is a guest.
+
+#### Server hooks for plugin ports: NPCs
+
+Helpers for server mods that spawn and drive NPCs (an NPC library, guards that fight, a stage that places actors),
+in `crates/horizon-client/src/game/native_npcs.rs`, on a server only (on a client they do nothing and the readers give
+nothing). Each names its level by `dimension` (`minecraft:the_nether`) and reaches any level the server has loaded,
+not only the one in place: that level is put in place for the call and the one that was is put back, as `execute in`
+does, so they work from `native_server_tick` too. A level the server hasn't loaded is refused, and a level nobody is
+in has only the chunks something holds loaded. While a level ticks its mobs they are out of it, so from a hook inside
+that tick the other mobs of that level read as gone.
+
+- **`native_spawn_mob(dimension, kind, pos, &NativeSpawn)`** and **`native_summon(dimension, kind, pos, nbt)`**
+  ([Mobs](#mobs), [Entities](#entities)) spawn into any loaded level, as `execute in <dimension> run summon` does,
+  where they were refused for any level but the one in place. Their other refusals stay. API @API:npc_any_level@.
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a
@@ -2613,7 +2627,8 @@ client they do nothing, and the readers give nothing). Each takes the `dimension
 `native_set_block` does, and is refused when another level is in place. The per-level tick hooks (API 23) run with a defined level in
 place; `native_server_tick` does not define one, so name the dimension and expect a refusal there.
 
-- `native_spawn_mob(dimension, kind, pos, &NativeSpawn)` spawns a mob and returns its id. `NativeSpawn` holds an optional name and health, and the
+- `native_spawn_mob(dimension, kind, pos, &NativeSpawn)` spawns a mob and returns its id, in any loaded level since API
+  @API:npc_any_level@ ([NPCs](#server-hooks-for-plugin-ports-npcs)). `NativeSpawn` holds an optional name and health, and the
   `no_ai`, `invisible`, `silent`, `invulnerable` and `no_gravity` flags; its default is a plain mob. The mob is finalized as a natural spawn
   is, and kept when its chunk unloads. Nothing is spawned outside `/summon`'s bounds, in a chunk that isn't loaded, or a monster on peaceful.
 - `native_mob(dimension, id)` and `native_mobs(dimension)` read the living mobs: id, dimension, kind, position, yaw, health and maximum health.
@@ -2726,7 +2741,8 @@ During a machine's own tick its block entity is out of the world, so these answe
 names the level it means by its `dimension` (`minecraft:overworld`), as `native_set_block` does.
 
 - `native_summon(dimension, kind, pos, nbt)` spawns an entity of `kind` from its compound, as `/summon <kind> <pos> <nbt>`
-  does (passengers included), and returns its id. None on a client, for another dimension, a position outside `/summon`'s
+  does (passengers included), and returns its id, in any loaded level since API @API:npc_any_level@
+  ([NPCs](#server-hooks-for-plugin-ports-npcs)). None on a client, for a level not loaded, a position outside `/summon`'s
   bounds, a chunk that isn't loaded, a kind Horizon can't load, or one a mod kept out with `native_entity_join_level`.
 - `native_move_entity(dimension, id, pos, yaw, pitch)` moves an entity Horizon keeps without simulating it (a display, a
   marker, an interaction); a display eases there over its teleport duration. Mobs move with `native_teleport_mob`.
