@@ -144,15 +144,18 @@ impl ProjectileWorld for ProjWorld<'_, '_> {
             binding: self.w.collision,
             subject: None,
         };
+        let context = horizon_world::collision_context::CollisionContext::position(from.y);
         let r = traverse_blocks(from, to, 256, |p: BlockPos| {
             let state = self.w.world.block(p.x, p.y, p.z);
             if self.w.facts.is_air(state) {
                 return None;
             }
+            // ClipContext hands CollisionContext.of(projectile): scaffolding
+            // is open for a projectile below it.
             let shape = self
                 .w
                 .collision
-                .collision_shape(&mut scene, state, [p.x, p.y, p.z])
+                .collision_shape_with_context(&mut scene, state, p, &context)
                 .ok()?;
             shape.clip(from, to, p)
         });
