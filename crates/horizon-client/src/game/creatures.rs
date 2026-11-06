@@ -105,6 +105,9 @@ pub(super) struct Creatures {
     pub lan_explosions: Vec<([f64; 3], bool, f32, usize, Vec<(u32, [f64; 3])>)>,
     /// Ticks left of the elder guardian's apparition (MobAppearanceParticle).
     pub elder_apparition: i32,
+    /// The snapshot's buffer between ticks, empty: ~400 bytes a mob, so
+    /// thousands of mobs would allocate and free megabytes every tick.
+    seen_buf: Vec<Seen>,
     /// The wandering trader spawner's clock.
     pub trader: super::wandering_trader::Spawner,
     /// When each player last put a parrot on a shoulder (`timeEntitySatOnShoulder`).
@@ -998,7 +1001,8 @@ impl Game<'_> {
         }
         let uuid = self.level.player_uuid;
         let level_id = self.dim.id();
-        let mut snapshot: Vec<Seen> = self.mobs.iter().map(|m| seen(m, uuid)).collect();
+        let mut snapshot = std::mem::take(&mut self.creatures.seen_buf);
+        snapshot.extend(self.mobs.iter().map(|m| seen(m, uuid)));
         let mut events = Vec::new();
         let mut mobs = std::mem::take(&mut self.mobs);
         let mut dead = Vec::new();
@@ -1261,6 +1265,8 @@ impl Game<'_> {
             self.mobs.append(&mut mobs);
         }
         self.died = died;
+        snapshot.clear();
+        self.creatures.seen_buf = snapshot;
         self.native_tick_post_batch(round);
         // ... and entity event 60 goes out as it is: the poof.
         for (id, at, width, height) in gone {
