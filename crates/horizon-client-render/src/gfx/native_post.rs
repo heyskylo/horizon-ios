@@ -368,6 +368,7 @@ impl NativeFrame {
             unculled: None,
             every_face: false,
             view_casters: false,
+            depth_planes: true,
         })
     }
 
