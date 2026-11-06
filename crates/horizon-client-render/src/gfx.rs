@@ -7636,9 +7636,7 @@ impl Renderer {
         if let Some(v) = &shadow_view {
             let radius = (frame.detail_distance / 16.0) as i32;
             let light = ShadowCull {
-                light: Frustum {
-                    planes: frustum(v.cull),
-                },
+                light: shadow_box(v),
                 casters: v.view_casters.then(|| shadow_casters(cull_proj, v.light)),
                 reach: v.distance,
             };
@@ -11441,6 +11439,17 @@ impl Cull for ShadowCull {
         self.casters.is_none()
     }
 }
+/// The shadow camera's box that the shadow pass draws terrain in: the sides of `view.cull`, and
+/// its near and far planes only with `depth_planes`.
+fn shadow_box(view: &pack_post::ShadowView) -> Frustum {
+    let mut planes = frustum(view.cull);
+    if !view.depth_planes {
+        // `frustum`'s faces at depth 0 and 1 take in everything.
+        planes[4] = Vec4::W;
+        planes[5] = Vec4::W;
+    }
+    Frustum { planes }
+}
 /// Camera-relative clip planes (`Frustum`).
 #[derive(Clone, Copy, Debug)]
 pub struct Frustum {
@@ -13412,6 +13421,7 @@ mod shadow_face_tests {
             unculled: None,
             every_face,
             view_casters: true,
+            depth_planes: false,
         }
     }
 
@@ -13583,6 +13593,52 @@ mod shadow_caster_tests {
             drawn(&|out| sections.visible(camera, 4, &view, |_| true, |_, _| false, out))
                 .is_empty()
         );
+    }
+
+    /// Our probe pack's Iris 1.11.7 shadow maps, under a noon sun with `shadowDistance` 128, hold
+    /// the terrain at every depth along the light whatever planes the pack gives (#10403): from
+    /// a cave at y -7, the surface's sections ~70 blocks toward the light with `shadowNearPlane`
+    /// 0.05 and `shadowFarPlane` 256; from y 600, the ground ~535 blocks away with no planes set;
+    /// and both with the planes at 200 and 210. Only the box's sides cull.
+    #[test]
+    fn the_shadow_pass_draws_terrain_outside_the_pack_s_planes() {
+        let kept = |near: Option<f32>, far: Option<f32>, y: f64, min: [f32; 3], depth: bool| {
+            let shadow = horizon_shaders::Shadow {
+                distance: 128.0,
+                near,
+                far,
+                ..horizon_shaders::Shadow::default()
+            };
+            let camera = DVec3::new(13.5, y + 1.62, -13.5);
+            let view = pack_post::ShadowView {
+                cull: pack_uniforms::shadow_culling_at(Vec3::Y, camera, &shadow),
+                light: Vec3::Y,
+                distance: None,
+                unculled: None,
+                every_face: true,
+                view_casters: false,
+                depth_planes: depth,
+            };
+            let cull = ShadowCull {
+                light: shadow_box(&view),
+                casters: None,
+                reach: None,
+            };
+            let min = Vec3::from(min);
+            cull.intersects(min, min + 16.0)
+        };
+        // The section holding the surface (y 64..80) above the cave, and the ground under y 600.
+        let above = [-8.0, 64.0 - (-7.0 + 1.62), -8.0];
+        let below = [-8.0, 64.0 - (600.0 + 1.62), -8.0];
+        assert!(kept(Some(0.05), Some(256.0), -7.0, above, false));
+        assert!(kept(None, None, 600.0, below, false));
+        assert!(kept(Some(200.0), Some(210.0), -7.0, above, false));
+        assert!(kept(Some(200.0), Some(210.0), 600.0, below, false));
+        // A section 200 blocks off to the side is still outside the box.
+        let side = [200.0, 0.0, -8.0];
+        assert!(!kept(Some(0.05), Some(256.0), -7.0, side, false));
+        // Horizon's own packs keep culling by their planes.
+        assert!(!kept(Some(0.05), Some(256.0), -7.0, above, true));
     }
 
     /// The margin doesn't follow the field of view: from the same camera under a noon sun, our

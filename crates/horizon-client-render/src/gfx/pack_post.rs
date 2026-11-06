@@ -1131,6 +1131,11 @@ pub(super) struct ShadowView {
     /// maps fit keeping only those with `shadow.culling` unset (#8464): under a noon sun, only
     /// the terrain above the ground the camera sees; with a low sun ahead, none behind the camera.
     pub view_casters: bool,
+    /// Whether the projection's near and far planes in `cull` drop sections too. Our probes'
+    /// Iris 1.11.7 maps hold the terrain at every depth we put it along the light (from 535 blocks
+    /// beyond the shadow camera to about 120 before it), whatever `shadowNearPlane` and
+    /// `shadowFarPlane` the pack sets, or none (#10403): only its sides cull.
+    pub depth_planes: bool,
 }
 
 /// Set 3 of flat terrain, read by the vertex stage: the sprite layers' table (`mc_Entity`'s id
@@ -4037,6 +4042,7 @@ impl PackPost {
             },
             every_face: true,
             view_casters: true,
+            depth_planes: false,
         })
     }
 
