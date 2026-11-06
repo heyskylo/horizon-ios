@@ -2534,6 +2534,13 @@ console (which waits for the next tick and does nothing inside a player's hook).
   `eject`). `native_entity_mount` may refuse each. Inside a player's hook only the acting player and mobs are reached.
   True when it rides, got off, or one got off; false otherwise and on a client. Server-side. Bundles need
   `"hooks": @API:mount@`.
+- Helper **`native_set_flight(uuid, allow, flying)`** (`host.set_flight`): lets a server player fly in any game mode
+  (`allow`) or not, and sets whether they fly now (`flying`), as Bukkit's `Player.setAllowFlight` and `setFlying`
+  (`Abilities.mayfly` and `flying`); their client is told, and the server's flying check no longer kicks them. A player
+  who may not fly does not fly; creative and spectator players fly whatever `allow` is. Kept until their game mode
+  changes, they respawn or they leave (vanilla sets it for the mode then); not saved. Done at once where nobody's state
+  is swapped in, else after the players' packets of the server tick. True when done or queued; false for a player not
+  on the server (where that can be seen) and on a client. Server-side. Bundles need `"hooks": @API:set_flight@`.
 
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The

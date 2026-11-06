@@ -498,14 +498,15 @@ impl Game<'_> {
         motion.yaw = g.yaw;
         motion.pitch = g.pitch;
         motion.sprinting = g.sprinting;
-        motion.may_fly = g.creative() || g.game_mode == SPECTATOR;
+        let mode_flies = g.creative() || g.game_mode == SPECTATOR;
+        motion.may_fly = mode_flies || g.allow_flight;
         motion.flying = g.flying;
         motion.flying_speed = g.flying_speed;
         // FireworkRocketItem.use boosts only a gliding player.
         motion.fall_flying = g.fall_flying;
         // A player frozen for a hand-over takes no damage (`Abilities.invulnerable`, which the
         // void and `/kill` still pass), so its record stays true until the release.
-        motion.invulnerable = motion.may_fly || g.handover.is_some();
+        motion.invulnerable = mode_flies || g.handover.is_some();
         // `ServerPlayer.isInvulnerableTo`'s connection term, as of now.
         motion.client_loaded = g.client_loaded();
         let _ = motion.set_health(g.health, false);

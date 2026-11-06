@@ -12,6 +12,10 @@ pub(super) enum NativeMove {
         pos: [f64; 3],
         rotation: [f32; 2],
     },
+    Flight {
+        allow: bool,
+        flying: bool,
+    },
 }
 
 /// The level a mod names, of the three a server keeps.
@@ -243,6 +247,44 @@ impl Game<'_> {
             .then_some(Target::Mob(entity))
     }
 
+    /// Lets the server player `uuid` fly in any game mode (`allow`) or not, and sets whether
+    /// they fly now (`flying`), as Bukkit's `Player.setAllowFlight` and `setFlying`
+    /// (`Abilities.mayfly` and `flying`); their client is told. A player who may not fly does
+    /// not fly, and creative and spectator players fly whatever `allow` is. Kept until their
+    /// game mode changes, they respawn or they leave (vanilla's `GameType.updatePlayerAbilities`
+    /// sets it for the mode then); not saved. Where nobody's state is swapped in it is done at
+    /// once, else after the players' packets of the server tick. True when done or queued;
+    /// false for a player not on the server (when that can be seen) and on a client. API
+    /// @API:set_flight@.
+    pub(super) fn native_set_flight(&mut self, uuid: u128, allow: bool, flying: bool) -> bool {
+        if !self.native_serves() {
+            return false;
+        }
+        if self.lan_acting.is_some() || self.lan.is_none() {
+            self.native_moves
+                .push((uuid, NativeMove::Flight { allow, flying }));
+            return true;
+        }
+        self.native_flight_now(uuid, allow, flying)
+    }
+
+    fn native_flight_now(&mut self, uuid: u128, allow: bool, flying: bool) -> bool {
+        let Some(host) = self.lan.as_mut() else {
+            return false;
+        };
+        let Some(conn) = host
+            .hub
+            .guests
+            .iter()
+            .find(|g| g.placed && g.uuid == uuid)
+            .map(|g| g.conn)
+        else {
+            return false;
+        };
+        host.hub.set_flight(conn, allow, flying);
+        true
+    }
+
     /// The teleport of a server player while nobody's state is swapped in.
     fn native_teleport_now(
         &mut self,
@@ -281,6 +323,9 @@ impl Game<'_> {
             match todo {
                 NativeMove::Teleport { dim, pos, rotation } => {
                     self.native_teleport_now(uuid, dim, pos, rotation);
+                }
+                NativeMove::Flight { allow, flying } => {
+                    self.native_flight_now(uuid, allow, flying);
                 }
             }
         }
