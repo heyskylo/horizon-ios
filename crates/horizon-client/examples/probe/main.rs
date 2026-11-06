@@ -109,6 +109,7 @@ mod text_display_render_fixture;
 mod toggle_keys_probe;
 mod tooltip_display_fixture;
 mod trading_fixture;
+mod trade_components_probe;
 mod translucency_fixture;
 mod trident_probe;
 mod vehicle_container_fixture;
@@ -215,6 +216,7 @@ probes! {
     text_display_fixture,
     text_display_render_fixture,
     trading_fixture,
+    trade_components_probe,
     trident_probe,
     translucency_fixture,
     stack_foil_fixture,
