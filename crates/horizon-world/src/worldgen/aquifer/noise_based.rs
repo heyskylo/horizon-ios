@@ -41,6 +41,8 @@ pub struct RegistryAquiferBlockStates<'a> {
     registry: &'a BlockRegistry,
     air: BlockStateId,
     lava: BlockStateId,
+    /// The default water state, if the registry has water.
+    water: Option<BlockStateId>,
 }
 impl<'a> RegistryAquiferBlockStates<'a> {
     pub fn new(registry: &'a BlockRegistry) -> Result<Self, AquiferError> {
@@ -52,12 +54,15 @@ impl<'a> RegistryAquiferBlockStates<'a> {
             lava: registry
                 .default_state("minecraft:lava")
                 .ok_or(AquiferError::MissingBlock)?,
+            water: registry.default_state("minecraft:water"),
         })
     }
     fn name(&self, state: BlockStateId) -> Option<&str> {
         self.registry.state(state).map(|s| s.name.as_str())
     }
 }
+// Almost every state asked about is default air, water or lava, whose blocks
+// are known without reading their names; any other state reads its name.
 impl AquiferBlockStates for RegistryAquiferBlockStates<'_> {
     fn air(&self) -> BlockStateId {
         self.air
@@ -66,16 +71,25 @@ impl AquiferBlockStates for RegistryAquiferBlockStates<'_> {
         self.lava
     }
     fn is_air(&self, state: BlockStateId) -> bool {
-        matches!(
-            self.name(state),
-            Some("minecraft:air" | "minecraft:cave_air" | "minecraft:void_air")
-        )
+        state == self.air
+            || (state != self.lava
+                && Some(state) != self.water
+                && matches!(
+                    self.name(state),
+                    Some("minecraft:air" | "minecraft:cave_air" | "minecraft:void_air")
+                ))
     }
     fn is_lava(&self, state: BlockStateId) -> bool {
-        self.name(state) == Some("minecraft:lava")
+        state == self.lava
+            || (state != self.air
+                && Some(state) != self.water
+                && self.name(state) == Some("minecraft:lava"))
     }
     fn is_water(&self, state: BlockStateId) -> bool {
-        self.name(state) == Some("minecraft:water")
+        Some(state) == self.water
+            || (state != self.air
+                && state != self.lava
+                && self.name(state) == Some("minecraft:water"))
     }
 }
 #[derive(Debug)]
@@ -109,6 +123,18 @@ impl std::fmt::Display for AquiferError {
 }
 impl std::error::Error for AquiferError {}
 
+/// The 12 grid cells around one anchor, in vanilla's `x, y, z` loop order.
+#[derive(Clone, Copy)]
+struct Cells {
+    /// The cell's index in the grid's caches.
+    index: [u32; 12],
+    x: [i32; 12],
+    y: [i32; 12],
+    z: [i32; 12],
+    /// `dx * dx + dz * dz` from the cell's location to the current column.
+    horizontal: [i32; 12],
+}
+
 pub struct NoiseBasedAquifer<P, F, B> {
     samplers: AquiferSamplers,
     picker: P,
@@ -119,15 +145,16 @@ pub struct NoiseBasedAquifer<P, F, B> {
     size_z: i32,
     statuses: Vec<Option<FluidStatus>>,
     locations: Vec<i64>,
+    /// Each drawn location as `BlockPos.getX/Y/Z` read it back.
+    points: Vec<[i32; 3]>,
     surfaces: HashMap<i64, i32>,
-    neighborhood: Option<([i32; 3], [(usize, BlockPos); 12])>,
+    /// The anchor `cells` holds, once all 12 of its cells are in the grid.
+    anchor: Option<[i32; 3]>,
+    /// The column `cells.horizontal` was computed for.
+    column: [i32; 2],
+    cells: Cells,
     skip_above_y: i32,
     schedule: bool,
-    cached_col: [i32; 2],
-    cached_y_anchor: i32,
-    cached_h: [i32; 12],
-    cached_py: [i32; 12],
-    cached_indices: [usize; 12],
 }
 impl<P: FluidPicker, F: PositionalRandom, B: AquiferBlockStates> NoiseBasedAquifer<P, F, B> {
     /// The positional factory is the caller's aquifer factory, not the world's
@@ -175,6 +202,11 @@ impl<P: FluidPicker, F: PositionalRandom, B: AquiferBlockStates> NoiseBasedAquif
             .try_reserve_exact(count)
             .map_err(|_| AquiferError::Allocation)?;
         locations.resize(count, i64::MAX);
+        let mut points = Vec::new();
+        points
+            .try_reserve_exact(count)
+            .map_err(|_| AquiferError::Allocation)?;
+        points.resize(count, [0; 3]);
         let mut result = Self {
             samplers,
             picker,
@@ -185,15 +217,19 @@ impl<P: FluidPicker, F: PositionalRandom, B: AquiferBlockStates> NoiseBasedAquif
             size_z: sizes[2],
             statuses,
             locations,
+            points,
             surfaces: HashMap::new(),
-            neighborhood: None,
+            anchor: None,
+            column: [0; 2],
+            cells: Cells {
+                index: [0; 12],
+                x: [0; 12],
+                y: [0; 12],
+                z: [0; 12],
+                horizontal: [0; 12],
+            },
             skip_above_y: 0,
             schedule: false,
-            cached_col: [i32::MIN, i32::MIN],
-            cached_y_anchor: i32::MIN,
-            cached_h: [0; 12],
-            cached_py: [0; 12],
-            cached_indices: [0; 12],
         };
         let max_surface = result
             .max_surface_level(
@@ -327,16 +363,116 @@ impl<P: FluidPicker, F: PositionalRandom, B: AquiferBlockStates> NoiseBasedAquif
         }
         Ok(index as usize)
     }
+    /// Loads the 12 cells around `grid` for the column `[x, z]`, drawing missing
+    /// locations in vanilla's loop order. A cell outside the grid stops the
+    /// loop where vanilla's index check would, and leaves no anchor cached.
+    #[inline(never)]
+    fn load_cells(&mut self, grid: [i32; 3], column: [i32; 2]) -> Result<(), AquiferError> {
+        // The fill walks each column down: one anchor down, the 8 cells at the
+        // old anchor's y and the y below stay. Their slots move up by one y
+        // (2 slots); the 4 cells below are new, and vanilla's loop meets them
+        // in the same order (slots 0, 1, 6, 7) with only drawn cells between.
+        let down = self.anchor == Some([grid[0], grid[1].wrapping_add(1), grid[2]]);
+        self.anchor = None;
+        if down {
+            let cells = &mut self.cells;
+            for to in [11, 10, 9, 8, 5, 4, 3, 2] {
+                cells.index[to] = cells.index[to - 2];
+                cells.x[to] = cells.x[to - 2];
+                cells.y[to] = cells.y[to - 2];
+                cells.z[to] = cells.z[to - 2];
+                cells.horizontal[to] = cells.horizontal[to - 2];
+            }
+            for (slot, dx, dz) in [(0, 0, 0), (1, 0, 1), (6, 1, 0), (7, 1, 1)] {
+                self.load_cell(slot, [dx, -1, dz], grid, column)?;
+            }
+            if self.column != column {
+                self.column = column;
+                self.measure_column();
+            }
+        } else {
+            let mut slot = 0;
+            for dx in 0..=1i32 {
+                for dy in -1..=1i32 {
+                    for dz in 0..=1i32 {
+                        self.load_cell(slot, [dx, dy, dz], grid, column)?;
+                        slot += 1;
+                    }
+                }
+            }
+            self.column = column;
+        }
+        self.anchor = Some(grid);
+        Ok(())
+    }
+    #[inline(always)]
+    fn load_cell(
+        &mut self,
+        slot: usize,
+        [dx, dy, dz]: [i32; 3],
+        grid: [i32; 3],
+        [x, z]: [i32; 2],
+    ) -> Result<(), AquiferError> {
+        let cell = [
+            grid[0].wrapping_add(dx),
+            grid[1].wrapping_add(dy),
+            grid[2].wrapping_add(dz),
+        ];
+        let index = self.grid_index(cell)?;
+        if self.locations[index] == i64::MAX {
+            let mut random = self.random.at(BlockPos::new(cell[0], cell[1], cell[2]));
+            let px = cell[0]
+                .wrapping_shl(4)
+                .wrapping_add(random.next_int_bound(10).expect("positive bound"));
+            let py = cell[1]
+                .wrapping_mul(12)
+                .wrapping_add(random.next_int_bound(9).expect("positive bound"));
+            let pz = cell[2]
+                .wrapping_shl(4)
+                .wrapping_add(random.next_int_bound(10).expect("positive bound"));
+            let location = BlockPos::new(px, py, pz).pack();
+            let point = BlockPos::unpack(location);
+            self.locations[index] = location;
+            self.points[index] = [point.x, point.y, point.z];
+        }
+        let [px, py, pz] = self.points[index];
+        let (ax, az) = (px.wrapping_sub(x), pz.wrapping_sub(z));
+        // The grid holds at most 16777216 cells, so indices fit.
+        self.cells.index[slot] = index as u32;
+        self.cells.x[slot] = px;
+        self.cells.y[slot] = py;
+        self.cells.z[slot] = pz;
+        self.cells.horizontal[slot] = ax.wrapping_mul(ax).wrapping_add(az.wrapping_mul(az));
+        Ok(())
+    }
+    /// Recomputes every cell's horizontal distance to `column`.
+    fn measure_column(&mut self) {
+        let [x, z] = self.column;
+        for i in 0..12 {
+            let ax = self.cells.x[i].wrapping_sub(x);
+            let az = self.cells.z[i].wrapping_sub(z);
+            self.cells.horizontal[i] = ax.wrapping_mul(ax).wrapping_add(az.wrapping_mul(az));
+        }
+    }
+    #[inline(always)]
     fn status(
         &mut self,
         context: &mut SamplerContext,
         index: usize,
     ) -> Result<FluidStatus, AquiferError> {
-        if let Some(status) = self.statuses[index] {
-            return Ok(status);
+        match self.statuses[index] {
+            Some(status) => Ok(status),
+            None => self.compute_status(context, index),
         }
-        let pos = BlockPos::unpack(self.locations[index]);
-        let status = self.compute_fluid(context, [pos.x, pos.y, pos.z])?;
+    }
+    #[inline(never)]
+    fn compute_status(
+        &mut self,
+        context: &mut SamplerContext,
+        index: usize,
+    ) -> Result<FluidStatus, AquiferError> {
+        let [x, y, z] = self.points[index];
+        let status = self.compute_fluid(context, [x, y, z])?;
         self.statuses[index] = Some(status);
         Ok(status)
     }
@@ -502,69 +638,30 @@ impl<P: FluidPicker, F: PositionalRandom, B: AquiferBlockStates> NoiseBasedAquif
             self.schedule = false;
             return Ok(Some(self.blocks.lava()));
         }
+        let (distances, indices) = self.closest([x, y, z])?;
+        self.resolve(context, [x, y, z], density, distances, indices)
+    }
+    /// The squared distances to the 4 cell locations closest to the block, and
+    /// their grid indices, closest first.
+    #[inline(always)]
+    fn closest(&mut self, [x, y, z]: [i32; 3]) -> Result<([i32; 4], [usize; 4]), AquiferError> {
         let grid = [
             x.wrapping_sub(5) >> 4,
             y.wrapping_add(1).div_euclid(12),
             z.wrapping_sub(5) >> 4,
         ];
-        // Fill in the original cell order, publishing only after checked traversal
-        // succeeds. Failed traversal keeps the last complete neighborhood.
-        if self.neighborhood.as_ref().map(|(key, _)| *key) != Some(grid) {
-            let mut entries = [(0, BlockPos::default()); 12];
-            let mut next = 0;
-            for dx in 0..=1i32 {
-                for dy in -1..=1i32 {
-                    for dz in 0..=1i32 {
-                        let cell = [
-                            grid[0].wrapping_add(dx),
-                            grid[1].wrapping_add(dy),
-                            grid[2].wrapping_add(dz),
-                        ];
-                        let index = self.grid_index(cell)?;
-                        if self.locations[index] == i64::MAX {
-                            let mut random =
-                                self.random.at(BlockPos::new(cell[0], cell[1], cell[2]));
-                            let px = cell[0]
-                                .wrapping_shl(4)
-                                .wrapping_add(random.next_int_bound(10).expect("positive bound"));
-                            let py = cell[1]
-                                .wrapping_mul(12)
-                                .wrapping_add(random.next_int_bound(9).expect("positive bound"));
-                            let pz = cell[2]
-                                .wrapping_shl(4)
-                                .wrapping_add(random.next_int_bound(10).expect("positive bound"));
-                            self.locations[index] = BlockPos::new(px, py, pz).pack();
-                        }
-                        entries[next] = (index, BlockPos::unpack(self.locations[index]));
-                        next += 1;
-                    }
-                }
-            }
-            self.neighborhood = Some((grid, entries));
-        }
-        if x != self.cached_col[0] || z != self.cached_col[1] || grid[1] != self.cached_y_anchor {
-            self.cached_col = [x, z];
-            self.cached_y_anchor = grid[1];
-            let entries = &self
-                .neighborhood
-                .as_ref()
-                .expect("populated neighborhood")
-                .1;
-            for i in 0..12 {
-                let (index, point) = entries[i];
-                let ax = point.x.wrapping_sub(x);
-                let az = point.z.wrapping_sub(z);
-                self.cached_indices[i] = index;
-                self.cached_h[i] = ax.wrapping_mul(ax).wrapping_add(az.wrapping_mul(az));
-                self.cached_py[i] = point.y;
-            }
+        if self.anchor != Some(grid) {
+            self.load_cells(grid, [x, z])?;
+        } else if self.column != [x, z] {
+            self.column = [x, z];
+            self.measure_column();
         }
         let mut distances = [i32::MAX; 4];
         let mut indices = [0usize; 4];
         for i in 0..12 {
-            let ay = self.cached_py[i].wrapping_sub(y);
-            let distance = self.cached_h[i].wrapping_add(ay.wrapping_mul(ay));
-            let index = self.cached_indices[i];
+            let ay = self.cells.y[i].wrapping_sub(y);
+            let distance = self.cells.horizontal[i].wrapping_add(ay.wrapping_mul(ay));
+            let index = self.cells.index[i] as usize;
             // Equal distances insert before existing entries, as in vanilla.
             if distance <= distances[0] {
                 distances = [distance, distances[0], distances[1], distances[2]];
@@ -586,6 +683,18 @@ impl<P: FluidPicker, F: PositionalRandom, B: AquiferBlockStates> NoiseBasedAquif
                 indices[3] = index;
             }
         }
+        Ok((distances, indices))
+    }
+    /// The block's substance from its 4 closest cells.
+    #[inline(always)]
+    fn resolve(
+        &mut self,
+        context: &mut SamplerContext,
+        [x, y, z]: [i32; 3],
+        density: f64,
+        distances: [i32; 4],
+        indices: [usize; 4],
+    ) -> Result<Option<BlockStateId>, AquiferError> {
         let a = self.status(context, indices[0])?;
         let s01 = similarity(distances[0], distances[1]);
         let candidate = a.at(y, self.blocks.air());
@@ -639,4 +748,392 @@ impl<P: FluidPicker, F: PositionalRandom, B: AquiferBlockStates> NoiseBasedAquif
 }
 fn similarity(a: i32, b: i32) -> f64 {
     1. - b.wrapping_sub(a) as f64 / 25.
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::nbt::Tag;
+    use crate::worldgen::aquifer::GlobalFluidPicker;
+    use horizon_core::{density::DensitySampler, random::LegacyPositionalRandom};
+    use std::sync::Arc;
+
+    /// States as `(name, level)`; each name's first state is its default.
+    fn registry(states: &[(&str, &str)]) -> BlockRegistry {
+        let mut defaults = Vec::new();
+        for (id, (name, _)) in states.iter().enumerate() {
+            if !defaults.iter().any(|(n, _)| n == name) {
+                defaults.push((*name, Tag::Int(id as i32)));
+            }
+        }
+        let states = states.iter().map(|(name, level)| {
+            let id = ("id", Tag::String((*name).into()));
+            match *level {
+                "" => Tag::compound([id]),
+                level => Tag::compound([
+                    id,
+                    (
+                        "properties",
+                        Tag::compound([("level", Tag::String(level.into()))]),
+                    ),
+                ]),
+            }
+        });
+        BlockRegistry::from_nbt(&Tag::compound([
+            ("DataVersion", Tag::Int(crate::DATA_VERSION)),
+            ("states", Tag::List(states.collect())),
+            ("defaults", Tag::compound(defaults)),
+        ]))
+        .unwrap()
+    }
+    const STATES: [(&str, &str); 10] = [
+        ("minecraft:stone", ""),
+        ("minecraft:water", "0"),
+        ("minecraft:water", "3"),
+        ("minecraft:lava", "0"),
+        ("minecraft:lava", "5"),
+        ("minecraft:air", ""),
+        ("minecraft:cave_air", ""),
+        ("minecraft:void_air", ""),
+        ("minecraft:lava_cauldron", ""),
+        ("minecraft:waterlogged", ""),
+    ];
+
+    /// The block classification before its default-state shortcuts: every
+    /// state reads its name.
+    struct NameBlocks<'a>(RegistryAquiferBlockStates<'a>);
+    impl AquiferBlockStates for NameBlocks<'_> {
+        fn air(&self) -> BlockStateId {
+            self.0.air
+        }
+        fn lava(&self) -> BlockStateId {
+            self.0.lava
+        }
+        fn is_air(&self, state: BlockStateId) -> bool {
+            matches!(
+                self.0.name(state),
+                Some("minecraft:air" | "minecraft:cave_air" | "minecraft:void_air")
+            )
+        }
+        fn is_lava(&self, state: BlockStateId) -> bool {
+            self.0.name(state) == Some("minecraft:lava")
+        }
+        fn is_water(&self, state: BlockStateId) -> bool {
+            self.0.name(state) == Some("minecraft:water")
+        }
+    }
+
+    #[test]
+    fn block_classification_matches_the_names() {
+        // With and without a water default. IDs past the end name no block.
+        let no_water = [
+            ("minecraft:air", ""),
+            ("minecraft:lava", ""),
+            ("minecraft:stone", ""),
+        ];
+        for registry in [registry(&STATES), registry(&no_water)] {
+            let fast = RegistryAquiferBlockStates::new(&registry).unwrap();
+            let names = NameBlocks(RegistryAquiferBlockStates::new(&registry).unwrap());
+            for id in 0..registry.len() as u32 + 3 {
+                let state = BlockStateId(id);
+                assert_eq!(fast.is_air(state), names.is_air(state), "{id}");
+                assert_eq!(fast.is_lava(state), names.is_lava(state), "{id}");
+                assert_eq!(fast.is_water(state), names.is_water(state), "{id}");
+            }
+        }
+    }
+
+    /// A cheap, position-dependent stand-in for a noise root, spread over
+    /// `base .. base + span`, so every aquifer branch is reached.
+    #[derive(Debug)]
+    struct Pattern {
+        salt: u32,
+        base: f32,
+        span: f32,
+    }
+    impl DensitySampler for Pattern {
+        fn sample_value(
+            &self,
+            _: &mut SamplerContext,
+            [x, y, z]: [i32; 3],
+        ) -> Result<f32, SampleError> {
+            Ok(self.base + hash(self.salt, x, y, z) as f32 / 16_777_216. * self.span)
+        }
+    }
+    fn hash(salt: u32, x: i32, y: i32, z: i32) -> u32 {
+        let mut h = (x as u32).wrapping_mul(0x9e37_79b9)
+            ^ (y as u32).wrapping_mul(0x85eb_ca6b)
+            ^ (z as u32).wrapping_mul(0xc2b2_ae35)
+            ^ salt.wrapping_mul(0x2718_2818);
+        h ^= h >> 15;
+        h = h.wrapping_mul(0x2545_f491);
+        h ^= h >> 13;
+        h >> 8
+    }
+    fn samplers() -> AquiferSamplers {
+        let pattern =
+            |salt, base, span| Arc::new(Pattern { salt, base, span }) as Arc<dyn DensitySampler>;
+        // AquiferField::ALL order: barrier, floodedness, spread, lava,
+        // exclusion, surface level. Surfaces from deep below the lava level
+        // to above sea level, so cells reach every fluid rule.
+        AquiferSamplers::new([
+            pattern(1, -1.5, 3.),
+            pattern(2, -1.2, 2.4),
+            pattern(3, -1., 2.),
+            pattern(4, -0.6, 1.2),
+            pattern(5, -1., 1.3),
+            pattern(6, -90., 190.),
+        ])
+    }
+
+    /// The closest-cell search before the cell arrays, kept verbatim: a
+    /// neighbourhood of packed locations, a column cache and a two-array
+    /// insertion.
+    #[derive(Default)]
+    struct Previous {
+        neighborhood: Option<([i32; 3], [(usize, BlockPos); 12])>,
+        cached_col: [i32; 2],
+        cached_y_anchor: i32,
+        cached_h: [i32; 12],
+        cached_py: [i32; 12],
+        cached_indices: [usize; 12],
+    }
+    type NameAquifer<'a> =
+        NoiseBasedAquifer<GlobalFluidPicker, LegacyPositionalRandom, NameBlocks<'a>>;
+    impl Previous {
+        fn compute_substance(
+            &mut self,
+            this: &mut NameAquifer<'_>,
+            context: &mut SamplerContext,
+            [x, y, z]: [i32; 3],
+            density: f64,
+        ) -> Result<Option<BlockStateId>, AquiferError> {
+            if density > 0. {
+                this.schedule = false;
+                return Ok(None);
+            }
+            let global = this.picker.compute([x, y, z]);
+            if y > this.skip_above_y {
+                this.schedule = false;
+                return Ok(Some(global.at(y, this.blocks.air())));
+            }
+            if this.blocks.is_lava(global.at(y, this.blocks.air())) {
+                this.schedule = false;
+                return Ok(Some(this.blocks.lava()));
+            }
+            let grid = [
+                x.wrapping_sub(5) >> 4,
+                y.wrapping_add(1).div_euclid(12),
+                z.wrapping_sub(5) >> 4,
+            ];
+            if self.neighborhood.as_ref().map(|(key, _)| *key) != Some(grid) {
+                let mut entries = [(0, BlockPos::default()); 12];
+                let mut next = 0;
+                for dx in 0..=1i32 {
+                    for dy in -1..=1i32 {
+                        for dz in 0..=1i32 {
+                            let cell = [
+                                grid[0].wrapping_add(dx),
+                                grid[1].wrapping_add(dy),
+                                grid[2].wrapping_add(dz),
+                            ];
+                            let index = this.grid_index(cell)?;
+                            if this.locations[index] == i64::MAX {
+                                let mut random =
+                                    this.random.at(BlockPos::new(cell[0], cell[1], cell[2]));
+                                let px = cell[0].wrapping_shl(4).wrapping_add(
+                                    random.next_int_bound(10).expect("positive bound"),
+                                );
+                                let py = cell[1].wrapping_mul(12).wrapping_add(
+                                    random.next_int_bound(9).expect("positive bound"),
+                                );
+                                let pz = cell[2].wrapping_shl(4).wrapping_add(
+                                    random.next_int_bound(10).expect("positive bound"),
+                                );
+                                this.locations[index] = BlockPos::new(px, py, pz).pack();
+                                // The status cache reads the unpacked location.
+                                let point = BlockPos::unpack(this.locations[index]);
+                                this.points[index] = [point.x, point.y, point.z];
+                            }
+                            entries[next] = (index, BlockPos::unpack(this.locations[index]));
+                            next += 1;
+                        }
+                    }
+                }
+                self.neighborhood = Some((grid, entries));
+            }
+            if x != self.cached_col[0] || z != self.cached_col[1] || grid[1] != self.cached_y_anchor
+            {
+                self.cached_col = [x, z];
+                self.cached_y_anchor = grid[1];
+                let entries = &self
+                    .neighborhood
+                    .as_ref()
+                    .expect("populated neighborhood")
+                    .1;
+                for i in 0..12 {
+                    let (index, point) = entries[i];
+                    let ax = point.x.wrapping_sub(x);
+                    let az = point.z.wrapping_sub(z);
+                    self.cached_indices[i] = index;
+                    self.cached_h[i] = ax.wrapping_mul(ax).wrapping_add(az.wrapping_mul(az));
+                    self.cached_py[i] = point.y;
+                }
+            }
+            let mut distances = [i32::MAX; 4];
+            let mut indices = [0usize; 4];
+            for i in 0..12 {
+                let ay = self.cached_py[i].wrapping_sub(y);
+                let distance = self.cached_h[i].wrapping_add(ay.wrapping_mul(ay));
+                let index = self.cached_indices[i];
+                if distance <= distances[0] {
+                    distances = [distance, distances[0], distances[1], distances[2]];
+                    indices = [index, indices[0], indices[1], indices[2]];
+                } else if distance <= distances[1] {
+                    distances[3] = distances[2];
+                    distances[2] = distances[1];
+                    distances[1] = distance;
+                    indices[3] = indices[2];
+                    indices[2] = indices[1];
+                    indices[1] = index;
+                } else if distance <= distances[2] {
+                    distances[3] = distances[2];
+                    distances[2] = distance;
+                    indices[3] = indices[2];
+                    indices[2] = index;
+                } else if distance <= distances[3] {
+                    distances[3] = distance;
+                    indices[3] = index;
+                }
+            }
+            this.resolve(context, [x, y, z], density, distances, indices)
+        }
+    }
+
+    /// The cell arrays, the inlined status cache and the default-state
+    /// classification answer what the code before them answered, bit for bit:
+    /// the same block (or default block), the same pending fluid update and the
+    /// same errors, then the same cached locations, statuses and surfaces.
+    /// Columns are swept top-down as the noise fill does (ocean water, the
+    /// lava level below -54, cave air with barriers between aquifers), then
+    /// blocks are asked in a scrambled order, then outside the grid.
+    #[test]
+    fn substance_matches_the_previous_code_bit_for_bit() {
+        let registry = registry(&STATES);
+        let air = registry.default_state("minecraft:air").unwrap();
+        let water = registry.default_state("minecraft:water").unwrap();
+        let lava = registry.default_state("minecraft:lava").unwrap();
+        let picker = GlobalFluidPicker::new(63, water, lava, air);
+        for (seed, chunk) in [(7, [0, 0]), (-3, [-5, 12]), (12345, [31, -32])] {
+            let volume =
+                DensityVolume::new([16, 384, 16], [chunk[0] * 16, -64, chunk[1] * 16], [1; 3])
+                    .unwrap();
+            let mut context = SamplerContext::cached();
+            let mut candidate = NoiseBasedAquifer::new(
+                samplers(),
+                picker,
+                LegacyPositionalRandom::new(seed),
+                RegistryAquiferBlockStates::new(&registry).unwrap(),
+                volume,
+                &mut context,
+            )
+            .unwrap();
+            let mut reference = NoiseBasedAquifer::new(
+                samplers(),
+                picker,
+                LegacyPositionalRandom::new(seed),
+                NameBlocks(RegistryAquiferBlockStates::new(&registry).unwrap()),
+                volume,
+                &mut context,
+            )
+            .unwrap();
+            let mut previous = Previous {
+                cached_col: [i32::MIN, i32::MIN],
+                cached_y_anchor: i32::MIN,
+                ..Previous::default()
+            };
+            assert_eq!(
+                candidate.skip_sampling_above_y(),
+                reference.skip_sampling_above_y()
+            );
+            let [bx, bz] = [chunk[0] * 16, chunk[1] * 16];
+            let mut positions = Vec::new();
+            for z in 0..16 {
+                for x in 0..16 {
+                    for y in (-64..320).rev() {
+                        positions.push([bx + x, y, bz + z]);
+                    }
+                }
+            }
+            positions.extend((0..20_000).map(|i| {
+                let h = hash(seed as u32, i, 0, 0);
+                let y = -64 + (hash(9, i, 1, 0) % 384) as i32;
+                [bx + (h & 15) as i32, y, bz + ((h >> 4) & 15) as i32]
+            }));
+            // Outside the grid: errors, then the cache must still answer.
+            // Vanilla checks only the final index, so some of these wrap onto
+            // other rows of the grid instead of failing.
+            positions.extend([
+                [bx + 100_000, 0, bz],
+                [bx + 3, -40, bz + 3],
+                [bx, 10, bz - 100_000],
+                [bx + 40, 10, bz],
+                [bx - 100, 10, bz - 100],
+                [bx + 4, -41, bz + 4],
+                [bx + 4, -42, bz + 4],
+            ]);
+            let mut outcomes = [0usize; 6];
+            for position in positions {
+                let [x, y, z] = position;
+                // Mostly open space, some solid, a few NaN: barriers decide
+                // where the density is just below zero.
+                let h = hash(seed as u32 ^ 77, x, y, z);
+                let density = match h % 64 {
+                    0 => f64::NAN,
+                    1..=6 => 0.2,
+                    _ => -f64::from(h % 1000) / 1500.,
+                };
+                let got = candidate.compute_substance(&mut context, position, density);
+                let want =
+                    previous.compute_substance(&mut reference, &mut context, position, density);
+                match (&got, &want) {
+                    (Ok(got), Ok(want)) => assert_eq!(got, want, "{position:?} {density}"),
+                    (Err(got), Err(want)) => {
+                        assert_eq!(got.to_string(), want.to_string(), "{position:?}")
+                    }
+                    _ => panic!("{position:?} {density}: {got:?} vs {want:?}"),
+                }
+                assert_eq!(
+                    candidate.should_schedule_fluid_update(),
+                    reference.should_schedule_fluid_update(),
+                    "{position:?} {density}"
+                );
+                // Errors, barriers, air, water, lava, pending updates.
+                let seen = [
+                    got.is_err(),
+                    density <= 0. && matches!(got, Ok(None)),
+                    matches!(got, Ok(Some(s)) if s == air),
+                    matches!(got, Ok(Some(s)) if s == water),
+                    matches!(got, Ok(Some(s)) if s == lava),
+                    candidate.should_schedule_fluid_update(),
+                ];
+                for (count, seen) in outcomes.iter_mut().zip(seen) {
+                    *count += usize::from(seen);
+                }
+            }
+            assert!(outcomes.iter().all(|&n| n > 0), "{outcomes:?}");
+            assert!(candidate.cached_cells().eq(reference.cached_cells()));
+            for (location, point) in candidate.locations.iter().zip(&candidate.points) {
+                if *location != i64::MAX {
+                    let unpacked = BlockPos::unpack(*location);
+                    assert_eq!(*point, [unpacked.x, unpacked.y, unpacked.z]);
+                }
+            }
+            let mut surfaces: Vec<_> = candidate.cached_surfaces().collect();
+            let mut want: Vec<_> = reference.cached_surfaces().collect();
+            surfaces.sort();
+            want.sort();
+            assert_eq!(surfaces, want);
+        }
+    }
 }

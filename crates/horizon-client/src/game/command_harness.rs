@@ -260,11 +260,6 @@ impl Game<'_> {
             std::fs::write(path, serde_json::to_vec(&rows)?)?;
         }
         let mut out = String::new();
-        let mut receipts = std::env::var_os("HORIZON_COMMAND_RECEIPTS")
-            .map(std::fs::File::create)
-            .transpose()?;
-        let receipt_start = Instant::now();
-        let mut receipt_sequence = 0_u64;
         for line in std::fs::read_to_string(script)?.lines() {
             if line.trim().is_empty() {
                 continue;
@@ -298,6 +293,13 @@ impl Game<'_> {
                             out.push('\n');
                         }
                     }
+                }
+                "raid_state" => {
+                    let state = self.harness_owner(|g| g.raid_fixture_state(&op))?;
+                    let row = json!({"cmd":format!("#raid_state {} {}",op["label"].as_str().unwrap_or(""),op["id"]),
+                        "messages":[],"results":[],"state":state});
+                    out.push_str(&row.to_string());
+                    out.push('\n');
                 }
                 "mob_anger" => {
                     // Metadata-state equality through the production writer, not packet delivery.
@@ -931,26 +933,6 @@ impl Game<'_> {
                     out.push('\n');
                 }
                 other => return Err(format!("command harness: unknown op {other}").into()),
-            }
-            if let Some(file) = receipts.as_mut() {
-                use std::io::Write;
-                let state = self.in_owner_level(|g| -> Result<Value> {
-                    let host = g.lan.as_ref().ok_or("receipt: no hub")?;
-                    let owner = g.serving.as_ref().ok_or("receipt: no owner")?.owner;
-                    let guest = host.hub.guests.iter().find(|p|p.uuid==owner && p.placed)
-                        .ok_or("receipt: missing actual owner")?;
-                    let menu=g.harness_merchant(host,guest.conn).map(|(window,revision,_)|json!({"window":window,"revision":revision}));
-                    Ok(json!({"connection":guest.conn,"uuid":format!("{owner:032x}"),"game_time":g.world.game_time,"menu":menu}))
-                })?;
-                writeln!(
-                    file,
-                    "{}",
-                    json!({"event":"receipt","sequence":receipt_sequence,
-                    "elapsed_ns":receipt_start.elapsed().as_nanos().to_string(),
-                    "unix_ns":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos().to_string(),"operation":op,"actual":state})
-                )?;
-                file.flush()?;
-                receipt_sequence += 1;
             }
         }
         std::fs::write(output, out)?;
