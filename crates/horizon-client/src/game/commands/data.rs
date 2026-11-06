@@ -117,7 +117,12 @@ impl Game<'_> {
             Target::Item(id) => {
                 let uuid = self.uuid_for(id);
                 let e = self.dropped.iter().find(|e| e.id == id)?;
-                entity_nbt::item_entity_to_nbt(e, uuid, self.persist.raw.get(&id))
+                entity_nbt::item_entity_to_nbt_with_items(
+                    e,
+                    uuid,
+                    self.persist.raw.get(&id),
+                    self.items(),
+                )
             }
             Target::Stand(id) => {
                 let uuid = self.uuid_for(id);
