@@ -476,25 +476,36 @@ pub struct MobTypes {
 }
 impl MobTypes {
     pub fn load(root: &Path) -> crate::Result<Self> {
-        Self::load_with_models(root, true)
+        Self::load_with_models(root, true, None)
     }
 
     /// The dedicated server needs entity facts and AI, but never their render
     /// geometry. Keep one empty part for the fields shared with the client
     /// rather than parsing and retaining every entity-model layer.
     pub fn load_for_server(root: &Path) -> crate::Result<Self> {
-        Self::load_with_models(root, false)
+        Self::load_with_models(root, false, None)
     }
 
-    fn load_with_models(root: &Path, models_needed: bool) -> crate::Result<Self> {
+    /// The client startup already parsed `entity-models.json` for the handoff
+    /// and the other model loaders; read the model layers from that copy.
+    pub fn load_with_document(root: &Path, document: &EntityModelDocument) -> crate::Result<Self> {
+        Self::load_with_models(root, true, Some(document))
+    }
+
+    fn load_with_models(
+        root: &Path,
+        models_needed: bool,
+        document: Option<&EntityModelDocument>,
+    ) -> crate::Result<Self> {
         let bytes = fs::read(root.join("entity-types.json"))?;
         let types: Value = serde_json::from_slice(&bytes)?;
         let exact = exact_attributes(&bytes);
         let models = models_needed
-            .then(|| -> crate::Result<Value> {
-                Ok(serde_json::from_slice(&fs::read(
-                    root.join("entity-models.json"),
-                )?)?)
+            .then(|| -> crate::Result<EntityModelDocument> {
+                match document {
+                    Some(document) => Ok(document.clone()),
+                    None => EntityModelDocument::load(root),
+                }
             })
             .transpose()?;
         let empty_model = Arc::new(Part::parse("root", &Value::Null));
@@ -554,14 +565,19 @@ impl MobTypes {
                 continue;
             }
             let model_key = format!("minecraft:{}", def.model);
-            let model = models.as_ref().and_then(|models| models.get(&model_key));
+            let model = models
+                .as_ref()
+                .and_then(|models| models.value().get(&model_key));
             if models_needed && model.is_none() {
                 continue;
             }
             let defaults = exact.get(&id).cloned().unwrap_or_default();
             let attr = |k: &str| defaults.get(&format!("minecraft:{k}")).copied();
             let mut layers = crate::fast_hash::FxHashMap::default();
-            if let Some(all) = models.as_ref().and_then(Value::as_object) {
+            if let Some(all) = models
+                .as_ref()
+                .and_then(|models| models.value().as_object())
+            {
                 for prefix in def.layer_prefixes() {
                     let start = format!("minecraft:{prefix}#");
                     for (k, v) in all.iter().filter(|(k, _)| k.starts_with(&start)) {
@@ -4143,13 +4159,14 @@ pub fn render(
 }
 /// A parsed `entity-models.json` document, shared while loading model batches.
 /// Each lookup still constructs an independent part tree for the caller.
-pub struct EntityModelDocument(Value);
+#[derive(Clone)]
+pub struct EntityModelDocument(Arc<Value>);
 
 impl EntityModelDocument {
     pub fn load(root: &Path) -> crate::Result<Self> {
-        Ok(Self(serde_json::from_slice(&fs::read(
+        Ok(Self(Arc::new(serde_json::from_slice(&fs::read(
             root.join("entity-models.json"),
-        )?)?))
+        )?)?)))
     }
 
     pub fn model(&self, key: &str) -> Option<Part> {
@@ -4161,6 +4178,11 @@ impl EntityModelDocument {
             .as_object()
             .into_iter()
             .flat_map(|all| all.keys().map(String::as_str))
+    }
+
+    /// The parsed document, for loaders that read several keys from it.
+    pub(crate) fn value(&self) -> &Value {
+        &self.0
     }
 }
 
@@ -5710,6 +5732,66 @@ mod effect_refusal_tests {
         assert!(struck.damage(1.0, Damage::mob(2, [0.0, 64.0, 0.0])));
         assert_eq!(struck.health, 9.0);
         assert_eq!(aquatic::dark_ticks(&struck), 100);
+    }
+}
+#[cfg(test)]
+mod model_document_sharing_tests {
+    use super::*;
+
+    fn part_dump(part: &Part) -> String {
+        format!("{part:?}")
+    }
+
+    /// The startup reads `entity-models.json` once and hands the same document
+    /// to every model loader; reading it again per loader must build the same
+    /// types, model for model and layer for layer.
+    #[test]
+    fn a_shared_document_builds_the_same_types() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("entity-models.json").exists() {
+            return;
+        }
+        let document = EntityModelDocument::load(&root).unwrap();
+        let shared = MobTypes::load_with_document(&root, &document).unwrap();
+        let independent = MobTypes::load(&root).unwrap();
+        assert_eq!(shared.types.len(), independent.types.len());
+        for (id, independent) in &independent.types {
+            let shared = shared.types.get(id).unwrap_or_else(|| panic!("{id}"));
+            assert_eq!(independent.id, shared.id);
+            assert_eq!(independent.species, shared.species);
+            assert_eq!(
+                (
+                    independent.width,
+                    independent.height,
+                    independent.eye_height,
+                ),
+                (shared.width, shared.height, shared.eye_height)
+            );
+            assert_eq!(independent.attributes, shared.attributes);
+            assert_eq!(independent.item_stack_limits, shared.item_stack_limits);
+            assert_eq!(
+                part_dump(&independent.model),
+                part_dump(&shared.model),
+                "{id} model"
+            );
+            let mut independent_layers: Vec<_> = independent.layers.iter().collect();
+            let mut shared_layers: Vec<_> = shared.layers.iter().collect();
+            independent_layers.sort_by_key(|(key, _)| key.as_str());
+            shared_layers.sort_by_key(|(key, _)| key.as_str());
+            assert_eq!(independent_layers.len(), shared_layers.len(), "{id} layers");
+            for ((independent_key, independent_part), (shared_key, shared_part)) in
+                independent_layers.into_iter().zip(shared_layers)
+            {
+                assert_eq!(independent_key, shared_key, "{id} layer key");
+                assert_eq!(
+                    part_dump(independent_part),
+                    part_dump(shared_part),
+                    "{id} layer {independent_key}"
+                );
+            }
+        }
     }
 }
 crate::impl_joined!(Mob);

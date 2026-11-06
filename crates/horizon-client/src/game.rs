@@ -19946,7 +19946,7 @@ impl<'a> Game<'a> {
         ));
         let prepared = prepared
             .map(Ok)
-            .unwrap_or_else(|| GameCpuResources::load(&root))?;
+            .unwrap_or_else(|| GameCpuResources::load(&root, None))?;
         let world = World::new(res.facts().air, 0);
         let tutorial = tutorial::Tutorial::new(tutorial::Step::from_option(
             settings.file.int("tutorialStep"),
@@ -20538,26 +20538,39 @@ impl EntityModels {
     }
 }
 impl GameCpuResources {
-    fn load(root: &std::path::Path) -> Result<Self> {
-        let document = horizon_client::mobs::EntityModelDocument::load(root).ok();
-        let model = |key| document.as_ref().and_then(|document| document.model(key));
+    fn load(
+        root: &std::path::Path,
+        document: Option<&horizon_client::mobs::EntityModelDocument>,
+    ) -> Result<Self> {
+        let owned_document;
+        let document = match document {
+            Some(document) => Some(document),
+            None => match horizon_client::mobs::EntityModelDocument::load(root) {
+                Ok(document) => {
+                    owned_document = document;
+                    Some(&owned_document)
+                }
+                Err(_) => None,
+            },
+        };
+        let model = |key| document.and_then(|document| document.model(key));
         Ok(Self {
             painting_variants: paintings::PaintingVariants::load(root),
             frame_model: frames::bake_frame(root, "item_frame"),
             glow_frame_model: frames::bake_frame(root, "glow_item_frame"),
             map_frame_model: frames::bake_frame(root, "item_frame_map"),
             glow_map_frame_model: frames::bake_frame(root, "glow_item_frame_map"),
-            armor_stand_assets: armor_stands::ArmorStandAssets::load(root, document.as_ref()),
+            armor_stand_assets: armor_stands::ArmorStandAssets::load(root, document),
             waypoint_styles: horizon_client::locator_bar::WaypointStyles::load(root),
-            boat_models: boats::BoatModels::load(document.as_ref()),
-            cart_models: minecarts::CartModels::load(document.as_ref()),
+            boat_models: boats::BoatModels::load(document),
+            cart_models: minecarts::CartModels::load(document),
             crystal_model: model("minecraft:end_crystal#main"),
             cushion_model: model("minecraft:cushion#main"),
             dragon_model: model("minecraft:ender_dragon#main"),
             arrow_model: model("minecraft:arrow#main"),
             bee_stinger_model: model("minecraft:bee_stinger#main"),
             trident_model: model("minecraft:trident#main"),
-            entity_models: EntityModels::load(document.as_ref()),
+            entity_models: EntityModels::load(document),
             creative_screen: Creative::load(root)?,
         })
     }
@@ -20566,6 +20579,9 @@ impl GameCpuResources {
 /// The data the background loader produces for `Game::new`.
 struct Loaded {
     game_cpu: Option<GameCpuResources>,
+    /// The one parsed `entity-models.json`, for the handoff `Game::new` does
+    /// itself on the synchronous launch.
+    entity_models: Option<Arc<horizon_client::mobs::EntityModelDocument>>,
     renderer_cpu: Option<horizon_client::gfx::PreparedTextures>,
     root: PathBuf,
     pack_error: Option<String>,
@@ -21386,8 +21402,8 @@ fn load_resources(
             Some(ui)
         }
     };
-    let (core, loaded_gui) = loop {
-        let (ui, core) = std::thread::scope(|scope| {
+    let (core, loaded_gui, entity_models) = loop {
+        let (ui, core, entity_models) = std::thread::scope(|scope| {
             let core = Step::spawn(scope, parallel, "core", || {
                 // A failed pack starts core again from the game's own
                 // resources, which the world's preload must read: with packs
@@ -21397,12 +21413,22 @@ fn load_resources(
                     load_core(&root, headless, parallel, progress, early)
                 })
             });
+            // The handoff's entity models, the rest worker's mob models and
+            // its transformers all read this one document. A server draws
+            // none of them.
+            let entity_models = (!headless).then(|| {
+                Step::spawn(scope, parallel, "entity_models", || {
+                    startup::time("core.entity_models", || {
+                        horizon_client::mobs::EntityModelDocument::load(&root).ok()
+                    })
+                })
+            });
             let ui = load_ui(&root).map(|ui| offer(ui, &root));
-            (ui, core.join())
+            (ui, core.join(), entity_models.and_then(|step| step.join()))
         });
         let packs = root != vanilla_root;
         let failure = match (ui, core) {
-            (Ok(gui), Ok(Ok(core))) => break (core, gui),
+            (Ok(gui), Ok(Ok(core))) => break (core, gui, entity_models),
             (Err(e), _) if packs => e.to_string(),
             (_, Ok(Err(e))) if packs => e,
             (_, Ok(Err(e))) => {
@@ -21421,6 +21447,7 @@ fn load_resources(
         root = vanilla_root.to_path_buf();
     };
     log::info!("load core tables: {:.2}s", started.elapsed().as_secs_f32());
+    let entity_models = entity_models.map(Arc::new);
     let CoreTables {
         assets,
         item_defaults,
@@ -21497,6 +21524,7 @@ fn load_resources(
         let resources = resources.clone();
         let root = root.clone();
         let vanilla_root = vanilla_root.to_owned();
+        let entity_models = entity_models.clone();
         let rest_progress = progress.clone();
         let progress = progress.clone();
         let handle = std::thread::Builder::new()
@@ -21510,6 +21538,7 @@ fn load_resources(
                     &assets,
                     &behaviour_json,
                     &gameplay_projection,
+                    entity_models.as_deref(),
                     visibility,
                     &progress,
                     started,
@@ -21540,6 +21569,7 @@ fn load_resources(
             &assets,
             &behaviour_json,
             &gameplay_projection,
+            entity_models.as_deref(),
             visibility,
             progress,
             started,
@@ -21562,7 +21592,9 @@ fn load_resources(
                     prepare_renderer_textures(&pack)
                 })
             });
-            let game_cpu = startup::time("handoff.game_cpu", || GameCpuResources::load(&root));
+            let game_cpu = startup::time("handoff.game_cpu", || {
+                GameCpuResources::load(&root, entity_models.as_deref())
+            });
             (game_cpu, textures.join())
         });
         let game_cpu = match game_cpu {
@@ -21584,6 +21616,7 @@ fn load_resources(
     };
     Ok(Loaded {
         game_cpu,
+        entity_models,
         renderer_cpu,
         root,
         pack_error,
@@ -21631,6 +21664,7 @@ fn load_world_rest(
     assets: &Assets,
     behaviour_json: &serde_json::Value,
     gameplay_projection: &[horizon_client::blocks::GameplayProjection],
+    entity_models: Option<&horizon_client::mobs::EntityModelDocument>,
     visibility: horizon_world::block_render::FaceVisibility,
     progress: &Progress,
     started: Instant,
@@ -21685,7 +21719,10 @@ fn load_world_rest(
     let load_mobs = || -> Result<_> {
         let _step = startup::step("rest.mobs");
         let mob_types: HashMap<_, _> = if draws {
-            MobTypes::load(root)?
+            match entity_models {
+                Some(document) => MobTypes::load_with_document(root, document)?,
+                None => MobTypes::load(root)?,
+            }
         } else {
             MobTypes::load_for_server(root)?
         }
@@ -21705,11 +21742,18 @@ fn load_world_rest(
     let load_transformers = || -> Result<_> {
         let _step = startup::step("rest.transformers_models");
         let transformers = horizon_client::block_transform::Transformers::load(root, registry)?;
+        let player_type = match entity_models {
+            Some(document) => perspective::player_type_with_document(root, document),
+            None => perspective::player_type(root),
+        };
         let models = (
-            perspective::player_type(root),
-            player_arms(root, "minecraft:player#main"),
-            player_arms(root, "minecraft:player_slim#main"),
-            horizon_client::mobs::load_model(root, "minecraft:spin_attack#main"),
+            player_type,
+            player_arms(root, "minecraft:player#main", entity_models),
+            player_arms(root, "minecraft:player_slim#main", entity_models),
+            match entity_models {
+                Some(document) => document.model("minecraft:spin_attack#main"),
+                None => horizon_client::mobs::load_model(root, "minecraft:spin_attack#main"),
+            },
         );
         Ok((transformers, models))
     };
@@ -22052,6 +22096,7 @@ fn start_game<'a>(
     rest_loader: Option<WorldRestLoader>,
     settings: Option<Settings>,
     prepared: Option<GameCpuResources>,
+    entity_models: Option<Arc<horizon_client::mobs::EntityModelDocument>>,
 ) -> Result<Option<Game<'a>>> {
     let handoff = prepared.is_some();
     let mut settings = match settings {
@@ -22061,6 +22106,15 @@ fn start_game<'a>(
     if let Some(d) = options.distance_override {
         settings.render_distance = d;
     }
+    // A synchronous launch has no handoff worker: build its CPU resources
+    // here, from the same entity-model document the rest worker read.
+    let prepared = match prepared {
+        Some(prepared) => Some(prepared),
+        None => Some(GameCpuResources::load(
+            &options.resources,
+            entity_models.as_deref(),
+        )?),
+    };
     let mut game = Game::new(res, pack, gui, options, settings, audio, prepared)?;
     game.rest_loader = rest_loader;
     game.ui.vanilla_root = vanilla_root;
@@ -22565,6 +22619,7 @@ impl Loading {
             loaded.rest_loader,
             Some(self.settings.clone()),
             loaded.game_cpu,
+            loaded.entity_models,
         )?
         else {
             return Ok(None);
@@ -22958,6 +23013,7 @@ pub fn run_with() -> Result<()> {
         loaded.rest_loader,
         None,
         None,
+        loaded.entity_models,
     )?;
     if let Some(mut game) = game {
         // Minecraft.onGameLoadFinished: a start that made it this far is clean.
@@ -22975,8 +23031,15 @@ pub fn run_with() -> Result<()> {
 
 /// The right and left arms of a player model layer (`PlayerModel.rightArm`
 /// and `leftArm`, with their sleeves).
-fn player_arms(root: &std::path::Path, key: &str) -> [Option<horizon_client::mobs::Part>; 2] {
-    let model = horizon_client::mobs::load_model(root, key);
+fn player_arms(
+    root: &std::path::Path,
+    key: &str,
+    document: Option<&horizon_client::mobs::EntityModelDocument>,
+) -> [Option<horizon_client::mobs::Part>; 2] {
+    let model = match document {
+        Some(document) => document.model(key),
+        None => horizon_client::mobs::load_model(root, key),
+    };
     ["right_arm", "left_arm"].map(|name| {
         model
             .as_ref()
@@ -23172,7 +23235,7 @@ mod startup_cpu_tests {
         .unwrap();
         let worker_root = root.clone();
         let prepared = std::thread::spawn(move || {
-            GameCpuResources::load(&worker_root).map_err(|error| error.to_string())
+            GameCpuResources::load(&worker_root, None).map_err(|error| error.to_string())
         })
         .join()
         .unwrap()
@@ -23193,7 +23256,7 @@ mod startup_cpu_tests {
             "minecraft:stone"
         );
         // No documents from the old generation remain available to reload.
-        assert!(GameCpuResources::load(&root).is_err());
+        assert!(GameCpuResources::load(&root, None).is_err());
     }
 }
 
