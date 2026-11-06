@@ -394,9 +394,9 @@ of the frame ([#8750](https://github.com/horizon-rust/horizon/issues/8750)).
   40`): the server sends its time once a second, which can leave the client a tick ahead until the
   next, and the last tick still eases for a client tick. `/tick unfreeze` plays on as without the
   switch.
-- While frozen, rain and thunder sit at their levels (1 while it rains or thunders, else 0), as a
-  shader pack's smoothed values do: `/weather rain` shows full rain without a step. A step or
-  `/tick unfreeze` fades them as without the switch.
+- While frozen, rain and thunder sit at their levels (1 while it rains or thunders, else 0), and
+  the rain fog too, as a shader pack's smoothed values do: `/weather rain` shows full rain without
+  a step. A step or `/tick unfreeze` fades them as without the switch.
 - The server's own randoms and entity ids are its own: a summoned mob's facing and variant, and
   mob AI during a step, can differ when other server work drew on them first, and ids follow the
   order the server loads and creates entities in, which loading changes from run to run. What an
