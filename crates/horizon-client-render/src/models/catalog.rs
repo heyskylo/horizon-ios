@@ -23,6 +23,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     path::Path,
+    sync::OnceLock,
 };
 
 pub struct BakedFace {
@@ -51,6 +52,8 @@ type VariantKey = (String, [u8; 3], bool);
 pub struct StateModels {
     /// Each definition's choices, a variant standing as its index in `baked`.
     choices: Vec<CompiledChoices<u32>>,
+    /// All baked alternatives per definition, invalidated before mutable model access.
+    bounds: OnceLock<Vec<Option<[[f32; 3]; 2]>>>,
     /// By state id: its definition in `choices` and the models it selects.
     states: Vec<Option<(usize, SelectedModels)>>,
     /// Every transformed model once, with the variant it was baked from.
@@ -357,6 +360,7 @@ impl StateModels {
         let choices = choices.iter().map(|c| c.map(|v| index[&key(v)])).collect();
         Ok(Self {
             choices,
+            bounds: OnceLock::new(),
             states,
             baked,
             standalone: BTreeMap::new(),
@@ -408,6 +412,7 @@ impl StateModels {
     }
     /// Every baked model with the variant it was baked from, to change its faces.
     pub fn models_mut(&mut self) -> impl Iterator<Item = (&Variant, &mut BakedModel)> {
+        self.bounds.take();
         self.baked
             .iter_mut()
             .map(|(variant, model)| (&*variant, model))
@@ -432,6 +437,37 @@ impl StateModels {
         let model = self.choices[*choice].particle_variant(selected)?;
         self.baked[*model as usize].1.particle
     }
+    /// Envelope of every weighted/multipart alternative in the state's definition.
+    /// Includes transformed resource-pack faces outside the unit cube. Empty or
+    /// non-finite geometry has no usable envelope and keeps the original draw path.
+    pub fn render_bounds(&self, state: BlockStateId) -> Option<[[f32; 3]; 2]> {
+        let (definition, _) = self.state(state)?;
+        let bounds = self.bounds.get_or_init(|| {
+            self.choices
+                .iter()
+                .map(|choices| {
+                    let mut lo = glam::Vec3::splat(f32::INFINITY);
+                    let mut hi = glam::Vec3::splat(f32::NEG_INFINITY);
+                    let mut valid = true;
+                    // `map` visits every choice, without consuming the render RNG.
+                    choices.map(|&index| {
+                        for face in &self.baked[index as usize].1.faces {
+                            for p in face.quad.positions {
+                                let p = glam::Vec3::from_array(p);
+                                valid &= p.is_finite();
+                                lo = lo.min(p);
+                                hi = hi.max(p);
+                            }
+                        }
+                    });
+                    (valid && lo.is_finite() && hi.is_finite())
+                        .then_some([lo.to_array(), hi.to_array()])
+                })
+                .collect()
+        });
+        bounds.get(*definition).copied().flatten()
+    }
+
     pub fn collect_seeded(
         &self,
         state: BlockStateId,
@@ -619,3 +655,7 @@ mod tests {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "catalog/bounds_tests.rs"]
+mod bounds_tests;
