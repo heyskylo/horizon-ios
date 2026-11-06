@@ -63,6 +63,22 @@ cargo horizon-mod check target/horizon-mod/my_mod.hmod   # the registry's checks
   and `.hshader` files.
 - `registry build|review|check|list|release|page` is the registry repository's CI ([api/mod-index.md](api/mod-index.md)).
 
+### A real-game Recipes check
+
+`python tools/lan_e2e.py --check recipes-hmod --bin-dir PATH` runs two real clients against the
+host's integrated server. `PATH` must contain `horizon-client` compiled with the official native
+Recipes mod and a matching `horizon-ctl`. This opt-in check fails if Recipes is absent; ordinary
+LAN runs do not require it.
+
+The runner installs the same original `tools/fixtures/recipes_hmod` package in both scratch game
+folders. It finds the output of an original recipe (flint to two echo shards), checks unknown recipes
+and missing ingredients, fills the
+crafting grid through Recipes' `+` button, takes the result, and checks authoritative inventory counts
+before and after Save and Quit/rejoin. Logs, screenshots and `recipes-hmod.json` go under `--out`.
+As an assertion canary, changing only the fixture's result count from two to one must fail the custom
+result check; restore it before running the passing case. This is a content scenario, not general
+Java-mod compatibility or custom-item registration coverage.
+
 ### The manifest
 
 ```toml
@@ -222,6 +238,14 @@ gets its own damage and durability, or a tool its mining speed:
       "operation": "add_value", "slot": "mainhand" }],
     "!minecraft:repairable": {} } }
 ```
+
+An item may set `"place_block": "ruby:frame"` to place an ordinary block while retaining its
+own item ID. The target must exist and be a vanilla block or a block in the item's namespace;
+it may have `"item": false`. Multiple items can place the same block. Components still come
+from the item template; specialized behavior such as a sign or bucket item's placement is not
+copied. The compiled binding is used by server placement and client prediction. Placement
+contexts receive the original item ID, and survival placement consumes that item's stack.
+Without `place_block`, template behavior is unchanged.
 
 Native mods can register component types before content loads. A content item
 can set a registered type with a JSON value, such as `"sample:charge": {"charge": 42}`.

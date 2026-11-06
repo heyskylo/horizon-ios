@@ -160,7 +160,10 @@ listening; `HORIZON_AUDIO=1` opens it there anyway, so send it to a null sink
 (`PIPEWIRE_PROPS='{ target.object=<sink> node.dont-fallback=true }'`). Don't
 mute a test run's stream in the mixer: PipeWire remembers the mute for every
 later `horizon-client`. The launcher starts the game as "Horizon" for that
-reason.
+reason. On Linux, Horizon requests a 1024-frame fixed buffer for lower latency;
+if your audio server underruns (e.g. PipeWire with `min-quantum` ≥ 1024), set
+`HORIZON_AUDIO_BUFFER=2048` or `HORIZON_AUDIO_BUFFER=default` to use the backend's
+default buffer size.
 
 ### Agent control (`horizon-ctl` and MCP)
 

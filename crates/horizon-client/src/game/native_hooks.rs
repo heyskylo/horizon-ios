@@ -996,8 +996,9 @@ use super::{
 };
 use horizon_assets::item_model::StackView;
 use horizon_client::mod_api::{
-    self, NativeCamera, NativeCommand, NativeDispensed, NativeLifecycleContext,
-    NativeNoteBlockChange, NativeServerPlayer, RecipeBookCategory, ServerTickPhase, WorldPhase,
+    self, NativeCamera, NativeCommand, NativeDispensed, NativeFluidAction, NativeFluidDrain,
+    NativeFluidStack, NativeFluidTankView, NativeLifecycleContext, NativeNoteBlockChange,
+    NativeServerPlayer, RecipeBookCategory, ServerTickPhase, WorldPhase,
 };
 use horizon_client::mod_api::{AttachmentResult, Attachments, Holder, LayerDefinition, Suggestion};
 pub(crate) use horizon_client::mod_api::{
@@ -2189,6 +2190,37 @@ fn chars_to_type(text: &str, canceled: impl FnMut(char) -> bool) -> Option<Strin
 
 /// The hook points. Each does nothing in Horizon.
 impl Game<'_> {
+    /// A dropped item's vertical move clipped. Collision response has run and
+    /// block effects and pickup are still ahead. The owner lends the active
+    /// stack and supplies the block from `Entity.getOnPosLegacy`.
+    /// `client` identifies prediction. `discard` consumes the current entity
+    /// without loot or pickup. A stack reduced to zero also consumes it.
+    /// @API:item_after_vertical_collision@
+    pub(super) fn native_item_after_vertical_collision(
+        &mut self,
+        dimension: &str,
+        client: bool,
+        entity: u32,
+        state: BlockStateId,
+        block_pos: [i32; 3],
+        item_pos: [f64; 3],
+        stack: &mut ItemStack,
+        discard: &mut bool,
+    ) {
+        mod_api::dispatch_item_after_vertical_collision(
+            self,
+            mod_api::mods(),
+            dimension,
+            client,
+            entity,
+            state,
+            block_pos,
+            item_pos,
+            stack,
+            discard,
+        );
+    }
+
     /// Client initialization, before any outgoing connection; a window need not exist yet.
     pub(super) fn native_client_start(&mut self) {
         mod_api::dispatch_client_start(self, mod_api::mods());
@@ -2605,6 +2637,36 @@ impl Game<'_> {
         mod_api::dispatch_gui_layer_post(self, mod_api::mods(), layer, batch);
     }
     /// A player right-clicks the entity `entity` (`Entity.getId`) of type
+    /// `kind` with `self.hand`, holding `stack`, at `location`: the point
+    /// clicked, measured from the entity's position (`EntityHitResult
+    /// .getLocation()` less `Entity.position()`, the interact packet's
+    /// `location`), as NeoForge's `PlayerInteractEvent.EntityInteractSpecific`.
+    /// It comes first where `Player.interactOn` starts, before
+    /// `native_interact_entity`, the entity's own `interact` (26.3's
+    /// `interactAt` and `interact` in one) and the item's
+    /// `interactLivingEntity`. Set `claimed` to take the click: the hand
+    /// swings and none of those runs. Asked once per hand, as vanilla tries
+    /// the main hand then the off hand. Server-side, for every player of the
+    /// world (the helpers read the acting one). API @API:entity_interact_specific@.
+    pub(super) fn native_entity_interact_specific(
+        &mut self,
+        entity: i32,
+        kind: &str,
+        stack: Option<&ItemStack>,
+        location: [f64; 3],
+        claimed: &mut bool,
+    ) {
+        mod_api::dispatch_entity_interact_specific(
+            self,
+            mod_api::mods(),
+            entity,
+            kind,
+            stack,
+            location,
+            claimed,
+        );
+    }
+    /// A player right-clicks the entity `entity` (`Entity.getId`) of type
     /// `kind` (`minecraft:cow`) with `self.hand`, holding `stack` (none in an
     /// empty hand): where `Player.interactOn` starts, before the entity's own
     /// `interact` and the item's `interactLivingEntity`. Set `claimed` to take
@@ -2619,6 +2681,24 @@ impl Game<'_> {
         claimed: &mut bool,
     ) {
         mod_api::dispatch_interact_entity(self, mod_api::mods(), entity, kind, stack, claimed);
+    }
+    /// An item's fallback on a living native Mob, after ordinary entity
+    /// interactions and `native_interact_entity` passed. The exact packet
+    /// target or unobstructed crosshair mob must still be alive; `stack` is
+    /// nonempty and belongs to the acting hand. First `Some` owns the turn:
+    /// true swings once, false ends it without a swing; None passes.
+    /// Server-side for every acting player. This covers native Mob entries,
+    /// not armor stands, other real players or dragon-part interaction tables.
+    /// `ItemStack.interactLivingEntity` in `Player.interactOn`.
+    /// API @API:item_interact_mob@.
+    pub(super) fn native_item_interact_mob(
+        &mut self,
+        entity: i32,
+        kind: &str,
+        stack: Option<&ItemStack>,
+        swing: &mut Option<bool>,
+    ) {
+        mod_api::dispatch_item_interact_mob(self, mod_api::mods(), entity, kind, stack, swing);
     }
     /// A player left-clicks the block `state` at `pos`, `face` the face hit
     /// (`[0, 1, 0]` is the top): where `ServerPlayerGameMode.handleBlockBreakAction`
@@ -3254,6 +3334,69 @@ impl Game<'_> {
             tank,
             fluid,
             cancel,
+        );
+    }
+    /// Opt a mod block into canonical custom fluid storage. Asked for mod block entities
+    /// when the block fluid helpers resolve their target. True takes precedence over API 54's
+    /// `fluids` storage, even when a runtime callback supplies no response.
+    /// Set custom to true for your block; never clear an earlier declaration.
+    /// @API:custom_block_fluids@
+    pub(super) fn native_custom_block_fluids(&self, block: &str, custom: &mut bool) {
+        mod_api::dispatch_custom_block_fluids(self, mod_api::mods(), block, custom);
+    }
+    /// Read the declared custom capability. None side is explicitly unsided.
+    /// The first supplied response owns the result; None never falls through
+    /// to ordinary storage. This callback must be read-only.
+    pub(super) fn native_custom_fluid_tanks(
+        &self,
+        pos: [i32; 3],
+        side: Option<Direction>,
+        out: &mut Option<Vec<NativeFluidTankView>>,
+    ) {
+        mod_api::dispatch_custom_fluid_tanks(self, mod_api::mods(), pos, side, out);
+    }
+    /// Fill the declared custom capability, returning the accepted amount.
+    /// Simulate must not mutate canonical NBT, inventory, dirty/sync state or
+    /// RNG. Execute owns those changes and notifications. Invalid responses
+    /// are refused, but validation cannot audit consumption or roll back a
+    /// provider's storage changes (including intentional source quirks).
+    pub(super) fn native_custom_fluid_fill(
+        &mut self,
+        pos: [i32; 3],
+        side: Option<Direction>,
+        resource: &NativeFluidStack,
+        action: NativeFluidAction,
+        out: &mut Option<i32>,
+    ) {
+        mod_api::dispatch_custom_fluid_fill(
+            self,
+            mod_api::mods(),
+            pos,
+            side,
+            resource,
+            action,
+            out,
+        );
+    }
+    /// Drain the declared custom capability. Exact matches fluid AND its
+    /// complete component patch; Any lets the provider choose. Simulate is
+    /// read-only. Execute owns canonical storage and notifications.
+    pub(super) fn native_custom_fluid_drain(
+        &mut self,
+        pos: [i32; 3],
+        side: Option<Direction>,
+        request: &NativeFluidDrain,
+        action: NativeFluidAction,
+        out: &mut Option<NativeFluidStack>,
+    ) {
+        mod_api::dispatch_custom_fluid_drain(
+            self,
+            mod_api::mods(),
+            pos,
+            side,
+            request,
+            action,
+            out,
         );
     }
     /// Block `block`'s block entity has an energy buffer
@@ -4658,6 +4801,21 @@ impl Game<'_> {
             cancel,
         );
     }
+    /// A block's clone item before Ctrl+Pick adds block-entity components.
+    /// The first supplied stack replaces the block's normal clone item;
+    /// no response keeps vanilla behavior. Empty or unregistered replacements
+    /// produce no picked item, including for a block without a primary item.
+    /// @API:block_clone_item@
+    pub(super) fn native_block_clone_item(
+        &self,
+        block: &str,
+        pos: [i32; 3],
+        state: BlockStateId,
+        stack: &mut Option<ItemStack>,
+    ) {
+        mod_api::dispatch_block_clone_item(self, mod_api::mods(), block, pos, state, stack);
+    }
+
     /// A server player picked an item from a block or entity, before it enters
     /// the hotbar. `pos` is zero for an entity; `entity_id` is zero for a
     /// block. The player's state is swapped in, though helpers that look them
@@ -9699,7 +9857,9 @@ impl Game<'_> {
     /// 8192), as the game's own slots in pages, with a search box; the
     /// player's clicks, searches and keys over items come back as
     /// `native_panel_event`. The panel is the last mod's to show one; empty
-    /// items and no recipe page take yours away.
+    /// items and no recipe page take yours away, except that an empty reply
+    /// to a non-empty Search keeps its field editable. A clear outside that
+    /// event still removes the panel (as when a viewer closes).
     pub(super) fn native_panel_items(&mut self, mod_id: &str, items: Vec<NativeStack>) {
         self.panel.show_items(mod_id, items);
     }
@@ -11489,6 +11649,7 @@ mod tests {
         let hunger_hooks = free_hooks(include_str!("../hunger.rs"));
         let landing_hooks = free_hooks(include_str!("../landing.rs"));
         let motion_hooks = free_hooks(include_str!("../motion.rs"));
+        let sound_hooks = free_hooks(include_str!("../sound_playback.rs"));
         // The chat relay's (`horizon_client_lib::lan::hub::chat`).
         let chat_hooks = free_hooks(include_str!("../lan/hub/chat.rs"));
         // The mob AI's (`horizon_client_lib::mobs::ai`).
@@ -11511,6 +11672,7 @@ mod tests {
             .chain(hunger_hooks.iter().copied())
             .chain(landing_hooks.iter().copied())
             .chain(motion_hooks.iter().copied())
+            .chain(sound_hooks.iter().copied())
             .chain(chat_hooks.iter().copied())
             .chain(mob_hooks.iter().copied())
             .collect();
@@ -11540,6 +11702,8 @@ mod tests {
                 format!("horizon_client_lib::landing::native_{name}")
             } else if motion_hooks.contains(name) {
                 format!("horizon_client_lib::motion::native_{name}")
+            } else if sound_hooks.contains(name) {
+                format!("horizon_client_lib::sound_playback::native_{name}")
             } else if chat_hooks.contains(name) {
                 format!("horizon_client_lib::lan::hub::chat::native_{name}")
             } else if menu_hooks.contains(name) {

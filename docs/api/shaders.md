@@ -152,6 +152,14 @@ value). The pack holds only the manifest, the `.wgsl` files it names (each used,
 `README.md`, `LICENSE` (`.md`, `.txt`) and `icon.png`, under plain paths, 8 MiB in all. A `.hshader` is built
 the same way every time (files in path order, fixed dates), so a pack's SHA-256 depends only on its files.
 
+Native selections are saved as `horizon:<id>`; option values live in
+`shaderpacks/.horizon-options/<id>.txt`. Updates and file renames keep both. Existing filename
+selections and sidecars are imported without deleting the originals; after an update has removed
+the old file, migration recognizes the launcher's `<id>-<version>.hshader` names. An arbitrary
+removed filename cannot be mapped back to an ID. If several installed packs share an ID, the first
+filename in lexical order is used and listed. The `HORIZON_SHADER_PACK` development override still
+names an exact filesystem path; `shaders/` packs still use filenames.
+
 ## Shader API 0.2 (experimental)
 
 0.2 is the line for linear light and HDR ([hdr-linear-light.md](../design/hdr-linear-light.md)). A pack opts in with

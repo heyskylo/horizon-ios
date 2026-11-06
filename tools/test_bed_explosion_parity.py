@@ -159,11 +159,12 @@ def snapshot(text):
     age = re.search(r'\bAge:\s*(-?\d+)', body)
     motion = re.search(r'\bMotion:\s*\[([^\]]+)\]', body)
     pos = re.search(r'\bPos:\s*\[([^\]]+)\]', body)
-    if not (age and motion and pos):
+    health = re.search(r'\bHealth:\s*(-?\d+)', body)
+    if not (age and motion and pos and health):
         return None
     number = lambda v: float(v.strip().rstrip('dfb'))  # NBT prints doubles with a `d` suffix
     return (int(age.group(1)), [number(v) for v in motion.group(1).split(',')],
-            [number(v) for v in pos.group(1).split(',')])
+            [number(v) for v in pos.group(1).split(',')], int(health.group(1)))
 
 
 def age_pinned(blast_age, shots):
@@ -179,11 +180,12 @@ def age_pinned(blast_age, shots):
     """
     if blast_age is None or not shots:
         return None
-    age1, motion1, _ = shots[0]
+    age1, motion1, _, health1 = shots[0]
     scale = AIR_DRAG ** -(age1 - blast_age)
-    line = 'data push ' + ' '.join(f'{v * scale:.2f}' for v in motion1)
+    line = ('data push ' + ' '.join(f'{v * scale:.2f}' for v in motion1)
+            + f' health {health1}')
     if len(shots) > 1 and shots[1][0] != age1:
-        age2, motion2, _ = shots[1]
+        age2, motion2, _, _ = shots[1]
         first = sum(v * v for v in motion1) ** 0.5
         second = sum(v * v for v in motion2) ** 0.5
         if first > 0.0:

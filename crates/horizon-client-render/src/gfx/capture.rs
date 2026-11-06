@@ -530,6 +530,7 @@ impl Scene {
             visible_static_block_entity_sections: &[],
             static_block_entity_stats: Default::default(),
             entity_motion: &[],
+            entity_motion_posed: &[],
             entity_spans: &[],
             skin: None,
             glowing: &[],
