@@ -13642,6 +13642,9 @@ impl Game<'_> {
             && let Ok(new) = registry.resolve(&block)
         {
             self.level_set(pos, new)?;
+            if result.lower_fill_level {
+                self.post_block_game_event("minecraft:block_change", pos, None, Some(new));
+            }
         }
         if let Some(sound) = result.sound {
             self.audio.play(
@@ -23925,3 +23928,6 @@ fn write_level_for_role(
         level.write_without_player(dir)
     }
 }
+
+#[cfg(test)]
+mod vibration_tests;
