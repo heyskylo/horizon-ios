@@ -362,7 +362,7 @@ impl Game<'_> {
     /// Iris's `endFlashIntensity` and the flash's direction (camera-relative, length 100: the
     /// sprite's centre), for shader packs; no flash outside the End.
     pub(super) fn end_flash_for_pack(&self, partial: f32) -> (f32, glam::Vec3) {
-        if self.dim != Dim::End {
+        if self.dimension_type().skybox != horizon_world::dimension_type::Skybox::End {
             return (0.0, glam::Vec3::ZERO);
         }
         let flash = &self.end.flash;
@@ -378,7 +378,9 @@ impl Game<'_> {
     /// unless Hide Lightning Flashes is on (the sky sprite is not gated), a
     /// third of it under a boss bar's world fog.
     pub(super) fn end_flash_sky(&self, sky: &mut horizon_client::environment::Sky, partial: f64) {
-        if self.dim == Dim::End && !self.settings.file.bool("hideLightningFlashes") {
+        if self.dimension_type().skybox == horizon_world::dimension_type::Skybox::End
+            && !self.settings.file.bool("hideLightningFlashes")
+        {
             let intensity = self.end.flash.intensity(partial as f32);
             sky.sky_light_factor += if self.boss_overlay.should_create_world_fog() {
                 intensity / 3.0
@@ -519,7 +521,7 @@ impl Game<'_> {
     /// End portals, End gateways and the exit portal, once per tick.
     pub(super) fn tick_end(&mut self) -> Result<()> {
         self.end.gateway_cooldown = self.end.gateway_cooldown.saturating_sub(1);
-        if self.dim == Dim::End {
+        if self.dimension_type().has_ender_dragon_fight {
             self.tick_fight();
             self.tick_dragon_fireballs();
         } else {
@@ -531,7 +533,7 @@ impl Game<'_> {
         self.native_joins_flush(false, 0);
         self.tick_crystals();
         self.tick_eyes();
-        if self.dim == Dim::End {
+        if self.dimension_type().skybox == horizon_world::dimension_type::Skybox::End {
             self.end.flash.tick(self.world.game_time);
             if let Some(n) = self.end.flash.sound_in.as_mut() {
                 *n = n.saturating_sub(1);
@@ -542,7 +544,7 @@ impl Game<'_> {
                 }
             }
         }
-        if self.dim == Dim::End {
+        if self.dimension_type().has_ender_dragon_fight {
             self.ensure_exit_portal()?;
         }
         Ok(())
