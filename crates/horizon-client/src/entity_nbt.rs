@@ -2380,6 +2380,14 @@ pub fn evoker_fangs_to_nbt(
     tag
 }
 
+/// `UUIDUtil.CODEC` via `NbtOps.getIntStream`: boxed Number conversions,
+/// with the first-four partial value retained by `TagValueInput.read`.
+fn item_uuid_from_tag(tag: Option<&Tag>) -> Option<[i32; 4]> {
+    let values = horizon_world::datafix::dynamic::as_int_stream(tag)?;
+    values.get(..4)?.try_into().ok()
+}
+
+/// `ItemEntity.readAdditionalSaveData`: Owner and Thrower use the numeric UUID codec.
 pub fn item_entity_from_nbt(tag: &Tag, id: u32, bob_offset: f32) -> Option<ItemEntity> {
     let stack = item_from_nbt(tag.get("Item")?)?;
     let position = position(tag)?;
@@ -2391,8 +2399,8 @@ pub fn item_entity_from_nbt(tag: &Tag, id: u32, bob_offset: f32) -> Option<ItemE
         fire_ticks: number(tag.get("Fire")).unwrap_or(0) as i32,
         id,
         stack,
-        thrower: uuid_from_tag(tag.get("Thrower")),
-        target: uuid_from_tag(tag.get("Owner")),
+        thrower: item_uuid_from_tag(tag.get("Thrower")),
+        target: item_uuid_from_tag(tag.get("Owner")),
         position,
         previous: position,
         velocity: motion(tag),
@@ -4467,6 +4475,149 @@ mod tests {
         legacy.pickup_delay = i64::from(u32::MAX);
         assert!(tick(&mut legacy));
         assert_eq!(legacy.pickup_delay, i64::from(u32::MAX));
+    }
+
+    #[test]
+    fn item_numeric_uuid_codec_adopts_numeric_streams_before_save() {
+        let cases = [
+            (Tag::IntArray(vec![54, 1, -2, 3]), [54, 1, -2, 3]),
+            (
+                Tag::LongArray(vec![
+                    54,
+                    4_294_967_297,
+                    -4_294_967_298,
+                    9_007_199_254_740_993,
+                ]),
+                [54, 1, -2, 1],
+            ),
+            (
+                Tag::List(vec![
+                    Tag::Float(54.9_f32.to_bits()),
+                    Tag::Float(1.75_f32.to_bits()),
+                    Tag::Float((-2.75_f32).to_bits()),
+                    Tag::Float((-0.5_f32).to_bits()),
+                ]),
+                [54, 1, -2, 0],
+            ),
+            (
+                Tag::List(vec![
+                    Tag::Double(54.9_f64.to_bits()),
+                    Tag::Double(1.75_f64.to_bits()),
+                    Tag::Double((-2.75_f64).to_bits()),
+                    Tag::Double((-0.5_f64).to_bits()),
+                ]),
+                [54, 1, -2, 0],
+            ),
+            (
+                Tag::List(vec![
+                    Tag::Long(54),
+                    Tag::Long(4_294_967_297),
+                    Tag::Long(-4_294_967_298),
+                    Tag::Long(9_007_199_254_740_993),
+                ]),
+                [54, 1, -2, 1],
+            ),
+            (
+                Tag::ByteArray(vec![54, 1, (-2_i8) as u8, 3]),
+                [54, 1, -2, 3],
+            ),
+            // Util.fixedSize returns a partial first-four result for overlong streams.
+            (Tag::IntArray(vec![54, 1, -2, 3, 4]), [54, 1, -2, 3]),
+        ];
+        for field in ["Owner", "Thrower"] {
+            for (value, expected) in &cases {
+                let raw = Tag::compound([
+                    ("Pos", doubles(&[2.5, 200.0, 2.5])),
+                    (
+                        "Item",
+                        Tag::compound([("id", string("minecraft:stone")), ("count", Tag::Int(1))]),
+                    ),
+                    ("CustomName", string("kept")),
+                    (field, value.clone()),
+                ]);
+                let mut item = item_entity_from_nbt(&raw, 7, 0.0).unwrap();
+                assert_eq!(
+                    if field == "Owner" {
+                        item.target
+                    } else {
+                        item.thrower
+                    },
+                    Some(*expected),
+                    "{field}: {value:?}"
+                );
+                assert_eq!(
+                    if field == "Owner" {
+                        item.thrower
+                    } else {
+                        item.target
+                    },
+                    None
+                );
+                for source in [None, Some(&raw)] {
+                    let saved = item_entity_to_nbt(&item, [54, 0, 0, 1], source);
+                    assert_eq!(saved.get(field), Some(&Tag::IntArray(expected.to_vec())));
+                    assert_eq!(saved.get("Item").unwrap().get("count"), Some(&Tag::Int(1)));
+                }
+                let saved = item_entity_to_nbt(&item, [54, 0, 0, 1], Some(&raw));
+                assert_eq!(saved.get("CustomName"), raw.get("CustomName"));
+                item.target = None;
+                item.thrower = None;
+                let cleared = item_entity_to_nbt(&item, [54, 0, 0, 1], Some(&saved));
+                assert!(cleared.get("Owner").is_none());
+                assert!(cleared.get("Thrower").is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn item_numeric_uuid_codec_rejects_nonstreams_and_short_inputs() {
+        let cases = [
+            None,
+            Some(string("00000036-0000-0001-ffff-fffe00000003")),
+            Some(Tag::IntArray(vec![])),
+            Some(Tag::IntArray(vec![54, 1, -2])),
+            Some(Tag::Int(7)),
+            Some(Tag::compound([("value", Tag::Int(7))])),
+            Some(Tag::List(vec![
+                Tag::Int(54),
+                Tag::Int(1),
+                Tag::Int(-2),
+                string("3"),
+            ])),
+        ];
+        for field in ["Owner", "Thrower"] {
+            for value in &cases {
+                let mut raw = Tag::compound([
+                    ("Pos", doubles(&[2.5, 200.0, 2.5])),
+                    (
+                        "Item",
+                        Tag::compound([("id", string("minecraft:stone")), ("count", Tag::Int(1))]),
+                    ),
+                ]);
+                if let Some(value) = value {
+                    put(&mut raw, field, value.clone());
+                }
+                let mut item = item_entity_from_nbt(&raw, 7, 0.0).unwrap();
+                assert_eq!(
+                    (item.target, item.thrower),
+                    (None, None),
+                    "{field}: {value:?}"
+                );
+                for source in [None, Some(&raw)] {
+                    let saved = item_entity_to_nbt(&item, [54, 0, 0, 1], source);
+                    assert!(saved.get("Owner").is_none());
+                    assert!(saved.get("Thrower").is_none());
+                }
+                item.target = Some([54, 1, -2, 3]);
+                item.thrower = Some([54, 4, 5, 6]);
+                let saved = item_entity_to_nbt(&item, [54, 0, 0, 1], Some(&raw));
+                assert_eq!(saved.get("Owner"), Some(&Tag::IntArray(vec![54, 1, -2, 3])));
+                assert_eq!(
+                    saved.get("Thrower"),
+                    Some(&Tag::IntArray(vec![54, 4, 5, 6]))
+                );
+            }
+        }
     }
 
     #[test]
