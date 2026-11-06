@@ -831,8 +831,7 @@ impl Game<'_> {
         let cell = |v: [f64; 3]| v.map(|c| c.floor() as i32);
         // LivingEntity.collectEquipmentChanges: newly worn armor runs its
         // location_changed effects at once, even when standing still.
-        let changed: [bool; 4] = std::array::from_fn(|i| self.armor[i] != self.location_armor[i]);
-        self.location_armor.clone_from(&self.armor);
+        let changed = armor_changes(&mut self.location_armor, &self.armor);
         let moved = cell(from) != cell(at) || (on_ground && !was_on_ground);
         if !moved && !changed.iter().any(|c| *c) {
             return;
@@ -1182,9 +1181,38 @@ fn location_requirements(req: &Value, on_ground: bool, riding: bool) -> bool {
     }
 }
 
+/// `LivingEntity.collectEquipmentChanges`: which armor slots differ from the
+/// `snapshot` taken at the last look, which is then brought up to date.
+fn armor_changes(
+    snapshot: &mut [Option<ItemStack>; 4],
+    armor: &[Option<ItemStack>; 4],
+) -> [bool; 4] {
+    let changed = std::array::from_fn(|i| armor[i] != snapshot[i]);
+    snapshot.clone_from(armor);
+    changed
+}
+
 #[cfg(test)]
 mod tests {
-    use super::block_break_speed_factor;
+    use super::{armor_changes, block_break_speed_factor};
+    use horizon_client::items::ItemStack;
+
+    /// The snapshot reports a newly worn piece once, then settles.
+    #[test]
+    fn armor_changes_settle_after_one_look() {
+        let worn = [
+            None,
+            None,
+            None,
+            Some(ItemStack::new("minecraft:iron_boots", 1)),
+        ];
+        let mut snapshot: [Option<ItemStack>; 4] = Default::default();
+        assert_eq!(
+            armor_changes(&mut snapshot, &worn),
+            [false, false, false, true]
+        );
+        assert_eq!(armor_changes(&mut snapshot, &worn), [false; 4]);
+    }
 
     /// #4094: `BLOCK_BREAK_SPEED` is a multiplier on the destroy speed.
     #[test]

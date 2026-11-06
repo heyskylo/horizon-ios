@@ -520,6 +520,7 @@ impl Game<'_> {
         self.pitch = g.pitch;
         std::mem::swap(&mut self.inventory, &mut g.inventory);
         std::mem::swap(&mut self.armor, &mut g.armor);
+        std::mem::swap(&mut self.location_armor, &mut g.location_armor);
         std::mem::swap(&mut self.offhand, &mut g.offhand);
         std::mem::swap(&mut self.carried, &mut g.carried);
         let selected = std::mem::replace(&mut self.selected, g.selected);
@@ -1034,6 +1035,7 @@ impl Game<'_> {
         g.selected = std::mem::replace(&mut self.selected, selected);
         std::mem::swap(&mut self.inventory, &mut g.inventory);
         std::mem::swap(&mut self.armor, &mut g.armor);
+        std::mem::swap(&mut self.location_armor, &mut g.location_armor);
         std::mem::swap(&mut self.offhand, &mut g.offhand);
         std::mem::swap(&mut self.carried, &mut g.carried);
         // A teleport with a rotation (commands) turns the guest. `/rotate`
