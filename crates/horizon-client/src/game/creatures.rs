@@ -199,20 +199,21 @@ impl ProjectileWorld for ProjWorld<'_, '_> {
     }
 }
 
-/// `AbstractWindCharge` is pickable, so a thrown pearl's
-/// `ProjectileUtil.getEntityHitResult` can strike it (`ThrownEnderpearl.onHit`).
-/// `WIND_CHARGE_IDS + j` is `projectiles[j]` during `tick_projectiles`, below
-/// the dragon's reserved ids.
-const WIND_CHARGE_IDS: u32 = super::dragon::SPECIAL - 0x10000;
+/// `Projectile.isPickable`: a projectile in `#minecraft:redirectable_projectile`
+/// (a ghast's fireball and both wind charges) is pickable, so another
+/// projectile's `ProjectileUtil.getEntityHitResult` can strike it
+/// (`Projectile.onHit` then redirects it). `PICKABLE_PROJECTILE_IDS + j` is
+/// `projectiles[j]` during `tick_projectiles`, below the dragon's reserved ids.
+const PICKABLE_PROJECTILE_IDS: u32 = super::dragon::SPECIAL - 0x10000;
 
-/// The index of the wind charge a `wind_charge_hitboxes` id stands for.
-pub(super) fn wind_charge_hit(id: u32) -> Option<usize> {
-    (WIND_CHARGE_IDS..super::dragon::SPECIAL)
+/// The index of the projectile a `pickable_projectile_hitboxes` id stands for.
+pub(super) fn pickable_projectile_hit(id: u32) -> Option<usize> {
+    (PICKABLE_PROJECTILE_IDS..super::dragon::SPECIAL)
         .contains(&id)
-        .then(|| (id - WIND_CHARGE_IDS) as usize)
+        .then(|| (id - PICKABLE_PROJECTILE_IDS) as usize)
 }
 
-fn wind_charge_hitboxes(
+fn pickable_projectile_hitboxes(
     projectiles: &[Projectile],
     alive: &[bool],
     skip: usize,
@@ -220,16 +221,8 @@ fn wind_charge_hitboxes(
     projectiles
         .iter()
         .enumerate()
-        .filter(|(j, q)| {
-            *j != skip
-                && alive[*j]
-                && !q.stuck
-                && matches!(
-                    q.kind,
-                    ProjectileKind::WindCharge | ProjectileKind::BreezeWindCharge
-                )
-        })
-        .map(|(j, q)| (Who::Mob(WIND_CHARGE_IDS + j as u32), q.aabb()))
+        .filter(|(j, q)| *j != skip && alive[*j] && super::deflect::redirectable(q))
+        .map(|(j, q)| (Who::Mob(PICKABLE_PROJECTILE_IDS + j as u32), q.aabb()))
         .collect()
 }
 
@@ -4109,12 +4102,13 @@ impl Game<'_> {
                     .collect()
             });
             for i in 0..projectiles.len() {
-                // A wind charge is pickable, so a pearl, an arrow or a trident can
-                // strike it (`Projectile.isPickable`, `Projectile.onHit`).
+                // A ghast's fireball or a wind charge is pickable, so a pearl, an
+                // arrow or a trident can strike it (`Projectile.isPickable`,
+                // `Projectile.onHit`).
                 let winds = if matches!(projectiles[i].kind, ProjectileKind::EnderPearl)
                     || projectiles[i].arrow.is_some()
                 {
-                    wind_charge_hitboxes(&projectiles, &keep_flags, i)
+                    pickable_projectile_hitboxes(&projectiles, &keep_flags, i)
                 } else {
                     Vec::new()
                 };
@@ -4262,11 +4256,12 @@ impl Game<'_> {
                     hits.push((p.clone(), hit));
                 }
                 keep_flags[i] = keep;
-                // Projectile.onHit: the wind charge it hit turns before its own tick.
+                // Projectile.onHit: the redirectable projectile it hit (a ghast's
+                // fireball or a wind charge) turns before its own tick.
                 if let Hit::Entity {
                     who: Who::Mob(id), ..
                 } = hit
-                    && let Some(j) = wind_charge_hit(id)
+                    && let Some(j) = pickable_projectile_hit(id)
                 {
                     let (owner, owner_uuid, guest) = (p.owner, p.owner_uuid, p.guest);
                     let look = self.owner_look(owner, guest);
@@ -4926,15 +4921,16 @@ impl Game<'_> {
             }
             // AbstractArrow.onHitBlock plays its sound itself (ArrowEvent).
             (ProjectileKind::Trident, Hit::Block { .. }) => {}
-            // AbstractArrow.onHitEntity on a wind charge: `hurtOrSimulate` fails
-            // (the charge turned in `Projectile.onHit`, which already ran), so the
-            // arrow takes `deflect(REVERSE, 0.2)` instead of vanishing.
+            // AbstractArrow.onHitEntity on a ghast's fireball or a wind charge:
+            // `hurtOrSimulate` fails (`AbstractHurtingProjectile.hurtServer` is
+            // false; the projectile turned in `Projectile.onHit`, which already
+            // ran), so the arrow takes `deflect(REVERSE, 0.2)` instead of vanishing.
             (
                 ProjectileKind::Arrow { .. },
                 Hit::Entity {
                     who: Who::Mob(id), ..
                 },
-            ) if wind_charge_hit(id).is_some() => {
+            ) if pickable_projectile_hit(id).is_some() => {
                 let mut arrow = p.clone();
                 arrow_damage(&mut arrow, &mut self.world.random);
                 self.finish_arrow_hit(arrow, EntityHit::Refused);
@@ -8725,6 +8721,95 @@ mod conversion_tag_tests {
             game.mobs.remove(index);
             let reloaded = game.load_mob(saved, None).unwrap();
             assert_eq!(game.tags_of(Target::Mob(reloaded)), ["subject", from]);
+        }
+    }
+}
+
+#[cfg(test)]
+mod pickable_projectile_tests {
+    use super::{pickable_projectile_hit, pickable_projectile_hitboxes};
+    use horizon_client::mobs::Who;
+    use horizon_client::projectiles::{Hit, Projectile, ProjectileKind, ProjectileWorld};
+    use horizon_core::geometry::{Aabb, Vec3};
+
+    /// Open air with nothing in it but `.0`.
+    struct Open(Vec<(Who, Aabb)>);
+    impl ProjectileWorld for Open {
+        fn clip(&self, _: Vec3, _: Vec3) -> Option<(Vec3, [i32; 3], [i32; 3])> {
+            None
+        }
+        fn in_water(&self, _: Aabb) -> bool {
+            false
+        }
+        fn targets(&self) -> &[(Who, Aabb)] {
+            &self.0
+        }
+    }
+
+    /// Which of `list` another projectile (the one at 0) can strike.
+    fn struck(list: &[Projectile]) -> Vec<usize> {
+        let alive = vec![true; list.len()];
+        pickable_projectile_hitboxes(list, &alive, 0)
+            .iter()
+            .map(|(who, _)| match who {
+                Who::Mob(id) => pickable_projectile_hit(*id).expect("a pickable projectile id"),
+                Who::Player => panic!("not a projectile"),
+            })
+            .collect()
+    }
+
+    /// `Projectile.isPickable` is `#minecraft:redirectable_projectile`: a ghast's
+    /// fireball is in it, as both wind charges are, so another projectile's hit
+    /// test can strike it. A blaze's small fireball is not, and a projectile
+    /// that is stuck is no target.
+    #[test]
+    fn a_ghast_fireball_is_pickable_like_a_wind_charge() {
+        let at = Vec3::new(0.0, 100.0, 0.0);
+        let fired = |kind| Projectile::fireball(kind, at, None, [1.0, 0.0, 0.0]);
+        let mut stuck = fired(ProjectileKind::LargeFireball { power: 1 });
+        stuck.stuck = true;
+        let list = vec![
+            Projectile::new(ProjectileKind::EnderPearl, at, Some(Who::Player)),
+            fired(ProjectileKind::LargeFireball { power: 1 }),
+            fired(ProjectileKind::WindCharge),
+            fired(ProjectileKind::BreezeWindCharge),
+            fired(ProjectileKind::SmallFireball),
+            stuck,
+        ];
+        assert_eq!(struck(&list), vec![1, 2, 3]);
+    }
+
+    /// A pearl thrown through a ghast's fireball strikes it (`Projectile.onHit`
+    /// then turns the fireball), where it used to fly on through.
+    #[test]
+    fn a_pearl_thrown_through_a_ghast_fireball_strikes_it() {
+        let mut pearl = Projectile::new(
+            ProjectileKind::EnderPearl,
+            Vec3::new(0.0, 100.0, 0.0),
+            Some(Who::Player),
+        );
+        pearl.velocity = Vec3::new(1.5, 0.0, 0.0);
+        let fireball = Projectile::fireball(
+            ProjectileKind::LargeFireball { power: 1 },
+            Vec3::new(1.0, 99.5, 0.0),
+            None,
+            [0.0, 0.0, 1.0],
+        );
+        let list = vec![pearl, fireball];
+        let alive = vec![true; list.len()];
+        let world = Open(pickable_projectile_hitboxes(&list, &alive, 0));
+        let mut pearl = list[0].clone();
+        let (keep, hit) = pearl.tick(&world);
+        assert!(!keep, "the pearl is spent on the hit");
+        match hit {
+            Hit::Entity {
+                who: Who::Mob(id), ..
+            } => assert_eq!(
+                pickable_projectile_hit(id),
+                Some(1),
+                "it struck the fireball"
+            ),
+            other => panic!("the pearl flew through the fireball: {other:?}"),
         }
     }
 }
