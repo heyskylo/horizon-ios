@@ -2514,6 +2514,14 @@ per-player helpers for these (a NeoForge mod sends `ServerPlayer.connection.send
   none. Sent at once, as `native_tell`: also inside a player's hook for the acting player, whose packets go after the
   hook. False on a client, for a negative time, and for a player who isn't on or can't be reached from here (another
   player inside a player's hook). Bundles need `"hooks": @API:title@`.
+- Helper **`native_boss_bar(uuid, id, bar)`** (`host.boss_bar`): shows that player the boss bar `id` (a UUID the mod
+  picks; a random one keeps clear of the world's) as a `NativeBossBar` (`name`, `progress` 0 to 1, `color` and
+  `overlay` as `BossBarColor` and `BossBarOverlay` ordinals, the `darken`, `music` and `fog` flags), changes it, or
+  takes it away with None, as Bukkit's `BossBar.addPlayer`/`removePlayer`. The game's boss bar update sends it with the
+  world's bars (`ServerBossEvent`'s packets: a change is one packet, a new bar is added under the mod's earlier ones,
+  after the `/bossbar` bars and before a boss's). By UUID: kept for a player who is off, who sees it again when they
+  come back, until a mod takes it away or the server stops. Works from any server hook. False on a client, and for a
+  progress outside 0 to 1 or a colour or overlay `BossEvent` hasn't. Bundles need `"hooks": @API:boss_bar@`.
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a

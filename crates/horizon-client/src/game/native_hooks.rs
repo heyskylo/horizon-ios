@@ -996,7 +996,7 @@ use super::{
 };
 use horizon_assets::item_model::StackView;
 use horizon_client::mod_api::{
-    self, NativeCamera, NativeCommand, NativeDispensed, NativeLifecycleContext,
+    self, NativeBossBar, NativeCamera, NativeCommand, NativeDispensed, NativeLifecycleContext,
     NativeNoteBlockChange, NativeServerPlayer, RecipeBookCategory, ServerTickPhase, WorldPhase,
 };
 use horizon_client::mod_api::{AttachmentResult, Attachments, Holder, LayerDefinition, Suggestion};
@@ -6678,6 +6678,52 @@ impl Game<'_> {
             }),
         ) && self.native_send(uuid, C::SetSubtitleText(text(subtitle)))
             && self.native_send(uuid, C::SetTitleText(text(title)))
+    }
+    /// Shows that player the boss bar `id` (any UUID the mod picks; a
+    /// random one keeps clear of the world's bars) as `bar`, in place of
+    /// what it showed before, or takes it away (None), as Bukkit's
+    /// `BossBar.addPlayer`/`removePlayer`. Only that player sees it, below
+    /// the world's `/bossbar` bars and above a boss's; a change reaches them
+    /// as one packet in the next boss bar update of the tick, a new bar at
+    /// the bottom of the mod's. By UUID: kept for a player who is off (they
+    /// see it when they come back), until a mod takes it away or the server
+    /// stops. Works from any server hook. False on a client, and for a
+    /// progress outside 0 to 1 or a colour or overlay `BossEvent` hasn't.
+    /// API @API:boss_bar@.
+    pub(super) fn native_boss_bar(
+        &mut self,
+        uuid: u128,
+        id: u128,
+        bar: Option<&NativeBossBar>,
+    ) -> bool {
+        if self.remote.is_some() {
+            return false;
+        }
+        let native = &mut self.bosses.native;
+        match bar {
+            Some(bar) => {
+                if !(0.0..=1.0).contains(&bar.progress)
+                    || !(0..=6).contains(&bar.color)
+                    || !(0..=4).contains(&bar.overlay)
+                {
+                    return false;
+                }
+                let bars = native.entry(uuid).or_default();
+                match bars.iter_mut().find(|(other, _)| *other == id) {
+                    Some(shown) => shown.1 = bar.clone(),
+                    None => bars.push((id, bar.clone())),
+                }
+            }
+            None => {
+                if let Some(bars) = native.get_mut(&uuid) {
+                    bars.retain(|(other, _)| *other != id);
+                    if bars.is_empty() {
+                        native.remove(&uuid);
+                    }
+                }
+            }
+        }
+        true
     }
     /// A click in a menu a mod opened (`native_open_menu`), which moved
     /// nothing: the menu's `slot` (its own first, then the player's
