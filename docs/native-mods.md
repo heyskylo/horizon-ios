@@ -2501,13 +2501,14 @@ what it needs and acts in its next tick hook. Bukkit's damage modifier breakdown
 absorption as separate values) is not offered: the reductions are applied after this hook. Bundles need "hooks":
 @API:living_incoming_damage_v3@.
 
-`native_interact_entity_v2(entity, kind, hand, stack, claimed)` is `native_interact_entity` with the hand that clicks
+`native_interact_entity_v2(entity, kind, hand, stack, cancel)` is `native_interact_entity` with the hand that clicks
 (`Hand::Main` or `Hand::Off`, NeoForge's `PlayerInteractEvent.EntityInteract.getHand`). It is asked right after the
 unchanged v1 hook, once per hand vanilla tries: the main hand first, the off hand only when the main hand's turn did
-nothing. A mod that claims the main hand's click hears one event per click, as Bukkit's `PlayerInteractEntityEvent`
-for `EquipmentSlot.HAND`. A click v1 claimed is not asked again. Bundles need "hooks": @API:interact_entity_v2@.
+nothing. Setting `cancel` claims the click, as v1's `claimed` does. A mod that claims the main hand's click hears one
+event per click, as Bukkit's `PlayerInteractEntityEvent` for `EquipmentSlot.HAND`. A click v1 claimed is not asked
+again. Bundles need "hooks": @API:interact_entity_v2@.
 
-`native_right_click_block_v2(pos, face, hand, canceled)` is `native_right_click_block` with the hand that clicks
+`native_right_click_block_v2(pos, face, hand, cancel)` is `native_right_click_block` with the hand that clicks
 (NeoForge's `PlayerInteractEvent.RightClickBlock.getHand`), asked right after the unchanged v1 hook, once per hand
 tried. A canceled click does what a v1 cancel does (neither the block nor the item acts, the hand doesn't swing, the
 other hand gets no turn); a click v1 canceled is not asked again. A protection mod refuses an off-hand flint and steel

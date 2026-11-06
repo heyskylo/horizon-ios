@@ -6549,7 +6549,7 @@ impl Game<'_> {
     /// where `Player.interactOn` starts. Asked right after the unchanged v1 hook, once per hand
     /// tried: vanilla tries the main hand, then the off hand only when the main hand's turn did
     /// nothing, so a mod that claims the main hand's click hears one event per click. Set
-    /// `claimed` to take the click: the hand swings and neither the entity's own `interact` nor
+    /// `cancel` to take the click: the hand swings and neither the entity's own `interact` nor
     /// the item's `interactLivingEntity` runs. A click v1 claimed is not asked here. Server-side,
     /// for every player of the world (the helpers read the acting one). @API:interact_entity_v2@.
     pub(super) fn native_interact_entity_v2(
@@ -6558,7 +6558,7 @@ impl Game<'_> {
         kind: &str,
         hand: Hand,
         stack: Option<&ItemStack>,
-        claimed: &mut bool,
+        cancel: &mut bool,
     ) {
         mod_api::dispatch_interact_entity_v2(
             self,
@@ -6567,14 +6567,14 @@ impl Game<'_> {
             kind,
             hand,
             stack,
-            claimed,
+            cancel,
         );
     }
     /// `native_right_click_block` with the hand: a player right clicks the block at `pos` with
     /// `hand` (NeoForge's `PlayerInteractEvent.RightClickBlock.getHand`), `face` the face clicked,
     /// where `ServerPlayerGameMode.useItemOn` starts, before the block's own use and before
     /// `native_use_item_on`. Asked right after the unchanged v1 hook, once per hand tried (the
-    /// off hand only when the main hand's turn did nothing). Set `canceled` to stop the click:
+    /// off hand only when the main hand's turn did nothing). Set `cancel` to stop the click:
     /// neither the block nor the item acts, the hand doesn't swing, and a guest sees the block as
     /// it is; that hand's turn ends the click, as a v1 cancel does. A click v1 canceled is not
     /// asked here. Server-side, for every player of the world (`native_acting_player` says who).
@@ -6584,9 +6584,9 @@ impl Game<'_> {
         pos: [i32; 3],
         face: [i32; 3],
         hand: Hand,
-        canceled: &mut bool,
+        cancel: &mut bool,
     ) {
-        mod_api::dispatch_right_click_block_v2(self, mod_api::mods(), pos, face, hand, canceled);
+        mod_api::dispatch_right_click_block_v2(self, mod_api::mods(), pos, face, hand, cancel);
     }
     /// `native_player_fish` with the hand: the server player's fishing rod in `hand`, with
     /// `state` as v1 has it (0 the cast, 1 a bite, 2 to 4 the reel-ins). The cast and the

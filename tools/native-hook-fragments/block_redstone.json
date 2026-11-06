@@ -4,10 +4,7 @@
       "name": "block_redstone",
       "target": "horizon_client::game::native_hooks::GameLevel<'_>::native_block_redstone",
       "neoforge": "none (NeoForge has no such event; Bukkit's BlockRedstoneEvent)",
-      "side": "server",
-      "mod_api": {
-        "contract": "listen"
-      }
+      "side": "server"
     }
   ],
   "rust_summary": "a button's, lever's or pressure plate's signal change, which a mod may change or hold (`native_block_redstone`).",

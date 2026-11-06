@@ -4,10 +4,7 @@
       "name": "fishing_hook_landed",
       "target": "horizon_client::game::native_hooks::Game<'_>::native_fishing_hook_landed",
       "neoforge": "none (NeoForge's ProjectileImpactEvent leaves the bobber's block contact out; Bukkit's ProjectileHitEvent for a FishHook)",
-      "side": "server",
-      "mod_api": {
-        "contract": "listen"
-      }
+      "side": "server"
     }
   ],
   "rust_summary": "a server player's fishing bobber meeting or lying on a block, each tick (`native_fishing_hook_landed`).",
