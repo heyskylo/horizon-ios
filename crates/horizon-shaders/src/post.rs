@@ -231,6 +231,7 @@ const GROUPS: [(Group, &str); 6] = [
     (Group::Final, "final"),
 ];
 
+#[derive(Clone)]
 pub struct PostProgram {
     /// The program's name (`composite3`).
     pub name: String,
@@ -409,6 +410,7 @@ pub enum ShadowCulling {
     Reversed,
 }
 
+#[derive(Clone)]
 pub struct Post {
     /// The folder the programs came from: `""` for `shaders` itself, else `world0`...
     pub folder: String,

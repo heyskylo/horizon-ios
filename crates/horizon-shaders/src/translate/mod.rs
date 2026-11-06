@@ -45,7 +45,7 @@ pub use geometry::{GeometryInputs, translate_geometry};
 use scan::Stage;
 
 /// What a program's stages need from the game.
-#[derive(Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Interface {
     /// The uniform block at binding 0: its size and each value's name, GLSL type and offset.
     /// Ours come first: `hz_target` (the target's width, height, 1/width, 1/height), and the
@@ -88,6 +88,7 @@ pub struct Image {
 /// A compute program (`deferred4_a.csh`): its module, what it reads and writes, and how many
 /// work groups it runs: `workGroups`, or `workGroupsRender` times the target's size over the
 /// local size (1, 1 when neither is set).
+#[derive(Clone)]
 pub struct ComputeProgram {
     pub module: naga::Module,
     pub interface: Interface,
@@ -131,6 +132,7 @@ pub struct Error {
     pub message: String,
 }
 
+#[derive(Clone)]
 pub struct Program {
     pub vertex: naga::Module,
     pub fragment: naga::Module,

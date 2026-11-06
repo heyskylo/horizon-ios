@@ -173,7 +173,7 @@ enum Expr {
     Bin(&'static str, Box<Expr>, Box<Expr>),
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct Item {
     name: String,
     ty: String,
@@ -182,7 +182,7 @@ struct Item {
 }
 
 /// The pack's custom uniforms and variables, with the state `smooth` and `random` keep.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Custom {
     items: Vec<Item>,
     /// `smooth` state per call site.
