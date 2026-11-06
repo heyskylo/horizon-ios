@@ -51,6 +51,9 @@ pub use crate::mobs::{Mob, MobWorld};
 pub use crate::music::{Music, MusicLayer};
 pub use crate::particles::{ParticleOptions, ParticleType};
 pub use crate::recipe_book::RecipeBookCategory;
+pub use crate::terrain_model::{
+    NativeModelMaterial, NativeModelRenderOptions, NativeModelShade, NativeModelUvShift,
+};
 pub use crate::text::Text;
 pub use crate::world_primitives::{PrimitiveShape, WorldPrimitive, WorldPrimitives};
 pub use horizon_assets::item_model::{DisplayContext, StackView};

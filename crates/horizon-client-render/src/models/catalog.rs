@@ -93,7 +93,7 @@ fn bake_resolved(
                 Some(RenderType::Translucent | RenderType::Tripwire) => (true, false),
                 Some(RenderType::Solid) => (false, true),
                 Some(RenderType::Cutout | RenderType::CutoutMipped) => (false, false),
-                None => (
+                None | Some(RenderType::Unsupported) => (
                     quad.material.force_translucent || sprites.translucent[layer as usize],
                     sprites.region_opaque(layer, &quad.uv),
                 ),
