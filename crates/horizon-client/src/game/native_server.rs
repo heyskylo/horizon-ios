@@ -533,6 +533,14 @@ impl Game<'_> {
         };
         out
     }
+    /// `native_run_command` that reaches the mods' commands too (Bukkit's
+    /// `Bukkit.dispatchCommand` from the console): a command a mod registered
+    /// goes to the mods (`native_perform_console_command`), anything else to
+    /// vanilla's. Whether it ran: a mod took it, or vanilla's ran without
+    /// failing. No output, as `native_run_command`. API @API:run_mod_command@.
+    pub(super) fn native_run_mod_command(&mut self, line: &str) -> bool {
+        self.native_run_command_captured(line).ran
+    }
     /// Runs `line` (a leading slash allowed) as the player `uuid` typing it
     /// would (Bukkit's `Player.performCommand`): their source, operator level
     /// and position, a command a mod registered going to the mods

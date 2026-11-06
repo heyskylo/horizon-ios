@@ -2501,6 +2501,10 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   hear it. Where `native_run_command` runs, or inside that player's own hook (`native_perform_command`: the lines
   join its feedback); for anyone else, or a player not on the server, nothing runs. Bundles need
   `"hooks": @API:run_command_as@`.
+- `native_run_mod_command(line) -> bool`: `native_run_command` that reaches the mods' commands too (Bukkit's
+  `Bukkit.dispatchCommand` from the console): a command a mod registered goes to the mods
+  (`native_perform_console_command`), anything else to vanilla's. True when a mod took it or vanilla's ran without
+  failing; no output. Bundles need `"hooks": @API:run_mod_command@`.
 
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
