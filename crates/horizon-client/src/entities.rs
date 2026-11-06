@@ -1925,6 +1925,84 @@ impl ArmorStand {
     pub fn render_position(&self, alpha: f64) -> Vec3 {
         self.previous.lerp(self.position, alpha)
     }
+    /// `ArmorStand.getDimensionsMarker(false)`: the width, height and eye
+    /// height of the box a stand has without the marker flag, which is the box
+    /// a marker's light probe walks (`MARKER_DIMENSIONS` itself is empty, and
+    /// `isBaby()` is `isSmall()`).
+    pub fn probe_dimensions(&self) -> (f64, f64, f64) {
+        if self.small {
+            (0.25, 0.9875, 0.9875)
+        } else {
+            (0.5, 1.975, 1.7775)
+        }
+    }
+    /// `ArmorStand.getLightProbePosition` as the cell the renderer reads
+    /// (`BlockPos.containing` of the position it returns): a marker walks
+    /// `BlockPos.betweenClosed` of its non-marker box at `position()` - it
+    /// takes no partial tick - and returns the first cell whose brightness
+    /// `max(block, sky)` is 15, else the brightest, ties going to the first
+    /// cell walked; every other stand is lit from its eye
+    /// (`Entity.getLightProbePosition` is `getEyePosition(partialTick)`).
+    /// `light` is the level's packed light.
+    pub fn light_probe(
+        &self,
+        partial: f64,
+        mut light: impl FnMut(i32, i32, i32) -> u8,
+    ) -> [i32; 3] {
+        let (width, height, eye) = self.probe_dimensions();
+        if !self.marker {
+            let at = self.render_position(partial);
+            return [
+                at.x.floor() as i32,
+                (at.y + eye).floor() as i32,
+                at.z.floor() as i32,
+            ];
+        }
+        let half = width / 2.0;
+        let (lo_x, hi_x) = (
+            (self.position.x - half).floor() as i32,
+            (self.position.x + half).floor() as i32,
+        );
+        let (lo_z, hi_z) = (
+            (self.position.z - half).floor() as i32,
+            (self.position.z + half).floor() as i32,
+        );
+        let (lo_y, hi_y) = (
+            self.position.y.floor() as i32,
+            (self.position.y + height).floor() as i32,
+        );
+        // `BlockPos.betweenClosed` walks x fastest, then y, then z; the stand's
+        // own cell is what it falls back to when the box is empty.
+        let mut best = [
+            self.position.x.floor() as i32,
+            self.position.y.floor() as i32,
+            self.position.z.floor() as i32,
+        ];
+        let mut brightest = i32::MIN;
+        for cell_z in lo_z..=hi_z {
+            for cell_y in lo_y..=hi_y {
+                for cell_x in lo_x..=hi_x {
+                    let level = light(cell_x, cell_y, cell_z);
+                    let brightness = i32::from((level & 15).max(level >> 4));
+                    if brightness == 15 {
+                        return [cell_x, cell_y, cell_z];
+                    }
+                    if brightness > brightest {
+                        brightest = brightness;
+                        best = [cell_x, cell_y, cell_z];
+                    }
+                }
+            }
+        }
+        best
+    }
+    /// `EntityRenderer.getPackedLightCoords` for the cell `light_probe` chose:
+    /// the level's sky light over the cell's block light, at 15 block light
+    /// while the stand `isOnFire`. `light` is the level's packed light.
+    pub fn render_light(&self, light: u8) -> u32 {
+        let block = if self.fire_ticks > 0 { 15 } else { light & 15 };
+        (u32::from(light >> 4) * 16) | ((u32::from(block) * 16) << 8)
+    }
     /// The body's yaw `alpha` of the way through the tick
     /// (`LivingEntityRenderer.solveBodyRot`: `Mth.rotLerp(partialTick,
     /// yBodyRotO, yBodyRot)`).
@@ -2599,6 +2677,113 @@ mod armor_stand_render_tests {
         stand.snap(Vec3::new(200.5, 64.0, 0.5), 90.0);
         assert_eq!(stand.render_position(0.5), Vec3::new(200.5, 64.0, 0.5));
         assert_eq!(stand.render_yaw(0.5), 90.0);
+    }
+}
+#[cfg(test)]
+mod armor_stand_light_tests {
+    use super::*;
+
+    fn stand(x: f64, y: f64, z: f64) -> ArmorStand {
+        ArmorStand::new(1, Vec3::new(x, y, z), 0.0)
+    }
+
+    /// `ArmorStand.getLightProbePosition` for a stand that is not a marker is
+    /// `Entity.getEyePosition`: `EntityType.ARMOR_STAND` declares
+    /// `eyeHeight(1.7775)`, and a small stand (`isBaby()`) is the same type
+    /// scaled by 0.5 with `withEyeHeight(0.9875)`. Horizon read
+    /// `floor(base + 0.5)` for every stand, so a stand standing on a lit floor
+    /// took the floor's light instead of the light at its head.
+    #[test]
+    fn a_stand_is_lit_from_the_block_its_eye_is_in() {
+        let dark = |_: i32, _: i32, _: i32| 0u8;
+        // Full stand on y = 64: eye 65.7775, cell 65 (the old 64.5 was 64).
+        assert_eq!(stand(0.5, 64.0, 0.5).light_probe(1.0, dark), [0, 65, 0]);
+        assert_eq!((64.0_f64 + 0.5).floor() as i32, 64);
+        // Small stand: eye 0.9875 above its base, so y = 64.2 is 65.1875.
+        let mut small = stand(0.5, 64.2, 0.5);
+        small.small = true;
+        assert_eq!(small.light_probe(1.0, dark), [0, 65, 0]);
+        assert_eq!((64.2_f64 + 0.5).floor() as i32, 64);
+        // A small stand at y = 64.0 stays in its own cell: eye 64.9875.
+        let mut low = stand(0.5, 64.0, 0.5);
+        low.small = true;
+        assert_eq!(low.light_probe(1.0, dark), [0, 64, 0]);
+    }
+
+    /// `getEyePosition(partialTick)` interpolates: a stand falling from 70 to
+    /// 69 is probed 0.5 down at the middle of the frame, 69.5 + 1.7775 in the
+    /// cell at 71, while its feet's cell is 69.
+    #[test]
+    fn a_stand_probe_follows_the_frame() {
+        let dark = |_: i32, _: i32, _: i32| 0u8;
+        let mut falling = stand(0.5, 70.0, 0.5);
+        falling.interpolate(Some((Vec3::new(0.5, 69.0, 0.5), 0.0)));
+        assert_eq!(falling.light_probe(0.0, dark), [0, 71, 0]);
+        assert_eq!(falling.light_probe(0.5, dark), [0, 71, 0]);
+        assert_eq!(falling.light_probe(1.0, dark), [0, 70, 0]);
+        assert_eq!(falling.position.y.floor() as i32, 69);
+    }
+
+    /// A marker walks `BlockPos.betweenClosed` of its own box - the size it has
+    /// without the marker flag, 0.5 by 1.975 - from `position()`, taking the
+    /// first cell at brightness 15 and else the brightest. Horizon used the
+    /// stand's own cell, so a marker (a hologram on a dark ceiling) was lit by
+    /// its feet's block.
+    #[test]
+    fn a_marker_scans_the_cells_of_its_own_box() {
+        let at = |want: [i32; 3], level: u8| {
+            move |x: i32, y: i32, z: i32| {
+                if [x, y, z] == want { level } else { 0 }
+            }
+        };
+        let mut marker = stand(0.5, 64.0, 0.5);
+        marker.marker = true;
+        // The box is x/z 0.25..0.75 - the cell at 0 - and y 64..65.975.
+        assert_eq!(marker.light_probe(1.0, at([0, 65, 0], 15)), [0, 65, 0]);
+        assert_eq!(marker.light_probe(1.0, at([0, 65, 0], 9)), [0, 65, 0]);
+        // Nothing lit: the first cell walked, x fastest then y then z.
+        assert_eq!(marker.light_probe(1.0, |_, _, _| 0u8), [0, 64, 0]);
+        // The cell above the box is not scanned, so its 15 does not win.
+        assert_eq!(marker.light_probe(1.0, at([0, 66, 0], 15)), [0, 64, 0]);
+        // 15 wins over a brighter-looking neighbour, and y is walked before z:
+        // (0, 65, 0) comes before (0, 64, 1) though both are at 15.
+        let mut wide = stand(0.5, 64.0, 0.9);
+        wide.marker = true;
+        let two = |x: i32, y: i32, z: i32| {
+            if (x, y, z) == (0, 65, 0) || (x, y, z) == (0, 64, 1) {
+                15
+            } else {
+                0
+            }
+        };
+        assert_eq!(wide.light_probe(1.0, two), [0, 65, 0]);
+        // `getLightProbePosition`'s marker branch reads `position()`, not the
+        // partial-tick position: falling does not move the scan.
+        let mut moving = stand(0.5, 64.0, 0.5);
+        moving.marker = true;
+        moving.interpolate(Some((Vec3::new(0.5, 70.0, 0.5), 0.0)));
+        assert_eq!(moving.light_probe(0.0, |_, _, _| 0u8), [0, 70, 0]);
+        assert_eq!(moving.light_probe(0.5, |_, _, _| 0u8), [0, 70, 0]);
+    }
+
+    /// `EntityRenderer.getBlockLightLevel`: a stand `isOnFire` is drawn at 15
+    /// block light whatever the level says, and the sky light is the probe
+    /// cell's own.
+    #[test]
+    fn a_burning_stand_is_drawn_at_full_block_light() {
+        let light = |sky: u8, block: u8| (sky << 4) | block;
+        let cold = stand(0.5, 64.0, 0.5);
+        assert_eq!(cold.render_light(light(15, 0)), (15 * 16) as u32);
+        assert_eq!(cold.render_light(light(0, 9)), ((9 * 16) << 8) as u32);
+        let burning = ArmorStand {
+            fire_ticks: 100,
+            ..stand(0.5, 64.0, 0.5)
+        };
+        assert_eq!(
+            burning.render_light(light(15, 0)),
+            ((15 * 16) | ((15 * 16) << 8)) as u32
+        );
+        assert_eq!(burning.render_light(light(0, 0)), ((15 * 16) << 8) as u32);
     }
 }
 #[cfg(test)]
