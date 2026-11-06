@@ -261,6 +261,24 @@ struct Tracked {
     kind: String,
     position: [f64; 3],
     silent: bool,
+    /// `Entity.vehicle`: the entity it rides (`SetPassengers`), whatever
+    /// either one's type.
+    vehicle: Option<u32>,
+}
+
+/// `Entity.startRiding` / `removePassenger` for a `SetPassengers` packet: the
+/// listed entities ride `vehicle`, the ones that rode it and are no longer
+/// listed got off. Every tracked entity counts, whatever its type, so a
+/// server's item display or marker on a player hides that player's name tag
+/// as vanilla's `isVehicle` does (#5666).
+fn seat_passengers(entities: &mut HashMap<i32, Tracked>, vehicle: u32, passengers: &[i32]) {
+    for (id, t) in entities.iter_mut() {
+        if passengers.contains(id) {
+            t.vehicle = Some(vehicle);
+        } else if t.vehicle == Some(vehicle) {
+            t.vehicle = None;
+        }
+    }
 }
 /// Smooth an entity toward a new position over three ticks (InterpolationHandler).
 #[derive(Clone, Copy)]
@@ -533,7 +551,9 @@ pub(super) struct Remote {
     position_sender: horizon_client::player_sync::PositionSender,
     last_input: u8,
     was_sprinting: bool,
-    carried: Option<usize>,
+    /// The slot the server last heard (`MultiPlayerGameMode.carriedIndex`): a cell, so `send` can
+    /// send a new one first (`ensureHasSentCarriedItem`).
+    carried: std::cell::Cell<Option<usize>>,
     /// The last ClientboundPlayerAbilitiesPacket. Vanilla's LocalPlayer
     /// holds its abilities from the login on; here the player is made at
     /// the first teleport, which takes them then.
@@ -641,6 +661,8 @@ pub(super) struct Remote {
     own_profile: OwnProfile,
     /// The skin texture each profile's players show, once its download is ready.
     skins: HashMap<u128, String>,
+    skins_revision: u64,
+    published_skins: Option<(usize, u128, u64, u64)>,
     listed: std::collections::HashSet<u128>,
     /// `ClientboundLoginPacket.onlineMode`: the player list shows heads.
     pub(super) online_mode: bool,
@@ -1096,7 +1118,7 @@ impl Game<'_> {
             position_sender: Default::default(),
             last_input: 0,
             was_sprinting: false,
-            carried: None,
+            carried: std::cell::Cell::new(None),
             abilities: None,
             loaded_sent: false,
             heard_level: None,
@@ -1142,6 +1164,8 @@ impl Game<'_> {
             skin_textures: HashMap::new(),
             own_profile: OwnProfile::Idle,
             skins: HashMap::new(),
+            skins_revision: 0,
+            published_skins: None,
             listed: Default::default(),
             online_mode: false,
             level_players: HashMap::new(),
@@ -1231,7 +1255,7 @@ impl Game<'_> {
             r.session.disconnect();
         }
         super::lan::forget_sync_data();
-        self.gui.atlas.object_skins.clear();
+        self.gui.atlas.clear_object_skins();
         self.server_packs_disconnect();
         self.code_of_conduct = None;
         self.reset_tutorial();
@@ -1317,6 +1341,16 @@ impl Game<'_> {
 
     pub(super) fn send(&self, packet: S) {
         if let Some(r) = &self.remote {
+            // MultiPlayerGameMode's attack, interact, useItem, useItemOn, releaseUsingItem, dropItem and
+            // piercingAttack run ensureHasSentCarriedItem before their packet: a slot the number keys
+            // chose this tick goes out first. A miss, a dig's start or a swap waits for the next tick.
+            if let S::Attack(_) | S::Interact(_) | S::UseItem(_) | S::UseItemOn(_) = &packet {
+                self.remote_send_carried();
+            } else if let S::PlayerAction(a) = &packet
+                && matches!(a.action, 4 | 5 | 6 | 8)
+            {
+                self.remote_send_carried();
+            }
             r.session.send(packet);
         }
     }
@@ -1983,9 +2017,12 @@ impl Game<'_> {
                     self.send_chat_acknowledgement();
                     self.close_dialogs();
                     // The server configuring us now (a proxy's next one)
-                    // offers its own far terrain, or none.
+                    // offers its own far terrain, or none, and announces its
+                    // own features again (a Horizon server's quiet commands).
                     if let Some(remote) = &mut self.remote {
                         remote.far_terrain = None;
+                        remote.quiet_commands = false;
+                        remote.mod_net = false;
                     }
                     self.clear_lod();
                     if let Some(remote) = &self.remote {
@@ -2223,6 +2260,9 @@ impl Game<'_> {
         let Some(r) = self.remote.as_mut() else {
             return;
         };
+        // A Horizon server's bulk edit sends whole columns with the light
+        // from before its relight; any other server's packet light is final.
+        let relight_resent = r.quiet_commands;
         let dimension = r.registries.dimension(spawn.dimension_type);
         // The server's dimension type gives the level's shape, and its
         // chunks the shape's column.
@@ -2328,6 +2368,7 @@ impl Game<'_> {
                 self.native_client_level_unload(&old);
             }
         }
+        self.streaming.relight_resent = relight_resent;
         let has_sky = self
             .remote
             .as_ref()
@@ -2602,7 +2643,10 @@ impl Game<'_> {
         }
     }
     fn set_block(&mut self, pos: [i32; 3], state: i32) {
-        let state = BlockStateId(state.max(0) as u32);
+        // A state we don't have (a server with mods we lack) reads as air, as in its chunks.
+        let state = state.max(0) as u32;
+        let known = horizon_client::chunk::known_block_state(state);
+        let state = BlockStateId(if known { state } else { 0 });
         let previous = self.world.block(pos[0], pos[1], pos[2]);
         if self.world.loaded(pos[0], pos[2])
             && self.world.set(pos[0], pos[1], pos[2], state).is_ok()
@@ -2635,6 +2679,18 @@ impl Game<'_> {
             if let Some(r) = self.remote.as_mut() {
                 r.placing = None;
             }
+        }
+    }
+    /// `Entity.isVehicle` on a client: the entities a tracked entity rides.
+    pub(super) fn remote_vehicle_ids(&self) -> impl Iterator<Item = u32> + '_ {
+        self.remote
+            .iter()
+            .flat_map(|r| r.entities.values().filter_map(|t| t.vehicle))
+    }
+    /// The `SetPassengers` bookkeeping of the tracked entities.
+    pub(super) fn remote_seat_passengers(&mut self, vehicle: u32, passengers: &[i32]) {
+        if let Some(r) = self.remote.as_mut() {
+            seat_passengers(&mut r.entities, vehicle, passengers);
         }
     }
     /// `recreateFromPacket`: yRot and xRot from the packet, the body and head
@@ -2691,6 +2747,7 @@ impl Game<'_> {
                     kind: kind.to_owned(),
                     position,
                     silent: false,
+                    vehicle: None,
                 },
             );
         }
@@ -3231,7 +3288,7 @@ impl Game<'_> {
                 self.potions.effects.clear();
                 self.riding = None;
                 if let Some(r) = self.remote.as_mut() {
-                    r.carried = Some(0);
+                    r.carried.set(Some(0));
                     // handleLogin makes a new ClientLevel: its predictions count from 0.
                     r.sequence = 0;
                     r.own_invisible = false;
@@ -3257,6 +3314,8 @@ impl Game<'_> {
                     false,
                     horizon_client::level_loading::Reason::Other,
                 );
+                // handleLogin: ClientPlayerNetworkEvent.LoggingIn, the new level made.
+                self.native_client_player_network_logging_in();
                 // No ClientInformation here: the configuration phase sent it,
                 // and ClientPacketListener.broadcastClientInformation sends it
                 // again only when an option changes it.
@@ -3413,7 +3472,9 @@ impl Game<'_> {
             C::LevelParticles(p) => self.remote_level_particles(&p),
             C::Explode(p) => self.remote_explode(&p),
             C::Sound(p) => {
-                if let Some(name) = self.remote_sound_name(&p.sound) {
+                if let Some(name) = self.remote_sound_name(&p.sound)
+                    && !self.settings.extras.pvp.combat.mutes_sound(&name)
+                {
                     let at = [
                         f64::from(p.x) / 8.0,
                         f64::from(p.y) / 8.0,
@@ -3434,6 +3495,7 @@ impl Game<'_> {
             }
             C::SoundEntity(p) => {
                 if let Some(name) = self.remote_sound_name(&p.sound)
+                    && !self.settings.extras.pvp.combat.mutes_sound(&name)
                     && let Some(state) = self.remote_sound_entity_state(p.id)
                 {
                     let source = usize::try_from(p.source)
@@ -5231,10 +5293,50 @@ impl Game<'_> {
     /// The player list's view of the connection: the listed players (with
     /// their downloaded skins once ready), online mode, and which players
     /// are in the level with an upside-down name.
+    pub(super) fn publish_tab_object_skins(&mut self) {
+        let Some(r) = self.remote.as_mut() else {
+            return;
+        };
+        let fingerprint = (
+            r.listed.len(),
+            r.listed.iter().fold(0, |xor, uuid| xor ^ uuid),
+            r.skins_revision,
+            self.gui.atlas.object_skins_revision,
+        );
+        if r.published_skins == Some(fingerprint) {
+            return;
+        }
+        for uuid in &r.listed {
+            let Some(p) = r.tab_players.get(uuid) else {
+                continue;
+            };
+            let skin = r.skins.get(uuid).map_or_else(
+                || horizon_client::tab_list::default_skin(*uuid),
+                String::as_str,
+            );
+            for key in [
+                format!("id:{uuid:032x}"),
+                format!("name:{}", p.name.to_ascii_lowercase()),
+            ] {
+                if object_skin_changed(&self.gui.atlas.object_skins, &key, skin) {
+                    self.gui.atlas.set_object_skin(key, skin.to_owned());
+                }
+            }
+        }
+        // Publication itself mutates the atlas; cache its final revision.
+        r.published_skins = Some((
+            fingerprint.0,
+            fingerprint.1,
+            fingerprint.2,
+            self.gui.atlas.object_skins_revision,
+        ));
+    }
+
     pub(super) fn remote_tab_players(
         &mut self,
     ) -> Option<(Vec<horizon_client::tab_list::TabPlayer>, bool, Vec<u128>)> {
         self.update_remote_skins();
+        self.publish_tab_object_skins();
         let mut players: Vec<_> = {
             let r = self.remote.as_ref()?;
             r.listed
@@ -5248,13 +5350,6 @@ impl Game<'_> {
                 .as_ref()
                 .and_then(|r| r.skins.get(&p.uuid).cloned())
                 .unwrap_or_else(|| horizon_client::tab_list::default_skin(p.uuid).to_owned());
-            self.gui
-                .atlas
-                .set_object_skin(format!("id:{:032x}", p.uuid), p.skin.clone());
-            self.gui.atlas.set_object_skin(
-                format!("name:{}", p.name.to_ascii_lowercase()),
-                p.skin.clone(),
-            );
         }
         let r = self.remote.as_ref()?;
         let upside_down = players
@@ -5464,14 +5559,13 @@ impl Game<'_> {
                 (skin.to_owned(), skin.contains("/slim/"))
             }
         };
-        let Some((level, skins, own)) = self.remote.as_mut().map(|r| {
-            r.skins = resolved.into_iter().collect();
+        let skins: HashMap<_, _> = resolved.into_iter().collect();
+        let Some((level, own)) = self.remote.as_ref().map(|r| {
             (
                 r.level_players
                     .iter()
                     .map(|(id, uuid)| (*id as u32, *uuid))
                     .collect::<Vec<_>>(),
-                r.skins.clone(),
                 r.profile,
             )
         }) else {
@@ -5479,12 +5573,16 @@ impl Game<'_> {
         };
         // Only the skins drawn hold atlas slots: the level's players, not
         // every entry of a busy server's player list.
+        // Build once: resolving each player must not scan every level entity.
+        let players: HashMap<_, _> = self
+            .mobs
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| &*m.kind.id == "minecraft:player")
+            .map(|(i, m)| (m.id, i))
+            .collect();
         for (id, uuid) in level {
-            let Some(i) = self
-                .mobs
-                .iter()
-                .position(|m| m.id == id && &*m.kind.id == "minecraft:player")
-            else {
+            let Some(&i) = players.get(&id) else {
                 continue;
             };
             let (skin, is_slim) = self.drawn_skin(uuid, skin_of(&skins, uuid));
@@ -5516,14 +5614,21 @@ impl Game<'_> {
                 mob.cape = cape;
             }
         }
+        if let Some(r) = self.remote.as_mut()
+            && r.skins != skins
+        {
+            r.skins_revision = r.skins_revision.wrapping_add(1);
+            r.skins = skins;
+        }
         // ClientMannequin.updateSkin (PlayerSkinRenderCache.lookup): a
         // mannequin's DATA_PROFILE `textures` property resolves like a
         // player's, never required to be signed.
-        let mannequins: Vec<(u32, horizon_client::skins::Textures)> = self
+        let mannequins: Vec<(usize, horizon_client::skins::Textures)> = self
             .mobs
             .iter()
-            .filter(|m| &*m.kind.id == "minecraft:mannequin" && m.profile.is_some())
-            .map(|m| {
+            .enumerate()
+            .filter(|(_, m)| &*m.kind.id == "minecraft:mannequin" && m.profile.is_some())
+            .map(|(i, m)| {
                 let profile = m.profile.as_ref();
                 let t = profile.and_then(|p| p.properties.iter().find(|p| p.name == "textures"));
                 let textures = if let Some(t) = t {
@@ -5561,10 +5666,10 @@ impl Game<'_> {
                     })
                     .unwrap_or_default()
                 };
-                (m.id, textures)
+                (i, textures)
             })
             .collect();
-        let mut resolved: Vec<(u32, Option<String>, bool)> = Vec::new();
+        let mut resolved: Vec<(usize, Option<String>, bool)> = Vec::new();
         for (id, textures) in mannequins {
             let skin = {
                 let mut downloads = self.skin_downloads.borrow_mut();
@@ -5575,16 +5680,12 @@ impl Game<'_> {
             let slim = skin.is_some() && textures.slim;
             resolved.push((id, skin, slim));
         }
-        for (id, skin, slim) in resolved {
+        for (i, skin, slim) in resolved {
             let skin = skin.filter(|s| !s.starts_with("skins/") || self.again_skin(s));
-            if let Some(mob) = self
-                .mobs
-                .iter_mut()
-                .find(|m| m.id == id && &*m.kind.id == "minecraft:mannequin")
-            {
-                mob.slim = slim && skin.is_some();
-                mob.skin = skin;
-            }
+            // Resolution and atlas uploads do not insert or remove mobs.
+            let mob = &mut self.mobs[i];
+            mob.slim = slim && skin.is_some();
+            mob.skin = skin;
         }
     }
     /// Puts a downloaded skin in an atlas skin slot (`SkinSlots::place`),
@@ -6362,6 +6463,9 @@ impl Game<'_> {
                 // NetherPortalBlock.entityInside on the client's own level:
                 // the portal overlay and its trigger sound (the server moves
                 // the player).
+                horizon_client::motion::MotionEvent::PowderSnowMelt { pos } => {
+                    self.powder_snow_melt(pos);
+                }
                 horizon_client::motion::MotionEvent::InsidePortal { .. } => {
                     self.client_inside_nether_portal();
                 }
@@ -7221,7 +7325,8 @@ impl Game<'_> {
     }
     /// The end of the player's tick: `AbstractBoat.tick`'s paddles (the vehicle ticks before its
     /// passenger's `sendChanges`), then `LocalPlayer.sendChanges`: the input, and a passenger's look,
-    /// vehicle and sprint, or `sendPosition`'s sprint and move.
+    /// vehicle and sprint, or `sendPosition`'s sprint and move. The held slot is not sent here:
+    /// `MultiPlayerGameMode.tick` sends it at the start of the next tick (`remote_handle_input`).
     fn remote_send_state(&mut self, input: u8) {
         let Some(p) = self.player.as_ref() else {
             return;
@@ -7232,7 +7337,7 @@ impl Game<'_> {
             p.collision.horizontal,
             p.sprinting,
         );
-        let (yaw, pitch, selected) = (self.yaw, self.pitch, self.selected);
+        let (yaw, pitch) = (self.yaw, self.pitch);
         let riding = self.riding.is_some();
         let controls_camera = self.controls_camera();
         let (paddles, vehicle): (Vec<S>, Vec<S>) = self
@@ -7243,12 +7348,6 @@ impl Game<'_> {
             return;
         };
         let mut out = paddles;
-        if r.carried != Some(selected) {
-            r.carried = Some(selected);
-            out.push(S::SetCarriedItem(play::SetCarriedItem {
-                slot: selected as i16,
-            }));
-        }
         if input != r.last_input {
             r.last_input = input;
             out.push(S::PlayerInput(play::PlayerInput { flags: input }));
@@ -7445,15 +7544,12 @@ impl Game<'_> {
             }
             return;
         }
-        let facts = self.res.facts().get(state).clone();
         // The server's own getDestroyProgress: under water, off the ground,
-        // with haste, fatigue and efficiency, so the client stops digging
-        // when the server is done too (#1254).
-        let progress = if facts.hardness == 0.0 {
-            1.0
-        } else {
-            self.destroy_progress(hit.pos)
-        };
+        // with haste, fatigue, efficiency and the mods' native_break_speed, so
+        // the client stops digging when the server is done too (#1254). A
+        // block of hardness 0 gives infinity, breaking at once, unless a mod
+        // made the speed 0.
+        let progress = self.destroy_progress(hit.pos);
         // sameDestroyTarget: the same block and still the item the break began with.
         let held = self.main_hand_key();
         let same = self.remote.as_ref().is_some_and(|r| {
@@ -8371,8 +8467,16 @@ impl Game<'_> {
         stack: &ItemStack,
     ) -> (bool, Option<DryChanges>, Vec<DrySound>) {
         // `BucketItem.use`: `level.mayInteract` and `mayUseItemAt`.
+        // `Player.mayUseItemAt` tests the clicked block against `can_place_on`.
         if !self.may_build() {
-            return (false, None, Vec::new());
+            let aim = if &*stack.item == "minecraft:bucket" {
+                self.bucket_hit()
+            } else {
+                self.pick()
+            };
+            if !aim.is_some_and(|hit| self.can_place_on_in_adventure(hit.pos)) {
+                return (false, None, Vec::new());
+            }
         }
         if &*stack.item == "minecraft:bucket" {
             let Some(hit) = self.bucket_hit() else {
@@ -8927,6 +9031,10 @@ impl Game<'_> {
             && self.screen == Screen::Playing
             && self.sleeping.is_none()
             && !self.dialog_open();
+        // MultiPlayerGameMode.tick, first in Minecraft.tick, screen or not: the slot
+        // chosen since the last tick (the wheel, the last tick's number keys, the
+        // server's SetHeldSlot) goes out before anything else of this tick.
+        self.remote_send_carried();
         if stop || !ready {
             self.stop_remote_mining();
         }
@@ -8935,13 +9043,8 @@ impl Game<'_> {
             self.hotbar_presses.clear();
             return;
         }
-        // MultiPlayerGameMode.tick syncs the carried slot before keybinds.
-        self.remote_send_carried();
         let (attack, use_item) = (self.left, self.right);
-        // A tick that clicks, attacks or uses acts with the slot its number
-        // keys select (`ensureHasSentCarriedItem` before the packets).
-        let acts = input.has_clicks() || attack || use_item;
-        input.tick(&mut RemoteInputWorld(self, acts), attack, use_item);
+        input.tick(&mut RemoteInputWorld(self), attack, use_item);
         self.remote_queued_keys();
         if let Some(r) = self.remote.as_mut() {
             r.input = input;
@@ -8950,17 +9053,12 @@ impl Game<'_> {
 
     /// `MultiPlayerGameMode.ensureHasSentCarriedItem`: the server hears of a
     /// new selected slot before anything the slot acts with.
-    fn remote_send_carried(&mut self) {
-        let carried_changed = self.remote.as_mut().is_some_and(|r| {
-            if r.carried == Some(self.selected) {
-                false
-            } else {
-                r.carried = Some(self.selected);
-                true
-            }
-        });
-        if carried_changed {
-            self.send(S::SetCarriedItem(play::SetCarriedItem {
+    fn remote_send_carried(&self) {
+        if let Some(r) = &self.remote
+            && r.carried.get() != Some(self.selected)
+        {
+            r.carried.set(Some(self.selected));
+            r.session.send(S::SetCarriedItem(play::SetCarriedItem {
                 slot: self.selected as i16,
             }));
         }
@@ -9190,6 +9288,10 @@ impl Game<'_> {
             } else {
                 self.native_interaction(0, Hand::Main)
             };
+            if canceled.is_none() && !air {
+                // MultiPlayerGameMode.continueDestroyBlock starts with ensureHasSentCarriedItem.
+                self.remote_send_carried();
+            }
             if let Some(swing) = canceled {
                 if swing {
                     self.swing_arm();
@@ -9304,9 +9406,7 @@ impl Game<'_> {
         // `KeyMapping.releaseAll` clears key.use; without this the button still
         // reads held and a use would start again on the first tick back.
         self.right = false;
-        horizon_client::interaction_input::release_on_screen_open(&mut RemoteInputWorld(
-            self, false,
-        ));
+        horizon_client::interaction_input::release_on_screen_open(&mut RemoteInputWorld(self));
     }
     /// `MultiPlayerGameMode.releaseUsingItem`: sends `RELEASE_USE_ITEM` and
     /// runs the client half of `Item.releaseUsing` (a Riptide launch moves the
@@ -9356,6 +9456,8 @@ impl Game<'_> {
     /// MultiPlayerGameMode.dropItem (key.drop): predict the removal, then send
     /// the action; swing only if a nonempty stack was removed.
     pub(super) fn remote_drop(&mut self, all: bool) {
+        // ensureHasSentCarriedItem: the server drops from the slot just chosen.
+        self.remote_send_carried();
         let dropped =
             horizon_client::items::take_held_drop(&mut self.inventory[self.selected], all, false);
         self.send(S::PlayerAction(play::PlayerAction {
@@ -10725,7 +10827,7 @@ fn synced_local_use(
 }
 
 /// The game as the tick's input sees it, and whether the tick acts.
-struct RemoteInputWorld<'g, 'a>(&'g mut Game<'a>, bool);
+struct RemoteInputWorld<'g, 'a>(&'g mut Game<'a>);
 
 struct RemoteUseWorld<'g, 'a>(&'g mut Game<'a>);
 
@@ -10744,12 +10846,6 @@ impl horizon_client::interaction_input::TargetUseWorld for RemoteUseWorld<'_, '_
 impl horizon_client::interaction_input::InteractionWorld for RemoteInputWorld<'_, '_> {
     fn pick_hit_result(&mut self) {
         self.0.pick_tick_targets();
-        // MultiPlayerGameMode.ensureHasSentCarriedItem: an action this tick
-        // sends the slot the number keys chose first; otherwise the next
-        // tick's MultiPlayerGameMode.tick does.
-        if self.1 {
-            self.0.remote_send_carried();
-        }
     }
     fn release_hit_result(&mut self) {
         self.0.release_tick_targets();
@@ -10899,6 +10995,10 @@ impl Remote {
             .or_else(|| self.players.get(uuid))
             .map(String::as_str)
     }
+    /// Listed UUIDs always have a tab entry; removal clears both together.
+    pub(super) fn listed_player_count(&self) -> usize {
+        self.listed.len()
+    }
     /// Players in the server's player list, this one included.
     pub(super) fn player_count(&self) -> usize {
         self.players.len()
@@ -10918,6 +11018,10 @@ impl Remote {
     pub(super) fn tracked(&self, id: i32) -> Option<(&str, [f64; 3])> {
         self.entities.get(&id).map(|t| (&*t.kind, t.position))
     }
+}
+
+fn object_skin_changed(published: &HashMap<String, String>, key: &str, skin: &str) -> bool {
+    published.get(key).is_none_or(|previous| previous != skin)
 }
 
 /// The textures to resolve skins from: every list entry's, and for a player
@@ -11399,6 +11503,49 @@ mod tests {
         assert_eq!(super::skin_entries(&players, &listed, &mut kept).len(), 1);
     }
 
+    #[test]
+    fn tab_publication_fingerprint_tracks_all_inputs() {
+        let fingerprint = |ids: &[u128], skins, atlas| {
+            (
+                ids.len(),
+                ids.iter().fold(0, |xor, uuid| xor ^ uuid),
+                skins,
+                atlas,
+            )
+        };
+        let published = fingerprint(&[7, 8], 1, 2);
+        assert_eq!(published, fingerprint(&[8, 7], 1, 2));
+        assert_ne!(published, fingerprint(&[7, 9], 1, 2));
+        assert_ne!(published, fingerprint(&[7, 8], 2, 2));
+        assert_ne!(published, fingerprint(&[7, 8], 1, 3));
+    }
+
+    #[test]
+    fn tab_object_skin_publication_tracks_changes_and_atlas_clear() {
+        let mut published = std::collections::HashMap::new();
+        let mut writes = 0;
+        for skin in ["skins/first", "skins/first", "skins/second"] {
+            for key in ["id:7", "name:player"] {
+                if super::object_skin_changed(&published, key, skin) {
+                    published.insert(key.to_owned(), skin.to_owned());
+                    writes += 1;
+                }
+            }
+        }
+        assert_eq!(writes, 4, "unchanged skins do not publish either entry");
+        published.clear();
+        assert!(super::object_skin_changed(
+            &published,
+            "id:7",
+            "skins/second"
+        ));
+        assert!(super::object_skin_changed(
+            &published,
+            "name:player",
+            "skins/second"
+        ));
+    }
+
     /// An NPC plugin's scale: a base the plugin sets, or a modifier on 1.
     #[test]
     fn attribute_values_add_then_multiply_as_vanilla() {
@@ -11582,6 +11729,42 @@ mod tests {
             "minecraft:entity.player.hurt"
         );
     }
+    /// `ClientPacketListener.handleSetEntityPassengersPacket`: the vehicle
+    /// ejects its passengers, then each listed entity `startRiding`s it, so
+    /// `isVehicle` holds while the list is not empty, whatever the passenger's
+    /// type: a server's item display riding a player hides that player's name
+    /// tag like a text display does (#5666).
+    #[test]
+    fn any_tracked_passenger_makes_its_vehicle_a_vehicle() {
+        use std::collections::{HashMap, HashSet};
+        let tracked = |kind: &str| super::Tracked {
+            kind: kind.to_owned(),
+            position: [0.0, 64.0, 0.0],
+            silent: false,
+            vehicle: None,
+        };
+        let mut entities = HashMap::from([
+            (42, tracked("minecraft:player")),
+            (43, tracked("minecraft:player")),
+            (9, tracked("minecraft:item_display")),
+            (10, tracked("minecraft:block_display")),
+        ]);
+        let vehicles = |e: &HashMap<i32, super::Tracked>| -> HashSet<u32> {
+            e.values().filter_map(|t| t.vehicle).collect()
+        };
+        super::seat_passengers(&mut entities, 42, &[9, 10]);
+        assert_eq!(vehicles(&entities), HashSet::from([42]));
+        // The list replaces the old one: 10 got off, 9 still rides.
+        super::seat_passengers(&mut entities, 42, &[9]);
+        assert_eq!(entities[&10].vehicle, None);
+        assert_eq!(entities[&9].vehicle, Some(42));
+        // startRiding leaves the old vehicle first.
+        super::seat_passengers(&mut entities, 43, &[9]);
+        assert_eq!(vehicles(&entities), HashSet::from([43]));
+        // An empty list: nobody rides 43 any more.
+        super::seat_passengers(&mut entities, 43, &[]);
+        assert!(vehicles(&entities).is_empty());
+    }
     /// `ClientboundSoundEntityPacket`: the sound is heard where the entity it
     /// names is — the local player included, which is no tracked entity — and
     /// an id this level doesn't have plays nothing at all.
@@ -11595,6 +11778,7 @@ mod tests {
                 kind: "minecraft:cow".to_owned(),
                 position: [8.5, 64.0, -3.5],
                 silent: false,
+                vehicle: None,
             },
         );
         let player = Some((2, [0.5, 70.0, 0.5], false));
@@ -11637,6 +11821,7 @@ mod tests {
                 kind: "minecraft:arrow".to_owned(),
                 position: [8.5, 64.0, -3.5],
                 silent: true,
+                vehicle: None,
             },
         );
         let state = super::entity_sound_state(7, None, None, &tracked, None).unwrap();

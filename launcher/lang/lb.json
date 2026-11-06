@@ -17,6 +17,7 @@
   "Pack tooling or a game feature that Horizon already has, so there is nothing to port.": "Pack tooling or a game feature that Horizon already has, so there is nothing to port.",
   "Built into Horizon already, so there is nothing to port.": "Built into Horizon already, so there is nothing to port.",
   "Nothing to port.": "Nothing to port.",
+  "Made for Minecraft 1.20 or older: Horizon ports mods made for 1.21 and later.": "Made for Minecraft 1.20 or older: Horizon ports mods made for 1.21 and later.",
   "Shader packs are not converted yet.": "Shader packs are not converted yet.",
   "Copied as a resource pack; Horizon has not checked how it renders. Turn it on in the game's Resource Packs screen.": "Copied as a resource pack; Horizon has not checked how it renders. Turn it on in the game's Resource Packs screen.",
   "Not downloaded yet; Port gets it.": "Not downloaded yet; Port gets it.",
@@ -1216,5 +1217,11 @@
   "US sales tax is added where a state charges it.": "US-Verkafssteier kënnt dobäi, wou e Bundesstaat se erhieft.",
   "VAT included where it applies.": "TVA abegraff, wou se gëllt.",
   "In a set in your basket": "An engem Set an dengem Kuerf",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Maach d'Bezuelung am Browser fäerdeg. Deng Saachen kommen e Moment duerno an d'Garderob."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Maach d'Bezuelung am Browser fäerdeg. Deng Saachen kommen e Moment duerno an d'Garderob.",
+  "{name} was left out: made for another Horizon version": "{name} gouf ewechgelooss: fir eng aner Horizon-Versioun gemaach",
+  "{name} was left out: clashes with {other}": "{name} gouf ewechgelooss: kollidéiert mat {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} gouf ewechgelooss: brauch {other}, dat ewechgelooss gouf",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Baut net op dem Horizon, deen s du spills ({code}): e Build léisst et ewech, bis säin Auteur et aktualiséiert",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Do wou s du bass, gëtt de Grënner-Set iwwer eng gratis Bezuelung op playhorizon.dev gefuerdert. Fuerder en am Buttek: hien mécht d'Bezuelung fir dech op.",
+  "The founder set can't be claimed from your country.": "De Grënner-Set kann net aus dengem Land gefuerdert ginn."
 }

@@ -17,6 +17,7 @@
   "Pack tooling or a game feature that Horizon already has, so there is nothing to port.": "Pack tooling or a game feature that Horizon already has, so there is nothing to port.",
   "Built into Horizon already, so there is nothing to port.": "Built into Horizon already, so there is nothing to port.",
   "Nothing to port.": "Nothing to port.",
+  "Made for Minecraft 1.20 or older: Horizon ports mods made for 1.21 and later.": "Made for Minecraft 1.20 or older: Horizon ports mods made for 1.21 and later.",
   "Shader packs are not converted yet.": "Shader packs are not converted yet.",
   "Copied as a resource pack; Horizon has not checked how it renders. Turn it on in the game's Resource Packs screen.": "Copied as a resource pack; Horizon has not checked how it renders. Turn it on in the game's Resource Packs screen.",
   "Not downloaded yet; Port gets it.": "Not downloaded yet; Port gets it.",
@@ -1216,5 +1217,11 @@
   "US sales tax is added where a state charges it.": "Hoʻohui ʻia ka ʻauhau kūʻai US ma kahi e ʻohi ai ka mokuʻāina.",
   "VAT included where it applies.": "Komo pū ka VAT ma kahi e pili ai.",
   "In a set in your basket": "I loko o kahi pūʻulu ma kāu hīnaʻi",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "E hoʻopau i ka uku ma kāu polokalamu pūnaewele. E hiki kāu mau mea i ka Lole ma hope iki."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "E hoʻopau i ka uku ma kāu polokalamu pūnaewele. E hiki kāu mau mea i ka Lole ma hope iki.",
+  "{name} was left out: made for another Horizon version": "Ua waiho ʻia ʻo {name}: hana ʻia no kekahi mana ʻē aʻe o Horizon",
+  "{name} was left out: clashes with {other}": "Ua waiho ʻia ʻo {name}: kūʻē ia me {other}",
+  "{name} was left out: it needs {other}, which was left out": "Ua waiho ʻia ʻo {name}: pono iā ia ʻo {other}, i waiho ʻia",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "ʻAʻole i kūkulu ʻia ma ka Horizon āu e pāʻani nei ({code}): waiho ke kūkulu ʻana iā ia a hōʻano hou kona mea kākau",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Ma kou wahi, loaʻa ka pūʻulu hoʻokumu ma o ka uku manuahi ma playhorizon.dev. E kiʻi iā ia ma ka Hale kūʻai: wehe ia i ka uku nou.",
+  "The founder set can't be claimed from your country.": "ʻAʻole hiki ke kiʻi i ka pūʻulu hoʻokumu mai kou ʻāina."
 }
