@@ -124,6 +124,8 @@ mod enchant_effects;
 mod end;
 mod enderman;
 #[cfg(test)]
+mod enderman_hurt_teleport_tests;
+#[cfg(test)]
 mod enderman_placement_tests;
 mod entity;
 mod entity_culling;
@@ -8145,6 +8147,8 @@ impl Game<'_> {
             horizon_client::spans::time("tick_block_entity_anims", || {
                 self.tick_block_entity_anims()
             });
+            // A conduit's hurt teleports an enderman now (`Enderman.hurtServer`).
+            self.settle_hurt_teleports()?;
             horizon_client::spans::time("tick_particles", || self.tick_particles());
             self.tick_client_ambient();
         }
