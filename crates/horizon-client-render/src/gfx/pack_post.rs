@@ -59,6 +59,9 @@ mod forced_flip_tests;
 mod weather_depth_tests;
 
 #[cfg(test)]
+mod float_into_integer_tests;
+
+#[cfg(test)]
 mod custom_type_tests;
 
 #[cfg(test)]
@@ -1742,6 +1745,8 @@ fn build_pass(
         features, interface, &p.name, p.group, &p.buffers, geometry, formats, shadow, notes, pack,
     )?;
     let final_pass = p.group == Group::Final;
+    // Outputs into an integer buffer, and its integer kind (`packed::bitcast_outputs`).
+    let mut int_outputs = Vec::new();
     let mut targets = Vec::new();
     let mut writes = Vec::new();
     // Outputs into a buffer of a small packed format, and the bits it keeps.
@@ -1757,6 +1762,15 @@ fn build_pass(
             }
         } else if let Some(&buffer) = p.buffers.get(l) {
             let format = formats[buffer as usize];
+            match format.sample_type(None, Some(features)) {
+                Some(wgpu::TextureSampleType::Uint) => {
+                    int_outputs.push((location, naga::ScalarKind::Uint));
+                }
+                Some(wgpu::TextureSampleType::Sint) => {
+                    int_outputs.push((location, naga::ScalarKind::Sint));
+                }
+                _ => {}
+            }
             let mut state = target(format);
             if !p.group.shadow()
                 && pack.rgb & 1 << buffer != 0
@@ -1844,6 +1858,7 @@ fn build_pass(
         };
         let mut fragment = program.fragment;
         packed::quantise_outputs(&mut fragment, &packed_outputs);
+        packed::bitcast_outputs(&mut fragment, &int_outputs);
         let (vs, fs) = (module(program.vertex), module(fragment));
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some(&p.name),
