@@ -816,7 +816,8 @@ impl Projectile {
             return;
         };
         if arrow.in_ground && !arrow.no_physics && no_block_collision {
-            self.velocity = crate::arrows::start_falling_velocity(self.velocity, &mut arrow.random);
+            self.velocity =
+                horizon_client::arrows::start_falling_velocity(self.velocity, &mut arrow.random);
             arrow.in_ground = false;
             arrow.life = 0;
             self.stuck = false;
@@ -1373,7 +1374,7 @@ mod tests {
         p.stuck = true;
         p.arrow.as_mut().unwrap().in_ground = true;
         let mut random = p.arrow.as_ref().unwrap().random.clone();
-        let expected = crate::arrows::start_falling_velocity(p.velocity, &mut random);
+        let expected = horizon_client::arrows::start_falling_velocity(p.velocity, &mut random);
 
         p.move_by_piston(Vec3::new(0.5, 0.0, 0.0));
         assert!(p.piston_release_bounds().is_some());
