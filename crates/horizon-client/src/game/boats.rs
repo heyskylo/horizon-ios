@@ -830,6 +830,11 @@ impl Game<'_> {
     }
     /// Every boat but the ridden one (which ticks with its rider).
     pub(super) fn tick_boats(&mut self) {
+        self.vehicles_ticking(true);
+        self.tick_boats_now();
+        self.vehicles_ticking(false);
+    }
+    fn tick_boats_now(&mut self) {
         // ServerLevel.tick: only entities in entity-ticking chunks tick.
         let ticking = self.entity_ticking_area();
         let mut round = self.native_tick_round();

@@ -7,7 +7,7 @@
 use super::{Game, boats::Boat, lan_mobs::guest_bounds};
 use horizon_client::{
     camera::wrap_degrees,
-    mobs::{Mob, Species, Who, drops::is_animal, equine, riders},
+    mobs::{BoxReach, Mob, Species, Who, drops::is_animal, equine, riders},
     scoreboard::pushable_by,
 };
 use horizon_core::geometry::{Aabb, Vec3};
@@ -68,6 +68,23 @@ pub(super) fn boat_pushes(boat: Aabb, other: Aabb, other_is_boat: bool) -> bool 
 impl Game<'_> {
     /// The players in boat `id`: the window's player (or the server player
     /// acting as it) and the server's other players.
+    /// Starts or ends a stretch of vehicle ticks (`tick_boats`, `tick_carts`): while one runs,
+    /// a vehicle's box query tests the mobs' positions against their [`BoxReach`] first.
+    /// Nothing a vehicle does resizes a mob, and a mob joining or leaving works it out again.
+    pub(super) fn vehicles_ticking(&self, on: bool) {
+        self.vehicle_mob_reach
+            .set(on.then(|| (self.mobs.len(), BoxReach::of(&self.mobs))));
+    }
+    /// The mobs' [`BoxReach`] while vehicles tick, none otherwise.
+    pub(super) fn vehicle_mob_reach(&self) -> Option<BoxReach> {
+        let (count, reach) = self.vehicle_mob_reach.get()?;
+        if count == self.mobs.len() {
+            return Some(reach);
+        }
+        let reach = BoxReach::of(&self.mobs);
+        self.vehicle_mob_reach.set(Some((self.mobs.len(), reach)));
+        Some(reach)
+    }
     pub(super) fn boat_players(&self, id: u32) -> usize {
         let guests = self.lan.as_ref().map_or(0, |h| {
             h.hub
@@ -150,11 +167,13 @@ impl Game<'_> {
     /// `AbstractBoat.canVehicleCollide`: the other boats, minecarts,
     /// shulkers and pushable mobs and players, but not its own passengers.
     pub(super) fn boat_obstacles(&self, id: u32, area: Aabb) -> Vec<Aabb> {
+        let reach = self.vehicle_mob_reach();
         let mut out: Vec<Aabb> = (0..self.mobs.len())
             .filter(|&j| {
                 let m = &self.mobs[j];
                 // The box first: it turns away nearly every mob of the level.
-                m.bounds().intersects(area)
+                reach.is_none_or(|r| r.may_meet(m, area))
+                    && m.bounds().intersects(area)
                     && pushable(m)
                     && (m.extra.mount.is_none() || self.mob_root_vehicle(j) != Some(id))
             })
@@ -206,8 +225,13 @@ impl Game<'_> {
         let room = !self.boats[i].under_water();
         // The box first: it turns away nearly every mob of the level, and the
         // teams are only worked out when something touches the boat.
+        let reach = self.vehicle_mob_reach();
+        let sweep = area.union_bounds(bb);
         let near: Vec<usize> = (0..self.mobs.len())
             .filter(|&j| {
+                if reach.is_some_and(|r| !r.may_meet(&self.mobs[j], sweep)) {
+                    return false;
+                }
                 let mb = self.mobs[j].bounds();
                 mb.intersects(area) || mb.intersects(bb)
             })
