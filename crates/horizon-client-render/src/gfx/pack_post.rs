@@ -41,6 +41,9 @@ mod higher_shadowcolor_tests;
 mod single_side_tests;
 
 #[cfg(test)]
+mod undrawn_terrain_tests;
+
+#[cfg(test)]
 mod shadow_faces_tests;
 
 #[cfg(test)]
@@ -558,6 +561,10 @@ pub struct PackPost {
     terrain_cutout: Option<Pass>,
     /// What draws translucent terrain (`gbuffers_water` or its fallback), after `deferred`.
     water: Option<Pass>,
+    /// The pack has no program for solid and cutout terrain, or for translucent terrain:
+    /// nothing draws it (`horizon_shaders::Post::terrain_undrawn`).
+    terrain_undrawn: bool,
+    water_undrawn: bool,
     /// What draws the sky (`gbuffers_skybasic` or its fallback), before terrain, and its vertices.
     sky: Option<Sky>,
     /// What draws entities and block entities, after terrain, and their vertices.
@@ -2300,6 +2307,7 @@ impl PackPost {
             cull: g.cull,
         });
         let split = post.terrain.is_some() && post.terrain_cutout.is_some();
+        let (terrain_undrawn, water_undrawn) = (post.terrain_undrawn, post.water_undrawn);
         let mut terrain = post
             .terrain
             .zip(terrain_geometry.as_ref())
@@ -2846,6 +2854,8 @@ impl PackPost {
             terrain,
             terrain_cutout,
             water,
+            terrain_undrawn,
+            water_undrawn,
             sky,
             entities,
             clouds,
@@ -4073,9 +4083,9 @@ impl PackPost {
         })
     }
 
-    /// Whether the pack draws terrain itself.
+    /// Whether the pack draws terrain itself, or has nothing draw it.
     pub fn has_terrain(&self) -> bool {
-        self.terrain.is_some() || self.terrain_cutout.is_some()
+        self.terrain.is_some() || self.terrain_cutout.is_some() || self.terrain_undrawn
     }
 
     /// Whether the pack's shadow pass draws terrain (`shadow_view`).
@@ -4103,7 +4113,7 @@ impl PackPost {
 
     /// Whether the pack draws translucent terrain itself.
     pub fn has_water(&self) -> bool {
-        self.water.is_some()
+        self.water.is_some() || self.water_undrawn
     }
 
     /// The names of the programs that run, in order.
