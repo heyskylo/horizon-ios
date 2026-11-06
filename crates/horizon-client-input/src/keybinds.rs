@@ -82,8 +82,7 @@ pub const HORIZON_MAPPINGS: &[(&str, &str, &str)] = &[
     ("key.emote", "key.keyboard.b", "multiplayer"),
 ];
 /// Every mapping the game binds: vanilla's in `Options.keyMappings` order, then Horizon's.
-pub fn all_mappings() -> impl Iterator<Item = &'static (&'static str, &'static str, &'static str)>
-{
+pub fn all_mappings() -> impl Iterator<Item = &'static (&'static str, &'static str, &'static str)> {
     MAPPINGS.iter().chain(HORIZON_MAPPINGS)
 }
 /// Mappings Options builds as `ToggleKeyMapping` (hold or toggle by option).
@@ -417,8 +416,7 @@ impl KeyBinds {
     /// Whether a mapping (other than a debug key) whose default is `key` was
     /// bound elsewhere.
     fn default_moved(&self, key: &str) -> bool {
-        all_mappings()
-            .any(|(n, d, c)| *d == key && *c != "debug" && !self.is_default(n))
+        all_mappings().any(|(n, d, c)| *d == key && *c != "debug" && !self.is_default(n))
     }
     /// Translate a physical key into the default key of the mapping it is
     /// bound to, so game code written against vanilla defaults follows the
