@@ -55,7 +55,10 @@ impl Game<'_> {
         // or stops one, and the block entities run into the thousands.
         let mut jukeboxes: Option<Vec<(i32, i32, i32)>> = None;
         for i in 0..self.mobs.len() {
-            if self.mobs[i].species() != Species::Allay || !self.mobs[i].alive() {
+            if self.mobs[i].species() != Species::Allay
+                || !self.mobs[i].alive()
+                || !self.creatures.ticked.contains(&self.mobs[i].id)
+            {
                 continue;
             }
             let pos = self.mobs[i].position;

@@ -28,7 +28,11 @@ impl Game<'_> {
         let mut near = super::item_areas::ItemAreas::default();
         for i in 0..self.mobs.len() {
             let m = &self.mobs[i];
-            if !m.can_pick_up_loot() || !m.alive() || m.removed {
+            if !m.can_pick_up_loot()
+                || !m.alive()
+                || m.removed
+                || !self.creatures.ticked.contains(&m.id)
+            {
                 continue;
             }
             // `Mob.ITEM_PICKUP_REACH`.

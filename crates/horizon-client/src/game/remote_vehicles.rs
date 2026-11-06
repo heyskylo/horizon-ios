@@ -154,6 +154,7 @@ impl Game<'_> {
             return;
         };
         let vehicle_id = vehicle as u32;
+        self.remote_seat_passengers(vehicle_id, passengers);
         let player_controls = passengers.first().is_some_and(|&id| {
             self.remote
                 .as_ref()
@@ -512,7 +513,7 @@ impl Game<'_> {
 /// it is the first passenger of (`AbstractHorse.getControllingPassenger`),
 /// or a harnessed adult Happy Ghast it is the first passenger of
 /// (`HappyGhast.getControllingPassenger`: wearing body armor, player on
-/// top, not on a still timeout â€” the rider steers it with `travelRidden`
+/// top, not on a still timeout — the rider steers it with `travelRidden`
 /// on their own client, and the mount goes to the server as `MoveVehicle`).
 fn client_moves(m: &Mob, first_passenger: bool) -> bool {
     if !first_passenger || !m.alive() {

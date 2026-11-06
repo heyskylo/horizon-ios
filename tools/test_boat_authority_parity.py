@@ -19,6 +19,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import tempfile
 try:
     from . import lab, test_rust_parity as base, test_model_baking_parity as baking
     from .integration_env import run_game
