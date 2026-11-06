@@ -6639,245 +6639,6 @@ impl Game<'_> {
     ) {
         mod_api::dispatch_player_level_change(self, mod_api::mods(), player, name, from, to);
     }
-    /// Plays `sound` to that player alone, as Bukkit's `Player.playSound`:
-    /// at `at` in their level, or where they stand when it leaves (None),
-    /// in `category` (`SoundSource`'s name: `master`, `music`, `record`,
-    /// `weather`, `block`, `hostile`, `neutral`, `player`, `ambient`,
-    /// `voice`, `ui`). Nobody else hears it, however near. Names go as for
-    /// `GameLevel::native_play_sound`: an unknown `minecraft:` event is
-    /// dropped, another namespace's goes by name. It leaves at the tick's
-    /// end, so it works from any server hook; true means queued. False on a
-    /// client, for a bad name, category, position, volume or pitch, and for
-    /// a player who isn't on (inside another player's hook, where the
-    /// players are out of reach, such a player just gets nothing). API
-    /// @API:play_sound_to@.
-    pub(super) fn native_play_sound_to(
-        &mut self,
-        uuid: u128,
-        sound: &str,
-        category: &str,
-        at: Option<[f64; 3]>,
-        volume: f32,
-        pitch: f32,
-    ) -> bool {
-        let Some(source) = horizon_client::settings::SOUND_SOURCES
-            .iter()
-            .position(|s| *s == category)
-        else {
-            return false;
-        };
-        let position_ok = at.is_none_or(|at| {
-            at.into_iter()
-                .all(|v| v.is_finite() && v.abs() <= f64::from(i32::MAX) / 8.0)
-        });
-        let gain_ok = volume.is_finite() && volume >= 0.0 && pitch.is_finite() && pitch >= 0.0;
-        if !sound_id(sound) || !position_ok || !gain_ok || !self.player_fx_reaches(uuid) {
-            return false;
-        }
-        self.queue_native_player_fx(
-            uuid,
-            super::native_player_fx::PlayerFx::Sound {
-                sound: sound.to_owned(),
-                source: source as i32,
-                at,
-                volume,
-                pitch,
-            },
-        );
-        true
-    }
-    /// Shows particles to that player alone, as Bukkit's
-    /// `Player.spawnParticle` and vanilla's `ServerLevel.sendParticles(player,
-    /// ...)` (`/particle ... force|normal <player>`): `count` of them around
-    /// `at` in their level, spread by `spread`, at `speed` (0 sends one
-    /// directional particle, as `GameLevel::native_send_particles`). They
-    /// reach the player within 32 blocks of `at`, or 512 with `force`
-    /// (which also lifts the client's particle setting limit). The same
-    /// types as `GameLevel::native_send_particles`: block particles need
-    /// `state`, item, trail and vibration particles aren't sent, and a mod's
-    /// own type (`ParticleOptions::named`) reaches only a Horizon client. It
-    /// leaves at the tick's end, so it works from any server hook; true
-    /// means queued. False on a client, for options or numbers that can't
-    /// be sent, and for a player who isn't on (inside another player's
-    /// hook, such a player just gets nothing). API @API:send_particles_to@.
-    pub(super) fn native_send_particles_to(
-        &mut self,
-        uuid: u128,
-        options: &ParticleOptions,
-        state: Option<BlockStateId>,
-        at: [f64; 3],
-        spread: [f64; 3],
-        speed: f64,
-        count: i32,
-        force: bool,
-    ) -> bool {
-        use ParticleType as T;
-        if let Some(name) = &options.mod_particle {
-            let namespaced = name
-                .split_once(':')
-                .is_some_and(|(ns, path)| !ns.is_empty() && !path.is_empty());
-            if !namespaced {
-                return false;
-            }
-        }
-        let supported = match options.ty {
-            T::Block | T::BlockMarker | T::FallingDust | T::DustPillar | T::BlockCrumble => {
-                state.is_some_and(|id| self.pack.assets.registry.state(id).is_some())
-            }
-            T::Item | T::Trail | T::Vibration => false,
-            T::Geyser | T::GeyserPlume | T::GeyserBase | T::GeyserPoof => options
-                .geyser
-                .is_some_and(|(_, impulse)| impulse.is_finite()),
-            _ => true,
-        };
-        if !supported
-            || !at.into_iter().all(f64::is_finite)
-            || !spread
-                .into_iter()
-                .all(|v| v.is_finite() && v.abs() <= f32::MAX as f64)
-            || !speed.is_finite()
-            || speed.abs() > f32::MAX as f64
-            || !options.color.into_iter().all(f32::is_finite)
-            || !options.to_color.into_iter().all(f32::is_finite)
-            || !options.scale.is_finite()
-            || !self.player_fx_reaches(uuid)
-        {
-            return false;
-        }
-        self.queue_native_player_fx(
-            uuid,
-            super::native_player_fx::PlayerFx::Particles {
-                options: options.clone(),
-                state,
-                at,
-                spread,
-                speed,
-                count,
-                force,
-            },
-        );
-        true
-    }
-    /// Shows `title` and `subtitle` in the middle of that player's screen,
-    /// as Adventure's `Audience.showTitle` and `/title`: fading in over
-    /// `fade_in` ticks, staying `stay`, fading out over `fade_out` (vanilla's
-    /// default is 10, 70, 20), in place of a title shown before; an empty
-    /// `subtitle` shows none. Also inside a player's hook for the acting
-    /// player, whose packets go after the hook. False on a client, for a
-    /// negative time, and for a player who isn't on or can't be reached
-    /// from here (another player inside a player's hook), as `native_tell`.
-    /// API @API:title@.
-    pub(super) fn native_title(
-        &mut self,
-        uuid: u128,
-        title: &Text,
-        subtitle: &Text,
-        fade_in: i32,
-        stay: i32,
-        fade_out: i32,
-    ) -> bool {
-        use horizon_protocol::packets::play::{self, Clientbound as C};
-        if self.remote.is_some() || fade_in < 0 || stay < 0 || fade_out < 0 {
-            return false;
-        }
-        let text = |t: &Text| play::Text {
-            text: horizon_client::lan::data::component_nbt(&t.component()),
-        };
-        // TitleCommand's order: the times and the subtitle wait on the
-        // client until the title shows them.
-        self.native_send(
-            uuid,
-            C::SetTitlesAnimation(play::TitlesAnimation {
-                fade_in,
-                stay,
-                fade_out,
-            }),
-        ) && self.native_send(uuid, C::SetSubtitleText(text(subtitle)))
-            && self.native_send(uuid, C::SetTitleText(text(title)))
-    }
-    /// Shows that player the boss bar `id` (any UUID the mod picks; a
-    /// random one keeps clear of the world's bars) as `bar`, in place of
-    /// what it showed before, or takes it away (None), as Bukkit's
-    /// `BossBar.addPlayer`/`removePlayer`. Only that player sees it, below
-    /// the world's `/bossbar` bars and above a boss's; a change reaches them
-    /// as one packet in the next boss bar update of the tick, a new bar at
-    /// the bottom of the mod's. By UUID: kept for a player who is off (they
-    /// see it when they come back), until a mod takes it away or the server
-    /// stops. Works from any server hook. False on a client, and for a
-    /// progress outside 0 to 1 or a colour or overlay `BossEvent` hasn't.
-    /// API @API:boss_bar@.
-    pub(super) fn native_boss_bar(
-        &mut self,
-        uuid: u128,
-        id: u128,
-        bar: Option<&NativeBossBar>,
-    ) -> bool {
-        if self.remote.is_some() {
-            return false;
-        }
-        let native = &mut self.bosses.native;
-        match bar {
-            Some(bar) => {
-                let valid = (0.0..=1.0).contains(&bar.progress)
-                    && (0..=6).contains(&bar.color)
-                    && (0..=4).contains(&bar.overlay);
-                if !valid {
-                    return false;
-                }
-                let bars = native.entry(uuid).or_default();
-                match bars.iter_mut().find(|(other, _)| *other == id) {
-                    Some(shown) => shown.1 = bar.clone(),
-                    None => bars.push((id, bar.clone())),
-                }
-            }
-            None => {
-                if let Some(bars) = native.get_mut(&uuid) {
-                    bars.retain(|(other, _)| *other != id);
-                    if bars.is_empty() {
-                        native.remove(&uuid);
-                    }
-                }
-            }
-        }
-        true
-    }
-    /// Points that player's compass at `pos` in `dimension`, or at the world
-    /// spawn again (None), as Bukkit's `Player.setCompassTarget`: the
-    /// `ClientboundSetDefaultSpawnPositionPacket` they are sent says the
-    /// target in place of the world spawn, now and each time the world spawn
-    /// is sent again (a respawn, a trip to another level), until a mod sets
-    /// it again or they leave. A compass points there only in that
-    /// dimension (elsewhere it spins), as for the world spawn; a lodestone
-    /// compass and a recovery compass keep their own. It leaves at the
-    /// tick's end, so it works from any server hook; true means queued.
-    /// False on a client, for a dimension that isn't a namespaced id or a
-    /// position a block position can't carry, and for a player who isn't
-    /// on (inside another player's hook, such a player just gets nothing).
-    /// API @API:compass_target@.
-    pub(super) fn native_set_compass_target(
-        &mut self,
-        uuid: u128,
-        target: Option<(&str, [i32; 3])>,
-    ) -> bool {
-        // BlockPos.asLong: 26 bits for x and z, 12 for y.
-        let packable = |p: [i32; 3]| {
-            let xz = -(1 << 25)..(1 << 25);
-            xz.contains(&p[0]) && xz.contains(&p[2]) && (-(1 << 11)..(1 << 11)).contains(&p[1])
-        };
-        if target.is_some_and(|(dimension, pos)| !sound_id(dimension) || !packable(pos))
-            || !self.player_fx_reaches(uuid)
-        {
-            return false;
-        }
-        let target = target.map(
-            |(dimension, pos)| horizon_protocol::packets::play::GlobalPos {
-                dimension: dimension.to_owned(),
-                pos,
-            },
-        );
-        self.queue_native_player_fx(uuid, super::native_player_fx::PlayerFx::Compass(target));
-        true
-    }
     /// A play packet the server is about to send `player`'s client (ProtocolLib's and
     /// PacketEvents' outgoing packet listener; there is no NeoForge or Bukkit event): every
     /// packet the server sends a guest in play, a broadcast once for each of its players, in
@@ -7132,65 +6893,6 @@ impl Game<'_> {
             amount,
             cancel,
         );
-    }
-    /// The stack an SNBT item compound stands for, as `/give` and the data
-    /// packs write one (`{id:"minecraft:diamond_sword",count:1,components:
-    /// {"minecraft:damage":5}}`): vanilla's `TagParser`, then
-    /// `ItemStack.CODEC`. None when the text is not one compound (whitespace
-    /// around it aside), for air, and for an item this world does not have.
-    /// Works on a client and a server alike. API @API:item_from_snbt@.
-    #[allow(dead_code)]
-    pub(super) fn native_item_from_snbt(&self, snbt: &str) -> Option<ItemStack> {
-        let (tag, read) = horizon_world::nbt::parse_snbt(snbt).ok()?;
-        if !snbt.get(read..).is_some_and(|rest| rest.trim().is_empty()) {
-            return None;
-        }
-        let horizon_world::nbt::Tag::Compound(compound) = &tag else {
-            return None;
-        };
-        let stack = ItemStack::from_nbt(compound)?;
-        world_items!(self)
-            .get(&stack.item)
-            .is_some()
-            .then_some(stack)
-    }
-    /// A new map of the world showing `colors` (128 x 128 `MapColor` ids
-    /// times 4 plus the shade, row by row), scale 0, locked as a cartography
-    /// table locks one (no exploring draws over it) and without player
-    /// markers, of the level `dimension`: Bukkit's `Server.createMap` with its
-    /// picture drawn. It takes the world's next map id (`last_id.dat`), is
-    /// saved with the world's maps and goes, like any map, to whoever carries
-    /// it or sees it framed, players who join later included. A
-    /// `minecraft:filled_map` with this `minecraft:map_id` shows it. None on
-    /// a client of a server and with no world open. API @API:new_map@.
-    #[allow(dead_code)]
-    pub(super) fn native_new_map(&mut self, dimension: &str, colors: &[u8; 16384]) -> Option<i32> {
-        if self.remote.is_some() || self.world_root.as_os_str().is_empty() {
-            return None;
-        }
-        let mut data = super::maps::MapData::fresh(0.0, 0.0, 0, dimension);
-        data.locked = true;
-        data.tracking = false;
-        data.unlimited = false;
-        data.colors = colors.to_vec();
-        Some(self.new_map_id(data))
-    }
-    /// Replaces the whole picture of the world's map `map_id` (`MapCanvas`
-    /// drawn for everyone): saved with the maps and sent in full to everyone
-    /// carrying it or seeing it framed. An unlocked map is still drawn over
-    /// where its holders explore, as vanilla's are. False for a map this
-    /// world never made or saved, and on a client of a server.
-    /// API @API:new_map@.
-    #[allow(dead_code)]
-    pub(super) fn native_paint_map(&mut self, map_id: i32, colors: &[u8; 16384]) -> bool {
-        if self.remote.is_some() {
-            return false;
-        }
-        let Some(map) = self.map(map_id) else {
-            return false;
-        };
-        map.paint(colors);
-        true
     }
     /// A menu with input slots a mod opened (`native_open_menu_with_input`)
     /// closed, for any reason: the player closed it, the server, a mod or
@@ -9382,6 +9084,305 @@ impl GameLevel<'_> {
 // Native mods use these; nothing in Horizon does.
 #[allow(dead_code)]
 impl Game<'_> {
+    /// Plays `sound` to that player alone, as Bukkit's `Player.playSound`:
+    /// at `at` in their level, or where they stand when it leaves (None),
+    /// in `category` (`SoundSource`'s name: `master`, `music`, `record`,
+    /// `weather`, `block`, `hostile`, `neutral`, `player`, `ambient`,
+    /// `voice`, `ui`). Nobody else hears it, however near. Names go as for
+    /// `GameLevel::native_play_sound`: an unknown `minecraft:` event is
+    /// dropped, another namespace's goes by name. It leaves at the tick's
+    /// end, so it works from any server hook; true means queued. False on a
+    /// client, for a bad name, category, position, volume or pitch, and for
+    /// a player who isn't on (inside another player's hook, where the
+    /// players are out of reach, such a player just gets nothing). API
+    /// @API:play_sound_to@.
+    pub(super) fn native_play_sound_to(
+        &mut self,
+        uuid: u128,
+        sound: &str,
+        category: &str,
+        at: Option<[f64; 3]>,
+        volume: f32,
+        pitch: f32,
+    ) -> bool {
+        let Some(source) = horizon_client::settings::SOUND_SOURCES
+            .iter()
+            .position(|s| *s == category)
+        else {
+            return false;
+        };
+        let position_ok = at.is_none_or(|at| {
+            at.into_iter()
+                .all(|v| v.is_finite() && v.abs() <= f64::from(i32::MAX) / 8.0)
+        });
+        let gain_ok = volume.is_finite() && volume >= 0.0 && pitch.is_finite() && pitch >= 0.0;
+        if !sound_id(sound) || !position_ok || !gain_ok || !self.player_fx_reaches(uuid) {
+            return false;
+        }
+        self.queue_native_player_fx(
+            uuid,
+            super::native_player_fx::PlayerFx::Sound {
+                sound: sound.to_owned(),
+                source: source as i32,
+                at,
+                volume,
+                pitch,
+            },
+        );
+        true
+    }
+    /// Shows particles to that player alone, as Bukkit's
+    /// `Player.spawnParticle` and vanilla's `ServerLevel.sendParticles(player,
+    /// ...)` (`/particle ... force|normal <player>`): `count` of them around
+    /// `at` in their level, spread by `spread`, at `speed` (0 sends one
+    /// directional particle, as `GameLevel::native_send_particles`). They
+    /// reach the player within 32 blocks of `at`, or 512 with `force`
+    /// (which also lifts the client's particle setting limit). The same
+    /// types as `GameLevel::native_send_particles`: block particles need
+    /// `state`, item, trail and vibration particles aren't sent, and a mod's
+    /// own type (`ParticleOptions::named`) reaches only a Horizon client. It
+    /// leaves at the tick's end, so it works from any server hook; true
+    /// means queued. False on a client, for options or numbers that can't
+    /// be sent, and for a player who isn't on (inside another player's
+    /// hook, such a player just gets nothing). API @API:send_particles_to@.
+    pub(super) fn native_send_particles_to(
+        &mut self,
+        uuid: u128,
+        options: &ParticleOptions,
+        state: Option<BlockStateId>,
+        at: [f64; 3],
+        spread: [f64; 3],
+        speed: f64,
+        count: i32,
+        force: bool,
+    ) -> bool {
+        use ParticleType as T;
+        if let Some(name) = &options.mod_particle {
+            let namespaced = name
+                .split_once(':')
+                .is_some_and(|(ns, path)| !ns.is_empty() && !path.is_empty());
+            if !namespaced {
+                return false;
+            }
+        }
+        let supported = match options.ty {
+            T::Block | T::BlockMarker | T::FallingDust | T::DustPillar | T::BlockCrumble => {
+                state.is_some_and(|id| self.pack.assets.registry.state(id).is_some())
+            }
+            T::Item | T::Trail | T::Vibration => false,
+            T::Geyser | T::GeyserPlume | T::GeyserBase | T::GeyserPoof => options
+                .geyser
+                .is_some_and(|(_, impulse)| impulse.is_finite()),
+            _ => true,
+        };
+        if !supported
+            || !at.into_iter().all(f64::is_finite)
+            || !spread
+                .into_iter()
+                .all(|v| v.is_finite() && v.abs() <= f32::MAX as f64)
+            || !speed.is_finite()
+            || speed.abs() > f32::MAX as f64
+            || !options.color.into_iter().all(f32::is_finite)
+            || !options.to_color.into_iter().all(f32::is_finite)
+            || !options.scale.is_finite()
+            || !self.player_fx_reaches(uuid)
+        {
+            return false;
+        }
+        self.queue_native_player_fx(
+            uuid,
+            super::native_player_fx::PlayerFx::Particles {
+                options: options.clone(),
+                state,
+                at,
+                spread,
+                speed,
+                count,
+                force,
+            },
+        );
+        true
+    }
+    /// Shows `title` and `subtitle` in the middle of that player's screen,
+    /// as Adventure's `Audience.showTitle` and `/title`: fading in over
+    /// `fade_in` ticks, staying `stay`, fading out over `fade_out` (vanilla's
+    /// default is 10, 70, 20), in place of a title shown before; an empty
+    /// `subtitle` shows none. Also inside a player's hook for the acting
+    /// player, whose packets go after the hook. False on a client, for a
+    /// negative time, and for a player who isn't on or can't be reached
+    /// from here (another player inside a player's hook), as `native_tell`.
+    /// API @API:title@.
+    pub(super) fn native_title(
+        &mut self,
+        uuid: u128,
+        title: &Text,
+        subtitle: &Text,
+        fade_in: i32,
+        stay: i32,
+        fade_out: i32,
+    ) -> bool {
+        use horizon_protocol::packets::play::{self, Clientbound as C};
+        if self.remote.is_some() || fade_in < 0 || stay < 0 || fade_out < 0 {
+            return false;
+        }
+        let text = |t: &Text| play::Text {
+            text: horizon_client::lan::data::component_nbt(&t.component()),
+        };
+        // TitleCommand's order: the times and the subtitle wait on the
+        // client until the title shows them.
+        self.native_send(
+            uuid,
+            C::SetTitlesAnimation(play::TitlesAnimation {
+                fade_in,
+                stay,
+                fade_out,
+            }),
+        ) && self.native_send(uuid, C::SetSubtitleText(text(subtitle)))
+            && self.native_send(uuid, C::SetTitleText(text(title)))
+    }
+    /// Shows that player the boss bar `id` (any UUID the mod picks; a
+    /// random one keeps clear of the world's bars) as `bar`, in place of
+    /// what it showed before, or takes it away (None), as Bukkit's
+    /// `BossBar.addPlayer`/`removePlayer`. Only that player sees it, below
+    /// the world's `/bossbar` bars and above a boss's; a change reaches them
+    /// as one packet in the next boss bar update of the tick, a new bar at
+    /// the bottom of the mod's. By UUID: kept for a player who is off (they
+    /// see it when they come back), until a mod takes it away or the server
+    /// stops. Works from any server hook. False on a client, and for a
+    /// progress outside 0 to 1 or a colour or overlay `BossEvent` hasn't.
+    /// API @API:boss_bar@.
+    pub(super) fn native_boss_bar(
+        &mut self,
+        uuid: u128,
+        id: u128,
+        bar: Option<&NativeBossBar>,
+    ) -> bool {
+        if self.remote.is_some() {
+            return false;
+        }
+        let native = &mut self.bosses.native;
+        match bar {
+            Some(bar) => {
+                let valid = (0.0..=1.0).contains(&bar.progress)
+                    && (0..=6).contains(&bar.color)
+                    && (0..=4).contains(&bar.overlay);
+                if !valid {
+                    return false;
+                }
+                let bars = native.entry(uuid).or_default();
+                match bars.iter_mut().find(|(other, _)| *other == id) {
+                    Some(shown) => shown.1 = bar.clone(),
+                    None => bars.push((id, bar.clone())),
+                }
+            }
+            None => {
+                if let Some(bars) = native.get_mut(&uuid) {
+                    bars.retain(|(other, _)| *other != id);
+                    if bars.is_empty() {
+                        native.remove(&uuid);
+                    }
+                }
+            }
+        }
+        true
+    }
+    /// Points that player's compass at `pos` in `dimension`, or at the world
+    /// spawn again (None), as Bukkit's `Player.setCompassTarget`: the
+    /// `ClientboundSetDefaultSpawnPositionPacket` they are sent says the
+    /// target in place of the world spawn, now and each time the world spawn
+    /// is sent again (a respawn, a trip to another level), until a mod sets
+    /// it again or they leave. A compass points there only in that
+    /// dimension (elsewhere it spins), as for the world spawn; a lodestone
+    /// compass and a recovery compass keep their own. It leaves at the
+    /// tick's end, so it works from any server hook; true means queued.
+    /// False on a client, for a dimension that isn't a namespaced id or a
+    /// position a block position can't carry, and for a player who isn't
+    /// on (inside another player's hook, such a player just gets nothing).
+    /// API @API:compass_target@.
+    pub(super) fn native_set_compass_target(
+        &mut self,
+        uuid: u128,
+        target: Option<(&str, [i32; 3])>,
+    ) -> bool {
+        // BlockPos.asLong: 26 bits for x and z, 12 for y.
+        let packable = |p: [i32; 3]| {
+            let xz = -(1 << 25)..(1 << 25);
+            xz.contains(&p[0]) && xz.contains(&p[2]) && (-(1 << 11)..(1 << 11)).contains(&p[1])
+        };
+        if target.is_some_and(|(dimension, pos)| !sound_id(dimension) || !packable(pos))
+            || !self.player_fx_reaches(uuid)
+        {
+            return false;
+        }
+        let target = target.map(
+            |(dimension, pos)| horizon_protocol::packets::play::GlobalPos {
+                dimension: dimension.to_owned(),
+                pos,
+            },
+        );
+        self.queue_native_player_fx(uuid, super::native_player_fx::PlayerFx::Compass(target));
+        true
+    }
+    /// The stack an SNBT item compound stands for, as `/give` and the data
+    /// packs write one (`{id:"minecraft:diamond_sword",count:1,components:
+    /// {"minecraft:damage":5}}`): vanilla's `TagParser`, then
+    /// `ItemStack.CODEC`. None when the text is not one compound (whitespace
+    /// around it aside), for air, and for an item this world does not have.
+    /// Works on a client and a server alike. API @API:item_from_snbt@.
+    #[allow(dead_code)]
+    pub(super) fn native_item_from_snbt(&self, snbt: &str) -> Option<ItemStack> {
+        let (tag, read) = horizon_world::nbt::parse_snbt(snbt).ok()?;
+        if !snbt.get(read..).is_some_and(|rest| rest.trim().is_empty()) {
+            return None;
+        }
+        let horizon_world::nbt::Tag::Compound(compound) = &tag else {
+            return None;
+        };
+        let stack = ItemStack::from_nbt(compound)?;
+        let items = match &self.world_tables {
+            Some(t) => &t.items,
+            None => self.res.items(),
+        };
+        items.get(&stack.item).is_some().then_some(stack)
+    }
+    /// A new map of the world showing `colors` (128 x 128 `MapColor` ids
+    /// times 4 plus the shade, row by row), scale 0, locked as a cartography
+    /// table locks one (no exploring draws over it) and without player
+    /// markers, of the level `dimension`: Bukkit's `Server.createMap` with its
+    /// picture drawn. It takes the world's next map id (`last_id.dat`), is
+    /// saved with the world's maps and goes, like any map, to whoever carries
+    /// it or sees it framed, players who join later included. A
+    /// `minecraft:filled_map` with this `minecraft:map_id` shows it. None on
+    /// a client of a server and with no world open. API @API:new_map@.
+    #[allow(dead_code)]
+    pub(super) fn native_new_map(&mut self, dimension: &str, colors: &[u8; 16384]) -> Option<i32> {
+        if self.remote.is_some() || self.world_root.as_os_str().is_empty() {
+            return None;
+        }
+        let mut data = super::maps::MapData::fresh(0.0, 0.0, 0, dimension);
+        data.locked = true;
+        data.tracking = false;
+        data.unlimited = false;
+        data.colors = colors.to_vec();
+        Some(self.new_map_id(data))
+    }
+    /// Replaces the whole picture of the world's map `map_id` (`MapCanvas`
+    /// drawn for everyone): saved with the maps and sent in full to everyone
+    /// carrying it or seeing it framed. An unlocked map is still drawn over
+    /// where its holders explore, as vanilla's are. False for a map this
+    /// world never made or saved, and on a client of a server.
+    /// API @API:new_map@.
+    #[allow(dead_code)]
+    pub(super) fn native_paint_map(&mut self, map_id: i32, colors: &[u8; 16384]) -> bool {
+        if self.remote.is_some() {
+            return false;
+        }
+        let Some(map) = self.map(map_id) else {
+            return false;
+        };
+        map.paint(colors);
+        true
+    }
     /// Access a server-owned holder's attachment map. On a client it is the
     /// copy of what the server synced: `set` and `remove` change only the copy.
     pub(super) fn native_attachments(
