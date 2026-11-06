@@ -593,6 +593,8 @@ pub struct PackPost {
     /// What draws the first-person hand (`gbuffers_hand` or its fallback), after the opaque
     /// world, and its vertices.
     hand: Option<(Pass, super::pack_hand::PackHand)>,
+    /// `gbuffers_hand_water` (or its fallback): the hand's translucent quads, after deferred.
+    hand_water: Option<Pass>,
     /// The pre-translucent copy: `depthtex1`, or `depthtex2` without a shader hand.
     depth1: bool,
     /// A program after the hand reads `depthtex2`: it is copied before the hand.
@@ -2465,6 +2467,20 @@ impl PackPost {
             };
             build(p, Some(&g)).map(|pass| (pass, geometry))
         });
+        // Translucent held items, drawn from the hand's own buffer.
+        let hand_water = post.hand_water.and_then(|p| {
+            let (_, geometry) = hand.as_ref()?;
+            let g = Geometry {
+                buffers: &entity_buffers,
+                table: Some(&geometry.layout),
+                depth_write: true,
+                atlas: world.celestial.clone(),
+                material_maps: false,
+                ids: None,
+                cull: false,
+            };
+            build(p, Some(&g))
+        });
         let weather = post
             .weather
             .zip(weather_geometry.as_ref())
@@ -2585,6 +2601,9 @@ impl PackPost {
         if let Some((h, _)) = &hand {
             notes.push(format!("the hand draws with {}", h.name));
         }
+        if let Some(h) = &hand_water {
+            notes.push(format!("translucent held items draw with {}", h.name));
+        }
         if let Some([w, _]) = &weather {
             notes.push(format!("rain and snow draw with {}", w.name));
         }
@@ -2638,6 +2657,7 @@ impl PackPost {
             .chain(&lines)
             .chain(weather.iter().flatten())
             .chain(hand.iter().map(|h| &h.0))
+            .chain(&hand_water)
         };
         let shadow_targets = shadow_formats.map(|f| {
             let colors = every_pass().fold(0u16, |m, p| {
@@ -2691,6 +2711,7 @@ impl PackPost {
                 .chain(&water)
                 .chain(weather.iter().take(1).flatten())
                 .chain(hand.iter().map(|h| &h.0))
+                .chain(&hand_water)
                 .find(touched)
                 .map(|_| true)
                 .or_else(|| passes.iter().find(touched).map(|_| true));
@@ -2870,6 +2891,7 @@ impl PackPost {
             weather_draw: None,
             weather_generation: 0,
             hand,
+            hand_water,
             depth1,
             depth2,
             shadow_targets,
@@ -3838,8 +3860,14 @@ impl PackPost {
                 rp.set_bind_group(1, &geometry.group, &[]);
                 rp.set_vertex_buffer(0, geometry.vertices());
                 rp.set_index_buffer(geometry.indices.slice(..), wgpu::IndexFormat::Uint32);
-                // The arm and each held item: their own `currentRenderedItemId`.
-                for &(first, quads, offset) in &geometry.runs {
+                // The arm and each held item: their own `currentRenderedItemId`. Translucent
+                // quads wait for `gbuffers_hand_water` when the pack has one.
+                let late = self.hand_water.is_some();
+                let runs = geometry
+                    .runs
+                    .iter()
+                    .chain(geometry.translucent_runs.iter().filter(|_| !late));
+                for &(first, quads, offset) in runs {
                     if pass.draw {
                         rp.set_bind_group(2, &geometry.slot_group, &[offset]);
                     }
@@ -3966,7 +3994,51 @@ impl PackPost {
             terrain,
         );
         self.draw_entities(device, queue, encoder, size, true);
+        self.draw_hand_water(device, queue, encoder, size);
         self.draw_weather(device, queue, encoder, size);
+    }
+
+    /// The hand's translucent quads (uploaded by `draw_hand` this frame), with
+    /// `gbuffers_hand_water`.
+    fn draw_hand_water(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        size: [u32; 2],
+    ) {
+        let Some(mut pass) = self.hand_water.take() else {
+            return;
+        };
+        let hand = self.hand.take();
+        if let Some((_, geometry)) = hand
+            .as_ref()
+            .filter(|(_, g)| g.quads > 0 && !g.translucent_runs.is_empty())
+        {
+            let group = self.bind(device, queue, encoder, &mut pass, size);
+            {
+                let mut rp = self.begin(encoder, &pass);
+                rp.set_pipeline(pass.render());
+                rp.set_bind_group(0, &group, &[]);
+                if pass.buffers
+                    && let Some(g) = &self.buffers.group
+                {
+                    rp.set_bind_group(4, g, &[]);
+                }
+                rp.set_bind_group(1, &geometry.group, &[]);
+                rp.set_vertex_buffer(0, geometry.vertices());
+                rp.set_index_buffer(geometry.indices.slice(..), wgpu::IndexFormat::Uint32);
+                for &(first, quads, offset) in &geometry.translucent_runs {
+                    if pass.draw {
+                        rp.set_bind_group(2, &geometry.slot_group, &[offset]);
+                    }
+                    rp.draw_indexed(first * 6..(first + quads) * 6, 0, 0..1);
+                }
+            }
+            self.mips_valid &= !pass.written;
+        }
+        self.hand = hand;
+        self.hand_water = Some(pass);
     }
 
     /// The rain, then the snow, `set_weather` gave for this frame, with `gbuffers_weather`.
@@ -4144,6 +4216,7 @@ impl PackPost {
             .chain(&mut self.lines)
             .chain(self.weather.iter_mut().flatten())
             .chain(self.hand.iter_mut().map(|h| &mut h.0))
+            .chain(&mut self.hand_water)
             .chain(&mut self.shadow_terrain)
             .chain(&mut self.shadow_water)
             .chain(&mut self.shadow_comp);

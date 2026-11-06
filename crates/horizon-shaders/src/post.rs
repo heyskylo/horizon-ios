@@ -185,6 +185,15 @@ const HAND: [&str; 4] = [
     "gbuffers_basic",
 ];
 
+/// `gbuffers_hand_water` and its fallbacks (2.3): translucent held items, after deferred.
+const HAND_WATER: [&str; 5] = [
+    "gbuffers_hand_water",
+    "gbuffers_hand",
+    "gbuffers_textured_lit",
+    "gbuffers_textured",
+    "gbuffers_basic",
+];
+
 /// `gbuffers_weather` and its fallbacks (2.3).
 const WEATHER: [&str; 4] = [
     "gbuffers_weather",
@@ -460,6 +469,8 @@ pub struct Post {
     pub rain_depth: bool,
     /// What draws the first-person hand and held items.
     pub hand: Option<PostProgram>,
+    /// What draws their translucent parts (stained glass, ice...), after deferred and blended.
+    pub hand_water: Option<PostProgram>,
     /// `clouds=off`: no clouds at all, neither the game's nor the pack's program for them.
     pub clouds_off: bool,
     /// Some program reads a shadow buffer, or `shadow.enabled=true`: the shadow pass runs (2.5).
@@ -664,6 +675,7 @@ pub fn load_post(
             .get("rain.depth")
             .is_none_or(|v| v.trim() != "false"),
         hand: None,
+        hand_water: None,
         clouds_off: false,
         shadow_pass: false,
         shadow: None,
@@ -877,6 +889,15 @@ pub fn load_post(
             p.blend = blend(properties, &p.name).flatten();
             p
         });
+    // Translucent held items draw after deferred as translucent terrain does, and blend.
+    let hand_water = inputs
+        .hand
+        .as_ref()
+        .and_then(|i| gbuffers(&HAND_WATER, Group::Translucent, i))
+        .map(|mut p| {
+            p.blend = blend(properties, &p.name).unwrap_or(Some(TRANSLUCENT_BLEND));
+            p
+        });
     if let Some(terrain) = &inputs.terrain {
         // Cutout terrain's alpha test, unless `alphaTest.*` says otherwise (3.2): alpha above
         // 0.5, which `alphaTestRef` reads. Iris 1.11.7 with probe packs of ours (#9307), through
@@ -986,6 +1007,7 @@ pub fn load_post(
     loader.post.lines = lines;
     loader.post.weather = weather;
     loader.post.hand = hand;
+    loader.post.hand_water = hand_water;
     let flag = |key: &str| properties.get(key).map(|v| v.trim() == "true");
     loader.post.translucent_late = flag("separateEntityDraws").unwrap_or(false);
     // `after` when the pack has a deferred program, else `mixed`; ours are all translucent, so
@@ -1031,6 +1053,7 @@ fn load_shadow(
         &post.clouds,
         &post.weather,
         &post.hand,
+        &post.hand_water,
     ];
     let reads = (post.programs.iter())
         .chain(gbuffers.into_iter().flatten())
@@ -2909,6 +2932,57 @@ blend.composite1.colortex3 = ONE ONE ONE ONE
         );
     }
 
+    /// A pack's own `gbuffers_hand_water` draws the translucent held items: after deferred,
+    /// blended, beside its opaque `gbuffers_hand`.
+    #[test]
+    fn translucent_held_items_draw_with_gbuffers_hand_water() {
+        let vsh = "#version 120\nvarying vec2 uv;\nvoid main() {\n    gl_Position = ftransform();\n    uv = gl_MultiTexCoord0.xy;\n}\n";
+        let fsh = "#version 120\nuniform sampler2D texture;\nvarying vec2 uv;\nvoid main() {\n    gl_FragData[0] = texture2D(texture, uv);\n}\n";
+        let pack = Pack::from_zip_bytes(
+            "P.zip",
+            zip(&[
+                ("shaders/gbuffers_hand.vsh", vsh),
+                ("shaders/gbuffers_hand.fsh", fsh),
+                ("shaders/gbuffers_hand_water.vsh", vsh),
+                ("shaders/gbuffers_hand_water.fsh", fsh),
+            ]),
+        )
+        .unwrap();
+        let hand = crate::GbuffersInputs {
+            declarations: "layout(location = 0) in vec3 hz_v_pos;".into(),
+            body: "    hz_Vertex = vec4(hz_v_pos, 1.0);\n    hz_Color = vec4(1.0);\n".into(),
+            ..Default::default()
+        };
+        let inputs = GameInputs {
+            hand: Some(hand),
+            ..Default::default()
+        };
+        let post = load_post(
+            &pack,
+            "",
+            &Properties::default(),
+            &Macros::standard(),
+            &inputs,
+        );
+        let (opaque, translucent) = (post.hand.unwrap(), post.hand_water.unwrap());
+        assert_eq!(
+            (opaque.name.as_str(), opaque.blend),
+            ("gbuffers_hand", None)
+        );
+        assert_eq!(
+            (
+                translucent.name.as_str(),
+                translucent.group,
+                translucent.blend
+            ),
+            (
+                "gbuffers_hand_water",
+                Group::Translucent,
+                Some(TRANSLUCENT_BLEND)
+            )
+        );
+    }
+
     #[test]
     fn water_falls_back_to_terrain_and_blends() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/packs/terrain-test");
@@ -2984,11 +3058,21 @@ blend.composite1.colortex3 = ONE ONE ONE ONE
             (clouds.name.as_str(), clouds.blend),
             ("gbuffers_textured", Some(TRANSLUCENT_BLEND))
         );
-        // The hand falls back to gbuffers_textured and does not blend.
+        // The hand falls back to gbuffers_textured and does not blend; its translucent items
+        // fall back to the same program, after deferred and blended.
         let hand = post.hand.as_ref().unwrap();
         assert_eq!(
             (hand.name.as_str(), hand.group, hand.blend),
             ("gbuffers_textured", Group::Gbuffers, None)
+        );
+        let hand_water = post.hand_water.as_ref().unwrap();
+        assert_eq!(
+            (hand_water.name.as_str(), hand_water.group, hand_water.blend),
+            (
+                "gbuffers_textured",
+                Group::Translucent,
+                Some(TRANSLUCENT_BLEND)
+            )
         );
         // Weather falls back to gbuffers_textured, after deferred, blended.
         let weather = post.weather.as_ref().unwrap();
