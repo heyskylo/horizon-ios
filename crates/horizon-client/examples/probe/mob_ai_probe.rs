@@ -607,7 +607,12 @@ fn player_damage(e: &MobEvent) -> f32 {
         | MobEvent::CubeHurtPlayer { amount, .. }
         | MobEvent::StingPlayer { amount, .. }
         | MobEvent::AttackPlayerWithEffect { amount, .. }
-        | MobEvent::DamagePlayer { amount, .. } => *amount,
+        | MobEvent::DamagePlayer { amount, .. }
+        | MobEvent::IronGolemHit {
+            target: Who::Player,
+            amount,
+            ..
+        } => *amount,
         MobEvent::SonicBoom {
             target: Who::Player,
             ..
@@ -626,7 +631,12 @@ fn player_hurt(player: Option<&PlayerView>, e: &MobEvent) -> bool {
         | MobEvent::CubeHurtPlayer { amount, .. }
         | MobEvent::StingPlayer { amount, .. }
         | MobEvent::AttackPlayerWithEffect { amount, .. }
-        | MobEvent::DamagePlayer { amount, .. } => *amount > 0.0,
+        | MobEvent::DamagePlayer { amount, .. }
+        | MobEvent::IronGolemHit {
+            target: Who::Player,
+            amount,
+            ..
+        } => *amount > 0.0,
         MobEvent::SonicBoom {
             target: Who::Player,
             ..
@@ -1391,14 +1401,28 @@ pub fn main() -> horizon_client::Result<()> {
                 // (LivingEntity.hurtServer), with the sounds they raise.
                 let mut k = from;
                 while k < events.len() {
-                    if let MobEvent::AttackMob {
-                        target,
-                        amount,
-                        source,
-                    } = events[k]
+                    let (hit, toss) = match events[k] {
+                        MobEvent::AttackMob {
+                            target,
+                            amount,
+                            source,
+                        } => (Some((target, amount, source)), false),
+                        // IronGolem.doHurtTarget: thrown up only if the hit landed.
+                        MobEvent::IronGolemHit {
+                            target: Who::Mob(target),
+                            amount,
+                            source,
+                        } => (Some((target, amount, source)), true),
+                        _ => (None, false),
+                    };
+                    if let Some((target, amount, source)) = hit
                         && let Some(t) = mobs.iter_mut().find(|m| m.id == target)
                         && t.damage(amount, source)
                     {
+                        if toss {
+                            t.velocity.y +=
+                                f64::from(0.4f32) * (1.0 - t.knockback_resistance()).max(0.0);
+                        }
                         let raised = std::mem::take(&mut t.outbox);
                         let n = raised.len();
                         events.splice(k + 1..k + 1, raised);

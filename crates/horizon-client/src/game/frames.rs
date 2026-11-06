@@ -163,21 +163,6 @@ impl Game<'_> {
             "minecraft:glow_item_frame" => true,
             _ => return false,
         };
-        let entity_data = stack.extra.as_ref().and_then(|extra| {
-            extra.other.iter().find_map(|(k, v)| {
-                (k == "minecraft:entity_data" || k == "entity_data").then_some(v)
-            })
-        });
-        let invisible = entity_data
-            .and_then(|v| horizon_client::save::number(v.get("Invisible")))
-            .unwrap_or(0)
-            != 0;
-        // `applyComponentsFromItemStack` sets `CUSTOM_NAME`, then `entity_data`
-        // loads (`updateCustomEntityTag`): a missing `CustomName` clears it.
-        let custom_name = match entity_data {
-            Some(data) => data.get("CustomName").cloned(),
-            None => stack.data().and_then(|d| d.custom_name.clone()),
-        };
         let pos: [i32; 3] = std::array::from_fn(|i| hit.pos[i] + hit.face[i]);
         // `ItemFrameItem.mayPlace`: `Level.isInsideBuildHeight(blockPos)`, so a frame is not
         // placed on the top face of the highest block or under the lowest one.
@@ -189,7 +174,7 @@ impl Game<'_> {
             self.use_failed = true;
             return true;
         }
-        let frame = ItemFrame {
+        let mut frame = ItemFrame {
             id: self.next_entity + 1,
             pos,
             facing: facing_of(hit.face),
@@ -198,20 +183,29 @@ impl Game<'_> {
             rotation: 0,
             drop_chance: 1.0,
             fixed: false,
-            invisible,
+            invisible: false,
             check_interval: 0,
-            custom_name,
+            // `applyComponentsFromItemStack` sets `CUSTOM_NAME`.
+            custom_name: stack.data().and_then(|d| d.custom_name.clone()),
         };
+        // `EntityType.createDefaultStackConfig`: the item's `custom_data`, then its
+        // `entity_data` merged over the frame (`TypedEntityData.loadInto`), before
+        // `survives` runs on the configured frame.
+        let kind = frame.kind();
+        let own = horizon_client::entity_nbt::item_frame_to_nbt(&frame, [0; 4], None);
+        let configured =
+            horizon_client::block_entity_item::stack_configured_entity(stack, kind, &own);
+        if let Some(mut loaded) =
+            horizon_client::entity_nbt::item_frame_from_nbt(&configured, frame.id)
+        {
+            loaded.glow = glow;
+            frame = loaded;
+        }
         // HangingEntity.survives false: CONSUME, which ItemStack.useOn still counts as a use.
         if !self.frame_survives(&frame) {
             self.award_stat("used", &stack.item, 1);
             return true;
         }
-        let kind = if glow {
-            "minecraft:glow_item_frame"
-        } else {
-            "minecraft:item_frame"
-        };
         if self.hanging_place_cancelled(kind, pos) {
             return true;
         }
@@ -223,6 +217,12 @@ impl Game<'_> {
         let ctx = self.player_context(None);
         self.post_game_event("minecraft:entity_place", center(&frame), ctx);
         self.world.modified.insert((pos[0] >> 4, pos[2] >> 4));
+        // The unmodelled rest of the loaded data (`data`, `Tags`...) stays with the frame.
+        let mut raw = configured;
+        if let horizon_world::nbt::Tag::Compound(map) = &mut raw {
+            map.remove(&"UUID".into());
+        }
+        self.persist.raw.insert(frame.id, raw);
         self.item_frames.push(frame);
         if !self.creative {
             self.consume_held();

@@ -822,6 +822,7 @@ pub fn tick_fuse(m: &mut Mob, events: &mut Vec<MobEvent>) {
                 charged: false,
                 name,
                 in_water: m.fluids.in_water,
+                kind: m.kind.id.clone(),
             });
             events.push(MobEvent::Explode(
                 [m.position.x, m.position.y + 0.0625, m.position.z],
