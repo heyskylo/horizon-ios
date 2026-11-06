@@ -1459,6 +1459,8 @@ impl Screen {
             deleting: None,
             member_job: None,
             settings: None,
+            tier: None,
+            tier_job: None,
             regions: None,
             regions_job: None,
             saving: None,

@@ -870,16 +870,6 @@ impl RealmsClient {
         Self::execute(self.request("POST", &url, READ_TIMEOUT), Some(&body)).map(drop)
     }
 
-    /// The invite-code service: `frontendV2Request`, with the token in `x-mojangauth`.
-    fn frontend(
-        &self,
-        method: &str,
-        path: &str,
-        body: Option<&str>,
-    ) -> Result<String, RealmsError> {
-        let url = format!("{}/{path}", self.frontend_url);
-    }
-
     /// `RealmsClient.getRealmTierConfiguration`: `GET worlds/{id}/configuration/tier`. A range
     /// the answer lacks is a configuration error, as `getRealmTierConfiguration`'s parse makes it.
     pub fn get_tier_configuration(
@@ -921,11 +911,14 @@ impl RealmsClient {
         Self::execute(self.request("PUT", &url, READ_TIMEOUT), Some("")).map(drop)
     }
 
-    /// `RealmsClient.redeemInviteCode`: the invite-code service, with the token in
-    /// `x-mojangauth` as `frontendV2Request` sets it.
-    pub fn redeem_invite_code(&self, code: &str) -> Result<(), RealmsError> {
-        let code = path_segment(code.trim())?;
-        let url = format!("{}/api/v1.0/invite/codes/use/{code}", self.frontend_url);
+    /// The invite-code service: `frontendV2Request`, with the token in `x-mojangauth`.
+    fn frontend(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&str>,
+    ) -> Result<String, RealmsError> {
+        let url = format!("{}/{path}", self.frontend_url);
         let request = self
             .request(method, &url, READ_TIMEOUT)
             .set("x-mojangauth", &self.access_token)
