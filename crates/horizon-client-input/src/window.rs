@@ -628,6 +628,22 @@ pub fn icon() -> Option<winit::window::Icon> {
     winit::window::Icon::from_rgba(bytes, info.width, info.height).ok()
 }
 
+/// Apply Horizon's icon to every window. Windows has a separate taskbar icon slot from the small
+/// window icon; requiring the decoded icon there prevents a generic taskbar icon from appearing.
+pub fn with_horizon_icon(
+    attributes: winit::window::WindowAttributes,
+) -> winit::window::WindowAttributes {
+    let icon = icon();
+    #[cfg(target_os = "windows")]
+    let icon = Some(icon.expect("Horizon's icon must be available on Windows"));
+
+    let attributes = attributes.with_window_icon(icon.clone());
+    #[cfg(target_os = "windows")]
+    let attributes =
+        winit::platform::windows::WindowAttributesExtWindows::with_taskbar_icon(attributes, icon);
+    attributes
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
