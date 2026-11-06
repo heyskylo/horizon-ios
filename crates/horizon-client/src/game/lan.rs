@@ -2,7 +2,10 @@
 //! server threads and the play-state hub, feeds it the world's entities each
 //! tick and turns what the guests do into gameplay. A world that is not open
 //! costs one `Option` check per tick.
+mod event_timings;
+
 use super::{Game, shield::OFFHAND_SLOT};
+use event_timings::EventTimings;
 use horizon_client::{
     Result,
     lan::{
@@ -1997,9 +2000,10 @@ impl Game<'_> {
         // after the loop.
         let timed = horizon_client::spans::recording_here();
         let mut previous = None;
+        let mut timings = EventTimings::default();
         for event in events {
             if timed {
-                note_event(&host, previous.take());
+                note_event(&host, previous.take(), &mut timings);
                 let detail = self.event_detail(&host, &event);
                 previous = Some((Instant::now(), event_kind(&event), detail));
             }
@@ -2272,7 +2276,21 @@ impl Game<'_> {
                 }
             }
         }
-        note_event(&host, previous);
+        note_event(&host, previous, &mut timings);
+        if let Some((ms, count)) = timings.overflow(horizon_client::spans::NOTE_MS) {
+            horizon_client::spans::note(ms, || {
+                format!("other events ({count} events total, attribution limit reached)")
+            });
+        }
+        for burst in timings.bursts(horizon_client::spans::NOTE_MS) {
+            horizon_client::spans::note(burst.ms, || {
+                format!(
+                    "{} ({} events total)",
+                    describe_event(&host, &burst.kind, burst.detail.as_ref()),
+                    burst.count
+                )
+            });
+        }
         Some(host)
     }
 
@@ -3329,27 +3347,41 @@ fn level_event_except(id: i32, acting: Option<u32>, collateral_break: bool) -> O
 
 /// Notes how long the event that started at `started` took (`spans::note`), with what it
 /// was about when [`Game::event_detail`] said.
-fn note_event(host: &LanHost, started: Option<(Instant, EventKind, Option<UseDetail>)>) {
-    let Some((started, (kind, conn, name), detail)) = started else {
+fn note_event(
+    host: &LanHost,
+    started: Option<(Instant, EventKind, Option<UseDetail>)>,
+    timings: &mut EventTimings<EventKind, UseDetail>,
+) {
+    let Some((started, kind, detail)) = started else {
         return;
     };
-    horizon_client::spans::note(started.elapsed().as_secs_f32() * 1000.0, || {
-        let who = name
-            .or_else(|| conn.and_then(|c| host.hub.guest(c)).map(|g| g.name.clone()))
-            .or_else(|| conn.map(|c| format!("connection {c}")));
-        let line = match who {
-            Some(who) => format!("{kind} of {who}"),
-            None => kind.to_owned(),
-        };
-        match detail {
-            Some(d) => format!("{line} ({d})"),
-            None => line,
-        }
-    });
+    let ms = started.elapsed().as_secs_f32() * 1000.0;
+    horizon_client::spans::note(ms, || describe_event(host, &kind, detail.as_ref()));
+    timings.add(kind, detail, ms);
+}
+
+fn describe_event(
+    host: &LanHost,
+    (kind, conn, name): &EventKind,
+    detail: Option<&UseDetail>,
+) -> String {
+    let who = name
+        .clone()
+        .or_else(|| conn.and_then(|c| host.hub.guest(c)).map(|g| g.name.clone()))
+        .or_else(|| conn.map(|c| format!("connection {c}")));
+    let line = match who {
+        Some(who) => format!("{kind} of {who}"),
+        None => (*kind).to_owned(),
+    };
+    match detail {
+        Some(d) => format!("{line} ({d})"),
+        None => line,
+    }
 }
 
 /// What a use packet was about, taken before it ran (the use may consume the item or change
 /// the block): the item in the hand it names and, on a block, that block, where, and the face.
+#[derive(PartialEq)]
 struct UseDetail {
     item: Option<Arc<str>>,
     block: Option<(Arc<str>, [i32; 3], i32)>,
@@ -3396,7 +3428,41 @@ impl Game<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{OFFHAND_SLOT, equipment_slot_name, living_flags, mob_freeze_meta};
+    use super::{EventTimings, OFFHAND_SLOT, equipment_slot_name, living_flags, mob_freeze_meta};
+
+    #[test]
+    fn a_burst_of_short_events_still_has_a_slow_tick_note() {
+        use horizon_client::spans;
+        // Thread-local recording avoids changing instrumentation on other test threads.
+        spans::record_here(true);
+        spans::take_notes();
+        let mut timings = EventTimings::default();
+        for _ in 0..200 {
+            spans::note(5.0, || "UseItemOn of fixture player".into());
+            timings.add(("UseItemOn", 7), None::<()>, 5.0);
+        }
+        assert!(
+            spans::take_notes().is_empty(),
+            "every individual event is below NOTE_MS"
+        );
+        for burst in timings.bursts(spans::NOTE_MS) {
+            spans::note(burst.ms, || {
+                format!(
+                    "{} of fixture player ({} events total)",
+                    burst.kind.0, burst.count
+                )
+            });
+        }
+        let notes = spans::take_notes();
+        spans::record_here(false);
+        assert_eq!(
+            notes,
+            vec![(
+                1000.0,
+                "UseItemOn of fixture player (200 events total)".into()
+            )]
+        );
+    }
     use horizon_client::mobs::Mob;
     use horizon_protocol::entity_data::{Value, serializer};
 
