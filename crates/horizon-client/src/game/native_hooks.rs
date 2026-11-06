@@ -8894,6 +8894,13 @@ impl Game<'_> {
     pub(super) fn native_max_stack_size(&self, item: &str) -> Option<u32> {
         self.res.items().get(item).map(|i| i.max_stack)
     }
+    /// The default state of the block named `block`, `minecraft:air` or
+    /// `mymod:cable` (`Block.defaultBlockState`), what `native_set_block` takes:
+    /// a machine clearing or placing a block by name. None for an unknown
+    /// block. API @API:default_state@.
+    pub(super) fn native_default_state(&self, block: &str) -> Option<BlockStateId> {
+        self.pack.assets.registry.default_state(block)
+    }
     /// The random of the server level `dimension`: vanilla's `Level.random`
     /// (`level.getRandom()`), the one its explosions, block drops and other
     /// level draws use, so a mod's draws move vanilla's later ones as a Java
