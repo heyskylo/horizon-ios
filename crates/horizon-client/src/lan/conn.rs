@@ -236,9 +236,64 @@ impl Drop for Holding {
     }
 }
 
+/// The game's hook on every play packet the server sends a player (`native_server_packet`), set
+/// once by the game: the player, the packet (which it may change) and cancel.
+pub type ServerPacketHook = fn(u128, &mut play::Clientbound, &mut bool);
+pub static SERVER_PACKET: std::sync::OnceLock<ServerPacketHook> = std::sync::OnceLock::new();
+/// What a mod asked to hear of the packets [`PlayerSender::send`] sends
+/// (`native_watch_server_packets`): [`WATCH_ALL`]. Nothing until a mod asks: until then each
+/// packet costs this one load, and its bytes go out untouched.
+pub static WATCHED: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+/// Every play packet reaches [`SERVER_PACKET`].
+pub const WATCH_ALL: u8 = 1;
+
+/// A body about to be sent to `player`, past the hooks a mod asked for ([`WATCHED`]): None
+/// when one canceled it. Bytes that don't decode, and a packet no hook changed, go out as they
+/// were; a changed one is encoded again.
+fn outgoing(player: u128, body: Vec<u8>) -> Option<Vec<u8>> {
+    let watched = WATCHED.load(Ordering::Relaxed);
+    if watched == 0 {
+        return Some(body);
+    }
+    watched_outgoing(player, body, watched)
+}
+
+#[cold]
+fn watched_outgoing(player: u128, body: Vec<u8>, watched: u8) -> Option<Vec<u8>> {
+    let head = {
+        let mut r = horizon_protocol::buf::Reader::new(&body);
+        r.varint().ok().map(|id| (id, r.position()))
+    };
+    let Some((id, at)) = head else {
+        return Some(body);
+    };
+    let all = SERVER_PACKET.get().filter(|_| watched & WATCH_ALL != 0);
+    if all.is_none() {
+        return Some(body);
+    }
+    let Ok(sent) = play::Clientbound::decode(id, &body[at..]) else {
+        return Some(body);
+    };
+    let mut packet = sent.clone();
+    if let Some(hook) = all {
+        let mut cancel = false;
+        hook(player, &mut packet, &mut cancel);
+        if cancel {
+            return None;
+        }
+    }
+    Some(if packet == sent {
+        body
+    } else {
+        packet.encode()
+    })
+}
+
 /// The sending half given to the game thread.
 #[derive(Clone)]
 pub struct PlayerSender {
+    /// The player it sends to, for the hooks on what it sends ([`outgoing`]); 0 for a test's.
+    player: u128,
     /// The bytes of the bodies sent and not framed yet.
     pub pending: Arc<AtomicUsize>,
     held: Arc<Mutex<Vec<Vec<u8>>>>,
@@ -258,6 +313,7 @@ impl PlayerSender {
     /// A sender whose packets go to `tx` (a test's).
     pub fn new(tx: Sender<Out>, pending: Arc<AtomicUsize>) -> Self {
         Self {
+            player: 0,
             pending,
             held: Arc::default(),
             to: To::Channel(tx),
@@ -288,6 +344,9 @@ impl PlayerSender {
         self.held.lock().unwrap_or_else(PoisonError::into_inner)
     }
     pub fn send(&self, body: Vec<u8>) {
+        let Some(body) = outgoing(self.player, body) else {
+            return;
+        };
         self.pending.fetch_add(body.len(), Ordering::Relaxed);
         if HOLDING.get() {
             self.held().push(body);
@@ -302,7 +361,8 @@ impl PlayerSender {
     /// Several packets in order, as [`Self::send`] each: under one lock
     /// while the tick holds them.
     pub fn send_many(&self, bodies: impl IntoIterator<Item = Vec<u8>>) {
-        if !HOLDING.get() {
+        // A mod hearing what is sent (`outgoing`) does so outside the lock.
+        if !HOLDING.get() || WATCHED.load(Ordering::Relaxed) != 0 {
             bodies.into_iter().for_each(|body| self.send(body));
             return;
         }
@@ -1318,6 +1378,7 @@ fn play(
         alive: Arc::new(AtomicI64::new(-1)),
     });
     let sender = PlayerSender {
+        player: parts.uuid,
         pending,
         held: Arc::default(),
         to: To::Pool(outbox.clone(), watch.clone()),

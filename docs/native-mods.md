@@ -2484,6 +2484,22 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
 - **`native_player_jump(player, name)`**: accepted guest movement made the server player jump from the ground, after movement simulation finishes. The guest's state is swapped in.
 - **`native_player_kicked(player, name, reason)`**: a guest was kicked after the hub recorded the rendered disconnect reason and sent the disconnect. The guest's state is swapped in, unless the guest was already removed in the same poll (a kick and the disconnect arriving together): the hook still fires, without it.
 - **`native_player_level_change(player, name, from, to)`**: a server player's experience change altered their level, after the new level was applied. The guest's state is swapped in when the player is a guest.
+#### Server hooks for plugin ports: packets
+
+What packet-level plugins (ProtocolLib, PacketEvents, TAB), plugin channel listeners, resource pack plugins and
+`/kick` replacements need, which plugin ports reached with raw packets and injections before.
+
+- **`native_server_packet(player, packet, cancel)`**: each play packet the server is about to send one guest's
+  client, decoded (`ClientboundPlayPacket`), in the order they leave; a broadcast is heard once for each player it
+  reaches, so a mod can answer each viewer differently (ProtocolLib's and PacketEvents' outgoing listeners; there is no
+  NeoForge or Bukkit event). Change `packet` and that client gets the changed packet, encoded again; set `cancel` and
+  it gets nothing. It is heard only after a mod called the helper **`native_watch_server_packets()`** (any thread,
+  any time; it cannot be switched off again): until then the server neither decodes nor copies what it sends, and each
+  packet costs one atomic load. Not heard: the configuration phase, the disconnect a kick sends, bytes that don't decode
+  (they go out unchanged, as does every packet no mod changed), and a player who isn't a guest (single player's own). It
+  runs where the packet is sent, on whichever server thread sends it, with no `self` and no player's state swapped in, once for
+  each packet and player: keep it cheap. Bundles need `"hooks": @API:server_packet@`.
+
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a
