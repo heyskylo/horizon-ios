@@ -1,6 +1,6 @@
 # Entity blob-shadow visibility
 
-Blob shadows used to scan blocks, collision bounds and light for every nearby caster, including shadows entirely outside the camera frustum. The new check uses the shadow's projected bounds rather than its caster's model: a caster behind the camera can still project a visible shadow. The existing radius/strength/distance gates run before the frustum test. Shader packs and native mods keep the original path.
+Blob shadows used to scan blocks, collision bounds and light for every nearby caster, including shadows entirely outside the camera frustum. The new check uses the shadow's projected bounds rather than its caster's model: a caster behind the camera can still project a visible shadow. The existing radius/strength/distance gates run before the frustum test. Shader packs keep the original path; native mods do not disable the optimization.
 
 This changes no quality setting or visible shadow geometry, and needs no new toggle. The benefit depends on nearby shadow casters outside the view; it is not a general FPS multiplier.
 
@@ -50,7 +50,7 @@ One saved fixture holds 100 cows on a 10×10 grid with 1.1-block spacing (`NoAI`
 - Nine resource-backed shadow tests pass, including the new bounds check: every generated vertex stays inside the tested bounds on stepped terrain, fractional positions, varying strength and radii up to/beyond the existing 32-block clamp.
 - A separate scene places an empty text display at (0,80,-12), shadow radius 4, strength 5, behind the player at (0.5,80,-9.5). Four views (toward the projected shadow, edge, upward, straight down) match the baseline exactly: zero changed pixels. Disabling shadows in the baseline changes 619,420 / 507,639 / 0 / 921,600 pixels respectively, confirming that the test retains substantial visible shadow geometry.
 - All dense-fixture behind-camera and empty-control image pairs match exactly. Its front/edge images have two states even between unmodified baseline launches; the model-region differences persist with entity shadows disabled. Those images are not used as a pixel-exact oracle for this change.
-- Windows, macOS, other GPUs and shader-pack paths were not measured. Shader-pack/native-mod paths bypass the new check.
+- Windows, macOS, other GPUs and shader-pack paths were not measured. Shader-pack paths bypass the new check.
 
 The resource-backed test can be repeated with your own prepared resources:
 
@@ -59,3 +59,10 @@ HORIZON_RESOURCES=/path/to/prepared/26.3 cargo test --profile fast -p horizon-cl
 ```
 
 To reproduce FPS measurements, build the baseline and candidate with the same optimized profile, create the fixtures above through `horizon-ctl command`, save once and copy that save for each launch. Keep all game/home directories isolated as described in `AGENTS.md`. Use `options-set entityShadows true`, select `improvedTransparency` identically in both builds, and collect `bench 8` after warmup. For image comparisons use frozen time and the separate single-display fixture, rather than overlapping model surfaces.
+
+A follow-up compatibility run registered one native trait mod through `entry::main_with`.
+Its camera hook asserted that the mod was loaded and observed the camera without changing it.
+All four single-display views matched the updated ordinary executable exactly, including the
+619,420 visible shadow pixels from the caster behind the camera. Native mods no longer cause
+a blanket bypass. The original FPS samples above were collected without mods; this checks
+rendering compatibility rather than arbitrary mixins that rewrite shadow geometry or passes.
