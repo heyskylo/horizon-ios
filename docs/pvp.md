@@ -97,6 +97,13 @@ Layout: a widget moved by hand stays where it was put, as `hudPlace:<widget>,<x>
 are fractions of the room the screen leaves beside the widget, so it stays on screen after a resize; `corner` instead of them keeps the corner; scale in
 percent, 50 to 200). Widgets without such a line keep their corner. `pvp_hud::Layout`, `pvp_hud::snap`.
 
+**HUD editor**: the **Edit HUD** button on the PvP & HUD page beside the preset (in a world), or the **HUD editor key** (unbound by
+default). The game pauses where it can; each widget that is on gets a frame. Drag one anywhere: it snaps to the
+screen's edges and middle and to the other widgets' edges (the guides show where). The mouse wheel over a widget
+scales it by 10%, a right click puts it back in its corner at 100%, and the buttons set the text colour, shadow,
+background and its opacity, put every widget back in its corner at 100% (Reset), or close the editor (Esc too). The layout is saved when it closes.
+Code: `game/hud_editor.rs`.
+
 ## Enchantment levels as numbers (`numericEnchants`, default off)
 
 `Enchantment.getFullname` with the level as a number ("Sharpness 5", also past vanilla's numerals: "Sharpness 255")
@@ -145,6 +152,43 @@ Overworld.
 
 They change how `chat::Chat` lays its lines out (`ChatQol`, `set_search`): the 100 messages it keeps are the same,
 so turning an option off shows them as before. Code: `chat.rs`, `game/chat.rs`.
+
+## Combat feel (`combatFeel`, default Modern)
+
+**Legacy (1.8.9)** draws fights as 1.8.9 did, from its own client (`ItemRenderer`, read for the numbers only):
+the item held in first person sits, swings, eats, drinks and draws a bow along 1.8.9's poses, a sword is held up
+to block while you hold use (with nothing in the off hand drawn), and the hand doesn't dip after each hit. The
+attack indicator is hidden unless **Attack indicator in Legacy** (`combatIndicator`) keeps it. Items whose
+resource pack moves them in hand, and the ones 1.8.9 didn't have (crossbow, trident, spear, brush...), keep
+26.3's poses. 1.8.9 tinted no armour red on a hit, so the hurt flash is the same in both.
+Legacy also leaves out what 1.9 added around a hit: the sweep arc and the damage hearts a server sends, and
+with **1.8 hit sounds** (`combatSounds`) the `entity.player.attack.*` sounds (strong, weak, crit, sweep,
+knockback, no damage); hurt sounds and crit particles stay. `pvp::Combat`.
+
+## 1.8 combat in worlds you host (`combatRules`, default off)
+
+The other options only change the look; this one changes the rules, so it applies only where Horizon is the
+server: single player (its server thread) and the worlds you open to LAN, at once when switched, and a dedicated
+server whose `server.toml` has `[combat]` `legacy = true` ([hosting.md](hosting.md)). Servers you join keep their
+own rules. Melee hits follow 1.8.9's `EntityPlayer.attackTargetEntityWithCurrentItem`:
+
+- no attack cooldown (every hit is full strength) and no sweep;
+- weapon damage as in 1.8.9: base 1, plus 4 for a sword, 3 for an axe, 2 for a pickaxe, 1 for a shovel, plus the
+  material (wood and gold 0, stone 1, iron 2, diamond 3; netherite 4 and copper 1, which 1.8.9 didn't have);
+  items 1.8.9 didn't have (trident, mace...) keep 26.3's damage;
+- Strength multiplies by 1 + 1.3 per level, Weakness subtracts 0.5 per level;
+- Sharpness adds 1.25 per level, Smite and Bane of Arthropods 2.5 per level against their targets;
+- a critical hit (×1.5) needs a fall, not a charge, and can be a sprinting hit.
+- knockback on players as `EntityLivingBase.knockBack`: it lifts a player in the air too (combos), and knockback
+  resistance is a chance to take none instead of a cut; the sprint and Knockback push is added on top (0.1 up)
+  instead of halving the motion first.
+
+Code: `crates/horizon-client/src/legacy_combat.rs` (the formulas, with their 1.8.9 sources),
+`game/legacy_rules.rs`; `lan_e2e.py --check legacy-pvp` measures it between two games.
+
+It is only the look: the client sends a server exactly what Modern sends (same attacks, same timing, no
+block-hit packets), so vanilla servers and their anticheats see nothing new. Code: `first_person.rs`
+(`legacy_item_pose`), the hand in `game.rs`.
 
 ## PvP preset
 

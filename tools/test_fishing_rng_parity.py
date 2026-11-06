@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Compare fishing retrieval against a real 26.3 server and player.
+"""Compare fishing movement and retrieval against a real 26.3 server and player.
 
 The Java side calls FishingHook.retrieve with seeded hook and table sequences.
-The Rust side compares seeded cast velocity, a bobbing tick, catch-timer
+The Rust side compares seeded cast velocity, bobbing and dry-ground ticks, catch-timer
 transitions and the rod's fallback loot path, plus named-sequence loot and XP.
 It does not yet cover the UUID-to-seed relationship.
 """
@@ -49,13 +49,19 @@ def main():
         raise SystemExit(f"fishing tick record count differs: {len(reference)} vs {len(actual)}")
     expected_bobbing = json.loads((work / "fishing-bobbing-reference.json").read_text())
     actual_bobbing = json.loads((work / "rust-fishing-bobbing.json").read_text())
-    if len(expected_bobbing) != 5 or len(actual_bobbing) != 5:
-        raise SystemExit(f"expected 5 bobbing cases: {len(expected_bobbing)} vs {len(actual_bobbing)}")
-    if expected_bobbing != actual_bobbing:
-        for expected, actual in zip(expected_bobbing, actual_bobbing):
-            if expected != actual:
-                raise SystemExit(f"fishing bobbing differs: vanilla {expected}; Horizon {actual}")
-        raise SystemExit(f"fishing bobbing count differs: {len(expected_bobbing)} vs {len(actual_bobbing)}")
+    if len(expected_bobbing) != 20 or len(actual_bobbing) != 20:
+        raise SystemExit(f"expected 20 bobbing and ground cases: {len(expected_bobbing)} vs {len(actual_bobbing)}")
+    for expected, actual in zip(expected_bobbing, actual_bobbing):
+        if "case" in expected:
+            # Collision clipping can differ below a picometre; retain exact
+            # case/tick matching and compare all three positions and velocities.
+            if expected["case"] != actual.get("case") or expected["tick"] != actual.get("tick"):
+                raise SystemExit(f"fishing ground case differs: {expected}; {actual}")
+            for field in ("position", "motion"):
+                if len(actual[field]) != 3 or any(not abs(a - b) <= 1e-12 for a, b in zip(expected[field], actual[field])):
+                    raise SystemExit(f"fishing ground differs: vanilla {expected}; Horizon {actual}")
+        elif expected != actual:
+            raise SystemExit(f"fishing bobbing differs: vanilla {expected}; Horizon {actual}")
     fallback = work / "fallback"
     fallback_env = env.copy()
     fallback_env.pop("HORIZON_FISHING_TICK_REFERENCE", None)
@@ -81,7 +87,7 @@ def main():
     subprocess.run(["cargo", "test", "--profile", "fast", "-p", "horizon-client", "--lib",
                     "game::fishing::tests::fishing_retrieve_reference", "--", "--exact", "--ignored"],
                    cwd=lab.ROOT, env=env, check=True)
-    print("fishing: seeded catch timers, loot and XP match vanilla")
+    print("fishing: ground prediction, bobbing, seeded catch timers, loot and XP match vanilla")
 
 
 if __name__ == "__main__":

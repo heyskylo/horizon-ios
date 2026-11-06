@@ -1174,6 +1174,10 @@ impl Title {
             screen.wheel(delta, cursor, size);
             return false;
         }
+        if let Mode::Realms(screen) = &mut self.mode {
+            screen.wheel(delta, cursor, size);
+            return false;
+        }
         if let Mode::CreateFlat { flat, .. } = &mut self.mode {
             flat::wheel(flat, delta, cursor, size);
             return false;
@@ -3585,7 +3589,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 crate::multiplayer::Outcome::None => Action::None,
             },
             (Mode::Main, Some(5)) => {
-                self.mode = Mode::Multiplayer(crate::multiplayer::Screen::friend());
+                self.mode = Mode::Multiplayer(crate::multiplayer::Screen::friend(true));
                 Action::None
             }
             (Mode::Onboarding(_), Some(onboarding::SOUNDS)) => Action::Sounds,

@@ -1137,12 +1137,21 @@ impl Items {
         table: &Value,
         random: &mut R,
     ) -> Vec<ItemStack> {
+        self.inline_loot_table_with_tool(table, None, random)
+    }
+    /// `LootCommand.dropFishingLoot`: evaluate an inline table with its TOOL.
+    pub fn inline_loot_table_with_tool<R: RandomSource>(
+        &self,
+        table: &Value,
+        held: Option<&ItemStack>,
+        random: &mut R,
+    ) -> Vec<ItemStack> {
         let empty = horizon_world::chunk::BlockProperties::new();
         let ctx = LootContext {
             items: self,
             block: "",
             properties: &empty,
-            held: None,
+            held,
             killed_by_player: false,
             explosion_radius: None,
             this_entity: false,
@@ -2375,6 +2384,76 @@ mod tests {
     use super::*;
     use horizon_core::random::LegacyRandom;
     use serde_json::json;
+
+    /// `LootCommand.dropFishingLoot` carries TOOL even for an inline holder.
+    #[test]
+    fn inline_fishing_keeps_the_actual_tool_context() {
+        let mut items = Items::for_tests(HashMap::new());
+        let table = |tool| {
+            json!({"type":"minecraft:fishing","pools":[{"rolls":1,"entries":[{
+                "type":"minecraft:item","name":"minecraft:diamond",
+                "condition":{"type":"minecraft:match_tool","predicate":{"items":tool}}
+            }]}]})
+        };
+        let rod_table = table("minecraft:fishing_rod");
+        let stick_table = table("minecraft:stick");
+        let unconditioned = json!({"pools":[{"rolls":1,"entries":[{"type":"minecraft:item","name":"minecraft:diamond"}]}]});
+        items.loot = Arc::new(
+            [
+                ("test:rod".to_owned(), rod_table.clone()),
+                ("test:stick".to_owned(), stick_table.clone()),
+                ("test:plain".to_owned(), unconditioned.clone()),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let rod = ItemStack::new("minecraft:fishing_rod", 1);
+        let stick = ItemStack::new("minecraft:stick", 1);
+        let summary = |drops: Vec<ItemStack>| {
+            drops
+                .into_iter()
+                .map(|s| (s.item.to_string(), s.count))
+                .collect::<Vec<_>>()
+        };
+        for (id, table, matches) in [
+            ("test:rod", &rod_table, [false, true, false]),
+            ("test:stick", &stick_table, [false, false, true]),
+            ("test:plain", &unconditioned, [true, true, true]),
+        ] {
+            for (held, matches) in [None, Some(&rod), Some(&stick)].into_iter().zip(matches) {
+                let expected = if matches {
+                    vec![("minecraft:diamond".to_owned(), 1)]
+                } else {
+                    vec![]
+                };
+                let mut named_rng = LegacyRandom::new(41);
+                assert_eq!(
+                    summary(items.loot_table(id, false, held, &mut named_rng)),
+                    expected
+                );
+                let mut inline_rng = LegacyRandom::new(41);
+                assert_eq!(
+                    summary(items.inline_loot_table_with_tool(table, held, &mut inline_rng)),
+                    expected
+                );
+                assert_eq!(
+                    inline_rng.next_long(),
+                    named_rng.next_long(),
+                    "same evaluator draw order"
+                );
+            }
+            let mut random = LegacyRandom::new(41);
+            let legacy = summary(items.inline_loot_table(table, &mut random));
+            assert_eq!(
+                legacy,
+                if matches[0] {
+                    vec![("minecraft:diamond".to_owned(), 1)]
+                } else {
+                    vec![]
+                }
+            );
+        }
+    }
 
     #[test]
     fn a_stacks_own_blocks_attacks_component_counts() {
