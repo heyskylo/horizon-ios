@@ -2352,12 +2352,23 @@ impl Game<'_> {
     /// `VehicleEntity.hurtServer`: shake, add the damage, break past 40 (at
     /// once for creative players); TNT minecarts prime instead when moving
     /// or hurt by fire or an explosion (`damageSourceIgnitesTnt`).
-    pub(super) fn hurt_cart(&mut self, i: usize, mut damage: f32, creative: bool, fire: bool) {
+    pub(super) fn hurt_cart(&mut self, i: usize, damage: f32, creative: bool, fire: bool) {
+        self.hurt_cart_result(i, damage, creative, fire);
+    }
+
+    /// Accepted damage is distinct from survival, destruction, or TNT priming.
+    pub(super) fn hurt_cart_result(
+        &mut self,
+        i: usize,
+        mut damage: f32,
+        creative: bool,
+        fire: bool,
+    ) -> bool {
         let kind = self.carts[i].kind.id();
         let mut cancel = false;
         self.native_vehicle_damage(kind, &mut damage, &mut cancel);
         if cancel {
-            return;
+            return false;
         }
         let destroyed = {
             let c = &mut self.carts[i];
@@ -2409,6 +2420,7 @@ impl Game<'_> {
                 }
             }
         }
+        true
     }
     /// Baked block-state faces with default block tints and terrain shade or diffuse lighting.
     pub(super) fn block_model_vertices(
