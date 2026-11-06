@@ -35,6 +35,9 @@ mod packed;
 mod world_target_tests;
 
 #[cfg(test)]
+mod celestial_blend_tests;
+
+#[cfg(test)]
 mod higher_shadowcolor_tests;
 
 #[cfg(test)]
