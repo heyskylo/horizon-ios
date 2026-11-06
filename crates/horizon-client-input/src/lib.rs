@@ -3,6 +3,7 @@
 //! options. horizon-client re-exports each module under its old path
 //! (`horizon_client::keybinds`, ...).
 #![forbid(unsafe_code)]
+pub mod actions;
 pub mod clipboard;
 pub mod gamepad;
 pub mod held;

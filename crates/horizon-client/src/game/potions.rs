@@ -784,6 +784,10 @@ impl Game<'_> {
         let eye = self.eye_position().unwrap_or_default();
         self.using = None;
         self.send_use_item_complete();
+        // Consumable.onConsume: the used statistic and the consume_item
+        // trigger, with the stack as drunk (before it shrinks).
+        self.award_stat("used", &stack.item, 1);
+        self.trigger_item("minecraft:consume_item", stack);
         self.post_entity_event("minecraft:drink", horizon_client::mobs::Who::Player);
         if ominous {
             self.drink_ominous_bottle(slot, stack);
@@ -2033,7 +2037,14 @@ impl Game<'_> {
                     }
                 };
                 let m = &mut self.mobs[i];
-                if harm {
+                if harm && m.species() == horizon_client::mobs::Species::Enderman {
+                    // `Enderman.hurtServer` for a thrown potion: only water hurts
+                    // (`hurtWithCleanWater`), then `repeatedlyTryToTeleport`, which
+                    // the AI step runs and which does nothing while it rides.
+                    if m.alive() && !m.extra.passenger {
+                        m.extra.counter2 = 64;
+                    }
+                } else if harm {
                     // HealOrHarmMobEffect.applyInstantaneousEffect: indirectMagic(potion, owner).
                     let harm = (intensity * f64::from(6 << amp) + 0.5) as i32 as f32;
                     let source = Damage::indirect_magic(owner.who(), [at.x, at.y, at.z]);
