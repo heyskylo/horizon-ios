@@ -46,6 +46,9 @@ fn book_page_box() -> ui::EditBox {
     edit
 }
 
+/// Where a book's text is, from its top left corner, above its page buttons.
+const BOOK_TEXT: [f32; 4] = [36.0, 16.0, 120.0, 136.0];
+
 pub(super) enum BookScreen {
     Edit {
         /// Inventory slot of the book (the selected hotbar slot).
@@ -1219,6 +1222,18 @@ impl Game<'_> {
             r.u1 = r.u0 + 192.0 * du;
             r.v1 = r.v0 + 192.0 * dv;
             batch.rect_uv(left, top, 192.0, 192.0, r, u32::MAX);
+        }
+        // The page, or the signing title on it: a field to a controller, which opens its keyboard.
+        if matches!(book, BookScreen::Edit { .. }) {
+            widgets::target_as(
+                [
+                    left + BOOK_TEXT[0],
+                    top + BOOK_TEXT[1],
+                    BOOK_TEXT[2],
+                    BOOK_TEXT[3],
+                ],
+                widgets::Kind::Field,
+            );
         }
         let tr = |key: &str, fallback: &str| self.translate(key, fallback);
         let page_buttons = |batch: &mut HudBatch, back: bool, forward: bool| {

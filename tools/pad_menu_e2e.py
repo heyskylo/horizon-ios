@@ -1807,6 +1807,59 @@ def osk_stays_open(game, check, what):
     check(game.menu()['keyboard'], f'{what}: deleting closed the keyboard')
 
 
+def osk_book(args, name):
+    """A on a book and quill's page opens the keyboard, a new line keeps it open, and B closes it."""
+    game = Game(args, name, world=True)
+    check = Check()
+    try:
+        game.ctl('command', 'give @s writable_book')
+        time.sleep(1)
+        game.ctl('pad', 'trigger', 'left', 1)
+        time.sleep(0.4)
+        game.ctl('pad', 'trigger', 'left', 0)
+        time.sleep(1.5)
+        menu = game.menu()
+        check(menu['mode'] == 'pointer', f"no book open: {menu['mode']}")
+        field = next((t for t in menu['targets'] if t['kind'] == 'field'), None)
+        check(field is not None, f"the page isn't a field: {menu['targets']}")
+        x, y, w, h = field['rect']
+        for _ in range(40):
+            pointer = game.menu()['pointer']
+            if pointer and x <= pointer[0] < x + w and y <= pointer[1] < y + h:
+                break
+            step = 'left' if pointer and pointer[0] >= x + w else 'right' if pointer and pointer[0] < x else 'up' if pointer and pointer[1] >= y + h else 'down'
+            game.pad(step)
+        game.pad('south')
+        check(game.menu()['keyboard'], 'A on the page opened no keyboard')
+    finally:
+        game.quit()
+    return check.failures
+
+
+def osk_sign(args, name):
+    """A keeps a sign's keyboard to hand: Enter goes to the next line, and B then A opens it again."""
+    game = Game(args, name, world=True)
+    check = Check()
+    try:
+        game.ctl('command', 'give @s oak_sign')
+        game.ctl('command', 'setblock ~ ~-1 ~ stone')
+        time.sleep(1)
+        game.ctl('turn', '0', '90')
+        time.sleep(0.5)
+        game.ctl('pad', 'trigger', 'left', 1)
+        time.sleep(0.4)
+        game.ctl('pad', 'trigger', 'left', 0)
+        time.sleep(1.5)
+        check(game.menu()['keyboard'], 'a sign the pad placed opened no keyboard')
+        game.pad('east')
+        check(not game.menu()['keyboard'], 'B did not close the keyboard')
+        game.pad('south')
+        check(game.menu()['keyboard'], 'A did not open the keyboard again')
+    finally:
+        game.quit()
+    return check.failures
+
+
 def osk_social(args, name):
     game = Game(args, name, world=True)
     check = Check()
@@ -1994,6 +2047,8 @@ CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': releas
          'prompt_keeps_typing': prompt_keeps_typing,
          'prompt_keeps_crosshair': prompt_keeps_crosshair,
          'osk_social': osk_social,
+         'osk_book': osk_book,
+         'osk_sign': osk_sign,
          'osk_debug_options': osk_debug_options,
          'osk_command_block': osk_command_block,
          'osk_jigsaw': osk_jigsaw,

@@ -774,6 +774,10 @@ impl Game<'_> {
                 return Ok(());
             }
         }
+        // The screen under the keyboard went away (dying with chat open): so does the keyboard.
+        if self.pad.menu.osk.is_some() && !self.pad_has_typing_screen() {
+            self.pad.menu.osk = None;
+        }
         // The on-screen keyboard takes every button while it is open.
         if let Some(keyboard) = self.pad.menu.osk.as_mut() {
             if let Some(out) = keyboard.button(button) {
@@ -841,6 +845,8 @@ impl Game<'_> {
                     }
                 }
             }
+            // A sign has no field to press, so A opens its keyboard from anywhere on it.
+            Button::South if !prompt && self.sign_edit.is_some() => self.pad_open_keyboard(),
             Button::South | Button::West => {
                 self.pad_take_pointer(event_loop);
                 self.pad_pointer_button(event_loop, button == Button::West, true);
@@ -2148,6 +2154,23 @@ impl Game<'_> {
             )
     }
 
+    /// Whether the screen under the keyboard can still be typed in.
+    fn pad_has_typing_screen(&self) -> bool {
+        self.pad_typing()
+            || self.title.is_some()
+            || matches!(self.screen, Screen::Options | Screen::WorldOptions)
+    }
+
+    /// Enter on these goes on to a new line: a dialog's, a sign's or a book's page.
+    fn pad_enter_keeps_typing(&self) -> bool {
+        self.dialog_typing_lines()
+            || self.sign_edit.is_some()
+            || matches!(
+                self.book,
+                Some(super::books::BookScreen::Edit { signing: false, .. })
+            )
+    }
+
     /// Open the on-screen keyboard over the focused field: Horizon's, or
     /// Steam's on a Steam Deck (`steam://open/keyboard`, which types into
     /// the window like a real keyboard).
@@ -2293,12 +2316,10 @@ impl Game<'_> {
                 _ => self.title_edit(text, false),
             }
         }
-        // Enter ends the typing, but for a dialog's new line; a field that
-        // closed with it closes the keyboard.
-        if (key == Some(KeyCode::Enter) && !self.dialog_typing_lines())
-            || (!self.pad_typing()
-                && self.title.is_none()
-                && !matches!(self.screen, Screen::Options | Screen::WorldOptions))
+        // Enter ends the typing, but for a new line; a field that closed with it closes the
+        // keyboard.
+        if (key == Some(KeyCode::Enter) && !self.pad_enter_keeps_typing())
+            || !self.pad_has_typing_screen()
         {
             self.pad.menu.osk = None;
         }

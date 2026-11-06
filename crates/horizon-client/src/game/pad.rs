@@ -96,6 +96,9 @@ mod hardware;
 mod parity_tests;
 pub(super) use hardware::{PadId, PadRouter};
 
+/// How long the death screen's confirm ignores cancelling (`ConfirmScreen`).
+const DEATH_CONFIRM_WAIT: Duration = Duration::from_secs(1);
+
 /// A controller coming or going, for this player's notice (`pad_connection_notice`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Connection {
@@ -577,6 +580,14 @@ impl Game<'_> {
 
     /// B and Start: what Escape does where the pad is.
     pub(super) fn pad_back(&mut self) -> Result<()> {
+        // The death confirm's buttons wait a second, as its Escape does.
+        if self
+            .ui
+            .death_confirm
+            .is_some_and(|shown| shown.elapsed() < DEATH_CONFIRM_WAIT)
+        {
+            return Ok(());
+        }
         if self.prompt_open() {
             return self.pad_prompt_back();
         }
