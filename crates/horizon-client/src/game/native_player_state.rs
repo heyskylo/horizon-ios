@@ -7,7 +7,7 @@
 //! `native_server_tick`, `native_menu_clicked`) everyone on.
 use super::{Game, commands::Target};
 use horizon_client::{brewing, effects::EffectInstance, entities::Experience, lan::playerdata};
-use horizon_world::nbt::Tag;
+use horizon_world::{attribute_map::ValueKind, nbt::Tag};
 
 /// An effect on a player, as `native_effects` reads it and
 /// `native_add_effect` and `native_set_effects` take it (vanilla's
@@ -47,6 +47,15 @@ fn native_effect(e: &EffectInstance) -> NativeEffect {
         duration: e.duration,
         ambient: e.ambient,
         particles: e.visible,
+    }
+}
+
+/// `minecraft:` in front of an id without a namespace.
+fn namespaced(id: &str) -> String {
+    if id.contains(':') {
+        id.to_owned()
+    } else {
+        format!("minecraft:{id}")
     }
 }
 
@@ -260,6 +269,78 @@ impl Game<'_> {
                 game.add_player_effect(e);
             }
         })
+        .is_some()
+    }
+
+    /// The player `uuid`'s attribute `attribute` (`minecraft:max_health`,
+    /// `scale`): its base value and its value with every modifier (armour,
+    /// effects, `/attribute`), as Bukkit's `AttributeInstance.getBaseValue`
+    /// and `getValue`. None for an attribute players don't have, and for a
+    /// player not reached or between bodies (just respawned, not yet
+    /// ticked). API @API:player_attributes@.
+    pub(super) fn native_attribute(&mut self, uuid: u128, attribute: &str) -> Option<(f64, f64)> {
+        let id = namespaced(attribute);
+        let motion = match self.native_place(uuid)? {
+            Place::Acting => self.player.as_mut()?,
+            Place::Guest(i) => self.lan.as_mut()?.hub.guests[i].motion.as_deref_mut()?,
+        };
+        let key = motion.attributes.key(&id)?;
+        let base = motion.attributes.value(Some(key.clone()), ValueKind::Base);
+        let value = motion.attributes.value(Some(key), ValueKind::Computed);
+        Some((base.ok()?, value.ok()?))
+    }
+
+    /// Sets the base value of the player `uuid`'s attribute `attribute`, as
+    /// `/attribute <player> <attribute> base set` (Bukkit's
+    /// `AttributeInstance.setBaseValue`); a lower `max_health` caps their
+    /// health. Their client gets `UpdateAttributes` with the tick's sync, and
+    /// the base is saved. False for an attribute players don't have, a value
+    /// that is not a number, and a player not reached or dead. API
+    /// @API:player_attributes@.
+    pub(super) fn native_set_attribute_base(
+        &mut self,
+        uuid: u128,
+        attribute: &str,
+        base: f64,
+    ) -> bool {
+        if !base.is_finite() {
+            return false;
+        }
+        let id = namespaced(attribute);
+        self.native_player_turn(uuid, |game| {
+            let p = game.player.as_mut()?;
+            let key = p.attributes.key(&id)?;
+            let handle = p.attributes.get_instance(Some(key)).ok().flatten()?;
+            p.attributes
+                .edit(&handle, |value, observer| {
+                    value.set_base_value(base, observer)
+                })
+                .ok()?;
+            let _ = p.clamp_health_to_max();
+            Some(())
+        })
+        .flatten()
+        .is_some()
+    }
+
+    /// Loads a saved `attributes` list (the compound's, as
+    /// `native_player_compound` gives it) onto the player `uuid`, as
+    /// vanilla's `AttributeMap.load` reads a player's file: each listed
+    /// attribute takes its base and permanent modifiers, unknown ones are
+    /// skipped, the others stay. A lower `max_health` caps their health.
+    /// False for anything but a list, and for a player not reached or dead.
+    /// API @API:player_attributes@.
+    pub(super) fn native_set_attributes(&mut self, uuid: u128, saved: &Tag) -> bool {
+        if !matches!(saved, Tag::List(_)) {
+            return false;
+        }
+        self.native_player_turn(uuid, |game| {
+            let p = game.player.as_mut()?;
+            p.apply_saved_attributes(Some(saved)).ok()?;
+            let _ = p.clamp_health_to_max();
+            Some(())
+        })
+        .flatten()
         .is_some()
     }
 }

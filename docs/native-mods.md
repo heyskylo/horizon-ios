@@ -2511,6 +2511,12 @@ calls them without a mod.
   all replaced (a saved player's potion effects restored). The client gets `UpdateMobEffect` with the ambient and
   particle flags. Horizon keeps no hidden-icon flag on an effect, so the icon always shows. Unknown effects and a
   duration of 0 or below -1 are refused. Bundles need `"hooks": @API:player_effects@`.
+- Helpers **`native_attribute(uuid, attribute)`**, **`native_set_attribute_base(uuid, attribute, base)`** and
+  **`native_set_attributes(uuid, saved)`**: an attribute's base value and its value with every modifier (Bukkit's
+  `AttributeInstance.getBaseValue` and `getValue`); its base set as `/attribute .. base set` does; a saved
+  `attributes` list (the compound's) loaded as `AttributeMap.load` reads a player's file. A lower `max_health` caps the
+  health, and the client gets `UpdateAttributes`. An id without a namespace is `minecraft:`'s.
+  Bundles need `"hooks": @API:player_attributes@`.
 
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
