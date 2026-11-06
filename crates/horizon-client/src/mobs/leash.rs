@@ -327,6 +327,20 @@ pub fn tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         });
         return;
     }
+    // Leashable.tickLeash: a holder that cannot interact with the level (dead
+    // or spectating, `Entity.canInteractWithLevel`) drops the lead.
+    if holder == Holder::Player
+        && let Some(p) = w.player.as_ref()
+        && m.extra.leash_player.is_none_or(|u| p.uuid == u)
+        && (p.spectator || !p.alive)
+    {
+        events.push(MobEvent::LeashBreak {
+            mob: m.id,
+            drop: true,
+            sound: false,
+        });
+        return;
+    }
     let state = holder_state(w, holder).filter(|_| {
         holder != Holder::Player
             || m.extra
