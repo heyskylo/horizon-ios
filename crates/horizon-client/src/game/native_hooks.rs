@@ -6525,6 +6525,45 @@ impl Game<'_> {
     pub(super) fn native_player_logging_out(&mut self, player: u128, name: &str) {
         mod_api::dispatch_player_logging_out(self, mod_api::mods(), player, name);
     }
+    /// One player's attack hurting another (Bukkit's `EntityDamageByEntityEvent` between two
+    /// players): `attacker` (a UUID, and `attacker_entity`, their network entity id) hits
+    /// `victim` (`victim_entity`) for `amount` of `damage_type` (`minecraft:player_attack`,
+    /// `minecraft:arrow`). `source` is how: `melee`, `sweep`, or the projectile's entity type
+    /// (`minecraft:arrow`, `minecraft:spectral_arrow`, `minecraft:snowball`, `minecraft:egg`, a
+    /// mod's thrown type). Heard where `native_living_incoming_damage` is, at the victim's
+    /// `LivingEntity.hurtServer` past its guards: the `pvp` game rule and the teams allow it, and
+    /// the victim is neither invulnerable (creative, spectator) nor dead; a hit inside the
+    /// victim's hurt cooldown is heard, as vanilla's event is. Change `amount`, or set `canceled`
+    /// and nothing of the hurt happens, as for a canceled `native_living_incoming_damage`, which
+    /// then hears nothing of it; otherwise that hook follows with the amount set here. A snowball
+    /// or egg deals no damage, and vanilla's `Player.hurtServer` stops on zero: that is heard with
+    /// amount 0 where it stops, and what the mods set changes nothing. Not heard: thorns,
+    /// Channeling's lightning, fire, the effects of a potion or a tipped arrow, and thrown
+    /// tridents, which hurt no players yet. Like `native_living_incoming_damage` there is no
+    /// `self`: the game is in the middle of the hit. It runs on the server thread.
+    /// @API:player_hurt_by_player@.
+    pub(super) fn native_player_hurt_by_player(
+        attacker: u128,
+        attacker_entity: i32,
+        victim: u128,
+        victim_entity: i32,
+        source: &str,
+        damage_type: &str,
+        amount: &mut f32,
+        canceled: &mut bool,
+    ) {
+        mod_api::dispatch_player_hurt_by_player(
+            mod_api::mods(),
+            attacker,
+            attacker_entity,
+            victim,
+            victim_entity,
+            source,
+            damage_type,
+            amount,
+            canceled,
+        );
+    }
     /// A click in a menu a mod opened (`native_open_menu`), which moved
     /// nothing: the menu's `slot` (its own first, then the player's
     /// inventory, `native_menu_inventory_slot`; -999 outside), the `button`
@@ -8237,6 +8276,24 @@ pub(super) fn hurt_server(hurting: Hurting<'_>, amount: &mut f32) -> bool {
         direct,
     } = source;
     let mut canceled = false;
+    // One player hurting another: the mods hear who first.
+    if kind == "minecraft:player"
+        && let Some(hit) = super::lan_pvp::pvp_hit(entity)
+    {
+        Game::native_player_hurt_by_player(
+            hit.attacker,
+            hit.attacker_entity,
+            hit.victim,
+            hit.victim_entity,
+            hit.source,
+            damage_type,
+            amount,
+            &mut canceled,
+        );
+        if canceled {
+            return true;
+        }
+    }
     Game::native_living_incoming_damage(
         entity,
         kind,

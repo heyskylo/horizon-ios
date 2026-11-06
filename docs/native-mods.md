@@ -2493,6 +2493,15 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   reach them. A death a mod causes here (`kill <name>`) happens at once where they stand, with its death message, drops
   and `native_player_died`, and they are saved dead. Once per placed player who leaves, before `native_player_logged_out`.
   Not heard when the server stops (`native_player_logged_out` tells then, with them still listed).
+- **`native_player_hurt_by_player(attacker, attacker_entity, victim, victim_entity, source, damage_type, amount, canceled)`**:
+  one player hurting another, both named by UUID and network entity id. `source` is `melee`, `sweep` or the projectile's
+  entity type (`minecraft:arrow`, `minecraft:spectral_arrow`, `minecraft:snowball`, `minecraft:egg`, a mod's thrown type).
+  Heard where `native_living_incoming_damage` is (the victim's `hurtServer` past its guards: the `pvp` rule and the teams
+  allow it, the victim is not creative, a spectator or dead; a hit in the hurt cooldown is heard too) and just before it.
+  Change `amount`, or set `canceled` and nothing of the hurt happens; v1 then hears nothing of it. A snowball or egg does
+  no damage and vanilla's `Player.hurtServer` stops on zero: it is heard there with amount 0, and what a mod sets changes
+  nothing. No `self`, like v1. Not heard: thorns, Channeling's lightning, fire, potion and tipped-arrow effects, thrown
+  tridents (they hurt no players yet).
 
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
