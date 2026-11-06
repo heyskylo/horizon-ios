@@ -2515,6 +2515,12 @@ before (#10461).
   own included; `Ok` means queued, and a player who isn't on by then gets nothing. Unlike `native_net_send_to_player`
   nothing caps or frames it. An error on a client, and for a bad channel or size. Bundles need
   `"hooks": @API:send_custom_payload_to_player@`.
+- Helper **`native_player_permission(player)`** (`host.player_permission`): the permission level of a player who is on
+  the server or joining it, 0 to 4, an operator's from `ops.json` above 0 (`PlayerList.getProfilePermissions`). It also
+  works inside `native_player_login`, for the player that hook hears (their level is set by then), so a login gate that
+  lets operators through needs no `ops.json` of its own. Inside a player's hook, with the hub out of reach, only that
+  player is found; None for a player who isn't on, and on a client. Bundles need `"hooks": @API:player_permission@`.
+
 
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The

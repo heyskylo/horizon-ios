@@ -469,6 +469,30 @@ impl Game<'_> {
                 .unwrap_or_default(),
         })
     }
+    /// The permission level of a player who is on the server or joining it:
+    /// 0 to 4, an operator's from `ops.json` above 0
+    /// (`PlayerList.getProfilePermissions`; a single player world's guests
+    /// get 2 with cheats on). Also inside `native_player_login`, for the
+    /// player it hears, whose level is set by then: a login gate needs no
+    /// `ops.json` of its own. Inside a player's hook, with the hub out of
+    /// reach, only that player is found. None for a player who isn't on, and
+    /// on a client. API @API:player_permission@.
+    pub(super) fn native_player_permission(&self, player: u128) -> Option<u8> {
+        if let Some((uuid, level)) = self.native_login_permission
+            && uuid == player
+        {
+            return Some(level);
+        }
+        if self.lan_acting_uuid == Some(player) {
+            return self.lan_acting_permission;
+        }
+        let host = self.lan.as_ref()?;
+        host.hub
+            .guests
+            .iter()
+            .find(|g| g.uuid == player)
+            .map(|g| g.permission)
+    }
     /// Runs `line` (no slash) as the server's console does: permission
     /// level 4, from the overworld's spawn, with no output. A teleport to
     /// another level (`execute in minecraft:the_nether run tp Alex 0 70 0`)
