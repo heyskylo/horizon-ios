@@ -2849,6 +2849,38 @@ Bundles need "hooks": @API:hurt_entity@.
   away, comes back. None for a viewer not here, the target being the viewer, logging in, dead or never seen here, a
   layout longer than the rows' slots, a slot past the inventory or shown twice, and inside a player's turn. A mixin
   helper, not on `Host` (it takes `NativeInventoryKind`). Bundles need `"hooks": @API:inventory_menu@`.
+
+#### Server hooks for plugin ports: world generation
+
+For a mod that generates terrain of its own (a custom world generator, a far lands border, a void world with climate
+biomes) in some chunks or all of them, as Bukkit's `ChunkGenerator` does.
+
+- **`native_world_seed()`** (`native_world_seed.rs`): the world's seed as `/seed` prints it (`WorldOptions.seed`,
+  Bukkit's `World.getSeed`), the one every level generates from, for a preview that draws the terrain a chunk will get.
+  None off a server: a client only knows a hash of its server's seed. API @API:world_seed@.
+- **`native_chunk_generate(dimension, chunk, seed, flat, chunk_out, generate)`**
+  (`horizon_world::worldgen::native_generate`): chunk `[x, z]` of the level `dimension` is about to get its terrain,
+  after its biomes and structure starts and before the noise (Bukkit's `ChunkGenerator.generateNoise`, vanilla's
+  `NOISE` status); `flat` says the level is superflat. To build it, set its blocks with `chunk_out.set_block(x, y, z,
+  state)` (all air until then; `chunk_out.registry()` names the states) and set `generate` to `NativeGenerate::Replaced
+  { surface, carvers, structures, decorations }`: vanilla then adds only what the flags ask for, the dimension's surface
+  rule, its carvers (on a superflat level too), the structures, the biomes' features (Bukkit's `shouldGenerateSurface`,
+  `shouldGenerateCaves`, `shouldGenerateStructures`, `shouldGenerateDecorations`). Left at `Vanilla` with no block set,
+  the chunk is vanilla's, byte for byte; `chunk_out.set_biomes(pick)` (what decoration, the saved chunk and the players
+  see; the surface rule and structure placement keep reading the biome source) and `chunk_out.clear_structures()` work
+  with either answer. Mods are asked in turn. It runs on the generation workers, for several chunks at once on several
+  threads and never on the server thread, so no `Game` helper works there; a chunk can be asked again (a proto chunk
+  saved unfinished, the neighbours of a finished one, the far terrain's decoration), so answer the same each time. Also
+  where single player and the far terrain generate. API @API:chunk_generate@.
+- **`native_lod_column(dimension, column, seed, flat, column_out)`** (`horizon_world::worldgen::native_generate`): the
+  far terrain samples block column `[x, z]` where no chunk is generated yet, from vanilla's noise and surface rule
+  (`GeneratorWorker::lod_grid`, `surface_sample`). A mod whose `native_chunk_generate` builds that chunk calls
+  `column_out.replace(spans, biome)` with the column's blocks, runs `(lowest y, highest y + 1, state)` in any order, and
+  the biome its top shows (None keeps vanilla's): the far terrain then draws them, its top, the water right over it and
+  the spans a cliff shows, until the chunk itself is generated. Left alone, the column is vanilla's. It is asked for each
+  far column, many per tile, on the far terrain's workers, several at once: answer from the terrain function alone,
+  without building the chunk. Like vanilla's, a far column shows no carver's caves. API @API:lod_column@.
+
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a
