@@ -1752,17 +1752,17 @@ impl Game<'_> {
     }
     /// `positionRider` for the mobs in minecarts: each sits on the cart's
     /// passenger attachment, less its own vehicle attachment.
-    pub(super) fn seat_cart_mobs(&mut self) {
+    pub(super) fn seat_cart_mobs(&mut self, riding: &super::passengers::Riders) {
         for i in 0..self.carts.len() {
             let id = self.carts[i].id;
+            let Some(js) = riding.get(&id) else {
+                continue;
+            };
             let (pos, prev) = (self.carts[i].position, self.carts[i].previous);
-            let seats: Vec<(usize, f64)> = self
-                .mobs
+            let seats: Vec<(usize, f64)> = js
                 .iter()
-                .enumerate()
-                .filter(|(_, m)| m.extra.mount == Some(id))
                 // Minecart's box is 0.98 wide.
-                .map(|(j, m)| (j, riders::vehicle_attachment(m, 0.98)))
+                .map(|&j| (j, riders::vehicle_attachment(&self.mobs[j], 0.98)))
                 .collect();
             for (j, offset) in seats {
                 let m = &mut self.mobs[j];

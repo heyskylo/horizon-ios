@@ -484,17 +484,18 @@ impl Game<'_> {
 impl Game<'_> {
     /// `positionRider` for the mobs riding primed TNT: the passenger attachment
     /// (the top of its 0.98 box), less the rider's own vehicle attachment.
-    pub(super) fn seat_tnt_mobs(&mut self) {
+    pub(super) fn seat_tnt_mobs(&mut self, riders: &super::passengers::Riders) {
         for i in 0..self.tnts.len() {
             let (id, pos, prev) = (
                 self.tnts[i].id,
                 self.tnts[i].position,
                 self.tnts[i].previous,
             );
-            if id == 0 {
+            let Some(js) = riders.get(&id).filter(|_| id != 0) else {
                 continue;
-            }
-            for m in self.mobs.iter_mut().filter(|m| m.extra.mount == Some(id)) {
+            };
+            for &j in js {
+                let m = &mut self.mobs[j];
                 // Primed TNT's box is 0.98 wide.
                 let offset = horizon_client::mobs::riders::vehicle_attachment(m, 0.98);
                 m.position = tnt_seat(pos, offset);
