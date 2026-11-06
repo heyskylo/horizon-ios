@@ -40,6 +40,7 @@ fn index_of(versions: &[(&str, &str, &Path)]) -> Index {
             capabilities: vec![horizon_mods::Capability::Registries],
             api_level: None,
             game: (*game).into(),
+            broken_on: Vec::new(),
             requires: Vec::new(),
             file: index::File {
                 name: path.file_name().unwrap().to_string_lossy().into_owned(),

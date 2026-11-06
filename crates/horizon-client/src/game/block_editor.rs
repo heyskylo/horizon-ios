@@ -365,7 +365,7 @@ impl Game<'_> {
         let b = HudBatch::new(size);
         let cursor = self.cursor;
         let shift = self.has_shift_down();
-        let alt = self.keys.contains(&KeyCode::AltLeft);
+        let alt = self.keys.raw(&KeyCode::AltLeft);
         let atlas_click = |game: &Game<'_>, edit: &mut EditBox| {
             edit.click(&game.gui.atlas, cursor.0, false, false);
         };

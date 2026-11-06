@@ -1,0 +1,33 @@
+[package]
+name = "horizon-mod-deps"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+description = "Registry crates native mods may depend on (docs/native-mods.md). Nothing depends on this crate and every dependency is optional, so no build compiles them."
+
+# Cargo.lock lists every optional dependency of a workspace member, so these are in the lock
+# (and in the allow list of docs/native-mods.md) without being built. The lock records a crate's
+# dependencies only for the features something enables, so each entry names the features mods may
+# use. TLS goes through the rustls + ring already in the lock. One feature per crate; `all` builds
+# the lot (`cargo check -p horizon-mod-deps --features all`).
+[dependencies]
+# MariaDB / MySQL client, blocking. Its default features build zlib from C.
+mysql = { version = "27", default-features = false, features = ["minimal-rust", "rustls-tls-ring"], optional = true }
+# Redis client, blocking (pub/sub included).
+redis = { version = "1", default-features = false, optional = true }
+# Websocket protocol (e.g. a Discord gateway) over a stream the mod opens, TLS through rustls.
+tungstenite = { version = "0.30", default-features = false, optional = true }
+# Opus encoder and decoder in pure Rust (voice chat, #7759).
+rusty-opus = { version = "1", optional = true }
+
+[features]
+mysql = ["dep:mysql"]
+redis = ["dep:redis"]
+websocket = ["dep:tungstenite"]
+opus = ["dep:rusty-opus"]
+all = ["mysql", "redis", "websocket", "opus"]
+
+[lints]
+workspace = true

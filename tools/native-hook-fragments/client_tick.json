@@ -1,0 +1,26 @@
+{
+  "hooks": [
+    {
+      "name": "client_tick_pre",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_client_tick_pre",
+      "neoforge": "ClientTickEvent.Pre",
+      "side": "client",
+      "cancellable": false,
+      "mod_api": {
+        "contract": "listen"
+      }
+    },
+    {
+      "name": "client_tick_post",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_client_tick_post",
+      "neoforge": "ClientTickEvent.Post",
+      "side": "client",
+      "cancellable": false,
+      "mod_api": {
+        "contract": "listen"
+      }
+    }
+  ],
+  "rust_summary": "the window's client tick, before and after its work (`native_client_tick_pre`, `native_client_tick_post`).",
+  "doc_summary": "the window's client tick for client mods: `native_client_tick_pre()` and `native_client_tick_post()` bracket each one, as NeoForge's `ClientTickEvent.Pre` and `.Post` do, 20 times a second on the title screen, while paused and in a world alike, never on a server ([The client's tick](#the-clients-tick)). Bundles need \"hooks\": @API:client_tick@."
+}

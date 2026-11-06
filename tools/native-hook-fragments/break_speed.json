@@ -1,0 +1,16 @@
+{
+  "hooks": [
+    {
+      "name": "break_speed",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_break_speed",
+      "neoforge": "PlayerEvent.BreakSpeed",
+      "side": "both",
+      "cancellable": false,
+      "mod_api": {
+        "contract": "listen"
+      }
+    }
+  ],
+  "rust_summary": "how fast a player digs a block (`native_break_speed`).",
+  "doc_summary": "how fast a player digs a block: `native_break_speed` may change the speed that `Player.getDestroySpeed` gives, as NeoForge's `PlayerEvent.BreakSpeed` does, on both sides ([How fast a player digs](#how-fast-a-player-digs)). Bundles need \"hooks\": @API:break_speed@."
+}
