@@ -55,6 +55,9 @@ mod custom_type_tests;
 #[cfg(test)]
 mod sky_depth_tests;
 
+#[cfg(test)]
+mod translucent_color_tests;
+
 /// The texture behind a pack sampler name.
 #[derive(Clone, Copy, PartialEq)]
 enum Source {
@@ -1273,8 +1276,9 @@ fn bindings(
     let mut reads = 0u16;
     let mut shadow_reads = 0u16;
     let watershadow = interface.samplers.iter().any(|s| s.name == "watershadow");
-    // A gbuffers pass draws into its buffers and the depth buffer: reading them as well would
-    // be a feedback loop (undefined in GL, refused by wgpu), so those read a blank texture.
+    // Opaque gbuffers draws cannot sample their own attachments. Translucent draws can
+    // read colortex4 and above from the preceding deferred stage; those reads use a copy
+    // taken before the draw, so the sampled texture is never also an attachment.
     let in_place = match geometry {
         Some(_) => buffers.iter().fold(0u16, |m, &b| m | 1 << b),
         None => 0,
@@ -1384,7 +1388,9 @@ fn bindings(
                     Source::Depth => geometry.is_some(),
                     // Translucent terrain reads the copy; opaque terrain would read itself.
                     Source::Depth1 | Source::Depth2 => group == Group::Gbuffers,
-                    Source::Color(n) => in_place & 1 << n != 0,
+                    Source::Color(n) => {
+                        (group != Group::Translucent || n < 4) && in_place & 1 << n != 0
+                    }
                     _ => false,
                 };
                 let mut sample_type = match src {
@@ -1865,7 +1871,13 @@ fn build_pass(
         ids: geometry.is_some_and(|g| g.ids.is_some()),
         groups: HashMap::new(),
         portal_groups: HashMap::new(),
-        copies: image_buffers(&images) & reads,
+        copies: (image_buffers(&images)
+            | if p.group == Group::Translucent {
+                written
+            } else {
+                0
+            })
+            & reads,
         reads: reads | image_buffers(&images),
         buffers: !interface.buffers.is_empty(),
         images,
