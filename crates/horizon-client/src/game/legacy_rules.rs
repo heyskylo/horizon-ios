@@ -57,6 +57,17 @@ impl Game<'_> {
         })
     }
 
+    /// The sprint and Knockback push on this game's player (a guest swapped in), added as 1.8.9 did.
+    pub(super) fn legacy_extra_knockback(&mut self, strength: f64, dir: (f64, f64)) {
+        if let Some(p) = self.player.as_mut() {
+            let v = p.velocity;
+            let [x, y, z] = legacy_combat::extra_knockback([v.x, v.y, v.z], strength, dir);
+            p.velocity.x = x;
+            p.velocity.y = y;
+            p.velocity.z = z;
+        }
+    }
+
     fn legacy_attacker(&self) -> legacy_combat::Attacker {
         let p = self.player.as_ref();
         legacy_combat::Attacker {

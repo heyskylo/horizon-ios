@@ -3856,8 +3856,9 @@ impl Game<'_> {
             0 => credit,
             attacker => attacker,
         });
+        let legacy = self.legacy_rules();
         if let Some(p) = self.player.as_mut() {
-            knock_back(p, &mut self.world.random, power, (xd, zd), source);
+            knock_back(p, &mut self.world.random, power, (xd, zd), source, legacy);
         }
     }
     /// A status effect from a mob, arrow or splash potion (`addEffect`).
@@ -7824,13 +7825,15 @@ impl Game<'_> {
         }
     }
 }
-/// `LivingEntity.knockback` on `p`: [`Game::knock_back_player`].
+/// `LivingEntity.knockback` on `p`: [`Game::knock_back_player`]; 1.8.9's
+/// `EntityLivingBase.knockBack` under `legacy` rules.
 fn knock_back(
     p: &mut horizon_client::motion::PlayerMotion,
     random: &mut horizon_core::random::LegacyRandom,
     power: f64,
     (xd, zd): (f64, f64),
     source: HurtSource<'_>,
+    legacy: bool,
 ) {
     let resistance = p.attribute("minecraft:knockback_resistance").unwrap_or(0.0);
     // The native hook runs first, on the raw strength (`LivingKnockBackEvent`), then the
@@ -7848,13 +7851,26 @@ fn knock_back(
         x: mut xd,
         z: mut zd,
     } = knock;
-    let power = power * (1.0 - resistance);
+    if legacy && horizon_client::legacy_combat::resists(resistance, random.next_double()) {
+        return;
+    }
+    let power = if legacy {
+        power
+    } else {
+        power * (1.0 - resistance)
+    };
     if power <= 0.0 {
         return;
     }
     while xd * xd + zd * zd < f64::from(1.0e-5_f32) {
         xd = (random.next_double() - random.next_double()) * 0.01;
         zd = (random.next_double() - random.next_double()) * 0.01;
+    }
+    if legacy {
+        let v = p.velocity;
+        let [x, y, z] = horizon_client::legacy_combat::knockback([v.x, v.y, v.z], power, (xd, zd));
+        p.velocity = Vec3::new(x, y, z);
+        return;
     }
     let l = (xd * xd + zd * zd).sqrt();
     let v = p.velocity;
@@ -8357,7 +8373,7 @@ mod knockback_tests {
                 let set = p.set_modifier(attribute, "horizon:test", resistance, "add_value", true);
                 set.unwrap();
             }
-            knock_back(&mut p, &mut random, 0.4, (0.0, 3.0), hit);
+            knock_back(&mut p, &mut random, 0.4, (0.0, 3.0), hit, false);
             (p.velocity.x, p.velocity.y, p.velocity.z)
         };
         // No mod in the way: vanilla's push, away from z = 3.
