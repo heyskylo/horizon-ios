@@ -151,6 +151,7 @@ fn the_validation_error_still_fails_the_load_first() {
         &br#"{"states":[["minecraft:air",true,false,"","minecraft:air"]],"defaults":{"minecraft:air":0}}"#[..],
     )
     .unwrap();
+    let expected = format!("{}: {expected}", root.join("gameplay-facts.json").display());
     for parallel in [false, true] {
         let error = super::super::BlockFacts::load_with_projection(
             &root,
