@@ -753,6 +753,63 @@ fn authenticate(
     }
 }
 
+/// A player logging in, on the connection's own thread, after the session service (online mode) or the proxy
+/// (forwarding) has named them and before the server's own checks (name, whitelist, bans, player limit), as
+/// Bukkit's `AsyncPlayerPreLoginEvent`: `address` is theirs (behind a proxy, the one it forwarded). A mod that
+/// needs time (a database load) or may refuse pushes a receiver onto `defer` and answers on it, from any thread:
+/// `Ok` lets the player on to the server's checks, `Err` refuses them with that reason. The login waits for every
+/// answer, 20 s at most in all (a vanilla client gives up after 30 s of silence); an answer that doesn't come by
+/// then, or whose sender is dropped, refuses them with a plain "Disconnected". Mods answer without waiting on
+/// each other, so loads run side by side. Once for each player who logs in over the network, the integrated
+/// server's own player excepted. There is no `Game` on this thread: no helper works. API
+/// @API:player_pre_login@.
+#[inline(never)]
+pub fn native_player_pre_login(
+    player: u128,
+    name: &str,
+    address: std::net::SocketAddr,
+    defer: &mut Vec<std::sync::mpsc::Receiver<Result<(), horizon_client_core::text::Text>>>,
+) {
+    crate::native_client_hooks::player_pre_login(player, name, address, defer);
+}
+
+/// How long a login waits in all for the mods' answers to `native_player_pre_login`.
+const PRE_LOGIN_WAIT: Duration = Duration::from_secs(20);
+
+/// The refusal among the mods' answers to `native_player_pre_login`, each waited for until
+/// [`PRE_LOGIN_WAIT`] is up: an `Err`'s reason, or a plain "Disconnected" for an answer that didn't come in
+/// time or never will. None lets the player in.
+fn pre_login_refusal(
+    defer: Vec<std::sync::mpsc::Receiver<Result<(), horizon_client_core::text::Text>>>,
+) -> Option<horizon_world::nbt::Tag> {
+    let until = Instant::now() + PRE_LOGIN_WAIT;
+    for answer in defer {
+        match answer.recv_timeout(until.saturating_duration_since(Instant::now())) {
+            Ok(Ok(())) => {}
+            Ok(Err(text)) => return Some(super::data::component_nbt(&text.component())),
+            Err(_) => return Some(translatable("multiplayer.disconnect.generic", &[])),
+        }
+    }
+    None
+}
+
+/// A joining player's profile, on the connection's own thread, once the server has let them in (the name,
+/// whitelist, ban and server-full checks have passed) and before it sends `LoginFinished`: `properties` are
+/// what the session service (online mode) or the proxy (forwarding) gave, none in offline mode. A mod may
+/// change, add or remove them (a skin's `textures`), within `GameProfile`'s limits (a name of up to 64
+/// characters, a signature of up to 1024): the player's own client and every player list then get the new
+/// ones. Once for each player who logs in over the network, the integrated server's own player excepted.
+/// There is no `Game` on this thread: no helper works. The hook may block for a lookup (a database's); the
+/// login waits for it, but a vanilla client gives up after 30 s of silence. API @API:player_profile@.
+#[inline(never)]
+pub fn native_player_profile(
+    player: u128,
+    name: &str,
+    properties: &mut Vec<horizon_protocol::packets::login::Property>,
+) {
+    crate::native_client_hooks::player_profile(player, name, properties);
+}
+
 fn serve_login(
     mut c: Connection,
     address: std::net::SocketAddr,
@@ -799,7 +856,7 @@ fn serve_login(
         .forwarding_secret
         .as_deref()
         .filter(|_| online.is_none() && !c.is_memory());
-    let (uuid, properties) = match (online, forwarding) {
+    let (uuid, mut properties) = match (online, forwarding) {
         (Some(online), _) => {
             match authenticate(&mut c, shared, online, &hello.name, address, &user) {
                 Ok(Ok(profile)) => profile,
@@ -846,12 +903,26 @@ fn serve_login(
         },
         (None, None) => (offline_uuid(&hello.name), Vec::new()),
     };
+    // The mods may hold the login for their answers, or refuse it, before the server's checks.
+    if !c.is_memory() {
+        let mut defer = Vec::new();
+        native_player_pre_login(uuid, &name, address, &mut defer);
+        if let Some(reason) = pre_login_refusal(defer) {
+            let text = refuse(&mut c, shared, "Server thread", &user, &reason);
+            lost(shared, &user, &text);
+            return Ok(());
+        }
+    }
     // verifyLoginAndFinishConnectionSetup: PlayerList.canPlayerLogin, then
     // duplicates and a full server.
     if let Some(reason) = shared.try_admit(address, uuid, &name) {
         let text = refuse(&mut c, shared, "Server thread", &user, &reason);
         lost(shared, &user, &text);
         return Ok(());
+    }
+    // The mods may change the profile's properties before anyone is sent them.
+    if !c.is_memory() {
+        native_player_profile(uuid, &name, &mut properties);
     }
     // A player a proxy said would arrive (`player-expect`) uses the expectation up
     // here, as the login starts: one that ran out while the player was still in

@@ -250,6 +250,7 @@ mod native_net;
 mod native_panel;
 mod native_panel_recipes;
 mod native_permissions;
+mod native_profiles;
 mod native_projectiles;
 mod native_quick_move;
 mod native_recipes;

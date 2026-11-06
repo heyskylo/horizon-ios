@@ -2799,6 +2799,56 @@ tick later with a command.
   slots, each of which must still hold exactly its stack, all or none (a stake, a trade, a fine with enchanted gear).
   A player's screen follows with the tick's sync.
 
+#### Server hooks for plugin ports: login and profiles
+
+What a skin, login or profile mod needs, which plugin ports reached with raw injections or their own `usercache.json`
+parsing before (#10461).
+
+- **`native_player_pre_login(player, name, address, defer)`**: a free function in `horizon_client_lib::lan::conn`,
+  heard on the connection's own thread for a player logging in, once the session service or the proxy has named them
+  and before the server's own checks (Bukkit's `AsyncPlayerPreLoginEvent`). `address` is theirs (behind a proxy, the
+  forwarded one). A mod that needs time, a permissions or inventory load from a database, or may refuse, pushes a
+  `Receiver<Result<(), Text>>` onto `defer` and answers on it from any thread: `Ok` lets the player on, `Err` refuses
+  them with that reason. The login waits for every answer, 20 s at most in all (a vanilla client gives up after 30 s
+  of silence); an answer that doesn't come by then, or whose sender is dropped, refuses with a plain "Disconnected".
+  Mods' loads run side by side. The integrated server's own player is not heard, and there is no `Game` on this
+  thread. Bundles need `"hooks": @API:player_pre_login@`.
+- **`native_player_profile(player, name, properties)`**: a free function in `horizon_client_lib::lan::conn`, heard on
+  the connection's own thread once the server has let a player in (name, whitelist, bans and player limit checked) and
+  before it sends `LoginFinished` (Velocity's `GameProfileRequestEvent`). `properties` are the profile's, as the session
+  service (online mode) or the proxy (forwarding) gave them, none in offline mode. A mod may change, add or remove them,
+  within `GameProfile`'s limits (names up to 64 characters, signatures up to 1024): the player's own client and every
+  player list get the new ones, so a skin mod sets a stored `textures` here before anyone sees the old one. The
+  integrated server's own player is not heard. There is no `Game` on this thread, so no helper works; the hook may block
+  for a lookup, the login waits for it (a vanilla client gives up after 30 s of silence). Bundles need
+  `"hooks": @API:player_profile@`.
+
+- Helpers **`native_set_profile_property(player, name, value)`** (`host.set_profile_property`) and
+  **`native_refresh_player(player)`** (`host.refresh_player`): a skin changed while the player is on (Paper's
+  `Player.setPlayerProfile`, then `hidePlayer`/`showPlayer`). The first sets the property `name` of an online player's
+  profile to `value` (its value and signature, None unsigned) or removes it with None; every player list entry of
+  theirs carries it from then on, but nothing is sent. False on a client and past `GameProfile`'s limits (64, 32767
+  and 1024 characters). Where the hub is out of reach (inside a player's own hook) the change applies at the tick's
+  end. The second shows the player again, at the end of their level's pass: everyone who sees them gets their list
+  entry anew and their entity again, and the player is respawned in place into the level they are in, all state kept,
+  so their own client draws the new skin too (a dead player only to the others). Both work from any server hook,
+  `native_server_tick` included; true does not mean the player was found. Bundles need
+  `"hooks": @API:profile_refresh@`.
+
+- Helpers **`native_player_textures(uuid)`** (`host.player_textures`) and **`native_player_head(uuid)`**
+  (`host.player_head`): the `textures` property of a player who is on, its value and signature as their player list
+  entry carries it (Paper's `Player.getPlayerProfile`), and a `minecraft:player_head` stack of any player (Bukkit's
+  `SkullMeta.setOwningPlayer`) whose `minecraft:profile` holds their id, plus their name and skin when they are on,
+  so it shows the skin at once (a profile of an id alone the client resolves itself). Where the hub is out of reach
+  (inside a player's own hook) the textures are None and the head carries the id only. Bundles need
+  `"hooks": @API:player_textures@`.
+
+- Helpers **`native_profile_by_name(name)`** (`host.profile_by_name`) and **`native_profile_by_uuid(uuid)`**
+  (`host.profile_by_uuid`): a player the server knows, by name in any case (their id and name as written) or by id
+  (their name): one who is on, else one in a dedicated server's profile cache, `usercache.json` (vanilla's
+  `GameProfileCache`, Bukkit's `getOfflinePlayer` without its network lookup). They ask no profile service and make
+  up no offline player; None when nobody is found. Bundles need `"hooks": @API:profile_cache@`.
+
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a

@@ -13,6 +13,13 @@ pub struct NativeClientHooks {
     pub living_fall: fn(u32, &str, &mut f64, &mut f32, &mut bool),
     pub living_jump: fn(u32, &str),
     pub register_goals: fn(&mut crate::mobs::Mob),
+    pub player_pre_login: fn(
+        u128,
+        &str,
+        std::net::SocketAddr,
+        &mut Vec<std::sync::mpsc::Receiver<Result<(), horizon_client_core::text::Text>>>,
+    ),
+    pub player_profile: fn(u128, &str, &mut Vec<horizon_protocol::packets::login::Property>),
     pub ingredient: fn(&str, &Map<String, Value>, &mut Vec<String>),
     pub ingredient_test: fn(&str, &Map<String, Value>, &ItemStack, &mut bool),
     pub log_line: fn(&str, &str, &str, &str),
@@ -115,6 +122,27 @@ pub(crate) fn living_jump(entity: u32, kind: &str) {
 pub(crate) fn register_goals(mob: &mut crate::mobs::Mob) {
     if let Some(hooks) = HOOKS.get() {
         (hooks.register_goals)(mob);
+    }
+}
+
+pub(crate) fn player_pre_login(
+    player: u128,
+    name: &str,
+    address: std::net::SocketAddr,
+    defer: &mut Vec<std::sync::mpsc::Receiver<Result<(), horizon_client_core::text::Text>>>,
+) {
+    if let Some(hooks) = HOOKS.get() {
+        (hooks.player_pre_login)(player, name, address, defer);
+    }
+}
+
+pub(crate) fn player_profile(
+    player: u128,
+    name: &str,
+    properties: &mut Vec<horizon_protocol::packets::login::Property>,
+) {
+    if let Some(hooks) = HOOKS.get() {
+        (hooks.player_profile)(player, name, properties);
     }
 }
 

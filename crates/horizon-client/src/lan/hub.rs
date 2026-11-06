@@ -4688,6 +4688,35 @@ impl Hub {
         }
     }
 
+    /// A player shown again with their current profile (Paper's `hidePlayer`, then `showPlayer`):
+    /// every placed player who sees them, they included, is sent their list entry anew
+    /// (ClientboundPlayerInfoRemove, then an entry with every action), and the others their entity
+    /// again at the next tick ([`Self::respawned`]), so a changed skin is drawn.
+    pub fn resend_profile(&mut self, i: usize) {
+        let g = &self.guests[i];
+        let (uuid, id) = (g.uuid, g.entity_id);
+        let entry = self.player_info(
+            uuid,
+            &g.name,
+            g.game_mode,
+            g.latency.load(Ordering::Relaxed),
+        );
+        let remove = C::PlayerInfoRemove(play::PlayerInfoRemove { uuids: vec![uuid] });
+        let add = C::PlayerInfoUpdate(play::PlayerInfoUpdate {
+            actions: Self::INFO_ACTIONS,
+            entries: vec![entry],
+        });
+        for other in self
+            .guests
+            .iter()
+            .filter(|o| o.placed && !o.tab_hidden.contains(&uuid))
+        {
+            other.send(&remove);
+            other.send(&add);
+        }
+        self.respawned(id);
+    }
+
     /// A respawn point whose block is gone or blocked: the respawning player
     /// is sent NO_RESPAWN_BLOCK_AVAILABLE and says
     /// `block.minecraft.spawn.not_valid` in its chat.
