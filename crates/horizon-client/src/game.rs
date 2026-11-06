@@ -7190,7 +7190,10 @@ impl Game<'_> {
         if !on_block && self.place_boat(&stack) {
             return Ok(true);
         }
+        // ItemStack.useOn passes in adventure mode unless the item's
+        // can_place_on matches the clicked block; Item.use then runs as usual.
         if let Some(hit) = block_hit
+            && (self.may_build() || self.can_place_on_in_adventure(hit.pos))
             && (self.launch_firework(hit, &stack)
                 || self.place_minecart(hit, &stack)
                 || self.place_painting(hit, &stack)
