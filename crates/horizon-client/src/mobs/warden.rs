@@ -233,13 +233,17 @@ impl AngerManagement {
     }
     /// `AngerManagement.convertFromUuids`: a suspect that is back in the level
     /// rejoins the live map with the anger it kept while it was away. One that
-    /// already is in the level keeps the anger it has there, which is what
-    /// `increaseAnger` leaves behind when it takes a returning suspect in.
+    /// is already in the live map was angered again before this lookup: vanilla's
+    /// `increaseAnger` would have added the anger kept under its UUID then
+    /// (`angerByUuid.removeInt`, uncapped), which the mob layer cannot do as it
+    /// knows no UUIDs, so that anger is added here.
     fn convert_from_uuids(&mut self, by_uuid: impl Fn([i32; 4]) -> Option<Who>) {
         let away = std::mem::take(&mut self.unloaded);
         for (uuid, anger) in away {
             match by_uuid(uuid) {
-                Some(who) if self.anger.contains_key(&who) => {}
+                Some(who) if self.anger.contains_key(&who) => {
+                    *self.anger.entry(who).or_default() += anger;
+                }
                 Some(who) => {
                     self.anger.insert(who, anger);
                     self.suspects.push(who);
@@ -1080,6 +1084,21 @@ mod tests {
             AngerLevel::Agitated.listening_sound(),
             "entity.warden.listening_angry"
         );
+    }
+
+    #[test]
+    fn a_suspect_angered_again_before_its_lookup_keeps_its_saved_anger() {
+        // `increaseAnger` on a new suspect adds what `angerByUuid` kept for it:
+        // a reloaded warden angered at the player again before the first lookup
+        // keeps both angers, not only the new one.
+        let player = [5, 5, 5, 5];
+        let mut a = AngerManagement::from_saved([(player, 95)]);
+        assert_eq!(a.increase(Who::Player, 35), 35);
+        a.tick(|_| true, |u| (u == player).then_some(Who::Player));
+        // 35 + 95 = 130, then one anger tick calms it by one.
+        assert_eq!(a.anger_of(Who::Player), 129);
+        assert_eq!(a.unloaded().count(), 0);
+        assert_eq!(a.suspects(), [Who::Player]);
     }
 
     #[test]
