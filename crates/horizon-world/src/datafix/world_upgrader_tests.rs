@@ -296,3 +296,105 @@ fn region_names_and_dimension_folders() {
         [OVERWORLD, NETHER, END, "mod:sky"]
     );
 }
+
+fn copy_tree(from: &Path, to: &Path) {
+    fs::create_dir_all(to).unwrap();
+    for entry in fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else {
+            fs::copy(entry.path(), target).unwrap();
+        }
+    }
+}
+
+/// Every file below `dir` by relative path. The region header's timestamp
+/// table (bytes 4096..8192) is zeroed: it holds the wall clock of the write.
+fn snapshot(dir: &Path, rel: &Path, out: &mut BTreeMap<PathBuf, Vec<u8>>) {
+    for entry in fs::read_dir(dir).unwrap() {
+        let entry = entry.unwrap();
+        let rel = rel.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            snapshot(&entry.path(), &rel, out);
+        } else {
+            let mut bytes = fs::read(entry.path()).unwrap();
+            if bytes.len() >= 8192 {
+                bytes[4096..8192].fill(0);
+            }
+            out.insert(rel, bytes);
+        }
+    }
+}
+
+fn multi_region_world(name: &str) -> TempWorld {
+    let world = TempWorld::new(name);
+    for (dimension, folder) in [
+        (OVERWORLD, "entities"),
+        (NETHER, "poi"),
+        (OVERWORLD, "region"),
+    ] {
+        for rx in -2..3 {
+            for rz in 0..2 {
+                let file = world
+                    .folder(dimension, folder)
+                    .join(format!("r.{rx}.{rz}.mca"));
+                let chunks: Vec<_> = (0..6)
+                    .map(|i| {
+                        let (x, z) = (rx * 32 + i, rz * 32 + (i * 3) % 32);
+                        let version = if (rx + rz + i) % 3 == 0 {
+                            CURRENT
+                        } else {
+                            4000
+                        };
+                        let tag = if folder == "region" {
+                            Tag::compound([
+                                ("DataVersion", Tag::Int(version)),
+                                ("xPos", Tag::Int(x)),
+                                ("zPos", Tag::Int(z)),
+                                ("Status", Tag::String("minecraft:full".into())),
+                                ("isLightOn", Tag::Byte(1)),
+                                ("Heightmaps", Tag::Compound(Default::default())),
+                            ])
+                        } else {
+                            entity_chunk(version, x, z)
+                        };
+                        (ChunkPos::new(x, z), tag)
+                    })
+                    .collect();
+                write_chunks(&file, &chunks);
+            }
+        }
+    }
+    world
+}
+
+/// The output of a many-threaded run equals the one-thread run byte for byte,
+/// and so do the counts.
+#[test]
+fn parallel_output_is_byte_identical_to_one_thread() {
+    for (erase, recreate) in [(false, false), (true, false), (false, true)] {
+        let source = multi_region_world("par-src");
+        let mut results = Vec::new();
+        for threads in [1, 4] {
+            let copy = TempWorld::new(&format!("par-{threads}"));
+            copy_tree(&source.0, &copy.0);
+            let progress = Arc::new(UpgradeProgress::new());
+            work_with_threads(&copy.0, &level(&copy), &progress, erase, recreate, threads);
+            assert!(progress.is_finished());
+            let mut files = BTreeMap::new();
+            snapshot(&copy.0, Path::new(""), &mut files);
+            results.push((
+                files,
+                progress.converted(),
+                progress.skipped(),
+                progress.total_progress(),
+                progress.dimension_progress(OVERWORLD),
+            ));
+        }
+        assert_eq!(results[0], results[1], "erase={erase} recreate={recreate}");
+        assert!(results[0].0.len() >= 30);
+        assert_eq!(results[0].3, 1.0);
+    }
+}
