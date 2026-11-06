@@ -170,6 +170,16 @@ pub fn main_with(mods: crate::mod_api::Mods) {
                 accept,
             );
         },
+        handshake: |address, host, intent, cancel, reason| {
+            crate::mod_api::dispatch_handshake(
+                crate::mod_api::mods(),
+                address,
+                host,
+                intent,
+                reason,
+                cancel,
+            );
+        },
     })
     .is_err()
     {

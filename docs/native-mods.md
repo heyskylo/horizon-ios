@@ -2484,6 +2484,21 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
 - **`native_player_jump(player, name)`**: accepted guest movement made the server player jump from the ground, after movement simulation finishes. The guest's state is swapped in.
 - **`native_player_kicked(player, name, reason)`**: a guest was kicked after the hub recorded the rendered disconnect reason and sent the disconnect. The guest's state is swapped in, unless the guest was already removed in the same poll (a kick and the disconnect arriving together): the hook still fires, without it.
 - **`native_player_level_change(player, name, from, to)`**: a server player's experience change altered their level, after the new level was applied. The guest's state is swapped in when the player is a guest.
+#### Server hooks for plugin ports: connection
+
+What a proxy-fronted backend, a plugin channel or a login gate needs, which plugin ports reached with raw injections
+before (#10461).
+
+- **`native_handshake(address, host, intent, cancel, reason)`**: a free function in `horizon_client_lib::lan::conn`,
+  heard on the connection's own thread for each network connection's handshake (`ClientIntentionPacket`), before the
+  server acts on `intent` (1 status, 2 login, 3 transfer). `address` is the peer's (behind a proxy, the proxy's; the
+  forwarded address comes later, with the login), `host` the address the client says it connects to, with whatever a
+  proxy put after it (Floodgate's `\0^Floodgate^...` data). A mod may rewrite `host` (later mods see the new one; the
+  server itself reads nothing from it), or set `cancel` to refuse the connection: a login or a transfer is disconnected
+  with `reason` (a plain "Disconnected" if unset), a status ping is closed unanswered. The legacy `0xFE` ping and an
+  integrated server's own player are not heard. There is no `Game` on this thread, so no helper works and `native_tell`
+  reaches nobody; keep the hook short, the connection waits for it. Bundles need `"hooks": @API:handshake@`.
+
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a

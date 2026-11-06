@@ -12,6 +12,7 @@ use super::{
     forwarding,
     io_pool::{self, Session as _},
 };
+use horizon_client_core::text::Text;
 use horizon_protocol::{
     PROTOCOL_VERSION,
     connection::{ConnWriter, Connection, Counters},
@@ -472,6 +473,26 @@ pub fn serve_local(
     serve_connection(Connection::local(pipe), MEMORY_ADDRESS, shared, None)
 }
 
+/// A client's handshake (`ClientIntentionPacket`) reached the server, on the connection's own thread, before
+/// the server acts on its `intent` (1 status, 2 login, 3 transfer): `address` is the peer's (behind a proxy, the
+/// proxy's), `host` the server address the client says it connects to, with whatever a proxy put after it
+/// (Floodgate's data). A mod may rewrite `host` (the server itself reads nothing from it; later mods see the new
+/// one), or set `cancel` to refuse the connection: a login or a transfer is disconnected with `reason` (a plain
+/// "Disconnected" if it is left unset), a status ping is closed unanswered. Once for each network connection, the
+/// legacy server list ping (`0xFE`) and an integrated server's own player excepted. There is no `Game` on this
+/// thread: no helper works, and the hook must not block for long (the connection waits for it). API
+/// @API:handshake@.
+#[inline(never)]
+pub fn native_handshake(
+    address: std::net::SocketAddr,
+    host: &mut String,
+    intent: i32,
+    cancel: &mut bool,
+    reason: &mut Option<Text>,
+) {
+    crate::native_client_hooks::handshake(address, host, intent, cancel, reason);
+}
+
 fn serve_connection(
     mut c: Connection,
     address: std::net::SocketAddr,
@@ -481,10 +502,31 @@ fn serve_connection(
     let e = |e: horizon_protocol::Error| e.to_string();
     c.reader.set_read_timeout(Some(LOGIN_TIMEOUT)).map_err(e)?;
     let (id, payload) = c.recv().map_err(e)?;
-    let intention = match handshake::Serverbound::decode(id, &payload).map_err(e)? {
+    let mut intention = match handshake::Serverbound::decode(id, &payload).map_err(e)? {
         handshake::Serverbound::Intention(i) => i,
         _ => return Err("expected a handshake".into()),
     };
+    // Native mods, on this connection's thread, before the intent is acted on.
+    if !c.is_memory() {
+        let (mut cancel, mut reason) = (false, None);
+        native_handshake(
+            address,
+            &mut intention.host,
+            intention.intent,
+            &mut cancel,
+            &mut reason,
+        );
+        if cancel {
+            if matches!(intention.intent, handshake::LOGIN | handshake::TRANSFER) {
+                let reason = match reason {
+                    Some(text) => super::data::component_nbt(&text.component()),
+                    None => translatable("multiplayer.disconnect.generic", &[]),
+                };
+                login_disconnect(&mut c, &reason);
+            }
+            return Ok(());
+        }
+    }
     match intention.intent {
         // ServerHandshakePacketListenerImpl: a server that does not reply
         // to status requests closes the connection.

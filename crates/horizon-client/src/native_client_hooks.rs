@@ -15,6 +15,13 @@ pub struct NativeClientHooks {
     pub register_goals: fn(&mut crate::mobs::Mob),
     pub ingredient: fn(&str, &Map<String, Value>, &mut Vec<String>),
     pub ingredient_test: fn(&str, &Map<String, Value>, &ItemStack, &mut bool),
+    pub handshake: fn(
+        std::net::SocketAddr,
+        &mut String,
+        i32,
+        &mut bool,
+        &mut Option<horizon_client_core::text::Text>,
+    ),
 }
 
 static HOOKS: OnceLock<NativeClientHooks> = OnceLock::new();
@@ -124,5 +131,17 @@ pub(crate) fn ingredient_test(
 ) {
     if let Some(hooks) = HOOKS.get() {
         (hooks.ingredient_test)(kind, data, stack, accept);
+    }
+}
+
+pub(crate) fn handshake(
+    address: std::net::SocketAddr,
+    host: &mut String,
+    intent: i32,
+    cancel: &mut bool,
+    reason: &mut Option<horizon_client_core::text::Text>,
+) {
+    if let Some(hooks) = HOOKS.get() {
+        (hooks.handshake)(address, host, intent, cancel, reason);
     }
 }
