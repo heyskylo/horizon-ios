@@ -836,6 +836,13 @@ impl Hub {
     pub fn here(&self, g: &Guest) -> bool {
         g.placed && g.dimension == self.config.dimension
     }
+    /// How many passes the level in place's entity tracking has run (None
+    /// before its first).
+    pub fn tracking_ticks(&self) -> Option<u32> {
+        self.entities
+            .get(&self.config.dimension)
+            .map(Entities::ticks)
+    }
     /// Whether a guest is sent the level in place: the players placed in it, and
     /// the held ones, which look at it without being part of it.
     pub fn watches(&self, g: &Guest) -> bool {
@@ -3060,6 +3067,8 @@ impl Hub {
             vertical_collision: false,
             horizontal_collision: false,
             needs_sync: false,
+            idle: false,
+            bare: false,
             minecart_steps: None,
             leash: None,
             spectator: false,

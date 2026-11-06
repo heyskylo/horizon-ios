@@ -80,11 +80,13 @@ pub(super) fn capture(compiler: &Compiler<'_>, input: impl BufRead, mut log: imp
     output
 }
 
-/// A file's functions (where each is, its name and its tokens) and inline modules (where, name).
+/// A file's functions (where each is, its name and its tokens), inline modules (where, name),
+/// and the blocks horizon-mixins wraps a helper in (where, the helper's name and tokens).
 #[derive(Default)]
 struct Items {
     functions: Vec<(Range<usize>, String, String)>,
     modules: Vec<(Range<usize>, String)>,
+    calls: Vec<(Range<usize>, String, String)>,
 }
 
 impl<'ast> Visit<'ast> for Items {
@@ -104,13 +106,31 @@ impl<'ast> Visit<'ast> for Items {
         }
         syn::visit::visit_item_mod(self, module);
     }
+
+    /// `{ fn helper(…) { … } helper(…) }` and nothing else: an error in the generated call (an
+    /// argument the helper's signature no longer takes) is the helper's too.
+    fn visit_block(&mut self, block: &'ast syn::Block) {
+        if let [syn::Stmt::Item(syn::Item::Fn(function)), syn::Stmt::Expr(syn::Expr::Call(call), _)] =
+            block.stmts.as_slice()
+        {
+            if matches!(&*call.func, syn::Expr::Path(path) if path.path.is_ident(&function.sig.ident))
+            {
+                self.calls.push((
+                    block.span().byte_range(),
+                    function.sig.ident.to_string(),
+                    function.to_token_stream().to_string(),
+                ));
+            }
+        }
+        syn::visit::visit_block(self, block);
+    }
 }
 
 /// A file being touched is insufficient: the error must be inside what a mod brought, and its
 /// owner be unique. That is a helper (the function with its tokens, or with its name when the
 /// pristine source has no function of that name: the staged file may be formatted, a trailing
-/// comma added, which changes its tokens and not its name), or a support module (the inline
-/// module of its name, when the pristine source has none).
+/// comma added, which changes its tokens and not its name, with the call horizon-mixins generates
+/// for it), or a support module (the inline module of its name, when the pristine source has none).
 fn owner(compiler: &Compiler<'_>, plan: &Value, manifest: &Value, span: &Value) -> Option<String> {
     let stage = compiler.stage.canonicalize().ok()?;
     let file = Path::new(span["file_name"].as_str()?);
@@ -184,6 +204,7 @@ fn owner(compiler: &Compiler<'_>, plan: &Value, manifest: &Value, span: &Value) 
             if staged
                 .functions
                 .iter()
+                .chain(&staged.calls)
                 .any(|f| inside(&f.0) && is_helper(f))
             {
                 owners.insert(owner(entry));
@@ -427,6 +448,54 @@ mod tests {
             "{error}"
         );
         assert!(!error.contains("fast_mesh"), "{error}");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// flair 1.0.0 on Horizon 66f3981: Horizon widened `extra` to five-element tuples, so the
+    /// call horizon-mixins generates for the mod's helper, outside the helper itself, fails.
+    #[test]
+    fn an_error_in_the_generated_call_to_a_helper_names_its_mod() {
+        const FLAIR: &str = "fn flair_armor(extra: &[(u8, u8)]) -> usize { extra.len() }";
+        let check = |dir: &Path, main: &str| {
+            fs::write(dir.join("src/main.rs"), main).unwrap();
+            let output = Command::new(env!("CARGO"))
+                .args(["check", "--offline", "--message-format=json"])
+                .arg("--manifest-path")
+                .arg(dir.join("Cargo.toml"))
+                .env("CARGO_TARGET_DIR", dir.join("target"))
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8(output.stdout).unwrap();
+            assert!(stdout.contains("E0308"), "{stdout}");
+            stdout
+        };
+        let dir = fixture("compiler-generated-call");
+        fs::write(
+            dir.join("original/src/main.rs"),
+            "fn render(_extra: &[(u8, u8, bool)]) {}\nfn main() {}\n",
+        )
+        .unwrap();
+        plan(&dir, json!([entry("flair", "1.0.0", FLAIR)]));
+        let mods = vec![("flair".to_owned(), "1.0.0".to_owned())];
+        let compiler = Compiler {
+            stage: &dir,
+            source: &dir.join("original"),
+            mods: &mods,
+        };
+        let stdout = check(
+            &dir,
+            &format!("fn render(extra: &[(u8, u8, bool)]) {{\n    {{\n        {FLAIR}\n        flair_armor(extra)\n    }};\n}}\nfn main() {{ render(&[]); }}\n"),
+        );
+        let output = capture(&compiler, Cursor::new(&stdout), Vec::new());
+        assert_eq!(output.owners(), ["flair 1.0.0"]);
+
+        // The same call in a block that also holds the game's own code is not proven the mod's.
+        let stdout = check(
+            &dir,
+            &format!("fn render(extra: &[(u8, u8, bool)]) {{\n    {{\n        {FLAIR}\n        let _ = 1;\n        flair_armor(extra)\n    }};\n}}\nfn main() {{ render(&[]); }}\n"),
+        );
+        let output = capture(&compiler, Cursor::new(&stdout), Vec::new());
+        assert!(output.owners().is_empty(), "{:?}", output.owners());
         fs::remove_dir_all(dir).unwrap();
     }
 }

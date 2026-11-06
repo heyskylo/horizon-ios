@@ -226,6 +226,42 @@ struct PreferredRegionsResponse {
     region_data: Vec<RegionDataDto>,
 }
 
+/// `RealmTierConfigurationDto`: the Realm tier's two distance ranges.
+#[derive(Clone, Debug, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RealmTierConfiguration {
+    #[serde(default, deserialize_with = "nullable")]
+    pub render_distance: Option<RealmTierRange>,
+    #[serde(default, deserialize_with = "nullable")]
+    pub sim_distance: Option<RealmTierRange>,
+}
+
+/// `RealmTierConfigurationDto.RealmTierRangeDto`: the values a slot's distance may take.
+#[derive(Clone, Debug, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RealmTierRange {
+    #[serde(default, deserialize_with = "nullable")]
+    pub min: i32,
+    #[serde(default, deserialize_with = "nullable")]
+    pub max: i32,
+    #[serde(default, deserialize_with = "nullable")]
+    pub default_value: i32,
+    #[serde(default, deserialize_with = "nullable")]
+    pub current: Option<i32>,
+}
+
+impl RealmTierRange {
+    /// `RealmsSettingsTab.currentOrDefault`.
+    pub fn current_or_default(&self) -> i32 {
+        self.current.unwrap_or(self.default_value)
+    }
+
+    /// `OptionInstance.IntRange`: a slider position to a value in the range.
+    pub fn from_slider(&self, value: f32) -> i32 {
+        self.min + (value * (self.max - self.min) as f32).round() as i32
+    }
+}
+
 /// `RealmsRegion`: each region's `nameId` and its translation key.
 pub fn region_translation_key(name_id: &str) -> Option<&'static str> {
     const REGIONS: [(&str, &str); 27] = [
@@ -815,6 +851,47 @@ impl RealmsClient {
         Self::execute(self.request("POST", &url, READ_TIMEOUT), Some(&body)).map(drop)
     }
 
+    /// `RealmsClient.getRealmTierConfiguration`: `GET worlds/{id}/configuration/tier`. A range
+    /// the answer lacks is a configuration error, as `getRealmTierConfiguration`'s parse makes it.
+    pub fn get_tier_configuration(
+        &self,
+        realm_id: i64,
+    ) -> Result<RealmTierConfiguration, RealmsError> {
+        let url = self.url(&format!("worlds/{realm_id}/configuration/tier"));
+        let json = Self::execute(self.request("GET", &url, READ_TIMEOUT), None)?;
+        let tier: RealmTierConfiguration =
+            serde_json::from_str(&json).map_err(|_| RealmsError::Parse)?;
+        if tier.render_distance.is_some() && tier.sim_distance.is_some() {
+            Ok(tier)
+        } else {
+            Err(RealmsError::Parse)
+        }
+    }
+
+    /// `RealmsClient.updateRenderDistance`: `PUT worlds/{id}/configuration/renderDistance/{n}`.
+    pub fn update_render_distance(
+        &self,
+        realm_id: i64,
+        render_distance: i32,
+    ) -> Result<(), RealmsError> {
+        let url = self.url(&format!(
+            "worlds/{realm_id}/configuration/renderDistance/{render_distance}"
+        ));
+        Self::execute(self.request("PUT", &url, READ_TIMEOUT), Some("")).map(drop)
+    }
+
+    /// `RealmsClient.updateSimulationDistance`: `PUT worlds/{id}/configuration/simDistance/{n}`.
+    pub fn update_simulation_distance(
+        &self,
+        realm_id: i64,
+        simulation_distance: i32,
+    ) -> Result<(), RealmsError> {
+        let url = self.url(&format!(
+            "worlds/{realm_id}/configuration/simDistance/{simulation_distance}"
+        ));
+        Self::execute(self.request("PUT", &url, READ_TIMEOUT), Some("")).map(drop)
+    }
+
     /// `RealmsClient.redeemInviteCode`: the invite-code service, with the token in
     /// `x-mojangauth` as `frontendV2Request` sets it.
     pub fn redeem_invite_code(&self, code: &str) -> Result<(), RealmsError> {
@@ -1164,5 +1241,80 @@ mod tests {
                 preferred_region: None,
             })
         );
+    }
+    #[test]
+    fn the_tier_configuration_names_both_ranges_and_their_default() {
+        let body = r#"{"renderDistance":{"min":2,"max":16,"defaultValue":8,"current":12},"simDistance":{"min":3,"max":12,"defaultValue":6,"current":null}}"#;
+        let answer: &'static str = Box::leak(
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .into_boxed_str(),
+        );
+        let (base, server) = serve_once(answer);
+        let tier = client(&base).get_tier_configuration(7).unwrap();
+        let request = server.join().unwrap();
+        assert!(
+            request.starts_with("GET /worlds/7/configuration/tier HTTP/1.1"),
+            "{request}"
+        );
+        // `currentOrDefault`: the current value, else the default.
+        assert_eq!(tier.render_distance.unwrap().current_or_default(), 12);
+        let sim = tier.sim_distance.unwrap();
+        assert_eq!(sim.current_or_default(), 6);
+        assert_eq!((sim.min, sim.max), (3, 12));
+        // `getRealmTierConfiguration`: a range it cannot read is a parse error.
+        let short: &'static str = Box::leak(
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{{\"renderDistance\":{{\"min\":2,\"max\":16}}}}",
+                "{\"renderDistance\":{\"min\":2,\"max\":16}}".len()
+            )
+            .into_boxed_str(),
+        );
+        let (base, server) = serve_once(short);
+        assert!(client(&base).get_tier_configuration(7).is_err());
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn a_distance_update_puts_its_value_into_the_path() {
+        for (realm, distance, path) in [
+            (
+                7,
+                8,
+                "PUT /worlds/7/configuration/renderDistance/8 HTTP/1.1",
+            ),
+            (12, 3, "PUT /worlds/12/configuration/simDistance/3 HTTP/1.1"),
+        ] {
+            let (base, server) =
+                serve_once("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            if path.contains("renderDistance") {
+                client(&base)
+                    .update_render_distance(realm, distance)
+                    .unwrap();
+            } else {
+                client(&base)
+                    .update_simulation_distance(realm, distance)
+                    .unwrap();
+            }
+            let request = server.join().unwrap();
+            assert!(request.starts_with(path), "{request}");
+        }
+    }
+
+    #[test]
+    fn a_slider_position_maps_into_the_range() {
+        // `OptionInstance.IntRange` with min 2, max 16: the ends and the middle snap.
+        let range = RealmTierRange {
+            min: 2,
+            max: 16,
+            default_value: 8,
+            current: None,
+        };
+        assert_eq!(range.from_slider(0.0), 2);
+        assert_eq!(range.from_slider(1.0), 16);
+        assert_eq!(range.from_slider(0.5), 9);
+        assert_eq!(range.current_or_default(), 8);
     }
 }

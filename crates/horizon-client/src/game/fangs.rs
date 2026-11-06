@@ -187,28 +187,51 @@ impl Game<'_> {
         };
         bite(self);
         self.each_guest_hit(bite);
-        // `AbstractIllager.considersEntityAsAlly`: with no teams, the illager
-        // tag is allied; `Evoker.considersEntityAsAlly` adds a vex whose
-        // owner is allied (itself or another illager). Teams are not modelled.
-        let illager = |s: Species| {
-            matches!(
-                s,
-                Species::Evoker | Species::Illusioner | Species::Pillager | Species::Vindicator
-            )
-        };
+        // `Entity.isAlliedTo`: the owner's or the target's
+        // `considersEntityAsAlly`, teams included.
+        let teams = self.mob_teams();
         let illagers: Vec<u32> = self
             .mobs
             .iter()
-            .filter(|m| illager(m.species()))
+            .filter(|m| is_illager(m.species()))
             .map(|m| m.id)
             .collect();
         // A missing owner hurts everyone (`currentOwner == null`).
         let owner_known = illagers.contains(&f.owner);
+        let team_of = |id: u32| teams.of(horizon_client::mobs::Who::Mob(id));
+        let allies: Vec<u32> = if owner_known {
+            self.mobs
+                .iter()
+                .filter(|m| {
+                    let other = Party {
+                        illager: is_illager(m.species()),
+                        team: team_of(m.id),
+                    };
+                    let root = (m.species() == Species::Vex)
+                        .then_some(m.extra.counter2 as u32)
+                        .filter(|r| illagers.contains(r))
+                        .map(|r| {
+                            (
+                                r == f.owner,
+                                Party {
+                                    illager: true,
+                                    team: team_of(r),
+                                },
+                            )
+                        });
+                    let owner = Party {
+                        illager: true,
+                        team: team_of(f.owner),
+                    };
+                    fangs_allied(owner, other, root)
+                })
+                .map(|m| m.id)
+                .collect()
+        } else {
+            Vec::new()
+        };
         for m in &mut self.mobs {
-            let ally = owner_known
-                && (illager(m.species())
-                    || m.species() == Species::Vex
-                        && illagers.contains(&(m.extra.counter2 as u32)));
+            let ally = allies.contains(&m.id);
             if m.id != f.owner && !ally && m.alive() && m.bounds().intersects(b) {
                 m.damage(
                     6.0,
@@ -293,12 +316,41 @@ impl Game<'_> {
         }
     }
 }
+/// `EntityTypeTags.ILLAGER` members, the types of `ILLAGER_FRIENDS`.
+fn is_illager(s: Species) -> bool {
+    matches!(
+        s,
+        Species::Evoker | Species::Illusioner | Species::Pillager | Species::Vindicator
+    )
+}
+/// One side of an ally check: whether it is an illager and its team.
+#[derive(Clone, Copy)]
+struct Party<'a> {
+    illager: bool,
+    team: Option<&'a horizon_client::scoreboard::Team>,
+}
+/// `AbstractIllager.considersEntityAsAlly(other)`: the base rule (the teams
+/// are allied), or an illager friend while both have no team.
+fn illager_considers(me: Party, other: Party) -> bool {
+    horizon_client::scoreboard::teams_allied(me.team, other.team)
+        || other.illager && me.team.is_none() && other.team.is_none()
+}
+/// `owner.isAlliedTo(other)` for an evoker owner: `Evoker.considersEntityAsAlly`
+/// either way round. `vex_root` is the root owner of a vex target (whether it
+/// is the owner itself, and its party); the owner treats such a vex as an ally
+/// when its root owner is.
+fn fangs_allied(owner: Party, other: Party, vex_root: Option<(bool, Party)>) -> bool {
+    illager_considers(owner, other)
+        || other.illager && illager_considers(other, owner)
+        || !other.illager && horizon_client::scoreboard::teams_allied(other.team, owner.team)
+        || vex_root.is_some_and(|(is_owner, root)| is_owner || illager_considers(owner, root))
+}
 fn p_zrot(p: &mut Poses, part: &str, v: f32) {
     p.zrot(part, v);
 }
 #[cfg(test)]
 mod tests {
-    use super::{fang_attack_pitch, fang_crit};
+    use super::{Party, fang_attack_pitch, fang_crit, fangs_allied};
     use horizon_core::random::LegacyRandom;
 
     #[test]
@@ -333,5 +385,47 @@ mod tests {
                 "{velocity:?}"
             );
         }
+    }
+
+    fn party(illager: bool, team: Option<&horizon_client::scoreboard::Team>) -> Party<'_> {
+        Party { illager, team }
+    }
+
+    #[test]
+    fn fangs_allies_follow_teams_and_the_illager_tag() {
+        let mut board = horizon_client::scoreboard::Scoreboard::default();
+        board.add_team("red");
+        board.add_team("blue");
+        let red = board.team("red").unwrap();
+        let blue = board.team("blue").unwrap();
+        let evoker = |t| party(true, t);
+        // Teamless illagers are friends.
+        assert!(fangs_allied(evoker(None), party(true, None), None));
+        // Different teams: the illager tag no longer applies.
+        assert!(!fangs_allied(
+            evoker(Some(red)),
+            party(true, Some(blue)),
+            None
+        ));
+        // One side with a team: still not allied.
+        assert!(!fangs_allied(evoker(Some(red)), party(true, None), None));
+        // The same team allies a non-illager mob.
+        assert!(fangs_allied(
+            evoker(Some(red)),
+            party(false, Some(red)),
+            None
+        ));
+        assert!(!fangs_allied(evoker(None), party(false, None), None));
+        // A vex follows its root owner.
+        assert!(fangs_allied(
+            evoker(None),
+            party(false, None),
+            Some((true, evoker(None)))
+        ));
+        assert!(!fangs_allied(
+            evoker(Some(red)),
+            party(false, None),
+            Some((false, party(true, Some(blue))))
+        ));
     }
 }
