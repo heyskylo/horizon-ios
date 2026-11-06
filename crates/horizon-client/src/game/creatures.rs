@@ -1051,7 +1051,10 @@ impl Game<'_> {
             .path_writes
             .get_or_insert_with(Vec::new)
             .split_off(0);
-        // The mobs whose bodies go this tick: (id, feet, width, height).
+        // The mobs whose bodies go this tick: (id, feet, width, height, split).
+        // 🤖 Agent: the last field is the grown slime, magma cube or sulfur
+        // cube the body leaves behind (`AbstractCubeMob.remove`), captured as
+        // the body goes because it has left the list by the time it splits.
         let mut gone = Vec::new();
         let level_random;
         {
@@ -1211,7 +1214,21 @@ impl Game<'_> {
                 // LivingEntity.tickDeath: after twenty ticks the body is removed.
                 if !kept && !m.removed && !m.alive() && m.death_time >= 20 {
                     let (width, height) = (f64::from(m.width()), f64::from(m.height()));
-                    gone.push((m.id, m.position, width, height));
+                    // 🤖 Agent: `AbstractCubeMob.remove` splits a grown cube into
+                    // its smaller halves when it is removed, twenty ticks after
+                    // the death. The parent leaves the list before the split
+                    // runs, so its size, position, kind and persistence are
+                    // captured here, as they are at the removal.
+                    let split = if matches!(
+                        m.species(),
+                        Species::Slime | Species::MagmaCube | Species::SulfurCube
+                    ) && m.extra.size > 1
+                    {
+                        Some(m.clone())
+                    } else {
+                        None
+                    };
+                    gone.push((m.id, m.position, width, height, split));
                 }
                 if let Some(conn) = seen_guest {
                     // ShulkerBullet.finalTarget is the guest's entity: the
@@ -1284,10 +1301,15 @@ impl Game<'_> {
         self.creatures.ticked = ticked;
         self.native_tick_post_batch(round);
         // ... and entity event 60 goes out as it is: the poof.
-        for (id, at, width, height) in gone {
+        // 🤖 Agent: the split follows the poof, as `LivingEntity.tickDeath`
+        // broadcasts event 60 before it calls `remove`.
+        for (id, at, width, height, split) in gone {
             let at = [at.x, at.y, at.z];
             self.lan_entity_event(id as i32, 60, at);
             self.death_poof(at, width, height);
+            if let Some(m) = split {
+                self.split_dead_cube(&m);
+            }
         }
         laps.lap("creature_retain");
         self.tick_boarding();
@@ -1481,32 +1503,37 @@ impl Game<'_> {
             // CopperGolem.dropEquipment: the preserved equipment too.
             self.golem_drop_equipment(&mut dying);
         }
+    }
+    /// 🤖 Agent: `AbstractCubeMob.remove`'s split: a grown cube mob leaves its
+    /// smaller halves behind when its body goes, twenty ticks after the death
+    /// (`LivingEntity.tickDeath`), not when it dies.
+    fn split_dead_cube(&mut self, m: &Mob) {
         if m.species() == Species::SulfurCube {
             self.split_sulfur_cube(m);
+            return;
         }
-        if m.species() == Species::Slime || m.species() == Species::MagmaCube {
-            // Slime.remove: split into 2-4 smaller slimes.
-            let size = m.extra.size;
-            if size > 1 {
-                let mut n = 2 + self.world.random.next_int_bound(3).unwrap_or(0);
-                let mut cancel = false;
-                let mut count = n as u32;
-                let kind = super::native_hooks::mob_kind(m);
-                self.native_mob_split(m.id, &kind, size, size / 2, &mut count, &mut cancel);
-                n = if cancel { 0 } else { count.min(64) as _ };
-                for k in 0..n {
-                    let off = |kk: i32| (f64::from(kk % 2) - 0.5) * f64::from(size) / 4.0;
-                    let at = [
-                        m.position.x + off(k),
-                        m.position.y + 0.5,
-                        m.position.z + off(k / 2),
-                    ];
-                    if let Some(id) = self.spawn_mob(&m.kind.id, at, m.persistent)
-                        && let Some(c) = self.mobs.iter_mut().find(|c| c.id == id)
-                    {
-                        horizon_client::mobs::cube::set_size(c, size / 2);
-                    }
-                }
+        // 🤖 Agent: AbstractCubeMob.getSplitCount: two to four smaller slimes.
+        let size = m.extra.size;
+        if size <= 1 {
+            return;
+        }
+        let mut n = 2 + self.world.random.next_int_bound(3).unwrap_or(0);
+        let mut cancel = false;
+        let mut count = n as u32;
+        let kind = super::native_hooks::mob_kind(m);
+        self.native_mob_split(m.id, &kind, size, size / 2, &mut count, &mut cancel);
+        n = if cancel { 0 } else { count.min(64) as _ };
+        for k in 0..n {
+            let off = |kk: i32| (f64::from(kk % 2) - 0.5) * f64::from(size) / 4.0;
+            let at = [
+                m.position.x + off(k),
+                m.position.y + 0.5,
+                m.position.z + off(k / 2),
+            ];
+            if let Some(id) = self.spawn_mob(&m.kind.id, at, m.persistent)
+                && let Some(c) = self.mobs.iter_mut().find(|c| c.id == id)
+            {
+                horizon_client::mobs::cube::set_size(c, size / 2);
             }
         }
     }
