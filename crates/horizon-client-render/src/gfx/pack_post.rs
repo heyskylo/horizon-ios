@@ -61,6 +61,9 @@ mod sky_depth_tests;
 #[cfg(test)]
 mod translucent_color_tests;
 
+#[cfg(test)]
+mod noise_resolution_tests;
+
 /// The texture behind a pack sampler name.
 #[derive(Clone, Copy, PartialEq)]
 enum Source {
@@ -858,10 +861,11 @@ fn source(name: &str, shadow_space: bool, shadow_pass: bool, watershadow: bool) 
     }
 }
 
-/// 256×256 RGB white noise (6.4), from a fixed seed so every run looks the same.
-fn noise(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::TextureView {
+/// `size`×`size` RGB white noise (6.4), from a fixed seed so every run looks the same.
+fn noise(device: &wgpu::Device, queue: &wgpu::Queue, size: u32) -> wgpu::TextureView {
+    let size = size.min(device.limits().max_texture_dimension_2d);
     let mut state = 0x2545_f491_4f6c_dd1du64;
-    let texels: Vec<u8> = (0..256 * 256 * 4)
+    let texels: Vec<u8> = (0..size as usize * size as usize * 4)
         .map(|i| {
             state ^= state << 13;
             state ^= state >> 7;
@@ -869,7 +873,7 @@ fn noise(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::TextureView {
             if i % 4 == 3 { 255 } else { (state >> 56) as u8 }
         })
         .collect();
-    texture(device, queue, "Shader pack noisetex", 256, &texels)
+    texture(device, queue, "Shader pack noisetex", size, &texels)
 }
 
 fn texture(
@@ -2086,6 +2090,7 @@ impl PackPost {
         }
         let textures = pack_textures::upload(device, queue, post.textures, &mut notes);
         let shadow_config = post.config.shadow.clone();
+        let noise_size = post.config.noise_resolution.unwrap_or(256);
         // shadowcolor2 to 7 only for a pack that names `HIGHER_SHADOWCOLOR`.
         let shadow_colors = (1u16 << post.shadow_colors) - 1;
         let mut custom = post.custom;
@@ -2910,7 +2915,7 @@ impl PackPost {
             targets: None,
             noise: pack_textures::noise(&textures)
                 .cloned()
-                .unwrap_or_else(|| noise(device, queue)),
+                .unwrap_or_else(|| noise(device, queue, noise_size)),
             dummy: texture(device, queue, "Shader pack stand-in", 1, &white),
             dummy_black: texture(device, queue, "Shader pack black stand-in", 1, &black),
             dummy_normal: texture(
