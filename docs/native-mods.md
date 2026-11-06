@@ -2513,6 +2513,12 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   state is swapped in. `state` is `getStateForPlacement`'s, before the stack's `block_state` component; finding it asks
   `native_state_for_placement` and `native_can_survive` once more. Unlike claiming `native_use_item_on`, the block's
   own use (a door, a chest) and the item's other uses are left alone.
+- Helper `native_set_inventory(uuid, kind, slots, selected) -> Result<(), String>`: replaces a player's whole
+  inventory (`Player`: 41 slots in `native_inventory`'s numbering) or ender chest (`Ender`: 27), as Bukkit's
+  `PlayerInventory.setContents` does: live when they are on the server, else in their file, never while they log in,
+  are dead or while a player's state is swapped in (call it from `native_server_tick`). For `Player`,
+  `selected` (0..9) becomes the held hotbar slot, the cursor and the 2x2 crafting grid are emptied, and a player on
+  the server is sent the whole inventory at once. Err for a wrong number of slots.
 
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The

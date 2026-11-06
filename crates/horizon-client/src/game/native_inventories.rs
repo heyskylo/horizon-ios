@@ -301,6 +301,89 @@ impl Game<'_> {
         Ok(())
     }
 
+    /// Replaces the player `uuid`'s whole inventory `kind` with `slots`,
+    /// `kind.size()` of them in `native_inventory`'s numbering (Bukkit's
+    /// `PlayerInventory.setContents`). For `Player`, `selected` (0..9), when
+    /// given, becomes the held hotbar slot, and the cursor and the 2x2
+    /// crafting grid are emptied (what they held is gone), as for an
+    /// inventory loaded from elsewhere. Live or their file, as
+    /// `native_inventory`; a player on the server is sent their whole
+    /// inventory at once. Err as `native_inventory`, or for a wrong number
+    /// of slots or a `selected` past the hotbar. @API:set_inventory@.
+    pub(super) fn native_set_inventory(
+        &mut self,
+        uuid: u128,
+        kind: NativeInventoryKind,
+        slots: Vec<Option<ItemStack>>,
+        selected: Option<usize>,
+    ) -> Result<(), String> {
+        if slots.len() != kind.size() {
+            return Err(format!("{} slots, not {}", kind.size(), slots.len()));
+        }
+        if selected.is_some_and(|s| s >= 9 || kind != NativeInventoryKind::Player) {
+            return Err("no such hotbar slot".into());
+        }
+        let ((), live) = self.native_edit_slots(uuid, kind, |s, held| {
+            *s = slots;
+            if let Some(selected) = selected {
+                *held = selected;
+            }
+            Ok(())
+        })?;
+        if let (Some(i), NativeInventoryKind::Player) = (live, kind) {
+            use horizon_protocol::packets::play::{Clientbound, SetHeldSlot};
+            let hub = &mut self.lan.as_mut().expect("live").hub;
+            let g = &mut hub.guests[i];
+            g.carried = None;
+            g.craft_grid = Default::default();
+            g.craft_result = None;
+            hub.send_inventory(i);
+            let g = &hub.guests[i];
+            g.send(&Clientbound::SetHeldSlot(SetHeldSlot {
+                slot: g.selected as i32,
+            }));
+        }
+        Ok(())
+    }
+
+    /// Edits the player `uuid`'s inventory `kind` (and, for `Player`, the
+    /// held hotbar slot) live or in their file, as `native_inventory` reads
+    /// it: nothing is written when `edit` fails. The guest's hub index when
+    /// they are on the server.
+    fn native_edit_slots<R>(
+        &mut self,
+        uuid: u128,
+        kind: NativeInventoryKind,
+        edit: impl FnOnce(&mut Vec<Option<ItemStack>>, &mut usize) -> Result<R, String>,
+    ) -> Result<(R, Option<usize>), String> {
+        // A just-disconnected player can already be absent from the hub.
+        let _ = self.finish_player_autosaves(true);
+        match self.native_inventory_side(uuid)? {
+            Side::Live(i) => {
+                let g = &mut self.lan.as_mut().expect("live").hub.guests[i];
+                let mut slots = guest_slots(g, kind);
+                let mut held = g.selected;
+                let r = edit(&mut slots, &mut held)?;
+                set_guest_slots(g, kind, slots);
+                g.selected = held;
+                Ok((r, Some(i)))
+            }
+            Side::File(mut level) => {
+                let mut slots = level_slots(&level, kind);
+                let mut held = usize::try_from(level.selected_slot).unwrap_or(0);
+                let r = edit(&mut slots, &mut held)?;
+                set_level_slots(&mut level, kind, slots);
+                level.selected_slot = held as i32;
+                write_dat(
+                    &playerdata::path(&self.world_root, uuid),
+                    level.player_tag(),
+                )
+                .map_err(|e| format!("the player's file: {e}"))?;
+                Ok((r, None))
+            }
+        }
+    }
+
     /// Sends the player `uuid` the whole picture of map `map_id`: 128 x 128
     /// colours (`MapColor` ids times 4 plus the shade, row by row), scale 0,
     /// locked, no decorations, as `ClientboundMapItemDataPacket`. A filled
