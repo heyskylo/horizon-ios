@@ -393,6 +393,10 @@ impl Connection {
         self.reader.older_client = session.clone();
         self.writer.older_client = session;
     }
+    /// The older release this connection's client is on ([`Self::serve_older`]), `None` for the pinned one.
+    pub fn older_client(&self) -> Option<crate::adapter::ServerVersion> {
+        self.reader.older_client.as_ref().map(|s| s.version)
+    }
     /// `Connection.isMemoryConnection`: through a [`Pipe`] rather than a socket.
     pub fn is_memory(&self) -> bool {
         matches!(self.reader.stream, Stream::Memory(_))

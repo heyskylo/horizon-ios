@@ -153,6 +153,9 @@ pub const HORIZON_CLIENTS_ONLY_REASON: &str =
 /// The server.properties key (server.toml's `server.accept_older_clients`) that lets 26.2 clients join
 /// (off unless "true").
 pub const ACCEPT_OLDER_CLIENTS: &str = "horizon-accept-older-clients";
+/// What a 26.2 client is told while only its packet ids are translated (#10404).
+pub const OLDER_CLIENTS_UNFINISHED: &str =
+    "This server lets 26.2 join, but Horizon cannot translate 26.2 yet: join with 26.3";
 
 /// How the server side of the network behaves: an integrated server's LAN
 /// uses the defaults, a dedicated server takes them from server.properties.
@@ -216,6 +219,12 @@ pub struct NetConfig {
     /// `horizon-accept-older-clients` (off): a client of 26.2 joins too, its packets renumbered
     /// (horizon_protocol::adapter::ClientSession). Off, it is turned away as vanilla turns it away.
     pub accept_older_clients: bool,
+    /// Lets an older client past configuration although only its packet ids are translated yet
+    /// (#10404's later parts translate the registry ids and the packets whose layout changed): for tests
+    /// of the id renumbering, never in server.toml. False, such a client is told
+    /// [`OLDER_CLIENTS_UNFINISHED`] before any registry data, tag or play packet would reach it in 26.3's
+    /// ids and layouts.
+    pub older_clients_play: bool,
     /// `horizon-lod-distance` (Horizon's own server.properties key, 64): how
     /// far, in chunks, the server samples far terrain for Horizon clients
     /// (`lod_net`); 0 serves none.
@@ -265,6 +274,7 @@ impl NetConfig {
             server_links: Vec::new(),
             horizon_clients_only: false,
             accept_older_clients: false,
+            older_clients_play: false,
             lod_distance: crate::lod_net::DEFAULT_DISTANCE,
             levels: crate::chunk::LevelShapes::VANILLA,
             owner_profile: None,

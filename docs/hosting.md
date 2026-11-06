@@ -214,8 +214,9 @@ any other release. With `accept_older_clients = true` a 26.2 client may join too
 ways, with no proxy in between, and the server list shows the server as joinable for 26.2.
 
 This is work in progress (#10404): the ids inside packets and the packets whose layout changed between 26.2 and
-26.3 aren't translated yet, so a 26.2 player can't play on the server yet. 26.3 clients are served exactly as
-before, whatever the setting.
+26.3 aren't translated yet, so for now a 26.2 player gets through the login and is then told that 26.2 can't be
+translated yet, before the server sends anything it would misread. 26.3 clients are served exactly as before,
+whatever the setting.
 
 ### Seeing further: `max_view_distance`
 

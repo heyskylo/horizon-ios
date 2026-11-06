@@ -1786,8 +1786,8 @@ impl Numbered {
     }
 }
 
-/// A login as `version`: `Err` with the refusal's JSON, or the client once in play, with the ids of the item
-/// tag `beacon_payment_items` it was sent.
+/// A login as `version`: `Err` with the refusal (login's JSON, configuration's text), or the client once in
+/// play, with the ids of the item tag `beacon_payment_items` it was sent.
 fn join_as(
     version: ServerVersion,
     port: u16,
@@ -1856,6 +1856,12 @@ fn join_as(
                     }
                 }
             }
+            cfg::Clientbound::Disconnect(d) => {
+                return Ok(Err(match d.reason {
+                    horizon_world::nbt::Tag::String(s) => s.to_string_lossy(),
+                    other => format!("{other:?}"),
+                }));
+            }
             cfg::Clientbound::FinishConfiguration(_) => {
                 bot.send(cfg::Serverbound::FinishConfiguration(Empty).encode())?;
                 bot.state = State::Play;
@@ -1895,8 +1901,10 @@ fn status_protocol(port: u16, protocol: i32) -> Result<i64, String> {
 }
 
 /// `accept_older_clients` off (the default), a 26.2 client is turned away as vanilla turns it away and the
-/// server list shows 26.3's protocol; on, the client is told its own protocol, logs in, plays in 26.2's
-/// packet ids and sees the block it places, while a 26.3 client is served as before.
+/// server list shows 26.3's protocol; on, the client is told its own protocol, logs in in 26.2's packet ids
+/// and is told, before any registry data, that 26.2 isn't translated yet, while a 26.3 client is served as
+/// before. Let past that (the tests-only `older_clients_play`), it plays in 26.2's packet ids and sees the
+/// block it places.
 #[test]
 fn a_26_2_client_joins_only_a_server_that_accepts_older_clients() {
     let Some(resources) = resources() else {
@@ -1932,7 +1940,31 @@ fn a_26_2_client_joins_only_a_server_that_accepts_older_clients() {
         ))
     });
     assert_eq!(statuses, (776, i64::from(PROTOCOL_VERSION)));
-    let placed = run(&mut on, move || {
+    let unfinished = run(&mut on, move || {
+        join_as(OLD, port, "Old")?
+            .err()
+            .ok_or_else(|| "a 26.2 client got past configuration".to_owned())
+    });
+    assert!(
+        unfinished.contains(horizon_client::lan::OLDER_CLIENTS_UNFINISHED),
+        "{unfinished}"
+    );
+    // A 26.3 client on the same server: its own ids, as on any server.
+    let payment = run(&mut on, move || {
+        let (_bot, payment) =
+            join_as(ServerVersion::Current, port, "New")?.map_err(|r| format!("refused: {r}"))?;
+        Ok(payment)
+    });
+    assert!(payment.contains(&DIAMOND_26_3), "{payment:?}");
+
+    let net = NetConfig {
+        accept_older_clients: true,
+        older_clients_play: true,
+        ..NetConfig::loopback(0, "Test - World".into(), 8)
+    };
+    let mut play = server_with(&resources, net);
+    let port = play.hub.lan.port;
+    let placed = run(&mut play, move || {
         let (mut bot, _) = join_as(OLD, port, "Old")?.map_err(|r| format!("refused: {r}"))?;
         let (mut login, mut chunks, mut placed) = (false, 0, None);
         let deadline = Instant::now() + Duration::from_secs(15);
@@ -2000,13 +2032,5 @@ fn a_26_2_client_joins_only_a_server_that_accepts_older_clients() {
         Ok(placed.flatten())
     });
     assert_eq!(placed, Some(([9, MIN_Y + 5, 9], STONE as i32)));
-    assert_eq!(on.placed.len(), 1);
-
-    // A 26.3 client on the same server: its own ids, as on any server.
-    let payment = run(&mut on, move || {
-        let (_bot, payment) =
-            join_as(ServerVersion::Current, port, "New")?.map_err(|r| format!("refused: {r}"))?;
-        Ok(payment)
-    });
-    assert!(payment.contains(&DIAMOND_26_3), "{payment:?}");
+    assert_eq!(play.placed.len(), 1);
 }

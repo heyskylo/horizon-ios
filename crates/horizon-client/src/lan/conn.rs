@@ -979,6 +979,24 @@ fn login_and_configure(
             _ => {}
         }
     };
+    // An older client's packet ids are translated, not yet what is inside them (#10404): the registry data,
+    // tags and play packets would reach it in 26.3's ids and layouts, so it is turned away before them.
+    if let Some(version) = c.older_client()
+        && !shared.config.older_clients_play
+    {
+        let text = super::OLDER_CLIENTS_UNFINISHED;
+        let reason = horizon_world::nbt::Tag::String(horizon_world::nbt::JavaString::from(text));
+        let _ = send(c, cfg::Clientbound::Disconnect(cfg::Disconnect { reason }));
+        if let Some(log) = &shared.config.log {
+            let line = format!(
+                "Disconnecting {name}: its client is on protocol {} ({text})",
+                version.protocol()
+            );
+            (log.write)("Server thread", "INFO", &line);
+        }
+        lost(shared, &format!("{name} ({})", uuid_string(uuid)), text);
+        return Ok(None);
+    }
     // Custom component IDs need Horizon's registry check. The server may also
     // require Horizon clients even when it has no custom components.
     if brand != "horizon"
