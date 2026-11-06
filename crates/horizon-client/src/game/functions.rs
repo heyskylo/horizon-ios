@@ -554,9 +554,14 @@ impl Game<'_> {
                 _ => data,
             };
             if !matches!(tag, Tag::Compound(_)) {
+                // FunctionCommand.getArgumentTag uses TagType.getName, not the tag's value.
+                let names = [
+                    "END", "BYTE", "SHORT", "INT", "LONG", "FLOAT", "DOUBLE", "BYTE[]", "STRING",
+                    "LIST", "COMPOUND", "INT[]", "LONG[]",
+                ];
                 return Err(err(
                     "commands.function.error.argument_not_compound",
-                    &[&"tag"],
+                    &[&names[usize::from(tag.id())]],
                 ));
             }
             Some(tag)
