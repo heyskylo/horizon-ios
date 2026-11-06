@@ -127,6 +127,7 @@ fn fixture(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
         false,
         true,
         false,
+        false,
     ))?;
     renderer.resize(320, 180);
     assert!(

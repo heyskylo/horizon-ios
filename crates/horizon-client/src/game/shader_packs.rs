@@ -87,6 +87,9 @@ pub(crate) struct PickedPack {
     pub draws_flat: bool,
     /// It is a shader API 0.2 pack under `HORIZON_HDR_FRAME=float`: the frame is float.
     pub linear: bool,
+    /// None is picked, and HDR is on under `HORIZON_HDR_FRAME=float`: the frame is float where
+    /// HDR output is offered (docs/design/hdr-linear-light.md, step 3).
+    pub hdr_float: bool,
 }
 
 pub(super) fn picked_pack_shape(settings: &horizon_client::settings::Settings) -> PickedPack {
@@ -100,6 +103,9 @@ pub(super) fn picked_pack_shape(settings: &horizon_client::settings::Settings) -
     PickedPack {
         draws_flat: !picked.is_empty() && pack_draws_flat(&path),
         linear: !picked.is_empty() && linear(),
+        hdr_float: picked.is_empty()
+            && settings.horizon.hdr
+            && super::native_shaders::linear_frame_switch(),
     }
 }
 
