@@ -1430,7 +1430,7 @@ fn play_ambient(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
             let sound = super::happy_ghast::sounds(m)[0];
             events.push(MobEvent::Sound(
                 sound,
-                m.center(),
+                [m.position.x, m.position.y, m.position.z],
                 super::happy_ghast::volume(m),
                 1.0,
             ));
@@ -5166,5 +5166,59 @@ mod dolphin_noai_air_tests {
     #[test]
     fn normal_dolphins_keep_their_underwater_countdown() {
         check(true, false, 4800, [4799, 4798]);
+    }
+}
+
+#[cfg(test)]
+mod happy_ghast_ambient_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn natural_happy_ghast_ambient_uses_entity_position() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let ran = crate::mobs::world::with_resource_test_world(
+            &root,
+            &[],
+            true,
+            true,
+            |world, _| {
+                world
+                    .chunks
+                    .insert((0, 0), Arc::new(crate::chunk::Chunk::empty(0, 0)));
+            },
+            |w, types| {
+                for baby in [false, true] {
+                    let kind = Arc::new(types.types["minecraft:happy_ghast"].clone());
+                    let mut mob = Mob::new(1, kind, Vec3::new(10.5, 208.0, 10.5), 0.0);
+                    mob.no_ai = true;
+                    mob.no_gravity = true;
+                    mob.persistent = true;
+                    mob.extra.age = if baby { -24000 } else { 0 };
+                    let sound = super::super::happy_ghast::sounds(&mob)[0];
+                    let mut random = LegacyRandom::new(0);
+                    let mut heard = false;
+                    // Natural scheduling: no ambient counter is forced or reset here.
+                    for _ in 0..1200 {
+                        let mut events = Vec::new();
+                        assert!(tick(&mut mob, w, &mut random, &mut events));
+                        for event in events {
+                            if let MobEvent::Sound(name, at, _, _) = event
+                                && name == sound
+                            {
+                                assert_eq!(at, [10.5, 208.0, 10.5], "baby={baby}");
+                                heard = true;
+                            }
+                        }
+                        if heard {
+                            break;
+                        }
+                    }
+                    assert!(heard, "no natural ambient event, baby={baby}");
+                }
+            },
+        );
+        assert!(ran, "prepared-data callback did not run");
     }
 }
