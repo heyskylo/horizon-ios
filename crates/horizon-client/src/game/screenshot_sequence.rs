@@ -17,7 +17,7 @@ const READ_ONLY: [&str; 5] = ["screenshot-sequence", "hello", "help", "status", 
 
 pub(super) struct Sequence {
     frames: u32,
-    step_ms: u32,
+    step_ms: f64,
     /// The frame drawn next, from 1.
     next: u32,
     path: PathBuf,
@@ -34,7 +34,7 @@ impl Sequence {
 }
 
 /// `FRAMES STEP_MS PATH`; the path is the rest of the line and may hold spaces.
-fn parse(args: &str) -> Result<(u32, u32, PathBuf)> {
+fn parse(args: &str) -> Result<(u32, f64, PathBuf)> {
     let usage = "screenshot-sequence FRAMES STEP_MS PATH, or screenshot-sequence cancel";
     let (frames, rest) = args.trim().split_once(char::is_whitespace).ok_or(usage)?;
     let (step_ms, path) = rest
@@ -42,12 +42,12 @@ fn parse(args: &str) -> Result<(u32, u32, PathBuf)> {
         .split_once(char::is_whitespace)
         .ok_or(usage)?;
     let frames: u32 = frames.parse().map_err(|_| usage)?;
-    let step_ms: u32 = step_ms.parse().map_err(|_| usage)?;
+    let step_ms: f64 = step_ms.parse().map_err(|_| usage)?;
     if !(1..=MAX_FRAMES).contains(&frames) {
         return Err(format!("FRAMES must be 1 to {MAX_FRAMES}").into());
     }
-    if step_ms == 0 {
-        return Err("STEP_MS must be more than 0".into());
+    if !step_ms.is_finite() || step_ms <= 0.0 {
+        return Err("STEP_MS must be a number of milliseconds more than 0".into());
     }
     Ok((frames, step_ms, path.trim().into()))
 }
@@ -296,14 +296,18 @@ mod tests {
     fn the_path_is_the_rest_of_the_line_and_the_counts_are_bounded() {
         assert_eq!(
             parse(" 64  50 /tmp/a b.png ").unwrap(),
-            (64, 50, PathBuf::from("/tmp/a b.png"))
+            (64, 50.0, PathBuf::from("/tmp/a b.png"))
         );
         assert_eq!(parse("10000 1 x.png").unwrap().0, 10_000);
+        assert_eq!(parse("64 16.666667 x.png").unwrap().1, 16.666667);
         for bad in [
             "0 50 x.png",
             "10001 50 x.png",
             "4 0 x.png",
             "4 -1 x.png",
+            "4 0.0 x.png",
+            "4 NaN x.png",
+            "4 inf x.png",
             "4 50",
             "x 50 a",
         ] {

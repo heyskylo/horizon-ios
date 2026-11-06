@@ -189,10 +189,10 @@ refused.
 
 `horizon-ctl screenshot-sequence FRAMES STEP_MS PATH`, under `HORIZON_STILL`, starts the running pack over and draws
 its first FRAMES frames on a set clock: frame n has `frame_index` n, `time` (n - 1) × STEP_MS / 1000 and `delta_time`
-STEP_MS / 1000 (0 on frame 1), and `history` and the eased values start as in a pack just loaded. The last frame is
-written as a PNG, the same bytes every run on the same build, GPU and driver. Packs in the `shaders/` format get the
-same (`frameCounter`, `frameTimeCounter`, `frameTime`). How to use it:
-[the guide](../shaders.md#testing-a-pack-frame-by-frame).
+STEP_MS / 1000 (0 on frame 1; STEP_MS may be a decimal, `16.666667` for 60 fps), and `history` and the eased values
+start as in a pack just loaded. The last frame is written as a PNG, the same bytes every run on the same build, GPU
+and driver. Packs in the `shaders/` format get the same (`frameCounter`, `frameTimeCounter`, `frameTime`). How to use
+it: [the guide](../shaders.md#testing-a-pack-frame-by-frame).
 
 ## Guide, reference and examples
 

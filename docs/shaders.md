@@ -73,7 +73,8 @@ horizon-ctl screenshot-sequence 64 50 frame64.png
 
 starts the pack over as if just loaded (black `history`, eased values from the start) and draws 64 frames 50 ms
 apart on its clock: frame n has `frame_index` n, `time` (n - 1) × 0.05 and `delta_time` 0.05 (0 on frame 1). The
-64th is written to `frame64.png` (and `frame64-hdr.png` with HDR output on) before the reply. The same build, GPU
+64th is written to `frame64.png` (and `frame64-hdr.png` with HDR output on) before the reply. STEP_MS may be a
+decimal: `16.666667` steps a 60 fps clock. The same build, GPU
 and driver write the same bytes every run, so two versions of a pack compare by a pixel diff. `screenshot-sequence
 cancel` stops one.
 
