@@ -174,7 +174,8 @@ fn flat_draws_map_uvs_onto_a_stitched_sprite() {
 /// Read back with a probe pack of ours, Iris 1.11.7's terrain `gl_Vertex` (camera on the block
 /// grid) puts a water top, 8/9 - 0.001 of a block up, at 29094/32768, and plants offset by 13/15
 /// and 0.1 of a block at 28398/32768 and 3276/32768 (#8464): each 32768th below the position.
-/// Whole blocks and sixteenths stay where they are.
+/// Whole blocks and sixteenths stay where they are, and so does a place float rounding put a hair
+/// below a grid line: Iris reads plants offset by 9/15 exactly on a half block.
 #[test]
 fn terrain_vertices_go_down_to_the_32768th_below_them() {
     let instance = crate::gfx::test_gpu::instance();
@@ -204,6 +205,15 @@ fn terrain_vertices_go_down_to_the_32768th_below_them() {
         ([0.1, water, 13.0 / 15.0], [3276.0, 29094.0, 28398.0]),
         ([13.0 / 15.0, 0.1, water], [28398.0, 3276.0, 29094.0]),
         ([1.0, 0.5, 15.9375], [32768.0, 16384.0, 522240.0]),
+        // One float step below 1, 0.5 and 9.5.
+        (
+            [
+                1.0 - f32::EPSILON / 2.0,
+                0.5 - f32::EPSILON / 4.0,
+                9.5 - f32::EPSILON * 8.0,
+            ],
+            [32768.0, 16384.0, 311296.0],
+        ),
     ];
     let vertices: Vec<_> = cases
         .iter()

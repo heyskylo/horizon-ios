@@ -5795,6 +5795,31 @@ impl Renderer {
                 blocks.iter().map(move |block| (block, fully_inside))
             })
     }
+    /// The block entities of the sections a shader pack's shadow pass drew in the last frame
+    /// (`shadow_visible`), within the 64 blocks `visible_block_entities_in_frustum` keeps.
+    /// Our probe packs' Iris 1.11.7 shadow maps hold a block entity wherever the shadow pass
+    /// draws its section's terrain, whether or not the camera's view takes it in (#8464).
+    pub fn shadow_pass_block_entities(
+        &self,
+        camera: DVec3,
+    ) -> impl Iterator<Item = &([i32; 3], u32)> + '_ {
+        block_entities_within_reach(
+            self.shadow_visible.iter().map(|v| v.key),
+            &self.block_entities,
+            camera,
+            self.layout.min_y(),
+        )
+    }
+    /// Whether a shader pack's shadow pass drew the section holding block `pos` in the last
+    /// frame (`shadow_pass_block_entities`).
+    pub fn shadow_pass_drew(&self, pos: [i32; 3]) -> bool {
+        let key = (
+            pos[0] >> 4,
+            (pos[1] - self.layout.min_y()) >> 4,
+            pos[2] >> 4,
+        );
+        self.shadow_visible.iter().any(|v| v.key == key)
+    }
     /// Milliseconds since `key` was uploaded; a section not in `section_uploaded` is old.
     fn section_elapsed_ms(&self, key: SectionKey, now: std::time::Instant) -> u64 {
         self.section_uploaded.get(&key).map_or(u64::MAX, |t| {
@@ -6609,17 +6634,11 @@ impl Renderer {
             if let Some(atlas) = &mut atlas {
                 atlas.separate_ao = self.separate_ao;
             }
-            self.pack_material_atlases = atlas.as_ref().and_then(|_| {
+            self.pack_material_atlases = atlas.as_ref().and_then(|colour| {
                 let maps = self.pbr_maps.as_ref()?;
                 let make = |kind: usize, encoder: &mut wgpu::CommandEncoder| {
                     let arrays: Vec<_> = maps.iter().map(|pair| pair[kind].clone()).collect();
-                    pack_atlas::PackAtlas::material(
-                        &self.device,
-                        encoder,
-                        &arrays,
-                        self.sprite_split,
-                        layers,
-                    )
+                    colour.material_for(&self.device, encoder, &arrays, layers)
                 };
                 Some([make(0, &mut encoder)?, make(1, &mut encoder)?])
             });
@@ -7636,9 +7655,7 @@ impl Renderer {
         if let Some(v) = &shadow_view {
             let radius = (frame.detail_distance / 16.0) as i32;
             let light = ShadowCull {
-                light: Frustum {
-                    planes: frustum(v.cull),
-                },
+                light: shadow_box(v),
                 casters: v.view_casters.then(|| shadow_casters(cull_proj, v.light)),
                 reach: v.distance,
             };
@@ -11441,6 +11458,39 @@ impl Cull for ShadowCull {
         self.casters.is_none()
     }
 }
+/// The block entities of `sections` whose box, a block wider on every side, comes within the
+/// 64 blocks block entities are drawn to (`Renderer::visible_block_entities_in_frustum`).
+fn block_entities_within_reach<'a>(
+    sections: impl Iterator<Item = SectionKey> + 'a,
+    block_entities: &'a FxHashMap<SectionKey, Vec<([i32; 3], u32)>>,
+    camera: DVec3,
+    min_y: i32,
+) -> impl Iterator<Item = &'a ([i32; 3], u32)> + 'a {
+    sections
+        .filter_map(move |key| {
+            let min = (DVec3::new(
+                f64::from(key.0 * 16 - 1),
+                f64::from(min_y + key.1 * 16 - 1),
+                f64::from(key.2 * 16 - 1),
+            ) - camera)
+                .as_vec3();
+            let max = min + Vec3::splat(18.0);
+            let near = Vec3::ZERO.max(min).min(max).length_squared() <= 64.0 * 64.0;
+            near.then(|| block_entities.get(&key)).flatten()
+        })
+        .flatten()
+}
+/// The shadow camera's box that the shadow pass draws terrain in: the sides of `view.cull`, and
+/// its near and far planes only with `depth_planes`.
+fn shadow_box(view: &pack_post::ShadowView) -> Frustum {
+    let mut planes = frustum(view.cull);
+    if !view.depth_planes {
+        // `frustum`'s faces at depth 0 and 1 take in everything.
+        planes[4] = Vec4::W;
+        planes[5] = Vec4::W;
+    }
+    Frustum { planes }
+}
 /// Camera-relative clip planes (`Frustum`).
 #[derive(Clone, Copy, Debug)]
 pub struct Frustum {
@@ -13412,6 +13462,7 @@ mod shadow_face_tests {
             unculled: None,
             every_face,
             view_casters: true,
+            depth_planes: false,
         }
     }
 
@@ -13430,6 +13481,24 @@ mod shadow_face_tests {
 #[cfg(test)]
 mod shadow_caster_tests {
     use super::*;
+
+    #[test]
+    fn the_shadow_pass_takes_the_block_entities_of_its_sections_within_64_blocks() {
+        // Sections 64 to 79 high (the world from -64): a chest in each of three. The shadow
+        // pass drew `near` and `far`; `left_out` lies as near but the pass didn't draw it, and
+        // `far`'s nearest block is 78.5 blocks away.
+        let (near, left_out, far) = ((0, 8, 0), (1, 8, 0), (5, 8, 0));
+        let mut block_entities = FxHashMap::default();
+        block_entities.insert(near, vec![([3, 70, 3], 7)]);
+        block_entities.insert(left_out, vec![([20, 70, 3], 7)]);
+        block_entities.insert(far, vec![([85, 70, 3], 7)]);
+        let camera = DVec3::new(0.5, 70.0, 0.5);
+        let drawn = [near, far].into_iter();
+        let taken: Vec<_> = block_entities_within_reach(drawn, &block_entities, camera, -64)
+            .copied()
+            .collect();
+        assert_eq!(taken, vec![([3, 70, 3], 7)]);
+    }
 
     /// What the shadow pass keeps of a camera-relative section at `min`, the camera at the
     /// origin looking along -X (yaw 90) with the scenes' 70 degree, 16:9 view, and the light in
@@ -13583,6 +13652,52 @@ mod shadow_caster_tests {
             drawn(&|out| sections.visible(camera, 4, &view, |_| true, |_, _| false, out))
                 .is_empty()
         );
+    }
+
+    /// Our probe pack's Iris 1.11.7 shadow maps, under a noon sun with `shadowDistance` 128, hold
+    /// the terrain at every depth along the light whatever planes the pack gives (#10403): from
+    /// a cave at y -7, the surface's sections ~70 blocks toward the light with `shadowNearPlane`
+    /// 0.05 and `shadowFarPlane` 256; from y 600, the ground ~535 blocks away with no planes set;
+    /// and both with the planes at 200 and 210. Only the box's sides cull.
+    #[test]
+    fn the_shadow_pass_draws_terrain_outside_the_pack_s_planes() {
+        let kept = |near: Option<f32>, far: Option<f32>, y: f64, min: [f32; 3], depth: bool| {
+            let shadow = horizon_shaders::Shadow {
+                distance: 128.0,
+                near,
+                far,
+                ..horizon_shaders::Shadow::default()
+            };
+            let camera = DVec3::new(13.5, y + 1.62, -13.5);
+            let view = pack_post::ShadowView {
+                cull: pack_uniforms::shadow_culling_at(Vec3::Y, camera, &shadow),
+                light: Vec3::Y,
+                distance: None,
+                unculled: None,
+                every_face: true,
+                view_casters: false,
+                depth_planes: depth,
+            };
+            let cull = ShadowCull {
+                light: shadow_box(&view),
+                casters: None,
+                reach: None,
+            };
+            let min = Vec3::from(min);
+            cull.intersects(min, min + 16.0)
+        };
+        // The section holding the surface (y 64..80) above the cave, and the ground under y 600.
+        let above = [-8.0, 64.0 - (-7.0 + 1.62), -8.0];
+        let below = [-8.0, 64.0 - (600.0 + 1.62), -8.0];
+        assert!(kept(Some(0.05), Some(256.0), -7.0, above, false));
+        assert!(kept(None, None, 600.0, below, false));
+        assert!(kept(Some(200.0), Some(210.0), -7.0, above, false));
+        assert!(kept(Some(200.0), Some(210.0), 600.0, below, false));
+        // A section 200 blocks off to the side is still outside the box.
+        let side = [200.0, 0.0, -8.0];
+        assert!(!kept(Some(0.05), Some(256.0), -7.0, side, false));
+        // Horizon's own packs keep culling by their planes.
+        assert!(!kept(Some(0.05), Some(256.0), -7.0, above, true));
     }
 
     /// The margin doesn't follow the field of view: from the same camera under a noon sun, our

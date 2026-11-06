@@ -23,6 +23,11 @@ pub(super) struct Output {
 }
 
 impl Output {
+    /// The mods the errors were traced to, as `id version`.
+    pub(super) fn owners(&self) -> Vec<String> {
+        self.owners.iter().cloned().collect()
+    }
+
     pub(super) fn explain(self, error: String) -> String {
         let prefix = if self.owners.is_empty() {
             String::new()
@@ -75,20 +80,57 @@ pub(super) fn capture(compiler: &Compiler<'_>, input: impl BufRead, mut log: imp
     output
 }
 
+/// A file's functions (where each is, its name and its tokens), inline modules (where, name),
+/// and the blocks horizon-mixins wraps a helper in (where, the helper's name and tokens).
 #[derive(Default)]
-struct Functions(Vec<(Range<usize>, String)>);
+struct Items {
+    functions: Vec<(Range<usize>, String, String)>,
+    modules: Vec<(Range<usize>, String)>,
+    calls: Vec<(Range<usize>, String, String)>,
+}
 
-impl<'ast> Visit<'ast> for Functions {
+impl<'ast> Visit<'ast> for Items {
     fn visit_item_fn(&mut self, function: &'ast syn::ItemFn) {
-        self.0.push((
+        self.functions.push((
             function.span().byte_range(),
+            function.sig.ident.to_string(),
             function.to_token_stream().to_string(),
         ));
         syn::visit::visit_item_fn(self, function);
     }
+
+    fn visit_item_mod(&mut self, module: &'ast syn::ItemMod) {
+        if module.content.is_some() {
+            self.modules
+                .push((module.span().byte_range(), module.ident.to_string()));
+        }
+        syn::visit::visit_item_mod(self, module);
+    }
+
+    /// `{ fn helper(…) { … } helper(…) }` and nothing else: an error in the generated call (an
+    /// argument the helper's signature no longer takes) is the helper's too.
+    fn visit_block(&mut self, block: &'ast syn::Block) {
+        if let [syn::Stmt::Item(syn::Item::Fn(function)), syn::Stmt::Expr(syn::Expr::Call(call), _)] =
+            block.stmts.as_slice()
+        {
+            if matches!(&*call.func, syn::Expr::Path(path) if path.path.is_ident(&function.sig.ident))
+            {
+                self.calls.push((
+                    block.span().byte_range(),
+                    function.sig.ident.to_string(),
+                    function.to_token_stream().to_string(),
+                ));
+            }
+        }
+        syn::visit::visit_block(self, block);
+    }
 }
 
-/// A file being touched is insufficient: the entire helper must match and its owner be unique.
+/// A file being touched is insufficient: the error must be inside what a mod brought, and its
+/// owner be unique. That is a helper (the function with its tokens, or with its name when the
+/// pristine source has no function of that name: the staged file may be formatted, a trailing
+/// comma added, which changes its tokens and not its name, with the call horizon-mixins generates
+/// for it), or a support module (the inline module of its name, when the pristine source has none).
 fn owner(compiler: &Compiler<'_>, plan: &Value, manifest: &Value, span: &Value) -> Option<String> {
     let stage = compiler.stage.canonicalize().ok()?;
     let file = Path::new(span["file_name"].as_str()?);
@@ -97,6 +139,7 @@ fn owner(compiler: &Compiler<'_>, plan: &Value, manifest: &Value, span: &Value) 
     if start >= end {
         return None;
     }
+    let inside = |range: &Range<usize>| range.start <= start && end <= range.end;
     let mut files = BTreeSet::new();
     for base in [
         Some(stage.as_path()),
@@ -111,44 +154,75 @@ fn owner(compiler: &Compiler<'_>, plan: &Value, manifest: &Value, span: &Value) 
             }
         }
     }
-    let entries = plan["injections"].as_array()?;
+    let empty = Vec::new();
+    let injections = plan["injections"].as_array().unwrap_or(&empty);
+    let modules = plan["modules"].as_array().unwrap_or(&empty);
     let mut owners = BTreeSet::new();
     for file in files {
         let source = fs::read_to_string(&file).ok()?;
         let syntax = syn::parse_file(&source).ok()?;
-        let mut functions = Functions::default();
-        functions.visit_file(&syntax);
+        let mut staged = Items::default();
+        staged.visit_file(&syntax);
         let pristine =
             fs::read_to_string(compiler.source.join(file.strip_prefix(&stage).ok()?)).ok()?;
-        let mut original = Functions::default();
+        let mut original = Items::default();
         original.visit_file(&syn::parse_file(&pristine).ok()?);
-        for entry in entries {
-            let (Some(id), Some(version), Some(path), Some(helper)) = (
+        // The plan's entries of the mods built, in this file.
+        let ours = |entry: &&Value| {
+            let (Some(id), Some(version), Some(path)) = (
                 entry["mod_id"].as_str(),
                 entry["mod_version"].as_str(),
                 entry["file"].as_str(),
-                entry["helper_source"].as_str(),
             ) else {
-                continue;
+                return false;
             };
-            if !compiler.mods.iter().any(|(m, v)| m == id && v == version)
-                || stage.join(path).canonicalize().ok().as_ref() != Some(&file)
-            {
-                continue;
-            }
-            let Ok(helper) = syn::parse_str::<syn::ItemFn>(helper) else {
+            compiler.mods.iter().any(|(m, v)| m == id && v == version)
+                && stage.join(path).canonicalize().ok().as_ref() == Some(&file)
+        };
+        let owner = |entry: &Value| {
+            format!(
+                "{} {}",
+                entry["mod_id"].as_str().unwrap_or_default(),
+                entry["mod_version"].as_str().unwrap_or_default()
+            )
+        };
+        for entry in injections.iter().filter(ours) {
+            let Some(Ok(helper)) = entry["helper_source"]
+                .as_str()
+                .map(syn::parse_str::<syn::ItemFn>)
+            else {
                 continue;
             };
             let tokens = helper.to_token_stream().to_string();
-            if original.0.iter().any(|(_, body)| *body == tokens) {
+            let name = helper.sig.ident.to_string();
+            let is_helper = |(_, other, body): &(Range<usize>, String, String)| {
+                *body == tokens || *other == name
+            };
+            if original.functions.iter().any(is_helper) {
                 continue;
             }
-            if functions
-                .0
+            if staged
+                .functions
                 .iter()
-                .any(|(range, body)| range.start <= start && end <= range.end && *body == tokens)
+                .chain(&staged.calls)
+                .any(|f| inside(&f.0) && is_helper(f))
             {
-                owners.insert(format!("{id} {version}"));
+                owners.insert(owner(entry));
+            }
+        }
+        for entry in modules.iter().filter(ours) {
+            let Some(name) = entry["name"].as_str() else {
+                continue;
+            };
+            if original.modules.iter().any(|(_, other)| other == name) {
+                continue;
+            }
+            if staged
+                .modules
+                .iter()
+                .any(|(range, other)| other == name && inside(range))
+            {
+                owners.insert(owner(entry));
             }
         }
     }
@@ -230,7 +304,7 @@ mod tests {
                 .arg(dir.join("Cargo.toml"))
                 .env("CARGO_TARGET_DIR", dir.join("target"));
             let error = super::super::logged(|| {
-                super::super::run_with_compiler(
+                super::super::run_checked(
                     command,
                     "Compiling the fixture",
                     |_| {},
@@ -240,6 +314,7 @@ mod tests {
                         mods: &mods,
                     }),
                 )
+                .map_err(|ran| ran.error)
             })
             .unwrap_err();
             assert!(
@@ -285,6 +360,41 @@ mod tests {
             "{error}"
         );
         assert!(error.contains("E0063") && error.ends_with(&original));
+
+        // The staged file was formatted after the helper was planned (rustfmt added a trailing
+        // comma): the helper is still found, by its name.
+        plan(
+            &dir,
+            json!([entry(
+                "fast_mesh",
+                "0.1.0",
+                "fn replace() -> MeshTables { MeshTables { base: 1, } }"
+            )]),
+        );
+        let error = capture(&compiler, Cursor::new(&stdout), Vec::new()).explain(original.clone());
+        assert!(error.contains("fast_mesh 0.1.0"), "{error}");
+
+        // An error in a support module names the mod that declared it.
+        fs::write(
+            dir.join("src/main.rs"),
+            "struct MeshTables { base: u8, animated_layers: u8 }\nfn main() {}\nmod fast_mesh_tables {\n    pub fn replace() -> super::MeshTables { super::MeshTables { base: 1 } }\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join(".horizon-mixins-stage.json"),
+            json!({"schema":6,"injections":[],"modules":[{"mod_id":"fast_mesh","mod_version":"0.1.0","file":"src/main.rs","name":"fast_mesh_tables"}]}).to_string(),
+        )
+        .unwrap();
+        let in_module = Command::new(env!("CARGO"))
+            .args(["check", "--offline", "--message-format=json"])
+            .arg("--manifest-path")
+            .arg(dir.join("Cargo.toml"))
+            .env("CARGO_TARGET_DIR", dir.join("target"))
+            .output()
+            .unwrap();
+        let output = capture(&compiler, Cursor::new(&in_module.stdout), Vec::new());
+        assert_eq!(output.owners(), ["fast_mesh 0.1.0"]);
+        fs::write(dir.join("src/main.rs"), SOURCE).unwrap();
 
         for metadata in ["not json", "{}", r#"{"schema":99,"injections":[]}"#] {
             fs::write(dir.join(".horizon-mixins-stage.json"), metadata).unwrap();
@@ -338,6 +448,54 @@ mod tests {
             "{error}"
         );
         assert!(!error.contains("fast_mesh"), "{error}");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// flair 1.0.0 on Horizon 66f3981: Horizon widened `extra` to five-element tuples, so the
+    /// call horizon-mixins generates for the mod's helper, outside the helper itself, fails.
+    #[test]
+    fn an_error_in_the_generated_call_to_a_helper_names_its_mod() {
+        const FLAIR: &str = "fn flair_armor(extra: &[(u8, u8)]) -> usize { extra.len() }";
+        let check = |dir: &Path, main: &str| {
+            fs::write(dir.join("src/main.rs"), main).unwrap();
+            let output = Command::new(env!("CARGO"))
+                .args(["check", "--offline", "--message-format=json"])
+                .arg("--manifest-path")
+                .arg(dir.join("Cargo.toml"))
+                .env("CARGO_TARGET_DIR", dir.join("target"))
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8(output.stdout).unwrap();
+            assert!(stdout.contains("E0308"), "{stdout}");
+            stdout
+        };
+        let dir = fixture("compiler-generated-call");
+        fs::write(
+            dir.join("original/src/main.rs"),
+            "fn render(_extra: &[(u8, u8, bool)]) {}\nfn main() {}\n",
+        )
+        .unwrap();
+        plan(&dir, json!([entry("flair", "1.0.0", FLAIR)]));
+        let mods = vec![("flair".to_owned(), "1.0.0".to_owned())];
+        let compiler = Compiler {
+            stage: &dir,
+            source: &dir.join("original"),
+            mods: &mods,
+        };
+        let stdout = check(
+            &dir,
+            &format!("fn render(extra: &[(u8, u8, bool)]) {{\n    {{\n        {FLAIR}\n        flair_armor(extra)\n    }};\n}}\nfn main() {{ render(&[]); }}\n"),
+        );
+        let output = capture(&compiler, Cursor::new(&stdout), Vec::new());
+        assert_eq!(output.owners(), ["flair 1.0.0"]);
+
+        // The same call in a block that also holds the game's own code is not proven the mod's.
+        let stdout = check(
+            &dir,
+            &format!("fn render(extra: &[(u8, u8, bool)]) {{\n    {{\n        {FLAIR}\n        let _ = 1;\n        flair_armor(extra)\n    }};\n}}\nfn main() {{ render(&[]); }}\n"),
+        );
+        let output = capture(&compiler, Cursor::new(&stdout), Vec::new());
+        assert!(output.owners().is_empty(), "{:?}", output.owners());
         fs::remove_dir_all(dir).unwrap();
     }
 }

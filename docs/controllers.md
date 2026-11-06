@@ -11,9 +11,8 @@ Nothing. Minecraft Java 26.3 never calls GLFW's gamepad or joystick API, has
 no controller options and ships no button glyphs. Its only non-mouse UI input
 is keyboard focus navigation (`InputType.KEYBOARD_ARROW` / `KEYBOARD_TAB`:
 arrows and Tab move a focus ring between widgets). So controller support is
-Horizon's own feature. It follows what players already know from Minecraft on
-consoles (Bedrock Edition's default controller layout) and Horizon's menu
-design for any new screen.
+Horizon's own feature. Its default buttons are Horizon's own; analog walking and toggle sneak follow
+Bedrock Edition on consoles.
 
 ## Input layer
 
@@ -54,7 +53,7 @@ once per loop iteration next to winit's events.
 | Move | Left stick | Left stick | analog `key.forward/back/left/right` |
 | Look | Right stick | Right stick | camera |
 | Jump / fly up | A | ✕ | `key.jump` |
-| Drop item | B | ○ | `key.drop` |
+| Drop item | D-pad down | D-pad down | `key.drop` |
 | Swap offhand | X | □ | `key.swapOffhand` |
 | Inventory | Y | △ | `key.inventory` |
 | Hotbar left / right | LB / RB | L1 / R1 | Horizon `pad.hotbarPrevious/Next` |
@@ -62,12 +61,28 @@ once per loop iteration next to winit's events.
 | Attack / break | RT | R2 | `key.attack` |
 | Sprint | Left stick click | L3 | `key.sprint` |
 | Sneak (toggles) | Right stick click | R3 | `key.sneak` |
-| Change camera | D-pad up | D-pad up | `key.togglePerspective` |
+| Change camera | View | Create / Share | `key.togglePerspective` |
 | Pick block | D-pad left | D-pad left | `key.pickItem` |
-| Chat | D-pad right | D-pad right | `key.chat` |
-| Advancements | D-pad down | D-pad down | `key.advancements` |
-| Player list (hold) | View | Create / Share | `key.playerlist` |
+| Chat | D-pad up | D-pad up | `key.chat` |
 | Pause / back | Menu | Options | Escape (fixed) |
+
+Advancements and the player list have no button of their own, and are
+bindable. A settings file from before these defaults keeps its buttons where
+they were.
+
+Also bindable, with no default button: fullscreen, player social, quick actions, the save and load
+toolbar activators and hotbar slots 1 to 9. They act in play only: in a menu or a prompt the button
+does what that screen says. A toolbar activator does nothing by itself: a creative player holds it and
+presses a hotbar slot's button, as with the keys, and a spectator's hotbar buttons drive the spectator
+menu.
+
+The bumpers go through what the wheel goes through (`Game::hotbar_step`), one notch a press, RB down:
+with no screen, prompt or bed in the way, a native mod can take it (`native_wheel`, then
+`native_mouse_scrolling`), then a spectator's menu or flying speed takes it, else the hotbar turns.
+
+Drop follows Q: a tap throws one item. Held, it repeats at the repeat delay and interval of Controller
+Settings > General, and from 1 second on (`DROP_STACK_HOLD`) each repeat throws what's left of the
+stack, as a pad has no Control to hold. Nothing repeats while a menu is open.
 
 The Guide / PS / Steam button is left to the system. Sneak on a stick click
 toggles by default (holding a stick in while steering the camera is
@@ -113,8 +128,9 @@ The hint is the glyph on the declared button, in that player's pad's style and v
 in a corner. It shows while the pad drives; the mouse or a focus key hides it, and a button too small
 for it, or running off a split view, goes without it and keeps its pad button. What a screen declared
 stops counting as soon as another screen is drawn over it (`widgets::begin_screen`: a popup's buried
-buttons can't be pressed) or takes its place. While a key row waits for its key nothing is declared:
-B is Escape, which unbinds.
+buttons can't be pressed) or takes its place. While a key row waits for its key nothing is declared and only B and Start act:
+they are Escape, which unbinds. A row on Controller Settings > Bindings takes the next button pressed
+as its binding, and Start cancels.
 
 Don't declare a button Escape deliberately ignores: Optimize World's and a connection's Cancel have
 no pad button, only A on them, and show in `undeclared` for that reason.
@@ -122,7 +138,8 @@ no pad button, only A on them, and show in `undeclared` for that reason.
 A focused text field shows A at its right end. `game/pad_actions.rs` holds this table. A screen that declares nothing keeps
 B as Escape. `horizon-ctl pad status` lists `undeclared`: a button labelled
 Done, Back or Cancel on the current screen that didn't declare its job.
-`tools/pad_menu_e2e.py` fails on one in the settings screens. `glyphs` lists what is drawn.
+`tools/pad_menu_e2e.py` fails on one in the settings screens. `glyphs` lists what is drawn: each
+button, its `sprite` (null when it is the label on a key) and the `rect` it covers.
 
 A label wider than its button slides inside it, as vanilla's do
 (`AbstractWidget.extractScrollingStringOverContents`); one under a glyph slides beside it.
@@ -175,7 +192,7 @@ the crafting result, armour to the player's grid.
 | D-pad, left stick | move focus (held: repeats after 0.35 s, every 0.09 s; the stick steps past 0.55 and lets go under 0.35) |
 | A | press the focused widget: a button when A is let go, if the focus is still on it; anything else when A goes down (held: drag); on a text field, type with the on-screen keyboard. With nothing focused yet, A only lands the focus, as the D-pad does |
 | B, Menu | back (Escape); on the title's main menu, B moves the focus to Quit Game, for A to confirm |
-| X | right click (inventories: take half, place one); on the title's main menu, Options |
+| X | right click (inventories: take half, place one); on the title's main menu and the pause menu, Options |
 | Y | quick move (shift-click) in inventories; on the pause menu, moves the focus to the exit button, for A to confirm |
 | View | throw one item from the focused slot (Q) |
 | Left stick click | throw the focused stack (Ctrl+Q) |
@@ -196,7 +213,7 @@ the crafting result, armour to the player's grid.
   draws it under the pointer). A takes or places, X splits or places one, Y
   quick-moves, View and the left stick click throw.
 - **Where focus lands** when a screen opens: the held hotbar slot in an
-  inventory, else the first button.
+  inventory, else the first button; on a prompt, see "Prompts".
 
 It looks as vanilla's own keyboard focus does: buttons, sliders and slots
 show their highlighted sprite (`isHoveredOrFocused`, drawn because the hidden
@@ -294,6 +311,29 @@ on return (Options, after its Done), as vanilla keeps a screen's focused
 widget. Moving the pad's focus drops the highlight a click gave a button, so
 only one widget ever shows as focused.
 
+The focus means the widget, not the place: the rows under it can have moved, or a resize or a new
+GUI scale moved everything. So it is found again by its label (`widgets::slug`) when exactly one
+widget has that label, and otherwise by its rectangle.
+
+### Prompts
+
+A prompt is a server dialog, the code of conduct, a link or command confirmation or a server pack
+prompt (`Game::prompt_open`), over gameplay or over another screen. The pad drives it by focus, as a
+menu, and nothing it presses reaches the game or the screen behind:
+
+- Of the buttons only A, B, Start and the D-pad do anything.
+- The focus starts on what answers no (its enabled Cancel or Back), so a press meant for the game
+  can't accept anything. A dialog with text to fill in starts on its first input instead, and a prompt
+  with neither starts on its first widget in tab order, a dialog's warning icon last.
+- B and Start answer as Escape, the top prompt first: a command or link confirmation or a pack prompt
+  says no, a dialog closes only if it allows that, and the code of conduct stays, since it has no
+  answer by Escape.
+- The right stick and a step past a list's edge scroll only the prompt, as the mouse wheel does.
+- A prompt coming or going closes the on-screen keyboard and starts the focus again on the new frame.
+  What a prompt covers stops counting (`widgets::cover_frame`): a buried button has no pad button.
+- Once a prompt closes, a keyboard it took from chat or a sign opens again, and on a crosshair screen
+  the crosshair glides back to where it was.
+
 ### Text fields
 
 A on a focused text field (A in pointer mode clicks into it) opens the
@@ -303,10 +343,21 @@ lower half, as chat is). D-pad or stick to move, A types, X deletes, Y is a
 space, LT is Shift (twice: caps lock), RB switches to symbols and accents,
 Menu is Enter, B closes it. It opens by itself when the pad opens chat or a
 sign, but not over the chat a sleeper gets (the game opens that one): there
-it waits for A on the chat box. It types into every field the keyboard
-reaches: chat (local and server), signs, books, the title screens' fields,
-the options' searches, the creative and recipe-book searches, the anvil, the
-LAN port.
+it waits for A on the chat box. It types into chat (local and server), signs, books being written, the title screens' fields,
+every options page's fields (searches, the packs', the language list's,
+splitscreen profiles), the creative and recipe-book searches, the mod browser's search, the anvil, the
+LAN screen's port and its game rules, a server dialog's inputs, command blocks, the game master blocks'
+edit screens, Player Social's search and Debug Options' search. The one exception is a native mod's
+own screen (`Screen::Mod`), which takes its input through the screen hooks: the keyboard types nothing
+there.
+
+Enter (Menu, or the keyboard's Done key) closes the keyboard, and on the way:
+
+- reaches the field as the key would in chat (it sends), on signs and books, on command blocks (their
+  Done) and game master blocks, on the options pages and on the title's fields;
+- does nothing more on the searches, the anvil, the LAN screen and a dialog's one-line input;
+- on a dialog's input of many lines is a new line, and the keyboard stays.
+
 
 On a Steam Deck under Steam (`SteamDeck=1`), A asks Steam for its own
 keyboard instead (`steam://open/keyboard`), which types like a real keyboard;
@@ -330,25 +381,54 @@ book's page text), the pad drives the pointer instead, as it does on Replay Stud
 
 ## Glyphs
 
-Horizon draws its own button glyphs in the HUD and screens (no Mojang
-assets, nothing new from the player's jar): a small round or pill shape with
-the label in the game font, sized to the GUI scale, with two styles:
+A button is drawn as Horizon's own art where its family has a picture, and otherwise as the label
+printed on the pad, in its colour, on a dark key (`pad_glyph.rs`; no Mojang assets, nothing from the
+player's jar). Whatever draws or measures a glyph goes through that module.
 
-- **Xbox / Steam Deck / generic**: A B X Y in their usual colours, LB RB LT
-  RT, View, Menu, stick icons.
-- **PlayStation**: × ○ □ △ in their colours (× rather than ✕, which the game fonts lack), L1 R1 L2 R2,
-  Create/Share, Options.
-- **Nintendo**: B A Y X by position.
+| Family | Art | Text |
+|---|---|---|
+| Xbox, also Auto, Steam Deck and anything unknown | `xb_*`: a b x y, lb rb lt rt, view menu, l3 r3, up down left right | none |
+| PlayStation | `psx_*`: cross circle square triangle, l1 r1 l2 r2, create options, l3 r3, up down left right | none |
+| Nintendo | `nx_*`, by what the pad prints: b a y x at south, east, west and north, l r zl zr, minus plus, l3 r3, up down left right | none |
 
-The style comes from the pad's USB vendor (Sony 054c, Microsoft 045e,
-Nintendo 057e, Valve 28de) unless the controls options force one. Glyphs
-replace key names where a prompt names a key (the controls list, tutorial
-hints, "Press X to dismount") only while the pad is the last-used input.
+Every family has its own file for every button, so a family's art can change without touching another's.
+Some are copies until theirs is drawn: Nintendo's letters and shoulders are Xbox's, and all three share the
+same sticks, D-pad and menu pictures. Text remains for what runs inside a line of text, and for an atlas
+without the sprite.
+
+The art is in `crates/horizon-client/assets/horizon/textures/gui/controller/`, built into the binary, one
+line of `pad_glyph::ART` per picture: a button with no line is text, and adding one is that line and its
+file. A resource pack replaces a picture by bringing the same path,
+`assets/horizon/textures/gui/controller/<file>.png`: the atlas packs other namespaces' `textures/gui/` as
+`horizon:gui/controller/<file>` and adds Horizon's own only when that sprite is missing (`HudAtlas`). A
+pack's picture of another size is drawn in the same place, and a pack can't add a picture for a button
+with no line. An atlas without the sprite falls back to text.
+
+The picture's texture is 32 pixels tall, drawn 16 GUI pixels tall with a clear edge of 2 all round, so a
+glyph shows 12 tall, as a text glyph does: a square picture 12 wide, a bumper or trigger 20. A declared
+button's label leaves room for it.
+
+Art shows on declared buttons and a focused field's A, in notices and splitscreen's strips. What runs
+inside a line of text stays text: the recipe tooltip, the on-screen keyboard's hint line and the buttons on
+the Bindings page. Vanilla's own messages that name a key (tutorial hints) keep the keyboard's names.
+
+The inventory crosshair is `crosshair_inv` in the same folder, drawn at 16 GUI pixels on the point it
+clicks (`pad_cursor.rs`).
+
+The family comes from the pad's USB ids (`GlyphStyle::of_device`) unless Controller Settings > Device
+forces one: Sony 054c and a few licensed pads (HORIPAD 4 FPS and FPS Plus, Razer Raiju, Nacon Revolution
+Pro) are PlayStation; Nintendo 057e and a few licensed pads (HORIPAD for Nintendo Switch, PowerA Wired
+Plus, PDP Faceoff Wired Pro) are Nintendo; Microsoft, Valve's Steam Deck and Steam Input's virtual pad,
+and everything else are Xbox.
 
 ## Options and remapping
 
 Controller settings are Horizon's own: **Options → Controls → Controller
-Settings...**, a screen in the graphics settings' style with a search field and General, Bindings and Device pages. It
+Settings...** (or **Options → Horizon Settings... → Controller Settings...**),
+a screen in the graphics settings' style with a search field and General, Bindings and Device pages. Bindings
+is a list like the key binds screen (pick an action, press a button; conflicts marked as vanilla does), and
+Reset. General's Play group has **Trigger Threshold**, how far a trigger is pulled before it counts as pressed:
+0.1 to 0.9, by default 0.4, which also places a DualSense's catch (see "Adaptive triggers"). The screen
 names the player whose profile it edits and the controller the game sees; Device also shows its vendor and
 product ids, the detected glyph family and the override. Changes apply at once; **Undo** (X) is there only
 while something differs from when the screen opened, and **Done** (B) leaves. They live in
@@ -370,13 +450,11 @@ toggleSneak:true
 glyphs:auto
 bind_key.jump:south
 bind_pad.hotbarNext:rb
+bindLayout:1
 ```
 
-Only bindings that differ from the defaults are written. The controls
-options get a Controller page: on/off, vibration, adaptive triggers, lightbar, look sensitivity, invert
-X/Y, deadzones, glyph style, sneak toggle, and a binding list like the key
-binds screen (pick an action, press a button; conflicts marked as vanilla
-does; reset).
+Only bindings that differ from the defaults are written. A file without `bindLayout` comes from before the
+current defaults and keeps its buttons where they were.
 
 Deadzones are radial (the stick's length, so diagonals aren't clipped) and the
 remaining range is rescaled to 0..1. Look uses a squared curve for precise

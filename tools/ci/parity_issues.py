@@ -11,6 +11,10 @@ shards merged into their harness, and compares them with the previous audit (.lo
 - a harness with an open issue that still fails gets a comment on it;
 - a harness with an open issue that passes again gets its issue closed.
 
+When more than MASS_FAILURE harnesses newly fail at once (a commit that does not build, a broken runner), they get
+one issue titled "Nightly audit: N harnesses newly fail" instead of one each (2026-11-06: a main commit that did not
+compile opened 421), and their previous results are kept so the next audit compares them again.
+
 The first audit only records the results. Needs the gh CLI; --dry-run prints what it would do.
 """
 
@@ -27,6 +31,7 @@ AUDIT = ROOT / ".local" / "parity-runner" / "audit.json"
 LOGS = ROOT / ".local" / "parity-runner" / "logs"
 LABEL = "parity-regression"
 TITLE = "Parity regression: "
+MASS_FAILURE = 20
 
 
 def results(state, since):
@@ -53,6 +58,26 @@ def plan(now, previous, open_issues):
     return actions
 
 
+def mass_failure(actions):
+    """The harnesses to report in one issue instead of one each, or [] when the audit looks normal."""
+    opened = [harness for kind, harness in actions if kind == "open"]
+    return opened if len(opened) > MASS_FAILURE else []
+
+
+def first_errors(lines=40):
+    """The first compiler errors in the audit's logs: the likely reason for a mass failure."""
+    found = []
+    for path in sorted(LOGS.glob("*.log")):
+        text = path.read_text(errors="replace").splitlines()
+        for index, line in enumerate(text):
+            if line.lstrip().startswith("error[") or line.lstrip().startswith("error: "):
+                found = text[index:index + lines]
+                break
+        if found:
+            break
+    return "\n".join(found)
+
+
 def log_tail(harness, lines=60):
     logs = sorted(LOGS.glob(f"{harness}*.log"))
     text = "\n".join(path.read_text(errors="replace") for path in logs)
@@ -73,7 +98,7 @@ def main():
     args = parser.parse_args()
     now = results(json.loads(STATE.read_text()), args.since)
     previous = json.loads(AUDIT.read_text()) if AUDIT.exists() else None
-    listed = json.loads(gh("issue", "list", "--label", LABEL, "--state", "open", "--limit", "200",
+    listed = json.loads(gh("issue", "list", "--label", LABEL, "--state", "open", "--limit", "1000",
                            "--json", "number,title") or "[]")
     open_issues = {issue["title"][len(TITLE):]: issue["number"] for issue in listed if issue["title"].startswith(TITLE)}
     commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
@@ -87,6 +112,16 @@ def main():
         actions = plan(now, {}, open_issues)
     else:
         actions = plan(now, previous, open_issues)
+    mass = mass_failure(actions)
+    if mass:
+        actions = [action for action in actions if action[0] != "open"]
+        print(f"open: one issue for {len(mass)} harnesses that newly fail at once")
+        gh("issue", "create", "--label", LABEL, "--title", f"Nightly audit: {len(mass)} harnesses newly fail",
+           "--body", f"{len(mass)} harnesses passed in the previous nightly audit and fail in the audit of "
+           f"`{commit[:12]}` ({run}): usually a commit that does not build or a broken runner, so they get this "
+           f"one issue instead of one each.\n\n{', '.join(f'`{harness}`' for harness in mass)}\n\n"
+           f"<details><summary>First compiler error in the logs</summary>\n\n```\n{first_errors()}\n```\n"
+           f"</details>\n", dry_run=args.dry_run)
     for kind, harness in actions:
         details = (f"Nightly audit of `{commit[:12]}` ({run}).\n\n"
                    f"Reproduce: `python3 tools/parity.py {harness}`\n\n<details><summary>End of the log</summary>\n\n"
@@ -102,7 +137,7 @@ def main():
                f"Passes again in the nightly audit of `{commit[:12]}` ({run}).", dry_run=args.dry_run)
     if not args.dry_run:
         merged = dict(previous or {})
-        merged.update(now)
+        merged.update({harness: status for harness, status in now.items() if harness not in mass})
         AUDIT.write_text(json.dumps(merged, indent=1, sort_keys=True))
     return 0
 

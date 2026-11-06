@@ -2,6 +2,7 @@
 //! events (`CriteriaTriggers`), awarding with rewards, the toast and the
 //! chat announcement, and `players/advancements/<uuid>.json`.
 use super::{Dim, Game};
+use horizon_client::actions::Action;
 use horizon_client::{
     advancements::{self as adv, EntityView, Frame, ItemView, Progress, Tree},
     hud::{HudBatch, rgba},
@@ -596,7 +597,7 @@ impl Game<'_> {
             on_fire: p.fire_ticks > 0,
             sneaking: p.pose == horizon_client::pose::Pose::Crouching,
             // Input.shift: the held key, as `BlockItem.place`'s sneaking reads it.
-            input_sneak: self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft),
+            input_sneak: self.keys.held(Action::Sneak),
             sprinting: p.sprinting,
             swimming: p.pose == horizon_client::pose::Pose::Swimming,
             flying: p.flying,
@@ -691,7 +692,9 @@ impl Game<'_> {
             let uuid = self.persist.uuids.get(&m.id).copied().unwrap_or_default();
             let raw = self.persist.raw.get(&m.id);
             let registry = Some(self.pack.assets.registry);
-            let mut tag = horizon_client::entity_nbt::mob_to_nbt(m, uuid, raw, registry);
+            let mut tag = horizon_client::entity_nbt::mob_to_nbt(m, uuid, raw, registry, |other| {
+                self.persist.uuid_of(other)
+            });
             let riders = passengers.iter().filter_map(|r| r.nbt.clone()).collect();
             super::persist::add_passengers(&mut tag, riders);
             tag
