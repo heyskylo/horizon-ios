@@ -1759,8 +1759,8 @@ fn a_boat_floating_too_long_kicks_its_driver() {
 }
 
 /// A client that numbers its packets as `version` does, from the protocol adapter's own tables: for 26.2 its
-/// handshake states 776 and every id it sends and reads is 26.2's. The payloads stay the pinned ones: the
-/// packets whose layout changed are a later step of `older-clients`.
+/// handshake states 776 and every id it sends and reads is 26.2's. The payloads stay as they come: the world
+/// packets in 26.2's layout, the rest in the pinned one until later steps of `older-clients`.
 struct Numbered {
     c: Connection,
     version: ServerVersion,
@@ -1975,6 +1975,26 @@ fn a_26_2_client_joins_only_a_server_that_accepts_older_clients() {
             if id == horizon_protocol::ids::play::clientbound::COMMANDS {
                 continue;
             }
+            // World packets come in 26.2's own layout, which the pinned readers don't read (the adapter's
+            // unit tests read them back with translate's 26.2 readers).
+            {
+                use horizon_protocol::ids::play::clientbound as cb;
+                match id {
+                    cb::LEVEL_CHUNK_WITH_LIGHT => {
+                        chunks += 1;
+                        continue;
+                    }
+                    cb::LIGHT_UPDATE
+                    | cb::LEVEL_PARTICLES
+                    | cb::EXPLODE
+                    | cb::MOVE_ENTITY_POS
+                    | cb::MOVE_ENTITY_POS_ROT
+                    | cb::MOVE_ENTITY_ROT
+                    | cb::ENTITY_POSITION_SYNC
+                    | cb::ANIMATE => continue,
+                    _ => {}
+                }
+            }
             match C::decode(id, &payload).map_err(|e| format!("packet {id}: {e}"))? {
                 C::Login(_) => login = true,
                 C::PlayerPosition(p) => bot.send(
@@ -1988,7 +2008,6 @@ fn a_26_2_client_joins_only_a_server_that_accepts_older_clients() {
                     })
                     .encode(),
                 )?,
-                C::LevelChunkWithLight(_) => chunks += 1,
                 C::ChunkBatchFinished(_) => {
                     bot.send(
                         S::ChunkBatchReceived(play::ChunkBatchReceived {
