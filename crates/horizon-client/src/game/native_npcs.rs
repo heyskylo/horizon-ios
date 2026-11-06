@@ -7,6 +7,7 @@
 //! place: that level is put in place for the call, as `execute in` does, and
 //! the one that was is put back. A level nobody opened is not opened.
 use super::{Game, commands::Target};
+use horizon_client::mobs::{Mob, MobWorld};
 use horizon_world::nbt::Compound;
 
 // Native mods use these; nothing in Horizon does.
@@ -127,6 +128,136 @@ impl Game<'_> {
             true
         })
         .unwrap_or(false)
+    }
+    /// Walks mob `mob` of the loaded level `dimension` towards `to` with the
+    /// engine's pathfinding, as `PathNavigation.moveTo(x, y, z, reach,
+    /// speed)` does: a path to the block holding `to` (a walker's onto the
+    /// ground below it), done within `reach` blocks, followed at `speed`
+    /// times the mob's movement speed. True when a path was found and the
+    /// mob is on its way; false for no path (within its follow range, as
+    /// vanilla's), a level not loaded, no such living mob, or a value that
+    /// isn't finite. The path goes round walls and through open doors as the
+    /// mob's own navigation allows. The mob's goals may take the navigation
+    /// over, as they do from vanilla's callers: call it again (an NPC
+    /// library's navigator does so each tick) or give the mob goals of its
+    /// own (`native_register_goals`). A mob with `no_ai` keeps the path but
+    /// doesn't walk it. API @API:npc_mob_navigation@.
+    pub(super) fn native_mob_navigate(
+        &mut self,
+        dimension: &str,
+        mob: u32,
+        to: [f64; 3],
+        reach: i32,
+        speed: f64,
+    ) -> bool {
+        if !to.into_iter().all(f64::is_finite) || !speed.is_finite() || reach < 0 {
+            return false;
+        }
+        let at = to.map(|v| v.floor() as i32);
+        self.npc_drive(dimension, mob, |m, w| {
+            let path = m.create_path_to(w, at, reach);
+            m.nav_move_to_path(w, path, speed)
+        })
+        .unwrap_or(false)
+    }
+    /// Walks mob `mob` towards where entity `target` (a mob, a player or any
+    /// other entity of the same level) stands now, as
+    /// `PathNavigation.moveTo(entity, speed)` does (done within a block). A
+    /// path to where it is now: to follow it, call it again as it moves
+    /// (vanilla's follow and attack goals ask every few ticks). False as
+    /// `native_mob_navigate`, or for no such target in that level. API
+    /// @API:npc_mob_navigation@.
+    pub(super) fn native_mob_follow(
+        &mut self,
+        dimension: &str,
+        mob: u32,
+        target: u32,
+        speed: f64,
+    ) -> bool {
+        if !speed.is_finite() || mob == target {
+            return false;
+        }
+        self.npc_in_level(dimension, |g| {
+            let Some(at) = g.npc_entity_position(target) else {
+                return false;
+            };
+            g.npc_drive(dimension, mob, |m, w| m.nav_move_to_entity(w, at, 1, speed))
+                .unwrap_or(false)
+        })
+        .unwrap_or(false)
+    }
+    /// Stops mob `mob`'s walk (`PathNavigation.stop`): false for a level not
+    /// loaded or no such living mob. API @API:npc_mob_navigation@.
+    pub(super) fn native_mob_stop(&mut self, dimension: &str, mob: u32) -> bool {
+        self.npc_drive(dimension, mob, |m, _| m.nav_stop())
+            .is_some()
+    }
+    /// Whether mob `mob` is walking a path (`PathNavigation.isInProgress`):
+    /// false once it arrived, got stuck or was stopped, and for a level not
+    /// loaded or no such living mob. API @API:npc_mob_navigation@.
+    pub(super) fn native_mob_navigating(&mut self, dimension: &str, mob: u32) -> bool {
+        self.npc_in_level(dimension, |g| {
+            g.mobs
+                .iter()
+                .any(|m| m.id == mob && !m.removed && m.alive() && m.ai.nav.is_in_progress())
+        })
+        .unwrap_or(false)
+    }
+    /// Turns mob `mob`'s head towards `at` at its own head speeds, as
+    /// `LookControl.setLookAt(x, y, z)` does: the head turns on the mob's
+    /// next tick and the body follows it, as for vanilla's look goals. It
+    /// holds for that tick only, so call it each tick to keep looking; a mob
+    /// with `no_ai` doesn't turn (`native_set_entity_rotation` turns it).
+    /// False for a level not loaded, no such living mob or a point that isn't
+    /// finite. API @API:npc_mob_navigation@.
+    pub(super) fn native_mob_look_at(&mut self, dimension: &str, mob: u32, at: [f64; 3]) -> bool {
+        if !at.into_iter().all(f64::is_finite) {
+            return false;
+        }
+        self.npc_drive(dimension, mob, |m, _| m.look_at(at))
+            .is_some()
+    }
+    /// Runs `f` on the living mob `mob` of the loaded level `dimension`, with
+    /// the world its goals see. The mob is out of the level's list meanwhile,
+    /// as in its own tick.
+    fn npc_drive<R>(
+        &mut self,
+        dimension: &str,
+        mob: u32,
+        f: impl FnOnce(&mut Mob, &MobWorld<'_>) -> R,
+    ) -> Option<R> {
+        self.npc_in_level(dimension, |g| {
+            let i = g
+                .mobs
+                .iter()
+                .position(|m| m.id == mob && !m.removed && m.alive())?;
+            let mut mobs = std::mem::take(&mut g.mobs);
+            let out = f(&mut mobs[i], &g.mob_world_base(&[]));
+            g.mobs = mobs;
+            Some(out)
+        })
+        .flatten()
+    }
+    /// Where entity `id` of the level in place stands: a server's player in
+    /// it, or any entity of its lists.
+    fn npc_entity_position(&self, id: u32) -> Option<[f64; 3]> {
+        let player = self.lan.as_ref().and_then(|h| {
+            h.hub
+                .guests
+                .iter()
+                .find(|g| h.hub.here(g) && u32::try_from(g.entity_id) == Ok(id))
+                .map(|g| g.position)
+        });
+        if player.is_some() {
+            return player;
+        }
+        let t = self.level_entity(i32::try_from(id).ok()?)?;
+        if let Target::Mob(m) = t
+            && !self.mobs.iter().any(|x| x.id == m && !x.removed)
+        {
+            return None;
+        }
+        self.target_position(t)
     }
 }
 

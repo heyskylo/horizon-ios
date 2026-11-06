@@ -2513,6 +2513,19 @@ that tick the other mobs of that level read as gone.
   keeps without simulating them; a player is turned by teleporting them. A mob whose AI runs turns back by its own
   look and body control on its next tick: for one that looks around, use `native_mob_look_at` each tick, or spawn it
   with `no_ai`. False for no such entity, another kind, or an angle that isn't finite. API @API:npc_entity_rotation@.
+- **`native_mob_navigate(dimension, mob, to, reach, speed)`** walks a mob with the engine's pathfinding, as
+  `PathNavigation.moveTo(x, y, z, reach, speed)` does: round walls and through doors as its own navigation allows (a
+  walker's target is the ground below `to`), done within `reach` blocks, at `speed` times its movement speed. True
+  when a path was found within the mob's follow range. **`native_mob_follow(dimension, mob, target, speed)`** walks it
+  to where an entity of its level stands now (`moveTo(entity, speed)`; a player by their entity id): call it again as
+  the target moves, as vanilla's follow and attack goals do. **`native_mob_stop(dimension, mob)`** stops the walk
+  (`stop`), **`native_mob_navigating(dimension, mob)`** says whether one is in progress (`isInProgress`: false once
+  it arrived, got stuck or was stopped), and **`native_mob_look_at(dimension, mob, at)`** turns its head towards a
+  point at its own head speeds for its next tick (`LookControl.setLookAt`), its body following. These drive the mob
+  as vanilla's goals do, so its own goals may take the navigation or the look over on a later tick: an NPC library
+  asks again each tick, or gives its mobs goals of their own (`native_register_goals`). A mob with `no_ai` keeps a path
+  but doesn't walk it, and doesn't turn its head (`native_set_entity_rotation` turns it). False for no such living mob
+  or a value that isn't finite. API @API:npc_mob_navigation@.
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a
