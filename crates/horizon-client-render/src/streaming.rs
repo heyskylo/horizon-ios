@@ -70,6 +70,12 @@ pub type Proto = Box<dyn std::any::Any + Send>;
 pub trait ChunkGenerator: Send + Sync + 'static {
     type Worker: Send + 'static;
     fn worker(&self) -> Self::Worker;
+    /// The persistent wrapper supplies starts from their owning chunk, in every dimension.
+    fn set_saved_starts(
+        &self,
+        _source: Arc<horizon_world::worldgen::generator::SavedStructureStarts>,
+    ) {
+    }
     fn lod_sampler(self: Arc<Self>) -> Box<dyn LodSampler>
     where
         Self: Sized,

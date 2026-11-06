@@ -5043,6 +5043,14 @@ impl SaveDir {
 impl<G: ChunkGenerator> ChunkGenerator for Persistent<G> {
     type Worker = G::Worker;
     fn worker(&self) -> G::Worker {
+        let save = self.save.clone();
+        self.inner.set_saved_starts(Arc::new(move |pos| {
+            let root = save.raw_chunk(pos.x, pos.z)?;
+            match root.tag.get("structures")?.get("starts")? {
+                Tag::Compound(starts) => Some(starts.clone()),
+                _ => None,
+            }
+        }));
         self.inner.worker()
     }
     fn lod_sampler(self: Arc<Self>) -> Box<dyn crate::streaming::LodSampler> {
@@ -5382,6 +5390,82 @@ mod tests {
         save.save_attachments(&map).unwrap();
         assert_eq!(save.load_attachments().get(&key), Ok(7));
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn loaded_chunk_uses_saved_jigsaw_from_its_referenced_start_chunk() {
+        let Some(root) = std::env::var_os("HORIZON_TEST_RESOURCES") else {
+            return;
+        };
+        let root = PathBuf::from(root);
+        let assets = Arc::new(crate::assets::Assets::load(&root).expect("assets"));
+        let biomes = Arc::new(Biomes::load(&root).expect("biomes"));
+        let inner = Arc::new(
+            crate::vanillagen::VanillaTerrain::new(
+                &root.join("worldgen"),
+                assets.registry,
+                &biomes,
+                12345,
+            )
+            .unwrap(),
+        );
+        let mut original = inner
+            .structure_start("minecraft:ancient_city", 2, -3)
+            .unwrap();
+        Arc::get_mut(&mut original).unwrap().references = 4;
+        let starts = Tag::compound([
+            ("minecraft:ancient_city", original.save().unwrap()),
+            (
+                "minecraft:mineshaft",
+                Tag::compound([("id", string("INVALID"))]),
+            ),
+        ]);
+        let mut saved = encode(&Chunk::empty(2, -3), assets.registry, &biomes);
+        let Tag::Compound(root) = &mut saved.tag else {
+            panic!("chunk root")
+        };
+        let Some(Tag::Compound(structures)) = root.get_mut(&"structures".into()) else {
+            panic!("structures")
+        };
+        structures.insert("starts".into(), starts.clone());
+        let loaded = decode(&saved, assets.registry, &biomes).expect("chunk");
+        let Tag::Compound(expected) = &starts else {
+            unreachable!()
+        };
+        assert_eq!(loaded.saved_structure_starts(), Some(expected));
+        let again = encode(&loaded, assets.registry, &biomes);
+        assert_eq!(
+            again.tag.get("structures").and_then(|s| s.get("starts")),
+            Some(&starts)
+        );
+        let save = Arc::new(SaveDir::new(
+            std::env::temp_dir().join(format!("horizon-saved-starts-{}", std::process::id())),
+            LevelShape::OVERWORLD,
+        ));
+        // A pending record is authoritative even before any region file exists.
+        save.pending
+            .lock()
+            .unwrap()
+            .insert((Folder::Region, 2, -3), (0, Record::Tag(Arc::new(saved))));
+        let generator = Persistent {
+            inner: inner.clone(),
+            save,
+            registry: assets,
+            biomes,
+        };
+        let mut worker = generator.worker();
+        let mut referring = Chunk::empty(3, -3);
+        referring
+            .structure_refs
+            .push(("minecraft:ancient_city".into(), (2, -3)));
+        generator.prepare_loaded(&mut worker, &referring);
+        let starts = inner.starts_at(2, -3);
+        let restored = starts
+            .iter()
+            .find(|s| s.name == original.name)
+            .expect("referenced saved start");
+        assert_eq!(restored.save(), original.save());
+        assert_eq!(format!("{restored:?}"), format!("{original:?}"));
     }
 
     #[test]
