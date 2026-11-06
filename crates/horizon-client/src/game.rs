@@ -3170,6 +3170,8 @@ struct Game<'a> {
     gpu_utilization: f64,
     /// The mobs `mob_geometry` drew last frame (`lastEntityRenderStateCount`).
     rendered_mobs: std::cell::Cell<usize>,
+    /// Whether a native mod requested background blur for this frame (`apply_screen_blur`).
+    screen_blur_requested: std::cell::Cell<bool>,
     /// `ServerChunkCache.lastSpawnState` of each level: its spawnable chunks
     /// and each `MobCategory`'s count.
     spawn_counts: HashMap<Dim, (i32, [i32; 8])>,
@@ -9692,14 +9694,7 @@ impl Game<'_> {
         let (ox, oy) = self.inventory_origin(batch);
         {
             let atlas = &self.gui.atlas;
-            batch.fill(
-                atlas,
-                0.0,
-                0.0,
-                batch.width,
-                batch.height,
-                rgba(16, 16, 16, 160),
-            );
+            self.render_transparent_background("inventory", batch);
             let part = |batch: &mut HudBatch,
                         name: &str,
                         sx: f32,
@@ -15622,14 +15617,7 @@ impl Game<'_> {
                 t.column + 1
             )
         };
-        batch.fill(
-            &self.gui.atlas,
-            0.0,
-            0.0,
-            batch.width,
-            batch.height,
-            rgba(16, 16, 16, 160),
-        );
+        self.render_transparent_background("creative", batch);
         // Unselected tabs behind the panel, then the panel, then the selected tab.
         for (i, t) in tabs.iter().enumerate() {
             if i != selected && self.creative_screen.on_page(t) {
@@ -16661,6 +16649,7 @@ impl Game<'_> {
             horizon_client::camera::depth_far(terrain_distance, self.settings.cloud_range);
         // Only native mods read it: no matrices or allocation per frame without one.
         let mods_read_camera = !horizon_client::mod_api::mods().is_empty();
+        self.screen_blur_requested.set(false);
         self.native_camera_frame = (mods_read_camera && !title).then(|| {
             let partial = camera_alpha as f32;
             horizon_client::mod_api::NativeCamera {
@@ -17078,11 +17067,30 @@ impl Game<'_> {
                 && self.player.is_some()
                 && (self.screen.blurs_background(self.pause_menu)
                     || self.dialog_open()
-                    || (self.screen == Screen::Win && self.win_screen_pauses())));
+                    || (self.screen == Screen::Win && self.win_screen_pauses())))
+            || self.screen_blur_requested.get();
         let radius = self.settings.menu_blur as f32;
         let mut radius = (blurred && radius >= 1.0).then_some(radius);
         self.native_menu_background(&mut radius);
         radius.filter(|r| r.is_finite() && (1.0..=64.0).contains(r))
+    }
+    /// `Screen.renderTransparentBackground`: draws the translucent dark background
+    /// behind an in-game screen (inventory, containers, creative, books, signs, editors),
+    /// giving native mods a chance to suppress it (`Flow::Cancel`) or apply menu blur / tiled background.
+    pub(super) fn render_transparent_background(&self, screen: &str, batch: &mut HudBatch) {
+        let mut canceled = false;
+        self.native_screen_transparent_background(screen, batch, &mut canceled);
+        if !canceled {
+            let atlas = &self.gui.atlas;
+            batch.fill(
+                atlas,
+                0.0,
+                0.0,
+                batch.width,
+                batch.height,
+                rgba(16, 16, 16, 160),
+            );
+        }
     }
     /// `LevelExtractor` / `LevelRenderer`: the world border wall this frame.
     fn border_draw(
@@ -18018,9 +18026,9 @@ impl ApplicationHandler for Game<'_> {
         let fullscreen = self.settings.fullscreen || self.options.fullscreen;
         let size = self.options.window_size.map(f64::from);
         self.fullscreen = horizon_client::window::FullscreenState::new(fullscreen);
-        let attributes = Window::default_attributes()
-            .with_title("Horizon")
-            .with_window_icon(horizon_client::window::icon());
+        let attributes = horizon_client::window::with_horizon_icon(
+            Window::default_attributes().with_title("Horizon"),
+        );
         // Wayland names the window by its app id, which the horizon.desktop entry matches.
         #[cfg(target_os = "linux")]
         let attributes = winit::platform::wayland::WindowAttributesExtWayland::with_name(
@@ -20248,6 +20256,7 @@ impl<'a> Game<'a> {
             memory_meter: Default::default(),
             gpu_utilization: 0.0,
             rendered_mobs: Default::default(),
+            screen_blur_requested: Default::default(),
             spawn_counts: HashMap::new(),
             pause_menu: true,
             pause_focus: None,
@@ -22164,9 +22173,9 @@ impl Loading {
             .map_or([1280, 720], |o| o.window_size)
             .map(f64::from);
         self.fullscreen = horizon_client::window::FullscreenState::new(fullscreen);
-        let attributes = Window::default_attributes()
-            .with_title("Horizon")
-            .with_window_icon(horizon_client::window::icon());
+        let attributes = horizon_client::window::with_horizon_icon(
+            Window::default_attributes().with_title("Horizon"),
+        );
         // Wayland names the window by its app id, which the horizon.desktop entry matches.
         #[cfg(target_os = "linux")]
         let attributes = winit::platform::wayland::WindowAttributesExtWayland::with_name(
