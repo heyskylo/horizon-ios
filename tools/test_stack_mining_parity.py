@@ -39,9 +39,20 @@ def main():
     lock, jars, _ = base.verify_artifacts()
     build = lab.LOCAL / 'rust-stack-mining-parity'
     build.mkdir(parents=True, exist_ok=True)
+    report = build / 'report.json'
+    report.unlink(missing_ok=True)
+    sources = [Path(__file__), lab.ROOT / 'tools/oracle_harness.py', lab.ROOT / 'tools/lab.py',
+               lab.ROOT / 'tools/test_rust_parity.py', lab.ROOT / 'tools/test_model_baking_parity.py',
+               lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaStackMiningOracle.java',
+               lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/ParityData.java',
+               lab.ROOT / 'crates/horizon-client/examples/probe/stack_mining_probe.rs',
+               lab.ROOT / 'crates/horizon-items/src/items.rs', lab.ROOT / 'crates/horizon-items/src/item_data.rs',
+               lab.ROOT / 'crates/horizon-items/src/item_nbt.rs', lab.ROOT / 'Cargo.toml', lab.ROOT / 'Cargo.lock']
+    tested = base.source_hashes(sources)
     inputs = build / 'inputs.jsonl'
     rows = list(corpus())
     inputs.write_text(''.join(json.dumps(row) + '\n' for row in rows), encoding='utf-8')
+    input_hash = lab.digest(inputs, 'sha256')
     classes, dependencies, _ = harness.compile_oracle(build, 'VanillaStackMiningOracle', jars, baking.client_libraries(), lock['minecraft']['java_major'])
     harness.java_run(build, classes, dependencies, 'VanillaStackMiningOracle', [inputs, build / 'vanilla.txt'], 'java')
     harness.run_logged(['cargo', 'build', '--locked', '-p', 'horizon-client-lib', '--example', 'client_probe'], build, 'rust-build', env=dict(os.environ, CARGO_BUILD_JOBS='2'))
@@ -50,6 +61,19 @@ def main():
     resources = Path(os.environ.get('HORIZON_TEST_RESOURCES', lab.RESOURCES))
     harness.run_logged([binary, 'stack_mining_probe', inputs, build / 'rust.txt', resources], build, 'rust', env=lab.game_env())
     harness.compare(build / 'vanilla.txt', build / 'rust.txt', len(rows))
+    base.ensure_sources_unchanged(sources, tested)
+    if input_hash != lab.digest(inputs, 'sha256'):
+        raise RuntimeError('Input fixtures changed during validation')
+    lab.write_json(report, dict(schema=1, minecraft=lab.VERSION, units=len(rows),
+        sources_sha256=tested, inputs_sha256=input_hash,
+        client_jar_sha256=lab.digest(jars['client'], 'sha256'),
+        oracle_class_sha256=lab.digest(classes / 'dev/horizonlab/parity/VanillaStackMiningOracle.class', 'sha256'),
+        rust_binary_sha256=lab.digest(binary, 'sha256'),
+        output_sha256=lab.digest(build / 'rust.txt', 'sha256'),
+        scope='Actual Java item-command admission, TOOL mining speed/drop/wear amount and durable-prototype '
+              'capacity queries before/after saved-stack round trips. Custom durability on non-durable '
+              'prototypes is deferred. Eye immersion is covered separately by source-derived Game regressions; '
+              'this differential does not execute block destruction, durability mutation or statistics.'))
     print(f'{len(rows)} stack mining command/save cases match pinned vanilla {lab.VERSION}')
 
 
