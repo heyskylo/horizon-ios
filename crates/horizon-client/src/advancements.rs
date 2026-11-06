@@ -538,14 +538,12 @@ impl Progress {
             .get(adv)
             .is_some_and(|m| m.contains_key(criterion))
     }
-    /// `AdvancementProgress.isDone`: every requirement group has a criterion
-    /// obtained, and an advancement with no requirement groups at all (no
-    /// criteria, so nothing to wait for) is done from the start, as vanilla's
-    /// empty loop answers true.
+    /// `AdvancementProgress.isDone`.
     pub fn done(&self, a: &Advancement) -> bool {
-        a.requirements
-            .iter()
-            .all(|group| group.iter().any(|c| self.has(&a.id, c)))
+        !a.requirements.is_empty()
+            && a.requirements
+                .iter()
+                .all(|group| group.iter().any(|c| self.has(&a.id, c)))
     }
     /// Completed requirement groups and their count (the screen's tooltip).
     pub fn counts(&self, a: &Advancement) -> (usize, usize) {
@@ -2650,17 +2648,13 @@ mod tests {
         p.grant("minecraft:t", "b", "now");
         assert!(p.done(&a));
     }
-    /// `AdvancementProgress.isDone` answers true for an advancement with no
-    /// requirement groups (no criteria), which is what makes vanilla's
-    /// `PlayerAdvancements.checkForAutomaticTriggers` grant such an advancement
-    /// the moment progress loads; `Tree::automatic` is the list it walks.
+    /// `AdvancementRequirements.test` answers false with no requirement groups, so an advancement
+    /// without criteria is never done by `isDone`; `PlayerAdvancements.checkForAutomaticTriggers`
+    /// still grants its rewards as progress loads, and `Tree::automatic` is the list it walks.
     #[test]
-    fn an_advancement_without_criteria_is_done_and_granted_automatically() {
+    fn an_advancement_without_criteria_is_not_done_but_granted_automatically() {
         let empty = parse("minecraft:free", &serde_json::json!({"criteria": {}})).unwrap();
-        assert!(
-            Progress::default().done(&empty),
-            "no groups, nothing to wait for"
-        );
+        assert!(!Progress::default().done(&empty), "no groups: not done");
         let waiting = parse(
             "minecraft:waits",
             &serde_json::json!({"criteria": {"a": {"trigger": "minecraft:tick"}}}),
