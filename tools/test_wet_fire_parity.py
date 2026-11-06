@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Compare 82 full mob-tick wet-fire observations against the pinned vanilla server.
 
-Requires prepared resources via HORIZON_TEST_RESOURCES. Does not start a server,
+Reads prepared resources from HORIZON_TEST_RESOURCES, or .local's when unset. Does not start a server,
 open a window, or modify the resource root. The Java fixture fixes movement and
 world boundaries while retaining real Mob.tick, damage, fluids and block effects.
 """
@@ -45,7 +45,8 @@ def native_rows(text):
 
 
 def main():
-    resources = Path(os.environ["HORIZON_TEST_RESOURCES"])
+    # parity.py sets no HORIZON_TEST_RESOURCES: default to the prepared resources, as the other harnesses do.
+    resources = Path(os.environ.get("HORIZON_TEST_RESOURCES", lab.RESOURCES))
     if not (resources / "movement-properties.nbt").is_file():
         raise RuntimeError("HORIZON_TEST_RESOURCES must contain prepared 26.3 resources")
     build = lab.LOCAL / "wet-fire-parity"
