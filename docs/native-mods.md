@@ -2498,6 +2498,14 @@ that tick the other mobs of that level read as gone.
 - **`native_spawn_mob(dimension, kind, pos, &NativeSpawn)`** and **`native_summon(dimension, kind, pos, nbt)`**
   ([Mobs](#mobs), [Entities](#entities)) spawn into any loaded level, as `execute in <dimension> run summon` does,
   where they were refused for any level but the one in place. Their other refusals stay. API @API:npc_any_level@.
+- **`native_entity_by_uuid(uuid)`** finds the entity with that UUID in any loaded level, as Bukkit's
+  `Server.getEntity(UUID)` does: `(dimension, id, kind)`, so a stage plugin that keeps its actors by UUID reaches them
+  wherever they are, without `/tp`, `/data` or `/kill` by UUID on the console. A server's player is found too
+  (`minecraft:player`, in its level), except while a guest's packet is handled, where the hub is taken out.
+  **`native_merge_entity_nbt(dimension, id, nbt)`** is `native_entity_merge_nbt` ([Entity and level
+  handles](#entity-and-level-handles)) for any loaded level, as `execute in <dimension> run data merge entity` does,
+  with the same refusals (a player, a kind Horizon can't reload yet, data that changes nothing). API
+  @API:npc_entity_by_uuid@.
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a
