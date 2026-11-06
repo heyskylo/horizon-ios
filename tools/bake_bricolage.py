@@ -137,6 +137,9 @@ def add_cyrillic(font: TTFont, geist: Path) -> int:
 
 
 def main() -> None:
+    if len(sys.argv) != 3 or any(argument.startswith("-") for argument in sys.argv[1:]):
+        sys.exit(__doc__ + "\nUsage: python3 tools/bake_bricolage.py "
+                 "'BricolageGrotesque[opsz,wdth,wght].ttf' 'Geist[wght].ttf'")
     source, geist = Path(sys.argv[1]), Path(sys.argv[2])
     for family, style, opsz, wght in CUTS:
         font = TTFont(source)
