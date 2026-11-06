@@ -2357,6 +2357,7 @@ impl Game<'_> {
     pub(super) fn hurt_cart(&mut self, i: usize, damage: f32, creative: bool, fire: bool) {
         self.hurt_cart_result(i, damage, creative, fire);
     }
+
     /// Accepted damage is distinct from survival, destruction, or TNT priming.
     pub(super) fn hurt_cart_result(
         &mut self,
