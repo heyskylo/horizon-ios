@@ -5,7 +5,6 @@ use super::Game;
 use horizon_assets::item_model::DisplayContext;
 use horizon_client::{
     block_entity_render::vertex_light,
-    effects::EffectInstance,
     items::ItemStack,
     mesher::Vertex,
     particles::{ParticleOptions, ParticleType},
@@ -26,6 +25,37 @@ impl Game<'_> {
             .components(&horizon_client::item_render::stack_view(s))
             .get("minecraft:death_protection")
             .is_some()
+    }
+    /// The `death_effects` of the stack's `minecraft:death_protection`.
+    fn death_effects(&self, s: &ItemStack) -> Vec<horizon_client::items::ConsumeEffect> {
+        death_effects_of(&self.pack.item_renderer.models, s)
+    }
+    /// What each armed mob's hands carry as `minecraft:death_protection`, for
+    /// `Mob::use_death_protection` (the mob has no item data of its own): any
+    /// item with the component counts, not only the totem.
+    pub(super) fn sync_mob_death_protection(&mut self) {
+        let models = &self.pack.item_renderer.models;
+        let of = |id: Option<&std::sync::Arc<str>>, stack: Option<&ItemStack>| {
+            let stack = match (stack, id) {
+                (Some(s), _) => s.clone(),
+                (None, Some(id)) => ItemStack::new(id, 1),
+                (None, None) => return None,
+            };
+            models
+                .components(&horizon_client::item_render::stack_view(&stack))
+                .get("minecraft:death_protection")
+                .map(horizon_client::items::death_effects)
+        };
+        for m in self.mobs.iter_mut().filter(|m| !m.removed) {
+            if m.extra.main_hand.is_none() && m.extra.off_hand.is_none() {
+                m.extra.hand_protection = None;
+                continue;
+            }
+            m.extra.hand_protection = Some(horizon_client::mobs::HandProtection {
+                main: of(m.extra.main_hand.as_ref(), m.extra.main_hand_stack()),
+                off: of(m.extra.off_hand.as_ref(), None),
+            });
+        }
     }
     /// Whether either hand holds a death-protection item, for the next hurt:
     /// the window's player once a tick, a server's player for each of its
@@ -86,16 +116,11 @@ impl Game<'_> {
         // ItemStack.causeUseVibration: the totem's use effects make one.
         let ctx = self.player_context(None);
         self.post_game_event("minecraft:item_interact_finish", body.at, ctx);
-        // DeathProtection.TOTEM_EFFECTS: clear, then regeneration II, absorption II, fire resistance.
-        self.potions.effects.clear();
-        for (id, ticks, amp) in [
-            ("regeneration", 900, 1),
-            ("absorption", 100, 1),
-            ("fire_resistance", 800, 0),
-        ] {
-            if let Some(e) = horizon_client::brewing::effect(id) {
-                self.add_player_effect(EffectInstance::new(e.id, ticks, amp));
-            }
+        // `DeathProtection.applyEffects`: the component's own `death_effects`,
+        // read from the protector copy (the totem's clear-then-effects, or a
+        // custom list; `death_protection={}` has none).
+        for effect in self.death_effects(&protector) {
+            self.apply_consume_effect(&effect);
         }
         Some(Body {
             protector: Some(protector),
@@ -208,6 +233,19 @@ impl Game<'_> {
         let pose = pose * glam::Mat4::from_scale(glam::Vec3::splat(size));
         self.submit_item_lit(&state, to_world * pose, vertex_light(0xFF), lights, out);
     }
+}
+
+/// The `death_effects` of the stack's `minecraft:death_protection`, if it has
+/// the component.
+fn death_effects_of(
+    models: &horizon_assets::item_model::ItemModels,
+    s: &ItemStack,
+) -> Vec<horizon_client::items::ConsumeEffect> {
+    models
+        .components(&horizon_client::item_render::stack_view(s))
+        .get("minecraft:death_protection")
+        .map(horizon_client::items::death_effects)
+        .unwrap_or_default()
 }
 
 /// Where an entity event's entity stands and its size, and, for the event
