@@ -3784,17 +3784,36 @@ impl Game<'_> {
         // The hit's own push, held back until after the shield's (`hurtServer`
         // runs `applyItemBlocking` before `dealDefaultKnockback`).
         let mut default_push: Option<([f64; 2], HurtSource<'_>)> = None;
-        if let Some(player) = self.player.as_mut()
-            && let Some(id) = self.health_resources.damage.id(damage_type)
-            && let Ok(o) = player.hurt_caused_by(
-                &self.health_resources,
-                self.world.health_rules,
-                id,
-                amount,
-                blocking,
-                living_cause,
-                causing,
-            )
+        let mut resolved_damage = None;
+        let damage_outcome = if let Some(id) = self.health_resources.damage.id(damage_type) {
+            if self
+                .health_resources
+                .damage
+                .in_tag(id, "minecraft:damages_helmet")
+            {
+                self.hurt_player_equipment(id, amount, blocking, living_cause, causing)
+                    .map(|(outcome, actual)| {
+                        resolved_damage = Some(actual);
+                        outcome
+                    })
+            } else if let Some(player) = self.player.as_mut() {
+                player.hurt_caused_by(
+                    &self.health_resources,
+                    self.world.health_rules,
+                    id,
+                    amount,
+                    blocking,
+                    living_cause,
+                    causing,
+                )
+            } else {
+                Ok(Default::default())
+            }
+        } else {
+            Ok(Default::default())
+        };
+        if let Ok(o) = damage_outcome
+            && let Some(player) = self.player.as_mut()
             && {
                 outcome = o;
                 o.hurt
@@ -3853,7 +3872,7 @@ impl Game<'_> {
                 is_direct: !projectile,
                 source,
                 original: amount,
-                actual: amount - outcome.blocked,
+                actual: resolved_damage.unwrap_or(amount - outcome.blocked),
                 blocked: outcome.blocked > 0.0,
             });
         }

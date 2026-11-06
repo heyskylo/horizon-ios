@@ -13359,6 +13359,56 @@ impl Game<'_> {
         let _ = player.clamp_health_to_max();
         self.apply_enchantment_attributes();
     }
+    /// `LivingEntity.hurtServer` with the two equipment services performed
+    /// synchronously. Keeping the acting player installed lets durability
+    /// hooks observe and modify its real inventory before this hit continues.
+    fn hurt_player_equipment(
+        &mut self,
+        source: horizon_world::damage_source::DamageTypeId,
+        amount: f32,
+        blocking: Option<horizon_client::health::Blocking>,
+        living_cause: bool,
+        causing: i32,
+    ) -> horizon_client::Result<(horizon_client::health::BlockOutcome, f32)> {
+        let mut hit = self
+            .player
+            .as_mut()
+            .ok_or("missing damage target")?
+            .prepare_equipment_hurt(
+                &self.health_resources,
+                self.world.health_rules,
+                source,
+                amount,
+                blocking,
+                living_cause,
+                causing,
+            )?;
+        if let Some(damage) = hit.helmet_damage()
+            && self.armor[0]
+                .as_ref()
+                .is_some_and(|s| s.count > 0 && &*s.item != "minecraft:air")
+        {
+            self.hurt_equipment(source, damage, &[0]);
+            hit.helmet_worn();
+            self.refresh_armor_protection();
+        }
+        let actual = hit.damage().unwrap_or(amount);
+        let armor_damage = self
+            .player
+            .as_mut()
+            .ok_or("missing damage target")?
+            .select_equipment_hurt(&self.health_resources, &mut hit)?;
+        if let Some(damage) = armor_damage {
+            self.hurt_armor(source, damage);
+            self.refresh_armor_protection();
+        }
+        let outcome = self
+            .player
+            .as_mut()
+            .ok_or("missing damage target")?
+            .finish_equipment_hurt(&self.health_resources, hit)?;
+        Ok((outcome, actual))
+    }
     /// The armor hits among a tick's motion events (`Player.hurtArmor` from
     /// `getDamageAfterArmorAbsorb`), whatever the damage: a mob, an explosion,
     /// a cactus, lava, a campfire.
@@ -13377,10 +13427,29 @@ impl Game<'_> {
     /// wears when its wearer is hurt loses max(1, damage / 4) durability, except
     /// to a fire source when the piece resists fire (`ItemStack.canBeHurtBy`).
     fn hurt_armor(&mut self, source: horizon_world::damage_source::DamageTypeId, damage: f32) {
+        self.hurt_equipment(source, damage, &[3, 2, 1, 0]);
+    }
+    /// Vanilla visits FEET, LEGS, CHEST, HEAD, applying each break before the
+    /// next slot's durability hook and enchantment random draws.
+    fn hurt_equipment(
+        &mut self,
+        source: horizon_world::damage_source::DamageTypeId,
+        damage: f32,
+        slots: &[usize],
+    ) {
         if damage <= 0.0 {
             return;
         }
-        let amount = ((damage / 4.0) as u32).max(1);
+        // The maximum of 1.0F and damage / 4.0F, then Java's saturating float-to-int.
+        let amount = if damage.is_nan() {
+            0
+        } else {
+            (damage / 4.0).max(1.0) as i32
+        };
+        if amount <= 0 {
+            return;
+        }
+        let amount = amount as u32;
         let name = self
             .health_resources
             .damage
@@ -13391,51 +13460,49 @@ impl Game<'_> {
             .health_resources
             .damage
             .in_tag(source, "minecraft:is_fire");
-        let mut broke = false;
-        let mut broken_items = Vec::new();
-        let losses: Vec<Option<(u32, u32)>> = (0..4)
-            .map(|i| {
-                let stack = self.armor[i].clone()?;
-                let info = world_items!(self).get(&stack.item)?;
-                let component = |id| stack.data().and_then(|data| data.other(id));
-                // ItemStack.isDamageableItem: component removal and
-                // unbreakable are checked before enchantment RNG or hooks.
-                if stack.count == 0
-                    || !info.equip_damage_on_hurt
-                    || component("minecraft:unbreakable").is_some()
-                    || component("!minecraft:max_damage").is_some()
-                    || component("!minecraft:damage").is_some()
-                    || (fire && world_items!(self).resists_fire(&stack, &name))
-                {
-                    return None;
-                }
-                let max = match component("minecraft:max_damage") {
-                    Some(horizon_world::nbt::Tag::Int(value)) => u32::try_from(*value).ok()?,
-                    _ => info.max_damage,
-                };
-                if max == 0 {
-                    return None;
-                }
-                let loss = self.wear(&stack, amount);
-                (loss > 0).then_some((loss, max))
-            })
-            .collect();
-        for (index, (slot, loss)) in self.armor.iter_mut().zip(losses).enumerate() {
-            if let (Some(stack), Some((amount, max))) = (slot.as_mut(), loss) {
-                stack.damage = stack.damage.saturating_add(amount).min(max);
-                if stack.damage >= max {
-                    broken_items.push((stack.clone(), index));
-                    *slot = None;
-                    broke = true;
-                }
+        for &i in slots {
+            let Some(stack) = self.armor[i].clone() else {
+                continue;
+            };
+            let Some(info) = world_items!(self).get(&stack.item) else {
+                continue;
+            };
+            let component = |id| stack.data().and_then(|data| data.other(id));
+            // ItemStack.isDamageableItem: component removal and
+            // unbreakable are checked before enchantment RNG or hooks.
+            if stack.count == 0
+                || !info.equip_damage_on_hurt
+                || component("minecraft:unbreakable").is_some()
+                || component("!minecraft:max_damage").is_some()
+                || component("!minecraft:damage").is_some()
+                || (fire && world_items!(self).resists_fire(&stack, &name))
+            {
+                continue;
             }
-        }
-        if broke {
-            // LivingEntity.onEquippedItemBroken for each armour piece that broke.
-            for (stack, index) in &broken_items {
-                self.player_equipment_broke(armor_slot(*index), stack);
+            let max = match component("minecraft:max_damage") {
+                Some(horizon_world::nbt::Tag::Int(value)) => match u32::try_from(*value) {
+                    Ok(value) => value,
+                    Err(_) => continue,
+                },
+                _ => info.max_damage,
+            };
+            if max == 0 {
+                continue;
             }
-            self.apply_equipment();
+            let loss = self.wear(&stack, amount);
+            if loss == 0 {
+                continue;
+            }
+            let Some(worn) = self.armor[i].as_mut() else {
+                continue;
+            };
+            worn.damage = worn.damage.saturating_add(loss).min(max);
+            if worn.damage >= max {
+                let broken = worn.clone();
+                self.armor[i] = None;
+                self.player_equipment_broke(armor_slot(i), &broken);
+                self.apply_equipment();
+            }
         }
     }
     /// Voxel traversal that also stops at fluid source blocks (bucket pick).

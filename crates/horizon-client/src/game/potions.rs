@@ -1131,6 +1131,16 @@ impl Game<'_> {
         {
             let _ = p.set_health(0.0, true);
         }
+        self.refresh_armor_protection();
+        let mut status = self.potions.effects.status();
+        if let Some(p) = self.player.as_mut() {
+            status.protection = std::mem::take(&mut p.status.protection);
+            p.status = status;
+        }
+    }
+    /// `EnchantmentHelper.getDamageProtection` after equipment changes. This
+    /// does not tick effects or clear absorption while a hit is in progress.
+    pub(super) fn refresh_armor_protection(&mut self) {
         // EnchantmentHelper.getDamageProtection per damage type, recomputed on armor change.
         let armor: Vec<Option<ItemStack>> = self.armor.to_vec();
         if !self
@@ -1172,11 +1182,6 @@ impl Game<'_> {
             if let Some(p) = self.player.as_mut() {
                 p.status.protection = table;
             }
-        }
-        let mut status = self.potions.effects.status();
-        if let Some(p) = self.player.as_mut() {
-            status.protection = std::mem::take(&mut p.status.protection);
-            p.status = status;
         }
     }
     /// The players a thrown potion can hit (`Projectile.canHitEntity`): the
