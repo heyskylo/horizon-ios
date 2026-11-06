@@ -989,7 +989,10 @@ mod tests {
         game.border.set_size(64.0);
         game.world.random = LegacyRandom::new(12345);
         game.spawn_natural();
-        assert_ne!(game.world.random.next_long(), LegacyRandom::new(12345).next_long());
+        assert_ne!(
+            game.world.random.next_long(),
+            LegacyRandom::new(12345).next_long()
+        );
         game.world.inhabited.clear();
         game.border.set_size(2.0);
         game.world.random = LegacyRandom::new(12345);
@@ -997,7 +1000,10 @@ mod tests {
         // No shuffle draw for one candidate, and no attempt draws for a
         // rejected chunk. Inhabited time still advances before the gate.
         assert_eq!(game.world.inhabited.get(&(0, 0)), Some(&1));
-        assert_eq!(game.world.random.next_long(), LegacyRandom::new(12345).next_long());
+        assert_eq!(
+            game.world.random.next_long(),
+            LegacyRandom::new(12345).next_long()
+        );
     }
     fn player(x: f64, y: f64, z: f64, spectator: bool) -> LevelPlayer {
         LevelPlayer {
