@@ -169,7 +169,7 @@ impl ThrownTrident {
     }
     fn start_falling(&mut self) {
         self.in_ground = false;
-        self.life = 0;
+        self.in_ground_time = 0;
         self.velocity =
             horizon_client::projectiles::start_falling_velocity(self.velocity, &mut self.random);
         self.needs_sync = true;
