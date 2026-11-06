@@ -1278,6 +1278,17 @@ impl Game<'_> {
         if pos.1 == super::minecarts::CART_KEY_Y {
             return self.lan_open_vehicle_container(host, conn, pos);
         }
+        // `RandomizableContainer.unpackLootTable`: a guest opening a block
+        // container rolls the table it still holds, as the host's own open does
+        // (`unpack_opened_loot` no-ops when there is no roll), and the stat
+        // fires for the acting guest.
+        let opened = self
+            .res
+            .facts()
+            .get(self.world.block(pos.0, pos.1, pos.2))
+            .name
+            .to_string();
+        self.unpack_opened_loot(pos, &opened);
         let name = &self
             .res
             .facts()
