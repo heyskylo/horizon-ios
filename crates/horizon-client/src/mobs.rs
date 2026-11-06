@@ -3457,6 +3457,8 @@ impl Mob {
         // Wolf.actuallyHurt: wolf armor takes the damage instead of the wolf.
         let absorbed = self.wolf_armor_absorbs(&source);
         let mut knock = true;
+        // What came off the health, for `LivingDamageEvent.Post`.
+        let mut taken = 0.0;
         let dealt = if self.invulnerable as f32 > 10.0 {
             if amount <= self.last_hurt {
                 return false;
@@ -3465,8 +3467,8 @@ impl Mob {
             if absorbed {
                 self.hurt_wolf_armor(dealt);
             } else {
-                let dealt = self.soak_hit(dealt, &source);
-                self.health -= dealt;
+                let through = self.soak_hit(dealt, &source);
+                taken = self.hurt_health(through, &source);
             }
             self.last_hurt = amount;
             knock = false;
@@ -3478,7 +3480,7 @@ impl Mob {
                 self.hurt_wolf_armor(amount);
             } else {
                 let through = self.soak_hit(amount, &source);
-                self.health -= through;
+                taken = self.hurt_health(through, &source);
             }
             self.hurt_time = 10;
             amount
@@ -3488,6 +3490,11 @@ impl Mob {
         // Wolf.actuallyHurt keeps a hit its armor takes out of it.
         if !absorbed && dealt != 0.0 {
             self.record_damage(source, dealt);
+        }
+        // The end of `actuallyHurt`: a native mod's `LivingDamageEvent.Post`.
+        // `Wolf.actuallyHurt` never gets there when the armour takes the hit.
+        if !absorbed {
+            crate::health::damage_post(crate::health::Hurting::Mob(self, &source), taken);
         }
         // LivingEntity.hurtArmor: `Horse` is the only mob that overrides it, and
         // it hands `doHurtEquipment` the body slot alone. A wolf's armour has
@@ -3840,6 +3847,15 @@ impl Mob {
             && (before != after
                 || present_ambient != self.extra.ambient_effects.contains(&effect)
                 || was_visible != visible)
+    }
+    /// `LivingEntity.actuallyHurt`'s last step: what got past absorption goes to
+    /// a native mod's `LivingDamageEvent.Pre`, which may change it, then comes
+    /// off the health. What came off.
+    fn hurt_health(&mut self, through: f32, source: &Damage) -> f32 {
+        let mut through = through;
+        crate::health::damage_pre(crate::health::Hurting::Mob(self, source), &mut through);
+        self.health -= through;
+        through
     }
     /// [`Mob::soak_absorption`] for a hit from `source`: `LivingEntity.actuallyHurt`
     /// credits a `ServerPlayer` attacker with the absorbed damage in tenths.

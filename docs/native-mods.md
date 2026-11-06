@@ -466,6 +466,20 @@ v1. Unless canceled, v1 receives the modified amount. It is not a replacement fo
 projectiles, player victims, dragons, mob attacks or environmental damage. There is no extra per-hit allocation
 without loaded mods. The fragment `living_incoming_damage_v2.json` receives its API number at merge.
 
+### Damage the health takes
+
+`native_living_damage_pre` and `native_living_damage_post` are NeoForge's `LivingDamageEvent.Pre` and `.Post`, at
+the end of vanilla's `LivingEntity.actuallyHurt`, for the players, mobs and ender dragon that
+`native_living_incoming_damage` hears, with that hook's arguments. Pre comes once armour (worn down by the hit
+already), enchantment protection, effects and absorption have taken their part, with the amount about to come off
+the health. A mod may change it: a negative or NaN amount takes nothing, an infinite one `Float.MAX_VALUE`. The hit
+can't be canceled any more, so its invulnerable time, hurt sound and knockback follow whatever the amount. Post
+comes once the health and the combat tracker are done, with what came off the health, 0 when nothing did (absorption
+took it all, or a mod made it 0), and only hears. Neither fires when no hit reaches `actuallyHurt` (refused,
+canceled by `native_living_incoming_damage`, or within the cooldown and no stronger than the last hit), nor when a
+wolf's armour takes the hit. Like `native_living_incoming_damage`, they have no `self` and run on the server thread.
+API @API:living_damage@.
+
 ### The build's warnings
 
 Before it builds, the launcher reads the mods' `[[injection]]` lists and says three things in `native/build.log` that
