@@ -3726,6 +3726,26 @@ dispatch_use_item_on(&mut Stone, &mods, &stack, [0, 64, 0], [0, 1, 0], &mut clai
 assert!(claimed);
 ```
 
+### Item fallback on native mobs
+
+`native_item_interact_mob(entity, kind, stack, swing)` is a pending fragment for
+an item's fallback after a native Mob's ordinary interaction passes. Existing
+`native_interact_entity` (API 29), the entity's own handlers and built-in item
+actions retain priority; errors propagate before the fallback. This is the
+`ItemStack.interactLivingEntity` part of `Player.interactOn`, currently limited
+to native Mob entries. Armor stands, other real players and dragon-part tables
+are not covered by this hook.
+
+The caller reuses normal mob selection: an already validated packet names its
+exact entity ID; a local crosshair must reach the mob before a blocking shape.
+The target must still be alive and not removed, and the acting hand must hold a
+nonempty item. `stack` is that hand's item snapshot; a hook changes inventories
+through ordinary Host helpers when needed. First `Some(true)` owns the turn and
+swings once, `Some(false)` owns it without a swing, and `None` passes to the next
+mod. An earlier mixin result also owns the output. No item count or world change
+is performed merely because a hook answers. The fragment is unstamped; it adds
+no manually assigned global API number.
+
 ### Adding a hook
 
 A new hook needs its fragment in `tools/native-hook-fragments/` with its `mod_api` entry (for example
