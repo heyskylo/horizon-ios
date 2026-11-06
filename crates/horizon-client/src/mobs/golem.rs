@@ -710,6 +710,23 @@ mod tests {
         }
     }
 
+    /// The golems' target predicates test `instanceof Enemy`: the zombie
+    /// horse and camel husk share the monster category but are not `Enemy`.
+    #[test]
+    fn mounts_in_the_monster_category_are_not_golem_prey() {
+        let prey = |sp| {
+            let mut m = mob(2, sp, Vec3::new(0.5, 64.0, 0.5));
+            let mut kind = (*m.kind).clone();
+            kind.category = "monster".into();
+            m.kind = Arc::new(kind);
+            golem_prey(&m.seen(None))
+        };
+        assert!(prey(Species::Zombie));
+        assert!(!prey(Species::Creeper));
+        assert!(!prey(Species::ZombieHorse));
+        assert!(!prey(Species::CamelHusk));
+    }
+
     /// `IronGolem.canAttack` refuses creepers, and `HurtByTargetGoal.canUse`
     /// asks it: the creeper that hurt the golem is never fought back, while
     /// a zombie that hurts it is.
