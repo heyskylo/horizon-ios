@@ -162,6 +162,7 @@ pub fn install(
     home: &Path,
     progress: &dyn Fn(&str, f32),
 ) -> Result<Vec<Entry>, String> {
+    let _lock = super::lock_home(home);
     let steps = plan(source, target, project)?;
     let folder = |kind| target.folder(kind).expect("plan checks every kind");
     let was = Installed::load(home).entries;
@@ -199,6 +200,7 @@ pub fn is_on(home: &Path, entry: &Entry) -> bool {
 
 /// Turns the mod `entry` on or off by renaming its file; it stays installed.
 pub fn set_on(home: &Path, entry: &Entry, on: bool) -> Result<(), String> {
+    let _lock = super::lock_home(home);
     if entry.kind != Kind::Mod {
         return Err(format!(
             "{} isn't a mod: only mods turn on and off.",
@@ -231,6 +233,7 @@ pub fn update_for(
 
 /// Removes what the browser installed in the instance for `name` (a project id or slug).
 pub fn remove(home: &Path, name: &str) -> Result<Entry, String> {
+    let _lock = super::lock_home(home);
     let mut installed = Installed::load(home);
     let entry = installed
         .lookup(name)

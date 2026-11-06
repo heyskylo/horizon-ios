@@ -152,16 +152,51 @@ value). The pack holds only the manifest, the `.wgsl` files it names (each used,
 `README.md`, `LICENSE` (`.md`, `.txt`) and `icon.png`, under plain paths, 8 MiB in all. A `.hshader` is built
 the same way every time (files in path order, fixed dates), so a pack's SHA-256 depends only on its files.
 
+## Shader API 0.2 (experimental)
+
+0.2 is the line for linear light and HDR ([hdr-linear-light.md](../design/hdr-linear-light.md)). A pack opts in with
+`api = "0.2"`. `horizon-shader check` and `pack` take it, but **the game refuses 0.2 packs for now and the registry
+doesn't list them**: the game draws 0.2 in a later step, behind `HORIZON_HDR_FRAME=float` at first. What it changes
+from 0.1:
+
+- **Linear light.** Every colour a stage reads or returns is linear light, 1.0 at paper white and more brighter. Horizon
+  decodes vanilla's values with a 2.2 power and encodes the results the frame stores. Depth, normals, light levels,
+  `emission`, the LabPBR maps and `[[textures]]` stay data. `[[lights]]` and `[[particle_lights]]` colours are still
+  written in vanilla's gamma, and Horizon decodes them. Alpha is coverage only, and a post pass's alpha is ignored.
+- **The display in `Frame`:** `hdr`, `headroom`, `paper_white`, `peak` and `black_level`, after `shadow_center_texel`.
+  Until HDR output is served for 0.2 packs (a later step), a 0.2 pack sees SDR values with HDR on too (`hdr` 0,
+  `headroom` 1, `paper_white` and `peak` 80, `black_level` 0), and its picture is shown at paper white with nothing
+  lifted.
+- **`[tonemap]`**, `fn tonemap(input: TonemapInput) -> vec3<f32>`: the post chain's picture in, the picture for the
+  display out, from 0 to `frame.headroom`, once per pixel of the window. Without it a pack gets Horizon's curve.
+- **`[frame] blend`**: `"gamma"` (the default) or `"linear"`, what the frame stores and so how see-through draws
+  blend. `"linear"` passes the check, but the game doesn't serve it yet.
+
+```toml
+api = "0.2"
+
+[tonemap]                  # optional: the pack's own tone curve
+file = "tonemap.wgsl"
+
+[frame]
+blend = "gamma"            # optional: gamma (default) or linear
+```
+
+0.1 is unchanged: the same prelude, entries and reference, and a 0.1 pack that names `[tonemap]` or `[frame]` is
+refused.
+
 ## Guide, reference and examples
 
 - [shaders-reference.md](shaders-reference.md): every stage's signature, input and output structs, resources and
   helpers, the frame's fields with their units, option types and limits, generated from `crates/horizon-shader-api`.
+  0.2's is [shaders-reference-0.2.md](shaders-reference-0.2.md).
 - [The guide](../shaders.md): making a pack with `horizon-shader new`, `check` and `pack`; the templates and the
   example pack (`crates/horizon-shader-api/packs/golden_hour`).
 
 ## Stability
 
-Experimental (API 0.1). The stages ship in the game behind pack selection; see [stability.md](stability.md).
+Experimental (API 0.1). The stages ship in the game behind pack selection; see [stability.md](stability.md). API
+0.2 is experimental too, and the game doesn't draw it yet.
 
 ## Not there yet
 
@@ -170,6 +205,9 @@ and particles (the material stage covers terrain only).
 
 ## Changelog
 
+- 2026-11-05: API 0.2 (new line, experimental): linear light, `Frame`'s display fields, `[tonemap]` and
+  `[frame] blend`, with its own reference. `horizon-shader` checks and packs it; the game and the registry refuse it
+  for now. API 0.1 is unchanged: the uploaded `Frame` buffer grows by 32 bytes after the fields 0.1 declares.
 - 2026-11-04: API 0.1 (change, experimental): the post stage's `scene_surface` is `texture_2d<u32>`, the bits of
   the stored floats (RGBA32F is not renderable on OpenGL). Read it through `surface_at`, or
   `bitcast<vec4<f32>>(textureLoad(scene_surface, p, 0))`; a `textureLoad` as `vec4<f32>` no longer validates.

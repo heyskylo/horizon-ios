@@ -30,6 +30,7 @@ struct Stitched {
     /// Each layer's sprite at the first level: its top left corner and its side.
     rects: Vec<[u32; 3]>,
     padding: u32,
+    material: bool,
     pipeline: wgpu::RenderPipeline,
     /// One per sprite array.
     groups: Vec<wgpu::BindGroup>,
@@ -66,10 +67,19 @@ fn vs(@builtin(vertex_index) v: u32, @location(0) rect: vec4<i32>, @location(1) 
     out.source = source.xy;
     return out;
 }
+fn sprite_texel(in: Out) -> vec2<i32> {
+    return clamp(vec2<i32>(floor(in.position.xy)) - in.rect.xy, vec2(0), vec2(in.rect.z - 1));
+}
 @fragment
 fn fs(in: Out) -> @location(0) vec4<f32> {
-    let texel = clamp(vec2<i32>(floor(in.position.xy)) - in.rect.xy, vec2(0), vec2(in.rect.z - 1));
-    return textureLoad(sprites, texel, i32(in.source.x), i32(in.source.y));
+    return textureLoad(sprites, sprite_texel(in), i32(in.source.x), i32(in.source.y));
+}
+@fragment
+fn fs_material(in: Out) -> @location(0) vec4<f32> {
+    let texel = sprite_texel(in);
+    let edge = i32(textureDimensions(sprites, 0).x);
+    let sampled = min((texel * 2 + 1) * edge / (2 * in.rect.z), vec2(edge - 1));
+    return textureLoad(sprites, sampled, i32(in.source.x), i32(in.source.y));
 }
 "#;
 
@@ -210,14 +220,72 @@ impl PackAtlas {
             stitch_mip_level(&sides, mip_option).min(array_levels.saturating_sub(deepest + 1));
         let max = device.limits().max_texture_dimension_2d;
         let layout = stitch::stitch(&sides, mip, anisotropy_bit, max)?;
+        let rects = layout
+            .holders
+            .iter()
+            .zip(&sides)
+            .map(|(&[x, y], &side)| [x + layout.padding, y + layout.padding, side])
+            .collect();
+        Some(Self::with_rects(
+            device,
+            encoder,
+            arrays,
+            split,
+            sprite,
+            [layout.width.max(1), layout.height.max(1)],
+            rects,
+            layout.padding,
+            mip + 1,
+            false,
+        ))
+    }
+
+    /// Companion maps use the colour atlas's coordinates, not a second packing.
+    pub fn material_for(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        arrays: &[wgpu::Texture],
+        layers: u32,
+    ) -> Option<Self> {
+        let Some(stitched) = &self.stitched else {
+            return Self::material(device, encoder, arrays, self.split, layers);
+        };
+        Some(Self::with_rects(
+            device,
+            encoder,
+            arrays,
+            self.split,
+            arrays[0].width(),
+            self.size(),
+            stitched.rects.clone(),
+            stitched.padding,
+            1,
+            true,
+        ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn with_rects(
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        arrays: &[wgpu::Texture],
+        split: u32,
+        sprite: u32,
+        size: [u32; 2],
+        rects: Vec<[u32; 3]>,
+        padding: u32,
+        levels: u32,
+        material: bool,
+    ) -> Self {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Shader pack block atlas"),
             size: wgpu::Extent3d {
-                width: layout.width.max(1),
-                height: layout.height.max(1),
+                width: size[0],
+                height: size[1],
                 depth_or_array_layers: 1,
             },
-            mip_level_count: mip + 1,
+            mip_level_count: levels,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8Unorm,
@@ -268,7 +336,7 @@ impl PackAtlas {
             multisample: Default::default(),
             fragment: Some(wgpu::FragmentState {
                 module: &module,
-                entry_point: Some("fs"),
+                entry_point: Some(if material { "fs_material" } else { "fs" }),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::TextureFormat::Rgba8Unorm.into())],
             }),
@@ -293,12 +361,6 @@ impl PackAtlas {
                 })
             })
             .collect();
-        let rects = layout
-            .holders
-            .iter()
-            .zip(&sides)
-            .map(|(&[x, y], &side)| [x + layout.padding, y + layout.padding, side])
-            .collect::<Vec<_>>();
         let layers = rects.len() as u32;
         let atlas = Self {
             texture,
@@ -309,13 +371,14 @@ impl PackAtlas {
             separate_ao: false,
             stitched: Some(Stitched {
                 rects,
-                padding: layout.padding,
+                padding,
+                material,
                 pipeline,
                 groups,
             }),
         };
         atlas.copy(device, encoder, arrays, 0..layers);
-        Some(atlas)
+        atlas
     }
 
     /// Whether the sprites keep their own sizes ([`PackAtlas::stitched`]).
@@ -425,7 +488,11 @@ impl PackAtlas {
                     rect: [x, y, side, stitched.padding].map(|v| (v >> level) as i32),
                     source: [
                         layer % self.split,
-                        (self.sprite / side).ilog2() + level,
+                        if stitched.material {
+                            0
+                        } else {
+                            (self.sprite / side).ilog2() + level
+                        },
                         size[0],
                         size[1],
                     ],
@@ -563,7 +630,7 @@ impl PackAtlas {
                 "layout(set = 1, binding = 0) readonly buffer HzBlockSlots { uint hz_block_slots[]; };\n\
                  layout(set = 1, binding = 1) readonly buffer HzSlotOrigins { vec4 hz_slot_origins[]; };\n",
             );
-            // Of each sprite layer, `mc_Entity` (id, then 1 for fluids or -1) and
+            // Of each sprite layer, `mc_Entity` (id, then 1 for fluids or 0) and
             // `at_midBlock.w` (its block's light), the game's table; and the arena page's
             // vertices (`TerrainVertex`, six words each).
             declarations.push_str(
@@ -610,13 +677,17 @@ impl PackAtlas {
         // A vertex's place in its section goes down to the 32768th of a block below it: read back
         // with a probe pack of ours, Iris 1.11.7's terrain `gl_Vertex` has that for every position
         // we read (water tops at 8/9 - 0.001, plants' offsets), on all three axes (#8464). A fit,
-        // not Iris's code. Whole and half blocks, and every 1/16, are on that grid already.
+        // not Iris's code. Whole and half blocks, and every 1/16, are on that grid already. A place
+        // up to 1/32 of a 32768th (one float step below 16) under a grid line is on it: plants whose
+        // random offset is 9/15 of a block read exactly on a half block in Iris, and a 32768th
+        // under it in Horizon (our guess, not tested: Horizon's float sum lands just under the
+        // line) (#8464). Also a fit.
         let body = format!(
             "    vec4 hz_origin = {origin};\n    \
              uint hz_layer = hz_v_layer & 32767u;\n    \
              {cell}\
              hz_scale = vec2({:?}, {:?}) * {side};\n    \
-             hz_Vertex = vec4(floor(hz_v_pos * 32768.0) / 32768.0 + hz_origin.xyz, 1.0);\n    \
+             hz_Vertex = vec4(floor(hz_v_pos * 32768.0 + 0.03125) / 32768.0 + hz_origin.xyz, 1.0);\n    \
              hz_uv_scale = hz_origin.w > 0.0 ? uintBitsToFloat(floatBitsToUint(hz_origin.w) & 0xff800000u) : fract(abs(hz_origin.w));\n    \
              hz_mid = vec2(0.5);\n    \
              hz_MultiTexCoord0 = vec4((hz_cell + clamp(vec2(hz_v_uv) * hz_uv_scale, 0.0, 1.0)) * hz_scale, 0.0, 1.0);\n    \
@@ -637,7 +708,7 @@ impl PackAtlas {
         let entity = if flat {
             "vec4(float(hz_block_ids[3u * hz_layer]), float(hz_block_ids[3u * hz_layer + 1u]), 0.0, 0.0)"
         } else {
-            "vec4(-1.0, -1.0, 0.0, 0.0)"
+            "vec4(-1.0, 0.0, 0.0, 0.0)"
         };
         // The block a face belongs to: half a block behind its centre (the quad's diagonal);
         // w, the light it gives (Iris's `BLOCK_EMISSION_ATTRIBUTE`, 0 to 15).
@@ -888,6 +959,144 @@ mod tests {
             ]
         );
         assert_eq!([at(9, 5), at(8, 4), at(10, 6)], [[100, 0, 0, 255]; 3]);
+    }
+
+    fn material_fixture(animated: bool) {
+        let instance = crate::gfx::test_gpu::instance();
+        // No adapter (a CI runner without a GPU): skip, as the module's other readback tests do.
+        let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+            return;
+        };
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+        let colour_array = upscaled_array(&device, &queue, &[2, 4, 1]);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        let colour = PackAtlas::stitched(
+            &device,
+            &mut encoder,
+            &[colour_array],
+            3,
+            4,
+            &[2, 4, 1],
+            0,
+            0,
+        )
+        .unwrap();
+        for kind in 0..2 {
+            // Different source resolution, with encoded channel boundaries and defaults.
+            let markers = if kind == 0 {
+                [
+                    [128, 126, 255, 19],
+                    crate::sprites::FLAT_NORMAL,
+                    [130, 125, 254, 21],
+                ]
+            } else {
+                [
+                    [17, 240, 65, 255],
+                    [18, 0, 66, 0],
+                    crate::sprites::NO_SPECULAR,
+                ]
+            };
+            let pixels: Vec<_> = markers.iter().flat_map(|m| m.repeat(4)).collect();
+            let array = wgpu::util::DeviceExt::create_texture_with_data(
+                &device,
+                &queue,
+                &wgpu::TextureDescriptor {
+                    label: None,
+                    size: wgpu::Extent3d {
+                        width: 2,
+                        height: 2,
+                        depth_or_array_layers: 3,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                    view_formats: &[],
+                },
+                wgpu::util::TextureDataOrder::LayerMajor,
+                &pixels,
+            );
+            let arrays = [array];
+            let material = colour
+                .material_for(&device, &mut encoder, &arrays, 3)
+                .unwrap();
+            assert_eq!(material.size(), [16, 8]);
+            assert_eq!(material.rects_table(), colour.rects_table());
+            assert_eq!(material.texture.mip_level_count(), 1);
+            queue.submit([encoder.finish()]);
+            encoder = device.create_command_encoder(&Default::default());
+            let changed = [243, 1, 229, 0];
+            if animated {
+                // Alter every source layer, but copy only the animated layer.
+                queue.write_texture(
+                    arrays[0].as_image_copy(),
+                    &changed.repeat(12),
+                    wgpu::TexelCopyBufferLayout {
+                        bytes_per_row: Some(8),
+                        rows_per_image: Some(2),
+                        offset: 0,
+                    },
+                    arrays[0].size(),
+                );
+                material.copy(&device, &mut encoder, &arrays, [0]);
+            }
+            let read = device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: 256 * 8,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            encoder.copy_texture_to_buffer(
+                material.texture.as_image_copy(),
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &read,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        bytes_per_row: Some(256),
+                        ..Default::default()
+                    },
+                },
+                material.texture.size(),
+            );
+            queue.submit([encoder.finish()]);
+            encoder = device.create_command_encoder(&Default::default());
+            read.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            let data = read.slice(..).get_mapped_range().unwrap();
+            // Independent, hand-worked colour rectangles, including all padding pixels.
+            for (layer, [x, y, side]) in [[9usize, 1, 2], [1, 1, 4], [9, 5, 1]]
+                .into_iter()
+                .enumerate()
+            {
+                let expected = if animated && layer == 0 {
+                    changed
+                } else {
+                    markers[layer]
+                };
+                for py in y - 1..=y + side {
+                    for px in x - 1..=x + side {
+                        let at = py * 256 + px * 4;
+                        assert_eq!(
+                            &data[at..at + 4],
+                            &expected,
+                            "kind={kind}, layer={layer}, ({px},{py})"
+                        );
+                    }
+                }
+            }
+        }
+        queue.submit([encoder.finish()]);
+    }
+
+    #[test]
+    fn stitched_material_maps_share_colour_rectangles() {
+        material_fixture(false);
+    }
+
+    #[test]
+    fn animated_stitched_material_updates_only_its_rectangle() {
+        material_fixture(true);
     }
 
     #[test]

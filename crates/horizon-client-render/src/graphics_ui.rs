@@ -1576,7 +1576,7 @@ impl GraphicsUi {
             &cols,
             &lines,
             self.scroll.amount,
-            Page::name,
+            |page| lang::get(page.name()),
             |batch, setting: Setting, y| {
                 let item = setting.item;
                 let rect = cols.row(y);
@@ -1840,9 +1840,10 @@ impl GraphicsUi {
         self.scroll.release();
         self.dragging.take().is_some()
     }
-    /// The mouse wheel at the cursor. It scrolls the list, except that a hovered value
-    /// stepped by `<` `>` takes the step (`CycleButton.mouseScrolled`: up goes back)
-    /// while the "Scroll wheel changes settings" extra is on. A slider, a tick box and a
+    /// The mouse wheel at the cursor. It scrolls the list, as vanilla's does
+    /// (`AbstractScrollArea.mouseScrolled`), except that a hovered value stepped by
+    /// `<` `>` takes the step (up goes back) while the "Scroll wheel changes settings"
+    /// extra is on. A slider, a tick box and a
     /// focused row don't take it, wherever the focus came from: the keyboard and a
     /// controller step them with Left and Right.
     pub fn wheel(
@@ -2524,6 +2525,25 @@ mod tests {
         assert_eq!(ui.scroll.amount, content - (cols.bottom - cols.top));
         ui.scroll(&s, SIZE, 1000.0);
         assert_eq!(ui.scroll.amount, 0.0);
+    }
+
+    #[test]
+    fn a_hovered_value_takes_the_wheel_only_with_the_extra_on() {
+        let mut s = Settings::default();
+        let mut ui = GraphicsUi::default();
+        let item = Item::Vanilla(Opt::AttackIndicator);
+        let r = row(&mut ui, &s, item);
+        let before = format!("{s:?}");
+        let actions = ui.wheel(&mut s, SIZE, (r[0] + 4.0, r[1] + 4.0), FB, -1.0);
+        assert_eq!(format!("{s:?}"), before, "the hovered value stays put");
+        assert!(actions.is_empty());
+
+        s.extras.wheel_cycles_settings = true;
+        let r = row(&mut ui, &s, item);
+        let before = format!("{s:?}");
+        let actions = ui.wheel(&mut s, SIZE, (r[0] + 4.0, r[1] + 4.0), FB, -1.0);
+        assert_ne!(format!("{s:?}"), before, "the hovered value steps");
+        assert!(!actions.is_empty());
     }
 
     #[test]
