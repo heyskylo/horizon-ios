@@ -1366,27 +1366,33 @@ impl Game<'_> {
         };
         let target = offset(key, facing);
         let remaining = if dropper {
-            match self.containers().view(target, false) {
+            // `HopperBlockEntity.getContainerAt`: the block's container, else a
+            // container entity (chest boat, chest or hopper minecart) there.
+            let one = ItemStack {
+                count: 1,
+                ..stack.clone()
+            };
+            let face = Some(facing.opposite());
+            let inserted = match self.containers().view(target, false) {
+                Some(into) => Some(self.dropper_insert(&into, one, face)),
+                None => self
+                    .entity_container_at([
+                        f64::from(target.0) + 0.5,
+                        f64::from(target.1) + 0.5,
+                        f64::from(target.2) + 0.5,
+                    ])
+                    .and_then(|id| {
+                        self.with_entity_container(id, |g, into| g.dropper_insert(into, one, face))
+                    }),
+            };
+            match inserted {
                 None => self.dispense_default(key, facing, stack),
-                Some(into) => {
-                    let one = ItemStack {
-                        count: 1,
-                        ..stack.clone()
-                    };
-                    if self
-                        .add_item(None, &into, one, Some(facing.opposite()))
-                        .is_none()
-                    {
-                        self.view_changed(&into);
-                        Some(ItemStack {
-                            count: stack.count - 1,
-                            ..stack
-                        })
-                        .filter(|s| s.count > 0)
-                    } else {
-                        Some(stack)
-                    }
-                }
+                Some(true) => Some(ItemStack {
+                    count: stack.count - 1,
+                    ..stack
+                })
+                .filter(|s| s.count > 0),
+                Some(false) => Some(stack),
             }
         } else {
             self.dispense_item(key, facing, stack)?
@@ -1396,6 +1402,15 @@ impl Game<'_> {
         }
         self.container_changed(key);
         Ok(())
+    }
+    /// `DropperBlock.dispenseFrom`'s `HopperBlockEntity.addItem` of one item
+    /// into the container in front: whether it all went in.
+    fn dropper_insert(&mut self, into: &View, one: ItemStack, face: Option<Direction>) -> bool {
+        let taken = self.add_item(None, into, one, face).is_none();
+        if taken {
+            self.view_changed(into);
+        }
+        taken
     }
 }
 

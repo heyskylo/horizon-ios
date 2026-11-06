@@ -471,7 +471,16 @@ public final class VanillaDispenserOracle {
             // count: whether orbs merge depends on entity ids, which Horizon doesn't share.
             for (int n = e instanceof ExperienceOrb orb ? orbCount(orb) : 1; n > 0; n--) result.add(line.toString());
         }
-        for (int i = 0; i < targets.size(); i++) result.add(describe(i, targets.get(i)));
+        for (int i = 0; i < targets.size(); i++) {
+            result.add(describe(i, targets.get(i)));
+            // A container entity's items (chest boats, chest and hopper minecarts): what a dropper put in.
+            if (targets.get(i) instanceof net.minecraft.world.entity.vehicle.ContainerEntity box) {
+                for (int slot = 0; slot < box.getContainerSize(); slot++) {
+                    ItemStack s = box.getItem(slot);
+                    if (!s.isEmpty()) result.add("Tinv " + i + " " + slot + " " + ParityData.canon(s));
+                }
+            }
+        }
         for (String s : w.log.toString().split("\n")) {
             if (s.isEmpty() || s.startsWith("E ")) continue;
             result.add(s);
