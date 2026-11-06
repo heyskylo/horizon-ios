@@ -209,6 +209,74 @@ fn client_packet_hands_a_mod_the_decoded_packet() {
     );
 }
 
+/// #9036, part of #9873: a landing's block change (farmland trampled into
+/// dirt, a turtle egg broken) goes through a hook a mod can cancel, before its
+/// neighbour updates - so a claims mod can keep the crop above standing.
+#[test]
+fn a_landing_change_a_mod_cancels_keeps_the_block_as_it_was() {
+    use horizon_client::mod_api::{
+        EntityChangeBlockV2Event, Flow, Hooks, Host, dispatch_entity_change_block_v2,
+    };
+    struct TestHost;
+    impl Host for TestHost {}
+    struct Claims;
+    impl Hooks for Claims {
+        fn entity_change_block_v2(
+            &self,
+            _host: &mut dyn Host,
+            event: &mut EntityChangeBlockV2Event<'_>,
+        ) -> Flow {
+            // A guest's landing: who trampled, the position and both states.
+            assert_eq!(event.player, Some(7));
+            assert_eq!(event.entity, None);
+            assert_eq!(event.kind, "minecraft:player");
+            assert_eq!(event.pos, [0, 64, 0]);
+            assert_eq!(event.from, "minecraft:farmland");
+            assert_eq!(event.to, "minecraft:dirt");
+            Flow::Cancel
+        }
+    }
+    struct Unreached;
+    impl Hooks for Unreached {
+        fn entity_change_block_v2(
+            &self,
+            _host: &mut dyn Host,
+            _event: &mut EntityChangeBlockV2Event<'_>,
+        ) -> Flow {
+            panic!("a cancelled change is not offered to later mods");
+        }
+    }
+    let mods: Vec<Box<dyn Hooks>> = vec![Box::new(Claims), Box::new(Unreached)];
+    let mut host = TestHost;
+    let mut cancel = false;
+    dispatch_entity_change_block_v2(
+        &mut host,
+        &mods,
+        Some(7),
+        None,
+        "minecraft:player",
+        [0, 64, 0],
+        "minecraft:farmland",
+        "minecraft:dirt",
+        &mut cancel,
+    );
+    assert!(cancel, "the farmland stays");
+    // No mods: the change goes ahead.
+    let mut cancel = false;
+    dispatch_entity_change_block_v2(
+        &mut host,
+        &[],
+        Some(7),
+        None,
+        "minecraft:player",
+        [0, 64, 0],
+        "minecraft:farmland",
+        "minecraft:dirt",
+        &mut cancel,
+    );
+    assert!(!cancel);
+}
+
 #[test]
 fn a_tank_hook_can_refuse_a_fluid() {
     use horizon_client::mod_api::{
