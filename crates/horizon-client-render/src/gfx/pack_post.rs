@@ -60,6 +60,8 @@ mod sky_depth_tests;
 
 #[cfg(test)]
 mod end_fan_tests;
+
+#[cfg(test)]
 mod translucent_color_tests;
 
 /// The texture behind a pack sampler name.
