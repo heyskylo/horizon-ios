@@ -2505,6 +2505,15 @@ reel-ins (states 0 and 2 to 4) name the hand the rod is used with, as Bukkit's `
 v1 set is not asked again. A stasis or power rod in the off hand is seen, and read from that hand's stack. Bundles
 need "hooks": @API:player_fish_v2@.
 
+`native_fishing_hook_landed(player, hook, dimension, block, face)` hears a server player's fishing bobber (`hook`, its
+entity id) touching a block, as Bukkit's `ProjectileHitEvent` for a `FishHook`: once each tick the flying bobber meets
+a block on its way (`face` the side it meets), and once each tick it lies on one (on the ground as the tick begins or
+ends: the block under its centre, `face` `[0, 1, 0]`). It is heard at the end of the bobber's tick with the bobber in
+place, so a mod that powers the button or plate it rests on can also take it away with `native_remove_entity`. A
+bobber in water, one hooked to an entity and a LAN host's own bobber are not heard. It only hears: the bobber moves as
+it would. The player's state is swapped in, the other players are out of reach. Bundles need "hooks":
+@API:fishing_hook_landed@.
+
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a

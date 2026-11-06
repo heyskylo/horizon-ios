@@ -6585,6 +6585,34 @@ impl Game<'_> {
     ) {
         mod_api::dispatch_player_fish_v2(self, mod_api::mods(), player, name, state, hand, cancel);
     }
+    /// The fishing bobber `hook` (its entity id) of the server player `player` touches a
+    /// block in the level `dimension` this tick (Bukkit's `ProjectileHitEvent` for a
+    /// `FishHook`): `block` the block, `face` the side it meets (`[0, 1, 0]` the top). Heard
+    /// once each tick the flying bobber meets a block on its way, and once each tick it lies on
+    /// one (on the ground as the tick begins or ends; then the block under its centre, on its
+    /// top), at the end of `FishingHook.tick`, with the bobber in place: `native_remove_entity`
+    /// takes it from here. Not heard for a bobber in water, one hooked to an entity, nor the host
+    /// of a LAN world's. It only hears; the bobber moves as it would. The player's state is
+    /// swapped in, but the server's other players are out of reach (`native_tell` reaches nobody
+    /// here). @API:fishing_hook_landed@.
+    pub(super) fn native_fishing_hook_landed(
+        &mut self,
+        player: u128,
+        hook: u32,
+        dimension: &str,
+        block: [i32; 3],
+        face: [i32; 3],
+    ) {
+        mod_api::dispatch_fishing_hook_landed(
+            self,
+            mod_api::mods(),
+            player,
+            hook,
+            dimension,
+            block,
+            face,
+        );
+    }
     /// A click in a menu a mod opened (`native_open_menu`), which moved
     /// nothing: the menu's `slot` (its own first, then the player's
     /// inventory, `native_menu_inventory_slot`; -999 outside), the `button`

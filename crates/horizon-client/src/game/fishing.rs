@@ -903,6 +903,10 @@ impl Game<'_> {
         ];
         let liquid = self.water_height(b[0], b[1], b[2]).map_or(0.0, |w| w.0);
         let in_water = liquid > 0.0;
+        // The block a flying bobber meets or rests on this tick (and the face), for
+        // `native_fishing_hook_landed` once the tick is done.
+        let rested = h.on_ground;
+        let mut landed: Option<([i32; 3], [i32; 3])> = None;
         match h.state {
             State::Flying => {
                 if in_water {
@@ -915,7 +919,8 @@ impl Game<'_> {
                 // checkCollision: find the first block and entity on the movement
                 // segment so a fast hook cannot tunnel or catch through a wall.
                 let to = h.position.add_vector(h.velocity);
-                let block_hit = self.hook_block_hit(h.position, to);
+                let block_hit_at = self.hook_block_hit_at(h.position, to);
+                let block_hit = block_hit_at.map(|hit| hit.location);
                 let entity_end = block_hit.unwrap_or(to);
                 let owner = self.lan_acting;
                 let own_vehicle = self.own_vehicle();
@@ -986,6 +991,8 @@ impl Game<'_> {
                         }
                     }
                 } else if let Some(hit) = block_hit {
+                    landed = block_hit_at
+                        .map(|at| ([at.block.x, at.block.y, at.block.z], at.direction.normal()));
                     // Projectile.onHit on a block: PROJECTILE_LAND.
                     self.projectile_event(
                         "minecraft:projectile_land",
@@ -1108,7 +1115,24 @@ impl Game<'_> {
             h.velocity.y * 0.92,
             h.velocity.z * 0.92,
         );
+        // A bobber lying on a block (on the ground as the tick began or ends) rests on
+        // the block under its centre, on that block's top.
+        if landed.is_none() && h.state == State::Flying && (rested || h.on_ground) {
+            let below = [
+                h.position.x.floor() as i32,
+                (h.position.y - 1.0e-4).floor() as i32,
+                h.position.z.floor() as i32,
+            ];
+            landed = Some((below, [0, 1, 0]));
+        }
+        let id = h.id;
         self.hook = Some(h);
+        // The mods hear a server player's bobber on a block with the bobber in place, so
+        // `native_remove_entity` can take it.
+        if let (Some((block, face)), Some(player)) = (landed, self.lan_acting_uuid) {
+            let dimension = self.dim.id();
+            self.native_fishing_hook_landed(player, id, dimension, block, face);
+        }
     }
     /// The players a hook can catch: everyone but spectators and the dead
     /// (`Projectile.canHitEntity`), the host and the guests in the level.
@@ -1608,6 +1632,10 @@ impl Game<'_> {
 
     /// `FishingHook.checkCollision` clips blocks on both sides of the connection.
     fn hook_block_hit(&self, from: Vec3, to: Vec3) -> Option<Vec3> {
+        self.hook_block_hit_at(from, to).map(|hit| hit.location)
+    }
+    /// [`Self::hook_block_hit`] with the block and the face it meets.
+    fn hook_block_hit_at(&self, from: Vec3, to: Vec3) -> Option<horizon_core::geometry::BlockHit> {
         let mut scene = SceneCollisions {
             world: &self.world,
             binding: self.collision,
@@ -1625,7 +1653,6 @@ impl Game<'_> {
         })
         .ok()
         .flatten()
-        .map(|hit| hit.location)
     }
 
     /// `FishingHook.tick`: one tick of movement without the fishing (the
