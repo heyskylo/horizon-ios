@@ -197,6 +197,8 @@ refused.
 
 Experimental (API 0.1). The stages ship in the game behind pack selection; see [stability.md](stability.md). API
 0.2 is experimental too, and the game doesn't draw it yet.
+While the API is experimental, a line is served until the next one is on by default: 0.1 ends when 0.2 is
+([hdr-linear-light.md](../design/hdr-linear-light.md), step 5).
 
 ## Not there yet
 
