@@ -467,6 +467,11 @@ impl Creative {
     pub fn tab(&self) -> &Tab {
         &self.tabs[self.selected.min(self.tabs.len() - 1)]
     }
+    /// The search tab's index (`CreativeModeTabs.searchTab`), the tab the chat
+    /// key opens while another one is shown.
+    pub fn search_tab(&self) -> Option<usize> {
+        self.tabs.iter().position(|t| t.search)
+    }
     /// selectTab: a different tab empties the search box; the scrollbar goes to the top.
     /// A tab on another page shows that page.
     pub fn select(&mut self, tab: usize) {
@@ -1436,6 +1441,22 @@ mod tests {
             assert_eq!(effect, DisplayClick::Nothing);
             assert_eq!(carried, before);
         }
+    }
+
+    /// `CreativeModeInventoryScreen.keyPressed`: from a tab that is not the
+    /// search, the chat key selects `CreativeModeTabs.searchTab`, which focuses
+    /// the search box and empties the query the other tab left.
+    #[test]
+    fn the_chat_key_opens_the_search_tab() {
+        let mut c = creative(0);
+        c.search.set_value("anvil");
+        let tab = c.search_tab().expect("the fixture has a search tab");
+        assert!(c.tabs[tab].search);
+        assert!(!c.tab().search);
+        c.select(tab);
+        assert!(c.tab().search);
+        assert!(c.search.focused);
+        assert_eq!(c.search.value, "", "another tab empties the query");
     }
 
     #[test]
