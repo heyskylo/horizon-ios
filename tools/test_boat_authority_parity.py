@@ -13,6 +13,13 @@ Horizon's controlled ticker and remote-copy ticker. Synced flag values and the
 first passenger are controlled inputs, including stale true flags after a
 player leaves and a non-player first passenger. These checks compare animation
 phase and interpolation, not rendered screenshots or network packet delivery.
+
+Bare-hand and enchanted-stick attacks additionally run Horizon's real boat strike and vanilla's
+Player.attack for bare-hand hits and Player.causeExtraKnockback for the
+enchanted/creative controls, checking retained boat motion, upward impulse, the
+attacker's slowdown and sprint cancellation. The enchanted/creative Java
+knockback amount and removal flag are controlled; the vanilla server attack
+and enchantment lookup are not run.
 """
 import argparse
 import json
@@ -75,6 +82,22 @@ def cases():
                         dict(occupied=True, first_player=True, flags=[True, True]),
                         dict(occupied=False, flags=[True, True]),
                     ])))
+    # Player.causeExtraKnockback's nonliving branch, through the actual boat
+    # attack in Horizon: uncharged/non-sprinting controls, axis and oblique yaw,
+    # retained target motion and the attacker's slowdown/sprint cancellation.
+    for yaw in (0.0, 90.0, 180.0, -90.0, 37.0):
+        for sprint in (False, True):
+            for ticks in (0, 4, 5, 100):
+                for velocity in ([0.0, 0.0, 0.0], [0.125, -0.0625, -0.25]):
+                    for knockback in (0, 1, 2):
+                        out.append(dict(name=f'attack-{len(out)}', spin=0, velocity=velocity, owned=[],
+                                        attack=dict(yaw=yaw, sprint=sprint, ticks=ticks, knockback=knockback, creative=False,
+                                                    player_velocity=[0.25, 0.42, -0.1])))
+    for sprint in (False, True):
+        for knockback in (0, 1, 2):
+            out.append(dict(name=f'attack-destroyed-{len(out)}', spin=0, velocity=[0.0, 0.0, 0.0], owned=[],
+                            attack=dict(yaw=0.0, sprint=sprint, ticks=100, knockback=knockback,
+                                        creative=True, player_velocity=[0.25, 0.42, -0.1])))
     return out
 
 
@@ -114,11 +137,10 @@ def main():
         'compile-java')
     run(['java', '-cp', str(classes) + os.pathsep + dependencies, 'dev.horizonlab.parity.VanillaBoatAuthorityOracle',
          work / 'inputs.json', work / 'vanilla.json'], 'vanilla')
-    run(['cargo', 'build', '--locked', '-p', 'horizon-client', '--bin', 'horizon-client'], 'compile-rust')
-    binary = lab.cargo_target() / 'debug' / ('horizon-client.exe' if os.name == 'nt' else 'horizon-client')
+    run(['cargo', 'build', '--profile', 'fast', '-p', 'horizon-client', '--bin', 'horizon-client'], 'compile-rust')
+    binary = lab.cargo_target() / 'fast' / ('horizon-client.exe' if os.name == 'nt' else 'horizon-client')
     with (work / 'rust.log').open('w') as log, tempfile.TemporaryDirectory(prefix='boat-authority-') as game_dir:
-        run_game([str(binary), '--headless', '--resources', str(args.resources.resolve()),
-                  '--game-dir', game_dir], cwd=game_dir,
+        run_game([str(binary), '--headless', '--resources', str(args.resources.resolve()), '--game-dir', game_dir], cwd=game_dir,
                  env=lab.game_env(HORIZON_BOAT_AUTHORITY_FIXTURE=work), stdout=log,
                  stderr=subprocess.STDOUT, check=True, timeout=180)
     native = json.loads((work / 'vanilla.json').read_text())
