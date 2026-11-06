@@ -159,6 +159,8 @@ mod integrated;
 mod interaction_shapes;
 mod interactions;
 mod item_areas;
+#[cfg(test)]
+mod item_contact_tests;
 mod item_draw;
 mod item_particles;
 mod item_use;
@@ -4441,23 +4443,22 @@ impl Game<'_> {
             );
             obstacles.near(item.bounds().inflate(reach), &mut nearby);
             let mut entered = Vec::new();
-            let alive = entity::tick_item(
+            let (alive, discarded) = self.tick_item_with_block_contacts(
                 item,
-                &self.world,
-                self.pack.assets.registry,
-                self.res.facts(),
-                self.collision,
-                &self.res.motion().fluids,
                 no_physics,
                 &nearby,
-                Some(self.border.geometry()),
-                Some(&self.res.motion().blocks),
+                false,
                 &mut |splash| entered.push(splash),
             );
             // Entity.doWaterSplashEffect: the server plays the sound (broadcast
             // to clients). Its addParticle is empty.
             for splash in entered {
                 self.apply_item_splash(splash);
+            }
+            if discarded {
+                removed[i] = true;
+                cells.remove(i, item.previous);
+                continue;
             }
             if merging && !no_physics {
                 self.item_landing_event(item.id, item.previous, item.position, item.on_ground);
@@ -4553,12 +4554,12 @@ impl Game<'_> {
         let mut removed = removed.into_iter();
         items.retain(|_| !removed.next().unwrap_or(false));
         let Some(p) = self.player.as_ref() else {
-            self.dropped = items;
+            self.restore_item_batch(items);
             self.spawn_destroyed_contents(destroyed);
             return;
         };
         if p.health.dead_or_dying() || self.spectator() {
-            self.dropped = items;
+            self.restore_item_batch(items);
             self.spawn_destroyed_contents(destroyed);
             return;
         }
@@ -4640,7 +4641,7 @@ impl Game<'_> {
             }
             kept.push(item);
         }
-        self.dropped = kept.into();
+        self.restore_item_batch(kept.into());
         self.spawn_destroyed_contents(destroyed);
     }
     /// `ItemUtils.onContainerDestroyed`: each stack a destroyed item held

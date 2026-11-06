@@ -2189,6 +2189,37 @@ fn chars_to_type(text: &str, canceled: impl FnMut(char) -> bool) -> Option<Strin
 
 /// The hook points. Each does nothing in Horizon.
 impl Game<'_> {
+    /// A dropped item's vertical move clipped. Collision response has run and
+    /// block effects and pickup are still ahead. The owner lends the active
+    /// stack and supplies the block from `Entity.getOnPosLegacy`.
+    /// `client` identifies prediction. `discard` consumes the current entity
+    /// without loot or pickup. A stack reduced to zero also consumes it.
+    /// @API:item_after_vertical_collision@
+    pub(super) fn native_item_after_vertical_collision(
+        &mut self,
+        dimension: &str,
+        client: bool,
+        entity: u32,
+        state: BlockStateId,
+        block_pos: [i32; 3],
+        item_pos: [f64; 3],
+        stack: &mut ItemStack,
+        discard: &mut bool,
+    ) {
+        mod_api::dispatch_item_after_vertical_collision(
+            self,
+            mod_api::mods(),
+            dimension,
+            client,
+            entity,
+            state,
+            block_pos,
+            item_pos,
+            stack,
+            discard,
+        );
+    }
+
     /// Client initialization, before any outgoing connection; a window need not exist yet.
     pub(super) fn native_client_start(&mut self) {
         mod_api::dispatch_client_start(self, mod_api::mods());
