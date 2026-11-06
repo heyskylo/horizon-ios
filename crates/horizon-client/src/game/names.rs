@@ -124,7 +124,7 @@ impl Game<'_> {
         self.name_tags_with_hooks(camera, alpha, !mod_api::mods().is_empty())
     }
     fn name_tags_with_hooks(&self, camera: glam::DVec3, alpha: f64, hooks: bool) -> Vec<NameTag> {
-        let target = self.mob_hit().map(|(i, _)| self.mobs[i].id);
+        let target = self.mob_hit().map(|(i, _, _)| self.mobs[i].id);
         let viewer = self.player_team();
         let mut tags = Vec::new();
         let players = self.other_players();
@@ -158,9 +158,7 @@ impl Game<'_> {
         let local_entity_id = self.remote.as_ref().map(|r| r.entity_id as u32);
         let ridden = collect_vehicle_ids(
             &self.mobs,
-            self.text_displays.values().filter_map(|d| d.vehicle),
-            self.armor_stands.iter().filter_map(|a| a.vehicle),
-            self.interactions.values().filter_map(|i| i.vehicle),
+            self.remote_vehicle_ids(),
             self.riding,
             local_entity_id,
         );
@@ -397,7 +395,7 @@ impl Game<'_> {
             .then(|| self.frame_hit())
             .flatten()
             .filter(|(_, distance)| {
-                self.before_block(*distance) && self.mob_hit().is_none_or(|(_, d)| d > *distance)
+                self.before_block(*distance) && self.mob_hit().is_none_or(|(_, d, _)| d > *distance)
             })
             .map(|(index, _)| index);
         let frames = if hooks {
@@ -662,7 +660,9 @@ impl Game<'_> {
 }
 
 /// Collect entity IDs of all vehicles: entities that have passengers
-/// (mobs, players, text displays, armor stands, or interactions riding them).
+/// (`passenger_vehicles`: what every entity the server sent rides, text displays,
+/// armor stands, item displays and interactions included; vanilla's `isVehicle` is
+/// any passenger at all).
 ///
 /// On multiplayer servers (e.g. `mcpvp.club`), server plugins hang custom nametags
 /// (ranks, prefixes, stats) over players using `TextDisplay` or `ArmorStand` passengers.
@@ -674,9 +674,7 @@ impl Game<'_> {
 /// is ridden and suppresses the duplicate tag (#9477).
 fn collect_vehicle_ids(
     mobs: &[Mob],
-    text_display_vehicles: impl IntoIterator<Item = u32>,
-    armor_stand_vehicles: impl IntoIterator<Item = u32>,
-    interaction_vehicles: impl IntoIterator<Item = u32>,
+    passenger_vehicles: impl IntoIterator<Item = u32>,
     local_riding: Option<u32>,
     local_entity_id: Option<u32>,
 ) -> std::collections::HashSet<u32> {
@@ -684,9 +682,7 @@ fn collect_vehicle_ids(
         .iter()
         .filter_map(|o| o.extra.mount)
         .chain(mobs.iter().filter_map(|m| m.extra.rider.map(|_| m.id)))
-        .chain(text_display_vehicles)
-        .chain(armor_stand_vehicles)
-        .chain(interaction_vehicles)
+        .chain(passenger_vehicles)
         .collect();
     if let Some(riding) = local_riding {
         ridden.insert(riding);
@@ -903,14 +899,7 @@ mod tests {
         let mobs = vec![remote_player];
 
         // 1. TextDisplay riding remote player 42
-        let ridden = collect_vehicle_ids(
-            &mobs,
-            vec![42],
-            std::iter::empty(),
-            std::iter::empty(),
-            None,
-            Some(100),
-        );
+        let ridden = collect_vehicle_ids(&mobs, vec![42], None, Some(100));
         assert!(
             ridden.contains(&42),
             "remote player 42 is ridden by text display"
@@ -919,14 +908,7 @@ mod tests {
         assert!(!ridden.contains(&0), "local model 0 has no passenger");
 
         // 2. ArmorStand riding local player 100 -> model 0 must be in ridden
-        let ridden_local = collect_vehicle_ids(
-            &mobs,
-            std::iter::empty(),
-            vec![100],
-            std::iter::empty(),
-            None,
-            Some(100),
-        );
+        let ridden_local = collect_vehicle_ids(&mobs, vec![100], None, Some(100));
         assert!(
             ridden_local.contains(&100),
             "local player 100 is ridden by armor stand"

@@ -300,7 +300,6 @@
   "horizon.osk.close": "Tutup",
   "horizon.extras.chat_animation.tooltip": "Baris obrolan baru meluncur dari kiri sambil memudar, alih-alih langsung muncul seutuhnya.",
   "horizon.extras.chat_indicator.tooltip": "Bilah berwarna di sebelah kiri baris obrolan.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "Roda gulir di atas tombol pengaturan akan mengubah nilainya, seperti pada versi vanilla. Jika nonaktif, roda gulir hanya menggulir daftar.",
   "horizon.extras.splitscreen.tooltip": "Di dalam dunia, kontroler lain dapat bergabung sebagai pemain baru: tekan A saat diminta, lalu pilih profil dan tempat bermain.",
   "horizon.splitscreen.setup.monitor_unknown": "sebuah monitor",
   "horizon.splitscreen.setup.window": "Jendela %s",

@@ -156,8 +156,19 @@ fn save_kept(home: &Path, list: &[Kept]) -> Result<(), String> {
         let _ = fs::remove_file(&path);
         return Ok(());
     }
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let id = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let part = home.join(format!(".replaced.{}-{id}.part", std::process::id()));
     let text = serde_json::to_string_pretty(list).map_err(|e| e.to_string())?;
-    fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    let res = fs::write(&part, text).and_then(|()| fs::rename(&part, &path));
+    if let Err(e) = res {
+        let _ = fs::remove_file(&part);
+        return Err(format!("{}: {e}", path.display()));
+    }
+    Ok(())
 }
 
 /// Whether the browser's list has `kept`'s project at a newer version whose file is in place.
@@ -198,6 +209,7 @@ fn restore(home: &Path, kept: &Kept) -> Result<(), String> {
 /// At start: each file an earlier launcher replaced is dropped when its update finished, put back
 /// when it didn't.
 pub fn recover(home: &Path) {
+    let _lock = crate::browser::lock_home(home);
     let me = std::process::id();
     let (mine, earlier): (Vec<Kept>, Vec<Kept>) =
         kept_list(home).into_iter().partition(|k| k.pid == me);
@@ -241,6 +253,7 @@ pub fn run(home: &Path, ctx: &Context, progress: &dyn Fn(&str, f32)) -> Option<R
     // The start's run and Play's never touch a folder at once.
     static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
+    // The index comes first: the folder stays free while it downloads.
     let index = super::index().ok()?;
     Some(run_with(&index, super::local(), home, ctx, progress))
 }
@@ -252,6 +265,7 @@ pub(super) fn run_with(
     ctx: &Context,
     progress: &dyn Fn(&str, f32),
 ) -> Report {
+    let _lock = crate::browser::lock_home(home);
     recover(home);
     let mut report = Report::default();
     for entry in installed::Installed::load(home).entries {
@@ -284,6 +298,14 @@ fn update(
     home: &Path,
     progress: &dyn Fn(&str, f32),
 ) -> Result<Option<String>, String> {
+    let _lock = crate::browser::lock_home(home);
+    let list = installed::Installed::load(home);
+    let Some(current) = list.find(entry.source, &entry.project) else {
+        return Ok(None);
+    };
+    if current.version != entry.version {
+        return Ok(None);
+    }
     let old: Option<PathBuf> = entry.path(home).filter(|p| p.is_file());
     let held = RefCell::new(None);
     // Content mods: nothing the worlds may hold goes missing.

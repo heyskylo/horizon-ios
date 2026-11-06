@@ -175,3 +175,57 @@ fn client_packet_hands_a_mod_the_decoded_packet() {
         [("voicechat:secret".to_string(), vec![1, 2, 3])]
     );
 }
+
+#[test]
+fn a_tank_hook_can_refuse_a_fluid() {
+    use horizon_client::mod_api::{
+        BlockEntityAcceptsFluidEvent, Flow, dispatch_block_entity_accepts_fluid,
+    };
+    struct TestHost;
+    impl Host for TestHost {}
+    struct WaterTank;
+    impl Hooks for WaterTank {
+        fn block_entity_accepts_fluid(
+            &self,
+            _host: &dyn Host,
+            event: &mut BlockEntityAcceptsFluidEvent<'_>,
+        ) -> Flow {
+            if event.block == "mymod:water_tank" && event.fluid != "minecraft:water" {
+                Flow::Cancel
+            } else {
+                Flow::Continue
+            }
+        }
+    }
+    let mut cancel = false;
+    dispatch_block_entity_accepts_fluid(
+        &TestHost,
+        &[],
+        "mymod:water_tank",
+        0,
+        "create:chocolate",
+        &mut cancel,
+    );
+    assert!(!cancel, "every tank takes every fluid without a mod");
+    let mods: Vec<Box<dyn Hooks>> = vec![Box::new(WaterTank)];
+    let mut cancel = false;
+    dispatch_block_entity_accepts_fluid(
+        &TestHost,
+        &mods,
+        "mymod:water_tank",
+        0,
+        "create:chocolate",
+        &mut cancel,
+    );
+    assert!(cancel, "the water tank refuses the mod's fluid");
+    let mut cancel = false;
+    dispatch_block_entity_accepts_fluid(
+        &TestHost,
+        &mods,
+        "mymod:water_tank",
+        0,
+        "minecraft:water",
+        &mut cancel,
+    );
+    assert!(!cancel, "the water tank takes water");
+}

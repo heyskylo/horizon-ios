@@ -345,8 +345,13 @@ Tiles are sampled again for each player who asks (there is no cache yet). Vanill
 then prints a short summary and saves it in `reports/`: `perf-<time>.txt` and `perf-<time>.json`. They say where
 the ticks' time went, phase by phase (mobs, block ticks, block entities, the network and the chunks it
 sends, saving...), the slowest ticks, how many entities of each type, chunks, players, memory, CPU, and the
-settings that matter (view and simulation distance, max players). They hold no names, UUIDs or addresses, so you
-can attach them to an issue as they are. On the console it is `horizon-report [SECONDS]`.
+settings that matter (view and simulation distance, max players). Since format 2 they also give each dimension's
+share of the tick (`level_*`), what each mob type costs per dimension (one tick in four times every mob: ms a
+tick, mobs, µs a mob), the chunk workers' CPU by job (load, generate, decorate, finish, light), the network bytes
+a player sends and receives, and what recording cost the tick (measured, usually well under 1 % of MSPT). They
+hold no names, UUIDs or addresses, so you can attach them to an issue as they are. On the console it is
+`horizon-report [SECONDS]`; `horizon-report stop` writes the report now and `horizon-report status` says how far
+it is. Nothing restarts: the report runs beside the game.
 
 Between reports, the log keeps the spikes: a tick slower than 250 ms writes a `Horizon: slow tick` line with
 its phases (`HORIZON_SPIKES=MS` in the engine's environment sets another threshold), and a server more than
@@ -563,6 +568,19 @@ region files are rewritten compacted (vanilla still reads them) and a file left 
 can't be read, files in `keep_files` (keys or text like `minecraft:overworld 12 -3`, objects with `dimension`,
 `x` and `z`), level.dat and player data are never touched; a `keep_files` file that exists but can't be read
 stops the prune before anything is deleted.
+
+### 1.8 combat: `[combat]`
+
+Fights follow 26.3's rules. For 1.8.9's (no attack cooldown or sweep, 1.8 weapon damage, Strength and
+Sharpness; the list is in [pvp.md](pvp.md#18-combat-in-worlds-you-host-combatrules-default-off)), add to
+`server.toml`, then restart:
+
+```toml
+[combat]
+legacy = true
+```
+
+Players join with any vanilla 26.3 client: only the server decides the damage.
 
 ## 8. Start it with the computer
 
