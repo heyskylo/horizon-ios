@@ -1995,6 +1995,31 @@ def gameplay_guide(args, name):
         _, right = guide(game)
         check(('lt', 'open') in right and ('lt', 'place') not in right, f'on a chest: {right}')
 
+        # Only what opens something says Open, and a block that keeps the click and does nothing
+        # has no row, for it or for the item. Break shows the aim is on the block.
+        def rows_on(block, item='air'):
+            place(block)
+            give(item)
+            game.ctl('look-at', 'block', *at)
+            _, rows = guide(game)
+            check(('north', 'break') in rows, f'not aiming at {block}: {rows}')
+            return rows
+        for block, wanted in (('nether_portal', None), ('end_gateway', None), ('lectern', None),
+                              ('flower_pot', None), ('chiseled_bookshelf', None),
+                              ('stone_button[face=floor,powered=true]', None),
+                              ('lectern[has_book=true]', 'open'), ('ender_chest', 'open'),
+                              ('oak_door', 'use'), ('stone_button[face=floor]', 'use')):
+            rows = rows_on(block)
+            shown = [c for b, c in rows if b == 'lt']
+            check(shown == ([wanted] if wanted else []), f'empty hand on {block}: {rows}')
+        for block, item, wanted in (('lectern', 'stone', []), ('lectern', 'written_book', ['use']),
+                                    ('flower_pot', 'stone', []), ('flower_pot', 'poppy', ['use']),
+                                    ('nether_portal', 'stone', ['place'])):
+            rows = rows_on(block, item)
+            shown = [c for b, c in rows if b == 'lt']
+            check(shown == wanted, f'{item} on {block}: {rows}')
+        give('air')
+
         game.ctl('command', 'gamemode survival')
         place('bedrock')
         give('air')
@@ -2008,7 +2033,7 @@ def gameplay_guide(args, name):
         # The item in use.
         give('bow')
         # Nothing in reach to break, whatever this world grew here.
-        game.ctl('command', f'fill {x - 6} {y + 2} {z - 6} {x + 6} {y + 7} {z + 6} air')
+        game.ctl('command', f'fill {x - 6} {y + 1} {z - 6} {x + 6} {y + 7} {z + 6} air')
         game.ctl('look-at', x + 40, y + 20, z)
         _, right = guide(game)
         check(right == [('lt', 'shoot')], f'creative bow at nothing: {right}')

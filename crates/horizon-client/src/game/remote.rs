@@ -8216,6 +8216,18 @@ impl Game<'_> {
     pub(super) fn block_takes_click(&mut self, hit: &super::Hit, held: Option<&ItemStack>) -> bool {
         self.remote_block_reacts(hit, held).0.consumes_action()
     }
+    /// `InteractionResult.CONSUME` for this click: the block keeps it and does nothing, so the
+    /// item in hand never gets it either (an empty flower pot, a pressed button).
+    pub(super) fn block_swallows_click(
+        &mut self,
+        hit: &super::Hit,
+        held: Option<&ItemStack>,
+    ) -> bool {
+        matches!(
+            self.remote_block_reacts(hit, held).0,
+            InteractionResult::Consume
+        )
+    }
 
     /// Whether the block hit takes a main-hand right click with `held`
     /// (`BlockState.useItemOn`, then `useWithoutItem`): a door, a button, a

@@ -264,8 +264,12 @@ impl Game<'_> {
         let main_hand_item = self.stack_in(self.selected).is_some();
         let off_hand_item = self.offhand.is_some();
         let (target, block, can_pick) = self.pad_guide_target(spectator);
+        let held = self.held().cloned();
+        let swallowed = block
+            .as_ref()
+            .is_some_and(|hit| self.pad_guide_click_swallowed(hit, held.as_ref()));
         let mut item_use = None;
-        if !spectator {
+        if !spectator && !swallowed {
             for hand in Hand::BOTH {
                 item_use = self.with_hand(hand, |g| g.pad_guide_item_use(block.as_ref()));
                 if item_use.is_some() {
@@ -358,7 +362,18 @@ impl Game<'_> {
             let held = self.held().cloned();
             let hands_full = self.stack_in(self.selected).is_some() || self.offhand.is_some();
             let secondary = self.keys.held(Action::Sneak) && hands_full;
+            let ender_chest = &*self
+                .res
+                .facts()
+                .get(self.world.block(hit.pos[0], hit.pos[1], hit.pos[2]))
+                .name
+                == "minecraft:ender_chest";
             if !secondary && opens {
+                Some(Verb::Open)
+            } else if self.pad_guide_click_swallowed(&hit, held.as_ref()) {
+                None
+            } else if !secondary && ender_chest && !self.pad_guide_block_covered(&hit) {
+                // EnderChestBlock has no menu provider but opens one: nothing solid on top.
                 Some(Verb::Open)
             } else if self.block_takes_click(&hit, held.as_ref()) {
                 Some(Verb::Use)
@@ -383,6 +398,35 @@ impl Game<'_> {
                 .picked_stack(hit.pos, false)
                 .is_some_and(|stack| self.pad_guide_can_pick(&stack));
         (Target::Block { breakable, takes }, Some(hit), picked)
+    }
+
+    /// The block keeps the click and nothing happens, so neither it nor the item gets a row:
+    /// `InteractionResult.CONSUME`, which an empty lectern also returns for anything but a book
+    /// (`LecternBlock.useWithoutItem`; `ItemTags.LECTERN_BOOKS`).
+    fn pad_guide_click_swallowed(
+        &mut self,
+        hit: &super::super::Hit,
+        held: Option<&ItemStack>,
+    ) -> bool {
+        let hands_full = self.stack_in(self.selected).is_some() || self.offhand.is_some();
+        if self.keys.held(Action::Sneak) && hands_full {
+            return false;
+        }
+        let book = held.is_some_and(|s| {
+            matches!(
+                &*s.item,
+                "minecraft:written_book" | "minecraft:writable_book"
+            )
+        });
+        (self.block_is_empty_lectern(hit) && !book) || self.block_swallows_click(hit, held)
+    }
+
+    /// A redstone conductor on the block, which keeps an ender chest shut.
+    fn pad_guide_block_covered(&self, hit: &super::super::Hit) -> bool {
+        let above = self.world.block(hit.pos[0], hit.pos[1] + 1, hit.pos[2]);
+        self.res.behaviours().facts(above).flags
+            & horizon_world::level::data::state_flags::CONDUCTOR
+            != 0
     }
 
     /// `Inventory.findSlotMatchingItem`, or the creative hand that adds what it doesn't find
