@@ -155,6 +155,15 @@ impl Game<'_> {
         };
         let vehicle_id = vehicle as u32;
         self.remote_seat_passengers(vehicle_id, passengers);
+        let player_controls = passengers.first().is_some_and(|&id| {
+            self.remote
+                .as_ref()
+                .is_some_and(|r| r.level_player(id).is_some())
+        });
+        if let Some(boat) = self.boats.iter_mut().find(|b| b.id == vehicle_id) {
+            boat.paddle_controller = player_controls;
+        }
+
         for m in &mut self.mobs {
             // `Entity.isVehicle` (the saddle reins of a ridden horse): the
             // server sends no rider on the mob itself, only this list.
@@ -400,7 +409,7 @@ impl Game<'_> {
     /// boat on a client: `status`, the two `applyEffectsFromBlocks` (a boat
     /// above a column may splash; the boat the player drives is lifted or
     /// dragged by a column it is inside) and `tickBubbleColumn`'s wobble from
-    /// the synched bubble time.
+    /// the synched bubble time, followed by the oars on boats this client does not drive.
     pub(super) fn tick_remote_boat_bubbles(&mut self) {
         for i in 0..self.boats.len() {
             let driven = self.riding == Some(self.boats[i].id);
@@ -424,6 +433,13 @@ impl Game<'_> {
                 }
             }
             self.boats[i].tick_bubble_wobble();
+            if !driven {
+                Self::tick_boat_paddles(
+                    &mut self.boats[i],
+                    &mut self.audio,
+                    &mut self.world.random,
+                );
+            }
         }
     }
 

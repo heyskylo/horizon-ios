@@ -9,7 +9,7 @@ pub use crate::settings::Opt;
 use crate::{
     gamepad::{self, GlyphStyle},
     hud::{HudAtlas, HudBatch, rgba},
-    keybinds::{self, CATEGORIES, KeyBinds, MAPPINGS},
+    keybinds::{self, CATEGORIES, KeyBinds, all_mappings},
     lang::{self, LanguageInfo},
     settings::{SOUND_SOURCES, Settings},
     text::{self, Style, Text},
@@ -3339,7 +3339,7 @@ impl OptionsUi {
                     row: 0,
                 });
                 let mut mappings: Vec<(&str, &str)> =
-                    MAPPINGS.iter().map(|(n, _, c)| (*n, *c)).collect();
+                    all_mappings().map(|(n, _, c)| (*n, *c)).collect();
                 let query = self.settings_search.value.to_lowercase();
                 mappings.retain(|(name, _)| {
                     query.is_empty() || lang::get(name).to_lowercase().contains(&query)
@@ -3433,7 +3433,7 @@ impl OptionsUi {
                     }
                     let reset_x = scrollbar_x - 50.0 - 10.0;
                     let change_x = reset_x - 5.0 - 75.0;
-                    let name_static = MAPPINGS.iter().find(|m| m.0 == name).map_or("", |m| m.0);
+                    let name_static = all_mappings().find(|m| m.0 == name).map_or("", |m| m.0);
                     out.push(button(change_x, y, 75.0, message, Act::Key(name_static)));
                     if !conflicts.is_empty() {
                         out.push(Widget {
