@@ -2502,6 +2502,15 @@ server only.
   level's `data/minecraft/world_border.dat`, `/worldborder` changing the level it runs in); Horizon keeps one for every
   level today, so the three levels answer the same bounds until that is fixed, and the helper then answers each level's
   own. None for another dimension. API @API:world_border@.
+- **`native_set_player_view_distance(uuid, distance)`** (`native_view_distance.rs`): limits one player's view distance
+  to `distance` chunks (2 to 32), None gives it the server's again. The player's distance is the smallest of the
+  server's, what its client asked for and the limit; only that player is told its radius (`SetChunkCacheRadius`), and
+  from its next view update it is sent, keeps and tracks chunks and entities within it, the others as before. The
+  server still loads its own view distance round every player, so the limit can only lower a player's distance (raise
+  the server's and limit the others to give one player more). It lasts until the player leaves.
+  `native_player_view_distance(uuid)` is the distance the player has now. Both answer false/None for a player not online
+  and inside a guest's packet hook, where the hub is taken out: call them from a tick or console hook. API
+  @API:player_view_distance@.
 
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
