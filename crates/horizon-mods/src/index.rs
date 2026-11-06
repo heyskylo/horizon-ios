@@ -151,6 +151,10 @@ pub struct Project {
     /// GitHub's counts, added by the registry's publish job (hourly).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub downloads: u64,
+    /// The GitHub stars of its `source` repository, added by the registry's
+    /// publish job (hourly); 0 when it has none or isn't on GitHub.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub stars: u64,
 }
 
 fn is_zero(n: &u64) -> bool {
@@ -176,12 +180,30 @@ pub struct Version {
     /// built before levels.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_level: Option<u32>,
+    /// A native mod's hook points version (`horizon-native.json`'s `hooks`): it builds on any
+    /// Horizon whose `NATIVE_HOOKS_API` is this or later. None for a native mod that pins its
+    /// commit, other kinds, and indexes built before it was listed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hooks: Option<u32>,
     /// The Minecraft version it is for.
     pub game: String,
+    /// The Horizon commits a native mod's version doesn't apply on, as the registry's daily check
+    /// on the newest Nightly found (horizon-mods' native-compat.yml): the launcher warns before
+    /// an install, and a build there leaves it out. Never in an entry: the publish job adds it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub broken_on: Vec<BrokenOn>,
     /// A modpack's mods, as its manifest lists them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub requires: Vec<Requirement>,
     pub file: File,
+}
+
+/// A Horizon commit a native mod's version doesn't apply on, and horizon-mixins' diagnostic code
+/// (`E_TARGET_NOT_FOUND`, `E_MODULE_CONFLICT`...).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrokenOn {
+    pub horizon: String,
+    pub code: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -537,6 +559,8 @@ pub struct Facts {
     pub capabilities: Vec<Capability>,
     /// The mod API level a mod's code needs, from the functions it imports.
     pub api_level: Option<u32>,
+    /// A native mod's hook points version.
+    pub hooks: Option<u32>,
     /// The Minecraft version, when the file names one (a modpack does).
     pub game: Option<String>,
     pub requires: Vec<Requirement>,
@@ -554,6 +578,7 @@ impl Facts {
             || self.side != version.side
             || caps != listed
             || version.api_level.is_some() && self.api_level != version.api_level
+            || version.hooks.is_some() && self.hooks != version.hooks
             || self.game.as_ref().is_some_and(|g| *g != version.game)
             || self.requires != version.requires;
         if !differs {
@@ -647,10 +672,19 @@ pub fn inspect(kind: &Kind, path: &Path) -> Result<Facts, String> {
                 ));
             }
             let m = pack.manifest;
+            // Players get only what the game draws without a switch, and a line that may
+            // still change in any release would break the packs listed for it.
+            if m.api != horizon_shader_api::Api::V0_1 {
+                return Err(format!(
+                    "it is written for shader API {}, which is experimental: the registry takes \
+                     such packs once the game draws them without a switch",
+                    m.api
+                ));
+            }
             Ok(Facts {
                 id: Some(m.id),
                 version: Some(m.version),
-                api: m.api,
+                api: m.api.to_string(),
                 ..Facts::default()
             })
         }

@@ -306,7 +306,6 @@
   "horizon.osk.close": "Sulje",
   "horizon.extras.chat_animation.tooltip": "Uusi chat-linja liukuu sisään vasemmalta sen häipyessä sen sijaan, että se näyttäisi kokonaisena.",
   "horizon.extras.chat_indicator.tooltip": "Värillinen palkki keskustelupalkin vasemmalla puolella.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "Asetuksissa painikkeen päällä oleva vierityspyörä muuttaa sen arvoa, kuten vaniljassa. Pois päältä, pyörä vain vierittää luetteloa.",
   "horizon.extras.pack_browser.tooltip": "Valitse Resurssipaketit saa Lisää-painikkeen, joka etsii Modrinthista ja asentaa paketin pakettikansioosi. Pois päältä, peli ei koskaan saa yhteyttä Modrinthiin.",
   "horizon.extras.splitscreen.tooltip": "Maailmassa toinen ohjain voi liittyä uutena pelaajana: paina A, kun se pyytää, ja valitse sitten profiili ja pelipaikka.",
   "horizon.splitscreen.setup.monitor": "Monitori %s",
@@ -449,9 +448,10 @@
   "horizon.extras.cosmetics_mine.tooltip": "Piilotettu: jokainen Horizon-pelaaja näkee sinut ilman kosmetiikkaasi, sinä mukaan lukien. Sama kytkin kuin kantoraketin vaatekaappi.",
   "horizon.extras.cosmetics_others": "Muiden pelaajien kosmetiikkaa",
   "horizon.extras.cosmetics_others.tooltip": "Mitä muut Horizon-pelaajat käyttävät: kaikki, vain heidän nimilaputyylinsä tai ei mitään. Piilotettu, peli ei koskaan kysy, mitä he käyttävät.",
-  "horizon.extras.cosmetics_auras": "Toisten aurat ja polut",
-  "horizon.extras.cosmetics_auras.tooltip": "Aurat ja jäljet, joita muut pelaajat käyttävät. Oletuksena pois päältä.",
+  "horizon.extras.cosmetics_hide_fx": "Piilota muiden pelaajien jäljet ja aurat",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "Muiden pelaajien jäljet ja aurat pysyvät piilossa; heidän muut kosmetiikkansa näkyvät yhä. Oletuksena pois.",
   "horizon.extras.cosmetics.shown": "Näytetään",
   "horizon.extras.cosmetics.hidden": "Piilotettu",
-  "horizon.extras.cosmetics.name_tags": "Vain nimilaput"
+  "horizon.extras.cosmetics.name_tags": "Vain nimilaput",
+  "Shader Packs...": "Shader Packit..."
 }

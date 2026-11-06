@@ -20,7 +20,7 @@ impl Game<'_> {
             let id = (!self.interactions.contains_key(&hit.id)).then_some(hit.id);
             offer(hit.distance, id);
         }
-        if let Some((i, d)) = self.mob_hit() {
+        if let Some((i, d, _)) = self.mob_hit() {
             offer(d, Some(self.mobs[i].id as i32));
         }
         if let Some((_, d)) = self.redirectable_hit() {
@@ -48,7 +48,7 @@ impl Game<'_> {
         if let Some(hit) = self.remote_object_hit(true) {
             offer(hit.distance, uuid_of(hit.id as u32));
         }
-        if let Some((i, d)) = self.mob_hit() {
+        if let Some((i, d, _)) = self.mob_hit() {
             offer(d, uuid_of(self.mobs[i].id));
         }
         if let Some((i, d)) = self.redirectable_hit() {

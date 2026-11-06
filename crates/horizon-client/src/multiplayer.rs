@@ -121,6 +121,8 @@ pub enum Screen {
     /// Join a friend's world with its invite code (Horizon's own, behind the
     /// title screen's Friends button).
     Friend {
+        /// The title and server list both open this page; cancellation returns to its parent.
+        from_title: bool,
         code: String,
         /// The relay for short codes (optional; saved on Join).
         relay: String,
@@ -130,6 +132,8 @@ pub enum Screen {
         reason: String,
         /// Auto-reconnect's next attempt, until it is cancelled.
         retry: Option<crate::reconnect::Retry>,
+        /// Wrapped reason lines, set by the last draw; the buttons sit below them.
+        lines: std::cell::Cell<usize>,
     },
 }
 /// What a click asks the title screen to do.
@@ -876,10 +880,11 @@ impl Screen {
                     57,
                 ),
             ],
-            Self::Disconnected { retry, .. } => {
+            Self::Disconnected { retry, lines, .. } => {
+                let btn = disconnected_layout(h, lines.get(), retry.is_some()).buttons;
                 let mut v = vec![b(
                     half(w) - 100.0,
-                    half(h) + 30.0,
+                    btn,
                     200.0,
                     &crate::lang::get_or("gui.toMenu", "Back to Server List"),
                     true,
@@ -888,7 +893,7 @@ impl Screen {
                 if retry.is_some() {
                     v.push(b(
                         half(w) - 100.0,
-                        half(h) + 54.0,
+                        btn + 24.0,
                         200.0,
                         &crate::lang::get_or(
                             "horizon.multiplayer.cancel_reconnecting",
@@ -1422,7 +1427,9 @@ impl Screen {
                     centered(batch, &line.plain(), top + 17.0 + i as f32 * 9.0, u32::MAX);
                 }
             }
-            Self::Friend { code, relay, focus } => {
+            Self::Friend {
+                code, relay, focus, ..
+            } => {
                 centered(
                     batch,
                     &crate::lang::get_or("horizon.multiplayer.join_friend", "Join a Friend"),
@@ -1454,19 +1461,27 @@ impl Screen {
                     *focus == 1,
                 );
             }
-            Self::Disconnected { reason, retry } => {
+            Self::Disconnected {
+                reason,
+                retry,
+                lines,
+            } => {
+                // DisconnectedScreen: the reason wraps to width - 50.
+                let wrapped = wrap(reason, (w.ceil() - 50.0).max(1.0), atlas);
+                lines.set(wrapped.len());
+                let l = disconnected_layout(h, wrapped.len(), retry.is_some());
                 centered(
                     batch,
                     &crate::lang::get_or("disconnect.lost", "Connection Lost"),
-                    half(h) - 40.0,
+                    l.title,
                     rgba(170, 170, 170, 255),
                 );
-                for (i, line) in wrap(reason, 300.0, atlas).iter().enumerate() {
-                    centered(batch, line, half(h) - 16.0 + i as f32 * 9.0, u32::MAX);
+                for (i, line) in wrapped.iter().enumerate() {
+                    centered(batch, line, l.message + i as f32 * 9.0, u32::MAX);
                 }
                 if let Some(r) = retry {
                     let text = r.text(std::time::Instant::now());
-                    centered(batch, &text, half(h) + 16.0, rgba(170, 170, 170, 255));
+                    centered(batch, &text, l.retry, rgba(170, 170, 170, 255));
                 }
             }
         }
@@ -1524,7 +1539,7 @@ impl Screen {
                     address: String::new(),
                 }
             }
-            (Self::List { .. }, Some(47)) => *self = Self::friend(),
+            (Self::List { .. }, Some(47)) => *self = Self::friend(false),
             (Self::List { .. }, Some(42)) => {
                 *self = Self::Edit {
                     index: None,
@@ -1697,6 +1712,12 @@ impl Screen {
                 let _ = servers::save(&servers_file(saves), &list);
                 *self = Self::list(saves);
             }
+            (
+                Self::Friend {
+                    from_title: true, ..
+                },
+                Some(57),
+            ) => return Outcome::Back,
             (
                 Self::Edit { .. }
                 | Self::Direct { .. }
@@ -1873,8 +1894,9 @@ impl Screen {
         }
     }
     /// Join a friend, with the relay the player set before.
-    pub fn friend() -> Self {
+    pub fn friend(from_title: bool) -> Self {
         Self::Friend {
+            from_title,
             code: String::new(),
             relay: crate::net::friends_relay_setting().unwrap_or_default(),
             focus: 0,
@@ -1979,7 +2001,10 @@ impl Screen {
     /// Escape: back to the list, or out of it (true).
     pub fn escape(&mut self, saves: &Path) -> bool {
         match self {
-            Self::List { .. } => true,
+            Self::List { .. }
+            | Self::Friend {
+                from_title: true, ..
+            } => true,
             // ConfirmScreen.keyPressed: Escape answers no.
             Self::ConfirmDelete { list, .. } => {
                 let list = std::mem::replace(
@@ -2012,6 +2037,29 @@ fn direct_address(address: &str) -> String {
         address.trim().to_owned()
     }
 }
+/// Y positions on the disconnect screen.
+struct DisconnectedLayout {
+    title: f32,
+    message: f32,
+    retry: f32,
+    buttons: f32,
+}
+/// `DisconnectedScreen.init`: a vertical layout centred on the screen. The
+/// title and message cells pad 10 on each side, the buttons 2; the message
+/// is `lines` rows of 9, so the buttons always sit below it.
+fn disconnected_layout(h: f32, lines: usize, retry: bool) -> DisconnectedLayout {
+    let message_h = lines as f32 * 9.0 + 20.0;
+    let retry_h = if retry { 13.0 } else { 0.0 };
+    let buttons = if retry { 48.0 } else { 24.0 };
+    let top = half(h - (29.0 + message_h + retry_h + buttons));
+    DisconnectedLayout {
+        title: top + 10.0,
+        message: top + 39.0,
+        retry: top + 29.0 + message_h + 2.0,
+        buttons: top + 29.0 + message_h + retry_h + 2.0,
+    }
+}
+
 /// Greedy word wrap to a pixel width.
 pub fn wrap(text: &str, width: f32, atlas: &HudAtlas) -> Vec<String> {
     let mut lines = Vec::new();
@@ -2178,6 +2226,7 @@ mod tests {
         assert_eq!(at(&direct, 427.0, 334.0), [(113.0, 191.0), (113.0, 215.0)]);
         assert_eq!(at(&direct, 320.0, 240.0), [(60.0, 168.0), (60.0, 192.0)]);
         let friend = Screen::Friend {
+            from_title: false,
             code: String::new(),
             relay: String::new(),
             focus: 0,
@@ -2186,8 +2235,14 @@ mod tests {
         let lost = Screen::Disconnected {
             reason: String::new(),
             retry: None,
+            lines: std::cell::Cell::new(1),
         };
-        assert_eq!(at(&lost, 427.0, 253.0), [(113.0, 156.0)]);
+        assert_eq!(at(&lost, 427.0, 253.0), [(113.0, 145.0)]);
+        // Taller messages push the button down instead of under the text.
+        let l1 = disconnected_layout(253.0, 1, false);
+        let l6 = disconnected_layout(253.0, 6, false);
+        assert!(l6.buttons >= l6.message + 6.0 * 9.0);
+        assert!(l1.buttons >= l1.message + 9.0);
         // centeredText: `width / 2 - font.width(text) / 2`.
         assert_eq!(centered_x(427.0, 85.0), 171.0);
         assert_eq!(centered_x(320.0, 84.0), 118.0);

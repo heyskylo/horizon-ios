@@ -317,7 +317,6 @@
   "horizon.osk.close": "Κλείσιμο",
   "horizon.extras.chat_animation.tooltip": "Μια νέα γραμμή συνομιλίας ολισθαίνει από τα αριστερά ενώ σβήνει, αντί να εμφανίζεται ολόκληρη.",
   "horizon.extras.chat_indicator.tooltip": "Η έγχρωμη γραμμή στα αριστερά μιας γραμμής συνομιλίας.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "Ο τροχός κύλισης πάνω από ένα κουμπί στις ρυθμίσεις αλλάζει την τιμή του, όπως στη βανίλια. Ανενεργό, ο τροχός κάνει κύλιση μόνο στη λίστα.",
   "horizon.extras.pack_browser.tooltip": "Το Select Resource Packs παίρνει ένα κουμπί Προσθήκη που αναζητά το Modrinth και εγκαθιστά ένα πακέτο στο φάκελο των πακέτων σας. Εκτός, το παιχνίδι δεν έρχεται ποτέ σε επαφή με τη Modrinth.",
   "horizon.extras.splitscreen.tooltip": "Σε έναν κόσμο, ένας άλλος ελεγκτής μπορεί να εγγραφεί ως νέος παίκτης: πατήστε A όταν σας ζητήσει, μετά επιλέξτε ένα προφίλ και πού θα παίξετε.",
   "horizon.splitscreen.setup.monitor": "Οθόνη %s",
@@ -462,9 +461,10 @@
   "horizon.extras.cosmetics_mine.tooltip": "Κρυφό: κάθε παίκτης του Horizon σας βλέπει χωρίς τα καλλυντικά σας, συμπεριλαμβανομένων εσείς. Ο ίδιος διακόπτης με την ντουλάπα του εκτοξευτή.",
   "horizon.extras.cosmetics_others": "Καλλυντικά άλλων παικτών",
   "horizon.extras.cosmetics_others.tooltip": "Τι φοράνε οι άλλοι παίκτες του Horizon: τα πάντα, μόνο τα στυλ των ετικετών τους ή τίποτα. Κρυφά, το παιχνίδι δεν ρωτά ποτέ τι φοράνε.",
-  "horizon.extras.cosmetics_auras": "Οι αύρες και τα μονοπάτια των άλλων",
-  "horizon.extras.cosmetics_auras.tooltip": "Αύρες και μονοπάτια φορούν άλλοι παίκτες. Απενεργοποίηση από προεπιλογή.",
+  "horizon.extras.cosmetics_hide_fx": "Απόκρυψη ιχνών και αυρών άλλων παικτών",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "Τα ίχνη και οι αύρες των άλλων παικτών μένουν κρυφά· τα άλλα διακοσμητικά τους εξακολουθούν να φαίνονται. Ανενεργό από προεπιλογή.",
   "horizon.extras.cosmetics.shown": "Εμφανίζεται",
   "horizon.extras.cosmetics.hidden": "Κρυφό",
-  "horizon.extras.cosmetics.name_tags": "Μόνο ετικέτες ονομάτων"
+  "horizon.extras.cosmetics.name_tags": "Μόνο ετικέτες ονομάτων",
+  "Shader Packs...": "Πακέτα Shader..."
 }

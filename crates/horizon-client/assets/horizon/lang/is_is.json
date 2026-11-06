@@ -320,7 +320,6 @@
   "horizon.osk.close": "Loka",
   "horizon.extras.chat_animation.tooltip": "Ný spjalllína rennur inn frá vinstri á meðan hún dofnar inn, í stað þess að virðast heil.",
   "horizon.extras.chat_indicator.tooltip": "Litaða stikan vinstra megin á spjalllínu.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "Skrunahjólið yfir hnapp í stillingunum breytir gildi þess, eins og í vanillu. Slökkt, hjólið flettir aðeins listann.",
   "horizon.extras.pack_browser.tooltip": "Select Resource Packs fær hnappinn Bæta við sem leitar í Modrinth og setur upp pakka í pakkamöppuna þína. Slökkt, leikurinn hefur aldrei samband við Modrinth.",
   "horizon.extras.splitscreen.tooltip": "Í heimi getur annar stjórnandi tekið þátt sem nýr leikmaður: ýttu á A þegar hann spyr, veldu síðan prófíl og hvar á að spila.",
   "horizon.splitscreen.setup.monitor": "Fylgjast með %s",
@@ -465,9 +464,10 @@
   "horizon.extras.cosmetics_mine.tooltip": "Falinn: sérhver Horizon leikmaður sér þig án snyrtivörunnar þinnar, þú meðtalin. Sami rofi og fataskápur sjósetjunnar.",
   "horizon.extras.cosmetics_others": "Snyrtivörur annarra leikmanna",
   "horizon.extras.cosmetics_others.tooltip": "Það sem aðrir Horizon-spilarar klæðast: allt, aðeins nafnmerkisstíllinn eða ekkert. Falinn, leikurinn spyr aldrei hverju þeir klæðist.",
-  "horizon.extras.cosmetics_auras": "Aurar og slóðir annarra",
-  "horizon.extras.cosmetics_auras.tooltip": "Auras og slóðir sem aðrir leikmenn klæðast. Slökkt sjálfgefið.",
+  "horizon.extras.cosmetics_hide_fx": "Fela slóðir og árur annarra leikmanna",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "Slóðir og árur annarra leikmanna eru faldar; aðrir skrautmunir þeirra sjást áfram. Slökkt sjálfgefið.",
   "horizon.extras.cosmetics.shown": "Sýnd",
   "horizon.extras.cosmetics.hidden": "Falinn",
-  "horizon.extras.cosmetics.name_tags": "Eingöngu nafnamerki"
+  "horizon.extras.cosmetics.name_tags": "Eingöngu nafnamerki",
+  "Shader Packs...": "Shader pakkar..."
 }

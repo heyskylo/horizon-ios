@@ -319,7 +319,6 @@
   "horizon.osk.close": "Tancar",
   "horizon.extras.chat_animation.tooltip": "Una nova línia de xat es desplaça des de l'esquerra mentre s'esvaeix, en lloc de semblar sencera.",
   "horizon.extras.chat_indicator.tooltip": "La barra de colors a l'esquerra d'una línia de xat.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "La roda de desplaçament sobre un botó a la configuració canvia el seu valor, com a la vainilla. Desactivada, la roda només desplaça la llista.",
   "horizon.extras.pack_browser.tooltip": "Select Resource Packs obté un botó Afegeix que cerca Modrinth i instal·la un paquet a la carpeta de paquets. Desactivat, el joc mai contacta amb Modrinth.",
   "horizon.extras.splitscreen.tooltip": "En un món, un altre controlador pot unir-se com a jugador nou: premeu A quan ho demani, després trieu un perfil i on jugar.",
   "horizon.splitscreen.setup.monitor_unknown": "un monitor",
@@ -463,9 +462,10 @@
   "horizon.extras.cosmetics_mine.tooltip": "Ocult: tots els jugadors d'Horizon et veuen sense els teus cosmètics, tu inclòs. El mateix interruptor que l'armari del llançador.",
   "horizon.extras.cosmetics_others": "Cosmètica d'altres jugadors",
   "horizon.extras.cosmetics_others.tooltip": "Què porten altres jugadors d'Horizon: tot, només els seus estils d'etiquetes de nom o res. Amagat, el joc mai pregunta què porten.",
-  "horizon.extras.cosmetics_auras": "Les aures i els camins dels altres",
-  "horizon.extras.cosmetics_auras.tooltip": "Aures i rastres que porten altres jugadors. Desactivat per defecte.",
+  "horizon.extras.cosmetics_hide_fx": "Amaga les esteles i les aures dels altres jugadors",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "Les esteles i les aures dels altres jugadors queden amagades; els seus altres cosmètics es continuen veient. Desactivat per defecte.",
   "horizon.extras.cosmetics.shown": "Es mostra",
   "horizon.extras.cosmetics.hidden": "Ocult",
-  "horizon.extras.cosmetics.name_tags": "Només etiquetes de nom"
+  "horizon.extras.cosmetics.name_tags": "Només etiquetes de nom",
+  "Shader Packs...": "Paquets d'ombres..."
 }

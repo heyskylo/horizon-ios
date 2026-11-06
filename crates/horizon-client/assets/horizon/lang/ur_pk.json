@@ -282,7 +282,6 @@
   "horizon.osk.close": "بند کریں",
   "horizon.extras.chat_animation.tooltip": "ایک نئی چیٹ لائن پوری طرح ظاہر ہونے کے بجائے مدہم ہوتے ہوئے بائیں طرف سے سلائیڈ کرتی ہے۔",
   "horizon.extras.chat_indicator.tooltip": "چیٹ لائن کے بائیں طرف رنگین پٹی۔",
-  "horizon.extras.wheel_cycles_settings.tooltip": "ترتیبات میں کسی بٹن پر سکرول وہیل اس کی قدر بدلتا ہے، جیسا کہ ونیلا میں ہوتا ہے۔ آف ہونے پر، وہیل صرف لسٹ کو سکرول کرتا ہے۔",
   "horizon.extras.splitscreen.tooltip": "ایک دنیا میں، دوسرا کنٹرولر ایک نئے کھلاڑی کے طور پر شامل ہو سکتا ہے: پوچھنے پر A دبائیں، پھر ایک پروفائل اور کھیلنے کی جگہ منتخب کریں۔",
   "horizon.splitscreen.setup.monitor": "مانیٹر %s",
   "horizon.splitscreen.setup.monitor_unknown": "ایک مانیٹر",
@@ -399,5 +398,6 @@
   "horizon.repro.bundle": "ریپرو بنڈل: %s",
   "horizon.repro.error": "ریپرو: %s",
   "horizon.repro.no_recording": "برآمد کرنے کے لیے ابھی تک کوئی ریکارڈنگ نہیں ہے۔",
-  "horizon.repro.replay_started": "ری پلے شروع ہو گیا: %s"
+  "horizon.repro.replay_started": "ری پلے شروع ہو گیا: %s",
+  "Shader Packs...": "شیڈر پیکس..."
 }
