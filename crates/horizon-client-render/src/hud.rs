@@ -531,6 +531,49 @@ fn cit_sprite(root: &Path, id: &str) -> Option<(PackedImage, Option<TextureFlags
     let flags = mcmeta.as_deref().and_then(TextureFlags::from_mcmeta);
     Some(((name.to_owned(), w, h, pixels), flags, animation.is_some()))
 }
+/// The texture of every `bitmap` font provider. A provider's `file` may name
+/// any texture, so a pack's glyph sheet need not live under `textures/font`.
+fn bitmap_font_textures(root: &Path) -> Vec<PathBuf> {
+    fn jsons(dir: &Path, out: &mut Vec<PathBuf>) {
+        for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                jsons(&path, out);
+            } else if path.extension().is_some_and(|e| e == "json") {
+                out.push(path);
+            }
+        }
+    }
+    let assets = root.join("assets");
+    let mut defs = Vec::new();
+    for ns in fs::read_dir(&assets).into_iter().flatten().flatten() {
+        jsons(&ns.path().join("font"), &mut defs);
+    }
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for def in defs {
+        let Ok(bytes) = fs::read(&def) else { continue };
+        let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes);
+        let Ok(json) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+            continue;
+        };
+        for p in json["providers"].as_array().into_iter().flatten() {
+            if p["type"] != "bitmap" {
+                continue;
+            }
+            let Some(file) = p["file"].as_str() else {
+                continue;
+            };
+            let (ns, path) = file.split_once(':').unwrap_or(("minecraft", file));
+            let path = assets.join(ns).join("textures").join(path);
+            if path.is_file() && seen.insert(path.clone()) {
+                out.push(path);
+            }
+        }
+    }
+    out
+}
+
 /// Folders of `assets/minecraft/textures/` that [`HudAtlas::pack`] walks for
 /// the full atlas. A pack may add others through `atlases/blocks.json`.
 const WALKED_TEXTURE_FOLDERS: &[&str] = &[
@@ -1101,6 +1144,18 @@ impl HudAtlas {
         let mut files = Vec::new();
         for folder in folders {
             walk(&textures.join(folder), &mut files);
+        }
+        // A bitmap provider's `file` may be outside the walked folders (HUD
+        // packs keep their glyph sheets under their own namespace or path).
+        // Pack those sheets too, so Font reads them from the atlas instead of
+        // copying every glyph into the small run-time region.
+        if folders.contains(&"font") {
+            let mut seen: HashSet<PathBuf> = files.iter().cloned().collect();
+            files.extend(
+                bitmap_font_textures(root)
+                    .into_iter()
+                    .filter(|p| seen.insert(p.clone())),
+            );
         }
         // Content mods' entity textures: their equipment assets name them as
         // `<ns>:<path>`, and native mods draw their block entities with them
@@ -3891,6 +3946,30 @@ texture=wide",
             assert_eq!(((r.w, r.h), r.texels(size)), (gui, texels), "{name}");
         }
     }
+    /// A bitmap font's `file` may be any texture, not only one under
+    /// `textures/font`; the atlas packs it so the font can read its glyphs
+    /// from there instead of copying them into the run-time region.
+    #[test]
+    fn a_bitmap_font_sheet_outside_font_is_packed() {
+        let root = std::env::temp_dir().join(format!("horizon-font-pack-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        write_png(&root, "hud/sheet", 16, 8);
+        let def = root.join("assets/minecraft/font/default.json");
+        fs::create_dir_all(def.parent().unwrap()).unwrap();
+        fs::write(
+            &def,
+            r#"{"providers":[{"type":"bitmap","file":"minecraft:hud/sheet.png","ascent":7,"chars":["ab"]}]}"#,
+        )
+        .unwrap();
+        let atlas = HudAtlas::build(&root).unwrap();
+        let _ = fs::remove_dir_all(&root);
+        let rect = atlas
+            .sprites
+            .get("hud/sheet")
+            .expect("the font sheet is packed");
+        assert_eq!(rect.texels((atlas.width, atlas.height)), (16, 8));
+    }
+
     /// A content mod's GUI textures join the atlas under its namespace;
     /// its other textures and vanilla's names stay as they were.
     #[test]
