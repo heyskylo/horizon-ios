@@ -8,6 +8,7 @@ use horizon_client::{
     lan::guest::Guest,
     mod_api::NativeClientInfo,
 };
+use std::path::PathBuf;
 
 // Native mods use these; nothing in Horizon calls them.
 #[allow(dead_code)]
@@ -148,6 +149,27 @@ impl Game<'_> {
         g.advancements_loaded = true;
         g.advancements_changed.extend(all);
         true
+    }
+
+    /// The server's player limit (`max-players`, as `/list` shows it), as Bukkit's
+    /// `Server.getMaxPlayers`. None while the hub is out of reach and on a client.
+    /// API @API:server_files@.
+    pub(super) fn native_max_players(&self) -> Option<u32> {
+        let host = self.lan.as_ref()?;
+        Some(host.hub.lan.shared.max_players().min(u32::MAX as usize) as u32)
+    }
+
+    /// The dedicated server's folder (where `server.properties` is), absolute. None
+    /// elsewhere. API @API:server_files@.
+    pub(super) fn native_server_dir(&self) -> Option<PathBuf> {
+        self.options.dedicated.as_ref()?;
+        std::env::current_dir().ok()
+    }
+
+    /// The log file this run writes (`logs/latest.log` of the server's or the game's folder),
+    /// absolute; None when it logs to the terminal only. API @API:server_files@.
+    pub(super) fn native_log_file(&self) -> Option<PathBuf> {
+        horizon_client::logging::latest_path()
     }
 }
 

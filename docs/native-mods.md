@@ -2514,6 +2514,10 @@ None.
   this server lacks are dropped as when the file loads, and the client gets every advancement's progress again
   with the player's next tick (one newly done shows its toast, as a grant would, with no rewards). The setters say whether the player was found. Bundles need
   `"hooks": @API:player_records@`.
+- Helpers **`native_max_players()`** (`max-players`, as `/list` shows it; None while the hub is out of reach),
+  **`native_server_dir()`** (a dedicated server's folder, absolute; None elsewhere) and **`native_log_file()`** (the
+  `logs/latest.log` this run writes, absolute; None when it logs to the terminal only), as Bukkit's
+  `Server.getMaxPlayers` and a plugin's server folder. Bundles need `"hooks": @API:server_files@`.
 
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
