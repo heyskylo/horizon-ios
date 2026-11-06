@@ -967,19 +967,7 @@ impl Game<'_> {
             if !self.may_enter(plan.dim) {
                 return;
             }
-            let uuid = self.uuid_for(id);
-            let t = &self.tnts[i];
-            let tag = horizon_client::entity_nbt::tnt_to_nbt(
-                t.position,
-                t.velocity,
-                t.on_ground,
-                t.fuse,
-                t.power,
-                t.block_state_nbt(self.pack.assets.registry),
-                t.rotation,
-                uuid,
-                self.persist_raw(id),
-            );
+            let tag = self.tnt_nbt(i);
             self.tnts.remove(i);
             self.forget_entity(id);
             self.portals.arrivals.push(Arrival { plan, tag });

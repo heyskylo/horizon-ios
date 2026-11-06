@@ -124,10 +124,18 @@ pub fn face(
     }
 }
 
-/// `Hud.extractTabList`: whether the list shows. A single-player world
-/// shows it only with another listed player or a `list` objective.
-pub fn visible(key_down: bool, local_server: bool, listed: usize, objective: bool) -> bool {
-    key_down && !(local_server && listed <= 1 && !objective)
+/// `Hud.extractTabList`: whether the list shows. `Hud.extractRenderState`
+/// only calls it inside `if (!isHidden)`, so F1 takes the list away whatever
+/// else holds it up. A single-player world shows it only with another listed
+/// player or a `list` objective.
+pub fn visible(
+    hud_shown: bool,
+    key_down: bool,
+    local_server: bool,
+    listed: usize,
+    objective: bool,
+) -> bool {
+    hud_shown && key_down && !(local_server && listed <= 1 && !objective)
 }
 
 /// `Options.getBackgroundColor(553648127)`: the row background.
@@ -702,8 +710,11 @@ mod tests {
         assert_eq!(ping_sprite(1000), "icon/ping_1");
         // UUID.hashCode of 0 is 0: the first default skin.
         assert_eq!(default_skin(0), "entity/player/slim/alex");
-        assert!(!visible(true, true, 1, false));
-        assert!(visible(true, true, 1, true));
-        assert!(visible(true, false, 1, false));
+        assert!(!visible(true, true, true, 1, false));
+        assert!(visible(true, true, true, 1, true));
+        assert!(visible(true, true, false, 1, false));
+        // F1 (`Hud.isHidden`) takes the list away however it was held up.
+        assert!(!visible(false, true, false, 2, false));
+        assert!(!visible(false, true, true, 1, true));
     }
 }
