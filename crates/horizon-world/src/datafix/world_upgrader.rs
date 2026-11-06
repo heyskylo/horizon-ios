@@ -1,7 +1,7 @@
 //! `net.minecraft.util.worldupdate.WorldUpgrader` and `RegionStorageUpgrader`:
-//! Optimize World. A worker thread reads every chunk of each dimension's
-//! `entities`, `poi` and `region` folders, brings it to the current DataVersion
-//! and writes it back, reporting its counts through an [`UpgradeProgress`] the
+//! Optimize World. Worker threads, one region file each at a time, read every
+//! chunk of each dimension's `entities`, `poi` and `region` folders, bring it
+//! to the current DataVersion and write it back, reporting its counts through an [`UpgradeProgress`] the
 //! screen reads. Unlike [`super::files::upgrade_world`] (the converter that
 //! runs when an older world opens) it works on a world that is already at the
 //! current layout and decides per chunk whether anything changed.
@@ -228,43 +228,61 @@ impl RegionStorageUpgrader {
         let finished = Mutex::new(0usize);
         let workers = self.builder.threads.clamp(1, files.len());
         let this = &*self;
-        std::thread::scope(|scope| {
-            for _ in 0..workers {
-                scope.spawn(|| {
-                    // The cancel flag is looked at before every file, as the
-                    // vanilla loop does.
-                    while !this.progress.is_canceled() {
-                        let index = next.fetch_add(1, Ordering::Relaxed);
-                        let Some(file) = files.get(index) else {
-                            break;
-                        };
-                        this.upgrade_file(file);
-                        let mut done = finished.lock().unwrap_or_else(|e| e.into_inner());
-                        *done += 1;
-                        let dimension_progress = *done as f32 / total_size;
-                        let total_progress =
-                            (this.start_index as usize + *done) as f32 / total_size;
-                        this.progress
-                            .set_dimension_progress(&this.dimension, dimension_progress);
-                        this.progress.set_total_progress(total_progress);
-                    }
-                });
+        let work = || {
+            // The cancel flag is looked at before every file, as the vanilla
+            // loop does, and before every chunk (`upgrade_file`).
+            while !this.progress.is_canceled() {
+                let index = next.fetch_add(1, Ordering::Relaxed);
+                let Some(file) = files.get(index) else {
+                    break;
+                };
+                this.upgrade_file(file);
+                let mut done = finished.lock().unwrap_or_else(|e| e.into_inner());
+                *done += 1;
+                let dimension_progress = *done as f32 / total_size;
+                let total_progress = (this.start_index as usize + *done) as f32 / total_size;
+                this.progress
+                    .set_dimension_progress(&this.dimension, dimension_progress);
+                this.progress.set_total_progress(total_progress);
             }
+        };
+        std::thread::scope(|scope| {
+            // This thread is worker 0; a helper that fails to start leaves
+            // its share to the others.
+            for i in 1..workers {
+                let _ = std::thread::Builder::new()
+                    .name(format!("World Upgrader #{i}"))
+                    .spawn_scoped(scope, work);
+            }
+            work();
         });
         self.progress.set_status(UpgradeStatus::Finished);
         self.close();
     }
 
-    /// One region file of `upgrade`.
+    /// One region file of `upgrade`, stopping before the next chunk once the
+    /// upgrade is canceled. The file's writes reach the disk once, when it is
+    /// done, not after every chunk: a sync per chunk (vanilla opens the files
+    /// `DSYNC`) costs more than the chunk's whole upgrade.
     fn upgrade_file(&self, file: &FileToUpgrade) {
         let mut open = OpenFiles::default();
         let mut converted = true;
         for &pos in &file.chunks {
+            if self.progress.is_canceled() {
+                converted = false;
+                break;
+            }
             // `converted && processOnePosition(..)`: once a chunk was not
             // converted the rest of the file is not looked at.
             converted = converted && self.process_one_position(&mut open, &file.path, pos);
         }
-        if self.builder.recreate_region_files {
+        if let Some((path, writer)) = &open.writer
+            && let Err(e) = writer.sync()
+        {
+            eprintln!("Failed to write region file {}: {e}", path.display());
+            converted = false;
+        }
+        if self.builder.recreate_region_files && !self.progress.is_canceled() {
             if converted {
                 self.on_file_finished(&mut open, &file.path);
             } else {
@@ -334,13 +352,7 @@ impl RegionStorageUpgrader {
         let mut root = record.nbt(limits)?;
         let version = as_int(root.tag.get("DataVersion"), -1);
         let mut changed = false;
-        let modifiers: Vec<(i32, Arc<TagModifier>)> = self
-            .builder
-            .tag_modifiers
-            .iter()
-            .map(|(v, m)| (*v, m.clone()))
-            .collect();
-        for (needed_version, modifier) in modifiers {
+        for (&needed_version, modifier) in &self.builder.tag_modifiers {
             self.upgrade_tag(&mut root.tag, needed_version);
             changed |= modifier(pos, &mut root.tag);
         }
@@ -352,18 +364,19 @@ impl RegionStorageUpgrader {
                 .map_or(0, |d| d.as_secs() as u32);
             let out = ChunkRecord::from_nbt(&root, Compression::Zlib, timestamp, limits)?;
             let target = if self.builder.recreate_region_files {
-                let dir = resolve_recreate_directory(&self.region_folder);
-                fs::create_dir_all(&dir)?;
-                dir.join(file.file_name().unwrap_or_default())
+                resolve_recreate_directory(&self.region_folder)
+                    .join(file.file_name().unwrap_or_default())
             } else {
                 file.to_path_buf()
             };
             if open.writer.as_ref().is_none_or(|(path, _)| *path != target) {
+                if let Some(dir) = target.parent() {
+                    fs::create_dir_all(dir)?;
+                }
                 open.writer = Some((target.clone(), RegionFile::open_writable(&target, true)?));
             }
             if let Some((_, writer)) = open.writer.as_mut() {
                 writer.write(pos, &out)?;
-                writer.sync()?;
             }
             return Ok(true);
         }
@@ -506,7 +519,7 @@ impl WorldUpgrader {
         }
     }
 
-    /// `cancel`: stops after the file in hand and waits for the worker.
+    /// `cancel`: stops after the chunks in hand and waits for the workers.
     pub fn cancel(&mut self) {
         self.progress.set_canceled();
         if let Some(thread) = self.thread.take() {
