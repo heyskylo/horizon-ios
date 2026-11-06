@@ -878,7 +878,11 @@ left out (blocks with a class of their own are counted and named, since facts ca
 their extra code); **partial** with the failing checks, the blocks left out and what the
 templates miss; **not yet** with the API tier it waits for, or the dependency; **not needed**
 for libraries, performance mods, pack tooling and what Horizon has built in. Unclassified mods
-(the 20 CurseForge-only rows the reviewed table only guesses) count as not yet.
+(the 20 CurseForge-only rows the reviewed table only guesses) count as not yet. A mod made for
+1.20 or older (its `recipes/` and `loot_tables/` folders named as before 1.21, which 26.3 does
+not read) is not carried, as `check` doesn't carry it either: not yet, and not one Port can
+carry over. Prominence II (Fabric 1.20.1, 445 jars) had 149 such mods counted as come over,
+with 28,948 recipes and 8,784 loot tables that would not load.
 
 Both files open with a plain headline for players, counted from the rows' own status, class and
 tier: how many of the mods that need porting came over (ported or partial, as content: blocks,

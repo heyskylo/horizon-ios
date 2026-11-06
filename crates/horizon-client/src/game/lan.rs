@@ -2,7 +2,10 @@
 //! server threads and the play-state hub, feeds it the world's entities each
 //! tick and turns what the guests do into gameplay. A world that is not open
 //! costs one `Option` check per tick.
+mod event_timings;
+
 use super::{Game, shield::OFFHAND_SLOT};
+use event_timings::EventTimings;
 use horizon_client::{
     Result,
     lan::{
@@ -268,6 +271,8 @@ pub(super) struct LanHost {
     /// The entity id counter when this tick's states were taken for guests
     /// (`lan_note_joined`), None when no guest tracked them.
     pub(super) states_next_entity: Option<u32>,
+    /// Last tick's states of the idle mobs and items (game/lan_idle.rs).
+    pub(super) idle_states: super::lan_idle::IdleStates,
 }
 
 impl Game<'_> {
@@ -1448,6 +1453,7 @@ impl Game<'_> {
             sleep_ignored: Default::default(),
             states: Default::default(),
             states_next_entity: None,
+            idle_states: Default::default(),
         });
         self.audio.capture = Some(Vec::new());
         Ok(())
@@ -1896,7 +1902,9 @@ impl Game<'_> {
 
     /// The entities guests track: mobs, items and the rest (game/lan_entities.rs).
     /// `mob_players` is the guest each mob sees as its player (game/lan_mobs.rs).
-    /// Only the entities whose id is above `after` (0: all of them).
+    /// Only the entities whose id is above `after` (0: all of them). With
+    /// `kept`, idle mobs and items no client can pair with are described bare
+    /// (game/lan_idle.rs).
     fn lan_entities(
         &mut self,
         mob_players: &horizon_client::fast_hash::FxHashMap<u32, u32>,
@@ -1904,16 +1912,24 @@ impl Game<'_> {
         out: &mut States,
         drain_minecart_steps: bool,
         after: u32,
+        mut kept: Option<&mut super::lan_idle::IdlePass<'_>>,
     ) {
         out.clear();
         let mut speeds = super::lan_attributes::SpeedByType::default();
+        // ChunkMap.tick sends the changes of an entity outside the
+        // entity-ticking range only when it changed section or needs sync.
+        let levels = self.tickets.levels();
+        let idle_at = |p: horizon_core::geometry::Vec3| {
+            !levels.in_entity_ticking_range((p.x.floor() as i32) >> 4, (p.z.floor() as i32) >> 4)
+        };
         for m in self.mobs.iter().filter(|m| !m.removed && m.id > after) {
             // The lead's holder: the player the mob sees, another mob or a
             // fence knot (game/lan_entities.rs).
-            let player_entity = mob_players
-                .get(&m.id)
-                .and_then(|conn| hub.guest(*conn))
-                .map(|g| g.entity_id);
+            let player_entity = || {
+                (mob_players.get(&m.id))
+                    .and_then(|conn| hub.guest(*conn))
+                    .map(|g| g.entity_id)
+            };
             let leash = m.extra.leash.and_then(|h| match h {
                 Holder::Player => match m.extra.leash_player {
                     Some(u) => hub
@@ -1921,21 +1937,37 @@ impl Game<'_> {
                         .iter()
                         .find(|g| playerdata::uuid_ints(g.uuid) == u)
                         .map(|g| g.entity_id),
-                    None => player_entity,
+                    None => player_entity(),
                 },
                 Holder::Mob(id) | Holder::Boat(id) => Some(id as i32),
                 Holder::Knot(p) => self.knot_ids.get(&p).map(|&id| id as i32),
             });
-            let e = out.add(m.id as i32, entity_uuid(m.id), m.kind.id.as_str());
-            e.position = [m.position.x, m.position.y, m.position.z];
-            (e.yaw, e.pitch, e.head_yaw) = (m.yaw, m.head_pitch, m.head_yaw);
-            e.on_ground = m.on_ground;
-            e.velocity = [m.velocity.x, m.velocity.y, m.velocity.z];
+            let idle = idle_at(m.position);
+            let place = super::lan_idle::Place {
+                position: [m.position.x, m.position.y, m.position.z],
+                rotation: (m.yaw, m.head_pitch, m.head_yaw),
+                on_ground: m.on_ground,
+                velocity: [m.velocity.x, m.velocity.y, m.velocity.z],
+            };
+            let kind = m.kind.id.as_str();
+            let bare = idle
+                && (kept.as_deref_mut()).is_some_and(|k| k.bare(hub, m.id as i32, kind, &place))
+                && !m.needs_sync;
+            let e = out.add(m.id as i32, entity_uuid(m.id), kind);
+            e.position = place.position;
+            (e.yaw, e.pitch, e.head_yaw) = place.rotation;
+            e.on_ground = place.on_ground;
+            e.velocity = place.velocity;
             e.needs_sync = m.needs_sync;
+            (e.idle, e.bare) = (idle, bare);
+            e.leash = leash;
+            if bare {
+                continue;
+            }
             mob_meta(
                 m,
                 hub,
-                player_entity,
+                player_entity(),
                 self.world.game_time,
                 &mut e.meta,
                 &mut e.defaults,
@@ -1946,14 +1978,28 @@ impl Game<'_> {
             mob_freeze_meta(m, &mut e.meta, &mut e.defaults);
             mob_equipment(m, hub, &mut e.equipment);
             self.mob_attributes(m, &mut speeds, &mut e.attributes);
-            e.leash = leash;
         }
         for d in self.dropped.iter().filter(|d| d.id > after) {
-            let stack = hub.stack(&Some(d.stack.clone()));
+            let idle = idle_at(d.position);
+            let place = super::lan_idle::Place {
+                position: [d.position.x, d.position.y, d.position.z],
+                rotation: (0.0, 0.0, 0.0),
+                on_ground: d.on_ground,
+                velocity: [d.velocity.x, d.velocity.y, d.velocity.z],
+            };
+            let bare = idle
+                && (kept.as_deref_mut())
+                    .is_some_and(|k| k.bare(hub, d.id as i32, "minecraft:item", &place))
+                && !d.needs_sync;
             let e = out.add(d.id as i32, entity_uuid(d.id), "minecraft:item");
-            e.position = [d.position.x, d.position.y, d.position.z];
-            e.on_ground = d.on_ground;
-            e.velocity = [d.velocity.x, d.velocity.y, d.velocity.z];
+            e.position = place.position;
+            e.on_ground = place.on_ground;
+            e.velocity = place.velocity;
+            (e.idle, e.bare) = (idle, bare);
+            if bare {
+                continue;
+            }
+            let stack = hub.stack(&Some(d.stack.clone()));
             // `ServerEntity.getRequiresPrecisePosition` is false for an item:
             // `needs_sync` asks for its data again, not for an exact position.
             // The collision case is `full_precision_required` in the tracker.
@@ -1970,6 +2016,7 @@ impl Game<'_> {
         for o in self.orbs.iter().filter(|o| o.id > after) {
             let e = out.add(o.id as i32, entity_uuid(o.id), "minecraft:experience_orb");
             e.position = [o.position.x, o.position.y, o.position.z];
+            e.idle = idle_at(o.position);
             e.on_ground = o.on_ground;
             e.velocity = [o.velocity.x, o.velocity.y, o.velocity.z];
             // ExperienceOrb.DATA_VALUE.
@@ -1997,9 +2044,10 @@ impl Game<'_> {
         // after the loop.
         let timed = horizon_client::spans::recording_here();
         let mut previous = None;
+        let mut timings = EventTimings::new(horizon_client::spans::NOTE_MS);
         for event in events {
             if timed {
-                note_event(&host, previous.take());
+                note_event(&host, previous.take(), &mut timings);
                 let detail = self.event_detail(&host, &event);
                 previous = Some((Instant::now(), event_kind(&event), detail));
             }
@@ -2272,7 +2320,10 @@ impl Game<'_> {
                 }
             }
         }
-        note_event(&host, previous);
+        note_event(&host, previous, &mut timings);
+        for burst in timings.bursts() {
+            horizon_client::spans::note(burst.ms, || describe_burst(&host, &burst));
+        }
         Some(host)
     }
 
@@ -2460,7 +2511,14 @@ impl Game<'_> {
             self.lan_assign_ids();
             if self.next_entity != next {
                 let mut states = States::default();
-                self.lan_entities(&host.mob_players, &mut host.hub, &mut states, false, next);
+                self.lan_entities(
+                    &host.mob_players,
+                    &mut host.hub,
+                    &mut states,
+                    false,
+                    next,
+                    None,
+                );
                 self.lan_hook_states(&host.play, &host.hub, &mut states);
                 self.lan_entity_uuids(&mut states);
                 host.hub.note_joined(states.as_slice());
@@ -2537,8 +2595,31 @@ impl Game<'_> {
                     .filter_map(|g| Some((g.vehicle?, g.entity_id)))
                     .collect();
                 self.lan_riding(&guests, &mut host.hub.riding);
+                // Idle states are kept only when the players' moves are in:
+                // the clients that could pair are known. The range scale is
+                // the one the tracker gets below.
+                let mut kept = if self.level_pass.packets_drained {
+                    let percent = if host.hub.config.integrated {
+                        (self.settings.entity_distance * 100.0).round() as i32
+                    } else {
+                        host.hub.entity_range_percent
+                    };
+                    host.idle_states.pass(&host.hub, percent)
+                } else {
+                    None
+                };
                 horizon_client::spans::time("lan_entity_states", || {
-                    self.lan_entities(&host.mob_players, &mut host.hub, &mut states, true, 0);
+                    self.lan_entities(
+                        &host.mob_players,
+                        &mut host.hub,
+                        &mut states,
+                        true,
+                        0,
+                        kept.as_mut(),
+                    );
+                    if let Some(kept) = kept {
+                        kept.finish();
+                    }
                     self.lan_hook_states(&host.play, &host.hub, &mut states);
                     self.lan_entity_uuids(&mut states);
                 });
@@ -2803,7 +2884,14 @@ impl Game<'_> {
                 return;
             }
             // A dedicated server has no host player.
-            self.lan_entities(&host.mob_players, &mut host.hub, &mut theirs, false, 0);
+            self.lan_entities(
+                &host.mob_players,
+                &mut host.hub,
+                &mut theirs,
+                false,
+                0,
+                None,
+            );
             self.lan_hook_states(&host.play, &host.hub, &mut theirs);
             self.lan_entity_uuids(&mut theirs);
             theirs.as_slice()
@@ -3329,27 +3417,66 @@ fn level_event_except(id: i32, acting: Option<u32>, collateral_break: bool) -> O
 
 /// Notes how long the event that started at `started` took (`spans::note`), with what it
 /// was about when [`Game::event_detail`] said.
-fn note_event(host: &LanHost, started: Option<(Instant, EventKind, Option<UseDetail>)>) {
-    let Some((started, (kind, conn, name), detail)) = started else {
+fn note_event(
+    host: &LanHost,
+    started: Option<(Instant, EventKind, Option<UseDetail>)>,
+    timings: &mut EventTimings<(Option<u32>, Option<String>), UseDetail>,
+) {
+    let Some((started, kind, detail)) = started else {
         return;
     };
-    horizon_client::spans::note(started.elapsed().as_secs_f32() * 1000.0, || {
-        let who = name
-            .or_else(|| conn.and_then(|c| host.hub.guest(c)).map(|g| g.name.clone()))
-            .or_else(|| conn.map(|c| format!("connection {c}")));
-        let line = match who {
-            Some(who) => format!("{kind} of {who}"),
-            None => kind.to_owned(),
-        };
-        match detail {
-            Some(d) => format!("{line} ({d})"),
-            None => line,
-        }
-    });
+    let ms = started.elapsed().as_secs_f32() * 1000.0;
+    horizon_client::spans::note(ms, || describe_event(host, &kind, detail.as_ref()));
+    let (name, conn, player) = kind;
+    timings.add(name, (conn, player), detail, ms);
+}
+
+/// The player an event came from: its name, else its connection.
+fn who(host: &LanHost, conn: Option<u32>, name: Option<String>) -> Option<String> {
+    name.or_else(|| conn.and_then(|c| host.hub.guest(c)).map(|g| g.name.clone()))
+        .or_else(|| conn.map(|c| format!("connection {c}")))
+}
+
+/// A burst's note: `213 x UseItemOn under 10 ms each (…); most from Steve: 140 of them, 710.0 ms`.
+fn describe_burst(
+    host: &LanHost,
+    burst: &event_timings::Burst<(Option<u32>, Option<String>), UseDetail>,
+) -> String {
+    let mut line = format!(
+        "{} x {} under {} ms each",
+        burst.count,
+        burst.kind,
+        horizon_client::spans::NOTE_MS
+    );
+    if let Some(d) = &burst.detail {
+        line.push_str(&format!(" ({d})"));
+    }
+    if let Some(((conn, name), count, ms)) = &burst.top
+        && let Some(who) = who(host, *conn, name.clone())
+    {
+        line.push_str(&format!("; most from {who}: {count} of them, {ms:.1} ms"));
+    }
+    line
+}
+
+fn describe_event(
+    host: &LanHost,
+    (kind, conn, name): &EventKind,
+    detail: Option<&UseDetail>,
+) -> String {
+    let line = match who(host, *conn, name.clone()) {
+        Some(who) => format!("{kind} of {who}"),
+        None => (*kind).to_owned(),
+    };
+    match detail {
+        Some(d) => format!("{line} ({d})"),
+        None => line,
+    }
 }
 
 /// What a use packet was about, taken before it ran (the use may consume the item or change
 /// the block): the item in the hand it names and, on a block, that block, where, and the face.
+#[derive(PartialEq)]
 struct UseDetail {
     item: Option<Arc<str>>,
     block: Option<(Arc<str>, [i32; 3], i32)>,
@@ -3396,7 +3523,30 @@ impl Game<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{OFFHAND_SLOT, equipment_slot_name, living_flags, mob_freeze_meta};
+    use super::{EventTimings, OFFHAND_SLOT, equipment_slot_name, living_flags, mob_freeze_meta};
+
+    #[test]
+    fn a_burst_of_short_events_still_has_a_slow_tick_note() {
+        use horizon_client::spans;
+        // Thread-local recording avoids changing instrumentation on other test threads.
+        spans::record_here(true);
+        spans::take_notes();
+        let mut timings = EventTimings::new(spans::NOTE_MS);
+        for _ in 0..200 {
+            spans::note(5.0, || "UseItemOn of fixture player".into());
+            timings.add("UseItemOn", "fixture player", None::<()>, 5.0);
+        }
+        assert!(
+            spans::take_notes().is_empty(),
+            "every individual event is below NOTE_MS"
+        );
+        for burst in timings.bursts() {
+            spans::note(burst.ms, || format!("{} x {}", burst.count, burst.kind));
+        }
+        let notes = spans::take_notes();
+        spans::record_here(false);
+        assert_eq!(notes, vec![(1000.0, "200 x UseItemOn".into())]);
+    }
     use horizon_client::mobs::Mob;
     use horizon_protocol::entity_data::{Value, serializer};
 
