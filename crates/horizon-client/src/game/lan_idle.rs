@@ -49,10 +49,7 @@ impl IdleStates {
             .filter(|(_, g)| hub.here(g))
             .map(|(i, g)| (i, [g.position[0], g.position[2]], g.view_distance * 16))
             .collect();
-        let kept = self
-            .levels
-            .entry(hub.config.dimension.clone())
-            .or_default();
+        let kept = self.levels.entry(hub.config.dimension.clone()).or_default();
         Some(IdlePass {
             kept,
             now,
@@ -74,7 +71,13 @@ impl IdlePass<'_> {
 
     /// [`Self::bare`] but for the passengers, with whether the player `i`
     /// tracks the entity.
-    fn unchanged(&mut self, id: i32, kind: &str, at: &Place, tracks: impl Fn(usize) -> bool) -> bool {
+    fn unchanged(
+        &mut self,
+        id: i32,
+        kind: &str,
+        at: &Place,
+        tracks: impl Fn(usize) -> bool,
+    ) -> bool {
         // A new one reads as noted two passes ago.
         let now = self.now;
         let noted = self.kept.entry(id).or_insert((now.wrapping_sub(2), *at));

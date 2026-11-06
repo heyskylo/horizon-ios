@@ -831,7 +831,9 @@ impl Hub {
     /// How many passes the level in place's entity tracking has run (None
     /// before its first).
     pub fn tracking_ticks(&self) -> Option<u32> {
-        self.entities.get(&self.config.dimension).map(Entities::ticks)
+        self.entities
+            .get(&self.config.dimension)
+            .map(Entities::ticks)
     }
     /// `PlayerList.broadcastAll(packet, dimension)`: the players in the
     /// level in place.

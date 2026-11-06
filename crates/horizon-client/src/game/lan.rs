@@ -2452,7 +2452,14 @@ impl Game<'_> {
             self.lan_assign_ids();
             if self.next_entity != next {
                 let mut states = States::default();
-                self.lan_entities(&host.mob_players, &mut host.hub, &mut states, false, next, None);
+                self.lan_entities(
+                    &host.mob_players,
+                    &mut host.hub,
+                    &mut states,
+                    false,
+                    next,
+                    None,
+                );
                 self.lan_hook_states(&host.play, &host.hub, &mut states);
                 self.lan_entity_uuids(&mut states);
                 host.hub.note_joined(states.as_slice());
@@ -2818,7 +2825,14 @@ impl Game<'_> {
                 return;
             }
             // A dedicated server has no host player.
-            self.lan_entities(&host.mob_players, &mut host.hub, &mut theirs, false, 0, None);
+            self.lan_entities(
+                &host.mob_players,
+                &mut host.hub,
+                &mut theirs,
+                false,
+                0,
+                None,
+            );
             self.lan_hook_states(&host.play, &host.hub, &mut theirs);
             self.lan_entity_uuids(&mut theirs);
             theirs.as_slice()
