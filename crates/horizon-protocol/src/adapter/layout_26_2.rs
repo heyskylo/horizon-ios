@@ -437,4 +437,70 @@ mod tests {
         // diamond: 1012 pinned, 926 in 26.2.
         assert!(p.stats.contains(&(1, 926, 2)));
     }
+
+    #[test]
+    fn pot_sides_and_container_slots_take_26_2_s_layout_and_ids() {
+        use crate::item::{Component, Stack, Template, component};
+        let v26_2 = ids();
+        // A pot with a diamond (1012 pinned, 926 in 26.2) at the back, the rest undecorated, and a
+        // container holding three diamonds and an empty slot: their pinned bytes.
+        let mut pot = Writer::new();
+        pot.bool(true);
+        Template::write(&Stack::new(1012, 1), &mut pot);
+        (0..3).for_each(|_| pot.bool(false));
+        let mut container = Writer::new();
+        container.varint(2);
+        container.bool(true);
+        Template::write(&Stack::new(1012, 3), &mut container);
+        container.bool(false);
+        let mut stack = Stack::new(1012, 1);
+        for (kind, bytes) in [
+            (component::POT_DECORATIONS, &pot.data),
+            (component::CONTAINER, &container.data),
+        ] {
+            let c = Component::read(kind, &mut Reader::new(bytes)).unwrap();
+            stack.added.push((kind, c));
+        }
+        let mut w = Writer::new();
+        {
+            let _down = ids::renumbering(v26_2, Way::Down);
+            Template::write(&stack, &mut w);
+        }
+        // Read with 26.2's reader (its quirks, its ids) both come back as they were.
+        let back = {
+            let _up = ids::renumbering(v26_2, Way::Up);
+            Template::read(&mut Reader::new(&w.data)).unwrap()
+        };
+        assert_eq!(back.item, 1012);
+        for (kind, bytes) in [
+            (component::POT_DECORATIONS, &pot.data),
+            (component::CONTAINER, &container.data),
+        ] {
+            let mut b = Writer::new();
+            back.component(kind).unwrap().write(kind, &mut b);
+            assert_eq!(&b.data, bytes, "component {kind}");
+        }
+    }
+
+    #[test]
+    fn a_tag_slot_display_is_a_bare_tag_id_for_26_2() {
+        use crate::packets::recipes::{HolderSet, SlotDisplay};
+        let round = |d: &SlotDisplay| {
+            let mut w = Writer::new();
+            {
+                let _down = ids::renumbering(ids(), Way::Down);
+                d.write(&mut w);
+            }
+            let _up = ids::renumbering(ids(), Way::Up);
+            SlotDisplay::read(&mut Reader::new(&w.data)).unwrap()
+        };
+        let tag = SlotDisplay::Tag(HolderSet::Tag("minecraft:planks".into()));
+        assert_eq!(round(&tag), tag);
+        // Items have no TagSlotDisplay form in 26.2: a composite of the items.
+        let items = SlotDisplay::Tag(HolderSet::Items(vec![1012]));
+        assert_eq!(
+            round(&items),
+            SlotDisplay::Composite(vec![SlotDisplay::Item(1012)])
+        );
+    }
 }
