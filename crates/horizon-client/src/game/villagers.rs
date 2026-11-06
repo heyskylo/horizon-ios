@@ -315,8 +315,9 @@ impl Game<'_> {
             .get("minecraft:villager_picks_up")
             .cloned();
         // A villager with no item near skips its scan; one near an item scans
-        // as before, testing the cheap reach first: a server's villagers and
-        // dropped items each run into the hundreds or thousands.
+        // the items of the cells it meets as before, testing the cheap reach
+        // first: a server's villagers and dropped items each run into the
+        // hundreds or thousands.
         let mut near_items = super::item_areas::ItemAreas::default();
         for i in 0..self.mobs.len() {
             let m = &self.mobs[i];
@@ -329,13 +330,17 @@ impl Game<'_> {
                 Vec3::new(pos.x - half, pos.y - 0.25, pos.z - half),
                 Vec3::new(pos.x + half, pos.y + top, pos.z + half),
             );
-            if !near_items.may_meet(&self.dropped, self.next_entity, reach) {
+            let mut scan = near_items.scan(&self.dropped, self.next_entity, reach);
+            if scan.is_empty() {
                 continue;
             }
             let requested = villager::requested_items(m);
             let mut j = 0;
-            while j < self.dropped.len() {
-                let e = &self.dropped[j];
+            loop {
+                j = scan.next_from(j, self.dropped.len());
+                let Some(e) = self.dropped.get(j) else {
+                    break;
+                };
                 let near = (e.position.x - pos.x).abs() <= half
                     && (e.position.z - pos.z).abs() <= half
                     && e.position.y >= pos.y - 0.25
@@ -370,6 +375,7 @@ impl Game<'_> {
                 match rest {
                     None => {
                         self.remove_dropped(j);
+                        scan.removed(j);
                     }
                     Some(rest) => {
                         self.dropped[j].stack.count = rest.count;

@@ -33,13 +33,17 @@ impl Game<'_> {
             }
             // `Mob.ITEM_PICKUP_REACH`.
             let reach = m.bounds().inflate(Vec3::new(1.0, 0.0, 1.0));
-            if !near.may_meet(&self.dropped, self.next_entity, reach) {
+            let mut scan = near.scan(&self.dropped, self.next_entity, reach);
+            if scan.is_empty() {
                 continue;
             }
             let (species, baby, passenger) = (m.species(), m.is_baby(), m.extra.passenger);
             let mut j = 0;
-            while j < self.dropped.len() {
-                let e = &self.dropped[j];
+            loop {
+                j = scan.next_from(j, self.dropped.len());
+                let Some(e) = self.dropped.get(j) else {
+                    break;
+                };
                 if e.pickup_delay > 0 || !reach.intersects(e.bounds()) {
                     j += 1;
                     continue;
@@ -70,6 +74,7 @@ impl Game<'_> {
                 e.stack.count -= taken;
                 if e.stack.count == 0 {
                     self.remove_dropped(j);
+                    scan.removed(j);
                 } else {
                     j += 1;
                 }
