@@ -30,6 +30,7 @@ view_distance = 10           # chunks sent around each player
 simulation_distance = 10     # chunks around each player where mobs, crops and redstone tick
 max_view_distance = 0        # past view_distance, saved chunks only, up to this (never generated; 0: off)
 admin_feedback_to_ops = true # operators see each other's commands ([name: ...], vanilla); false: only the log
+accept_older_clients = false # true: 26.2 clients join too, their packets translated (docs/hosting.md)
 
 [world]
 name = "world"               # the world folder
@@ -108,7 +109,7 @@ enabled = true               # false pauses it and keeps the webhook
 "##;
 
 /// Each typed setting: its section, its name, and the vanilla key it writes.
-pub(crate) const TYPED: [(&str, &str, &str); 16] = [
+pub(crate) const TYPED: [(&str, &str, &str); 17] = [
     ("server", "motd", "motd"),
     ("server", "port", "server-port"),
     ("server", "bind", "server-ip"),
@@ -123,6 +124,11 @@ pub(crate) const TYPED: [(&str, &str, &str); 16] = [
         "server",
         "admin_feedback_to_ops",
         "horizon-admin-feedback-to-ops",
+    ),
+    (
+        "server",
+        "accept_older_clients",
+        "horizon-accept-older-clients",
     ),
     ("world", "name", "level-name"),
     ("world", "seed", "level-seed"),
@@ -209,6 +215,9 @@ pub struct Server {
     /// Whether operators get each other's command feedback (`[name: ...]`, vanilla's broadcastToAdmins);
     /// false leaves it to the console's log, so nobody in game sees an operator's commands.
     pub admin_feedback_to_ops: bool,
+    /// Whether 26.2 clients may join, their packets translated (horizon-protocol's `ClientSession`); off, they
+    /// are turned away as vanilla turns away any other release.
+    pub accept_older_clients: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -419,6 +428,7 @@ impl Default for Server {
             simulation_distance: 10,
             max_view_distance: 0,
             admin_feedback_to_ops: true,
+            accept_older_clients: false,
         }
     }
 }
@@ -863,12 +873,12 @@ mod tests {
             ServerProperties::new(Properties::default(), &mut SystemEntropy::default()).unwrap();
         for (key, value) in Config::default().vanilla() {
             // Horizon's own, which vanilla doesn't have: their defaults behave as vanilla does
-            // (the far ring off, operators told of each other's commands).
+            // (the far ring off, operators told of each other's commands, other releases turned away).
             if key.starts_with("horizon-") {
-                let vanilla_like = if key == "horizon-admin-feedback-to-ops" {
-                    "true"
-                } else {
-                    "0"
+                let vanilla_like = match key.as_str() {
+                    "horizon-admin-feedback-to-ops" => "true",
+                    "horizon-accept-older-clients" => "false",
+                    _ => "0",
                 };
                 assert_eq!(value, vanilla_like, "{key}");
                 continue;
