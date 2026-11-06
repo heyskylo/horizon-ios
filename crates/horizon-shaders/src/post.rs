@@ -229,6 +229,11 @@ const GROUPS: [(Group, &str); 6] = [
     (Group::Final, "final"),
 ];
 
+/// The stars' blend: added to the sky, their own alpha replacing the buffer's, as vanilla draws
+/// them (`RenderPipelines.STARS`, `BlendFunction.OVERLAY`). Iris 1.11.7 drew them so with a probe
+/// pack of ours (#10490): colour 0.25 × 0.5 over the disc's 1.0 read 1.125, alpha 0.5.
+pub const STARS_BLEND: Blend = [Factor::SrcAlpha, Factor::One, Factor::One, Factor::Zero];
+
 pub struct PostProgram {
     /// The program's name (`composite3`).
     pub name: String,
@@ -241,6 +246,10 @@ pub struct PostProgram {
     pub flips: Vec<(u32, bool)>,
     /// How the program's output blends into its buffers; `None` writes them.
     pub blend: Option<Blend>,
+    /// `gbuffers_skybasic` without a `blend.*` of its own: each part of the sky blends as
+    /// vanilla draws it, the disc and the void without blending (`RenderPipelines.SKY`), the stars
+    /// with [`STARS_BLEND`] and the sunset fan with `blend`.
+    pub vanilla_sky_blends: bool,
     /// Per-buffer blend overrides, keyed by colortex index (not output location).
     pub buffer_blends: Vec<(u32, Option<Blend>)>,
     /// Bit n: `colortex<n>MipmapEnabled` in its fragment stage, so buffer n's mip chain is
@@ -775,13 +784,18 @@ pub fn load_post(
             })
         })
     };
-    // The sky blends as vanilla draws its sunset fan and stars unless `blend.*` says otherwise.
+    // The sky's parts blend as vanilla draws them (the sunset fan translucent, the stars
+    // [`STARS_BLEND`], the disc and the void not at all), unless `blend.*` says otherwise. Iris 1.11.7 left exactly what
+    // `gbuffers_skybasic` wrote on the sky disc, alpha 0.25 included, with a probe pack of ours
+    // (#10490).
     let sky = inputs
         .sky
         .as_ref()
         .and_then(|i| gbuffers(&SKY, Group::Gbuffers, i));
     let sky = sky.map(|mut p| {
-        p.blend = blend(properties, &p.name).unwrap_or(Some(TRANSLUCENT_BLEND));
+        let own = blend(properties, &p.name);
+        p.vanilla_sky_blends = own.is_none();
+        p.blend = own.unwrap_or(Some(TRANSLUCENT_BLEND));
         p
     });
     let celestial = inputs.celestial.as_ref();
@@ -1213,6 +1227,7 @@ impl Loader<'_> {
                 program: None,
                 buffers: Vec::new(),
                 blend: None,
+                vanilla_sky_blends: false,
                 mipmaps: 0,
                 compute,
                 geometry_triangles: 0,
@@ -1310,6 +1325,7 @@ impl Loader<'_> {
             program: Some(program),
             buffers,
             blend: None,
+            vanilla_sky_blends: false,
             mipmaps,
             compute,
             geometry_triangles: 0,
@@ -1441,6 +1457,7 @@ impl Loader<'_> {
             program: Some(program),
             buffers,
             blend: None,
+            vanilla_sky_blends: false,
             mipmaps: 0,
             compute: Vec::new(),
             geometry_triangles: triangles,
@@ -3004,6 +3021,12 @@ blend.composite1.colortex3 = ONE ONE ONE ONE
                 Group::Gbuffers,
                 Some(TRANSLUCENT_BLEND)
             )
+        );
+        // Its parts blend as vanilla's: the stars with BlendFunction.OVERLAY.
+        assert!(sky.vanilla_sky_blends);
+        assert_eq!(
+            STARS_BLEND,
+            [Factor::SrcAlpha, Factor::One, Factor::One, Factor::Zero]
         );
         // gbuffers_skytextured falls back to gbuffers_textured, then gbuffers_basic.
         let sun = post.sky_textured.unwrap();
