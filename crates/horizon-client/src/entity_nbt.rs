@@ -3893,6 +3893,7 @@ mod tests {
         }
     }
 
+    #[test]
     fn conversion_keeps_only_the_old_mobs_command_tags() {
         let tags = Tag::List(vec![
             Tag::String("subject".into()),
