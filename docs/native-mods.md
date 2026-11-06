@@ -1786,7 +1786,7 @@ trusting native code is the player's decision, never an agent's.
 1. **Rust.** The launcher's own toolchain ([`rust_toolchain`](../launcher/src/rust_toolchain.rs)): Rust 1.99.1's
    official `rustc`, `cargo` and `rust-std` (and `rust-mingw` on Windows), each pinned by SHA-256, downloaded once
    from static.rust-lang.org into `<launcher data>/rust/`, with its own Cargo home `<launcher data>/cargo/`. No
-   rustup, nothing on the system; the player's own Rust is never used. It ships for macOS on Apple Silicon, Linux
+   rustup, nothing on the system; the player's own Rust is never used. It ships for macOS (Apple Silicon and Intel), Linux
    x86-64, Windows x64 and Windows ARM64. The managed compiler follows the launcher's process architecture. An x64
    launcher running under ARM64 emulation keeps the existing x64 Rust and MinGW toolchain. The game architecture
    setting does not switch the compiler or enable cross-compilation. Windows x64 uses `x86_64-pc-windows-gnu` and
@@ -1809,8 +1809,7 @@ trusting native code is the player's decision, never an agent's.
    including when it runs under ARM64 emulation. A selection that does not match the launcher's process architecture
    is rejected, and an ARM64 selection that has only installed the x64 fallback is rejected by the PE check. Install
    a matching game build before building native mods. ARM64EC executables are unsupported. ARM64 Cargo artifacts
-   and build records have their own cache namespace; the existing x64 cache layout is unchanged. An Intel Mac has
-   no bundled compiler either, so native builds there stop with "the launcher has none for macos x86_64". The linker
+   and build records have their own cache namespace; the existing x64 cache layout is unchanged. The linker
    is the system's on macOS (the Command Line Tools: the launcher asks for `xcode-select --install`) and Linux (`cc`).
    On Linux the game also builds against the system's ALSA (`alsa-sys`) and libudev (`libudev-sys`, `hidapi`), found
    with `pkg-config`, whose development files desktop distributions don't install. Before downloading anything the
