@@ -2399,6 +2399,18 @@ def place_structure():
     ]
 
 
+def forceload_loads_the_chunk():
+    """`ServerLevel.setChunkForced` loads a newly forced chunk before the next command."""
+    return [
+        cmd('/execute if loaded 4000 200 4000'),
+        cmd('/forceload add 4000 4000'),
+        cmd('/execute if loaded 4000 200 4000'),
+        cmd('/setblock 4000 200 4000 minecraft:stone'),
+        cmd('/execute if block 4000 200 4000 minecraft:stone'),
+        *setup('/setblock 4000 200 4000 minecraft:air', '/forceload remove 4000 4000'),
+    ]
+
+
 def tame_wolf_kills():
     # LivingEntity.resolvePlayerResponsibleForDamage: a tame wolf's hit is its
     # owner's (the harness player, OfflinePlayer:Player), so the kill drops
@@ -5772,6 +5784,7 @@ def groups():
         ('place structure', place_structure()),
         ('template container loot table', template_container_loot_table()),
         ('tame wolf kills', tame_wolf_kills()),
+        ('forceload loads the chunk', forceload_loads_the_chunk()),
         ('experience orb fall', experience_orb_fall()),
         ('piglin pickups', piglin_pickups()),
         ('experience orb stuck', experience_orb_stuck()),
