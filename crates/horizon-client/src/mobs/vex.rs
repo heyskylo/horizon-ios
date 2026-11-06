@@ -143,6 +143,21 @@ impl Goal for RandomMove {
         }
     }
 }
+/// `Vex.getOwner`: the mob the vex is bound to. `counter2` holds its id while
+/// the evoker that summoned it is in the level; a vex loaded from a save knows
+/// only the UUID it was saved with, and vanilla's `EntityReference.getEntity`
+/// asks the level for that entity every time it is called
+/// (`MobWorld::who_by_uuid`), so an owner that loaded later is found too.
+pub fn owner(m: &Mob, lookup: Option<&dyn super::WhoLookup>) -> Option<u32> {
+    if m.extra.counter2 != 0 {
+        return Some(m.extra.counter2 as u32);
+    }
+    match lookup?.who_by_uuid(m.extra.owner?)? {
+        Who::Mob(id) => Some(id),
+        // `Vex.setOwner` takes a `Mob`: a UUID naming the player is no owner.
+        Who::Player => None,
+    }
+}
 /// `VexCopyOwnerTargetGoal`: the evoker's target.
 #[derive(Clone, Debug)]
 struct CopyOwnerTarget;
@@ -152,26 +167,24 @@ impl Goal for CopyOwnerTarget {
         super::goals::TARGET
     }
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
-        let owner = m.extra.counter2 as u32;
-        owner != 0
-            && cx
-                .w
-                .others
+        let seen = owner(m, cx.w.who_lookup).and_then(|owner| {
+            cx.w.others
                 .iter()
                 .find(|s| s.id == owner)
                 .and_then(|s| s.target)
-                .is_some_and(|t| t != Who::Mob(m.id))
+        });
+        seen.is_some_and(|t| t != Who::Mob(m.id))
     }
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         m.target_info(cx.w).is_some_and(|t| t.alive)
     }
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
-        let owner = m.extra.counter2 as u32;
-        m.ai.target =
+        m.ai.target = owner(m, cx.w.who_lookup).and_then(|owner| {
             cx.w.others
                 .iter()
                 .find(|s| s.id == owner)
-                .and_then(|s| s.target);
+                .and_then(|s| s.target)
+        });
     }
 }
 /// `VexMoveControl`: accelerate straight at the wanted point.

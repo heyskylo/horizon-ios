@@ -1173,7 +1173,8 @@ pub struct Extra {
     pub sitting: bool,
     /// `Parrot.partyParrot` and `jukebox`: the playing jukebox it dances to.
     pub party_jukebox: Option<[i32; 3]>,
-    /// The owner's UUID (tamed animals).
+    /// The owner's UUID: a tamed animal's, and the reference a vex was loaded
+    /// with (`Vex.readAdditionalSaveData`'s `owner`).
     pub owner: Option<[i32; 4]>,
     /// `Vindicator.isJohnny`: a custom name that was ever `Johnny`, which
     /// `setCustomName` latches and nothing clears.
