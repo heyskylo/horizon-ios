@@ -1762,6 +1762,7 @@ impl Game<'_> {
                 continue;
             };
             let (pos, prev) = (self.carts[i].position, self.carts[i].previous);
+            let cart_box = self.carts[i].bounds();
             let seats: Vec<(usize, f64)> = js
                 .iter()
                 // Minecart's box is 0.98 wide.
@@ -1769,6 +1770,7 @@ impl Game<'_> {
                 .collect();
             for (j, offset) in seats {
                 let m = &mut self.mobs[j];
+                m.seated(id, offset, cart_box);
                 m.position = cart_seat(pos, offset);
                 m.previous = cart_seat(prev, offset);
                 m.velocity = Vec3::ZERO;

@@ -1262,6 +1262,10 @@ pub struct Extra {
     /// `getFirstPassenger`).
     pub mount: Option<u32>,
     pub rider: Option<u32>,
+    /// Where `positionRider` last seated this rider: its own vehicle
+    /// attachment (`getPassengerRidingPosition(this).y` is its feet plus this)
+    /// and the vehicle's box (`Mob.getAttackBoundingBox`, `getHitbox`).
+    pub seat: Option<(u32, f64, Aabb)>,
     /// `Entity.boardingCooldown`: ticks after leaving a boat before a boat
     /// can pick this mob up again.
     pub boarding_cooldown: i32,
@@ -2401,6 +2405,8 @@ pub struct Seen {
     pub passenger: bool,
     /// The vehicle it rides (`getVehicle`): a mob's or a boat's id.
     pub vehicle: Option<u32>,
+    /// `LivingEntity.getHitbox`: the box, cut below the seat when riding.
+    pub hitbox: Aabb,
     /// A villager's reputation of the player (`getPlayerReputation`).
     pub player_rep: i32,
     /// `isPushable` and pushed by others (`Entity.push(Entity)` moves it).
@@ -2575,6 +2581,7 @@ impl Mob {
             species: m.species(),
             position: m.position,
             bounds: m.bounds(),
+            hitbox: m.hitbox(),
             eye_y: m.eye_y(),
             alive: m.alive(),
             baby: m.is_baby(),
@@ -3213,6 +3220,36 @@ impl Mob {
         }
     }
     #[inline]
+    /// `LivingEntity.getHitbox`: a rider's box starts no lower than its seat
+    /// (`vehicle.getPassengerRidingPosition(this).y`).
+    pub fn hitbox(&self) -> Aabb {
+        let b = self.bounds();
+        match self.extra.seat.filter(|s| self.extra.mount == Some(s.0)) {
+            Some((_, offset, _)) => {
+                let (lo, hi) = (b.min_position(), b.max_position());
+                let y = (self.position.y + offset).max(lo.y);
+                Aabb::new(Vec3::new(lo.x, y, lo.z), hi)
+            }
+            None => b,
+        }
+    }
+    /// `Mob.getAttackBoundingBox(range)`: its box, widened to its vehicle's
+    /// (`vehicle`, when it rides) on x and z, grown by `range` on x and z.
+    pub fn attack_box(&self, range: f64, vehicle: Option<Aabb>) -> Aabb {
+        let b = self.bounds();
+        let (mut lo, mut hi) = (b.min_position(), b.max_position());
+        if let Some(vehicle) = vehicle.filter(|_| self.extra.mount.is_some()) {
+            let (vlo, vhi) = (vehicle.min_position(), vehicle.max_position());
+            lo = Vec3::new(lo.x.min(vlo.x), lo.y, lo.z.min(vlo.z));
+            hi = Vec3::new(hi.x.max(vhi.x), hi.y, hi.z.max(vhi.z));
+        }
+        Aabb::new(lo, hi).inflate(Vec3::new(range, 0.0, range))
+    }
+    /// `positionRider` seated it on vehicle `id`: its own vehicle attachment
+    /// and the vehicle's box, good while it rides that vehicle.
+    pub fn seated(&mut self, id: u32, offset: f64, vehicle: Aabb) {
+        self.extra.seat = Some((id, offset, vehicle));
+    }
     pub fn bounds(&self) -> Aabb {
         self.bounds_at(self.position)
     }

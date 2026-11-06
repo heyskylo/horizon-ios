@@ -552,10 +552,12 @@ impl Game<'_> {
             let Some(js) = riders.get(&id).filter(|_| id != 0) else {
                 continue;
             };
+            let tnt_box = self.tnts[i].bounds();
             for &j in js {
                 let m = &mut self.mobs[j];
                 // Primed TNT's box is 0.98 wide.
                 let offset = horizon_client::mobs::riders::vehicle_attachment(m, 0.98);
+                m.seated(id, offset, tnt_box);
                 m.position = tnt_seat(pos, offset);
                 m.previous = tnt_seat(prev, offset);
                 m.velocity = Vec3::ZERO;
