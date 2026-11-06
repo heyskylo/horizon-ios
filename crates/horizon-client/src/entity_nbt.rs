@@ -3812,7 +3812,7 @@ mod spell_ticks_nbt_tests {
                     value.unwrap_or(0),
                     "{name}: {value:?}"
                 );
-                let saved = mob_to_nbt(&loaded, [1, 2, 3, 4], None, None);
+                let saved = mob_to_nbt(&loaded, [1, 2, 3, 4], None, None, |_| None);
                 assert_eq!(saved.get("SpellTicks"), Some(&Tag::Int(value.unwrap_or(0))));
             }
         }
@@ -3834,7 +3834,7 @@ mod spell_ticks_nbt_tests {
             for value in [29, 27, 20, 0, -2] {
                 m.extra.counter = value;
                 for raw in [None, Some(&raw)] {
-                    let saved = mob_to_nbt(&m, [1, 2, 3, 4], raw, None);
+                    let saved = mob_to_nbt(&m, [1, 2, 3, 4], raw, None, |_| None);
                     assert_eq!(saved.get("SpellTicks"), Some(&Tag::Int(value)), "{name}");
                     if raw.is_some() {
                         assert_eq!(saved.get("audit:unrelated"), Some(&Tag::Int(7)));
@@ -4574,7 +4574,7 @@ mod tests {
             );
             assert!(mob.no_ai && mob.no_gravity && mob.extra.age_locked);
             for source in [None, Some(&raw)] {
-                let saved = mob_to_nbt(&mob, [0, 0, 0, 55], source, None);
+                let saved = mob_to_nbt(&mob, [0, 0, 0, 55], source, None, |_| None);
                 for key in ["Age", "ForcedAge", "InLove"] {
                     assert_eq!(
                         saved.get(key),
