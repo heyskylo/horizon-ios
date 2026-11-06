@@ -654,13 +654,14 @@ impl Component {
             Self::TooltipDisplay { hide, hidden } => {
                 w.bool(*hide);
                 // Without the components an older client being written for lacks.
-                let hidden: Vec<i32> = hidden
-                    .iter()
-                    .map(|h| ids::component(*h))
-                    .filter(|h| *h >= 0)
-                    .collect();
-                w.varint(hidden.len() as i32);
-                hidden.iter().for_each(|h| w.varint(*h));
+                let kept = || {
+                    hidden
+                        .iter()
+                        .map(|h| ids::component(*h))
+                        .filter(|h| *h >= 0)
+                };
+                w.varint(kept().count() as i32);
+                kept().for_each(|h| w.varint(h));
             }
             Self::Stacks(stacks) => {
                 w.varint(stacks.len() as i32);

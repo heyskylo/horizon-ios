@@ -61,7 +61,9 @@ REGISTRIES = [
 
 # What stands in for a pinned entry an older client lacks: (registries, pattern, replacement), the pattern matched
 # against the whole name without its namespace and tried in order; the first replacement the older version has wins.
-# A block keeps its shape (a slab for a slab), so a client's movement agrees with the server's.
+# A block keeps its shape (a slab for a slab), so a client's movement agrees with the server's; where no block of the
+# same shape exists, the stand-in's collision holds the original's (a client walking into what the server calls solid
+# is pulled back; one stopped short of it is not).
 BLOCKS = ("minecraft:block", "minecraft:item")
 SUBSTITUTES = [
     (BLOCKS, r"\w+_poplar_leaves", "birch_leaves"),
@@ -70,9 +72,12 @@ SUBSTITUTES = [
     (BLOCKS, r"\w+_(wool|concrete)_stairs", "stone_stairs"),
     (BLOCKS, r"straw_bed", "yellow_bed"),
     (BLOCKS, r"red_shrub", "dead_bush"),
-    (BLOCKS, r"shelf_mushroom", "brown_mushroom"),
+    # The shelf mushroom is a solid shelf players stand and bounce on; the brown mushroom has no collision.
+    (("minecraft:block",), r"shelf_mushroom", "brown_mushroom_block"),
+    (("minecraft:item",), r"shelf_mushroom", "brown_mushroom"),
     (("minecraft:item",), r"(\w+)_cushion", r"\1_carpet"),
-    (("minecraft:item",), r"\w+_map", "map"),
+    # The explorer maps are filled maps (MapItem): an empty map would not draw their map_id.
+    (("minecraft:item",), r"\w+_map", "filled_map"),
     (("minecraft:particle_type",), r"\w+_poplar_leaves", "cherry_leaves"),
     (("minecraft:sound_event",), r"block\.poplar_leaves\.(\w+)", r"block.cherry_leaves.\1"),
     (("minecraft:sound_event",), r"entity\.cushion\.(break|place)", r"block.wool.\1"),
