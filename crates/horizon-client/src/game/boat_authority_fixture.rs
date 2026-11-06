@@ -12,7 +12,29 @@ struct Case {
     name: String,
     velocity: [f64; 3],
     spin: f32,
+    #[serde(default)]
     owned: Vec<bool>,
+    #[serde(default)]
+    paddles: Option<PaddleCase>,
+}
+
+#[derive(Deserialize)]
+struct PaddleCase {
+    initial: [f32; 2],
+    steps: Vec<PaddleStep>,
+}
+#[derive(Deserialize)]
+struct PaddleStep {
+    occupied: bool,
+    #[serde(default)]
+    owned: bool,
+    #[serde(default = "is_player")]
+    first_player: bool,
+    flags: [bool; 2],
+}
+
+fn is_player() -> bool {
+    true
 }
 
 impl Game<'_> {
@@ -28,6 +50,36 @@ impl Game<'_> {
             boat.delta_rotation = case.spin;
             self.boats.push(boat);
             let mut steps = Vec::new();
+            if let Some(paddles) = case.paddles {
+                self.riding = None;
+                self.boats[0].paddles = paddles.initial;
+                for step in paddles.steps {
+                    self.boats[0].paddling = step.flags;
+                    self.boats[0].paddle_controller = step.occupied && step.first_player;
+                    self.riding = step.owned.then_some(1);
+                    if step.owned {
+                        self.boats[0].input = [
+                            step.flags[1] && !step.flags[0],
+                            step.flags[0] && !step.flags[1],
+                            step.flags[0] && step.flags[1],
+                            false,
+                        ];
+                        let boat = self.tick_boat(self.boats[0].clone(), true);
+                        self.boats[0] = boat;
+                    }
+                    self.tick_remote_boat_bubbles();
+                    let boat = &self.boats[0];
+                    let rowing = [0.0, 0.25, 0.5, 1.0].map(|a| {
+                        [0, 1].map(|side| format!("{:08x}", boat.rowing_time(side, a).to_bits()))
+                    });
+                    steps.push(json!({
+                        "phase": boat.paddles.map(|p| format!("{:08x}", p.to_bits())),
+                        "rowing": rowing,
+                    }));
+                }
+                output.push(json!({"name": case.name, "steps": steps}));
+                continue;
+            }
             for owned in case.owned {
                 self.riding = owned.then_some(1);
                 if owned {

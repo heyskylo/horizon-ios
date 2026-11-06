@@ -154,6 +154,15 @@ impl Game<'_> {
             return;
         };
         let vehicle_id = vehicle as u32;
+        let player_controls = passengers.first().is_some_and(|&id| {
+            self.remote
+                .as_ref()
+                .is_some_and(|r| r.level_player(id).is_some())
+        });
+        if let Some(boat) = self.boats.iter_mut().find(|b| b.id == vehicle_id) {
+            boat.paddle_controller = player_controls;
+        }
+
         for m in &mut self.mobs {
             // `Entity.isVehicle` (the saddle reins of a ridden horse): the
             // server sends no rider on the mob itself, only this list.
@@ -399,7 +408,7 @@ impl Game<'_> {
     /// boat on a client: `status`, the two `applyEffectsFromBlocks` (a boat
     /// above a column may splash; the boat the player drives is lifted or
     /// dragged by a column it is inside) and `tickBubbleColumn`'s wobble from
-    /// the synched bubble time.
+    /// the synched bubble time, followed by the oars on boats this client does not drive.
     pub(super) fn tick_remote_boat_bubbles(&mut self) {
         for i in 0..self.boats.len() {
             let driven = self.riding == Some(self.boats[i].id);
@@ -423,6 +432,13 @@ impl Game<'_> {
                 }
             }
             self.boats[i].tick_bubble_wobble();
+            if !driven {
+                Self::tick_boat_paddles(
+                    &mut self.boats[i],
+                    &mut self.audio,
+                    &mut self.world.random,
+                );
+            }
         }
     }
 
@@ -496,7 +512,7 @@ impl Game<'_> {
 /// it is the first passenger of (`AbstractHorse.getControllingPassenger`),
 /// or a harnessed adult Happy Ghast it is the first passenger of
 /// (`HappyGhast.getControllingPassenger`: wearing body armor, player on
-/// top, not on a still timeout — the rider steers it with `travelRidden`
+/// top, not on a still timeout â€” the rider steers it with `travelRidden`
 /// on their own client, and the mount goes to the server as `MoveVehicle`).
 fn client_moves(m: &Mob, first_passenger: bool) -> bool {
     if !first_passenger || !m.alive() {
