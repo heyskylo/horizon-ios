@@ -2140,6 +2140,39 @@ def gameplay_guide_basic(args, name):
     return check.failures
 
 
+def gameplay_guide_boat_and_keys(args, name):
+    """A boat shows Ride only when it would take the player, and the keyboard hides the guide."""
+    game = Game(args, name, world=True)
+    check = Check()
+    try:
+        game.pad('lb')
+        x, y, z = game.ctl('state')['player']['block_pos']
+        game.ctl('command', f'fill {x - 2} {y} {z + 1} {x + 2} {y + 3} {z + 5} air')
+        game.ctl('command', f'summon oak_boat {x} {y} {z + 3}')
+        time.sleep(1)
+        game.ctl('look-at', x, y + 0.2, z + 3)
+        for _ in range(10):
+            time.sleep(0.3)
+            _, right = guide(game)
+            if right:
+                break
+        check(('lt', 'ride') in right, f'no Ride on a free boat: {right}')
+        game.ctl('key', 'lshift', 'down')
+        game.pad('lb')
+        _, sneaking = guide(game)
+        check(not any(caption == 'ride' for _, caption in sneaking), f'Ride while sneaking: {sneaking}')
+        game.ctl('key', 'lshift', 'up')
+
+        game.ctl('key', 'j', 'tap')
+        time.sleep(SETTLE)
+        check(guide(game) == ([], []), f'the guide stayed up after a key: {guide(game)}')
+        game.pad('lb')
+        check(guide(game) != ([], []), 'the pad did not bring the guide back')
+    finally:
+        game.quit()
+    return check.failures
+
+
 def gameplay_guide_off(args, name):
     game = Game(args, name, world=True, seed=seed_controller('gameplayGuide:false\n'))
     check = Check()
@@ -2202,6 +2235,7 @@ CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': releas
          'slider_needs_a': slider_needs_a,
          'gameplay_guide': gameplay_guide,
          'gameplay_guide_basic': gameplay_guide_basic,
+         'gameplay_guide_boat_and_keys': gameplay_guide_boat_and_keys,
          'gameplay_guide_off': gameplay_guide_off, 'gameplay_guide_mobs': gameplay_guide_mobs}
 
 

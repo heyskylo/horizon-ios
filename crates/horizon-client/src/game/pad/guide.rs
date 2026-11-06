@@ -30,6 +30,7 @@ impl Game<'_> {
         settings.enabled
             && settings.guide_detail != GuideDetail::Off
             && self.pad.in_use
+            && !self.pad.keyboard_took_over
             && !self.pad_in_menu()
             && !self.screen_over_playing()
             && self.sleeping.is_none()
@@ -387,12 +388,19 @@ impl Game<'_> {
                 _ => Some(Verb::Use),
             };
         }
-        if let Some(boat) = self.boats.iter().find(|b| b.id as i32 == id) {
-            return Some(if boat.chest && sneaking {
-                Verb::Open
-            } else {
-                Verb::Ride
-            });
+        if let Some(i) = self.boats.iter().position(|b| b.id as i32 == id) {
+            // ChestBoat.interact, then AbstractBoat.interact.
+            let boat = &self.boats[i];
+            let room = self.boat_has_room(i);
+            if boat.chest && (sneaking || self.riding.is_some() || !room) {
+                return Some(Verb::Open);
+            }
+            let rideable = !sneaking
+                && boat.out_of_control < 60.0
+                && self.riding.is_none()
+                && self.may_board()
+                && room;
+            return rideable.then_some(Verb::Ride);
         }
         if self
             .painting_hit()

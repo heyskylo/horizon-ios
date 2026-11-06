@@ -18142,6 +18142,7 @@ impl Game<'_> {
         }
         if let WindowEvent::MouseInput { state, button, .. } = &event {
             if *state == ElementState::Pressed {
+                self.pad.keyboard_took_over = true;
                 self.physical_buttons.insert(*button);
             } else {
                 self.physical_buttons.remove(button);
@@ -18225,6 +18226,11 @@ impl Game<'_> {
             return;
         }
         // Fullscreen is a window shortcut, before screens consume keyboard input.
+        if let WindowEvent::KeyboardInput { event, .. } = &event
+            && event.state == ElementState::Pressed
+        {
+            self.pad.keyboard_took_over = true;
+        }
         if let WindowEvent::KeyboardInput { event, .. } = &event
             && event.state == ElementState::Pressed
             && let PhysicalKey::Code(key) = event.physical_key
