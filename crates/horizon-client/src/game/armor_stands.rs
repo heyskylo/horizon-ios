@@ -1629,8 +1629,8 @@ impl Game<'_> {
                 .extra
                 .as_deref()
                 .and_then(|d| d.other.iter().find(|(k, _)| k == "minecraft:profile"))
-                .map(|(_, t)| horizon_client::scoreboard::tag_to_json(t))
-                .unwrap_or(serde_json::Value::Null);
+                .map(|(_, t)| self.skin_profiles.borrow_mut().head_profile_nbt(t))
+                .unwrap_or_else(|| std::sync::Arc::new(serde_json::Value::Null));
             self.pack.item_renderer.submit_special(
                 &special,
                 &profile,
