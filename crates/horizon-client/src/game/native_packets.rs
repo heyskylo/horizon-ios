@@ -38,19 +38,26 @@ impl Game<'_> {
     }
 
     /// What a guest who just logged in said during their configuration, for the mods: the
-    /// channels they registered. The hub is in place.
+    /// channels they registered and their answers to the server's resource pack. The hub is in
+    /// place.
     pub(super) fn configuration_heard(&mut self, uuid: u128, name: &str) {
-        let Some(channels) = self.lan.as_ref().and_then(|host| {
+        let Some((channels, answers)) = self.lan.as_mut().and_then(|host| {
             host.hub
                 .guests
-                .iter()
+                .iter_mut()
                 .find(|g| g.uuid == uuid)
-                .map(|g| g.channels.clone())
+                .map(|g| {
+                    let answers = std::mem::take(&mut g.configuration_pack_answers);
+                    (g.channels.clone(), answers)
+                })
         }) else {
             return;
         };
         if !channels.is_empty() {
             self.native_player_register_channels(uuid, name, &channels, true);
+        }
+        for (pack, status) in answers {
+            self.native_resource_pack_status_v2(uuid, name, pack, status);
         }
     }
 }

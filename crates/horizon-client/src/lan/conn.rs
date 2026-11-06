@@ -1317,7 +1317,12 @@ fn offer_pack(
     c.send(&cfg::Clientbound::ResourcePackPush(push).encode())
         .map_err(e)?;
     wait_alive(c, |packet| match packet {
-        Ok(cfg::Serverbound::ResourcePack(r)) if !matches!(r.action, 3 | 4) => {
+        // Every answer is kept for the mods (native_resource_pack_status_v2).
+        Ok(cfg::Serverbound::ResourcePack(r)) => {
+            configured.pack_answers.push((r.id, r.action));
+            if matches!(r.action, 3 | 4) {
+                return None;
+            }
             let rejected = r.action == PACK_DECLINED && pack.required;
             Some(Ok(rejected.then_some(r.id)))
         }

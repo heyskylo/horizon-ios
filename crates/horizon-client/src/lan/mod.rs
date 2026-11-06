@@ -90,10 +90,12 @@ pub struct Joined {
 }
 
 /// What a client said during its configuration, kept for the game (`native_packets.rs`): the
-/// plugin channels it registered (`minecraft:register`), in order.
+/// plugin channels it registered (`minecraft:register`), in order, and its answers to the
+/// server's resource pack (pack id, `ServerboundResourcePackPacket.Action` id), in order.
 #[derive(Clone, Debug, Default)]
 pub struct Configured {
     pub channels: Vec<String>,
+    pub pack_answers: Vec<(u128, i32)>,
 }
 
 /// The most plugin channels kept for one client ([`apply_channels`]).

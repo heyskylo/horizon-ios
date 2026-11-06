@@ -6586,6 +6586,26 @@ impl Game<'_> {
     ) {
         let _ = (player, name, channels, register);
     }
+    /// `native_resource_pack_status` with the answered pack's id (`pack`,
+    /// `ServerboundResourcePackPacket.id`, Bukkit's `PlayerResourcePackStatusEvent.getID`), so a
+    /// mod that offered its own pack (`native_send_resource_pack`) hears only that pack's
+    /// answers; `status` is the same `Action` number. In play it is heard just before v1, the
+    /// player's state swapped in, as for v1. The answers to the server's own pack
+    /// (`resource-pack` in `server.properties`), given during the configuration before the
+    /// player joined, which v1 never hears, are heard here once the player has logged in, in
+    /// order, right after `native_player_logged_in`, with the hub in place and no player's state
+    /// swapped in (a player disconnected for declining a required pack never logs in and is not
+    /// heard). It only hears: a declined required pack is handled as before. Server-side.
+    /// @API:resource_pack_status_v2@.
+    pub(super) fn native_resource_pack_status_v2(
+        &mut self,
+        player: u128,
+        name: &str,
+        pack: u128,
+        status: i32,
+    ) {
+        let _ = (player, name, pack, status);
+    }
     /// A click in a menu a mod opened (`native_open_menu`), which moved
     /// nothing: the menu's `slot` (its own first, then the player's
     /// inventory, `native_menu_inventory_slot`; -999 outside), the `button`

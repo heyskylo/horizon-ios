@@ -2531,6 +2531,14 @@ What packet-level plugins (ProtocolLib, PacketEvents, TAB), plugin channel liste
   takes away every server pack the client has. Both send as `native_send` does (from `native_server_tick` and from the
   player's own hooks) and are false when the player isn't on, on a client, and for an empty URL, a URL past 32767
   characters or a hash past 40. Bundles need `"hooks": @API:resource_packs@`.
+- **`native_resource_pack_status_v2(player, name, pack, status)`**: an additive version of
+  `native_resource_pack_status` with the answered pack's id (`ServerboundResourcePackPacket.id`, Bukkit's
+  `PlayerResourcePackStatusEvent.getID`), so a mod hears its own pack's answers apart from every other pack's;
+  `status` is the same `Action` number. In play it is heard just before v1, with the player's state swapped in. The
+  answers to the server's own pack (`resource-pack` in `server.properties`), given during the configuration and never
+  heard by v1, are heard here in order once the player has logged in, right after `native_player_logged_in`, with the
+  hub in place; a player disconnected for declining a required pack never logs in. v1 keeps its signature and firing
+  point. It only hears. Bundles need `"hooks": @API:resource_pack_status_v2@`.
 
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The

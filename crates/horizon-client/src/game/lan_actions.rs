@@ -2545,6 +2545,7 @@ impl Game<'_> {
             S::ResourcePack(r) => {
                 let (uuid, name) = (host.hub.guests[gi].uuid, host.hub.guests[gi].name.clone());
                 self.as_guest(host, conn, |g| {
+                    g.native_resource_pack_status_v2(uuid, &name, r.id, r.action);
                     g.native_resource_pack_status(uuid, &name, r.action);
                 });
             }
