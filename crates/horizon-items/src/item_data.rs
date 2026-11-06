@@ -723,6 +723,20 @@ pub fn encode_components(stack: &ItemStack) -> Option<Tag> {
             return None;
         }
     }
+    // Items.BEEHIVE/BEE_NEST use this whole block-state map as their prototype.
+    // Empty maps and maps with extra properties are distinct, nondefault patches.
+    if matches!(&*stack.item, "minecraft:beehive" | "minecraft:bee_nest")
+        && matches!(components.get("minecraft:block_state"), Some(Tag::Compound(state))
+            if state.len() == 1
+                && matches!(state.get(&JavaString::from("honey_level")),
+                    Some(Tag::String(level)) if level.to_string_lossy() == "0"))
+        && let Tag::Compound(entries) = &mut components
+    {
+        entries.remove(&JavaString::from("minecraft:block_state"));
+        if entries.is_empty() {
+            return None;
+        }
+    }
     Some(components)
 }
 /// `encode_components` from the damage value and extra components.
@@ -1242,6 +1256,73 @@ mod tests {
                 crate::item_nbt::item_from_nbt(&crate::item_nbt::item_to_nbt(&stack)).unwrap();
             assert_eq!(encode_components(&back), Some(components.clone()), "{item}");
         }
+    }
+
+    fn check_hive_saved_patch(decoded: bool) {
+        let parse = |text| horizon_world::nbt::parse_snbt(text).unwrap().0;
+        let zero = parse(r#"{"minecraft:block_state":{honey_level:"0"}}"#);
+        let keep = parse(
+            r#"{"minecraft:block_state":{honey_level:"0"},"minecraft:custom_data":{keep:34}}"#,
+        );
+        let custom = parse(r#"{"minecraft:custom_data":{keep:34}}"#);
+        let one = parse(r#"{"minecraft:block_state":{honey_level:"1"}}"#);
+        let empty = parse(r#"{"minecraft:block_state":{}}"#);
+        let extra = parse(r#"{"minecraft:block_state":{honey_level:"0",facing:"south"}}"#);
+        let removed = parse(r#"{"!minecraft:block_state":{},"minecraft:custom_data":{keep:34}}"#);
+        for item in ["minecraft:beehive", "minecraft:bee_nest", "minecraft:stone"] {
+            assert!(encode_components(&ItemStack::new(item, 1)).is_none());
+            for source in [&zero, &keep, &one, &empty, &extra, &removed] {
+                let mut stack = ItemStack::new(item, 1);
+                if decoded {
+                    (stack.damage, stack.extra) = decode_components(Some(source));
+                } else {
+                    // A fresh model, without retained source NBT.
+                    assert!(stack.extra.is_none());
+                    let Tag::Compound(entries) = source else {
+                        unreachable!()
+                    };
+                    for (id, value) in entries {
+                        stack
+                            .data_mut()
+                            .set_other(&id.to_string_lossy(), Some(value.clone()));
+                    }
+                }
+                let before = stack.data().cloned();
+                assert_eq!(
+                    components_tag(stack.damage, stack.data()),
+                    Some(source.clone())
+                );
+                let saved = encode_components(&stack);
+                // Saved patch canonicalization must not change live/unsaved values.
+                assert_eq!(stack.data(), before.as_ref());
+                assert_eq!(
+                    components_tag(stack.damage, stack.data()),
+                    Some(source.clone())
+                );
+                let expected = if item != "minecraft:stone" && source == &zero {
+                    None
+                } else if item != "minecraft:stone" && source == &keep {
+                    Some(custom.clone())
+                } else {
+                    Some(source.clone())
+                };
+                assert_eq!(saved, expected, "{item}, decoded={decoded}, {source:?}");
+                let tag = crate::item_nbt::item_to_nbt(&stack);
+                assert_eq!(tag.get("components"), expected.as_ref());
+                let back = crate::item_nbt::item_from_nbt(&tag).unwrap();
+                assert_eq!(encode_components(&back), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn decoded_hive_saved_patch_uses_whole_prototype() {
+        check_hive_saved_patch(true);
+    }
+
+    #[test]
+    fn fresh_hive_saved_patch_uses_whole_prototype() {
+        check_hive_saved_patch(false);
     }
 
     #[test]
