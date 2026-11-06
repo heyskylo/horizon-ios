@@ -416,6 +416,9 @@ mod tests {
         assert_eq!(update(8), 8);
         // poplar_log axis=y (167, new in 26.3) shows as birch_log axis=y (146 in 26.3, 143 in 26.2).
         assert_eq!(update(167), 143);
+        // shelf_mushroom (11227, new in 26.3) is solid: it shows as a brown_mushroom_block (9500 in 26.3, 7766 in
+        // 26.2), not as the brown mushroom players would fall through.
+        assert_eq!(update(11227), 7766);
     }
 
     #[test]
@@ -436,6 +439,8 @@ mod tests {
         assert_eq!(slot(1012), 926);
         // poplar_planks (72, new in 26.3) shows as birch_planks (65 in both).
         assert_eq!(slot(72), 65);
+        // ocean_monument_map (1239, new in 26.3) is a filled map: filled_map (1238 in 26.3, 1133 in 26.2).
+        assert_eq!(slot(1239), 1133);
     }
 
     #[test]
