@@ -892,7 +892,8 @@ impl Launcher {
         };
         let row = self.row_menu.rows.borrow().get(&id).copied()?;
         let t = self.theme;
-        let height = f32::from(window.viewport_size().height);
+        let viewport = window.viewport_size();
+        let height = f32::from(viewport.height);
         // The mockup's `rect.right + 12`, `min(rect.top - 8, innerHeight - 330)`: its ⋮ button
         // ends 6 px inside the row and sits in the row's middle.
         let x = f32::from(row.origin.x + row.size.width) - 6. + 12.;
@@ -914,12 +915,31 @@ impl Launcher {
             instance.clone(),
         );
         let home = instance.home.clone();
-        let shortcut_label = if self.has_shortcut(&instance.id) {
-            tr("Remove the desktop shortcut")
-        } else {
-            tr("Create a desktop shortcut")
-        };
-        let mut menu = ui::popover(250.)
+        let labels = [
+            tr("Edit…"),
+            tr("Duplicate…"),
+            tr("Open folder"),
+            tr("Export…"),
+            tr("Launch…"),
+            if self.has_shortcut(&instance.id) {
+                tr("Remove the desktop shortcut")
+            } else {
+                tr("Create a desktop shortcut")
+            },
+            if confirm {
+                tr("Click again to delete")
+            } else {
+                tr("Delete…")
+            },
+        ];
+        let [edit_label, copy_label, folder_label, export_label, launch_label, shortcut_label, delete_label] =
+            labels;
+        let viewport_width = f32::from(viewport.width);
+        let width = ui::menu_content_width(window, &labels)
+            .max(250.)
+            .min((viewport_width - 16.).max(0.));
+        let x = x.min(viewport_width - width - 8.).max(8.);
+        let mut menu = ui::popover(width)
             .id("row-menu")
             .occlude()
             .on_mouse_down_out(cx.listener(|this, event: &MouseDownEvent, _, cx| {
@@ -928,7 +948,7 @@ impl Launcher {
                 cx.notify();
             }))
             .child(
-                item("edit", "pencil-edit-02", tr("Edit…").into()).on_click(cx.listener(
+                item("edit", "pencil-edit-02", edit_label.into()).on_click(cx.listener(
                     move |this, _: &ClickEvent, _, cx| {
                         this.row_menu.open = None;
                         this.open_instance_dialog(Some(edit.clone()));
@@ -937,7 +957,7 @@ impl Launcher {
                 )),
             )
             .child(
-                item("duplicate", "copy-01", tr("Duplicate…").into()).on_click(cx.listener(
+                item("duplicate", "copy-01", copy_label.into()).on_click(cx.listener(
                     move |this, _: &ClickEvent, _, cx| {
                         pick(this, &copy);
                         this.start_copy();
@@ -946,7 +966,7 @@ impl Launcher {
                 )),
             )
             .child(
-                item("folder", "folder-01", tr("Open folder").into()).on_click(cx.listener(
+                item("folder", "folder-01", folder_label.into()).on_click(cx.listener(
                     move |this, _: &ClickEvent, _, cx| {
                         this.row_menu.open = None;
                         let _ = std::fs::create_dir_all(&home);
@@ -956,7 +976,7 @@ impl Launcher {
                 )),
             )
             .child(
-                item("export", "upload-04", tr("Export…").into()).on_click(cx.listener(
+                item("export", "upload-04", export_label.into()).on_click(cx.listener(
                     move |this, _: &ClickEvent, _, cx| {
                         pick(this, &export);
                         if this.export.is_none() {
@@ -967,7 +987,7 @@ impl Launcher {
                 )),
             )
             .child(
-                item("launch", "sliders-horizontal", tr("Launch…").into()).on_click(cx.listener(
+                item("launch", "sliders-horizontal", launch_label.into()).on_click(cx.listener(
                     move |this, _: &ClickEvent, _, cx| {
                         pick(this, &launch);
                         this.home_tab = home_tabs::HomeTab::Overview;
@@ -992,17 +1012,7 @@ impl Launcher {
             && self.client.is_none()
             && self.starting_client.is_none();
         let gone = instance.id.clone();
-        let delete = ui::menu_row(
-            "row-menu-delete",
-            "delete-02",
-            if confirm {
-                tr("Click again to delete")
-            } else {
-                tr("Delete…")
-            },
-            true,
-            &t,
-        );
+        let delete = ui::menu_row("row-menu-delete", "delete-02", delete_label, true, &t);
         let delete = if can_delete {
             delete.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                 if let Some((_, confirm)) = this.row_menu.open.as_mut().filter(|(_, c)| !*c) {
