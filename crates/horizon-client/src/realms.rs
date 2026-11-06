@@ -573,6 +573,9 @@ pub enum SubScreen {
         job: Option<TemplatePages>,
         /// `SwitchMinigameTask` on a worker, from the minigame list's Select.
         select: Option<Job<Result<(), RealmsError>>>,
+        /// `Entry.websiteButton`/`trailerButton` as drawn: (row, rect, trailer) — the
+        /// click needs the row's version width, which only the draw measures.
+        icons: std::cell::RefCell<Vec<(usize, [f32; 4], bool)>>,
         error: Option<String>,
     },
     /// `RealmsSelectFileToUploadScreen`: the local worlds an upload can pick.
@@ -1629,6 +1632,7 @@ impl Screen {
             scroll: crate::ui::Scroll::default(),
             job,
             select: None,
+            icons: std::cell::RefCell::new(Vec::new()),
             error: None,
         };
     }
@@ -2562,8 +2566,24 @@ impl Screen {
                 group,
                 templates,
                 scroll,
+                icons,
                 ..
             } => {
+                // `Entry.mouseClicked` checks its two buttons before the list.
+                if let Some(link) = icons.borrow().iter().find_map(|(row, rect, trailer)| {
+                    let [ix, iy, iw, ih] = *rect;
+                    if x < ix || x >= ix + iw || y < iy || y >= iy + ih {
+                        return None;
+                    }
+                    let template = templates.get(*row)?;
+                    if *trailer {
+                        template.trailer.clone()
+                    } else {
+                        template.link.clone()
+                    }
+                }) {
+                    return Outcome::OpenUri(link);
+                }
                 let top = if group.is_none() { 51.0 } else { 30.0 };
                 row_at(x, y, w, top, h - 44.0, TEMPLATE_ROW, scroll.amount)
                     .filter(|row| *row < templates.len())
@@ -3858,6 +3878,7 @@ impl Screen {
                 selected,
                 scroll,
                 job,
+                icons,
                 error,
                 ..
             } => {
@@ -3889,6 +3910,8 @@ impl Screen {
                     content,
                     scroll.amount,
                 );
+                let mut icons = icons.borrow_mut();
+                icons.clear();
                 for (i, template) in templates.iter().enumerate() {
                     let y = top + 2.0 + i as f32 * TEMPLATE_ROW - scroll.amount;
                     if y + TEMPLATE_ROW <= top || y >= bottom {
@@ -3920,6 +3943,27 @@ impl Screen {
                         GREY,
                         true,
                     );
+                    // `Entry`: the website and trailer buttons, left of the version.
+                    for (trailer, offset) in [(false, 10.0), (true, 15.0 + 15.0)] {
+                        let present = if trailer {
+                            template.trailer.is_some()
+                        } else {
+                            template.link.is_some()
+                        };
+                        if !present {
+                            continue;
+                        }
+                        let x = rx + ROW_WIDTH - version - 15.0 - offset;
+                        let hovered = crate::ui::hovered(cursor, x, y, 15.0, 15.0);
+                        let sprite = match (trailer, hovered) {
+                            (false, false) => "gui/sprites/icon/link",
+                            (false, true) => "gui/sprites/icon/link_highlighted",
+                            (true, false) => "gui/sprites/icon/video_link",
+                            (true, true) => "gui/sprites/icon/video_link_highlighted",
+                        };
+                        crate::ui::blit_sprite(batch, atlas, sprite, x, y, 15.0, 15.0, u32::MAX);
+                        icons.push((i, [x, y, 15.0, 15.0], trailer));
+                    }
                     batch.text(atlas, &template.author, rx + 60.0, y + 19.0, GREY, true);
                     if !template.recommended_players.is_empty() {
                         batch.text(
