@@ -663,13 +663,17 @@ pub struct EntityView {
     /// `None` without a team or where the identity is not bound.
     pub team: Option<String>,
 }
-/// What `PlayerPredicate` reads of a player beyond its entity. Each part is
-/// filled only when a criterion may ask for it (`Tree::player_facts_asked`);
-/// a predicate that asks for a part left `None` fails.
+/// What `PlayerPredicate` reads of a player beyond its entity. Each record
+/// is filled only when a criterion may ask for it (`Tree::player_facts_asked`),
+/// the food always (two numbers); a predicate that asks for a part left
+/// `None` fails.
 #[derive(Clone, Default)]
 pub struct PlayerFacts {
     /// `Player.experienceLevel`.
     pub level: Option<i32>,
+    /// `Player.getFoodData`: `FoodData.getFoodLevel` and
+    /// `FoodData.getSaturationLevel`.
+    pub food: Option<(i32, f32)>,
     /// `ServerStatsCounter`: stat type -> stat id -> value, both namespaced.
     pub stats: Option<BTreeMap<String, BTreeMap<String, i32>>>,
     /// `PlayerAdvancements`: the loaded advancements and the player's
@@ -682,6 +686,7 @@ impl std::fmt::Debug for PlayerFacts {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PlayerFacts")
             .field("level", &self.level)
+            .field("food", &self.food)
             .field("stats", &self.stats)
             .field(
                 "advancements",
@@ -1059,14 +1064,28 @@ pub fn entity(v: &Value, e: &EntityView, w: &dyn World, origin: [f64; 3]) -> boo
     true
 }
 /// The rest of `PlayerPredicate.matches` (expected from it): the experience
-/// level in the `level` bounds; each `stats` entry's value (0 when never
-/// counted) in its bounds; each listed recipe known or not as asked; each
-/// listed advancement loaded, and done or not, or each named criterion of it
-/// granted or not. A field asked of facts that weren't filled fails.
+/// level in the `level` bounds; the food (`FoodPredicate.matches`); each
+/// `stats` entry's value (0 when never counted) in its bounds; each listed
+/// recipe known or not as asked; each listed advancement loaded, and done or
+/// not, or each named criterion of it granted or not. A field asked of facts
+/// that weren't filled fails.
 fn player_facts(p: &Value, f: &PlayerFacts) -> bool {
     let level = &p["level"];
     if !level.is_null() && !f.level.is_some_and(|l| range_i(level, i64::from(l))) {
         return false;
+    }
+    // `FoodPredicate.matches`: the food level in `level`, then the
+    // saturation (a float, compared as a double) in `saturation`.
+    let food = &p["food"];
+    if !food.is_null() {
+        let Some((level, saturation)) = f.food else {
+            return false;
+        };
+        if !range_i(&food["level"], i64::from(level))
+            || !range_f(&food["saturation"], f64::from(saturation))
+        {
+            return false;
+        }
     }
     let stats = &p["stats"];
     if !stats.is_null() {
@@ -2729,6 +2748,59 @@ mod tests {
             &PlayerFacts::default()
         ));
         assert!(player_matches(json!({}), &PlayerFacts::default()));
+    }
+    #[test]
+    fn player_food_tests_level_and_saturation_in_their_bounds() {
+        let fed = PlayerFacts {
+            food: Some((17, 3.0)),
+            ..PlayerFacts::default()
+        };
+        for (food, expected) in [
+            (json!({}), true),
+            (json!({"level": {"min": 17}}), true),
+            (json!({"level": {"min": 18}}), false),
+            (json!({"level": {"max": 16}}), false),
+            (json!({"level": 17}), true),
+            (json!({"saturation": {"min": 3.0}}), true),
+            (json!({"saturation": {"min": 3.5}}), false),
+            (json!({"saturation": {"max": 2.9}}), false),
+            (
+                json!({"level": {"min": 17}, "saturation": {"max": 3.0}}),
+                true,
+            ),
+            (
+                json!({"level": {"min": 17}, "saturation": {"min": 3.5}}),
+                false,
+            ),
+            (
+                json!({"level": {"min": 18}, "saturation": {"min": 3.0}}),
+                false,
+            ),
+        ] {
+            assert_eq!(
+                player_matches(json!({"food": food}), &fed),
+                expected,
+                "{food}"
+            );
+        }
+        // The saturation float widens to a double: 1.2f is 1.2000000476837158.
+        let widened = PlayerFacts {
+            food: Some((20, 1.2)),
+            ..PlayerFacts::default()
+        };
+        assert!(player_matches(
+            json!({"food": {"saturation": {"min": 1.2}}}),
+            &widened
+        ));
+        assert!(!player_matches(
+            json!({"food": {"saturation": {"max": 1.2}}}),
+            &widened
+        ));
+        // No food known: food asked fails, even unbounded.
+        assert!(!player_matches(
+            json!({"food": {}}),
+            &PlayerFacts::default()
+        ));
     }
     #[test]
     fn player_stats_match_each_counter_by_type_and_id() {
