@@ -76,6 +76,7 @@ pub struct HudAtlas {
     pub sprites: HashMap<String, Rect>,
     /// Resolved player-profile names and UUIDs for inline head components.
     pub object_skins: HashMap<String, String>,
+    pub object_skins_revision: u64,
     /// Sprites with a 0 < alpha < 255 texel (`SpriteContents.transparency().hasTranslucent`),
     /// which puts their particles on vanilla's translucent layer.
     pub translucent: HashSet<String>,
@@ -786,21 +787,29 @@ impl HudAtlas {
             .or_else(|| self.sprites.get(MISSING_SPRITE))
             .copied()
     }
+    pub fn clear_object_skins(&mut self) {
+        self.object_skins.clear();
+        self.object_skins_revision = Self::next_revision();
+    }
     /// Keep a ready profile skin when another source only has its default.
     pub fn set_object_skin(&mut self, key: String, skin: String) {
         use std::collections::hash_map::Entry;
         if self.object_skins.len() >= 1024 && !self.object_skins.contains_key(&key) {
-            self.object_skins.clear();
+            self.clear_object_skins();
         }
         match self.object_skins.entry(key) {
             Entry::Occupied(entry)
                 if skin.starts_with("entity/player/") && self.sprites.contains_key(entry.get()) => {
             }
             Entry::Occupied(mut entry) => {
-                entry.insert(skin);
+                if entry.get() != &skin {
+                    entry.insert(skin);
+                    self.object_skins_revision = Self::next_revision();
+                }
             }
             Entry::Vacant(entry) => {
                 entry.insert(skin);
+                self.object_skins_revision = Self::next_revision();
             }
         }
     }
@@ -920,6 +929,7 @@ impl HudAtlas {
             height: 1,
             sprites: HashMap::new(),
             object_skins: HashMap::new(),
+            object_skins_revision: Self::next_revision(),
             translucent: HashSet::new(),
             flags: HashMap::new(),
             sprite_animations: Vec::new(),
@@ -985,6 +995,7 @@ impl HudAtlas {
             translucent: HashSet::new(),
             flags: HashMap::new(),
             object_skins: HashMap::new(),
+            object_skins_revision: Self::next_revision(),
             sprite_animations: Vec::new(),
             glint: (vec![0; 4], 1, 1),
             glint_armor: (vec![0; 4], 1, 1),
@@ -1232,7 +1243,8 @@ impl HudAtlas {
                     .ok();
             let animation = animation_of(mcmeta.as_deref());
             // An animated strip keeps its first frame.
-            let frames = name.starts_with("block/") || name.starts_with("item/");
+            let frames =
+                animation.is_some() || name.starts_with("block/") || name.starts_with("item/");
             let (w, h, pixels) = if frames {
                 first_frame(image, animation.as_ref())
             } else {
@@ -1313,12 +1325,13 @@ impl HudAtlas {
             edition.3 = pixels;
         }
         images.push(("horizon/white".into(), 4, 4, vec![255; 64]));
-        images.push((
-            crate::pad_cursor::SPRITE.into(),
-            crate::pad_cursor::SIZE,
-            crate::pad_cursor::SIZE,
-            crate::pad_cursor::pixels(),
-        ));
+        // The controller's art, unless a pack brought its own (walked above, as a mod's GUI
+        // textures are).
+        for image in crate::pad_glyph::images() {
+            if !images.iter().any(|i| i.0 == image.0) {
+                images.push(image);
+            }
+        }
         if full {
             Self::slots(&mut images, crate::trims::slot_size(root), mod_image);
             // MissingTextureAtlasSprite.generateMissingImage: 16x16, magenta
@@ -1434,6 +1447,7 @@ impl HudAtlas {
             height,
             sprites,
             object_skins: HashMap::new(),
+            object_skins_revision: Self::next_revision(),
             translucent,
             flags,
             sprite_animations,
@@ -2888,6 +2902,28 @@ impl HudRenderer {
 mod tests {
     use super::*;
 
+    #[test]
+    fn object_skin_revision_tracks_changes_and_capacity_clear() {
+        let mut atlas = HudAtlas::boot();
+        atlas.set_object_skin("name:player".into(), "skins/server".into());
+        let revision = atlas.object_skins_revision;
+        atlas.set_object_skin("name:player".into(), "skins/server".into());
+        assert_eq!(atlas.object_skins_revision, revision);
+        atlas.set_object_skin("name:player".into(), "skins/inline".into());
+        assert_ne!(atlas.object_skins_revision, revision);
+        for i in 1..1024 {
+            atlas.set_object_skin(format!("name:{i}"), "skins/server".into());
+        }
+        let revision = atlas.object_skins_revision;
+        atlas.set_object_skin("name:overflow".into(), "skins/server".into());
+        assert_ne!(atlas.object_skins_revision, revision);
+        assert_eq!(atlas.object_skins.len(), 1);
+        let revision = atlas.object_skins_revision;
+        atlas.clear_object_skins();
+        assert_ne!(atlas.object_skins_revision, revision);
+        assert!(atlas.object_skins.is_empty());
+    }
+
     /// The mod image slot is paid only by a game with a native mod loaded.
     #[test]
     fn the_mod_image_slot_exists_only_when_a_mod_is_loaded() {
@@ -3494,6 +3530,49 @@ mod tests {
         // A still texture there stays whole, as vanilla stitches it.
         let banner = atlas.sprites["custom/banner"];
         assert_eq!(banner.texels((atlas.width, atlas.height)), (16, 32));
+    }
+    #[test]
+    fn an_animated_gui_sprite_packs_its_first_frame_and_animates() {
+        let root =
+            std::env::temp_dir().join(format!("horizon-atlas-gui-anim-{}", std::process::id()));
+        let sprites = root.join("assets/minecraft/textures/gui/sprites/icon");
+        fs::create_dir_all(&sprites).unwrap();
+        // A GUI sprite like icon/music_notes: 4 frames stacked vertically (16x64),
+        // with animation metadata, and a still 16x32 texture beside it.
+        write_strip(
+            &sprites.join("music_notes.png"),
+            16,
+            64,
+            &[
+                [10, 20, 30, 255],
+                [40, 50, 60, 255],
+                [70, 80, 90, 255],
+                [100, 110, 120, 255],
+            ],
+            Some(r#"{"animation": {"frametime": 2}}"#),
+        );
+        write_strip(
+            &sprites.join("static_badge.png"),
+            16,
+            32,
+            &[[9, 9, 9, 255]],
+            None,
+        );
+        let atlas = HudAtlas::build(&root).unwrap();
+        let _ = fs::remove_dir_all(&root);
+        let rect = atlas.sprites["gui/sprites/icon/music_notes"];
+        // One frame, not the whole 16x64 strip squeezed into a slot.
+        assert_eq!(rect.texels((atlas.width, atlas.height)), (16, 16));
+        assert_eq!(texel_at(&atlas, rect, 0, 15), [10, 20, 30, 255]);
+        let (_, animation) = atlas
+            .sprite_animations
+            .iter()
+            .find(|(r, _)| r.u0 == rect.u0 && r.v0 == rect.v0)
+            .expect("the gui sprite animates");
+        assert_eq!(animation.frame_count(), 4);
+        // A still texture there stays whole.
+        let static_badge = atlas.sprites["gui/sprites/icon/static_badge"];
+        assert_eq!(static_badge.texels((atlas.width, atlas.height)), (16, 32));
     }
     /// A resource root with one plain item texture and these CIT files (relative path, contents).
     fn cit_root(name: &str, files: &[(&str, &str)]) -> PathBuf {

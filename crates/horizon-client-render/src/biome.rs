@@ -288,7 +288,7 @@ impl Biomes {
             .collect();
         files.sort_by_cached_key(|f| format!("{}.json", f.name));
         for file in files {
-            let v: Value = serde_json::from_slice(file.bytes()?)?;
+            let v: Value = horizon_world::json_file::parse(&file.path, file.bytes()?)?;
             list.push(BiomeInfo::from_json(
                 format!("minecraft:{}", file.name),
                 &v,
