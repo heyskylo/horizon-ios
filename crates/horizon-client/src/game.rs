@@ -256,6 +256,7 @@ mod native_server;
 mod native_shaders;
 mod native_structures;
 mod native_ticks;
+mod native_travel;
 mod native_visuals;
 mod native_world_columns;
 pub mod native_world_draw;
@@ -2942,6 +2943,9 @@ struct Game<'a> {
     carts: horizon_client::join_seq::JoinList<minecarts::Minecart>,
     /// The boats and minecarts `native_vehicle_moved` follows (lan_vehicles.rs).
     watched_vehicles: Vec<lan_vehicles::WatchedVehicle>,
+    /// What the mods asked for server players out of reach (`native_teleport_player`...),
+    /// done after the players' packets of the tick (native_travel.rs).
+    native_moves: Vec<(u128, native_travel::NativeMove)>,
     /// Songs playing from jukeboxes (tracked sound handles).
     jukebox_sounds: HashMap<(i32, i32, i32), u64>,
     bolts: Vec<lightning::Bolt>,
@@ -20045,6 +20049,7 @@ impl<'a> Game<'a> {
             entity_models: prepared.entity_models,
             carts: Default::default(),
             watched_vehicles: Vec::new(),
+            native_moves: Vec::new(),
             jukebox_sounds: HashMap::new(),
             bolts: Vec::new(),
             maps: maps::Maps::default(),

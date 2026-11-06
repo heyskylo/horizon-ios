@@ -2498,6 +2498,21 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
 - **`native_player_jump(player, name)`**: accepted guest movement made the server player jump from the ground, after movement simulation finishes. The guest's state is swapped in.
 - **`native_player_kicked(player, name, reason)`**: a guest was kicked after the hub recorded the rendered disconnect reason and sent the disconnect. The guest's state is swapped in, unless the guest was already removed in the same poll (a kick and the disconnect arriving together): the hook still fires, without it.
 - **`native_player_level_change(player, name, from, to)`**: a server player's experience change altered their level, after the new level was applied. The guest's state is swapped in when the player is a guest.
+#### Server hooks for plugin ports: Moving players and vehicles
+
+Helpers that move a server player or a vehicle from a mod, so a port no longer runs `execute in .. run tp` from the
+console (which waits for the next tick and does nothing inside a player's hook).
+
+- Helper **`native_teleport_player(uuid, dimension, pos, yaw, pitch)`** (`host.teleport_player`): teleports a server
+  player to `pos` in `dimension` (`minecraft:the_nether`), facing `yaw` and `pitch`, as `/tp` does (Bukkit's
+  `Player.teleport`): they leave their vehicle, lose their motion and fall, and their client is told. Callable from any
+  server hook. Within their level it is done at once when they are the acting player or nobody's state is swapped in
+  (a tick hook); inside another player's hook it is done after the players' packets of the server tick (the same tick
+  when the hook heard a packet). Into another level it happens when the tick's level teleports run, as a command's.
+  True when done or queued; false for a player not on the server or dead (where that can be seen), another dimension
+  than the three, a position outside `/tp`'s bounds, an angle that is not finite, and on a client. Server-side.
+  Bundles need `"hooks": @API:teleport_player@`.
+
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a
