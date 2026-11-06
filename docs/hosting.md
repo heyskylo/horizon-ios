@@ -54,7 +54,8 @@ irm https://raw.githubusercontent.com/horizon-rust/horizon/main/packaging/server
 
 The script picks the machine's x64 or ARM64 archive, including when PowerShell runs under x64 emulation. It downloads
 the current Horizon Nightly from GitHub (the only build Horizon ships;
-`--version` picks another), checks it against the SHA-256 GitHub publishes, and never asks for sudo or administrator rights. It installs:
+`--version` picks another), checks it against the release's signature when OpenSSL 3 is installed (on Windows, Git
+for Windows includes it), else against the SHA-256 GitHub publishes, and never asks for sudo or administrator rights. It installs:
 
 - the release in `~/.local/share/horizon/releases/<version>` (Windows: `%LOCALAPPDATA%\Horizon`), with
   `current` pointing at the one in use;
