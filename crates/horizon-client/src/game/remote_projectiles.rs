@@ -113,7 +113,7 @@ fn projectile_kind(kind: &str) -> Option<ProjectileKind> {
 /// tracker's updates (10 to 20 ticks apart) with its own gravity and drag,
 /// and a block stops it there; only the server decides what it hits.
 pub(super) fn remote_projectile_tick(p: &mut Projectile, w: &impl ProjectileWorld) {
-    if !matches!(p.tick(w).1, Hit::None) {
+    if !matches!(p.tick_remote(w).1, Hit::None) {
         p.velocity = Vec3::ZERO;
     }
 }
