@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod tests {
+    include!("block_clone_item_tests.rs");
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
@@ -71,6 +72,7 @@ mod tests {
         pub(super) struct ModEnergyBuffer;
         pub(super) struct Mob;
         pub(super) struct LootStack;
+        pub(super) struct SoundPlayback<'a>(pub &'a ());
         pub(super) struct NativeLootContext<'a>(pub &'a ());
         pub(super) struct NativeDataMapType;
         pub(super) struct NativeConfig;
