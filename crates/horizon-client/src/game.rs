@@ -11283,7 +11283,7 @@ impl Game<'_> {
         camera: glam::DVec3,
         alpha: f64,
         fov_degrees: f32,
-        billboard_frustum: Option<horizon_client::gfx::Frustum>,
+        orb_frustum: Option<horizon_client::gfx::Frustum>,
         mut out: Vec<Vertex>,
     ) -> (
         Vec<Vertex>,
@@ -11313,11 +11313,13 @@ impl Game<'_> {
         } else {
             self.yaw
         };
-        // Packs may move vertices or draw from another camera. The shared
-        // billboard frustum covers TAA's jitter without changing model culling.
-        let fire_view = billboard_frustum
-            .as_ref()
-            .filter(|_| self.pack_ids.is_none() && self.native_shaders.picked.is_empty());
+        // Packs may move vertices or draw from another camera; TAA jitters the
+        // projection beyond this unjittered frustum. Keep their original geometry path.
+        let fire_view = self.view_frustum.as_ref().filter(|_| {
+            self.pack_ids.is_none()
+                && self.native_shaders.picked.is_empty()
+                && !self.settings.horizon.taa
+        });
         let fire_visible = |position, width, height| {
             fire_view.is_none_or(|view| {
                 horizon_client::fire_render::in_view(view, camera, position, width, height)
@@ -11759,8 +11761,8 @@ impl Game<'_> {
         // Experience orbs (ExperienceOrbRenderer): pulsing billboards from a 4x4 icon sheet.
         self.mark_entity(out.len(), "minecraft:experience_orb");
         // Shader packs can move vertices or use another camera. TAA's own
-        // sub-pixel projection shifts are covered by billboard_frustum's guard band.
-        let orb_view = billboard_frustum
+        // sub-pixel projection shifts are covered by orb_frustum's guard band.
+        let orb_view = orb_frustum
             .as_ref()
             .filter(|_| self.pack_ids.is_none() && self.native_shaders.picked.is_empty());
         if let Some(r) = self
@@ -16683,7 +16685,7 @@ impl Game<'_> {
             .renderer
             .as_ref()
             .map(|r| r.camera_frustum(fov_degrees, yaw, pitch, bob * spin, depth_far));
-        let billboard_frustum = if self.settings.horizon.taa {
+        let orb_frustum = if self.settings.horizon.taa {
             self.renderer.as_ref().map(|r| {
                 r.camera_frustum_with_jitter(fov_degrees, yaw, pitch, bob * spin, depth_far)
             })
@@ -16703,7 +16705,7 @@ impl Game<'_> {
         if !title {
             let (built, static_sections, visible_static_sections, static_stats) =
                 spans::time("entity_geometry", || {
-                    self.entity_geometry(camera, alpha, fov_degrees, billboard_frustum, entities)
+                    self.entity_geometry(camera, alpha, fov_degrees, orb_frustum, entities)
                 });
             entities = built;
             static_block_entities = static_sections;
