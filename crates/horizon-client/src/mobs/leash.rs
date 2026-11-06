@@ -187,6 +187,17 @@ pub fn elastic_pull(
     motion: Vec3,
     quad: bool,
 ) -> Option<([f64; 3], f64)> {
+    elastic_pull_with_distance(position, yaw, size, holder, motion, quad, ELASTIC)
+}
+fn elastic_pull_with_distance(
+    position: Vec3,
+    yaw: f32,
+    size: (f64, f64),
+    holder: &HolderState,
+    motion: Vec3,
+    quad: bool,
+    elastic_distance: f64,
+) -> Option<([f64; 3], f64)> {
     // SHARED_QUAD_ATTACHMENT_POINTS, ENTITY_ATTACHMENT_POINT, LEASHER_ATTACHMENT_POINT.
     const SHARED_QUAD: [[f64; 3]; 4] = [
         [-0.5, 0.5, 0.5],
@@ -243,7 +254,7 @@ pub fn elastic_pull(
             pivot[2] - object[2],
         ];
         let distance = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
-        if distance < ELASTIC {
+        if distance < elastic_distance {
             continue;
         }
         // Vec3.normalize, then scale(distance - slack).
@@ -253,7 +264,7 @@ pub fn elastic_pull(
         } else {
             [d[0] / length, d[1] / length, d[2] / length]
         };
-        let pull = distance - ELASTIC;
+        let pull = distance - elastic_distance;
         let mut f = [unit[0] * pull, unit[1] * pull, unit[2] * pull];
         let t = lever[2] * f[0] - lever[0] * f[2];
         if motion.x * f[0] + motion.y * f[1] + motion.z * f[2] >= 0.0 {
@@ -360,10 +371,10 @@ pub fn tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     };
     // PathfinderMob.whenLeashedTo: home is the holder's block, within the
     // elastic distance less one.
-    let elastic = if m.species() == super::Species::HappyGhast {
-        10.0
+    let (elastic, snap) = if m.species() == Species::HappyGhast {
+        (10.0, 16.0)
     } else {
-        ELASTIC
+        (ELASTIC, SNAP)
     };
     m.ai.home = Some((
         [
@@ -390,7 +401,7 @@ pub fn tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         + (state.center.y - center.y).powi(2)
         + (state.center.z - center.z).powi(2))
     .sqrt();
-    if distance > SNAP {
+    if distance > snap {
         events.push(MobEvent::LeashBreak {
             mob: m.id,
             drop: true,
@@ -398,7 +409,7 @@ pub fn tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         });
         return;
     }
-    let stretched = distance > ELASTIC - state.width - f64::from(m.width());
+    let stretched = distance > elastic - state.width - f64::from(m.width());
     // Leashable.checkElasticInteractions: both ends must support the shared
     // quad attachment points. The live holder was resolved and checked above;
     // these physics points are independent of the rendered rope offsets.
@@ -406,13 +417,14 @@ pub fn tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         && matches!(holder, Holder::Mob(id) if w.seen(id).is_some_and(|s|
             matches!(s.species, Species::Ghast | Species::HappyGhast)));
     let pulled = stretched
-        && elastic_pull(
+        && elastic_pull_with_distance(
             m.position,
             m.yaw,
             (f64::from(m.width()), f64::from(m.height())),
             &state,
             m.velocity,
             quad,
+            elastic,
         )
         .is_some_and(|(force, torque)| {
             m.extra.leash_spin += 10.0 * torque;
@@ -428,6 +440,11 @@ pub fn tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
             );
             check_fall_distance(m);
             super::equine::on_elastic_leash_pull(m, w, events);
+            // HappyGhast.onElasticLeashPull: let the rope move it without
+            // competing with the current flight target.
+            if m.species() == Species::HappyGhast {
+                m.ai.mov.operation = super::control::Operation::Wait;
+            }
             true
         });
     if !pulled {
@@ -472,7 +489,8 @@ pub fn remove(m: &mut Mob) -> Option<Holder> {
 /// `PathfinderMob.closeRangeLeashBehaviour`: walk to within two blocks of
 /// the holder unless panicking.
 fn close_range(m: &mut Mob, w: &MobWorld, holder: &HolderState) {
-    if m.ai.panicking {
+    // HappyGhast.shouldStayCloseToLeashHolder is false at either age.
+    if m.ai.panicking || m.species() == Species::HappyGhast {
         return;
     }
     let d = Vec3::new(
@@ -667,6 +685,110 @@ pub fn quad_holder_offsets(m: &Mob) -> Option<[[f64; 3]; 4]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires HORIZON_TEST_RESOURCES and the vanilla Happy Ghast leash reference"]
+    fn happy_ghast_leash_dispatch_matches_vanilla() {
+        use super::super::{
+            control::Operation,
+            path::{Path, PathNode, PathType},
+        };
+        use std::sync::Arc;
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let reference = std::env::var_os("HORIZON_HAPPY_GHAST_LEASH_REFERENCE").unwrap();
+        let rows: Vec<serde_json::Value> =
+            serde_json::from_slice(&std::fs::read(reference).unwrap()).unwrap();
+        assert_eq!(rows.len(), 36, "missing leash cases");
+        let ran = crate::mobs::world::with_resource_test_world(
+            &root,
+            &[],
+            true,
+            true,
+            |world, registry| {
+                world
+                    .chunks
+                    .insert((0, 0), Arc::new(crate::chunk::Chunk::empty(0, 0)));
+                world
+                    .set(
+                        0,
+                        64,
+                        0,
+                        registry.default_state("minecraft:oak_fence").unwrap(),
+                    )
+                    .unwrap();
+            },
+            |world, types| {
+                assert!(
+                    holder_state(world, Holder::Knot([0, 64, 0])).is_some(),
+                    "missing fence holder"
+                );
+                let mut failures = Vec::new();
+                for row in rows {
+                    let kind = row["kind"].as_str().unwrap();
+                    let position = &row["position"];
+                    let id = if kind == "cow" {
+                        "minecraft:cow"
+                    } else {
+                        "minecraft:happy_ghast"
+                    };
+                    let mut mob = Mob::new(
+                        1,
+                        Arc::new(types.types[id].clone()),
+                        Vec3::new(
+                            position[0].as_f64().unwrap(),
+                            position[1].as_f64().unwrap(),
+                            position[2].as_f64().unwrap(),
+                        ),
+                        0.0,
+                    );
+                    if kind != "cow" {
+                        mob.extra.age = if kind == "baby" { -24000 } else { 0 };
+                        super::super::happy_ghast::ensure_setup(&mut mob);
+                    }
+                    mob.on_ground = false;
+                    mob.ai.nav.path = Some(Path {
+                        nodes: vec![PathNode {
+                            x: 8,
+                            y: 64,
+                            z: 8,
+                            kind: PathType::Open,
+                        }],
+                        next: 0,
+                        target: [8, 64, 8],
+                        dist_to_target: 0.0,
+                        reached: true,
+                    });
+                    mob.ai.nav.target_pos = Some([8, 64, 8]);
+                    mob.ai.mov.set_wanted(20.0, 70.0, 20.0, 1.0);
+                    mob.extra.leash = Some(Holder::Knot([0, 64, 0]));
+                    let mut events = Vec::new();
+                    tick(&mut mob, world, &mut events);
+                    let actual = serde_json::json!({
+                        "kind": kind, "distance": row["distance"], "phase": row["phase"],
+                        "position": position,
+                        "snapped": events.iter().any(|event| matches!(event, MobEvent::LeashBreak { .. })),
+                        "wanted": mob.ai.mov.operation == Operation::MoveTo,
+                        "path": mob.ai.nav.path.as_ref().map(|path| path.target),
+                        "velocity": [mob.velocity.x, mob.velocity.y, mob.velocity.z],
+                    });
+                    let states_match = ["kind", "distance", "phase", "snapped", "wanted", "path"]
+                        .into_iter()
+                        .all(|key| row[key] == actual[key]);
+                    let velocity_matches = (0..3).all(|i| {
+                        (row["velocity"][i].as_f64().unwrap()
+                            - actual["velocity"][i].as_f64().unwrap())
+                        .abs()
+                            <= 1e-10
+                    });
+                    if !states_match || !velocity_matches {
+                        failures.push((row, actual));
+                    }
+                }
+                assert!(failures.is_empty(), "leash dispatch differs: {failures:?}");
+            },
+        );
+        assert!(ran, "prepared resources must execute the fixture");
+    }
 
     #[test]
     fn mob_tick_selects_quad_only_when_both_live_ends_support_it() {

@@ -210,13 +210,14 @@ while each operator still reads their own command's answer.
 ### Older clients: `accept_older_clients`
 
 Off by default, a Horizon setting with no vanilla equivalent: a vanilla server, and Horizon's, turn away a client of
-any other release. With `accept_older_clients = true` a 26.2 client may join too: Horizon renumbers its packets both
-ways, with no proxy in between, and the server list shows the server as joinable for 26.2.
+any other release. With `accept_older_clients = true` a 26.2 client may join too. Horizon renumbers its packets and
+the blocks, items, entities, particles and sounds in them both ways, with no proxy in between; what 26.3 added and
+26.2 lacks is shown as the nearest thing 26.2 has (a poplar log as a birch log, a wool slab as a stone slab), and
+what has no such thing (a cushion) isn't shown. The server list shows the server as joinable for 26.2.
 
-This is work in progress (#10404): the ids inside packets and the packets whose layout changed between 26.2 and
-26.3 aren't translated yet, so for now a 26.2 player gets through the login and is then told that 26.2 can't be
-translated yet, before the server sends anything it would misread. 26.3 clients are served exactly as before,
-whatever the setting.
+This is work in progress (#10404): the packets whose layout changed between 26.2 and 26.3 aren't translated yet,
+so for now a 26.2 player gets through the login and is then told that 26.2 can't be translated yet, before the
+server sends anything it would misread. 26.3 clients are served exactly as before, whatever the setting.
 
 ### Seeing further: `max_view_distance`
 
@@ -584,6 +585,16 @@ region files are rewritten compacted (vanilla still reads them) and a file left 
 can't be read, files in `keep_files` (keys or text like `minecraft:overworld 12 -3`, objects with `dimension`,
 `x` and `z`), level.dat and player data are never touched; a `keep_files` file that exists but can't be read
 stops the prune before anything is deleted.
+
+Deletion stages each region's terrain, entities and POI together, keeping originals in the dimension's
+`.horizon-prune` folder until it commits. An interrupted region is rolled back before the next server
+start, even though `mode` is now `"off"`; committed earlier regions stay pruned. A failed prune or failed
+recovery stops startup and reports an error instead of reporting planned deletions as successful. Keep
+the recovery folder if recovery fails; do not delete it to force the server to start. Staging retains
+hard links to the originals and needs room for the compacted files of one region group. The three
+folders must support hard links on the same filesystem. Unix flushes files and directories; Windows
+flushes files and uses write-through renames. This does not replace a backup or promise recovery from
+filesystem corruption or storage hardware that ignores flushes.
 
 ### 1.8 combat: `[combat]`
 

@@ -166,18 +166,40 @@ pub fn parse_address(text: &str) -> Option<(String, u16)> {
         return None;
     }
     if let Some(rest) = text.strip_prefix('[') {
-        let (host, tail) = rest.split_once(']')?;
+        let (host, tail) = rest.rsplit_once(']')?;
+        // HostAndPort requires a colon inside a bracketed host; it does not
+        // accept a bracketed DNS name as an IPv6-style address.
+        if !host.contains(':') {
+            return None;
+        }
         let port = match tail.strip_prefix(':') {
-            Some(p) => p.parse().ok()?,
+            Some(p) if p.bytes().all(|byte| byte.is_ascii_digit()) => parse_port(p)?,
             None if tail.is_empty() => 25565,
-            None => return None,
+            _ => return None,
         };
         return Some((host.to_owned(), port));
     }
     match text.rsplit_once(':') {
-        Some((host, port)) if !host.contains(':') => Some((host.to_owned(), port.parse().ok()?)),
+        Some((host, port)) if !host.contains(':') => {
+            if host.is_empty() {
+                return None;
+            }
+            Some((host.to_owned(), parse_port(port)?))
+        }
         Some(_) => Some((text.to_owned(), 25565)),
         None => Some((text.to_owned(), 25565)),
+    }
+}
+
+/// HostAndPort uses the default for an empty port, refuses a leading plus,
+/// and accepts signed zero on its non-bracketed path before checking range.
+fn parse_port(text: &str) -> Option<u16> {
+    if text.is_empty() {
+        Some(25565)
+    } else if text.starts_with('+') {
+        None
+    } else {
+        u16::try_from(text.parse::<i32>().ok()?).ok()
     }
 }
 
@@ -255,5 +277,45 @@ mod tests {
         assert_eq!(parse_address("[::1]:1234"), Some(("::1".into(), 1234)));
         assert_eq!(parse_address("host:notaport"), None);
         assert_eq!(parse_address(""), None);
+    }
+
+    #[test]
+    fn empty_explicit_ports_use_the_vanilla_default() {
+        for (input, host) in [
+            ("example.com:", "example.com"),
+            ("127.0.0.1:", "127.0.0.1"),
+            ("[::1]:", "::1"),
+            ("[2001:db8::1]:", "2001:db8::1"),
+            (" \t[::1]:\r\n", "::1"),
+        ] {
+            assert_eq!(parse_address(input), Some((host.into(), 25565)), "{input}");
+        }
+    }
+
+    #[test]
+    fn ports_and_brackets_keep_vanilla_validation() {
+        for input in [
+            ":",
+            ":25565",
+            "[]",
+            "[]:",
+            "[example.com]",
+            "[example.com]:",
+            "[::1]junk",
+            "example.com:+25565",
+            "[::1]:+25565",
+            "[::1]:-0",
+            "example.com:-1",
+            "example.com:65536",
+            "[::1]:65536",
+            "host:2147483648",
+            "host:1_000",
+            "host:\u{0661}\u{0662}",
+        ] {
+            assert_eq!(parse_address(input), None, "{input}");
+        }
+        assert_eq!(parse_address("host:-0"), Some(("host".into(), 0)));
+        assert_eq!(parse_address("host:0"), Some(("host".into(), 0)));
+        assert_eq!(parse_address("[::1]:65535"), Some(("::1".into(), 65535)));
     }
 }

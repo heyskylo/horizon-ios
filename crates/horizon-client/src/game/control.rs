@@ -294,6 +294,11 @@ impl Game<'_> {
             // The anvil's rename box, while it has an input to name.
             Screen::Inventory if self.station_typing() => self.station_text(Some(text), false),
             Screen::Creative if self.creative_screen.tab().search => {
+                // CreativeModeInventoryScreen.charTyped: the chat key that
+                // opened the tab does not type its letter.
+                if std::mem::take(&mut self.creative_ignore_text) {
+                    return Ok(());
+                }
                 // As typed: replaces a selected query, keeps the length limit.
                 self.creative_search_edit(Some(text))
             }
@@ -1059,6 +1064,7 @@ impl Game<'_> {
                 if page == Page::ShaderPacks {
                     self.settings.shader_packs =
                         horizon_client::shader_pack_list::scan(&Self::shader_packs_dir());
+                    self.open_shader_options();
                 }
                 ok()
             }

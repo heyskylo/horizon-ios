@@ -162,6 +162,7 @@ mod server_player_combat_fixture;
 mod server_player_damage_fixture;
 mod simple_block_fixture;
 mod simple_container_fixture;
+mod snbt_unicode_fixture;
 mod spawn_origin;
 mod state_provider_fixture;
 mod status_effect_fixture;
@@ -348,6 +349,7 @@ probes! {
     structure_density_fixture,
     structure_pieces,
     structure_start_nbt,
+    snbt_unicode_fixture,
     suffocation_fixture,
     swimming_fixture,
     synced_bytes_fixture,
