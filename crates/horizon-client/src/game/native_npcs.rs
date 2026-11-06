@@ -6,8 +6,8 @@
 //! loaded by its `dimension` (`minecraft:the_nether`), not only the one in
 //! place: that level is put in place for the call, as `execute in` does, and
 //! the one that was is put back. A level nobody opened is not opened.
-use super::{Game, commands::Target};
-use horizon_client::mobs::{Mob, MobWorld};
+use super::{Game, commands::Target, creatures::seen};
+use horizon_client::mobs::{Mob, MobWorld, Seen, Who, ai::do_hurt_target, goals::Cx};
 use horizon_world::nbt::Compound;
 
 // Native mods use these; nothing in Horizon does.
@@ -216,6 +216,80 @@ impl Game<'_> {
         }
         self.npc_drive(dimension, mob, |m, _| m.look_at(at))
             .is_some()
+    }
+    /// Mob `mob` strikes entity `target` of its level with its own attack, as
+    /// `Mob.doHurtTarget` does: its attack damage, held weapon and
+    /// enchantments, knockback, the species' extras (a cave spider's poison,
+    /// a husk's hunger) and its attack sound, through the damage the game
+    /// deals any mob's hit. `target` is a living mob or a server's player in
+    /// the same level, by entity id. No reach or sight check and no swing,
+    /// as in vanilla, where the attack goal checks and swings first. True
+    /// when the blow was dealt (whether it hurt is the damage hooks' to
+    /// tell); false for a level not loaded, no such living mob or target, the
+    /// mob itself, or a player while a guest's packet is handled (the hub is
+    /// taken out then). API @API:npc_mob_attack@.
+    pub(super) fn native_mob_attack(&mut self, dimension: &str, mob: u32, target: u32) -> bool {
+        if mob == target {
+            return false;
+        }
+        self.npc_in_level(dimension, |g| g.npc_mob_attack(mob, target))
+            .unwrap_or(false)
+    }
+    /// `native_mob_attack` in the level in place.
+    fn npc_mob_attack(&mut self, mob: u32, target: u32) -> bool {
+        let live = |m: &Mob, id: u32| m.id == id && !m.removed && m.alive();
+        let Some(i) = self.mobs.iter().position(|m| live(m, mob)) else {
+            return false;
+        };
+        let guest = self.lan.as_ref().and_then(|h| {
+            h.hub
+                .guests
+                .iter()
+                .find(|g| {
+                    h.hub.here(g) && g.loaded && !g.dead && u32::try_from(g.entity_id) == Ok(target)
+                })
+                .map(|g| g.conn)
+        });
+        // The mob code sees one player (`Who::Player`): the guest hit, as in a
+        // mob's tick that sees them.
+        let (who, player) = match guest {
+            Some(conn) => match self.lan_guest_view(conn) {
+                Some(view) => (Who::Player, Some(view)),
+                None => return false,
+            },
+            None if self.mobs.iter().any(|m| live(m, target)) => (Who::Mob(target), None),
+            None => return false,
+        };
+        let uuid = self.level.player_uuid;
+        let snapshot: Vec<Seen> = self.mobs.iter().map(|m| seen(m, uuid)).collect();
+        let mut events = Vec::new();
+        let mut random = self.world.random.clone();
+        let mut mobs = std::mem::take(&mut self.mobs);
+        {
+            let mut w = self.mob_world_base(&snapshot);
+            if player.is_some() {
+                w.player = player;
+            }
+            let mut cx = Cx {
+                w: &w,
+                lr: &mut random,
+                events: &mut events,
+            };
+            do_hurt_target(&mut mobs[i], who, &mut cx);
+        }
+        self.world.random = random;
+        self.mobs = mobs;
+        // What acts on the player goes to the guest, the rest as a tick's events.
+        let (to_guest, events): (Vec<_>, Vec<_>) = events
+            .into_iter()
+            .partition(|e| guest.is_some() && super::lan_mobs::acts_on_player(e));
+        if let Err(e) = self.handle_mob_events(events) {
+            log::warn!("mob {mob} attacking {target}: {e}");
+        }
+        if let Some(conn) = guest {
+            self.lan_guest_mob_events(to_guest.into_iter().map(|e| (conn, e)).collect());
+        }
+        true
     }
     /// Runs `f` on the living mob `mob` of the loaded level `dimension`, with
     /// the world its goals see. The mob is out of the level's list meanwhile,

@@ -2526,6 +2526,14 @@ that tick the other mobs of that level read as gone.
   asks again each tick, or gives its mobs goals of their own (`native_register_goals`). A mob with `no_ai` keeps a path
   but doesn't walk it, and doesn't turn its head (`native_set_entity_rotation` turns it). False for no such living mob
   or a value that isn't finite. API @API:npc_mob_navigation@.
+- **`native_mob_attack(dimension, mob, target)`** has a mob strike an entity with its own attack, as
+  `Mob.doHurtTarget` does: its attack damage, held weapon and enchantments, knockback, the species' extras (a cave
+  spider's poison, a husk's hunger) and its attack sound, dealt as any mob's hit is, so the damage hooks hear it.
+  `target` is a living mob or a server's player of the same level, by entity id; the player is hit as when a mob that
+  sees them strikes in its tick, whichever player the mob sees. There is no reach or sight check and no swing, as in
+  vanilla, where the attack goal checks and swings first. True when the blow was dealt (whether it hurt, a shield or
+  creative mode aside, is the damage hooks' to tell); false for no such living mob or target, the mob itself, and a
+  player while a guest's packet is handled, where the hub is taken out. API @API:npc_mob_attack@.
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a
