@@ -840,6 +840,17 @@ fn effects_from_blocks(
                         },
                     ));
                     visited.push(p);
+                    // PowderSnowBlock.entityInside: a burning mob destroys the
+                    // block (with `mob_griefing`), then EXTINGUISH puts it out.
+                    if w.block_name(x, y, z) == "minecraft:powder_snow" {
+                        if m.is_on_fire() && w.mob_griefing {
+                            events.push(MobEvent::BreakBlock {
+                                pos: p,
+                                drop: false,
+                            });
+                        }
+                        m.extinguish_fire();
+                    }
                     match w.block_name(x, y, z) {
                         "minecraft:cactus" => {
                             m.damage(1.0, Damage::of(DamageKind::Cactus));
