@@ -916,9 +916,10 @@ fn system_chat(line: &Text) -> C {
 /// Where the game calls the server hook points.
 impl Game<'_> {
     /// Asks the mods for their commands once per hub, and puts them in every
-    /// player's command tree.
+    /// player's command tree; again when a mod asked (`native_refresh_commands`).
     pub(super) fn register_native_commands(&mut self, host: &mut LanHost) {
-        if host.native_commands.is_some() {
+        let refresh = std::mem::take(&mut self.native_commands_refresh);
+        if host.native_commands.is_some() && !refresh {
             return;
         }
         let mut commands = Vec::new();
@@ -940,8 +941,27 @@ impl Game<'_> {
                 .iter()
                 .any(|c| c.usage.split(' ').next() == Some(name.as_str()))
         });
-        host.hub.set_mod_commands(0, tree);
         host.native_commands = Some(levels);
+        if !refresh {
+            host.hub.set_mod_commands(0, tree);
+            return;
+        }
+        // PlayerList.sendPlayerPermissionLevel for everyone, as after `/reload`
+        // (`Commands.sendCommands`): each tree with the mods' say on it, sent once.
+        host.hub.store_mod_commands(0, tree);
+        host.hub.refresh_permissions();
+        self.native_filter_commands(host, None);
+        host.hub.resend_commands();
+    }
+
+    /// A mod changed the commands it registers (`native_register_commands`):
+    /// at the start of the next server tick every mod is asked again, the
+    /// commands players may run are rebuilt, and every player on the server is
+    /// sent their tree again, after `native_player_commands_sent`. Nothing
+    /// happens where no world is open to players, and nothing for a server
+    /// whose mods never call it. API @API:refresh_commands@.
+    pub(super) fn native_refresh_commands(&mut self) {
+        self.native_commands_refresh = true;
     }
 
     /// Asks the mods what root commands each player's tree keeps

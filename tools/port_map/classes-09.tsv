@@ -17,8 +17,8 @@ CompositeLootItemCondition.Builder	skip:java		builder (addTerm)
 ConditionUserBuilder	skip:java		builder interface for loot conditions
 DamageSourceCondition.test	port	crates/horizon-world/src/loot.rs::Context::condition	damage_source_properties arm (mob death loot)
 EnchantmentActiveCheck.test	inline	crates/horizon-client/src/game/enchant_effects.rs::Game::tick_soul_speed	the soul speed modifiers switch on and off here; the ENCHANTMENT_ACTIVE flag itself is not read as a condition
-EntityHasScoreCondition.hasScore	missing		`loot.rs::condition` has no `entity_scores` arm, and no vanilla loot table asks for one
-EntityHasScoreCondition.test	missing		same as `hasScore`: the condition dispatch (`inverted`, `all_of`, `any_of`, `entity_properties`, `killed_by_player`, the chance and location checks) has no scoreboard arm
+EntityHasScoreCondition.hasScore	missing		named Game predicates support this/constant ranges in advancements::conditions; the separate global loot.rs::condition engine and score providers remain unsupported
+EntityHasScoreCondition.test	missing		same global-loot gap as hasScore; named Game this/constant ranges use the actual holder snapshot via Game::check_predicate
 EntityHasScoreCondition.validate	skip:data		datapack validation
 EnvironmentAttributeCheck.createCodec	skip:java		codec
 EnvironmentAttributeCheck.test	missing		no `environment_attribute_check` arm in `loot.rs::condition`; no vanilla data uses it
