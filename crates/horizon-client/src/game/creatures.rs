@@ -8756,7 +8756,11 @@ mod pickable_projectile_tests {
         match hit {
             Hit::Entity {
                 who: Who::Mob(id), ..
-            } => assert_eq!(pickable_projectile_hit(id), Some(1), "it struck the fireball"),
+            } => assert_eq!(
+                pickable_projectile_hit(id),
+                Some(1),
+                "it struck the fireball"
+            ),
             other => panic!("the pearl flew through the fireball: {other:?}"),
         }
     }
