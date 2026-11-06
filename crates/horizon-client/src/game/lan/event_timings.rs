@@ -1,66 +1,98 @@
-//! Bounded attribution for bursts whose individual events are too short for a slow-step note.
+//! Attribution for slow steps made of many short events: each event under the slow-step threshold
+//! has no note of its own, so a whole second of 5 ms `UseItemOn`s would name nobody (#10255).
+//!
+//! Events are grouped by packet kind, as a freeze is usually one kind of packet from many players.
+//! A group reports only the time of its short events (the slow ones are noted on their own), and
+//! names the player who spent the most of it. Kinds are packet names and players are the
+//! server's guests, so the groups stay as few as those, and only while timing is recorded.
 
-// A busy server can see many connections and packet kinds in one poll. Instrumentation must not
-// grow with that cardinality. Individual slow events still use the existing notes independently.
-const KEPT: usize = 32;
-
-pub(super) struct Burst<K, D> {
-    pub kind: K,
+pub(super) struct Burst<W, D> {
+    pub kind: &'static str,
+    /// What every event of the group was about, when it was the same for all of them.
     pub detail: Option<D>,
-    pub ms: f32,
+    /// The short events and their total time.
     pub count: u32,
-    longest: f32,
+    pub ms: f32,
+    /// The player with the most of that time: who, how many events, how long.
+    pub top: Option<(W, u32, f32)>,
 }
 
-pub(super) struct EventTimings<K, D> {
-    groups: Vec<Burst<K, D>>,
-    overflow: (f32, u32, f32),
+struct Group<W, D> {
+    kind: &'static str,
+    detail: Option<D>,
+    mixed: bool,
+    count: u32,
+    ms: f32,
+    players: Vec<(W, u32, f32)>,
 }
 
-impl<K, D> Default for EventTimings<K, D> {
-    fn default() -> Self {
+pub(super) struct EventTimings<W, D> {
+    threshold: f32,
+    groups: Vec<Group<W, D>>,
+}
+
+impl<W: PartialEq, D: PartialEq> EventTimings<W, D> {
+    /// `threshold`: the time from which an event is noted on its own.
+    pub fn new(threshold: f32) -> Self {
         Self {
+            threshold,
             groups: Vec::new(),
-            overflow: (0.0, 0, 0.0),
         }
     }
-}
 
-impl<K: PartialEq, D: PartialEq> EventTimings<K, D> {
-    pub fn add(&mut self, kind: K, detail: Option<D>, ms: f32) {
-        if let Some(group) = self.groups.iter_mut().find(|g| g.kind == kind) {
-            group.ms += ms;
-            group.count = group.count.saturating_add(1);
-            group.longest = group.longest.max(ms);
-            if group.detail != detail {
-                // A burst can visit different blocks or change the held item. Do not attribute
-                // all of its cost to the first target in that case.
-                group.detail = None;
+    pub fn add(&mut self, kind: &'static str, who: W, detail: Option<D>, ms: f32) {
+        if ms >= self.threshold {
+            return;
+        }
+        let i = match self.groups.iter().position(|g| g.kind == kind) {
+            Some(i) => i,
+            None => {
+                self.groups.push(Group {
+                    kind,
+                    detail: None,
+                    mixed: false,
+                    count: 0,
+                    ms: 0.0,
+                    players: Vec::new(),
+                });
+                self.groups.len() - 1
             }
-        } else if self.groups.len() < KEPT {
-            self.groups.push(Burst {
-                kind,
-                detail,
-                ms,
-                count: 1,
-                longest: ms,
-            });
-        } else {
-            self.overflow.0 += ms;
-            self.overflow.1 = self.overflow.1.saturating_add(1);
-            self.overflow.2 = self.overflow.2.max(ms);
+        };
+        let g = &mut self.groups[i];
+        // A burst can visit different blocks or change the held item: then it names no target.
+        if g.count == 0 {
+            g.detail = detail;
+        } else if !g.mixed && g.detail != detail {
+            g.detail = None;
+            g.mixed = true;
+        }
+        g.count = g.count.saturating_add(1);
+        g.ms += ms;
+        match g.players.iter_mut().find(|p| p.0 == who) {
+            Some(p) => {
+                p.1 = p.1.saturating_add(1);
+                p.2 += ms;
+            }
+            None => g.players.push((who, 1, ms)),
         }
     }
 
-    pub fn overflow(&self, threshold: f32) -> Option<(f32, u32)> {
-        let (ms, count, longest) = self.overflow;
-        (count > 1 && ms >= threshold && longest < threshold).then_some((ms, count))
-    }
-
-    pub fn bursts(self, threshold: f32) -> impl Iterator<Item = Burst<K, D>> {
+    /// The groups whose short events add up to a slow step.
+    pub fn bursts(self) -> impl Iterator<Item = Burst<W, D>> {
+        let threshold = self.threshold;
         self.groups
             .into_iter()
-            .filter(move |g| g.count > 1 && g.ms >= threshold && g.longest < threshold)
+            .filter(move |g| g.ms >= threshold)
+            .map(|g| Burst {
+                kind: g.kind,
+                detail: g.detail,
+                count: g.count,
+                ms: g.ms,
+                top: g
+                    .players
+                    .into_iter()
+                    .reduce(|a, b| if b.2 > a.2 { b } else { a }),
+            })
     }
 }
 
@@ -68,53 +100,85 @@ impl<K: PartialEq, D: PartialEq> EventTimings<K, D> {
 mod tests {
     use super::*;
 
+    fn bursts(
+        timings: EventTimings<&'static str, &'static str>,
+    ) -> Vec<Burst<&'static str, &'static str>> {
+        timings.bursts().collect()
+    }
+
     #[test]
-    fn short_events_that_add_up_to_a_slow_step_keep_their_culprit() {
-        let mut timings = EventTimings::default();
+    fn one_short_event_from_each_of_many_players_is_still_named() {
+        let mut timings = EventTimings::new(10.0);
+        let players: Vec<String> = (0..69).map(|i| format!("p{i}")).collect();
+        for (i, name) in players.iter().enumerate() {
+            let ms = if i == 40 { 9.0 } else { 6.0 };
+            timings.add("UseItemOn", name.as_str(), None::<()>, ms);
+        }
+        let b: Vec<_> = timings.bursts().collect();
+        assert_eq!(b.len(), 1);
+        assert_eq!(
+            (b[0].kind, b[0].count, b[0].ms),
+            ("UseItemOn", 69, 68.0 * 6.0 + 9.0)
+        );
+        assert_eq!(b[0].top, Some(("p40", 1, 9.0)));
+    }
+
+    #[test]
+    fn a_late_burst_is_named_however_many_other_groups_came_first() {
+        let mut timings = EventTimings::new(10.0);
+        for i in 0..100 {
+            let name: &'static str = Box::leak(format!("p{i}").into_boxed_str());
+            timings.add("MovePlayerPos", name, None, 0.05);
+            timings.add("Chat", name, None, 0.01);
+        }
+        for i in 0..200 {
+            timings.add(
+                "UseItemOn",
+                if i % 3 == 0 { "Alex" } else { "Steve" },
+                Some("chest"),
+                5.0,
+            );
+        }
+        let b = bursts(timings);
+        assert_eq!(
+            b.len(),
+            1,
+            "movement (5 ms) and chat (1 ms) stay under 10 ms"
+        );
+        assert_eq!((b[0].kind, b[0].count, b[0].ms), ("UseItemOn", 200, 1000.0));
+        assert_eq!(b[0].detail, Some("chest"));
+        assert_eq!(b[0].top, Some(("Steve", 133, 665.0)));
+    }
+
+    #[test]
+    fn events_noted_on_their_own_are_left_out_of_the_burst() {
+        let mut timings = EventTimings::new(10.0);
+        timings.add("UseItemOn", "Steve", None::<()>, 15.0);
         for _ in 0..200 {
-            timings.add(("UseItemOn", 7), Some("diamond axe on chest"), 5.0);
+            timings.add("UseItemOn", "Alex", None, 5.0);
         }
-        let bursts: Vec<_> = timings.bursts(10.0).collect();
-        assert_eq!(bursts.len(), 1);
-        assert_eq!(bursts[0].kind, ("UseItemOn", 7));
-        assert_eq!(bursts[0].detail, Some("diamond axe on chest"));
-        assert_eq!(bursts[0].count, 200);
-        assert_eq!(bursts[0].ms, 1000.0);
+        let b: Vec<_> = timings.bursts().collect();
+        assert_eq!((b[0].count, b[0].ms), (200, 1000.0));
+        assert_eq!(b[0].top, Some(("Alex", 200, 1000.0)));
     }
 
     #[test]
-    fn groups_separate_players_and_packets_and_discard_mixed_target_details() {
-        let mut timings = EventTimings::default();
-        timings.add(("UseItemOn", 1), Some("chest"), 6.0);
-        timings.add(("UseItemOn", 2), Some("sign"), 6.0);
-        timings.add(("UseItem", 1), Some("bow"), 6.0);
-        timings.add(("UseItemOn", 1), Some("sign"), 6.0);
-        let bursts: Vec<_> = timings.bursts(10.0).collect();
-        assert_eq!(bursts.len(), 1);
-        assert_eq!(bursts[0].kind, ("UseItemOn", 1));
-        assert_eq!(bursts[0].detail, None);
-        assert_eq!(bursts[0].ms, 12.0);
+    fn short_events_that_stay_short_together_report_nothing() {
+        let mut timings = EventTimings::new(10.0);
+        timings.add("UseItemOn", "Steve", None::<()>, 4.0);
+        timings.add("UseItemOn", "Alex", None, 4.0);
+        timings.add("UseItem", "Steve", None, 9.0);
+        assert!(timings.bursts().next().is_none());
     }
 
     #[test]
-    fn individually_slow_events_are_not_reported_twice() {
-        let mut timings = EventTimings::default();
-        timings.add(1, None::<()>, 15.0);
-        timings.add(1, None, 5.0);
-        timings.add(2, None, 4.0);
-        timings.add(2, None, 4.0);
-        assert_eq!(timings.bursts(10.0).count(), 0);
-    }
-
-    #[test]
-    fn cardinality_is_bounded() {
-        let mut timings = EventTimings::default();
-        for key in 0..10_000 {
-            timings.add(key, None::<()>, 5.0);
+    fn mixed_targets_name_none_even_when_the_first_comes_back() {
+        let mut timings = EventTimings::new(10.0);
+        for detail in ["chest", "sign", "chest"] {
+            timings.add("UseItemOn", "Steve", Some(detail), 6.0);
         }
-        assert_eq!(timings.groups.len(), KEPT);
-        assert_eq!(timings.overflow(10.0), Some((49_840.0, 9968)));
-        timings.add(0, None, 5.0);
-        assert_eq!(timings.bursts(10.0).count(), 1);
+        let b = bursts(timings);
+        assert_eq!(b[0].detail, None);
+        assert_eq!(b[0].ms, 18.0);
     }
 }

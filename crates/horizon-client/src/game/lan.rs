@@ -2000,7 +2000,7 @@ impl Game<'_> {
         // after the loop.
         let timed = horizon_client::spans::recording_here();
         let mut previous = None;
-        let mut timings = EventTimings::default();
+        let mut timings = EventTimings::new(horizon_client::spans::NOTE_MS);
         for event in events {
             if timed {
                 note_event(&host, previous.take(), &mut timings);
@@ -2277,19 +2277,8 @@ impl Game<'_> {
             }
         }
         note_event(&host, previous, &mut timings);
-        if let Some((ms, count)) = timings.overflow(horizon_client::spans::NOTE_MS) {
-            horizon_client::spans::note(ms, || {
-                format!("other events ({count} events total, attribution limit reached)")
-            });
-        }
-        for burst in timings.bursts(horizon_client::spans::NOTE_MS) {
-            horizon_client::spans::note(burst.ms, || {
-                format!(
-                    "{} ({} events total)",
-                    describe_event(&host, &burst.kind, burst.detail.as_ref()),
-                    burst.count
-                )
-            });
+        for burst in timings.bursts() {
+            horizon_client::spans::note(burst.ms, || describe_burst(&host, &burst));
         }
         Some(host)
     }
@@ -3350,14 +3339,43 @@ fn level_event_except(id: i32, acting: Option<u32>, collateral_break: bool) -> O
 fn note_event(
     host: &LanHost,
     started: Option<(Instant, EventKind, Option<UseDetail>)>,
-    timings: &mut EventTimings<EventKind, UseDetail>,
+    timings: &mut EventTimings<(Option<u32>, Option<String>), UseDetail>,
 ) {
     let Some((started, kind, detail)) = started else {
         return;
     };
     let ms = started.elapsed().as_secs_f32() * 1000.0;
     horizon_client::spans::note(ms, || describe_event(host, &kind, detail.as_ref()));
-    timings.add(kind, detail, ms);
+    let (name, conn, player) = kind;
+    timings.add(name, (conn, player), detail, ms);
+}
+
+/// The player an event came from: its name, else its connection.
+fn who(host: &LanHost, conn: Option<u32>, name: Option<String>) -> Option<String> {
+    name.or_else(|| conn.and_then(|c| host.hub.guest(c)).map(|g| g.name.clone()))
+        .or_else(|| conn.map(|c| format!("connection {c}")))
+}
+
+/// A burst's note: `213 x UseItemOn under 10 ms each (…); most from Steve: 140 of them, 710.0 ms`.
+fn describe_burst(
+    host: &LanHost,
+    burst: &event_timings::Burst<(Option<u32>, Option<String>), UseDetail>,
+) -> String {
+    let mut line = format!(
+        "{} x {} under {} ms each",
+        burst.count,
+        burst.kind,
+        horizon_client::spans::NOTE_MS
+    );
+    if let Some(d) = &burst.detail {
+        line.push_str(&format!(" ({d})"));
+    }
+    if let Some(((conn, name), count, ms)) = &burst.top
+        && let Some(who) = who(host, *conn, name.clone())
+    {
+        line.push_str(&format!("; most from {who}: {count} of them, {ms:.1} ms"));
+    }
+    line
 }
 
 fn describe_event(
@@ -3365,11 +3383,7 @@ fn describe_event(
     (kind, conn, name): &EventKind,
     detail: Option<&UseDetail>,
 ) -> String {
-    let who = name
-        .clone()
-        .or_else(|| conn.and_then(|c| host.hub.guest(c)).map(|g| g.name.clone()))
-        .or_else(|| conn.map(|c| format!("connection {c}")));
-    let line = match who {
+    let line = match who(host, *conn, name.clone()) {
         Some(who) => format!("{kind} of {who}"),
         None => (*kind).to_owned(),
     };
@@ -3436,32 +3450,21 @@ mod tests {
         // Thread-local recording avoids changing instrumentation on other test threads.
         spans::record_here(true);
         spans::take_notes();
-        let mut timings = EventTimings::default();
+        let mut timings = EventTimings::new(spans::NOTE_MS);
         for _ in 0..200 {
             spans::note(5.0, || "UseItemOn of fixture player".into());
-            timings.add(("UseItemOn", 7), None::<()>, 5.0);
+            timings.add("UseItemOn", "fixture player", None::<()>, 5.0);
         }
         assert!(
             spans::take_notes().is_empty(),
             "every individual event is below NOTE_MS"
         );
-        for burst in timings.bursts(spans::NOTE_MS) {
-            spans::note(burst.ms, || {
-                format!(
-                    "{} of fixture player ({} events total)",
-                    burst.kind.0, burst.count
-                )
-            });
+        for burst in timings.bursts() {
+            spans::note(burst.ms, || format!("{} x {}", burst.count, burst.kind));
         }
         let notes = spans::take_notes();
         spans::record_here(false);
-        assert_eq!(
-            notes,
-            vec![(
-                1000.0,
-                "UseItemOn of fixture player (200 events total)".into()
-            )]
-        );
+        assert_eq!(notes, vec![(1000.0, "200 x UseItemOn".into())]);
     }
     use horizon_client::mobs::Mob;
     use horizon_protocol::entity_data::{Value, serializer};
