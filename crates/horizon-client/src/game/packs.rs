@@ -30,16 +30,11 @@ pub fn packs_dir() -> PathBuf {
         .unwrap_or_default()
         .join("resourcepacks")
 }
+mod folder;
+
 /// `Util.getPlatform().openPath`: the system file manager on the folder.
 pub fn open_folder(dir: &Path) {
-    let program = if cfg!(target_os = "windows") {
-        "explorer"
-    } else if cfg!(target_os = "macos") {
-        "open"
-    } else {
-        "xdg-open"
-    };
-    if let Err(e) = std::process::Command::new(program).arg(dir).spawn() {
+    if let Err(e) = folder::command(dir).and_then(|mut command| command.spawn()) {
         log::warn!("Horizon: could not open {}: {e}", dir.display());
     }
 }
@@ -251,8 +246,10 @@ impl Game<'_> {
                 match &mut self.server_packs.load_fail {
                     Some(toast) => toast.reset(title, None),
                     None => {
-                        self.server_packs.load_fail =
-                            Some(horizon_client::toasts::SystemToast::new(title, None));
+                        if self.toast_allowed("system", "pack_load_failure") {
+                            self.server_packs.load_fail =
+                                Some(horizon_client::toasts::SystemToast::new(title, None));
+                        }
                     }
                 }
                 return;
@@ -282,7 +279,7 @@ impl Game<'_> {
         let (selected, server, mods, dev_mods) = (
             self.settings.resource_packs.clone(),
             self.server_packs.active.clone(),
-            self.settings.mods.enabled.clone(),
+            self.applied_mods(),
             self.options.dev_mods.clone(),
         );
         let (assets, res, context) = (
@@ -312,6 +309,7 @@ impl Game<'_> {
             staged.and_then(|staged| self.apply_staged_pack(staged).map_err(|e| e.to_string()));
         match kind {
             ReloadKind::Selection => {
+                self.mods_reloaded(result.is_ok());
                 if let Err(e) = result {
                     self.selection_reload_failed(&e);
                 }

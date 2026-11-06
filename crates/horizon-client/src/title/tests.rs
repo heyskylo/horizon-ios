@@ -620,6 +620,62 @@ fn recreate_uses_existing_name_seed_and_mode_and_scroll_reaches_later_rows() {
 }
 
 #[test]
+fn only_the_vertical_wheel_cycles_a_create_world_button() {
+    let mut f = Fixture::new();
+    f.enter_create_world_for_packs();
+    let size = (480.0, 262.0);
+    let labels = |f: &Fixture| {
+        let Mode::Create {
+            creative, options, ..
+        } = &f.title.mode
+        else {
+            panic!("not on Create World");
+        };
+        create_world::buttons(size.0, size.1, *creative, options)
+    };
+    let button = labels(&f)
+        .into_iter()
+        .find(|b| b.enabled)
+        .expect("an enabled button");
+    // What the buttons cycle: their labels read the same without a language loaded.
+    let state = |f: &Fixture| {
+        let Mode::Create {
+            creative, options, ..
+        } = &f.title.mode
+        else {
+            panic!("not on Create World");
+        };
+        (*creative, options.clone())
+    };
+    let at = (button.x + 1.0, button.y + 1.0);
+    let before = state(&f);
+    // A horizontal notch arrives with no vertical part.
+    f.title.scroll_worlds(0.0, at, size);
+    assert_eq!(state(&f), before);
+    f.title.scroll_worlds(-1.0, at, size);
+    assert_ne!(state(&f), before);
+}
+
+#[test]
+fn stick_scroll_moves_the_world_list_with_the_pointer_outside_it() {
+    let mut f = Fixture::new();
+    for i in 0..10 {
+        f.world(&format!("World{i}"), &format!("World {i}"));
+    }
+    f.select();
+    let (outside, size) = ((10.0, 2.0), (480.0, 262.0));
+    f.title.scroll_worlds(-1.0, outside, size);
+    assert_eq!(f.title.scroll.get().amount, 0.0);
+    f.title.step_scroll(-1.0, outside, size);
+    assert_eq!(f.title.scroll.get().amount, 0.0);
+    // The stick goes by the list the last frame drew.
+    crate::widgets::scroll_area([0.0, 32.0, 400.0, 166.0], 0.0, 100.0);
+    crate::widgets::end_frame(u64::MAX);
+    f.title.stick_scroll(-1.0, outside, size);
+    assert_eq!(f.title.scroll.get().amount, 18.0);
+}
+
+#[test]
 fn classic_navigation_buttons_sound_even_without_a_game_action() {
     let mut f = Fixture::new();
     f.world("World", "World");
@@ -2441,6 +2497,7 @@ fn the_multiplayer_screens_have_their_own_ids() {
         M::Disconnected {
             reason: String::new(),
             retry: None,
+            lines: std::cell::Cell::new(1),
         }
         .id(),
         "disconnected"

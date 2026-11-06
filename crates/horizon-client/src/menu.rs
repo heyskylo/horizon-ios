@@ -3625,6 +3625,7 @@ pub(crate) mod tests {
                 living_drown: |_, _, _, _, _, _| {},
                 living_fall: |_, _, _, _, _| {},
                 living_jump: |_, _| {},
+                register_goals: |_| {},
                 ingredient: |_, _, _| {},
                 ingredient_test: |_, _, _, _| {},
             });
@@ -3960,6 +3961,7 @@ pub(crate) mod tests {
                     count: 4,
                     damage: 0,
                     extra: None,
+                    components: None,
                 },
             },
         ));
@@ -4008,6 +4010,7 @@ pub(crate) mod tests {
                     count: 4,
                     damage: 0,
                     extra: None,
+                    components: None,
                 },
             },
         ));
@@ -4057,6 +4060,7 @@ pub(crate) mod tests {
                     count: 4,
                     damage: 0,
                     extra: None,
+                    components: None,
                 },
             },
         ));
@@ -4110,6 +4114,7 @@ pub(crate) mod tests {
                     count: 1,
                     damage: 0,
                     extra: None,
+                    components: None,
                 },
             }),
         ));

@@ -263,6 +263,7 @@ struct MeshSettings {
     nether: bool,
     shader_pack_lighting: bool,
     separate_ao: bool,
+    shader_pack: bool,
     zoom: BiomeZoom,
     blend_radius: i32,
     smooth_lighting: bool,
@@ -517,6 +518,9 @@ pub struct Streaming {
     /// OptiFine/Iris separate ambient occlusion: vertex RGB has pure tint and alpha holds AO factor
     /// (`Mesher::separate_ao`).
     pub separate_ao: bool,
+    /// A `shaders/` pack draws the terrain: fluid tops split as Iris splits them
+    /// (`Mesher::shader_pack`).
+    pub shader_pack: bool,
     /// `BiomeManager`'s zoom seed (the hashed world seed) and `biomeBlendRadius`.
     pub biome_zoom: BiomeZoom,
     pub biome_blend: i32,
@@ -832,7 +836,14 @@ impl<G: ChunkGenerator> Source for Jobs<G> {
                 Job::Mesh(..) => 5,
                 _ => 6,
             };
-            (kind, crate::spans::thread_cpu().unwrap_or_default())
+            // The other jobs (saves, light views, freed meshes) are many and short: counted, not
+            // timed, so the clock reads don't cost more than they do.
+            let cpu = if kind == 6 {
+                std::time::Duration::ZERO
+            } else {
+                crate::spans::thread_cpu().unwrap_or_default()
+            };
+            (kind, cpu)
         });
         let _tag = horizon_threads::heap_tag(match &job.job {
             Job::Generate(..) => "stream.generate",
@@ -861,8 +872,13 @@ impl<G: ChunkGenerator> Source for Jobs<G> {
             } else {
                 kind
             };
-            let cpu = crate::spans::thread_cpu().unwrap_or_default();
-            job_stats::add(kind, cpu.saturating_sub(started).as_nanos() as u64);
+            let nanos = if kind == 6 {
+                0
+            } else {
+                let cpu = crate::spans::thread_cpu().unwrap_or_default();
+                cpu.saturating_sub(started).as_nanos() as u64
+            };
+            job_stats::add(kind, nanos);
         }
         if let Some(done) = done {
             self.shared.done.send(done);
@@ -964,6 +980,7 @@ impl<G: ChunkGenerator> Jobs<G> {
                     nether_shading: settings.nether,
                     shader_pack_lighting: settings.shader_pack_lighting,
                     separate_ao: settings.separate_ao,
+                    shader_pack: settings.shader_pack,
                     zoom: settings.zoom,
                     blend_radius: settings.blend_radius,
                     smooth_lighting: settings.smooth_lighting,
@@ -1077,6 +1094,7 @@ impl Streaming {
             nether_shading: false,
             shader_pack_lighting: false,
             separate_ao: false,
+            shader_pack: false,
             biome_zoom: BiomeZoom::new(0),
             biome_blend: 2,
             smooth_lighting: true,
@@ -2072,6 +2090,7 @@ impl Streaming {
                             nether: self.nether_shading,
                             shader_pack_lighting: self.shader_pack_lighting,
                             separate_ao: self.separate_ao,
+                            shader_pack: self.shader_pack,
                             zoom: self.biome_zoom,
                             blend_radius: self.biome_blend,
                             smooth_lighting: self.smooth_lighting,

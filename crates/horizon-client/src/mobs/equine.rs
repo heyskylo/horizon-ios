@@ -80,6 +80,11 @@ pub fn is_equine(s: Species) -> bool {
             | Species::TraderLlama
     )
 }
+/// `Entity.canSprint`: false everywhere but the camel (`Camel.canSprint`). A
+/// rider's `LocalPlayer.isSprintingPossible` asks its vehicle.
+pub fn can_sprint(s: Species) -> bool {
+    matches!(s, Species::Camel | Species::CamelHusk)
+}
 /// `AbstractHorse.getMaxTemper`: 100, 30 for llamas.
 pub fn max_temper(s: Species) -> i32 {
     if super::llama::is_llama(s) {
@@ -280,12 +285,12 @@ pub fn controlled(m: &Mob) -> bool {
         _ => m.extra.saddled,
     }
 }
-/// `AbstractHorse`s (camels too, not llamas, which no player steers): the
-/// player controlling one moves it on its own client
+/// Saddled equines (not llamas), pigs and striders: the controlling player
+/// moves the mount on their own client
 /// (`Entity.isLocalInstanceAuthoritative`, `LivingEntity.travelRidden`) and
 /// sends the moves (`ServerboundMoveVehiclePacket`).
 pub fn moved_by_rider(s: Species) -> bool {
-    is_equine(s) && !super::llama::is_llama(s)
+    matches!(s, Species::Pig | Species::Strider) || (is_equine(s) && !super::llama::is_llama(s))
 }
 /// A server's mount that its rider's client moves: `travelRidden` without
 /// `canSimulateMovement` turns it (`tickRidden`) and stops it there.

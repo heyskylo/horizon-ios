@@ -2,16 +2,10 @@
 //! compile the game. levzzz5154 (2026-10-27): players combine many native mods per build, so they
 //! build on their own computer, and the launcher brings the compiler.
 //!
-//! It downloads only the official components a build needs (`rustc`, `cargo`, `rust-std`, and on
-//! Windows `rust-mingw`, the linker of the `windows-gnu` host, which needs no Visual Studio) from
-//! static.rust-lang.org, each pinned by its SHA-256 below, and unpacks them into the launcher's data
-//! folder. No rustup, nothing installed on the system or added to the PATH: the launcher calls this
-//! cargo with its own `CARGO_HOME`. The pins come from the channel manifest of [`VERSION`]
-//! (`https://static.rust-lang.org/dist/channel-rust-<VERSION>.toml`, `[pkg.<name>.target.<host>]`).
-//!
-//! On Windows it also brings MinGW-w64 ([`MINGW`]): `rust-mingw` only links. The game needs a C
-//! compiler (`ring`, `hidapi` and wasmtime build C with `cc`), and `windows-sys`' `raw-dylib`
-//! imports need `dlltool`, which runs the GNU assembler; `rust-mingw` has neither.
+//! It downloads only the official Rust components a build needs (`rustc`, `cargo`, `rust-std`, and
+//! on Windows `rust-mingw`) from static.rust-lang.org, each pinned by its SHA-256 below, and
+//! unpacks them into the launcher's data folder. No rustup or player-installed compiler is used.
+//! Windows also gets a pinned C/link toolchain: WinLibs for x64 and LLVM-MinGW for ARM64.
 use crate::backend;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -23,29 +17,57 @@ pub const VERSION: &str = "1.99.1";
 const DIST: &str = "https://static.rust-lang.org/dist/2026-10-15";
 
 /// One platform's components: (name, SHA-256 of `<name>-<VERSION>-<target>.tar.gz`).
+#[derive(Debug, PartialEq)]
 pub struct Host {
     pub target: &'static str,
     components: &'static [(&'static str, &'static str)],
-    /// The C toolchain it brings besides Rust's components, unpacked into [`MINGW_DIR`].
-    mingw: Option<&'static Mingw>,
+    /// The C and link toolchain it brings besides Rust's components.
+    c_toolchain: Option<&'static CToolchain>,
 }
 
-/// A MinGW-w64 release: one zip, pinned by its SHA-256.
-pub struct Mingw {
+/// A Windows C/link toolchain archive, pinned by its SHA-256.
+#[derive(Debug, PartialEq)]
+pub struct CToolchain {
     pub version: &'static str,
     url: &'static str,
     sha256: &'static str,
+    directory: &'static str,
+    kind: CToolchainKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum CToolchainKind {
+    WinLibs,
+    LlvmMingw,
 }
 
 /// WinLibs' build of GCC and binutils on MinGW-w64 (MSVCRT, the C runtime `rust-mingw` links
 /// against; POSIX threads; SEH), the release's `mingw64/` folder without its documentation.
-pub const MINGW: Mingw = Mingw {
+pub const MINGW: CToolchain = CToolchain {
     version: "GCC 16.2.0, MinGW-w64 14.0.0 (WinLibs r3)",
     url: "https://github.com/brechtsanders/winlibs_mingw/releases/download/16.2.0posix-23.1.3-14.0.0-msvcrt-r3/winlibs-x86_64-posix-seh-gcc-16.2.0-mingw-w64msvcrt-14.0.0-r3.zip",
     sha256: "62af32ea58acdea1318ea5dd8eb7017eaee694dd40b269d52a59c769dcfefb82",
+    directory: MINGW_DIR,
+    kind: CToolchainKind::WinLibs,
+};
+
+/// LLVM-MinGW 20261104, with UCRT and native ARM64 host tools. It targets ARM64 Windows using
+/// LLVM's GNU-compatible ABI; it is not an MSVC object/library toolchain.
+pub const LLVM_MINGW: CToolchain = CToolchain {
+    version: "LLVM-MinGW 23.1.5 (20261104, UCRT)",
+    url: "https://github.com/mstorsjo/llvm-mingw/releases/download/20261104/llvm-mingw-20261104-ucrt-aarch64.zip",
+    sha256: "7d7f8387a8706639b0b47a629d6e23f8b3ef9acce67e9832b8cd4c5bb2816eab",
+    directory: LLVM_MINGW_DIR,
+    kind: CToolchainKind::LlvmMingw,
 };
 /// Where MinGW-w64 goes in the toolchain, as the zip names it.
 const MINGW_DIR: &str = "mingw64";
+const LLVM_MINGW_DIR: &str = "llvm-mingw";
+
+pub const WINDOWS_X64_TARGET: &str = "x86_64-pc-windows-gnu";
+pub const WINDOWS_ARM64_TARGET: &str = "aarch64-pc-windows-gnullvm";
+pub const WINDOWS_X64_MACHINE: u16 = 0x8664;
+pub const WINDOWS_ARM64_MACHINE: u16 = 0xaa64;
 
 const HOSTS: &[Host] = &[
     Host {
@@ -64,7 +86,7 @@ const HOSTS: &[Host] = &[
                 "c124006d63885ba1029aca49efd59e93be6b2b171c379318ff94a00ef5eba664",
             ),
         ],
-        mingw: None,
+        c_toolchain: None,
     },
     Host {
         target: "x86_64-unknown-linux-gnu",
@@ -82,10 +104,10 @@ const HOSTS: &[Host] = &[
                 "d1290c05994a59c029e562cb75be1bddc6fb11a4c501e1b7b0f61d119c6cbb12",
             ),
         ],
-        mingw: None,
+        c_toolchain: None,
     },
     Host {
-        target: "x86_64-pc-windows-gnu",
+        target: WINDOWS_X64_TARGET,
         components: &[
             (
                 "rustc",
@@ -104,20 +126,68 @@ const HOSTS: &[Host] = &[
                 "30263d7bb4fd0bf63a153afe36d7fc102f929a7d42781651c6b3a03a414ba428",
             ),
         ],
-        mingw: Some(&MINGW),
+        c_toolchain: Some(&MINGW),
+    },
+    Host {
+        target: WINDOWS_ARM64_TARGET,
+        components: &[
+            (
+                "rustc",
+                "261a6bff00129905f97e07db33aaecb994d22ab40efef2b6b1e27b8cc37231a8",
+            ),
+            (
+                "cargo",
+                "a678122654b6ca4240997cec6ab6e3c91fa0e79466939c06b079c8a717efc6aa",
+            ),
+            (
+                "rust-std",
+                "a492480db6ba615c70a10c8c146012d04276122cd57d00aef225764e0791968f",
+            ),
+            (
+                "rust-mingw",
+                "69fe700a14751b7b5a191bab92a9620e4deb4095f232873476033d1a6a5d8cd7",
+            ),
+        ],
+        c_toolchain: Some(&LLVM_MINGW),
     },
 ];
 
-/// This computer's host, if the launcher ships a toolchain for it (the platforms it is released
-/// for: macOS on Apple silicon, Linux x86-64, Windows x64).
-pub fn host() -> Option<&'static Host> {
-    let target = match (std::env::consts::OS, std::env::consts::ARCH) {
+/// This computer's host, if the launcher ships a toolchain for it.
+fn host_for(os: &str, arch: &str) -> Option<&'static Host> {
+    let target = match (os, arch) {
         ("macos", "aarch64") => "aarch64-apple-darwin",
         ("linux", "x86_64") => "x86_64-unknown-linux-gnu",
-        ("windows", "x86_64") => "x86_64-pc-windows-gnu",
+        ("windows", "x86_64") => WINDOWS_X64_TARGET,
+        ("windows", "aarch64") => WINDOWS_ARM64_TARGET,
         _ => return None,
     };
     HOSTS.iter().find(|h| h.target == target)
+}
+
+/// Every host the launcher ships a toolchain for, so tests check each host's commands on
+/// whichever machine runs them (a macOS x64 or Windows ARM64 runner included).
+#[cfg(test)]
+pub(crate) fn hosts() -> &'static [Host] {
+    HOSTS
+}
+
+pub fn host() -> Option<&'static Host> {
+    host_for(std::env::consts::OS, std::env::consts::ARCH)
+}
+
+/// The Rust target for an installed Windows game's PE machine type.
+pub fn windows_target_for_machine(machine: u16) -> Option<&'static str> {
+    match machine {
+        WINDOWS_X64_MACHINE => Some(WINDOWS_X64_TARGET),
+        WINDOWS_ARM64_MACHINE => Some(WINDOWS_ARM64_TARGET),
+        _ => None,
+    }
+}
+
+/// Native-mod builds are supported when the selected game's architecture matches the launcher.
+pub fn windows_target_for_host(host_target: &str, machine: u16) -> Option<&'static str> {
+    let target = windows_target_for_machine(machine)?;
+    (target == host_target).then_some(target)
 }
 
 fn exe(name: &str) -> String {
@@ -128,6 +198,7 @@ fn exe(name: &str) -> String {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Toolchain {
     pub dir: PathBuf,
+    pub(crate) host: &'static Host,
 }
 
 impl Toolchain {
@@ -135,20 +206,45 @@ impl Toolchain {
         self.dir.join("bin").join(exe("cargo"))
     }
 
-    /// MinGW-w64's programs (gcc, as, dlltool), when the toolchain brings it (Windows).
+    /// The managed C/link toolchain's programs, when the host brings one (Windows).
     pub fn mingw_bin(&self) -> PathBuf {
-        self.dir.join(MINGW_DIR).join("bin")
+        self.host
+            .c_toolchain
+            .map_or_else(|| self.dir.join(MINGW_DIR), |c| self.dir.join(c.directory))
+            .join("bin")
+    }
+
+    fn compiler_available(&self) -> bool {
+        let Some(compiler) = self.host.c_toolchain else {
+            return true;
+        };
+        match compiler.kind {
+            CToolchainKind::WinLibs => self.mingw_bin().join(exe("gcc")).is_file(),
+            CToolchainKind::LlvmMingw => [
+                exe("aarch64-w64-mingw32-clang"),
+                exe("aarch64-w64-mingw32-clang++"),
+                exe("llvm-ar"),
+                exe("llvm-ranlib"),
+                exe("llvm-dlltool"),
+                // winresource defaults to an unprefixed x64 `windres` on a native ARM64 host.
+                // Give it the target-specific resource compiler and archive tool too.
+                exe("aarch64-w64-mingw32-ar"),
+                exe("aarch64-w64-mingw32-windres"),
+            ]
+            .iter()
+            .all(|program| self.mingw_bin().join(program).is_file()),
+        }
     }
 
     /// `program` (this toolchain's cargo, or a tool built with it) set up to use only this
-    /// toolchain: its rustc, its MinGW-w64 where it has one, the launcher's Cargo home, and none of
+    /// toolchain: its rustc, its C/link tools where it has them, the launcher's Cargo home, and none of
     /// the player's rustup, compiler-wrapper or compiler-flag settings ([`scrubbed`]). On Windows it
     /// opens no console window: cargo is a console program, and the launcher has none to share, so
     /// each build showed an empty one for as long as it ran (#4770).
     pub fn command(&self, program: &Path) -> Command {
         let mut cmd = crate::process::command(program);
         let path = std::env::var_os("PATH").unwrap_or_default();
-        let mingw = Some(self.mingw_bin()).filter(|bin| bin.is_dir());
+        let mingw = self.host.c_toolchain.map(|_| self.mingw_bin());
         let paths = std::iter::once(self.dir.join("bin"))
             .chain(mingw)
             .chain(std::env::split_paths(&path));
@@ -173,7 +269,46 @@ impl Toolchain {
                 cmd.env_remove(name);
             }
         }
+        // These are the launcher's own settings, so add them after removing the player's Cargo
+        // target overrides. The ARM64 target's linker is LLVM-MinGW's Clang driver; Rust and cc
+        // must both see tools from this managed toolchain.
+        if self.host.target == WINDOWS_ARM64_TARGET {
+            let bin = self.mingw_bin();
+            let cc = bin.join(exe("aarch64-w64-mingw32-clang"));
+            let cxx = bin.join(exe("aarch64-w64-mingw32-clang++"));
+            let ar = bin.join(exe("llvm-ar"));
+            let ranlib = bin.join(exe("llvm-ranlib"));
+            let resource_ar = bin.join(exe("aarch64-w64-mingw32-ar"));
+            let windres = bin.join(exe("aarch64-w64-mingw32-windres"));
+            cmd.env("CC_aarch64_pc_windows_gnullvm", &cc)
+                .env("CXX_aarch64_pc_windows_gnullvm", &cxx)
+                .env("AR_aarch64_pc_windows_gnullvm", &ar)
+                .env("RANLIB_aarch64_pc_windows_gnullvm", &ranlib)
+                .env("AR", resource_ar)
+                .env("WINDRES", windres)
+                .env("CARGO_TARGET_AARCH64_PC_WINDOWS_GNULLVM_LINKER", cc);
+        }
         cmd
+    }
+
+    /// Adds the ARM64-specific Rust flags Cargo needs for Windows imports and a self-contained
+    /// unwind runtime. A Cargo config value keeps paths with spaces intact.
+    pub fn configure_cargo(&self, cmd: &mut Command) {
+        if self.host.target != WINDOWS_ARM64_TARGET {
+            return;
+        }
+        let dlltool = self.mingw_bin().join(exe("llvm-dlltool"));
+        let rustflags = toml::Value::Array(vec![
+            toml::Value::String("-C".into()),
+            // Windows doesn't ship LLVM-MinGW's libunwind.dll. On this target, crt-static also
+            // makes Rust use the static unwinder so the built game has no extra runtime DLL.
+            toml::Value::String("target-feature=+crt-static".into()),
+            toml::Value::String("-C".into()),
+            toml::Value::String(format!("dlltool={}", dlltool.display())),
+        ]);
+        cmd.arg("--config").arg(format!(
+            "target.{WINDOWS_ARM64_TARGET}.rustflags={rustflags}"
+        ));
     }
 
     /// `rustc --version`, once the toolchain answers.
@@ -297,13 +432,14 @@ fn dir_for(host: &Host) -> PathBuf {
 
 const COMPLETE: &str = ".installed";
 
-/// The toolchain, when it is installed. A Windows one from before MinGW-w64 isn't: installing
-/// again brings it.
+/// The toolchain, when it is installed. An incomplete Windows C/link toolchain is reinstalled.
 pub fn installed() -> Option<Toolchain> {
     let host = host()?;
-    let toolchain = Toolchain { dir: dir_for(host) };
-    let mingw = host.mingw.is_none() || toolchain.mingw_bin().join(exe("gcc")).is_file();
-    (toolchain.dir.join(COMPLETE).is_file() && mingw).then_some(toolchain)
+    let toolchain = Toolchain {
+        dir: dir_for(host),
+        host,
+    };
+    (toolchain.dir.join(COMPLETE).is_file() && toolchain.compiler_available()).then_some(toolchain)
 }
 
 /// Downloads, checks and unpacks the pinned toolchain (once); `progress` gets the fraction done.
@@ -327,7 +463,7 @@ pub fn install(progress: impl Fn(f32)) -> Result<Toolchain, String> {
     let partial = root().join(format!(".{VERSION}-{}.partial", host.target));
     let _ = fs::remove_dir_all(&partial);
     fs::create_dir_all(&partial).map_err(|e| e.to_string())?;
-    let count = (host.components.len() + usize::from(host.mingw.is_some())) as f32;
+    let count = (host.components.len() + usize::from(host.c_toolchain.is_some())) as f32;
     for (i, (name, sha256)) in host.components.iter().enumerate() {
         let file = format!("{name}-{VERSION}-{}.tar.gz", host.target);
         let archive = root().join(format!(".{file}"));
@@ -338,21 +474,34 @@ pub fn install(progress: impl Fn(f32)) -> Result<Toolchain, String> {
         let _ = fs::remove_file(&archive);
         unpacked.map_err(|e| format!("Rust {VERSION} ({name}): {e}"))?;
     }
-    if let Some(mingw) = host.mingw {
-        let archive = root().join(".mingw.zip");
+    if let Some(compiler) = host.c_toolchain {
+        let archive = root().join(format!(".{}.zip", compiler.directory));
         let done = host.components.len() as f32;
         let step = |f: f32| progress((done + f) / count);
-        backend::download(mingw.url, 0, mingw.sha256, &archive, &step)
-            .map_err(|e| format!("MinGW-w64 ({}): {e}", mingw.version))?;
-        let unpacked = unpack_mingw(&archive, &partial);
+        backend::download(compiler.url, 0, compiler.sha256, &archive, &step)
+            .map_err(|e| format!("{}: {e}", compiler.version))?;
+        let unpacked = match compiler.kind {
+            CToolchainKind::WinLibs => unpack_mingw(&archive, &partial),
+            CToolchainKind::LlvmMingw => unpack_llvm_mingw(&archive, &partial),
+        };
         let _ = fs::remove_file(&archive);
-        unpacked.map_err(|e| format!("MinGW-w64 ({}): {e}", mingw.version))?;
+        unpacked.map_err(|e| format!("{}: {e}", compiler.version))?;
+        let toolchain = Toolchain {
+            dir: partial.clone(),
+            host,
+        };
+        if !toolchain.compiler_available() {
+            return Err(format!(
+                "{} did not contain the compiler and linker files the launcher needs.",
+                compiler.version
+            ));
+        }
     }
     fs::write(partial.join(COMPLETE), VERSION).map_err(|e| e.to_string())?;
     let _ = fs::remove_dir_all(&dir);
     fs::rename(&partial, &dir).map_err(|e| e.to_string())?;
     progress(1.0);
-    Ok(Toolchain { dir })
+    Ok(Toolchain { dir, host })
 }
 
 /// Unpacks one component archive into `prefix`, as its installer would: an archive holds
@@ -420,6 +569,53 @@ fn unpack_mingw(archive: &Path, prefix: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Unpacks LLVM-MinGW under `llvm-mingw/`. Release archives have either a versioned top folder or
+/// the toolchain folders at their root; both layouts are accepted, but paths may never escape it.
+fn unpack_llvm_mingw(archive: &Path, prefix: &Path) -> Result<(), String> {
+    let file = fs::File::open(archive).map_err(|e| e.to_string())?;
+    let mut zip = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+    for i in 0..zip.len() {
+        let mut entry = zip.by_index(i).map_err(|e| e.to_string())?;
+        let Some(relative) = entry.enclosed_name().and_then(|p| llvm_mingw_path(&p)) else {
+            continue;
+        };
+        let to = prefix.join(LLVM_MINGW_DIR).join(&relative);
+        if entry.is_dir() {
+            fs::create_dir_all(&to).map_err(|e| e.to_string())?;
+            continue;
+        }
+        if let Some(parent) = to.parent() {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let mut out = fs::File::create(&to).map_err(|e| format!("{}: {e}", relative.display()))?;
+        std::io::copy(&mut entry, &mut out).map_err(|e| format!("{}: {e}", relative.display()))?;
+    }
+    Ok(())
+}
+
+fn llvm_mingw_path(path: &Path) -> Option<PathBuf> {
+    use std::path::Component;
+    let parts: Vec<&std::ffi::OsStr> = path
+        .components()
+        .map(|c| match c {
+            Component::Normal(name) => Some(name),
+            _ => None,
+        })
+        .collect::<Option<_>>()?;
+    if parts.is_empty() {
+        return None;
+    }
+    let contents = if parts[0].to_string_lossy().starts_with("llvm-mingw") {
+        if parts.len() == 1 {
+            return None;
+        }
+        &parts[1..]
+    } else {
+        &parts[..]
+    };
+    (!contents.is_empty()).then(|| contents.iter().collect())
+}
+
 /// Where a file of MinGW-w64's zip goes, relative to the prefix: `mingw64/bin/gcc.exe` as it is.
 /// None for its documentation (`mingw64/share/`, 50 MB of the 925), the folder itself and anything
 /// outside `mingw64/`.
@@ -476,6 +672,28 @@ fn link(full: bool) -> Result<(), String> {
         ),
         _ => Ok(()),
     }
+}
+
+/// What to do when Windows' Smart App Control refused one of the build's programs (#5911). It
+/// lets only signed programs or ones Microsoft knows run, and a build runs programs it has just
+/// compiled (every crate's build script, horizon-mixins, the game) and the toolchain's own
+/// (`dlltool.exe`). Windows refuses them with os error 4551 ("An Application Control policy has
+/// blocked this file"). Nothing is checked before the build: with Smart App Control on, a build
+/// whose programs already ran before it was turned on still succeeds.
+pub fn smart_app_control() -> String {
+    crate::i18n::tr("Windows' Smart App Control is blocking the build (os error 4551). \
+It only lets signed programs run, and a native build runs programs no one has signed: the ones it \
+compiles on this computer and some of the compiler's own. To build native mods, turn it off in \
+Windows Security > App & browser control > Smart App Control settings, then build again. On some \
+Windows versions it can't be turned back on without reinstalling Windows. Content mods (.hmod) need \
+no build and work with it on.")
+    .to_string()
+}
+
+/// Whether `text` (a build's output, or the error starting one of its programs) is Windows
+/// refusing a program under an Application Control policy, Smart App Control's.
+pub fn blocked_by_app_control(text: &str) -> bool {
+    text.contains("os error 4551")
 }
 
 /// What a Linux build needs from the system, checked before anything is downloaded: a C compiler
@@ -615,23 +833,81 @@ mod tests {
                 );
             }
         }
-        let windows = HOSTS.iter().find(|h| h.target.contains("windows")).unwrap();
-        assert!(windows.target.ends_with("-gnu"), "no Visual Studio needed");
-        assert!(windows.components.iter().any(|c| c.0 == "rust-mingw"));
+        let x64 = HOSTS
+            .iter()
+            .find(|h| h.target == WINDOWS_X64_TARGET)
+            .unwrap();
+        let arm64 = HOSTS
+            .iter()
+            .find(|h| h.target == WINDOWS_ARM64_TARGET)
+            .unwrap();
+        assert!(x64.target.ends_with("-gnu"), "preserve the x64 toolchain");
+        assert!(x64.components.iter().any(|c| c.0 == "rust-mingw"));
+        assert!(arm64.components.iter().any(|c| c.0 == "rust-mingw"));
         // Only Windows brings a C toolchain; macOS and Linux use the system's.
         for host in HOSTS {
-            assert_eq!(host.mingw.is_some(), host.target.contains("windows"));
+            assert_eq!(
+                host.c_toolchain.is_some(),
+                host.target.contains("windows"),
+                "{}",
+                host.target
+            );
         }
-        let mingw = windows.mingw.unwrap();
-        assert!(mingw.sha256.len() == 64 && mingw.sha256.bytes().all(|b| b.is_ascii_hexdigit()));
-        assert!(mingw.url.starts_with("https://") && mingw.url.ends_with(".zip"));
-        assert!(
-            mingw.url.contains("msvcrt"),
-            "the C runtime rust-mingw links against"
-        );
+        assert_eq!(x64.c_toolchain.unwrap().kind, CToolchainKind::WinLibs);
+        assert_eq!(arm64.c_toolchain.unwrap().kind, CToolchainKind::LlvmMingw);
+        for compiler in [x64.c_toolchain.unwrap(), arm64.c_toolchain.unwrap()] {
+            assert!(
+                compiler.sha256.len() == 64
+                    && compiler.sha256.bytes().all(|b| b.is_ascii_hexdigit()),
+                "{}",
+                compiler.version
+            );
+            assert!(compiler.url.starts_with("https://") && compiler.url.ends_with(".zip"));
+        }
+        assert!(x64.c_toolchain.unwrap().url.contains("msvcrt"));
+        assert!(arm64.c_toolchain.unwrap().url.contains("ucrt"));
         if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
             assert_eq!(host().unwrap().target, "aarch64-apple-darwin");
         }
+    }
+
+    #[test]
+    fn game_pe_architecture_selects_only_a_matching_managed_host() {
+        assert_eq!(
+            host_for("windows", "x86_64").unwrap().target,
+            WINDOWS_X64_TARGET,
+            "an x64 process under ARM64 emulation stays on the x64 compiler"
+        );
+        assert_eq!(
+            host_for("windows", "aarch64").unwrap().target,
+            WINDOWS_ARM64_TARGET
+        );
+        assert_eq!(windows_target_for_machine(0x8664), Some(WINDOWS_X64_TARGET));
+        assert_eq!(
+            windows_target_for_machine(0xaa64),
+            Some(WINDOWS_ARM64_TARGET)
+        );
+        assert_eq!(
+            windows_target_for_machine(0xa641),
+            None,
+            "ARM64EC is unsupported"
+        );
+        assert_eq!(
+            windows_target_for_host(WINDOWS_X64_TARGET, WINDOWS_X64_MACHINE),
+            Some(WINDOWS_X64_TARGET)
+        );
+        assert_eq!(
+            windows_target_for_host(WINDOWS_ARM64_TARGET, WINDOWS_ARM64_MACHINE),
+            Some(WINDOWS_ARM64_TARGET)
+        );
+        assert_eq!(
+            windows_target_for_host(WINDOWS_X64_TARGET, WINDOWS_ARM64_MACHINE),
+            None
+        );
+        assert_eq!(
+            windows_target_for_host(WINDOWS_ARM64_TARGET, WINDOWS_X64_MACHINE),
+            None
+        );
     }
 
     #[test]
@@ -761,9 +1037,16 @@ mod tests {
 
     #[test]
     fn the_command_uses_only_the_launchers_toolchain() {
-        let toolchain = Toolchain {
-            dir: PathBuf::from("/rust/1.99.1-x"),
-        };
+        for host in HOSTS {
+            let toolchain = Toolchain {
+                dir: PathBuf::from("/rust/1.99.1-x"),
+                host,
+            };
+            the_command_uses_only(&toolchain);
+        }
+    }
+
+    fn the_command_uses_only(toolchain: &Toolchain) {
         let cmd = toolchain.command(&toolchain.cargo());
         let env: Vec<(String, Option<String>)> = cmd
             .get_envs()
@@ -792,18 +1075,26 @@ mod tests {
     /// open a non-ASCII %TEMP%, like the one under a Cyrillic user name.
     #[test]
     fn the_command_uses_the_builds_own_temp_dir() {
-        let toolchain = Toolchain {
-            dir: PathBuf::from("/rust/1.99.1-x"),
-        };
-        let cmd = toolchain.command(&toolchain.cargo());
         let tmp = backend::build_dir().join("tmp");
-        for name in ["TMPDIR", "TMP", "TEMP"] {
-            let value = cmd
-                .get_envs()
-                .find(|(k, _)| *k == name)
-                .and_then(|(_, v)| v)
-                .map(PathBuf::from);
-            assert_eq!(value.as_deref(), Some(tmp.as_path()), "{name}");
+        for host in HOSTS {
+            let toolchain = Toolchain {
+                dir: PathBuf::from("/rust/1.99.1-x"),
+                host,
+            };
+            let cmd = toolchain.command(&toolchain.cargo());
+            for name in ["TMPDIR", "TMP", "TEMP"] {
+                let value = cmd
+                    .get_envs()
+                    .find(|(k, _)| *k == name)
+                    .and_then(|(_, v)| v)
+                    .map(PathBuf::from);
+                assert_eq!(
+                    value.as_deref(),
+                    Some(tmp.as_path()),
+                    "{}: {name}",
+                    host.target
+                );
+            }
         }
     }
 
@@ -860,12 +1151,95 @@ mod tests {
     }
 
     #[test]
+    fn llvm_mingw_paths_are_safe_with_or_without_a_versioned_root() {
+        let at = |p: &str| llvm_mingw_path(Path::new(p));
+        assert_eq!(at("bin/clang.exe"), Some(PathBuf::from("bin/clang.exe")));
+        assert_eq!(
+            at("llvm-mingw-20261104-ucrt-aarch64/bin/clang.exe"),
+            Some(PathBuf::from("bin/clang.exe"))
+        );
+        assert_eq!(at("llvm-mingw-20261104-ucrt-aarch64"), None);
+        assert_eq!(at("../outside.exe"), None);
+        assert_eq!(at("/bin/clang.exe"), None);
+    }
+
+    #[test]
+    fn an_llvm_mingw_zip_unpacks_to_its_managed_folder() {
+        let dir =
+            std::env::temp_dir().join(format!("horizon-llvm-mingw-unpack-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let archive = dir.join("llvm-mingw.zip");
+        let mut zip = zip::ZipWriter::new(fs::File::create(&archive).unwrap());
+        let options = zip::write::SimpleFileOptions::default();
+        for (path, body) in [
+            ("llvm-mingw-20261104-ucrt-aarch64/bin/clang.exe", "clang"),
+            ("llvm-mingw-20261104-ucrt-aarch64/LICENSE.txt", "license"),
+            ("../outside.exe", "unsafe"),
+        ] {
+            zip.start_file(path, options).unwrap();
+            zip.write_all(body.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+        let prefix = dir.join("prefix");
+        unpack_llvm_mingw(&archive, &prefix).unwrap();
+        assert_eq!(
+            fs::read_to_string(prefix.join("llvm-mingw/bin/clang.exe")).unwrap(),
+            "clang"
+        );
+        assert_eq!(
+            fs::read_to_string(prefix.join("llvm-mingw/LICENSE.txt")).unwrap(),
+            "license"
+        );
+        assert!(!prefix.join("outside.exe").exists());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn arm64_toolchain_is_incomplete_without_each_required_c_and_link_tool() {
+        let dir = std::env::temp_dir().join(format!("horizon-arm64-tools-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let host = HOSTS
+            .iter()
+            .find(|h| h.target == WINDOWS_ARM64_TARGET)
+            .unwrap();
+        let toolchain = Toolchain {
+            dir: dir.clone(),
+            host,
+        };
+        let bin = toolchain.mingw_bin();
+        fs::create_dir_all(&bin).unwrap();
+        for name in [
+            "aarch64-w64-mingw32-clang",
+            "aarch64-w64-mingw32-clang++",
+            "llvm-ar",
+            "llvm-ranlib",
+            "llvm-dlltool",
+            "aarch64-w64-mingw32-ar",
+            "aarch64-w64-mingw32-windres",
+        ] {
+            assert!(!toolchain.compiler_available(), "missing {name}");
+            fs::write(bin.join(exe(name)), "tool").unwrap();
+        }
+        assert!(toolchain.compiler_available());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn the_command_puts_mingw_after_rust_when_the_toolchain_has_it() {
         let dir = std::env::temp_dir().join(format!("horizon-mingw-path-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
-        let toolchain = Toolchain { dir: dir.clone() };
+        let host = HOSTS
+            .iter()
+            .find(|h| h.target == WINDOWS_X64_TARGET)
+            .unwrap();
+        let toolchain = Toolchain {
+            dir: dir.clone(),
+            host,
+        };
         fs::create_dir_all(toolchain.mingw_bin()).unwrap();
-        let cmd = toolchain.command(&toolchain.cargo());
+        let mut cmd = toolchain.command(&toolchain.cargo());
+        toolchain.configure_cargo(&mut cmd);
         let path = cmd
             .get_envs()
             .find(|(k, _)| *k == "PATH")
@@ -873,7 +1247,98 @@ mod tests {
             .unwrap();
         let first: Vec<PathBuf> = std::env::split_paths(path).take(2).collect();
         assert_eq!(first, [dir.join("bin"), toolchain.mingw_bin()]);
+        assert!(!cmd
+            .get_envs()
+            .any(|(key, _)| matches!(key.to_string_lossy().as_ref(), "AR" | "WINDRES")));
+        assert!(cmd.get_args().next().is_none());
+        assert!(!cmd
+            .get_envs()
+            .any(|(key, _)| key == "CARGO_TARGET_AARCH64_PC_WINDOWS_GNULLVM_LINKER"));
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_arm64_command_selects_managed_llvm_c_and_link_tools() {
+        let dir = std::env::temp_dir().join(format!(
+            "horizon-arm64-toolchain-{} with spaces",
+            std::process::id()
+        ));
+        let host = HOSTS
+            .iter()
+            .find(|h| h.target == WINDOWS_ARM64_TARGET)
+            .unwrap();
+        let toolchain = Toolchain { dir, host };
+        let cmd = toolchain.command(&toolchain.cargo());
+        let env: Vec<(String, Option<String>)> = cmd
+            .get_envs()
+            .map(|(k, v)| {
+                (
+                    k.to_string_lossy().into_owned(),
+                    v.map(|v| v.to_string_lossy().into_owned()),
+                )
+            })
+            .collect();
+        let value = |name: &str| {
+            env.iter()
+                .find(|(key, _)| key == name)
+                .and_then(|(_, value)| value.as_deref())
+        };
+        let compiler = toolchain.mingw_bin().join(exe("aarch64-w64-mingw32-clang"));
+        assert_eq!(
+            value("CC_aarch64_pc_windows_gnullvm"),
+            Some(compiler.to_str().unwrap())
+        );
+        assert_eq!(
+            value("AR_aarch64_pc_windows_gnullvm"),
+            Some(toolchain.mingw_bin().join(exe("llvm-ar")).to_str().unwrap())
+        );
+        let mut cargo = toolchain.command(&toolchain.cargo());
+        toolchain.configure_cargo(&mut cargo);
+        let args: Vec<String> = cargo
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        let dlltool = toolchain.mingw_bin().join(exe("llvm-dlltool"));
+        let rustflags = toml::Value::Array(vec![
+            toml::Value::String("-C".into()),
+            toml::Value::String("target-feature=+crt-static".into()),
+            toml::Value::String("-C".into()),
+            toml::Value::String(format!("dlltool={}", dlltool.display())),
+        ]);
+        assert_eq!(
+            args[1],
+            format!("target.{WINDOWS_ARM64_TARGET}.rustflags={rustflags}")
+        );
+        assert_eq!(
+            value("CARGO_TARGET_AARCH64_PC_WINDOWS_GNULLVM_LINKER"),
+            Some(
+                toolchain
+                    .mingw_bin()
+                    .join(exe("aarch64-w64-mingw32-clang"))
+                    .to_str()
+                    .unwrap()
+            )
+        );
+        assert_eq!(
+            value("AR"),
+            Some(
+                toolchain
+                    .mingw_bin()
+                    .join(exe("aarch64-w64-mingw32-ar"))
+                    .to_str()
+                    .unwrap()
+            )
+        );
+        assert_eq!(
+            value("WINDRES"),
+            Some(
+                toolchain
+                    .mingw_bin()
+                    .join(exe("aarch64-w64-mingw32-windres"))
+                    .to_str()
+                    .unwrap()
+            )
+        );
     }
 
     #[test]
@@ -934,5 +1399,70 @@ mod tests {
         );
         assert!(!nixos.contains("apt install"), "{nixos}");
         assert_eq!(linux_needs(|_: &str, _: &[&str]| true, mint, true), Ok(()));
+    }
+
+    /// The Windows ARM64 CI invokes this ignored integration test on its real ARM64 runner. It
+    /// exercises the downloaded host compiler, C dependencies, Windows imports and final linker.
+    #[cfg(all(target_os = "windows", target_arch = "aarch64"))]
+    #[test]
+    #[ignore = "downloads the managed Windows ARM64 toolchain and builds Horizon"]
+    fn managed_arm64_toolchain_builds_the_game() {
+        let home = std::env::var_os("HORIZON_LAUNCHER_HOME").map_or_else(
+            || {
+                std::env::temp_dir().join(format!(
+                    "horizon-managed-native-arm64-{}",
+                    std::process::id()
+                ))
+            },
+            PathBuf::from,
+        );
+        let _ = fs::create_dir_all(&home);
+        std::env::set_var("HORIZON_LAUNCHER_HOME", &home);
+        let target_dir = std::env::var_os("HORIZON_NATIVE_TARGET_DIR").map_or_else(
+            || backend::build_dir().join("managed-native-target"),
+            PathBuf::from,
+        );
+
+        let rust = install(|_| {}).expect("managed ARM64 Rust and LLVM-MinGW install");
+        assert_eq!(rust.host.target, WINDOWS_ARM64_TARGET);
+        assert!(rust.compiler_available(), "managed LLVM-MinGW is complete");
+
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let mut cargo = rust.command(&rust.cargo());
+        low_priority(&mut cargo);
+        rust.configure_cargo(&mut cargo);
+        cargo
+            .current_dir(workspace)
+            .args([
+                "build",
+                "--locked",
+                "--profile",
+                "fast",
+                "-p",
+                "horizon-client",
+                "--bin",
+                "horizon-client",
+            ])
+            .env("CARGO_TARGET_DIR", &target_dir)
+            .env(
+                "CARGO_BUILD_JOBS",
+                std::thread::available_parallelism()
+                    .map(|n| n.get())
+                    .unwrap_or(1)
+                    .to_string(),
+            );
+        let output = cargo.output().expect("managed cargo starts on ARM64");
+        assert!(
+            output.status.success(),
+            "managed ARM64 native-mod build failed\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let executable = target_dir.join("fast").join(crate::backend::CLIENT);
+        assert_eq!(
+            crate::native_mods::pe_machine(&executable).unwrap(),
+            WINDOWS_ARM64_MACHINE,
+            "managed native-mod game must be ARM64"
+        );
     }
 }

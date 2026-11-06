@@ -170,6 +170,7 @@ Settings, all optional:
 | `RELAY_GLOBAL_UNKNOWN_PER_MIN` | 120 | unknown short codes a minute, all clients together |
 | `RELAY_PER_ADDRESS_LIMITS` | 1 | per-address rate limits (see below) |
 | `RELAY_PROXY_PROTOCOL` | 0 | read the client address from a PROXY protocol v1 line |
+| `RELAY_PROXY_FROM` | none | with `RELAY_PROXY_PROTOCOL=1`, required: the load balancers' addresses or CIDR ranges (`10.0.0.0/8,fd00::/8`). Connections from anywhere else are closed unanswered; the relay refuses to start with the protocol on and this empty |
 
 Fixed limits: per client address (IPv6 by /64), 6 host registrations a minute (burst 3), 12 joins a
 minute (burst 6), 5 unknown short codes in 10 minutes block joins for 10 minutes; a relayed stream idle

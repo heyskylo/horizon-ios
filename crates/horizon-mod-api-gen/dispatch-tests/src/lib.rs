@@ -47,6 +47,8 @@ mod tests {
         #[derive(Clone, Copy)]
         pub(super) struct Hand;
         pub(super) struct NativeMobRender<'a>(pub &'a ());
+        pub(super) struct LayerDefinition;
+        pub(super) struct ModelPart;
         pub(super) struct NativeShake;
         pub(super) struct WorldPrimitives;
         pub(super) struct Music;
@@ -62,6 +64,7 @@ mod tests {
         pub(super) struct MerchantOffer;
         pub(super) struct ModFluidTanks;
         pub(super) struct ModEnergyBuffer;
+        pub(super) struct Mob;
         pub(super) struct LootStack;
         pub(super) struct NativeLootContext<'a>(pub &'a ());
         pub(super) struct NativeDataMapType;

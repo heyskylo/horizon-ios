@@ -119,12 +119,27 @@ tag `nightly-source/<date>-<short>` ([release-flow.md](release-flow.md#nightly-c
 builds after its Nightly is replaced. When the mods of one build pin different commits, the launcher says which
 mod pins which and the commit the build would use, the newest of them, and builds only after the player chooses
 **Build anyway** (`native-build --allow-version-mismatch`): such mods often still apply and compile. A failed build
-then says the mods were made for other versions. Their horizon-mixins pins may differ too: the build uses the
+then says the mods were made for other versions. A mod that doesn't fit the build's Horizon doesn't stop the others: when
+horizon-mixins refuses it (a function it hooks, the file it adds a module to or a named hook point this Horizon
+doesn't have: `E_TARGET_NOT_FOUND`, `E_MODULE`, `E_HOOK_CATALOG`; a module named like one of Horizon's or another
+mod's: `E_MODULE_CONFLICT`), or the compiler's errors are in its helpers, the build runs again without it and without
+the mods that need it ([dependencies](#dependencies-between-trait-mods)), at most three more compiles. The build's steps
+and the Mods page say which mods were left out and why ("X was left out: made for another Horizon version", "…:
+clashes with Y", "…: it needs Y, which was left out"); `native-mods.json` keeps them (`left_out`), so the build is up
+to date with the same mods turned on, and a new version of a left-out mod asks for a build again. A server engine
+(`--server-output`) leaves nothing out: it fails instead. Their horizon-mixins pins may differ too: the build uses the
 newest of them and the launcher's own, never one older than a mod was made with. A bundle with no pin builds on
 the commit of the installed version the build starts from. A pin chooses the commit even when the player picked another
 version: the Mods page then says which mods pinned the commit the build compiled, and **Rebuild on Horizon**
 (`native-build --ignore-pins`) builds every mod on the picked version's own commit, where a pinned mod may not
 apply or compile. Its later rebuilds keep doing so.
+
+Before a native mod is installed, the registry browser (and `horizon-launcher mods search`) says how it fits the
+Horizon the selected instance plays: the commit its native build compiled, else the commit of its release or
+Nightly. A mod naming hook points builds there when that commit's `NATIVE_HOOKS_API` is the one it needs or later,
+else it asks for a newer Horizon; a pinned mod fits its own commit, else the line says the build moves the game to
+that commit, or, when mods turned on pin another, that the build will ask for **Build anyway**. The registry's index
+lists each version's `hooks` for this ([api/mod-index.md](api/mod-index.md)).
 
 ### Mods on the hook points
 
@@ -499,7 +514,12 @@ are compiled into `horizon-client`; a stable API crate for mods' own crates is #
 
 **Dependencies come from Horizon's `Cargo.lock`.** A crate names registry crates by version requirement
 (`crc32fast = "1"`, `{ version, features, default-features, optional }`); each must already be in Horizon's lock
-file in a version that matches, and builds in exactly that version. The lock file is the allow list: horizon-mixins
+file in a version that matches, and builds in exactly that version. The crates that are there only for mods are listed in
+`crates/horizon-mod-deps/Cargo.toml` (optional dependencies, with the features mods may turn on; nothing builds them):
+`mysql` 27 (blocking MariaDB/MySQL client, `minimal-rust` + `rustls-tls-ring`, no default features), `redis` 1 (blocking,
+no default features), `tungstenite` 0.30 (websocket over a stream the mod opens, no default features) and `rusty-opus` 1
+(Opus encoder and decoder). A feature of theirs that turns on a dependency not listed there is refused.
+The lock file is the allow list: horizon-mixins
 refuses a crate the lock lacks (`E_CRATE_DEPENDENCY`) and writes the mod's crates into the staged lock without
 changing any other byte, so the game still builds with `--locked`. The launcher checks it again (every downloaded
 package of the staged lock as in Horizon's: name, version, source, checksum), and a feature that turns on a
@@ -1704,6 +1724,10 @@ API 408 adds reading the server's play packets on the client (`native_client_pac
 
 API 409 adds `native_send_packet(packet)` sends any serverbound play packet (`ServerboundPlayPacket`), a plugin channel's custom payload included, to any server, unchecked; an error when not in a server's play state. Bundles need "hooks": 409.
 
+API 410 adds `native_gui_render_post(batch, gui_hidden, focused)` draws after the complete normal GUI batch: screens, prompts, toasts, debug overlays, pad cursor and IME included. It fires during gameplay, menus and the title, even with F1; loading/file-upgrade and resource-reload overlays do not fire it. The read-only host's `camera()` is the current frame's world camera (None on the panorama), including bob/spin, FOV and projection. `batch` uses GUI pixels; `gui_hidden` reports F1 and `focused` reports window focus so the mod can choose when its indicator is visible. The existing `hud` and `screen_render_post` hooks retain their drawing order and visibility rules. Bundles need "hooks": 410.
+
+API 411 adds Client-only Host snapshots of the window, connection, entities, interpolated model heads and profile skins; visual rays and block occlusion facts; atlas GUI painting, nine-slice widgets and tooltips; persisted mod key changes and a local action bar. client_start runs before connecting (a window need not exist yet), client_disconnecting before a real connection is discarded (not dimension travel), client_stopping once before final save/exit. menu_background can change a normal menu blur request (None disables it; finite 1..64 only). Bundles need "hooks": 411.
+
 ## What the launcher does
 
 **Developing a mod?** Run `horizon-launcher settings native-profile dev` once, or pick "Dev build" in the Mods page's
@@ -1736,22 +1760,42 @@ trusting native code is the player's decision, never an agent's.
    official `rustc`, `cargo` and `rust-std` (and `rust-mingw` on Windows), each pinned by SHA-256, downloaded once
    from static.rust-lang.org into `<launcher data>/rust/`, with its own Cargo home `<launcher data>/cargo/`. No
    rustup, nothing on the system; the player's own Rust is never used. It ships for macOS on Apple Silicon, Linux
-   x86-64 and Windows x64. The Windows ARM64 launcher has no bundled native-mod compiler yet. An x64 launcher
-   also refuses to build native mods when the selected game is ARM64: its compiler only produces x64 binaries.
-   Choosing x64 from the ARM64 launcher does not provide an x64 compiler. An Intel
-   Mac has none either, so native builds there stop with "the launcher has none for macos x86_64". Windows uses the
-   `windows-gnu` host, which links without Visual Studio. `rust-mingw` only links, so on Windows the toolchain also brings MinGW-w64
-   (`rust_toolchain::MINGW`: WinLibs' GCC 16.2.0 on MinGW-w64 14.0.0, MSVCRT like `rust-mingw`, one zip pinned by
-   SHA-256, its `mingw64/` without the documentation) on the build's `PATH`: `ring` and `hidapi` compile C,
-   and `windows-sys`' `raw-dylib` imports need `dlltool` and the assembler it runs. The linker is the system's on
-   macOS (the Command Line Tools: the launcher asks for `xcode-select --install`) and Linux (`cc`). On Linux the
-   game also builds against the system's ALSA (`alsa-sys`) and libudev (`libudev-sys`, `hidapi`), found with
-   `pkg-config`, whose development files desktop distributions don't install. Before downloading anything the
-   launcher checks for `cc`, the C library's headers (`cc` compiles an include of `stdint.h`), `pkg-config`,
-   `alsa` and `libudev` and names what is missing, with the install command for the distribution in
-   `/etc/os-release` (Debian, Ubuntu and Mint:
-   `sudo apt install build-essential pkg-config libasound2-dev libudev-dev`). SteamOS has GCC without the C
-   library's headers, and a read-only system: native builds don't work there yet.
+   x86-64, Windows x64 and Windows ARM64. The managed compiler follows the launcher's process architecture. An x64
+   launcher running under ARM64 emulation keeps the existing x64 Rust and MinGW toolchain. The game architecture
+   setting does not switch the compiler or enable cross-compilation. Windows x64 uses `x86_64-pc-windows-gnu` and
+   WinLibs' GCC 16.2.0 on MinGW-w64 14.0.0 (MSVCRT), with its SHA-pinned `mingw64/` folder on `PATH`.
+
+   On Windows ARM64, Rust 1.99.1's native host tools use `aarch64-pc-windows-gnullvm`; the launcher also downloads
+   a SHA-pinned LLVM-MinGW 23.1.5 toolchain with UCRT. Rust's `aarch64-pc-windows-msvc` release target cannot be
+   reused as a self-contained player toolchain: it needs the MSVC linker and C libraries, while the launcher must
+   bring its own C compiler and linker for dependencies such as `ring` and `hidapi` and for Windows imports. The
+   selected game's source is rebuilt in full for `aarch64-pc-windows-gnullvm`; the existing MSVC executable is never
+   linked into the output. Rust and C code therefore use one Windows ARM64 calling convention and ABI. The
+   executable's PE machine is checked before installation. LLVM-MinGW's ARM64 `windres` and archive tools are
+   selected for Windows icon resources; the generic resource compiler can emit x64 objects on an ARM64 host.
+   Prebuilt MSVC static libraries in a native mod are not compatible. The output uses UCRT, which is included with
+   Windows 10 and later. Rust's unwinder is statically linked because Windows does not include LLVM-MinGW's
+   `libunwind.dll`; the built game imports only Windows system DLLs.
+
+   Before compiling, the launcher checks that the selected game's installed executable matches its managed compiler.
+   The Windows ARM64 launcher builds a selected ARM64 game, and the x64 launcher builds a selected x64 game,
+   including when it runs under ARM64 emulation. A selection that does not match the launcher's process architecture
+   is rejected, and an ARM64 selection that has only installed the x64 fallback is rejected by the PE check. Install
+   a matching game build before building native mods. ARM64EC executables are unsupported. ARM64 Cargo artifacts
+   and build records have their own cache namespace; the existing x64 cache layout is unchanged. An Intel Mac has
+   no bundled compiler either, so native builds there stop with "the launcher has none for macos x86_64". The linker
+   is the system's on macOS (the Command Line Tools: the launcher asks for `xcode-select --install`) and Linux (`cc`).
+   On Linux the game also builds against the system's ALSA (`alsa-sys`) and libudev (`libudev-sys`, `hidapi`), found
+   with `pkg-config`, whose development files desktop distributions don't install. Before downloading anything the
+   launcher checks for `cc`, the C library's headers (`cc` compiles an include of `stdint.h`), `pkg-config`, `alsa`
+   and `libudev` and names what is missing, with the install command for the distribution in `/etc/os-release`
+   (Debian, Ubuntu and Mint: `sudo apt install build-essential pkg-config libasound2-dev libudev-dev`). SteamOS has
+   GCC without the C library's headers, and a read-only system: native builds don't work there yet.
+   On Windows, Smart App Control lets only signed programs run, and a build runs programs it has just compiled
+   (build scripts, horizon-mixins, the game) and some of the toolchain's own (`dlltool.exe`), which Windows refuses
+   with os error 4551 (#5911). No build setting avoids it. A build that hits os error 4551 leads its error with what
+   to do: turn it off in Windows Security > App & browser control > Smart App Control settings. Nothing is checked
+   before the build: with Smart App Control on, a build whose programs already ran before it was turned on succeeds.
    `horizon-launcher rust status|install|remove`.
 2. **horizon-mixins**, at the commit the mods name (their `.hnmod`'s `mixins`), else `native_mods::MIXINS_REV`,
    built once with that cargo (`cargo install --locked --git … --rev …`) into `native/tools/<commit>/`.
@@ -1761,6 +1805,10 @@ trusting native code is the player's decision, never an agent's.
 4. **Mixins.** The bundles are copied first, so the build and its key use that copy whatever happens to the
    folder meanwhile. `horizon-mixins apply` stages the modded source; the launcher copies only the files that
    changed into `native/stage/`, so Cargo, which goes by file times, recompiles only the crates the mods touch.
+   Each file written gets the current time, never the archive's (the commit's) or the copy's original: on
+   Windows and macOS a copy keeps it, and a file older than the last build reads as already compiled, so
+   switching Nightlies linked the previous one's crates (#10421). A stage from before that fix is written again
+   once (`native/stage.stamped` marks it).
    With mods' crates, their dependencies are checked against Horizon's `Cargo.lock` ("The mod's crate").
 5. **Compile**: `cargo build --locked --profile <fast|release> [--config ...] [--features horizon-client/mods] -p
    horizon-client`, into `native/target/`, with one of three build profiles:
@@ -2577,6 +2625,61 @@ place; `native_server_tick` does not define one, so name the dimension and expec
 - While the game ticks its mobs they are out of the level: from a hook inside that tick, a spawned mob joins after the tick, and the others
   read as gone.
 
+### Mob goals
+
+**`horizon_client_lib::mobs::ai::native_register_goals(mob)`** (vanilla's `Mob.registerGoals`; a trait mod's
+`Hooks::register_goals(event)`, with `event.mob`) is asked for every new mob, after its species added its goals and before its
+saved data is read. `mob.ai.goals` is vanilla's `goalSelector`, `mob.ai.targets` its `targetSelector`. A mod's living type
+([mods.md](mods.md)) comes with its template's goals, a zombie's attacks, strolls and targets: clear them to replace them, as a
+class whose `registerGoals` skips `super`'s, or add to them. A villager acts through its brain, which goals don't replace:
+a type from the villager template still works, sleeps and trades as a villager, next to the goals a mod adds. For a
+neutral mob whose goals are all the mod's, copy `minecraft:wandering_trader`. A goal is a
+Rust type implementing
+`horizon_client::mobs::goals::Goal` (a bundle compiles into the game, so nothing is loaded at run time): its `flags` (`MOVE`,
+`LOOK`, `JUMP`, `TARGET`), `can_use`, `can_continue`, `start`, `tick` and `stop` run by priority and flag as vanilla's
+`GoalSelector` runs them. The vanilla goals in that module (`Float`, `Stroll`, `LookAtPlayer`, `MeleeAttack`, `NearestTarget`
+and the rest) are there to reuse.
+
+```rust
+use horizon_client::mobs::{Mob, goals::{self, Cx, Goal}};
+use horizon_client::mod_api::{Hooks, RegisterGoalsEvent};
+
+/// Walks the mob back to its post when it is more than 4 blocks away.
+#[derive(Clone, Debug)]
+struct ToPost { post: [f64; 3] }
+impl Goal for ToPost {
+    fn flags(&self) -> u8 { goals::MOVE }
+    fn can_use(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
+        let [x, y, z] = self.post;
+        let (dx, dy, dz) = (m.position.x - x, m.position.y - y, m.position.z - z);
+        dx * dx + dy * dy + dz * dz > 16.0
+    }
+    fn can_continue(&mut self, m: &mut Mob, _: &mut Cx) -> bool { !m.ai.nav.is_done() }
+    fn start(&mut self, m: &mut Mob, cx: &mut Cx) { m.nav_move_to(cx.w, self.post, 1.0); }
+    fn box_clone(&self) -> Box<dyn Goal> { Box::new(self.clone()) }
+}
+
+struct Guards;
+impl Hooks for Guards {
+    fn register_goals(&self, event: &mut RegisterGoalsEvent<'_>) {
+        if event.mob.kind.id == "example:guard" {
+            let ai = &mut event.mob.ai;
+            ai.goals.clear();
+            ai.targets.clear();
+            ai.goals.add(0, goals::Float);
+            ai.goals.add(1, ToPost { post: [0.5, 64.0, 0.5] });
+        }
+    }
+}
+```
+
+From a goal, `mob.nav_move_to(cx.w, [x, y, z], speed)` walks the mob with the engine's pathfinding (`create_path_to` and
+`nav_move_to_path` to check a path first), and `mob.ai.mov.set_wanted(x, y, z, speed)` steps it toward a point, for a mod with
+pathfinding of its own. `goals::Float` keeps the navigation floating, as FloatGoal's constructor does. Each mob gets its own
+goals, so a goal's fields are that mob's state while it lives; state that is saved goes in an attachment on
+`Holder::Entity(mob.id)` ([Server attachments](#server-attachments)), from a hook with a host such as `native_entity_tick_pre`.
+The hook is asked on a client too, for its copies of a server's mobs; goals tick only where the mob's AI runs.
+
 ### Loot tables
 
 Changing loot a mod didn't make, as NeoForge's `LootTableLoadEvent` and global loot modifiers and Fabric's
@@ -2720,6 +2823,32 @@ items are left out (NeoForge's `RenderLivingEvent.Pre`, cancelled); its name tag
   after its vanilla model and layers, in the same frame (not for one a mod drew itself); `who` is set for a player. The
   geometry hangs from the entity's frame, not from a model bone: place a hat from `head_yaw`, `pitch` and the entity type's
   eye height.
+- A model built in code, as a NeoForge mod's `createBodyLayer()` builds it, is an entity model layer (API
+  @API:model_layers@). `native_layer_definitions(layers)` (`EntityRenderersEvent.RegisterLayerDefinitions`, asked once at
+  start) takes a mod's layers by id, `<mod id>:<model>#<layer>`. Each is a `LayerDefinition`: a `MeshDefinition` whose
+  named parts hold `CubeListBuilder` boxes at a `PartPose`, on a texture of a given size. A box takes its faces from the
+  texture as vanilla's do (`tex_offs`, `mirror`), and a `CubeDeformation` grows it over the same texels.
+  `native_bake_layer(layer)` (`EntityModelSet.bakeLayer`) bakes one of them, or a vanilla layer by its
+  `entity-models.json` name (`minecraft:zombie#main`), into a `ModelPart` tree. Bake it once and keep it. Each frame,
+  `reset_all_poses` and set the parts' `x_rot`, `y_rot`, `z_rot` and place, as `setupAnim` does, then draw the tree
+  with `native_draw_model_part(draw, part, sprite, tint)` (`ModelPart.render`). A mob's model is in the model's own
+  frame, +y down with its front towards -z: turn the mob's frame into it first, as `LivingEntityRenderer` does.
+
+  ```rust
+  fn layer_definitions(&self, event: &mut LayerDefinitionsEvent<'_>) {
+      let mut mesh = MeshDefinition::new();
+      let root = mesh.root();
+      let body = CubeListBuilder::create().tex_offs(0, 16).add_box([-4.0, 0.0, -2.0], [8.0, 12.0, 4.0]);
+      let body = mesh.add_or_replace_child(root, "body", body, PartPose::offset(0.0, 0.0, 0.0));
+      let head = CubeListBuilder::create().tex_offs(0, 0).add_box([-4.0, -8.0, -4.0], [8.0, 8.0, 8.0]);
+      mesh.add_or_replace_child(body, "head", head, PartPose::ZERO);
+      event.layers.push(("mymod:golem#main".into(), LayerDefinition::create(mesh, 64, 64)));
+  }
+  // In mob_submit, with `model` from host.bake_layer("mymod:golem#main"):
+  draw.scale([1.0, -1.0, -1.0]);
+  draw.translate([0.0, -1.501, 0.0]);
+  host.draw_model_part(draw, &model, "mymod:entity/golem", 0xFFFFFF);
+  ```
 
 ### Advancement triggers
 
@@ -2809,6 +2938,24 @@ give it what Horizon's own rows use, without reading `Game`'s fields:
 
 Bundles need `"hooks": @API:health_hud_state@`.
 
+### Toasts a mod hides
+
+`native_toast_add(kind, id, cancel)` (client) is NeoForge's `ToastAddEvent`: it is heard once for each new toast, just
+before it is queued, so a mod can drop recipe toasts, tutorial hints or the advancement toasts of a large pack. `kind`
+and `id` say which:
+
+- `advancement`: the advancement id; `recipe`: the first recipe id of the toast;
+- `tutorial`: the hint, `move`, `look`, `find_tree`, `punch_tree`, `open_inventory`, `craft_planks` or `socialInteractions`;
+- `system`: `narrator_toggle`, `pack_load_failure`, `pack_download` (a server pack batch's progress), `low_disk_space`,
+  `chunk_load_failure` or `chunk_save_failure`;
+- `now_playing`: an empty id, each time the music toast shows a new song.
+
+Set `cancel` and the toast isn't queued, shown or sounded. As in vanilla, an update to a toast already queued or shown
+is not an add: more recipes joining the recipe toast, or a system toast taking new text (`SystemToast.addOrUpdate`).
+A cancelled tutorial hint isn't asked again while it stays the current hint; a cancelled system toast is asked again at
+its next update. The startup menu's narrator toast is not told: it shows before the game's `Host` exists.
+Bundles need `"hooks": @API:toast_add@`.
+
 ### Values for a mod's shader pack
 
 `native_shader_params(partial, params)` (client) asks every frame, while a Horizon shader pack is on, for eight
@@ -2860,6 +3007,26 @@ a potion's kinds, are ids of their own (`create:potion/healing`). The mod draws 
 cauldron takes only water and lava, and the world itself has only vanilla's fluids: no source or flowing blocks of a
 mod's fluid yet, and no buckets of one.
 
+A tank may refuse a fluid: `native_block_entity_accepts_fluid(block, tank, fluid, cancel)` (NeoForge's
+`IFluidHandler.isFluidValid`) is asked on the server before `native_fluid_insert` fills a fillable tank, in both its
+passes (same fluid first, then empty), and before `native_move_fluids` counts a tank's room. Set `cancel` to refuse the
+fluid there, so a water tank takes no `create:chocolate` and a mod removed later leaves no fluid id the tank cannot use.
+Every tank takes every fluid unless a mod says otherwise, and a cauldron, which holds only water and lava, never asks:
+
+```rust,ignore
+fn block_entity_accepts_fluid(
+    &self,
+    _host: &dyn Host,
+    event: &mut BlockEntityAcceptsFluidEvent<'_>,
+) -> Flow {
+    if event.block == "mymod:water_tank" && event.fluid != "minecraft:water" {
+        Flow::Cancel
+    } else {
+        Flow::Continue
+    }
+}
+```
+
 ### Falling blocks
 
 `crates/horizon-client/src/game/native_falling.rs`: a helper for server mods, for the level in place, on a server only. It
@@ -2908,7 +3075,9 @@ These are what Create's drill, saw, harvester and deployer need.
   the players within 64 blocks. Pass a negative id of your own, the same each time; any other stage removes the crack.
 - `native_use_as_player(stack, eye, yaw, pitch, target, sneaking)` is NeoForge's `FakePlayer`. It uses `stack` on a
   block (`useItemOn`), in the air (`useItem`) or on an entity (`interactOn`). The fake player is in survival and holds
-  nothing else. It has no connection: nothing it opens stays open, and its stats and advancements count for no one.
+  nothing else. It has no connection, so what it opens closes again before the call returns, through the same paths a
+  player's close takes: a lid opens and shuts, a trader is free for the next player, and the click still counts as used.
+  Its stats and advancements count for no one.
   The answer (`NativeFakeUse`) says whether the use did something, and what the fake player holds and carries
   afterwards. Call it from a block entity's tick, not from inside a player's hook: while a player acts, it answers
   `None`.
@@ -2931,6 +3100,29 @@ pieces.
   read as air (its tints as 0). `below + above` must be 1 to the level's height, and the read at most 1,048,576 blocks.
   The tints are the biome's own at the column's top, not blended over the biome blend radius as the game draws them, so
   near a biome border they can differ from what players see by a few blocks.
+
+### Structure templates
+
+`crates/horizon-client/src/game/native_structures.rs`: a helper for server mods that reads a structure template without
+placing it, for a builder that places it a block at a time (a colony's builder, a schematic cannon). API
+@API:structure_template@.
+
+- `native_structure_template(id, at, rotation, mirror)` (`Host::structure_template`) finds template `id` (`mymod:hut`)
+  as vanilla's `StructureTemplateManager.get` does: the world's saved structures (`generated/<namespace>/structures/`,
+  what a structure block saves), then the game's and the content mods' (`data/<namespace>/structure/`). It answers what
+  `/place template id` would place at `at` with that `Rotation` and `Mirror`: `NativeStructureTemplate` holds the
+  template's `size` after the rotation and its `blocks`. Each block has its position in the level, its state after the
+  mirror and the rotation, as `native_set_block` takes it, and the block entity data the template saved with it (`nbt`:
+  a chest's items, a sign's text), for the mod to apply.
+- The blocks come in the order `StructureTemplate.placeInWorld` places them: full blocks, then the others, then those
+  with a block entity, each group by y, then x, then z. Of a template with several palettes, it is the one
+  `/place template` picks at `at`. No processor runs, nothing is placed, and the template's entities are left out.
+- It answers `None` on a client, for an id that doesn't parse or has a `.` or `..` part, and for a template the game
+  doesn't have.
+
+A builder reads the template once when it starts and keeps it. Then, each time it places a block, it walks there (its
+goals, [Mob goals](#mob-goals)) and calls `native_set_block(dimension, pos, state, 3)`, skipping blocks that are already
+right. It keeps how far it got in an attachment on the builder, so the build goes on after a save.
 
 ### Chunk tickets
 
@@ -3236,6 +3428,12 @@ into a generated game executable and calls `hooks()` in dependency order (a mod 
 depends on, else in bundle order). The package is not a
 `[[crate]]`: it depends on the game instead of the game depending on it. A bundle with no
 injections, state, bridges, modules, mixin crates or post-build steps skips horizon-mixins.
+
+Turning a trait mod off in Options > Mods takes effect at once: the game skips its `Hooks` from the next dispatch on,
+on the server thread and in the window alike, and turning it on again resumes it, with no rebuild while it is still in
+the build. It stays loaded and keeps what it holds; what it registered at start (blocks, items, component types)
+stays registered, and its `RenderHooks` keep drawing until a restart. Mixin code is not switched: it checks
+`native_on` itself, as before ([design/mod-hotload.md](design/mod-hotload.md)).
 
 ### Dependencies between trait mods
 

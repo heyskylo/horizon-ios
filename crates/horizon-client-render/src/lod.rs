@@ -4025,9 +4025,12 @@ mod tests {
         );
         // A chunk covers only one quarter of this parent's 32² cell. Both
         // opaque terrain and water must leave precisely that 16² footprint.
+        // Only active tiles enter the mesher snapshot, even when samples are ready.
+        lod.active.insert(key);
         lod.covered.insert((-1, -2));
         lod.covered_bounds = Some([-16, -32, 0, -16]);
         let mesh = lod.mesh(key);
+        lod.active.remove(&key);
         let top_area = |vertices: &[TerrainVertex], y: f32| {
             vertices
                 .as_chunks::<4>()
@@ -4213,14 +4216,19 @@ mod tests {
             &lod.reduced[&(-1, -1)].columns,
             &lod.saved[&(-1, -1)]
         ));
-        assert!(
+        let reduced_spans = |lod: &Lod| {
             lod.snapshot()
                 .visited_source(-16, -16, 2)
                 .unwrap()
                 .get()
                 .spans
-                .is_empty()
-        );
+                .iter()
+                .map(|span| (span.min, span.max, span.state))
+                .collect::<Vec<_>>()
+        };
+        // Reduction keeps a block held by any column of the footprint, so
+        // this single-column build survives the cached two-block reduction.
+        assert_eq!(reduced_spans(&lod), vec![(120, 121, stone)]);
         let old = lod.saved[&(-1, -1)].clone();
         lod.observe(Arc::new(chunk.clone()), &facts);
         receive_observed(&mut lod);
@@ -4233,30 +4241,43 @@ mod tests {
             &lod.reduced[&(-1, -1)].columns,
             &lod.saved[&(-1, -1)]
         ));
+        assert_eq!(
+            reduced_spans(&lod),
+            vec![(120, 121, stone), (130, 131, stone)]
+        );
         // A seed reduction arriving after the edit cannot restore old data.
         lod.finish_detail((-1, -1), ReducedColumns::new(old));
         assert_eq!(lod.ready[&fine][0].surface.unwrap().height, 131);
+        assert_eq!(
+            reduced_spans(&lod),
+            vec![(120, 121, stone), (130, 131, stone)]
+        );
 
         // Exercise the actual worker/update seam: a parent stays displayed
-        // until all four child meshes can replace it in the same update.
+        // until all four child meshes have arrived, possibly over several updates.
         let camera = [-256.0, 100.0, -256.0];
         lod.area = Some(([-16, -16], 2, 64, 0, false, None));
         lod.plan.roots = vec![key];
         lod.plan.nodes.insert(key);
         // As a replan does (`update` only selects after a change).
         lod.reselect = true;
-        let await_meshes = |lod: &mut Lod| {
+        let await_meshes = |lod: &mut Lod, count: usize| {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let mut uploaded = Vec::new();
             loop {
-                let meshes = lod.update(camera, 2, 64, None, None);
-                if !meshes.is_empty() {
-                    return meshes;
+                uploaded.extend(lod.update(camera, 2, 64, None, None));
+                if uploaded.len() >= count {
+                    return uploaded;
                 }
+                assert!(
+                    lod.removed().is_empty(),
+                    "retired before replacement meshes"
+                );
                 assert!(std::time::Instant::now() < deadline, "mesh worker stalled");
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
         };
-        let uploaded = await_meshes(&mut lod);
+        let uploaded = await_meshes(&mut lod, 1);
         assert_eq!(uploaded.len(), 1);
         assert_eq!(uploaded[0].0, key);
         assert!(lod.active.contains(&key));
@@ -4266,13 +4287,7 @@ mod tests {
             lod.ready.insert(child, lod.ready[&key].clone());
         }
         lod.reselect = true;
-        assert!(lod.update(camera, 2, 64, None, None).is_empty());
-        assert!(
-            lod.active.contains(&key),
-            "parent retired before child meshes"
-        );
-        assert!(lod.removed().is_empty());
-        let uploaded = await_meshes(&mut lod);
+        let uploaded = await_meshes(&mut lod, 4);
         assert_eq!(uploaded.len(), 4);
         assert!(
             key.children()
@@ -4376,6 +4391,7 @@ mod tests {
                 .insert(parent, Arc::new(vec![Column::default(); 256]));
         }
         lod.active = [near, far].into_iter().collect();
+        lod.wanted_stale = true;
         lod.shared.jobs.lock().unwrap().clear();
         lod.sample_jobs = SAMPLE_JOBS;
         lod.pending = (0..SAMPLE_JOBS - 1)
@@ -4401,6 +4417,7 @@ mod tests {
         lod.plan.split.clear();
         lod.detail_masks.clear();
         lod.covered = [(0, 0)].into_iter().collect();
+        lod.full = lod.covered.clone();
         lod.detail_request_pending = false;
         lod.detail_request_at = std::time::Instant::now() - std::time::Duration::from_secs(1);
         lod.request_detail([0, 0]);

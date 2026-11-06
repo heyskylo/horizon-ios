@@ -7,7 +7,7 @@ fn fixtures() -> PathBuf {
 }
 
 /// The sample index with its files on disk, as a local test registry lists them.
-fn sample() -> Index {
+pub(super) fn sample() -> Index {
     let text = fs::read_to_string(fixtures().join("index-v1.json")).unwrap();
     let mut index = Index::parse(&text).unwrap();
     for p in &mut index.projects {
@@ -19,7 +19,7 @@ fn sample() -> Index {
     index
 }
 
-fn scratch(name: &str) -> PathBuf {
+pub(super) fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "horizon-launcher-registry-{name}-{}",
         std::process::id()
@@ -72,6 +72,20 @@ fn only_horizons_own_projects_go_without_the_not_endorsed_line() {
     assert!(!official(&p), "the name alone doesn't make it official");
     p.authors = vec!["levzzz5154".into()];
     assert!(!official(&p));
+}
+
+#[test]
+fn only_horizons_own_projects_say_they_come_from_horizon() {
+    let mut index = sample();
+    let id = index.projects[0].id.clone();
+    index.projects[0].authors = vec!["levzzz5154".into()];
+    index.projects[0].source = "https://github.com/levzzz5154/horizon-mod-zoom".into();
+    assert!(!official_in(Some(&index), &id), "a contributor's project");
+    index.projects[0].authors = vec!["Horizon".into()];
+    index.projects[0].source = "https://github.com/horizon-rust/horizon-mod-zoom".into();
+    assert!(official_in(Some(&index), &id));
+    assert!(!official_in(Some(&index), "not_listed"));
+    assert!(!official_in(None, &id), "no index read yet");
 }
 
 #[test]
@@ -135,6 +149,162 @@ fn searches_by_kind_and_words() {
     let p = hud(&index);
     assert_eq!(p.support(), super::super::Support::Works);
     assert_eq!(p.page, "https://playhorizon.dev/mods/coords_hud");
+}
+
+#[test]
+fn searches_by_category_and_tag() {
+    let mut index = sample();
+    let glow = index.projects.iter().position(|p| p.id == "glow").unwrap();
+    index.projects[glow].categories = vec!["fantasy".into(), "bloom".into()];
+    index.projects[glow].tags = vec!["sunset".into()];
+    let found = |text: &str, categories: &[&str]| -> Vec<String> {
+        let mut q = Query::new(text, Kind::Shader);
+        q.filters.categories = categories.iter().map(|c| c.to_string()).collect();
+        search(&index, &q).into_iter().map(|p| p.id).collect()
+    };
+    assert_eq!(found("", &["bloom"]), ["glow"]);
+    assert_eq!(found("", &["bloom", "fantasy"]), ["glow"]);
+    assert!(
+        found("", &["bloom", "pbr"]).is_empty(),
+        "every category asked"
+    );
+    assert_eq!(found("sunset", &[]), ["glow"], "tags are searched");
+    assert!(found("dawn", &[]).is_empty());
+    let tagged = |tags: &[&str]| -> Vec<String> {
+        let mut q = Query::new("", Kind::Shader);
+        q.filters.tags = tags.iter().map(|t| t.to_string()).collect();
+        search(&index, &q).into_iter().map(|p| p.id).collect()
+    };
+    assert_eq!(tagged(&["sunset"]), ["glow"]);
+    assert!(tagged(&["sunset", "dawn"]).is_empty(), "every tag asked");
+    // The filter offers the kind's own list: a resolution for resource packs, not for shaders.
+    let shader = Registry.tags(Kind::Shader).unwrap().categories;
+    assert!(shader.iter().any(|c| c.name == "path-tracing"));
+    let packs = Registry.tags(Kind::ResourcePack).unwrap().categories;
+    assert!(packs.iter().any(|c| c.name == "16x"));
+    assert!(!shader.iter().any(|c| c.name == "16x"));
+}
+
+#[test]
+fn the_tag_filter_offers_the_kinds_tags_most_used_first() {
+    let mut index = sample();
+    let at = |index: &Index, id: &str| index.projects.iter().position(|p| p.id == id).unwrap();
+    let glow = at(&index, "glow");
+    index.projects[glow].tags = vec![
+        "sunset".into(),
+        "cozy".into(),
+        "sunset".into(),
+        "Not Plain".into(),
+    ];
+    assert_eq!(
+        tags_of(&index, Kind::Shader),
+        ["cozy", "sunset"],
+        "ties by name"
+    );
+    let mut dusk = index.projects[glow].clone();
+    dusk.id = "dusk".into();
+    dusk.tags = vec!["sunset".into()];
+    index.projects.push(dusk);
+    let hud = at(&index, "coords_hud");
+    index.projects[hud].tags = vec!["pvp".into()];
+    assert_eq!(tags_of(&index, Kind::Shader), ["sunset", "cozy"]);
+    assert_eq!(tags_of(&index, Kind::Mod), ["pvp"], "each kind its own");
+    assert!(tags_of(&index, Kind::DataPack).is_empty());
+}
+
+/// A data pack zip with one function, and the registry project that lists it.
+fn data_pack(index: &mut Index, dir: &Path) -> Project {
+    use std::io::Write;
+    let path = dir.join("lanterns-1.0.0.zip");
+    let mut zip = zip::ZipWriter::new(fs::File::create(&path).unwrap());
+    for (name, text) in [
+        (
+            "pack.mcmeta",
+            r#"{"pack": {"description": "Lanterns", "pack_format": 94}}"#,
+        ),
+        ("data/lanterns/function/light.mcfunction", "say lit"),
+    ] {
+        zip.start_file(name, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(text.as_bytes()).unwrap();
+    }
+    zip.finish().unwrap();
+    let base = index.project("glow").unwrap().clone();
+    let mut version = base.versions[0].clone();
+    version.version = "1.0.0".into();
+    version.api = "94".into();
+    version.side = None;
+    version.capabilities.clear();
+    version.api_level = None;
+    version.requires.clear();
+    version.file = index::File {
+        name: "lanterns-1.0.0.zip".into(),
+        url: format!("file://{}", path.display()),
+        size: fs::metadata(&path).unwrap().len(),
+        sha256: index::sha256_file(&path).unwrap(),
+        signature: None,
+    };
+    index.projects.push(index::Project {
+        id: "lanterns".into(),
+        kind: index::Kind::DataPack,
+        name: "Lanterns".into(),
+        key: None,
+        versions: vec![version],
+        ..base
+    });
+    project_of(index.project("lanterns").unwrap()).unwrap()
+}
+
+#[test]
+fn a_registry_data_pack_is_checked_then_goes_into_a_world() {
+    let dir = scratch("datapack");
+    let mut index = sample();
+    let p = data_pack(&mut index, &dir);
+    assert_eq!(p.kind, Kind::DataPack);
+    assert_eq!(p.support(), super::super::Support::Works);
+    let found: Vec<String> = search(&index, &Query::new("", Kind::DataPack))
+        .into_iter()
+        .map(|p| p.id)
+        .collect();
+    assert_eq!(found, ["lanterns"]);
+    // Not into the game folder: into a world.
+    assert!(install_from(&index, true, None, &p, &dir.join("home"), &|_, _| {}).is_err());
+    let (zip, number) = fetch_datapack_from(&index, true, &p, &dir.join("dl"), &|_| {}).unwrap();
+    assert_eq!(number, "1.0.0");
+    let world = dir.join("world");
+    let pack = crate::datapacks::add(&world, &zip).unwrap();
+    assert!(world.join("datapacks").join(&pack.file).is_file());
+
+    // A file other than the one the index lists never gets there.
+    let mut changed = index.clone();
+    let at = changed.projects.len() - 1;
+    changed.projects[at].versions[0].file.sha256 = "0".repeat(64);
+    let e = fetch_datapack_from(&changed, true, &p, &dir.join("dl2"), &|_| {}).unwrap_err();
+    assert!(e.contains("checksum") || e.contains("SHA-256"), "{e}");
+    // Nor one taken down.
+    index.revoked.push(index::Revoked {
+        id: "lanterns".into(),
+        sha256: None,
+        reason: "Test.".into(),
+        date: String::new(),
+    });
+    let e = fetch_datapack_from(&index, true, &p, &dir.join("dl3"), &|_| {}).unwrap_err();
+    assert_eq!(e, "Lanterns was taken down: Test.");
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn screenshots_are_the_gallery_from_the_registry_only() {
+    let mut p = sample().projects[0].clone();
+    assert!(gallery_of(&p).is_empty());
+    let pages = "https://horizon-rust.github.io/horizon-mods/screenshots/coords_hud";
+    p.screenshots = vec![
+        format!("{pages}/b.png"),
+        "https://example.com/tracker.png".into(),
+        format!("{pages}/a.jpg"),
+    ];
+    let urls: Vec<String> = gallery_of(&p).into_iter().map(|i| i.url).collect();
+    assert_eq!(urls, [format!("{pages}/b.png"), format!("{pages}/a.jpg")]);
 }
 
 #[test]
@@ -358,4 +528,39 @@ fn ratings_keep_only_what_is_well_formed() {
         rate_url("zoom"),
         "https://playhorizon.dev/api/mods/auth/login?back=/mods/zoom"
     );
+}
+
+#[test]
+fn a_project_is_starred_on_the_repository_its_source_is_in() {
+    let repo = |s: &str| github_repo(s);
+    let daybreak = Some("https://github.com/hildlabs/horizon-shaders".to_owned());
+    // A folder of it, a trailing slash, `.git`, a query or an anchor: the same repository.
+    for source in [
+        "https://github.com/hildlabs/horizon-shaders",
+        "https://github.com/hildlabs/horizon-shaders/tree/main/pack",
+        "https://github.com/hildlabs/horizon-shaders/",
+        "https://github.com/hildlabs/horizon-shaders.git",
+        "https://github.com/hildlabs/horizon-shaders?tab=readme",
+        "https://github.com/hildlabs/horizon-shaders#readme",
+    ] {
+        assert_eq!(repo(source), daybreak, "{source:?}");
+    }
+    assert_eq!(
+        repo("https://github.com/horizon-rust/horizon.v2_mods"),
+        Some("https://github.com/horizon-rust/horizon.v2_mods".to_owned())
+    );
+    // Not GitHub, no repository, or a name GitHub doesn't allow: no star button.
+    for source in [
+        "https://gitlab.com/hildlabs/horizon-shaders",
+        "http://github.com/hildlabs/horizon-shaders",
+        "https://github.com.evil.example/hildlabs/horizon-shaders",
+        "https://github.com/hildlabs",
+        "https://github.com/hildlabs/",
+        "https://github.com/-hildlabs/horizon-shaders",
+        "https://github.com/hildlabs/..",
+        "https://github.com/hildlabs/horizon shaders",
+        "",
+    ] {
+        assert_eq!(repo(source), None, "{source:?}");
+    }
 }

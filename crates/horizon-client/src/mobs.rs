@@ -56,6 +56,7 @@ pub mod landing;
 pub mod leash;
 pub mod living;
 pub mod llama;
+pub mod model_layers;
 pub mod monster_brain;
 pub mod nautilus;
 pub mod nav;
@@ -1410,6 +1411,9 @@ pub struct Mob {
     pub last_hurt: f32,
     /// `LivingEntity.getAbsorptionAmount`: golden hearts that soak damage before health.
     pub absorption: f32,
+    /// Tenths of absorbed damage a player's hit dealt, which the attack awards as
+    /// `Stats.DAMAGE_DEALT_ABSORBED` to the player whose turn it is (see [`Mob::soak_hit`]).
+    pub dealt_absorbed: i32,
     pub last_damage: Option<(Damage, i64)>,
     /// `DamageSource.getDirectEntity` of `last_damage` when [`Damage`] cannot name it (a
     /// thrown potion, an area effect cloud): its entity type.
@@ -1439,6 +1443,9 @@ pub struct Mob {
     /// `PlayerSkin.cape`: a player's cape texture, once every download of
     /// its skin is ready.
     pub cape: Option<String>,
+    /// A Horizon emote this player plays (docs/cosmetics.md), timed on `age`: it poses the bones
+    /// after the vanilla animation (`anim::setup`). Visual only.
+    pub emote: Option<horizon_cosmetics::Playing>,
     /// A mannequin's `DATA_PROFILE` (ResolvableProfile): the profile's
     /// `textures` property resolves to `skin` like a player's.
     pub profile: Option<horizon_protocol::entity_data::Profile>,
@@ -1934,6 +1941,13 @@ pub enum MobEvent {
         table: &'static str,
         at: [f64; 3],
     },
+    /// A leave-block goal's sampled candidate, before neighbor-shape updates.
+    EndermanPlaceBlock {
+        mob: u32,
+        pos: [i32; 3],
+        carried: horizon_world::registry::BlockStateId,
+        occupants: Vec<horizon_core::geometry::Aabb>,
+    },
     SetBlock {
         pos: [i32; 3],
         state: horizon_world::registry::BlockStateId,
@@ -2201,6 +2215,8 @@ pub enum MobEvent {
         from: [f64; 3],
         to: [f64; 3],
         ticks: i32,
+        /// `VibrationSystem.User.getPositionSource`: the listener itself.
+        source: horizon_protocol::entity_data::PositionSource,
     },
     /// The crumbs of the block under a digging or emerging warden.
     DigParticles {
@@ -2475,7 +2491,9 @@ impl Mob {
     }
 
     /// What other mobs see of this one this tick (`player`: the player's
-    /// UUID, which villagers' reputation is keyed by).
+    /// UUID, which villagers' reputation is keyed by). Inline: the game's
+    /// snapshot of every mob writes each one in its slot, not through a copy.
+    #[inline]
     pub fn seen(&self, player: Option<[i32; 4]>) -> Seen {
         let m = self;
         let villager = m.species() == Species::Villager;
@@ -2720,6 +2738,54 @@ pub fn apply_brain_events(mobs: &mut [Mob], events: &mut Vec<MobEvent>, from: us
                     animal_brain::forget_breed_target(m, parent);
                 }
                 i += 1;
+            }
+            // Pufferfish.touch: the poison and playSound sit inside the
+            // hurtServer branch, so only a hit that landed poisons and stings.
+            // In vanilla, this runs in Pufferfish.aiStep during the fish's tick,
+            // so mobs ticking later in the same level tick tick their effects.
+            MobEvent::PufferfishSting {
+                mob,
+                target,
+                amount,
+                source,
+                poison_ticks,
+            } => {
+                let mut sound = None;
+                let mut raised = Vec::new();
+                let (aim, fish_pos, fish_silent) = mobs
+                    .iter()
+                    .find(|m| m.id == mob)
+                    .map(|m| {
+                        (
+                            Aim {
+                                eye: [m.position.x, m.eye_y(), m.position.z],
+                                look: m.look_angle(),
+                                feet: [m.position.x, m.position.y, m.position.z],
+                            },
+                            [m.position.x, m.position.y, m.position.z],
+                            m.silent,
+                        )
+                    })
+                    .map(|(aim, pos, silent)| (Some(aim), Some(pos), silent))
+                    .unwrap_or((None, None, true));
+                if let Some(t) = mobs.iter_mut().find(|m| m.id == target)
+                    && t.damage_aimed(amount, source, aim)
+                {
+                    t.add_effect("minecraft:poison", poison_ticks, 0);
+                    raised = std::mem::take(&mut t.outbox);
+                    if !fish_silent && let Some(at) = fish_pos {
+                        sound = Some(MobEvent::Sound("entity.puffer_fish.sting", at, 1.0, 1.0));
+                    }
+                }
+                events.remove(i);
+                if let Some(s) = sound {
+                    events.insert(i, s);
+                    i += 1;
+                }
+                for e in raised {
+                    events.insert(i, e);
+                    i += 1;
+                }
             }
             _ => i += 1,
         }
@@ -3005,6 +3071,7 @@ impl Mob {
             air: 300,
             last_hurt: 0.0,
             absorption: 0.0,
+            dealt_absorbed: 0,
             last_damage: None,
             last_direct: None,
             combat: combat::Tracker::default(),
@@ -3020,6 +3087,7 @@ impl Mob {
             slim: false,
             skin_3d: None,
             cape: None,
+            emote: None,
             profile: None,
             random_textures: Default::default(),
             attrs: Attrs {
@@ -3200,6 +3268,28 @@ impl Mob {
         source: Damage,
         armor_effectiveness: Option<&mut dyn FnMut(f32) -> f32>,
     ) -> bool {
+        self.damage_with_player_context(amount, source, armor_effectiveness, None)
+    }
+    /// The same damage pipeline with a verified causing-player UUID. Unresolved
+    /// callers keep using `damage_with`, including its legacy Allay filter.
+    pub fn damage_with_player_uuid(
+        &mut self,
+        amount: f32,
+        source: Damage,
+        uuid: [i32; 4],
+        armor_effectiveness: Option<&mut dyn FnMut(f32) -> f32>,
+    ) -> bool {
+        self.damage_with_player_context(amount, source, armor_effectiveness, Some(uuid))
+    }
+    /// `LivingEntity.hurtServer`'s shared partial mob adapter. The optional
+    /// identity only selects the species filter; the health pipeline is shared.
+    fn damage_with_player_context(
+        &mut self,
+        amount: f32,
+        source: Damage,
+        armor_effectiveness: Option<&mut dyn FnMut(f32) -> f32>,
+        player_uuid: Option<[i32; 4]>,
+    ) -> bool {
         axolotl::before_damage(self, amount, &source);
         raider::note_hurt(self);
         // SulfurCube.hurtServer: the priming and a block's immune knockback
@@ -3223,7 +3313,11 @@ impl Mob {
         if source.is_fire() && (self.kind.flags.fire_immune) && !reflected {
             return false;
         }
-        if !ai::accepts_damage(self, &source, amount) {
+        let accepts = match player_uuid {
+            Some(uuid) => ai::accepts_damage_from_player(self, &source, amount, uuid),
+            None => ai::accepts_damage(self, &source, amount),
+        };
+        if !accepts {
             return false;
         }
         // LivingEntity.hurtServer refuses fire before hooks and damage processing.
@@ -3334,7 +3428,7 @@ impl Mob {
             if absorbed {
                 self.hurt_wolf_armor(dealt);
             } else {
-                let dealt = self.soak_absorption(dealt);
+                let dealt = self.soak_hit(dealt, &source);
                 self.health -= dealt;
             }
             self.last_hurt = amount;
@@ -3346,7 +3440,7 @@ impl Mob {
             if absorbed {
                 self.hurt_wolf_armor(amount);
             } else {
-                let through = self.soak_absorption(amount);
+                let through = self.soak_hit(amount, &source);
                 self.health -= through;
             }
             self.hurt_time = 10;
@@ -3709,6 +3803,21 @@ impl Mob {
             && (before != after
                 || present_ambient != self.extra.ambient_effects.contains(&effect)
                 || was_visible != visible)
+    }
+    /// [`Mob::soak_absorption`] for a hit from `source`: `LivingEntity.actuallyHurt`
+    /// credits a `ServerPlayer` attacker with the absorbed damage in tenths.
+    fn soak_hit(&mut self, damage: f32, source: &Damage) -> f32 {
+        let through = self.soak_absorption(damage);
+        let absorbed = damage - through;
+        if absorbed > 0.0
+            && absorbed < 3.402_823_5e37
+            && matches!(source.attacker, Some(Who::Player))
+        {
+            self.dealt_absorbed = self
+                .dealt_absorbed
+                .saturating_add((absorbed * 10.0).round() as i32);
+        }
+        through
     }
     /// `LivingEntity.actuallyHurt`: the absorption amount takes the damage first;
     /// what is left reaches the health.
@@ -5153,6 +5262,64 @@ mod armor_hurt_tests {
             Some(8.0),
             "the pre-reduction damage, not the damage the health took"
         );
+    }
+}
+
+#[cfg(test)]
+mod allay_damage_identity_tests {
+    use super::*;
+
+    const ACTUAL: [i32; 4] = [101, 102, 103, 104];
+    const OTHER: [i32; 4] = [10, 20, 30, 40];
+
+    fn allay(liked: Option<[i32; 4]>) -> Mob {
+        let mut kind = (*super::sensor_scan_tests::kind()).clone();
+        kind.id = "minecraft:allay".into();
+        kind.species = Species::Allay;
+        kind.max_health = 20.0;
+        let mut m = Mob::new(1, Arc::new(kind), Vec3::ZERO, 0.0);
+        m.extra.tame = liked.is_some();
+        m.extra.owner = liked;
+        m
+    }
+
+    #[test]
+    fn verified_player_damage_compares_live_liked_uuid() {
+        for liked in [Some(ACTUAL), Some(OTHER), None] {
+            let mut m = allay(liked);
+            let accepted = m.damage_with_player_uuid(2.0, Damage::player([0.0; 3]), ACTUAL, None);
+            assert_eq!(accepted, liked != Some(ACTUAL), "liked={liked:?}");
+            assert_eq!(m.health, if accepted { 18.0 } else { 20.0 });
+            assert_eq!(m.hurt_time, if accepted { 10 } else { 0 });
+            assert_eq!(m.extra.owner, liked);
+        }
+        // A UUID context alone must not turn a source without a player into its liked player.
+        let mut m = allay(Some(ACTUAL));
+        assert!(m.damage_with_player_uuid(2.0, Damage::of(DamageKind::Generic), ACTUAL, None));
+        assert_eq!(m.health, 18.0);
+    }
+
+    #[test]
+    fn unresolved_player_and_projectile_entrypoints_keep_legacy_behavior() {
+        for liked in [Some(ACTUAL), Some(OTHER), None] {
+            let mut m = allay(liked);
+            assert_eq!(m.damage(2.0, Damage::player([0.0; 3])), liked.is_none());
+            assert_eq!(m.health, if liked.is_none() { 18.0 } else { 20.0 });
+            // This is compatibility coverage, not UUID attribution parity for projectiles.
+            let mut m = allay(liked);
+            let arrow = Damage {
+                kind: DamageKind::Arrow,
+                ..Damage::player([0.0; 3])
+            };
+            assert_eq!(
+                m.damage_projectile(2.0, arrow, None, [1.0, 0.0]),
+                liked.is_none()
+            );
+            assert_eq!(m.health, if liked.is_none() { 18.0 } else { 20.0 });
+            assert!(m.projectile_motion.is_none());
+        }
+        let mut m = allay(Some(ACTUAL));
+        assert!(m.damage(2.0, Damage::of(DamageKind::Generic)));
     }
 }
 

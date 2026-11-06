@@ -321,7 +321,6 @@
   "horizon.osk.close": "Serra",
   "horizon.extras.chat_animation.tooltip": "Una nœuva linea de chat scivola denter de sinistra menter la sbiadiss, inveci de cumparir intera.",
   "horizon.extras.chat_indicator.tooltip": "La barra culurada a sinistra de una linea de chat.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "La rœuda de scorriment sü un buttun in di impostaziun cambia el sò valur, cuma in de la vaniglia. Disattiva, la rœuda scorre sultant la lista.",
   "horizon.extras.pack_browser.tooltip": "Seleziuna Pachett de risurs g’he un buttun Aggiungi che cerca Modrinth e instala un pachett in de la cartella di pachett. Off, el giœugh se cuntat mai Modrinth.",
   "horizon.extras.splitscreen.tooltip": "En un mund, un olter cuntroladur pœu entrà denter cuma nœuf giucadur: premet A quand che dumanda, e dopu seleziuna un profil e indué giugar.",
   "horizon.splitscreen.setup.monitor_unknown": "un monitor",
@@ -409,6 +408,7 @@
   "Frame Generation": "Generaziun di fotogramm",
   "Shows a made-up frame between each two real ones: smoother, a little more lag.": "Mustra un quader truà intra ognun di dü reai: püsee lisc, un pooch püsee ritardo.",
   "Shadow Cache": "Cache d'ombra",
+  "Shader Packs...": "Pacchett de ombreggiatura...",
   "Reuses the pack shadow map when sun, view and world match. Off by default.": "Dupera ancamò la mapa del ombra del pachett quand el sul, la vista e el mund curispunden. Disattiva per predefiniziun.",
   "Find BlueMap": "Truva BlueMap",
   "On servers, finds their BlueMap web map for far terrain. Next join.": "Süi server, truva luur mapa web BlueMap per terren luntan. Prossim uniment.",
@@ -473,5 +473,5 @@
   "horizon.extras.cosmetics_mine.tooltip": "Ascüs: tüt i giucadur Horizon te veden senza i tò cosmetich, anca tì. L’istess interruttur del guardaroba del lanciador.",
   "horizon.extras.cosmetics_others": "Cosmetich di olter giucadur",
   "horizon.extras.cosmetics_others.tooltip": "Che ròbb che purtan sü i olter giucadur Horizon: tüt, sultant i luur stil de etichett o nient. Ascüs, el giœugh dumanda mai cus’è che g’han sü.",
-  "horizon.extras.cosmetics_auras.tooltip": "Auras and trails other players wear. Disattiva per predefiniziun."
+  "horizon.extras.cosmetics_hide_fx.tooltip": "I strasc e i aur di olter giugadur resten scondu; i sò olter cosmetegh se veden anmò. Smorzaa de default."
 }

@@ -11,6 +11,10 @@ depend on world generation.
 """
 
 
+# This fixture establishes its own live clock before spawning actors.
+ISOLATED_WOLF_ANGER = frozenset({'wolf anger live writes'})
+
+
 def cmd(command, record=True, expect_result=None, comparison=None):
     op = {'op': 'cmd', 'cmd': command}
     if not record:
@@ -49,6 +53,12 @@ def inline_predicate_constants():
 
 def predicate_selector_fixtures(group_names):
     fixtures = {}
+    if 'mob effect predicate view' in group_names:
+        try:
+            from .mob_effect_predicate_corpus import predicates as effect_predicates
+        except ImportError:
+            from mob_effect_predicate_corpus import predicates as effect_predicates
+        fixtures.update(effect_predicates())
     if 'named smoke predicates' in group_names:
         always = {'type': 'minecraft:all_of', 'terms': []}
         fixtures['command_smoke:always'] = always
@@ -642,11 +652,13 @@ def entities():
         # So is a falling block, named after its block (`getTypeName`).
         cmd('/summon minecraft:falling_block 4.5 210 8.5 {BlockState:{Name:"minecraft:sand"},NoGravity:1b,Tags:["f"]}'),
         cmd('/execute if entity @e[type=minecraft:falling_block,tag=f]'),
-        cmd('/tag @e[type=minecraft:falling_block,limit=1] list'),
-        cmd('/data get entity @e[type=minecraft:falling_block,limit=1] BlockState.Name'),
-        cmd('/tp @e[type=minecraft:falling_block] 4.5 215 8.5'),
-        cmd('/kill @e[type=minecraft:falling_block]'),
-        cmd('/execute if entity @e[type=minecraft:falling_block]'),
+        # Near the fixture only: terrain the Rust side ticks and the oracle never loads has its own
+        # falling gravel (see piglin_pickups).
+        cmd('/tag @e[type=minecraft:falling_block,x=4.5,y=212,z=8.5,distance=..16,limit=1] list'),
+        cmd('/data get entity @e[type=minecraft:falling_block,x=4.5,y=212,z=8.5,distance=..16,limit=1] BlockState.Name'),
+        cmd('/tp @e[type=minecraft:falling_block,x=4.5,y=212,z=8.5,distance=..16] 4.5 215 8.5'),
+        cmd('/kill @e[type=minecraft:falling_block,x=4.5,y=212,z=8.5,distance=..16]'),
+        cmd('/execute if entity @e[type=minecraft:falling_block,x=4.5,y=212,z=8.5,distance=..16]'),
         # A firework rocket, with what `addAdditionalSaveData` writes.
         cmd('/summon minecraft:firework_rocket 4.5 210 8.5 {LifeTime:2000,NoGravity:1b,Tags:["r"]}'),
         cmd('/execute if entity @e[type=minecraft:firework_rocket,tag=r]'),
@@ -966,7 +978,9 @@ def execute():
         cmd('/execute facing 0 230 0 run tp @s ~ ~ ~ ~ ~'),
         cmd('/execute facing entity @e[tag=ex,limit=1] feet run tp @s ~ ~ ~ ~ ~'),
         cmd('/execute in minecraft:the_nether run setblock 0 200 0 minecraft:stone'),
-        cmd('/execute in minecraft:the_end if block 0 64 0 minecraft:air'),
+        # Far from the End's centre: the oracle's settles keep their tickets for the rest of the run, so a
+        # group that settles in the End (gateway passengers) leaves 0 64 0 loaded on the Java side only.
+        cmd('/execute in minecraft:the_end if block 1000 64 1000 minecraft:air'),
         cmd('/execute in minecraft:the_end run say elsewhere'),
         cmd('/execute in minecraft:nowhere run say nowhere'),
         cmd('/execute in minecraft:overworld run setblock 5 210 5 minecraft:dirt'),
@@ -1741,6 +1755,16 @@ def world_misc():
     ]
 
 
+def template_container_loot_table():
+    """A template's chest keeps its loot table (`RandomizableContainer.tryLoadLootTable`)."""
+    return [
+        *setup('/forceload add 0 0 15 15'),
+        cmd('/place template minecraft:village/plains/houses/plains_small_house_7 0 200 0'),
+        cmd('/data get block 4 201 5 LootTable'),
+        *setup('/fill 0 200 0 15 215 15 minecraft:air', '/forceload remove 0 0 15 15'),
+    ]
+
+
 def progression():
     return [
         *setup('/gamemode survival', '/experience set @s 0 levels', '/experience set @s 0 points'),
@@ -1813,6 +1837,12 @@ def advancement_reward_fixtures(group_names):
 
 def function_return_fixtures(group_names):
     functions = {}
+    if any(name.startswith('wolf anger ') for name in group_names):
+        try:
+            from .wolf_anger_corpus import functions as anger_functions
+        except ImportError:
+            from wolf_anger_corpus import functions as anger_functions
+        functions.update(anger_functions())
     if 'function return feedback' in group_names:
         functions.update({'parity:fail': 'return fail\n', 'parity:zero': 'return 0\n',
                           'parity:value': 'return 7\n', 'parity:empty': '# no commands\n',
@@ -2369,6 +2399,18 @@ def place_structure():
     ]
 
 
+def forceload_loads_the_chunk():
+    """`ServerLevel.setChunkForced` loads a newly forced chunk before the next command."""
+    return [
+        cmd('/execute if loaded 4000 200 4000'),
+        cmd('/forceload add 4000 4000'),
+        cmd('/execute if loaded 4000 200 4000'),
+        cmd('/setblock 4000 200 4000 minecraft:stone'),
+        cmd('/execute if block 4000 200 4000 minecraft:stone'),
+        *setup('/setblock 4000 200 4000 minecraft:air', '/forceload remove 4000 4000'),
+    ]
+
+
 def tame_wolf_kills():
     # LivingEntity.resolvePlayerResponsibleForDamage: a tame wolf's hit is its
     # owner's (the harness player, OfflinePlayer:Player), so the kill drops
@@ -2464,6 +2506,10 @@ def creative_shulker_drops():
 
 def piglin_pickups():
     """PiglinAi.pickUpItem/stopHoldingOffHandItem: babies keep admired gold, adults barter it."""
+    # The item checks look in the pen only: the Rust side block-ticks a wider ring of terrain than the
+    # oracle loads, where generated kelp breaks and gravel falls into flooded caves (as vanilla's own
+    # would once ticked), and those drops are no piglin's.
+    PEN = 'x=4.5,y=210,z=4.5,distance=..16'
     ops = [*setup('/fill 2 209 2 6 212 6 minecraft:glass hollow',
                   '/fill 3 209 3 5 209 5 minecraft:stone')]
     for baby, held in ((False, "crossbow"), (True, None), (True, "golden_sword"),
@@ -2484,15 +2530,15 @@ def piglin_pickups():
                    '{PickupDelay:0s,Item:{id:"minecraft:gold_ingot",count:1}}'),
             {'op': 'tick', 'n': 40},
             cmd('/execute if items entity @e[tag=barter,limit=1] weapon.offhand minecraft:gold_ingot'),
-            cmd('/execute if entity @e[type=minecraft:item]'),
+            cmd(f'/execute if entity @e[type=minecraft:item,{PEN}]'),
             {'op': 'tick', 'n': 140},
             cmd('/execute if items entity @e[tag=barter,limit=1] weapon.offhand *'),
             cmd('/execute if items entity @e[tag=barter,limit=1] weapon.mainhand minecraft:gold_ingot'),
             # A baby drops nothing. What an adult's barter throws comes from the level's random (vanilla's is
             # unseeded), and the piglin picks some of it back up, so only the gold's fate is fixed: none of it lies
             # on the ground.
-            cmd('/execute if entity @e[type=minecraft:item]' if baby
-                else '/execute if items entity @e[type=minecraft:item] contents minecraft:gold_ingot'),
+            cmd(f'/execute if entity @e[type=minecraft:item,{PEN}]' if baby
+                else f'/execute if items entity @e[type=minecraft:item,{PEN}] contents minecraft:gold_ingot'),
         ]
         if baby:
             ops.append(cmd('/execute if data entity @e[tag=barter,limit=1] Inventory[{id:"minecraft:golden_sword"}]'))
@@ -2507,7 +2553,7 @@ def piglin_pickups():
                    '/summon minecraft:item 4.5 210 4.5 '
                    '{PickupDelay:0s,Item:{id:"minecraft:leather",count:1}}'),
             {'op': 'tick', 'n': 40},
-            cmd('/execute if entity @e[type=minecraft:item]'),
+            cmd(f'/execute if entity @e[type=minecraft:item,{PEN}]'),
             cmd('/execute if items entity @e[tag=barter,limit=1] weapon.mainhand minecraft:leather'),
         ]
     ops += [*setup('/kill @e[type=!player]'), {'op': 'tick', 'n': 25},
@@ -3591,7 +3637,7 @@ def allay_invalid_brain_retention():
             ops.append(cmd('/scoreboard players get success h226', expect_result=success))
     ops += setup('/execute store result score after h226 run time query gametime')
     ops.append(cmd('/execute if score after h226 = before h226', expect_result=1))
-    return ops
+    return ops + setup('/scoreboard objectives remove h226')
 
 
 def large_fireball_fire():
@@ -3680,7 +3726,8 @@ def mob_partial_block_suffocation():
             ops += setup(f'/kill @e[tag={eye}]')
         ops += setup(f'/kill {target}')
         ops.append({'op': 'tick', 'n': 25})
-    return ops
+    # Later groups run with the world's rules: piglins pick nothing up without mob_griefing.
+    return ops + setup('/gamerule mob_griefing true', '/gamerule random_tick_speed 3')
 
 
 
@@ -3729,7 +3776,7 @@ def mob_baby_attribute_reads():
     reads(subject, False)
     ops.extend(setup('/execute store result score after h227 run time query gametime'))
     ops.append(cmd('/execute if score after h227 = before h227', expect_result=1))
-    return ops
+    return ops + setup('/scoreboard objectives remove h227')
 
 
 
@@ -3828,6 +3875,127 @@ def awake_villager_saved_position():
     ops.append({'op': 'settle'})
     return ops
 
+
+
+def mob_saved_pickup_loot():
+    """Valid boolean inputs only; full bodies retain unrelated save diagnostics."""
+    ops = [cmd('/tick freeze'), cmd('/forceload add 160 160 175 175'),
+           {'op': 'wait_chunks', 'chunks': [[10, 10]]},
+           cmd('/fill 160 199 160 175 199 175 stone', expect_result=256),
+           cmd('/execute if loaded 164 200 164', expect_result=1),
+           cmd('/execute if block 164 199 164 stone', expect_result=1),
+           cmd('/scoreboard objectives add pickup_save dummy', expect_result=1)]
+    ops += setup('/execute store result score start pickup_save run time query gametime')
+    for species, name in enumerate(['pig', 'allay', 'sulfur_cube']):
+        for value, supplied in enumerate(['', ',CanPickUpLoot:0b', ',CanPickUpLoot:1b']):
+            n = 1 + species * 3 + value
+            uuid = f'0000002e-0000-0000-0000-{n:012x}'
+            array = f'[I;46,0,0,{n}]'
+            tag = f'pickup_save_{n}'
+            body = 'Pos:[164.5d,200d,164.5d],Motion:[0d,0d,0d],NoAI:1b,NoGravity:1b,Silent:1b,PersistenceRequired:1b,Health:4f'
+            expected = int(name == 'sulfur_cube' or (name == 'pig' and value == 2))
+            ops += [cmd(f'/summon minecraft:{name} 164.5 200 164.5 {{UUID:{array},Tags:["{tag}"],{body}{supplied}}}', expect_result=1),
+                    cmd(f'/execute as {uuid} if entity @s[type=minecraft:{name},tag={tag}]', expect_result=1),
+                    cmd(f'/execute if data entity {uuid} {{UUID:{array},{body}}}', expect_result=1)]
+            for _ in range(2):
+                ops += setup('/scoreboard players set value pickup_save 317',
+                             '/scoreboard players set success pickup_save 17')
+                ops += [cmd(f'/data get entity {uuid} CanPickUpLoot', expect_result=expected),
+                        cmd(f'/execute store result score value pickup_save store success score success pickup_save run data get entity {uuid} CanPickUpLoot', expect_result=expected),
+                        cmd('/scoreboard players get value pickup_save', expect_result=expected),
+                        cmd('/scoreboard players get success pickup_save', expect_result=1),
+                        cmd(f'/execute if data entity {uuid} {{CanPickUpLoot:{expected}b}}', expect_result=1)]
+            full = cmd(f'/data get entity {uuid}', record=False)
+            full['trace'] = True
+            ops.append(full)
+    ops += setup('/execute store result score elapsed pickup_save run time query gametime',
+                 '/scoreboard players operation elapsed pickup_save -= start pickup_save')
+    return ops + [cmd('/scoreboard players get elapsed pickup_save', expect_result=0)]
+
+
+def orb_saved_uuid():
+    """Zero-tick identity gate; complete entity bodies remain raw diagnostics."""
+    ops = [cmd('/tick freeze'), cmd('/forceload add 160 160 175 175'),
+           {'op': 'wait_chunks', 'chunks': [[10, 10]]},
+           cmd('/fill 160 199 160 175 199 175 stone', expect_result=256),
+           cmd('/execute if loaded 164 200 164', expect_result=1),
+           cmd('/execute if block 164 199 164 stone', expect_result=1),
+           cmd('/scoreboard objectives add orb_identity dummy', expect_result=1)]
+    ops += setup('/execute store result score start orb_identity run time query gametime')
+    for kind, target, array, x, fields in [
+        ('experience_orb', '00000000-0000-0000-0000-000000000002', '[I;0,0,0,2]', 164.5,
+         'Value:1s,Age:0s,Health:5s'),
+        ('pig', '0000000b-0000-000c-0000-000d0000000e', '[I;11,12,13,14]', 166.5,
+         'Health:10f,NoAI:1b,Silent:1b,PersistenceRequired:1b'),
+    ]:
+        tag = f'orb_identity_{kind}'
+        body = f'Pos:[{x}d,200d,164.5d],Motion:[0d,0d,0d],NoGravity:1b,{fields}'
+        ops += [cmd(f'/summon minecraft:{kind} {x} 200 164.5 {{UUID:{array},Tags:["{tag}"],{body}}}', expect_result=1),
+                # No saved-UUID predicate in admission: that is the defect under test.
+                cmd(f'/execute as {target} if entity @s[type=minecraft:{kind},tag={tag}]', expect_result=1),
+                cmd(f'/execute if data entity {target} {{{body}}}', expect_result=1)]
+        for _ in range(3):
+            ops += setup('/scoreboard players set value orb_identity 317',
+                         '/scoreboard players set success orb_identity 17')
+            ops += [cmd(f'/data get entity {target} UUID', expect_result=4),
+                    cmd(f'/execute store result score value orb_identity store success score success orb_identity run data get entity {target} UUID', expect_result=4),
+                    cmd('/scoreboard players get value orb_identity', expect_result=4),
+                    cmd('/scoreboard players get success orb_identity', expect_result=1),
+                    cmd(f'/execute if data entity {target} {{UUID:{array}}}', expect_result=1),
+                    cmd(f'/execute as {target} if entity @s[type=minecraft:{kind},tag={tag}]', expect_result=1)]
+            full = cmd(f'/data get entity {target}', record=False)
+            full['trace'] = True
+            ops.append(full)
+    ops += setup('/execute store result score elapsed orb_identity run time query gametime',
+                 '/scoreboard players operation elapsed orb_identity -= start orb_identity')
+    return ops + [cmd('/scoreboard players get elapsed orb_identity', expect_result=0)]
+
+
+def stand_saved_fall():
+    """Five real tick boundaries; whole bodies remain separate raw diagnostics."""
+    ops = [cmd('/tick freeze'), cmd('/forceload add 0 0 15 15'),
+           {'op': 'settle', 'required_chunks': [[0, 0]]},
+           {'op': 'wait_chunks', 'chunks': [[0, 0]]},
+           cmd('/fill 0 199 0 15 199 15 stone', expect_result=256),
+           cmd('/fill 0 200 0 15 210 15 air'),
+           cmd('/execute if loaded 4 205 4', expect_result=1),
+           cmd('/scoreboard objectives add stand_fall dummy', expect_result=1)]
+    actors = [('0000001c-0000-0000-0000-000000000001', '[I;28,0,0,1]', 4.5, 0),
+              ('0000001c-0000-0000-0000-000000000002', '[I;28,0,0,2]', 12.5, 1)]
+    for uuid, array, x, gravity in actors:
+        cell = int(x)
+        ops += [cmd(f'/execute if block {cell} 199 4 stone', expect_result=1),
+                cmd(f'/execute if block {cell} 205 4 air', expect_result=1),
+                cmd(f'/execute if block {cell} 206 4 air', expect_result=1),
+                cmd(f'/summon armor_stand {x} 205 4.5 {{UUID:{array},Tags:["stand_fall_{gravity}"],Health:20f,NoGravity:{gravity}b,Motion:[0d,0d,0d]}}', expect_result=1),
+                cmd(f'/execute if data entity {uuid} {{Pos:[{x}d,205d,4.5d],Motion:[0d,0d,0d]}}', expect_result=1)]
+    ops += setup('/execute store result score start stand_fall run time query gametime')
+    for ticks, step in [(0, 0), (1, 1), (2, 1), (3, 1), (5, 2)]:
+        if step:
+            ops.append(cmd(f'/tick step {step}'))
+            ops.append({'op': 'tick', 'n': step})
+        ops += setup('/execute store result score elapsed stand_fall run time query gametime',
+                     '/scoreboard players operation elapsed stand_fall -= start stand_fall')
+        ops.append(cmd('/scoreboard players get elapsed stand_fall', expect_result=ticks))
+        for uuid, array, x, gravity in actors:
+            ops += [cmd(f'/execute as {uuid} if entity @s[type=minecraft:armor_stand,tag=stand_fall_{gravity}]', expect_result=1),
+                    cmd(f'/execute if data entity {uuid} {{UUID:{array},Health:20f}}', expect_result=1),
+                    cmd(f'/data get entity {uuid} Pos', expect_result=3),
+                    cmd(f'/data get entity {uuid} Motion', expect_result=3),
+                    cmd(f'/data get entity {uuid} fall_distance', expect_result=0),
+                    cmd(f'/data get entity {uuid} OnGround', expect_result=0)]
+            if gravity:
+                ops.append(cmd(f'/execute if data entity {uuid} {{NoGravity:1b,Pos:[{x}d,205d,4.5d],Motion:[0d,0d,0d],fall_distance:0d}}', expect_result=1))
+            else:
+                ops.append(cmd(f'/execute unless data entity {uuid} {{NoGravity:1b}}', expect_result=1))
+                # Independently measured on Java 26.3; the suffix also checks Double type.
+                distance = {0: '0.0', 1: '0.0', 2: '0.07840000092983246',
+                            3: '0.23363199830055237', 5: '0.7684761881828308'}[ticks]
+                ops.append(cmd(f'/execute if data entity {uuid} {{fall_distance:{distance}d}}', expect_result=1))
+            full = cmd(f'/data get entity {uuid}', record=False)
+            full['trace'] = True
+            ops.append(full)
+    return ops
 
 
 def projectile_saved_uuid():
@@ -4835,7 +5003,10 @@ def crafter_map_extension():
     ops += setup('/execute store success score identity_changed crafter_map run data modify storage h298:identity uuid set from entity @s UUID')
     ops += [cmd('/scoreboard players get identity_changed crafter_map', expect_result=0),
             cmd('/execute if entity @s[type=player,nbt={Pos:[8.5d,200d,8.5d],Health:20f}]', expect_result=1)]
-    return ops + setup('/setblock 4 200 5 air', '/scoreboard objectives remove crafter_map')
+    # Later groups build on the setup's empty, creative world: take the room, its floor and its chunk back.
+    return ops + setup('/setblock 4 200 3 air', '/setblock 4 200 4 air', '/setblock 4 200 5 air',
+                       '/fill 0 199 0 15 199 15 air', '/gamemode creative', '/clear @s',
+                       '/scoreboard objectives remove crafter_map', '/forceload remove 0 0 15 15')
 
 
 def advancement_loot_fixtures(group_names):
@@ -4916,7 +5087,8 @@ def advancement_world_loot_rewards(named_table=False, include_missing_ack=False)
                  '/scoreboard players operation elapsed reward_loot -= clock reward_loot')
     ops += [cmd('/scoreboard players get identity_changed reward_loot', expect_result=0),
             cmd('/scoreboard players get elapsed reward_loot', expect_result=0)]
-    return ops + setup('/scoreboard objectives remove reward_loot', '/clear @s')
+    return ops + setup('/scoreboard objectives remove reward_loot', '/clear @s',
+                       '/forceload remove 0 0 15 15')
 
 
 def advancement_empty_loot_reference():
@@ -4944,7 +5116,7 @@ def advancement_empty_loot_reference():
                  '/scoreboard players operation elapsed empty_loot -= clock empty_loot')
     ops += [cmd('/scoreboard players get identity_changed empty_loot', expect_result=0),
             cmd('/scoreboard players get elapsed empty_loot', expect_result=0)]
-    return ops + setup('/scoreboard objectives remove empty_loot')
+    return ops + setup('/scoreboard objectives remove empty_loot', '/forceload remove 0 0 15 15')
 
 
 def bell_server_glow():
@@ -5491,8 +5663,31 @@ def command_zombie_reinforcements(once=False, raw=False, legacy=False):
     return ops
 
 
+# Groups the full run leaves out: each runs alone in its own world (--only), so
+# what they leave behind reaches no other group.
+ISOLATED_REINFORCEMENTS = frozenset({'command zombie reinforcements', 'command reinforcement once'})
+# These overlays replace built-in recipes, never beside the corpus's fixed vanilla recipe-count controls.
+ISOLATED_RECIPES = frozenset({'crafting recipe priority', 'crafting base recipe control', 'transmute result patches'})
+ISOLATED_FRAME_MAPS = frozenset({'frame live map detachment'})
+ISOLATED_PICKUP_SAVE = frozenset({'mob saved pickup loot'})
+ISOLATED_ORB_UUID = frozenset({'orb saved UUID'})
+ISOLATED_STAND_FALL = frozenset({'stand saved fall distance'})
+ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL
+
+
 def groups():
     try:
+        from .transmute_patch_corpus import cases as transmute_patches
+    except ImportError:
+        from transmute_patch_corpus import cases as transmute_patches
+    try:
+        from .mob_effect_predicate_corpus import cases as mob_effect_predicates
+    except ImportError:
+        from mob_effect_predicate_corpus import cases as mob_effect_predicates
+    try:
+        from .frame_map_corpus import frame_maps
+        from .allay_damage_corpus import allay_player_damage
+        from .wolf_anger_corpus import groups as wolf_anger_groups
         from .allay_healing_corpus import allay_healing
         from .loaded_cloud_corpus import loaded_clouds
         from .moving_piston_data_corpus import moving_piston_data
@@ -5501,6 +5696,9 @@ def groups():
         from .gateway_passenger_corpus import gateway_passengers
         from .item_merge_corpus import stack_limit_merges
     except ImportError:
+        from frame_map_corpus import frame_maps
+        from allay_damage_corpus import allay_player_damage
+        from wolf_anger_corpus import groups as wolf_anger_groups
         from allay_healing_corpus import allay_healing
         from loaded_cloud_corpus import loaded_clouds
         from moving_piston_data_corpus import moving_piston_data
@@ -5510,6 +5708,14 @@ def groups():
         from item_merge_corpus import stack_limit_merges
     return [
         ('setup', group_setup()),
+        ('stand saved fall distance', stand_saved_fall()),
+        ('orb saved UUID', orb_saved_uuid()),
+        ('mob saved pickup loot', mob_saved_pickup_loot()),
+        ('transmute result patches', transmute_patches(cmd, setup)),
+        ('mob effect predicate view', mob_effect_predicates(cmd, setup)),
+        ('frame live map detachment', frame_maps(cmd, setup)),
+        ('allay player damage immunity', allay_player_damage(cmd, setup)),
+        *wolf_anger_groups(cmd, setup),
         ('allay passive healing', allay_healing(cmd, setup)),
         ('crafter map extension', crafter_map_extension()),
 
@@ -5625,7 +5831,9 @@ def groups():
         ('minecart drag', minecart_drag()),
         ('ender dragon', ender_dragon()),
         ('place structure', place_structure()),
+        ('template container loot table', template_container_loot_table()),
         ('tame wolf kills', tame_wolf_kills()),
+        ('forceload loads the chunk', forceload_loads_the_chunk()),
         ('experience orb fall', experience_orb_fall()),
         ('piglin pickups', piglin_pickups()),
         ('experience orb stuck', experience_orb_stuck()),

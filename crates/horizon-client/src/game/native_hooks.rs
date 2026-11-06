@@ -6,6 +6,10 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
+//! API 411 adds client Host services, GUI painting, model-head snapshots and client lifecycle notifications.
+//!
+//! API 410 adds a final foreground GUI overlay (`native_gui_render_post`) and the current frame's camera during GUI rendering.
+//!
 //! API 409 adds a client mod's play packet to the server, as it is (`native_send_packet`).
 //!
 //! API 408 adds reading the server's play packets on the client (`native_client_packet`).
@@ -995,7 +999,7 @@ use horizon_client::mod_api::{
     self, NativeCamera, NativeCommand, NativeDispensed, NativeLifecycleContext,
     NativeNoteBlockChange, NativeServerPlayer, RecipeBookCategory, ServerTickPhase, WorldPhase,
 };
-use horizon_client::mod_api::{AttachmentResult, Attachments, Holder, Suggestion};
+use horizon_client::mod_api::{AttachmentResult, Attachments, Holder, LayerDefinition, Suggestion};
 pub(crate) use horizon_client::mod_api::{
     ClientboundPlayPacket, NativeBlockRim, NativeColoredLight, NativeLootDrops, NativeMinimap,
     NativeMod, NativePanelEvent, NativeScreen, NativeScreenView, NativeStack, NativeZoom,
@@ -1160,7 +1164,7 @@ pub(super) use horizon_world::level::flags;
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
 #[allow(dead_code)]
-pub(crate) const NATIVE_HOOKS_API: u32 = 409;
+pub(crate) const NATIVE_HOOKS_API: u32 = 411;
 
 impl GameLevel<'_> {
     /// A hopper at `pos` is about to pick up `count` of `item`. Set `cancel` to leave the dropped stack in the world. Server-side. 232.
@@ -2510,7 +2514,7 @@ impl Game<'_> {
     /// is in GUI pixels. `native_camera` is this frame's world camera (None on
     /// the panorama). `gui_hidden` is the F1 setting; `focused` is window focus.
     /// A mod decides whether its foreground indicator respects those flags.
-    /// Client only; the host is read-only. API @API:gui_render_post@.
+    /// Client only; the host is read-only. API 410.
     pub(super) fn native_gui_render_post(
         &self,
         batch: &mut HudBatch,
@@ -3031,6 +3035,17 @@ impl Game<'_> {
     pub(super) fn native_standalone_models(models: &mut Vec<String>) {
         mod_api::dispatch_standalone_models(mod_api::mods(), models);
     }
+    /// Entity model layers built in code (NeoForge's
+    /// `EntityRenderersEvent.RegisterLayerDefinitions`): push each one's id,
+    /// `<mod id>:<model>#<layer>` as a `ModelLayerLocation` names it
+    /// (`mymod:golem#main`), and its `LayerDefinition`, as the mod's
+    /// `createBodyLayer()` builds it. `native_bake_layer` bakes one into the
+    /// `ModelPart` tree `native_draw_model_part` draws. Asked once at start,
+    /// on every side. An id in vanilla's namespace, not of that form, or
+    /// registered already is logged and left out. API @API:model_layers@.
+    pub(super) fn native_layer_definitions(layers: &mut Vec<(String, LayerDefinition)>) {
+        mod_api::dispatch_layer_definitions(mod_api::mods(), layers);
+    }
     /// Options > Mods lists the native mods: push yours.
     pub(super) fn native_mods(&mut self, mods: &mut Vec<NativeMod>) {
         mod_api::dispatch_mods(self, mod_api::mods(), mods);
@@ -3129,6 +3144,34 @@ impl Game<'_> {
         fluids: &mut Option<ModFluidTanks>,
     ) {
         mod_api::dispatch_block_entity_fluids(self, mod_api::mods(), block, fluids);
+    }
+    /// Does tank `tank` of the mod block `block` take `fluid`
+    /// (`minecraft:water`, `minecraft:lava`, or a mod's own,
+    /// `create:chocolate`)? NeoForge's `IFluidHandler.isFluidValid`: a water
+    /// tank refuses a mod's fluid, so a removed mod leaves no id it cannot
+    /// use behind. Asked on the server before `native_fluid_insert` fills a
+    /// tank that the block's `ModFluidTanks` lets be filled through that
+    /// face, in both passes (same fluid first, then empty), and before
+    /// `native_move_fluids` counts that tank's room. Set `cancel` to refuse
+    /// the fluid there; the fill tries the next tank. Every tank accepts
+    /// every fluid unless a mod says otherwise; a cauldron, which holds only
+    /// water and lava, and a drain never ask it. Bundles need "hooks":
+    /// @API:block_entity_accepts_fluid@.
+    pub(super) fn native_block_entity_accepts_fluid(
+        &self,
+        block: &str,
+        tank: usize,
+        fluid: &str,
+        cancel: &mut bool,
+    ) {
+        mod_api::dispatch_block_entity_accepts_fluid(
+            self,
+            mod_api::mods(),
+            block,
+            tank,
+            fluid,
+            cancel,
+        );
     }
     /// Block `block`'s block entity has an energy buffer
     /// (`Capabilities.Energy.BLOCK`): set `energy` when the block is yours,
@@ -6080,6 +6123,20 @@ impl Game<'_> {
             message,
             cancel,
         );
+    }
+
+    /// NeoForge's `ToastAddEvent`: a new toast is about to be queued. `kind`
+    /// is `advancement`, `recipe`, `tutorial`, `system` or `now_playing`;
+    /// `id` is the advancement id, the first recipe id, the tutorial hint
+    /// (`move`, `look`, `find_tree`, `punch_tree`, `open_inventory`,
+    /// `craft_planks`, `socialInteractions`), the system toast's id (`narrator_toggle`,
+    /// `pack_load_failure`, `pack_download`, `low_disk_space`,
+    /// `chunk_load_failure`, `chunk_save_failure`), or empty for
+    /// `now_playing`. An update to a toast already queued or shown is not an
+    /// add. Set `cancel` and it isn't queued, shown or sounded. Title-screen
+    /// toasts are not told. Client-side. API @API:toast_add@.
+    pub(super) fn native_toast_add(&mut self, kind: &str, id: &str, cancel: &mut bool) {
+        mod_api::dispatch_toast_add(self, mod_api::mods(), kind, id, cancel);
     }
 
     /// The dedicated server's whitelist changed to `enabled`. 305.
@@ -9251,7 +9308,7 @@ impl Game<'_> {
         let &(_, key) = MAPPINGS.iter().find(|m| m.0 == name)?;
         let label = keybinds::display_name(self.settings.keys.get(name)).plain();
         let down = match key {
-            Some(k) => self.keys.contains(&k),
+            Some(k) => self.movement_key_held(k),
             None => self.mouse_reading().1[usize::from(name == "key.use")],
         };
         Some((down, label))
@@ -11047,6 +11104,8 @@ mod tests {
         let motion_hooks = free_hooks(include_str!("../motion.rs"));
         // The chat relay's (`horizon_client_lib::lan::hub::chat`).
         let chat_hooks = free_hooks(include_str!("../lan/hub/chat.rs"));
+        // The mob AI's (`horizon_client_lib::mobs::ai`).
+        let mob_hooks = free_hooks(include_str!("../mobs/ai.rs"));
         let declared: BTreeSet<_> = section
             .lines()
             .chain(level_section.lines())
@@ -11066,6 +11125,7 @@ mod tests {
             .chain(landing_hooks.iter().copied())
             .chain(motion_hooks.iter().copied())
             .chain(chat_hooks.iter().copied())
+            .chain(mob_hooks.iter().copied())
             .collect();
         let mut names = BTreeSet::new();
         let mut contracts = BTreeSet::new();
@@ -11102,6 +11162,8 @@ mod tests {
             } else if breath_hooks.contains(name) {
                 // breathing.rs compiles into horizon-client-lib too.
                 format!("horizon_client_lib::breathing::native_{name}")
+            } else if mob_hooks.contains(name) {
+                format!("horizon_client_lib::mobs::ai::native_{name}")
             } else if level_hooks.contains(name) {
                 format!("horizon_client::game::native_hooks::GameLevel<'_>::native_{name}")
             } else {

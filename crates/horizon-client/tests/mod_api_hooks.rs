@@ -80,6 +80,39 @@ fn recipe_book_categories_accept_mod_declarations() {
 }
 
 #[test]
+fn layer_definitions_collect_each_mods_layers_in_order() {
+    use horizon_client::mod_api::{
+        CubeListBuilder, LayerDefinition, LayerDefinitionsEvent, MeshDefinition, PartPose,
+        dispatch_layer_definitions,
+    };
+    struct Golem(&'static str);
+    impl Hooks for Golem {
+        fn layer_definitions(&self, event: &mut LayerDefinitionsEvent<'_>) {
+            let mut mesh = MeshDefinition::new();
+            let root = mesh.root();
+            let head = CubeListBuilder::create()
+                .tex_offs(0, 0)
+                .add_box([-4.0, -8.0, -4.0], [8.0, 8.0, 8.0]);
+            mesh.add_or_replace_child(root, "head", head, PartPose::offset(0.0, 6.0, 0.0));
+            event
+                .layers
+                .push((self.0.into(), LayerDefinition::create(mesh, 64, 32)));
+        }
+    }
+    let mods: Vec<Box<dyn Hooks>> = vec![
+        Box::new(Golem("first:golem#main")),
+        Box::new(Golem("second:golem#main")),
+    ];
+    let mut layers = Vec::new();
+    dispatch_layer_definitions(&mods, &mut layers);
+    let ids: Vec<_> = layers.iter().map(|(id, _)| id.as_str()).collect();
+    assert_eq!(ids, ["first:golem#main", "second:golem#main"]);
+    let model = layers[0].1.bake_root();
+    let head = model.get_child("head").expect("the head part");
+    assert_eq!((head.y, head.polygons.len()), (6.0, 6));
+}
+
+#[test]
 fn received_chat_is_replaced_in_order_and_cancel_stops_later_mods() {
     use horizon_client::mod_api::{ClientChatReceivedEvent, Flow, dispatch_client_chat_received};
     use horizon_client::text::Text;
@@ -174,4 +207,58 @@ fn client_packet_hands_a_mod_the_decoded_packet() {
         *HEARD.lock().unwrap(),
         [("voicechat:secret".to_string(), vec![1, 2, 3])]
     );
+}
+
+#[test]
+fn a_tank_hook_can_refuse_a_fluid() {
+    use horizon_client::mod_api::{
+        BlockEntityAcceptsFluidEvent, Flow, dispatch_block_entity_accepts_fluid,
+    };
+    struct TestHost;
+    impl Host for TestHost {}
+    struct WaterTank;
+    impl Hooks for WaterTank {
+        fn block_entity_accepts_fluid(
+            &self,
+            _host: &dyn Host,
+            event: &mut BlockEntityAcceptsFluidEvent<'_>,
+        ) -> Flow {
+            if event.block == "mymod:water_tank" && event.fluid != "minecraft:water" {
+                Flow::Cancel
+            } else {
+                Flow::Continue
+            }
+        }
+    }
+    let mut cancel = false;
+    dispatch_block_entity_accepts_fluid(
+        &TestHost,
+        &[],
+        "mymod:water_tank",
+        0,
+        "create:chocolate",
+        &mut cancel,
+    );
+    assert!(!cancel, "every tank takes every fluid without a mod");
+    let mods: Vec<Box<dyn Hooks>> = vec![Box::new(WaterTank)];
+    let mut cancel = false;
+    dispatch_block_entity_accepts_fluid(
+        &TestHost,
+        &mods,
+        "mymod:water_tank",
+        0,
+        "create:chocolate",
+        &mut cancel,
+    );
+    assert!(cancel, "the water tank refuses the mod's fluid");
+    let mut cancel = false;
+    dispatch_block_entity_accepts_fluid(
+        &TestHost,
+        &mods,
+        "mymod:water_tank",
+        0,
+        "minecraft:water",
+        &mut cancel,
+    );
+    assert!(!cancel, "the water tank takes water");
 }

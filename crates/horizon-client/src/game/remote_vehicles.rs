@@ -9,9 +9,12 @@
 //! server (`LocalPlayer.tick`: `ServerboundMoveVehiclePacket`,
 //! `AbstractBoat.tick`: `ServerboundPaddleBoatPacket`). So is a saddled horse,
 //! donkey, mule or camel: its rider's client moves it and reports the moves,
-//! and tells the server of a riding jump (`START_RIDING_JUMP`). A minecart
+//! and tells the server of a riding jump (`START_RIDING_JUMP`). Pigs and striders
+//! also move on their rider's client when saddled and steered with the right stick.
+//! A minecart
 //! moves on the server with the rider's input, and the rider sits in it.
 use super::{Game, Keys, ray_box};
+use crate::Result;
 use horizon_client::mobs::{Mob, equine, happy_ghast};
 use horizon_core::geometry::{Aabb, Vec3};
 use horizon_protocol::packets::play::{self, Serverbound as S};
@@ -153,6 +156,16 @@ impl Game<'_> {
             return;
         };
         let vehicle_id = vehicle as u32;
+        self.remote_seat_passengers(vehicle_id, passengers);
+        let player_controls = passengers.first().is_some_and(|&id| {
+            self.remote
+                .as_ref()
+                .is_some_and(|r| r.level_player(id).is_some())
+        });
+        if let Some(boat) = self.boats.iter_mut().find(|b| b.id == vehicle_id) {
+            boat.paddle_controller = player_controls;
+        }
+
         for m in &mut self.mobs {
             // `Entity.isVehicle` (the saddle reins of a ridden horse): the
             // server sends no rider on the mob itself, only this list.
@@ -243,10 +256,18 @@ impl Game<'_> {
 
     /// The local player's tick in its vehicle, in place of its own movement:
     /// false when it rides nothing.
-    pub(super) fn remote_ride(&mut self, keys: Keys) -> bool {
+    pub(super) fn remote_ride(&mut self, keys: Keys, sprint_window: i32) -> Result<bool> {
         let Some(id) = self.riding else {
-            return false;
+            return Ok(false);
         };
+        // LocalPlayer.aiStep runs its sprint decisions in a vehicle too: `canSprint` and
+        // this client's authority stand in for food (`isSprintingPossible`).
+        let (can_sprint, local) = self
+            .driven_mount()
+            .map_or((false, false), |m| (equine::can_sprint(m.species()), true));
+        if let Some(p) = self.player.as_mut() {
+            p.sprint_input_tick_riding(keys, sprint_window, can_sprint, local)?;
+        }
         if let Some(i) = self.mobs.iter().position(|m| m.id == id) {
             // LocalPlayer.aiStep: the jump bar charges while jump is held.
             let jump = self.charge_mount_jump(i, keys);
@@ -256,7 +277,7 @@ impl Game<'_> {
             // Another animal moves on the server with the rider's input
             // (PlayerInput); the rider sits where `positionRider` puts it.
             self.position_rider();
-            return true;
+            return Ok(true);
         }
         let seat = if let Some(c) = self.cushions.iter().find(|c| c.id == id) {
             // The seat does not move; the rider sits on the cushion.
@@ -297,7 +318,7 @@ impl Game<'_> {
                 // riding it. Nothing with the id is in the level any more (it
                 // died, or the world it rode in was left), so the seat goes.
                 self.riding = None;
-                return false;
+                return Ok(false);
             }
             cart
         };
@@ -317,7 +338,7 @@ impl Game<'_> {
             p.velocity = Vec3::ZERO;
             p.fall_distance = 0.0;
         }
-        true
+        Ok(true)
     }
 
     /// `LocalPlayer.tick` for a passenger: the boat it controls goes to the
@@ -390,7 +411,7 @@ impl Game<'_> {
     /// boat on a client: `status`, the two `applyEffectsFromBlocks` (a boat
     /// above a column may splash; the boat the player drives is lifted or
     /// dragged by a column it is inside) and `tickBubbleColumn`'s wobble from
-    /// the synched bubble time.
+    /// the synched bubble time, followed by the oars on boats this client does not drive.
     pub(super) fn tick_remote_boat_bubbles(&mut self) {
         for i in 0..self.boats.len() {
             let driven = self.riding == Some(self.boats[i].id);
@@ -414,6 +435,13 @@ impl Game<'_> {
                 }
             }
             self.boats[i].tick_bubble_wobble();
+            if !driven {
+                Self::tick_boat_paddles(
+                    &mut self.boats[i],
+                    &mut self.audio,
+                    &mut self.world.random,
+                );
+            }
         }
     }
 
@@ -422,7 +450,19 @@ impl Game<'_> {
     /// saddle (`isLocalInstanceAuthoritative`).
     fn drives(&self, m: &Mob) -> bool {
         self.riding == Some(m.id)
-            && client_moves(m, self.remote.as_ref().is_some_and(|r| r.first_passenger))
+            && client_moves(
+                m,
+                self.remote.as_ref().is_some_and(|r| r.first_passenger),
+                self.steers_mount(m),
+            )
+    }
+
+    fn steers_mount(&self, m: &Mob) -> bool {
+        super::mounts::steering_item(
+            m.species(),
+            self.held().map(|s| s.item.as_ref()),
+            self.offhand.as_ref().map(|s| s.item.as_ref()),
+        )
     }
 
     /// The mount this client moves, if the player rides one.
@@ -443,6 +483,7 @@ impl Game<'_> {
         }
         let strafe = f32::from(u8::from(keys.left)) - f32::from(u8::from(keys.right));
         let forward = f32::from(u8::from(keys.forward)) - f32::from(u8::from(keys.backward));
+        let steer = self.steers_mount(&self.mobs[i]);
         let m = &mut self.mobs[i];
         if jump > 0.0 && equine::is_equine(m.species()) {
             // LocalPlayer.aiStep also runs `onPlayerJump` here: the mount slides
@@ -451,14 +492,18 @@ impl Game<'_> {
         }
         // playerJumpPendingScale waits for the ground.
         let pending = m.rider.map_or(0.0, |r| r.jump);
+        // The rider's sprint state, not the key: Camel.getRiddenSpeed reads
+        // `controller.isSprinting()`, which keeps the double-tapped sprint
+        // after the key is let go (`shouldStopRunSprinting` decides the end).
+        let sprinting = self.player.as_ref().is_some_and(|p| p.sprinting);
         m.rider = Some(equine::Rider {
             strafe,
             forward,
             yaw: self.yaw,
             pitch: self.pitch,
             jump: if jump > 0.0 { jump } else { pending },
-            steer: false,
-            sprint: keys.sprint,
+            steer,
+            sprint: sprinting,
             jumping: keys.jump,
             client: false,
         });
@@ -485,12 +530,15 @@ impl Game<'_> {
 /// (`HappyGhast.getControllingPassenger`: wearing body armor, player on
 /// top, not on a still timeout — the rider steers it with `travelRidden`
 /// on their own client, and the mount goes to the server as `MoveVehicle`).
-fn client_moves(m: &Mob, first_passenger: bool) -> bool {
+fn client_moves(m: &Mob, first_passenger: bool, steer: bool) -> bool {
     if !first_passenger || !m.alive() {
         return false;
     }
     if equine::moved_by_rider(m.species()) && m.extra.saddled {
-        return true;
+        return !matches!(
+            m.species(),
+            horizon_client::mobs::Species::Pig | horizon_client::mobs::Species::Strider
+        ) || steer;
     }
     m.species() == horizon_client::mobs::Species::HappyGhast
         && happy_ghast::harnessed_adult(m)
@@ -523,6 +571,129 @@ mod tests {
     use super::*;
     use horizon_client::mobs::MobTypes;
 
+    #[test]
+    #[ignore = "requires prepared resources and the vanilla mount-control reference"]
+    fn steering_mount_control_matches_vanilla() {
+        use super::super::{
+            Audio, Options, Progress, Settings, execution_role::ExecutionRole, load_resources,
+        };
+        use horizon_client::{items::ItemStack, motion::PlayerMotion};
+        use horizon_protocol::connection::Pipe;
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let reference = std::env::var_os("HORIZON_MOUNT_CONTROL_REFERENCE").unwrap();
+        let rows: Vec<serde_json::Value> =
+            serde_json::from_slice(&std::fs::read(reference).unwrap()).unwrap();
+        assert_eq!(rows.len(), 32, "missing vanilla control cases");
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!("no menu handoff"),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = ExecutionRole::Client;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        let (client, _server) = Pipe::pair();
+        game.connect_local(client, "SteeringTest").unwrap();
+        game.remote.as_mut().unwrap().joined = true;
+        game.player = Some(PlayerMotion::new(game.motion, Vec3::new(0.5, 300.0, 0.5)).unwrap());
+        let types = MobTypes::load(&root).unwrap();
+        for row in rows {
+            let kind = row["kind"].as_str().unwrap();
+            let t = std::sync::Arc::new(types.types[&format!("minecraft:{kind}")].clone());
+            let mut m = Mob::new(7, t, Vec3::new(0.5, 300.0, 0.5), 0.0);
+            if row["saddled"].as_bool().unwrap() {
+                m.set_saddle(Some(ItemStack::new("minecraft:saddle", 1)));
+            }
+            let stick = if kind == "pig" {
+                "minecraft:carrot_on_a_stick"
+            } else {
+                "minecraft:warped_fungus_on_a_stick"
+            };
+            let wrong = if kind == "pig" {
+                "minecraft:warped_fungus_on_a_stick"
+            } else {
+                "minecraft:carrot_on_a_stick"
+            };
+            let hand = row["hand"].as_str().unwrap();
+            game.inventory[game.selected] = match hand {
+                "main" => Some(ItemStack::new(stick, 1)),
+                "wrong" => Some(ItemStack::new(wrong, 1)),
+                _ => None,
+            };
+            game.offhand = (hand == "off").then(|| ItemStack::new(stick, 1));
+            game.mobs.clear();
+            game.mobs.push(m);
+            game.riding = Some(7);
+            game.remote.as_mut().unwrap().first_passenger = row["first"].as_bool().unwrap();
+            let controlled = row["controlled"].as_bool().unwrap();
+            assert_eq!(game.driven_mount().is_some(), controlled, "{row}");
+            let packets = game.remote_vehicle_packets();
+            assert_eq!(packets.len(), usize::from(controlled), "{row}");
+            if controlled {
+                assert!(matches!(packets[0], S::MoveVehicle(_)), "{row}");
+                let before = game.mobs[0].position;
+                assert!(game.remote_ride(Keys::default(), 0).unwrap());
+                let m = &game.mobs[0];
+                assert_eq!(
+                    f64::from(m.ai.zza),
+                    row["forward"].as_f64().unwrap(),
+                    "{row}"
+                );
+                assert!(m.position.z > before.z, "{row}: mount did not move forward");
+                match &game.remote_vehicle_packets()[0] {
+                    S::MoveVehicle(p) => assert_eq!(
+                        p.position,
+                        [m.position.x, m.position.y, m.position.z],
+                        "{row}"
+                    ),
+                    packet => panic!("wrong movement packet: {packet:?}"),
+                }
+            }
+            // The server reads the same held-item requirement, then waits for
+            // this controlling client's MoveVehicle rather than traveling twice.
+            if row["first"].as_bool().unwrap() {
+                assert!(game.tick_mount_riding(Keys::default()));
+                game.mobs[0].rider.as_mut().unwrap().client = true;
+            } else {
+                game.mobs[0].rider = None;
+            }
+            assert_eq!(
+                equine::moved_by_client(&game.mobs[0]),
+                !row["server_simulates"].as_bool().unwrap(),
+                "{row}"
+            );
+            if controlled {
+                let mut server_mount = game.mobs[0].clone();
+                let before = server_mount.position;
+                let mut random = game.world.random.clone();
+                let mut events = Vec::new();
+                server_mount.tick(&game.mob_world_base(&[]), &mut random, &mut events);
+                assert_eq!(
+                    server_mount.position, before,
+                    "server traveled twice: {row}"
+                );
+            }
+        }
+    }
+
     /// A mob of the prepared resources' type `kind` (None without them).
     fn mob(kind: &str) -> Option<Mob> {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -534,7 +705,7 @@ mod tests {
     }
 
     /// #2920: on a vanilla server the rider's client moves a saddled horse,
-    /// donkey, mule or camel; a pig, a llama, an unsaddled horse or a second
+    /// donkey, mule or camel; a pig without its stick, a llama, an unsaddled horse or a second
     /// passenger's ride is the server's.
     #[test]
     fn the_rider_moves_a_saddled_horse_on_its_client() {
@@ -542,14 +713,17 @@ mod tests {
             let Some(mut m) = mob(&format!("minecraft:{kind}")) else {
                 return;
             };
-            assert!(!client_moves(&m, true), "{kind} without a saddle");
+            assert!(!client_moves(&m, true, false), "{kind} without a saddle");
             m.set_saddle(Some(horizon_client::items::ItemStack::new(
                 "minecraft:saddle",
                 1,
             )));
             let horse = matches!(kind, "horse" | "donkey" | "mule" | "camel");
-            assert_eq!(client_moves(&m, true), horse, "{kind}");
-            assert!(!client_moves(&m, false), "{kind} behind another rider");
+            assert_eq!(client_moves(&m, true, false), horse, "{kind}");
+            assert!(
+                !client_moves(&m, false, false),
+                "{kind} behind another rider"
+            );
         }
     }
 
@@ -561,12 +735,12 @@ mod tests {
         let Some(mut m) = mob("minecraft:happy_ghast") else {
             return;
         };
-        assert!(!client_moves(&m, true), "ghast without a harness");
+        assert!(!client_moves(&m, true, false), "ghast without a harness");
         m.extra.body = Some("minecraft:white_happy_ghast_harness".into());
-        assert!(client_moves(&m, true), "harnessed adult");
-        assert!(!client_moves(&m, false), "behind another rider");
+        assert!(client_moves(&m, true, false), "harnessed adult");
+        assert!(!client_moves(&m, false, false), "behind another rider");
         m.extra.age = -1;
-        assert!(!client_moves(&m, true), "baby ghast");
+        assert!(!client_moves(&m, true, false), "baby ghast");
     }
 
     /// #2920: the client reports where it moved the mount, and a released

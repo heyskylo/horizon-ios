@@ -7,7 +7,7 @@ use horizon_client::{
     chunk::Chunk,
     entity_nbt,
     mobs::Who,
-    save::{ChunkExtras, random_uuid, text, uuid_text},
+    save::{ChunkExtras, random_uuid, text, uuid_from_text, uuid_text},
     scoreboard::Scoreboard,
 };
 use horizon_core::{
@@ -855,7 +855,7 @@ impl Game<'_> {
             if let Some(r) = self.load_mob(rider, Some(id))
                 && let Some(v) = self.mobs.iter_mut().find(|m| m.id == id)
             {
-                v.extra.rider = Some(r);
+                v.extra.rider.get_or_insert(r);
             }
         }
         Some(id)
@@ -886,9 +886,20 @@ impl Game<'_> {
     /// The mobs riding entity `id` under `tag`'s `Passengers`, after the
     /// passengers it kept from loading.
     pub(super) fn put_mob_passengers(&mut self, tag: &mut Tag, id: u32) {
-        let riders: Vec<usize> = (0..self.mobs.len())
+        let mut riders: Vec<usize> = (0..self.mobs.len())
             .filter(|&j| self.mobs[j].extra.mount == Some(id) && self.mobs[j].alive())
             .collect();
+        if let Some(driver) = self
+            .mobs
+            .iter()
+            .find(|m| m.id == id)
+            .and_then(|m| m.extra.rider)
+            && let Some(pos) = riders.iter().position(|&j| self.mobs[j].id == driver)
+            && pos != 0
+        {
+            let d = riders.remove(pos);
+            riders.insert(0, d);
+        }
         let riders: Vec<Tag> = riders.into_iter().map(|j| self.mob_tree_nbt(j)).collect();
         add_passengers(tag, riders);
     }
@@ -1552,13 +1563,56 @@ impl Game<'_> {
             self.save.save_entities_later(chunks)
         }
     }
-    pub(super) fn prune_entity_memory(&mut self) {
+    /// The ids of every entity in the level now.
+    fn live_entity_ids(&self) -> HashSet<u32> {
         use super::entity::{Entity as _, entity_lists_of, for_each_entity};
-        // Forget entities that no longer exist.
         let mut alive: HashSet<u32> = self.entity_ids_off_walk().collect();
         for_each_entity!(entity_lists_of!(self), entity => {
             alive.insert(entity.id());
         });
+        alive
+    }
+    /// `ServerLevel.EntityCallbacks.onDestroyed` → `Scoreboard.entityRemoved`
+    /// for every kind of entity, not only the mobs `score_entity_removed`
+    /// covers as they die: an item picked up or killed, an expired cloud, a
+    /// discarded projectile leaves the board and its team. Unloaded and
+    /// travelling entities leave `persist.uuids` first (`forget_entity`,
+    /// `detach_entity`), so they keep their scores, as vanilla's do. Once a
+    /// tick, so a command in the same tick still sees them; nothing to do
+    /// while no entity holds a score or a team.
+    pub(super) fn score_destroyed_entities(&mut self) {
+        let board = &self.score.board;
+        let held: HashSet<[i32; 4]> = board
+            .scores
+            .keys()
+            .map(String::as_str)
+            .chain(board.team_members())
+            .filter(|holder| holder.len() == 36)
+            .filter_map(uuid_from_text)
+            .collect();
+        if held.is_empty() {
+            return;
+        }
+        let candidates: Vec<(u32, [i32; 4])> = self
+            .persist
+            .uuids
+            .iter()
+            .filter(|(_, uuid)| held.contains(*uuid))
+            .map(|(&id, &uuid)| (id, uuid))
+            .collect();
+        if candidates.is_empty() {
+            return;
+        }
+        let alive = self.live_entity_ids();
+        for (id, uuid) in candidates {
+            if !alive.contains(&id) {
+                self.score.board.entity_removed(&uuid_text(uuid));
+            }
+        }
+    }
+    pub(super) fn prune_entity_memory(&mut self) {
+        // Forget entities that no longer exist.
+        let alive = self.live_entity_ids();
         for (id, uuid) in &self.persist.uuids {
             if !alive.contains(id) {
                 self.entity_attachments.remove(uuid);

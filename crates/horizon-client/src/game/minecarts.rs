@@ -5,6 +5,7 @@
 //! furnace and TNT variants, saving, and `AbstractMinecartRenderer`'s old
 //! rail-following render with the display block.
 use super::{Game, Hit, InteractTarget, Keys, entity::Entity};
+use horizon_client::actions::Action;
 use horizon_client::entity_rules::EntityRules;
 use horizon_client::{
     blocks::Fluid,
@@ -2063,9 +2064,19 @@ impl Game<'_> {
                 [cart.position.x, cart.position.y, cart.position.z],
             );
         }
+        // MinecartItem.useOn: ENTITY_PLACE at the rail, by the player, with the block under it.
+        let below = self.world.block(hit.pos[0], hit.pos[1] - 1, hit.pos[2]);
+        self.post_block_game_event(
+            "minecraft:entity_place",
+            hit.pos,
+            self.sculk_actor(),
+            Some(below),
+        );
         if !self.creative {
             self.consume_held();
         }
+        // ItemStack.useOn counts the use.
+        self.award_stat("used", &stack.item, 1);
         self.swing_arm();
         true
     }
@@ -2140,7 +2151,7 @@ impl Game<'_> {
         if target.is_none() && !self.before_block(d) {
             return false;
         }
-        let sneaking = self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft);
+        let sneaking = self.keys.held(Action::Sneak);
         let held = self.held().cloned();
         match self.carts[i].kind {
             CartKind::Rideable => {
@@ -2232,7 +2243,13 @@ impl Game<'_> {
             return;
         }
         self.store_cart_items(key);
-        self.world.block_entities.remove(&key);
+        let guest_viewers = self
+            .lan
+            .as_ref()
+            .is_some_and(|host| Self::vehicle_has_other_viewers(None, &host.hub.guests, None, key));
+        if !guest_viewers {
+            self.world.block_entities.remove(&key);
+        }
     }
     /// A chest or hopper minecart or a chest boat is about to be removed
     /// (`Containers.dropContents` / `AbstractChestBoat.remove`): what an open

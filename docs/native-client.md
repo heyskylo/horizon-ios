@@ -12,6 +12,12 @@ in vanilla's Anvil format.
 in the README scores each subsystem against vanilla and lists what is still
 missing; [Rust rewrite status](rust-parity.md) has the details.
 
+On Windows, the launcher uses a stable executable path for each game home across
+release and native-mod updates. Its private runtime copy lives under the launcher's
+data folder in `run/<home key>/game/`; installed versions remain intact. Opening a
+world to other machines can still require an initial Windows Firewall permission.
+The launcher does not create firewall rules or change network-profile settings.
+
 ## musl Linux: manual installation
 
 On x86-64 musl distributions, download `horizon-linux-musl-x86_64.tar.gz` from the

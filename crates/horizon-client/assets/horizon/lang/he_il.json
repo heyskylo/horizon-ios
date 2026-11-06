@@ -321,7 +321,6 @@
   "horizon.osk.close": "סגור",
   "horizon.extras.chat_animation.tooltip": "קו צ'אט חדש גולש פנימה משמאל בזמן שהוא נמוג פנימה, במקום להיראות שלם.",
   "horizon.extras.chat_indicator.tooltip": "הסרגל הצבעוני בצד שמאל של קו צ'אט.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "גלגל הגלילה מעל כפתור בהגדרות משנה את ערכו, כמו בוניל. כבוי, הגלגל רק גולל את הרשימה.",
   "horizon.extras.pack_browser.tooltip": "Select Resource Packs מקבל כפתור הוסף שמחפש את Modrinth ומתקין חבילה בתיקיית החבילות שלך. כבוי, המשחק אף פעם לא יוצר קשר עם Modrinth.",
   "horizon.extras.splitscreen.tooltip": "בעולם, בקר אחר יכול להצטרף כשחקן חדש: הקש A כאשר הוא שואל, ואז בחר פרופיל ואיפה לשחק.",
   "horizon.splitscreen.setup.monitor": "צג %s",
@@ -465,9 +464,10 @@
   "horizon.extras.cosmetics_mine": "הקוסמטיקה שלי",
   "horizon.extras.cosmetics_others": "מוצרי קוסמטיקה של שחקנים אחרים",
   "horizon.extras.cosmetics_others.tooltip": "מה שחקני Horizon אחרים לובשים: הכל, רק סגנונות תג השם שלהם, או כלום. נסתר, המשחק אף פעם לא שואל מה הם לובשים.",
-  "horizon.extras.cosmetics_auras": "ההילות והשבילים של אחרים",
-  "horizon.extras.cosmetics_auras.tooltip": "הילות ושבילים ששחקנים אחרים לובשים. כבוי כברירת מחדל.",
+  "horizon.extras.cosmetics_hide_fx": "הסתרת שבילים והילות של שחקנים אחרים",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "השבילים וההילות של שחקנים אחרים נשארים מוסתרים; שאר הקוסמטיקה שלהם עדיין מוצגת. כבוי כברירת מחדל.",
   "horizon.extras.cosmetics.shown": "מוצג",
   "horizon.extras.cosmetics.hidden": "מוסתר",
-  "horizon.extras.cosmetics.name_tags": "תגי שם בלבד"
+  "horizon.extras.cosmetics.name_tags": "תגי שם בלבד",
+  "Shader Packs...": "חבילות Shader..."
 }

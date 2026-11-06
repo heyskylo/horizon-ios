@@ -309,7 +309,6 @@
   "horizon.osk.close": "Stäng",
   "horizon.extras.chat_animation.tooltip": "En ny chattlinje glider in från vänster medan den tonar in, istället för att se hel ut.",
   "horizon.extras.chat_indicator.tooltip": "Den färgade stapeln till vänster om en chattlinje.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "Scrollhjulet över en knapp i inställningarna ändrar dess värde, som i vanilj. Av, hjulet rullar bara i listan.",
   "horizon.extras.pack_browser.tooltip": "Select Resource Packs får en Lägg till-knapp som söker efter Modrinth och installerar ett paket i din pack-mapp. Av, spelet kontaktar aldrig Modrinth.",
   "horizon.extras.splitscreen.tooltip": "I en värld kan en annan kontroller gå med som en ny spelare: tryck på A när den frågar, välj sedan en profil och var du vill spela.",
   "horizon.splitscreen.setup.monitor": "Övervaka %s",
@@ -450,9 +449,10 @@
   "horizon.extras.cosmetics_mine.tooltip": "Dolt: alla Horizon-spelare ser dig utan din kosmetika, inklusive du. Samma switch som bärraketens garderob.",
   "horizon.extras.cosmetics_others": "Andra spelares kosmetika",
   "horizon.extras.cosmetics_others.tooltip": "Vad andra Horizon-spelare bär: allt, bara deras namnetikettstilar eller ingenting. Dolt, spelet frågar aldrig vad de har på sig.",
-  "horizon.extras.cosmetics_auras": "Andras auror och spår",
-  "horizon.extras.cosmetics_auras.tooltip": "Auror och spår som andra spelare bär. Av som standard.",
+  "horizon.extras.cosmetics_hide_fx": "Dölj andra spelares spår och auror",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "Andra spelares spår och auror förblir dolda; deras övriga kosmetika syns fortfarande. Av som standard.",
   "horizon.extras.cosmetics.shown": "Visas",
   "horizon.extras.cosmetics.hidden": "Dold",
-  "horizon.extras.cosmetics.name_tags": "Endast namnlappar"
+  "horizon.extras.cosmetics.name_tags": "Endast namnlappar",
+  "Shader Packs...": "Shader-paket..."
 }

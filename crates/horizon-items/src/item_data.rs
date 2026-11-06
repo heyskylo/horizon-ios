@@ -255,6 +255,20 @@ pub fn destroyed_container(stack: &mut ItemStack) -> Vec<ItemStack> {
     held.into_iter().map(|(_, stack)| stack).collect()
 }
 
+/// `NbtOps.getBooleanValue`, used by boolean component codecs: every numeric tag
+/// is true unless its double value is zero. In particular, fractions stay true.
+pub fn component_bool(value: &Tag) -> Option<bool> {
+    Some(match value {
+        Tag::Byte(v) => *v != 0,
+        Tag::Short(v) => *v != 0,
+        Tag::Int(v) => *v != 0,
+        Tag::Long(v) => *v != 0,
+        Tag::Float(bits) => f32::from_bits(*bits) != 0.0,
+        Tag::Double(bits) => f64::from_bits(*bits) != 0.0,
+        _ => return None,
+    })
+}
+
 impl ItemStack {
     pub fn new(item: &str, count: u32) -> Self {
         Self {
@@ -334,11 +348,12 @@ impl ItemStack {
     /// non-empty `minecraft:enchantments` component (`Item.isFoil` is
     /// `ItemStack.isEnchanted`; stored book enchantments do not count).
     pub fn has_foil(&self, item_glint: bool) -> bool {
-        if let Some(Tag::Byte(flag)) = self
+        if let Some(flag) = self
             .data()
             .and_then(|d| d.other("minecraft:enchantment_glint_override"))
+            .and_then(component_bool)
         {
-            return *flag != 0;
+            return flag;
         }
         item_glint || !self.enchantments().is_empty()
     }
@@ -689,9 +704,41 @@ pub fn parse_stack(snbt: &str) -> Result<Option<ItemStack>, String> {
     let (tag, _) = horizon_world::nbt::parse_snbt(snbt)?;
     Ok(crate::item_nbt::item_from_nbt(&tag))
 }
-/// The `components` compound for a stack, or None when every component is default.
+/// `MapDecorations.Entry.CODEC`: a bare type ID uses the default resource namespace.
+/// Keep preserved entry keys and numeric tags intact; this is not registry validation.
+fn canonical_other_component(id: &str, tag: &Tag) -> Tag {
+    let mut value = tag.clone();
+    if id == "minecraft:map_decorations"
+        && let Tag::Compound(entries) = &mut value
+    {
+        for entry in entries.values_mut() {
+            if let Some(Tag::String(kind)) = entry.get_mut("type") {
+                let text = kind.to_string_lossy();
+                if !text.is_empty()
+                    && !text.contains(':')
+                    && let Ok(id) = horizon_world::identifier::Identifier::parse(&text)
+                {
+                    *kind = id.to_string().as_str().into();
+                }
+            }
+        }
+    }
+    value
+}
+/// The saved `DataComponentPatch.CODEC` compound, or None when default.
+/// A filled map's empty decorations equal its prototype (`Items.mapProperties`).
 pub fn encode_components(stack: &ItemStack) -> Option<Tag> {
-    components_tag(stack.damage, stack.data())
+    let mut components = components_tag(stack.damage, stack.data())?;
+    if &*stack.item == "minecraft:filled_map"
+        && matches!(components.get("minecraft:map_decorations"), Some(Tag::Compound(entries)) if entries.is_empty())
+        && let Tag::Compound(entries) = &mut components
+    {
+        entries.remove(&JavaString::from("minecraft:map_decorations"));
+        if entries.is_empty() {
+            return None;
+        }
+    }
+    Some(components)
 }
 /// `encode_components` from the damage value and extra components.
 pub fn components_tag(damage: u32, data: Option<&StackData>) -> Option<Tag> {
@@ -897,7 +944,7 @@ pub fn components_tag(damage: u32, data: Option<&StackData>) -> Option<Tag> {
     if let Some(d) = data {
         for (k, v) in &d.other {
             out.entry(JavaString::from(k.as_str()))
-                .or_insert_with(|| v.clone());
+                .or_insert_with(|| canonical_other_component(k, v));
         }
     }
     (!out.is_empty()).then_some(Tag::Compound(out))
@@ -907,7 +954,9 @@ pub fn decode_components(components: Option<&Tag>) -> (u32, Option<Box<StackData
     let Some(c) = components else {
         return (0, None);
     };
-    let damage = c.get("minecraft:damage").and_then(int).unwrap_or(0).max(0) as u32;
+    // NbtOps.getNumberValue supplies a boxed number; Codec.INT truncates its value.
+    let damage =
+        horizon_world::datafix::dynamic::as_int(c.get("minecraft:damage"), 0).max(0) as u32;
     let potion = match c.get("minecraft:potion_contents") {
         Some(Tag::String(s)) => Some(Arc::from(s.to_string_lossy().as_str())),
         Some(t) => t
@@ -1068,7 +1117,8 @@ pub fn decode_components(components: Option<&Tag>) -> (u32, Option<Box<StackData
                 && (matches!(key.as_str(), "minecraft:item_name" | "minecraft:rarity")
                     || (key == "minecraft:tooltip_display" && v == &ominous_tooltip_display()));
             if !MODELLED.contains(&key.as_str()) && !ominous_part {
-                data.other.push((key, v.clone()));
+                let value = canonical_other_component(&key, v);
+                data.other.push((key, value));
             }
         }
         data.other.sort_by(|a, b| a.0.cmp(&b.0));
@@ -1107,6 +1157,165 @@ pub fn command_components(text: &str) -> Result<Tag, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn numeric_damage_decodes_and_saves_as_a_modelled_int() {
+        let keep = Tag::compound([("keep", Tag::Int(87))]);
+        for (raw, expected) in [
+            (None, 0),
+            (Some(Tag::Byte(1)), 1),
+            (Some(Tag::Short(1)), 1),
+            (Some(Tag::Int(1)), 1),
+            (Some(Tag::Long(4_294_967_297)), 1),
+            (Some(Tag::Float(1.5_f32.to_bits())), 1),
+            (Some(Tag::Double(2.75_f64.to_bits())), 2),
+            (Some(Tag::Float((-0.5_f32).to_bits())), 0),
+            (
+                Some(Tag::Float(2_147_483_648_f32.to_bits())),
+                i32::MAX as u32,
+            ),
+            (Some(Tag::Double(1.0e20_f64.to_bits())), i32::MAX as u32),
+        ] {
+            let mut entries = vec![("minecraft:custom_data", keep.clone())];
+            if let Some(raw) = &raw {
+                entries.push(("minecraft:damage", raw.clone()));
+            }
+            let (damage, extra) = decode_components(Some(&Tag::compound(entries)));
+            let loaded = ItemStack {
+                damage,
+                extra,
+                ..ItemStack::new("minecraft:diamond_pickaxe", 1)
+            };
+            assert_eq!(loaded.damage, expected, "{raw:?}");
+            assert!(loaded.wire_patch().is_none());
+            assert!(loaded.data().unwrap().other("minecraft:damage").is_none());
+            let saved = crate::item_nbt::item_to_nbt(&loaded);
+            assert_eq!(
+                saved
+                    .get("components")
+                    .and_then(|c| c.get("minecraft:damage")),
+                (expected > 0).then_some(&Tag::Int(expected as i32)),
+                "{raw:?}"
+            );
+            assert_eq!(
+                saved
+                    .get("components")
+                    .unwrap()
+                    .get("minecraft:custom_data"),
+                Some(&keep)
+            );
+            // No retained source or wire patch: only modelled damage is saved.
+            let mut fresh = ItemStack::new("minecraft:diamond_pickaxe", 1);
+            fresh.damage = expected;
+            fresh
+                .data_mut()
+                .set_other("minecraft:custom_data", Some(keep.clone()));
+            assert_eq!(crate::item_nbt::item_to_nbt(&fresh), saved);
+        }
+    }
+
+    #[test]
+    fn map_decoration_types_round_trip_with_default_namespaces() {
+        let parse = |text| horizon_world::nbt::parse_snbt(text).unwrap().0;
+        let source = parse(
+            r#"{"minecraft:map_decorations":{a:{type:"minecraft:mansion",x:10.5d,z:-20.0d,rotation:90.0f},"a+b":{type:"red_x",x:-1.25d,z:2.75d,rotation:-45.5f}},"minecraft:custom_data":{keep:7}}"#,
+        );
+        let expected = parse(
+            r#"{"minecraft:map_decorations":{a:{type:"minecraft:mansion",x:10.5d,z:-20.0d,rotation:90.0f},"a+b":{type:"minecraft:red_x",x:-1.25d,z:2.75d,rotation:-45.5f}},"minecraft:custom_data":{keep:7}}"#,
+        );
+        assert!(decode_components(None).1.is_none());
+        for input in [&source, &expected] {
+            let (damage, extra) = decode_components(Some(input));
+            assert_eq!(
+                extra.as_ref().unwrap().other("minecraft:map_decorations"),
+                expected.get("minecraft:map_decorations")
+            );
+            let loaded = ItemStack {
+                damage,
+                extra,
+                ..ItemStack::new("minecraft:filled_map", 1)
+            };
+            assert_eq!(encode_components(&loaded), Some(expected.clone()));
+            // A fresh model has no original NBT or retained component source.
+            let mut fresh = ItemStack::new("minecraft:filled_map", 1);
+            assert!(fresh.extra.is_none());
+            for id in ["minecraft:map_decorations", "minecraft:custom_data"] {
+                fresh.data_mut().set_other(id, input.get(id).cloned());
+            }
+            assert_eq!(encode_components(&fresh), Some(expected.clone()));
+            assert!(fresh.data().unwrap().map_id.is_none());
+        }
+    }
+
+    #[test]
+    fn empty_map_decoration_patch_uses_filled_map_prototype() {
+        let parse = |text| horizon_world::nbt::parse_snbt(text).unwrap().0;
+        let empty = parse(r#"{"minecraft:map_decorations":{}}"#);
+        assert!(decode_components(None).1.is_none());
+        assert!(encode_components(&ItemStack::new("minecraft:filled_map", 1)).is_none());
+        let mut fresh = ItemStack::new("minecraft:filled_map", 1);
+        fresh
+            .data_mut()
+            .other
+            .push(("minecraft:map_decorations".into(), parse("{}")));
+        // The value codec has no item prototype; only the saved patch elides it.
+        assert_eq!(components_tag(0, fresh.data()), Some(empty.clone()));
+        assert!(encode_components(&fresh).is_none());
+        let (damage, extra) = decode_components(Some(&empty));
+        let loaded = ItemStack {
+            damage,
+            extra,
+            ..ItemStack::new("minecraft:filled_map", 1)
+        };
+        let saved = crate::item_nbt::item_to_nbt(&loaded);
+        assert_eq!(saved, parse(r#"{id:"minecraft:filled_map",count:1}"#));
+        let back = crate::item_nbt::item_from_nbt(&saved).unwrap();
+        assert!(encode_components(&back).is_none());
+        let keep = parse(r#"{"minecraft:map_decorations":{},"minecraft:custom_data":{keep:7}}"#);
+        let (damage, extra) = decode_components(Some(&keep));
+        let stack = ItemStack {
+            damage,
+            extra,
+            ..ItemStack::new("minecraft:filled_map", 1)
+        };
+        assert_eq!(
+            encode_components(&stack),
+            Some(parse(r#"{"minecraft:custom_data":{keep:7}}"#))
+        );
+    }
+
+    #[test]
+    fn nondefault_map_decoration_patches_round_trip() {
+        let parse = |text| horizon_world::nbt::parse_snbt(text).unwrap().0;
+        let nonempty = parse(
+            r#"{"minecraft:map_decorations":{"a+b":{type:"minecraft:red_x",x:-1.25d,z:2.75d,rotation:-45.5f}},"minecraft:custom_data":{keep:7}}"#,
+        );
+        let removed =
+            parse(r#"{"!minecraft:map_decorations":{},"minecraft:custom_data":{keep:7}}"#);
+        let empty = parse(r#"{"minecraft:map_decorations":{}}"#);
+        for (item, components) in [
+            ("minecraft:filled_map", &nonempty),
+            ("minecraft:stone", &nonempty),
+            ("minecraft:filled_map", &removed),
+            ("minecraft:stone", &empty),
+            ("minecraft:map", &empty),
+        ] {
+            let (damage, extra) = decode_components(Some(components));
+            let stack = ItemStack {
+                damage,
+                extra,
+                ..ItemStack::new(item, 1)
+            };
+            assert_eq!(
+                encode_components(&stack),
+                Some(components.clone()),
+                "{item}"
+            );
+            let back =
+                crate::item_nbt::item_from_nbt(&crate::item_nbt::item_to_nbt(&stack)).unwrap();
+            assert_eq!(encode_components(&back), Some(components.clone()), "{item}");
+        }
+    }
 
     #[test]
     fn components_round_trip() {

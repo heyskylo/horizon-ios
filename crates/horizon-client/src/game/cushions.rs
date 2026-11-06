@@ -7,11 +7,11 @@
 //! only an entity whose `Pos` is the click point's height. Placement uses
 //! outline bounds, collision shapes and suffocation predicates.
 use super::{Game, Hit, InteractTarget, Keys, entity_culling::default_range, ray_box};
+use horizon_client::actions::Action;
 use horizon_client::entities::{Cushion, dye_index};
 use horizon_client::items::ItemStack;
 use horizon_client::mobs::anim::Poses;
 use horizon_core::geometry::{Aabb, Vec3};
-use winit::keyboard::KeyCode;
 
 /// `Direction.fromYRot(yaw).toYRot()`: the nearest 90 degree step.
 pub(crate) fn snap_yaw(yaw: f32) -> f32 {
@@ -278,6 +278,7 @@ impl Game<'_> {
             yaw: snap_yaw(self.yaw),
             color,
             check_interval: 0,
+            custom_name: None,
         });
         self.world
             .modified
@@ -323,7 +324,7 @@ impl Game<'_> {
             return false;
         }
         // isSecondaryUseActive.
-        if self.keys.contains(&KeyCode::ShiftLeft) {
+        if self.keys.held(Action::Sneak) {
             return false;
         }
         let id = self.cushions[i].id;
@@ -396,12 +397,7 @@ impl Game<'_> {
         if !self.ui.rules.bool("entity_drops") || (by_player && self.creative) {
             return;
         }
-        let stack = ItemStack {
-            item: std::sync::Arc::from(c.item()),
-            count: 1,
-            damage: 0,
-            extra: None,
-        };
+        let stack = c.item_stack_with_data();
         self.spawn_item(stack, [p.x, p.y, p.z], [0.0; 3], 10);
     }
 
@@ -605,5 +601,34 @@ impl Game<'_> {
             );
             self.finish_entity_occlusion(culling, c, out, entity_start);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use horizon_world::nbt::Tag;
+
+    /// `Cushion.getCushionItemStackWithData`: a named cushion drops named.
+    #[test]
+    fn a_named_cushion_drops_with_its_name() {
+        let c = Cushion {
+            id: 1,
+            position: Vec3::ZERO,
+            pos: [0, 64, 0],
+            yaw: 0.0,
+            color: 1,
+            check_interval: 0,
+            custom_name: Some(Tag::String("Seat".into())),
+        };
+        let stack = c.item_stack_with_data();
+        assert_eq!(&*stack.item, "minecraft:orange_cushion");
+        assert!(stack.data().is_some_and(|d| d.custom_name.is_some()));
+        // An unnamed one gains no component.
+        let c = Cushion {
+            custom_name: None,
+            ..c
+        };
+        assert!(c.item_stack_with_data().data().is_none());
     }
 }

@@ -15,8 +15,11 @@ use horizon_client::{
     particles::{ParticleEngine, ParticleOptions, ParticleType},
     world::World,
 };
-use horizon_core::random::RandomSource;
-use horizon_world::chunk::BlockState;
+use horizon_core::{
+    position::BlockPos,
+    random::{RandomSource, position_seed},
+};
+use horizon_world::{chunk::BlockState, registry::BlockStateId};
 use serde_json::Value;
 use std::{
     collections::HashMap,
@@ -44,6 +47,20 @@ fn parse_state(spec: &str) -> BlockState {
 /// A position as the oracle prints it: exact double bits.
 fn d(v: f64) -> String {
     format!("{:016x}", v.to_bits())
+}
+
+/// The per-column offset the client jitters a model with: an `XZ` offset type's
+/// two nibbles of `Mth.getSeed(x, 0, z)`, 0.25 either way.
+fn column_offset(x: i32, z: i32) -> [f64; 3] {
+    let seed = position_seed(BlockPos::new(x, 0, z));
+    // The division is single precision, as the offset itself is: only the
+    // centring and the 0.25 scale are double.
+    let nibble = |shift: u32| ((seed >> shift) & 15) as f32 / 15.0;
+    [
+        ((f64::from(nibble(0)) - 0.5) * 0.5).clamp(-0.25, 0.25),
+        0.0,
+        ((f64::from(nibble(8)) - 0.5) * 0.5).clamp(-0.25, 0.25),
+    ]
 }
 
 pub fn main() -> Result<()> {
@@ -82,30 +99,47 @@ pub fn main() -> Result<()> {
         let case: Value = serde_json::from_str(&line?)?;
         let kind = case["kind"].as_str().unwrap_or("marker");
         // A block's own tick through the whole ClientLevel.animateTick loop,
-        // over a world that is all of it: every particle and sound it asks the
-        // engine for, from the level random seeded by the case.
+        // over a world that is all of it above y = 64 and all of the case's
+        // floor below: every particle and sound it asks the engine for, from the
+        // level random seeded by the case.
         if kind == "tick" {
             let spec = case["state"].as_str().ok_or("state")?.to_owned();
-            if !tick_worlds.contains_key(&spec) {
+            let floor_spec = case["floor"].as_str().unwrap_or(&spec).to_owned();
+            let key = format!("{spec}|{floor_spec}");
+            if !tick_worlds.contains_key(&key) {
                 let state = assets.registry.resolve(&parse_state(&spec))?;
+                let floor = assets.registry.resolve(&parse_state(&floor_spec))?;
                 let mut world = World::new(facts.air, 0);
-                for cz in -2..2 {
-                    for cx in -2..2 {
+                // The loop samples y 32 to 96, reads neighbours one block out
+                // and a stalactite climbs ten blocks to its root, so the
+                // stand-in world has to hold all of that: a case that ends
+                // inside the sample box compares air against the oracle's
+                // unending world.
+                for cz in -3..3 {
+                    for cx in -3..3 {
                         world
                             .chunks
                             .insert((cx, cz), Arc::new(Chunk::empty(cx, cz)));
-                        for y in 33..96 {
+                        for y in 31..=107 {
                             for z in 0..16 {
                                 for x in 0..16 {
-                                    world.set(cx * 16 + x, y, cz * 16 + z, state)?;
+                                    let at = if y < 64 { floor } else { state };
+                                    world.set(cx * 16 + x, y, cz * 16 + z, at)?;
                                 }
                             }
                         }
                     }
                 }
-                tick_worlds.insert(spec.clone(), world);
+                tick_worlds.insert(key.clone(), world);
             }
-            let world = &tick_worlds[&spec];
+            let world = &tick_worlds[&key];
+            // A block whose model is jittered per column: the offset the client
+            // gives its model, so the oracle's shape moves exactly as the game
+            // moves it.
+            let jitter = case["offset"].as_str() == Some("xz");
+            let model_offset = move |_: BlockStateId, x: i32, z: i32| -> Option<[f64; 3]> {
+                jitter.then(|| column_offset(x, z))
+            };
             let ctx = AnimateContext {
                 world,
                 facts: &facts,
@@ -118,7 +152,7 @@ pub fn main() -> Result<()> {
                 creaking_active: false,
                 sky_darken: 0,
                 marker: None,
-                model_offset: &|_, _, _| None,
+                model_offset: &model_offset,
                 gateway_particles: &|_, _| 0,
                 thundering: false,
                 ultrawarm: false,

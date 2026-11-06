@@ -54,6 +54,8 @@ sha2 = "0.10.9"
 sha1 = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1.0.151", features = ["raw_value"] }
+# server.toml's [combat], which the dedicated server reads itself.
+toml = "1.1"
 # hlsl-out: the gfx.rs tests translate every shader as wgpu's DirectX 12 backend does. A normal feature,
 # not a dev-dependency's, so builds, tests and examples share one build of naga, wgpu and this crate.
 naga = { version = "30.0.1", features = ["wgsl-in", "hlsl-out"] }
@@ -83,6 +85,8 @@ fs4 = { version = "1.1.0", default-features = false, features = ["sync"] }
 rustix = { version = "1", default-features = false, features = ["std", "time", "process", "fs"] }
 
 [target.'cfg(windows)'.dependencies]
+# Resolve virtualized folders to shell-compatible physical paths.
+dunce = "1.0.5"
 # Use the registered URI handler without routing links through Explorer/cmd.
 open = { version = "5.4.5", features = ["shellexecute-on-windows"] }
 # DirectX 12, where Vulkan has no adapter or device, or by choice (`graphicsApi`, graphics.rs).
@@ -101,10 +105,6 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 # OpenGL (WGL on Windows, EGL on Linux), the last fallback, for GPUs with no Vulkan or
 # DirectX 12 driver (`graphicsApi`, graphics.rs).
 wgpu = { version = "30.0.1", default-features = false, features = ["gles"] }
-
-[target.'cfg(windows)'.build-dependencies]
-# The icon resource in the .exe (build.rs).
-winresource = "0.1"
 
 [features]
 default = ["audio", "controllers"]
@@ -148,6 +148,8 @@ path = "examples/native_gui_overlay_probe.rs"
 
 [build-dependencies]
 horizon-mod-api-gen = { path = "../horizon-mod-api-gen" }
+# The build script runs on the host, but embeds resources based on the target OS.
+winresource = "0.1"
 
 [lints]
 workspace = true

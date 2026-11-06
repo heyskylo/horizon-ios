@@ -109,7 +109,7 @@ impl Game<'_> {
         let Some((i, t)) = self.redirectable_hit() else {
             return false;
         };
-        if self.mob_hit().is_some_and(|(_, d)| d < t) {
+        if self.mob_hit().is_some_and(|(_, d, _)| d < t) {
             return false;
         }
         if let (Some(hit), Some(eye)) = (self.pick_unfiltered(), self.eye_position()) {

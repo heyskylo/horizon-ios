@@ -3,9 +3,9 @@
 //! here names one (docs/controllers.md, "Adding a screen").
 use super::{Game, Screen};
 use horizon_client::{
-    gamepad::{Button, GlyphStyle},
-    hud::{HudAtlas, HudBatch, rgba},
-    lang,
+    gamepad::Button,
+    hud::HudBatch,
+    lang, pad_glyph,
     widgets::{self, Action, DeclaredAction, Kind, Target},
 };
 
@@ -43,7 +43,7 @@ fn glyph_at(
     right: bool,
 ) -> Option<(f32, f32)> {
     const INSET: f32 = 4.0;
-    let fits = w >= wide + 2.0 * INSET && h >= 11.0;
+    let fits = w >= wide + 2.0 * INSET && h >= pad_glyph::HEIGHT;
     let shown = x >= 0.0 && y >= 0.0 && x + w <= view_w && y + h <= view_h;
     (fits && shown).then(|| {
         let at = if right {
@@ -55,25 +55,12 @@ fn glyph_at(
     })
 }
 
-/// The button as printed on the pad, in its colour, on a dark key.
-fn draw_glyph(
-    batch: &mut HudBatch,
-    atlas: &HudAtlas,
-    button: Button,
-    style: GlyphStyle,
-    x: f32,
-    y: f32,
-) {
-    let (label, [r, g, b]) = (button.label(style), button.color(style));
-    let width = HudBatch::text_width(atlas, label).ceil() + 4.0;
-    batch.fill(atlas, x - 1.0, y - 2.0, width, 11.0, rgba(40, 40, 40, 255));
-    batch.text(atlas, label, x + 1.0, y, rgba(r, g, b, 255), false);
-}
-
 impl Game<'_> {
-    /// A key row waits for its key: B is Escape, which unbinds; its buttons aren't pressed.
-    fn pad_binding(&self) -> bool {
-        self.screen == Screen::Options
+    /// A key row waits for its key: B is Escape, which unbinds; its buttons aren't pressed. A
+    /// prompt over the row has the buttons first.
+    pub(super) fn pad_binding(&self) -> bool {
+        !self.prompt_open()
+            && self.screen == Screen::Options
             && (self.options_waiting_for_key() || self.ui.options.selected_pad_action.is_some())
     }
 
@@ -128,7 +115,7 @@ impl Game<'_> {
         }
         let focus = self.pad.menu.focus.filter(|_| self.pad_focus_mode());
         let (atlas, style) = (&self.gui.atlas, self.ui.options.pad_style);
-        let width = |button: Button| HudBatch::text_width(atlas, button.label(style)).ceil() + 4.0;
+        let width = |button: Button| pad_glyph::width(atlas, button, style);
         let mut glyphs = Vec::new();
         // A on a text field opens the keyboard: at its right end, its text stays in view.
         if let Some(focus) = focus.filter(|f| f.kind == Kind::Field)
@@ -156,16 +143,25 @@ impl Game<'_> {
     pub(super) fn draw_pad_action_glyphs(&self, batch: &mut HudBatch) {
         let (atlas, style) = (&self.gui.atlas, self.ui.options.pad_style);
         for (button, x, y) in self.pad_glyphs((batch.width, batch.height)) {
-            draw_glyph(batch, atlas, button, style, x, y);
+            pad_glyph::draw(batch, atlas, button, style, x, y);
         }
     }
 
-    /// `pad status`: the glyphs drawn now and where.
+    /// `pad status`: the glyphs drawn now and where: its text's place, what it covers, and its
+    /// sprite (none: the label on a key).
     pub(super) fn pad_glyphs_status(&self) -> Vec<serde_json::Value> {
         let view = self.gui_scale().map_or((0.0, 0.0), |b| (b.width, b.height));
+        let (atlas, style) = (&self.gui.atlas, self.ui.options.pad_style);
         self.pad_glyphs(view)
             .iter()
-            .map(|(button, x, y)| serde_json::json!({ "button": format!("{button:?}"), "at": [x, y] }))
+            .map(|&(button, x, y)| {
+                serde_json::json!({
+                    "button": format!("{button:?}"),
+                    "at": [x, y],
+                    "rect": pad_glyph::rect(atlas, button, style, x, y),
+                    "sprite": pad_glyph::art(atlas, button, style),
+                })
+            })
             .collect()
     }
 
@@ -260,6 +256,23 @@ mod tests {
     }
 
     #[test]
+    fn a_face_glyph_on_a_button_stays_clear_of_its_label() {
+        let (x, y) = glyph_at(
+            [10.0, 20.0, 150.0, 20.0],
+            pad_glyph::FACE_WIDTH,
+            (640.0, 480.0),
+            false,
+        )
+        .unwrap();
+        // Vertically inside the button, ending before the label's left (its x + 2 + room).
+        assert_eq!((y - 2.0, y - 2.0 + pad_glyph::HEIGHT), (24.0, 36.0));
+        widgets::set_action_glyphs(true);
+        let label_left = 10.0 + 2.0 + widgets::action_glyph_room();
+        widgets::set_action_glyphs(false);
+        assert!(x - 1.0 + pad_glyph::FACE_WIDTH < label_left);
+    }
+
+    #[test]
     fn a_glyph_goes_on_a_button_it_fits_in_the_view() {
         let view = (320.0, 240.0);
         let button = [10.0, 20.0, 150.0, 20.0];
@@ -269,6 +282,12 @@ mod tests {
         // Too narrow, too short, running off a small split view.
         assert_eq!(glyph_at([10.0, 20.0, 15.0, 20.0], 10.0, view, false), None);
         assert_eq!(glyph_at([10.0, 20.0, 150.0, 8.0], 10.0, view, false), None);
+        // Art as tall as the row fits; a row any shorter would clip it.
+        assert_eq!(
+            glyph_at([10.0, 20.0, 150.0, 12.0], 12.0, view, false),
+            Some((14.0, 22.0))
+        );
+        assert_eq!(glyph_at([10.0, 20.0, 150.0, 11.0], 12.0, view, false), None);
         assert_eq!(glyph_at(button, 10.0, (120.0, 240.0), false), None);
     }
 

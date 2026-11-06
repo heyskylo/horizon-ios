@@ -55,9 +55,10 @@ The opening, then Play ([clip](docs/opening.webm)):
   starts the game. With no install on the computer the Play page offers the download alone and the
   Minecraft folder row says none is needed. Without an owner,
   the Play page asks to sign in first. `horizon-launcher prepare --download`.
-- **Mods**: tabs for Mods, Modpacks, Resource packs, Shader packs and Data packs. Mods, Modpacks
-  and Resource packs search Horizon's own registry or Modrinth (CurseForge support is coming soon);
-  Shader packs search the registry, Data packs Modrinth (into the world picked there). A Java
+- **Mods**: tabs for Mods, Modpacks, Resource packs, Shader packs and Data packs. Mods, Modpacks,
+  Resource packs and Data packs (into the world picked there) search Horizon's own registry, with
+  its categories as filters, or Modrinth (CurseForge support is coming soon); Shader packs search
+  the registry. A Java
   instance's files come from Modrinth for its version and loader; on a Horizon instance, Modrinth's
   Java mods are listed too, each marked Works, Partly or Doesn't run in Horizon. Install puts a file in
   the game folder only after its SHA-512 matches, and a
@@ -269,7 +270,8 @@ page `servers.json` (the list), `servers/<name>/` (the servers created there) an
   game starts. `horizon-launcher game-args "<line>"` sets them too, and `play --arg <ARG>` passes
   one for a single run.
 - **Proxy**: when the internet here needs one (a school's, an office's, a country where a host is
-  unreachable), Settings' Proxy takes the `http://host:port` address your proxy app listens on, and
+  unreachable), Settings' Proxy takes the `http://host:port` or `socks5://host:port` address your
+  proxy app listens on, and
   every download goes through it: Horizon's releases and the launcher's own update, Minecraft's
   files and Java from Mojang, Modrinth, CurseForge, Horizon's mod registry, pictures, Microsoft
   sign-in, and the jars a modpack import fetches. It is kept as `proxy` in `settings.json`, and

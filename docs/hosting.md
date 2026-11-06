@@ -157,6 +157,7 @@ view_distance = 10
 simulation_distance = 10
 max_view_distance = 0        # past view_distance, saved chunks only, up to this (0: off)
 admin_feedback_to_ops = true # operators see each other's commands ([name: ...]); false: only the log
+accept_older_clients = false # true: 26.2 clients join too (see below; work in progress)
 
 [world]
 name = "world"
@@ -205,6 +206,17 @@ On by default, as vanilla: when an operator runs a command that reports to admin
 the other operators read `[name: ...]` in gray, and the console logs it. Players who aren't operators never see it
 either way. `false` keeps it to the console's log (`logs/latest.log`): nobody in game sees an operator's commands,
 while each operator still reads their own command's answer.
+
+### Older clients: `accept_older_clients`
+
+Off by default, a Horizon setting with no vanilla equivalent: a vanilla server, and Horizon's, turn away a client of
+any other release. With `accept_older_clients = true` a 26.2 client may join too: Horizon renumbers its packets both
+ways, with no proxy in between, and the server list shows the server as joinable for 26.2.
+
+This is work in progress (#10404): the ids inside packets and the packets whose layout changed between 26.2 and
+26.3 aren't translated yet, so for now a 26.2 player gets through the login and is then told that 26.2 can't be
+translated yet, before the server sends anything it would misread. 26.3 clients are served exactly as before,
+whatever the setting.
 
 ### Seeing further: `max_view_distance`
 
@@ -302,8 +314,9 @@ horizon-server rollback [--timeout SECONDS]
 ```
 
 While the server runs, `op`, `whitelist` and `cmd` go to the game's console, so they act exactly as vanilla's
-console commands do. While it's stopped, they edit vanilla's files directly. `kick`, `ban`, `pardon`, `ban-ip`
-and `pardon-ip` run the vanilla command on the running server, through its control API; `players` reads the
+console commands do. While it's stopped, they edit vanilla's files directly. `kick` runs the vanilla command
+on the running server, through its control API; `ban`, `pardon`, `ban-ip` and `pardon-ip` do the same while it
+is running and edit the vanilla files directly while it is stopped. `players` reads the
 lists from the files when the server is stopped. Any console command works through
 `cmd`: `horizon-server cmd ban Griefer`, `horizon-server cmd say Restarting in 5 minutes`.
 #### Temporary bans
@@ -344,8 +357,13 @@ Tiles are sampled again for each player who asks (there is no cache yet). Vanill
 then prints a short summary and saves it in `reports/`: `perf-<time>.txt` and `perf-<time>.json`. They say where
 the ticks' time went, phase by phase (mobs, block ticks, block entities, the network and the chunks it
 sends, saving...), the slowest ticks, how many entities of each type, chunks, players, memory, CPU, and the
-settings that matter (view and simulation distance, max players). They hold no names, UUIDs or addresses, so you
-can attach them to an issue as they are. On the console it is `horizon-report [SECONDS]`.
+settings that matter (view and simulation distance, max players). Since format 2 they also give each dimension's
+share of the tick (`level_*`), what each mob type costs per dimension (one tick in four times every mob: ms a
+tick, mobs, µs a mob), the chunk workers' CPU by job (load, generate, decorate, finish, light), the network bytes
+a player sends and receives, and what recording cost the tick (measured, usually well under 1 % of MSPT). They
+hold no names, UUIDs or addresses, so you can attach them to an issue as they are. On the console it is
+`horizon-report [SECONDS]`; `horizon-report stop` writes the report now and `horizon-report status` says how far
+it is. Nothing restarts: the report runs beside the game.
 
 Between reports, the log keeps the spikes: a tick slower than 250 ms writes a `Horizon: slow tick` line with
 its phases (`HORIZON_SPIKES=MS` in the engine's environment sets another threshold), and a server more than
@@ -540,6 +558,41 @@ and the oldest automatic ones beyond `keep` are deleted. Backups you make by han
 world aside to `backups/replaced-<time>/` (never deleted), puts the backup in place, and restarts the server if
 it was running. Add `--dimension ID` (like `minecraft:the_nether`) to bring back only that dimension and leave
 the rest of the world as it is. The panel does the same with one click.
+
+### A smaller world: `[prune_chunks]`
+
+Players who travel far leave a trail of chunks nobody comes back to. This deletes the chunks players spent
+less than a minute near (vanilla's `InhabitedTime`, 1200 ticks), so they generate again from the seed, as they
+were, if someone returns. Back up first. Add to `server.toml`, then restart:
+
+```toml
+[prune_chunks]
+mode = "dry-run"             # "dry-run": only the report, the game starts at once; "delete": before the game starts
+min_inhabited_ticks = 1200   # chunks players spent less than this near go
+spawn_radius = 32            # chunks this close to the spawn stay (0 0 in the Nether and the End)
+ring = 1                     # chunks this close to a kept chunk stay, so no seam opens beside a build
+keep_files = ["horizon-smp/claims.json", "horizon-smp/places.json"]   # in the world folder: claims, homes
+```
+
+After the run, `mode` is set back to `"off"` and `logs/prune-chunks-<time>.txt` says, per dimension, how many
+chunks went (or would go) and how much disk was freed. The chunk's entities and points of interest go with it;
+region files are rewritten compacted (vanilla still reads them) and a file left empty is deleted. Chunks that
+can't be read, files in `keep_files` (keys or text like `minecraft:overworld 12 -3`, objects with `dimension`,
+`x` and `z`), level.dat and player data are never touched; a `keep_files` file that exists but can't be read
+stops the prune before anything is deleted.
+
+### 1.8 combat: `[combat]`
+
+Fights follow 26.3's rules. For 1.8.9's (no attack cooldown or sweep, 1.8 weapon damage, Strength and
+Sharpness; the list is in [pvp.md](pvp.md#18-combat-in-worlds-you-host-combatrules-default-off)), add to
+`server.toml`, then restart:
+
+```toml
+[combat]
+legacy = true
+```
+
+Players join with any vanilla 26.3 client: only the server decides the damage.
 
 ## 8. Start it with the computer
 

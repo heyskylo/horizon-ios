@@ -191,7 +191,7 @@ impl Game<'_> {
         {
             log::error!("could not open {}: {e}", dim.id());
         }
-        let Some(swap) = self.enter_guest(&mut host, conn) else {
+        let Some(swap) = self.enter_guest(&mut host, conn, back) else {
             if self.dim != back
                 && let Err(e) = self.enter_level(Some(&mut host), back)
             {

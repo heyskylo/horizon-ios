@@ -7,7 +7,7 @@
 //! the block plus `minecraft_mix_light` with the level's two diffuse lights.
 use crate::{
     Result,
-    bidi::visual_str,
+    bidi::visual,
     block_entity_anim::{self, EnchantingBook},
     breaking::entity_geometry,
     fast_hash::FxHashMap,
@@ -639,7 +639,9 @@ fn sign_text_near(pos: [i32; 3], camera: DVec3) -> bool {
 }
 
 /// `AbstractSignRenderer.submitSignText`: four centred lines, glowing text
-/// full-bright with an 8x outline in the dark colour.
+/// full-bright with an 8x outline in the dark colour. The font colours each
+/// glyph by its style (`Font.StringRenderOutput`): a line's own colour wins,
+/// else the sign's. A line is one call per run of one colour.
 fn sign_text_calls(
     scene: &Scene,
     data: &SignData,
@@ -662,25 +664,53 @@ fn sign_text_calls(
         (dark, 0, vertex_light(packed))
     };
     let advance = |c: char| (scene.glyph)(c).advance;
-    let width = |s: &str| s.chars().map(advance).sum::<f32>().ceil();
-    text.lines
-        .iter()
-        .enumerate()
-        .map(|(i, line)| {
-            // The line that fits, in the order it is drawn (getVisualOrder).
-            let shown = first_line(line, data.max_line_width(), &advance);
-            let shown = visual_str(&shown).into_owned();
-            TextCall {
+    let mut calls: Vec<TextCall> = Vec::with_capacity(text.lines.len());
+    for i in 0..text.lines.len() {
+        // The line that fits, in the order it is drawn (getVisualOrder).
+        let line = text.line_text(i);
+        let line = line.resolved();
+        let flat: String = line.chars().map(|(c, _)| c).collect();
+        let fits = first_line(&flat, data.max_line_width(), &advance);
+        let shown = line.slice(0, fits.chars().count());
+        let shown = visual(&shown);
+        let width = shown.chars().map(|(c, _)| advance(c)).sum::<f32>().ceil();
+        let x = -((width as i32) / 2) as f32;
+        let y = i as f32 * line_height - midpoint;
+        let first = calls.len();
+        let mut pen = 0.0;
+        for span in shown.spans.iter().filter(|s| !s.text.is_empty()) {
+            let run = span
+                .style
+                .color
+                .map_or(color, |rgb| 0xFF00_0000 | (rgb & 0xFF_FFFF));
+            match calls[first..].last_mut() {
+                Some(last) if last.color == run => last.text.push_str(&span.text),
+                _ => calls.push(TextCall {
+                    matrix: m,
+                    x: x + pen,
+                    y,
+                    text: span.text.clone(),
+                    color: run,
+                    outline,
+                    light,
+                }),
+            }
+            pen += span.text.chars().map(advance).sum::<f32>();
+        }
+        if calls.len() == first {
+            // A line with no text is still a call, of no glyphs.
+            calls.push(TextCall {
                 matrix: m,
-                x: -((width(&shown) as i32) / 2) as f32,
-                y: i as f32 * line_height - midpoint,
-                text: shown,
+                x,
+                y,
+                text: String::new(),
                 color,
                 outline,
                 light,
-            }
-        })
-        .collect()
+            });
+        }
+    }
+    calls
 }
 
 /// How far the text of an outlined call sits in front of its outline, in
@@ -3467,6 +3497,7 @@ fn portal_cube(m: Mat4, faces: &[Direction], layer: u32, out: &mut Vec<Vertex>) 
 mod tests {
     use super::*;
     use crate::assets::Assets;
+    use horizon_world::nbt::Tag;
     #[test]
     #[ignore = "requires prepared models/textures in HORIZON_TEST_RESOURCES"]
     fn entity_block_particles_and_breaking_use_exported_models() -> Result<()> {
@@ -3974,6 +4005,129 @@ mod tests {
             })
             .collect();
         assert_eq!(boxes, [[10.0, 14.0, 2.0, 10.0], [15.0, 19.0, 2.0, 10.0]]);
+    }
+
+    /// The front text calls of a sign whose every glyph advances 6.
+    fn front_calls(data: &SignData, near: bool) -> Vec<(String, f32, f32, u32, u32)> {
+        let world = World::new(BlockStateId(0), 1);
+        let sprites = HashMap::new();
+        let glyph = |_: char| Glyph {
+            advance: 6.0,
+            ..Glyph::default()
+        };
+        let scene = Scene {
+            camera: DVec3::ZERO,
+            orientation: Quat::IDENTITY,
+            anim: &|_| BlockAnim::default(),
+            texts: None,
+            partial: 0.0,
+            game_time: 0,
+            max_y: 320,
+            world: &world,
+            sprites: &sprites,
+            emissive: &Default::default(),
+            translucent_sprites: &HashSet::new(),
+            atlas_revision: 1,
+            nether: false,
+            lid: &|_| 0.0,
+            sign: &|_| None,
+            banner: &|_| Vec::new(),
+            skull: &|_| None,
+            glyph: &glyph,
+            glyphs: 0,
+            dynamic_visible: None,
+        };
+        sign_text_calls(&scene, data, &data.front, Mat4::IDENTITY, 0, near)
+            .into_iter()
+            .map(|c| (c.text, c.x, c.y, c.color, c.outline))
+            .collect()
+    }
+    fn sign_with(lines: [Tag; 4]) -> SignData {
+        let mut data = SignData::default();
+        data.decode(&Tag::compound([(
+            "front_text",
+            Tag::compound([("messages", Tag::List(lines.to_vec()))]),
+        )]));
+        data
+    }
+    fn colored(text: &str, color: &str) -> Tag {
+        Tag::compound([
+            ("text", Tag::String(text.into())),
+            ("color", Tag::String(color.into())),
+        ])
+    }
+
+    /// `Font.StringRenderOutput`: a glyph takes its style's colour and the
+    /// sign's dark text colour only when the style has none (#9783). A line
+    /// of two colours is two calls, the second where the first ends, the
+    /// whole line centred.
+    #[test]
+    fn sign_text_takes_each_lines_own_colors() {
+        let mut two = colored("ab", "red");
+        let Tag::Compound(parts) = &mut two else {
+            unreachable!()
+        };
+        parts.insert("extra".into(), Tag::List(vec![colored("cd", "blue")]));
+        let data = sign_with([
+            Tag::String("plain".into()),
+            colored("Online", "green"),
+            two,
+            Tag::String("".into()),
+        ]);
+        // Black dye: the dark text colour is black. Sign lines are 10 apart
+        // from 20 above the middle.
+        assert_eq!(
+            front_calls(&data, false),
+            [
+                ("plain".to_owned(), -15.0, -20.0, 0xFF00_0000, 0),
+                ("Online".to_owned(), -18.0, -10.0, 0xFF55_FF55, 0),
+                ("ab".to_owned(), -12.0, 0.0, 0xFFFF_5555, 0),
+                ("cd".to_owned(), 0.0, 0.0, 0xFF55_55FF, 0),
+                (String::new(), 0.0, 10.0, 0xFF00_0000, 0),
+            ]
+        );
+    }
+
+    /// A glowing sign's own colour still wins over its dye, and the outline
+    /// stays the dye's dark colour. `§` codes in a line colour it too, and
+    /// `§r` goes back to the sign's colour.
+    #[test]
+    fn glowing_sign_text_keeps_its_outline_under_a_lines_own_colors() {
+        let mut data = sign_with([
+            Tag::String("plain".into()),
+            colored("Online", "green"),
+            Tag::String("§cRed§rX".into()),
+            Tag::String("".into()),
+        ]);
+        data.front.color = 14;
+        data.front.glowing = true;
+        let (red, outline) = (0xFFFF_0000, 0xFF66_0000);
+        assert_eq!(
+            front_calls(&data, true),
+            [
+                ("plain".to_owned(), -15.0, -20.0, red, outline),
+                ("Online".to_owned(), -18.0, -10.0, 0xFF55_FF55, outline),
+                ("Red".to_owned(), -12.0, 0.0, 0xFFFF_5555, outline),
+                ("X".to_owned(), 6.0, 0.0, red, outline),
+                (String::new(), 0.0, 10.0, red, outline),
+            ]
+        );
+    }
+
+    /// The text that fits the sign is drawn, in the colour it had.
+    #[test]
+    fn a_long_colored_line_is_cut_where_it_stops_fitting() {
+        // 90 wide: fifteen glyphs of 6.
+        let data = sign_with([
+            colored("abcdefghijklmnopqrst", "gold"),
+            Tag::String("".into()),
+            Tag::String("".into()),
+            Tag::String("".into()),
+        ]);
+        assert_eq!(
+            front_calls(&data, false)[0],
+            ("abcdefghijklmno".to_owned(), -45.0, -20.0, 0xFFFF_AA00, 0)
+        );
     }
 
     #[test]

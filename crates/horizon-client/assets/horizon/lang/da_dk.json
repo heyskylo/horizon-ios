@@ -301,7 +301,6 @@
   "horizon.osk.close": "Luk",
   "horizon.extras.chat_animation.tooltip": "En ny chatlinje glider ind fra venstre, mens den toner ind, i stedet for at virke hel.",
   "horizon.extras.chat_indicator.tooltip": "Den farvede bjælke til venstre for en chatlinje.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "Scrollhjulet over en knap i indstillingerne ændrer dens værdi, som i vanilje. Fra, hjulet ruller kun listen.",
   "horizon.extras.pack_browser.tooltip": "Select Resource Packs får en Tilføj knap, der søger mod Modrinth og installerer en pakke i din pakkemappe. Off, spillet kontakter aldrig Modrinth.",
   "horizon.extras.splitscreen.tooltip": "I en verden kan en anden controller deltage som en ny spiller: Tryk på A, når den spørger, vælg derefter en profil og hvor du vil spille.",
   "horizon.splitscreen.setup.monitor": "Overvåg %s",
@@ -440,9 +439,10 @@
   "horizon.extras.cosmetics_mine.tooltip": "Skjult: alle Horizon-spillere ser dig uden din kosmetik, inklusive dig. Den samme kontakt som løfterakettens garderobe.",
   "horizon.extras.cosmetics_others": "Andre spilleres kosmetik",
   "horizon.extras.cosmetics_others.tooltip": "Hvad andre Horizon-spillere bærer: alt, kun deres navnemærke eller intet. Skjult spørger spillet aldrig, hvad de har på.",
-  "horizon.extras.cosmetics_auras": "Andres auraer og spor",
-  "horizon.extras.cosmetics_auras.tooltip": "Auraer og spor, som andre spillere bærer. Fra som standard.",
+  "horizon.extras.cosmetics_hide_fx": "Skjul andre spilleres spor og auraer",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "Andre spilleres spor og auraer forbliver skjulte; deres andre kosmetikker vises stadig. Slået fra som standard.",
   "horizon.extras.cosmetics.shown": "Vist",
   "horizon.extras.cosmetics.hidden": "Skjult",
-  "horizon.extras.cosmetics.name_tags": "Kun navneskilte"
+  "horizon.extras.cosmetics.name_tags": "Kun navneskilte",
+  "Shader Packs...": "Shader-pakker..."
 }

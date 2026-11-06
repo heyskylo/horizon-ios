@@ -61,6 +61,7 @@ Every command `horizon-ctl` takes, its MCP tool in `horizon-ctl mcp` (the launch
 
 | Command | MCP tool | What it does | Arguments |
 | --- | --- | --- | --- |
+| `emote [ID\|stop]` | `emote` | Play one of the player's emotes, stop it, or list them | `id` (string): an owned emote's id, or stop |
 | `break X Y Z [--timeout S]` | `break` | Mine a block, holding the attack button until it breaks | `x` (integer, required): block X<br>`y` (integer, required): block Y<br>`z` (integer, required): block Z<br>`--timeout` (number): give up after this many seconds (default 30) |
 | `place X Y Z [--item ITEM]` | `place` | Place the held item (or ITEM from the hotbar) at an empty position | `x` (integer, required): block X<br>`y` (integer, required): block Y<br>`z` (integer, required): block Z<br>`--item` (string): hotbar item to select first |
 | `interact X Y Z [FACE]` | `interact` | Right-click a block: open a chest or crafting table, press a button, open a door | `x` (integer, required): block X<br>`y` (integer, required): block Y<br>`z` (integer, required): block Z<br>`face` (down, up, north, south, west, east): which face to click |
@@ -72,7 +73,7 @@ Every command `horizon-ctl` takes, its MCP tool in `horizon-ctl mcp` (the launch
 | `key KEY down\|up\|tap\|repeat` | `key` | Press, release or auto-repeat a key (w a s d space shift ctrl e q esc f3 1-9 arrows ...) | `key` (string, required): key name<br>`action` (down, up, tap, repeat, required): what to do |
 | `mouse left\|right\|middle down\|up\|click` | `mouse` | Press or release a mouse button in the world | `button` (left, right, middle, required): button<br>`action` (down, up, click, required): what to do |
 | `interact-entity ID` | `interact_entity` | Right-click an entity: trade with a villager, mount a horse, ride a boat, shear a sheep | `id` (integer, required): entity id from entities |
-| `pad BUTTON down\|up\|tap \| pad stick left\|right X Y \| pad trigger left\|right V \| pad release \| pad status` | `pad` | A virtual controller: buttons, sticks and triggers as a real pad would send them | `what` (string, required): a button name, stick, trigger, release or status<br>`a` (string): down\|up\|tap, or left\|right<br>`b` (number): stick X or trigger value<br>`c` (number): stick Y |
+| `pad BUTTON down\|up\|tap \| pad stick left\|right X Y \| pad trigger left\|right V \| pad release \| pad status \| pad connection connected\|disconnected` | `pad` | A virtual controller: buttons, sticks and triggers as a real pad would send them | `what` (string, required): a button name, stick, trigger, release, status or connection<br>`a` (string): down\|up\|tap, left\|right, or connected\|disconnected<br>`b` (number): stick X or trigger value<br>`c` (number): stick Y |
 | `release` | `release` | Release every key and mouse button | none |
 | `stop` | `stop` | Cancel the running action (goto, break...) and release every key | none |
 
@@ -98,7 +99,7 @@ Every command `horizon-ctl` takes, its MCP tool in `horizon-ctl mcp` (the launch
 | `respawn` | `respawn` | Respawn from the death screen | none |
 | `pause` | `pause` | Open the pause menu | none |
 | `resume` | `resume` | Leave the pause menu | none |
-| `options [PAGE]` | `options` | Open the options screen, or one of its pages (Horizon's too) | `page` (main, video, sound, controls, keybinds, controller, controller-binds, mouse, chat, accessibility, language, font, packs, mods, shader-packs, graphics, graphics-advanced, graphics-hdr, extras, horizon, agent): the page (default: the main options) |
+| `options [PAGE]` | `options` | Open the options screen, or one of its pages (Horizon's too) | `page` (main, video, sound, controls, keybinds, controller, controller-binds, mouse, chat, accessibility, language, font, packs, mods, shader-packs, graphics, graphics-advanced, graphics-hdr, extras, horizon, agent, video-vanilla): the page (default: the main options) |
 | `book [next\|back\|take\|done]` | `book` | The open book or lectern: its page text, or press one of its buttons | `action` (next, back, take, done): a button to press |
 | `signedit X Y Z [front\|back]` | `signedit` | Open the sign editor of the sign at X Y Z (then type and close) | `x` (integer, required): block X<br>`y` (integer, required): block Y<br>`z` (integer, required): block Z<br>`side` (front, back): which side |
 | `mount-menu` | `mount_menu` | Open the inventory of the horse, donkey, mule or llama being ridden | none |

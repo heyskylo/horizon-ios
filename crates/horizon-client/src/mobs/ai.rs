@@ -428,6 +428,7 @@ pub fn register(m: &mut Mob) {
         Family::Panda => super::panda::register(m),
         Family::PolarBear => super::polar_bear::register(m),
     }
+    native_register_goals(m);
     // FloatGoal's constructor lets the navigation float, as do the
     // constructors of these brain-driven and flying mobs. A floater rises
     // 0.04 a tick in Mob.jumpInLiquid, the others 0.3 (the bounce of #542).
@@ -444,6 +445,21 @@ pub fn register(m: &mut Mob) {
     {
         m.ai.nav.can_float = true;
     }
+}
+/// A new mob's goals (`Mob.registerGoals`): `mob.ai.goals` (vanilla's
+/// `goalSelector`) and `mob.ai.targets` (`targetSelector`) hold the goals of
+/// its species, which for a mod's type is its template's. Clear them to
+/// replace them, as a class whose `registerGoals` skips `super`'s, or add
+/// yours with `GoalSelector::add(priority, goal)`. Each mob gets its own
+/// goals, so a goal's fields are that mob's state while it lives (for state
+/// that is saved, see attachments on `Holder::Entity(mob.id)`). Asked for
+/// every mob Horizon makes, a client's copies of a server's mobs included,
+/// before its saved data is read; goals tick only where the mob's AI runs.
+/// `goals::Float` keeps the navigation floating, as FloatGoal's
+/// constructor does. API @API:register_goals@.
+#[inline(never)]
+pub fn native_register_goals(mob: &mut Mob) {
+    crate::native_client_hooks::register_goals(mob);
 }
 /// Mob.tick additions that run before the entity tick (cube/creeper fuses, puffing).
 fn pre_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
@@ -665,6 +681,7 @@ pub fn tick(
         super::villager_brain::woken(m, w.game_time);
     }
     if m.no_ai {
+        reset_effect_fall_distance(m);
         // Mob.aiStep still runs without AI (only serverAiStep is skipped),
         // so undead still burn in daylight and the endermite's life keeps
         // counting.
@@ -1525,6 +1542,14 @@ fn ageable_step(
     }
 }
 
+/// `LivingEntity.aiStep`: both flight effects discard accumulated fall before
+/// travel, even when NoAI skips the server AI step.
+fn reset_effect_fall_distance(m: &mut Mob) {
+    if m.has_effect("minecraft:slow_falling") || m.has_effect("minecraft:levitation") {
+        m.fall_distance = 0.0;
+    }
+}
+
 /// LivingEntity.aiStep (and Mob/AgeableMob/Animal additions).
 fn ai_step(m: &mut Mob, w: &MobWorld, level_random: &mut LegacyRandom, events: &mut Vec<MobEvent>) {
     if m.species() == Species::Parrot {
@@ -1586,6 +1611,7 @@ fn ai_step(m: &mut Mob, w: &MobWorld, level_random: &mut LegacyRandom, events: &
         f64::from(m.ai.yya),
         f64::from(m.ai.zza),
     );
+    reset_effect_fall_distance(m);
     if super::equine::moved_by_client(m) {
         // LivingEntity.travelRidden: the rider's client moves it
         // (handleMoveVehicle), so the server only stops it.
@@ -1945,7 +1971,7 @@ fn species_ai_step(
         Species::Guardian | Species::ElderGuardian => super::guardian::ai_step(m, w, events),
         Species::Vex => super::vex::ai_step(m, w),
         Species::Ravager => super::ravager::ai_step(m, w, events),
-        Species::Wither => super::wither::ai_step(m, w, events),
+        Species::Wither => super::wither::ai_step(m, w, level_random, events),
         Species::Allay => super::allay::ai_step(m),
         Species::Bee => super::bee::ai_step(m, w),
         Species::PolarBear => super::polar_bear::ai_step(m, w),
@@ -2111,6 +2137,8 @@ pub fn voice_sounds(m: &Mob) -> [&'static str; 3] {
         Species::Nautilus | Species::ZombieNautilus => super::nautilus::sounds(m),
         Species::SulfurCube => super::sulfur_cube::sounds(m),
         Species::Armadillo => super::armadillo::sounds(m),
+        // HappyGhast.getHurtSound and getDeathSound: the ghastling's by age.
+        Species::HappyGhast => super::happy_ghast::sounds(m),
         // Panda.getAmbientSound.
         Species::Panda => {
             let ambient = if super::panda::is_aggressive(m) {
@@ -2458,11 +2486,26 @@ pub fn walk_target_value(m: &Mob, w: &MobWorld, p: [i32; 3]) -> f32 {
     }
     0.0
 }
+/// `Allay.hurtServer`'s liked-player guard for verified player sources.
+/// Other species and unresolved callers retain their existing filters.
+pub fn accepts_damage_from_player(
+    m: &mut Mob,
+    source: &Damage,
+    amount: f32,
+    uuid: [i32; 4],
+) -> bool {
+    if m.species() == Species::Allay {
+        !super::allay::is_liked_player(m, source.attacker, uuid)
+    } else {
+        accepts_damage(m, source, amount)
+    }
+}
 /// Species damage filters (LivingEntity.hurtServer overrides).
 pub fn accepts_damage(m: &mut Mob, source: &Damage, _amount: f32) -> bool {
     match m.species() {
         Species::Breeze => super::breeze::accepts_damage(m, source),
-        // Allay.hurtServer: its liked player cannot hurt it.
+        // Compatibility for unresolved player sources; verified UUID routes
+        // use accepts_damage_from_player instead (this is not UUID parity).
         Species::Allay if m.extra.tame && source.attacker == Some(Who::Player) => false,
         Species::Creaking => super::creaking::accepts_damage(m, source),
         Species::Wither => super::wither::accepts(m, source.kind, source.attacker, false),
@@ -2701,8 +2744,15 @@ pub fn do_hurt_target(m: &mut Mob, who: Who, cx: &mut Cx) {
     }
     let _ = Fluid::None;
 }
-/// Mob.ate (sheep regrow wool, babies grow).
-pub fn ate(m: &mut Mob) {
+/// Mob.ate: `gameEvent(GameEvent.EAT)`, then (Sheep.ate) the wool grows back and a baby
+/// grows.
+pub fn ate(m: &mut Mob, events: &mut Vec<MobEvent>) {
+    events.push(MobEvent::GameEvent {
+        event: "minecraft:eat",
+        at: [m.position.x, m.position.y, m.position.z],
+        source: m.id,
+        state: horizon_world::registry::BlockStateId(0),
+    });
     if m.species() == Species::Sheep {
         m.extra.sheared = false;
         // Sheep.ate: only a baby `canAgeUp` (no age lock holds it) grows.
@@ -4929,5 +4979,77 @@ mod air_tests {
             return;
         };
         assert_eq!(air, 300);
+    }
+}
+
+#[cfg(test)]
+mod flight_effect_fall_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn flight_effects_reset_accumulated_fall_distance_even_without_ai() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let ran = crate::mobs::world::with_resource_test_world(
+            &root,
+            &[],
+            true,
+            true,
+            |world, _| {
+                world
+                    .chunks
+                    .insert((0, 0), Arc::new(crate::chunk::Chunk::empty(0, 0)));
+            },
+            |world, types| {
+                let mut failures = Vec::new();
+                let mut rows = Vec::new();
+                for effect in [
+                    None,
+                    Some("minecraft:levitation"),
+                    Some("minecraft:slow_falling"),
+                ] {
+                    for no_ai in [false, true] {
+                        for velocity_y in [0.0, 0.2, -0.2] {
+                            let kind = Arc::new(types.types["minecraft:cow"].clone());
+                            let mut mob = Mob::new(1, kind, Vec3::new(2.5, 64.0, 2.5), 0.0);
+                            mob.no_ai = no_ai;
+                            mob.no_gravity = true;
+                            mob.persistent = true;
+                            mob.fall_distance = 12.0;
+                            mob.velocity.y = velocity_y;
+                            if let Some(effect) = effect {
+                                mob.add_effect(effect, 100, 0);
+                            }
+                            let mut random = LegacyRandom::new(0);
+                            assert!(tick(&mut mob, world, &mut random, &mut Vec::new()));
+                            // The pinned Java aiStep resets before travel. A
+                            // downward move then adds 0.2F of NEW fall distance;
+                            // NoAI skips movement but must still erase the old fall.
+                            let expected = match (effect.is_some(), no_ai, velocity_y < 0.0) {
+                                (false, false, true) => 12.200000002980232,
+                                (true, false, true) => 0.20000000298023224,
+                                (false, _, _) => 12.0,
+                                (true, _, _) => 0.0,
+                            };
+                            let name = effect.unwrap_or("none").trim_start_matches("minecraft:");
+                            rows.push(format!(
+                                "{name} {no_ai} {:016x} {:016x}",
+                                velocity_y.to_bits(),
+                                mob.fall_distance.to_bits()
+                            ));
+                            if mob.fall_distance != expected {
+                                failures.push((effect, no_ai, velocity_y, mob.fall_distance));
+                            }
+                        }
+                    }
+                }
+                if let Some(path) = std::env::var_os("HORIZON_MOB_FALL_RESET_OUTPUT") {
+                    std::fs::write(path, rows.join("\n") + "\n").unwrap();
+                }
+                assert!(failures.is_empty(), "fall distance differs: {failures:?}");
+            },
+        );
+        assert!(ran, "prepared resources must run the integration fixture");
     }
 }

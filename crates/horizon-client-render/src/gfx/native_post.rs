@@ -368,6 +368,7 @@ impl NativeFrame {
             unculled: None,
             every_face: false,
             view_casters: false,
+            depth_planes: true,
         })
     }
 
@@ -1172,6 +1173,14 @@ pub fn frame_inputs(
             let k = super::native_shadow::distortion(s.distance, s.resolution);
             2.0 * s.distance / s.resolution.max(1) as f32 * (1.0 - k)
         }),
+        // Shader API 0.2's display fields, which 0.1 packs don't declare: SDR's values, also
+        // with HDR on, until HDR output is served for 0.2 packs.
+        hdr: 0,
+        headroom: 1.0,
+        paper_white: 80.0,
+        peak: 80.0,
+        black_level: 0.0,
+        padding: [0; 3],
     }
 }
 
@@ -1614,7 +1623,7 @@ file = \"b.wgsl\"
             mapped_at_creation: false,
         });
         // What the material stage stores, as the bits of floats: the normal +x (octahedral
-        // (1, 0), two snorm16), smoothness 0.5, data 0.25 and the fragment's depth 0.5.
+        // (1, 0), two snorm16), smoothness 0.75, data 0.25 and the fragment's depth 0.5.
         let writer = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: None,
             source: wgpu::ShaderSource::Wgsl(
@@ -1623,7 +1632,7 @@ file = \"b.wgsl\"
                 }
                 @fragment fn fs() -> @location(0) vec4<u32> {
                     return bitcast<vec4<u32>>(vec4<f32>(
-                        bitcast<f32>(pack2x16snorm(vec2<f32>(1.0, 0.0))), 0.5, 0.25, 0.5));
+                        bitcast<f32>(pack2x16snorm(vec2<f32>(1.0, 0.0))), 0.75, 0.25, 0.5));
                 }"
                 .into(),
             ),
@@ -1723,8 +1732,9 @@ file = \"b.wgsl\"
             buffer.unmap();
             pixel
         };
-        // Present where the world's depth is the stored one: +x, 0.5, 0.25 as 8-bit.
-        assert_eq!(read(0.5), [255, 128, 64, 255]);
+        // Present where the world's depth is the stored one: +x, 0.75, 0.25 as 8-bit. No value
+        // here sits halfway between two 8-bit levels, where drivers round either way.
+        assert_eq!(read(0.5), [255, 191, 64, 255]);
         // Hidden by something nearer drawn since: the stored values no longer show.
         assert_eq!(read(0.25), [0, 0, 0, 0]);
     }

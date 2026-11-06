@@ -9,8 +9,10 @@ Feature → files → harness for the most-changed areas: [docs/architecture.md]
 - **Never commit Mojang's files**: game jars, assets, decompiled source, prepared resources (`.local/`).
   `tools/check_public_tree.py` rejects them; `git config core.hooksPath .githooks` runs it on commit.
 - **Keep your runs away from real player data.** Any game or launcher you start gets fresh `mktemp -d`
-  folders in `HORIZON_HOME` (the game's data), `HORIZON_LAUNCHER_HOME`, `XDG_DATA_HOME` and
-  `XDG_CONFIG_HOME`, plus `HORIZON_LAUNCHER_NO_SELF_UPDATE=1` and `HORIZON_NO_AUDIO=1`, and, for the
+  folders in `HORIZON_HOME` (logs, crash reports, telemetry consent, recordings; not saves), `HORIZON_LAUNCHER_HOME`, `XDG_DATA_HOME` and
+  `XDG_CONFIG_HOME`, plus `HORIZON_LAUNCHER_NO_SELF_UPDATE=1` and `HORIZON_NO_AUDIO=1`. Saves, `options.txt` and
+  caches go in the game folder, by default the working directory: start the game from a scratch folder with
+  `--game-dir` pointing at it, or they land in the repo root, hidden by `.gitignore`. For the
   launcher, `HORIZON_LAUNCHER_TRASH`, `HORIZON_LAUNCHER_CLIPBOARD` and `HORIZON_LAUNCHER_DESKTOP` pointing into the scratch home. Never write to
   `~/.local/share/{applications,horizon,horizon-launcher}` or `~/.local/bin`.
 - **Mark what an agent posts.** A PR body starts with a line naming the person whose agent opened it and
@@ -33,6 +35,7 @@ Feature → files → harness for the most-changed areas: [docs/architecture.md]
 - **No hardcoded user-facing strings.** Keep UI translation-ready from the start. In the launcher (`launcher/`), wrap visible text with `tr("...")` or `trf("... {arg} ...", &[("arg", &val)])` from `crate::i18n` instead of raw string literals or `format!`. In the game, use translation keys (`Text::tr`, `lang::get`), never hardcoded English strings.
 - **Claim before you start**: comment `/claim` on the issue (no issue yet: open one, then claim it). An assigned
   issue is taken: pick another. `/unclaim` when you stop; a claim with no open PR linking it is released after 5 days.
+- **Controllers reach what registers.** Draw controls with a registering helper (`ui::button`, `settings_shell::foot_button`); `graphics_style::button` and `screen_draw::button` only paint, and registering one part of a screen ends its crosshair, so register all of it.
 
 ## Crates
 

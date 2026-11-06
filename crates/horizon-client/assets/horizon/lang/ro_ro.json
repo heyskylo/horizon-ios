@@ -312,7 +312,6 @@
   "horizon.osk.close": "Închide",
   "horizon.extras.chat_animation.tooltip": "O nouă linie de chat glisează din stânga în timp ce dispare, în loc să pară întreg.",
   "horizon.extras.chat_indicator.tooltip": "Bara colorată din stânga unei linii de chat.",
-  "horizon.extras.wheel_cycles_settings.tooltip": "Rotița de derulare deasupra unui buton din setări își schimbă valoarea, ca la vanilie. Oprit, roata derulează doar lista.",
   "horizon.extras.pack_browser.tooltip": "Select Resource Packs primește un buton Adaugă care caută în Modrinth și instalează un pachet în folderul pachetelor dvs. Dezactivat, jocul nu îl contactează niciodată pe Modrinth.",
   "horizon.extras.splitscreen.tooltip": "Într-o lume, un alt controler se poate alătura ca jucător nou: apăsați A când vă cere, apoi alegeți un profil și unde să jucați.",
   "horizon.splitscreen.setup.monitor_unknown": "un monitor",
@@ -453,9 +452,10 @@
   "horizon.extras.cosmetics_mine.tooltip": "Ascuns: fiecare jucător Horizon te vede fără cosmeticele tale, inclusiv tu. Același comutator ca și garderoba lansatorului.",
   "horizon.extras.cosmetics_others": "Cosmeticele altor jucători",
   "horizon.extras.cosmetics_others.tooltip": "Ce poartă alți jucători de la Horizon: totul, doar stilurile lor de etichete de nume sau nimic. Ascuns, jocul nu le întreabă niciodată ce poartă.",
-  "horizon.extras.cosmetics_auras": "Aurele și traseele altora",
-  "horizon.extras.cosmetics_auras.tooltip": "Aurele și traseele pe care le poartă alți jucători. Oprit implicit.",
+  "horizon.extras.cosmetics_hide_fx": "Ascunde urmele și aurele altor jucători",
+  "horizon.extras.cosmetics_hide_fx.tooltip": "Urmele și aurele altor jucători rămân ascunse; celelalte cosmetice ale lor se văd în continuare. Dezactivat implicit.",
   "horizon.extras.cosmetics.shown": "Afisat",
   "horizon.extras.cosmetics.hidden": "Ascuns",
-  "horizon.extras.cosmetics.name_tags": "Numai etichete de nume"
+  "horizon.extras.cosmetics.name_tags": "Numai etichete de nume",
+  "Shader Packs...": "Pachete de shader..."
 }

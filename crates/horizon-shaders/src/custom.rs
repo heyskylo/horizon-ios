@@ -197,6 +197,8 @@ pub struct Custom {
     /// Expressions that did not parse, and unknown names, as `key: message`.
     pub notes: Vec<String>,
     calls: usize,
+    /// Whether `smooth` has started on a frame of the world (see [`Custom::world_frame`]).
+    world_seen: bool,
 }
 
 impl Custom {
@@ -242,6 +244,20 @@ impl Custom {
     /// camera's biome is known).
     pub fn restart_smoothing(&mut self) {
         self.smooth.clear();
+    }
+
+    /// Called before each frame's [`Custom::eval`], with whether the camera's biome is known (its
+    /// chunk loaded). Until the first frame that knows it, `smooth` restarts every frame, so it
+    /// starts from that frame's values rather than from the frames before it (the biome reads
+    /// -1 there). From then on it keeps going for as long as the pack runs, through teleports
+    /// and the frames whose chunk isn't loaded yet: in Iris 1.11.7, our probe pack's
+    /// `smooth(cameraPosition.y + 200.0, 1000, 1000)` kept smoothing across teleports within a
+    /// dimension, and started again when the player entered the Nether.
+    pub fn world_frame(&mut self, biome_known: bool) {
+        if !self.world_seen {
+            self.restart_smoothing();
+            self.world_seen = biome_known;
+        }
     }
 
     /// Restarts `smooth` and `random` for a frame of the world's tick `tick`, so a frame drawn
@@ -490,7 +506,9 @@ impl Custom {
                         .copied()
                         .reduce(|p, q| p.zip(q, f64::max))
                         .unwrap_or(arg(0)),
-                    "clamp" => arg(0).zip(arg(1), f64::max).zip(arg(2), f64::min),
+                    // The upper bound first, then the lower: with min > max the lower wins, as
+                    // our probes read in Iris 1.11.7 (`clamp(5.0, 3.0, 1.0)` gives 3, #9307).
+                    "clamp" => arg(0).zip(arg(2), f64::min).zip(arg(1), f64::max),
                     "abs" => one(f64::abs),
                     "floor" => one(f64::floor),
                     "ceil" => one(f64::ceil),
@@ -525,7 +543,10 @@ impl Custom {
                         let fade_out = at(2).unwrap_or(fade_in);
                         let state = self.smooth.entry(*site).or_insert(val);
                         let fade = if val > *state { fade_in } else { fade_out };
-                        if fade > 0.0 {
+                        // A value it already holds stays as it is: an infinite one too, which
+                        // the step below would turn into NaN (inf - inf). Our probe read
+                        // `smooth(1.0 / 0.0, 5, 5)` as +inf in Iris 1.11.7.
+                        if fade > 0.0 && *state != val {
                             *state = val + (*state - val) * 0.5f64.powf(dt / (fade * FADE_UNIT));
                         } else {
                             *state = val;
@@ -1069,6 +1090,46 @@ mod tests {
         );
     }
 
+    /// Iris 1.11.7, read back with probe packs of our own in three scenes: with the lower bound
+    /// above the upper one, `clamp(5.0, 3.0, 1.0)`, `clamp(0.0, 3.0, 1.0)` and
+    /// `clamp(2.0, 3.0, 1.0)` read 3, and `clamp(vec2(5.0, 0.5), vec2(3.0, 0.0), vec2(1.0, 1.0))`
+    /// reads (3, 0.5).
+    #[test]
+    fn clamp_with_its_bounds_crossed_gives_the_lower_one() {
+        let mut c = custom(
+            "uniform.float.a = clamp(5.0, 3.0, 1.0)\n\
+             uniform.float.b = clamp(0.0, 3.0, 1.0)\n\
+             uniform.float.c = clamp(2.0, 3.0, 1.0)\n\
+             uniform.float.d = clamp(2.0, 1.0, 3.0)\n\
+             uniform.float.e = clamp(-2.0, 1.0, 3.0)\n\
+             uniform.vec2.f = clamp(vec2(5.0, 0.5), vec2(3.0, 0.0), vec2(1.0, 1.0))\n",
+        );
+        assert!(c.notes.is_empty(), "{:?}", c.notes);
+        let v = c.eval(0.016, &|_| None);
+        let x: Vec<f64> = v[..5].iter().map(|v| v.v[0]).collect();
+        assert_eq!(x, [3.0, 3.0, 3.0, 2.0, 1.0]);
+        assert_eq!(&v[5].v[..2], &[3.0, 0.5]);
+    }
+
+    /// Iris 1.11.7, read back with probe packs of our own after 3 s to 30 s in a scene:
+    /// `smooth(1.0 / 0.0, 5, 5)` reads +inf, `smooth(-1.0 / 0.0, 5, 5)` -inf and
+    /// `smooth(0.0 / 0.0, 5, 5)` NaN.
+    #[test]
+    fn smooth_keeps_an_infinite_value() {
+        let mut c = custom(
+            "uniform.float.a = smooth(1.0 / 0.0, 5, 5)\n\
+             uniform.float.b = smooth(-1.0 / 0.0, 5, 5)\n\
+             uniform.float.c = smooth(0.0 / 0.0, 5, 5)\n",
+        );
+        assert!(c.notes.is_empty(), "{:?}", c.notes);
+        for _ in 0..100 {
+            let v = c.eval(0.016, &|_| None);
+            assert_eq!(v[0].v[0], f64::INFINITY);
+            assert_eq!(v[1].v[0], f64::NEG_INFINITY);
+            assert!(v[2].v[0].is_nan());
+        }
+    }
+
     #[test]
     fn smooth_halves_the_distance_per_tenth_of_its_fade_time() {
         let mut c = custom("uniform.float.s = smooth(1, target, 20, 5)\n");
@@ -1204,6 +1265,40 @@ mod tests {
         assert!(eval(&mut c, 0.6) < 0.01, "the fade holds the old value");
         c.restart_smoothing();
         assert_eq!(eval(&mut c, 0.6), 0.6);
+    }
+
+    /// Iris 1.11.7, with a probe pack of our own (`scenes.json`'s caves after loading at the
+    /// spawn): `smooth(cameraPosition.y + 200.0, 1000, 1000)` read 294.1, 291.1 and 288.1 in three
+    /// scenes after teleports to y -5.4, -5.4 and 23.6, still fading from the spawn's 300, and
+    /// `smooth(biome_category + 0.0, 1000, 1000)` read the biome's 10.0 in every scene. Horizon
+    /// started both again after each teleport, from the frames before the chunk was loaded:
+    /// 194.6 and 0.4 (the biome reads 0 there).
+    #[test]
+    fn smooth_starts_once_the_biome_is_known_and_keeps_going_through_teleports() {
+        let mut c = custom(
+            "uniform.float.cat = smooth(biome_category + 0.0, 1000, 1000)\n\
+             uniform.float.y = smooth(cameraPosition.y + 200.0, 1000, 1000)\n",
+        );
+        let frame = |c: &mut Custom, known: bool, cat: f64, y: f64| {
+            c.world_frame(known);
+            let out = c.eval(0.05, &|n: &str| match n {
+                "biome_category" => Some(Val::scalar(cat)),
+                "cameraPosition" => Some(Val::vector(&[0.5, y, 0.5])),
+                _ => None,
+            });
+            (out[0].v[0], out[1].v[0])
+        };
+        // Loading: the camera's chunk isn't there yet, so its biome reads 0.
+        frame(&mut c, false, 0.0, 100.0);
+        frame(&mut c, false, 0.0, 100.0);
+        assert_eq!(frame(&mut c, true, 10.0, 100.0), (10.0, 300.0));
+        // A teleport: a few frames before the chunk is there, then the scene.
+        for _ in 0..3 {
+            frame(&mut c, false, 0.0, -5.38);
+        }
+        let (cat, y) = (0..60).fold((0.0, 0.0), |_, _| frame(&mut c, true, 10.0, -5.38));
+        assert!(cat > 9.9, "the biome's category from the start: {cat}");
+        assert!(y > 290.0, "still fading from the spawn's 300: {y}");
     }
 
     #[test]

@@ -614,7 +614,12 @@ fn button_with_room(
     room: f32,
     narration: impl FnOnce([f32; 4]) -> crate::widgets::Narratable,
 ) {
-    crate::widgets::record(&label.plain(), [x, y, w, h], active);
+    let plain = label.plain();
+    crate::widgets::record(&plain, [x, y, w, h], active);
+    // An icon button has no label to record, and A presses it all the same.
+    if active && plain.trim().is_empty() {
+        crate::widgets::target([x, y, w, h]);
+    }
     crate::widgets::narratable(|| narration([x, y, w, h]).hovered(hover));
     crate::widgets::widget_cursor(hover, active);
     let sprite = if !active {
@@ -917,8 +922,29 @@ impl Scroll {
     }
 }
 
-/// Vertical scroll bar (AbstractScrollArea): background and scroller sprites.
+/// Vertical scroll bar of a list (AbstractScrollArea): the sprites, and the
+/// list is registered for the controller's focus (`widgets::scroll_area`).
 pub fn scrollbar(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    x: f32,
+    top: f32,
+    bottom: f32,
+    content: f32,
+    scroll: f32,
+) {
+    if content > bottom - top {
+        crate::widgets::scroll_area(
+            [0.0, top, x + 6.0, bottom - top],
+            scroll,
+            content - (bottom - top),
+        );
+    }
+    scrollbar_sprites(batch, atlas, x, top, bottom, content, scroll);
+}
+
+/// The scroll bar's background and scroller sprites.
+pub fn scrollbar_sprites(
     batch: &mut HudBatch,
     atlas: &HudAtlas,
     x: f32,
@@ -991,6 +1017,31 @@ pub fn tooltip_menu(
         (w.ceil() as i32, h.ceil() as i32),
     );
     tooltip_box(batch, atlas, lines, x as f32, y as f32, w, h);
+}
+/// A widget's tooltip while the controller's focus is on it (Horizon's: vanilla has no gamepad
+/// input, and the hidden pointer mid-widget would put it over the widget).
+pub fn tooltip_under(batch: &mut HudBatch, atlas: &HudAtlas, lines: &[Text], rect: [f32; 4]) {
+    if lines.is_empty() {
+        return;
+    }
+    let (w, h) = tooltip_size(atlas, lines);
+    let (x, y) = tooltip_under_position((batch.width, batch.height), rect, (w, h));
+    tooltip_box(batch, atlas, lines, x, y, w, h);
+}
+/// Where `tooltip_under` puts lines of `size`: the frame's top left a pixel under the widget's
+/// bottom left, over the widget when the screen ends first, and always on the screen.
+fn tooltip_under_position(screen: (f32, f32), rect: [f32; 4], size: (f32, f32)) -> (f32, f32) {
+    // The frame reaches this far past the lines on every side.
+    const FRAME: f32 = 4.0;
+    let [x, y, _, height] = rect;
+    let right = screen.0 - size.0 - FRAME;
+    let below = y + height + 1.0 + FRAME;
+    let top = if below + size.1 + FRAME <= screen.1 {
+        below
+    } else {
+        y - 1.0 - FRAME - size.1
+    };
+    ((x + FRAME).min(right).max(FRAME), top.max(FRAME))
 }
 /// `MenuTooltipPositioner.positionTooltip`: the tooltip's top left with the
 /// pointer at `cursor`, the widget it belongs to at `rect`, and the screen.
@@ -1102,6 +1153,9 @@ pub struct EditBox {
     /// `getMessage`: what the narrator calls the box ("<message> edit box:
     /// <value>").
     pub message: String,
+    /// Where a borderless box drawn in a frame of its own focuses: a controller's outline goes
+    /// round the frame, not over the text.
+    pub frame: Option<[f32; 4]>,
 }
 /// The focused text field of a screen that keeps its values as `String`s
 /// (the world list's search, world names, seeds, and the server screens): the `EditBox` state that
@@ -1364,6 +1418,7 @@ impl EditBox {
             suggestion: None,
             text_color: rgba(224, 224, 224, 255),
             message: String::new(),
+            frame: None,
         }
     }
     pub fn inner_width(&self) -> f32 {
@@ -1583,7 +1638,8 @@ impl EditBox {
     pub fn draw(&mut self, batch: &mut HudBatch, atlas: &HudAtlas, format: Option<&Text>) {
         self.layout(atlas);
         crate::widgets::target_as(
-            [self.x, self.y, self.width, self.height],
+            self.frame
+                .unwrap_or([self.x, self.y, self.width, self.height]),
             crate::widgets::Kind::Field,
         );
         crate::widgets::narratable(|| {
@@ -1795,9 +1851,43 @@ mod tests {
         assert_eq!(scrolled_left(10.0, 40.0, 1_000), 10.0 - offset);
     }
 
-    /// The label of a widget it does not fit is clipped to the widget's box
-    /// instead of being drawn past it (the bug: `so_so`'s 590 px Create World
-    /// label ran over the button beside it).
+    /// A controller reaches an icon button only through its target, and can't press a disabled one.
+    #[test]
+    fn an_active_icon_button_is_a_focus_target_and_a_disabled_one_is_not() {
+        let atlas = atlas();
+        let mut batch = HudBatch::new([640, 480]);
+        // Whatever this thread drew before is the last frame's, then gone.
+        crate::widgets::end_frame(u64::MAX - 1);
+        button(
+            &mut batch,
+            &atlas,
+            10.0,
+            20.0,
+            20.0,
+            20.0,
+            &Text::empty(),
+            true,
+            false,
+        );
+        button(
+            &mut batch,
+            &atlas,
+            40.0,
+            20.0,
+            20.0,
+            20.0,
+            &Text::empty(),
+            false,
+            false,
+        );
+        crate::widgets::end_frame(u64::MAX);
+        let targets: Vec<[f32; 4]> = crate::widgets::last_targets()
+            .iter()
+            .map(|t| t.rect)
+            .collect();
+        assert_eq!(targets, [[10.0, 20.0, 20.0, 20.0]]);
+    }
+
     #[test]
     fn a_glyph_leaves_a_label_that_fits_centred() {
         let atlas = atlas();
@@ -2275,6 +2365,25 @@ mod tests {
         let mut v = "stone".to_string();
         assert!(!delete_words(&mut v, 1));
         assert_eq!(v, "stone");
+    }
+    #[test]
+    fn a_pad_focused_tooltip_hangs_from_its_widgets_bottom_left() {
+        let screen = (427.0, 240.0);
+        let widget = [100.0, 100.0, 150.0, 20.0];
+        // Frame at 100, 121: lines 4 further in.
+        assert_eq!(
+            tooltip_under_position(screen, widget, (80.0, 10.0)),
+            (104.0, 125.0)
+        );
+        // The screen's right edge moves it left, its bottom puts it over the widget.
+        assert_eq!(
+            tooltip_under_position(screen, [400.0, 100.0, 20.0, 20.0], (80.0, 10.0)),
+            (343.0, 125.0)
+        );
+        assert_eq!(
+            tooltip_under_position(screen, [100.0, 215.0, 150.0, 20.0], (80.0, 10.0)),
+            (104.0, 200.0)
+        );
     }
     /// `MenuTooltipPositioner.positionTooltip`: the pointer's 12 px offset,
     /// the 5 px screen margin, and the 3 to 5 px the tooltip keeps from the

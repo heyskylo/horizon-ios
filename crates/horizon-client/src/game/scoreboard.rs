@@ -3,6 +3,7 @@
 //! entities, the selector options `scores=`, `team=` and `tag=`, the
 //! commands' [`Env`] and the sidebar.
 use super::{Game, chat::PLAYER_NAME, commands::Target};
+use horizon_client::actions::Action;
 use horizon_client::{
     command::{
         Context,
@@ -810,8 +811,7 @@ impl Game<'_> {
         // Player heads and the player list both draw from the same skin
         // slots: a new frame, with what the last one drew.
         self.flush_skin_slots();
-        let key = self.screen == super::Screen::Playing
-            && self.keys.contains(&winit::keyboard::KeyCode::Tab);
+        let key = self.screen == super::Screen::Playing && self.keys.held(Action::Playerlist);
         let (mut players, online_mode, upside_down) = match self.remote_tab_players() {
             Some(remote) => remote,
             None => {
@@ -859,6 +859,9 @@ impl Game<'_> {
         let board = &self.score.board;
         let objective = board.display_objective(sb::SLOT_LIST);
         let up = |id: u128| upside_down.contains(&id);
+        // Horizon's mark before the names of Horizon players (the cosmetics service's cache).
+        let horizon = self.horizon_players(players.iter().map(|p| p.uuid));
+        let marked = |id: u128| horizon.contains(&id);
         let inputs = TabInputs {
             players: &players,
             board,
@@ -872,6 +875,7 @@ impl Game<'_> {
                 f64::from(self.settings.text_background_opacity),
             ),
             upside_down: &up,
+            horizon: &marked,
         };
         let draws = self.tab_list.layout(&inputs, &self.gui.atlas.font);
         horizon_client::hud_layout::paint(batch, &self.gui.atlas, &draws);

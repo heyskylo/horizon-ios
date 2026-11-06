@@ -3,17 +3,23 @@
 //! server build) has the stub in pad.rs instead, and only `horizon-ctl pad`'s virtual pad.
 use super::{
     super::{Game, Screen},
-    PadEvent, Pads,
+    Connection, PadEvent, Pads,
 };
+use horizon_client::controller_ui::Device;
 use horizon_client::gamepad::{self, Button, GlyphStyle, PadState, Rumble, TriggerFeel};
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
+
+mod face_buttons;
+mod triggers;
 
 /// The controllers gilrs sees and the DualSense's output.
 #[derive(Default)]
 pub(super) struct Devices {
     gilrs: Option<gilrs::Gilrs>,
     started: bool,
+    /// The pads seen so far, so one already there when gilrs opens isn't news.
+    known: Vec<gilrs::GamepadId>,
     /// The pad last touched; only its input counts.
     active: Option<gilrs::GamepadId>,
     /// Vibrations playing (an effect stops when dropped) and when they end.
@@ -28,6 +34,51 @@ pub(super) struct Devices {
     haptics_tried: bool,
     /// What it was last told to show.
     shown: Option<horizon_dualsense::device::State>,
+    /// While `PadRouter` has the reader and isn't lending it: what `pad status` lists.
+    routed: Option<Vec<Value>>,
+}
+
+/// `pad status`'s line for a controller. `uuid` is the id an SDL mapping row starts with, so a
+/// report says which row a pad needs; `mapping_source` says whether one was found.
+fn controller_status(
+    id: gilrs::GamepadId,
+    pad: &gilrs::Gamepad,
+    active: Option<gilrs::GamepadId>,
+) -> Value {
+    let mapping_source = match pad.mapping_source() {
+        gilrs::MappingSource::SdlMappings => "sdl",
+        gilrs::MappingSource::Driver => "driver",
+        gilrs::MappingSource::None => "none",
+    };
+    let uuid: String = pad.uuid().iter().map(|b| format!("{b:02x}")).collect();
+    json!({
+        "name": pad.name(),
+        "vendor": pad.vendor_id(),
+        "product": pad.product_id(),
+        "mapping_source": mapping_source,
+        "uuid": uuid,
+        "active": active == Some(id),
+    })
+}
+
+impl Devices {
+    /// The hardware part of `pad status`.
+    fn status(&self) -> Value {
+        let pads: Vec<Value> = match (&self.gilrs, &self.routed) {
+            (Some(g), _) => g
+                .gamepads()
+                .map(|(id, p)| controller_status(id, &p, self.active))
+                .collect(),
+            (None, Some(routed)) => routed.clone(),
+            (None, None) => Vec::new(),
+        };
+        json!({
+            "backend": self.gilrs.is_some() || self.routed.is_some(),
+            "controllers": pads,
+            "dualsense_output": self.output.as_ref().and_then(|o| o.open()).map(|t| format!("{t:?}")),
+            "trigger_effects": self.shown.map(|s| s.triggers),
+        })
+    }
 }
 
 fn gilrs_button(button: Button) -> gilrs::Button {
@@ -67,6 +118,11 @@ const EXTRA_SDL_MAPPINGS: &str = concat!(
     "03000000c82d00000b31000014010000,8BitDo Ultimate 2,a:b0,b:b1,back:b6,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b8,leftshoulder:b4,leftstick:b9,lefttrigger:a2,leftx:a0,lefty:a1,rightshoulder:b5,rightstick:b10,righttrigger:a5,rightx:a3,righty:a4,start:b7,x:b2,y:b3,platform:Linux,\n",
 );
 
+/// The one way to open gilrs: each reader needs the extra rows.
+fn gilrs_builder() -> gilrs::GilrsBuilder {
+    gilrs::GilrsBuilder::new().add_mappings(EXTRA_SDL_MAPPINGS)
+}
+
 impl Pads {
     /// Open gilrs on first use. A platform without it (or a Linux without
     /// udev) leaves controllers off; the game runs as before.
@@ -75,13 +131,11 @@ impl Pads {
             return;
         }
         self.devices.started = true;
-        self.devices.gilrs = match gilrs::GilrsBuilder::new()
-            .add_mappings(EXTRA_SDL_MAPPINGS)
-            .build()
-        {
+        self.devices.gilrs = match gilrs_builder().build() {
             Ok(g) => {
-                for (_, pad) in g.gamepads() {
+                for (id, pad) in g.gamepads() {
                     log::info!("Controller connected: {}", pad.name());
+                    self.devices.known.push(id);
                 }
                 Some(g)
             }
@@ -102,6 +156,8 @@ impl Pads {
             self.devices.gilrs = None;
             self.devices.started = false;
             self.devices.active = None;
+            self.devices.known.clear();
+            self.device = None;
             self.devices.rumbles.clear();
             self.devices.dualsense = false;
             self.devices.output = None;
@@ -120,12 +176,23 @@ impl Pads {
             match event {
                 E::Connected => {
                     log::info!("Controller connected: {}", gilrs.gamepad(id).name());
+                    // Some backends report the controllers already there as they open.
+                    if !self.devices.known.contains(&id) {
+                        self.devices.known.push(id);
+                        let pad = gilrs.gamepad(id);
+                        let style = GlyphStyle::of_device(pad.vendor_id(), pad.product_id());
+                        self.connections.push(Connection::Connected(style));
+                    }
                     if let Some(output) = &self.devices.output {
                         output.scan();
                     }
                 }
                 E::Disconnected => {
                     log::info!("Controller disconnected: {}", gilrs.gamepad(id).name());
+                    self.devices.known.retain(|known| *known != id);
+                    self.connections.push(Connection::Disconnected {
+                        active: self.devices.active == Some(id),
+                    });
                     if self.devices.active == Some(id) {
                         self.devices.active = None;
                     }
@@ -153,20 +220,33 @@ impl Pads {
         else {
             // Before any pad is touched (the virtual pad playing), a DualSense still shows it.
             self.devices.dualsense = gilrs.gamepads().any(|(_, pad)| is_dualsense(&pad));
+            self.device = gilrs.gamepads().next().map(|(_, pad)| device_of(&pad));
             return PadState::default();
         };
-        self.style = GlyphStyle::of_vendor(pad.vendor_id());
+        self.device = Some(device_of(&pad));
+        self.style = GlyphStyle::of_device(pad.vendor_id(), pad.product_id());
         self.devices.dualsense = is_dualsense(&pad);
         state_of(&pad)
+    }
+}
+
+/// What the controller settings say about a pad.
+fn device_of(pad: &gilrs::Gamepad) -> Device {
+    Device {
+        name: pad.name().to_owned(),
+        vendor: pad.vendor_id(),
+        product: pad.product_id(),
     }
 }
 
 /// A pad's buttons, sticks and triggers now.
 fn state_of(pad: &gilrs::Gamepad) -> PadState {
     let mut state = PadState::default();
+    let crossed = face_buttons::crossed(pad);
     for button in Button::ALL {
         if !matches!(button, Button::LeftTrigger | Button::RightTrigger) {
-            state.set(button, pad.is_pressed(gilrs_button(button)));
+            let named = face_buttons::named(gilrs_button(button), crossed);
+            state.set(button, pad.is_pressed(named));
         }
     }
     let axis = |a| pad.value(a);
@@ -182,20 +262,7 @@ fn state_of(pad: &gilrs::Gamepad) -> PadState {
     );
     state.left = left;
     state.right = right;
-    // Triggers arrive as analog buttons on most mappings, as plain
-    // buttons on some.
-    let trigger = |b: gilrs::Button| {
-        let value = pad.button_data(b).map_or(0.0, |d| d.value());
-        if pad.is_pressed(b) {
-            value.max(1.0)
-        } else {
-            value
-        }
-    };
-    state.triggers = [
-        trigger(gilrs::Button::LeftTrigger2),
-        trigger(gilrs::Button::RightTrigger2),
-    ];
+    state.triggers = triggers::triggers(pad);
     state
 }
 
@@ -211,6 +278,29 @@ pub(in crate::game) struct PadRouter {
 }
 
 impl PadRouter {
+    /// Take over the reader P1 already has open, instead of opening a second and closing the
+    /// first. A compositor can count who holds a pad to pause its own use of it (KWin's pointer
+    /// emulation), and that count goes wrong when readers overlap: gilrs opens a pad twice at
+    /// once, which inotify can merge into one event, and closes it twice apart (#9730).
+    pub(in crate::game) fn adopt(&mut self, pads: &mut Pads) {
+        if !self.started
+            && let Some(gilrs) = pads.devices.gilrs.take()
+        {
+            self.started = true;
+            self.gilrs = Some(gilrs);
+        }
+    }
+
+    /// Routing ends: P1 gets the reader back, open as it was.
+    pub(in crate::game) fn hand_back(&mut self, pads: &mut Pads) {
+        self.started = false;
+        pads.devices.routed = None;
+        if let Some(gilrs) = self.gilrs.take() {
+            pads.devices.gilrs = Some(gilrs);
+            pads.devices.started = true;
+        }
+    }
+
     /// Solo play uses this reader's device IDs for feedback too: another pad cannot steal
     /// the active output while its input is being offered to join. Reclaimed after P1's turn.
     pub(in crate::game) fn lend_output(&mut self, pads: &mut Pads, id: PadId) {
@@ -236,11 +326,21 @@ impl PadRouter {
         self.gilrs = pads.devices.gilrs.take();
     }
 
+    /// `pad status` is answered in P1's turn, which can't reach this reader: leave it what the
+    /// reader sees. `owner`: the pad driving P1.
+    pub(in crate::game) fn report_status(&self, pads: &mut Pads, owner: Option<PadId>) {
+        pads.devices.routed = self.gilrs.as_ref().map(|g| {
+            g.gamepads()
+                .map(|(id, p)| controller_status(id, &p, owner))
+                .collect()
+        });
+    }
+
     /// The buttons pressed and the controllers gone or back since the last call, in order.
     pub(in crate::game) fn events(&mut self) -> Vec<PadEvent> {
         if !self.started {
             self.started = true;
-            self.gilrs = gilrs::Gilrs::new().ok();
+            self.gilrs = gilrs_builder().build().ok();
         }
         let Some(gilrs) = self.gilrs.as_mut() else {
             return Vec::new();
@@ -249,9 +349,10 @@ impl PadRouter {
         while let Some(gilrs::Event { id, event, .. }) = gilrs.next_event() {
             match event {
                 gilrs::EventType::ButtonPressed(pressed, _) => {
+                    let crossed = face_buttons::crossed(&gilrs.gamepad(id));
                     if let Some(button) = Button::ALL
                         .into_iter()
-                        .find(|&b| gilrs_button(b) == pressed)
+                        .find(|&b| face_buttons::named(gilrs_button(b), crossed) == pressed)
                     {
                         events.push(PadEvent::Press(id, button));
                     }
@@ -295,8 +396,15 @@ impl PadRouter {
             .as_ref()
             .and_then(|g| g.connected_gamepad(id))
             .map_or(GlyphStyle::Auto, |pad| {
-                GlyphStyle::of_vendor(pad.vendor_id())
+                GlyphStyle::of_device(pad.vendor_id(), pad.product_id())
             })
+    }
+
+    pub(in crate::game) fn device(&self, id: PadId) -> Option<Device> {
+        self.gilrs
+            .as_ref()
+            .and_then(|g| g.connected_gamepad(id))
+            .map(|pad| device_of(&pad))
     }
 
     pub(in crate::game) fn name(&self, id: PadId) -> String {
@@ -539,26 +647,76 @@ impl Game<'_> {
         }
     }
 
-    /// The hardware part of `pad status`.
     pub(super) fn pad_devices_status(&self) -> Value {
-        let devices = &self.pad.devices;
-        let pads: Vec<Value> = devices.gilrs.as_ref().map_or(Vec::new(), |g| {
-            g.gamepads()
-                .map(|(id, p)| {
-                    json!({
-                        "name": p.name(),
-                        "vendor": p.vendor_id(),
-                        "product": p.product_id(),
-                        "active": devices.active == Some(id),
-                    })
-                })
-                .collect()
-        });
-        json!({
-            "backend": devices.gilrs.is_some(),
-            "controllers": pads,
-            "dualsense_output": devices.output.as_ref().and_then(|o| o.open()).map(|t| format!("{t:?}")),
-            "trigger_effects": devices.shown.map(|s| s.triggers),
-        })
+        self.pad.devices.status()
+    }
+}
+
+#[cfg(test)]
+mod one_reader_tests {
+    use super::*;
+
+    /// Whether a machine can open gilrs at all; a test without it has nothing to check.
+    fn reader() -> Option<gilrs::Gilrs> {
+        gilrs_builder().build().ok()
+    }
+
+    #[test]
+    fn routing_takes_p1s_reader_and_gives_it_back_without_closing_it() {
+        let Some(gilrs) = reader() else {
+            return;
+        };
+        let mut pads = Pads::default();
+        pads.devices.gilrs = Some(gilrs);
+        pads.devices.started = true;
+        let mut router = PadRouter::default();
+
+        router.adopt(&mut pads);
+        assert!(pads.devices.gilrs.is_none(), "P1 no longer holds it");
+        assert!(router.gilrs.is_some(), "the router holds the same reader");
+        assert!(router.started, "so the router won't open a second");
+
+        pads.release_hardware();
+        router.hand_back(&mut pads);
+        assert!(router.gilrs.is_none());
+        assert!(pads.devices.gilrs.is_some(), "P1 holds it again");
+        assert!(pads.devices.started, "so P1 won't open a second");
+    }
+
+    /// While the router has the reader, `pad status` still says controllers can be read.
+    #[test]
+    fn status_sees_the_routers_reader_until_it_comes_back() {
+        let Some(gilrs) = reader() else {
+            return;
+        };
+        let mut pads = Pads::default();
+        pads.devices.gilrs = Some(gilrs);
+        pads.devices.started = true;
+        let mut router = PadRouter::default();
+        let backend = |pads: &Pads| pads.devices.status()["backend"].as_bool().unwrap();
+
+        router.adopt(&mut pads);
+        assert!(!backend(&pads), "nothing reported yet");
+        router.report_status(&mut pads, None);
+        assert!(backend(&pads), "the router's reader counts");
+
+        router.hand_back(&mut pads);
+        assert!(pads.devices.routed.is_none(), "P1 reads its own again");
+        assert!(backend(&pads));
+    }
+
+    #[test]
+    fn a_router_with_its_own_reader_leaves_a_lent_ones_owner_alone() {
+        let (Some(own), Some(other)) = (reader(), reader()) else {
+            return;
+        };
+        let mut pads = Pads::default();
+        pads.devices.gilrs = Some(other);
+        let mut router = PadRouter {
+            gilrs: Some(own),
+            started: true,
+        };
+        router.adopt(&mut pads);
+        assert!(pads.devices.gilrs.is_some());
     }
 }

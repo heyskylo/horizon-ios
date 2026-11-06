@@ -268,6 +268,7 @@ const PAGES: Ty = Ty::Enum(&[
     "extras",
     "horizon",
     "agent",
+    "video-vanilla",
 ]);
 
 /// `--confirm`, required by destructive commands: the player agreed.
@@ -436,6 +437,10 @@ pub const COMMANDS: &[Cmd] = &[
     cmd!("look-at-entity", Move, "look-at-entity ID [--over S]", "face an entity (same as look-at entity)", "",
         ["horizon-ctl look-at-entity 42"], &[p("id", Ty::Int, "entity id from entities"), OVER], mcp: true, local: false, wire: "look-at entity"),
     cmd!("tp", Move, "tp X Y Z", "teleport the player", "", ["horizon-ctl tp 0 80 0"], &XYZ, mcp: true, local: false),
+    cmd!("emote", Act, "emote [ID|stop]", "play one of the player's emotes, stop it, or list them",
+        "Without an argument: the emotes the player owns (the wheel's) and the one playing. With an ID it plays that emote as the emote wheel does (the player must stand still: moving, attacking or using an item cancels it); stop fades it out. Visual only: nothing is sent to the game server (docs/cosmetics.md).",
+        ["horizon-ctl emote", "horizon-ctl emote wave_hello", "horizon-ctl emote stop"],
+        &[opt("id", Ty::Str, "an owned emote's id, or stop")], mcp: true, local: false),
     // Act
     cmd!("break", Act, "break X Y Z [--timeout S]", "mine a block, holding the attack button until it breaks",
         "Aims at a visible face (the block must be within reach: use goto --near 2 first), mines with the held item, then waits up to a second for the drops. Replies with block_before, block, ticks, drops and picked_up (inventory change).",
@@ -465,10 +470,10 @@ pub const COMMANDS: &[Cmd] = &[
     cmd!("interact-entity", Act, "interact-entity ID", "right-click an entity: trade with a villager, mount a horse, ride a boat, shear a sheep",
         "Faces the entity (from entities), right-clicks it with the held item, waits two ticks and replies with the screen.",
         ["horizon-ctl interact-entity 42"], &[p("id", Ty::Int, "entity id from entities")], mcp: true, local: true),
-    cmd!("pad", Act, "pad BUTTON down|up|tap | pad stick left|right X Y | pad trigger left|right V | pad release | pad status", "a virtual controller: buttons, sticks and triggers as a real pad would send them",
+    cmd!("pad", Act, "pad BUTTON down|up|tap | pad stick left|right X Y | pad trigger left|right V | pad release | pad status | pad connection connected|disconnected", "a virtual controller: buttons, sticks and triggers as a real pad would send them",
         "Buttons by position: south east west north lb rb lt rt select start ls rs up down left right (south is Xbox A / PlayStation cross). Sticks run -1..1 with up positive and stay tilted until centred; triggers 0..1. Merged with any real controller; status lists the connected ones and what is held.",
         ["horizon-ctl pad south tap", "horizon-ctl pad stick left 0 1", "horizon-ctl pad trigger right 1", "horizon-ctl pad status"],
-        &[p("what", Ty::Str, "a button name, stick, trigger, release or status"), opt("a", Ty::Str, "down|up|tap, or left|right"), opt("b", Ty::Num, "stick X or trigger value"), opt("c", Ty::Num, "stick Y")], mcp: true, local: false),
+        &[p("what", Ty::Str, "a button name, stick, trigger, release, status or connection"), opt("a", Ty::Str, "down|up|tap, left|right, or connected|disconnected"), opt("b", Ty::Num, "stick X or trigger value"), opt("c", Ty::Num, "stick Y")], mcp: true, local: false),
     cmd!("release", Act, "release", "release every key and mouse button", "", ["horizon-ctl release"], &[], mcp: true, local: false),
     cmd!("stop", Act, "stop", "cancel the running action (goto, break...) and release every key", "", ["horizon-ctl stop"], &[], mcp: true, local: false),
     // Screens

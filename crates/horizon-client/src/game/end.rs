@@ -451,6 +451,7 @@ impl Game<'_> {
                 p.position.y = top;
             }
         }
+        self.award_stat("used", "minecraft:ender_eye", 1);
         self.consume_held();
         self.swing_arm();
         // EnderEyeItem.useOn emits this event for all nearby players.
@@ -458,13 +459,15 @@ impl Game<'_> {
         if let Some(c) = self.portal_ring_center(hit.pos) {
             for dz in -1..=1 {
                 for dx in -1..=1 {
-                    self.set_state_named(
-                        [c[0] + dx, c[1], c[2] + dz],
-                        "minecraft:end_portal",
-                        &[],
-                    )?;
+                    let p = [c[0] + dx, c[1], c[2] + dz];
+                    let at = BlockPos::new(p[0], p[1], p[2]);
+                    self.with_level(|b, level, ticks| {
+                        b.destroy_block(level, ticks, at, true);
+                    });
+                    self.set_state_named(p, "minecraft:end_portal", &[])?;
                 }
             }
+            self.process_level_events()?;
             // EnderEyeItem.useOn: global level event 1038 (END_PORTAL_SPAWN),
             // heard by every player (vanilla places it at the frame's corner
             // + (1, 0, 1); only its direction matters).
@@ -1222,6 +1225,7 @@ impl Game<'_> {
         self.audio
             .play("minecraft:entity.ender_eye.launch", Some(at), 1.0, pitch);
         self.consume_held();
+        self.award_stat("used", "minecraft:ender_eye", 1);
         self.swing_arm();
     }
 

@@ -1174,6 +1174,10 @@ impl Title {
             screen.wheel(delta, cursor, size);
             return false;
         }
+        if let Mode::Realms(screen) = &mut self.mode {
+            screen.wheel(delta, cursor, size);
+            return false;
+        }
         if let Mode::CreateFlat { flat, .. } = &mut self.mode {
             flat::wheel(flat, delta, cursor, size);
             return false;
@@ -1182,9 +1186,11 @@ impl Title {
             buffet::wheel(buffet, delta, cursor, size);
             return false;
         }
+        // CycleButton.mouseScrolled reads only the vertical wheel.
         if let Mode::Create {
             creative, options, ..
         } = &mut self.mode
+            && delta != 0.0
         {
             let (w, h) = size;
             let buttons = create_world::buttons(w, h, *creative, options);
@@ -1211,6 +1217,20 @@ impl Title {
         scroll.wheel(delta, ROW_HEIGHT / 2.0, top, bottom, content);
         self.scroll.set(scroll);
         false
+    }
+    /// The right stick's scroll: the open list moves wherever the hidden pointer
+    /// is, and Create World's buttons don't take the step.
+    pub fn stick_scroll(&mut self, delta: f32, cursor: (f32, f32), size: (f32, f32)) {
+        self.step_scroll(delta, crate::widgets::over_scroll_area(cursor), size);
+    }
+    /// A focus step past a list's edge: what the pointer is over scrolls, and
+    /// Create World's buttons don't take the step.
+    pub fn step_scroll(&mut self, delta: f32, cursor: (f32, f32), size: (f32, f32)) {
+        let open_rules = self.rules.get_mut().is_some();
+        if matches!(self.mode, Mode::Create { .. }) && !open_rules {
+            return;
+        }
+        self.scroll_worlds(delta, cursor, size);
     }
     pub fn failed(&mut self, error: impl std::fmt::Display) {
         let return_to = Box::new(self.mode.clone());
@@ -2969,6 +2989,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 let x = (w / 2.0).floor() - 155.0 + 80.0;
                 let y = 76.0 + (lines.len() as f32 + 1.0) * 9.0;
                 self.erase_check.set([x, y, width, BOX]);
+                crate::widgets::target([x, y, width, BOX]);
                 let hover = (x..x + width).contains(&cursor.0) && (y..y + BOX).contains(&cursor.1);
                 let sprite = match (*erase_cache, hover) {
                     (true, true) => "gui/sprites/widget/checkbox_selected_highlighted",
@@ -3139,6 +3160,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 let x = (w / 2.0).floor() - (width / 2.0).floor();
                 let y = top + 57.0 + lines.len() as f32 * 9.0;
                 self.warning_check.set([x, y, width, BOX]);
+                crate::widgets::target([x, y, width, BOX]);
                 let hover = (x..x + width).contains(&cursor.0) && (y..y + BOX).contains(&cursor.1);
                 crate::widgets::narratable(|| {
                     crate::widgets::Narratable::checkbox(
@@ -3203,6 +3225,10 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
         }
         for b in self.buttons(w, h) {
             crate::widgets::record(&b.label, [b.x, b.y, b.w, 20.0], b.enabled);
+            // Realms' icon buttons have no label to record.
+            if b.enabled && b.label.trim().is_empty() {
+                crate::widgets::target([b.x, b.y, b.w, 20.0]);
+            }
             if let Some(action) = b.action.filter(|_| !self.preparing) {
                 crate::widgets::declare_action(action, [b.x, b.y, b.w, 20.0], b.enabled);
             }
@@ -4346,12 +4372,26 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
             self.focused_button = Some(next_id);
         }
     }
-    /// The keyboard's focus landed on the world row at `point`
+    /// The focus moves the selection on this list, the controller's as well as the keyboard's:
+    /// the superflat and single-biome ones, where a selected row only sits there. On the world
+    /// list the controller leaves it to A.
+    pub fn focus_selects_row(&self) -> bool {
+        matches!(
+            self.mode,
+            Mode::CreateFlat { .. } | Mode::CreateBuffet { .. }
+        )
+    }
+    /// The focus landed on the list row at `point`
     /// (`AbstractSelectionList.setFocused`): it is selected, never joined,
     /// and the search box no longer has the keys. Whether a row was there.
     pub fn focus_world_row(&mut self, point: (f32, f32), size: (f32, f32)) -> bool {
         if self.rules.get_mut().is_some() {
             return false;
+        }
+        match &mut self.mode {
+            Mode::CreateFlat { flat, .. } => return flat::focus_row(flat, point, size),
+            Mode::CreateBuffet { buffet, .. } => return buffet::focus_row(buffet, point, size),
+            _ => {}
         }
         let Mode::Select { worlds, .. } = &self.mode else {
             return false;

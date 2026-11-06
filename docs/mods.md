@@ -14,14 +14,19 @@ Mods are **off by default**. A fresh install has no `horizon-mods` folder and pl
 
 ## Playing with mods
 
-1. Install a mod from the launcher's Mods page ([mod-browser.md](mod-browser.md)), or put its files by hand in the
+1. Install a mod from the launcher's Mods page ([mod-browser.md](mod-browser.md)) or from the game (Options > Mods >
+   **Browse Mods**: Horizon's registry, checked as the launcher checks it), or put its files by hand in the
    game folder (the one holding `options.txt`): a content mod's `.hmod` (or a folder holding `horizon-mod.toml`) in
    `horizon-mods/`. Native mods go in `horizon-native-mods/`, and the launcher builds them
    ([native-mods.md](native-mods.md)).
 2. Options > **Mods** lists them with what each may do ("May add blocks, items, mob effects and entity types to your
    worlds") and a switch. They start off. The choice is kept in `horizon-mods.txt` (`mod.<id>:true`).
-3. A content mod's blocks, items, mob effects and entity types load once, when the game starts: restart the game after
-   a switch.
+3. A switch applies at once when the mod has only assets and data (textures, models, sounds, languages, recipes, tags,
+   loot tables, advancements, functions): the game reloads its resources, then the world's data as `/reload` does,
+   and the players of a world open to LAN get the new data. A mod that adds blocks, items, mob effects, entity or menu
+   types, or changes world generation, still loads only when the game starts: the Mods page says to restart, and its
+   switch waits outside a world. On another server's world every content mod's switch waits: the server owns its
+   data ([design/mod-hotload.md](design/mod-hotload.md)).
 4. A mod that can't load shows why, in red, on its row.
 
 Two turned-on content mods never own the same namespace: the first by file name loads, and the other stays out with
@@ -333,8 +338,11 @@ it. A world opened without the
 mod keeps the saved ones as they are, frozen in place. Not yet: a dispenser doesn't throw it, and a vanilla client on a
 server with it may be disconnected when one spawns.
 
-A living type copies a mob, `minecraft:zombie` or `minecraft:villager`, the way NeoForge's
-`EntityType.Builder.of(Zombie::new, ...)` makes a type of a vanilla class. It has no `item` or `damage`. `attributes`
+A living type copies a mob, `minecraft:zombie`, `minecraft:villager` or `minecraft:wandering_trader`, the way NeoForge's
+`EntityType.Builder.of(Zombie::new, ...)` makes a type of a vanilla class. The wandering trader is the neutral one whose
+behaviour is all goals, so a native mod's [`register_goals`](native-mods.md#mob-goals) can replace all of it (a citizen,
+a guard, an NPC); its trades on a right click are still a wandering trader's until a native mod answers the
+interaction (`native_interact_entity`). A villager's behaviour is its brain, which stays. It has no `item` or `damage`. `attributes`
 sets default attribute values that differ from its template's (`EntityAttributeCreationEvent`), by attribute id, and
 only for attributes the template has; one it lacks stops the content root's build:
 
@@ -348,8 +356,9 @@ behaviour, with its own attributes. It saves what its template's class saves und
 table is its own, `<id>:entities/<name>` (vanilla's `EntityType.getDefaultLootTable`). It is not in vanilla's entity type
 tags (`#minecraft:undead`, `#minecraft:zombies`...) unless the mod adds it. Its row in `entity-types.json` is its
 template's, with `template` added and its attributes in place of the template's. Unit tests check all this; it has
-not yet been tried in a running game. Not yet: its own model or texture (a native mod draws one with
-`native_mob_submit`), and its own goals.
+not yet been tried in a running game. Not yet as data: its own model or texture (a native mod draws one with
+`native_mob_submit`) and its own goals (a native mod gives it them with
+[`register_goals`](native-mods.md#mob-goals)).
 
 #### Menu types
 

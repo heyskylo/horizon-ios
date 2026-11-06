@@ -25,6 +25,7 @@ pub mod forwarding;
 pub mod guest;
 pub mod handoff;
 pub mod hub;
+pub mod import;
 mod io_pool;
 pub mod menu;
 pub mod playerdata;
@@ -149,6 +150,12 @@ pub const HORIZON_CLIENTS_ONLY: &str = "horizon-clients-only";
 /// What another client is told.
 pub const HORIZON_CLIENTS_ONLY_REASON: &str =
     "This server is for the Horizon client: playhorizon.dev";
+/// The server.properties key (server.toml's `server.accept_older_clients`) that lets 26.2 clients join
+/// (off unless "true").
+pub const ACCEPT_OLDER_CLIENTS: &str = "horizon-accept-older-clients";
+/// What a 26.2 client is told while only its packet ids are translated (#10404).
+pub const OLDER_CLIENTS_UNFINISHED: &str =
+    "This server lets 26.2 join, but Horizon cannot translate 26.2 yet: join with 26.3";
 
 /// How the server side of the network behaves: an integrated server's LAN
 /// uses the defaults, a dedicated server takes them from server.properties.
@@ -209,6 +216,15 @@ pub struct NetConfig {
     /// client whose `minecraft:brand` isn't Horizon's is turned away during
     /// configuration. A brand can be spoofed: a gate, not security.
     pub horizon_clients_only: bool,
+    /// `horizon-accept-older-clients` (off): a client of 26.2 joins too, its packets renumbered
+    /// (horizon_protocol::adapter::ClientSession). Off, it is turned away as vanilla turns it away.
+    pub accept_older_clients: bool,
+    /// Lets an older client past configuration although only its packet ids are translated yet
+    /// (#10404's later parts translate the registry ids and the packets whose layout changed): for tests
+    /// of the id renumbering, never in server.toml. False, such a client is told
+    /// [`OLDER_CLIENTS_UNFINISHED`] before any registry data, tag or play packet would reach it in 26.3's
+    /// ids and layouts.
+    pub older_clients_play: bool,
     /// `horizon-lod-distance` (Horizon's own server.properties key, 64): how
     /// far, in chunks, the server samples far terrain for Horizon clients
     /// (`lod_net`); 0 serves none.
@@ -218,6 +234,15 @@ pub struct NetConfig {
     pub levels: crate::chunk::LevelShapes,
 }
 impl NetConfig {
+    /// A real TCP server confined to this machine, without multicast announcements.
+    /// Use this for socket tests; `lan` retains the public LAN behaviour.
+    pub fn loopback(port: u16, motd: String, max_players: usize) -> Self {
+        Self {
+            bind: Some(std::net::Ipv4Addr::LOCALHOST.into()),
+            announce: false,
+            ..Self::lan(port, motd, max_players)
+        }
+    }
     /// MinecraftServer.enforceSecureProfile.
     pub fn enforces_secure_chat(&self) -> bool {
         self.secure_chat.as_ref().is_some_and(|s| s.enforced())
@@ -248,6 +273,8 @@ impl NetConfig {
             code_of_conducts: Vec::new(),
             server_links: Vec::new(),
             horizon_clients_only: false,
+            accept_older_clients: false,
+            older_clients_play: false,
             lod_distance: crate::lod_net::DEFAULT_DISTANCE,
             levels: crate::chunk::LevelShapes::VANILLA,
             owner_profile: None,
@@ -471,6 +498,10 @@ impl Shared {
     /// ServerStatus.CODEC): description, players with up to 12 shuffled
     /// names, version, favicon and enforcesSecureChat when true.
     pub fn status_json(&self) -> String {
+        self.status_json_for(PROTOCOL_VERSION)
+    }
+    /// [`Self::status_json`] stating `protocol`: an older client's own, when it may join.
+    pub fn status_json_for(&self, protocol: i32) -> String {
         use crate::server::json::Json;
         let motd = self.motd.lock().unwrap().clone();
         let online: Vec<(u128, String)> = self.online.lock().unwrap().clone();
@@ -512,10 +543,7 @@ impl Shared {
                 "version".to_owned(),
                 Json::Object(vec![
                     ("name".to_owned(), Json::String(GAME_VERSION.to_owned())),
-                    (
-                        "protocol".to_owned(),
-                        Json::Number(PROTOCOL_VERSION.to_string()),
-                    ),
+                    ("protocol".to_owned(), Json::Number(protocol.to_string())),
                 ]),
             ),
         ];
@@ -635,7 +663,13 @@ impl Lan {
     /// The socket [`Lan::listen`] accepts on, bound ahead so that a failure
     /// can be reported before the hub is at hand.
     pub fn bind(address: Option<std::net::IpAddr>, port: u16) -> io::Result<TcpListener> {
-        let bind = address.unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
+        let bind = address.unwrap_or_else(|| {
+            if test_loopback() {
+                std::net::Ipv4Addr::LOCALHOST.into()
+            } else {
+                std::net::Ipv4Addr::UNSPECIFIED.into()
+            }
+        });
         let listener = TcpListener::bind((bind, port))?;
         listener.set_nonblocking(true)?;
         Ok(listener)
@@ -654,7 +688,7 @@ impl Lan {
         let thread = std::thread::Builder::new()
             .name("horizon-lan-accept".into())
             .spawn(move || accept_loop(listener, accept_shared, &accept_stop))?;
-        self._pinger = if announce {
+        self._pinger = if announce && !test_loopback() {
             discovery::Pinger::start(self.shared.motd(), port).ok()
         } else {
             None
@@ -931,13 +965,41 @@ fn handle(stream: TcpStream, addr: SocketAddr, counted: Counted) {
 
 /// HttpUtil.getAvailablePort: a free local port.
 pub fn available_port() -> u16 {
-    TcpListener::bind(("0.0.0.0", 0))
+    let bind = if cfg!(test) || test_loopback() {
+        "127.0.0.1"
+    } else {
+        "0.0.0.0"
+    };
+    TcpListener::bind((bind, 0))
         .and_then(|l| l.local_addr())
         .map_or(25565, |a| a.port())
 }
 
+/// Same-machine harnesses opt in; real LAN runs keep the normal network interfaces.
+pub(super) fn test_loopback() -> bool {
+    std::env::var_os("HORIZON_TEST_LOOPBACK").is_some_and(|v| v == "1")
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_local_server_accepts_only_the_requested_loopback_address() {
+        let lan = super::Lan::start_with(
+            std::sync::Arc::new(super::data::SyncData::empty()),
+            super::NetConfig::loopback(0, "Local test".into(), 1),
+        )
+        .unwrap();
+        let local = std::net::TcpStream::connect(("127.0.0.1", lan.port)).unwrap();
+        let other = "127.0.0.2".parse::<std::net::IpAddr>().unwrap();
+        assert!(
+            std::net::TcpStream::connect_timeout(
+                &std::net::SocketAddr::new(other, lan.port),
+                std::time::Duration::from_millis(500),
+            )
+            .is_err()
+        );
+        drop(local);
+    }
     use super::conn::MEMORY_ADDRESS;
     use super::*;
     use std::{io::Read, time::Instant};
@@ -949,7 +1011,7 @@ mod tests {
     fn a_flood_of_silent_sockets_is_turned_away() {
         let config = NetConfig {
             announce: false,
-            ..NetConfig::lan(0, "Flood".into(), 1)
+            ..NetConfig::loopback(0, "Flood".into(), 1)
         };
         let lan = Lan::start_with(Arc::new(data::SyncData::empty()), config).unwrap();
         let address = (std::net::Ipv4Addr::LOCALHOST, lan.port);
@@ -994,7 +1056,7 @@ mod tests {
         let config = NetConfig {
             announce: false,
             listen: false,
-            ..NetConfig::lan(0, "Status".into(), 8)
+            ..NetConfig::loopback(0, "Status".into(), 8)
         };
         let lan = Lan::start_with(Arc::new(data::SyncData::empty()), config).unwrap();
         assert!(lan.shared.try_admit(MEMORY_ADDRESS, 1, "Player").is_none());
@@ -1012,7 +1074,7 @@ mod tests {
         let config = NetConfig {
             announce: false,
             listen: false,
-            ..NetConfig::lan(0, "Share".into(), 20)
+            ..NetConfig::loopback(0, "Share".into(), 20)
         };
         let lan = Lan::start_with(Arc::new(data::SyncData::empty()), config).unwrap();
         let ip = |s: &str| s.parse::<IpAddr>().unwrap();
@@ -1046,7 +1108,7 @@ mod tests {
                 lang: Arc::new(Default::default()),
                 log_ips: true,
             }),
-            ..NetConfig::lan(0, "Room".into(), 1)
+            ..NetConfig::loopback(0, "Room".into(), 1)
         };
         let lan = Lan::start_with(Arc::new(data::SyncData::empty()), config).unwrap();
         let shared = &lan.shared;

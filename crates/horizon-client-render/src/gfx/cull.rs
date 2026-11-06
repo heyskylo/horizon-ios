@@ -55,6 +55,13 @@ const RETEST: u32 = 8;
 /// more than they save. Else one frame in `PROBE` tests every section.
 const MIN_SHARE: f32 = 0.1;
 const PROBE: u32 = 64;
+/// The gate, for frame `stamp`, with `share` the newest result's hidden share:
+/// whether the frame culls, and whether it probes (tests every section). GPU
+/// culling's frames take it too.
+pub(super) fn gate(share: f32, stamp: u32) -> (bool, bool) {
+    let probe = share < MIN_SHARE;
+    (!probe || stamp.is_multiple_of(PROBE), probe)
+}
 /// On Metal, sections in view from which a frame culls. Apple's GPUs store
 /// and reload the whole frame at each of the passes the test adds, a fixed
 /// cost that the sections it hides repay only at high render distances: on
@@ -232,6 +239,11 @@ impl Cull {
             ))
         .then_some(depth_test)
     }
+    /// Its test runs in phase 1's pass, the depth test forced early (Vulkan):
+    /// GPU culling's frames can run it too.
+    pub fn early(&self) -> bool {
+        self.depth_test == DepthTest::Early
+    }
     /// `color` is the world pass's colour format.
     pub fn new(device: &wgpu::Device, color: wgpu::TextureFormat, depth_test: DepthTest) -> Self {
         let entry = |binding, visibility, ty| wgpu::BindGroupLayoutEntry {
@@ -275,7 +287,7 @@ impl Cull {
                     0,
                     fragment,
                     wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Depth,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
                         view_dimension: wgpu::TextureViewDimension::D2,
                         multisampled: false,
                     },
@@ -422,8 +434,12 @@ impl Cull {
         self.test_slots.clear();
         self.test_indices.clear();
         self.total = 0;
-        self.probe = !self.always && self.hidden.1 < MIN_SHARE;
-        !self.probe || self.stamp.is_multiple_of(PROBE)
+        let (culls, probe) = match self.always {
+            true => (true, false),
+            false => gate(self.hidden.1, self.stamp),
+        };
+        self.probe = probe;
+        culls
     }
 
     /// Whether phase 1 draws the section in resident `slot` (or the far tile
@@ -717,6 +733,15 @@ fn source(depth_test: DepthTest) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Culling while the newest result hid enough; else one frame in `PROBE`
+    /// tests every section. GPU culling's frames take the same gate.
+    #[test]
+    fn the_gate_culls_while_enough_is_hidden_and_probes_else() {
+        assert_eq!(gate(MIN_SHARE, 3), (true, false));
+        assert_eq!(gate(MIN_SHARE / 2.0, 3), (false, true));
+        assert_eq!(gate(MIN_SHARE / 2.0, PROBE), (true, true));
+    }
 
     #[test]
     fn shaders_validate() {
