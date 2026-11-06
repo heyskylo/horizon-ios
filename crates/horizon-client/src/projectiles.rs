@@ -21,6 +21,16 @@ pub fn own_random(shooter: &crate::mobs::Mob) -> horizon_core::random::LegacyRan
             ^ shooter.position.x.to_bits() as i64,
     )
 }
+/// `AbstractArrow.startFalling`'s per-axis random velocity damping.
+pub fn start_falling_velocity(
+    velocity: Vec3,
+    random: &mut horizon_core::random::LegacyRandom,
+) -> Vec3 {
+    let x = f64::from(random.next_float() * 0.2);
+    let y = f64::from(random.next_float() * 0.2);
+    let z = f64::from(random.next_float() * 0.2);
+    Vec3::new(velocity.x * x, velocity.y * y, velocity.z * z)
+}
 
 /// a content mod's thrown item projectile, a copy of `Snowball` that deals
 /// `damage` and flies as its `item`.
@@ -816,8 +826,7 @@ impl Projectile {
             return;
         };
         if arrow.in_ground && !arrow.no_physics && no_block_collision {
-            self.velocity =
-                horizon_client::arrows::start_falling_velocity(self.velocity, &mut arrow.random);
+            self.velocity = start_falling_velocity(self.velocity, &mut arrow.random);
             arrow.in_ground = false;
             arrow.life = 0;
             self.stuck = false;
@@ -1374,7 +1383,7 @@ mod tests {
         p.stuck = true;
         p.arrow.as_mut().unwrap().in_ground = true;
         let mut random = p.arrow.as_ref().unwrap().random.clone();
-        let expected = horizon_client::arrows::start_falling_velocity(p.velocity, &mut random);
+        let expected = start_falling_velocity(p.velocity, &mut random);
 
         p.move_by_piston(Vec3::new(0.5, 0.0, 0.0));
         assert!(p.piston_release_bounds().is_some());

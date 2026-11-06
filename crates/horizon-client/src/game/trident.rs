@@ -167,6 +167,13 @@ impl ThrownTrident {
             self.start_falling();
         }
     }
+    fn start_falling(&mut self) {
+        self.in_ground = false;
+        self.life = 0;
+        self.velocity =
+            horizon_client::projectiles::start_falling_velocity(self.velocity, &mut self.random);
+        self.needs_sync = true;
+    }
     pub(super) fn piston_slime_bounce(&mut self, movement: horizon_core::geometry::Direction) {
         self.velocity = horizon_world::piston_push::bounce_velocity(movement, self.velocity);
         self.in_ground = false;
@@ -1183,7 +1190,7 @@ mod tests {
         trident.velocity = Vec3::new(1.0, -2.0, 3.0);
         let mut random = trident.random.clone();
         let expected =
-            horizon_client::arrows::start_falling_velocity(trident.velocity, &mut random);
+            horizon_client::projectiles::start_falling_velocity(trident.velocity, &mut random);
 
         trident.move_by_piston(Vec3::new(0.5, 0.0, 0.0));
         assert!(trident.piston_release_bounds().is_some());
