@@ -3241,6 +3241,13 @@ edits and sends it, or presses Escape, and it goes into the chat history then li
 256-character limit and its character filter. It is an error with no player in a world, and while another screen
 (the chat itself included) is open. Bundles need `"hooks": @API:open_chat@`.
 
+While the chat is open, `native_chat_input()` (API @API:chat_input@, `crates/horizon-client/src/game/chat.rs`) gives its
+text and cursor (counted in characters), `None` when it's closed, and `native_set_chat_input(text, cursor)` replaces
+them, as an edit: completions refresh as they do for typing, so a mod that turns `:smile:` into an emoji as it's typed
+runs from `native_screen_char_typed_pre` and writes the result back. The cursor is clamped to the text. Only what typing
+lets in reaches the box (no control characters, DEL or section sign), within its 256-character limit. Writing is an
+error while the chat isn't open. Bundles need `"hooks": @API:chat_input@`.
+
 ### Packets a client mod sends
 
 API 409, `crates/horizon-client/src/game/native_net.rs`: `native_send_packet(packet)` sends one
