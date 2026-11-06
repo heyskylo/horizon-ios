@@ -1223,5 +1223,7 @@
   "{name} was left out: it needs {other}, which was left out": "{name} چھوڑ دیا گیا: اسے {other} چاہیے، جو چھوڑ دیا گیا",
   "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "آپ جو Horizon کھیلتے ہیں اس پر نہیں بنتا ({code}): بلڈ اسے تب تک چھوڑ دیتا ہے جب تک اس کا مصنف اسے اپڈیٹ نہ کرے",
   "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "آپ جہاں ہیں، وہاں بانیوں کا سیٹ playhorizon.dev پر مفت چیک آؤٹ کے ذریعے لیا جاتا ہے۔ اسے دکان سے لیں: وہ آپ کے لیے چیک آؤٹ کھول دیتی ہے۔",
-  "The founder set can't be claimed from your country.": "بانیوں کا سیٹ آپ کے ملک سے نہیں لیا جا سکتا۔"
+  "The founder set can't be claimed from your country.": "بانیوں کا سیٹ آپ کے ملک سے نہیں لیا جا سکتا۔",
+  "Duplicate native mod {id}.": "Duplicate native mod {id}.",
+  "Native and content mod ids differ.": "Native and content mod ids differ."
 }

@@ -29,8 +29,9 @@ What a file holds decides what it is (#5865):
   out of the build. Any other top-level entry refuses the file.
 - **`.hnmod`:** native code only, read exactly as before.
 
-The registry still publishes native mods as `.hnmod`. It switches to `.hmod` once launchers and the game read native
-`.hmod`s, so no launcher in use gets a file it can't read.
+Native registry entries may name `.hnmod` (code only) or `.hmod` (optionally with content). A combined file needs
+a launcher and game with native `.hmod` support; keep publishing code-only `.hnmod`s for older launchers. Content
+is validated and copied into the exact native build's `native-content/<id>/`, then read by the game's content loader.
 
 ## `horizon-native.json`
 

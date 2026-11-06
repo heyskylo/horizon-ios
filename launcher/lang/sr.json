@@ -1223,5 +1223,7 @@
   "{name} was left out: it needs {other}, which was left out": "{name} је изостављен: потребан му је {other}, који је изостављен",
   "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Не гради се на Horizon-у који играш ({code}): изградња га изоставља док га аутор не ажурира",
   "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Тамо где сте, комплет оснивача се преузима кроз бесплатну наплату на playhorizon.dev. Преузмите га у Продавници: она вам отвара наплату.",
-  "The founder set can't be claimed from your country.": "Комплет оснивача не може да се преузме из ваше земље."
+  "The founder set can't be claimed from your country.": "Комплет оснивача не може да се преузме из ваше земље.",
+  "Duplicate native mod {id}.": "Duplicate native mod {id}.",
+  "Native and content mod ids differ.": "Native and content mod ids differ."
 }

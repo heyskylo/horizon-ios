@@ -1223,5 +1223,7 @@
   "{name} was left out: it needs {other}, which was left out": "{name} gouf ewechgelooss: brauch {other}, dat ewechgelooss gouf",
   "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Baut net op dem Horizon, deen s du spills ({code}): e Build léisst et ewech, bis säin Auteur et aktualiséiert",
   "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Do wou s du bass, gëtt de Grënner-Set iwwer eng gratis Bezuelung op playhorizon.dev gefuerdert. Fuerder en am Buttek: hien mécht d'Bezuelung fir dech op.",
-  "The founder set can't be claimed from your country.": "De Grënner-Set kann net aus dengem Land gefuerdert ginn."
+  "The founder set can't be claimed from your country.": "De Grënner-Set kann net aus dengem Land gefuerdert ginn.",
+  "Duplicate native mod {id}.": "Duplicate native mod {id}.",
+  "Native and content mod ids differ.": "Native and content mod ids differ."
 }

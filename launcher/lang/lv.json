@@ -1223,5 +1223,7 @@
   "{name} was left out: it needs {other}, which was left out": "{name} tika izlaists: tam vajag {other}, kas tika izlaists",
   "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Neveidojas uz Horizon, ko tu spēlē ({code}): būvējums to izlaiž, līdz autors to atjaunina",
   "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Tur, kur jūs esat, dibinātāju komplektu saņem ar bezmaksas apmaksu vietnē playhorizon.dev. Saņemiet to Veikalā: tas jums atvērs apmaksu.",
-  "The founder set can't be claimed from your country.": "Dibinātāju komplektu nevar saņemt no jūsu valsts."
+  "The founder set can't be claimed from your country.": "Dibinātāju komplektu nevar saņemt no jūsu valsts.",
+  "Duplicate native mod {id}.": "Duplicate native mod {id}.",
+  "Native and content mod ids differ.": "Native and content mod ids differ."
 }

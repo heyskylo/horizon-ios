@@ -1223,5 +1223,7 @@
   "{name} was left out: it needs {other}, which was left out": "{name} a zo bet lezet a-gostez: ezhomm en deus eus {other}, a zo bet lezet a-gostez",
   "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Ne vez ket savet war an Horizon a c'hoarit ({code}): ur sevel a lez anezhañ a-gostez betek ma vo hizivaet gant e aozer",
   "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "El lec'h m'emaoc'h, e vez goulennet ar sagad krouer dre ur paeañ digoust war playhorizon.dev. Goulennit anezhañ er Stal: digeriñ a ra ar paeañ evidoc'h.",
-  "The founder set can't be claimed from your country.": "N'haller ket goulenn ar sagad krouer eus ho pro."
+  "The founder set can't be claimed from your country.": "N'haller ket goulenn ar sagad krouer eus ho pro.",
+  "Duplicate native mod {id}.": "Duplicate native mod {id}.",
+  "Native and content mod ids differ.": "Native and content mod ids differ."
 }

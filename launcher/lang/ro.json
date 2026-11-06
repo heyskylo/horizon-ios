@@ -1223,5 +1223,7 @@
   "{name} was left out: it needs {other}, which was left out": "{name} a fost omis: are nevoie de {other}, care a fost omis",
   "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Nu se compilează pe Horizon-ul pe care îl joci ({code}): compilarea îl omite până când autorul îl actualizează",
   "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Acolo unde ești, setul fondatorilor se revendică printr-o plată gratuită pe playhorizon.dev. Revendică-l din Magazin: îți deschide plata.",
-  "The founder set can't be claimed from your country.": "Setul fondatorilor nu poate fi revendicat din țara ta."
+  "The founder set can't be claimed from your country.": "Setul fondatorilor nu poate fi revendicat din țara ta.",
+  "Duplicate native mod {id}.": "Duplicate native mod {id}.",
+  "Native and content mod ids differ.": "Native and content mod ids differ."
 }

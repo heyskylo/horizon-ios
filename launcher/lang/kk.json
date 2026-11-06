@@ -1223,5 +1223,7 @@
   "{name} was left out: it needs {other}, which was left out": "{name} алынып тасталды: оған {other} керек, ол алынып тасталды",
   "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Сен ойнайтын Horizon-да жиналмайды ({code}): авторы жаңартқанша жинау оны алып тастайды",
   "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Сіз тұрған жерде негізін қалаушылар жиынтығы playhorizon.dev сайтындағы тегін төлем арқылы алынады. Оны Дүкеннен алыңыз: ол төлемді сізге ашып береді.",
-  "The founder set can't be claimed from your country.": "Негізін қалаушылар жиынтығын сіздің еліңізден алу мүмкін емес."
+  "The founder set can't be claimed from your country.": "Негізін қалаушылар жиынтығын сіздің еліңізден алу мүмкін емес.",
+  "Duplicate native mod {id}.": "Duplicate native mod {id}.",
+  "Native and content mod ids differ.": "Native and content mod ids differ."
 }

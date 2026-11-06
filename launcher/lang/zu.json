@@ -1223,5 +1223,7 @@
   "{name} was left out: it needs {other}, which was left out": "I-{name} ishiywe ngaphandle: idinga i-{other}, eshiywe ngaphandle",
   "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Ayakhiwa ku-Horizon oyidlalayo ({code}): ukwakha kuyayishiya ngaphandle kuze kube umbhali wayo uyayibuyekeza",
   "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Lapho ukhona, isethi yabasunguli ithathwa ngokukhokha mahhala ku-playhorizon.dev. Yithathe esitolo: sizokuvulela ukukhokha.",
-  "The founder set can't be claimed from your country.": "Isethi yabasunguli ayikwazi ukuthathwa ezweni lakho."
+  "The founder set can't be claimed from your country.": "Isethi yabasunguli ayikwazi ukuthathwa ezweni lakho.",
+  "Duplicate native mod {id}.": "Duplicate native mod {id}.",
+  "Native and content mod ids differ.": "Native and content mod ids differ."
 }

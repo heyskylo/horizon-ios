@@ -1223,5 +1223,7 @@
   "{name} was left out: it needs {other}, which was left out": "{name} praleistas: jam reikia {other}, kuris praleistas",
   "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Nesukompiliuojamas tavo žaidžiamame Horizon ({code}): kompiliavimas jį praleidžia, kol autorius jo neatnaujins",
   "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Ten, kur esate, įkūrėjų rinkinys gaunamas per nemokamą apmokėjimą playhorizon.dev svetainėje. Gaukite jį Parduotuvėje: ji atidarys apmokėjimą už jus.",
-  "The founder set can't be claimed from your country.": "Įkūrėjų rinkinio negalima gauti iš jūsų šalies."
+  "The founder set can't be claimed from your country.": "Įkūrėjų rinkinio negalima gauti iš jūsų šalies.",
+  "Duplicate native mod {id}.": "Duplicate native mod {id}.",
+  "Native and content mod ids differ.": "Native and content mod ids differ."
 }

@@ -1223,5 +1223,7 @@
   "{name} was left out: it needs {other}, which was left out": "{name} төшереп калдырылды: аңа {other} кирәк, ә ул төшереп калдырылды",
   "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Син уйнаган Horizon'да җыелмый ({code}): авторы яңартмыйча, җыю аны төшереп калдыра",
   "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Сез булган җирдә нигез салучылар комплекты playhorizon.dev сайтында бушлай түләү аша алына. Аны Кибеттән алыгыз: ул түләүне сезгә үзе ача.",
-  "The founder set can't be claimed from your country.": "Нигез салучылар комплектын сезнең илдән алып булмый."
+  "The founder set can't be claimed from your country.": "Нигез салучылар комплектын сезнең илдән алып булмый.",
+  "Duplicate native mod {id}.": "Duplicate native mod {id}.",
+  "Native and content mod ids differ.": "Native and content mod ids differ."
 }

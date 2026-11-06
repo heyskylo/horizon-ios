@@ -22745,6 +22745,7 @@ pub fn run_with() -> Result<()> {
     options.resources = mods::content_root(
         &options.resources,
         &early_settings.mods.enabled,
+        &early_settings.mods.disabled,
         &options.dev_mods,
     );
     let loaded = load_resources(

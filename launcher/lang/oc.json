@@ -1223,5 +1223,7 @@
   "{name} was left out: it needs {other}, which was left out": "{name} es estat daissat de caire: a besonh de {other}, daissat de caire",
   "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Se compila pas sus l'Horizon que i jogas ({code}): una compilacion lo daissa de caire fins que son autor lo mete a jorn",
   "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Ont sètz, lo lòt dels fondadors se reclama amb un pagament gratuit sus playhorizon.dev. Reclamatz-lo dins la Botiga: vos dobrís lo pagament.",
-  "The founder set can't be claimed from your country.": "Lo lòt dels fondadors se pòt pas reclamar dempuèi vòstre país."
+  "The founder set can't be claimed from your country.": "Lo lòt dels fondadors se pòt pas reclamar dempuèi vòstre país.",
+  "Duplicate native mod {id}.": "Duplicate native mod {id}.",
+  "Native and content mod ids differ.": "Native and content mod ids differ."
 }

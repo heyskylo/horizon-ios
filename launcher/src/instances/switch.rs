@@ -119,7 +119,9 @@ fn mod_files(home: &Path, horizon: bool) -> usize {
     };
     if horizon {
         count("mods", &|n| n.ends_with(".hmod"))
-            + count(crate::native_mods::INSTALLED, &|n| n.ends_with(".hnmod"))
+            + count(crate::native_mods::INSTALLED, &|n| {
+                n.ends_with(".hnmod") || n.ends_with(".hmod")
+            })
     } else {
         count("mods", &|n| {
             n.ends_with(".jar") || n.ends_with(".jar.disabled")

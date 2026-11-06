@@ -1223,5 +1223,7 @@
   "{name} was left out: it needs {other}, which was left out": "{name} tidak disertakan: membutuhkan {other}, yang tidak disertakan",
   "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Tidak bisa dibangun di Horizon yang kamu mainkan ({code}): build tidak menyertakannya sampai pembuatnya memperbaruinya",
   "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Di tempatmu, set pendiri diklaim lewat checkout gratis di playhorizon.dev. Klaim dari Toko: Toko akan membukakan checkout untukmu.",
-  "The founder set can't be claimed from your country.": "Set pendiri tidak bisa diklaim dari negaramu."
+  "The founder set can't be claimed from your country.": "Set pendiri tidak bisa diklaim dari negaramu.",
+  "Duplicate native mod {id}.": "Duplicate native mod {id}.",
+  "Native and content mod ids differ.": "Native and content mod ids differ."
 }

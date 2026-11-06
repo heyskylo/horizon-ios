@@ -1223,5 +1223,7 @@
   "{name} was left out: it needs {other}, which was left out": "Hindi isinama ang {name}: kailangan nito ang {other}, na hindi isinama",
   "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Hindi nabubuo sa Horizon na nilalaro mo ({code}): hindi ito isasama ng build hangga't hindi ito ina-update ng may-akda",
   "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Kung nasaan ka, kinukuha ang founder set sa pamamagitan ng libreng checkout sa playhorizon.dev. I-claim ito sa Shop: bubuksan nito ang checkout para sa iyo.",
-  "The founder set can't be claimed from your country.": "Hindi makukuha ang founder set mula sa iyong bansa."
+  "The founder set can't be claimed from your country.": "Hindi makukuha ang founder set mula sa iyong bansa.",
+  "Duplicate native mod {id}.": "Duplicate native mod {id}.",
+  "Native and content mod ids differ.": "Native and content mod ids differ."
 }

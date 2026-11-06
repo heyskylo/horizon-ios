@@ -1223,5 +1223,7 @@
   "{name} was left out: it needs {other}, which was left out": "{name} は除外されました: 除外された {other} が必要です",
   "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "プレイ中の Horizon ではビルドできません ({code}): 作者が更新するまでビルドから除外されます",
   "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "お住まいの地域では、ファウンダーセットは playhorizon.dev の無料チェックアウトで受け取ります。ショップから受け取ってください。チェックアウトが開きます。",
-  "The founder set can't be claimed from your country.": "お住まいの国ではファウンダーセットを受け取れません。"
+  "The founder set can't be claimed from your country.": "お住まいの国ではファウンダーセットを受け取れません。",
+  "Duplicate native mod {id}.": "Duplicate native mod {id}.",
+  "Native and content mod ids differ.": "Native and content mod ids differ."
 }

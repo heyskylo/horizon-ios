@@ -1223,5 +1223,7 @@
   "{name} was left out: it needs {other}, which was left out": "Ua waiho ʻia ʻo {name}: pono iā ia ʻo {other}, i waiho ʻia",
   "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "ʻAʻole i kūkulu ʻia ma ka Horizon āu e pāʻani nei ({code}): waiho ke kūkulu ʻana iā ia a hōʻano hou kona mea kākau",
   "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Ma kou wahi, loaʻa ka pūʻulu hoʻokumu ma o ka uku manuahi ma playhorizon.dev. E kiʻi iā ia ma ka Hale kūʻai: wehe ia i ka uku nou.",
-  "The founder set can't be claimed from your country.": "ʻAʻole hiki ke kiʻi i ka pūʻulu hoʻokumu mai kou ʻāina."
+  "The founder set can't be claimed from your country.": "ʻAʻole hiki ke kiʻi i ka pūʻulu hoʻokumu mai kou ʻāina.",
+  "Duplicate native mod {id}.": "Duplicate native mod {id}.",
+  "Native and content mod ids differ.": "Native and content mod ids differ."
 }

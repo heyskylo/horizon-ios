@@ -1223,5 +1223,7 @@
   "{name} was left out: it needs {other}, which was left out": "{name} byl vynechán: potřebuje {other}, který byl vynechán",
   "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Nesestaví se na Horizonu, který hraješ ({code}): sestavení ho vynechá, dokud ho autor neaktualizuje",
   "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Tam, kde jste, se zakladatelská sada získává přes bezplatnou pokladnu na playhorizon.dev. Získejte ji v Obchodě: pokladnu vám otevře sám.",
-  "The founder set can't be claimed from your country.": "Zakladatelskou sadu nelze získat z vaší země."
+  "The founder set can't be claimed from your country.": "Zakladatelskou sadu nelze získat z vaší země.",
+  "Duplicate native mod {id}.": "Duplicate native mod {id}.",
+  "Native and content mod ids differ.": "Native and content mod ids differ."
 }

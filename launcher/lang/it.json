@@ -1223,5 +1223,7 @@
   "{name} was left out: it needs {other}, which was left out": "{name} è stato escluso: richiede {other}, che è stato escluso",
   "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Non si compila sull'Horizon a cui giochi ({code}): una compilazione lo esclude finché il suo autore non lo aggiorna",
   "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Dove ti trovi, il set dei fondatori si riscatta con un pagamento gratuito su playhorizon.dev. Riscattalo dal Negozio: apre il pagamento per te.",
-  "The founder set can't be claimed from your country.": "Il set dei fondatori non può essere riscattato dal tuo paese."
+  "The founder set can't be claimed from your country.": "Il set dei fondatori non può essere riscattato dal tuo paese.",
+  "Duplicate native mod {id}.": "Duplicate native mod {id}.",
+  "Native and content mod ids differ.": "Native and content mod ids differ."
 }

@@ -1223,5 +1223,7 @@
   "{name} was left out: it needs {other}, which was left out": "{name} ble utelatt: den trenger {other}, som ble utelatt",
   "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Bygger ikke på Horizon-versjonen du spiller ({code}): en bygging utelater den til forfatteren oppdaterer den",
   "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Der du er, får du grunnleggersettet gjennom en gratis betaling på playhorizon.dev. Gjør krav på det i Butikk: den åpner betalingen for deg.",
-  "The founder set can't be claimed from your country.": "Grunnleggersettet kan ikke fås fra landet ditt."
+  "The founder set can't be claimed from your country.": "Grunnleggersettet kan ikke fås fra landet ditt.",
+  "Duplicate native mod {id}.": "Duplicate native mod {id}.",
+  "Native and content mod ids differ.": "Native and content mod ids differ."
 }

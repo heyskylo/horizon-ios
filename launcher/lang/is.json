@@ -1223,5 +1223,7 @@
   "{name} was left out: it needs {other}, which was left out": "{name} var sleppt: það þarf {other}, sem var sleppt",
   "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Byggist ekki á þeirri Horizon sem þú spilar ({code}): smíði sleppir því þar til höfundurinn uppfærir það",
   "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Þar sem þú ert færðu stofnendasettið með ókeypis greiðslu á playhorizon.dev. Gerðu tilkall til þess í Versluninni: hún opnar greiðsluna fyrir þig.",
-  "The founder set can't be claimed from your country.": "Ekki er hægt að gera tilkall til stofnendasettsins frá þínu landi."
+  "The founder set can't be claimed from your country.": "Ekki er hægt að gera tilkall til stofnendasettsins frá þínu landi.",
+  "Duplicate native mod {id}.": "Duplicate native mod {id}.",
+  "Native and content mod ids differ.": "Native and content mod ids differ."
 }
