@@ -1860,6 +1860,64 @@ def osk_sign(args, name):
     return check.failures
 
 
+def recipe_search_keyboard(args, name):
+    """A on the recipe book's search box opens the keyboard."""
+    game = Game(args, name, world=True)
+    check = Check()
+    try:
+        game.ctl('command', 'gamemode survival')
+        game.ctl('key', 'e', 'tap')
+        time.sleep(SETTLE)
+        game.wait_targets()
+        x, y, w, h = next(t for t in game.ctl('screen')['recipe_book']['targets'] if t[2:] == [20.0, 18.0])
+        crosshair_walk(game, x + w / 2, y + h / 2)
+        game.pad('south')
+        time.sleep(SETTLE)
+        field = next((t for t in game.menu()['targets'] if t['kind'] == 'field'), None)
+        check(field is not None, 'the search box is not a field')
+        if field:
+            x, y, w, h = field['rect']
+            crosshair_walk(game, x + w / 2, y + h / 2)
+            game.pad('south')
+            check(game.menu()['keyboard'], 'A on the search box opened no keyboard')
+    finally:
+        game.quit()
+    return check.failures
+
+
+def chat_suggestion_rows(args, name):
+    """A command's suggestions are rows the pad can reach."""
+    game = Game(args, name, world=True)
+    check = Check()
+    try:
+        game.ctl('key', 't', 'tap')
+        time.sleep(SETTLE)
+        game.ctl('type', '/ga')
+        time.sleep(SETTLE)
+        check(any(t['kind'] == 'row' for t in game.menu()['targets']),
+              f"no suggestion rows: {game.menu()['targets']}")
+    finally:
+        game.quit()
+    return check.failures
+
+
+def server_list_arrows(args, name):
+    """The selected server's move arrows are targets, and pressing one moves it."""
+    game = Game(args, name, seed=seed_servers)
+    check = Check()
+    try:
+        game.wait_targets()
+        for button in ('south', 'down', 'south'):
+            game.pad(button)
+        game.wait_targets()
+        game.pad('south')
+        arrows = [t for t in game.menu()['targets'] if t['rect'][2:] == [16.0, 16.0]]
+        check(arrows, f"no move arrows on the selected server: {game.menu()['focus']}")
+    finally:
+        game.quit()
+    return check.failures
+
+
 def osk_social(args, name):
     game = Game(args, name, world=True)
     check = Check()
@@ -2048,6 +2106,9 @@ CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': releas
          'prompt_keeps_crosshair': prompt_keeps_crosshair,
          'osk_social': osk_social,
          'osk_book': osk_book,
+         'recipe_search_keyboard': recipe_search_keyboard,
+         'chat_suggestion_rows': chat_suggestion_rows,
+         'server_list_arrows': server_list_arrows,
          'osk_sign': osk_sign,
          'osk_debug_options': osk_debug_options,
          'osk_command_block': osk_command_block,
