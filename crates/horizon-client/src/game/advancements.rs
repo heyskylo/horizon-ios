@@ -661,6 +661,8 @@ impl Game<'_> {
             ..Default::default()
         }
     }
+    /// `Entity.get`: the mob's live custom-name component and type variants,
+    /// alongside the other state the entity predicate asks for.
     pub(super) fn mob_entity(&self, m: &horizon_client::mobs::Mob) -> EntityView {
         // mainhand, offhand, head, chest, legs, feet.
         let slot = |i: &Option<std::sync::Arc<str>>| {
@@ -720,6 +722,7 @@ impl Game<'_> {
                 .map(|(id, value)| (id.to_owned(), value))
                 .into_iter()
                 .collect(),
+            custom_name: m.custom_name_text.as_ref().map(Text::component),
             passengers,
             nbt,
             team: self.mob_team_of(m).map(|t| t.name.clone()),
@@ -2390,6 +2393,91 @@ pub(super) fn text_of(v: &Value) -> Text {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn mob_name_components_read_live_text_without_saved_nbt() {
+        use crate::game::{Audio, Options, Settings, commands::Target, load_resources};
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            Instant::now(),
+            false,
+            true,
+            &crate::game::Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        let kind = game.res.mob_types()["minecraft:pig"].clone();
+        game.mobs.push(horizon_client::mobs::Mob::new(
+            12500,
+            kind,
+            Vec3::new(4.5, 200.0, 4.5),
+            0.0,
+        ));
+        let matches = |game: &Game<'_>, key: &str, want: Value| {
+            let view = game.entity_view_of(Target::Mob(12500));
+            assert_eq!(view.kind, "minecraft:pig");
+            assert!(view.nbt.is_none());
+            let mut predicate = serde_json::Map::new();
+            predicate.insert(
+                key.into(),
+                serde_json::json!({"minecraft:custom_name": want}),
+            );
+            adv::entity(
+                &Value::Object(predicate),
+                &view,
+                &View(game),
+                [4.5, 200.0, 4.5],
+            )
+        };
+        for key in ["components", "minecraft:components"] {
+            assert!(!matches(&game, key, serde_json::json!("Bob")));
+        }
+        for (name, unequal) in [
+            (serde_json::json!("Bob"), serde_json::json!("minecraft:Bob")),
+            (serde_json::json!("minecraft:Bob"), serde_json::json!("Bob")),
+            (
+                serde_json::json!({"text": "Bob", "color": "red", "bold": true}),
+                serde_json::json!("Bob"),
+            ),
+            (
+                serde_json::json!({"text": "B", "extra": [{"text": "ob"}]}),
+                serde_json::json!("Bob"),
+            ),
+        ] {
+            let text = horizon_client::scoreboard::comp_text(&name);
+            game.mobs[0].custom_name = Some(text.plain());
+            game.mobs[0].custom_name_text = Some(text);
+            for key in ["components", "minecraft:components"] {
+                assert!(matches(&game, key, name.clone()), "{key}: {name}");
+                assert!(!matches(&game, key, unequal.clone()), "{key}: {unequal}");
+            }
+        }
+        game.mobs[0].custom_name = None;
+        game.mobs[0].custom_name_text = None;
+        for key in ["components", "minecraft:components"] {
+            assert!(!matches(&game, key, serde_json::json!("Bob")));
+        }
+    }
 
     #[test]
     #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]

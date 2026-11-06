@@ -10,7 +10,9 @@ use std::sync::{
 
 pub use crate::biome::{BiomeColors, SpawnEntry};
 pub use crate::block_sprites::{BlockSprites, FaceSprite, SpriteRef};
+pub use crate::block_states::{BlockStateFacts, BlockStates};
 pub use crate::camera::{CameraEntity, FovPlayer};
+pub use crate::client_resources::{ClientResources, TexturePixels};
 pub use crate::command::Suggestion;
 pub use crate::containers::{ModBlockEntity, ModContainer, ModEnergyBuffer, ModFluidTanks};
 pub use crate::crafting::{CustomRecipe, Ingredient};
@@ -24,12 +26,13 @@ pub use crate::game::native_client_services::{
     NativeClientEntity, NativeClientHead, NativeClientProfile, NativeClientState,
 };
 pub use crate::game::{
-    ItemEnergyBuffer, NativeBlockEdit, NativeBlockReadError, NativeBlockRun, NativeClock,
-    NativeColumnBlocks, NativeComponentError, NativeConfig, NativeConfigFile, NativeConfigKind,
-    NativeCriterion, NativeDataMapType, NativeExperienceOrb, NativeFalling, NativeHeightmap,
-    NativeHeldItem, NativeHit, NativeItemEntity, NativeMapDecoration, NativeMapInfo,
-    NativeMobRender, NativeModEvent, NativePlayer, NativePlayerRender, NativeReloadListener,
-    NativeShake, NativeStructureBlock, NativeStructureTemplate, NativeWorldDraw,
+    ItemEnergyBuffer, NativeBiomeId, NativeBlockEdit, NativeBlockReadError, NativeBlockRun,
+    NativeClientBiomes, NativeClientChunks, NativeClock, NativeColumnBlocks, NativeComponentError,
+    NativeConfig, NativeConfigFile, NativeConfigKind, NativeCriterion, NativeDataMapType,
+    NativeExperienceOrb, NativeFalling, NativeHeightmap, NativeHeldItem, NativeHit,
+    NativeItemEntity, NativeMapDecoration, NativeMapInfo, NativeMobRender, NativeModEvent,
+    NativePlayer, NativePlayerRender, NativeReloadListener, NativeShake, NativeStructureBlock,
+    NativeStructureTemplate, NativeWorldDraw,
 };
 pub use crate::gfx::native_render::{
     BlockSpriteArrays, RenderHooks, RenderNeeds, RenderNeedsEvent, WorldDrawn, WorldDrawnEvent,
@@ -50,6 +53,7 @@ pub use crate::mobs::{Mob, MobWorld};
 pub use crate::music::{Music, MusicLayer};
 pub use crate::particles::{ParticleOptions, ParticleType};
 pub use crate::recipe_book::RecipeBookCategory;
+pub use crate::sound_engine::SoundPlayback;
 pub use crate::text::Text;
 pub use crate::world_primitives::{PrimitiveShape, WorldPrimitive, WorldPrimitives};
 pub use horizon_assets::item_model::{DisplayContext, StackView};
@@ -68,7 +72,7 @@ pub use horizon_world::{
     attachments::{
         AttachmentCodec, AttachmentError, AttachmentHost, AttachmentType, Attachments, Holder,
     },
-    fluid::FluidState,
+    fluid::{FluidKind, FluidState},
     level::{BlockId, Dimension as LevelDimension, PlacementContext},
     loot::{LootStack, NativeLootContext},
     nbt::{Compound, Tag},
@@ -81,6 +85,41 @@ use std::time::Duration;
 /// The window events `input_key` hands over (`winit::event::KeyEvent`) and their key types.
 pub use winit;
 pub use winit::keyboard::KeyCode;
+
+/// An owned fluid payload. Component additions and removals are preserved exactly;
+/// the amount is in millibuckets. Empty/negative stacks are not transferable.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NativeFluidStack {
+    pub fluid: String,
+    pub amount: i32,
+    pub components: Compound,
+}
+
+/// A tank exposed by a block's fluid capability, in provider order.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NativeFluidTankView {
+    pub tank: usize,
+    pub content: Option<NativeFluidStack>,
+    pub capacity: i32,
+    pub can_fill: bool,
+    pub can_drain: bool,
+}
+
+/// Simulation is read-only, including dirty flags, synchronization and RNG.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum NativeFluidAction {
+    Simulate,
+    Execute,
+}
+
+/// Maximum-only drain, or a drain matching the full selected fluid payload.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub enum NativeFluidDrain {
+    Any(i32),
+    Exact(NativeFluidStack),
+}
 
 /// Camera values from the most recently extracted world frame.
 #[derive(Clone, Debug)]
@@ -134,6 +173,40 @@ pub struct NativeFakeUse {
     /// What else ended up in its inventory (a bowl of stew from a stack of
     /// bowls, a bottle), for the mod to keep or drop.
     pub other: Vec<ItemStack>,
+}
+
+/// One tick of a bot's keys for `native_simulate_player_move`, as a client's input is
+/// (`ClientInput`, `LocalPlayer.aiStep`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct NativePlayerInput {
+    /// Forward (1) or back (-1); in between is a stick's partial push.
+    pub forward: f32,
+    /// Left (1) or right (-1), as vanilla's `leftImpulse`.
+    pub strafe: f32,
+    pub jump: bool,
+    pub sneak: bool,
+    /// Sprint is held; it sprints only while moving forward.
+    pub sprint: bool,
+    /// Where the body faces, in degrees (`Entity.getYRot`, `getXRot`).
+    pub yaw: f32,
+    pub pitch: f32,
+    /// The velocity to start from (the last call's answer), in blocks a tick; None takes the
+    /// server's copy of the player.
+    pub velocity: Option<[f64; 3]>,
+}
+
+/// Where a bot's tick took it (`native_simulate_player_move`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[non_exhaustive]
+pub struct NativeSimulatedMove {
+    pub position: [f64; 3],
+    /// The velocity after the tick, to pass back as the next tick's `velocity`.
+    pub velocity: [f64; 3],
+    pub on_ground: bool,
+    /// It ran into a wall (`Entity.horizontalCollision`).
+    pub horizontal_collision: bool,
+    /// Whether it sprints after the tick (a wall or sneaking stops it).
+    pub sprinting: bool,
 }
 
 /// Context for a player tuning a note block.
@@ -1055,5 +1128,74 @@ mod tests {
         };
         let mut claimed = false;
         dispatch_use_item_on(&mut host, &mods, &stick(), [0; 3], [0, 1, 0], &mut claimed);
+    }
+
+    struct ItemMobReply {
+        answer: Option<bool>,
+        calls: Arc<Mutex<Vec<Option<bool>>>>,
+    }
+    impl Hooks for ItemMobReply {
+        fn item_interact_mob(
+            &self,
+            _: &mut dyn Host,
+            event: &mut ItemInteractMobEvent<'_>,
+        ) -> Option<bool> {
+            assert_eq!(event.entity, 17);
+            assert_eq!(event.kind, "minecraft:zombie");
+            assert_eq!(event.stack, Some(&stick()));
+            self.calls.lock().unwrap().push(self.answer);
+            self.answer
+        }
+    }
+
+    #[test]
+    fn item_interact_mob_first_response_controls_swing() {
+        for (answers, expected, expected_calls) in [
+            ([None, Some(false), Some(true)], Some(false), 2),
+            ([None, Some(true), Some(false)], Some(true), 2),
+            ([None, None, None], None, 3),
+        ] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let mods: Vec<Box<dyn Hooks>> = answers
+                .into_iter()
+                .map(|answer| {
+                    Box::new(ItemMobReply {
+                        answer,
+                        calls: calls.clone(),
+                    }) as Box<dyn Hooks>
+                })
+                .collect();
+            let mut host = Reader {
+                block: "minecraft:air",
+                lines: Vec::new(),
+            };
+            let mut swing = None;
+            dispatch_item_interact_mob(
+                &mut host,
+                &mods,
+                17,
+                "minecraft:zombie",
+                Some(&stick()),
+                &mut swing,
+            );
+            assert_eq!(swing, expected);
+            assert_eq!(calls.lock().unwrap().len(), expected_calls);
+            calls.lock().unwrap().clear();
+            swing = Some(false);
+            dispatch_item_interact_mob(
+                &mut host,
+                &mods,
+                17,
+                "minecraft:zombie",
+                Some(&stick()),
+                &mut swing,
+            );
+            assert_eq!(
+                swing,
+                Some(false),
+                "an earlier mixin already owned the result"
+            );
+            assert!(calls.lock().unwrap().is_empty());
+        }
     }
 }

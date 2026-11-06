@@ -238,9 +238,35 @@ impl Game<'_> {
                 return true;
             }
         }
+        // `updateCustomEntityTag`: the item's `custom_data` and its `entity_data`
+        // merged over the painting, so a `variant` there replaces the pick (and
+        // has to survive, else the use is CONSUME).
+        let own = horizon_client::entity_nbt::painting_to_nbt(&candidate, [0; 4], None);
+        let mut raw = horizon_client::block_entity_item::stack_configured_entity(
+            stack,
+            "minecraft:painting",
+            &own,
+        );
+        if let Some((_, _, variant)) = horizon_client::entity_nbt::painting_from_nbt(&raw)
+            && *candidate.variant != *variant
+            && let Some(v) = self
+                .painting_variants
+                .get(&horizon_world::datafix::dynamic::namespaced(&variant))
+                .cloned()
+        {
+            (candidate.variant, candidate.width, candidate.height) = (v.id, v.width, v.height);
+            if !self.painting_survives(&candidate) {
+                self.award_stat("used", &stack.item, 1);
+                return true;
+            }
+        }
+        if let horizon_world::nbt::Tag::Compound(map) = &mut raw {
+            map.remove(&"UUID".into());
+        }
         if self.hanging_place_cancelled("minecraft:painting", pos) {
             return true;
         }
+        self.persist.raw.insert(candidate.id, raw);
         let (lo, hi) = candidate.bounds();
         let at = [
             (lo[0] + hi[0]) / 2.0,
