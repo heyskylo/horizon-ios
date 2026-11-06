@@ -207,7 +207,7 @@ pub fn clientbound(
 }
 
 /// Pinned entity type ids the translation looks for.
-mod packet_ids_entity {
+pub(super) mod packet_ids_entity {
     /// `minecraft:falling_block` in 26.3.
     pub const FALLING_BLOCK: i32 = 52;
 }

@@ -228,14 +228,15 @@ def describe(packets):
     return '\n'.join(lines)
 
 
-def field_diff(v, h):
+def field_diff(v, h, names=('vanilla', 'Horizon')):
     """One line per differing field of packets paired by position, with the exact values."""
+    a, b = names
     lines = []
     for i, ((vn, vf), (hn, hf)) in enumerate(zip(v or [], h or [])):
         if vn != hn:
-            lines.append(f'    #{i}: vanilla {vn}, Horizon {hn}')
+            lines.append(f'    #{i}: {a} {vn}, {b} {hn}')
             continue
         for k in sorted(set(vf) | set(hf)):
             if vf.get(k) != hf.get(k):
-                lines.append(f'    #{i} {vn}.{k}: vanilla {vf.get(k)!r}, Horizon {hf.get(k)!r}')
+                lines.append(f'    #{i} {vn}.{k}: {a} {vf.get(k)!r}, {b} {hf.get(k)!r}')
     return lines
