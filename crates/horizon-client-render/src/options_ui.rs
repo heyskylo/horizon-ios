@@ -4459,6 +4459,10 @@ impl OptionsUi {
             self.graphics.scroll(s, size, amount);
             return;
         }
+        if self.page() == Page::Studio {
+            self.studio.wheel(amount);
+            return;
+        }
         if Self::controller_page(self.page()).is_some() {
             self.controller.scroll(s, size, amount);
             return;
