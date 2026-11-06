@@ -110,6 +110,25 @@ pub fn spawn_egg_entity_data<'a>(
     Some(data)
 }
 
+/// `EntityType.appendDefaultStackConfig` for a hanging entity or armor stand an
+/// item places: `Entity.applyImplicitComponents` stores the item's
+/// `minecraft:custom_data` as the entity's `data`, then `updateCustomEntityTag`
+/// (`TypedEntityData.loadInto`) merges the item's `minecraft:entity_data` over
+/// the entity's saved tag `own` when its type is `kind`.
+pub fn stack_configured_entity(stack: &crate::items::ItemStack, kind: &str, own: &Tag) -> Tag {
+    let mut tag = own.clone();
+    if let (Tag::Compound(map), Some(custom)) = (
+        &mut tag,
+        stack.data().and_then(|d| d.other("minecraft:custom_data")),
+    ) {
+        map.insert("data".into(), custom.clone());
+    }
+    match spawn_egg_entity_data(stack, kind, false) {
+        Some(data) => crate::data_cmd::merged(&tag, data),
+        None => tag,
+    }
+}
+
 /// `Spawner.getSpawnEntityDisplayName` (`SpawnData.entity.id` of the item's
 /// data, which `ItemStack.addDetailsToTooltip` reads for spawners and trial
 /// spawners alike): the entity type a spawner item spawns.
@@ -556,6 +575,34 @@ mod tests {
             data.get(&JavaString::from("CustomName")),
             Some(&Tag::String("Guard".into()))
         );
+    }
+
+    #[test]
+    fn a_placed_entity_takes_the_items_custom_data_and_matching_entity_data() {
+        let item = |components: &str| {
+            let components = snbt(components);
+            let (damage, extra) = crate::item_data::decode_components(Some(&components));
+            crate::items::ItemStack {
+                damage,
+                extra,
+                ..crate::items::ItemStack::new("minecraft:armor_stand", 1)
+            }
+        };
+        let own = snbt("{CustomName:\"Named\",ShowArms:0b}");
+        let stack = item(
+            "{\"minecraft:custom_data\":{k:1b},\"minecraft:entity_data\":{id:\"minecraft:armor_stand\",ShowArms:1b}}",
+        );
+        let tag = stack_configured_entity(&stack, "minecraft:armor_stand", &own);
+        assert_eq!(tag.get("ShowArms"), Some(&Tag::Byte(1)));
+        assert_eq!(tag.get("CustomName"), Some(&Tag::String("Named".into())));
+        assert_eq!(
+            tag.get("data").and_then(|d| d.get("k")),
+            Some(&Tag::Byte(1))
+        );
+        // Data of another type is not loaded; the custom data still is.
+        let tag = stack_configured_entity(&stack, "minecraft:item_frame", &own);
+        assert_eq!(tag.get("ShowArms"), Some(&Tag::Byte(0)));
+        assert!(tag.get("data").is_some());
     }
 
     #[test]
