@@ -2018,7 +2018,17 @@ impl Screen {
             }
             // The tab bar draws its own tabs (`MenuTabBar`), so a click there carries no
             // button id: the tab bar's geometry decides.
-            None if matches!(self.subscreen, SubScreen::Configure { .. }) => {
+            // Clicks that miss every button: the tab bar, the screens' drawn fields and
+            // lists (the Configure guard covers its tab bar; the others their rows).
+            None if matches!(
+                self.subscreen,
+                SubScreen::Configure { .. }
+                    | SubScreen::RegionPreference { .. }
+                    | SubScreen::EditCode { .. }
+                    | SubScreen::SlotOptions { .. }
+                    | SubScreen::CreateRealm { .. }
+            ) =>
+            {
                 let (bar_x, tab_w) = tab_geometry(w);
                 if y < TAB_HEIGHT && x >= bar_x {
                     let index = ((x - bar_x) / tab_w).floor() as usize;
@@ -2127,8 +2137,6 @@ impl Screen {
                     }
                     return Outcome::None;
                 }
-                // RealmsEditInviteCodeScreen's expiration slider: a click picks the
-                // nearest of the seven choices.
                 if let SubScreen::EditCode {
                     active, expiration, ..
                 } = &mut self.subscreen
@@ -2566,8 +2574,10 @@ impl Screen {
                 }
             }
             SubScreen::RegionPreference { .. } => {
-                buttons.push((cx - 102.0, h - 36.0, 100.0, t("gui.done"), true, 87, None));
-                buttons.push((cx + 2.0, h - 36.0, 100.0, t("gui.cancel"), true, 86, None));
+                // `RealmsPreferredRegionSelectionScreen`: two 150-wide buttons 8 apart.
+                let x = (w - 308.0) / 2.0;
+                buttons.push((x, h - 26.0, 150.0, t("gui.done"), true, 87, None));
+                buttons.push((x + 158.0, h - 26.0, 150.0, t("gui.cancel"), true, 86, None));
             }
             SubScreen::SlotOptions {
                 server,
@@ -3415,7 +3425,10 @@ impl Screen {
                         .is_some_and(|(p, r)| p == preference && *r == *region);
                     let label = preference_label(*preference, region.as_deref());
                     if picked {
-                        batch.fill(atlas, left, y, 300.0, 14.0, 0xFF30_3030);
+                        // `AbstractSelectionList.extractSelection`: the entry black, its
+                        // outline white (the list is focused).
+                        batch.fill(atlas, left, y, 300.0, 14.0, 0xFFFF_FFFF);
+                        batch.fill(atlas, left + 1.0, y + 1.0, 298.0, 12.0, 0xFF00_0000);
                     }
                     batch.text(atlas, &label, left + 5.0, y + 2.0, u32::MAX, true);
                 }
