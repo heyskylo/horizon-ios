@@ -6582,6 +6582,25 @@ impl Game<'_> {
         map.paint(colors);
         true
     }
+    /// A menu with input slots a mod opened (`native_open_menu_with_input`)
+    /// closed, for any reason: the player closed it, the server, a mod or
+    /// another menu did, the player died or left. `slots` are its input
+    /// slots, in order, as the player left them; take what the mod keeps
+    /// (`Option::take`), and what stays goes back to the player as vanilla's
+    /// `clearContainer` gives a crafting grid's items back: into their
+    /// inventory, the rest dropped, all dropped when they left. Heard before
+    /// `native_menu_closed` for the same window. The hub may be out of the
+    /// game's hands and a player's state swapped in (it runs where the menu
+    /// closed), so answer through `slots`; the helpers that take a UUID may
+    /// see nothing. Server-side. API @API:menu_input@.
+    pub(super) fn native_menu_input_closed(
+        &mut self,
+        uuid: u128,
+        window: i32,
+        slots: &mut Vec<Option<ItemStack>>,
+    ) {
+        let _ = (uuid, window, slots);
+    }
     /// A click in a menu a mod opened (`native_open_menu`), which moved
     /// nothing: the menu's `slot` (its own first, then the player's
     /// inventory, `native_menu_inventory_slot`; -999 outside), the `button`

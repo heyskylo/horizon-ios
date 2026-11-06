@@ -64,20 +64,78 @@ pub struct Menu {
 
 /// What a guest did with a native mod's menu (`Slots::Native`), for the game
 /// to tell the mod once the hub is back in its hands.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum NativeMenuEvent {
     /// A click (`ServerboundContainerClickPacket`): the menu's slot (its own
-    /// first, then the player's 36; -999 outside), the button and the mode.
+    /// first, then the player's 36; -999 outside), the button and the mode,
+    /// and the stack the player had on the cursor as they clicked.
     Click {
         uuid: u128,
         window: i32,
         slot: i32,
         button: i32,
         mode: i32,
+        cursor: Option<ItemStack>,
     },
     /// The menu closed: by the player, by the server, another opened, or
     /// the player left.
     Closed { uuid: u128, window: i32 },
+}
+
+/// The slots of a native mod's menu that hold items, which clicks move by
+/// vanilla's rules (`AbstractContainerMenu.doClick`, as in a chest). The
+/// menu's other slots stay the mod's to show, and a click on them is still
+/// only the mod's (`NativeMenuEvent::Click`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum NativeStore {
+    /// The menu's slots in this range take items the player puts in and give
+    /// them back; when the menu closes, what is left goes to the mods and then
+    /// back to the player (`clearContainer`).
+    Input(std::ops::Range<usize>),
+}
+
+impl NativeStore {
+    /// Whether menu slot `slot` holds items the clicks move.
+    pub fn holds(&self, slot: usize) -> bool {
+        match self {
+            Self::Input(range) => range.contains(&slot),
+        }
+    }
+}
+
+/// What the input slots of a native menu held as it closed, for the game to
+/// hand the mods (`native_menu_input_closed`) and then the player.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NativeReturn {
+    pub conn: u32,
+    pub uuid: u128,
+    pub window: i32,
+    /// The input slots, in order.
+    pub slots: Vec<Option<ItemStack>>,
+    /// The mods have heard it; what is left waits for the player's level.
+    pub heard: bool,
+}
+
+impl NativeReturn {
+    /// The guest's native menu goes as it closes (`Guest::native_menu` and
+    /// `native_store` empty): what its input slots held, if it had any.
+    pub fn take(guest: &mut Guest, window: i32) -> Option<Self> {
+        let store = guest.native_store.take();
+        let mut menu = std::mem::take(&mut guest.native_menu);
+        let Some(NativeStore::Input(range)) = store else {
+            return None;
+        };
+        let slots = range
+            .map(|k| menu.get_mut(k).and_then(Option::take))
+            .collect();
+        Some(Self {
+            conn: guest.conn,
+            uuid: guest.uuid,
+            window,
+            slots,
+            heard: false,
+        })
+    }
 }
 
 /// The y of the key a chest minecart's or chest boat's items are kept under
@@ -95,7 +153,8 @@ pub enum Slots {
     /// The player's own ender chest inventory (`PlayerEnderChestContainer`).
     Ender,
     /// A native mod's menu (`Guest::native_menu`): items to look at, which no
-    /// click moves; the clicks go to the mod.
+    /// click moves; the clicks go to the mod. Slots its `Guest::native_store`
+    /// holds take clicks as a chest's do.
     Native,
 }
 
@@ -168,7 +227,17 @@ impl Slots {
             return;
         }
         if self == Slots::Native {
-            // Only the mod changes what it shows.
+            // Only the mod changes what it shows; the slots that hold items
+            // (`Guest::native_store`) keep what the click left in them.
+            if let Some(store) = &guest.native_store {
+                for (k, stack) in items.into_iter().enumerate() {
+                    if store.holds(k)
+                        && let Some(slot) = guest.native_menu.get_mut(k)
+                    {
+                        *slot = stack;
+                    }
+                }
+            }
             return;
         }
         let mut rest = items.into_iter();
@@ -1276,6 +1345,55 @@ mod tests {
         assert_eq!(view.get(0).map(|s| s.count), Some(64));
         assert_eq!(view.get(2).map(|s| s.count), Some(64));
         assert_eq!(view.guest.carried.as_ref().map(|s| s.count), Some(64));
+    }
+
+    /// A native menu's input slots take shift-clicks from the inventory as a
+    /// chest's do, the shown slots around them are never filled, and closing
+    /// hands back the input slots only.
+    #[test]
+    fn native_input_slots_fill_like_a_chest_and_come_back_on_close() {
+        let mut g = guest();
+        let store = NativeStore::Input(2..4);
+        let hidden: Vec<usize> = (0..9).filter(|&k| !store.holds(k)).collect();
+        let mut menu = vec![None; 9];
+        menu[0] = Some(ItemStack::new("minecraft:paper", 1));
+        g.inventory[9] = Some(ItemStack::new("minecraft:stone", 64));
+        g.inventory[10] = Some(ItemStack::new("minecraft:stone", 10));
+        let mut drag = None;
+        let mut view = View {
+            guest: &mut g,
+            container: Some(&mut menu),
+            shulker: false,
+            hidden: &hidden,
+        };
+        // Menu slots 9 and 10 are the inventory's 9 and 10, below the menu.
+        click(&mut view, &mut drag, 9, 0, input::QUICK_MOVE, &SwapRules);
+        click(&mut view, &mut drag, 10, 0, input::QUICK_MOVE, &SwapRules);
+        let count = |s: Option<ItemStack>| s.map(|s| (s.item.to_string(), s.count));
+        assert_eq!(count(view.get(0)), Some(("minecraft:paper".into(), 1)));
+        assert_eq!(count(view.get(1)), None);
+        assert_eq!(count(view.get(2)), Some(("minecraft:stone".into(), 64)));
+        assert_eq!(count(view.get(3)), Some(("minecraft:stone".into(), 10)));
+        assert!((4..11).all(|k| view.get(k).is_none()));
+        g.native_menu = menu;
+        g.native_store = Some(store);
+        let back = NativeReturn::take(&mut g, 7).unwrap();
+        assert_eq!(
+            (back.conn, back.uuid, back.window, back.heard),
+            (2, 2, 7, false)
+        );
+        assert_eq!(
+            back.slots,
+            vec![
+                Some(ItemStack::new("minecraft:stone", 64)),
+                Some(ItemStack::new("minecraft:stone", 10)),
+            ]
+        );
+        assert!(g.native_menu.is_empty() && g.native_store.is_none());
+        // A menu without input slots hands nothing back.
+        g.native_menu = vec![Some(ItemStack::new("minecraft:paper", 1))];
+        assert_eq!(NativeReturn::take(&mut g, 8), None);
+        assert!(g.native_menu.is_empty());
     }
 
     struct SwapRules;

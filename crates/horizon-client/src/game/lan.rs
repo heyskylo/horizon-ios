@@ -2394,7 +2394,7 @@ impl Game<'_> {
                 .take()
                 .expect("the hub is back after the advancement grants");
         }
-        if !host.hub.native_menu_events.is_empty() {
+        if !host.hub.native_menu_events.is_empty() || !host.hub.native_menu_returns.is_empty() {
             self.lan = Some(host);
             horizon_client::spans::time("lan_menu_events", || self.run_native_menu_events());
             host = self
@@ -2755,7 +2755,7 @@ impl Game<'_> {
                 .take()
                 .expect("the hub is back after the advancement grants");
         }
-        if !host.hub.native_menu_events.is_empty() {
+        if !host.hub.native_menu_events.is_empty() || !host.hub.native_menu_returns.is_empty() {
             self.lan = Some(host);
             self.run_native_menu_events();
             host = self

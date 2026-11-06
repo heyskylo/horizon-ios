@@ -79,6 +79,9 @@ pub use horizon_world::{
 };
 pub use serde_json;
 use serde_json::{Map, Value};
+/// The slot range a menu's input slots take (`native_open_menu_with_input`).
+/// API @API:menu_input@.
+pub use std::ops::Range;
 use std::time::Duration;
 /// The window events `input_key` hands over (`winit::event::KeyEvent`) and their key types.
 pub use winit;

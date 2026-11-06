@@ -1645,6 +1645,8 @@ impl Game<'_> {
             }
             host.hub.container_closed(conn, window);
         }
+        // A mod's menu with input slots gives them back (`clearContainer`).
+        self.native_menu_returned(host, conn, removal);
         self.lan_merchant_closed(host, conn, None);
         self.lan_crafting_removed(host, conn, None, removal);
         if removal == MenuRemoval::Disconnected {
@@ -2637,6 +2639,7 @@ impl Game<'_> {
                     self.close_guest_vehicle_menu(host, conn, key);
                 }
                 host.hub.container_closed(conn, p.container);
+                self.native_menu_returned(host, conn, MenuRemoval::Live);
                 self.guest_carried_back(host, gi);
             }
             S::ChatCommand(c) => self.guest_chat_command(host, conn, &c.command),

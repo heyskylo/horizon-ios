@@ -2,7 +2,7 @@
 //! level events, animations and block containers with their clicks.
 use super::{
     hub::Hub,
-    menu::{self, Menu, NativeMenuEvent, Rules, Slots, View},
+    menu::{self, Menu, NativeMenuEvent, NativeReturn, NativeStore, Rules, Slots, View},
 };
 use crate::{containers::BlockEntity, items::ItemStack, world::World};
 use horizon_core::random::RandomSource;
@@ -419,13 +419,33 @@ impl Hub {
     }
 
     /// Replaces what a guest's open native menu shows; the changed slots go
-    /// out with the tick's container sync.
+    /// out with the tick's container sync. The slots its store holds
+    /// (`Guest::native_store`) keep their items: the player's, not the mod's.
     pub fn set_native_menu(&mut self, conn: u32, mut items: Vec<Option<ItemStack>>) {
         if let Some(g) = self.guest_mut(conn)
             && let Some(m) = g.menu.as_ref().filter(|m| m.slots == Slots::Native)
         {
             items.resize(m.size, None);
+            if let Some(store) = &g.native_store {
+                for (k, slot) in items.iter_mut().enumerate() {
+                    if store.holds(k) {
+                        *slot = g.native_menu.get(k).cloned().flatten();
+                    }
+                }
+            }
             g.native_menu = items;
+        }
+    }
+
+    /// The slots `store` holds of the guest's open native menu take and give
+    /// items by vanilla's click rules from now on; its other slots stay the
+    /// mod's to show, and no click or quick move reaches them (`Menu::hidden`).
+    pub fn set_native_store(&mut self, conn: u32, store: NativeStore) {
+        if let Some(g) = self.guest_mut(conn)
+            && let Some(m) = g.menu.as_mut().filter(|m| m.slots == Slots::Native)
+        {
+            m.hidden = (0..m.size).filter(|&k| !store.holds(k)).collect();
+            g.native_store = Some(store);
         }
     }
 
@@ -521,8 +541,11 @@ impl Hub {
                 container: menu.window,
             }));
             if menu.slots == Slots::Native {
-                g.native_menu.clear();
                 let (uuid, window) = (g.uuid, menu.window);
+                // The input slots' items go to the mods, then the player.
+                if let Some(back) = NativeReturn::take(g, window) {
+                    self.native_menu_returns.push(back);
+                }
                 self.native_menu_events
                     .push(NativeMenuEvent::Closed { uuid, window });
             }
@@ -546,8 +569,9 @@ impl Hub {
         {
             let native = g.menu.take().is_some_and(|m| m.slots == Slots::Native);
             if native {
-                g.native_menu.clear();
                 let uuid = g.uuid;
+                let back = NativeReturn::take(g, window);
+                self.native_menu_returns.extend(back);
                 self.native_menu_events
                     .push(NativeMenuEvent::Closed { uuid, window });
             }
@@ -603,17 +627,29 @@ impl Hub {
             return Vec::new();
         }
         // A native mod's menu: the click is the mod's to answer, and the
-        // whole menu and the cursor go back as they were.
+        // whole menu and the cursor go back as they were. A click on the slots
+        // its store holds, on the inventory below them, outside or a drag is
+        // a chest menu's click instead (`Guest::native_store`).
         if in_menu && self.guests[i].menu.as_ref().map(|m| m.slots) == Some(Slots::Native) {
-            self.native_menu_events.push(NativeMenuEvent::Click {
-                uuid: self.guests[i].uuid,
-                window: p.container,
-                slot: i32::from(p.slot),
-                button: i32::from(p.button),
-                mode: p.input,
+            let size = self.guests[i].menu.as_ref().map_or(0, |m| m.size);
+            let stored = self.guests[i].native_store.as_ref().is_some_and(|store| {
+                p.input == menu::input::QUICK_CRAFT
+                    || usize::try_from(p.slot)
+                        .ok()
+                        .is_none_or(|s| s >= size || store.holds(s))
             });
-            self.resend_menu(conn, p.container, world);
-            return Vec::new();
+            if !stored {
+                self.native_menu_events.push(NativeMenuEvent::Click {
+                    uuid: self.guests[i].uuid,
+                    window: p.container,
+                    slot: i32::from(p.slot),
+                    button: i32::from(p.button),
+                    mode: p.input,
+                    cursor: self.guests[i].carried.clone(),
+                });
+                self.resend_menu(conn, p.container, world);
+                return Vec::new();
+            }
         }
         // A menu that is no longer valid takes no clicks.
         if let Some(m) = self.guests[i].menu.as_ref().filter(|_| in_menu)
