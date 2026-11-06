@@ -282,8 +282,8 @@ fn refuses_what_this_build_does_not_read() {
     let cases = [
         (text.replace("schema = 1", "schema = 2"), "schema 2"),
         (
-            text.replace("api = \"0.1\"", "api = \"0.2\""),
-            "shader API 0.2",
+            text.replace("api = \"0.1\"", "api = \"0.3\""),
+            "shader API 0.3",
         ),
         (
             text.replace("\"sample_pack\"", "\"Sample\""),
@@ -760,4 +760,71 @@ fn displacement_needs_the_material_stage_and_stays_in_range() {
     let no_stage = "schema = 1\nid = \"p\"\nname = \"P\"\nversion = \"1\"\napi = \"0.1\"\n";
     let sky_only = format!("{no_stage}[sky]\nfile = \"sky.wgsl\"\n[displacement]\n");
     assert!(refused(&sky_only).contains("[displacement] needs [material]"));
+}
+
+const SMALLEST_0_2: &str = "schema = 1\nid = \"p\"\nname = \"P\"\nversion = \"1\"\napi = \"0.2\"\n[[post]]\nfile = \"a.wgsl\"\n";
+
+#[test]
+fn both_lines_are_read() {
+    use horizon_shader_api::{Api, Blend};
+    let m = Manifest::parse(SMALLEST_0_2).unwrap();
+    assert_eq!(
+        (m.api, m.blend, m.tonemap.is_none()),
+        (Api::V0_2, Blend::Gamma, true)
+    );
+    assert_eq!(Manifest::parse(&sample_text()).unwrap().api, Api::V0_1);
+    let tonemap = format!("{SMALLEST_0_2}[tonemap]\nfile = \"t.wgsl\"\nname = \"Curve\"\n");
+    let m = Manifest::parse(&tonemap).unwrap();
+    assert_eq!(m.tonemap.as_ref().unwrap().name.as_deref(), Some("Curve"));
+    assert!(m.files().contains(&"t.wgsl"));
+    let linear = Manifest::parse(&format!("{SMALLEST_0_2}[frame]\nblend = \"linear\"\n")).unwrap();
+    assert_eq!(linear.blend, Blend::Linear);
+    let only = SMALLEST_0_2.replace(
+        "[[post]]\nfile = \"a.wgsl\"\n",
+        "[tonemap]\nfile = \"t.wgsl\"\n",
+    );
+    assert!(Manifest::parse(&only).unwrap().post.is_empty());
+}
+
+#[test]
+fn the_0_2_keys_are_refused_under_0_1_and_checked_under_0_2() {
+    let smallest_0_1 = SMALLEST_0_2.replace("0.2", "0.1");
+    let cases = [
+        (
+            format!("{smallest_0_1}[tonemap]\nfile = \"t.wgsl\"\n"),
+            "[tonemap] is shader API 0.2",
+        ),
+        (
+            format!("{smallest_0_1}[frame]\nblend = \"gamma\"\n"),
+            "[frame] is shader API 0.2",
+        ),
+        (
+            format!("{SMALLEST_0_2}[frame]\nblend = \"srgb\"\n"),
+            "frame.blend \"srgb\": gamma or linear",
+        ),
+        (
+            format!("{SMALLEST_0_2}[frame]\nwhite = 1\n"),
+            "unknown field",
+        ),
+        (
+            format!("{SMALLEST_0_2}[tonemap]\nfile = \"t.wgsl\"\nscale = 0.5\n"),
+            "`scale` and `output` are keys of [[post]] only",
+        ),
+        (
+            format!("{SMALLEST_0_2}[tonemap]\nfile = \"t.wgsl\"\nfog = false\n"),
+            "`fog` is a key of [material] only",
+        ),
+        (
+            format!("{SMALLEST_0_2}[tonemap]\nfile = \"../t.wgsl\"\n"),
+            "is not a plain path",
+        ),
+        (
+            "schema = 1\nid = \"p\"\nname = \"P\"\nversion = \"1\"\napi = \"0.2\"\n".into(),
+            "or a [tonemap]",
+        ),
+    ];
+    for (text, needle) in cases {
+        let e = refused(&text);
+        assert!(e.contains(needle), "{needle:?} not in {e:?}");
+    }
 }

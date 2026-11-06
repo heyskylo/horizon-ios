@@ -529,3 +529,38 @@ fn ratings_keep_only_what_is_well_formed() {
         "https://playhorizon.dev/api/mods/auth/login?back=/mods/zoom"
     );
 }
+
+#[test]
+fn a_project_is_starred_on_the_repository_its_source_is_in() {
+    let repo = |s: &str| github_repo(s);
+    let daybreak = Some("https://github.com/hildlabs/horizon-shaders".to_owned());
+    // A folder of it, a trailing slash, `.git`, a query or an anchor: the same repository.
+    for source in [
+        "https://github.com/hildlabs/horizon-shaders",
+        "https://github.com/hildlabs/horizon-shaders/tree/main/pack",
+        "https://github.com/hildlabs/horizon-shaders/",
+        "https://github.com/hildlabs/horizon-shaders.git",
+        "https://github.com/hildlabs/horizon-shaders?tab=readme",
+        "https://github.com/hildlabs/horizon-shaders#readme",
+    ] {
+        assert_eq!(repo(source), daybreak, "{source:?}");
+    }
+    assert_eq!(
+        repo("https://github.com/horizon-rust/horizon.v2_mods"),
+        Some("https://github.com/horizon-rust/horizon.v2_mods".to_owned())
+    );
+    // Not GitHub, no repository, or a name GitHub doesn't allow: no star button.
+    for source in [
+        "https://gitlab.com/hildlabs/horizon-shaders",
+        "http://github.com/hildlabs/horizon-shaders",
+        "https://github.com.evil.example/hildlabs/horizon-shaders",
+        "https://github.com/hildlabs",
+        "https://github.com/hildlabs/",
+        "https://github.com/-hildlabs/horizon-shaders",
+        "https://github.com/hildlabs/..",
+        "https://github.com/hildlabs/horizon shaders",
+        "",
+    ] {
+        assert_eq!(repo(source), None, "{source:?}");
+    }
+}

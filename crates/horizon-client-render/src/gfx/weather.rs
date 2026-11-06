@@ -319,7 +319,7 @@ mod tests {
     #[test]
     fn a_native_weather_stage_validates() {
         use horizon_shader_api::stages::StageKind;
-        let source = StageKind::Weather.prelude()
+        let source = StageKind::Weather.prelude(horizon_shader_api::Api::V0_1)
             + "fn weather(input: WeatherInput) -> vec4<f32> {\n    \
                return input.color * vec4(input.light, input.position.x, f32(input.snow));\n}\n";
         let text = native_source(&source);
