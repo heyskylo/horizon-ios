@@ -681,6 +681,7 @@ pub fn tick(
         super::villager_brain::woken(m, w.game_time);
     }
     if m.no_ai {
+        reset_effect_fall_distance(m);
         // Mob.aiStep still runs without AI (only serverAiStep is skipped),
         // so undead still burn in daylight and the endermite's life keeps
         // counting.
@@ -1541,6 +1542,14 @@ fn ageable_step(
     }
 }
 
+/// `LivingEntity.aiStep`: both flight effects discard accumulated fall before
+/// travel, even when NoAI skips the server AI step.
+fn reset_effect_fall_distance(m: &mut Mob) {
+    if m.has_effect("minecraft:slow_falling") || m.has_effect("minecraft:levitation") {
+        m.fall_distance = 0.0;
+    }
+}
+
 /// LivingEntity.aiStep (and Mob/AgeableMob/Animal additions).
 fn ai_step(m: &mut Mob, w: &MobWorld, level_random: &mut LegacyRandom, events: &mut Vec<MobEvent>) {
     if m.species() == Species::Parrot {
@@ -1602,6 +1611,7 @@ fn ai_step(m: &mut Mob, w: &MobWorld, level_random: &mut LegacyRandom, events: &
         f64::from(m.ai.yya),
         f64::from(m.ai.zza),
     );
+    reset_effect_fall_distance(m);
     if super::equine::moved_by_client(m) {
         // LivingEntity.travelRidden: the rider's client moves it
         // (handleMoveVehicle), so the server only stops it.
@@ -4969,5 +4979,77 @@ mod air_tests {
             return;
         };
         assert_eq!(air, 300);
+    }
+}
+
+#[cfg(test)]
+mod flight_effect_fall_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn flight_effects_reset_accumulated_fall_distance_even_without_ai() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let ran = crate::mobs::world::with_resource_test_world(
+            &root,
+            &[],
+            true,
+            true,
+            |world, _| {
+                world
+                    .chunks
+                    .insert((0, 0), Arc::new(crate::chunk::Chunk::empty(0, 0)));
+            },
+            |world, types| {
+                let mut failures = Vec::new();
+                let mut rows = Vec::new();
+                for effect in [
+                    None,
+                    Some("minecraft:levitation"),
+                    Some("minecraft:slow_falling"),
+                ] {
+                    for no_ai in [false, true] {
+                        for velocity_y in [0.0, 0.2, -0.2] {
+                            let kind = Arc::new(types.types["minecraft:cow"].clone());
+                            let mut mob = Mob::new(1, kind, Vec3::new(2.5, 64.0, 2.5), 0.0);
+                            mob.no_ai = no_ai;
+                            mob.no_gravity = true;
+                            mob.persistent = true;
+                            mob.fall_distance = 12.0;
+                            mob.velocity.y = velocity_y;
+                            if let Some(effect) = effect {
+                                mob.add_effect(effect, 100, 0);
+                            }
+                            let mut random = LegacyRandom::new(0);
+                            assert!(tick(&mut mob, world, &mut random, &mut Vec::new()));
+                            // The pinned Java aiStep resets before travel. A
+                            // downward move then adds 0.2F of NEW fall distance;
+                            // NoAI skips movement but must still erase the old fall.
+                            let expected = match (effect.is_some(), no_ai, velocity_y < 0.0) {
+                                (false, false, true) => 12.200000002980232,
+                                (true, false, true) => 0.20000000298023224,
+                                (false, _, _) => 12.0,
+                                (true, _, _) => 0.0,
+                            };
+                            let name = effect.unwrap_or("none").trim_start_matches("minecraft:");
+                            rows.push(format!(
+                                "{name} {no_ai} {:016x} {:016x}",
+                                velocity_y.to_bits(),
+                                mob.fall_distance.to_bits()
+                            ));
+                            if mob.fall_distance != expected {
+                                failures.push((effect, no_ai, velocity_y, mob.fall_distance));
+                            }
+                        }
+                    }
+                }
+                if let Some(path) = std::env::var_os("HORIZON_MOB_FALL_RESET_OUTPUT") {
+                    std::fs::write(path, rows.join("\n") + "\n").unwrap();
+                }
+                assert!(failures.is_empty(), "fall distance differs: {failures:?}");
+            },
+        );
+        assert!(ran, "prepared resources must run the integration fixture");
     }
 }
