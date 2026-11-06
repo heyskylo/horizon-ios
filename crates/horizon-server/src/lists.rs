@@ -262,16 +262,112 @@ fn listed<'a>(mut users: impl Iterator<Item = &'a NameAndId>, name: &str) -> Opt
 fn load<E: horizon_server_files::user_lists::Entry>(
     mut list: horizon_server_files::user_lists::UserList<E>,
 ) -> Result<horizon_server_files::user_lists::UserList<E>, String> {
-    if list.file.exists() {
-        list.load()
-            .map_err(|e| format!("{}: {e}", list.file.display()))?;
-    }
+    // UserList::load deliberately tolerates I/O errors for the running game's vanilla behavior.
+    // A stopped command must not edit an empty replacement for a file it could not read.
+    let text = match std::fs::read_to_string(&list.file) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(list),
+        Err(error) => return Err(format!("{}: {error}", list.file.display())),
+    };
+    list.load_str(&text)
+        .map_err(|e| format!("{}: {e}", list.file.display()))?;
     Ok(list)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn unreadable_lists_are_rejected(name: &str, directory: bool, bytes: &[u8]) {
+        let dir = std::env::temp_dir().join(format!(
+            "horizon-server-unreadable-lists-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let commands: &[(&str, &[&str], &str)] = &[
+            ("op", &["Alex"], "ops.json"),
+            ("deop", &["Alex"], "ops.json"),
+            ("whitelist", &["add", "Alex"], "whitelist.json"),
+            ("whitelist", &["remove", "Alex"], "whitelist.json"),
+            ("whitelist", &["list"], "whitelist.json"),
+            ("ban", &["Alex"], "banned-players.json"),
+            ("pardon", &["Alex"], "banned-players.json"),
+            ("ban-ip", &["203.0.113.7"], "banned-ips.json"),
+            ("pardon-ip", &["203.0.113.7"], "banned-ips.json"),
+        ];
+        for (i, &(command, args, file)) in commands.iter().enumerate() {
+            let home = dir.join(i.to_string());
+            std::fs::create_dir_all(&home).unwrap();
+            std::fs::write(home.join(config::FILE), config::TEMPLATE).unwrap();
+            config::update(&home, "server", "online_mode", toml::Value::Boolean(false)).unwrap();
+            let path = home.join(file);
+            if directory {
+                std::fs::create_dir(&path).unwrap();
+                std::fs::write(path.join("sentinel"), bytes).unwrap();
+            } else {
+                std::fs::write(&path, bytes).unwrap();
+            }
+            match edit_stopped(&home, command, args) {
+                Err(error) => assert!(error.contains(file), "{error}"),
+                Ok(edit) => panic!("{command} accepted unreadable {file}: {}", edit.message),
+            }
+            let contents = if directory {
+                path.join("sentinel")
+            } else {
+                path
+            };
+            assert_eq!(std::fs::read(contents).unwrap(), bytes);
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn invalid_utf8_lists_are_not_overwritten_by_stopped_commands() {
+        unreadable_lists_are_rejected("utf8", false, &[0xff, 0xfe]);
+    }
+
+    #[test]
+    fn directories_are_not_empty_user_lists() {
+        unreadable_lists_are_rejected("directory", true, b"sentinel");
+    }
+
+    #[test]
+    fn malformed_json_keeps_its_existing_error_and_is_not_overwritten() {
+        unreadable_lists_are_rejected("json", false, b"{invalid JSON");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn an_exclusively_open_list_is_not_treated_as_empty() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir =
+            std::env::temp_dir().join(format!("horizon-server-denied-list-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(config::FILE), config::TEMPLATE).unwrap();
+        config::update(&dir, "server", "online_mode", toml::Value::Boolean(false)).unwrap();
+        let path = dir.join("ops.json");
+        let original = b"[]";
+        std::fs::write(&path, original).unwrap();
+        let locked = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&path)
+            .unwrap();
+        let denied = std::fs::read_to_string(&path).unwrap_err();
+        assert_eq!(
+            denied.raw_os_error(),
+            Some(windows_sys::Win32::Foundation::ERROR_SHARING_VIOLATION as i32)
+        );
+        let rejected = edit_stopped(&dir, "op", &["Alex"]).is_err();
+        drop(locked);
+        assert!(
+            rejected,
+            "an inaccessible existing list must not become an empty list"
+        );
+        assert_eq!(std::fs::read(path).unwrap(), original);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn edits_the_lists_while_stopped() {

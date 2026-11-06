@@ -612,8 +612,8 @@ mod tests {
     #[test]
     fn water_speed_is_cut_away_from_home_and_for_babies() {
         // updateSpeed in water near home: no cut, the lerp climbs towards
-        // 0.25, and it lifts the turtle 0.005 a tick. (Only the control's
-        // speed: Turtle.travelInWater is not ported.)
+        // 0.25, and it lifts the turtle 0.005 a tick. (Tests only the move
+        // control's speed; Turtle.travelInWater is ported in travel().)
         let mut m = strolling_turtle();
         m.on_ground = false;
         m.fluids.in_water = true;

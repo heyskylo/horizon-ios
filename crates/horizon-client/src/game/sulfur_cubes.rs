@@ -223,7 +223,7 @@ impl Game<'_> {
         let griefing = self.ui.rules.bool("mob_griefing");
         for i in 0..self.mobs.len() {
             let m = &self.mobs[i];
-            if m.species() != Species::SulfurCube {
+            if m.species() != Species::SulfurCube || !self.creatures.ticked.contains(&m.id) {
                 continue;
             }
             if !m.alive() || m.is_baby() || sulfur_cube::has_body(m) || m.extra.ints[3] > 0 {
