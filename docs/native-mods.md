@@ -2517,6 +2517,11 @@ calls them without a mod.
   `attributes` list (the compound's) loaded as `AttributeMap.load` reads a player's file. A lower `max_health` caps the
   health, and the client gets `UpdateAttributes`. An id without a namespace is `minecraft:`'s.
   Bundles need `"hooks": @API:player_attributes@`.
+- Helpers **`native_player_persistent_data(uuid)`** and **`native_set_player_persistent_data(uuid, data)`**: the
+  compound mods keep on a player (NeoForge's `Entity.getPersistentData()`, Bukkit's `PersistentDataContainer`), saved in
+  their file as `NeoForgeData`; an empty compound when there is none, and
+  setting an empty one takes it away. Mods share it: keep your keys under your namespace.
+  Bundles need `"hooks": @API:player_persistent_data@`.
 
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The

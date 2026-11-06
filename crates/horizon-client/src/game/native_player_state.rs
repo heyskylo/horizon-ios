@@ -7,7 +7,14 @@
 //! `native_server_tick`, `native_menu_clicked`) everyone on.
 use super::{Game, commands::Target};
 use horizon_client::{brewing, effects::EffectInstance, entities::Experience, lan::playerdata};
-use horizon_world::{attribute_map::ValueKind, nbt::Tag};
+use horizon_world::{
+    attribute_map::ValueKind,
+    nbt::{JavaString, Tag},
+};
+
+/// The key of the compound mods keep on a player in their file: NeoForge's
+/// `Entity.getPersistentData()`, saved as `NeoForgeData`.
+const PERSISTENT_DATA: &str = "NeoForgeData";
 
 /// An effect on a player, as `native_effects` reads it and
 /// `native_add_effect` and `native_set_effects` take it (vanilla's
@@ -57,6 +64,35 @@ fn namespaced(id: &str) -> String {
     } else {
         format!("minecraft:{id}")
     }
+}
+
+/// The mods' compound in a player's saved compound (an empty one when
+/// there is none).
+fn persistent_data(saved: Option<&Tag>) -> Tag {
+    saved
+        .and_then(|t| t.get(PERSISTENT_DATA))
+        .filter(|t| matches!(t, Tag::Compound(_)))
+        .cloned()
+        .unwrap_or_else(|| Tag::compound(Vec::<(&str, Tag)>::new()))
+}
+
+/// Puts `data` in a player's saved compound as the mods' compound; an
+/// empty one takes the key away. False when `data` is not a compound.
+fn set_persistent_data(saved: &mut Option<Tag>, data: Tag) -> bool {
+    let Tag::Compound(map) = &data else {
+        return false;
+    };
+    let empty = map.is_empty();
+    let Tag::Compound(root) = saved.get_or_insert_with(|| Tag::compound(Vec::<(&str, Tag)>::new()))
+    else {
+        return false;
+    };
+    if empty {
+        root.remove(&JavaString::from(PERSISTENT_DATA));
+    } else {
+        root.insert(JavaString::from(PERSISTENT_DATA), data);
+    }
+    true
 }
 
 /// Where a player's state is while a helper reads it.
@@ -343,6 +379,35 @@ impl Game<'_> {
         .flatten()
         .is_some()
     }
+
+    /// The compound mods keep on the player `uuid` (NeoForge's
+    /// `Entity.getPersistentData()`, Bukkit's `PersistentDataContainer`):
+    /// saved in their file as `NeoForgeData`, beside the keys Horizon keeps
+    /// without modelling them; an empty compound when there is none. None
+    /// for a player not reached. API @API:player_persistent_data@.
+    pub(super) fn native_player_persistent_data(&self, uuid: u128) -> Option<Tag> {
+        let saved = match self.native_place(uuid)? {
+            Place::Acting => self.level.player_extra.as_ref(),
+            Place::Guest(i) => self.lan.as_ref()?.hub.guests[i].saved.as_ref(),
+        };
+        Some(persistent_data(saved))
+    }
+
+    /// Replaces the compound mods keep on the player `uuid` with `data`; an
+    /// empty compound takes it away. It is saved with the player. False for
+    /// anything but a compound and for a player not reached. API
+    /// @API:player_persistent_data@.
+    pub(super) fn native_set_player_persistent_data(&mut self, uuid: u128, data: Tag) -> bool {
+        let saved = match self.native_place(uuid) {
+            Some(Place::Acting) => &mut self.level.player_extra,
+            Some(Place::Guest(i)) => match self.lan.as_mut() {
+                Some(host) => &mut host.hub.guests[i].saved,
+                None => return false,
+            },
+            None => return false,
+        };
+        set_persistent_data(saved, data)
+    }
 }
 
 #[cfg(test)]
@@ -374,5 +439,27 @@ mod tests {
         assert!(instance(&effect("minecraft:no_such_effect", 200)).is_none());
         assert!(instance(&effect("minecraft:speed", 0)).is_none());
         assert!(instance(&effect("minecraft:speed", -2)).is_none());
+    }
+
+    #[test]
+    fn the_mods_compound_is_kept_beside_the_rest_and_an_empty_one_goes() {
+        let mut saved = Some(Tag::compound([("XpSeed", Tag::Int(3))]));
+        assert_eq!(
+            persistent_data(saved.as_ref()),
+            Tag::compound(Vec::<(&str, Tag)>::new())
+        );
+        let data = Tag::compound([("husksync:locked", Tag::Byte(1))]);
+        assert!(set_persistent_data(&mut saved, data.clone()));
+        assert_eq!(persistent_data(saved.as_ref()), data);
+        assert_eq!(saved.as_ref().unwrap().get("XpSeed"), Some(&Tag::Int(3)));
+        assert!(!set_persistent_data(&mut saved, Tag::Int(1)));
+        assert!(set_persistent_data(
+            &mut saved,
+            Tag::compound(Vec::<(&str, Tag)>::new())
+        ));
+        assert!(saved.as_ref().unwrap().get(PERSISTENT_DATA).is_none());
+        let mut none = None;
+        assert!(set_persistent_data(&mut none, data.clone()));
+        assert_eq!(persistent_data(none.as_ref()), data);
     }
 }
