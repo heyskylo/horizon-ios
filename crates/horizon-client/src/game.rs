@@ -14478,11 +14478,7 @@ impl Game<'_> {
             a.fired_from_weapon = weapon;
         }
         // Flame: the arrow is spawned burning (EnchantmentHelper.onProjectileSpawned).
-        if let Some(seconds) = self.bow_projectile_ignite()
-            && let Some(a) = arrow.arrow.as_mut()
-        {
-            a.ignite_for_seconds(seconds);
-        }
+        self.ignite_spawned_arrow(stack, &mut arrow);
         let (velocity, on_ground) = self.player.as_ref().map_or((Vec3::ZERO, true), |pl| {
             (self.known_player_movement(), pl.ground.on_ground)
         });
