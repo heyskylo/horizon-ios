@@ -7036,16 +7036,16 @@ mod warden_anger_tests {
         assert_eq!(a.active_anger(None), 57);
     }
 
-    /// Anger gained at a suspect that has not rejoined yet keeps the live value:
-    /// vanilla's `increaseAnger` takes the anger it kept into the new total, and
-    /// without its UUID here the old points are dropped rather than allowed to
-    /// overwrite the new ones.
+    /// Anger gained at a suspect that has not rejoined yet: vanilla's
+    /// `increaseAnger` takes the anger kept under its UUID into the new total
+    /// (min(150, 35) + 20 = 55), so the lookup adds it rather than dropping it or
+    /// letting it overwrite the new points; one anger tick then calms it to 54.
     #[test]
-    fn a_suspect_that_has_not_rejoined_is_not_overwritten() {
+    fn a_suspect_that_has_not_rejoined_keeps_both_angers() {
         let mut a = AngerManagement::from_saved([([3, 0, 0, 3], 20)]);
         assert_eq!(a.increase(Who::Mob(3), 35), 35);
         a.tick(|_| true, |_| Some(Who::Mob(3)));
-        assert_eq!(a.anger_of(Who::Mob(3)), 34);
+        assert_eq!(a.anger_of(Who::Mob(3)), 54);
         assert!(a.unloaded().next().is_none());
     }
 }
