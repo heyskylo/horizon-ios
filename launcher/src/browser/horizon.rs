@@ -329,7 +329,7 @@ pub fn trust_and_capabilities(
             let pin = v.api.split('/').nth(1).unwrap_or_default();
             lines.push(
                 instance
-                    .and_then(|i| crate::native_fit::line(i, &p.id, v.hooks, pin))
+                    .and_then(|i| crate::native_fit::line(i, &p.id, v.hooks, pin, &v.broken_on))
                     .unwrap_or_else(|| {
                         format!(
                             "Built by the launcher on Horizon {}",
@@ -839,6 +839,7 @@ fn install_version_guarded(
     guard: &dyn Fn(&Path) -> Result<(), String>,
     progress: &dyn Fn(&str, f32),
 ) -> Result<installed::Entry, String> {
+    let _lock = crate::browser::lock_home(home);
     let project = project_of(p).ok_or_else(|| format!("{} can't be installed here.", p.name))?;
     if let Some(r) = index.revoked(&p.id, &v.file.sha256) {
         return Err(format!("{} was taken down: {}", p.name, r.reason));
@@ -949,6 +950,7 @@ pub fn mod_id(entry: &installed::Entry) -> Option<&str> {
 /// Turns the registry's files that were taken down off in the game folder `home`, and says
 /// which. Their files stay, so the player sees them and can remove them.
 pub fn turn_off_revoked(index: &Index, home: &Path) -> Vec<String> {
+    let _lock = crate::browser::lock_home(home);
     let mut out = Vec::new();
     for e in installed::Installed::load(home).entries {
         let hash = e.checksum.strip_prefix("SHA-256:").unwrap_or_default();

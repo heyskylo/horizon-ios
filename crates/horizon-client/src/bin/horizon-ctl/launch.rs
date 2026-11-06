@@ -174,6 +174,9 @@ pub fn parse(args: &[String]) -> Result<Options, String> {
 /// Start the game and wait for its control endpoint; Ok(reply) or Err(reply).
 pub fn launch(socket: &Path, args: &[String]) -> Result<Value, Value> {
     let o = parse(args).map_err(|e| json!({ "error": e, "kind": "usage" }))?;
+    horizon_client::control::check_path(socket).map_err(
+        |e| json!({ "error": format!("--socket {}: {e}", socket.display()), "kind": "usage" }),
+    )?;
     if horizon_client::control::connect(socket).is_ok() {
         return Err(json!({
             "error": format!("a game is already listening on {}; quit it first or pass another --socket", socket.display()),
@@ -258,6 +261,18 @@ pub fn launch(socket: &Path, args: &[String]) -> Result<Value, Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Refused up front: a usage error, with no game started and no log beside the socket.
+    #[cfg(unix)]
+    #[test]
+    fn launch_refuses_a_socket_path_too_long() {
+        let dir = temp("long-socket");
+        let socket = dir.join(format!("{}.sock", "x".repeat(150)));
+        let reply = launch(&socket, &[]).unwrap_err();
+        assert_eq!(reply["kind"], "usage", "{reply}");
+        assert!(reply["error"].as_str().unwrap().contains("too long"));
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+    }
 
     fn temp(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("horizon-ctl-{name}-{}", std::process::id()));

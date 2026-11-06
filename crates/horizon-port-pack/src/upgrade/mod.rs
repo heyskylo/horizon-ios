@@ -24,7 +24,7 @@ use noise::noise;
 pub use noise::parity_base_amplitude;
 use registries::{biome, carver, dimension_type, structure};
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, fs, io::Read, path::Path};
+use std::{collections::BTreeMap, fs, path::Path};
 
 /// 26.3's data pack format (`version.json`'s `pack_version.data_major`).
 pub const PACK_FORMAT: u64 = 121;
@@ -274,6 +274,7 @@ pub fn read_pack(path: &Path) -> Result<BTreeMap<String, Vec<u8>>, String> {
     } else {
         let file = fs::File::open(path).map_err(|e| at(&e))?;
         let mut zip = zip::ZipArchive::new(file).map_err(|e| at(&e))?;
+        let mut budget = crate::entry::Budget::archive();
         for i in 0..zip.len() {
             let mut entry = zip.by_index(i).map_err(|e| at(&e))?;
             if entry.is_dir() {
@@ -286,8 +287,10 @@ pub fn read_pack(path: &Path) -> Result<BTreeMap<String, Vec<u8>>, String> {
             if entry.enclosed_name().is_none() || !is_inside(Path::new(&raw)) {
                 return Err(at(&format!("entry {raw:?} leaves the pack")));
             }
-            let mut bytes = Vec::new();
-            entry.read_to_end(&mut bytes).map_err(|e| at(&e))?;
+            let declared = entry.size();
+            let bytes = budget
+                .read(&mut entry, declared, crate::entry::MAX_FILE)
+                .map_err(|e| at(&format!("{raw}: {e}")))?;
             files.insert(raw, bytes);
         }
     }
@@ -401,6 +404,18 @@ mod tests {
             v,
             json!({"base_amplitude": 0.955388882960065, "base_octave": -3})
         );
+    }
+
+    #[test]
+    fn a_noise_with_no_octaves_becomes_one_muted_octave() {
+        // How a void pack turns off vanilla's iceberg noises. The game's reader
+        // has a test for this form (`decode_noise`).
+        let (v, report) = up(
+            "data/x/worldgen/noise/n.json",
+            json!({"firstOctave": -1000, "amplitudes": []}),
+        );
+        assert_eq!(v, json!({"base_octave": 0, "amplitude_modifiers": [0.0]}));
+        assert!(report.lossy.is_empty(), "{:?}", report.lossy);
     }
 
     #[test]
@@ -550,7 +565,7 @@ mod tests {
         );
         assert_eq!(
             v,
-            json!({"type": "minecraft:disk", "state_provider": "minecraft:clay", "radius": 2})
+            json!({"type": "minecraft:disk", "state_provider": {"id": "minecraft:clay"}, "radius": 2})
         );
         let (v, _) = up(
             "data/x/worldgen/placed_feature/p.json",

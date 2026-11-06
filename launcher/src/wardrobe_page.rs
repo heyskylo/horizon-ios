@@ -2,12 +2,12 @@
 //! cosmetics service has a founder set to show (`horizon_launcher::shop`, `watch_shop`), or with
 //! `HORIZON_COSMETICS=1`: the signed-in Microsoft account's skin wearing its items in 3D
 //! (`viewer`: drag to turn, scroll to zoom, a hovered card tries its item on), a
-//! row per slot, what the account owns for the chosen slot, the purchase history, one plain link
-//! to the website's shop ("Get more cosmetics on playhorizon.dev"; browsing, prices, buying and
-//! the founder claim are all there, never in the launcher, except "Claim for free" where Paddle
-//! doesn't sell: `Claim::here`, decided by the service), and three switches:
+//! row per slot, what the account owns for the chosen slot, the purchase history, one plain button
+//! to the Shop tab ("Get more cosmetics"; `shop.rs`: browsing, prices, the
+//! basket and the founder claim, paid on the website; "Claim for free" where Paddle doesn't sell:
+//! `Claim::here`, decided by the service), and three switches:
 //! Show my cosmetics (the account's, on the service), Hide
-//! other players' cosmetics and Show other players' auras and trails (the game's
+//! other players' cosmetics and Hide other players' trails and auras (the game's
 //! `horizon-extras.txt`, `horizon_cosmetics::prefs`, also in its settings).
 //!
 //! It opens on the outfit kept on disk (`wardrobe::Saved`), so it shows offline and when the
@@ -18,28 +18,31 @@ use crate::glass_ui as ui;
 use gpui::RenderImage;
 use horizon_cosmetics::prefs::{self, Others, Prefs};
 use horizon_cosmetics::{Item, Slot, Texture};
-use horizon_launcher::wardrobe::{
-    Catalogue, Change, ClaimState, Error, Saved, Service, Session, SHOP_URL,
-};
+use horizon_launcher::wardrobe::{Catalogue, Change, ClaimState, Error, Saved, Service, Session};
 use horizon_theme::glass::{fill, ink, radius};
 use std::collections::HashMap;
 use std::sync::Arc;
 
 mod marks;
 mod purchases;
+mod shop;
 mod viewer;
 pub(super) use marks::Marks;
+pub(super) use shop::Shop;
 use viewer::{Outfit, Viewer};
 /// How long a line like "Equipped Founder Visor." stays.
 const TOAST: Duration = Duration::from_secs(4);
 
 /// The slots a row each, with their names. Name tags have no model; launcher themes are free in
 /// Settings, not worn.
-const SLOTS: [(&str, &str); 5] = [
+const SLOTS: [(&str, &str); 8] = [
     ("head", "Head"),
     ("back", "Back"),
     ("torso", "Shirt"),
     ("shoulder", "Shoulder pet"),
+    ("companion", "Companion"),
+    ("trail", "Trail"),
+    ("aura", "Aura"),
     ("name_tag", "Name tag"),
 ];
 
@@ -236,18 +239,6 @@ fn tell_the_game(uuid: &str, saved: &Saved) {
     }
 }
 
-/// The website's shop in the browser, where cosmetics are browsed and bought: the launcher has no
-/// shop of its own (Ludovic, 2026-11-05), only this plain button.
-fn site_link(id: &'static str, t: &Theme) -> Stateful<Div> {
-    button(
-        id,
-        "Get more cosmetics on playhorizon.dev",
-        Kind::Secondary,
-        t,
-    )
-    .on_click(|_: &ClickEvent, _, cx| cx.open_url(SHOP_URL))
-}
-
 /// A day, in the player's time zone (Unix seconds).
 fn day(secs: i64) -> String {
     chrono::DateTime::from_timestamp(secs, 0)
@@ -360,7 +351,7 @@ impl Launcher {
                 }
                 this.shop_kept = kept;
                 // Taken away while shown (the window unset again): back Home.
-                if this.page == Page::Wardrobe && !this.wardrobe_shown() {
+                if matches!(this.page, Page::Wardrobe | Page::Shop) && !this.wardrobe_shown() {
                     this.go(Page::Play);
                 }
                 cx.notify();
@@ -516,6 +507,12 @@ impl Launcher {
                 }
                 saved.me = Some(me);
             });
+            // Paddle sells where the player is now: the Shop offers its free checkout instead.
+            if result.as_ref().is_err_and(Error::use_checkout) {
+                if let Some(me) = saved.me.as_mut() {
+                    me.claim.one_click = false;
+                }
+            }
             if let Err(e) = saved.save(&dir(), &uuid) {
                 eprintln!("Horizon: the outfit is not saved: {e}");
             }
@@ -558,7 +555,7 @@ impl Launcher {
         .detach();
     }
 
-    /// `HORIZON_LAUNCHER_PAGE=wardrobe` in a development build: the page for a made-up account
+    /// `HORIZON_LAUNCHER_PAGE=wardrobe` (or `shop`) in a development build: the page for a made-up account
     /// that owns the items of `HORIZON_COSMETICS_LOCAL` and wears the first of each slot, for
     /// screenshots. Nothing is asked of Mojang or the service, and nothing is saved.
     /// `HORIZON_WARDROBE_STATE=offline|failed|empty|no_paddle` shows that state instead.
@@ -576,7 +573,7 @@ impl Launcher {
         // The founder set's order: head, shirt, back, name tag.
         let order = |i: &Item| {
             use horizon_cosmetics::Slot::*;
-            [Head, Torso, Back, Shoulder, NameTag]
+            [Head, Torso, Back, Shoulder, Companion, Trail, Aura, NameTag]
                 .iter()
                 .position(|s| *s == i.slot)
         };
@@ -588,6 +585,9 @@ impl Launcher {
             horizon_cosmetics::Slot::Shoulder => "shoulder",
             horizon_cosmetics::Slot::NameTag => "name_tag",
             horizon_cosmetics::Slot::Emote => "emote",
+            horizon_cosmetics::Slot::Companion => "companion",
+            horizon_cosmetics::Slot::Trail => "trail",
+            horizon_cosmetics::Slot::Aura => "aura",
         };
         let state = std::env::var("HORIZON_WARDROBE_STATE").unwrap_or_default();
         let mut equipped = std::collections::BTreeMap::new();
@@ -635,10 +635,14 @@ impl Launcher {
                     hash: String::new(),
                     slot: slot(i).to_owned(),
                     names: [("en_us".to_owned(), title_case(&i.id))].into(),
-                    theme: None,
+                    ..Default::default()
                 })
                 .collect(),
             claim: claim.clone(),
+            currencies: Vec::new(),
+            sets: Vec::new(),
+            collections: Vec::new(),
+            supporter: None,
         };
         let account = account::Account {
             uuid: "00000000000000000000000000000001".into(),
@@ -666,7 +670,12 @@ impl Launcher {
             });
         }
         // A page switch reads accounts.json again, which doesn't hold this one: switch first.
-        self.go(Page::Wardrobe);
+        // `HORIZON_LAUNCHER_PAGE=shop`: the Shop, the founder set tried on.
+        let shop = std::env::var("HORIZON_LAUNCHER_PAGE").as_deref() == Ok("shop");
+        self.go(if shop { Page::Shop } else { Page::Wardrobe });
+        if shop {
+            self.shop.preview();
+        }
         self.accounts.accounts.push(account.clone());
         self.owner = Some(true);
         self.wardrobe = Some(Wardrobe {
@@ -772,35 +781,12 @@ impl Launcher {
                         } else {
                             4.
                         }))
-                        .child(site_link("wardrobe-shop", &t)),
+                        .child(self.shop_link("wardrobe-shop", cx)),
                 )
             });
         let page = div().flex().flex_col().gap(px(24.)).child(header);
         if signed_out {
-            let sign_in = button(
-                "wardrobe-sign-in",
-                "Sign in with Microsoft",
-                Kind::Primary,
-                &t,
-            )
-            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                this.go(Page::Settings);
-                this.start_sign_in();
-                cx.notify();
-            }));
-            return page.child(
-                glass::plate(radius::PANEL)
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap(px(16.))
-                    .p(px(24.))
-                    .child(
-                        ui::text(15., FontWeight::MEDIUM, ink::FULL)
-                            .child(tr("Sign in to use cosmetics.")),
-                    )
-                    .child(sign_in),
-            );
+            return page.child(self.wardrobe_sign_in(cx));
         }
         let viewer = self.wardrobe_dress(cx);
         let Some(w) = self.wardrobe.as_ref() else {
@@ -1078,6 +1064,44 @@ impl Launcher {
         }))
     }
 
+    /// The Wardrobe's one way to the Shop tab, a plain secondary button (the Shop has the
+    /// cosmetics to try on and buy; paying happens on playhorizon.dev).
+    fn shop_link(&self, id: &'static str, cx: &mut Context<Self>) -> Stateful<Div> {
+        let label = "Get more cosmetics";
+        button(id, label, Kind::Secondary, &self.theme).on_click(cx.listener(
+            |this, _: &ClickEvent, _, cx| {
+                this.go(Page::Shop);
+                cx.notify();
+            },
+        ))
+    }
+
+    /// No Microsoft account selected: the way to sign in (the Wardrobe's and the Shop's).
+    fn wardrobe_sign_in(&self, cx: &mut Context<Self>) -> Div {
+        let t = self.theme;
+        let sign_in = button(
+            "wardrobe-sign-in",
+            "Sign in with Microsoft",
+            Kind::Primary,
+            &t,
+        )
+        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+            this.go(Page::Settings);
+            this.start_sign_in();
+            cx.notify();
+        }));
+        glass::plate(radius::PANEL)
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(px(16.))
+            .p(px(24.))
+            .child(
+                ui::text(15., FontWeight::MEDIUM, ink::FULL).child(tr("Sign in to use cosmetics.")),
+            )
+            .child(sign_in)
+    }
+
     /// Sets whether the pointer turns the view, for its hand.
     fn wardrobe_drag(cx: &mut Context<Self>) -> impl Fn(bool, &mut App) + Clone + 'static {
         let page = cx.entity().downgrade();
@@ -1196,7 +1220,7 @@ impl Launcher {
         // Nothing owned yet: the shop is on the website.
         me.owned.is_empty().then(|| {
             row(tr("You don't own any cosmetics yet.").into())
-                .child(site_link("wardrobe-shop-empty", &t))
+                .child(self.shop_link("wardrobe-shop-empty", cx))
         })
     }
 
@@ -1280,13 +1304,13 @@ impl Launcher {
             )
             .child(
                 item(
-                    "wardrobe-auras",
-                    prefs.auras,
-                    "Show other players' auras and trails",
+                    "wardrobe-hide-fx",
+                    prefs.hide_fx,
+                    "Hide other players' trails and auras",
                     "Off by default. Also in the game's Horizon settings.",
                 )
                 .on_click(save(Prefs {
-                    auras: !prefs.auras,
+                    hide_fx: !prefs.hide_fx,
                     ..prefs
                 })),
             )
