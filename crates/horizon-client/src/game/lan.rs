@@ -259,6 +259,9 @@ pub(super) struct LanHost {
     /// Native mods' commands and the level each needs, once asked
     /// (game/native_server.rs).
     pub native_commands: Option<HashMap<String, u8>>,
+    /// The permission node of each native mod's command that has one
+    /// (`NativeCommand::permission`), in registration order.
+    pub native_command_nodes: Vec<(String, String)>,
     /// The players a native mod leaves out of the sleep count when they
     /// aren't in bed (`native_sleep_ignored`).
     pub sleep_ignored: std::collections::HashSet<u128>,
@@ -1447,6 +1450,7 @@ impl Game<'_> {
             quiet: std::collections::VecDeque::new(),
             far,
             native_commands: None,
+            native_command_nodes: Vec::new(),
             sleep_ignored: Default::default(),
             states: Default::default(),
             states_next_entity: None,
@@ -2548,6 +2552,7 @@ impl Game<'_> {
         // What the tick sends a guest goes to its connection at the end.
         let holding = lan::Holding::start();
         self.register_native_commands(&mut host);
+        self.resend_native_trees(&mut host);
         // The host's own commands' (and command blocks') players moving
         // to another level, and their broadcastToAdmins lines.
         if !self.level_teleports.is_empty() {

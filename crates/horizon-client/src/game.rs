@@ -249,6 +249,7 @@ mod native_mounts;
 mod native_net;
 mod native_panel;
 mod native_panel_recipes;
+mod native_permissions;
 mod native_projectiles;
 mod native_quick_move;
 mod native_recipes;
@@ -3292,6 +3293,9 @@ struct Game<'a> {
     /// The acting guest's cooldowns, as (item, ticks): their packet needs the
     /// hub's item registry, which the guest's turn does not hold.
     guest_cooldowns: Vec<(Arc<str>, i32)>,
+    /// Players whose command tree the mods asked to send again
+    /// (`native_resend_commands`), sent in the next server tick.
+    native_resend_trees: Vec<u128>,
     /// The acting guest's own entity events (`ServerPlayer.connection.send`),
     /// sent with their entity id, which the guest's turn does not hold.
     guest_entity_events: Vec<i8>,
@@ -20278,6 +20282,7 @@ impl<'a> Game<'a> {
             lan_break_pos: None,
             guest_packets: Vec::new(),
             guest_cooldowns: Vec::new(),
+            native_resend_trees: Vec::new(),
             guest_entity_events: Vec::new(),
             guest_equipment_breaks: Vec::new(),
             guest_player_sounds: Vec::new(),

@@ -114,6 +114,21 @@ impl CommandTree {
         extra: &Value,
         features: &[String],
     ) -> Commands {
+        self.packet_granting(level, dedicated, builtin, extra, features, &[])
+    }
+
+    /// [`CommandTree::packet_with_features`] with root commands the level
+    /// would leave out sent anyway, each as for a player of the level it
+    /// requires: a server mod granted them (`native_player_commands_sent_v2`).
+    pub fn packet_granting(
+        &self,
+        level: u8,
+        dedicated: bool,
+        builtin: &Builtin,
+        extra: &Value,
+        features: &[String],
+        granted: &[String],
+    ) -> Commands {
         let minecart_improvements = features
             .iter()
             .any(|f| f == crate::gamerules::MINECART_IMPROVEMENTS);
@@ -144,6 +159,7 @@ impl CommandTree {
                 0,
                 &mut Vec::new(),
                 level,
+                granted,
                 dedicated,
                 minecart_improvements,
                 &suggestions,
@@ -205,6 +221,7 @@ fn fill(
     target: usize,
     path: &mut Vec<String>,
     level: u8,
+    granted: &[String],
     dedicated: bool,
     minecart_improvements: bool,
     suggestions: &HashMap<&str, &'static str>,
@@ -236,6 +253,12 @@ fn fill(
             } else {
                 required_level(child)
             };
+        // A granted root, and what it leads to, as for its own level.
+        let level = if path.is_empty() && granted.contains(name) {
+            level.max(required)
+        } else {
+            level
+        };
         if required > level
             || path.len() == 1
                 && path[0] == "gamerule"
@@ -279,6 +302,7 @@ fn fill(
             index,
             path,
             level,
+            granted,
             dedicated,
             minecart_improvements,
             suggestions,
@@ -441,6 +465,32 @@ mod tests {
             ["", "me", "tell", "say", "stop", "action", "message"]
         );
         assert!(op.nodes[3].restricted);
+    }
+
+    #[test]
+    fn a_granted_root_comes_with_its_subtree() {
+        let report: Value = serde_json::from_str(
+            r#"{"type":"root","children":{
+                "say":{"type":"literal","children":{"message":{"type":"argument","parser":"minecraft:message","executable":true}},
+                       "permissions":{"type":"minecraft:require","permission":{"type":"minecraft:command_level","level":"gamemasters"}}},
+                "stop":{"type":"literal","executable":true,
+                       "permissions":{"type":"minecraft:require","permission":{"type":"minecraft:command_level","level":"owners"}}},
+                "me":{"type":"literal","children":{"action":{"type":"argument","parser":"minecraft:message","executable":true}}}}}"#,
+        )
+        .unwrap();
+        let tree = CommandTree { root: report };
+        let b = Builtin::default();
+        let names = |p: &Commands| p.nodes.iter().map(|n| n.name.clone()).collect::<Vec<_>>();
+        let plain = tree.packet_granting(0, true, &b, &Value::Null, &[], &[]);
+        assert_eq!(names(&plain), ["", "me", "action"]);
+        let granted = tree.packet_granting(0, true, &b, &Value::Null, &[], &["say".into()]);
+        assert_eq!(names(&granted), ["", "me", "say", "action", "message"]);
+        assert!(granted.nodes[2].restricted);
+        // Nothing granted: the same tree as before.
+        assert_eq!(
+            names(&tree.packet_with_features(0, true, &b, &Value::Null, &[])),
+            names(&plain)
+        );
     }
 
     #[test]

@@ -6787,6 +6787,89 @@ impl Game<'_> {
             cancel,
         );
     }
+    /// Whether a player has the permission node `node` (`essentials.tpa`,
+    /// `minecraft.command.gamemode`), as Bukkit's `Permissible.hasPermission`
+    /// and NeoForge's `PermissionAPI.getPermission` ask it: a permissions mod
+    /// sets `result`, and the first mod that sets it decides. Left None, the
+    /// answer is the player's operator level against `default_level`
+    /// (`ops.json`; 0 lets everyone). `native_has_permission` asks it, for
+    /// every mod and for the server's own checks of nodes (a mod command's
+    /// `NativeCommand::permission`), so one mod answers for all of them. It
+    /// is asked through `&self`: a provider reads what it knows and changes
+    /// nothing. `player` may be on the server, joining, or unknown to it; it
+    /// is often asked with the hub out of reach, so answer from the mod's own
+    /// data. Calling `native_has_permission` from inside it asks again.
+    /// Server-side. API @API:permission_check@.
+    pub(super) fn native_permission_check(
+        &self,
+        player: u128,
+        node: &str,
+        default_level: u8,
+        result: &mut Option<bool>,
+    ) {
+        mod_api::dispatch_permission_check(
+            self,
+            mod_api::mods(),
+            player,
+            node,
+            default_level,
+            result,
+        );
+    }
+    /// `native_player_commands_sent` with what the player's level leaves
+    /// out: heard right after v1, at the same times, with `names` as v1 left
+    /// it. `names_hidden` are the root commands an operator of level 4 would
+    /// get that this player's level hides (`gamemode`, `op`, a mod's command
+    /// above their level). Put one of them into `names` and the player's
+    /// tree has it with everything under it, as an operator of its level
+    /// gets it (Paper's `PlayerCommandSendEvent` after a permission check
+    /// passed), so their client completes and highlights it; take a name out
+    /// of `names` and it is hidden, as with v1. This changes only the tree
+    /// the client gets: running a granted vanilla command still needs its
+    /// level (`native_player_command_level`). Mods are asked in order and
+    /// share both lists. API @API:player_commands_sent_v2@.
+    pub(super) fn native_player_commands_sent_v2(
+        &mut self,
+        player: u128,
+        name: &str,
+        names: &mut Vec<String>,
+        names_hidden: &mut Vec<String>,
+    ) {
+        mod_api::dispatch_player_commands_sent_v2(
+            self,
+            mod_api::mods(),
+            player,
+            name,
+            names_hidden,
+            names,
+        );
+    }
+    /// The operator level one typed command of a player runs at, before the
+    /// server checks it (Paper's `VanillaCommandWrapper` asking a
+    /// `minecraft.command.<name>` node instead of the level): `level` comes
+    /// in as the player's own (`ops.json`), and a mod may raise it to grant
+    /// this command (`/gamemode` at 2 for a player of level 0) or lower it
+    /// to refuse one. `command` is the line without its slash. The command
+    /// then runs at that level, a vanilla one through its own checks, a
+    /// mod's against its level (a mod command with a permission node asks
+    /// the node, with this level as the fallback); above 4 counts as 4.
+    /// Heard after `native_player_command`, for the commands vanilla's and
+    /// the mods' dispatch run, not for the chat commands the server answers
+    /// itself (`/me`, `/msg` and its aliases, `/say` from a player allowed
+    /// it), `/list`, the chat filter's and Horizon's `/tempban` commands, nor
+    /// for a mod's quiet commands; a LAN world without Allow Commands still
+    /// refuses its guests' vanilla commands. The hub is out of reach here and
+    /// no player's state is swapped in: answer from the mod's own data.
+    /// Server-side. API @API:player_command_level@.
+    pub(super) fn native_player_command_level(
+        &mut self,
+        player: u128,
+        name: &str,
+        command: &str,
+        level: &mut u8,
+    ) {
+        mod_api::dispatch_player_command_level(self, mod_api::mods(), player, name, command, level);
+    }
     /// A click in a menu a mod opened (`native_open_menu`), which moved
     /// nothing: the menu's `slot` (its own first, then the player's
     /// inventory, `native_menu_inventory_slot`; -999 outside), the `button`

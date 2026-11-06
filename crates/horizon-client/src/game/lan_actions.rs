@@ -3466,12 +3466,24 @@ impl Game<'_> {
             self.guest_tempban_command(host, conn, &words);
             return;
         }
-        // A native mod's command, for every player its level allows,
-        // whether the world allows commands or not (game/native_server.rs).
+        // A native mod's command, for every player its level allows (or,
+        // for one with a permission node, whom the node lets: asked when it
+        // runs), whether the world allows commands or not
+        // (game/native_server.rs).
         let integrated = host.hub.config.integrated;
-        if let Some(level) = Self::native_command_level(host, command.trim_start_matches('/'))
-            && let Some(permission) = host.hub.guest(conn).map(|g| g.permission)
-            && permission >= level
+        let line = command.trim_start_matches('/');
+        // The level this one command runs at, which the mods may change.
+        let Some((uuid, name, mut permission)) = host
+            .hub
+            .guest(conn)
+            .map(|g| (g.uuid, g.name.clone(), g.permission))
+        else {
+            return;
+        };
+        self.native_player_command_level(uuid, &name, line, &mut permission);
+        let permission = permission.min(4);
+        if let Some(level) = Self::native_command_level(host, line)
+            && (permission >= level || Self::native_command_node(host, line).is_some())
         {
             host.commands.push(GuestCommand {
                 conn,
@@ -3498,10 +3510,8 @@ impl Game<'_> {
             return;
         }
         // The guest's own level (Commands.performCommand with the player's
-        // source): an operator's on a dedicated server, never the host's.
-        let Some(permission) = host.hub.guest(conn).map(|g| g.permission) else {
-            return;
-        };
+        // source): an operator's on a dedicated server, never the host's,
+        // unless a mod changed it for this command.
         host.commands.push(GuestCommand {
             conn,
             command: command.trim_start_matches('/').to_owned(),

@@ -376,6 +376,9 @@ pub struct Guest {
     /// Root command names the mods took out of this player's command tree
     /// (`native_player_commands_sent`); their tree is sent without them.
     pub hidden_commands: Vec<String>,
+    /// Root commands above this player's level that the mods put back into
+    /// their tree (`native_player_commands_sent_v2`).
+    pub granted_commands: Vec<String>,
     /// `Abilities.flyingSpeed`: vanilla's 0.05, unless a server mod set
     /// another (`native_set_flying_speed`). Saved with the player.
     pub flying_speed: f32,
@@ -559,6 +562,7 @@ impl Guest {
             quiet_leave: false,
             released: false,
             hidden_commands: Vec::new(),
+            granted_commands: Vec::new(),
             flying_speed: 0.05,
             dimension: "minecraft:overworld".into(),
             menu: None,

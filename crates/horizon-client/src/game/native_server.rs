@@ -965,13 +965,23 @@ impl Game<'_> {
                 .any(|c| c.usage.split(' ').next() == Some(name.as_str()))
         });
         host.hub.set_mod_commands(0, tree);
+        for command in &commands {
+            let root = command.usage.split(' ').next().unwrap_or_default();
+            if let Some(node) = &command.permission
+                && levels.contains_key(root)
+                && !host.native_command_nodes.iter().any(|(r, _)| r == root)
+            {
+                host.native_command_nodes
+                    .push((root.to_owned(), node.clone()));
+            }
+        }
         host.native_commands = Some(levels);
     }
 
     /// Asks the mods what root commands each player's tree keeps
-    /// (`native_player_commands_sent`) and stores the answer in the hub,
-    /// which sends the trees without what the mods took out: for `only`, or
-    /// for every placed player.
+    /// (`native_player_commands_sent` and its v2) and stores the answer in
+    /// the hub, which sends the trees without what the mods took out and with
+    /// what they put back: for `only`, or for every placed player.
     pub(super) fn native_filter_commands(&mut self, host: &mut LanHost, only: Option<u32>) {
         let players: Vec<(u32, u128, String)> = host
             .hub
@@ -982,22 +992,51 @@ impl Game<'_> {
             .collect();
         for (conn, uuid, name) in players {
             let names = host.hub.command_names(conn);
+            let above = host.hub.command_names_above(conn);
             let mut kept = names.clone();
+            let mut hidden = above.clone();
+            // A mod's command with a permission node: the node decides.
+            let level = host.hub.guest(conn).map_or(0, |g| g.permission);
+            for (root, node) in &host.native_command_nodes {
+                let needs = Self::native_command_level(host, root).unwrap_or(4);
+                let allowed = self.has_permission_at(uuid, node, needs, level);
+                let shown = kept.contains(root);
+                if allowed && !shown && hidden.contains(root) {
+                    hidden.retain(|n| n != root);
+                    kept.push(root.clone());
+                } else if !allowed && shown {
+                    kept.retain(|n| n != root);
+                    hidden.push(root.clone());
+                }
+            }
             let placed = host.hub.guest(conn).is_some_and(|g| g.placed);
             if !placed {
                 // A joining player has no world yet: nothing can be told them.
-                self.native_player_commands_sent(uuid, &name, &mut kept);
+                self.ask_commands_sent(uuid, &name, &mut kept, &mut hidden);
             } else if self.lan_acting == Some(conn) {
-                self.native_player_commands_sent(uuid, &name, &mut kept);
+                self.ask_commands_sent(uuid, &name, &mut kept, &mut hidden);
             } else {
                 self.as_guest(host, conn, |g| {
-                    g.native_player_commands_sent(uuid, &name, &mut kept);
+                    g.ask_commands_sent(uuid, &name, &mut kept, &mut hidden);
                 });
             }
             if let Some(g) = host.hub.guest_mut(conn) {
+                g.granted_commands = above.into_iter().filter(|n| kept.contains(n)).collect();
                 g.hidden_commands = names.into_iter().filter(|n| !kept.contains(n)).collect();
             }
         }
+    }
+
+    /// Both versions of the commands-sent hook, v1 first, sharing `names`.
+    fn ask_commands_sent(
+        &mut self,
+        uuid: u128,
+        name: &str,
+        names: &mut Vec<String>,
+        hidden: &mut Vec<String>,
+    ) {
+        self.native_player_commands_sent(uuid, name, names);
+        self.native_player_commands_sent_v2(uuid, name, names, hidden);
     }
 
     /// `Hub::resend_commands` with the mods' say on each tree.
@@ -1018,18 +1057,37 @@ impl Game<'_> {
         host.native_commands.as_ref()?.get(name).copied()
     }
 
+    /// The permission node of a mod's command (`line`, without its slash),
+    /// when it has one (`NativeCommand::permission`).
+    pub(super) fn native_command_node<'h>(host: &'h LanHost, line: &str) -> Option<&'h str> {
+        let name = line.split(' ').next().unwrap_or_default();
+        host.native_command_nodes
+            .iter()
+            .find(|(root, _)| root == name)
+            .map(|(_, node)| node.as_str())
+    }
+
     /// A guest's command for the mods, inside their swap
-    /// (`run_guest_command`): true when one ran it.
+    /// (`run_guest_command`): true when one ran it. A command with a
+    /// permission node asks `native_has_permission` instead of comparing
+    /// levels.
     pub(super) fn perform_native_command(&mut self, conn: u32, permission: u8, line: &str) -> bool {
         let Some(host) = &self.lan else {
             return false;
         };
-        if Self::native_command_level(host, line).is_none_or(|level| level > permission) {
+        let Some(level) = Self::native_command_level(host, line) else {
             return false;
-        }
+        };
         let Some(g) = host.hub.guest(conn) else {
             return false;
         };
+        let allowed = match Self::native_command_node(host, line) {
+            Some(node) => self.has_permission_at(g.uuid, node, level, permission),
+            None => level <= permission,
+        };
+        if !allowed {
+            return false;
+        }
         let player = NativeServerPlayer {
             uuid: g.uuid,
             name: g.name.clone(),

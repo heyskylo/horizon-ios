@@ -1767,7 +1767,24 @@ impl Hub {
         let Some(g) = self.guest(conn) else {
             return Vec::new();
         };
-        let packet = self.commands_packet(g.permission);
+        Self::names_of(&self.commands_packet(g.permission, &[]))
+    }
+
+    /// The root commands `conn`'s level leaves out of their tree, which an
+    /// operator of level 4 would get, in the tree's order.
+    pub fn command_names_above(&self, conn: u32) -> Vec<String> {
+        let theirs = self.command_names(conn);
+        if self.guest(conn).is_none() {
+            return Vec::new();
+        }
+        Self::names_of(&self.commands_packet(4, &[]))
+            .into_iter()
+            .filter(|n| !theirs.contains(n))
+            .collect()
+    }
+
+    /// The names of a tree's root commands, in its order.
+    fn names_of(packet: &play::Commands) -> Vec<String> {
         packet
             .nodes
             .get(packet.root as usize)
@@ -1779,6 +1796,13 @@ impl Hub {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// Sends `conn`'s player their command tree again, as it stands.
+    pub fn send_commands_to(&self, conn: u32) {
+        if let Some(i) = self.guests.iter().position(|g| g.conn == conn && g.placed) {
+            self.send_commands(i);
+        }
     }
 
     /// Whether vanilla's command tree has a command of this name.
@@ -1807,7 +1831,7 @@ impl Hub {
     /// Commands.sendCommands: the command tree for this player.
     fn send_commands(&self, i: usize) {
         let g = &self.guests[i];
-        let mut packet = self.commands_packet(g.permission);
+        let mut packet = self.commands_packet(g.permission, &g.granted_commands);
         // What the mods took out is not in the tree the client gets.
         if !g.hidden_commands.is_empty() {
             let hidden: Vec<i32> = packet
@@ -1825,17 +1849,19 @@ impl Hub {
         g.send(&C::Commands(packet));
     }
 
-    /// The command tree a player of this permission level gets.
-    fn commands_packet(&self, permission: u8) -> play::Commands {
+    /// The command tree a player of this permission level gets, with the
+    /// root commands the mods `granted` above it.
+    fn commands_packet(&self, permission: u8, granted: &[String]) -> play::Commands {
         match &self.sync.commands {
             Some(tree) => {
                 let dedicated = !self.config.integrated;
-                tree.packet_with_features(
+                tree.packet_granting(
                     permission,
                     dedicated,
                     &self.sync.builtin,
                     &self.mod_commands.0,
                     &self.sync.features,
+                    granted,
                 )
             }
             None => play::Commands {
