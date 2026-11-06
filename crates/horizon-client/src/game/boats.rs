@@ -1489,7 +1489,12 @@ impl Game<'_> {
         self.hurt_boat_result(i, damage, creative).unwrap_or(false)
     }
     /// None means a canceled hit; Some records whether an accepted hit destroyed it.
-    fn hurt_boat_result(&mut self, i: usize, mut damage: f32, creative: bool) -> Option<bool> {
+    pub(super) fn hurt_boat_result(
+        &mut self,
+        i: usize,
+        mut damage: f32,
+        creative: bool,
+    ) -> Option<bool> {
         let mut cancel = false;
         self.native_vehicle_damage("boat", &mut damage, &mut cancel);
         if cancel {
