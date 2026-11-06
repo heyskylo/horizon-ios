@@ -5,10 +5,15 @@ To play, use [the launcher](../launcher/README.md); the project site is [playhor
 ## Build and run
 
 - [AGENTS.md](../AGENTS.md) and [Architecture](architecture.md): where each part of the code lives, how `Game` is organised, which harness checks which area.
+- [How Horizon is built](how-horizon-is-built.md): who writes Horizon, how changes are checked, and what is safe to run.
+- [Release flow](release-flow.md): pull request checks, merging and the automatic Nightly releases that reach players.
+- [Resource preparation and filesystem work](prepare-performance.md): shared asset indexes, verified imports, staging and filesystem work that reduce preparation time.
 - [Build from source](../README.md#build-from-source): your own copy of the game, resource preparation, `cargo run`.
 - [Build times](build-times.md): `tools/build_times.py` measures cold and incremental builds per crate and the critical path, writes a JSON report and a table, and compares two reports; the first numbers, Windows and Linux.
 - [Native client](native-client.md): options, controls, the dedicated server, `horizon-ctl` scripting, packaging, architecture.
 - [Host a server](hosting.md): install `horizon-server`, prepare the game files, first run, `server.toml`, the commands, the web panel, backups, services and Docker; what works today and what doesn't yet.
+- [A server's levels](server-levels.md): how the dedicated server and single player's server thread tick, save and travel between dimensions.
+- [Velocity forwarding](velocity-forwarding.md): the player-information exchange behind a Velocity proxy and how it was checked.
 - [The anticheat](anticheat.md): the dedicated server's own checks, off unless `server.toml`'s `[anticheat]` turns them on: violation levels, setback, alerts, kicks, the log, and how to write a check.
 - [The chat filter](chat-filter.md): the dedicated server refuses hate slurs in chat, message commands, signs, anvil names and book titles: the list and its normalising, mutes, temporary bans, `[chat_filter]`.
 - [Hosting a server: design](server.md): `horizon-server`, the design and the plan: install, `server.toml`, the CLI, the web panel, backups, services, Docker, and the bot benchmark against vanilla.
@@ -27,6 +32,7 @@ To play, use [the launcher](../launcher/README.md); the project site is [playhor
 - [Modpacks](modpacks.md): porting whole packs (ATM10 and smaller): import, inventory, carry-over, an agent per mod with a harness against the Java original, coverage, and how "10x" is measured.
 - [Launcher](../launcher/README.md): installs, updates and starts builds; its CLI and MCP server; releasing it.
 - [Versioning](versioning.md): how releases are numbered from 0.2 (`v0.2.x`, `launcher@0.2.x`), how installs from before 0.2 get there, and the steps for the day 0.2 ships.
+- [Reusing pack overlays](reuse-pack-overlays.md): caching completed pack overlays, invalidating changed inputs and measuring reload costs.
 - [Resource packs](resource-packs.md): everything a 26.3 resource pack can change, whether Horizon honours it, and the proof.
 - [Opt-in data collection](telemetry.md): the consent, exactly what is sent, how it is stored and sent.
 - [Benchmark report format](benchmark-report.md): the versioned JSON every benchmark writes (game, launcher, `tools/perf_bench.py`), the local log and, with consent, the upload.
@@ -43,6 +49,14 @@ To play, use [the launcher](../launcher/README.md); the project site is [playhor
 - [Version ports](version-ports.md): how a new Minecraft release is detected, diffed against the pinned one and ported, and what stays manual.
 - [Decompilation and research lab](research-lab.md) and [decompilation status](decompilation-status.md): the local game inspection workspace the harnesses build on.
 
+## Design notes
+
+- [Design system](design-system.md): shared tokens and interface rules for the launcher, website and Horizon-only game overlays.
+- [Offscreen frame compositor](design/compositor.md): sharing a window surface between views, clipping and the standalone splitscreen compositor example.
+- [Linear light for HDR and shader packs](design/hdr-linear-light.md): the proposed shader API 0.2 colour contract and frame format for HDR output.
+- [Mod registry v2](design/registry-v2.md): project kinds, metadata, installation locations and the registry rollout.
+- [Shared audio output](design/shared-audio.md): sound engines on one output, listener ownership and duplicate world-sound handling.
+
 ## Architecture: world generation
 
 - [World generation](world-generation.md): the pipeline from noise to features.
@@ -56,6 +70,7 @@ To play, use [the launcher](../launcher/README.md); the project site is [playhor
 ## Architecture: world data and simulation
 
 - [World data](world-data.md): chunk storage, palettes, region files.
+- [Block entity save batches](save-batch-entities.md): grouping block entities across save batches while preserving chunk data and save ordering.
 - [Block-state codecs](block-state-codecs.md), [scheduled ticks](scheduled-ticks.md).
 - [Collision geometry](collision-geometry.md): shapes, collision, movement and fluids.
 - [Face visibility](face-visibility.md): which model faces the mesher emits.
