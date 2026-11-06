@@ -287,7 +287,7 @@ fn build_tags(
 }
 /// Convert a data-generator `biome_parameters` report into the quantized
 /// preset table format, using vanilla's float `quantizeCoord`.
-fn quantize_parameter_report(json: &str) -> Result<String, GeneratorError> {
+pub(crate) fn quantize_parameter_report(json: &str) -> Result<String, GeneratorError> {
     let report: Value = serde_json::from_str(json)?;
     let float = |v: &Value| -> Result<i64, GeneratorError> {
         let text = v.to_string();
