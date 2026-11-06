@@ -181,7 +181,15 @@ pub async fn vote(State(app): State<Arc<App>>, req: Request) -> Response {
         return refuse(&app, StatusCode::BAD_REQUEST, "an item id and a voter id");
     }
     let up = body["up"].as_bool().unwrap_or(true);
-    let counted = app.store().vote(item, voter, up);
+    // SQLite runs on the blocking pool, never on the two async workers (crate::blocking).
+    let (item, voter) = (item.to_owned(), voter.to_owned());
+    let counted = {
+        let item = item.clone();
+        match crate::blocking(&app, move |app| app.store().vote(&item, &voter, up)).await {
+            Ok(counted) => counted,
+            Err(_) => return refuse(&app, StatusCode::SERVICE_UNAVAILABLE, "try again later"),
+        }
+    };
     match counted {
         Ok(Some(votes)) => {
             *app.votes_cache.lock().unwrap_or_else(|e| e.into_inner()) = None;
@@ -204,25 +212,30 @@ pub async fn votes(State(app): State<Arc<App>>, req: Request) -> Response {
     if !app.allow_hub(&req) {
         return refuse(&app, StatusCode::TOO_MANY_REQUESTS, "too many requests");
     }
-    let json = {
-        let mut cache = app.votes_cache.lock().unwrap_or_else(|e| e.into_inner());
-        match &*cache {
-            Some((at, json)) if at.elapsed() < VOTES_FOR => json.clone(),
-            _ => {
-                let counts = app.store().votes();
-                match counts {
-                    Ok(counts) => {
-                        let json = json!({ "votes": counts }).to_string();
-                        *cache = Some((Instant::now(), json.clone()));
-                        json
-                    }
-                    Err(e) => {
-                        eprintln!("horizon-telemetry-server: could not read the votes: {e}");
-                        return refuse(&app, StatusCode::SERVICE_UNAVAILABLE, "try again later");
-                    }
-                }
+    let cached = app
+        .votes_cache
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .filter(|(at, _)| at.elapsed() < VOTES_FOR)
+        .map(|(_, json)| json.clone());
+    let json = match cached {
+        Some(json) => json,
+        // Counted on the blocking pool, with the cache's lock released: a handler waiting for the
+        // store holds nothing another one needs (crate::blocking).
+        None => match crate::blocking(&app, |app| app.store().votes()).await {
+            Err(_) => return refuse(&app, StatusCode::SERVICE_UNAVAILABLE, "try again later"),
+            Ok(Ok(counts)) => {
+                let json = json!({ "votes": counts }).to_string();
+                *app.votes_cache.lock().unwrap_or_else(|e| e.into_inner()) =
+                    Some((Instant::now(), json.clone()));
+                json
             }
-        }
+            Ok(Err(e)) => {
+                eprintln!("horizon-telemetry-server: could not read the votes: {e}");
+                return refuse(&app, StatusCode::SERVICE_UNAVAILABLE, "try again later");
+            }
+        },
     };
     json_response(&app, json, VOTES_FOR.as_secs())
 }

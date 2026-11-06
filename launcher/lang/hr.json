@@ -17,6 +17,7 @@
   "Pack tooling or a game feature that Horizon already has, so there is nothing to port.": "Pack tooling or a game feature that Horizon already has, so there is nothing to port.",
   "Built into Horizon already, so there is nothing to port.": "Built into Horizon already, so there is nothing to port.",
   "Nothing to port.": "Nothing to port.",
+  "Made for Minecraft 1.20 or older: Horizon ports mods made for 1.21 and later.": "Made for Minecraft 1.20 or older: Horizon ports mods made for 1.21 and later.",
   "Shader packs are not converted yet.": "Shader packs are not converted yet.",
   "Copied as a resource pack; Horizon has not checked how it renders. Turn it on in the game's Resource Packs screen.": "Copied as a resource pack; Horizon has not checked how it renders. Turn it on in the game's Resource Packs screen.",
   "Not downloaded yet; Port gets it.": "Not downloaded yet; Port gets it.",
@@ -1216,5 +1217,11 @@
   "US sales tax is added where a state charges it.": "Američki porez na promet dodaje se gdje ga savezna država naplaćuje.",
   "VAT included where it applies.": "PDV uključen gdje se primjenjuje.",
   "In a set in your basket": "U kompletu u vašoj košarici",
-  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Dovršite plaćanje u pregledniku. Predmeti stižu u Garderobu za trenutak."
+  "Finish paying in your browser. Your items reach the Wardrobe a moment later.": "Dovršite plaćanje u pregledniku. Predmeti stižu u Garderobu za trenutak.",
+  "{name} was left out: made for another Horizon version": "{name} je izostavljen: napravljen za drugu verziju Horizona",
+  "{name} was left out: clashes with {other}": "{name} je izostavljen: sukobljava se s {other}",
+  "{name} was left out: it needs {other}, which was left out": "{name} je izostavljen: treba mu {other}, koji je izostavljen",
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Ne gradi se na Horizonu koji igraš ({code}): izgradnja ga izostavlja dok ga autor ne ažurira",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Tamo gdje ste, set osnivača preuzima se kroz besplatnu naplatu na playhorizon.dev. Preuzmite ga u Trgovini: ona vam otvara naplatu.",
+  "The founder set can't be claimed from your country.": "Set osnivača ne može se preuzeti iz vaše zemlje."
 }

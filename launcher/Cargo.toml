@@ -79,6 +79,9 @@ libc = "0.2"
 # Microsoft account secrets in the OS keychain: the Secret Service on Linux through oo7 (the same
 # build gpui uses), Keychain and Credential Manager through keyring.
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
+# The GPU's texture limit, which caps the pictures made for GPUI's atlas (`pictures::gpu_limit`): the
+# wgpu GPUI itself uses on Linux.
+wgpu = { version = "=30.0.1", default-features = false, features = ["std", "vulkan", "gles"] }
 oo7 = { version = "0.6", default-features = false, features = ["async-std", "native_crypto"] }
 futures-lite = "2"
 [target.'cfg(target_os = "macos")'.dependencies]
