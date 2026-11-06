@@ -269,6 +269,16 @@ fn arrival_from_tag(a: &Tag) -> Option<Arrival> {
     })
 }
 
+/// Keep an explicitly captured counter. Old archives without a positive counter
+/// retain the historical fallback; their migration needs separate evidence.
+fn preserve_arrival_cooldown(tag: &mut Tag) {
+    if let Tag::Compound(fields) = tag
+        && !matches!(fields.get(&"PortalCooldown".into()), Some(Tag::Int(delay)) if *delay > 0)
+    {
+        fields.insert("PortalCooldown".into(), Tag::Int(ENTITY_DELAY));
+    }
+}
+
 impl Game<'_> {
     /// The world border's extent.
     pub(super) fn border_bounds(&self) -> BorderBounds {
@@ -1270,12 +1280,8 @@ impl Game<'_> {
                     "Rotation".into(),
                     Tag::List(vec![Tag::Float(yaw.to_bits()), Tag::Float(pitch.to_bits())]),
                 );
-                // setPortalCooldown before the teleport, copied by restoreFrom.
-                if !matches!(c.get(&"PortalCooldown".into()), Some(Tag::Int(delay)) if *delay > 0) {
-                    // Old waiting-arrival files did not carry the reset counter.
-                    c.insert("PortalCooldown".into(), Tag::Int(ENTITY_DELAY));
-                }
             }
+            preserve_arrival_cooldown(&mut tag);
             // ServerLevel.addDuringTeleport: a fresh add, not loaded from disk.
             super::persist::mark_fresh(&mut tag);
             let key = ((at.x.floor() as i32) >> 4, (at.z.floor() as i32) >> 4);
@@ -1468,6 +1474,29 @@ mod tests {
     }
 
     #[test]
+    fn legacy_arrivals_keep_explicit_positive_counters_without_type_migration() {
+        let mut tag = Tag::compound([
+            ("id", Tag::String("minecraft:oak_boat".into())),
+            ("PortalCooldown", Tag::Int(5)),
+        ]);
+        preserve_arrival_cooldown(&mut tag);
+        let arrival = Arrival {
+            plan: Plan::end_portal(Dim::Overworld, BlockPos::new(0, 64, 0), 1.375, 0.5625),
+            tag,
+        };
+        let restored = arrival_from_tag(&arrival_tag(&arrival)).unwrap();
+        assert_eq!(restored.tag.get("PortalCooldown"), Some(&Tag::Int(5)));
+        for old in [None, Some(0), Some(-1)] {
+            let mut tag = Tag::compound([]);
+            if let (Some(old), Tag::Compound(fields)) = (old, &mut tag) {
+                fields.insert("PortalCooldown".into(), Tag::Int(old));
+            }
+            preserve_arrival_cooldown(&mut tag);
+            assert_eq!(tag.get("PortalCooldown"), Some(&Tag::Int(ENTITY_DELAY)));
+        }
+    }
+
+    #[test]
     fn waiting_arrivals_keep_their_end_destination_when_saved() {
         let tag = Tag::compound([("id", Tag::String("minecraft:cow".into()))]);
         for (from, dim) in [(Dim::Overworld, Dim::End), (Dim::End, Dim::Overworld)] {
@@ -1492,3 +1521,7 @@ mod tests {
         assert!(!arrival_from_tag(&old).unwrap().plan.end);
     }
 }
+
+#[cfg(test)]
+#[path = "portal_cooldown_tests.rs"]
+mod cooldown_tests;
