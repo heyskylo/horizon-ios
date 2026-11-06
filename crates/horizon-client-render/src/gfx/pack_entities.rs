@@ -1206,6 +1206,7 @@ mod gpu_span_tests {
                 },
                 &mut rest,
                 None,
+                (&[], &[]),
             );
             assert_eq!(
                 geometry.scratch.len(),
