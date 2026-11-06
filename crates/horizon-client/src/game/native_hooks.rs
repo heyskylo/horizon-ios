@@ -6564,6 +6564,33 @@ impl Game<'_> {
             canceled,
         );
     }
+    /// A joining player is about to be placed (Spigot's `PlayerSpawnLocationEvent`, inside
+    /// `PlayerList.placeNewPlayer`): their saved data is loaded and a newcomer's spawn found, so
+    /// `dimension` (`minecraft:overworld`, `minecraft:the_nether`, `minecraft:the_end`),
+    /// `position` (the feet) and `rotation` (yaw, pitch) are where they will appear. Change them
+    /// and the player is placed there, in that level, before the world around them is sent: no
+    /// teleport follows. A dimension the server does not have, or a value that is not finite,
+    /// leaves that part as it was. Once for each join, after `native_player_login` let them in
+    /// and before `native_player_logged_in`; no player's state is swapped in (they are in no
+    /// level yet). Server-side. @API:player_spawn_location@.
+    pub(super) fn native_player_spawn_location(
+        &mut self,
+        player: u128,
+        name: &str,
+        dimension: &mut String,
+        position: &mut [f64; 3],
+        rotation: &mut [f32; 2],
+    ) {
+        mod_api::dispatch_player_spawn_location(
+            self,
+            mod_api::mods(),
+            player,
+            name,
+            dimension,
+            position,
+            rotation,
+        );
+    }
     /// A click in a menu a mod opened (`native_open_menu`), which moved
     /// nothing: the menu's `slot` (its own first, then the player's
     /// inventory, `native_menu_inventory_slot`; -999 outside), the `button`

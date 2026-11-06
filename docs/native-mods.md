@@ -2502,6 +2502,11 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   no damage and vanilla's `Player.hurtServer` stops on zero: it is heard there with amount 0, and what a mod sets changes
   nothing. No `self`, like v1. Not heard: thorns, Channeling's lightning, fire, potion and tipped-arrow effects, thrown
   tridents (they hurt no players yet).
+- **`native_player_spawn_location(player, name, dimension, position, rotation)`**: a joining player is about to be placed
+  (Spigot's `PlayerSpawnLocationEvent`): after `native_player_login` and their saved data (or a newcomer's spawn), before
+  the level and the world around them are chosen and sent. Change the dimension, feet position or yaw/pitch and they
+  appear there, with no teleport afterwards; an unknown dimension or a non-finite value leaves that part as it was.
+  No state is swapped in.
 
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
