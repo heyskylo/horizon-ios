@@ -2511,6 +2511,8 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   `native_item_picked_up` with the whole `ItemStack` (its components: enchantments, unbreakable, attribute modifiers, a
   custom name...), the item entity's thrower UUID (none for block and mob drops) and its position. Heard just before v1,
   which keeps its signature and firing point and hears nothing of a pickup canceled here.
+- **`native_item_dropped_v2(player, stack)`**: an additive version of `native_item_dropped` with the whole `ItemStack`
+  thrown, heard just before v1, which keeps its signature and firing point.
 
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The

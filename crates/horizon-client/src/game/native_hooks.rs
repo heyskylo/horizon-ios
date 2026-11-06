@@ -6615,6 +6615,12 @@ impl Game<'_> {
             canceled,
         );
     }
+    /// `native_item_dropped` with the whole stack thrown (its components: enchantments,
+    /// damage, a custom name, unbreakable, attribute modifiers...). Heard just before
+    /// `native_item_dropped`. It only hears. Server-side. @API:item_dropped_v2@.
+    pub(super) fn native_item_dropped_v2(&mut self, player: u128, stack: &ItemStack) {
+        mod_api::dispatch_item_dropped_v2(self, mod_api::mods(), player, stack);
+    }
     /// A click in a menu a mod opened (`native_open_menu`), which moved
     /// nothing: the menu's `slot` (its own first, then the player's
     /// inventory, `native_menu_inventory_slot`; -999 outside), the `button`

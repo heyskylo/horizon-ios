@@ -1,0 +1,15 @@
+{
+  "hooks": [
+    {
+      "name": "item_dropped_v2",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_item_dropped_v2",
+      "neoforge": "ItemTossEvent",
+      "side": "server",
+      "mod_api": {
+        "contract": "listen"
+      }
+    }
+  ],
+  "rust_summary": "a player's throw with the whole stack (`native_item_dropped_v2`), leaving `native_item_dropped` as it was.",
+  "doc_summary": "`native_item_dropped_v2(player, stack)`: an additive version of `native_item_dropped` with the whole stack thrown, its components included (enchantments, unbreakable, attribute modifiers...). Heard just before v1, which keeps its signature and firing point. Bundles that use it need `\"hooks\": @API:item_dropped_v2@`."
+}
