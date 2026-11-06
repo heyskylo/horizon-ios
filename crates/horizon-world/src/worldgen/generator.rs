@@ -1010,30 +1010,15 @@ impl ChunkWork {
 
 type BiomeCache = Mutex<HashMap<(i32, i32), Arc<BiomeChunk<BiomeId>>>>;
 
-fn state(registry: &BlockRegistry, raw: &Value) -> Result<BlockStateId, GeneratorError> {
-    let name = raw
-        .get("Name")
-        .and_then(Value::as_str)
-        .or_else(|| raw.as_str())
-        .ok_or_else(|| resource("block state"))?;
-    let properties = raw.get("Properties").and_then(Value::as_object);
-    match properties {
-        Some(properties) if !properties.is_empty() => {
-            let descriptor = crate::chunk::BlockState {
-                name: super::tags::identifier(name)?,
-                properties: properties
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.as_str().unwrap_or_default().to_owned()))
-                    .collect(),
-            };
-            registry
-                .resolve(&descriptor)
-                .map_err(|e| resource(format!("block state {name}: {e}")))
-        }
-        _ => registry
-            .default_state(&super::tags::identifier(name)?)
-            .ok_or_else(|| resource(format!("unknown block {name}"))),
-    }
+/// `NoiseGeneratorSettings`' `default_block` and `default_fluid`: a block state
+/// in 26.3's form, the id alone or `{"id", "properties"}`.
+fn state(
+    codec: &crate::registry::BlockStateJsonCodec<'_>,
+    raw: &Value,
+) -> Result<BlockStateId, GeneratorError> {
+    codec
+        .decode(&raw.to_string(), false)
+        .map_err(|e| resource(format!("block state {raw}: {e}")))
 }
 
 impl<R: RandomSource + 'static> Pipeline<R>
@@ -1061,6 +1046,8 @@ where
         if min_y < level_min_y || min_y + height > level_min_y + level_height {
             return Err(resource("noise range outside the dimension's build height"));
         }
+        let codec = crate::registry::BlockStateJsonCodec::new(registry, data.integers.clone())
+            .map_err(|e| resource(e.to_string()))?;
         let settings = Settings {
             noise_min_y: min_y,
             noise_height: height,
@@ -1069,15 +1056,13 @@ where
             sea_level: settings_json["sea_level"]
                 .as_i64()
                 .ok_or_else(|| resource("sea_level"))? as i32,
-            default_block: state(registry, &settings_json["default_block"])?,
-            default_fluid: state(registry, &settings_json["default_fluid"])?,
+            default_block: state(&codec, &settings_json["default_block"])?,
+            default_fluid: state(&codec, &settings_json["default_fluid"])?,
             legacy: settings_json["legacy_random_source"]
                 .as_bool()
                 .unwrap_or(false),
         };
         let root = random.fork_positional();
-        let codec = crate::registry::BlockStateJsonCodec::new(registry, data.integers.clone())
-            .map_err(|e| resource(e.to_string()))?;
         let mut densities = DensityRegistry::from_json(&data.noises, &data.densities)?;
         let router =
             NoiseRouter::from_json(&settings_json["noise_router"].to_string(), &mut densities)?;
@@ -3837,6 +3822,29 @@ impl GeneratorWorker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn settings_default_states_read_the_26_3_block_state_form() {
+        let facts = br#"{"states": [
+            ["minecraft:stone", false, false, "x", "minecraft:stone"],
+            ["minecraft:jigsaw", false, false, "x", {"id": "minecraft:jigsaw", "properties": {"orientation": "north_up"}}],
+            ["minecraft:jigsaw", false, false, "x", {"id": "minecraft:jigsaw", "properties": {"orientation": "down_north"}}]
+        ], "defaults": {"minecraft:stone": 0, "minecraft:jigsaw": 1}}"#;
+        let (registry, _) = BlockRegistry::from_facts_json_bytes(facts).unwrap();
+        let codec =
+            crate::registry::BlockStateJsonCodec::new(&registry, Default::default()).unwrap();
+        let read = |raw: Value| state(&codec, &raw).map(|id| id.0);
+        assert_eq!(read(Value::from("minecraft:stone")).unwrap(), 0);
+        assert_eq!(
+            read(serde_json::json!({"id": "minecraft:jigsaw", "properties": {"orientation": "down_north"}}))
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            read(serde_json::json!({"id": "minecraft:jigsaw"})).unwrap(),
+            1
+        );
+        assert!(read(serde_json::json!({"properties": {}})).is_err());
+    }
     #[test]
     fn pack_tags_join_the_prepared_ones_and_broken_ones_are_dropped() {
         let raw = Bundle::from([(
