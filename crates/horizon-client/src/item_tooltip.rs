@@ -1054,16 +1054,15 @@ pub fn container_lines(
     let mut lines: Vec<String> = slots
         .iter()
         .take(5)
-        .map(|(_, s)| {
-            count
-                .replacen("%s", &s.count.to_string(), 1)
-                .replacen("%s", &name(s), 1)
-        })
+        .map(|(_, s)| horizon_protocol::text::format_java(&count, &[s.count.to_string(), name(s)]))
         .collect();
     if slots.len() > 5 {
         let more =
             translate("item.container.more_items").unwrap_or_else(|| "and %s more...".into());
-        lines.push(more.replacen("%s", &(slots.len() - 5).to_string(), 1));
+        lines.push(horizon_protocol::text::format_java(
+            &more,
+            &[(slots.len() - 5).to_string()],
+        ));
     }
     lines
 }
@@ -1568,6 +1567,12 @@ mod tests {
             ]
         );
         assert!(container_lines(&ItemStack::new("minecraft:chest", 1), &name, &lang).is_empty());
+        // German writes the count after the name: "%2$s× %1$s".
+        let german = |k: &str| match k {
+            "item.container.item_count" => Some("%2$s× %1$s".to_owned()),
+            other => lang(other),
+        };
+        assert_eq!(container_lines(&chest, &name, &german)[0], "stone× 1");
     }
 
     #[test]

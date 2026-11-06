@@ -6,13 +6,7 @@ use horizon_world::{
     worldgen::{tags::TagDefinitions, terrain::TerrainBlockStates},
 };
 use serde_json::Value;
-use std::{
-    collections::BTreeSet,
-    fs::File,
-    io::{self, BufReader},
-    path::Path,
-    sync::Arc,
-};
+use std::{collections::BTreeSet, io, path::Path, sync::Arc};
 
 pub const MATERIALS: [&str; 6] = ["bedrock", "dirt", "stone", "sand", "oak_planks", "bricks"];
 #[derive(Clone, Copy)]
@@ -190,15 +184,12 @@ fn invalid(message: &str) -> io::Error {
 }
 impl Assets {
     pub fn load(root: &Path) -> Result<Self> {
-        let manifest: Value = serde_json::from_reader(BufReader::new(File::open(
-            root.join("horizon-resources.json"),
-        )?))?;
+        let manifest: Value = horizon_world::json_file::read(&root.join("horizon-resources.json"))?;
         if manifest["data_version"].as_i64() != Some(i64::from(DATA_VERSION)) {
             return Err(invalid("resources do not match Horizon's pinned data version").into());
         }
         let (registry, flags) = horizon_world::level::data::load_registry_with_flags(root)?;
-        let bundle: Value =
-            serde_json::from_reader(BufReader::new(File::open(root.join("block-tags.json"))?))?;
+        let bundle: Value = horizon_world::json_file::read(&root.join("block-tags.json"))?;
         let mut definitions = TagDefinitions::default();
         for (name, text) in bundle
             .as_object()
