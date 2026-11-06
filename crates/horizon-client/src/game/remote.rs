@@ -2621,7 +2621,10 @@ impl Game<'_> {
         }
     }
     fn set_block(&mut self, pos: [i32; 3], state: i32) {
-        let state = BlockStateId(state.max(0) as u32);
+        // A state we don't have (a server with mods we lack) reads as air, as in its chunks.
+        let state = state.max(0) as u32;
+        let known = horizon_client::chunk::known_block_state(state);
+        let state = BlockStateId(if known { state } else { 0 });
         let previous = self.world.block(pos[0], pos[1], pos[2]);
         if self.world.loaded(pos[0], pos[2])
             && self.world.set(pos[0], pos[1], pos[2], state).is_ok()

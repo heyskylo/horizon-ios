@@ -346,12 +346,33 @@ impl Drop for Server {
     }
 }
 
+/// The longest request line a connection may send. The game reads and parses a request on its
+/// own thread between two ticks, so one without bound could stall the server (a proxy's
+/// `player-import` carries a whole player, a few hundred kilobytes at most).
+const MAX_LINE: u64 = 16 << 20;
+
 fn serve(stream: Stream, sender: &mpsc::Sender<Request>) {
     let Ok(mut writer) = stream.try_clone() else {
         return;
     };
-    for line in BufReader::new(stream).lines() {
-        let Ok(line) = line else { return };
+    let mut reader = BufReader::new(stream);
+    loop {
+        let mut bytes = Vec::new();
+        match (&mut reader)
+            .take(MAX_LINE + 1)
+            .read_until(b'\n', &mut bytes)
+        {
+            Ok(0) | Err(_) => return,
+            Ok(_) => {}
+        }
+        if bytes.len() as u64 > MAX_LINE {
+            let _ = writeln!(writer, r#"{{"error":"the request is longer than 16 MiB"}}"#);
+            return;
+        }
+        let Ok(line) = String::from_utf8(bytes) else {
+            return;
+        };
+        let line = line.trim_end_matches(['\n', '\r']).to_owned();
         if line.trim().is_empty() {
             continue;
         }
@@ -426,6 +447,35 @@ mod tests {
         assert_eq!(reply.trim(), r#"{"ok":true}"#);
         drop(server);
         assert!(!path.exists());
+    }
+
+    /// A request past the limit is answered with an error and never reaches the game.
+    #[test]
+    fn a_request_longer_than_the_limit_is_refused() {
+        let path =
+            std::env::temp_dir().join(format!("horizon-ctl-long-{}.json", std::process::id()));
+        let server = Server::start(&path).unwrap();
+        let client = connect(&path).unwrap();
+        let mut writing = client.try_clone().unwrap();
+        // The server stops reading at the limit and closes: the rest may not be taken.
+        let writer = thread::spawn(move || {
+            let chunk = vec![b'x'; 1 << 20];
+            for _ in 0..=(MAX_LINE >> 20) {
+                if writing.write_all(&chunk).is_err() {
+                    return;
+                }
+            }
+            let _ = writing.write_all(b"\n");
+        });
+        let mut reply = String::new();
+        BufReader::new(client).read_line(&mut reply).unwrap();
+        assert!(reply.contains("longer than"), "{reply}");
+        let _ = writer.join();
+        assert!(
+            server.try_recv().is_none(),
+            "the game was handed the request"
+        );
+        drop(server);
     }
 
     #[test]

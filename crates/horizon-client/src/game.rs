@@ -20425,7 +20425,9 @@ impl Game<'_> {
             &self.motion.health
         };
         let health = base.with_packs(root, &overlay, reload)?;
-        if files.is_empty() {
+        // With no pack, `res` holds the tables, unless content mods switched
+        // live since it was loaded: their data is in the new root.
+        if files.is_empty() && !self.mods.data_switched {
             return Ok((None, health));
         }
         let mut items = Items::load(root, self.pack.assets.registry, self.res.facts(), &overlay)?;
