@@ -401,6 +401,36 @@ pub struct NativeServerPlayer {
     /// The IP address the player connects from (behind a Velocity proxy: the address the proxy forwards);
     /// empty when not known. API 407.
     pub address: String,
+    /// The connection's round-trip time in milliseconds, as the keep-alive measured it and the
+    /// player list shows it (`ServerCommonPacketListenerImpl.latency`). The fields below are API
+    /// @API:server_player_state@; 0, false or None where the server does not hold them.
+    pub latency: i32,
+    /// The protocol version the client connected with (the server's own: others are refused).
+    pub protocol: i32,
+    /// The experience level and the progress to the next one, 0 to 1.
+    pub xp_level: i32,
+    pub xp_progress: f32,
+    /// On the ground, as the player's last accepted move said.
+    pub on_ground: bool,
+    /// The player's abilities as the client is told them (`Abilities.flying`, `mayfly`,
+    /// `invulnerable`, `walkingSpeed`, `flyingSpeed`): speeds 0.1 and 0.05 by default.
+    pub flying: bool,
+    pub may_fly: bool,
+    pub invulnerable: bool,
+    pub walk_speed: f32,
+    pub fly_speed: f32,
+    /// Holding sneak (`Player.isShiftKeyDown`).
+    pub sneaking: bool,
+    /// The eyes' height above the feet in the current pose (`Entity.getEyeHeight`): 1.62
+    /// standing, 1.27 crouching, 0.4 swimming or gliding, 0.2 asleep.
+    pub eye_height: f32,
+    /// The selected hotbar slot, 0 to 8.
+    pub selected_slot: u8,
+    /// The name a server mod shows for the player (`native_set_nickname`), if one does.
+    pub nickname: Option<String>,
+    /// The level a player needs to see this one, when a server mod hid them
+    /// (`native_hide_player`).
+    pub hidden: Option<u8>,
 }
 
 /// A command a native mod adds, as one usage: words, then arguments
@@ -873,6 +903,21 @@ mod tests {
                 pitch: 0.0,
                 entity_id: 0,
                 address: String::new(),
+                latency: 0,
+                protocol: 0,
+                xp_level: 0,
+                xp_progress: 0.0,
+                on_ground: true,
+                flying: false,
+                may_fly: false,
+                invulnerable: false,
+                walk_speed: 0.1,
+                fly_speed: 0.05,
+                sneaking: false,
+                eye_height: 1.62,
+                selected_slot: 0,
+                nickname: None,
+                hidden: None,
             })
         }
         fn action_bar(&mut self, _uuid: u128, line: Text) -> bool {
