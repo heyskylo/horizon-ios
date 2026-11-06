@@ -639,7 +639,12 @@ fn each_claim_refusal_says_what_to_do_instead_of_a_bare_failure() {
     let generic = Error::Service(403).message();
     let paddle = Error::Shop("paddle".into()).message();
     let mut said = std::collections::BTreeSet::new();
-    for code in ["use_checkout", "not_offered_here", "claim_not_open", "claimed"] {
+    for code in [
+        "use_checkout",
+        "not_offered_here",
+        "claim_not_open",
+        "claimed",
+    ] {
         let e = Error::Shop(code.into());
         assert_ne!(e.message(), generic, "{code}");
         assert_ne!(e.message(), paddle, "{code}");
