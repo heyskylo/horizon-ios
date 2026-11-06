@@ -1382,11 +1382,6 @@ impl Mob {
         {
             y += (0.05 * f64::from(amp + 1) - movement.y) * 0.2;
         } else {
-            // LivingEntity.travelInAir: a Slow Falling mob on its way down lands without
-            // having fallen.
-            if self.velocity.y <= 0.0 && self.has_effect("minecraft:slow_falling") {
-                self.fall_distance = 0.0;
-            }
             y -= self.effective_gravity();
         }
         // LivingEntity.shouldDiscardFriction (a breeze's, a frog's or a goat's
