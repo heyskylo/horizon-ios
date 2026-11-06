@@ -55,6 +55,9 @@ mod custom_type_tests;
 #[cfg(test)]
 mod sky_depth_tests;
 
+#[cfg(test)]
+mod end_fan_tests;
+
 /// The texture behind a pack sampler name.
 #[derive(Clone, Copy, PartialEq)]
 enum Source {
@@ -3751,7 +3754,7 @@ impl PackPost {
         frame: &super::Frame,
         terrain: &mut TerrainDraw<'_>,
     ) {
-        if super::sky_visible(frame) {
+        if super::sky_visible(frame) || super::end_fog_sky(frame) {
             self.draw_sky(device, queue, encoder, size, frame);
         }
         self.draw_terrain(device, queue, encoder, size, TerrainList::Solid, terrain);
