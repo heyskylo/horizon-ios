@@ -78,6 +78,56 @@ impl Game<'_> {
         })
         .unwrap_or(false)
     }
+    /// Turns entity `id` of the loaded level `dimension` to `yaw` and `pitch`
+    /// in degrees, as `/rotate` does (`Entity.forceSetRotation`: `setYRot`,
+    /// `setXRot` clamped to -90..90, its body and head with it), without
+    /// moving it; `head_yaw` then turns a mob's head alone
+    /// (`setYHeadRot`). For a mob, a mannequin, an armor stand, a boat, a
+    /// minecart, evoker fangs and the entities Horizon keeps without
+    /// simulating them (displays, interactions). A mob whose AI runs turns
+    /// back by its own look and body control on its next tick: face a point
+    /// with `native_mob_look_at` instead, or spawn it with `no_ai`. False on
+    /// a client, for a level not loaded, no such entity (a player is turned
+    /// by teleporting them), another kind, or an angle that isn't finite.
+    /// API @API:npc_entity_rotation@.
+    pub(super) fn native_set_entity_rotation(
+        &mut self,
+        dimension: &str,
+        id: u32,
+        yaw: f32,
+        pitch: f32,
+        head_yaw: Option<f32>,
+    ) -> bool {
+        if !yaw.is_finite() || !pitch.is_finite() || head_yaw.is_some_and(|h| !h.is_finite()) {
+            return false;
+        }
+        self.npc_in_level(dimension, |g| {
+            let Some(t) = i32::try_from(id).ok().and_then(|id| g.level_entity(id)) else {
+                return false;
+            };
+            let turns = match t {
+                Target::Mob(id) => g.mobs.iter().any(|m| m.id == id && !m.removed),
+                Target::Other(_)
+                | Target::Stand(_)
+                | Target::Boat(_)
+                | Target::Cart(_)
+                | Target::Fangs(_) => true,
+                _ => false,
+            };
+            if !turns {
+                return false;
+            }
+            g.set_rotation(t, [yaw, pitch]);
+            if let (Target::Mob(id), Some(head)) = (t, head_yaw)
+                && let Some(m) = g.mobs.iter_mut().find(|m| m.id == id)
+            {
+                m.head_yaw = head;
+                m.previous_head_yaw = head;
+            }
+            true
+        })
+        .unwrap_or(false)
+    }
 }
 
 impl Game<'_> {

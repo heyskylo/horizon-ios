@@ -2506,6 +2506,13 @@ that tick the other mobs of that level read as gone.
   handles](#entity-and-level-handles)) for any loaded level, as `execute in <dimension> run data merge entity` does,
   with the same refusals (a player, a kind Horizon can't reload yet, data that changes nothing). API
   @API:npc_entity_by_uuid@.
+- **`native_set_entity_rotation(dimension, id, yaw, pitch, head_yaw)`** turns an entity without moving it, as
+  `/rotate` does (`Entity.forceSetRotation`): its yaw and pitch in degrees (pitch clamped to -90..90), with its body and
+  head; `Some(head_yaw)` then turns a mob's head alone (`setYHeadRot`), so an NPC looks over its shoulder. It takes
+  mobs (mannequins too), armor stands, boats, minecarts, evoker fangs, and displays and the other entities Horizon
+  keeps without simulating them; a player is turned by teleporting them. A mob whose AI runs turns back by its own
+  look and body control on its next tick: for one that looks around, use `native_mob_look_at` each tick, or spawn it
+  with `no_ai`. False for no such entity, another kind, or an angle that isn't finite. API @API:npc_entity_rotation@.
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a
