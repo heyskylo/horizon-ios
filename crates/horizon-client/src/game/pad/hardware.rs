@@ -38,6 +38,8 @@ pub(super) struct Devices {
     shown: Option<horizon_dualsense::device::State>,
     /// While `PadRouter` has the reader and isn't lending it: what `pad status` lists.
     routed: Option<Vec<Value>>,
+    /// While `PadRouter` has the reader and isn't lending it: vibrations it hasn't played yet.
+    routed_rumbles: Vec<gamepad::Pulse>,
 }
 
 /// `pad status`'s line for a controller. `uuid` is the id an SDL mapping row starts with, so a
@@ -120,6 +122,52 @@ const EXTRA_SDL_MAPPINGS: &str = concat!(
     "03000000c82d00000b31000014010000,8BitDo Ultimate 2,a:b0,b:b1,back:b6,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b8,leftshoulder:b4,leftstick:b9,lefttrigger:a2,leftx:a0,lefty:a1,rightshoulder:b5,rightstick:b10,righttrigger:a5,rightx:a3,righty:a4,start:b7,x:b2,y:b3,platform:Linux,\n",
 );
 
+/// A vibration on pad `id` through gilrs' force feedback, kept alive until its end. Platforms
+/// without it (gilrs on macOS) skip it.
+fn play_pulse(
+    gilrs: &mut gilrs::Gilrs,
+    id: PadId,
+    pulse: gamepad::Pulse,
+) -> Option<(gilrs::ff::Effect, Instant)> {
+    if !gilrs
+        .connected_gamepad(id)
+        .is_some_and(|g| g.is_ff_supported())
+    {
+        return None;
+    }
+    use gilrs::ff::{BaseEffect, BaseEffectType, EffectBuilder, Repeat, Replay, Ticks};
+    let length = Ticks::from_ms(pulse.millis);
+    let motor = |kind| BaseEffect {
+        kind,
+        scheduling: Replay {
+            play_for: length,
+            ..Default::default()
+        },
+        envelope: Default::default(),
+    };
+    let magnitude = |v: f32| (v.clamp(0.0, 1.0) * f32::from(u16::MAX)) as u16;
+    let effect = EffectBuilder::new()
+        .add_effect(motor(BaseEffectType::Strong {
+            magnitude: magnitude(pulse.strong),
+        }))
+        .add_effect(motor(BaseEffectType::Weak {
+            magnitude: magnitude(pulse.weak),
+        }))
+        .repeat(Repeat::For(length))
+        .gamepads(&[id])
+        .finish(gilrs);
+    match effect.and_then(|e| e.play().map(|()| e)) {
+        Ok(effect) => Some((
+            effect,
+            Instant::now() + Duration::from_millis(u64::from(pulse.millis) + 50),
+        )),
+        Err(e) => {
+            log::debug!("Horizon: controller vibration: {e}");
+            None
+        }
+    }
+}
+
 /// The one way to open gilrs: each reader needs the extra rows.
 fn gilrs_builder() -> gilrs::GilrsBuilder {
     gilrs::GilrsBuilder::new().add_mappings(EXTRA_SDL_MAPPINGS)
@@ -151,8 +199,8 @@ impl Pads {
 
     /// Splitscreen reads the pads for every player (`PadRouter`): this game's own gilrs closes, or
     /// its events would queue up unread. It opens again if this game reads the pads itself.
-    /// While several play, nobody gets rumble, adaptive triggers or the lightbar: the router
-    /// has no output path yet.
+    /// While several play, the router plays their rumble (`PadRouter::play_rumbles`), and nobody
+    /// gets adaptive triggers or the lightbar: it has no output path for those yet.
     pub(in crate::game) fn release_hardware(&mut self) {
         if self.devices.started {
             self.devices.gilrs = None;
@@ -310,6 +358,8 @@ pub(in crate::game) type PadId = gilrs::GamepadId;
 pub(in crate::game) struct PadRouter {
     gilrs: Option<gilrs::Gilrs>,
     started: bool,
+    /// Vibrations playing while several play, each until its end.
+    rumbles: Vec<(gilrs::ff::Effect, Instant)>,
 }
 
 impl PadRouter {
@@ -324,6 +374,18 @@ impl PadRouter {
             self.started = true;
             self.gilrs = Some(gilrs);
         }
+    }
+
+    /// Play on pad `id` what its player's turn asked for, and let finished vibrations go.
+    pub(in crate::game) fn play_rumbles(&mut self, pads: &mut Pads, id: Option<PadId>) {
+        let now = Instant::now();
+        self.rumbles.retain(|(_, end)| *end > now);
+        let pulses = std::mem::take(&mut pads.devices.routed_rumbles);
+        let (Some(gilrs), Some(id)) = (self.gilrs.as_mut(), id) else {
+            return;
+        };
+        self.rumbles
+            .extend(pulses.into_iter().filter_map(|p| play_pulse(gilrs, id, p)));
     }
 
     /// Routing ends: P1 gets the reader back, open as it was.
@@ -462,7 +524,7 @@ impl Game<'_> {
     pub(super) fn pad_output_frame(&mut self) {
         if self.pad.devices.dualsense
             && self.pad.in_use
-            && self.focused
+            && self.pad_has_window()
             && self.pad.devices.output.is_none()
         {
             self.pad.devices.output = Some(horizon_dualsense::Link::start());
@@ -477,7 +539,8 @@ impl Game<'_> {
     /// (another game on the same pad keeps it otherwise).
     fn pad_output(&self) -> Option<&horizon_dualsense::Link> {
         let output = self.pad.devices.output.as_ref()?;
-        (self.pad.devices.dualsense && self.focused && output.open().is_some()).then_some(output)
+        (self.pad.devices.dualsense && self.pad_has_window() && output.open().is_some())
+            .then_some(output)
     }
 
     /// What the DualSense shows: while playing, its triggers feel what their actions do; in
@@ -487,7 +550,7 @@ impl Game<'_> {
             return;
         }
         let playing = self.pad.devices.dualsense
-            && self.focused
+            && self.pad_has_window()
             && self.title.is_none()
             && self.screen == Screen::Playing
             && !self.screen_over_playing()
@@ -643,43 +706,17 @@ impl Game<'_> {
             output.rumble(steps.collect());
             return;
         }
+        // Splitscreen's router holds the only reader, and plays this after the player's turn.
+        if self.pad.feed.is_some() && self.pad.devices.gilrs.is_none() {
+            self.pad.devices.routed_rumbles.push(pulse);
+            return;
+        }
         let (Some(gilrs), Some(id)) = (self.pad.devices.gilrs.as_mut(), self.pad.devices.active)
         else {
             return;
         };
-        if !gilrs
-            .connected_gamepad(id)
-            .is_some_and(|g| g.is_ff_supported())
-        {
-            return;
-        }
-        use gilrs::ff::{BaseEffect, BaseEffectType, EffectBuilder, Repeat, Replay, Ticks};
-        let length = Ticks::from_ms(pulse.millis);
-        let motor = |kind| BaseEffect {
-            kind,
-            scheduling: Replay {
-                play_for: length,
-                ..Default::default()
-            },
-            envelope: Default::default(),
-        };
-        let magnitude = |v: f32| (v.clamp(0.0, 1.0) * f32::from(u16::MAX)) as u16;
-        let effect = EffectBuilder::new()
-            .add_effect(motor(BaseEffectType::Strong {
-                magnitude: magnitude(pulse.strong),
-            }))
-            .add_effect(motor(BaseEffectType::Weak {
-                magnitude: magnitude(pulse.weak),
-            }))
-            .repeat(Repeat::For(length))
-            .gamepads(&[id])
-            .finish(gilrs);
-        match effect.and_then(|e| e.play().map(|()| e)) {
-            Ok(effect) => {
-                let end = Instant::now() + Duration::from_millis(u64::from(pulse.millis) + 50);
-                self.pad.devices.rumbles.push((effect, end));
-            }
-            Err(e) => log::debug!("Horizon: controller vibration: {e}"),
+        if let Some(playing) = play_pulse(gilrs, id, pulse) {
+            self.pad.devices.rumbles.push(playing);
         }
     }
 
@@ -695,6 +732,18 @@ mod one_reader_tests {
     /// Whether a machine can open gilrs at all; a test without it has nothing to check.
     fn reader() -> Option<gilrs::Gilrs> {
         gilrs_builder().build().ok()
+    }
+
+    #[test]
+    fn the_router_takes_a_players_rumble_even_with_no_pad_to_play_it_on() {
+        let mut pads = Pads::default();
+        pads.devices.routed_rumbles.push(gamepad::Pulse {
+            strong: 1.0,
+            weak: 1.0,
+            millis: 100,
+        });
+        PadRouter::default().play_rumbles(&mut pads, None);
+        assert!(pads.devices.routed_rumbles.is_empty(), "it can't queue up");
     }
 
     #[test]
@@ -751,6 +800,7 @@ mod one_reader_tests {
         let mut router = PadRouter {
             gilrs: Some(own),
             started: true,
+            ..Default::default()
         };
         router.adopt(&mut pads);
         assert!(pads.devices.gilrs.is_some());

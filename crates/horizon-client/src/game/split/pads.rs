@@ -170,7 +170,7 @@ impl Split<'_> {
         }
         self.forget_lost();
         // Presses in another window aren't asking to join this one.
-        if !self.host.focused {
+        if !self.host.pad_has_window() {
             presses.clear();
         }
         for (id, button) in presses {

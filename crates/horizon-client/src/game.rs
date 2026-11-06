@@ -8590,6 +8590,7 @@ impl Game<'_> {
             && self.player.is_some()
             && !self.options.no_pause
             && self.settings.file.bool("pauseOnLostFocus")
+            && !self.pad_keeps_playing_unfocused()
             && self.book.is_none()
             && self.sign_edit.is_none()
             && self.server_packs.prompt.is_none()

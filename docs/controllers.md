@@ -462,6 +462,12 @@ remaining range is rescaled to 0..1. Look uses a squared curve for precise
 aim near the centre, up to 200°/s yaw and 140°/s pitch at the default
 sensitivity, slower while scoping with a spyglass.
 
+## Playing in the background
+
+Play in Background (off by default, per player) lets the pad keep driving the game while its window
+has no focus, and a game the pad is playing doesn't pause on losing focus. Every game on the PC reads
+every pad: for a pad in one window and the keyboard in another, turn Controllers off in the keyboard's.
+
 ## Rumble
 
 Vibration (on by default, off in the options): taking damage (stronger with

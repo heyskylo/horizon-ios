@@ -152,6 +152,7 @@ mod hardware {
         }
         pub(in crate::game) fn lend_output(&mut self, _: &mut Pads, _: PadId) {}
         pub(in crate::game) fn reclaim_output(&mut self, _: &mut Pads) {}
+        pub(in crate::game) fn play_rumbles(&mut self, _: &mut Pads, _: Option<PadId>) {}
         pub(in crate::game) fn report_status(&self, _: &mut Pads, _: Option<PadId>) {}
         pub(in crate::game) fn connected(&self, _: PadId) -> bool {
             false
@@ -431,7 +432,19 @@ impl Game<'_> {
     /// Input from the pad counts while the window has focus, or always for
     /// the virtual pad (a script can't focus the window).
     fn pad_focused(&self) -> bool {
-        self.focused || self.pad.virtual_input
+        self.pad_has_window() || self.pad.virtual_input
+    }
+
+    /// The window has focus, or the player lets the pad play without it (Play in Background).
+    pub(super) fn pad_has_window(&self) -> bool {
+        self.focused || self.settings.controller.play_in_background
+    }
+
+    /// Losing focus doesn't pause a game the pad is playing in the background.
+    pub(super) fn pad_keeps_playing_unfocused(&self) -> bool {
+        self.settings.controller.enabled
+            && self.settings.controller.play_in_background
+            && self.pad.in_use
     }
 
     fn pad_button(
@@ -664,8 +677,7 @@ impl Game<'_> {
     /// playing (a pad lying idle while the mouse plays stays still).
     pub(super) fn pad_rumble(&mut self, rumble: Rumble) {
         let settings = &self.settings.controller;
-        // Not while the player is in another window, as the DualSense's own output isn't.
-        if !settings.enabled || !settings.vibration || !self.pad.in_use || !self.focused {
+        if !settings.enabled || !settings.vibration || !self.pad.in_use {
             return;
         }
         let Some(pulse) = rumble.pulse() else {

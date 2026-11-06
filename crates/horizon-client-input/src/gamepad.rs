@@ -537,6 +537,8 @@ pub fn steam_keyboard(choice: TextKeyboard) -> bool {
 pub struct PadSettings {
     pub enabled: bool,
     pub vibration: bool,
+    /// The pad keeps driving the game while its window has no focus.
+    pub play_in_background: bool,
     /// A DualSense's triggers push back (Horizon's; docs/controllers.md).
     pub adaptive_triggers: bool,
     pub lightbar: Lightbar,
@@ -569,6 +571,7 @@ impl Default for PadSettings {
         Self {
             enabled: true,
             vibration: true,
+            play_in_background: false,
             adaptive_triggers: true,
             lightbar: Lightbar::Health,
             look_sensitivity: 0.5,
@@ -635,6 +638,7 @@ impl PadSettings {
             match key.trim() {
                 "enabled" => s.enabled = flag(s.enabled),
                 "vibration" => s.vibration = flag(s.vibration),
+                "playInBackground" => s.play_in_background = flag(s.play_in_background),
                 "adaptiveTriggers" => s.adaptive_triggers = flag(s.adaptive_triggers),
                 "lightbar" => s.lightbar = Lightbar::parse(value),
                 "lookSensitivity" => s.look_sensitivity = unit(s.look_sensitivity),
@@ -715,6 +719,10 @@ impl PadSettings {
                 button.map_or("none", Button::name)
             ));
         }
+        text.push_str(&format!(
+            "playInBackground:{}\n",
+            bool_text(self.play_in_background)
+        ));
         text.push_str("bindLayout:1\n");
         text
     }
@@ -1751,6 +1759,15 @@ bind_key.hotbar.2:north
                 "{action}"
             );
         }
+    }
+
+    #[test]
+    fn playing_in_the_background_is_off_until_saved_on() {
+        assert!(!PadSettings::parse("vibration:false\n").play_in_background);
+        let mut on = PadSettings::default();
+        assert!(!on.play_in_background);
+        on.play_in_background = true;
+        assert!(PadSettings::parse(&on.serialize()).play_in_background);
     }
 
     #[test]
