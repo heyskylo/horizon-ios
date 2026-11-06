@@ -323,7 +323,7 @@ fn tags(ids: &Ids, registries: &mut [configuration::RegistryTags]) {
 
 /// 26.2's CommonPlayerSpawnInfo, read into Horizon's: the game types went from bytes (-1 for no previous
 /// one) to VarInts (an optional one as id + 1).
-fn spawn_info(r: &mut Reader) -> Result<play::SpawnInfo> {
+pub(super) fn spawn_info(r: &mut Reader) -> Result<play::SpawnInfo> {
     let dimension_type = r.varint()?;
     let dimension = r.string(32767)?;
     let seed = r.i64()?;
@@ -632,7 +632,7 @@ pub(super) fn animate(payload: &[u8]) -> Result<(i32, Vec<u8>)> {
 }
 
 /// 1.21.10 (and 1.21.9) to 1.21.11.
-mod v1_21_10 {
+pub(crate) mod v1_21_10 {
     use super::*;
 
     // 1.21.10's packets are laid out as 1.21.11's but for `horse_screen_open`, which 1.21.11 renamed
@@ -640,10 +640,10 @@ mod v1_21_10 {
     use crate::entity_data::{Value, serializer};
 
     /// Entity types (26.3 ids) whose entity data 1.21.11 changed.
-    const BEE: i32 = 11;
-    const WOLF: i32 = 152;
-    const MANNEQUIN: i32 = 84;
-    const PLAYER: i32 = 159;
+    pub(crate) const BEE: i32 = 11;
+    pub(crate) const WOLF: i32 = 152;
+    pub(crate) const MANNEQUIN: i32 = 84;
+    pub(crate) const PLAYER: i32 = 159;
 
     /// 1.21.11 made the bee's and the wolf's anger end a LONG (an INT before) and an avatar's main arm a
     /// HUMANOID_ARM (a BYTE before, with the same 0 left, 1 right). Indexes as 1.21.10 numbers them.
@@ -695,7 +695,7 @@ mod v1_21_10 {
 }
 
 /// 1.21.11 to 26.1.
-mod v1_21_11 {
+pub(crate) mod v1_21_11 {
     use super::*;
 
     /// 1.21.11's serverbound `swing` and `interact` (play).
@@ -705,7 +705,7 @@ mod v1_21_11 {
     /// Entity types (26.3 ids) whose class extends AgeableMob: 26.1 added a second boolean to it, after the
     /// baby flag (16), so their later entity data entries moved up one. Read off 26.1.2's EntityType
     /// registrations and class hierarchy.
-    const AGEABLE: [i32; 39] = [
+    pub(crate) const AGEABLE: [i32; 39] = [
         4, 7, 11, 19, 20, 21, 26, 30, 36, 37, 55, 56, 59, 62, 63, 65, 67, 79, 87, 88, 89, 92, 97,
         99, 101, 105, 111, 114, 119, 122, 130, 132, 138, 141, 143, 145, 152, 155, 156,
     ];
@@ -900,7 +900,7 @@ mod v1_21_11 {
 }
 
 /// 26.1 to 26.2: what changed in the packets of the release before.
-mod v26_1 {
+pub(crate) mod v26_1 {
     use super::*;
 
     /// 26.1's packet in 26.2's layout; `None` when it is laid out alike.
