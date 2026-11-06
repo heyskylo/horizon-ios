@@ -2498,6 +2498,11 @@ None.
   and `hidden` level server mods set (Bukkit's `getPing`, `isOnGround`, `getAllowFlight`, `isFlying`,
   `isSneaking`, `getEyeHeight`, `getDisplayName`). For the acting player, `latency`, `nickname`, `hidden` and
   `address` read 0 or None while the hub is out of reach. Bundles need `"hooks": @API:server_player_state@`.
+- Helper **`native_player_client(uuid) -> Option<NativeClientInfo>`** (`host.player_client`): the client's brand,
+  language, the view distance it asks for, chat visibility, main hand and particle setting, the chunks the server
+  sent it and its wire bytes in and out (Paper's `getClientBrandName`, `locale`, `getClientViewDistance`). It
+  reads the hub, so it is None inside a player's hook while the hub is out of reach, the acting player's too.
+  Bundles need `"hooks": @API:player_client@`.
 
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The

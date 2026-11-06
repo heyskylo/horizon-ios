@@ -433,6 +433,27 @@ pub struct NativeServerPlayer {
     pub hidden: Option<u8>,
 }
 
+/// What a player's client told the server about itself, and what the server sent it
+/// (`native_player_client`). API @API:player_client@.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct NativeClientInfo {
+    /// The client's brand (`minecraft:brand`): `vanilla`, `fabric`, `horizon`...
+    pub brand: String,
+    /// `ClientInformation`: the language (`en_us`), the view distance it asks for, chat
+    /// visibility (0 full, 1 system, 2 hidden), main hand (0 left, 1 right) and particles
+    /// (0 all, 1 decreased, 2 minimal).
+    pub language: String,
+    pub view_distance: i8,
+    pub chat_visibility: i32,
+    pub main_hand: i32,
+    pub particle_status: i32,
+    /// The chunks the server has sent it and holds as sent.
+    pub sent_chunks: usize,
+    /// The bytes received from and sent to it on the wire, where the connection counts them.
+    pub wire_bytes: Option<(u64, u64)>,
+}
+
 /// A command a native mod adds, as one usage: words, then arguments
 /// `<name:kind>`, optional ones last in brackets `[name:kind]`:
 /// `pay <player:player> <amount:integer>`, `balance [player:player]`,
