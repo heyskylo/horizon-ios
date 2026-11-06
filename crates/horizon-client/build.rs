@@ -9,18 +9,19 @@ fn main() {
         .expect("generating native mod API");
     let dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
     let ico = format!("{dir}/../../packaging/icons/horizon.ico");
+    let target_os =
+        std::env::var("CARGO_CFG_TARGET_OS").expect("Cargo must provide the build target OS");
     println!("cargo:rerun-if-changed={ico}");
     // The game's main thread gets 8 MB of stack on Windows as on macOS and Linux (Windows gives 1
     // MB): splitscreen builds a joining player's `Game`, ~67 KB, deep in the event loop.
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+    if target_os == "windows" {
         let arg = match std::env::var("CARGO_CFG_TARGET_ENV").as_deref() {
             Ok("msvc") => "/STACK:8388608",
             _ => "-Wl,--stack,8388608",
         };
         println!("cargo:rustc-link-arg-bin=horizon-client={arg}");
     }
-    #[cfg(windows)]
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+    if target_os == "windows" {
         let mut resource = winresource::WindowsResource::new();
         resource.set_icon(&ico);
         if std::env::var_os("CARGO_FEATURE_WINDOWS_SEGMENT_HEAP").is_some() {
@@ -28,16 +29,8 @@ fn main() {
             println!("cargo:rerun-if-changed={manifest}");
             resource.set_manifest_file(&manifest);
         }
-        if let Err(e) = resource.compile() {
-            // The GNU toolchain's `windres` (the launcher's mod builds use it) can't take a path
-            // with a space, and a Windows user name often has one: such a build goes on without
-            // the icon. Release builds run in CI, where the icon stays required.
-            if std::env::var_os("CI").is_some() {
-                panic!("embedding Windows resources: {e}");
-            }
-            println!(
-                "cargo:warning=building without Horizon's icon: embedding Windows resources failed: {e}"
-            );
-        }
+        resource
+            .compile()
+            .expect("embedding Horizon's icon in Windows resources");
     }
 }
