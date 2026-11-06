@@ -56,6 +56,22 @@ def scenarios():
         add(f'{species}_alone', 200, [
             f'mob minecraft:{species} 0.5 -60 0.5 90 {seed * 7 + 1} persistent',
         ])
+    # A zombie holding a spear (Mob.isWithinMeleeAttackRange): the spear's attack_range times its
+    # mob_factor, 0.5 to 2.25, instead of the default reach; a player too close is out of range.
+    add('zombie_spear_player', 200, ['player 6.5 -60 0.5',
+                                     'mob minecraft:zombie 0.5 -60 0.5 0 361 persistent hand=iron_spear*1'],
+        'time=18000')
+    add('zombie_spear_close', 120, ['player 1.2 -60 0.5',
+                                    'mob minecraft:zombie 0.5 -60 0.5 270 362 persistent hand=wooden_spear*1'],
+        'time=18000')
+    # A vindicator has no SpearUseGoal, so its MeleeAttackGoal hits with the spear's range: it must keep
+    # half a block off the player and reaches 2.25 out.
+    add('vindicator_spear_player', 200, ['player 6.5 -60 0.5',
+                                         'mob minecraft:vindicator 0.5 -60 0.5 0 363 persistent hand=iron_spear*1'],
+        'time=18000')
+    add('vindicator_spear_close', 120, ['player 1.0 -60 0.5',
+                                        'mob minecraft:vindicator 0.5 -60 0.5 270 364 persistent hand=stone_spear*1'],
+        'time=18000')
     # Drowned in a pool with the player on the shore and in the water.
     add('drowned_pool', 200, ['fill -6 -64 -6 6 -61 6 minecraft:water',
                               'player 9.5 -60 0.5',
