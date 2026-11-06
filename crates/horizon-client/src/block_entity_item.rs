@@ -379,7 +379,13 @@ pub fn place(saved: &Tag, components: &Compound, game_master: bool) -> Tag {
                     merged.insert(key.into(), v.clone());
                 }
             }
-            if let Some(Tag::Compound(loaded)) = canonical(&Tag::Compound(merged)) {
+            let merged = Tag::Compound(merged);
+            // A native mod's live entity supplies its own canonical id and
+            // schema. Keep the merged opaque payload for that type, while
+            // retaining vanilla's load/save validation for minecraft types.
+            let loaded =
+                canonical(&merged).or_else(|| (!id.starts_with("minecraft:")).then_some(merged));
+            if let Some(Tag::Compound(loaded)) = loaded {
                 tag = loaded;
             }
         }
@@ -479,6 +485,35 @@ mod tests {
     }
     fn canon(patch: &Compound) -> String {
         crate::item_data::canon_tag(&Tag::Compound(patch.clone()))
+    }
+
+    #[test]
+    fn a_native_entity_item_merges_opaque_data_without_replacing_its_identity() {
+        let fresh = snbt(
+            "{id:\"example:heater\",x:4,y:65,z:8,fuel:1,\
+             nested:{retained:17,changed:0},components:{}}",
+        );
+        let Tag::Compound(patch) = snbt(
+            "{\"minecraft:block_entity_data\":{id:\"example:heater\",\
+             x:99,y:99,z:99,fuel:923,nested:{changed:5},opaque:[B;1,-2,3]}}",
+        ) else {
+            unreachable!()
+        };
+        let placed = place(&fresh, &patch, false);
+        assert_eq!(
+            placed,
+            snbt(
+                "{id:\"example:heater\",x:4,y:65,z:8,fuel:923,\
+                 nested:{retained:17,changed:5},opaque:[B;1,-2,3],components:{}}"
+            )
+        );
+        let Tag::Compound(other_type) =
+            snbt("{\"minecraft:block_entity_data\":{id:\"example:other\",fuel:888}}")
+        else {
+            unreachable!()
+        };
+        assert_eq!(place(&fresh, &other_type, false), fresh);
+        assert_eq!(place(&fresh, &pick(&placed), false), placed);
     }
 
     #[test]
