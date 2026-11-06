@@ -97,18 +97,11 @@ id is not here.
 
 ## Next hooks
 
-Hooks main does not have yet, with the vanilla method each would sit in (rule 2). The NeoForge names are
-proposals, to be confirmed against the Javadoc linked from the documentation when a hook is built.
-
-| Hook | NeoForge event | Side | Cancellable | Vanilla method |
-|---|---|---|---|---|
-| `player_tick_pre` | `PlayerTickEvent.Pre` | both | no | `Player.tick` |
-| `client_tick_pre` / `_post` | `ClientTickEvent.Pre` / `.Post` | client | no | the window's half of `tick` |
-
-The rest of this table has landed, some of it under the vanilla call's name (rule 6 keeps those names):
-`left_click_block`, `use_item` (`RightClickItem`), `interact_entity` (`EntityInteract`), `player_tick`
-(`PlayerTickEvent.Post`, server-side), `entity_join_level`, `living_incoming_damage`, `living_death`, and
-`player_container_open` / `_close`.
+Every hook this section proposed has landed, some of it under the vanilla call's name (rule 6 keeps those
+names): `left_click_block`, `use_item` (`RightClickItem`), `interact_entity` (`EntityInteract`),
+`player_tick_pre` and `player_tick` (`PlayerTickEvent.Pre` and `.Post`, both server-side), `client_tick_pre` /
+`_post` (`ClientTickEvent.Pre` / `.Post`), `entity_join_level`, `living_incoming_damage`, `living_death`, and
+`player_container_open` / `_close`. New hooks take their NeoForge name when they are built (rule 2).
 
 ## Capabilities
 
