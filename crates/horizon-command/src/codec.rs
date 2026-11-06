@@ -1,7 +1,7 @@
 //! ResourceOrIdArgument and the data-fixer-upper decoding of inline values
 //! commands accept (loot predicates, item modifiers, slot sources, context
 //! providers, dialogs), reproducing the codec error messages vanilla reports.
-use super::args::{Registries, is_id_char, parse_identifier};
+use super::args::{Registries, is_id_char, parse_identifier, slot_ranges};
 use super::{CmdResult, CommandError, Reader};
 use horizon_world::nbt::{Compound, JavaString, Tag};
 
@@ -191,6 +191,15 @@ pub fn decode(registry: &str, t: &Tag, reg: &Registries) -> Result<(), String> {
                     ) {
                         return Err("No items in component".into());
                     }
+                } else if id == "minecraft:slot_range" {
+                    // RangeSlotSource.MAP_CODEC uses the global SlotRanges.CODEC,
+                    // independently of the eventual target inventory's size.
+                    require(map, t, &["slots"])?;
+                    let value = get(map, "slots").expect("required slots");
+                    let name = as_string(value).ok_or_else(|| "Not a string".to_owned())?;
+                    if !slot_ranges().iter().any(|(known, _)| known == &name) {
+                        return Err(format!("Unknown element name:{name}"));
+                    }
                 }
                 Ok(())
             })
@@ -317,6 +326,42 @@ mod contents_component_tests {
             } else {
                 assert_eq!(result, Ok(()));
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod slot_range_tests {
+    use super::*;
+
+    #[test]
+    fn inline_range_names_use_the_global_slot_registry() {
+        let reg = Registries::default();
+        for name in ["container.0", "container.53", "container.*", "hotbar.8"] {
+            let input = format!(r#"{{type:"minecraft:slot_range",slots:"{name}"}}"#);
+            let mut reader = Reader::new(&input);
+            assert!(
+                resource_or_id(&mut reader, &reg, "minecraft:slot_source").is_ok(),
+                "{name}"
+            );
+            assert_eq!(reader.cursor, input.len());
+        }
+        for name in ["container.54", "container.99"] {
+            let input = format!(r#"{{type:"minecraft:slot_range",slots:"{name}"}}"#);
+            let mut reader = Reader::new(&input);
+            assert!(
+                resource_or_id(&mut reader, &reg, "minecraft:slot_source").is_err(),
+                "{name} crossed argument parsing"
+            );
+            let (raw, _) = horizon_world::nbt::parse_snbt(&input).unwrap();
+            let message = format!("Unknown element name:{name}");
+            assert_eq!(
+                decode("minecraft:slot_source", &raw, &reg),
+                Err(either(
+                    message.clone(),
+                    either("Not a string".into(), either(not_list(&raw), message))
+                ))
+            );
         }
     }
 }
