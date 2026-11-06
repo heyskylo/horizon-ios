@@ -2530,6 +2530,15 @@ is checked again, a lever stays. A mod holds a power rod's button or plate on wi
 redstone wire, torches, repeaters, comparators, observers, detector rails, tripwire hooks, daylight detectors and the
 other sources. Server-side. Bundles need "hooks": @API:block_redstone@.
 
+`native_hurt_entity(dimension, target, amount, damage_type, attacker)` hurts a mob or a player of the level `dimension`
+by `amount` of `damage_type` (`minecraft:mob_attack`), from `attacker` (a mob's or a player's entity id, the causing
+and direct entity, as vanilla's `damageSources().mobAttack(attacker)`; none for no entity). It goes the way
+`/damage <target> <amount> <damage_type> by <attacker>` goes: armour, effects, invulnerability time, knockback away from
+the attacker, death and its message, and the damage hooks hear it. It returns whether the target was hurt: false for
+an invulnerable, dead or creative target, another dimension, an entity that is not a mob or a player, an attacker that
+isn't there, or an amount that is not a finite number. An NPC's own hit needs no `damage` command and no UUID lookup.
+Bundles need "hooks": @API:hurt_entity@.
+
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a
