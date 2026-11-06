@@ -1,0 +1,17 @@
+{
+  "hooks": [
+    {
+      "name": "anvil_update",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_anvil_update",
+      "neoforge": "AnvilUpdateEvent",
+      "side": "both",
+      "cancellable": true,
+      "mod_api": {
+        "contract": "cancel",
+        "out": "canceled"
+      }
+    }
+  ],
+  "rust_summary": "an anvil's result, which a mod may change or cancel (`native_anvil_update`).",
+  "doc_summary": "An anvil's result: `native_anvil_update(player, name, left, right, item_name, vanilla_output, vanilla_xp_cost, vanilla_material_cost, output, xp_cost, material_cost, canceled)` is NeoForge's `AnvilUpdateEvent`, where `AnvilMenu.createResult` ends, on both sides. A mod may change the output, the level cost and the material cost (how many of the right input the take uses), which start as vanilla's, or cancel, which leaves no result. Bundles need \"hooks\": @API:anvil_update@."
+}

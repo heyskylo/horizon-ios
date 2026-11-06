@@ -874,7 +874,8 @@ pub struct Frame<'a> {
     pub cave_culling: bool,
     /// Title screen: only the dedicated panorama cube map and the HUD.
     pub title: bool,
-    /// Lava, powder snow, blindness or darkness blocks the sky pass.
+    /// Lava, powder snow, blindness, darkness or a boss bar's world fog leaves out the sky pass
+    /// (`fog::sky_pass_skipped`).
     pub sky_blocked: bool,
     /// Dimensions without a skybox (the Nether) clear to the fog colour.
     pub skybox: bool,
@@ -925,6 +926,10 @@ pub struct Frame<'a> {
     /// Which entity `entities`' vertices belong to: (first vertex, entity id), each run up
     /// to the next; id 0 for none. Frame generation follows these entities' own motion.
     pub entity_motion: &'a [(u32, u64)],
+    /// For each mark of `entity_motion`, the GPU-posed vertex count at it (`skin`'s
+    /// `vertices`): where that entity's posed vertices start. A shader pack's `at_velocity`
+    /// matches both parts of an entity with last frame's.
+    pub entity_motion_posed: &'a [u32],
     /// The glowing entities' silhouettes in their team colours (`OutlineBufferSource`),
     /// outlined through walls after the hand.
     pub glowing: &'a [Vertex],
@@ -1385,10 +1390,14 @@ pub struct Renderer {
     hdr_lighting_setting: bool,
     /// The shader pack's post-processing, and the dimension (legacy id) it was loaded for.
     pack_post: Option<(i32, Option<pack_post::PackPost>)>,
+    /// A `shaders/` pack whose pipelines build on a thread of their own (`load_shader_pack`).
+    pack_loading: Option<PackLoading>,
     /// The post passes of one of Horizon's own shader packs; never beside `pack_post`'s.
     native: Option<native_pack::NativePack>,
     /// Time the shader pack's passes on the GPU (F3, or `HORIZON_SHADER_PACK_TIMING`).
     pass_timing: bool,
+    /// Least time between timed frames (`set_pass_timing_gap`).
+    pass_timing_gap: std::time::Duration,
     /// Times Horizon's own passes on the GPU, as `pass_timing` does (`own_pass_times`).
     own_timing: Option<pack_timing::PassTiming>,
     /// The entity vertices Horizon draws itself while a shader pack draws the others.
@@ -2115,10 +2124,22 @@ async fn open_with_retry(
             );
             match open_backend(backends, window, offscreen, true, layers, allow_cpu).await {
                 Ok(opened) => {
+                    let info = opened.adapter.get_info();
+                    if is_broken_haswell_vulkan(&info) {
+                        log::warn!(
+                            "Horizon renderer: skipping {} on Vulkan because Mesa hasvk suffers from \
+                             vertex corruption on Haswell; falling back to next backend",
+                            info.name
+                        );
+                        return Err(format!(
+                            "Mesa hasvk on Haswell ({}) has broken vertex buffers under Vulkan; falling back",
+                            info.name
+                        ));
+                    }
                     log::warn!(
                         "Horizon renderer: using {} although its driver reports no Vulkan \
                          conformance version",
-                        opened.adapter.get_info().name
+                        info.name
                     );
                     Ok(opened)
                 }
@@ -2128,6 +2149,19 @@ async fn open_with_retry(
         Err(NoDevice::Failed(e)) => Err(e),
         Ok(opened) => Ok(opened),
     }
+}
+/// Intel Haswell (Gen 7.5) Mesa Vulkan driver (`hasvk`) reports 0.0.0.0 and suffers
+/// from severe vertex buffer corruption and polygon tearing (#9912), but its OpenGL driver
+/// (`crocus`) is fully conformant and stable. Ivy Bridge (`IVB`) keeps Vulkan (#4059).
+pub(crate) fn is_broken_haswell_vulkan(info: &wgpu::AdapterInfo) -> bool {
+    info.backend == wgpu::Backend::Vulkan
+        && info.vendor == 0x8086
+        && (matches!(
+            info.device,
+            0x0400..=0x042f // Haswell Desktop / Mobile
+                | 0x0a00..=0x0a2f // Haswell ULT (Ultrabook)
+                | 0x0d00..=0x0d2f // Haswell CRW (Crystal Well)
+        ) || ["HSW", "Haswell"].iter().any(|tag| info.name.contains(tag)))
 }
 /// Opens a device on `backends` alone: its surface, adapter and device, or what
 /// stopped it. `allow_nonconformant` is `open_with_retry`'s second try; a
@@ -4711,8 +4745,10 @@ impl Renderer {
             frame_format,
             hdr_marker: None,
             pack_post: None,
+            pack_loading: None,
             native: None,
             pass_timing: pack_timing::PassTiming::logging(),
+            pass_timing_gap: std::time::Duration::ZERO,
             own_timing: None,
             pack_entity_rest: Vec::new(),
             cloud_bindings,
@@ -6462,7 +6498,17 @@ impl Renderer {
                 world,
             )
         });
-        let post = match post.transpose() {
+        self.pack_loading = None;
+        self.install_shader_pack(dimension, post.transpose())
+    }
+    /// Runs the pack `set_shader_pack` or `load_shader_pack` built (`None`: no pack), or none when
+    /// it can't run, for the dimension `dimension`; the programs that run and their notes.
+    fn install_shader_pack(
+        &mut self,
+        dimension: i32,
+        post: std::result::Result<Option<pack_post::PackPost>, pack_post::Refused>,
+    ) -> std::result::Result<Option<(Vec<String>, Vec<String>)>, pack_post::Refused> {
+        let post = match post {
             Ok(post) => post,
             Err(e) => {
                 self.pack_post = Some((dimension, None));
@@ -6481,8 +6527,138 @@ impl Renderer {
         }
         Ok(report)
     }
+    /// As `set_shader_pack` with a pack, but its pipelines build on a thread of their own while
+    /// the game keeps drawing without one: the driver compiles a big pack's programs for seconds.
+    /// `poll_shader_pack` runs it once they are built. `label` and `started` come back with it.
+    pub fn load_shader_pack(
+        &mut self,
+        dimension: i32,
+        pack: horizon_shaders::Post,
+        block_ids: Vec<i32>,
+        label: String,
+        started: std::time::Instant,
+    ) {
+        let device = self.device.clone();
+        let queue = self.queue.clone();
+        let adapter = self.adapter.clone();
+        let format = self.frame_format;
+        let atlas = self.pack_atlas.as_ref().map(|a| (a.view.clone(), a.size()));
+        let sprite_rects = self
+            .pack_atlas
+            .as_ref()
+            .map_or_else(Vec::new, |a| a.rects_table());
+        let material_maps = self
+            .pack_material_atlases
+            .as_ref()
+            .map(|a| [a[0].view.clone(), a[1].view.clone()]);
+        let lightmap = self.lightmap_view.clone();
+        let gui_size = self
+            .hud
+            .atlas_texture
+            .as_ref()
+            .map_or([1, 1], |t| [t.width(), t.height()]);
+        let celestial = self
+            .hud
+            .atlas_texture
+            .as_ref()
+            .map(|t| t.create_view(&Default::default()));
+        let flat = self.pack_terrain_flat;
+        let table = (self.flat.as_ref())
+            .filter(|_| flat)
+            .map(|f| f.draw_layout.clone());
+        let terrain = self.pack_atlas.is_some();
+        let clouds = self.cloud_bindings.clone();
+        let build = move || {
+            let instance = wgpu::vertex_attr_array![5=>Float32x4];
+            let vertex = wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<TerrainVertex>() as u64,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &TERRAIN_ATTRIBUTES,
+            };
+            let instances = wgpu::VertexBufferLayout {
+                array_stride: 16,
+                step_mode: wgpu::VertexStepMode::Instance,
+                attributes: &instance,
+            };
+            let buffers = [Some(vertex), Some(instances)];
+            let world = pack_post::World {
+                atlas,
+                sprite_rects: &sprite_rects,
+                material_maps,
+                lightmap,
+                gui_size,
+                terrain: terrain.then(|| pack_post::Geometry {
+                    buffers: if flat { &buffers[..1] } else { &buffers },
+                    table: table.as_ref(),
+                    depth_write: true,
+                    atlas: None,
+                    material_maps: true,
+                    ids: None,
+                    cull: true,
+                }),
+                block_ids: &block_ids,
+                celestial,
+                clouds: Some(&clouds),
+                weather: true,
+                hand: true,
+            };
+            pack_post::PackPost::new(&device, &queue, &adapter, pack, format, world)
+        };
+        // A pack is not the game's code: a panic building it turns the pack off (#3525).
+        let thread = std::thread::Builder::new()
+            .name("Shader pack".into())
+            .spawn(move || crate::crash::contain(build));
+        match thread {
+            Ok(thread) => {
+                // The last pack doesn't draw this dimension meanwhile.
+                self.pack_post = None;
+                self.pack_loading = Some(PackLoading {
+                    dimension,
+                    thread,
+                    label,
+                    started,
+                });
+            }
+            Err(e) => log::error!("shader pack {label}: no thread to build it on: {e}"),
+        }
+    }
+    /// The pack `load_shader_pack` builds, once its thread is done: it runs from now on, as
+    /// `set_shader_pack` would run it. Its dimension, label, start and what `set_shader_pack`
+    /// returns.
+    #[allow(clippy::type_complexity)]
+    pub fn poll_shader_pack(
+        &mut self,
+    ) -> Option<(
+        i32,
+        String,
+        std::time::Instant,
+        std::result::Result<Option<(Vec<String>, Vec<String>)>, pack_post::Refused>,
+    )> {
+        if !self.pack_loading.as_ref()?.thread.is_finished() {
+            return None;
+        }
+        let loading = self.pack_loading.take()?;
+        let built = match loading.thread.join() {
+            Ok(Ok(built)) => built,
+            Ok(Err(panic)) => Err(pack_post::Refused {
+                reason: format!("building it panicked: {panic}"),
+                notes: Vec::new(),
+            }),
+            Err(_) => Err(pack_post::Refused {
+                reason: "its thread panicked".into(),
+                notes: Vec::new(),
+            }),
+        };
+        let report = self.install_shader_pack(loading.dimension, built.map(Some));
+        Some((loading.dimension, loading.label, loading.started, report))
+    }
+    /// Whether a `shaders/` pack is still building (`load_shader_pack`).
+    pub fn shader_pack_loading(&self) -> bool {
+        self.pack_loading.is_some()
+    }
     /// Drops the running shader pack, of either kind.
     pub fn drop_shader_packs(&mut self) {
+        self.pack_loading = None;
         self.pack_post = None;
         self.native = None;
         self.pack_atlas = None;
@@ -6657,6 +6833,15 @@ impl Renderer {
     pub fn set_pass_timing(&mut self, on: bool) {
         self.pass_timing = on || pack_timing::PassTiming::logging();
     }
+    /// Times a frame at most once per `gap` while passes are timed (the F3 overlay needs far fewer
+    /// samples than a measurement). `HORIZON_SHADER_PACK_TIMING` keeps every sample.
+    pub fn set_pass_timing_gap(&mut self, gap: std::time::Duration) {
+        self.pass_timing_gap = if pack_timing::PassTiming::logging() {
+            std::time::Duration::ZERO
+        } else {
+            gap
+        };
+    }
     /// The running shader pack's timer, of either kind.
     fn pass_timer<'a>(
         pack: &'a mut Option<(i32, Option<pack_post::PackPost>)>,
@@ -6709,7 +6894,8 @@ impl Renderer {
 
     /// The dimension the shader pack was last set for.
     pub fn shader_pack_dimension(&self) -> Option<i32> {
-        self.pack_post.as_ref().map(|p| p.0)
+        let loading = self.pack_loading.as_ref().map(|l| l.dimension);
+        loading.or_else(|| self.pack_post.as_ref().map(|p| p.0))
     }
     /// The Texture Filtering and Max Anisotropy options (`filtering`: 0 none, 1 RGSS, 2
     /// anisotropic; `bit`: `maxAnisotropyBit`). All take LevelRenderer's chunk layer sampler
@@ -7231,6 +7417,7 @@ impl Renderer {
                 .flatten();
         }
         if let Some(t) = &mut self.own_timing {
+            t.gap = self.pass_timing_gap;
             t.begin(&self.device, &self.queue);
         }
         if self.animated_textures {
@@ -8361,6 +8548,7 @@ impl Renderer {
                 frame.end_portal_sprites[1],
                 &mut self.pack_entity_rest,
                 skin.filter(|_| pack_skin),
+                (frame.entity_motion, frame.entity_motion_posed),
             );
             entities = &self.pack_entity_rest;
         }
@@ -8867,6 +9055,9 @@ impl Renderer {
                 .pass_timing
                 .then(|| pack_timing::PassTiming::new(&self.device, &self.queue))
                 .flatten();
+        }
+        if let Some(Some(t)) = Self::pass_timer(&mut self.pack_post, &mut self.native) {
+            t.gap = self.pass_timing_gap;
         }
         let pack_reads_world = pack_post || native_post;
         laps.lap("r_uploads");
@@ -11520,6 +11711,21 @@ impl Frustum {
             .iter()
             .any(|plane| plane.truncate().dot(center) + plane.w < -radius)
     }
+    /// Depth clip planes alone: X/Y projection jitter cannot change this test.
+    /// Retaining side-of-screen geometry makes this safe before TAA selects a phase.
+    pub fn intersects_depth(&self, min: Vec3, max: Vec3) -> bool {
+        if !min.is_finite() || !max.is_finite() || !min.cmple(max).all() {
+            return true;
+        }
+        !self.planes[4..].iter().any(|p| {
+            let v = Vec3::new(
+                if p.x >= 0.0 { max.x } else { min.x },
+                if p.y >= 0.0 { max.y } else { min.y },
+                if p.z >= 0.0 { max.z } else { min.z },
+            );
+            p.truncate().dot(v) + p.w < 0.0
+        })
+    }
     /// Whether the camera-relative box `min..max` is entirely inside. Then
     /// `intersects` accepts every box within it: each plane's distance only
     /// grows from this box's nearest corner to the inner box's farthest, and
@@ -11726,6 +11932,47 @@ fn frustum(m: Mat4) -> [Vec4; 6] {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn depth_culling_keeps_jittered_edges_and_depth_crossing_models() {
+        use super::*;
+        for (yaw, pitch) in [(0.0, 0.0), (73.0, -35.0), (-142.0, 79.0)] {
+            let pose = Mat4::from_translation(Vec3::new(0.03, -0.02, 0.01))
+                * crate::camera::view_matrix(yaw, pitch);
+            let matrix = world_projection(70.0, 16.0 / 9.0, 512.0) * pose;
+            let view = Frustum {
+                planes: frustum(matrix),
+            };
+            for size in [[1, 1], [320, 180], [1280, 720], [3840, 2160]] {
+                for (x, y) in [(-1.0, 1.0), (1.0, -1.0)] {
+                    let jitter = Mat4::from_translation(Vec3::new(
+                        x / size[0] as f32,
+                        y / size[1] as f32,
+                        0.0,
+                    ));
+                    let inverse = (jitter * matrix).inverse();
+                    for (x, y) in [(-1.0, -1.0), (1.0, 1.0), (-1.0, 1.0), (1.0, -1.0)] {
+                        for z in [0.001, 0.5, 0.999] {
+                            let p = inverse * Vec4::new(x, y, z, 1.0);
+                            let p = p.truncate() / p.w;
+                            assert!(view.intersects_depth(
+                                p - Vec3::splat(1.0e-4),
+                                p + Vec3::splat(1.0e-4)
+                            ));
+                        }
+                    }
+                }
+            }
+            let point = |p| pose.inverse().transform_point3(p);
+            for z in [10.0, -600.0] {
+                let p = point(Vec3::new(0.0, 0.0, z));
+                assert!(!view.intersects_depth(p - Vec3::splat(0.1), p + Vec3::splat(0.1)));
+            }
+            // An oversized model straddling the eye must stay, even with its origin behind.
+            let p = point(Vec3::ZERO);
+            assert!(view.intersects_depth(p - Vec3::splat(10.0), p + Vec3::splat(10.0)));
+            assert!(view.intersects_depth(Vec3::splat(f32::NAN), Vec3::ONE));
+        }
+    }
     #[test]
     fn opaque_gizmo_lines_upload_first_for_the_depth_writing_pipeline() {
         let line = |argb: u32| [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, f32::from_bits(argb), 2.5];
@@ -13220,6 +13467,36 @@ mod sprite_upload_tests {
     }
 
     #[test]
+    fn broken_haswell_vulkan_detects_haswell_and_leaves_ivy_bridge() {
+        let mut info = wgpu::AdapterInfo {
+            name: "Intel(R) HD Graphics 4400 (HSW GT2)".into(),
+            vendor: 0x8086,
+            device: 0x0a16,
+            device_type: wgpu::DeviceType::IntegratedGpu,
+            device_pci_bus_id: String::new(),
+            driver: "Mesa 26.2.5".into(),
+            driver_info: "Mesa 26.2.5".into(),
+            backend: wgpu::Backend::Vulkan,
+            subgroup_min_size: 0,
+            subgroup_max_size: 0,
+            transient_saves_memory: None,
+            limit_bucket: None,
+        };
+        assert!(is_broken_haswell_vulkan(&info));
+
+        // Ivy Bridge keeps Vulkan (#4059)
+        info.name = "Intel(R) HD Graphics 4000 (IVB GT2)".into();
+        info.device = 0x0166;
+        assert!(!is_broken_haswell_vulkan(&info));
+
+        // Haswell on OpenGL is stable (crocus)
+        info.name = "Intel(R) HD Graphics 4400 (HSW GT2)".into();
+        info.device = 0x0a16;
+        info.backend = wgpu::Backend::Gl;
+        assert!(!is_broken_haswell_vulkan(&info));
+    }
+
+    #[test]
     fn mip_chain_allocates_exactly_its_size() {
         for size in [16, 64] {
             let animation = crate::sprites::test_animation(size, 0);
@@ -13732,4 +14009,16 @@ mod shadow_caster_tests {
         assert!(!kept(50.0, 339.0, -20.0, [3.0, 4.0, -1.0]));
         assert!(!kept(50.0, 0.0, 0.0, [-2.0, 3.0, 0.0]));
     }
+}
+
+/// A `shaders/` pack building on its own thread (`Renderer::load_shader_pack`): the dimension it
+/// is for, the thread (a panic in it contained), and what the game named it with and when.
+struct PackLoading {
+    dimension: i32,
+    #[allow(clippy::type_complexity)]
+    thread: std::thread::JoinHandle<
+        std::result::Result<std::result::Result<pack_post::PackPost, pack_post::Refused>, String>,
+    >,
+    label: String,
+    started: std::time::Instant,
 }
