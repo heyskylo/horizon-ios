@@ -1061,4 +1061,69 @@ mod tests {
         });
         let _ = ran;
     }
+
+    /// `Vindicator.setCustomName` latches `isJohnny` the first time the name is
+    /// `Johnny`, and nothing clears it: the Johnny goal keeps attacking every
+    /// living entity after the mob is renamed, and `addAdditionalSaveData`
+    /// saves the flag so a reload keeps it. Horizon read the live name each
+    /// tick and saved no flag, so a renamed vindicator stopped, and a reloaded
+    /// one that was named Johnny but is now Bob never started.
+    #[test]
+    fn a_vindicator_that_was_named_johnny_stays_johnny() {
+        use horizon_world::nbt::Tag;
+        let mut m = Mob::new(
+            1,
+            {
+                let mut kind = kind();
+                let k = Arc::make_mut(&mut kind);
+                k.id = "minecraft:vindicator".into();
+                k.species = Species::Vindicator;
+                kind
+            },
+            Vec3::new(0.5, 64.0, 0.5),
+            0.0,
+        );
+        assert_eq!(i8::from(m.extra.johnny), 0, "a vindicator with no name");
+        m.custom_name = Some("Bob".into());
+        vindicator_server_ai_step(&mut m);
+        assert_eq!(i8::from(m.extra.johnny), 0, "another name is no Johnny");
+        m.custom_name = Some("Johnny".into());
+        vindicator_server_ai_step(&mut m);
+        assert_eq!(i8::from(m.extra.johnny), 1, "the name sets the latch");
+        // Renamed, it stays Johnny: `setCustomName` only ever sets the flag.
+        m.custom_name = Some("Bob".into());
+        vindicator_server_ai_step(&mut m);
+        assert_eq!(
+            i8::from(m.extra.johnny),
+            1,
+            "a rename does not clear the latch"
+        );
+        // `Vindicator.addAdditionalSaveData` writes the flag, false or true.
+        let types = [("minecraft:vindicator".into(), m.kind.clone())].into();
+        let saved = crate::entity_nbt::mob_to_nbt(&m, [0; 4], None, None, |_| None);
+        assert_eq!(saved.get("Johnny"), Some(&Tag::Byte(1)));
+        let back = crate::entity_nbt::mob_from_nbt(&saved, &types, 2, None).unwrap();
+        assert_eq!(i8::from(back.extra.johnny), 1, "the reloaded flag");
+        // `readAdditionalSaveData`: `Johnny` absent is false, whatever the name
+        // in the compound is.
+        let mut silent = Tag::compound([
+            ("id", Tag::String("minecraft:vindicator".into())),
+            (
+                "Pos",
+                Tag::List(vec![
+                    Tag::Double(0.5_f64.to_bits()),
+                    Tag::Double(64.0_f64.to_bits()),
+                    Tag::Double(0.5_f64.to_bits()),
+                ]),
+            ),
+            ("CustomName", Tag::String("Johnny".into())),
+        ]);
+        let loaded = crate::entity_nbt::mob_from_nbt(&silent, &types, 3, None).unwrap();
+        assert_eq!(i8::from(loaded.extra.johnny), 0, "a save without the flag");
+        if let Tag::Compound(c) = &mut silent {
+            c.insert("Johnny".into(), Tag::Byte(0));
+        }
+        let saved = crate::entity_nbt::mob_to_nbt(&loaded, [0; 4], Some(&silent), None, |_| None);
+        assert_eq!(saved.get("Johnny"), Some(&Tag::Byte(0)));
+    }
 }
