@@ -208,7 +208,7 @@ where
         Ok(resolve_world_movement(
             self,
             MovementRequest {
-                entity: EntityIdentity(0),
+                entity: context.entity().unwrap_or(EntityIdentity(0)),
                 context,
                 bounds,
                 movement,
@@ -266,7 +266,7 @@ impl SceneCollisions<'_, '_> {
         Ok(resolve_world_movement(
             self,
             MovementRequest {
-                entity: EntityIdentity(0),
+                entity: context.entity().unwrap_or(EntityIdentity(0)),
                 context,
                 bounds,
                 movement,
@@ -287,6 +287,7 @@ impl SceneCollisions<'_, '_> {
         CollisionContext::for_entity(
             CollisionEntity {
                 identity: EntityIdentity(0),
+                kind: horizon_world::collision_context::EntityContextKind::Living,
                 y,
                 descending: false,
                 main_hand: Some(CollisionItem::EMPTY),
@@ -321,6 +322,26 @@ where
     W: BlockCollisionWorld<Error = E> + EntityMovementWorld<Error = E>,
 {
     no_collision_in(world, bounds, true)
+}
+/// `CollisionGetter.noCollision(entity, bounds)`: retain the real entity snapshot.
+pub fn no_collision_with_context<W, E>(
+    world: &mut W,
+    bounds: Aabb,
+    context: CollisionContext<'_>,
+) -> bool
+where
+    W: BlockCollisionWorld<Error = E> + EntityMovementWorld<Error = E>,
+{
+    no_world_collision(
+        world,
+        CollisionCheckRequest {
+            entity: context.entity().unwrap_or(EntityIdentity(0)),
+            context,
+            bounds,
+            candidate_budget: 1_000_000,
+        },
+    )
+    .unwrap_or(false)
 }
 fn no_collision_in<W, E>(world: &mut W, bounds: Aabb, fluids: bool) -> bool
 where

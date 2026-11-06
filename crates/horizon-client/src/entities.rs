@@ -523,9 +523,25 @@ impl ItemEntity {
         spilled.extend(crate::item_data::destroyed_container(&mut self.stack));
         Some(spilled)
     }
+    /// The ItemEntity snapshot used by both its move and its noCollision check.
+    fn collision_context(&self) -> horizon_world::collision_context::CollisionContext<'static> {
+        use horizon_world::collision_context::{
+            CollisionContext, CollisionEntity, EntityContextKind,
+        };
+        CollisionContext::for_entity(
+            CollisionEntity {
+                identity: horizon_world::entity_obstruction::EntityIdentity(u64::from(self.id)),
+                kind: EntityContextKind::Item,
+                y: self.position.y,
+                descending: false,
+                main_hand: None,
+            },
+            false,
+        )
+    }
     /// `ItemEntity.tick` on a server: an item whose box is inside a block
     /// (one placed where it lay) has no physics this tick
-    /// (`level.noCollision(box.deflate(1.0E-7))`).
+    /// (`level.noCollision(this, box.deflate(1.0E-7))`).
     pub fn inside_block(&self, world: &World, collision: &BlockCollisionRegistry<'_>) -> bool {
         let mut scene = SceneCollisions {
             world,
@@ -533,7 +549,7 @@ impl ItemEntity {
             subject: None,
         };
         let inner = self.bounds().deflate(Vec3::new(1.0e-7, 1.0e-7, 1.0e-7));
-        !crate::collisions::no_collision_empty(&mut scene, inner)
+        !crate::collisions::no_collision_with_context(&mut scene, inner, self.collision_context())
     }
     /// `Entity.updateFluidInteraction`: entering water after the first tick
     /// runs `doWaterSplashEffect`.
@@ -647,7 +663,13 @@ impl ItemEntity {
                     entities: entity_boxes,
                     border: border.map(|b| (b, [self.position.x, self.position.z])),
                 }
-                .resolve(self.bounds(), wanted, 0.0, self.on_ground)
+                .resolve_with_context(
+                    self.bounds(),
+                    wanted,
+                    0.0,
+                    self.on_ground,
+                    self.collision_context(),
+                )
                 .unwrap_or(Vec3::ZERO)
             };
             if move_applies(wanted, moved) {
@@ -2267,6 +2289,7 @@ impl ArmorStand {
             let context = horizon_world::collision_context::CollisionContext::for_entity(
                 horizon_world::collision_context::CollisionEntity {
                     identity: horizon_world::entity_obstruction::EntityIdentity(u64::from(self.id)),
+                    kind: horizon_world::collision_context::EntityContextKind::Living,
                     y: self.position.y,
                     descending: false,
                     main_hand: Some(horizon_world::collision_context::CollisionItem::EMPTY),
