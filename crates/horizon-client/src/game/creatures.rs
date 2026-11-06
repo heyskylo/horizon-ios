@@ -4495,7 +4495,7 @@ impl Game<'_> {
         }
         let _ = self.destroy_block_dropping(pos);
     }
-    /// The arrow tick's effects; `AbstractArrow.onHitBlock` uses the entity's sound source.
+    /// What an arrow's tick asked for: its particles and sounds.
     pub(super) fn arrow_event(&mut self, at: Vec3, event: horizon_client::arrows::ArrowEvent) {
         use horizon_client::arrows::{ArrowEvent, ArrowParticle, ArrowSound, BlockReaction};
         use horizon_client::particles::{ParticleOptions, ParticleType};
@@ -4532,14 +4532,11 @@ impl Game<'_> {
                     ArrowSound::TridentHitGround => "minecraft:item.trident.hit_ground",
                     ArrowSound::TridentHit => "minecraft:item.trident.hit",
                 };
-                if sound == ArrowSound::HitGround {
-                    // Entity.getSoundSource defaults to NEUTRAL for an ordinary arrow.
-                    self.audio
-                        .play_on(6, name, Some([at.x, at.y, at.z]), volume, pitch);
-                } else {
-                    self.audio
-                        .play(name, Some([at.x, at.y, at.z]), volume, pitch);
-                }
+                // Each one is the projectile's own `Entity.playSound`, on `getSoundSource()`:
+                // NEUTRAL, which neither AbstractArrow nor ThrownTrident overrides. The
+                // name-based guess would put `entity.arrow.*` and `item.*` on PLAYERS.
+                self.audio
+                    .play_on(6, name, Some([at.x, at.y, at.z]), volume, pitch);
             }
             ArrowEvent::BubbleColumnParticles { pos } => self.bubble_column_particles(pos),
             ArrowEvent::Block {
