@@ -226,6 +226,10 @@ pub struct Guest {
     /// The players a native mod hid from it (`Hub::hidden`) that its player
     /// list no longer has.
     pub tab_hidden: crate::fast_hash::FxHashSet<u128>,
+    /// The entities a native mod showed this client alone
+    /// (`native_client_entity_spawn`), by id, with their types: no level
+    /// holds them, and they go with the guest.
+    pub client_entities: crate::fast_hash::FxHashMap<i32, String>,
     /// The client finished loading terrain (ServerboundPlayerLoadedPacket).
     pub loaded: bool,
     /// Since it joined or respawned, the client hasn't said it loaded the level
@@ -494,6 +498,7 @@ impl Guest {
             changes: Default::default(),
             moved: false,
             tab_hidden: Default::default(),
+            client_entities: Default::default(),
             loaded: false,
             loading: true,
             load_timeout: CLIENT_LOADED_TIMEOUT,

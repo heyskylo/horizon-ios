@@ -2621,6 +2621,65 @@ What packet-level plugins (ProtocolLib, PacketEvents, TAB), plugin channel liste
   it is queued; false on a client, in a world nobody else can join, and for a player who isn't on when the hub can tell
   (a player gone by the tick's end isn't kicked either). Bundles need `"hooks": @API:kick@`.
 
+#### Server hooks for plugin ports: vanish and per-viewer visuals
+
+What a vanish, a per-player hologram or a Tab list plugin needs, which plugin ports reached with raw packets or
+injections before.
+
+- **`native_living_change_target(dimension, entity, kind, target, target_mob, cancel)`**: a mob's target changed
+  (NeoForge's `LivingChangeTargetEvent`, Bukkit's `EntityTargetEvent`): mob `entity` of type `kind` now targets the
+  player `target` (a UUID) or the mob `target_mob`, or lets go (both None). Heard once per change, after the mob's
+  tick that made it (its target goals or brain; a creative player it drops), or, when another mob's tick changed it
+  (`HurtByTargetGoal`'s alert), once every mob has ticked. Set `cancel` and the mob keeps the target it had, and what
+  its tick did to the new one (a melee hit, a sting, a sonic boom) is not dealt; it may pick the same target on a
+  later tick, which is heard again, so a vanish mod cancels every time the target is a vanished player. A target that
+  is neither a player nor a mob is not heard. No `self` (the mobs are out of the game while they tick), so a mod
+  decides from its own state. Server-side. Bundles need `"hooks": @API:living_change_target@`.
+- Helper **`native_hide_entity_from(viewer, entity, hidden)`** (`host.hide_entity_from`): hides the entity with
+  network id `entity` (a mob, a display, another player's `NativeServerPlayer.entity_id`) from the player `viewer`
+  alone, or shows it again, as Bukkit's `Player.hideEntity`/`showEntity` (`hidePlayer` for a player). From the next
+  tick the viewer's client stops tracking it, so it disappears there, and once shown it is paired again as it is then;
+  a hidden player also leaves the viewer's Tab list, and the viewer doesn't read them leave. Everyone else still sees
+  it; `native_hide_player` stays the way to hide a player from permission levels. Kept while the viewer is on, for that
+  id: forgotten when they leave, and a player who rejoins has another id (hide them again from
+  `native_player_logged_in`). Outside a player's hook; false there, when the viewer isn't on and for their own entity.
+  Bundles need `"hooks": @API:hide_entity_from@`.
+- Helpers **`native_client_entity_spawn(viewer, kind, pos, yaw, nbt)`**, **`native_client_entity_set(viewer, id, nbt)`**,
+  **`native_client_entity_move(viewer, id, pos, yaw)`**, **`native_client_entity_remove(viewer, ids)`** and
+  **`native_reserve_entity_id()`** (`host.client_entity_spawn`...): an entity shown to one player's client alone, a
+  hologram or a board only its owner sees (Bukkit has no API for it; plugins send the packets). Spawn sends the add and
+  its synched data, encoded from `nbt` as `/summon` reads it: all of a text, item or block display's (`text`,
+  `background`, `billboard`, `transformation`, `item`, `block_state`, `teleport_duration`...), and for any type
+  `CustomName`, `CustomNameVisible`, `Invisible`, `Glowing`, `Silent` and `NoGravity`; other types' own data is not
+  read, and a player is refused. It returns the entity's id, one no server entity takes. No level holds it: it is not
+  simulated, saved, tracked or seen by anyone else, and the client forgets it when the player changes dimension or
+  leaves. `set` gives it the data `nbt` gives its type, what `nbt` leaves out back at its default (pass the whole of what
+  it shows); `move` teleports it (a display eases over its `teleport_duration`); `remove` takes away those of `ids` that
+  are this viewer's client-side entities and leaves other ids alone. `native_reserve_entity_id()` is an id from the
+  server's own counter for a mod's own packets. Outside a player's hook; None or false there, when the viewer isn't on,
+  for an unknown type and for an id that isn't theirs. Bundles need `"hooks": @API:client_entities@`.
+- Helper **`native_set_list_name(uuid, name)`** (`host.set_list_name`): styled text (colours, a rank prefix) for that
+  player in everyone's Tab list in place of their nickname or name, as Bukkit's `Player.setPlayerListName`; None shows
+  the nickname or name again. Only the Tab list (chat keeps `native_set_display_name`'s or the nickname). It is sent at
+  once and with every entry the lists get of them later (they join, a vanish ends, `native_hide_entity_from` shows them
+  again), and kept by UUID until a mod sets it again or the server stops, also if they leave and come back, so a Tab
+  plugin needs no per-tick diff. Outside a player's hook; false there and when they aren't on. Bundles need
+  `"hooks": @API:set_list_name@`.
+- Helper **`native_set_display_name(uuid, name)`** (`host.set_display_name`): styled text for that player in chat in
+  place of their nickname or name, as Bukkit's `Player.setDisplayName`: their chat messages, `/me`, `/msg` both ways
+  and the lines that they joined or left; None shows the nickname or name again. Their team's prefix, suffix and colour
+  still go around it; hovering it gives the real name, which `/tell` is suggested with and which stays in the log,
+  commands and selectors. The Tab list keeps `native_set_list_name`'s or the nickname. Kept by UUID until a mod sets
+  it again or the server stops. Outside a player's hook; false there and when they aren't on. Bundles need
+  `"hooks": @API:set_display_name@`.
+- Helper **`native_set_name_tag(uuid, tag)`** (`host.set_name_tag`): a plain name over that player's head for everyone
+  else in place of theirs, a nickname above the head; None shows their name again. A client puts a player's profile
+  name there, so the tag is the profile name of their list entries: 1 to 16 ASCII letters, digits or symbols, no
+  spaces, no colours (a team's formatting applies only while the team lists the shown name). The other players'
+  clients get their entry and entity again at once (a blink), and their Tab list shows the tag unless a list name or
+  nickname covers it; their own client reads it from their next join. Chat, commands, selectors, the log and the
+  server's events keep the real name. Kept by UUID until a mod sets it again or the server stops. Outside a player's
+  hook; false there, when they aren't on and for a tag that isn't one. Bundles need `"hooks": @API:set_name_tag@`.
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a

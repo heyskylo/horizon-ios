@@ -336,6 +336,16 @@ pub struct Hub {
     /// Where a server mod points a player's compass (`native_set_compass_target`), by UUID,
     /// while they are on: sent in place of the world spawn whenever the world spawn is.
     pub compass_targets: std::collections::HashMap<u128, play::GlobalPos>,
+    /// The Tab list names a server mod gave players (`native_set_list_name`),
+    /// by UUID, as component NBT: they take a nickname's place there.
+    pub list_names: std::collections::HashMap<u128, Tag>,
+    /// The names a server mod shows for players in chat
+    /// (`native_set_display_name`), by UUID, as component JSON: they take
+    /// a nickname's place in `player_display_name`.
+    pub display_names: std::collections::HashMap<u128, serde_json::Value>,
+    /// The names a server mod shows over players' heads
+    /// (`native_set_name_tag`), by UUID: their list entries' profile name.
+    pub name_tags: std::collections::HashMap<u128, String>,
     last_clock: i64,
     last_rate: f32,
     ticking: (f32, bool),
@@ -475,15 +485,20 @@ impl Hub {
     /// player on hover and inserting the name.
     /// A nickname (`nicknames`) takes the name's place in the text; the
     /// hover, the suggested `/tell` and the insertion keep the real name.
+    /// A mod's display name (`display_names`) takes the place of both.
     pub fn player_display_name(&self, uuid: u128, name: &str) -> Tag {
         let shown = self.nicknames.get(&uuid).map_or(name, String::as_str);
+        let custom = self.display_names.get(&uuid);
         let team = self.teams.iter().find(|t| t.players.contains(name));
-        if team.is_none() && shown == name {
+        if team.is_none() && shown == name && custom.is_none() {
             return display_name(uuid, name);
         }
-        let mut c = match team {
-            Some(team) => team.formatted_name_comp(&crate::scoreboard::literal(shown)),
-            None => serde_json::json!({ "text": shown }),
+        let mut c = match (team, custom) {
+            (Some(team), Some(custom)) => team.formatted_name_comp(custom),
+            (Some(team), None) => team.formatted_name_comp(&crate::scoreboard::literal(shown)),
+            // Wrapped: the click, hover and insertion go on an object.
+            (None, Some(custom)) => serde_json::json!({ "text": "", "extra": [custom] }),
+            (None, None) => serde_json::json!({ "text": shown }),
         };
         c["click_event"] =
             serde_json::json!({"action": "suggest_command", "command": format!("/tell {name} ")});
@@ -686,6 +701,9 @@ impl Hub {
             teams: Vec::new(),
             nicknames: std::collections::HashMap::new(),
             compass_targets: std::collections::HashMap::new(),
+            list_names: std::collections::HashMap::new(),
+            display_names: std::collections::HashMap::new(),
+            name_tags: std::collections::HashMap::new(),
         }
     }
 
@@ -1134,17 +1152,27 @@ impl Hub {
     /// player loses the players hidden from it (ClientboundPlayerInfoRemove)
     /// and gets back those it sees again (an ADD_PLAYER entry). A change
     /// checks the client's entity pairs again, so the tracker follows too.
-    /// Nothing runs while nobody is hidden.
+    /// Nothing runs while nobody is hidden. A player whose entity a native
+    /// mod hid from one player (`Tracker.hidden`) leaves that player's list
+    /// too.
     fn sync_hidden(&mut self) {
-        if self.hidden.is_empty() && self.guests.iter().all(|g| g.tab_hidden.is_empty()) {
+        if self.hidden.is_empty()
+            && self
+                .guests
+                .iter()
+                .all(|g| g.tab_hidden.is_empty() && g.tracker.hidden.is_empty())
+        {
             return;
         }
         let candidates: Vec<usize> = (0..self.guests.len())
             .filter(|&j| {
-                let u = self.guests[j].uuid;
+                let (u, id) = (self.guests[j].uuid, self.guests[j].entity_id);
                 self.guests[j].placed
                     && (self.hidden.contains_key(&u)
-                        || self.guests.iter().any(|g| g.tab_hidden.contains(&u)))
+                        || self
+                            .guests
+                            .iter()
+                            .any(|g| g.tab_hidden.contains(&u) || g.tracker.hidden.contains(&id)))
             })
             .collect();
         for i in 0..self.guests.len() {
@@ -1156,7 +1184,8 @@ impl Hub {
                 if i == j {
                     continue;
                 }
-                let hide = !self.sees(viewer.permission, other.uuid);
+                let hide = !self.sees(viewer.permission, other.uuid)
+                    || viewer.tracker.hidden.contains(&other.entity_id);
                 if hide == viewer.tab_hidden.contains(&other.uuid) {
                     continue;
                 }
@@ -1190,6 +1219,8 @@ impl Hub {
 
     fn player_info(&self, uuid: u128, name: &str, mode: i32, latency: i32) -> play::PlayerInfo {
         let guest = self.guests.iter().find(|g| g.uuid == uuid);
+        // A mod's name tag is the profile name clients put over the head.
+        let name = self.name_tags.get(&uuid).map_or(name, String::as_str);
         play::PlayerInfo {
             uuid,
             name: Some(name.to_owned()),
@@ -1206,10 +1237,18 @@ impl Hub {
             game_mode: Some(mode),
             listed: Some(true),
             latency: Some(latency),
-            display_name: Some(self.nicknames.get(&uuid).map(|n| literal(n))),
+            display_name: Some(self.list_name(uuid)),
             list_order: Some(0),
             show_hat: Some(guest.is_none_or(|g| g.info.model_customisation & 0x40 != 0)),
         }
+    }
+    /// The name a player's Tab list entry shows in place of theirs
+    /// (`PlayerInfo.displayName`): a mod's list name, else their nickname.
+    fn list_name(&self, uuid: u128) -> Option<Tag> {
+        self.list_names
+            .get(&uuid)
+            .cloned()
+            .or_else(|| self.nicknames.get(&uuid).map(|n| literal(n)))
     }
     /// ClientboundPlayerInfoUpdatePacket.createPlayerInitializing: every action.
     const INFO_ACTIONS: u8 = 0xFF;
@@ -4472,10 +4511,70 @@ impl Hub {
             actions: 0x20,
             entries: vec![play::PlayerInfo {
                 uuid,
-                display_name: Some(self.nicknames.get(&uuid).map(|n| literal(n))),
+                display_name: Some(self.list_name(uuid)),
                 ..Default::default()
             }],
         }));
+    }
+
+    /// A player's Tab list name changed (None: their nickname or name
+    /// again), as component NBT: kept by UUID, sent with every entry the
+    /// player lists get of them, and now as UPDATE_DISPLAY_NAME to everyone.
+    pub fn set_list_name(&mut self, uuid: u128, name: Option<Tag>) {
+        match name {
+            Some(n) => self.list_names.insert(uuid, n),
+            None => self.list_names.remove(&uuid),
+        };
+        self.broadcast(&C::PlayerInfoUpdate(play::PlayerInfoUpdate {
+            actions: 0x20,
+            entries: vec![play::PlayerInfo {
+                uuid,
+                display_name: Some(self.list_name(uuid)),
+                ..Default::default()
+            }],
+        }));
+    }
+
+    /// A player's name tag changed (None: their name again): kept by UUID as
+    /// the profile name of their list entries. A client reads a player's
+    /// profile when it adds their entity, so each other player who has them
+    /// loses their entity and entry, gets the entry again, and is paired with
+    /// the entity again on the next tick.
+    pub fn set_name_tag(&mut self, uuid: u128, tag: Option<String>) {
+        match tag {
+            Some(t) => self.name_tags.insert(uuid, t),
+            None => self.name_tags.remove(&uuid),
+        };
+        let Some(g) = self.guests.iter().find(|g| g.placed && g.uuid == uuid) else {
+            return;
+        };
+        let entity = g.entity_id;
+        let entry = self.player_info(
+            uuid,
+            &g.name,
+            g.game_mode,
+            g.latency.load(Ordering::Relaxed),
+        );
+        let gone = C::RemoveEntities(play::RemoveEntities { ids: vec![entity] });
+        let removed = C::PlayerInfoRemove(play::PlayerInfoRemove { uuids: vec![uuid] });
+        let added = C::PlayerInfoUpdate(play::PlayerInfoUpdate {
+            actions: Self::INFO_ACTIONS,
+            entries: vec![entry],
+        });
+        for o in self
+            .guests
+            .iter_mut()
+            .filter(|o| (o.placed || o.held) && o.uuid != uuid)
+        {
+            if o.tracker.forget(entity) {
+                o.send(&gone);
+            }
+            if !o.tab_hidden.contains(&uuid) {
+                o.send(&removed);
+                o.send(&added);
+            }
+            o.moved = true;
+        }
     }
 
     /// Set a guest's flying speed and tell it (`Abilities.setFlyingSpeed`, then
