@@ -2260,7 +2260,9 @@ pub fn tnt_power(tag: &Tag) -> f32 {
 }
 
 /// `PrimedTnt.addAdditionalSaveData`: its `fuse` and, when it is not the
-/// default, its `explosion_power`, and the encoded live block state.
+/// default, its `explosion_power`, the encoded live block state, and its
+/// `owner` (`EntityReference.store`). With no live owner, a loaded `owner`
+/// stays as the raw compound has it.
 #[allow(clippy::too_many_arguments)]
 pub fn tnt_to_nbt(
     position: Vec3,
@@ -2271,6 +2273,7 @@ pub fn tnt_to_nbt(
     block_state: Tag,
     rotation: [f32; 2],
     uuid: [i32; 4],
+    owner: Option<[i32; 4]>,
     raw: Option<&Tag>,
 ) -> Tag {
     let mut tag = Base {
@@ -2288,7 +2291,14 @@ pub fn tnt_to_nbt(
         put(&mut tag, "explosion_power", Tag::Float(power.to_bits()));
     }
     put(&mut tag, "block_state", block_state);
+    if let Some(owner) = owner {
+        put(&mut tag, "owner", Tag::IntArray(owner.to_vec()));
+    }
     tag
+}
+/// `PrimedTnt.readAdditionalSaveData`: `EntityReference.read(input, "owner")`.
+pub fn tnt_owner(tag: &Tag) -> Option<[i32; 4]> {
+    uuid_from_tag(tag.get("owner"))
 }
 /// `EvokerFangs.addAdditionalSaveData`: always save the live warmup counter.
 /// Known Owner UUIDs use `EntityReference.store` encoding; unresolved
@@ -3666,6 +3676,7 @@ mod tnt_power_tests {
             [0.0, 0.0],
             [1, 2, 3, 4],
             None,
+            None,
         );
         assert_eq!(tnt_power(&saved), 10.0);
         let plain = tnt_to_nbt(
@@ -3678,8 +3689,37 @@ mod tnt_power_tests {
             [0.0, 0.0],
             [1, 2, 3, 4],
             None,
+            None,
         );
         assert!(plain.get("explosion_power").is_none());
+    }
+
+    /// `EntityReference.store(owner, output, "owner")`: the igniter's UUID as
+    /// an int array, read back by `EntityReference.read`; an owner the save
+    /// could not name keeps the loaded one from the raw compound.
+    #[test]
+    fn the_owner_round_trips_as_a_uuid() {
+        let save = |owner, raw: Option<&Tag>| {
+            let t = string("minecraft:tnt");
+            tnt_to_nbt(
+                Vec3::ZERO,
+                Vec3::ZERO,
+                false,
+                80,
+                4.0,
+                t,
+                [0.0; 2],
+                [1; 4],
+                owner,
+                raw,
+            )
+        };
+        let saved = save(Some([5, 6, 7, 8]), None);
+        assert_eq!(saved.get("owner"), Some(&Tag::IntArray(vec![5, 6, 7, 8])));
+        assert_eq!(tnt_owner(&saved), Some([5, 6, 7, 8]));
+        assert_eq!(tnt_owner(&save(None, None)), None);
+        assert_eq!(tnt_owner(&save(None, Some(&saved))), Some([5, 6, 7, 8]));
+        assert_eq!(tnt_owner(&save(Some([9; 4]), Some(&saved))), Some([9; 4]));
     }
 }
 
@@ -4503,6 +4543,7 @@ mod tests {
             string("minecraft:tnt"),
             [90.0, 10.0],
             [1; 4],
+            None,
             None,
         );
         assert_eq!(rotation(&tnt), [90.0, 10.0]);
