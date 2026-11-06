@@ -18,7 +18,7 @@ EntityRenderDispatcher.shouldRender	skip:other		frustum culling only; Horizon cu
 EntityRenderDispatcher.extractEntity	skip:other		render-state wrapper with a crash report; Horizon has no separate extraction stage
 EntityRenderDispatcher.fillRendererDetails	skip:debug		crash report detail
 EntityRenderDispatcher.onResourceManagerReload	skip:data		renderer rebuild on resource reload; Horizon loads its assets from files
-EntityRenderer.getBlockLightLevel	port	crates/horizon-client/src/game/creatures.rs::Game::mob_geometry	burning mobs drawn at full light (game/creatures.rs::Game::mob_geometry); other entities use world light
+EntityRenderer.getBlockLightLevel	port	crates/horizon-client/src/game/creatures.rs::Game::mob_geometry	burning mobs, projectiles and dropped items drawn at full block light (game/creatures.rs::Game::mob_geometry, game/item_draw.rs::Game::dropped_item_geometry); other entities use world light
 EntityRenderer.submit	inline	crates/horizon-client/src/game.rs::Game::entity_geometry	leash ropes and name tags drawn in their own passes from there
 EntityRenderer.shouldShowName	port	crates/horizon-client/src/game/names.rs::Game::name_tags	named mob under the crosshair
 EntityRenderer.submitNameDisplay	port	crates/horizon-client/src/game/names.rs::Game::name_tag_geometry	
@@ -69,7 +69,7 @@ IllusionerRenderer.getBoundingBoxForCulling	port	crates/horizon-client/src/game/
 IllusionerRenderer.extractRenderState	port	crates/horizon-client/src/mobs/illusioner.rs::offsets	mirror-image offsets; casting flag
 IronGolemRenderer.extractRenderState	port	crates/horizon-client/src/mobs/golem.rs::client_tick	gap: player: the offered poppy is not drawn in the golem hand and cracks from damage are not drawn
 IronGolemRenderer.setupRotations	port	crates/horizon-client/src/mobs/render.rs::base_transform_at	the 6.5-degree triangle wave over a 13-block walk phase
-ItemEntityRenderer.extractRenderState	port	crates/horizon-client/src/game/item_draw.rs::Game::dropped_item_geometry	bob offset, spin and spread
+ItemEntityRenderer.extractRenderState	port	crates/horizon-client/src/game/item_draw.rs::Game::dropped_item_geometry	bob offset, spin and spread; the light is Entity.getLightProbePosition's eye (0.2125 up, on the frame's position) over getBlockLightLevel's isOnFire rule (`entities.rs::ItemEntity::light_probe`, `render_light`)
 ItemEntityRenderer.renderMultipleFromCount	port	crates/horizon-client/src/item_render.rs::cluster_poses	copies of a stack laid out by depth
 ItemFrameRenderer.submit	port	crates/horizon-client/src/game/frames.rs::Game::frame_geometry	frame model, item or map
 ItemFrameRenderer.getRenderOffset	inline	crates/horizon-client/src/game/frames.rs::Game::frame_geometry	offset in front of the wall
