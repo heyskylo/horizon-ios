@@ -724,6 +724,9 @@ pub fn tick(
             // Pufferfish.aiStep's mob contacts run even when serverAiStep is skipped.
             aquatic::sting_touching_mobs(m, w, events);
         }
+        if m.species() == Species::GlowSquid {
+            aquatic::glow_squid_dark_tick(m);
+        }
     } else {
         ai_step(m, w, level_random, events);
     }
