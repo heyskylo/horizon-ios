@@ -59,6 +59,9 @@ mod custom_type_tests;
 mod sky_depth_tests;
 
 #[cfg(test)]
+mod runtime_length_tests;
+
+#[cfg(test)]
 mod translucent_color_tests;
 
 /// The texture behind a pack sampler name.
