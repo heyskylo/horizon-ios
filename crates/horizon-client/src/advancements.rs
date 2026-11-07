@@ -638,6 +638,9 @@ pub struct ItemView {
     pub enchantments: Vec<(String, u32)>,
     pub potion: Option<String>,
     pub custom_name: bool,
+    /// Typed snapshot for supported mob equipment views. `None` leaves this
+    /// family unprojected and unsupported; an empty compound is actual absence.
+    pub custom_data: Option<horizon_world::nbt::Tag>,
 }
 /// An entity as predicates see it.
 #[derive(Clone, Debug, Default)]
@@ -849,6 +852,20 @@ pub fn item(v: &Value, it: &ItemView, w: &dyn World) -> bool {
     if let Some(d) = keyed(preds, "minecraft:damage").and_then(Value::as_object) {
         let damage = Value::Object(d.clone());
         if !range_i(&damage["damage"], i64::from(it.damage)) {
+            return false;
+        }
+    }
+    // `CustomDataPredicate.matches`: typed subset matching of a projected
+    // stack snapshot. Unprojected consumers keep their unsupported behavior.
+    if let Some(pattern) = keyed(preds, "minecraft:custom_data").and_then(Value::as_str)
+        && let Some(actual) = it.custom_data.as_ref()
+    {
+        let Ok(pattern @ horizon_world::nbt::Tag::Compound(_)) =
+            crate::command::snbt::parse_fully(pattern)
+        else {
+            return false;
+        };
+        if !crate::nbt_path::compare_nbt(&pattern, Some(actual)) {
             return false;
         }
     }
