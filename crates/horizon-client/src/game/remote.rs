@@ -9057,6 +9057,28 @@ impl Game<'_> {
             }
             return succeeded;
         }
+        // KnowledgeBookItem.use on this client: the book is used up either
+        // way. With recipes it is SUCCESS (swings, ends the click); with none
+        // it is FAIL, and the other hand gets its turn. The recipes go as
+        // their NBT on the wire, and the item's own default is an empty list,
+        // so a stack whose patch sets them has some.
+        if &*held.item == "minecraft:knowledge_book" {
+            /// `DataComponents.RECIPES`' registry id (26.3).
+            const RECIPES: i32 = 68;
+            let has_recipes = held
+                .wire_patch()
+                .is_some_and(|p| horizon_protocol::item::WirePatch::adds(&p, RECIPES))
+                || held
+                    .data()
+                    .and_then(|d| d.other("minecraft:recipes"))
+                    .is_some_and(|t| matches!(t, Tag::List(l) if !l.is_empty()));
+            self.with_hand(hand, Game::consume_held);
+            if has_recipes {
+                self.apply_use_cooldown(&held);
+                self.with_hand(hand, Game::swing_arm);
+            }
+            return has_recipes;
+        }
         // Food starts being eaten (Consumable.startConsuming). A food that
         // can't be eaten (full and not always-edible) fails the use
         // (InteractionResult.FAIL): startUseItem tries the other hand, and
@@ -11241,6 +11263,7 @@ pub(super) fn item_has_use(info: &horizon_client::items::ItemInfo) -> bool {
                 | "goat_horn"
                 | "bundle"
                 | "brush"
+                | "knowledge_book"
         )
 }
 
