@@ -116,6 +116,23 @@ are fixed by the version, so histograms from any number of reports add up:
 Bucket *i* counts frames from edge *i* (included) to edge *i* + 1; the last bucket is 1000 ms and over
 (24 buckets). 4.17, 8.33, 16.67 and 33.33 ms are 240, 120, 60 and 30 FPS.
 
+**`ab`.** Optional, present only in A/B runs (one setting switched between arms A and B). The blocks are ordinary
+`frames` entries with phase `ab.a` or `ab.b`, `repeat` being the block's position in time (`0..2*pairs-1`, order B A A B
+B A A B...), so `result` can be recomputed from the file alone (`python3 tools/bench_stats.py REPORT.json`, which exits 1
+when the stored result differs). Fields: `switch`, `a`, `b` (the setting and its two values), `pairs`, `block_s`,
+`warmup_s`, `first_block_outside_range` (block 0, measured before any switch, lies outside the later B blocks: switching
+may reset what is measured) and `result`, by `gpu_p50_ms`, `cpu_p50_ms` and `frame_p50_ms` (a metric any block lacks is
+left out). Each is `pairs`, `a` and `b` (medians of the arm's block values), `diff` (B minus A), `diff_pct` (null when `a`
+is 0), `ci95` and `confidence` (null with fewer than 6 pairs), `noise` and `verdict`.
+
+The statistic, the same in `horizon_bench::compare` and `tools/bench_stats.py`, exact and deterministic:
+
+1. A block's value is the median of its frames; pair k is blocks 2k and 2k+1, adjacent in time, so linear drift cancels.
+2. `diff` is the Hodges-Lehmann estimate: the median of the Walsh averages `(d_i + d_j) / 2`, `i <= j`, of the per-pair differences `d = b - a`.
+3. `ci95` is the exact Wilcoxon signed-rank interval, the sorted Walsh averages `W(k)` to `W(M+1-k)` for the largest `k` whose lower tail of the null distribution of T+ is at most 2.5%; `confidence` is `1 - 2 * tail` (0.9609 for 8 pairs). Below 6 pairs there is none.
+4. `verdict`: `too_few_pairs`; `within_noise` when the interval holds 0; `negligible` when `|diff| < max(0.05 ms, 2% of a)`; else `slower` (interval above 0) or `faster` (below 0). Lower milliseconds are better.
+5. `noise` is the median distance between neighbouring blocks of the same arm (blocks 1-2, 3-4...), shown next to `diff`.
+
 ## Local only
 
 `label` (a name the person running it chose) and `local` (paths of the logs the run wrote next to the
