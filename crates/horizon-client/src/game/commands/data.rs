@@ -376,6 +376,11 @@ impl Game<'_> {
                     if keep_liked_player {
                         slot.extra.tame = old.extra.tame;
                         slot.extra.owner = old.extra.owner;
+                        if let (Some(st), Some(was)) =
+                            (slot.extra.allay.as_mut(), old.extra.allay.as_ref())
+                        {
+                            st.liked_player_ttl = was.liked_player_ttl;
+                        }
                     }
                     // Entity.load mutates the existing living entity; its damage
                     // cooldown and previous-hit amount are not read from saved NBT.
