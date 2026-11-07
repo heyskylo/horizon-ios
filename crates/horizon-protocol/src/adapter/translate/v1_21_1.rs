@@ -252,7 +252,7 @@ pub(super) fn explosion(session: &Session, payload: &[u8]) -> Result<Vec<u8>> {
         // explosions have different block-specific behavior and must not erase their blocks.
         let origin = center.map(|value| value.floor() as i32);
         let mut queued = session.incoming.lock().unwrap();
-        for offset in offsets.chunks_exact(3) {
+        for offset in offsets.as_chunks::<3>().0 {
             let pos = std::array::from_fn(|axis| {
                 origin[axis].wrapping_add(i32::from(offset[axis] as i8))
             });

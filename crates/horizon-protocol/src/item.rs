@@ -1134,9 +1134,9 @@ fn write_value(kind: i32, c: &Component, w: &mut Writer) {
     let quirks = ids::quirks_written();
     let renumbered = matches!(ids::active(), Some((_, ids::Way::Down)));
     let held = match kind {
-        POT_DECORATIONS => true,
+        POT_DECORATIONS | USE_REMAINDER | SULFUR_CUBE_CONTENT => true,
         // Before 26.1 these hold ItemStacks, written by another codec.
-        USE_REMAINDER | SULFUR_CUBE_CONTENT | CONTAINER => !quirks.stacks_in_components,
+        CONTAINER => !quirks.stacks_in_components,
         _ => false,
     };
     if !renumbered || !held {
@@ -1202,7 +1202,14 @@ fn value_down(kind: i32, quirks: ids::Quirks, pinned: &[u8]) -> Result<Vec<u8>> 
                 }
             }
         }
-        _ => Template::write(&read_pinned(&mut r)?, &mut w),
+        _ => {
+            let stack = read_pinned(&mut r)?;
+            if quirks.stacks_in_components {
+                Slot::write(&Some(stack), &mut w);
+            } else {
+                Template::write(&stack, &mut w);
+            }
+        }
     }
     Ok(w.data)
 }

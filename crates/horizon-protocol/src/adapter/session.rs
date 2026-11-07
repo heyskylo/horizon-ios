@@ -191,10 +191,11 @@ impl Session {
             self.login_requires_authentication
                 .store(hello.should_authenticate, Ordering::Release);
         }
-        if self.version.at_most(ServerVersion::V1_21_1) && state == State::Play {
-            if let Some((id, body)) = translated {
-                return translate::v1_21_1::boats::finish(self, id, body).map(Some);
-            }
+        if self.version.at_most(ServerVersion::V1_21_1)
+            && state == State::Play
+            && let Some((id, body)) = translated
+        {
+            return translate::v1_21_1::boats::finish(self, id, body).map(Some);
         }
         Ok(translated)
     }

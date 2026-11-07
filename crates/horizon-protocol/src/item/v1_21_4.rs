@@ -94,7 +94,14 @@ pub(super) fn read_added_legacy(raw: i32, r: &mut Reader) -> Result<Option<(i32,
         return Ok(None);
     }
     let kind = ids::component(raw);
-    let component = match older_layout(kind, r)? {
+    // InstrumentComponent's EitherHolder wrapper starts in 1.21.5; this era sends
+    // Instrument.STREAM_CODEC directly. Earlier duration layouts are handled by v1_21_1.
+    let layout = if kind == component::INSTRUMENT {
+        Older::Pinned
+    } else {
+        older_layout(kind, r)?
+    };
+    let component = match layout {
         Older::Dropped => return Ok(None),
         Older::Rewritten(bytes) => {
             let _pinned = ids::pinned();
@@ -185,7 +192,7 @@ pub(super) fn write_component(kind: i32, value: &Component, w: &mut Writer) {
                 rewrite(kind, &mut Reader::new(bytes), false).unwrap_or_else(|_| bytes.clone());
             w.bytes(&rewritten);
         }
-        _ => value.write(kind, w),
+        _ => write_value(kind, value, w),
     }
 }
 
@@ -263,6 +270,33 @@ mod tests {
     use crate::adapter::{ServerVersion, ids::Way};
 
     #[test]
+    fn pre_1_21_5_instruments_have_no_either_holder_flag() {
+        // 1.21.3/1.21.4 DataComponents uses Instrument.STREAM_CODEC (a holder),
+        // rather than 1.21.5's InstrumentComponent wrapping EitherHolder.
+        let old = [1, 1, 2, 0, 50, 3, 3, 17];
+        for version in [ServerVersion::V1_21_3, ServerVersion::V1_21_4] {
+            let mut r = Reader::new(&old);
+            let stack = {
+                let _up = ids::renumbering(version.ids().unwrap(), Way::Up);
+                Slot::read(&mut r).unwrap().unwrap()
+            };
+            assert_eq!(r.remaining(), 0, "{version:?}");
+            assert_eq!(
+                stack.component(component::INSTRUMENT),
+                Some(&Component::Instrument(2)),
+                "{version:?}"
+            );
+            assert_eq!(stack.damage(), 17, "{version:?}");
+            let mut down = Writer::new();
+            {
+                let _down = ids::renumbering(version.ids().unwrap(), Way::Down);
+                Slot::write(&Some(stack), &mut down);
+            }
+            assert_eq!(down.data, old, "{version:?}");
+        }
+    }
+
+    #[test]
     fn legacy_pots_and_removed_map_colors_keep_the_following_component_aligned() {
         // Raw ids from each official registry report. PotDecorations writes four item ids;
         // MapItemColor writes an INT and has no pinned counterpart. Stone is item 1 throughout.
@@ -308,6 +342,22 @@ mod tests {
                 expected,
                 "{version:?}"
             );
+
+            let mut down = Writer::new();
+            {
+                let _down = ids::renumbering(version.ids().unwrap(), Way::Down);
+                Slot::write(&stack, &mut down);
+            }
+            // Only the removed map color is lost; the old pot's item ids and damage survive.
+            let mut expected_old = Writer::new();
+            expected_old.bytes(&[1, 1, 2, 0]);
+            expected_old.varint(pot);
+            expected_old.varint(4);
+            for item in [sherd, brick, brick, brick] {
+                expected_old.varint(item);
+            }
+            expected_old.bytes(&[3, 17]);
+            assert_eq!(down.data, expected_old.data, "{version:?}");
         }
     }
 

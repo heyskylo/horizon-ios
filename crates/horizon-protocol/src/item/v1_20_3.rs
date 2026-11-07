@@ -1004,15 +1004,15 @@ fn legacy_tag(stack: &Stack) -> Result<Tag> {
             (kind, Component::Raw(bytes)) => legacy_raw(&mut tag, kind, bytes)?,
             _ => {}
         }
-        if let (71, Component::Fireworks { explosions, .. }) = (*kind, value) {
-            if !explosions.is_empty() {
-                set_sub(
-                    &mut tag,
-                    "Fireworks",
-                    "Explosions",
-                    Tag::List(explosions.iter().map(legacy_explosion).collect()),
-                );
-            }
+        if let (71, Component::Fireworks { explosions, .. }) = (*kind, value)
+            && !explosions.is_empty()
+        {
+            set_sub(
+                &mut tag,
+                "Fireworks",
+                "Explosions",
+                Tag::List(explosions.iter().map(legacy_explosion).collect()),
+            );
         }
     }
     if hide != 0 {
@@ -1297,16 +1297,14 @@ fn legacy_raw(tag: &mut Tag, kind: i32, bytes: &[u8]) -> Result<()> {
             if let Some(Tag::String(value)) = value
                 .get("components")
                 .and_then(|c| c.get("minecraft:custom_name"))
+                && let Some(datafix::json::Json::Str(name)) = datafix::json::parse_strict(&value.0)
             {
-                if let Some(datafix::json::Json::Str(name)) = datafix::json::parse_strict(&value.0)
-                {
-                    set_sub(
-                        tag,
-                        "BlockEntityTag",
-                        "Lock",
-                        Tag::String(horizon_world::nbt::JavaString(name)),
-                    );
-                }
+                set_sub(
+                    tag,
+                    "BlockEntityTag",
+                    "Lock",
+                    Tag::String(horizon_world::nbt::JavaString(name)),
+                );
             }
         }
         82 => {

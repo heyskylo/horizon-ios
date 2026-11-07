@@ -1493,16 +1493,6 @@ pub(crate) mod v1_21_6 {
 pub(crate) mod client_layout_v1_21_5 {
     use super::*;
 
-    /// Nothing: see the module doc.
-    pub fn clientbound(
-        _session: &Session,
-        _state: State,
-        _id: i32,
-        _payload: &[u8],
-    ) -> Result<Option<Vec<u8>>> {
-        Ok(None)
-    }
-
     /// The pinned `player_command` with 1.21.5's actions: 26.3's leave bed (0) to start flying with an elytra
     /// (6) are 1.21.5's 2 to 8. The jump boost is kept.
     pub fn player_command(
@@ -1774,15 +1764,6 @@ pub(crate) mod client_layout_v1_21_4 {
     pub(crate) const WOLF: i32 = 152;
     /// Minecart, chest, furnace, hopper, spawner, TNT and command block minecarts: Abstract Minecart's fields.
     pub(crate) const MINECARTS: [i32; 7] = [86, 25, 57, 66, 125, 137, 29];
-
-    /// Entity data a 1.21.4 server sent for the entity (`session` knows its kind), in 1.21.5's indexes.
-    #[cfg(test)]
-    pub fn entity_data(session: &Session, data: &mut play::SetEntityData) {
-        let Some(kind) = session.kinds.lock().unwrap().get(&data.id).copied() else {
-            return;
-        };
-        remap_entity_data(kind, data, true);
-    }
 
     /// The index an entry of `kind` has on the other side: `up` from 1.21.4 to 1.21.5, otherwise back. `None` when
     /// the other release has no such field. Minecarts are not here (see `remap_entity_data`).
@@ -2262,7 +2243,6 @@ pub(crate) mod client_layout_v1_20_6 {
         w.bytes(r.rest());
         Ok(())
     }
-
 }
 
 /// 1.21 and 1.21.1 (protocol 767) to 1.21.2 and 1.21.3 (768). Packets not named here are laid out alike.
@@ -2720,14 +2700,30 @@ mod tests {
             }
             let reverse = super::super::client_session::ClientSession::new(version);
             for (state, id) in [
-                (State::Login, packet_ids::login::serverbound::LOGIN_ACKNOWLEDGED),
-                (State::Configuration, packet_ids::configuration::serverbound::FINISH_CONFIGURATION),
+                (
+                    State::Login,
+                    packet_ids::login::serverbound::LOGIN_ACKNOWLEDGED,
+                ),
+                (
+                    State::Configuration,
+                    packet_ids::configuration::serverbound::FINISH_CONFIGURATION,
+                ),
             ] {
-                reverse.serverbound(version.serverbound_id(state, id).unwrap(), Vec::new()).unwrap();
+                reverse
+                    .serverbound(version.serverbound_id(state, id).unwrap(), Vec::new())
+                    .unwrap();
             }
             assert_eq!(reverse.reading(), State::Play);
-            assert_eq!(reverse.serverbound(swing, vec![0]).unwrap(), Some((punch, vec![])), "{version:?}");
-            assert_eq!(reverse.serverbound(swing, vec![1]).unwrap(), None, "{version:?}");
+            assert_eq!(
+                reverse.serverbound(swing, vec![0]).unwrap(),
+                Some((punch, vec![])),
+                "{version:?}"
+            );
+            assert_eq!(
+                reverse.serverbound(swing, vec![1]).unwrap(),
+                None,
+                "{version:?}"
+            );
         }
     }
 
