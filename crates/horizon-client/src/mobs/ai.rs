@@ -1238,9 +1238,11 @@ fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) -> bool {
             m.damage(1.0, Damage::of(DamageKind::InWall));
         }
         // Air supply and drowning (WaterAnimal.handleAirSupply for aquatic mobs).
+        // Nautilus.baseTick: NoAI skips only the custom handler; the
+        // superclass Breath/drown path must still process its air.
         if m.species() == Species::Axolotl {
             axolotl_air_supply(m, w);
-        } else if m.kind.flags.needs_water {
+        } else if m.kind.flags.needs_water && !(m.no_ai && m.species() == Species::Nautilus) {
             if !m.fluids.in_water {
                 m.air -= 1;
                 if m.air == -20 {
@@ -5487,6 +5489,80 @@ mod dolphin_noai_air_tests {
     #[test]
     fn normal_dolphins_keep_their_underwater_countdown() {
         check(true, false, 4800, [4799, 4798]);
+    }
+}
+
+#[cfg(test)]
+mod nautilus_noai_air_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn check(water: bool, no_ai: bool, initial: i32, expected: [i32; 2]) {
+        let build = |world: &mut crate::world::World,
+                     registry: &horizon_world::registry::BlockRegistry| {
+            world
+                .chunks
+                .insert((0, 0), Arc::new(crate::chunk::Chunk::empty(0, 0)));
+            if water {
+                let state = registry.default_state("minecraft:water").unwrap();
+                for x in 0..=4 {
+                    for z in 0..=4 {
+                        for y in 0..=8 {
+                            world.set(x, y, z, state).unwrap();
+                        }
+                    }
+                }
+            }
+        };
+        let ran = crate::mobs::world::with_built_test_world(&[], build, |w, types| {
+            let kind = Arc::new(types.types["minecraft:nautilus"].clone());
+            assert!(kind.flags.needs_water && kind.flags.breathes_water);
+            let mut mob = Mob::new(1, kind, Vec3::new(2.5, 3.0, 2.5), 0.0);
+            mob.no_ai = no_ai;
+            mob.no_gravity = true;
+            mob.persistent = true;
+            mob.attrs.speed = 0.0;
+            mob.health = 10.0;
+            mob.air = initial;
+            let mut random = LegacyRandom::new(0);
+            let mut events = Vec::new();
+            for (index, expected) in expected.into_iter().enumerate() {
+                assert!(tick(&mut mob, w, &mut random, &mut events));
+                assert_eq!(mob.age, (index + 1) as u32);
+                assert_eq!(mob.fluids.eye_in_water, water);
+                assert_eq!(mob.health, 10.0);
+                assert_eq!(mob.no_ai, no_ai);
+                assert_eq!(
+                    mob.air,
+                    expected,
+                    "water={water}, NoAI={no_ai}, initial={initial}, tick={}",
+                    index + 1
+                );
+            }
+        });
+        if !ran {
+            eprintln!("Prepared mob data unavailable; Nautilus full-tick coverage did not run");
+        }
+    }
+
+    /// `Nautilus.baseTick`: NoAI skips only handleAirSupply; super.baseTick
+    /// still refills a breathing mob by four, capped at300.
+    #[test]
+    fn noai_nautilus_keeps_superclass_refill_in_both_media() {
+        for water in [false, true] {
+            check(water, true, 300, [300, 300]);
+            check(water, true, 100, [104, 108]);
+        }
+    }
+
+    /// With AI, handleAirSupply still uses the pre-super air on land and
+    /// writes300 in water. The NoAI exception must not alter that policy.
+    #[test]
+    fn normal_nautilus_keeps_its_custom_handler() {
+        check(false, false, 300, [299, 298]);
+        check(false, false, 100, [99, 98]);
+        check(true, false, 300, [300, 300]);
+        check(true, false, 100, [300, 300]);
     }
 }
 
