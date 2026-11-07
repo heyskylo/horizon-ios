@@ -230,7 +230,7 @@ def main():
                    if name == 'advancement world loot rewards' else ops) for name, ops in groups]
     # These overlays replace built-in recipes: run each in its own world, never
     # beside the generic corpus's fixed vanilla recipe-count controls.
-    isolated_recipes = corpus_module.ISOLATED_RECIPES
+    isolated_recipes = corpus_module.ISOLATED_RECIPES | corpus_module.ISOLATED_MAP_CRAFTING
     if not args.only:
         groups = [(name, ops) for name, ops in groups if name not in isolated_recipes]
     if args.loaded_fixture:
@@ -398,7 +398,7 @@ def main():
             sys.exit('Java direct underwater reference prerequisite failed')
     if args.reference_only:
         reference = [json.loads(line) for line in (build / 'vanilla.jsonl').read_text().splitlines()]
-        recorded = [op for op in script if op['op'] in ('player_state', 'player_loop', 'map_state', 'frame_map_state', 'mob_anger', 'raid_state', 'menu_state', 'merchant_state', 'merchant_saved_stats') or
+        recorded = [op for op in script if op['op'] in ('player_state', 'player_loop', 'map_state', 'menu_state', 'craft_menu_state', 'frame_map_state', 'mob_anger', 'raid_state', 'map_files', 'merchant_state', 'merchant_saved_stats') or
                     (op['op'] == 'cmd' and op.get('record', True)) or
                     (op['op'] == 'tick' and op.get('record'))]
         if len(recorded) != len(reference):
@@ -473,7 +473,7 @@ def main():
     rust = [json.loads(l) for l in (build / 'rust.jsonl').open(encoding='utf-8')]
     if len(vanilla) != len(rust):
         sys.exit(f'record count differs: vanilla {len(vanilla)} rust {len(rust)}')
-    recorded_ops = [op for op in script if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'chunk_ready', 'server_distances', 'map_state', 'frame_map_state', 'light', 'player_state', 'player_loop', 'mob_anger', 'raid_state', 'menu_state', 'merchant_state', 'merchant_saved_stats') or
+    recorded_ops = [op for op in script if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'chunk_ready', 'server_distances', 'map_state', 'frame_map_state', 'craft_menu_state', 'map_files', 'light', 'player_state', 'player_loop', 'mob_anger', 'raid_state', 'menu_state', 'merchant_state', 'merchant_saved_stats') or
                     (op['op'] == 'cmd' and op.get('record', True)) or
                     (op['op'] == 'tick' and op.get('record'))]
     if len(recorded_ops) != len(vanilla):
@@ -501,7 +501,7 @@ def main():
     commands_by_group = []
     index = 0
     for name, lines in groups:
-        n = sum(1 for op in lines if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'chunk_ready', 'server_distances', 'map_state', 'frame_map_state', 'light', 'player_state', 'player_loop', 'mob_anger', 'raid_state', 'menu_state', 'merchant_state', 'merchant_saved_stats') or (op['op'] == 'cmd' and op.get('record', True)) or (op['op'] == 'tick' and op.get('record')))
+        n = sum(1 for op in lines if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'chunk_ready', 'server_distances', 'map_state', 'frame_map_state', 'craft_menu_state', 'map_files', 'light', 'player_state', 'player_loop', 'mob_anger', 'raid_state', 'menu_state', 'merchant_state', 'merchant_saved_stats') or (op['op'] == 'cmd' and op.get('record', True)) or (op['op'] == 'tick' and op.get('record')))
         commands_by_group.append((name, index, index + n))
         index += n
     mismatches = []
