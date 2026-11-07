@@ -1250,5 +1250,6 @@
   "Use a different Microsoft account": "Anderes Microsoft-Konto verwenden",
   "Buy": "Kaufen",
   "Gift": "Verschenken",
+  "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon führt die Funktionen, Funktions-Tags, Prädikate, Gegenstandsmodifikatoren, Rezepte, Beutetabellen, Fortschritte, Dorfbewohner-Handel, Schadensarten, die meisten Tags und den Großteil der Weltgenerierung (Biome, Features, Strukturen, Dimensionen) eines Datenpakets aus. Andere Dateien, etwa Welt-Voreinstellungen, werden noch nicht gelesen.",
   "Looks": "Looks"
 }

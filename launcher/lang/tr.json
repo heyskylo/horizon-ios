@@ -1250,5 +1250,6 @@
   "Use a different Microsoft account": "Farklı bir Microsoft hesabı kullan",
   "Buy": "Satın al",
   "Gift": "Hediye et",
+  "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon bir veri paketinin işlevlerini, işlev etiketlerini, koşullarını, eşya değiştiricilerini, tariflerini, ganimet tablolarını, ilerlemelerini, köylü ticaretlerini, hasar türlerini, çoğu etiketini ve dünya oluşturmanın çoğunu (biyomlar, özellikler, yapılar, boyutlar) çalıştırır. Dünya ön ayarları gibi diğer dosyalar henüz okunmuyor.",
   "Looks": "Görünümler"
 }
