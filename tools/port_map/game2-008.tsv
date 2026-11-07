@@ -8,8 +8,11 @@ MerchantContainer.isEmpty	skip:java		container emptiness helper; Horizon checks 
 MerchantContainer.setItem	inline	crates/horizon-client/src/menu.rs::Menu::slot_changed	the store is the generic put; the payment update is merchant_update, run from slot_changed for every merchant slot
 MerchantMenu.quickMoveStack	inline	crates/horizon-client/src/menu.rs::Menu::quick_move	the Kind::Merchant arm; a result shift-click also queues the trade sound event
 MerchantMenu.playTradeSound	port	crates/horizon-client/src/game/trading.rs::Game::merchant_apply	the TradeSound event plays entity.villager.yes or the wandering trader yes
-MerchantResultSlot.remove	port	crates/horizon-client/src/menu.rs::Menu::remove	gap: minor: the removeCount tally that feeds the crafted statistic is not kept
+MerchantResultSlot.remove	port	crates/horizon-client/src/menu.rs::Menu::remove	tallies min(requested amount, result count) for checkTakeAchievements
 MerchantResultSlot.mayPickup	port	crates/horizon-client/src/menu.rs::Menu::may_pickup	the Role::MerchantResult arm
+MerchantResultSlot.onQuickCraft	inline	crates/horizon-client/src/menu.rs::Menu::quick_move	the Merchant result arm tallies the moved amount and checks achievements on the original copy
+MerchantResultSlot.checkTakeAchievements	port	crates/horizon-client/src/menu.rs::Menu::merchant_check_take_achievements	queues the real item/count without a recipe id, then resets removeCount; Game awards through the acting player before merchant notification
+MerchantResultSlot.onTake	inline	crates/horizon-client/src/menu.rs::Menu::on_take	the Merchant result arm checks achievements before merchant_take; quick move passes the actual remaining stack
 ResultSlot.remove	port	crates/horizon-client/src/menu.rs::Menu::remove	gap: minor: the removeCount tally for the crafted statistic is not kept
 ResultSlot.safeClone	skip:other		onCraftedBy only matters for MAP_POST_PROCESSING, which only cartography results carry; map_crafted covers that take
 ResultSlot.checkTakeAchievements	port	crates/horizon-client/src/game.rs::Game::award_crafted	gap: minor: the recipe is awarded; the crafted statistic count from onCraftedBy is not added on this take
@@ -110,7 +113,7 @@ ItemStack.matchesIgnoringComponents	port	crates/horizon-items/src/item_data.rs::
 ItemStack.lenientOptionalFieldOf	skip:java		codec helper
 ItemStack.hashItemAndComponents	skip:java		hash for collections
 ItemStack.hashStackList	skip:java		hash for collections
-ItemStack.onCraftedBy	inline	crates/horizon-client/src/game.rs::Game::click_inventory	gap: minor: the crafted statistic is added only on the inventory grid craft path here
+ItemStack.onCraftedBy	inline	crates/horizon-client/src/game.rs::Game::click_inventory	gap: minor: other station result takes still omit crafted counts; the inventory grid and merchant result callbacks award through Game::award_stat
 ItemStack.set	skip:other		component write; Horizon stores component data in typed fields
 ItemStack.update	skip:java		functional update helper
 ItemStack.applyComponentsAndValidate	missing		a validated component patch has no single counterpart: `/item modify` goes through its own path

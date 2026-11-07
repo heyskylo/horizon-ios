@@ -394,6 +394,9 @@ of the frame ([#8750](https://github.com/horizon-rust/horizon/issues/8750)).
   40`): the server sends its time once a second, which can leave the client a tick ahead until the
   next, and the last tick still eases for a client tick. `/tick unfreeze` plays on as without the
   switch.
+- While frozen, rain and thunder sit at their levels (1 while it rains or thunders, else 0), and
+  the rain fog too, as a shader pack's smoothed values do: `/weather rain` shows full rain without
+  a step. A step or `/tick unfreeze` fades them as without the switch.
 - The server's own randoms and entity ids are its own: a summoned mob's facing and variant, and
   mob AI during a step, can differ when other server work drew on them first, and ids follow the
   order the server loads and creates entities in, which loading changes from run to run. What an
@@ -406,10 +409,21 @@ of the frame ([#8750](https://github.com/horizon-rust/horizon/issues/8750)).
   otherwise), and after a turn or a move wait a few seconds (`wait 60`) before a capture, or the
   hand, which eases toward the view each tick, is a hair off. What the player does goes on too:
   using an item, riding, running out of air.
-- Not covered: temporal AA and frame generation (they build on earlier frames: turn them off), a
-  shader pack's own buffers kept from frame to frame, custom entity model animations, native mods,
-  and what eases on the wall clock for a moment (toasts, the boss bar's fill, chunks fading in,
-  the spyglass): wait for them to settle. Frame times are real ones: not for timing.
+- A shader pack's own buffers, kept from frame to frame, take `horizon-ctl screenshot-sequence
+  FRAMES STEP_MS PATH`: the pack starts over (its buffers, images, shadow maps, smoothed values and
+  custom uniforms, or a Horizon pack's `history` and eased values) and draws FRAMES frames on a set
+  clock, frame n at n frames and (n - 1) × STEP_MS milliseconds (0 since the frame before on frame
+  1, STEP_MS after; a decimal, `16.666667` for 60 fps). The last is written as `screenshot PATH`
+  writes it (with its `-hdr.png` under HDR output), and the reply, once it is, names the pack and
+  the last frame's clock. Without a pack it draws the frames all the same. It needs the world
+  frozen, far terrain (LOD Distance), TAA, frame generation and the shadow cache off and chunk fade
+  0, and says so otherwise. While it runs, commands that would change the scene are refused, a
+  change to the camera, the world, the settings, the pack or the window's size ends it with an
+  error, `screenshot-sequence cancel` stops it and `quit` quits.
+- Not covered: temporal AA and frame generation (they build on earlier frames: turn them off),
+  custom entity model animations, native mods, and what eases on the wall clock for a moment
+  (toasts, the boss bar's fill, chunks fading in, the spyglass): wait for them to settle. Frame
+  times are real ones: not for timing.
 
 ## Tests
 

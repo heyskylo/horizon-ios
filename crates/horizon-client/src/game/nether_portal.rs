@@ -444,9 +444,9 @@ impl Game<'_> {
         }
         out
     }
-    /// The exit portal of `plan` in the loaded dimension: the closest one
-    /// within reach, else one built by `PortalForcer.createPortal`.
-    pub(super) fn nether_exit_portal(&mut self, plan: &Plan) -> Option<FoundRectangle> {
+    /// `PortalForcer.findClosestPortalPosition` and the rectangle around it,
+    /// for `plan` in the loaded dimension; builds nothing.
+    pub(super) fn find_exit_portal(&mut self, plan: &Plan) -> Option<(BlockPos, FoundRectangle)> {
         let to_nether = plan.dim == Dim::Nether;
         let radius = if to_nether { 16 } else { 128 };
         let border = self.border_bounds();
@@ -459,21 +459,29 @@ impl Game<'_> {
             &border,
             min_section,
             max_section,
+        )?;
+        let state = self.world.block(found.x, found.y, found.z);
+        let x_axis = self.res.behaviours().portal_axis(state).unwrap_or(true);
+        let rectangle = largest_rectangle_around(
+            found,
+            if x_axis { Axis::X } else { Axis::Z },
+            21,
+            Axis::Y,
+            21,
+            |p| self.world.block(p.x, p.y, p.z) == state,
         );
-        if let Some(found) = found {
+        Some((found, rectangle))
+    }
+    /// The exit portal of `plan` in the loaded dimension: the closest one
+    /// within reach, else one built by `PortalForcer.createPortal`.
+    pub(super) fn nether_exit_portal(&mut self, plan: &Plan) -> Option<FoundRectangle> {
+        let to_nether = plan.dim == Dim::Nether;
+        let border = self.border_bounds();
+        if let Some((found, rectangle)) = self.find_exit_portal(plan) {
             // NetherPortalBlock.getExitPortal: the ticket goes on the chunk
             // of the portal found.
             self.place_portal_ticket((found.x >> 4, found.z >> 4));
-            let state = self.world.block(found.x, found.y, found.z);
-            let x_axis = self.res.behaviours().portal_axis(state).unwrap_or(true);
-            return Some(largest_rectangle_around(
-                found,
-                if x_axis { Axis::X } else { Axis::Z },
-                21,
-                Axis::Y,
-                21,
-                |p| self.world.block(p.x, p.y, p.z) == state,
-            ));
+            return Some(rectangle);
         }
         let logical = if to_nether { 128 } else { 384 };
         let (approximate, x_axis) = (plan.approximate, plan.entry_x_axis);

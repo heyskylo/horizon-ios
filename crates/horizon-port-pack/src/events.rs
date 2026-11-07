@@ -42,6 +42,16 @@ const RENAMED: [(&str, &str); 5] = [
 /// hooked when every one of them is.
 const PARENTS: [(&str, &[&str]); 1] = [("ModConfigEvent", &["Loading", "Reloading", "Unloading"])];
 
+/// Events NeoForge dropped after 1.21.1 because vanilla made what they built
+/// into data, with the registries a port writes instead (from a native mod's
+/// data, or `data_pack_files`). NeoForge's 26.1 primer: "Villager trades has
+/// now become a data-generated registry from its original map-based setup",
+/// in `trade_set` and `villager_trade`; 26.3's javadoc has neither event.
+const DATA: [(&str, &[&str]); 2] = [
+    ("VillagerTradesEvent", &["trade_set", "villager_trade"]),
+    ("WandererTradesEvent", &["trade_set", "villager_trade"]),
+];
+
 /// The catalog's NeoForge names: the hooks that are each name's
 /// counterpart, and the hooks whose `none (…)` label mentions it.
 #[derive(Debug, Default)]
@@ -61,6 +71,9 @@ pub enum Status {
     Phase(Vec<String>),
     /// The hooks whose label says why they aren't its counterpart.
     Noted(Vec<String>),
+    /// No hook is needed: the registries (`DATA`) that took the event's
+    /// place.
+    Data(Vec<String>),
     Missing,
 }
 
@@ -102,7 +115,13 @@ impl Catalog {
                 }
             }
         }
-        (Status::Missing, None)
+        match DATA.iter().find(|(event, _)| *event == name) {
+            Some((_, registries)) => (
+                Status::Data(registries.iter().map(|r| (*r).to_owned()).collect()),
+                None,
+            ),
+            None => (Status::Missing, None),
+        }
     }
 
     fn lookup(&self, name: &str) -> Status {
@@ -286,7 +305,7 @@ pub fn table(mods: &BTreeMap<String, BTreeSet<String>>, catalog: &Catalog) -> St
         let hooks: Vec<String> = hooks.iter().map(|h| format!("`{h}`")).collect();
         hooks.join(", ")
     };
-    let mut counts = [0usize; 4];
+    let mut counts = [0usize; 5];
     let mut body = String::new();
     for (name, ids) in &rows {
         let (status, under) = catalog.status(name);
@@ -294,7 +313,8 @@ pub fn table(mods: &BTreeMap<String, BTreeSet<String>>, catalog: &Catalog) -> St
             Status::Hooked(h) => (0, code(h)),
             Status::Phase(h) => (1, format!("other phase: {}", code(h))),
             Status::Noted(h) => (2, format!("not quite: {}", code(h))),
-            Status::Missing => (3, "none".to_owned()),
+            Status::Data(r) => (3, format!("data: {}", code(r))),
+            Status::Missing => (4, "none".to_owned()),
         };
         counts[i] += 1;
         let under = under.map(|u| format!(" (as `{u}`)")).unwrap_or_default();
@@ -308,7 +328,7 @@ pub fn table(mods: &BTreeMap<String, BTreeSet<String>>, catalog: &Catalog) -> St
     let listening = mods.values().filter(|names| !names.is_empty()).count();
     format!(
         "{} mods; {listening} listen to NeoForge events or use its capabilities.\n\
-         {} names: {} with a hook, {} with another phase's, {} noted as not quite one, {} with none.\n\n\
+         {} names: {} with a hook, {} with another phase's, {} noted as not quite one, {} made data, {} with none.\n\n\
          | Mods | NeoForge | Hooks | Used by |\n|---:|---|---|---|\n{body}",
         mods.len(),
         rows.len(),
@@ -316,5 +336,6 @@ pub fn table(mods: &BTreeMap<String, BTreeSet<String>>, catalog: &Catalog) -> St
         counts[1],
         counts[2],
         counts[3],
+        counts[4],
     )
 }

@@ -1,0 +1,5 @@
+{
+  "hooks": [],
+  "rust_summary": "a permission node on a mod's command (`NativeCommand::permission`), which the command tree and the server's dispatch ask `native_has_permission` for.",
+  "doc_summary": "`NativeCommand::permission(node)`: a mod's command that a permission node decides, not the level alone; the server asks `native_has_permission(player, node, level)` before it puts the command in a player's tree and before it runs it, so a permissions mod grants or refuses it (Bukkit's `plugin.yml` `permission:`). Bundles need \"hooks\": @API:command_permission@."
+}
