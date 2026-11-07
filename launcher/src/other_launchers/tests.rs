@@ -70,6 +70,19 @@ fn prism_and_multimc_instances() {
         ]
     );
     assert_eq!(in_folder(&fabric, None)[0].name, "My Fabric");
+    // The launcher's folder and its instances folder find the same instances, never taken for
+    // the CurseForge app's Instances (one name where case is ignored).
+    let games = |found: &[Found]| -> Vec<(String, PathBuf)> {
+        found
+            .iter()
+            .map(|f| (f.name.clone(), f.game.clone()))
+            .collect()
+    };
+    assert_eq!(games(&in_folder(&root, None)), games(&found));
+    assert_eq!(
+        games(&in_folder(&root.join("instances"), None)),
+        games(&found)
+    );
     // The loader comes along at the same version.
     assert_eq!(
         loader(&found[0]),

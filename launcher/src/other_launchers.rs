@@ -315,14 +315,14 @@ fn curseforge_instances_in(dir: &Path) -> Vec<Found> {
         .collect()
 }
 
-/// `dir` is a folder of CurseForge instances: one of its folders holds the app's
-/// `minecraftinstance.json`.
-fn holds_curseforge_instances(dir: &Path) -> bool {
+/// One of the folders in `dir` holds `file`: `minecraftinstance.json` in a folder of CurseForge
+/// instances, `mmc-pack.json` in a Prism or MultiMC one.
+fn child_holds(dir: &Path, file: &str) -> bool {
     fs::read_dir(dir)
         .into_iter()
         .flatten()
         .flatten()
-        .any(|e| e.path().join("minecraftinstance.json").is_file())
+        .any(|e| e.path().join(file).is_file())
 }
 
 /// `found` with the Minecraft version and loader its CurseForge instance records
@@ -439,10 +439,12 @@ pub fn in_folder(dir: &Path, launcher: Option<&'static str>) -> Vec<Found> {
     if !atlauncher.is_empty() {
         return atlauncher;
     }
-    if dir.join("Instances").is_dir() {
+    // Where names ignore case (Windows, macOS), a Prism root's `instances` is `Instances` too.
+    let instances = dir.join("Instances");
+    if instances.is_dir() && !child_holds(&instances, "mmc-pack.json") {
         return curseforge_instances(dir);
     }
-    if holds_curseforge_instances(dir) {
+    if child_holds(dir, "minecraftinstance.json") {
         return curseforge_instances_in(dir);
     }
     if dir.join("profiles").is_dir() {
