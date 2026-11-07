@@ -3407,7 +3407,9 @@ impl BeamPart {
                 (at(b, self.end), [s.u0, v1]),
             ] {
                 out.push(Vertex {
-                    normal: [0; 4],
+                    // The beacon beam render types keep the default back-face culling: seen
+                    // from inside a beam, its walls must not show.
+                    normal: CULL_BACK,
                     pos: p.to_array(),
                     uv,
                     layer: 6,
@@ -4277,6 +4279,23 @@ mod tests {
     /// submits the unit cube's two Y faces. Both are wound outward, so of each
     /// face only the side looking at the camera draws: the portal shows one
     /// surface from above and one from below, never both at once.
+    /// `RenderPipelines.BEACON_BEAM_OPAQUE` / `_TRANSLUCENT` keep the default
+    /// back-face culling, so a camera inside a beam sees no wall of it.
+    #[test]
+    fn beacon_beam_faces_cull_their_backs() {
+        let rect = Rect {
+            u0: 0.0,
+            v0: 0.0,
+            u1: 1.0,
+            v1: 1.0,
+            w: 16,
+            h: 16,
+        };
+        let mut out = Vec::new();
+        beacon_beam(Vec3::ZERO, &[(0xFFFFFF, 4)], 0.0, 1.0, rect, &mut out);
+        assert_eq!(out.len(), 32, "solid and glow, four quads each");
+        assert!(out.iter().all(|v| v.normal == CULL_BACK));
+    }
     #[test]
     fn the_end_portal_cube_is_one_sided() {
         let mut out = Vec::new();
