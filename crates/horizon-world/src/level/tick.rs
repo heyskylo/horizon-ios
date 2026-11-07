@@ -483,7 +483,9 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         if data.implements(super::classes::Interface::WeatheringCopper) {
             let upper_door = data.is(Class::Door) && b.table.text(state, p.half) == "upper";
             let right_chest = data.is(Class::Chest) && b.table.text(state, p.kind) == "right";
-            if !upper_door && !right_chest {
+            // WeatheringCopperChestBlock.randomTick: nothing is drawn while it is open.
+            let viewed = data.is(Class::Chest) && self.level.container_has_viewers(pos);
+            if !upper_door && !right_chest && !viewed {
                 self.copper_change_over_time(state, pos);
             }
         }

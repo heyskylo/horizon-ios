@@ -643,6 +643,11 @@ pub trait LevelAccess {
     fn recheck_container_openers(&mut self, _pos: BlockPos) -> Option<(i32, i32)> {
         None
     }
+    /// `ContainerOpenersCounter.getEntitiesWithContainerOpen` is not empty for
+    /// the container at `pos`.
+    fn container_has_viewers(&self, _pos: BlockPos) -> bool {
+        false
+    }
     /// `CommandBlockEntity.setPowered` for the command block entity at `pos`:
     /// stores `powered` and returns the previous flag and `isAutomatic`, or
     /// None when there is no command block entity.
