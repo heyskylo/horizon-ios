@@ -1453,6 +1453,9 @@ pub struct Renderer {
     /// The block sprites as one atlas, while a shader pack is loaded.
     pack_atlas: Option<pack_atlas::PackAtlas>,
     pack_material_atlases: Option<[pack_atlas::PackAtlas; 2]>,
+    /// The shared atlas's LabPBR normal and specular paged maps (`set_shared_material_maps`),
+    /// which shader packs read for entities, items and the hand.
+    shared_material_maps: [Option<wgpu::Texture>; 2],
     /// The pack's terrain program reads flat draws' vertices (`pack_terrain_inputs`).
     pack_terrain_flat: bool,
     /// OptiFine/Iris separate ambient occlusion: pass vertex alpha to hz_Color.a.
@@ -4918,6 +4921,7 @@ impl Renderer {
             pack_weather: None,
             pack_atlas: None,
             pack_material_atlases: None,
+            shared_material_maps: [None, None],
             pack_terrain_flat: false,
             separate_ao: false,
             pack_lava_layers: Vec::new(),
@@ -5008,6 +5012,47 @@ impl Renderer {
             }
         }
         pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+    }
+    /// The shared atlas's LabPBR maps (`HudAtlas::material_maps`), uploaded for the shader packs
+    /// loaded from now on; a map too large for this GPU is left out.
+    pub fn set_shared_material_maps(&mut self, maps: &[Option<crate::paged_maps::PagedMap>; 2]) {
+        let limit = self.device.limits().max_texture_dimension_2d;
+        let sizes: Vec<String> = (maps.iter().zip(["normals", "specular"]))
+            .filter_map(|(m, name)| {
+                m.as_ref()
+                    .map(|m| format!("{name} {}x{}", m.width, m.height))
+            })
+            .collect();
+        if !sizes.is_empty() {
+            let bytes: usize = maps.iter().flatten().map(|m| m.pixels.len()).sum();
+            log::info!(
+                "shared atlas LabPBR maps: {} ({:.1} MiB)",
+                sizes.join(", "),
+                bytes as f64 / f64::from(1 << 20)
+            );
+        }
+        self.shared_material_maps = maps.each_ref().map(|map| {
+            let map = map.as_ref().filter(|m| m.width.max(m.height) <= limit)?;
+            Some(self.device.create_texture_with_data(
+                &self.queue,
+                &wgpu::TextureDescriptor {
+                    label: Some("Shared atlas material map"),
+                    size: wgpu::Extent3d {
+                        width: map.width,
+                        height: map.height,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                },
+                wgpu::util::TextureDataOrder::LayerMajor,
+                &map.pixels,
+            ))
+        });
     }
     /// The pack's OptiFine custom sky layer textures (`crate::custom_sky::CustomSky::load`).
     pub fn set_custom_sky(&mut self, pack: &crate::custom_sky::CustomSky) {
@@ -6682,7 +6727,7 @@ impl Renderer {
         dimension: i32,
         post: std::result::Result<Option<pack_post::PackPost>, pack_post::Refused>,
     ) -> std::result::Result<Option<(Vec<String>, Vec<String>)>, pack_post::Refused> {
-        let post = match post {
+        let mut post = match post {
             Ok(post) => post,
             Err(e) => {
                 self.pack_post = Some((dimension, None));
@@ -6691,6 +6736,12 @@ impl Renderer {
                 return Err(e);
             }
         };
+        if let Some(post) = post.as_mut() {
+            post.set_paged_maps(
+                (self.shared_material_maps.each_ref())
+                    .map(|t| t.as_ref().map(|t| t.create_view(&Default::default()))),
+            );
+        }
         let report = post.as_ref().map(|p| {
             let programs = p.programs().into_iter().map(str::to_owned).collect();
             (programs, p.notes.clone())
