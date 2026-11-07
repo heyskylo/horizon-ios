@@ -80,7 +80,7 @@ def install_datapack_fixtures(world, predicates, functions, jar, advancements=No
         target.write_text(json.dumps(recipe), encoding='utf-8')
 
 
-def main():
+def main(*, reference_admission=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--prepare', action='store_true')
     parser.add_argument('--raid-village-fixture', action='store_true', help='match the existing development command trees in the isolated Java/native fixture processes')
@@ -141,9 +141,12 @@ def main():
     parser.add_argument('--map-decoration-patch-fixture', action='store_true')
     parser.add_argument('--map-decoration-removal-diagnostic', action='store_true')
     parser.add_argument("--selector-bounds-fixture", action="store_true")
+    parser.add_argument("--macro-source-type-fixture", action="store_true")
     parser.add_argument("--stand-fall-fixture", action="store_true")
     parser.add_argument('--orb-uuid-fixture', action='store_true')
     parser.add_argument("--mob-pickup-save-fixture", action="store_true")
+    parser.add_argument('--mob-name-presentation-diagnostic', action='store_true',
+                        help='retain all 312 mob-name records, including ten separate name/saved-text presentation observations')
     args = parser.parse_args()
     build = args.work_dir.resolve() if args.work_dir else lab.LOCAL / 'command-exec-parity'
     build.mkdir(parents=True, exist_ok=True)
@@ -169,6 +172,10 @@ def main():
             sys.exit(f'{name} failed ({result.returncode}):\n{tail}')
 
     groups = corpus_module.groups()
+    if args.macro_source_type_fixture or args.only == "macro source type error":
+        groups = [(name, ops) for name, ops in groups if name == "macro source type error"]
+    elif not args.only:
+        groups = [(name, ops) for name, ops in groups if name not in corpus_module.ISOLATED_MACRO_TYPE]
     if args.stand_fall_fixture or args.only == "stand saved fall distance":
         groups = [(name, ops) for name, ops in groups if name == "stand saved fall distance"]
     elif not args.only:
@@ -310,6 +317,11 @@ def main():
     if args.selector_bounds_fixture:
         from selector_bounds_corpus import selector_bounds
         groups = [("setup", corpus_module.group_setup()), ("selector entity bounds", selector_bounds())]
+    if args.mob_name_presentation_diagnostic:
+        from mob_name_predicate_corpus import cases as mob_name_predicates
+        groups = [('setup', corpus_module.group_setup()),
+                  ('mob custom name components', mob_name_predicates(
+                      corpus_module.cmd, corpus_module.setup, presentation_diagnostic=True))]
     script = []
     for _, lines in groups:
         script.extend(lines)
@@ -364,6 +376,11 @@ def main():
                 any(len(r.get('bits', [])) != 3 or
                     any(re.fullmatch(r'[0-9a-f]{1,16}', b) is None for b in r['bits']) for r in direct)):
             sys.exit('Java direct underwater reference prerequisite failed')
+    # Specialized harnesses qualify the fresh reference before any native build
+    # or execution. Their strict raw-record checks also apply to normal CI runs.
+    if reference_admission is not None:
+        reference_admission([json.loads(line) for line in
+                             (build / 'vanilla.jsonl').read_text(encoding='utf-8').splitlines()])
     if args.reference_only:
         reference = [json.loads(line) for line in (build / 'vanilla.jsonl').read_text().splitlines()]
         recorded = [op for op in script if op['op'] in ('player_state', 'player_loop', 'map_state', 'frame_map_state', 'mob_anger', 'raid_state', 'menu_state') or
@@ -435,8 +452,8 @@ def main():
         native = json.loads((build / 'rust-client-config.json').read_text())
         if native.get('render_setting') != 2 or native.get('simulation_setting') != 2 or not native.get('joined'):
             sys.exit(f'native settings/join prerequisite failed: {native}')
-    vanilla = [json.loads(l) for l in (build / 'vanilla.jsonl').open(encoding='utf-8')]
-    rust = [json.loads(l) for l in (build / 'rust.jsonl').open(encoding='utf-8')]
+    vanilla = [json.loads(l) for l in (build / 'vanilla.jsonl').read_text(encoding='utf-8').splitlines()]
+    rust = [json.loads(l) for l in (build / 'rust.jsonl').read_text(encoding='utf-8').splitlines()]
     if len(vanilla) != len(rust):
         sys.exit(f'record count differs: vanilla {len(vanilla)} rust {len(rust)}')
     recorded_ops = [op for op in script if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'chunk_ready', 'server_distances', 'map_state', 'frame_map_state', 'light', 'player_state', 'player_loop', 'mob_anger', 'raid_state', 'menu_state') or
