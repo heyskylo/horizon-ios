@@ -1518,7 +1518,7 @@ impl Game<'_> {
         self.feedback(message);
         Ok(targets.len() as i32)
     }
-    fn teleport_to(
+    pub(in crate::game) fn teleport_to(
         &mut self,
         t: Target,
         pos: [f64; 3],
@@ -4586,6 +4586,21 @@ mod teleport_rider_tests {
             rider2.yaw, 80.0,
             "a vehicle turned by `facing` leaves its rider"
         );
+        // Native rotation preserves a rider's mount, position and motion.
+        game.native_lifecycle
+            .begin_open(horizon_client::mod_api::NativeAuthority::IntegratedServer);
+        let rider = game.mobs.iter_mut().find(|m| m.id == 51).unwrap();
+        rider.velocity = Vec3::new(0.2, 0.3, 0.4);
+        let position = rider.position;
+        let velocity = rider.velocity;
+        let handle = game.native_entity(51).unwrap();
+        assert!(game.native_entity_set_rotation(handle, -135.0, 120.0));
+        let rider = game.mobs.iter().find(|m| m.id == 51).unwrap();
+        assert_eq!(rider.extra.mount, Some(50));
+        assert_eq!(rider.position, position);
+        assert_eq!(rider.velocity, velocity);
+        assert_eq!((rider.yaw, rider.head_pitch), (-135.0, 90.0));
+        assert!(!game.native_entity_set_rotation(handle, f32::NAN, 0.0));
     }
 }
 
