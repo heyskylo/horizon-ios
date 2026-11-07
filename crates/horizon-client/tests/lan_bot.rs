@@ -2244,7 +2244,7 @@ fn a_26_2_clients_walk_dig_swing_and_teleport_confirmations_read_as_26_3s() {
     assert_eq!(punches, 1);
 }
 
-/// A client of each older release the adapter knows (26.1 down to 1.21.5) gets past configuration and is sent chunks without being
+/// A client of each older release the adapter knows (26.1 down to 1.20.5) gets past configuration and is sent chunks without being
 /// disconnected, on a server that accepts older clients.
 #[test]
 fn older_clients_of_each_release_join_and_are_sent_chunks() {
@@ -2258,6 +2258,10 @@ fn older_clients_of_each_release_join_and_are_sent_chunks() {
         ServerVersion::V1_21_8,
         ServerVersion::V1_21_6,
         ServerVersion::V1_21_5,
+        ServerVersion::V1_21_4,
+        ServerVersion::V1_21_3,
+        ServerVersion::V1_21_1,
+        ServerVersion::V1_20_6,
     ] {
         let net = NetConfig {
             accept_older_clients: true,

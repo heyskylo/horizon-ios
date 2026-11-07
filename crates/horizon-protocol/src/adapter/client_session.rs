@@ -19,8 +19,11 @@ use std::{
     },
 };
 
+mod step_1_20_6;
+mod step_1_21_1;
 mod step_1_21_10;
 mod step_1_21_11;
+mod step_1_21_4;
 mod step_1_21_5;
 mod step_1_21_6;
 mod step_1_21_8;
@@ -220,6 +223,16 @@ impl ClientSession {
             _ => state,
         };
         self.writing.store(to_u8(next), Ordering::Release);
+        // 1.21.1 has no entity_position_sync: the teleport it stands in for is sent under teleport_entity's id.
+        let synced = if self.version.at_most(ServerVersion::V1_21_1) {
+            step_1_21_1::entity_position_sync(state, id, payload)?
+        } else {
+            None
+        };
+        let (id, payload) = match &synced {
+            Some(p) => (packet_ids::play::clientbound::TELEPORT_ENTITY, &p[..]),
+            None => (id, payload),
+        };
         // 26.2 has no swing_animation: its hands swing through animate (world.rs).
         if state == State::Play
             && id == packet_ids::play::clientbound::SWING_ANIMATION
@@ -310,6 +323,10 @@ impl ClientSession {
                 if self.version.at_most(ServerVersion::V1_21_8) {
                     step_1_21_8::entity_data(kind, d);
                 }
+                // 1.21.5's indexes go back to 1.21.4's last.
+                if self.version.at_most(ServerVersion::V1_21_4) {
+                    step_1_21_4::entity_data(kind, d);
+                }
                 return Ok(Some(strip_id(p.encode())));
             }
             _ => {}
@@ -326,6 +343,19 @@ impl ClientSession {
         mut payload: Vec<u8>,
     ) -> Result<Option<Vec<u8>>> {
         let v = self.version;
+        // 1.21.2 reworked the recipe book (recipe displays, no ids a 1.21.1 client knows): a 1.21.1 client gets no
+        // recipe book, so its update_recipes and place_ghost_recipe are not sent. Its recipe_book_add, _remove and
+        // _settings have no 1.21.1 id at all (the id tables drop them).
+        if v.at_most(ServerVersion::V1_21_1)
+            && state == State::Play
+            && matches!(
+                id,
+                packet_ids::play::clientbound::UPDATE_RECIPES
+                    | packet_ids::play::clientbound::PLACE_GHOST_RECIPE
+            )
+        {
+            return Ok(None);
+        }
         // 1.21.11 has world clocks in no registry (26.1 synced them): its client is not sent that one.
         if v.at_most(ServerVersion::V1_21_11)
             && (state, id)
@@ -365,6 +395,25 @@ impl ClientSession {
         {
             payload = next;
         }
+        // 1.21.4 is older than 1.21.5 too: after its step, the last one.
+        if v.at_most(ServerVersion::V1_21_4)
+            && let Some(next) = step_1_21_4::clientbound(state, id, &payload)?
+        {
+            payload = next;
+        }
+        // 1.21.1 is older than 1.21.2 and than 1.21.4: its packets are brought down after those, and before 1.20.6's.
+        if v.at_most(ServerVersion::V1_21_1)
+            && let Some(next) = step_1_21_1::clientbound(state, id, &payload)?
+        {
+            payload = next;
+        }
+        // 1.20.6 is the oldest release: its packets are brought down after every step above.
+        if v.at_most(ServerVersion::V1_20_6)
+            && let Some(ids) = v.ids()
+            && let Some(next) = step_1_20_6::clientbound(state, id, &payload, ids)?
+        {
+            payload = next;
+        }
         Ok(Some(payload))
     }
 
@@ -378,7 +427,30 @@ impl ClientSession {
     ) -> Result<Option<(i32, Vec<u8>)>> {
         use packet_ids::play::serverbound as sb;
         let v = self.version;
-        // 1.21.5 is the oldest step: its packets are read before 1.21.6's.
+        // 1.20.6 is the oldest release: its use_item is read first, with the client's last rotation.
+        if v.at_most(ServerVersion::V1_20_6) {
+            let (yaw, pitch) = {
+                let place = self.place.lock().unwrap();
+                (place.yaw, place.pitch)
+            };
+            if let Some(next) = step_1_20_6::serverbound(state, pinned, &payload, (yaw, pitch))? {
+                payload = next;
+            }
+        }
+        // 1.21.1 is older than 1.21.2 and 1.21.4: its movement and steering are read before theirs (step_1_21_1).
+        if v.at_most(ServerVersion::V1_21_1)
+            && let Some(p) = step_1_21_1::serverbound(state, pinned, &payload)?
+        {
+            payload = p;
+        }
+        // 1.21.4 is the oldest step: its packets are read before 1.21.5's.
+        if v.at_most(ServerVersion::V1_21_4) {
+            match step_1_21_4::serverbound(state, pinned, &payload, v.ids())? {
+                step_1_21_4::Out::Untouched => {}
+                step_1_21_4::Out::Rewritten(p) => payload = p,
+            }
+        }
+        // 1.21.5 is the next oldest: its packets are read before 1.21.6's.
         if v.at_most(ServerVersion::V1_21_5) {
             match step_1_21_5::serverbound(state, pinned, &payload)? {
                 step_1_21_5::Out::Untouched => {}

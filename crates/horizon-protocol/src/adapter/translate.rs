@@ -76,7 +76,10 @@ pub fn clientbound(
     // A release at a time: an older server's packets are brought to 26.2's layout first, oldest step first.
     let mut before: Option<Vec<u8>> = None;
     type Step = fn(&Session, State, i32, &[u8]) -> Result<Option<Vec<u8>>>;
-    let steps: [(ServerVersion, Step); 4] = [
+    let steps: [(ServerVersion, Step); 7] = [
+        (ServerVersion::V1_20_6, v1_20_6::clientbound),
+        (ServerVersion::V1_21_1, v1_21_1::clientbound),
+        (ServerVersion::V1_21_4, v1_21_4::clientbound),
         (ServerVersion::V1_21_5, v1_21_5::clientbound),
         (ServerVersion::V1_21_8, v1_21_8::clientbound),
         (ServerVersion::V1_21_11, v1_21_11::clientbound),
@@ -182,7 +185,11 @@ pub fn clientbound(
         (State::Play, cb::SET_ENTITY_DATA) if session.version.at_most(ServerVersion::V1_21_11) => {
             let mut p = decode_play(ids, id, payload)?;
             if let play::Clientbound::SetEntityData(d) = &mut p {
-                // 1.21.8's layout first: the 1.21.10 steps below expect 1.21.10's indexes.
+                // 1.21.4's layout first (its indexes become 1.21.5's); then 1.21.8's: the 1.21.10 steps below
+                // expect 1.21.10's indexes.
+                if session.version.at_most(ServerVersion::V1_21_4) {
+                    v1_21_4::entity_data(session, d);
+                }
                 if session.version.at_most(ServerVersion::V1_21_8) {
                     v1_21_8::entity_data(session, d);
                 }
@@ -258,6 +265,10 @@ pub fn serverbound(
             w.bytes(r.rest());
             renumbered(id, w.data)
         }
+        // 1.21 added the head's yaw and pitch to use_item; a 1.20.6 server doesn't read them (v1_20_6).
+        (State::Play, sb::USE_ITEM) if session.version.at_most(ServerVersion::V1_20_6) => {
+            v1_20_6::use_item(session, id, payload)
+        }
         (State::Play, sb::INTERACT) if session.version.at_most(ServerVersion::V1_21_11) => {
             v1_21_11::interact(session, payload)
         }
@@ -284,6 +295,16 @@ pub fn serverbound(
             w.varint(0);
             Ok(Some((swing_id(session.version), w.data)))
         }
+        // 1.21.5 adds a checksum byte to the chat packets, their last field; 1.21.4 has none (v1_21_4).
+        (State::Play, sb::CHAT | sb::CHAT_COMMAND_SIGNED)
+            if session.version.at_most(ServerVersion::V1_21_4) =>
+        {
+            renumbered(id, v1_21_4::without_checksum(payload))
+        }
+        // 1.21.5's container clicks name hashed stacks; a 1.21.4 server reads full ones (v1_21_4).
+        (State::Play, sb::CONTAINER_CLICK) if session.version.at_most(ServerVersion::V1_21_4) => {
+            renumbered(id, v1_21_4::container_click(payload)?)
+        }
         (State::Play, sb::SET_CREATIVE_MODE_SLOT | sb::CONTAINER_CLICK) => {
             let p = play::Serverbound::decode(id, payload)?;
             let payload = {
@@ -296,6 +317,19 @@ pub fn serverbound(
         // sneak from player_input as well, which is sent with a press or release (v1_21_5).
         (State::Play, sb::PLAYER_COMMAND) if session.version.at_most(ServerVersion::V1_21_5) => {
             v1_21_5::player_command(session, id, payload)
+        }
+        // 1.21.1 reads the movement flags as an on-ground boolean, and its steering as floats (v1_21_1).
+        (
+            State::Play,
+            sb::MOVE_PLAYER_POS
+            | sb::MOVE_PLAYER_POS_ROT
+            | sb::MOVE_PLAYER_ROT
+            | sb::MOVE_PLAYER_STATUS_ONLY,
+        ) if session.version.at_most(ServerVersion::V1_21_1) => {
+            v1_21_1::movement(session, id, payload)
+        }
+        (State::Play, sb::PLAYER_INPUT) if session.version.at_most(ServerVersion::V1_21_1) => {
+            v1_21_1::player_input(session, id, payload)
         }
         (State::Play, sb::PLAYER_INPUT) if session.version.at_most(ServerVersion::V1_21_5) => {
             v1_21_5::player_input(session, id, payload)
@@ -1119,8 +1153,9 @@ pub(crate) mod v1_21_6 {
 /// lost its sneak press and release (actions 0 and 1) and its other actions are numbered two lower in 1.21.6; the
 /// sneak itself is `player_input`'s bit 0x20 in both versions.
 ///
-/// Not translated (see the TODOs): 1.21.6's item components (`attribute_modifiers` with a display, `equippable`
-/// with `can_be_sheared` and `shearing_sound`) and its dialog registries, which 1.21.5 lacks.
+/// Item components are read in 1.21.5's layout by `item.rs` (`ids::Quirks::components_before_1_21_6`), without
+/// a display on `attribute_modifiers` and the shearing fields of `equippable`. Not translated (see the TODOs):
+/// 1.21.6's dialog registries, which 1.21.5 lacks.
 pub(crate) mod v1_21_5 {
     use super::*;
 
@@ -1224,6 +1259,355 @@ pub(crate) mod v1_21_5 {
             r.varint().unwrap(); // the entity
             assert_eq!(r.varint().unwrap(), 0); // press sneak key
         }
+    }
+}
+
+/// 1.21.4 to 1.21.5 (protocol 769 to 770): the mirror of `client_session::step_1_21_4`. Clientbound, the explosion's
+/// player knockback is three doubles in 1.21.5 and a double and two floats in 1.21.4; the player chat starts with a
+/// global index (a VarInt) 1.21.4 lacks; the team's name tag visibility and collision rule are VarInt enums where
+/// 1.21.4 sends their names; and the advancements end with a show flag. Serverbound, the chat packets end with a
+/// checksum byte, and a container click's changed slots and carried item are hashes where 1.21.4 reads full stacks.
+/// The packets 1.21.5 added (the test instance ones, the copper golem's data) and add_experience_orb, which it
+/// removed, need no step: the id tables drop them.
+///
+/// Chunks (level chunk, chunk biomes): the heightmaps are NBT long arrays by name up to 1.21.4 and VarInt-typed
+/// ones from 1.21.5, and no container's data array has a length from 1.21.5 on (`chunk_up`, `chunks_biomes_up`).
+/// Entity data (`remap_entity_data`) moves the indexes of the classes the 1.21.4 wiki lists (its index numbers
+/// counted by hierarchy).
+///
+/// Not translated (see the TODOs): the cooldown, whose item id 1.21.5 sends as an identifier (the item's name is
+/// needed: `ids.item` and the registry).
+pub(crate) mod v1_21_4 {
+    use super::*;
+    use crate::entity_data::{Value, serializer};
+
+    /// The clientbound packet `id` a 1.21.4 server sent (`payload` in 1.21.4's layout), in 1.21.5's layout.
+    pub fn clientbound(
+        _session: &Session,
+        state: State,
+        id: i32,
+        payload: &[u8],
+    ) -> Result<Option<Vec<u8>>> {
+        use packet_ids::play::clientbound as cb;
+        if state != State::Play {
+            return Ok(None);
+        }
+        Ok(Some(match id {
+            cb::EXPLODE => explode_up(payload)?,
+            cb::PLAYER_CHAT => player_chat_up(payload)?,
+            cb::SET_PLAYER_TEAM => team_up(payload)?,
+            cb::UPDATE_ADVANCEMENTS => advancements_up(payload),
+            cb::LEVEL_CHUNK_WITH_LIGHT => chunk_up(payload)?,
+            cb::CHUNKS_BIOMES => chunks_biomes_up(payload)?,
+            _ => return Ok(None),
+        }))
+    }
+
+    /// 1.21.4's team enum names, by 1.21.5's VarInt id: name tag visibility, then collision rule.
+    pub(crate) const VISIBILITY: [&str; 4] =
+        ["always", "never", "hideForOtherTeams", "hideForOwnTeam"];
+    pub(crate) const COLLISION: [&str; 4] = ["always", "never", "pushOtherTeams", "pushOwnTeam"];
+
+    /// The name a 1.21.5 team enum id has in 1.21.4, from `table`.
+    pub(crate) fn name_of(table: &'static [&'static str], id: i32) -> Result<&'static str> {
+        usize::try_from(id)
+            .ok()
+            .and_then(|i| table.get(i).copied())
+            .ok_or_else(|| crate::Error::new(format!("team enum {id} is out of range")))
+    }
+
+    /// The 1.21.5 id of a team enum name, from `table`.
+    fn id_of(table: &[&str], name: &str) -> Result<i32> {
+        table
+            .iter()
+            .position(|n| *n == name)
+            .map(|i| i as i32)
+            .ok_or_else(|| crate::Error::new(format!("unknown team enum {name}")))
+    }
+
+    /// The explosion's player knockback: 1.21.4 writes a double, then two floats; 1.21.5 three doubles.
+    fn explode_up(payload: &[u8]) -> Result<Vec<u8>> {
+        let mut r = Reader::new(payload);
+        let mut w = Writer::new();
+        for _ in 0..3 {
+            w.f64(r.f64()?);
+        }
+        let knockback = r.bool()?;
+        w.bool(knockback);
+        if knockback {
+            w.f64(r.f64()?);
+            w.f64(f64::from(r.f32()?));
+            w.f64(f64::from(r.f32()?));
+        }
+        w.bytes(r.rest());
+        Ok(w.data)
+    }
+
+    /// A player chat with the global index 1.21.5 starts it with.
+    // TODO(step3): what 1.21.5's global index counts (the messages of the whole server, vanilla's count). 0 until known.
+    fn player_chat_up(payload: &[u8]) -> Result<Vec<u8>> {
+        let mut w = Writer::new();
+        w.varint(0);
+        w.bytes(payload);
+        Ok(w.data)
+    }
+
+    /// A team update with its name tag visibility and collision rule as 1.21.5's VarInt enums. Methods: 0 create
+    /// (entities after the suffix), 1 remove, 2 update, 3 add entities, 4 remove entities.
+    fn team_up(payload: &[u8]) -> Result<Vec<u8>> {
+        let mut r = Reader::new(payload);
+        let mut w = Writer::new();
+        w.string(&r.string(32767)?);
+        let method = r.u8()?;
+        w.u8(method);
+        if method == 0 || method == 2 {
+            w.nbt(&r.nbt()?);
+            w.u8(r.u8()?);
+            w.varint(id_of(&VISIBILITY, &r.string(40)?)?);
+            w.varint(id_of(&COLLISION, &r.string(40)?)?);
+            w.varint(r.varint()?);
+            w.nbt(&r.nbt()?);
+            w.nbt(&r.nbt()?);
+        }
+        if method == 0 || method == 3 || method == 4 {
+            let n = r.count(r.remaining())?;
+            w.varint(n as i32);
+            for _ in 0..n {
+                w.string(&r.string(32767)?);
+            }
+        }
+        w.bytes(r.rest());
+        Ok(w.data)
+    }
+
+    /// The advancements with 1.21.5's show flag after the removed identifiers, the last field of 1.21.4's.
+    // TODO(step3): what 1.21.5's show flag does (the downloaded pages give only its name); false keeps 1.21.4's behaviour.
+    fn advancements_up(payload: &[u8]) -> Vec<u8> {
+        let mut p = payload.to_vec();
+        p.push(0);
+        p
+    }
+
+    /// A serverbound chat packet without the checksum 1.21.5 adds as its last byte.
+    pub(crate) fn without_checksum(payload: &[u8]) -> Vec<u8> {
+        payload[..payload.len().saturating_sub(1)].to_vec()
+    }
+
+    /// A container click whose changed slots and carried item 1.21.5 sends as hashes: 1.21.4 reads each as an
+    /// empty slot, since a hash names no item.
+    // TODO(step3): a 1.21.4 server reads the changed slots only to track what the client shows; an empty one
+    // makes it resend the true stack. Check that against 1.21.4's handleContainerClick.
+    pub(crate) fn container_click(payload: &[u8]) -> Result<Vec<u8>> {
+        let mut r = Reader::new(payload);
+        let mut w = Writer::new();
+        w.varint(r.varint()?);
+        w.varint(r.varint()?);
+        w.i16(r.i16()?);
+        w.i8(r.i8()?);
+        w.varint(r.varint()?);
+        let n = r.count(r.remaining())?;
+        w.varint(n as i32);
+        for _ in 0..n {
+            w.i16(r.i16()?);
+            crate::item::HashedSlot::read(&mut r)?;
+            w.varint(0);
+        }
+        crate::item::HashedSlot::read(&mut r)?;
+        w.varint(0);
+        w.bytes(r.rest());
+        Ok(w.data)
+    }
+
+    /// Entity types (26.3 ids) whose entity data 1.21.5 changed, from the 1.21.4 wiki's classes.
+    pub(crate) const CHICKEN: i32 = 26;
+    pub(crate) const COW: i32 = 30;
+    pub(crate) const DOLPHIN: i32 = 36;
+    pub(crate) const EXPERIENCE_ORB: i32 = 50;
+    pub(crate) const MOOSHROOM: i32 = 87;
+    pub(crate) const PIG: i32 = 101;
+    pub(crate) const PIGLIN: i32 = 102;
+    pub(crate) const STRIDER: i32 = 132;
+    pub(crate) const TURTLE: i32 = 141;
+    pub(crate) const WOLF: i32 = 152;
+    /// Minecart, chest, furnace, hopper, spawner, TNT and command block minecarts: Abstract Minecart's fields.
+    pub(crate) const MINECARTS: [i32; 7] = [86, 25, 57, 66, 125, 137, 29];
+
+    /// Entity data a 1.21.4 server sent for the entity (`session` knows its kind), in 1.21.5's indexes.
+    pub fn entity_data(session: &Session, data: &mut play::SetEntityData) {
+        let Some(kind) = session.kinds.lock().unwrap().get(&data.id).copied() else {
+            return;
+        };
+        remap_entity_data(kind, data, true);
+    }
+
+    /// The index an entry of `kind` has on the other side: `up` from 1.21.4 to 1.21.5, otherwise back. `None` when
+    /// the other release has no such field. Minecarts are not here (see `remap_entity_data`).
+    pub(crate) fn retarget(kind: i32, index: u8, up: bool) -> Option<u8> {
+        match (kind, up, index) {
+            (DOLPHIN, true, 17) | (TURTLE, true, 17 | 20 | 21 | 22) | (STRIDER, true, 19) => None,
+            (PIG, true, 17) | (PIG, false, 18) | (PIGLIN, false, 16) => None,
+            (EXPERIENCE_ORB, false, 8) | (CHICKEN | COW, false, 17) | (WOLF, false, 23) => None,
+            (DOLPHIN | TURTLE | PIG, true, 18) => Some(17),
+            (DOLPHIN | TURTLE, true, 19) => Some(18),
+            (PIGLIN, true, 16) => Some(17),
+            (PIGLIN, true, 17) => Some(18),
+            (PIGLIN, true, 18) => Some(19),
+            (DOLPHIN | TURTLE | PIG, false, 17) => Some(18),
+            (DOLPHIN | TURTLE, false, 18) => Some(19),
+            (PIGLIN, false, 17) => Some(16),
+            (PIGLIN, false, 18) => Some(17),
+            (PIGLIN, false, 19) => Some(18),
+            _ => Some(index),
+        }
+    }
+
+    /// Moves a set of entity data between 1.21.4's layout and 1.21.5's (`up` from 1.21.4), for an entity of `kind`.
+    /// Entries the other release lacks are dropped. Serializers are the pinned ones.
+    ///
+    /// A minecart's custom block was 1.21.4's VarInt at 8, shown only when the flag at 10 is set; 1.21.5 puts its
+    /// state (an optional block state) at 11 and its Y at 12, and 8 to 10 are the vehicle's shaking, which is dropped
+    /// both ways (1.21.4 has none). A mooshroom's type is a String up to 1.21.4 and a VarInt in 1.21.5.
+    pub(crate) fn remap_entity_data(kind: i32, data: &mut play::SetEntityData, up: bool) {
+        let show = data
+            .values
+            .iter()
+            .any(|(i, _, v)| *i == 10 && matches!(v, Value::Bool(true)));
+        let mut out = Vec::with_capacity(data.values.len());
+        for (index, ser, value) in std::mem::take(&mut data.values) {
+            if MINECARTS.contains(&kind) {
+                match (up, index, value) {
+                    (true, 8, Value::Int(state)) if show => {
+                        out.push((11, serializer::OPTIONAL_BLOCK_STATE, Value::Id(state)));
+                    }
+                    (true, 9, Value::Int(y)) => out.push((12, serializer::INT, Value::Int(y))),
+                    (true, 8..=10, _) | (false, 8..=10, _) => {}
+                    (false, 11, Value::Id(state)) if state != 0 => {
+                        out.push((8, serializer::INT, Value::Int(state)));
+                        out.push((10, serializer::BOOLEAN, Value::Bool(true)));
+                    }
+                    (false, 11, _) => {}
+                    (false, 12, Value::Int(y)) => out.push((9, serializer::INT, Value::Int(y))),
+                    (_, index, value) => out.push((index, ser, value)),
+                }
+                continue;
+            }
+            let Some(to) = retarget(kind, index, up) else {
+                continue;
+            };
+            let (ser, value) = match (kind, up, value) {
+                (MOOSHROOM, true, Value::String(s)) => {
+                    (serializer::INT, Value::Int(i32::from(s == "brown")))
+                }
+                (MOOSHROOM, false, Value::Int(v)) => (
+                    serializer::STRING,
+                    Value::String(if v == 1 { "brown" } else { "red" }.to_owned()),
+                ),
+                (_, _, value) => (ser, value),
+            };
+            out.push((to, ser, value));
+        }
+        data.values = out;
+    }
+
+    /// Heightmap ids (26.3's, which 1.21.5 sends) and the names 1.21.4 sends them under, in its NBT.
+    pub(crate) const HEIGHTMAPS: [(i32, &str); 4] = [
+        (1, "WORLD_SURFACE"),
+        (3, "OCEAN_FLOOR"),
+        (4, "MOTION_BLOCKING"),
+        (5, "MOTION_BLOCKING_NO_LEAVES"),
+    ];
+
+    /// Whether a container with `bits` per entry sends a palette: blocks 1 to 8 (stored in at least 4 bits),
+    /// biomes 1 to 3. Other values are direct, the registry ids themselves.
+    pub(crate) fn indirect(bits: u8, blocks: bool) -> bool {
+        if blocks {
+            (1..=8).contains(&bits)
+        } else {
+            (1..=3).contains(&bits)
+        }
+    }
+
+    /// A paletted container as 1.21.4 sends it, its data array's length (a VarInt) left out: 1.21.5's.
+    fn paletted_up(r: &mut Reader, w: &mut Writer, blocks: bool) -> Result<()> {
+        let bits = r.u8()?;
+        w.u8(bits);
+        if bits == 0 {
+            w.varint(r.varint()?);
+        } else if indirect(bits, blocks) {
+            let n = r.varint()?;
+            w.varint(n);
+            for _ in 0..n {
+                w.varint(r.varint()?);
+            }
+        }
+        let longs = usize::try_from(r.varint()?)
+            .map_err(|_| crate::Error::new("negative data array length"))?;
+        w.bytes(r.bytes(longs * 8)?);
+        Ok(())
+    }
+
+    /// The sections of a chunk column (or its biomes only) in 1.21.4's layout to 1.21.5's: the block count stays,
+    /// and each container loses its data array's length.
+    fn sections_up(data: &[u8], biomes_only: bool) -> Result<Vec<u8>> {
+        let mut r = Reader::new(data);
+        let mut w = Writer::new();
+        while r.remaining() > 0 {
+            if !biomes_only {
+                w.i16(r.i16()?);
+                paletted_up(&mut r, &mut w, true)?;
+            }
+            paletted_up(&mut r, &mut w, false)?;
+        }
+        Ok(w.data)
+    }
+
+    /// The heightmaps: 1.21.4's NBT compound of long arrays by name; 1.21.5's a VarInt count, then a VarInt type and
+    /// a long array per heightmap. A name 1.21.5 has no id for is dropped.
+    fn heightmaps_up(r: &mut Reader, w: &mut Writer) -> Result<()> {
+        let horizon_world::nbt::Tag::Compound(map) = r.nbt()? else {
+            return Err(crate::Error::new("heightmaps: not a compound"));
+        };
+        let known: Vec<(i32, Vec<i64>)> = HEIGHTMAPS
+            .iter()
+            .filter_map(|&(kind, name)| {
+                match map.get(&horizon_world::nbt::JavaString::from(name)) {
+                    Some(horizon_world::nbt::Tag::LongArray(longs)) => Some((kind, longs.clone())),
+                    _ => None,
+                }
+            })
+            .collect();
+        w.varint(known.len() as i32);
+        for (kind, longs) in known {
+            w.varint(kind);
+            w.long_array(&longs);
+        }
+        Ok(())
+    }
+
+    /// Level chunk with light, 1.21.4's layout to 1.21.5's (heightmaps and sections); the block entities and the
+    /// light are alike.
+    pub(crate) fn chunk_up(payload: &[u8]) -> Result<Vec<u8>> {
+        let mut r = Reader::new(payload);
+        let mut w = Writer::new();
+        w.i32(r.i32()?);
+        w.i32(r.i32()?);
+        heightmaps_up(&mut r, &mut w)?;
+        let data = r.byte_array(r.remaining())?;
+        w.byte_array(&sections_up(&data, false)?);
+        w.bytes(r.rest());
+        Ok(w.data)
+    }
+
+    /// Chunk biomes, 1.21.4's layout to 1.21.5's: the biome containers of the column's sections, lengths left out.
+    pub(crate) fn chunks_biomes_up(payload: &[u8]) -> Result<Vec<u8>> {
+        let mut r = Reader::new(payload);
+        let mut w = Writer::new();
+        w.i32(r.i32()?);
+        w.i32(r.i32()?);
+        let data = r.byte_array(r.remaining())?;
+        w.byte_array(&sections_up(&data, true)?);
+        w.bytes(r.rest());
+        Ok(w.data)
     }
 }
 
@@ -1355,6 +1739,526 @@ pub(crate) mod v1_21_8 {
                 18 => 15,
                 other => other,
             };
+        }
+    }
+}
+
+/// 1.20.6 to 1.21 (protocol 766 to 767): the mirror of `client_session::step_1_20_6`. Clientbound, from the two
+/// Packets pages:
+/// - `level_particles` sends the particle (a VarInt) first in 1.20.6 and after the count in 1.21.
+/// - `explode`'s sound is a sound event holder in 1.21 (a VarInt, 0 for an inline one, then the location and the
+///   range); 1.20.6 sends the inline one alone.
+/// - `projectile_power` is one double, the power, in 1.21; 1.20.6 sends the vector.
+/// - `merchant_offers`: a trade's costs are trade items in 1.21 (an item id, a count and the components they add,
+///   no stack flag), and the second cost is optional. The stacks are read under 1.20.6's ids and components.
+///
+/// Serverbound, 1.21's `use_item` adds the head's yaw and pitch (see [`use_item`]). The sound packets are the same
+/// bytes in both, and the other packets 1.21 adds or drops are left to the id tables.
+///
+/// Not translated: the entity data serializers (the list of 1.20.6 and 1.21 is not in the wiki pages we have).
+pub(crate) mod v1_20_6 {
+    use super::*;
+
+    /// The bytes of 1.20.6's stack (a Slot, its components read under 1.20.6's ids) at `r`, which moves past them.
+    /// A stack with no components is measured alone; the stack codec only reads the ones that have some.
+    pub(crate) fn slot<'a>(
+        payload: &'a [u8],
+        r: &mut Reader<'a>,
+        ids: &'static Ids,
+    ) -> Result<&'a [u8]> {
+        let tail = &payload[r.position()..];
+        let mut h = Reader::new(tail);
+        let len = if h.varint()? <= 0 {
+            h.position()
+        } else {
+            h.varint()?;
+            let added = h.varint()?;
+            if h.varint()? == 0 && added == 0 {
+                h.position()
+            } else {
+                let _up = ids::renumbering(ids, Way::Up);
+                let mut m = Reader::new(tail);
+                crate::item::Slot::read(&mut m)?;
+                m.position()
+            }
+        };
+        r.bytes(len)?;
+        Ok(&tail[..len])
+    }
+
+    /// The bytes of `LEVEL_PARTICLES` between the particle and its data in both layouts: the long-distance flag,
+    /// three doubles, four floats and the count.
+    pub(crate) const LEVEL_PARTICLES_HEAD: usize = 1 + 24 + 16 + 4;
+
+    /// The clientbound packet `id` a 1.20.6 server sent (`payload` in 1.20.6's layout), in 1.21's layout; `None`
+    /// when laid out alike.
+    pub fn clientbound(
+        session: &Session,
+        state: State,
+        id: i32,
+        payload: &[u8],
+    ) -> Result<Option<Vec<u8>>> {
+        use packet_ids::play::clientbound as cb;
+        if state != State::Play {
+            return Ok(None);
+        }
+        Ok(match id {
+            cb::LEVEL_PARTICLES => Some(level_particles(payload)?),
+            cb::EXPLODE => Some(explode(payload)?),
+            cb::PROJECTILE_POWER => Some(projectile_power(payload)?),
+            cb::MERCHANT_OFFERS => Some(merchant_offers(session, payload)?),
+            _ => None,
+        })
+    }
+
+    /// level_particles: the particle goes after the count, before its data.
+    fn level_particles(payload: &[u8]) -> Result<Vec<u8>> {
+        let mut r = Reader::new(payload);
+        let particle = r.varint()?;
+        let head = r.bytes(LEVEL_PARTICLES_HEAD)?;
+        let mut w = Writer::new();
+        w.bytes(head);
+        w.varint(particle);
+        w.bytes(r.rest());
+        Ok(w.data)
+    }
+
+    /// explode: the sound is a holder in 1.21, and an inline one (0) here; the two explosion particles have no
+    /// data, so they are read as their ids alone.
+    fn explode(payload: &[u8]) -> Result<Vec<u8>> {
+        let mut r = Reader::new(payload);
+        r.bytes(24 + 4)?; // the centre and the strength
+        let records = r.count(1 << 20)?;
+        r.bytes(records * 3)?;
+        r.bytes(12)?; // the push the player takes
+        r.varint()?; // the block interaction
+        r.varint()?; // the small explosion particle's id
+        r.varint()?; // the large explosion particle's id
+        let mut w = Writer::new();
+        w.bytes(r.since(0));
+        w.varint(0);
+        w.bytes(r.rest());
+        Ok(w.data)
+    }
+
+    /// projectile_power: 1.21 sends the power's length; 1.20.6 sends the vector it is along.
+    // TODO(step3): verify that 1.21's power is the length of 1.20.6's vector (the wiki gives only the field).
+    fn projectile_power(payload: &[u8]) -> Result<Vec<u8>> {
+        let mut r = Reader::new(payload);
+        let id = r.varint()?;
+        let (x, y, z) = (r.f64()?, r.f64()?, r.f64()?);
+        let mut w = Writer::new();
+        w.varint(id);
+        w.f64((x * x + y * y + z * z).sqrt());
+        Ok(w.data)
+    }
+
+    /// merchant_offers: each cost is a trade item in 1.21 and a stack in 1.20.6; the second is optional. The
+    /// output stack, the rest of each offer and the list's end are the same bytes.
+    fn merchant_offers(session: &Session, payload: &[u8]) -> Result<Vec<u8>> {
+        let Some(ids) = session.version.ids() else {
+            return Ok(payload.to_vec());
+        };
+        let mut r = Reader::new(payload);
+        let mut w = Writer::new();
+        w.varint(r.varint()?);
+        let size = r.varint()?;
+        w.varint(size);
+        for _ in 0..size.max(0) {
+            trade_item(slot(payload, &mut r, ids)?, &mut w)?;
+            w.bytes(slot(payload, &mut r, ids)?);
+            let second = slot(payload, &mut r, ids)?;
+            if Reader::new(second).varint()? > 0 {
+                w.bool(true);
+                trade_item(second, &mut w)?;
+            } else {
+                w.bool(false);
+            }
+            // The disabled flag, the uses, the max uses, the xp, the special price, the multiplier and the demand.
+            w.bytes(r.bytes(1 + 4 * 4 + 4 + 4)?);
+        }
+        w.bytes(r.rest());
+        Ok(w.data)
+    }
+
+    /// A 1.20.6 stack as a 1.21 trade item: its item id, its count and the components it adds. A trade item has no
+    /// stack flag, and no removed components: a cost never has any, so one is refused.
+    // TODO(step3): a cost with removed components cannot be translated yet; it makes the packet fail.
+    fn trade_item(raw: &[u8], w: &mut Writer) -> Result<()> {
+        let mut r = Reader::new(raw);
+        let count = r.varint()?;
+        if count <= 0 {
+            w.varint(0);
+            w.varint(0);
+            w.varint(0);
+            return Ok(());
+        }
+        let item = r.varint()?;
+        let added = r.varint()?;
+        if r.varint()? != 0 {
+            return Err(crate::Error::new(
+                "merchant cost with removed components is not translated (TODO(step3))",
+            ));
+        }
+        w.varint(item);
+        w.varint(count);
+        w.varint(added);
+        w.bytes(r.rest());
+        Ok(())
+    }
+
+    /// use_item: a 1.20.6 server reads the hand and the sequence; 1.21's yaw and pitch are dropped.
+    pub fn use_item(session: &Session, id: i32, payload: &[u8]) -> Result<Option<(i32, Vec<u8>)>> {
+        let mut r = Reader::new(payload);
+        let mut w = Writer::new();
+        w.varint(r.varint()?);
+        w.varint(r.varint()?);
+        Ok(session
+            .version
+            .serverbound_id(State::Play, id)
+            .map(|mapped| (mapped, w.data)))
+    }
+}
+
+/// 1.21 and 1.21.1 (protocol 767) to 1.21.2 and 1.21.3 (768). Packets not named here are laid out alike.
+///
+/// Not done (TODO(step1_21_1)): explode (1.21.2 sends the radius, a block count, the knockback as an optional
+/// vector and the explosion particles as a list; 1.21.1 sends its records and a block interaction), the recipe
+/// packets (recipe_book_add/remove/settings, update_recipes, place_ghost_recipe: the recipe book was reworked and
+/// the display carries no 1.21.1 recipe id), and serverbound packets (1.21.1's player_input is steer_vehicle).
+pub(crate) mod v1_21_1 {
+    use super::*;
+
+    /// The sea level 1.21.2 sends after the portal cooldown; 1.21.1 has none, and the overworld's is 63.
+    const SEA_LEVEL: i32 = 63;
+
+    /// A window id 1.21.1 sends as an unsigned byte (`signed`: a signed one, as container_set_slot's) and 1.21.2
+    /// as a VarInt; the rest of the packet follows as it is.
+    fn window_up(payload: &[u8], signed: bool) -> Result<Vec<u8>> {
+        let mut r = Reader::new(payload);
+        let window = if signed {
+            i32::from(r.i8()?)
+        } else {
+            i32::from(r.u8()?)
+        };
+        let mut w = Writer::new();
+        w.varint(window);
+        w.bytes(r.rest());
+        Ok(w.data)
+    }
+
+    /// 1.21.1 sends the game time and the day time, which is negative while the day time stands still (its
+    /// absolute value being the time); 1.21.2 sends the day time's absolute value and whether it runs.
+    fn set_time(payload: &[u8]) -> Result<Vec<u8>> {
+        let mut r = Reader::new(payload);
+        let game_time = r.i64()?;
+        let day_time = r.i64()?;
+        let mut w = Writer::new();
+        w.i64(game_time);
+        w.i64(day_time.checked_abs().unwrap_or(i64::MAX));
+        w.bool(day_time >= 0);
+        Ok(w.data)
+    }
+
+    /// The login's or respawn's common spawn info: 1.21.2 has the sea level after the portal cooldown, 1.21.1 not.
+    /// The login's entity id, hardcore flag, dimension names, the three VarInts and three booleans come first.
+    fn spawn_info_up(payload: &[u8], login: bool) -> Result<Vec<u8>> {
+        let mut r = Reader::new(payload);
+        if login {
+            r.i32()?;
+            r.bool()?;
+            let n = r.count(r.remaining())?;
+            for _ in 0..n {
+                r.string(32767)?;
+            }
+            for _ in 0..3 {
+                r.varint()?;
+            }
+            for _ in 0..3 {
+                r.bool()?;
+            }
+        }
+        r.varint()?;
+        r.string(32767)?;
+        r.i64()?;
+        r.u8()?;
+        r.i8()?;
+        r.bool()?;
+        r.bool()?;
+        <crate::buf::Opt<play::GlobalPos>>::read(&mut r)?;
+        r.varint()?;
+        let at = r.position();
+        let mut w = Writer::new();
+        w.bytes(&payload[..at]);
+        w.varint(SEA_LEVEL);
+        w.bytes(&payload[at..]);
+        Ok(w.data)
+    }
+
+    /// 1.21.1 has one boolean (long distance) where 1.21.2 has two: the second, always visible, is off.
+    fn particles(payload: &[u8]) -> Result<Vec<u8>> {
+        let mut r = Reader::new(payload);
+        let long_distance = r.bool()?;
+        let mut w = Writer::new();
+        w.bool(long_distance);
+        w.bool(false);
+        w.bytes(r.rest());
+        Ok(w.data)
+    }
+
+    /// 1.21.1's angle is a byte of a turn (1/256); 1.21.2 sends degrees as floats.
+    fn degrees(angle: u8) -> f32 {
+        f32::from(angle) * 360.0 / 256.0
+    }
+
+    /// 1.21.1 sends an entity's absolute position, its angles as bytes and on ground. 1.21.2 adds the velocity
+    /// (zero: 1.21.1 has none), sends the angles as degrees and the relative flags (none: the position is absolute).
+    fn teleport_entity(payload: &[u8]) -> Result<Vec<u8>> {
+        let mut r = Reader::new(payload);
+        let id = r.varint()?;
+        let position = [r.f64()?, r.f64()?, r.f64()?];
+        let yaw = r.u8()?;
+        let pitch = r.u8()?;
+        let on_ground = r.bool()?;
+        let mut w = Writer::new();
+        w.varint(id);
+        position.iter().for_each(|v| w.f64(*v));
+        (0..3).for_each(|_| w.f64(0.0));
+        w.f32(degrees(yaw));
+        w.f32(degrees(pitch));
+        w.i32(0);
+        w.bool(on_ground);
+        Ok(w.data)
+    }
+
+    /// 1.21.1 sends the position, the rotation, the relative flags as a byte and the teleport id last; 1.21.2 sends
+    /// the teleport id first and the velocity (zero) before the rotation, and the flags as an Int. Its low five
+    /// bits (X, Y, Z, Y rotation, X rotation) are 1.21.1's.
+    fn player_position(payload: &[u8]) -> Result<Vec<u8>> {
+        let mut r = Reader::new(payload);
+        let position = [r.f64()?, r.f64()?, r.f64()?];
+        let yaw = r.f32()?;
+        let pitch = r.f32()?;
+        let flags = r.u8()?;
+        let teleport = r.varint()?;
+        let mut w = Writer::new();
+        w.varint(teleport);
+        position.iter().for_each(|v| w.f64(*v));
+        (0..3).for_each(|_| w.f64(0.0));
+        w.f32(yaw);
+        w.f32(pitch);
+        w.i32(i32::from(flags));
+        Ok(w.data)
+    }
+
+    /// 1.21.1's held slot is a byte; 1.21.2's a VarInt.
+    fn held_slot(payload: &[u8]) -> Result<Vec<u8>> {
+        let mut r = Reader::new(payload);
+        let mut w = Writer::new();
+        w.varint(i32::from(r.i8()?));
+        Ok(w.data)
+    }
+
+    /// 1.21.1's packet in 1.21.2's layout (the pinned ids): `None` when laid out alike.
+    pub fn clientbound(
+        _session: &Session,
+        state: State,
+        id: i32,
+        payload: &[u8],
+    ) -> Result<Option<Vec<u8>>> {
+        use packet_ids::play::clientbound as cb;
+        // 1.20.5 to 1.21.1 end login_finished (then game_profile) with strict error handling, which 1.21.2
+        // dropped.
+        if (state, id) == (State::Login, packet_ids::login::clientbound::LOGIN_FINISHED) {
+            return Ok(payload.split_last().map(|(_, rest)| rest.to_vec()));
+        }
+        if state != State::Play {
+            return Ok(None);
+        }
+        Ok(Some(match id {
+            cb::CONTAINER_CLOSE
+            | cb::CONTAINER_SET_CONTENT
+            | cb::CONTAINER_SET_DATA
+            | cb::MOUNT_SCREEN_OPEN => window_up(payload, false)?,
+            cb::CONTAINER_SET_SLOT => window_up(payload, true)?,
+            cb::SET_HELD_SLOT => held_slot(payload)?,
+            cb::SET_TIME => set_time(payload)?,
+            cb::LOGIN => spawn_info_up(payload, true)?,
+            cb::RESPAWN => spawn_info_up(payload, false)?,
+            cb::LEVEL_PARTICLES => particles(payload)?,
+            cb::TELEPORT_ENTITY => teleport_entity(payload)?,
+            cb::PLAYER_POSITION => player_position(payload)?,
+            _ => return Ok(None),
+        }))
+    }
+
+    /// 26.3's movement packets end with the flags byte (0x01 on ground); 1.21.1's end with the on-ground boolean.
+    pub fn movement(session: &Session, id: i32, payload: &[u8]) -> Result<Option<(i32, Vec<u8>)>> {
+        let flags = *payload
+            .last()
+            .ok_or_else(|| crate::Error::new("a movement packet without its flags"))?;
+        let mut out = payload[..payload.len() - 1].to_vec();
+        out.push(flags & 1);
+        Ok(session
+            .version
+            .serverbound_id(State::Play, id)
+            .map(|mapped| (mapped, out)))
+    }
+
+    /// 26.3's key flags as 1.21.1's steering: sideways (positive to the left) and forward as floats of their
+    /// signs, the jump bit as 1.21.1's jump, and sneak as its unmount. 1.21.1 reads a sneak from player_command's
+    /// press (0) and release (1) too, queued after the input, as 1.21.5's does.
+    pub fn player_input(
+        session: &Session,
+        id: i32,
+        payload: &[u8],
+    ) -> Result<Option<(i32, Vec<u8>)>> {
+        let flags = Reader::new(payload).u8()?;
+        let axis =
+            |plus: u8, minus: u8| f32::from(flags & plus != 0) - f32::from(flags & minus != 0);
+        let sneak = flags & 0x20 != 0;
+        let mut w = Writer::new();
+        w.f32(axis(0x04, 0x08));
+        w.f32(axis(0x01, 0x02));
+        let mut keys = 0u8;
+        if flags & 0x10 != 0 {
+            keys |= 0x01;
+        }
+        if sneak {
+            keys |= 0x02;
+        }
+        w.u8(keys);
+        if let Some(command) = session
+            .version
+            .serverbound_id(State::Play, packet_ids::play::serverbound::PLAYER_COMMAND)
+        {
+            let mut c = Writer::new();
+            c.varint(command);
+            c.varint(0);
+            c.varint(if sneak { 0 } else { 1 });
+            c.varint(0);
+            session.outgoing.lock().unwrap().push(c.data);
+        }
+        Ok(session
+            .version
+            .serverbound_id(State::Play, id)
+            .map(|mapped| (mapped, w.data)))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn a_window_id_is_a_varint_from_1_21_2() {
+            let mut w = Writer::new();
+            w.u8(200);
+            w.i16(3);
+            let body = window_up(&w.data, false).unwrap();
+            let mut r = Reader::new(&body);
+            assert_eq!(r.varint().unwrap(), 200);
+            assert_eq!(r.i16().unwrap(), 3);
+        }
+
+        #[test]
+        fn a_negative_day_time_stops_the_clock() {
+            let mut w = Writer::new();
+            w.i64(100);
+            w.i64(-6000);
+            let body = set_time(&w.data).unwrap();
+            let mut r = Reader::new(&body);
+            assert_eq!(
+                (r.i64().unwrap(), r.i64().unwrap(), r.bool().unwrap()),
+                (100, 6000, false)
+            );
+        }
+
+        #[test]
+        fn a_login_gets_the_overworld_sea_level_after_the_portal_cooldown() {
+            let mut w = Writer::new();
+            w.i32(7);
+            w.bool(false);
+            w.varint(1);
+            w.string("minecraft:overworld");
+            for v in [20, 10, 8] {
+                w.varint(v);
+            }
+            for b in [false, true, false] {
+                w.bool(b);
+            }
+            w.varint(0);
+            w.string("minecraft:overworld");
+            w.i64(42);
+            w.u8(0);
+            w.i8(-1);
+            w.bool(false);
+            w.bool(false);
+            w.bool(false);
+            w.varint(5);
+            w.bool(true);
+            let body = spawn_info_up(&w.data, true).unwrap();
+            let mut r = Reader::new(&body);
+            r.i32().unwrap();
+            r.bool().unwrap();
+            let n = r.count(r.remaining()).unwrap();
+            for _ in 0..n {
+                r.string(32767).unwrap();
+            }
+            for _ in 0..3 {
+                r.varint().unwrap();
+            }
+            for _ in 0..3 {
+                r.bool().unwrap();
+            }
+            let info = spawn_info(&mut r).unwrap();
+            assert_eq!((info.portal_cooldown, info.sea_level), (5, SEA_LEVEL));
+            assert!(r.bool().unwrap());
+            assert_eq!(r.remaining(), 0);
+        }
+
+        #[test]
+        fn a_teleport_s_angles_become_degrees_and_its_velocity_is_zero() {
+            let mut w = Writer::new();
+            w.varint(9);
+            [1.5, 64.0, -2.0].iter().for_each(|v| w.f64(*v));
+            w.u8(64);
+            w.u8(0);
+            w.bool(true);
+            let body = teleport_entity(&w.data).unwrap();
+            let mut r = Reader::new(&body);
+            assert_eq!(r.varint().unwrap(), 9);
+            assert_eq!(
+                [r.f64().unwrap(), r.f64().unwrap(), r.f64().unwrap()],
+                [1.5, 64.0, -2.0]
+            );
+            assert_eq!(
+                [r.f64().unwrap(), r.f64().unwrap(), r.f64().unwrap()],
+                [0.0; 3]
+            );
+            assert_eq!(
+                (r.f32().unwrap(), r.f32().unwrap(), r.i32().unwrap()),
+                (90.0, 0.0, 0)
+            );
+            assert!(r.bool().unwrap());
+        }
+
+        #[test]
+        fn a_movement_flag_byte_is_the_on_ground_boolean_and_steering_its_floats() {
+            let session = Session::new(ServerVersion::V1_21_1);
+            let mv = packet_ids::play::serverbound::MOVE_PLAYER_STATUS_ONLY;
+            let (id, body) = movement(&session, mv, &[1]).unwrap().unwrap();
+            assert_eq!((id, body), (mv_1_21_1(&session, mv), vec![1]));
+            let input = packet_ids::play::serverbound::PLAYER_INPUT;
+            let (_, steer) = player_input(&session, input, &[0x01 | 0x04 | 0x10 | 0x20])
+                .unwrap()
+                .unwrap();
+            let mut r = Reader::new(&steer);
+            assert_eq!((r.f32().unwrap(), r.f32().unwrap()), (1.0, 1.0));
+            assert_eq!(r.u8().unwrap(), 0x01 | 0x02);
+        }
+
+        fn mv_1_21_1(session: &Session, id: i32) -> i32 {
+            session.version.serverbound_id(State::Play, id).unwrap()
         }
     }
 }

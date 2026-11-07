@@ -6,8 +6,9 @@
 //! the sneak is in `player_input` (bit 0x20) for both. The press and release are dropped, the other actions are
 //! numbered two up in 1.21.5 and come back down here.
 //!
-//! TODO(step3): 1.21.6's item components (attribute modifiers' display, equippable's `can_be_sheared` and
-//! `shearing_sound`) and its dialog registries are not written in 1.21.5's layout; see translate's `v1_21_5`.
+//! Item components are written in 1.21.5's layout by `item.rs` (`ids::Quirks::components_before_1_21_6`).
+//!
+//! TODO(step3): 1.21.6's dialog registries are not written for 1.21.5; see translate's `v1_21_5`.
 use crate::{
     Result, State,
     buf::{Reader, Writer},
