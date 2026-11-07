@@ -6,6 +6,7 @@
 //! accent and the main action's face, bevel and lip) to it, keeping their saturation and
 //! lightness, then darkens or lightens each just enough to read as well as the violet does: white
 //! on the face at 4.5:1, the accent at 3:1 on every background.
+use horizon_theme::night::{Night, SkyArt};
 use horizon_theme::{contrast, Blocks};
 use std::path::{Path, PathBuf};
 
@@ -19,27 +20,123 @@ pub struct Accent {
     rgb: Option<u32>,
 }
 
+/// The accent a launcher theme brings: a hue in degrees (First Light) or one exact colour (Nord's
+/// frost).
+#[derive(Clone, Copy, Debug)]
+pub enum ThemeAccent {
+    Hue(f32),
+    Colour(u32),
+}
+
+impl ThemeAccent {
+    pub fn accent(self) -> Accent {
+        match self {
+            Self::Hue(hue) => Accent::custom(hue),
+            Self::Colour(rgb) => Accent::from_rgb(rgb),
+        }
+    }
+}
+
 /// A launcher theme: free for everyone in Settings › Appearance, never sold or claimed. Each
 /// has a sky (six stops, top to bottom, behind the light appearance) and the accent it brings.
+/// A theme that brings a whole palette carries its dark and light [`Night`] and paints every
+/// surface with it; the other themes only change the sky.
 pub struct Theme {
     /// Its name in `Settings::theme`.
     pub id: &'static str,
     /// Its name in Settings, in English (through `tr`).
     pub name: &'static str,
     pub sky: [u32; 6],
-    pub accent_hue: f32,
+    pub accent: ThemeAccent,
+    /// The theme's own palette (dark, light), for a theme that is more than a sky.
+    pub palette: Option<(&'static Night, &'static Night)>,
 }
+
+/// Nord's polar night and snow storm, with the frost accent.
+pub const NORD_DARK: Night = Night {
+    sky: [0x2e3440, 0x2e3440, 0x313845, 0x353d4b, 0x3b4252, 0x434c5e],
+    page: 0x2e3440,
+    side: 0x292e39,
+    card: 0x3b4252,
+    card_alpha: 0.88,
+    card_hi: 0x434c5e,
+    card_hi_alpha: 0.92,
+    stroke: 0xd8dee9,
+    stroke_alpha: 0.10,
+    rule_alpha: 0.10,
+    ink: 0xeceff4,
+    ink_soft: 0xd8dee9,
+    muted: 0xb6bfca,
+    accent: 0x88c0d0,
+    accent_hi: 0x9fd3d3,
+    on_accent: 0x2e3440,
+    success: 0xafc99a,
+    warn: 0xebcb8b,
+    danger: 0xeeb3b8,
+    dark: true,
+    art: SkyArt {
+        sun: [0x8fbcbb, 0x88c0d0, 0x5e81ac],
+        far: 0x3b4252,
+        near: 0x272c36,
+        cloud: [0x3b4252, 0x434c5e, 0x4c566a],
+        lit: [0x4c566a, 0x5e6a7d, 0x81a1c1],
+        shade: 0x272c36,
+        star: 0xeceff4,
+    },
+};
+
+pub const NORD_LIGHT: Night = Night {
+    sky: [0xeceff4, 0xeceff4, 0xe5e9f0, 0xe5e9f0, 0xd8dee9, 0xc8d2e0],
+    page: 0xeceff4,
+    side: 0xe5e9f0,
+    card: 0xf8f9fb,
+    card_alpha: 0.90,
+    card_hi: 0xffffff,
+    card_hi_alpha: 0.95,
+    stroke: 0x4c566a,
+    stroke_alpha: 0.14,
+    rule_alpha: 0.10,
+    ink: 0x2e3440,
+    ink_soft: 0x434c5e,
+    muted: 0x536070,
+    accent: 0x4c6a92,
+    accent_hi: 0x4c6a92,
+    on_accent: 0xffffff,
+    success: 0x3f6b2e,
+    warn: 0x7a5d00,
+    danger: 0xa8323f,
+    dark: false,
+    art: SkyArt {
+        sun: [0xffffff, 0xeceff4, 0xd8dee9],
+        far: 0xd8dee9,
+        near: 0xc8d2e0,
+        cloud: [0xf8f9fb, 0xeceff4, 0xe5e9f0],
+        lit: [0xffffff; 3],
+        shade: 0xd8dee9,
+        star: 0xffffff,
+    },
+};
 
 /// First Light: the sky just before sunrise, with a harbour skyline.
 pub const FIRST_LIGHT: Theme = Theme {
     id: "first_light",
     name: "First Light",
     sky: [0x0b1030, 0x1d2a63, 0x3d4c94, 0x7f78c0, 0xe2a0b0, 0xffd6a0],
-    accent_hue: 246.,
+    accent: ThemeAccent::Hue(246.),
+    palette: None,
+};
+
+/// Nord: the Nord palette's polar night, snow storm and frost.
+pub const NORD: Theme = Theme {
+    id: "nord",
+    name: "Nord",
+    sky: NORD_DARK.sky,
+    accent: ThemeAccent::Colour(0x88c0d0),
+    palette: Some((&NORD_DARK, &NORD_LIGHT)),
 };
 
 /// The launcher themes past Horizon's own sky.
-pub const THEMES: [Theme; 1] = [FIRST_LIGHT];
+pub const THEMES: [Theme; 2] = [FIRST_LIGHT, NORD];
 
 /// The theme named `id` (`Settings::theme`); None for Horizon's own sky or a name this launcher
 /// doesn't know.
@@ -189,8 +286,14 @@ impl Accent {
             let (_, s, l) = hsl(c);
             (hue, s, l)
         };
-        // The face holds white text.
-        let face = fit(turn(p.face), |c| contrast(p.on_face, c) >= 4.5, -1.);
+        // The face holds its label: white on a dark face, Nord's ink on a light one. Move the
+        // face away from the label until the two read.
+        let step = if contrast(p.on_face, 0x000000) < contrast(p.on_face, 0xffffff) {
+            1.
+        } else {
+            -1.
+        };
+        let face = fit(turn(p.face), |c| contrast(p.on_face, c) >= 4.5, step);
         let (_, _, face_l) = hsl(face);
         let (h, s, l) = turn(p.face_bevel);
         p.face_bevel = from_hsl(h, s, l.max(face_l + 0.08).min(0.92));

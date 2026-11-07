@@ -104,7 +104,6 @@ enum Place {
 }
 
 // Native mods use these; nothing in Horizon does.
-#[allow(dead_code)]
 impl Game<'_> {
     /// The player `uuid` as a helper finds them: the acting player inside a
     /// turn (nobody else then), a placed guest outside one.
