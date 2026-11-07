@@ -26,7 +26,7 @@ pub use crate::game::NativeFluidTank;
 pub use crate::game::NativeInventoryKind;
 pub use crate::game::native_block_entity_draw::{BlockEntityDraw, CubeFace};
 pub use crate::game::native_client_services::{
-    HudMode, NativeClientEntity, NativeClientHead, NativeClientProfile, NativeClientState,
+    NativeClientEntity, NativeClientHead, NativeClientProfile, NativeClientState,
 };
 pub use crate::game::{
     ItemEnergyBuffer, NativeBiomeId, NativeBlockEdit, NativeBlockReadError, NativeBlockRun,
@@ -969,6 +969,8 @@ mod generated_host {
     include!(concat!(env!("OUT_DIR"), "/mod_api_generated_host.rs"));
 }
 pub use generated_host::Host;
+
+pub use crate::game::native_client_services::HudMode;
 
 /// Result of accessing or decoding an attachment.
 pub type AttachmentResult<T> = std::result::Result<T, AttachmentError>;
