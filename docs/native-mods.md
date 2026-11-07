@@ -4001,7 +4001,7 @@ The `native_camera()` helper returns the most recently extracted world frame's c
 The pending `wind_burst` hook receives `dimension`, `center` and mutable `blocks`
 just before wind-charge, breeze-charge or Wind Burst mace block interactions.
 Remove positions to keep their doors, levers, candles and other reactive blocks
-unchanged. The list has already been shuffled; entity knockback and random draws
-are unaffected. A breeze blocked by `mob_griefing` does not call the hook.
+unchanged. The list has already been shuffled; entity knockback and the shuffle's
+random draws are unaffected. A breeze blocked by `mob_griefing` does not call the hook.
 This is separate from `explosion_detonate`, and does not cancel the burst's sound,
 particles or entity effects. The pending fragment assigns its API number at merge.
