@@ -1,0 +1,13 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "player_stats", "target": "horizon_client::game::native_player_reads::Game<'_>::native_player_stats"},
+    {"name": "player_stat", "target": "horizon_client::game::native_player_reads::Game<'_>::native_player_stat"},
+    {"name": "set_player_stats", "target": "horizon_client::game::native_player_reads::Game<'_>::native_set_player_stats"},
+    {"name": "player_advancements", "target": "horizon_client::game::native_player_reads::Game<'_>::native_player_advancements"},
+    {"name": "set_player_advancements", "target": "horizon_client::game::native_player_reads::Game<'_>::native_set_player_advancements"}
+  ],
+  "rust_summary": "a player's statistics and advancements in vanilla's JSON, read and replaced (`native_player_stats`, `native_player_stat`, `native_set_player_stats`, `native_player_advancements`, `native_set_player_advancements`).",
+  "doc_summary": "`native_player_stats(uuid)` and `native_player_advancements(uuid)` give a player's statistics and advancement progress as vanilla's `players/stats` and `players/advancements` files hold them, `native_player_stat(uuid, type, key)` one counter (Bukkit's `getStatistic`, `getAdvancementProgress`); `native_set_player_stats` and `native_set_player_advancements` replace them from the same JSON and resend them to the client. Bundles need \"hooks\": @API:player_records@.",
+  "comments": ["crates/horizon-client/src/game/native_player_reads.rs"]
+}

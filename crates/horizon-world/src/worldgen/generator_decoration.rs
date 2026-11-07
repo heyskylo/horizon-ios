@@ -436,7 +436,7 @@ impl Decoration {
             Ok(terrain) => terrain,
             Err(e) => return Err(resource(e.to_string())),
         };
-        let structures_only = worker.structures_only;
+        let structures_only = worker.structures_only || !region[4].features;
         let references = region[4].structure_starts.clone();
         let mut block_entities = Vec::new();
         for chunk in region.iter_mut() {
