@@ -666,7 +666,7 @@ impl ItemEntity {
                 wanted
             } else {
                 // `Entity.collide`: the entities that `canBeCollidedWith` the item stop it
-                // too (a boat, a minecart, a shulker, a happy ghast held still), and
+                // too (a boat, a shulker, a happy ghast held still; not a minecart), and
                 // so does the world border (`Entity.collectColliders`).
                 crate::collisions::EntityCollisions {
                     blocks: scene,
