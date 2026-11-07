@@ -333,6 +333,7 @@ struct ItemFile {
     #[serde(default)]
     components: BTreeMap<String, serde_json::Value>,
     crafting_remainder: Option<String>,
+    place_block: Option<String>,
 }
 
 /// An item the mod adds: a vanilla template item's components under a new
@@ -350,6 +351,9 @@ pub struct Item {
     /// What it leaves in the crafting grid (`Item.Properties.craftRemainder`):
     /// a vanilla item or one of the mod's own.
     pub crafting_remainder: Option<String>,
+    /// An ordinary `BlockItem` binding to a vanilla block or this namespace's block.
+    /// Components still come from `template`; placement retains this item's identity.
+    pub place_block: Option<String>,
 }
 
 /// `MobEffectCategory`.
@@ -812,6 +816,7 @@ impl Content {
                 rarity: file.rarity,
                 components: file.components,
                 crafting_remainder: file.crafting_remainder,
+                place_block: file.place_block,
             };
             check_item(&item).map_err(|e| format!("{name}: {e}"))?;
             if !ids.insert(item.id.clone()) {
@@ -990,6 +995,13 @@ fn check_item(item: &Item) -> Result<(), String> {
     }
     if item.max_stack_size.is_some_and(|n| !(1..=99).contains(&n)) {
         return Err("max_stack_size is 1 to 99".into());
+    }
+    if let Some(block) = &item.place_block
+        && (!namespaced_id(block)
+            || block.split_once(':').map(|(ns, _)| ns) != item.id.split_once(':').map(|(ns, _)| ns)
+                && !vanilla_id(block))
+    {
+        return Err("place_block is a vanilla block or a block in this item's namespace".into());
     }
     check_components(&item.components, &["max_stack_size", "rarity"])
 }
@@ -1298,6 +1310,49 @@ capabilities = ["registries"]
         let content = package.and_then(|p| Content::read(&path, &p.manifest));
         std::fs::remove_dir_all(&dir).unwrap();
         content
+    }
+
+    #[test]
+    fn place_block_checks_files_and_native_declarations() {
+        for (i, target) in ["ruby:frame", "minecraft:stone"].iter().enumerate() {
+            let text = format!(r#"{{"template":"minecraft:stick","place_block":"{target}"}}"#);
+            let content = hmod(
+                &format!("place-block-{i}"),
+                MANIFEST_TEXT,
+                &[("data/ruby/horizon/item/empty_frame.json", text.as_bytes())],
+            )
+            .unwrap();
+            assert_eq!(content.items[0].place_block.as_deref(), Some(*target));
+        }
+        for (i, target) in ["stone", "other:frame", "ruby:Bad", "ruby:"]
+            .iter()
+            .enumerate()
+        {
+            let text = format!(r#"{{"template":"minecraft:stick","place_block":"{target}"}}"#);
+            assert!(
+                hmod(
+                    &format!("bad-place-block-{i}"),
+                    MANIFEST_TEXT,
+                    &[("data/ruby/horizon/item/empty_frame.json", text.as_bytes())]
+                )
+                .is_err()
+            );
+            let mut content = Content::declared("ruby");
+            assert!(
+                content
+                    .declare(
+                        &[],
+                        &[Item {
+                            id: "ruby:empty_frame".into(),
+                            template: "minecraft:stick".into(),
+                            place_block: Some((*target).into()),
+                            ..Default::default()
+                        }]
+                    )
+                    .is_err()
+            );
+            assert!(content.items.is_empty());
+        }
     }
 
     #[test]

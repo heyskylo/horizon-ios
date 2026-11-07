@@ -55,13 +55,13 @@ fn ingredient(v: &Value) -> Option<Ingredient> {
 /// Every recipe file, by recipe id (the registry's order): read through
 /// `json_folder`, so a load holding the folder shares one read of it. A file
 /// that can't be read or doesn't parse is left out.
-pub(super) fn recipes(dir: &Path, out: &mut BTreeMap<String, Value>) {
+fn recipes(dir: &Path, namespace: &str, out: &mut BTreeMap<String, Value>) {
     let Ok(folder) = horizon_world::json_folder::read(dir) else {
         return;
     };
     for file in &folder.files {
         if let Ok(v) = serde_json::from_slice(file.bytes().unwrap_or_default()) {
-            out.insert(format!("minecraft:{}", file.name), v);
+            out.insert(format!("{namespace}:{}", file.name), v);
         }
     }
 }
@@ -102,7 +102,20 @@ pub(super) fn network_recipes(
     overlay: &horizon_world::loot::PackOverlay,
 ) -> (BTreeMap<String, Box<str>>, HashMap<String, i32>) {
     let mut all = BTreeMap::new();
-    recipes(&resources.join("data/minecraft/recipe"), &mut all);
+    recipes(
+        &resources.join("data/minecraft/recipe"),
+        "minecraft",
+        &mut all,
+    );
+    for namespace in horizon_items::content_namespaces::namespaces(resources) {
+        if namespace != "minecraft" {
+            recipes(
+                &resources.join(format!("data/{namespace}/recipe")),
+                &namespace,
+                &mut all,
+            );
+        }
+    }
     overlay_recipes(overlay, &mut all);
     // The data's recipe filters, as the server's own tables apply them
     // (#5910), once, before the ingredient normalization, so a swapped
