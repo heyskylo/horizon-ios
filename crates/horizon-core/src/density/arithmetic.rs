@@ -227,6 +227,9 @@ pub struct UnarySampler {
     pub operation: UnaryOp,
 }
 impl DensitySampler for UnarySampler {
+    fn pointwise_inputs(&self) -> Option<Vec<&Arc<dyn DensitySampler>>> {
+        Some(vec![&self.input])
+    }
     fn sample_value(
         &self,
         context: &mut SamplerContext,
@@ -308,6 +311,9 @@ pub struct BinarySampler {
     pub operation: BinaryOp,
 }
 impl DensitySampler for BinarySampler {
+    fn pointwise_inputs(&self) -> Option<Vec<&Arc<dyn DensitySampler>>> {
+        Some(vec![&self.left, &self.right])
+    }
     fn sample_value(
         &self,
         context: &mut SamplerContext,
