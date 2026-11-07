@@ -1279,7 +1279,7 @@ mod tests {
             let id = game.tnts[0].id;
             set_silent(&mut game, id, silent);
             let before = particle_count(&game);
-            game.tick_one_tnt(0).unwrap();
+            game.tick_one_tnt(0, &[]).unwrap();
             rows.push(format!(
                 "explosion {silent} {} {}",
                 particle_count(&game) > before,
