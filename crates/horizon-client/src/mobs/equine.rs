@@ -93,14 +93,9 @@ pub fn max_temper(s: Species) -> i32 {
         100
     }
 }
-/// `AbstractHorse.getTemper`. Camels retain their existing legacy storage;
-/// the horse/llama saved writers use the independent signed counter.
+/// `AbstractHorse.getTemper`: the signed saved counter.
 pub fn temper(m: &Mob) -> i32 {
-    if matches!(m.species(), Species::Camel | Species::CamelHusk) {
-        i32::from(m.extra.variant3)
-    } else {
-        m.extra.equine_temper
-    }
+    m.extra.equine_temper
 }
 /// `AbstractHorse.modifyTemper`: Java int addition, then the gameplay clamp.
 /// Loading a saved counter does not call this method.
@@ -108,11 +103,7 @@ pub fn modify_temper(m: &mut Mob, amount: i32) -> i32 {
     let value = temper(m)
         .wrapping_add(amount)
         .clamp(0, max_temper(m.species()));
-    if matches!(m.species(), Species::Camel | Species::CamelHusk) {
-        m.extra.variant3 = value as u8;
-    } else {
-        m.extra.equine_temper = value;
-    }
+    m.extra.equine_temper = value;
     value
 }
 /// `canPerformRearing`: every `AbstractHorse` but llamas (and camels).
@@ -1208,7 +1199,8 @@ mod tests {
                 assert_eq!(m.extra.variant3, 217, "unrelated byte is untouched");
             }
         }
-        // Preserve the existing two camel paths; this is not camel parity.
+        // Camels inherit the same AbstractHorse counter: loaded unclamped,
+        // clamped only by a modification.
         for (species, name) in [
             (Species::Camel, "minecraft:camel"),
             (Species::CamelHusk, "minecraft:camel_husk"),
@@ -1221,13 +1213,13 @@ mod tests {
             ]);
             let kinds = [(name.into(), m.kind.clone())].into();
             let decoded = crate::entity_nbt::mob_from_nbt(&raw, &kinds, 7, None).unwrap();
-            assert_eq!(decoded.extra.variant3, 100);
-            assert_eq!(temper(&decoded), 100);
+            assert_eq!(decoded.extra.equine_temper, 1000);
+            assert_eq!(temper(&decoded), 1000);
             m.extra.variant3 = 97;
-            m.extra.equine_temper = 1234;
+            m.extra.equine_temper = 98;
             assert_eq!(modify_temper(&mut m, 5), 100);
-            assert_eq!(m.extra.variant3, 100);
-            assert_eq!(m.extra.equine_temper, 1234);
+            assert_eq!(m.extra.equine_temper, 100);
+            assert_eq!(m.extra.variant3, 97, "unrelated byte is untouched");
         }
     }
 
