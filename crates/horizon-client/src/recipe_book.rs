@@ -720,8 +720,8 @@ pub(crate) fn crafting_station(kind: &str) -> &'static str {
     }
 }
 impl RecipeIndex {
-    /// Reads `data/minecraft/recipe/*.json` under `root`, with the world's
-    /// packs' recipe files over it (`overlay`).
+    /// Reads vanilla and content namespaces' recipes under `root`, with
+    /// the world's packs' recipe files over them (`overlay`).
     pub fn load(root: &std::path::Path, overlay: &PackOverlay) -> Self {
         let mut recipes = std::collections::BTreeMap::new();
         let mut insert = |id: String, v: &serde_json::Value| {
@@ -786,6 +786,19 @@ impl RecipeIndex {
                 Some((format!("minecraft:{}", file.name), v))
             })
             .collect();
+        for namespace in crate::mod_content::namespaces(root) {
+            if namespace == "minecraft" {
+                continue;
+            }
+            if let Ok(folder) =
+                crate::json_folder::read(&root.join(format!("data/{namespace}/recipe")))
+            {
+                sources.extend(folder.files.iter().filter_map(|file| {
+                    let v = serde_json::from_slice::<serde_json::Value>(file.bytes().ok()?).ok()?;
+                    Some((format!("{namespace}:{}", file.name), v))
+                }));
+            }
+        }
         for (id, files) in overlay.kind("recipe") {
             match serde_json::from_slice::<serde_json::Value>(PackOverlay::top(files)) {
                 Ok(v) => match sources.iter_mut().find(|(n, _)| n == id) {
@@ -1181,6 +1194,54 @@ mod tests {
             (Some("minecraft:smithing_table"), None)
         );
     }
+    #[test]
+    fn content_namespace_recipes_have_display_ids() {
+        let root = std::env::temp_dir().join(format!(
+            "horizon-mod-recipe-index-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let vanilla = root.join("data/minecraft/recipe");
+        let content = root.join("data/recipe_pilot/recipe");
+        std::fs::create_dir_all(&vanilla).unwrap();
+        std::fs::create_dir_all(&content).unwrap();
+        for marker in [
+            horizon_items::content_namespaces::MARKER,
+            horizon_items::content_namespaces::MOD_IDS_MARKER,
+        ] {
+            std::fs::write(root.join(marker), br#"["recipe_pilot"]"#).unwrap();
+        }
+        std::fs::write(
+            vanilla.join("control.json"),
+            br#"{"type":"minecraft:crafting_shapeless","result":{"id":"minecraft:stick"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            content.join("flint_to_echo_shard.json"),
+            br#"{"type":"minecraft:crafting_shapeless","ingredients":["minecraft:flint"],"result":{"id":"minecraft:echo_shard","count":2}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            content.join("gated.json"),
+            br#"{"type":"minecraft:crafting_shapeless","neoforge:conditions":[{"type":"neoforge:mod_loaded","modid":"absent"}],"result":{"id":"minecraft:diamond"}}"#,
+        )
+        .unwrap();
+        let index = RecipeIndex::load(&root, &PackOverlay::NONE);
+        std::fs::remove_dir_all(&root).unwrap();
+        let id = "recipe_pilot:flint_to_echo_shard";
+        let display = index
+            .first_display(id)
+            .expect("content recipe has a display ID");
+        assert!(display >= 0);
+        assert_eq!(index.recipe_of_display(display), Some(id));
+        assert_eq!(index.result(id), Some("minecraft:echo_shard"));
+        assert!(index.first_display("minecraft:control").is_some());
+        assert!(!index.contains("recipe_pilot:gated"));
+    }
+
     #[test]
     fn small_recipes_are_centred_in_the_grid() {
         // One ingredient in a 3x3 grid goes to the middle cell.

@@ -6,7 +6,10 @@ use super::{
     java_properties::{Properties, date_string, now_millis},
     json::{self, Json},
 };
-use horizon_core::random::java_string_hash;
+use horizon_core::{
+    random::java_string_hash,
+    text::{parse_java_integer, parse_java_long},
+};
 use horizon_protocol::crypto::md5;
 
 /// MinecraftServer.ServerResourcePackInfo.
@@ -210,10 +213,10 @@ impl Reader {
         )
     }
     fn int(&mut self, key: &str, default: i32) -> i32 {
-        self.get(key, |s| s.parse().ok(), i32::to_string, default)
+        self.get(key, parse_java_integer, i32::to_string, default)
     }
     fn long(&mut self, key: &str, default: i64) -> i64 {
-        self.get(key, |s| s.parse().ok(), i64::to_string, default)
+        self.get(key, parse_java_long, i64::to_string, default)
     }
     fn boolean(&mut self, key: &str, default: bool) -> bool {
         self.get(key, |s| Some(java_bool(s)), bool::to_string, default)
@@ -224,7 +227,7 @@ impl Reader {
     fn permission(&mut self, key: &str, default: i32) -> i32 {
         self.get(
             key,
-            |s| s.parse::<i32>().ok().map(|v| v.clamp(0, 4)),
+            |s| parse_java_integer(s).map(|v| v.clamp(0, 4)),
             i32::to_string,
             default,
         )
@@ -257,18 +260,18 @@ impl ServerProperties {
         let enforce_whitelist = r.boolean("enforce-whitelist", false);
         let difficulty = r.get(
             "difficulty",
-            |s| match s.parse::<i32>() {
-                Ok(id) => Some(id.rem_euclid(4)),
-                Err(_) => DIFFICULTIES.iter().position(|n| *n == s).map(|i| i as i32),
+            |s| match parse_java_integer(s) {
+                Some(id) => Some(id.rem_euclid(4)),
+                None => DIFFICULTIES.iter().position(|n| *n == s).map(|i| i as i32),
             },
             |d| DIFFICULTIES[*d as usize].to_owned(),
             1,
         );
         let game_mode = r.get(
             "gamemode",
-            |s| match s.parse::<i32>() {
-                Ok(id) => Some(if (0..4).contains(&id) { id } else { 0 }),
-                Err(_) => Some(GAME_MODES.iter().position(|n| *n == s).unwrap_or(0) as i32),
+            |s| match parse_java_integer(s) {
+                Some(id) => Some(if (0..4).contains(&id) { id } else { 0 }),
+                None => Some(GAME_MODES.iter().position(|n| *n == s).unwrap_or(0) as i32),
             },
             |g| GAME_MODES[*g as usize].to_owned(),
             0,
@@ -311,7 +314,7 @@ impl ServerProperties {
         let broadcast_console_to_ops = r.boolean("broadcast-console-to-ops", true);
         let max_world_size = r.get(
             "max-world-size",
-            |s| s.parse::<i32>().ok().map(|v| v.clamp(1, 29_999_984)),
+            |s| parse_java_integer(s).map(|v| v.clamp(1, 29_999_984)),
             i32::to_string,
             29_999_984,
         );
@@ -322,9 +325,11 @@ impl ServerProperties {
         let hide_online_players = r.boolean("hide-online-players", false);
         // Its deserializer is not wrapped: a non-number throws out of the constructor.
         let entity_broadcast_range_percentage = match r.raw("entity-broadcast-range-percentage") {
-            Some(s) => s.parse::<i32>().map(|v| v.clamp(10, 1000)).map_err(|_| {
-                format!("java.lang.NumberFormatException: For input string: \"{s}\"")
-            })?,
+            Some(s) => parse_java_integer(&s)
+                .map(|v| v.clamp(10, 1000))
+                .ok_or_else(|| {
+                    format!("java.lang.NumberFormatException: For input string: \"{s}\"")
+                })?,
             None => 100,
         };
         r.p.put(
@@ -490,10 +495,7 @@ pub fn parse_seed(s: &str) -> Option<i64> {
     if s.is_empty() {
         return None;
     }
-    Some(
-        s.parse::<i64>()
-            .unwrap_or_else(|_| i64::from(java_string_hash(s.encode_utf16()))),
-    )
+    Some(parse_java_long(s).unwrap_or_else(|| i64::from(java_string_hash(s.encode_utf16()))))
 }
 
 fn server_pack_info(
@@ -602,6 +604,44 @@ mod tests {
             0
         }
     }
+    #[test]
+    fn unicode_decimal_server_settings_match_java_number_parsers() {
+        for value in ["12", "\u{0661}\u{0662}", "\u{ff11}\u{ff12}"] {
+            let mut raw = Properties::default();
+            raw.put("max-players", value.into());
+            raw.put("max-tick-time", value.into());
+            raw.put("function-permission-level", "-\u{0661}".into());
+            let p = ServerProperties::new(raw, &mut Fixed).unwrap();
+            assert_eq!(p.max_players, 12, "{value}");
+            assert_eq!(p.max_tick_time, 12, "{value}");
+            assert_eq!(p.function_permission_level, 0);
+            assert_eq!(p.raw.get("max-players"), Some("12"));
+            assert_eq!(p.raw.get("max-tick-time"), Some("12"));
+        }
+    }
+
+    #[test]
+    fn unicode_numeric_enums_ranges_and_seeds_keep_vanilla_conversions() {
+        let mut raw = Properties::default();
+        for (key, value) in [
+            ("difficulty", "\u{0663}"),
+            ("gamemode", "\u{ff11}"),
+            ("max-world-size", "\u{0661}\u{0662}"),
+            ("entity-broadcast-range-percentage", "\u{ff11}\u{ff12}"),
+            ("level-seed", "\u{0661}\u{0662}"),
+        ] {
+            raw.put(key, value.into());
+        }
+        let p = ServerProperties::new(raw, &mut Fixed).unwrap();
+        assert_eq!((p.difficulty, p.game_mode, p.max_world_size), (3, 1, 12));
+        assert_eq!(p.entity_broadcast_range_percentage, 12);
+        assert_eq!((p.seed, p.random_seed), (12, false));
+        assert_eq!(p.raw.get("difficulty"), Some("hard"));
+        assert_eq!(p.raw.get("gamemode"), Some("creative"));
+        assert_eq!(p.raw.get("max-world-size"), Some("12"));
+        assert_eq!(p.raw.get("entity-broadcast-range-percentage"), Some("12"));
+    }
+
     #[test]
     fn defaults_match_vanilla_init_settings() {
         let p = ServerProperties::new(Properties::default(), &mut Fixed).unwrap();
