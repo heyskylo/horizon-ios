@@ -471,6 +471,51 @@ fn is_air(registry: &BlockRegistry, state: BlockStateId) -> bool {
         )
     })
 }
+/// The Mob codec's existing numeric reads, recursively for the same effect.
+fn mob_hidden_effect(tag: &Tag, id: &'static str) -> Option<crate::effects::EffectInstance> {
+    if !matches!(tag, Tag::Compound(_)) {
+        return None;
+    }
+    let visible = number(tag.get("show_particles")).is_none_or(|v| v != 0);
+    Some(crate::effects::EffectInstance {
+        id,
+        duration: number(tag.get("duration")).unwrap_or(0) as i32,
+        amplifier: number(tag.get("amplifier")).unwrap_or(0) as i32,
+        ambient: number(tag.get("ambient")).is_some_and(|v| v != 0),
+        visible,
+        show_icon: number(tag.get("show_icon")).map_or(visible, |v| v != 0),
+        hidden: tag
+            .get("hidden_effect")
+            .and_then(|h| mob_hidden_effect(h, id))
+            .map(Box::new),
+    })
+}
+/// `MobEffectInstance.Details`: the active tuple and its modeled weaker nodes.
+fn mob_effect_tag(e: &crate::effects::EffectInstance, root: bool) -> Tag {
+    let mut fields = Vec::new();
+    if root {
+        fields.push(("id", string(crate::brewing::namespaced(e.id))));
+    }
+    if e.amplifier != 0 {
+        fields.push((
+            "amplifier",
+            Tag::Byte(e.amplifier.clamp(0, 255) as u8 as i8),
+        ));
+    }
+    fields.push(("duration", Tag::Int(e.duration)));
+    if e.ambient {
+        fields.push(("ambient", Tag::Byte(1)));
+    }
+    if !e.visible {
+        fields.push(("show_particles", Tag::Byte(0)));
+    }
+    fields.push(("show_icon", Tag::Byte(i8::from(e.show_icon))));
+    if let Some(hidden) = e.hidden.as_deref() {
+        fields.push(("hidden_effect", mob_effect_tag(hidden, false)));
+    }
+    Tag::compound(fields)
+}
+
 /// The mob's entity compound. `registry` is what writes a field holding a block
 /// state (an enderman's `carriedBlockState`): without one, a caller that has no
 /// resources (unit tests, structure templates) keeps whatever the loaded
@@ -631,33 +676,12 @@ pub fn mob_to_nbt(
         }
     }
     // LivingEntity.addAdditionalSaveData: `active_effects` only when there are
-    // any (MobEffectInstance.CODEC; a mob's effects are never ambient, and one
-    // given with `hideParticles` shows neither particles nor its icon).
+    // any (MobEffectInstance.CODEC), including their modeled weaker instances.
     if m.extra.effects.is_empty() {
         map.remove(&horizon_world::nbt::JavaString::from("active_effects"));
     } else {
-        let effects = m
-            .extra
-            .effects
-            .iter()
-            .map(|&(effect, duration, amplifier)| {
-                let shown = !m.extra.hidden_effects.contains(&effect);
-                let ambient = m.extra.ambient_effects.contains(&effect);
-                let mut e = vec![("id", string(crate::brewing::namespaced(effect)))];
-                // The codec leaves out an amplifier of 0 (its default).
-                if amplifier != 0 {
-                    e.push(("amplifier", Tag::Byte(amplifier.clamp(0, 255) as u8 as i8)));
-                }
-                e.push(("duration", Tag::Int(duration)));
-                if ambient {
-                    e.push(("ambient", Tag::Byte(1)));
-                }
-                if !shown {
-                    e.push(("show_particles", Tag::Byte(0)));
-                }
-                e.push(("show_icon", Tag::Byte(i8::from(shown))));
-                Tag::compound(e)
-            });
+        let effects =
+            (0..m.extra.effects.len()).map(|i| mob_effect_tag(&m.effect_instance(i), true));
         map.insert("active_effects".into(), Tag::List(effects.collect()));
     }
     map.insert(
@@ -1927,6 +1951,12 @@ pub fn mob_from_nbt(
             if number(e.get("ambient")).is_some_and(|a| a != 0) {
                 m.extra.ambient_effects.push(effect);
             }
+            m.set_effect_fallback(
+                effect,
+                e.get("hidden_effect")
+                    .and_then(|h| mob_hidden_effect(h, effect))
+                    .map(Box::new),
+            );
         }
     }
     m.silent = flag(tag, "Silent");
@@ -9166,5 +9196,79 @@ mod carrier_inventory_tests {
                 .get("Inventory")
                 .is_none()
         );
+    }
+}
+
+#[cfg(test)]
+mod mob_hidden_speed_tests {
+    use super::*;
+    use crate::mobs::{Species, sensor_scan_tests::kind};
+    fn types() -> HashMap<String, Arc<MobType>> {
+        let mut pig = (*kind()).clone();
+        pig.id = "minecraft:pig".into();
+        pig.species = Species::Pig;
+        HashMap::from([("minecraft:pig".to_owned(), Arc::new(pig))])
+    }
+    fn saved(m: &Mob) -> Tag {
+        mob_to_nbt(m, [202, 0, 0, 1], None, None, |_| None)
+    }
+    #[test]
+    fn loaded_speed_fallback_survives_a_no_raw_save() {
+        let input = horizon_world::nbt::parse_snbt(r#"{id:"minecraft:pig",UUID:[I;202,0,0,1],Pos:[2.5d,200d,4.5d],Health:10f,NoAI:1b,NoGravity:1b,active_effects:[{id:"minecraft:speed",amplifier:1b,duration:40,show_icon:1b,hidden_effect:{duration:200,ambient:1b,show_particles:0b,show_icon:0b}}]}"#).unwrap().0;
+        let m = mob_from_nbt(&input, &types(), 7, None).unwrap();
+        assert_eq!(m.id, 7);
+        assert_eq!(m.kind.id, "minecraft:pig");
+        assert!(m.no_ai && m.no_gravity);
+        assert_eq!(m.health, 10.0);
+        assert_eq!(m.extra.effects, [("minecraft:speed", 40, 1)]);
+        let tag = saved(&m);
+        let hidden = tag
+            .get("active_effects")
+            .and_then(|t| match t {
+                Tag::List(v) => v.first(),
+                _ => None,
+            })
+            .and_then(|e| e.get("hidden_effect"));
+        assert_eq!(
+            hidden.and_then(|t| t.get("duration")),
+            Some(&Tag::Int(200)),
+            "real decoder must retain weaker duration without raw input"
+        );
+    }
+    // Added after the frozen old proof: modeled mutation and stale raw controls.
+    #[test]
+    fn fallback_model_wins_over_stale_raw_and_clears_without_resurrection() {
+        let input = horizon_world::nbt::parse_snbt(r#"{id:"minecraft:pig",Pos:[2.5d,200d,4.5d],Tags:["untouched"],active_effects:[{id:"minecraft:speed",amplifier:1b,duration:40,hidden_effect:{duration:200,ambient:1b,show_particles:0b,show_icon:0b}}]}"#).unwrap().0;
+        let mut m = mob_from_nbt(&input, &types(), 7, None).unwrap();
+        let h = &m.extra.effect_fallbacks[0];
+        assert_eq!(
+            (
+                h.id,
+                h.duration,
+                h.amplifier,
+                h.ambient,
+                h.visible,
+                h.show_icon
+            ),
+            ("minecraft:speed", 200, 0, true, false, false)
+        );
+        m.extra.effect_fallbacks[0].duration = 123;
+        m.extra.effects[0].1 = 30;
+        let actual = mob_to_nbt(&m, [202, 0, 0, 1], Some(&input), None, |_| None);
+        let first = |t: &Tag| match t.get("active_effects").unwrap() {
+            Tag::List(v) => v[0].clone(),
+            _ => panic!(),
+        };
+        assert_eq!(first(&actual).get("duration"), Some(&Tag::Int(30)));
+        assert_eq!(
+            first(&actual).get("hidden_effect").unwrap().get("duration"),
+            Some(&Tag::Int(123))
+        );
+        assert_eq!(actual.get("Tags"), input.get("Tags"));
+        m.extra.effect_fallbacks.clear();
+        for raw in [None, Some(&input)] {
+            let actual = mob_to_nbt(&m, [202, 0, 0, 1], raw, None, |_| None);
+            assert!(first(&actual).get("hidden_effect").is_none());
+        }
     }
 }

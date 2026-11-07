@@ -151,6 +151,9 @@ impl Game<'_> {
                             .retain(|x| e.is_some_and(|e| x.0 != namespaced(e.id)));
                         let left = &m.extra.effects;
                         m.extra
+                            .effect_fallbacks
+                            .retain(|h| left.iter().any(|x| x.0 == h.id));
+                        m.extra
                             .hidden_effects
                             .retain(|h| left.iter().any(|x| x.0 == *h));
                         m.extra
