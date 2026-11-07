@@ -892,8 +892,13 @@ impl Game<'_> {
         Some(id)
     }
     /// The mobs under an entity's `Passengers`, taken out of it; the
-    /// passengers Horizon doesn't simulate stay.
-    fn take_mob_passengers(&self, tag: &mut Tag) -> Vec<Tag> {
+    /// passengers Horizon doesn't simulate stay. An entry no entity loads
+    /// from goes (`EntityType.loadPassengersRecursive` mounts only a loaded
+    /// one): not a compound, or no registered type (`EntityType.by`).
+    fn take_mob_passengers(&mut self, tag: &mut Tag) -> Vec<Tag> {
+        self.load_entity_types();
+        // Without the registry nothing can be told apart: keep every entry.
+        let registry = self.entity_types_loaded();
         let mut riders = Vec::new();
         if let Tag::Compound(c) = tag
             && let Some(Tag::List(list)) = c.remove(&"Passengers".into())
@@ -902,9 +907,11 @@ impl Game<'_> {
             for p in list {
                 let known =
                     entity_nbt::kind(&p).is_some_and(|k| self.res.mob_types().contains_key(&k));
+                let loads = matches!(p, Tag::Compound(_))
+                    && entity_nbt::kind(&p).is_some_and(|k| self.entity_type_exists(&k));
                 if known {
                     riders.push(p);
-                } else {
+                } else if loads || !registry {
                     unknown.push(p);
                 }
             }
@@ -3120,6 +3127,254 @@ mod item_display_saved_transform_tests {
                     .health,
                 10.0
             );
+        });
+    }
+}
+
+#[cfg(test)]
+mod invalid_passenger_tests {
+    use super::*;
+    use crate::game::{Audio, Options, Progress, Settings, commands::Target, load_resources};
+    use horizon_client::motion::PlayerMotion;
+
+    const PIG: &str = "NoAI:1b,NoGravity:1b,PersistenceRequired:1b,Silent:1b";
+    const UNKNOWN: &str = "{id:\"minecraft:h161_unknown\",Tags:[\"h161_unknown_entry\"]}";
+    const NO_ID: &str = "{Tags:[\"h161_no_id_entry\"]}";
+
+    fn pig(tag: &str, n: i32, extra: &str) -> String {
+        format!("{{id:\"minecraft:pig\",UUID:[I;161,0,0,{n}],Tags:[\"{tag}\"],{PIG}{extra}}}")
+    }
+    fn summon(game: &mut Game<'_>, tag: &str, n: i32, passengers: &str) -> u32 {
+        assert!(game.run_command(&format!(
+            "summon minecraft:pig 4.5 200 4.5 {{UUID:[I;161,0,0,{n}],Tags:[\"{tag}\"],{PIG},Passengers:{passengers}}}"
+        )));
+        mob(game, n)
+    }
+    /// The mob in the level with UUID `n`.
+    fn mob(game: &Game<'_>, n: i32) -> u32 {
+        let ids: Vec<u32> = game
+            .mobs
+            .iter()
+            .filter(|m| game.persist.uuid_of(m.id) == Some([161, 0, 0, n]))
+            .map(|m| m.id)
+            .collect();
+        assert_eq!(ids.len(), 1, "one live mob with UUID {n}");
+        ids[0]
+    }
+    fn mount(game: &Game<'_>, id: u32) -> Option<u32> {
+        game.mobs.iter().find(|m| m.id == id).unwrap().extra.mount
+    }
+    /// Each saved passenger of `id` as (id, UUID word 3, first tag), in order;
+    /// `None` when the entity saves no Passengers.
+    fn saved(game: &mut Game<'_>, id: u32) -> Option<Vec<(String, Option<i32>, String)>> {
+        let tag = game.entity_nbt(Target::Mob(id)).expect("saved mob");
+        let Some(Tag::List(list)) = tag.get("Passengers") else {
+            return None;
+        };
+        let text = |t: Option<&Tag>| match t {
+            Some(Tag::String(s)) => s.to_string().unwrap_or_default(),
+            _ => String::new(),
+        };
+        Some(
+            list.iter()
+                .map(|p| {
+                    let uuid = match p.get("UUID") {
+                        Some(Tag::IntArray(u)) if u.len() == 4 => Some(u[3]),
+                        _ => None,
+                    };
+                    let first = match p.get("Tags") {
+                        Some(Tag::List(t)) => text(t.first()),
+                        _ => String::new(),
+                    };
+                    (text(p.get("id")), uuid, first)
+                })
+                .collect(),
+        )
+    }
+    fn pig_entry(n: i32, tag: &str) -> (String, Option<i32>, String) {
+        ("minecraft:pig".into(), Some(n), tag.into())
+    }
+
+    fn with_game(test: impl FnOnce(&mut Game<'_>)) {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.game_dir = Some(
+            std::path::PathBuf::from(std::env::var_os("HORIZON_HOME").unwrap())
+                .join(format!("h161-{:?}", std::thread::current().id())),
+        );
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.world
+            .chunks
+            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        game.block_ticks
+            .add_empty_chunk(ChunkPos::new(0, 0))
+            .unwrap();
+        assert!(game.run_command("forceload add 0 0"));
+        game.player = Some(PlayerMotion::new(game.motion, Vec3::new(2.5, 200.0, 2.5)).unwrap());
+        game.creative = true;
+        let time = game.world.game_time;
+        test(&mut game);
+        assert_eq!(game.world.game_time, time);
+    }
+
+    /// Expected values from the official 26.3 server:
+    /// EntityType.loadPassengersRecursive keeps only the entries that load,
+    /// and Entity.saveWithoutId saves the riders the entity has.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and a scratch HORIZON_HOME"]
+    fn passengers_that_do_not_load_are_not_saved() {
+        with_game(|game| {
+            let mut failures = Vec::new();
+            for (name, n, passengers) in [
+                ("unknown", 102, format!("[{UNKNOWN}]")),
+                ("missing_id", 103, format!("[{NO_ID}]")),
+                ("noncompound", 104, "[1,2]".to_string()),
+            ] {
+                let id = summon(game, &format!("h161_{name}"), n, &passengers);
+                let got = saved(game, id);
+                if got.is_some() {
+                    failures.push(format!("{name}: saved Passengers {got:?}"));
+                }
+            }
+            if game.mobs.len() != 3 {
+                failures.push(format!(
+                    "invalid entries: {} mobs, expected 3",
+                    game.mobs.len()
+                ));
+            }
+
+            // Valid riders keep their order and their own state.
+            let passengers = format!(
+                "[{UNKNOWN},{},{NO_ID},{}]",
+                pig("h161_mixed_a", 201, ",CustomName:\"a\""),
+                pig("h161_mixed_b", 202, "")
+            );
+            let root = summon(game, "h161_mixed", 105, &passengers);
+            let [a, b] = [201, 202].map(|n| mob(game, n));
+            if mount(game, a) != Some(root) || mount(game, b) != Some(root) {
+                failures.push("mixed: a valid rider does not ride the root".into());
+            }
+            let got = saved(game, root);
+            let want = vec![
+                pig_entry(201, "h161_mixed_a"),
+                pig_entry(202, "h161_mixed_b"),
+            ];
+            if got.as_ref() != Some(&want) {
+                failures.push(format!("mixed: saved {got:?}"));
+            }
+            let a_saved = game.entity_nbt(Target::Mob(a)).unwrap();
+            if !matches!(a_saved.get("CustomName"), Some(Tag::String(s)) if s.to_string().unwrap_or_default() == "a")
+            {
+                failures.push("mixed: rider a lost its CustomName".into());
+            }
+
+            // A rider's own invalid entries go too.
+            let passengers = format!(
+                "[{}]",
+                pig(
+                    "h161_nested_child",
+                    203,
+                    &format!(",Passengers:[{UNKNOWN}]")
+                )
+            );
+            let root = summon(game, "h161_nested", 106, &passengers);
+            let child = mob(game, 203);
+            if saved(game, root) != Some(vec![pig_entry(203, "h161_nested_child")]) {
+                failures.push(format!("nested: root saved {:?}", saved(game, root)));
+            }
+            if saved(game, child).is_some() {
+                failures.push(format!("nested: child saved {:?}", saved(game, child)));
+            }
+
+            // Without a kept compound the tree writer has only the live riders.
+            let root = mob(game, 105);
+            let kept = game.persist.raw.remove(&root);
+            if saved(game, root) != Some(want.clone()) {
+                failures.push(format!("mixed, no raw: saved {:?}", saved(game, root)));
+            }
+            if let Some(kept) = kept {
+                game.persist.raw.insert(root, kept);
+            }
+
+            // Entity.load does not read Passengers: a merge leaves the riders.
+            let passengers = format!("[{UNKNOWN},{}]", pig("h161_merged_child", 220, ""));
+            let root = summon(game, "h161_merged", 120, &passengers);
+            let child = mob(game, 220);
+            let merged = |game: &mut Game<'_>, merge: &str| {
+                game.run_command(&format!(
+                    "data merge entity @e[tag=h161_merged,limit=1] {merge}"
+                ))
+            };
+            let passengers_only = format!("{{Passengers:[{UNKNOWN},{NO_ID}]}}");
+            let rider = Some(vec![pig_entry(220, "h161_merged_child")]);
+            // An unrelated field applies; the second, identical merge changes
+            // nothing (DataCommands: ERROR_MERGE_UNCHANGED) and keeps the raw and the mount.
+            for (merge, expected) in [
+                ("{CustomName:\"merged2\"}", true),
+                ("{CustomName:\"merged2\"}", false),
+            ] {
+                let raw = game.persist.raw.get(&root).cloned();
+                let ok = merged(game, merge);
+                if ok != expected {
+                    failures.push(format!("merged {merge}: result {ok}, expected {expected}"));
+                }
+                if !expected && game.persist.raw.get(&root) != raw.as_ref() {
+                    failures.push(format!("merged {merge}: a refused merge changed the raw"));
+                }
+                if saved(game, root) != rider {
+                    failures.push(format!("merged {merge}: saved {:?}", saved(game, root)));
+                }
+                if mount(game, child) != Some(root) {
+                    failures.push(format!("merged {merge}: child left"));
+                }
+            }
+            let name = game.entity_nbt(Target::Mob(root)).unwrap();
+            if !matches!(name.get("CustomName"), Some(Tag::String(s)) if s.to_string().unwrap_or_default() == "merged2")
+            {
+                failures.push("merged: CustomName did not apply".into());
+            }
+            // Passenger-only merges, again and again: nothing accumulates.
+            for n in 0..3 {
+                if !merged(game, &passengers_only) {
+                    failures.push(format!("passengers-only merge {n}: failed"));
+                }
+                if saved(game, root) != rider {
+                    failures.push(format!(
+                        "passengers-only merge {n}: saved {:?}",
+                        saved(game, root)
+                    ));
+                }
+                if mount(game, child) != Some(root) {
+                    failures.push(format!("passengers-only merge {n}: child left"));
+                }
+            }
+            assert!(failures.is_empty(), "invalid passengers: {failures:#?}");
         });
     }
 }

@@ -318,6 +318,18 @@ impl Game<'_> {
     /// `TypedEntityData.loadInto` is: a spawn egg's data on the mob it spawned.
     pub(in crate::game) fn apply_entity_nbt(&mut self, t: Target, mut tag: Tag) -> R<()> {
         let stale = || err("commands.data.merge.failed", &[]);
+        // Entity.load does not read Passengers: the riders stay, and so do the
+        // passengers the load kept raw (none, when it kept none).
+        let kept_passengers = match t {
+            Target::Mob(id) | Target::Boat(id) | Target::Cart(id) | Target::Tnt(id) => Some(
+                self.persist
+                    .raw
+                    .get(&id)
+                    .and_then(|raw| raw.get("Passengers"))
+                    .cloned(),
+            ),
+            _ => None,
+        };
         match t {
             // EntityDataAccessor.setData: players can't be modified, guests neither.
             Target::Player | Target::Guest(_) => {
@@ -522,6 +534,18 @@ impl Game<'_> {
         | Target::Other(id)
         | Target::Fangs(id) = t
         {
+            if let Some(kept) = kept_passengers
+                && let Tag::Compound(c) = &mut tag
+            {
+                match kept {
+                    Some(passengers) => {
+                        c.insert("Passengers".into(), passengers);
+                    }
+                    None => {
+                        c.remove(&"Passengers".into());
+                    }
+                }
+            }
             self.persist.raw.insert(id, tag);
         }
         Ok(())
