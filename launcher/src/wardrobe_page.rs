@@ -134,6 +134,133 @@ fn plain() -> Texture {
     }
 }
 
+/// Horizon's stand-in player, the website shop's own (`standInSkin` in horizon-site's
+/// `components/shop/model.ts`): original art painted from rows, not Mojang's. The Shop dresses it
+/// when the account has no skin the preview can read, so its pictures match the website's.
+fn stand_in() -> Texture {
+    const PALETTE: [(char, u32); 12] = [
+        ('H', 0x3a2a4f),
+        ('S', 0xe0a98a),
+        ('W', 0xffffff),
+        ('E', 0x4b3bb8),
+        ('N', 0xc98f72),
+        ('M', 0x9a5a4a),
+        ('T', 0x5b3fd6),
+        ('t', 0x4a32b8),
+        ('L', 0xa08cff),
+        ('P', 0x23305a),
+        ('p', 0x1c2648),
+        ('B', 0x1a1a22),
+    ];
+    // One letter per row of a face (each spread across it), or the face's rows; a lone letter
+    // fills the face.
+    let rows = |spec: &str, w: usize| -> Vec<String> {
+        spec.chars().map(|c| c.to_string().repeat(w)).collect()
+    };
+    let lit = |r: &[&str]| -> Vec<String> { r.iter().map(|s| s.to_string()).collect() };
+    let mirror =
+        |r: &[String]| -> Vec<String> { r.iter().map(|s| s.chars().rev().collect()).collect() };
+    let one = |c: &str| vec![c.to_owned()];
+    let head_side = lit(&[
+        "HHHHHHHH", "HHHHHHHH", "HHHHHHSS", "HHHHSSSS", "HHHSSSSS", "HHSSSSSS", "HSSSSSSS",
+        "SSSSSSSS",
+    ]);
+    // top, bottom, right, front, left, back.
+    let limb = |spec: &str| -> [Vec<String>; 6] {
+        let first = &spec[..1];
+        let last = &spec[spec.len() - 1..];
+        [
+            one(first),
+            one(last),
+            rows(spec, 4),
+            rows(spec, 4),
+            rows(spec, 4),
+            rows(spec, 4),
+        ]
+    };
+    let leg = || {
+        let mut l = limb("PPPPPPPPPPBB");
+        l[3] = [rows("PPPPPPP", 4), lit(&["pPPp"]), rows("PPBB", 4)].concat();
+        l
+    };
+    let body_front = [
+        lit(&["TTTSSTTT", "TTTTTTTT", "TTLTTTTT", "TTLTTTTT"]),
+        rows("TTTTTtPP", 8),
+    ]
+    .concat();
+    // Each box: where its faces start on the skin, its size (w, h, d), its six faces.
+    let boxes = [
+        (
+            (0, 0),
+            (8, 8, 8),
+            [
+                one("H"),
+                one("S"),
+                head_side.clone(),
+                lit(&[
+                    "HHHHHHHH", "HHHHHHHH", "HSSSSSSH", "SSSSSSSS", "SWESSEWS", "SSSNNSSS",
+                    "SSMMMMSS", "SSSSSSSS",
+                ]),
+                mirror(&head_side),
+                one("H"),
+            ],
+        ),
+        (
+            (16, 16),
+            (8, 12, 4),
+            [
+                one("T"),
+                one("P"),
+                rows("TTTTTTTTTtPP", 4),
+                body_front,
+                rows("TTTTTTTTTtPP", 4),
+                rows("TTTTTTTTTtPP", 8),
+            ],
+        ),
+        ((40, 16), (4, 12, 4), limb("TTTtSSSSSSSS")),
+        ((32, 48), (4, 12, 4), limb("TTTtSSSSSSSS")),
+        ((0, 16), (4, 12, 4), leg()),
+        ((16, 48), (4, 12, 4), leg()),
+    ];
+    let mut rgba = vec![0u8; 64 * 64 * 4];
+    let mut fill = |x: usize, y: usize, w: usize, h: usize, face: &[String]| {
+        let widest = face[0].chars().count();
+        for j in 0..h {
+            let row = &face[j.min(face.len() - 1)];
+            for i in 0..w {
+                let Some(c) = row.chars().nth(i.min(widest - 1)) else {
+                    continue;
+                };
+                let Some((_, colour)) = PALETTE.iter().find(|(k, _)| *k == c) else {
+                    continue;
+                };
+                let [_, r, g, b] = colour.to_be_bytes();
+                rgba[((y + j) * 64 + x + i) * 4..][..4].copy_from_slice(&[r, g, b, 255]);
+            }
+        }
+    };
+    for ((u, v), (w, h, d), [top, bottom, right, front, left, back]) in boxes {
+        fill(u + d, v, w, d, &top);
+        fill(u + d + w, v, w, d, &bottom);
+        fill(u, v + d, d, h, &right);
+        fill(u + d, v + d, w, h, &front);
+        fill(u + d + w, v + d, d, h, &left);
+        fill(u + 2 * d + w, v + d, w, h, &back);
+    }
+    Texture {
+        width: 64,
+        height: 64,
+        rgba,
+    }
+}
+
+/// `stand_in()`, made once.
+fn stand_in_skin() -> Arc<Texture> {
+    static STAND_IN: std::sync::LazyLock<Arc<Texture>> =
+        std::sync::LazyLock::new(|| Arc::new(stand_in()));
+    STAND_IN.clone()
+}
+
 /// `plain()`, made once: the views compare skins by their file.
 fn plain_skin() -> Arc<Texture> {
     static PLAIN: std::sync::LazyLock<Arc<Texture>> =
@@ -1355,6 +1482,23 @@ impl Launcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_stand_in_wears_the_websites_face_and_no_outer_layers() {
+        let t = stand_in();
+        let at = |x: usize, y: usize| &t.rgba[(y * 64 + x) * 4..][..4];
+        // The face's fifth row, "SWESSEWS": skin, then the left eye's white and iris.
+        assert_eq!(at(8, 12), &[0xe0, 0xa9, 0x8a, 255]);
+        assert_eq!(at(9, 12), &[0xff, 0xff, 0xff, 255]);
+        assert_eq!(at(10, 12), &[0x4b, 0x3b, 0xb8, 255]);
+        // Hair on top, the shirt's front, a leg's shoe at its foot.
+        assert_eq!(at(10, 2), &[0x3a, 0x2a, 0x4f, 255]);
+        assert_eq!(at(22, 26), &[0x5b, 0x3f, 0xd6, 255]);
+        assert_eq!(at(5, 31), &[0x1a, 0x1a, 0x22, 255]);
+        // The hat and jacket layers stay see-through.
+        assert_eq!(at(40, 10)[3], 0);
+        assert_eq!(at(20, 36)[3], 0);
+    }
 
     #[test]
     fn a_hovered_card_tries_its_item_on_in_its_slot_only() {
