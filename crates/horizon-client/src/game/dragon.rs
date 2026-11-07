@@ -3817,6 +3817,7 @@ impl Game<'_> {
             vertical_collision: false,
             horizontal_collision: false,
             needs_sync: false,
+            sync_position: false,
             idle: false,
             bare: false,
             leash: None,

@@ -1966,6 +1966,7 @@ impl Game<'_> {
             e.on_ground = place.on_ground;
             e.velocity = place.velocity;
             e.needs_sync = m.needs_sync;
+            e.sync_position = m.sync_position;
             (e.idle, e.bare) = (idle, bare);
             e.leash = leash;
             if bare {
@@ -2680,8 +2681,10 @@ impl Game<'_> {
                 }
             }
             // ServerEntity.sendChanges clears needsSync once it has looked.
+            // SteppedInterpolationTracker.updateTracking clears syncPosition.
             for m in &mut self.mobs {
                 m.needs_sync = false;
+                m.sync_position = false;
             }
             for p in &mut self.creatures.projectiles {
                 p.needs_sync = false;

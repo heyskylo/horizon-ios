@@ -1456,6 +1456,9 @@ pub struct Mob {
     /// `Entity.needsSync`: knocked back, pushed or jumped since its server
     /// last sent it, so the next update goes out at once.
     pub needs_sync: bool,
+    /// `Entity.syncPosition`: it bounced this tick (`restituteMovementAfterCollisions`),
+    /// so its tracker keeps this position as a step of the next move it sends.
+    pub sync_position: bool,
     /// `getAttributeValue(KNOCKBACK_RESISTANCE)` with the modifiers of the
     /// items it wears or holds, which the game works out each tick for a mob
     /// that has any (the mob itself knows no item): `None` for the rest.
@@ -3205,6 +3208,7 @@ impl Mob {
             horizontal_collision: false,
             vertical_collision_below: false,
             needs_sync: false,
+            sync_position: false,
             gear_knockback_resistance: None,
             hurt_time: 0,
             invulnerable: 0,

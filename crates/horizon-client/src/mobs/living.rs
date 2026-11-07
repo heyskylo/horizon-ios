@@ -1984,9 +1984,11 @@ impl RestitutionWorld for MobRestitution<'_, '_> {
     fn bounce_event(&mut self) -> Result<(), ()> {
         Ok(())
     }
-    /// Nothing to mark: the bounce is already the velocity of this tick, and
-    /// the mob tracker sends the position and velocity it reads.
-    fn mark_position_for_sync(&mut self) {}
+    /// `Entity.syncPosition`: the tracker keeps where the mob bounced as a
+    /// step of its next move (`SteppedInterpolationTracker.updateTracking`).
+    fn mark_position_for_sync(&mut self) {
+        self.mob.sync_position = true;
+    }
     fn set_velocity(&mut self, velocity: Vec3) -> Result<(), ()> {
         self.mob.velocity = velocity;
         Ok(())
