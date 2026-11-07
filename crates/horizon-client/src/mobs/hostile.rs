@@ -361,7 +361,8 @@ pub fn creeper_tick(m: &mut Mob, events: &mut Vec<MobEvent>) {
     m.swell = (m.swell + dir).max(0);
     if m.swell >= m.max_swell {
         m.swell = m.max_swell;
-        let radius = if m.extra.charged { 6.0 } else { 3.0 };
+        // explodeCreeper: `explosionRadius * (isPowered() ? 2.0F : 1.0F)`.
+        let radius = f32::from(m.extra.explosion_radius) * if m.extra.charged { 2.0 } else { 1.0 };
         let name = match &m.custom_name {
             Some(name) => crate::text::Text::literal(name.clone()),
             None => crate::text::Text::translate(
@@ -374,6 +375,7 @@ pub fn creeper_tick(m: &mut Mob, events: &mut Vec<MobEvent>) {
             charged: m.extra.charged,
             name,
             in_water: m.fluids.in_water,
+            kind: m.kind.id.clone(),
         });
         events.push(MobEvent::Explode(
             [m.position.x, m.position.y, m.position.z],

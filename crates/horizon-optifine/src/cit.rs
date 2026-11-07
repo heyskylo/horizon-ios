@@ -344,14 +344,14 @@ impl ComponentTest {
         };
         // Enchantments were `{levels: {id: level}}` until 1.21.5 and are the bare map since, as
         // OptiFine's doc still writes them (`components.enchantments.levels.~thorns`).
-        if let Source::Component(id) = &source {
-            if matches!(
+        if let Source::Component(id) = &source
+            && matches!(
                 &**id,
                 "minecraft:enchantments" | "minecraft:stored_enchantments"
-            ) && path.first().is_some_and(|s| s == "levels")
-            {
-                path.remove(0);
-            }
+            )
+            && path.first().is_some_and(|s| s == "levels")
+        {
+            path.remove(0);
         }
         let (value, negate) = ValueTest::parse(value)?;
         Some(Self {
@@ -743,10 +743,9 @@ fn asset(
             if let Some((ns, rest)) = resolved
                 .strip_prefix("assets/")
                 .and_then(|p| p.split_once('/'))
+                && !rest.starts_with(&format!("{typed}/"))
             {
-                if !rest.starts_with(&format!("{typed}/")) {
-                    candidates.push(format!("assets/{ns}/{typed}/{rest}"));
-                }
+                candidates.push(format!("assets/{ns}/{typed}/{rest}"));
             }
             if !value.contains(':') {
                 candidates.push(format!("{dir}/{value}"));

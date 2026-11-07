@@ -1,0 +1,17 @@
+{
+  "hooks": [
+    {
+      "name": "block_place",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_block_place",
+      "neoforge": "BlockEvent.EntityPlaceEvent (Bukkit's BlockPlaceEvent)",
+      "side": "server",
+      "cancellable": true,
+      "mod_api": {
+        "contract": "cancel",
+        "out": "cancel"
+      }
+    }
+  ],
+  "rust_summary": "a guest about to place a block item, with the position and state, before anything is set, cancellable (`native_block_place`).",
+  "doc_summary": "`native_block_place(player, name, stack, pos, state, cancel)`: a guest is about to place `stack` as `state` at `pos`, heard where `BlockItem.place` has found the position and state and checked survival, before anything is set (Bukkit's `BlockPlaceEvent`, NeoForge's `BlockEvent.EntityPlaceEvent`). Set `cancel` and nothing is placed or used; the client sees the blocks and its inventory as they are and `native_place_block` hears nothing. Bundles that use it need `\"hooks\": @API:block_place@`."
+}

@@ -11,6 +11,50 @@ use horizon_world::{
 };
 
 impl Game<'_> {
+    /// `Enderman.hurtServer` teleports inside the hurt (`teleport()`,
+    /// `repeatedlyTryToTeleport()`). `Mob::damage` has no world, so it leaves
+    /// the tries in `counter2`; a hurt the game layer deals runs them here,
+    /// right after it, not on the enderman's next AI step.
+    pub(super) fn settle_hurt_teleports(&mut self) -> Result<()> {
+        let pending: Vec<u32> = self
+            .mobs
+            .iter()
+            .filter(|m| m.species() == Species::Enderman && m.extra.counter2 > 0)
+            .map(|m| m.id)
+            .collect();
+        for id in pending {
+            // What `LivingEntity.hurtServer` raised comes first, where the
+            // enderman was hurt and from its random's next draws: the hurt
+            // sound, `InfestedMobEffect.onMobHurt`'s silverfish.
+            let Some(i) = self.mobs.iter().position(|m| m.id == id) else {
+                continue;
+            };
+            let hurt = std::mem::take(&mut self.mobs[i].outbox);
+            if !hurt.is_empty() {
+                self.handle_mob_events(hurt)?;
+            }
+            // The world is read while the enderman moves: take it out, then
+            // put it back where it was (the mob order stays).
+            let Some(i) = self.mobs.iter().position(|m| m.id == id) else {
+                continue;
+            };
+            let mut mob = self.mobs.swap_remove(i);
+            let mut events = Vec::new();
+            {
+                let world = self.mob_world_base(&[]);
+                horizon_client::mobs::enderman::run_pending_teleports(
+                    &mut mob,
+                    &world,
+                    &mut events,
+                );
+            }
+            self.mobs.push(mob);
+            let last = self.mobs.len() - 1;
+            self.mobs.swap(i, last);
+            self.handle_mob_events(events)?;
+        }
+        Ok(())
+    }
     /// `EndermanLeaveBlockGoal.tick`: normalize, check, place, then clear.
     pub(super) fn enderman_place_block(
         &mut self,
