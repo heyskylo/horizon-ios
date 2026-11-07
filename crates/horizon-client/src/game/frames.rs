@@ -363,6 +363,10 @@ impl Game<'_> {
         );
         if !with_frame {
             self.item_frames[i].item = None;
+        } else {
+            // BlockAttachedEntity.kill, before dropItem. A frame holding an
+            // item only gives the item up (ItemFrame.hurtServer).
+            self.entity_killed_event(at, true);
         }
         self.drop_frame_items(&f, with_frame, true);
         self.world.modified.insert((f.pos[0] >> 4, f.pos[2] >> 4));
@@ -470,6 +474,7 @@ impl Game<'_> {
                 continue;
             }
             let f = self.item_frames.remove(i);
+            self.entity_killed_event(center(&f), false);
             self.audio
                 .play(&sound(&f, "break"), Some(center(&f)), 1.0, 1.0);
             self.drop_frame_items(&f, true, false);
@@ -497,6 +502,7 @@ impl Game<'_> {
                 if !self.frame_survives(&f) && !self.hanging_break_cancelled(f.kind(), f.pos, false)
                 {
                     self.item_frames.remove(i);
+                    self.entity_killed_event(center(&f), false);
                     self.audio
                         .play(&sound(&f, "break"), Some(center(&f)), 1.0, 1.0);
                     self.drop_frame_items(&f, true, false);
