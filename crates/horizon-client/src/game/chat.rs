@@ -1799,6 +1799,8 @@ impl Game<'_> {
         }
         self.ui.chat.clear();
         self.build_registries();
+        // The world opens with its test instances (`Registries.TEST_INSTANCE`).
+        self.snapshot_test_defs();
         self.sync_rules();
     }
     /// Save the clock beside level.dat (Level.write saves the game rules: a
