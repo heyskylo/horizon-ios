@@ -14,6 +14,18 @@ fn people_text_mentions_and_references_nothing() {
 }
 
 #[test]
+fn gh_references_link_nothing_either() {
+    // GitHub links GH-12 (either case) to issue 12, like #12.
+    assert_eq!(neutralise("see GH-12"), "see GH\u{200b}-12");
+    assert_eq!(neutralise("gh-7, (Gh-8)"), "gh\u{200b}-7, (Gh\u{200b}-8)");
+    // Only at the start of a word and before a number: other words are left alone.
+    assert_eq!(
+        neutralise("high-5 GH-pages laugh-1 aGH-3"),
+        "high-5 GH-pages laugh-1 aGH-3"
+    );
+}
+
+#[test]
 fn a_report_reads_as_the_template() {
     let fields: Map<String, Value> = serde_json::from_value(json!({
         "title": "Water is black\non AMD", "did": "Opened a world", "happened": "Black water",

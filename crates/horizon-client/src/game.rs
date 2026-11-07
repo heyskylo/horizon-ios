@@ -114,6 +114,7 @@ mod decorated_pot;
 mod dedicated;
 mod deflect;
 mod dialogs;
+#[cfg(feature = "discord")]
 mod discord;
 mod dispense_fixture;
 mod dispenser;
@@ -124,6 +125,8 @@ mod emotes;
 mod enchant_effects;
 mod end;
 mod enderman;
+#[cfg(test)]
+mod enderman_hurt_teleport_tests;
 #[cfg(test)]
 mod enderman_placement_tests;
 mod entity;
@@ -141,6 +144,11 @@ mod fishing;
 mod fov;
 mod foxes;
 mod frames;
+#[cfg(feature = "friends")]
+mod friends;
+// Without Play with Friends: nothing shared, no Friends button (game/friends_off.rs).
+#[cfg(not(feature = "friends"))]
+#[path = "game/friends_off.rs"]
 mod friends;
 mod functions;
 mod game_mode;
@@ -241,7 +249,9 @@ mod native_diagnostics;
 mod native_entities;
 mod native_entity_data;
 mod native_entity_motion;
+mod native_entity_moves;
 mod native_entity_refs;
+mod native_entity_state;
 mod native_explosions;
 mod native_falling;
 mod native_fluid_render;
@@ -251,7 +261,9 @@ mod native_inventories;
 mod native_item_container;
 mod native_item_energy;
 mod native_item_fluids;
+mod native_level_effects;
 mod native_level_refs;
+mod native_level_world;
 mod native_lifecycle;
 mod native_living_refs;
 mod native_machines;
@@ -3264,6 +3276,7 @@ struct Game<'a> {
     /// This game is that server thread's (game/integrated.rs).
     serving: Option<integrated::Serving>,
     /// The open world is shared behind an invite code (game/friends.rs).
+    #[cfg(feature = "friends")]
     friends: Option<friends::Sharing>,
     /// The Social Interactions screen and the players whose chat is hidden (game/social.rs).
     social: social::Social,
@@ -4433,6 +4446,17 @@ impl Game<'_> {
             return;
         }
         let v = dispenser::new_item_motion();
+        self.spawn_item(stack, p, v, 10);
+    }
+    /// `Block.popResourceFromFace`: the loot leaves the clicked face with the
+    /// face's own motion instead of the item's random one.
+    fn pop_resource_from_face(&mut self, pos: [i32; 3], face: [i32; 3], mut stack: ItemStack) {
+        self.pending.attach(pos, &mut stack);
+        let (p, v) = spill::pop_position_from_face(&mut self.world.random, pos, face);
+        // The private overload checks the gamerule after the offsets are drawn.
+        if !self.ui.rules.bool("block_drops") {
+            return;
+        }
         self.spawn_item(stack, p, v, 10);
     }
     /// Player.drop: thrown from the eyes along the view direction.
@@ -8418,6 +8442,8 @@ impl Game<'_> {
             horizon_client::spans::time("tick_block_entity_anims", || {
                 self.tick_block_entity_anims()
             });
+            // A conduit's hurt teleports an enderman now (`Enderman.hurtServer`).
+            self.settle_hurt_teleports()?;
             horizon_client::spans::time("tick_particles", || self.tick_particles());
             self.tick_client_ambient();
         }
@@ -8521,6 +8547,25 @@ impl Game<'_> {
             }
         }
     }
+    /// Whether the other device still holds the sneak or sprint mapping `source` released.
+    fn toggle_held_elsewhere(&self, slot: usize, key: KeyCode, source: Source) -> bool {
+        match source {
+            // A pad's toggle-sneak isn't holding it: it has no release that would end it.
+            Source::Keyboard => {
+                !(slot == SNEAK && self.settings.controller.toggle_sneak)
+                    && self
+                        .pad
+                        .holds_action(&self.settings.controller, ["key.sneak", "key.sprint"][slot])
+            }
+            Source::Pad => self.physical_keys.iter().any(|physical| {
+                self.settings
+                    .keys
+                    .translate_all(*physical)
+                    .contains(&Ok(key))
+            }),
+            Source::Agent => false,
+        }
+    }
     /// Apply a physical key to every mapping bound to it.
     fn mapped_key_event(&mut self, key: KeyCode, pressed: bool, repeat: bool) -> Result<()> {
         for mapped in self.settings.keys.translate_all(key) {
@@ -8583,6 +8628,10 @@ impl Game<'_> {
                 (_, false) => KeyAction::Press,
                 (_, true) => KeyAction::Repeat,
             };
+            // One device letting go doesn't let go for the other still holding it.
+            if !pressed && self.toggle_held_elsewhere(slot, key, source) {
+                return Ok(());
+            }
             let screen_open = !gameplay_has_keyboard(
                 self.screen,
                 self.title.is_some(),
@@ -8725,6 +8774,7 @@ impl Game<'_> {
             && self.player.is_some()
             && !self.options.no_pause
             && self.settings.file.bool("pauseOnLostFocus")
+            && !self.pad_keeps_playing_unfocused()
             && self.book.is_none()
             && self.sign_edit.is_none()
             && self.server_packs.prompt.is_none()
@@ -9130,6 +9180,7 @@ impl Game<'_> {
         batch
     }
     fn hud_layers(&mut self, size: [u32; 2]) -> HudBatch {
+        self.pad.guide_shown.clear();
         let mut batch = HudBatch::new(size);
         batch.glint_colour = self.settings.extras.pvp.tweaks.glint_texel();
         // GlobalSettingsUniform's GameTime, for a resource pack's text shader.
@@ -9218,8 +9269,11 @@ impl Game<'_> {
         let (wi, hi) = (w as i32, h as i32);
         let in_studio = self.studio_replay.is_some();
         let show_hud = !self.ui.hide_gui && !in_studio;
+        // What the gameplay guide keeps off starts after the view's full overlays.
+        let mut guide_from = 0;
         if show_hud {
             self.draw_spyglass(&mut batch);
+            guide_from = batch.vertices.len();
             // Hud.extractCrosshair / extractItemHotbar / extractPlayerHealth /
             // extractVehicleHealth and the experience bar, laid out by hud_layout.
             // Combat feel Legacy hides the attack indicator unless the player keeps it.
@@ -9508,11 +9562,16 @@ impl Game<'_> {
             Screen::DebugOptions => self.draw_debug_options(&mut batch),
             Screen::HudEditor => self.draw_hud_editor(&mut batch),
             Screen::Inventory => {
+                let from = batch.vertices.len();
                 self.draw_inventory(&mut batch);
                 self.draw_mod_browser(&mut batch);
+                self.draw_pad_menu_guide(&mut batch, from);
             }
             Screen::Creative => {
+                let from = batch.vertices.len();
                 self.draw_creative(&mut batch);
+                self.draw_mod_browser(&mut batch);
+                self.draw_pad_menu_guide(&mut batch, from);
             }
             Screen::Chat => self.draw_chat_screen(&mut batch),
             Screen::Playing | Screen::Options | Screen::Win => {}
@@ -9532,6 +9591,9 @@ impl Game<'_> {
             self.remote_hud(&mut batch);
             self.draw_sign_editor(&mut batch);
             self.draw_book(&mut batch);
+        }
+        if show_hud {
+            self.draw_pad_guide(&mut batch, guide_from);
         }
         batch
     }
@@ -14000,13 +14062,14 @@ impl Game<'_> {
     }
     /// What `BlockTransformer.transformBlock` would do with a held axe, hoe
     /// or shovel on the block at `pos`, without doing it: the new state, its
-    /// sound, loot table, the durability it costs and its particle.
+    /// sound, loot table, the durability it costs, its particle and its
+    /// transform type.
     pub(super) fn block_transform(
         &self,
         stack: &ItemStack,
         pos: [i32; 3],
         face: [i32; 3],
-    ) -> Option<(BlockStateId, String, Option<String>, u32, String)> {
+    ) -> Option<(BlockStateId, String, Option<String>, u32, String, String)> {
         use horizon_client::block_transform::Around;
         struct Column<'w> {
             world: &'w World,
@@ -14065,6 +14128,7 @@ impl Game<'_> {
             t.loot.clone(),
             t.damage,
             t.particle.clone(),
+            t.transform_type.clone(),
         ))
     }
     /// `BlockTransformer.TransformParticle.send`: its level event.
@@ -14083,21 +14147,21 @@ impl Game<'_> {
         pos: [i32; 3],
         face: [i32; 3],
     ) -> Result<bool> {
-        let Some((new, sound, loot, damage, particle)) = self.block_transform(stack, pos, face)
+        let Some((new, sound, loot, damage, particle, transform_type)) =
+            self.block_transform(stack, pos, face)
         else {
             return Ok(false);
         };
         // BlockTransformer.transformBlock: ITEM_USED_ON_BLOCK before the swap.
         self.trigger_block("minecraft:item_used_on_block", pos, stack);
+        // A loot table drops on the clicked face, before the block changes.
+        if loot.as_deref() == Some("minecraft:till/rooted_dirt") {
+            self.pop_resource_from_face(pos, face, ItemStack::new("minecraft:hanging_roots", 1));
+        }
+        let old = self.world.block(pos[0], pos[1], pos[2]);
         self.level_set(pos, new)?;
         // BlockTransformer.TransformParticle.send.
         self.transform_particle(&particle, pos);
-        if loot.as_deref() == Some("minecraft:till/rooted_dirt") {
-            self.pop_resource(
-                [pos[0] + face[0], pos[1] + face[1], pos[2] + face[2]],
-                ItemStack::new("minecraft:hanging_roots", 1),
-            );
-        }
         // `Level.playSound(player, ...)`: the actor's client already played
         // the strip/scrape/till sound in `predict_item_on_block` (#4681).
         let at = [
@@ -14115,7 +14179,53 @@ impl Game<'_> {
         self.award_stat("used", &stack.item, 1);
         self.damage_held(damage);
         self.post_block_game_event("minecraft:block_change", pos, self.sculk_actor(), Some(new));
+        if transform_type == "copper_chest" {
+            self.transform_copper_chest_neighbour(pos, old, &particle);
+        }
         Ok(true)
+    }
+    /// `BlockTransformer.transformBlock`'s `COPPER_CHEST` extra: a double
+    /// chest's other half hears a block change and gets the same particle.
+    fn transform_copper_chest_neighbour(
+        &mut self,
+        pos: [i32; 3],
+        old: BlockStateId,
+        particle: &str,
+    ) {
+        let old = self.pack.assets.registry.state(old).cloned();
+        let Some(old) = old else { return };
+        if !old.name.ends_with("copper_chest") {
+            return;
+        }
+        let kind = old
+            .properties
+            .get("type")
+            .map(String::as_str)
+            .unwrap_or("single");
+        let Some(facing) = old.properties.get("facing").map(String::as_str) else {
+            return;
+        };
+        // `ChestBlock.getConnectedDirection`: LEFT is facing.getClockWise().
+        let (dx, dz) = match (kind, facing) {
+            ("left", "north") => (1, 0),
+            ("left", "south") => (-1, 0),
+            ("left", "west") => (0, -1),
+            ("left", "east") => (0, 1),
+            ("right", "north") => (-1, 0),
+            ("right", "south") => (1, 0),
+            ("right", "west") => (0, 1),
+            ("right", "east") => (0, -1),
+            _ => return,
+        };
+        let neighbour = [pos[0] + dx, pos[1], pos[2] + dz];
+        let state = self.world.block(neighbour[0], neighbour[1], neighbour[2]);
+        self.post_block_game_event(
+            "minecraft:block_change",
+            neighbour,
+            self.sculk_actor(),
+            Some(state),
+        );
+        self.transform_particle(particle, neighbour);
     }
     fn set_state_named(&mut self, pos: [i32; 3], name: &str, keep: &[&str]) -> Result<bool> {
         let registry = &self.pack.assets.registry;
@@ -15022,17 +15132,18 @@ impl Game<'_> {
     fn hand_geometry(&mut self, alpha: f64) -> (Vec<Vertex>, Vec<(u32, i32)>) {
         let mut out = Vec::new();
         let mut runs = Vec::new();
-        // GameRenderer.renderItemInHand: F1 hides the hand with the HUD.
-        if self.spectator()
-            || self.ui.hide_gui
-            || self.sleeping.is_some()
-            || !self.camera_type.first_person()
-            || self.studio_replay.is_some()
-            || self
-                .player
-                .as_ref()
-                .is_none_or(|p| p.health.dead_or_dying())
-            || self.screen == Screen::Dead
+        // F1 hides both; a native HUD mode may keep the hands visible. A
+        // studio replay never draws them.
+        if self.studio_replay.is_some()
+            || !self.ui.hands_drawn(
+                self.spectator(),
+                self.sleeping.is_some(),
+                self.camera_type.first_person(),
+                self.player
+                    .as_ref()
+                    .is_some_and(|p| !p.health.dead_or_dying()),
+                self.screen == Screen::Dead,
+            )
         {
             return (out, runs);
         }
@@ -15318,6 +15429,16 @@ impl Game<'_> {
     }
     /// The renderer for the window, with the current block sprites, GUI
     /// atlas and world border texture.
+    /// A new renderer's atlas holds only the pack's sprites: what was drawn into it at run time
+    /// (skins, maps, the themed UI's glyphs and corners) has to be drawn again.
+    pub(super) fn forget_atlas_slots(&mut self) {
+        self.skin_slots.forget();
+        self.maps.slots.forget();
+        self.map_patches.clear();
+        self.kept_block_entities.get_mut().clear();
+        horizon_client::ui_theme::reset_atlas();
+    }
+
     fn new_renderer(&self, window: Arc<Window>) -> Result<Renderer> {
         self.renderer_for(window, &self.pack, &self.gui)
     }
@@ -15379,11 +15500,7 @@ impl Game<'_> {
         renderer.screenshot = screenshot;
         renderer.screenshot_result = screenshot_result;
         self.renderer = Some(renderer);
-        self.skin_slots.forget();
-        self.maps.slots.forget();
-        self.map_patches.clear();
-        self.kept_block_entities.get_mut().clear();
-        horizon_client::ui_theme::reset_atlas();
+        self.forget_atlas_slots();
         self.clear_lod();
         self.pending_uploads.clear();
         let context = self.worker_context();
@@ -15422,27 +15539,30 @@ impl Game<'_> {
         // LocalPlayer.refreshChatAbilities: the chat shows what the Chat option allows.
         let abilities = self.chat_abilities();
         self.ui.chat.set_abilities(&self.gui.atlas.font, abilities);
+        let render_distance_changed = self.streaming.radius != self.settings.render_distance;
         self.streaming.radius = self.settings.render_distance;
-        // Options.biomeBlendRadius, ambientOcclusion, cutoutLeaves and the
-        // leaf-culling mode: LevelExtractor.allChanged when they change.
+        // Options.renderDistance, biomeBlendRadius, ambientOcclusion,
+        // cutoutLeaves and the leaf-culling mode: LevelExtractor.allChanged
+        // when they change.
         let leaf_culling = self.effective_leaf_culling();
         let (s, st) = (&self.settings, &self.streaming);
-        let remesh = (
-            s.biome_blend,
-            s.smooth_lighting,
-            s.cutout_leaves,
-            leaf_culling,
-        ) != (
-            st.biome_blend,
-            st.smooth_lighting,
-            st.cutout_leaves,
-            st.leaf_culling,
-        );
+        let reload = render_distance_changed
+            || (
+                s.biome_blend,
+                s.smooth_lighting,
+                s.cutout_leaves,
+                leaf_culling,
+            ) != (
+                st.biome_blend,
+                st.smooth_lighting,
+                st.cutout_leaves,
+                st.leaf_culling,
+            );
         self.streaming.biome_blend = self.settings.biome_blend;
         self.streaming.smooth_lighting = self.settings.smooth_lighting;
         self.streaming.cutout_leaves = self.settings.cutout_leaves;
         self.streaming.leaf_culling = leaf_culling;
-        if remesh {
+        if reload {
             self.all_sections_changed();
         }
         self.audio.master = self.settings.master_volume;
@@ -15463,13 +15583,15 @@ impl Game<'_> {
             self.all_sections_changed();
         }
     }
-    /// `LevelExtractor.allChanged`: every loaded section is rebuilt.
+    /// `LevelExtractor.allChanged`: displayed sections and mesh work are
+    /// discarded, then every loaded section is rebuilt.
     fn all_sections_changed(&mut self) {
-        for &(x, z) in self.world.chunks.keys() {
-            for sy in 0..self.world.layout().height() / 16 {
-                self.world.dirty_sections.insert((x, sy, z));
-            }
+        self.clear_lod();
+        self.pending_uploads.clear();
+        if let Some(renderer) = self.renderer.as_mut() {
+            renderer.clear_sections(self.world.layout());
         }
+        self.streaming.reload_sections(&mut self.world);
     }
     /// Whether precipitation at a column is snow (Biome.coldEnoughToSnow:
     /// height adjusted temperature) or none (no precipitation).
@@ -16233,6 +16355,9 @@ impl Game<'_> {
         );
     }
     fn click_creative(&mut self, right: bool) {
+        if self.mod_browser_press(right) {
+            return;
+        }
         let Some(size) = self
             .renderer
             .as_ref()
@@ -17567,6 +17692,9 @@ impl Game<'_> {
         {
             return Ok(());
         }
+        if key == KeyCode::Escape && self.mod_browser_back() {
+            return Ok(());
+        }
         if self.remote.is_some() && self.remote_key(key)? {
             return Ok(());
         }
@@ -17585,6 +17713,7 @@ impl Game<'_> {
                 }
                 Screen::Creative => {
                     self.pad_clear_focus();
+                    self.mod_browser_closed();
                     self.carried = None;
                     self.screen = Screen::Playing;
                     self.capture(true);
@@ -18583,6 +18712,16 @@ impl Game<'_> {
                 self.physical_keys.remove(&key);
             }
         }
+        if matches!(
+            &event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                ..
+            }
+        ) && !self.pad.menu.synthetic
+        {
+            self.pad.keyboard_took_over = true;
+        }
         if let WindowEvent::MouseInput { state, button, .. } = &event {
             if *state == ElementState::Pressed {
                 self.physical_buttons.insert(*button);
@@ -18668,6 +18807,19 @@ impl Game<'_> {
             return;
         }
         // Fullscreen is a window shortcut, before screens consume keyboard input.
+        // Not Alt or Super on their own: leaving the window isn't playing with the keyboard.
+        if let WindowEvent::KeyboardInput { event, .. } = &event
+            && event.state == ElementState::Pressed
+            && !event.repeat
+            && !matches!(
+                event.physical_key,
+                PhysicalKey::Code(
+                    KeyCode::AltLeft | KeyCode::AltRight | KeyCode::SuperLeft | KeyCode::SuperRight
+                )
+            )
+        {
+            self.pad.keyboard_took_over = true;
+        }
         if let WindowEvent::KeyboardInput { event, .. } = &event
             && event.state == ElementState::Pressed
             && let PhysicalKey::Code(key) = event.physical_key
@@ -19580,6 +19732,7 @@ impl Game<'_> {
                 WindowEvent::KeyboardInput { event, .. }
                     if self.screen == Screen::Creative
                         && self.creative_screen.tab().search
+                        && !self.mod_browser_typing()
                         && event.state == ElementState::Pressed
                         && !matches!(event.physical_key, PhysicalKey::Code(KeyCode::Escape)) =>
                 {
@@ -19850,7 +20003,9 @@ impl Game<'_> {
                     self.track_toggle_screens();
                     self.heal_hold_latches();
                     // For the "I'm playing" ping: an atomic, sent on when it changes.
+                    #[cfg(feature = "heartbeat")]
                     horizon_client::heartbeat::set_lan(self.is_published());
+                    #[cfg(feature = "discord")]
                     self.update_discord_presence();
                     let steps = self.clock.advance(elapsed);
                     for _ in 0..steps {
@@ -20688,6 +20843,7 @@ impl<'a> Game<'a> {
             test_defs: std::cell::RefCell::new(HashMap::new()),
             test_highlights: HashMap::new(),
             game_tests: game_tests::GameTests::default(),
+            #[cfg(feature = "friends")]
             friends: None,
             social: Default::default(),
             debug_keys: Default::default(),
@@ -22632,6 +22788,7 @@ fn run_event_loop(mut game: Game<'_>) -> Result<()> {
     narrator::stop();
     leave_fullscreen_after(&result, &mut game.settings);
     result?;
+    #[cfg(feature = "discord")]
     horizon_client::discord_presence::stop();
     write_report(&game)?;
     if let Some(e) = game.error.take() {
@@ -23165,6 +23322,7 @@ fn run_loading(
         App::Loading(loading) => leave_fullscreen_after(&result, &mut loading.settings),
     }
     result?;
+    #[cfg(feature = "discord")]
     horizon_client::discord_presence::stop();
     match app {
         App::Ready(mut split) => {
@@ -23257,6 +23415,7 @@ pub fn run_with() -> Result<()> {
     // for a server, a benchmark, a run that quits by itself, a harness's fixture or a run that
     // horizon-ctl drives: those start in a source checkout and wrote the list there.
     if !options.offscreen && !synchronous_startup(&options) {
+        #[cfg(feature = "heartbeat")]
         horizon_client::heartbeat::start();
         let player_dir = horizon_client::logging::player_dir();
         if let Err(e) = horizon_client::multiplayer::add_official_server(&player_dir) {
@@ -23289,6 +23448,7 @@ pub fn run_with() -> Result<()> {
         narrator::start(&early_settings);
     }
     // "Playing Horizon" on Discord: never for a server; an automated run only talks to a test's fake Discord.
+    #[cfg(feature = "discord")]
     if options.dedicated.is_none() {
         let automated = options.benchmark.is_some()
             || options.offscreen

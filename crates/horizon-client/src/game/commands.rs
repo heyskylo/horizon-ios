@@ -93,6 +93,7 @@ pub(in crate::game) struct OtherEntity {
     pub position: Vec3,
     pub yaw: f32,
     pub pitch: f32,
+    pub item_transformation: Option<super::native_entities::ItemDisplayTransformation>,
 }
 pub(super) fn err(key: &str, args: &[&dyn std::fmt::Display]) -> CommandError {
     CommandError::tr(key, args)
@@ -1517,7 +1518,7 @@ impl Game<'_> {
         self.feedback(message);
         Ok(targets.len() as i32)
     }
-    fn teleport_to(
+    pub(in crate::game) fn teleport_to(
         &mut self,
         t: Target,
         pos: [f64; 3],
@@ -3145,9 +3146,7 @@ impl Game<'_> {
         let key = if grant { "grant" } else { "revoke" };
         let index = match ctx.get("advancement") {
             Some(Arg::Resource(id)) => Some(
-                *tree
-                    .by_id
-                    .get(id)
+                tree.find_id(id)
                     .ok_or_else(|| err("advancement.advancementNotFound", &[id]))?,
             ),
             _ => None,
@@ -3192,7 +3191,7 @@ impl Game<'_> {
                 let mut out = Vec::new();
                 if ctx.has("until") || ctx.has("through") {
                     let mut p = tree.list[i].parent.as_ref();
-                    while let Some(&pi) = p.and_then(|id| tree.by_id.get(id)) {
+                    while let Some(pi) = p.and_then(|id| tree.find_id(id)) {
                         out.push(pi);
                         p = tree.list[pi].parent.as_ref();
                     }
@@ -3489,22 +3488,13 @@ impl Game<'_> {
                 if cancel {
                     return;
                 }
-                if level == Dim::Overworld {
-                    g.spawn = Some(Vec3::new(
-                        f64::from(pos[0]) + 0.5,
-                        f64::from(pos[1]),
-                        f64::from(pos[2]) + 0.5,
-                    ));
-                    g.respawn_config = None;
-                } else {
-                    g.spawn = None;
-                    g.respawn_config = Some(super::respawn_anchor::RespawnConfig {
-                        dim: level,
-                        pos,
-                        yaw,
-                        forced: true,
-                    });
-                }
+                g.spawn = None;
+                g.respawn_config = Some(super::respawn_anchor::RespawnConfig {
+                    dim: level,
+                    pos,
+                    yaw,
+                    forced: true,
+                });
             });
         }
         let dim = Text::literal(self.dim.id());
@@ -4587,6 +4577,21 @@ mod teleport_rider_tests {
             rider2.yaw, 80.0,
             "a vehicle turned by `facing` leaves its rider"
         );
+        // Native rotation preserves a rider's mount, position and motion.
+        game.native_lifecycle
+            .begin_open(horizon_client::mod_api::NativeAuthority::IntegratedServer);
+        let rider = game.mobs.iter_mut().find(|m| m.id == 51).unwrap();
+        rider.velocity = Vec3::new(0.2, 0.3, 0.4);
+        let position = rider.position;
+        let velocity = rider.velocity;
+        let handle = game.native_entity(51).unwrap();
+        assert!(game.native_entity_set_rotation(handle, -135.0, 120.0));
+        let rider = game.mobs.iter().find(|m| m.id == 51).unwrap();
+        assert_eq!(rider.extra.mount, Some(50));
+        assert_eq!(rider.position, position);
+        assert_eq!(rider.velocity, velocity);
+        assert_eq!((rider.yaw, rider.head_pitch), (-135.0, 90.0));
+        assert!(!game.native_entity_set_rotation(handle, f32::NAN, 0.0));
     }
 }
 
@@ -4745,5 +4750,89 @@ mod query_feedback_tests {
         assert!(game.run_command("scoreboard players get #t q"));
         let lines = game.chat_capture.take().unwrap();
         assert!(lines[0].plain().contains("1234"), "{:?}", lines[0].plain());
+    }
+}
+
+#[cfg(test)]
+mod forced_respawn_tests {
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn overworld_spawnpoint_is_validated_at_both_player_blocks() {
+        use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+        use horizon_client::chunk::Chunk;
+        use horizon_core::geometry::Vec3;
+        use std::sync::Arc;
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.player = Some(
+            horizon_client::motion::PlayerMotion::new(game.motion, Vec3::new(5.5, 64.0, 5.5))
+                .unwrap(),
+        );
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.world
+            .chunks
+            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        game.level.world_spawn = Some([0, 80, 0]);
+        let registry = game.pack.assets.registry;
+        let air = registry.default_state("minecraft:air").unwrap();
+        // Liquid is a block property: aquatic plants such as kelp still permit
+        // a forced point, while a bubble column does not, at feet or head.
+        for (block, allowed) in [
+            ("air", true),
+            ("water", false),
+            ("lava", false),
+            ("bubble_column", false),
+            ("kelp", true),
+            ("stone", false),
+        ] {
+            let state = registry
+                .default_state(&format!("minecraft:{block}"))
+                .unwrap();
+            for height in [0, 1] {
+                game.world.set(5, 64, 5, air).unwrap();
+                game.world.set(5, 65, 5, air).unwrap();
+                game.world.set(5, 64 + height, 5, state).unwrap();
+                assert!(game.run_command("spawnpoint @s 5 64 5"));
+                let config = game
+                    .respawn_config
+                    .expect("Overworld commands must retain a forced configuration");
+                assert!(config.forced);
+                assert_eq!(config.pos, [5, 64, 5]);
+                let actual = game.resolve_server_respawn(config);
+                assert_eq!(actual.is_some(), allowed, "{block} at height {height}");
+                assert_eq!(game.respawn_config.is_some(), allowed);
+                assert_eq!(game.level.world_spawn, Some([0, 80, 0]));
+                if let Some((at, yaw)) = actual {
+                    assert_eq!(at, Vec3::new(5.5, 64.1, 5.5));
+                    assert_eq!(yaw, 0.0);
+                }
+            }
+        }
     }
 }
