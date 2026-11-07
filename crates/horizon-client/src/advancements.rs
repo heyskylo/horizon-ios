@@ -609,6 +609,11 @@ pub trait World {
     fn block_entity_nbt(&self, _pos: [i32; 3]) -> Option<horizon_world::nbt::Tag> {
         None
     }
+    /// Read-only contents of a loaded named predicate, when this context
+    /// supplies a predicate registry. Other contexts keep references absent.
+    fn predicate(&self, _id: &str) -> Option<&Value> {
+        None
+    }
 }
 /// An item stack as predicates see it.
 #[derive(Clone, Debug, Default)]
@@ -1346,11 +1351,68 @@ pub fn recipe_ingredients(v: &Value, used: &[ItemView], w: &dyn World) -> bool {
     })
 }
 
-/// A `ContextAwarePredicate`: a list of loot conditions (or one condition).
+/// `LootItemCondition` evaluation for one condition or a list. Invalid
+/// references are distinct from false: inversion must not accept them.
 pub fn conditions(v: &Value, ctx: &Entities, w: &dyn World) -> bool {
+    predicate_references(v, w, &mut BTreeSet::new()).is_ok() && evaluate_conditions(v, ctx, w)
+}
+
+enum InvalidReference {
+    Missing,
+    Cycle,
+}
+
+/// `Validatable.validateHolder`'s active-name rule, as a defensive check on
+/// this evaluation context. Check every typed reference before boolean
+/// short-circuiting; this does not implement registry/startup admission.
+fn predicate_references(
+    v: &Value,
+    w: &dyn World,
+    active: &mut BTreeSet<String>,
+) -> Result<(), InvalidReference> {
+    match v {
+        Value::String(id) => {
+            let id = full(id).into_owned();
+            if !active.insert(id.clone()) {
+                return Err(InvalidReference::Cycle);
+            }
+            let result = w
+                .predicate(&id)
+                .ok_or(InvalidReference::Missing)
+                .and_then(|v| predicate_references(v, w, active));
+            active.remove(&id);
+            result
+        }
+        Value::Array(list) => list
+            .iter()
+            .try_for_each(|v| predicate_references(v, w, active)),
+        Value::Object(o) => {
+            let kind = o
+                .get("condition")
+                .or_else(|| o.get("type"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            match &*full(kind) {
+                "minecraft:inverted" => predicate_references(&v["term"], w, active),
+                "minecraft:all_of" | "minecraft:any_of" => v["terms"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .try_for_each(|v| predicate_references(v, w, active)),
+                _ => Ok(()),
+            }
+        }
+        _ => Ok(()),
+    }
+}
+
+fn evaluate_conditions(v: &Value, ctx: &Entities, w: &dyn World) -> bool {
     match v {
         Value::Null => true,
-        Value::Array(list) => list.iter().all(|c| conditions(c, ctx, w)),
+        Value::Array(list) => list.iter().all(|c| evaluate_conditions(c, ctx, w)),
+        Value::String(id) => w
+            .predicate(&full(id))
+            .is_some_and(|v| evaluate_conditions(v, ctx, w)),
         Value::Object(o) if o.contains_key("condition") || o.contains_key("type") => {
             let ty = o
                 .get("condition")
@@ -1420,17 +1482,17 @@ pub fn conditions(v: &Value, ctx: &Entities, w: &dyn World) -> bool {
                     v["raining"].as_bool().is_none_or(|r| r == rain)
                         && v["thundering"].as_bool().is_none_or(|t| t == thunder)
                 }
-                "minecraft:inverted" => !conditions(&v["term"], ctx, w),
+                "minecraft:inverted" => !evaluate_conditions(&v["term"], ctx, w),
                 "minecraft:all_of" => v["terms"]
                     .as_array()
                     .into_iter()
                     .flatten()
-                    .all(|t| conditions(t, ctx, w)),
+                    .all(|t| evaluate_conditions(t, ctx, w)),
                 "minecraft:any_of" => v["terms"]
                     .as_array()
                     .into_iter()
                     .flatten()
-                    .any(|t| conditions(t, ctx, w)),
+                    .any(|t| evaluate_conditions(t, ctx, w)),
                 _ => false,
             }
         }

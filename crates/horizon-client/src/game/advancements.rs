@@ -136,6 +136,9 @@ impl AdvState {
 /// The game's world for predicates.
 struct View<'a, 'g>(&'a Game<'g>);
 impl adv::World for View<'_, '_> {
+    fn predicate(&self, id: &str) -> Option<&Value> {
+        self.0.fns.store.predicates.get(id)
+    }
     fn dimension(&self) -> &str {
         self.0.dim.id()
     }
