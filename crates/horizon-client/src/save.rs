@@ -3686,11 +3686,11 @@ pub struct Level {
     pub previous_game_mode: Option<i32>,
     pub time: i64,
     pub day_time: i64,
-    /// Where the player respawns when it has no bed or anchor: its forced
-    /// Overworld point (`spawnpoint`), or the world spawn.
+    /// The world spawn or a legacy bare Overworld spawn column. Personal
+    /// points use `respawn_elsewhere` so their blocks are checked on death.
     pub spawn: Option<[f64; 3]>,
     /// A respawn point resolved through its block when the player respawns
-    /// (a bed, a respawn anchor, a forced point outside the Overworld):
+    /// (a bed, a respawn anchor, a forced point in any dimension):
     /// dimension, block, yaw and `forced`.
     pub respawn_elsewhere: Option<(String, [i32; 3], f32, bool)>,
     pub position: Option<[f64; 3]>,
@@ -4033,18 +4033,13 @@ impl Level {
             let dimension =
                 text(respawn.get("dimension")).unwrap_or_else(|| "minecraft:overworld".into());
             let forced = number(respawn.get("forced")).is_some_and(|v| v != 0);
-            // A forced point in the Overworld (`spawnpoint`) is where the
-            // player respawns; anything else (a bed, an anchor) is resolved
-            // through its block then.
-            if dimension == "minecraft:overworld" && forced {
-                self.spawn = Some([f64::from(pos[0]), f64::from(pos[1]), f64::from(pos[2])]);
-            } else {
-                let yaw = match respawn.get("yaw") {
-                    Some(Tag::Float(b)) => f32::from_bits(*b),
-                    _ => 0.0,
-                };
-                self.respawn_elsewhere = Some((dimension, [pos[0], pos[1], pos[2]], yaw, forced));
-            }
+            // Forced points, including Overworld ones, are validated through
+            // their blocks on death, just like beds and respawn anchors.
+            let yaw = match respawn.get("yaw") {
+                Some(Tag::Float(b)) => f32::from_bits(*b),
+                _ => 0.0,
+            };
+            self.respawn_elsewhere = Some((dimension, [pos[0], pos[1], pos[2]], yaw, forced));
         }
         let mut inventory = Vec::new();
         let mut inventory_components = HashMap::new();
@@ -7146,7 +7141,11 @@ mod tests {
         assert_eq!(back.dimension, "minecraft:the_nether");
         assert_eq!(back.world_spawn, Some([8, 64, 8]));
         assert_eq!(back.world_spawn_angle, [45.0, -10.0]);
-        assert_eq!(back.spawn, Some([20.0, 70.0, 20.0]));
+        assert_eq!(back.spawn, Some([8.0, 64.0, 8.0]));
+        assert_eq!(
+            back.respawn_elsewhere,
+            Some(("minecraft:overworld".into(), [20, 70, 20], 0.0, true))
+        );
         assert!(back.difficulty_locked);
         assert!(back.weather.raining);
         assert_eq!(back.weather.rain_time, 500);
@@ -7409,6 +7408,31 @@ mod tests {
         let mut loaded = Level::default();
         loaded.read_player(&tag);
         assert_eq!(loaded.active_effects, effects);
+    }
+
+    #[test]
+    fn forced_overworld_spawnpoint_reloads_as_a_configuration() {
+        // A personal point coinciding with the world spawn must still keep
+        // its forced flag and yaw, rather than turning into a world fallback.
+        for pos in [[5, 64, 5], [0, 80, 0]] {
+            let point = ("minecraft:overworld".to_owned(), pos, 37.0, true);
+            let level = Level {
+                respawn_elsewhere: Some(point.clone()),
+                ..Level::default()
+            };
+            let mut loaded = Level {
+                spawn: Some([0.0, 80.0, 0.0]),
+                world_spawn: Some([0, 80, 0]),
+                ..Level::default()
+            };
+            loaded.read_player(&level.player_tag());
+            assert_eq!(loaded.respawn_elsewhere, Some(point));
+            assert_eq!(loaded.spawn, Some([0.0, 80.0, 0.0]));
+            assert_eq!(
+                loaded.player_tag().get("respawn"),
+                level.player_tag().get("respawn")
+            );
+        }
     }
 
     #[test]

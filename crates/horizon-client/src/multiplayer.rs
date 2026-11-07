@@ -1530,6 +1530,27 @@ impl Screen {
             _ => Outcome::None,
         }
     }
+    /// Move the selected saved server one row, as its arrows do: the pad's way to them, since a
+    /// click on a row lands at its centre. Whether there was one to move.
+    pub fn move_selected(&mut self, down: bool, saves: &Path) -> bool {
+        let Self::List {
+            servers, selected, ..
+        } = self
+        else {
+            return false;
+        };
+        let Some(k) = selected.filter(|k| *k < servers.len()) else {
+            return false;
+        };
+        let to = if down { k + 1 } else { k.wrapping_sub(1) };
+        if to < servers.len() {
+            servers.swap(k, to);
+            save_servers(&servers_file(saves), servers);
+            *selected = Some(to);
+        }
+        true
+    }
+
     pub fn click(
         &mut self,
         id: Option<u8>,
