@@ -147,6 +147,8 @@ mod frames;
 #[cfg(feature = "friends")]
 mod friends;
 // Without Play with Friends: nothing shared, no Friends button (game/friends_off.rs).
+#[cfg(test)]
+mod entity_inside_tests;
 #[cfg(not(feature = "friends"))]
 #[path = "game/friends_off.rs"]
 mod friends;
@@ -168,8 +170,6 @@ mod integrated;
 mod interaction_shapes;
 mod interactions;
 mod item_areas;
-#[cfg(test)]
-mod entity_inside_tests;
 #[cfg(test)]
 mod item_contact_tests;
 mod item_draw;

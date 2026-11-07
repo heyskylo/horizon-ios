@@ -30,8 +30,7 @@ fn a_mob_presses_a_plate_only_inside_the_simulation_distance() {
     // the simulation distance, and another in chunk (8, 0): loaded and in
     // view, but past it.
     game.player = Some(
-        horizon_client::motion::PlayerMotion::new(game.motion, Vec3::new(8.5, 65.0, 8.5))
-            .unwrap(),
+        horizon_client::motion::PlayerMotion::new(game.motion, Vec3::new(8.5, 65.0, 8.5)).unwrap(),
     );
     for (cx, x, id) in [(2, 40, 1), (8, 136, 2)] {
         game.world
@@ -49,13 +48,21 @@ fn a_mob_presses_a_plate_only_inside_the_simulation_distance() {
     game.update_chunk_tickets();
     let ticking = game.entity_ticking_area();
     assert!(ticking(40, 8), "chunk (2, 0) ticks entities");
-    assert!(!ticking(136, 8), "chunk (8, 0) is past the simulation distance");
+    assert!(
+        !ticking(136, 8),
+        "chunk (8, 0) is past the simulation distance"
+    );
     for _ in 0..3 {
         game.tick_blocks().unwrap();
     }
     let powered = |game: &Game<'_>, x: i32| {
         let state = game.world.block(x, 64, 8);
-        registry.state(state).unwrap().properties.get("powered").cloned()
+        registry
+            .state(state)
+            .unwrap()
+            .properties
+            .get("powered")
+            .cloned()
     };
     assert_eq!(powered(&game, 40).as_deref(), Some("true"));
     assert_eq!(powered(&game, 136).as_deref(), Some("false"));
