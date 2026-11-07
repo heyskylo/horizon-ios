@@ -608,6 +608,7 @@ impl Game<'_> {
                     0xFF00_0000 | (outline & 0xFF_FFFF)
                 },
                 light,
+                tier: 0,
             };
             text_vertices(
                 &glyph,

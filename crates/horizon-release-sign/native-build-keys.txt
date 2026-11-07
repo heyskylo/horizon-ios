@@ -1,0 +1,6 @@
+# The public keys prebuilt native-mod builds are signed with (crates/horizon-release-sign/src/native_build.rs,
+# #11859): one base64 Ed25519 key per line. The launcher builds these in and refuses a prebuilt build no key here
+# signed. They are not release keys: the private keys exist only as the NATIVE_BUILD_SIGNING_KEY secret(s) of
+# horizon-rust/horizon-mods' `native-builds` environment, where the registry compiles other people's code.
+# Changing this file needs Ludovic's review (.github/CODEOWNERS).
+Z6IAbJ0E8fIGYddlbe1FYfYNpzzOseREOdNbANWirKA=
