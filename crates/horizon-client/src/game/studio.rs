@@ -3,7 +3,7 @@
 //! Provides in-game and control-socket commands to record network packet streams
 //! into standard `.mcpr` containers and drive timeline-based replay playback.
 
-use super::{Game, Screen};
+use super::{Game, PendingWorldEntry, Screen};
 use horizon_client::{
     Result,
     studio::{Metadata, ReplayDriver},
@@ -598,6 +598,17 @@ impl Game<'_> {
     }
 
     pub(super) fn open_studio_replay(&mut self, path: &str) -> Result<Value> {
+        // The recordings browser can be opened while the title screen is
+        // available but the slower world tables are still loading. Replay
+        // setup builds the normal client registries, which require `rest`.
+        if self.remote.is_none() && self.res.rest.get().is_none() {
+            let pending = PendingWorldEntry::StudioReplay(PathBuf::from(path));
+            if self.defer_world_entry(pending)? {
+                return Ok(json!({ "ok": true, "pending": true }));
+            }
+            self.join_world_rest()?;
+        }
+
         // Validate and index the archive before replacing the title menu or active world. A
         // temp-file, metadata, or protocol error must leave the current screen usable.
         let driver = match ReplayDriver::open(Path::new(path)) {
