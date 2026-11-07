@@ -40,7 +40,7 @@ plan are in [server.md](server.md).
 
 ## 1. Install
 
-Linux (x86-64) and macOS (Apple Silicon; Intel from the next Nightly):
+Linux (x86-64) and macOS (Apple Silicon or Intel):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/horizon-rust/horizon/main/packaging/server/install.sh | sh
@@ -624,7 +624,7 @@ The service runs `horizon-server run` through the installed `current` release, s
 next restart. `service print` shows what it would install, `service uninstall` removes it and leaves the server
 folder alone.
 
-## Hosting panels (Pterodactyl)
+## Hosting panels (Pterodactyl, AMP)
 
 The egg installs the server build of the current Nightly (nothing of Mojang's) and runs `horizon-server`
 through `packaging/server/panel-start.sh`: the first start writes `server.toml` from the panel's settings, and the
@@ -637,6 +637,13 @@ the world first.
 Import `packaging/server/pterodactyl-egg.json` under Nests. Its Docker image is
 `ghcr.io/ptero-eggs/yolks:debian`. The `HORIZON_VERSION` variable picks the release to install (`nightly`, or a tag);
 it is read at install and reinstall.
+
+**AMP** (CubeCoders): `packaging/server/amp/` is a template for AMP's generic module, the same setup with AMP's
+words. Its update runs the egg's install script (the release named by "Horizon release", checked against its
+SHA-256) and the start runs the same `horizon-start.sh`, with the port from AMP's "Server Port". AMP reads templates
+from the root of a configuration repository: put the five files at the root of a repository of yours (a fork of
+CubeCoders/AMPTemplates, for example), add it under Configuration → Instance Deployment → Configuration Repositories,
+then Fetch latest, and "Horizon" is in the list of applications for a new instance. Linux only, x86-64.
 
 ## 9. Docker (build it yourself)
 

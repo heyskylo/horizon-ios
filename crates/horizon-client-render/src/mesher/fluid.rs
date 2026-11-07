@@ -229,7 +229,7 @@ pub(super) fn tesselate(
     let kind = me.fluid.kind();
     let same = |s: &Info| s.fluid.kind().same_family(kind);
     let neighbor = |d: Direction| {
-        let [dx, dy, dz] = d.normal();
+        let [dx, dy, dz] = super::DIRECTIONS[d as usize].1;
         at([x + dx, y + dy, z + dz])
     };
     let (down, up) = (neighbor(Direction::Down), neighbor(Direction::Up));
@@ -238,12 +238,11 @@ pub(super) fn tesselate(
     let render_down =
         should_render(Direction::Down) && !occluded_by(Direction::Down, MAX_HEIGHT, down);
     let sides = [
-        Direction::North,
-        Direction::South,
-        Direction::West,
-        Direction::East,
-    ]
-    .map(should_render);
+        should_render(Direction::North),
+        should_render(Direction::South),
+        should_render(Direction::West),
+        should_render(Direction::East),
+    ];
     if !render_up && !render_down && !sides.iter().any(|&s| s) {
         return;
     }
@@ -356,9 +355,9 @@ pub(super) fn tesselate(
             fluid_face(color, face)
         };
         let vertex = |(pos, uv)| TerrainVertex::new(pos, uv, layer, color, light);
-        target.extend(v.map(vertex));
+        target.extend([vertex(v[0]), vertex(v[1]), vertex(v[2]), vertex(v[3])]);
         if back {
-            target.extend([v[0], v[3], v[2], v[1]].map(vertex));
+            target.extend([vertex(v[0]), vertex(v[3]), vertex(v[2]), vertex(v[1])]);
         }
     };
     let (fx, fy, fz) = (x as f32, y as f32, z as f32);

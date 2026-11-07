@@ -1,0 +1,33 @@
+{
+  "hooks": [
+    {
+      "name": "server_tick_timed",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_server_tick_timed",
+      "neoforge": "none (NeoForge has no tick timing event; spark's tick monitor and profiler)",
+      "side": "server",
+      "cancellable": false,
+      "mod_api": {
+        "contract": "listen"
+      }
+    }
+  ],
+  "helpers": [
+    {
+      "name": "spans",
+      "target": "horizon_client::game::native_diagnostics::Game<'_>::native_spans"
+    },
+    {
+      "name": "mob_cost_sampling",
+      "target": "horizon_client::game::native_diagnostics::Game<'_>::native_mob_cost_sampling"
+    },
+    {
+      "name": "take_mob_costs",
+      "target": "horizon_client::game::native_diagnostics::Game<'_>::native_take_mob_costs"
+    }
+  ],
+  "rust_summary": "each server tick's wall and CPU time with its spans (`native_server_tick_timed`, `TickSpan`), a shared switch for the spans (`native_spans`), and mob costs a mod samples apart from performance reports (`native_mob_cost_sampling`, `native_take_mob_costs`, `NativeMobCost`).",
+  "doc_summary": "`native_server_tick_timed(wall_ms, cpu_ms, spans)` after each server tick pass while spans are recorded (always on a dedicated server; elsewhere after `native_spans(true)`), and mob costs by level and type a mod samples apart from `horizon-report` (`native_mob_cost_sampling(on)`, `native_take_mob_costs()`). Bundles need \"hooks\": @API:server_tick_timed@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_diagnostics.rs"
+  ]
+}

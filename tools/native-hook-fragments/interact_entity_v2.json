@@ -1,0 +1,17 @@
+{
+  "hooks": [
+    {
+      "name": "interact_entity_v2",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_interact_entity_v2",
+      "neoforge": "PlayerInteractEvent.EntityInteract (getHand)",
+      "side": "server",
+      "cancellable": true,
+      "mod_api": {
+        "contract": "cancel",
+        "out": "cancel"
+      }
+    }
+  ],
+  "rust_summary": "a player's right click on an entity with the hand that clicks, claimable (`native_interact_entity_v2`).",
+  "doc_summary": "`native_interact_entity_v2(entity, kind, hand, stack, cancel)`: `native_interact_entity` with the hand (`Hand::Main` or `Hand::Off`, NeoForge's `PlayerInteractEvent.EntityInteract.getHand`), asked right after v1, once per hand vanilla tries; a click v1 claimed is not asked again. Bundles need \"hooks\": @API:interact_entity_v2@."
+}

@@ -387,6 +387,9 @@ impl Game<'_> {
             Slot::Ender(i) => self.ender_items.get(*i).cloned().flatten(),
             Slot::Mob(id, key) => {
                 let m = self.mobs.iter().find(|m| m.id == *id)?;
+                if *key == "saddle" {
+                    return m.saddle_item();
+                }
                 let item = match *key {
                     "mainhand" => &m.extra.main_hand,
                     "offhand" => &m.extra.off_hand,
@@ -495,7 +498,9 @@ impl Game<'_> {
         let name = match s {
             Slot::Guest(_, inner) => return self.equipment_slot_accepts(inner, stack),
             Slot::Armor(i @ 1..=3) => ["head", "chest", "legs", "feet"][*i],
-            Slot::Mob(_, key) if matches!(*key, "chest" | "legs" | "feet") => key,
+            Slot::Mob(_, key) if matches!(*key, "chest" | "legs" | "feet" | "body" | "saddle") => {
+                key
+            }
             _ => return true,
         };
         // ItemStack.isEmpty: air or a count of 0.
@@ -588,6 +593,7 @@ impl Game<'_> {
                     "chest" => m.extra.chest = item,
                     "legs" => m.extra.legs = item,
                     "feet" => m.extra.feet = item,
+                    "saddle" => m.set_saddle(stack),
                     _ => return false,
                 }
                 true
@@ -1521,5 +1527,190 @@ mod stand_equip_event_tests {
                 assert!(info.owner.is_none());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod mob_equipment_command_tests {
+    use crate::game::commands::{Target, data::DataRef};
+    use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+    use horizon_client::chunk::Chunk;
+    use horizon_core::position::ChunkPos;
+    use std::sync::Arc;
+
+    fn with_game(test: impl FnOnce(&mut Game<'_>)) {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.game_dir = Some(
+            std::path::PathBuf::from(std::env::var_os("HORIZON_HOME").unwrap())
+                .join(format!("h025-{:?}", std::thread::current().id())),
+        );
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+
+        game.world
+            .chunks
+            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        game.block_ticks
+            .add_empty_chunk(ChunkPos::new(0, 0))
+            .unwrap();
+        assert!(game.run_command("difficulty normal"));
+        assert!(game.run_command("forceload add 0 0"));
+        test(&mut game);
+    }
+
+    fn actor(game: &mut Game<'_>, kind: &str, n: i32) -> (String, u32) {
+        let uuid = format!("00000019-0000-0000-0000-{n:012x}");
+        assert!(game.run_command(&format!("summon {kind} 4.5 200 5.5 {{UUID:[I;25,0,0,{n}],NoAI:1b,NoGravity:1b,Silent:1b,h025_raw:7,Tags:[h025]}}")), "{kind}/{n}: {:?}", game.ui.chat.recent_lines(3));
+        let mob = game
+            .mobs
+            .iter()
+            .find(|m| game.persist.uuid_of(m.id) == Some([25, 0, 0, n]))
+            .unwrap();
+        assert!(mob.no_ai);
+        (uuid, mob.id)
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn body_commands_reject_wrong_items_without_changing_head() {
+        with_game(|game| {
+            for (n, kind, slot, item) in [
+                (1, "horse", "armor.body", "iron_horse_armor"),
+                (2, "wolf", "armor.body", "wolf_armor"),
+                (3, "husk", "armor.head", "iron_helmet"),
+            ] {
+                let (uuid, id) = actor(game, kind, n);
+                assert!(
+                    game.run_command(&format!("item replace entity {uuid} {slot} with {item}"))
+                );
+                let mob = game.mobs.iter().find(|m| m.id == id).unwrap();
+                let actual = if slot == "armor.body" {
+                    &mob.extra.body
+                } else {
+                    &mob.extra.head
+                };
+                assert_eq!(
+                    actual.as_deref(),
+                    Some(format!("minecraft:{item}").as_str())
+                );
+            }
+            for (n, kind) in [(4, "husk"), (5, "pig")] {
+                let (uuid, id) = actor(game, kind, n);
+                assert!(
+                    game.run_command(&format!("item replace entity {uuid} armor.head with stone"))
+                );
+                assert!(
+                    !game.run_command(&format!(
+                        "item replace entity {uuid} armor.body with diamond_chestplate"
+                    )),
+                    "body must reject a chest item"
+                );
+                let mob = game.mobs.iter().find(|m| m.id == id).unwrap();
+                assert!(mob.extra.body.is_none());
+                assert_eq!(mob.extra.head.as_deref(), Some("minecraft:stone"));
+                let saved = game.data_of(&DataRef::Entity(Target::Mob(id))).unwrap();
+                assert!(saved.get("equipment").unwrap().get("body").is_none());
+                assert_eq!(
+                    saved
+                        .get("equipment")
+                        .unwrap()
+                        .get("head")
+                        .unwrap()
+                        .get("id"),
+                    Some(&horizon_world::nbt::Tag::String("minecraft:stone".into()))
+                );
+            }
+        });
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn saddle_commands_round_trip_existing_model_and_saved_equipment() {
+        use super::Slot;
+        use horizon_world::nbt::Tag;
+        with_game(|game| {
+            // Pig is the existing species saver; Husk needs the common projection.
+            for (n, kind) in [(6, "pig"), (7, "husk")] {
+                let (uuid, id) = actor(game, kind, n);
+                assert!(game.slot_get(&Slot::Mob(id, "saddle")).is_none());
+                assert!(
+                    game.run_command(&format!("item replace entity {uuid} armor.head with stone"))
+                );
+                assert!(
+                    game.run_command(&format!("item replace entity {uuid} saddle with saddle")),
+                    "command must reach the existing saddle model"
+                );
+                assert_eq!(
+                    game.slot_get(&Slot::Mob(id, "saddle"))
+                        .unwrap()
+                        .item
+                        .as_ref(),
+                    "minecraft:saddle"
+                );
+                let saved = game.data_of(&DataRef::Entity(Target::Mob(id))).unwrap();
+                assert_eq!(
+                    saved
+                        .get("equipment")
+                        .unwrap()
+                        .get("saddle")
+                        .unwrap()
+                        .get("id"),
+                    Some(&Tag::String("minecraft:saddle".into()))
+                );
+                assert_eq!(
+                    saved
+                        .get("equipment")
+                        .unwrap()
+                        .get("head")
+                        .unwrap()
+                        .get("id"),
+                    Some(&Tag::String("minecraft:stone".into()))
+                );
+                assert_eq!(saved.get("h025_raw"), Some(&Tag::Int(7)));
+                assert_eq!(saved.get("Silent"), Some(&Tag::Byte(1)));
+                assert_eq!(
+                    saved.get("Tags"),
+                    Some(&Tag::List(vec![Tag::String("h025".into())]))
+                );
+                assert!(
+                    !game.run_command(&format!("item replace entity {uuid} saddle with stick"))
+                );
+                assert_eq!(
+                    game.slot_get(&Slot::Mob(id, "saddle"))
+                        .unwrap()
+                        .item
+                        .as_ref(),
+                    "minecraft:saddle"
+                );
+                assert!(game.run_command(&format!("item replace entity {uuid} saddle with air")));
+                assert!(game.slot_get(&Slot::Mob(id, "saddle")).is_none());
+            }
+        });
     }
 }
