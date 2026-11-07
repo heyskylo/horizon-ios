@@ -4257,12 +4257,6 @@ impl Mob {
         if self.species() == Species::Wither || !self.can_be_affected(effect) {
             return;
         }
-        // AbsorptionMobEffect.onEffectStarted, which addEffect runs for every
-        // effect it accepts, new, stronger or not: at least 4 hearts-halves per
-        // level of the effect given (#11386).
-        if effect == "minecraft:absorption" {
-            self.absorption = self.absorption.max(4.0 * (amplifier + 1) as f32);
-        }
         if let Some(e) = self.extra.effects.iter_mut().find(|e| e.0 == effect) {
             // MobEffectInstance.update: a stronger effect replaces with its
             // own duration, an equal one only extends it; a weaker one is
@@ -4275,6 +4269,17 @@ impl Mob {
             }
         } else {
             self.extra.effects.push((effect, ticks, amplifier));
+        }
+        // AbsorptionMobEffect.onEffectStarted, which addEffect runs for every
+        // effect it accepts, new, stronger or not, after onEffectAdded or
+        // onEffectUpdated put its modifier on: at least 4 hearts-halves per
+        // level of the effect given (#11386), within getMaxAbsorption
+        // (setAbsorptionAmount).
+        if effect == "minecraft:absorption" {
+            self.absorption = self
+                .absorption
+                .max(4.0 * (amplifier + 1) as f32)
+                .clamp(0.0, armor::max_absorption(self));
         }
     }
     pub fn speed_bonus(&self) -> f64 {

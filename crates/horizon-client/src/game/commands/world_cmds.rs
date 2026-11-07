@@ -1341,7 +1341,10 @@ impl Game<'_> {
         attribute: &str,
     ) -> Option<&mut horizon_world::attributes::entity::EntityAttributes> {
         if let Target::Mob(id) = t
-            && matches!(attribute, "minecraft:armor" | "minecraft:armor_toughness")
+            && matches!(
+                attribute,
+                "minecraft:armor" | "minecraft:armor_toughness" | "minecraft:max_absorption"
+            )
         {
             let mob = self.mobs.iter_mut().find(|m| m.id == id)?;
             if mob.extra.armor_attributes.is_none() {
@@ -1385,6 +1388,15 @@ impl Game<'_> {
         };
         let catalog = self.motion.attributes.clone();
         let key = catalog.id(attribute).ok_or_else(no_attribute)?;
+        // A mob's max_absorption counts its Absorption effect's modifier.
+        let absorption_bonus = match target {
+            Target::Mob(mob) if attribute == "minecraft:max_absorption" => self
+                .mobs
+                .iter()
+                .find(|m| m.id == mob)
+                .map(|m| horizon_client::mobs::armor::absorption_bonus(&m.extra.effects)),
+            _ => None,
+        };
         let map = self
             .generic_attributes(target, attribute)
             .ok_or_else(no_attribute)?;
@@ -1393,7 +1405,11 @@ impl Game<'_> {
         }
         let (message, args, result) = match id {
             "attribute.get" | "attribute.base.get" => {
-                let v = if id == "attribute.get" {
+                let v = if id == "attribute.get"
+                    && let Some(bonus) = absorption_bonus
+                {
+                    horizon_client::mobs::armor::max_absorption_of(Some(&*map), 0.0, bonus)
+                } else if id == "attribute.get" {
                     map.value(key).map_err(|_| no_attribute())?
                 } else {
                     map.base_value(key).map_err(|_| no_attribute())?

@@ -146,9 +146,22 @@ impl Game<'_> {
                 (Target::Mob(id), e) => match self.mobs.iter_mut().find(|m| m.id == id) {
                     Some(m) => {
                         let before = m.extra.effects.len();
+                        let absorbing = |m: &horizon_client::mobs::Mob| {
+                            m.extra
+                                .effects
+                                .iter()
+                                .any(|x| x.0 == "minecraft:absorption")
+                        };
+                        let had_absorption = absorbing(m);
                         m.extra
                             .effects
                             .retain(|x| e.is_some_and(|e| x.0 != namespaced(e.id)));
+                        // LivingEntity.onEffectsRemoved -> onAttributeUpdated(MAX_ABSORPTION).
+                        if had_absorption && !absorbing(m) {
+                            m.absorption = m
+                                .absorption
+                                .min(horizon_client::mobs::armor::max_absorption(m));
+                        }
                         let left = &m.extra.effects;
                         m.extra
                             .hidden_effects
