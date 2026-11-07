@@ -653,15 +653,16 @@ fn sign_text_calls(
     let line_height = data.line_height();
     let midpoint = (4.0 * line_height / 2.0).floor();
     let dark = 0xFF00_0000 | text.dark_color();
-    let (color, outline, light) = if text.glowing {
+    let (color, outline, light, tier) = if text.glowing {
         let c = text.text_color();
         (
             0xFF00_0000 | c,
             if c == 0 || near { dark } else { 0 },
             240 | 240 << 8,
+            crate::mesher::LOW,
         )
     } else {
-        (dark, 0, vertex_light(packed))
+        (dark, 0, vertex_light(packed), 0)
     };
     let advance = |c: char| (scene.glyph)(c).advance;
     let mut calls: Vec<TextCall> = Vec::with_capacity(text.lines.len());
@@ -693,6 +694,7 @@ fn sign_text_calls(
                     color: run,
                     outline,
                     light,
+                    tier,
                 }),
             }
             pen += span.text.chars().map(advance).sum::<f32>();
@@ -707,6 +709,7 @@ fn sign_text_calls(
                 color,
                 outline,
                 light,
+                tier,
             });
         }
     }
@@ -761,7 +764,7 @@ pub fn text_vertices(glyph: &dyn Fn(char) -> Glyph, call: &TextCall, out: &mut V
                             .transform_point3(Vec3::new(cx, cy, z))
                             .to_array(),
                         uv,
-                        layer: 0,
+                        layer: u32::from(call.tier) << 16,
                         color: c,
                         light: call.light,
 
@@ -830,6 +833,9 @@ pub struct TextCall {
     pub outline: u32,
     /// Horizon packed light (sky*16 | block*16 << 8).
     pub light: u32,
+    /// HDR emission tier of its glyphs (`mesher::hdr_tier`), 0 for none: glowing sign text
+    /// shines in HDR output and in shader packs (`horizonTier`), as full-bright text does in SDR.
+    pub tier: u8,
 }
 
 /// Inputs from the game for one frame of block-entity rendering.
@@ -3917,6 +3923,7 @@ mod tests {
             color: 0xFFFF_FF00,
             outline: 0xFF33_3300,
             light: 240 | 240 << 8,
+            tier: 0,
         };
         let mut out = Vec::new();
         draw_text(&scene, &call, &mut out);
@@ -3990,6 +3997,7 @@ mod tests {
             color: 0xFF00_0000,
             outline: 0,
             light: 240 | 240 << 8,
+            tier: 0,
         };
         let mut out = Vec::new();
         draw_text(&scene, &call, &mut out);
