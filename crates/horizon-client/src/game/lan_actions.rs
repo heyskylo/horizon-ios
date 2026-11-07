@@ -5322,6 +5322,11 @@ impl Game<'_> {
             if g.fall_flying != gliding {
                 g.fall_flying = gliding;
                 changed = Some((g.uuid, g.name.clone(), gliding));
+            } else if !gliding {
+                // A refused start changes nothing on the server, so no flags
+                // update would follow; force one, so the client that predicted
+                // the glide takes the cleared bit and ends it.
+                g.sent_shared ^= -128;
             }
         }
         if let Some((uuid, name, gliding)) = changed {
