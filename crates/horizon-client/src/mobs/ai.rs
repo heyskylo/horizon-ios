@@ -1114,6 +1114,28 @@ fn axolotl_air_supply(m: &mut Mob, w: &MobWorld) {
         }
     }
 }
+/// `Nautilus.baseTick`: `LivingEntity.baseTick` refills the air of this
+/// water breather, then, unless it has no AI, `Nautilus.handleAirSupply`
+/// takes it back out of water, where the nautilus dries out.
+fn nautilus_air_supply(m: &mut Mob) {
+    const MAX_AIR: i32 = 300;
+    let before = m.air;
+    if m.alive() {
+        m.air = (m.air + 4).min(MAX_AIR);
+    }
+    if m.no_ai {
+        return;
+    }
+    if m.alive() && !m.fluids.in_water {
+        m.air = before - 1;
+        if m.air <= -20 {
+            m.air = 0;
+            m.damage(2.0, Damage::of(DamageKind::DryOut));
+        }
+    } else {
+        m.air = MAX_AIR;
+    }
+}
 /// `Entity.isInWall` (minus the noPhysics early-out, which the caller applies):
 /// visit every cell covered by the thin eye box and ask whether a suffocating
 /// collision shape actually intersects it. Width multiplication is a float.
@@ -1240,6 +1262,8 @@ fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) -> bool {
         // Air supply and drowning (WaterAnimal.handleAirSupply for aquatic mobs).
         if m.species() == Species::Axolotl {
             axolotl_air_supply(m, w);
+        } else if m.species() == Species::Nautilus {
+            nautilus_air_supply(m);
         } else if m.kind.flags.needs_water {
             if !m.fluids.in_water {
                 m.air -= 1;
