@@ -3066,6 +3066,12 @@ fn tick_effects(m: &mut Mob, mods: Option<&dyn super::ModEffectTicks>) {
             {
                 m.heal(1.0);
             }
+            // AbsorptionMobEffect.applyEffectTick (asked on every tick): false
+            // once the absorption is used up, so tickServer drops the effect
+            // before it counts down.
+            "minecraft:absorption" if m.absorption <= 0.0 => {
+                expired = true;
+            }
             id if horizon_client_core::potions::is_mod_effect(id) => {
                 // tickServer: one with no ticks left goes unasked.
                 if !infinite && m.extra.effects[i].1 <= 0 {
@@ -3084,6 +3090,14 @@ fn tick_effects(m: &mut Mob, mods: Option<&dyn super::ModEffectTicks>) {
         if !infinite && m.extra.effects.get(i).is_some_and(|e| e.0 == effect) {
             let ticks = &mut m.extra.effects[i].1;
             *ticks = if expired { 0 } else { *ticks - 1 };
+        } else if infinite
+            && expired
+            && effect == "minecraft:absorption"
+            && m.extra.effects.get(i).is_some_and(|e| e.0 == effect)
+        {
+            // An infinite Absorption goes the same way (tickServer asks it
+            // by tickCount); other infinite effects keep their -1.
+            m.extra.effects[i].1 = 0;
         }
         i += 1;
     }
