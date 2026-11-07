@@ -372,9 +372,9 @@ impl Game<'_> {
                         slot.extra.tame = old.extra.tame;
                         slot.extra.owner = old.extra.owner;
                     }
-                    // Entity.load mutates the existing living entity; its damage
-                    // cooldown and previous-hit amount are not read from saved NBT.
-                    slot.invulnerable = old.invulnerable;
+                    // Entity.load mutates the existing living entity; its
+                    // previous-hit amount is not read from saved NBT (its hurt
+                    // immunity is, as `invulnerable_time`).
                     slot.last_hurt = old.last_hurt;
                     slot.ai = old.ai;
                     // Mob.readAdditionalSaveData updates persistent home fields,
