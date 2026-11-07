@@ -219,16 +219,7 @@ impl Zip {
             if total > MAX_ENTRY as u64 {
                 return Err(invalid("entry inflates past the size limit"));
             }
-            budget
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |left| {
-                    left.checked_sub(n as u64)
-                })
-                .map_err(|_| {
-                    io::Error::new(
-                        io::ErrorKind::FileTooLarge,
-                        "the packs unpack to more than their size allows",
-                    )
-                })?;
+            take(budget, n as u64)?;
             out.write_all(&piece[..n])?;
         }
     }
@@ -245,6 +236,23 @@ impl Zip {
         let mut raw = Vec::with_capacity((entry.compressed_size() as usize).min(self.len));
         entry.read_to_end(&mut raw)?;
         Ok((method, raw))
+    }
+}
+
+/// `n` bytes taken from `budget`, or `FileTooLarge` (taking nothing) when it has fewer left.
+fn take(budget: &AtomicU64, n: u64) -> io::Result<()> {
+    let mut left = budget.load(Ordering::Relaxed);
+    loop {
+        let rest = left.checked_sub(n).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::FileTooLarge,
+                "the packs unpack to more than their size allows",
+            )
+        })?;
+        match budget.compare_exchange_weak(left, rest, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return Ok(()),
+            Err(now) => left = now,
+        }
     }
 }
 
