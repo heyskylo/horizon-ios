@@ -6,13 +6,20 @@
 //! it again. A stock client shows it; nothing on the player's side.
 //! `native_exchange_items` swaps two players' stacks in one step, checked
 //! first, so a trade built on these menus never moves an item before both
-//! sides are settled.
-use super::{Game, lan::LanHost};
+//! sides are settled. A menu opened with input slots
+//! (`native_open_menu_with_input`) lets the player put items into those slots
+//! and take them out as in a chest; what they hold when it closes goes to the
+//! mods (`native_menu_input_closed`) and then back to the player.
+use super::{Game, lan::LanHost, lan_crafting::MenuRemoval};
 use horizon_client::{
     items::ItemStack,
-    lan::{data::component_nbt, menu::NativeMenuEvent},
+    lan::{
+        data::component_nbt,
+        menu::{NativeMenuEvent, NativeReturn, NativeStore, Slots},
+    },
     text::Text,
 };
+use std::ops::Range;
 
 /// The inventory slot (0..9 the hotbar, 9..36 the rest) a click on `slot`
 /// of a native menu of `size` slots landed on, when it is the player's
@@ -109,7 +116,7 @@ fn exchange(
 /// `native_menu_clicked` or `native_server_tick`).
 #[allow(dead_code)]
 impl Game<'_> {
-    fn native_conn(&self, uuid: u128) -> Option<u32> {
+    pub(super) fn native_conn(&self, uuid: u128) -> Option<u32> {
         let host = self.lan.as_ref()?;
         let g = host
             .hub
@@ -146,6 +153,67 @@ impl Game<'_> {
         {
             host.hub.set_native_menu(conn, items);
         }
+    }
+    /// Opens a chest menu as `native_open_menu` does, whose slots in `input`
+    /// hold items as a chest's do: the player puts stacks in and takes them
+    /// out by vanilla's click rules (a shift-click from their inventory fills
+    /// them, a drag spreads over them), and the menu's other slots stay the
+    /// mod's to show, their clicks heard by `native_menu_clicked`. `items`
+    /// fills both; `native_set_menu_items` changes only the shown ones and
+    /// `native_menu_contents` reads them all. When the menu closes, for any
+    /// reason, the input slots go to `native_menu_input_closed` and what the
+    /// mods leave there goes back to the player (`clearContainer`). None
+    /// for a player not here, or `input` empty or past the rows' slots.
+    /// API @API:menu_input@.
+    pub(super) fn native_open_menu_with_input(
+        &mut self,
+        uuid: u128,
+        rows: u8,
+        title: Text,
+        items: Vec<Option<ItemStack>>,
+        input: Range<usize>,
+    ) -> Option<i32> {
+        let size = usize::from(rows.clamp(1, 6)) * 9;
+        if input.is_empty() || input.end > size {
+            return None;
+        }
+        let conn = self.native_conn(uuid)?;
+        let window = self.native_open_menu(uuid, rows, title, items)?;
+        if let Some(host) = self.lan.as_mut() {
+            host.hub.set_native_store(conn, NativeStore::Input(input));
+        }
+        Some(window)
+    }
+    /// What the player's open native menu holds, by slot: the items the mod
+    /// shows and what the player put in its input slots. None while no menu
+    /// a mod opened is open. API @API:menu_input@.
+    pub(super) fn native_menu_contents(&self, uuid: u128) -> Option<Vec<Option<ItemStack>>> {
+        let host = self.lan.as_ref()?;
+        let g = host
+            .hub
+            .guests
+            .iter()
+            .find(|g| g.placed && g.uuid == uuid)?;
+        g.menu.as_ref().filter(|m| m.slots == Slots::Native)?;
+        Some(g.native_menu.clone())
+    }
+    /// The stack on the player's cursor: inside `native_menu_clicked`, the
+    /// one they held as they made that click (a click on the mod's own slots
+    /// moves nothing, so it is still there); else the one they hold now.
+    /// None for an empty cursor or a player not here. API @API:menu_input@.
+    pub(super) fn native_menu_cursor(&self, uuid: u128) -> Option<ItemStack> {
+        if let Some((player, cursor)) = &self.native_click_cursor
+            && *player == uuid
+        {
+            return cursor.clone();
+        }
+        let host = self.lan.as_ref()?;
+        let g = host
+            .hub
+            .guests
+            .iter()
+            .find(|g| g.placed && g.uuid == uuid)?;
+        g.carried.clone()
     }
     /// Closes the player's native menu (a `native_menu_closed` follows).
     pub(super) fn native_close_menu(&mut self, uuid: u128) {
@@ -368,14 +436,16 @@ impl Game<'_> {
 
     /// The clicks on and closings of native menus the hub collected, each
     /// told to the mods with the hub back in `self.lan`, no player's state
-    /// swapped in.
+    /// swapped in. Then the input slots of menus the hub closed on its own
+    /// (a death, a mod's `native_close_menu`, another menu) go back to their
+    /// players in this level.
     pub(super) fn run_native_menu_events(&mut self) {
         loop {
             let Some(host) = self.lan.as_mut() else {
                 return;
             };
             if host.hub.native_menu_events.is_empty() {
-                return;
+                break;
             }
             match host.hub.native_menu_events.remove(0) {
                 NativeMenuEvent::Click {
@@ -384,9 +454,109 @@ impl Game<'_> {
                     slot,
                     button,
                     mode,
-                } => self.native_menu_clicked(uuid, window, slot, button, mode),
+                    cursor,
+                } => {
+                    self.native_click_cursor = Some((uuid, cursor));
+                    self.native_menu_clicked(uuid, window, slot, button, mode);
+                    self.native_click_cursor = None;
+                }
                 NativeMenuEvent::Closed { uuid, window } => self.native_menu_closed(uuid, window),
             }
+        }
+        if let Some(mut host) = self.lan.take() {
+            self.native_menu_returns_here(&mut host);
+            self.lan = Some(host);
+        }
+    }
+
+    /// The input slots of the native menus `conn` closed go to the mods
+    /// (`native_menu_input_closed`), then what they leave back to the player:
+    /// into their inventory (`placeItemBackInInventory`, the rest dropped), or
+    /// dropped at them when they left (`dropOrPlaceInInventory`). The guest
+    /// must be in `host.hub.guests` and the level they are in in place.
+    pub(super) fn native_menu_returned(
+        &mut self,
+        host: &mut LanHost,
+        conn: u32,
+        removal: MenuRemoval,
+    ) {
+        while let Some(at) = host
+            .hub
+            .native_menu_returns
+            .iter()
+            .position(|b| b.conn == conn)
+        {
+            let back = host.hub.native_menu_returns.remove(at);
+            self.native_menu_give_back(host, back, removal);
+        }
+    }
+
+    /// `native_menu_returned` for the players in this level whose menus the
+    /// hub closed; the others' wait for their level.
+    fn native_menu_returns_here(&mut self, host: &mut LanHost) {
+        let here = self.dim.id();
+        let conns: Vec<u32> = host
+            .hub
+            .native_menu_returns
+            .iter()
+            .map(|b| b.conn)
+            .filter(|&conn| host.hub.guest(conn).is_some_and(|g| g.dimension == here))
+            .collect();
+        for conn in conns {
+            self.native_menu_returned(host, conn, MenuRemoval::Live);
+        }
+        // The mods hear the others' now, even while their items wait.
+        for i in 0..host.hub.native_menu_returns.len() {
+            let back = &mut host.hub.native_menu_returns[i];
+            if back.heard {
+                continue;
+            }
+            back.heard = true;
+            let (uuid, window) = (back.uuid, back.window);
+            if let Some(mut slots) = back.slots.take() {
+                self.native_menu_input_closed(uuid, window, &mut slots);
+                host.hub.native_menu_returns[i].slots = Some(slots);
+            }
+        }
+    }
+
+    fn native_menu_give_back(
+        &mut self,
+        host: &mut LanHost,
+        back: NativeReturn,
+        removal: MenuRemoval,
+    ) {
+        let NativeReturn {
+            conn,
+            uuid,
+            window,
+            mut slots,
+            cursor,
+            heard,
+        } = back;
+        // Only a menu with input slots is heard.
+        if let Some(slots) = slots.as_mut().filter(|_| !heard) {
+            self.native_menu_input_closed(uuid, window, slots);
+        }
+        // `removed`: the cursor first, then `clearContainer`'s slots.
+        let stacks: Vec<ItemStack> = cursor
+            .into_iter()
+            .chain(slots.into_iter().flatten().flatten())
+            .filter(|s| s.count > 0)
+            .collect();
+        if stacks.is_empty() {
+            return;
+        }
+        let Some(gi) = host.hub.guests.iter().position(|g| g.conn == conn) else {
+            log::warn!(
+                "{} stacks of a closed native menu had no player to go back to",
+                stacks.len()
+            );
+            return;
+        };
+        match removal {
+            MenuRemoval::Live => self.lan_place_back(host, gi, stacks),
+            MenuRemoval::Disconnected => self.drop_guest_items(host, gi, stacks),
         }
     }
 }

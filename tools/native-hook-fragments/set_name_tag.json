@@ -1,0 +1,9 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "set_name_tag", "target": "horizon_client::game::native_server::Game<'_>::native_set_name_tag"}
+  ],
+  "rust_summary": "the name over a player's head (`native_set_name_tag`): the profile name of their list entries, a nickname above the head.",
+  "doc_summary": "`native_set_name_tag(uuid, tag)` shows a plain name (1 to 16 ASCII characters, no spaces) over a player's head for everyone else in place of theirs (None: back): their list entries carry it as the profile name, and the others' clients get their entry and entity again at once. Chat, commands and selectors keep the real name. Kept by UUID. Bundles need \"hooks\": @API:set_name_tag@.",
+  "comments": ["crates/horizon-client/src/game/native_server.rs"]
+}

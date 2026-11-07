@@ -57,6 +57,21 @@ pub fn emit(event: Event<'_>) {
     dispatch(event, &mut 0.0);
 }
 
+/// The game's native trample hook (`native_trample`), set once by the game: dimension, entity
+/// id, entity type, the farmland's position, the fall distance and cancel.
+pub static TRAMPLE: OnceLock<fn(&str, i32, &str, [i32; 3], f64, &mut bool)> = OnceLock::new();
+
+/// Whether the mods let `entity` (of type `kind`) trample the farmland at `position`.
+pub fn trample_allowed(entity: i32, kind: &str, position: BlockPos, distance: f64) -> bool {
+    let (Some(dimension), Some(hook)) = (LEVEL.get(), TRAMPLE.get()) else {
+        return true;
+    };
+    let mut cancel = false;
+    let at = [position.x, position.y, position.z];
+    hook(dimension, entity, kind, at, distance, &mut cancel);
+    !cancel
+}
+
 /// Damage is the calculated fall damage, before hurt handling and fall sounds.
 pub fn fall(contact: Contact<'_>, distance: f64, mut damage: f32) -> f32 {
     dispatch(Event::FallOn(contact, distance), &mut damage);

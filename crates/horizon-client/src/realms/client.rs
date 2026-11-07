@@ -367,6 +367,25 @@ fn configuration_body(
     })
 }
 
+/// `InviteCode`: one of the Realm's shareable invite codes.
+#[derive(Clone, Debug, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct InviteCode {
+    #[serde(default, deserialize_with = "nullable")]
+    pub code: String,
+    /// Epoch milliseconds; none never expires.
+    #[serde(default, deserialize_with = "nullable")]
+    pub expiration_date: Option<i64>,
+    #[serde(default, deserialize_with = "nullable")]
+    pub enabled: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Default)]
+struct InviteCodeListResponse {
+    #[serde(default, deserialize_with = "nullable")]
+    invite_codes: Vec<InviteCode>,
+}
+
 /// `RealmsWorldOptions`: a slot's options. Fields the JSON lacks keep the values of its
 /// constructor (`Default`); `empty` is never in the JSON (`RealmsSlot.defaults` sets it).
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -892,16 +911,90 @@ impl RealmsClient {
         Self::execute(self.request("PUT", &url, READ_TIMEOUT), Some("")).map(drop)
     }
 
-    /// `RealmsClient.redeemInviteCode`: the invite-code service, with the token in
-    /// `x-mojangauth` as `frontendV2Request` sets it.
-    pub fn redeem_invite_code(&self, code: &str) -> Result<(), RealmsError> {
-        let code = path_segment(code.trim())?;
-        let url = format!("{}/api/v1.0/invite/codes/use/{code}", self.frontend_url);
+    /// The invite-code service: `frontendV2Request`, with the token in `x-mojangauth`.
+    fn frontend(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&str>,
+    ) -> Result<String, RealmsError> {
+        let url = format!("{}/{path}", self.frontend_url);
         let request = self
-            .request("POST", &url, READ_TIMEOUT)
+            .request(method, &url, READ_TIMEOUT)
             .set("x-mojangauth", &self.access_token)
             .set("Accept", "application/json");
-        Self::execute(request, Some("")).map(drop)
+        Self::execute(request, body)
+    }
+
+    /// `RealmsClient.redeemInviteCode`: `POST api/v1.0/invite/codes/use/{code}`.
+    pub fn redeem_invite_code(&self, code: &str) -> Result<(), RealmsError> {
+        let code = path_segment(code.trim())?;
+        self.frontend(
+            "POST",
+            &format!("api/v1.0/invite/codes/use/{code}"),
+            Some(""),
+        )
+        .map(drop)
+    }
+
+    /// `RealmsClient.inviteCodes`: `GET api/v1.0/invite/codes?realmId={id}`.
+    pub fn invite_codes(&self, realm_id: i64) -> Result<Vec<InviteCode>, RealmsError> {
+        let json = self.frontend(
+            "GET",
+            &format!("api/v1.0/invite/codes?realmId={realm_id}"),
+            None,
+        )?;
+        serde_json::from_str::<InviteCodeListResponse>(&json)
+            .map(|r| r.invite_codes)
+            .map_err(|_| RealmsError::Parse)
+    }
+
+    /// `RealmsClient.createInviteCode`: `POST api/v1.0/invite/codes` with
+    /// `InviteCodeRequestDto`'s JSON.
+    pub fn create_invite_code(
+        &self,
+        realm_id: i64,
+        enabled: bool,
+        expiration: Option<i64>,
+    ) -> Result<(), RealmsError> {
+        let body = serde_json::json!({
+            "code": null,
+            "realmId": realm_id,
+            "enabled": enabled,
+            "expirationDate": expiration,
+        })
+        .to_string();
+        self.frontend("POST", "api/v1.0/invite/codes", Some(&body))
+            .map(drop)
+    }
+
+    /// `RealmsClient.updateInviteCode`: `POST api/v1.0/invite/codes/update`.
+    pub fn update_invite_code(
+        &self,
+        realm_id: i64,
+        code: &str,
+        enabled: bool,
+        expiration: Option<i64>,
+    ) -> Result<(), RealmsError> {
+        let body = serde_json::json!({
+            "code": code,
+            "realmId": realm_id,
+            "enabled": enabled,
+            "expirationDate": expiration,
+        })
+        .to_string();
+        self.frontend("POST", "api/v1.0/invite/codes/update", Some(&body))
+            .map(drop)
+    }
+
+    /// `RealmsClient.deleteInviteCode`: `DELETE api/v1.0/invite/codes/delete/{code}`.
+    pub fn delete_invite_code(&self, code: &str) -> Result<(), RealmsError> {
+        self.frontend(
+            "DELETE",
+            &format!("api/v1.0/invite/codes/delete/{}", path_segment(code)?),
+            None,
+        )
+        .map(drop)
     }
 }
 
