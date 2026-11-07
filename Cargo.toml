@@ -37,6 +37,7 @@ members = [
     "crates/horizon-port-pack",
     "crates/horizon-shaders",
     "crates/horizon-optifine",
+    "crates/horizon-polytone",
     "crates/horizon-shader-api",
     "crates/horizon-release-sign",
     "crates/horizon-mod-deps",
