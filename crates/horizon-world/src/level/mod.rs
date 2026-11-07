@@ -111,7 +111,7 @@ mod hooks;
 mod interact;
 pub mod pistons;
 mod place;
-mod portal;
+pub mod portal;
 pub mod portal_travel;
 mod query;
 pub(crate) use query::data_2d;
@@ -1019,6 +1019,37 @@ impl Behaviours {
         forward: horizon_core::geometry::Direction,
     ) -> bool {
         self.sim(level, ticks).fire_can_be_placed_at(pos, forward)
+    }
+    /// `PortalShape.findAnyShape`: the frame rectangle around `pos` on one
+    /// axis, valid or not.
+    pub fn portal_shape<L: LevelAccess + ?Sized>(
+        &self,
+        level: &mut L,
+        ticks: &mut Ticks,
+        pos: BlockPos,
+        x_axis: bool,
+    ) -> portal::PortalShape {
+        self.sim(level, ticks).find_portal_shape(pos, x_axis)
+    }
+    /// `PortalShape.findEmptyPortalShape`: a valid frame with no portal block,
+    /// trying the preferred axis first.
+    pub fn empty_portal_shape<L: LevelAccess + ?Sized>(
+        &self,
+        level: &mut L,
+        ticks: &mut Ticks,
+        pos: BlockPos,
+        x_axis: bool,
+    ) -> Option<portal::PortalShape> {
+        self.sim(level, ticks).find_empty_portal_shape(pos, x_axis)
+    }
+    /// `PortalShape.createPortalBlocks`: fill the frame with portal blocks.
+    pub fn create_portal_blocks<L: LevelAccess + ?Sized>(
+        &self,
+        level: &mut L,
+        ticks: &mut Ticks,
+        shape: &portal::PortalShape,
+    ) {
+        self.sim(level, ticks).create_portal_blocks(shape);
     }
     /// `BlockState.canSurvive(level, pos)`.
     pub fn can_survive<L: LevelAccess + ?Sized>(
