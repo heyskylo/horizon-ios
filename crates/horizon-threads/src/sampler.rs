@@ -37,6 +37,8 @@ pub enum Kind {
     Cpu = 0,
     /// End of a tick or frame: `value` is its duration in nanoseconds, `ctx.tick` its number.
     Tick = 1,
+    /// A wall-clock sample: `value` is 1 when the thread's CPU clock advanced since its previous wall sample, else 0.
+    Wall = 2,
 }
 
 #[repr(C)]
@@ -118,6 +120,8 @@ const TAG_PAD: u8 = 0;
 const TAG_FRAMES: u8 = 1;
 const TAG_COPY: u8 = 2;
 const TAG_TICK: u8 = 3;
+/// Set in a stack entry's `value` for a wall sample; bit 0 is then "was running".
+const WALL: u64 = 2;
 
 /// Starts every ring entry; a pad entry needs only `len` and `tag`. The payload follows: frames or a stack copy.
 #[repr(C)]
@@ -279,13 +283,18 @@ struct ThreadState {
     timed: AtomicU64,
     timed_ns: AtomicU64,
     timer: Mutex<Option<os::Timer>>,
+    wall_timer: Mutex<Option<os::Timer>>,
+    wall_period_ns: AtomicU64,
+    wall_cpu_ns: AtomicU64,
 }
 
 impl ThreadState {
     fn disarm(&self) {
         self.armed.store(false, Release);
-        if let Some(timer) = self.timer.lock().unwrap().take() {
-            os::disarm(timer);
+        for slot in [&self.timer, &self.wall_timer] {
+            if let Some(timer) = slot.lock().unwrap().take() {
+                os::disarm(timer);
+            }
         }
     }
 }
@@ -326,8 +335,8 @@ pub fn sampled_thread(name: &'static str) -> bool {
     })
 }
 
-/// Called from the signal handler on the sampled thread with the interrupted registers.
-fn on_sample(regs: Regs) {
+/// Called from the signal handler on the sampled thread with the interrupted registers; `wall` is the wall-clock timer's signal.
+fn on_sample(regs: Regs, wall: bool) {
     // SAFETY: LOCAL points at the state this thread's GUARD keeps alive, and is cleared before the guard drops.
     let Some(state) = (unsafe { LOCAL.with(Cell::get).as_ref() }) else {
         return;
@@ -342,6 +351,14 @@ fn on_sample(regs: Regs) {
     }
     let timed = state.seen.fetch_add(1, Relaxed) % TIME_EVERY == 0;
     let started = if timed { os::thread_cpu_ns() } else { 0 };
+    // Running means most of the interval went to CPU time; the handlers' own few microseconds don't count.
+    let tag = if wall {
+        let now = os::thread_cpu_ns();
+        let used = now.saturating_sub(state.wall_cpu_ns.swap(now, Relaxed));
+        WALL | u64::from(used > state.wall_period_ns.load(Relaxed) / 2)
+    } else {
+        0
+    };
     let (copy, bounds) = (state.copy_bytes.load(Relaxed), state.bounds);
     let on_stack = (bounds.lo..bounds.hi).contains(&regs.sp);
     let copied = if on_stack {
@@ -356,11 +373,11 @@ fn on_sample(regs: Regs) {
                 unsafe { std::slice::from_raw_parts_mut(slot.payload().cast(), MAX_FRAMES) };
             // SAFETY: bounds are this thread's stack and the registers are its interrupted ones.
             let depth = unsafe { unwind::walk(regs.pc, regs.fp, regs.sp, bounds, frames) };
-            slot.write(TAG_FRAMES, depth * 8, 0, regs);
+            slot.write(TAG_FRAMES, depth * 8, tag, regs);
         } else {
             // SAFETY: [sp, sp + copied) lies inside this thread's mapped stack and the slot's payload holds that many bytes.
             unsafe { std::ptr::copy_nonoverlapping(regs.sp as *const u8, slot.payload(), copied) };
-            slot.write(TAG_COPY, copied, 0, regs);
+            slot.write(TAG_COPY, copied, tag, regs);
         }
         ring.publish(&slot);
         state.samples.fetch_add(1, Relaxed);
@@ -371,6 +388,11 @@ fn on_sample(regs: Regs) {
             .fetch_add(os::thread_cpu_ns().saturating_sub(started), Relaxed);
         state.timed.fetch_add(1, Relaxed);
     }
+}
+
+/// The calling thread's CPU clock in nanoseconds.
+pub fn thread_cpu_ns() -> u64 {
+    os::thread_cpu_ns()
 }
 
 /// Ends the current tick or frame (`context().tick`) with its duration, so a report can keep only slow ones.
@@ -412,6 +434,8 @@ pub struct Config {
     pub unwind: Unwind,
     /// Stack bytes copied per sample in stack-copy mode, in KiB (clamped to the thread's stack).
     pub stack_copy_kib: usize,
+    /// Also arm a wall-clock timer per thread at the same rate, to find waits (`Kind::Wall`).
+    pub wall: bool,
 }
 
 impl Default for Config {
@@ -421,6 +445,7 @@ impl Default for Config {
             ring_samples: 0,
             unwind: Unwind::Auto,
             stack_copy_kib: 16,
+            wall: false,
         }
     }
 }
@@ -454,7 +479,7 @@ pub fn start(config: Config, select: impl Fn(&str) -> bool) -> io::Result<Sessio
     let samples = match config.ring_samples {
         0 => 2 * config.hz as usize,
         n => n,
-    };
+    } * (1 + usize::from(config.wall));
     let ring_bytes = samples.max(2) * align8(HDR + copy.max(MAX_FRAMES * 8));
     let registry = REGISTRY.lock().unwrap();
     let mut session = Session {
@@ -483,6 +508,12 @@ pub fn start(config: Config, select: impl Fn(&str) -> bool) -> io::Result<Sessio
         state.armed.store(true, Release);
         session.threads.push(state.clone());
         *state.timer.lock().unwrap() = Some(os::arm(&state.target, config.hz)?);
+        if config.wall {
+            let period = 1_000_000_000 / u64::from(config.hz.max(1));
+            state.wall_period_ns.store(period, Relaxed);
+            state.wall_cpu_ns.store(0, Relaxed);
+            *state.wall_timer.lock().unwrap() = Some(os::arm_wall(&state.target, config.hz)?);
+        }
     }
     if session.threads.is_empty() {
         return Err(io::Error::new(
@@ -506,6 +537,10 @@ impl Session {
                     value: header.value,
                     frames: [0; MAX_FRAMES],
                 };
+                if header.tag != TAG_TICK && header.value & WALL != 0 {
+                    record.kind = Kind::Wall;
+                    record.value = header.value & 1;
+                }
                 let depth = match header.tag {
                     TAG_TICK => {
                         record.kind = Kind::Tick;

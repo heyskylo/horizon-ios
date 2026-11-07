@@ -11,6 +11,7 @@ const fn at_1khz(unwind: Unwind, ring_samples: usize) -> Config {
         ring_samples,
         unwind,
         stack_copy_kib: 16,
+        wall: false,
     }
 }
 
@@ -374,4 +375,46 @@ fn unwind_cost_per_sample() {
             stats.handler_ns.unwrap_or(0.0)
         );
     }
+}
+
+fn wall_samples(name: &'static str, body: fn()) -> (usize, usize, Stats) {
+    let config = Config {
+        wall: true,
+        ..COPY_1K
+    };
+    let (records, stats, ()) = sampled(name, config, body);
+    let wall: Vec<_> = records.iter().filter(|r| r.kind == Kind::Wall).collect();
+    let running = wall.iter().filter(|r| r.value == 1).count();
+    (wall.len(), running, stats)
+}
+
+#[test]
+fn a_sleeping_thread_has_wall_samples_that_are_not_running() {
+    let (wall, running, _) =
+        wall_samples("t-wall-sleep", || thread::sleep(Duration::from_millis(300)));
+    assert!(
+        (60..=450).contains(&wall),
+        "{wall} wall samples in 300 ms at 1 kHz"
+    );
+    assert!(
+        running * 10 <= wall,
+        "{running} of {wall} marked running while asleep"
+    );
+}
+
+#[test]
+fn a_spinning_thread_has_wall_samples_that_are_running() {
+    let (wall, running, stats) = wall_samples("t-wall-spin", || spin_known(200));
+    assert!(
+        (60..=600).contains(&wall),
+        "{wall} wall samples in 200 ms at 1 kHz"
+    );
+    assert!(
+        running * 10 >= wall * 8,
+        "{running} of {wall} marked running while spinning"
+    );
+    assert!(
+        stats.samples as usize > wall,
+        "the CPU timer sampled too: {stats:?}"
+    );
 }

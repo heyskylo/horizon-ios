@@ -28,6 +28,15 @@ impl Target {
 }
 
 pub fn arm(target: &Target, hz: u32) -> io::Result<Timer> {
+    arm_clock(target, hz, None)
+}
+
+/// A timer on the monotonic clock, signalling SIGRTMIN: it queues, so it never merges with a CPU-time SIGPROF.
+pub fn arm_wall(target: &Target, hz: u32) -> io::Result<Timer> {
+    arm_clock(target, hz, Some(libc::CLOCK_MONOTONIC))
+}
+
+fn arm_clock(target: &Target, hz: u32, wall: Option<libc::clockid_t>) -> io::Result<Timer> {
     let period = 1_000_000_000 / u64::from(hz.max(1));
     let tick = libc::timespec {
         tv_sec: (period / 1_000_000_000) as _,
@@ -35,14 +44,20 @@ pub fn arm(target: &Target, hz: u32) -> io::Result<Timer> {
     };
     // SAFETY: all-zero is a valid sigevent/itimerspec; the out-pointers are live locals; the registry lock keeps the pthread alive.
     unsafe {
-        let mut clock = 0;
-        let rc = libc::pthread_getcpuclockid(target.pthread, &mut clock);
-        if rc != 0 {
-            return Err(io::Error::from_raw_os_error(rc));
+        let mut clock = wall.unwrap_or(0);
+        if wall.is_none() {
+            let rc = libc::pthread_getcpuclockid(target.pthread, &mut clock);
+            if rc != 0 {
+                return Err(io::Error::from_raw_os_error(rc));
+            }
         }
         let mut event: libc::sigevent = std::mem::zeroed();
         event.sigev_notify = libc::SIGEV_THREAD_ID;
-        event.sigev_signo = libc::SIGPROF;
+        event.sigev_signo = if wall.is_some() {
+            libc::SIGRTMIN()
+        } else {
+            libc::SIGPROF
+        };
         event.sigev_notify_thread_id = target.tid;
         let mut id = std::ptr::null_mut();
         if libc::timer_create(clock, &mut event, &mut id) != 0 {
@@ -100,12 +115,12 @@ fn registers(uc: &libc::ucontext_t) -> super::Regs {
 }
 
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-extern "C" fn handler(_: libc::c_int, _: *mut libc::siginfo_t, uc: *mut libc::c_void) {
+extern "C" fn handler(signal: libc::c_int, _: *mut libc::siginfo_t, uc: *mut libc::c_void) {
     // SAFETY: errno is thread-local; saving it keeps the interrupted code's value (async-signal-safe practice).
     let errno = unsafe { *libc::__errno_location() };
     // SAFETY: the kernel passes a valid ucontext_t to an SA_SIGINFO handler.
     let regs = registers(unsafe { &*(uc as *const libc::ucontext_t) });
-    super::on_sample(regs);
+    super::on_sample(regs, signal != libc::SIGPROF);
     // SAFETY: restores the value saved above.
     unsafe { *libc::__errno_location() = errno };
 }
@@ -121,12 +136,17 @@ pub fn install_handler() -> io::Result<()> {
             action.sa_sigaction = handler as *const () as usize;
             action.sa_flags = libc::SA_SIGINFO | libc::SA_RESTART;
             libc::sigemptyset(&mut action.sa_mask);
-            match libc::sigaction(libc::SIGPROF, &action, std::ptr::null_mut()) {
-                0 => Ok(()),
-                _ => Err(io::Error::last_os_error()
-                    .raw_os_error()
-                    .unwrap_or(libc::EINVAL)),
+            // Each handler blocks the other signal, so the two never nest on one ring.
+            libc::sigaddset(&mut action.sa_mask, libc::SIGPROF);
+            libc::sigaddset(&mut action.sa_mask, libc::SIGRTMIN());
+            for signal in [libc::SIGPROF, libc::SIGRTMIN()] {
+                if libc::sigaction(signal, &action, std::ptr::null_mut()) != 0 {
+                    return Err(io::Error::last_os_error()
+                        .raw_os_error()
+                        .unwrap_or(libc::EINVAL));
+                }
             }
+            Ok(())
         }
     });
     result.map_err(io::Error::from_raw_os_error)
