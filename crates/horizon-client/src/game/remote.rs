@@ -11804,7 +11804,8 @@ mod tests {
             let key = p.attributes.key("minecraft:movement_speed").unwrap();
             key.attribute().registry_id()
         };
-        let walking = 0.1;
+        // Player.createAttributes: 0.1F.
+        let walking = f64::from(0.1f32);
         // Speed II: 0.2 (a float) a level, multiplying the total.
         let amount = f64::from(0.2f32) * 2.0;
         let attributes = |sped: bool| {
