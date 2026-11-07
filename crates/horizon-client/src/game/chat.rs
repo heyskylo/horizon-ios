@@ -720,10 +720,13 @@ impl Game<'_> {
             .as_ref()
             .filter(|d| !command || d.command)
             .map(|d| d.text.clone());
-        self.open_chat(draft.as_deref().unwrap_or(prefix));
+        self.open_chat(draft.as_deref().unwrap_or(prefix), draft.is_some());
         self.ui.chat_draft_shown = draft.is_some() && self.ui.chat_screen.is_some();
     }
-    pub(super) fn open_chat(&mut self, initial: &str) {
+    /// Open the chat box on `initial`; `is_draft` when that text is the saved
+    /// draft (`ChatComponent.createScreen`), which draws grey italic until it
+    /// is edited.
+    pub(super) fn open_chat(&mut self, initial: &str, is_draft: bool) {
         if self.player.is_none() {
             return;
         }
@@ -743,6 +746,7 @@ impl Game<'_> {
             &m,
             &c,
             initial,
+            is_draft,
             self.ui.chat.recent.len(),
             b.width as i32,
             b.height as i32,
@@ -756,6 +760,36 @@ impl Game<'_> {
         self.left = false;
         self.right = false;
         self.capture(false);
+    }
+    /// The open chat box's text and its cursor, counted in characters; `None`
+    /// while the chat screen isn't open. API @API:chat_input@.
+    #[allow(dead_code)]
+    pub(super) fn native_chat_input(&self) -> Option<(String, usize)> {
+        let screen = self.ui.chat_screen.as_ref()?;
+        Some((screen.input.value.clone(), screen.input.cursor))
+    }
+    /// Replaces the open chat box's text and puts the cursor at `cursor`
+    /// (characters, clamped to the text), as an edit: completions refresh as
+    /// they do for typing. What typing can't put in the box isn't put there
+    /// either (`chat_box_text`), and the 256-character limit holds. An error
+    /// while the chat screen isn't open. API @API:chat_input@.
+    #[allow(dead_code)]
+    pub(super) fn native_set_chat_input(
+        &mut self,
+        text: &str,
+        cursor: usize,
+    ) -> Result<(), String> {
+        let m = Measure(&self.gui.atlas.font);
+        let c = Commands {
+            dispatcher: chat_tree(&self.remote),
+            registries: &self.ui.registries,
+        };
+        let Some(screen) = self.ui.chat_screen.as_mut() else {
+            return Err("the chat isn't open".into());
+        };
+        screen.suggest_command(&m, &c, &chat_box_text(text));
+        screen.input.move_cursor_to(&m, cursor, false);
+        Ok(())
     }
     pub(super) fn close_chat(&mut self, reason: ChatExit) {
         // InBedChatScreen.onClose: leaving the screen means getting up; the
@@ -836,11 +870,13 @@ impl Game<'_> {
                     .map_or_else(String::new, |s| s.value().to_owned());
                 self.close_chat(ChatExit::Interrupted);
                 if !text.is_empty() {
-                    self.open_chat(&text);
+                    // InBedChatScreen.onPlayerWokeUp: a new ChatScreen with
+                    // the typed text, not a draft.
+                    self.open_chat(&text, false);
                 }
             }
         } else if self.sleeping.is_some() && self.screen == Screen::Playing {
-            self.open_chat("");
+            self.open_chat("", false);
             self.ui.in_bed_chat = self.screen == Screen::Chat;
         }
     }
@@ -1627,23 +1663,23 @@ impl Game<'_> {
     pub(super) fn toggle_hide_gui(&mut self) {
         self.ui.hide_gui = !self.ui.hide_gui;
     }
-    /// F2: ScreenShot.grab into `screenshots/` with vanilla's file name.
-    pub(super) fn take_screenshot(&mut self) {
+    /// F2: ScreenShot.grab into `screenshots/` with vanilla's file name. The
+    /// file it will write, `None` without a window to draw.
+    pub(super) fn take_screenshot(&mut self) -> Option<std::path::PathBuf> {
         let dir = horizon_client::logging::player_dir().join("screenshots");
         if std::fs::create_dir_all(&dir).is_err() {
-            return;
+            return None;
         }
         let name = screenshot_name(&dir);
-        let Some(renderer) = self.renderer.as_mut() else {
-            return;
-        };
+        let renderer = self.renderer.as_mut()?;
         let path = dir.join(name);
         renderer.screenshot = Some(horizon_client::gfx::ScreenshotRequest {
             path: path.clone(),
             size: None,
             scaled: true,
         });
-        self.ui.screenshot_message = Some(path);
+        self.ui.screenshot_message = Some(path.clone());
+        Some(path)
     }
     /// `Minecraft.handleGlobalKeyPress`'s screenshot branch: the
     /// `key.screenshot` mapping (F2 by default) takes the picture before a
@@ -1699,6 +1735,14 @@ impl Game<'_> {
     }
 }
 /// `yyyy-MM-dd_HH.mm.ss[_n].png` (Util.getFilenameFormattedDateTime, in local time).
+/// What a mod may write into the chat box: the characters `ChatScreen`'s
+/// typing lets in (`StringUtil.isAllowedChatCharacter`: no control
+/// characters, no DEL, no section sign).
+fn chat_box_text(text: &str) -> String {
+    text.chars()
+        .filter(|&ch| ch >= ' ' && ch != '\u{7f}' && ch != '§')
+        .collect()
+}
 pub fn screenshot_name(dir: &std::path::Path) -> String {
     // Util.getFilenameFormattedDateTime: the local date and time.
     let base = chrono::Local::now().format("%Y-%m-%d_%H.%M.%S").to_string();
@@ -1729,6 +1773,17 @@ const LINK_COPY: usize = 1;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A mod's text reaches the chat box as typing would leave it: emoji and
+    /// accents stay, control characters, DEL and the section sign go.
+    #[test]
+    fn a_mods_chat_text_keeps_what_typing_allows() {
+        assert_eq!(
+            super::chat_box_text("hi :smile: → 😀 é"),
+            "hi :smile: → 😀 é"
+        );
+        assert_eq!(super::chat_box_text("a\nb\tc\u{7f}d§6e"), "abcd6e");
+    }
 
     /// `ChatScreen.shouldDiscardDraft`.
     #[test]
@@ -2057,6 +2112,7 @@ mod tests {
             &m,
             &c,
             "",
+            false,
             0,
             width as i32,
             height as i32,

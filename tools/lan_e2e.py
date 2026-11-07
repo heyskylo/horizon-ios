@@ -13376,6 +13376,148 @@ CHECKS += ['levelup-sounds']
 CHECK_FNS['levelup-sounds'] = check_levelup_sounds
 
 
+def check_mob_thorns(host, guest, out):
+    """A mob's Thorns answers the player who hits it (#9954): `doPostAttackEffectsWithItemSource` runs the victim's
+    equipment on every hit, so a husk in a Thorns 255 chestplate (the 15% per level always rolls) hurts the host's
+    sword hit, the guest's empty-handed punch and the guest's arrow, each by 1 to 5. The husk picks the chestplate
+    up (`Mob.pickUpItem`), as a mob finds its gear in play: `/item replace` on a mob keeps no enchantments yet
+    (#7985)."""
+    hx, hy, hz = (int(v // 1) for v in pos_of(host))
+    host('command', command='gamerule natural_health_regeneration false')
+    seen = {}
+    try:
+        for name, game, hand in (('host sword', host, 'minecraft:iron_sword'), ('guest punch', guest, 'minecraft:air'),
+                                 ('guest arrow', guest, 'minecraft:bow')):
+            x, z = hx + 8, hz + (-6 if game is host else 6)
+            husk = (x + (6 if hand == 'minecraft:bow' else 2), hy, z)
+            host('command', command=f'fill {x - 1} {hy - 1} {z - 2} {x + 8} {hy - 1} {z + 2} minecraft:stone')
+            host('command', command=f'fill {x - 1} {hy} {z - 2} {x + 8} {hy + 3} {z + 2} minecraft:air')
+            host('command', command=f'summon minecraft:husk {husk[0] + 0.5} {hy} {z + 0.5} '
+                                    '{NoAI:1b,PersistenceRequired:1b,CanPickUpLoot:1b,Tags:["thorny"],Health:200f,'
+                                    'attributes:[{id:"minecraft:max_health",base:200}]}')
+            host('command', command=f'summon minecraft:item {husk[0] + 0.5} {hy} {z + 0.5} '
+                                    '{PickupDelay:0s,Item:{id:"minecraft:diamond_chestplate",count:1,'
+                                    'components:{"minecraft:enchantments":{"minecraft:thorns":255}}}}')
+            host.wait(20)
+            game('command', command='gamemode survival')
+            game('command', command=f'item replace entity @s weapon.mainhand with {hand}')
+            if hand == 'minecraft:bow':
+                game('command', command='give @s minecraft:arrow 4')
+            game('command', command=f'tp @s {x + 0.5} {hy} {z + 0.5} -90 0')
+            game('command', command='effect give @s minecraft:instant_health 1 5 true')
+            game.wait(30)
+            target = game.raw('entities', 10, 'minecraft:husk')['entities'][0]['id']
+            ground = len(game.raw('entities', 10, 'minecraft:item')['entities'])
+            health = (lambda: host('state')['player']['health']) if game is host else (lambda: remote(guest)['health'])
+            before = health()
+            game.raw('look-at-entity', target)
+            if hand == 'minecraft:bow':
+                game.raw('use-item', '--hold', 1.3)
+                game.wait(40)
+            else:
+                game.raw('attack')
+                game.wait(10)
+            seen[name] = (before, health(), f'{ground} items on the ground')
+            game.shot(out, 'mob-thorns-' + name.replace(' ', '-'))
+            host('command', command='kill @e[tag=thorny]')
+            host('command', command=f'fill {x - 1} {hy} {z - 2} {x + 8} {hy + 3} {z + 2} minecraft:air')
+    finally:
+        host('command', command='gamerule natural_health_regeneration true')
+        host('command', command='kill @e[tag=thorny]')
+        for game in (host, guest):
+            back_to_game(game)
+            game('command', command='clear @s')
+        face_each_other(host, guest)
+    for name, (before, after, _) in seen.items():
+        assert before == 20.0, f'{name}: not at full health first: {seen}'
+        assert 15.0 <= after < 20.0, f'{name}: the husk\'s thorns did not hurt (or hurt too much): {seen}'
+    return seen
+
+
+CHECKS += ['mob-thorns']
+CHECK_FNS['mob-thorns'] = check_mob_thorns
+
+
+def check_command_block_chat(host, guest, out):
+    """#9377: SayCommand broadcasts to real clients, independently of TrackOutput.
+
+    Java 26.3 SayCommand returns 1 and PlayerList.broadcastChatMessage sends
+    the line to every player. Conditional chain execution is a separate control.
+    """
+    objective = 'say_9377'
+    positions = [(g, pos_of(g)) for g in (host, guest)]
+    rows = []
+
+    def command(line):
+        return '\n'.join(host('command', command=line)['chat'])
+
+    def gametime():
+        line = command('time query gametime')
+        found = re.search(r'is (-?\d+)', line)
+        assert found, f'prerequisite: no gametime reply: {line}'
+        return int(found.group(1))
+
+    try:
+        for line in ('tick freeze', 'gamerule command_blocks_work true',
+                     'gamerule spawn_mobs false', 'forceload add 0 0',
+                     'fill 0 110 4 1 110 6 stone',
+                     f'scoreboard objectives add {objective} dummy'):
+            command(line)
+        for actor, _ in positions:
+            x = 0.5 if actor is host else 1.5
+            command(f"tp {getattr(actor, 'player', GUEST_NAME)} {x} 112 5.5")
+        host.wait(5)
+        for sender in (host, guest):
+            marker = f'SAY_CONTROL_{sender.name}_{time.time_ns()}'
+            sender.raw('chat', f'/say {marker}')
+            for actor, _ in positions:
+                actor.until(lambda: actor.raw('messages', 30)['chat'],
+                            lambda lines: any(marker in line for line in lines), ticks=30)
+        for track in (True, False):
+            marker = f'SAY_BLOCK_{time.time_ns()}'
+            source_name = 'Announcer9377' if track else '@'
+            custom_name = ',CustomName:{text:"Announcer9377"}' if track else ''
+            for line in ('setblock 0 110 2 air', 'setblock 1 110 2 air', 'setblock 2 110 2 air',
+                         f'scoreboard players set chain {objective} 0',
+                         'setblock 2 110 2 chain_command_block[facing=east,conditional=true]'
+                         f'{{Command:"scoreboard players set chain {objective} 1",auto:1b}}',
+                         'setblock 1 110 2 command_block[facing=east]'
+                         f'{{Command:"say {marker}",auto:0b,TrackOutput:{int(track)}b{custom_name}}}',
+                         'setblock 0 110 2 redstone_block'):
+                command(line)
+            start = gametime()
+            command('tick step 2')
+            host.until(gametime, lambda tick: tick >= start + 2, ticks=60)
+            assert gametime() == start + 2, 'prerequisite: extra world ticks'
+            host.wait(5)
+            for actor, _ in positions:
+                actor.raw('look-at', 1.5, 110.5, 2.5)
+                actor.shot(out, f'command-block-chat-{int(track)}')
+            count = command('data get block 1 110 2 SuccessCount')
+            chain = command(f'scoreboard players get chain {objective}')
+            messages = {g.name: g.raw('messages', 30)['chat'] for g, _ in positions}
+            row = dict(track_output=track, marker=marker, success=count, chain=chain,
+                       block=command('data get block 1 110 2'), messages=messages)
+            rows.append(row)
+            (out / 'command-block-chat.json').write_text(json.dumps(rows, indent=2), encoding='utf-8')
+            assert re.search(r'following block data: 1\b', count), count
+            assert f'chain has 1 [{objective}]' in chain, chain
+            for actor, _ in positions:
+                assert messages[actor.name].count(f'[{source_name}] {marker}') == 1, row
+        return rows
+    finally:
+        for line in ('setblock 0 110 2 air', 'setblock 1 110 2 air', 'setblock 2 110 2 air',
+                     f'scoreboard objectives remove {objective}', 'forceload remove 0 0',
+                     'fill 0 110 4 1 110 6 air', 'tick unfreeze'):
+            command(line)
+        for actor, position in positions:
+            command(f"tp {getattr(actor, 'player', GUEST_NAME)} " + ' '.join(map(str, position)))
+
+
+CHECKS += ['command-block-chat']
+CHECK_FNS['command-block-chat'] = check_command_block_chat
+
+
 def check_death_credit(host, guest, out):
     """ServerPlayer.die for each player (#9955): the death is heard (`gameEvent(ENTITY_DIE)`: a sensor
     3 blocks away takes frequency 15, which beats the killing blow's `entity_damage`, 7, from the same
@@ -13462,26 +13604,33 @@ CHECK_FNS['death-credit'] = check_death_credit
 def set_legacy_rules(game, on):
     """The PvP page's "1.8 combat in worlds you host" switch, as a player flips it."""
     game('options', page='pvp')
-    for _ in range(40):
+    # The switch sits at the end of the page: wheel down over the list until it stops moving, so the row is
+    # whole inside the list (a click on a row half under the list's edge lands outside it, as in vanilla).
+    switch = None
+    for _ in range(60):
         ui = game.raw('ui')
-        switch = next((w for w in ui['widgets']
-                       if w.get('label', '').startswith('1.8 combat in worlds you host')), None)
-        if switch:
+        found = next((w for w in ui['widgets']
+                      if w.get('label', '').startswith('1.8 combat in worlds you host')), None)
+        if found and switch and found['bounds'] == switch['bounds']:
             break
-        # The switch sits at the end of the page: wheel down over the list.
+        switch = found
         width, height = ui['gui_size']
         game.raw('scroll-at', f'{width / 2:.1f}', f'{height / 2:.1f}', -3)
     assert switch, 'the PvP page has no "1.8 combat in worlds you host" switch'
     if switch['label'].endswith('On') != on:
         game('click', id=switch['id'])
+        now = next(w for w in game.raw('ui')['widgets'] if w.get('id') == switch['id'])
+        assert now['label'].endswith('On') == on, f'the click did not flip the switch: {now}'
     game('close')
     game.wait(5)
 
 
 def check_legacy_pvp(host, guest, out):
     """The host's legacy combat rules (crates/horizon-client/src/legacy_combat.rs) on a guest's diamond axe hits:
-    one at full charge, and one right after a hotbar swap, which empties the charge on the server
-    (ServerPlayer's attack item change resets attackStrengthTicker).
+    one at full charge, and one right after a hotbar swap and back, which empties the charge on the server
+    (Player.tick resets attackStrengthTicker when the main hand's item changes). The stick is held a few ticks:
+    the client sends a slot change from its next tick (MultiPlayerGameMode.tick), so a swap and back within one
+    tick sends nothing, as vanilla's.
 
     1.8.9, EntityPlayer.attackTargetEntityWithCurrentItem: the hit deals the attack damage attribute, which is
     EntityPlayer.applyEntityAttributes' base 1 plus the axe's weapon modifier (ItemAxe's 3.0F +
@@ -13515,7 +13664,7 @@ def check_legacy_pvp(host, guest, out):
         before = health()
         assert before == 20.0, f'the host was not healed: {before}'
         # One ctl process keeps the swap and the hit together.
-        guest.script(['select 2', 'select 1', 'attack'] if swap else ['attack'])
+        guest.script(['select 2', 'wait 3', 'select 1', 'attack'] if swap else ['attack'])
         guest.wait(10)
         return before - health()
 

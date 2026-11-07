@@ -1322,6 +1322,13 @@ impl Launcher {
                     }
                     match result {
                         Ok(()) => {
+                            if as_update.is_some()
+                                && horizon_launcher::nightly::date_of(&tag).is_some()
+                            {
+                                if let Err(e) = backend::mark_auto_installed(&tag) {
+                                    eprintln!("Could not mark updated Nightly {tag}: {e}");
+                                }
+                            }
                             if self.updates.horizon.as_ref().is_some_and(|r| r.tag == tag) {
                                 self.updates.horizon = None;
                             }

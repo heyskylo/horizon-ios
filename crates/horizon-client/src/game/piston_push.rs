@@ -60,11 +60,38 @@ struct Body {
 
 impl Game<'_> {
     /// Push whatever this tick's moving pistons ran into, in the order the
-    /// pistons ticked: vanilla pushes from each block entity's own tick.
+    /// pistons ticked: vanilla pushes from each block entity's own tick, so a
+    /// pushed entity collides with the moving blocks that ticked before it at
+    /// their new progress and with the ones after it at their old one
+    /// (`PistonMovingBlockEntity.getCollisionShape` reads `progress`). The
+    /// collision view (`World::moving_pistons`, last synced before these
+    /// ticks) takes each piston's new progress right after its own push: a
+    /// TNT duper's TNT stops at the block that has not moved yet (#11399).
     pub(super) fn push_piston_entities(&mut self, pushes: Vec<Push>) {
         let mut accumulators = std::collections::HashMap::new();
         for push in pushes {
+            let pos = push.0;
             self.push_for_piston(push, &mut accumulators);
+            self.advance_piston_collision(pos);
+        }
+    }
+
+    /// The collision view of the moving piston at `pos` takes the progress
+    /// its tick gave it. One no longer moving keeps its entry until
+    /// `sync_moving_pistons`.
+    fn advance_piston_collision(&mut self, pos: BlockPos) {
+        let Some(state) = self
+            .block_ticks
+            .moving_pistons
+            .iter()
+            .find(|(p, _)| *p == pos)
+            .map(|(_, piston)| piston.shape_state())
+        else {
+            return;
+        };
+        let at = [pos.x, pos.y, pos.z];
+        if let Some(entry) = self.world.moving_pistons.iter_mut().find(|(p, _)| *p == at) {
+            entry.1 = state;
         }
     }
 
@@ -665,5 +692,116 @@ mod tests {
             (moved.x - 0.51).abs() < 1.0e-9,
             "the body did not move the whole push: {moved:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod order_tests {
+    use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+    use horizon_client::chunk::Chunk;
+    use horizon_core::{geometry::Direction, position::BlockPos};
+    use horizon_world::level::pistons::MovingPiston;
+    use std::sync::Arc;
+
+    /// A stone pushes a primed TNT east, into the cell a second stone is
+    /// sliding north out of (half way there). The TNT collides with that
+    /// stone at its progress when the push happens
+    /// (`PistonMovingBlockEntity.getCollisionShape`): gone already when it
+    /// ticked first, still in the way when it ticks second (#11399). A block
+    /// moving the push's own way would not collide at all (`NOCLIP`).
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_pushed_entity_meets_the_other_moving_blocks_as_they_are_at_its_push() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.game_dir = Some(
+            std::env::temp_dir().join(format!("horizon-piston-order-unit-{}", std::process::id())),
+        );
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        let registry = &game.pack.assets.registry;
+        let stone = registry.default_state("minecraft:stone").unwrap();
+        let moving = registry.default_state("minecraft:moving_piston").unwrap();
+        let mut chunk = Chunk::empty(0, 0);
+        for x in 0..16 {
+            for z in 0..16 {
+                chunk.set(x, 199, z, stone.0);
+            }
+        }
+        chunk.set(5, 200, 5, moving.0);
+        chunk.set(6, 200, 4, moving.0);
+        game.world.chunks.insert((0, 0), Arc::new(chunk));
+        let piston = |id, direction, progress| MovingPiston {
+            moved_state: stone,
+            direction,
+            extending: true,
+            source: false,
+            progress,
+            progress_o: progress,
+            last_ticked: 0,
+            death_ticks: 0,
+            id,
+        };
+        let mut moved = Vec::new();
+        for far_first in [true, false] {
+            // The near stone moves east from x 4; the far one north from z 5,
+            // half way: its box covers z 4.5 to 5.5, then z 4 to 5.
+            let near = (BlockPos::new(5, 200, 5), piston(1, Direction::East, 0.0));
+            let far = (BlockPos::new(6, 200, 4), piston(2, Direction::North, 0.5));
+            game.block_ticks.moving_pistons = if far_first {
+                vec![far, near]
+            } else {
+                vec![near, far]
+            };
+            game.sync_moving_pistons();
+            game.tnts.clear();
+            assert!(game.run_command("summon tnt 5.5 200 5.5 {fuse:80,Motion:[0.0d,0.0d,0.0d]}"));
+            let before = game.tnts[0].position.x;
+            // PistonMovingBlockEntity.tick of each, in order: half a block on.
+            let pushes: Vec<_> = game
+                .block_ticks
+                .moving_pistons
+                .iter()
+                .map(|&(pos, old)| (pos, old, old.progress + 0.5))
+                .collect();
+            for (_, piston) in &mut game.block_ticks.moving_pistons {
+                piston.progress += 0.5;
+            }
+            game.push_piston_entities(pushes);
+            moved.push(game.tnts[0].position.x - before);
+        }
+        // The near stone's box reaches x 5.5 into a TNT from x 5.01: 0.49 plus
+        // PUSH_OFFSET; the far stone's old box stops it at x 6.
+        assert!(
+            (moved[0] - 0.5).abs() < 1e-9,
+            "far stone gone first: {}",
+            moved[0]
+        );
+        assert!(moved[1] < 0.02, "far stone still in the way: {}", moved[1]);
     }
 }
