@@ -327,6 +327,8 @@ mod pickups;
 mod piglins;
 mod piston_push;
 mod player_equip;
+#[cfg(test)]
+mod portal_ticking_tests;
 mod postprocess;
 mod potent_sulfur;
 mod potions;
