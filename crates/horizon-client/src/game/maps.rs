@@ -443,7 +443,7 @@ impl MapData {
     }
     /// `MapItemSavedData.isTrackedCountOverLimit`: more than `limit`
     /// decorations count (`MapDecorationType.trackCount`).
-    fn tracked_over_limit(&self, limit: usize) -> bool {
+    pub(super) fn tracked_over_limit(&self, limit: usize) -> bool {
         self.decorations
             .iter()
             .filter(|d| tracks_count(d.sprite))

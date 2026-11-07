@@ -45,6 +45,7 @@ fn static_entity_shader() -> String {
 mod crumbling_tests;
 mod entity_batch;
 mod entity_outline;
+mod fluid;
 #[cfg(test)]
 mod inter_stage_tests;
 #[cfg(test)]
@@ -53,9 +54,9 @@ mod weather;
 mod world_text;
 use entity_batch::EntityBatch;
 pub use entity_batch::{
-    DISSOLVE_OVERLAY, DRAGON_RAYS_OVERLAY, ENERGY_SWIRL_OVERLAY, OIT_ENTITY, SHADOW_OVERLAY,
-    TEXT_POLYGON_OFFSET_OVERLAY, TRANSLUCENT_GLINT_ITEM_OVERLAY, TRANSLUCENT_ITEM_OVERLAY,
-    TRANSLUCENT_PARTICLE_OVERLAY, WATER_MASK_OVERLAY, WORLD_TEXT_OVERLAY,
+    DISSOLVE_OVERLAY, DRAGON_RAYS_OVERLAY, ENERGY_SWIRL_OVERLAY, FLUID_OVERLAY, OIT_ENTITY,
+    SHADOW_OVERLAY, TEXT_POLYGON_OFFSET_OVERLAY, TRANSLUCENT_GLINT_ITEM_OVERLAY,
+    TRANSLUCENT_ITEM_OVERLAY, TRANSLUCENT_PARTICLE_OVERLAY, WATER_MASK_OVERLAY, WORLD_TEXT_OVERLAY,
     WORLD_TEXT_POLYGON_OFFSET_OVERLAY, mark_oit,
 };
 pub use view::{View, ViewSet};
@@ -170,6 +171,7 @@ mod hdr_icc;
 mod hdr_stats;
 pub use hdr::Calibration as HdrCalibration;
 pub mod block_light;
+mod custom_sky;
 mod displace;
 pub mod lightning;
 mod lod;
@@ -469,9 +471,9 @@ struct SectionGpu {
     /// while its instance carries a fade (`drawn_faded`), and GPU culling's
     /// pass leaves it out.
     gpu_fading: bool,
-    /// When it began to fade in over the far terrain it replaces, which
-    /// stays whole behind it until then: a section new where far tiles are
-    /// drawn. Meshed again, it stays as it was.
+    /// When it came in over the far terrain it replaces (drawn whole at once,
+    /// `fade`): a section new where far tiles are drawn, which skips vanilla's
+    /// fade-in. Meshed again, it stays as it was.
     fading: Option<std::time::Instant>,
     /// When it began to fade out, its column gone over far terrain that
     /// stays behind it (`Renderer::leave_section`); released once it has.
@@ -493,17 +495,19 @@ pub(crate) fn collect_animated_layers(
 }
 
 impl SectionGpu {
-    /// Its fade code this frame (`lod::fade_code`), 0 once whole. `retiring`:
-    /// its column has left the render distance, far terrain is coming in
-    /// under it (`lod::HELD`).
-    fn fade(&self, now: std::time::Instant, retiring: bool) -> u32 {
-        match self.leaving {
-            Some(since) => lod::fade_out_code(since, 0, now),
-            None if retiring => lod::HELD,
-            None => self
-                .fading
-                .and_then(|since| lod::fade_code(Some(since), 0, now))
-                .unwrap_or(0),
+    /// Its fade code this frame: 0, drawn whole, or `lod::HELD` (whole, in
+    /// front of far terrain) while it leaves (`leaving`) or its column has left
+    /// the render distance and far terrain is coming in under it (`retiring`).
+    /// A near section never dithers over far terrain: the holes of its pattern
+    /// showed its own inside (cave walls, the stone under the grass), nearer
+    /// than the tile behind, an x-ray of each column coming in or going out.
+    /// It comes in whole over the tile it replaces, which stays behind it until
+    /// `fading` is `lod::FADE` old, and leaves whole after as long.
+    fn fade(&self, retiring: bool) -> u32 {
+        if self.leaving.is_some() || retiring {
+            lod::HELD
+        } else {
+            0
         }
     }
     /// Its vertices in `arena`, and in `translucent_arena` when `split` (there
@@ -569,23 +573,21 @@ impl SectionGpu {
     /// once false, this stays false until the section is meshed again, leaves,
     /// is held (`lod_retiring`), or the chunk fade-in time changes.
     fn drawn_faded(&self, key: SectionKey, f: FadeInputs<'_>) -> bool {
-        let fade = self.fade(f.now, f.retiring.contains(&key));
+        let fade = self.fade(f.retiring.contains(&key));
         let visibility = section_visibility(f.uploaded.get(&key), f.fade_ms, f.now);
         section_instance([0.0; 3], fade, visibility)[3].to_bits()
             != section_instance([0.0; 3], 0, 1.0)[3].to_bits()
     }
-    /// When its fade is over at the latest (`drawn_faded`): the later of the
-    /// ends of its fade-in over far terrain (`fading` and `lod::FADE`, a few
-    /// milliseconds after `fade` reaches 0) and of vanilla's (its first upload
-    /// and `f.fade_ms`). None while it leaves or is held, which ends only when
-    /// it goes or is meshed again, and without either fade-in.
+    /// When its fade is over at the latest (`drawn_faded`): the end of
+    /// vanilla's fade-in (its first upload and `f.fade_ms`; one coming in over
+    /// far terrain is whole at once, `fade`). None while it leaves or is held,
+    /// which ends only when it goes or is meshed again, and without a fade-in.
     fn fade_end(&self, key: SectionKey, f: FadeInputs<'_>) -> Option<Instant> {
         if self.leaving.is_some() || f.retiring.contains(&key) {
             return None;
         }
         let vanilla = f.uploaded.get(&key).filter(|_| f.fade_ms > 0);
-        let vanilla = vanilla.map(|&t| t + std::time::Duration::from_millis(f.fade_ms));
-        vanilla.max(self.fading.map(|t| t + lod::FADE))
+        vanilla.map(|&t| t + std::time::Duration::from_millis(f.fade_ms))
     }
 }
 /// Which of a mesh's ranges `move_off_page` moves: what it holds in the section
@@ -1204,10 +1206,14 @@ pub struct Renderer {
     world_primitives: world_primitives::WorldPrimitives,
     text_polygon_offset_pipeline: wgpu::RenderPipeline,
     world_text_pipeline: wgpu::RenderPipeline,
+    fluid_pipeline: wgpu::RenderPipeline,
     celestial_pipeline: wgpu::RenderPipeline,
     celestial_buffer: wgpu::Buffer,
     end_sky: end_sky::EndSky,
     stars: stars::Stars,
+    /// OptiFine custom sky layers (`crate::custom_sky`), and the frame's from the game.
+    custom_sky: custom_sky::CustomSky,
+    custom_sky_draws: Vec<crate::custom_sky::Draw>,
     /// The glowing entities' outline (`LevelRenderer.entityOutlineTarget`).
     entity_outline: entity_outline::EntityOutline,
     panorama: panorama::Panorama,
@@ -1236,6 +1242,8 @@ pub struct Renderer {
     /// Ordinary entity models posed on the GPU; `None` without compute shaders.
     entity_skin: Option<entity_skin::EntitySkin>,
     group: wgpu::BindGroup,
+    fluid_group: wgpu::BindGroup,
+    fluid_sampler: wgpu::Sampler,
     globals: wgpu::Buffer,
     /// Resource-pack normal/specular maps, split like the colour sprite arrays.
     pbr_maps: Option<Vec<[wgpu::Texture; 2]>>,
@@ -1471,6 +1479,8 @@ pub struct Renderer {
     pub screenshot: Option<ScreenshotRequest>,
     /// Outcome of the last screenshot: frame size, or the error.
     pub screenshot_result: Option<std::result::Result<[u32; 2], String>>,
+    /// The HDR copy the last screenshot wrote beside it, if it wrote one.
+    pub screenshot_hdr: Option<std::path::PathBuf>,
     /// Screenshot Quality (Horizon setting): a `scaled` screenshot's frame is this many
     /// times the game's resolution (1, 2, 4 or 8).
     pub screenshot_quality: u32,
@@ -2022,24 +2032,26 @@ fn draws_frame(format: wgpu::TextureFormatFeatures) -> bool {
     )
 }
 
-/// The frame of a renderer made with a shader API 0.2 pack picked under
-/// `HORIZON_HDR_FRAME=float` (docs/design/hdr-linear-light.md): float, so values over 1
-/// survive from the world to the tonemap.
+/// The frame of a renderer made under `HORIZON_HDR_FRAME=float` (docs/design/hdr-linear-light.md)
+/// with a shader API 0.2 pack picked, or with HDR on and no pack: float, so values over 1
+/// survive from the world to the tonemap and the HDR pass.
 const LINEAR_FRAME: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
-/// What a renderer's frame is drawn in: `LINEAR_FRAME` for a 0.2 pack under the switch
-/// (`linear`: `(picked, the device draws it)`); else `WIDE_FRAME` when it is made with HDR on
-/// and Smooth Gradients (`wide_frame`, `Graphics::wide_frame`), the surface offering HDR output
-/// (`hdr_offered`) and the device drawing it (`draws_wide_frame`): an 8-bit frame's steps band
-/// in dark gradients, and HDR shows them. Else the swapchain's 8-bit format, as without HDR.
+/// What a renderer's frame is drawn in: `LINEAR_FRAME` under the switch where the device draws
+/// it, for a 0.2 pack, or for HDR on without a pack where the surface offers HDR output
+/// (`linear`: `(a 0.2 pack picked, HDR on without a pack, the device draws it)`); else
+/// `WIDE_FRAME` when it is made with HDR on and Smooth Gradients (`wide_frame`,
+/// `Graphics::wide_frame`), the surface offering HDR output (`hdr_offered`) and the device
+/// drawing it (`draws_wide_frame`): an 8-bit frame's steps band in dark gradients, and HDR
+/// shows them. Else the swapchain's 8-bit format, as without HDR.
 fn frame_format(
     wide_frame: bool,
     hdr_offered: bool,
     device_draws_it: bool,
     swapchain: wgpu::TextureFormat,
-    linear: (bool, bool),
+    linear: (bool, bool, bool),
 ) -> wgpu::TextureFormat {
-    if linear.0 && linear.1 {
+    if linear.2 && (linear.0 || linear.1 && hdr_offered) {
         LINEAR_FRAME
     } else if wide_frame && hdr_offered && device_draws_it {
         WIDE_FRAME
@@ -2516,6 +2528,7 @@ impl Renderer {
         wide_frame: bool,
         shader_pack: bool,
         linear_pack: bool,
+        hdr_float: bool,
     ) -> Result<Self> {
         let Opened {
             instance,
@@ -2651,9 +2664,10 @@ impl Renderer {
         crate::graphics::offer_smooth_gradients(wide_ok);
         let linear = (
             linear_pack,
+            hdr_float,
             draws_frame(adapter.get_texture_format_features(LINEAR_FRAME)),
         );
-        if linear == (true, false) {
+        if linear.0 && !linear.2 {
             log::warn!(
                 "Horizon renderer: the device can't draw a float frame; the shader API 0.2 pack runs on the 8-bit one"
             );
@@ -2763,6 +2777,13 @@ impl Renderer {
             bind_group_layouts: &[Some(&bindings)],
             ..Default::default()
         });
+        let fluid_pipeline = fluid::pipeline(
+            &device,
+            Some(&layout),
+            &shader,
+            config.format.remove_srgb_suffix(),
+            &sprite_constants,
+        );
         let instance_attributes = wgpu::vertex_attr_array![5=>Float32x4];
         let terrain_buffers = [
             Some(wgpu::VertexBufferLayout {
@@ -3317,6 +3338,18 @@ impl Renderer {
             &globals,
             &sprite_views,
             &sprite_sampler,
+            &lightmap_view,
+            &lightmap_sampler,
+            &emission_stats.view,
+        );
+        let fluid_sampler = device.create_sampler(&fluid::SAMPLER);
+        let fluid_group = terrain_group(
+            &device,
+            "Still fluid resources",
+            &bindings,
+            &globals,
+            &sprite_views,
+            &fluid_sampler,
             &lightmap_view,
             &lightmap_sampler,
             &emission_stats.view,
@@ -3888,12 +3921,8 @@ impl Renderer {
             alpha_blend,
             false,
         );
-        let world_text_pipeline = world_text::pipeline(
-            &device,
-            Some(&entity_layout),
-            &entity_shader,
-            config.format.remove_srgb_suffix(),
-        );
+        let world_text_pipeline =
+            world_text::pipeline(&device, Some(&entity_layout), &entity_shader, frame_format);
         // RenderPipelines.ENTITY_SOLID: a surface of an entity that is coplanar with
         // terrain wins the tie in vanilla (the boat's floor over the trapdoor on the
         // ground it is stopped by, #5950). Terrain and entities are separate draw
@@ -4595,6 +4624,7 @@ impl Renderer {
         let uploads = upload::Uploads::new(&device);
         let section_uploads = upload::Uploads::with_chunk(&device, SECTION_UPLOAD_CHUNK);
         let stars = stars::Stars::new(&device, frame_format);
+        let custom_sky = custom_sky::CustomSky::new(&device, frame_format);
         let entity_outline = entity_outline::EntityOutline::new(
             &device,
             (&entity_shader, &entity_layout, &entity_vertex),
@@ -4713,10 +4743,13 @@ impl Renderer {
             world_primitives,
             text_polygon_offset_pipeline,
             world_text_pipeline,
+            fluid_pipeline,
             celestial_pipeline,
             celestial_buffer,
             end_sky: end_sky::EndSky::default(),
             stars,
+            custom_sky,
+            custom_sky_draws: Vec::new(),
             entity_outline,
             panorama,
             border_pipeline,
@@ -4743,6 +4776,8 @@ impl Renderer {
             entity_batch: EntityBatch::default(),
             entity_skin,
             group,
+            fluid_group,
+            fluid_sampler,
             globals,
             pbr_maps,
             lightmap,
@@ -4863,6 +4898,7 @@ impl Renderer {
             started: Instant::now(),
             screenshot: None,
             screenshot_result: None,
+            screenshot_hdr: None,
             screenshot_quality: 1,
             screenshot_halvings: 0,
             gamma: 0.5,
@@ -4932,6 +4968,15 @@ impl Renderer {
             }
         }
         pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+    }
+    /// The pack's OptiFine custom sky layer textures (`crate::custom_sky::CustomSky::load`).
+    pub fn set_custom_sky(&mut self, pack: &crate::custom_sky::CustomSky) {
+        self.custom_sky.set_pack(&self.device, &self.queue, pack);
+    }
+    /// The custom sky layers the next frame draws (`CustomSky::draws`): the game refills it each
+    /// frame, empty when the world's sky has none.
+    pub fn custom_sky_draws(&mut self) -> &mut Vec<crate::custom_sky::Draw> {
+        &mut self.custom_sky_draws
     }
     /// The resource packs' `core/rendertype_lines` (`HudAtlas::lines_shader`) for the block
     /// outline, or the built-in one.
@@ -6615,6 +6660,50 @@ impl Renderer {
         }
         Ok(report)
     }
+    /// Makes the running shader pack, of either kind, forget what it kept from earlier frames:
+    /// the next frame draws as a freshly loaded pack's first. Nothing to do without a pack.
+    pub fn reset_shader_pack_history(&mut self) {
+        // A frame still on the submit thread uses the targets and readbacks replaced
+        // here.
+        self.land_frame();
+        if let Some((_, Some(post))) = &mut self.pack_post {
+            post.reset_history(&self.device);
+        }
+        if let Some(native) = &mut self.native {
+            native.frame.reset_history();
+            if let Some(post) = &mut native.post {
+                post.reset_history();
+            }
+        }
+    }
+    /// The running shader pack's kind: `iris` (a `shaders/` pack) or `native` (one of
+    /// Horizon's own).
+    pub fn shader_pack_kind(&self) -> Option<&'static str> {
+        match (&self.pack_post, &self.native) {
+            (Some((_, Some(_))), _) => Some("iris"),
+            (_, Some(_)) => Some("native"),
+            _ => None,
+        }
+    }
+    /// `screenshot-sequence`: waits (30 seconds at most) for the frame just drawn to finish on
+    /// the GPU, and takes the centre depth a `shaders/` pack copied in it, which its next frame
+    /// reads: that frame's, or an error, never an older one. The last frame's PNG has already
+    /// waited for it, without a limit, as `screenshot` does.
+    pub fn finish_sequence_frame(&mut self) -> Result<()> {
+        self.device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(std::time::Duration::from_secs(30)),
+            })
+            .map_err(|e| format!("the frame didn't finish on the GPU: {e}"))?;
+        if self.device_lost() {
+            return Err("the graphics device was lost".into());
+        }
+        if let Some((_, Some(post))) = &mut self.pack_post {
+            post.take_center_depth(&self.device)?;
+        }
+        Ok(())
+    }
     /// As `set_shader_pack` with a pack, but its pipelines build on a thread of their own while
     /// the game keeps drawing without one: the driver compiles a big pack's programs for seconds.
     /// `poll_shader_pack` runs it once they are built. `label` and `started` come back with it.
@@ -6786,7 +6875,7 @@ impl Renderer {
             && !std::mem::replace(&mut self.frame_kept_logged, true)
         {
             log::info!(
-                "Horizon renderer: the {:?} frame stays until the renderer is made again; a shader API 0.2 pack picked or dropped since runs on it",
+                "Horizon renderer: the {:?} frame stays until the renderer is made again; a shader pack picked or dropped since runs on it",
                 self.frame_format
             );
         }
@@ -7031,6 +7120,17 @@ impl Renderer {
             &self.globals,
             &self.sprite_views,
             &self.sprite_sampler,
+            &self.lightmap_view,
+            &self.lightmap_sampler,
+            &self.emission_stats.view,
+        );
+        self.fluid_group = terrain_group(
+            &self.device,
+            "Still fluid resources",
+            &self.terrain_layout,
+            &self.globals,
+            &self.sprite_views,
+            &self.fluid_sampler,
             &self.lightmap_view,
             &self.lightmap_sampler,
             &self.emission_stats.view,
@@ -8055,7 +8155,7 @@ impl Renderer {
         let fading_over_lods = self.sections_fading_over_lods(now);
         let fade_code = move |section: &SectionGpu, key: &SectionKey| {
             if fading_over_lods {
-                section.fade(now, retiring.contains(key))
+                section.fade(retiring.contains(key))
             } else {
                 0
             }
@@ -8676,6 +8776,7 @@ impl Renderer {
             translucent_particle_quads,
             translucent_item_quads,
             oit_entity_quads,
+            fluid_quads,
             world_text_quads,
             world_text_offset_quads,
         ] = self.entity_batch.update(
@@ -8704,13 +8805,17 @@ impl Renderer {
             + translucent_particle_quads
             + translucent_item_quads
             + oit_entity_quads
+            + fluid_quads
             + world_text_quads
             + world_text_offset_quads;
         laps.lap("r_draw_lists");
         // Where the tail of materials the classic and the improved passes
         // both draw ends: the shadows, particles and items count back from it.
-        let base_quads =
-            world_quads - oit_entity_quads - world_text_quads - world_text_offset_quads;
+        let base_quads = world_quads
+            - oit_entity_quads
+            - fluid_quads
+            - world_text_quads
+            - world_text_offset_quads;
         let native_clouds = self.native.as_ref().is_none_or(|n| n.vanilla_clouds);
         let cloud_quads = if let Some(input) = frame.clouds.as_ref().filter(|_| native_clouds) {
             let (rebuilt, uniform) =
@@ -8954,6 +9059,12 @@ impl Renderer {
                 brightness,
             );
         }
+        self.custom_sky.prepare(
+            &mut self.uploads,
+            &mut encoder,
+            jittered,
+            &self.custom_sky_draws,
+        );
         let celestial_vertices = frame.celestial.len().min(2048 * 4);
         if frame.end_sky && !frame.title {
             self.end_sky.prepare(&self.device, frame.end_sky_sprite);
@@ -9697,6 +9808,12 @@ impl Renderer {
                                 pass.set_vertex_buffer(0, self.sunrise_buffer.slice(..));
                                 pass.draw(0..sunrise_fan::VERTICES as u32, 0..1);
                             }
+                            // OptiFine custom sky layers, over the disc and sunrise and under the
+                            // sun, moon and stars.
+                            if self.custom_sky.is_drawing() {
+                                self.custom_sky.draw(&mut pass);
+                                pass.set_bind_group(0, &self.group, &[]);
+                            }
                         }
                     }
                 }
@@ -9709,6 +9826,13 @@ impl Renderer {
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                     if frame.end_sky {
                         self.end_sky.draw(&mut pass);
+                        // The End's custom sky layers go over its sky box.
+                        if self.custom_sky.is_drawing() && !pack_draws_sky && self.native.is_none()
+                        {
+                            self.custom_sky.draw(&mut pass);
+                            pass.set_pipeline(&self.celestial_pipeline);
+                            pass.set_bind_group(0, &self.entity_group, &[]);
+                        }
                     }
                     if celestial_vertices > 0 && !pack_draws_celestial {
                         // The Overworld's bodies start with the sun's quad
@@ -10123,6 +10247,20 @@ impl Renderer {
                 }
                 pass.set_bind_group(0, &self.group, &[]);
             }
+            // Still-fluid block entities draw as their own ordinary sorted
+            // translucent material, before terrain transparency. This material
+            // always writes depth and never joins the improved-transparency queues.
+            if fluid_quads > 0 {
+                pass.set_pipeline(&self.fluid_pipeline);
+                pass.set_bind_group(0, &self.fluid_group, &[]);
+                pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
+                pass.draw_indexed(
+                    0..fluid_quads * 6,
+                    ((base_quads + oit_entity_quads) * 4) as i32,
+                    0..1,
+                );
+                pass.set_bind_group(0, &self.group, &[]);
+            }
             if crumbling_quads > 0 && !oit_on {
                 pass.set_pipeline(&self.crumbling_pipeline);
                 pass.set_bind_group(0, &self.entity_group, &[]);
@@ -10509,7 +10647,7 @@ impl Renderer {
                 pass.set_bind_group(0, &self.entity_group, &[]);
                 pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                 pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
-                let first = base_quads + oit_entity_quads;
+                let first = base_quads + oit_entity_quads + fluid_quads;
                 for (pipeline, count, offset) in [
                     (&self.world_text_pipeline, world_text_quads, first),
                     (
@@ -10903,7 +11041,10 @@ impl Renderer {
         // submission needs this one: screenshots' readbacks, the error scopes (one per
         // thread), the first frame's startup log, VSync's frame callback, a reconfigure.
         // Frame generation presents its own frames (`frame_gen.present` below).
+        // A `screenshot-sequence` frame is submitted here, so it can wait for it to
+        // finish.
         let (encoder, surface_frame, after) = if readback.is_none()
+            && frame.pack.frame_timing.is_none()
             && fg_frames.is_none()
             && hdr_readback.is_none()
             && checks.is_none()
@@ -10988,10 +11129,14 @@ impl Renderer {
                 self.screenshot = Some(request);
             } else {
                 self.screenshot_halvings = 0;
+                self.screenshot_hdr = None;
                 if let Some(hdr_buffer) = hdr_readback {
                     let hdr_path = hdr_screenshot_path(&request.path);
                     match self.write_hdr_screenshot(&hdr_path, &hdr_buffer) {
-                        Ok(()) => log::info!("Saved HDR screenshot to {}", hdr_path.display()),
+                        Ok(()) => {
+                            log::info!("Saved HDR screenshot to {}", hdr_path.display());
+                            self.screenshot_hdr = Some(hdr_path);
+                        }
                         Err(e) => log::warn!(
                             "Horizon renderer: HDR screenshot {}: {e}",
                             hdr_path.display()
@@ -12424,8 +12569,14 @@ mod tests {
     fn the_frame_is_16_bit_only_with_hdr_and_a_device_that_draws_it() {
         use super::frame_format;
         use wgpu::TextureFormat::{Bgra8Unorm, Bgra8UnormSrgb, Rgba8Unorm, Rgba16Unorm};
-        // No 0.2 pack (or a device without the float frame) leaves it as before.
-        for linear in [(false, false), (false, true), (true, false)] {
+        // No float frame asked for (or a device without it) leaves it as before.
+        for linear in [
+            (false, false, false),
+            (false, false, true),
+            (true, false, false),
+            (false, true, false),
+            (true, true, false),
+        ] {
             assert_eq!(
                 frame_format(true, true, true, Bgra8Unorm, linear),
                 Rgba16Unorm
@@ -12455,8 +12606,38 @@ mod tests {
         use wgpu::TextureFormat::Bgra8UnormSrgb;
         for (wide_frame, hdr_offered, draws) in [(true, true, true), (false, false, false)] {
             assert_eq!(
-                frame_format(wide_frame, hdr_offered, draws, Bgra8UnormSrgb, (true, true)),
+                frame_format(
+                    wide_frame,
+                    hdr_offered,
+                    draws,
+                    Bgra8UnormSrgb,
+                    (true, false, true)
+                ),
                 LINEAR_FRAME
+            );
+        }
+    }
+    /// HDR on without a pack under `HORIZON_HDR_FRAME=float` gets the float frame where the
+    /// surface offers HDR output, Smooth Gradients or not; where it doesn't, the frame is as
+    /// without the switch.
+    #[test]
+    fn hdr_without_a_pack_gets_the_float_frame_where_hdr_output_is_offered() {
+        use super::{LINEAR_FRAME, frame_format};
+        use wgpu::TextureFormat::{Bgra8Unorm, Bgra8UnormSrgb};
+        for (wide_frame, draws) in [(true, true), (false, false)] {
+            assert_eq!(
+                frame_format(wide_frame, true, draws, Bgra8UnormSrgb, (false, true, true)),
+                LINEAR_FRAME
+            );
+            assert_eq!(
+                frame_format(
+                    wide_frame,
+                    false,
+                    draws,
+                    Bgra8UnormSrgb,
+                    (false, true, true)
+                ),
+                Bgra8Unorm
             );
         }
     }
@@ -12533,7 +12714,7 @@ mod tests {
         let mut batch = super::EntityBatch::default();
         let counts = batch.update(&entities, &quad(3, 5), &quad(0, 6), &quad(0, 8), false);
         let vertices = &batch.combined;
-        assert_eq!(counts, [4, 1, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0]);
+        assert_eq!(counts, [4, 1, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0]);
         assert_eq!(
             vertices
                 .as_chunks::<4>()
@@ -13292,7 +13473,8 @@ mod tests {
             last = now;
         }
         assert!(set_by.iter().all(|&n| n > 20), "flags set {set_by:?}");
-        assert!(handed_back > 2_000, "{handed_back} handed back");
+        // Over a thousand: the half of the uploads over far terrain come in whole.
+        assert!(handed_back > 1_000, "{handed_back} handed back");
         // Switched off with sections still flagged: none keeps a record or a
         // flag, and each is marked as while GPU culling is off.
         assert!(sim.records.fading() > 0, "none flagged at the end");
