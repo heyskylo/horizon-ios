@@ -289,6 +289,8 @@ impl ServerTickRateManager {
 /// Ticks one sprint frame may run (rendering carries on between frames).
 const SPRINT_PER_FRAME: i64 = 40;
 const SAMPLES: usize = 100;
+/// The windows of [`FixedStep::tps`], in seconds: one, five and fifteen minutes.
+const TPS_WINDOWS: [f64; 3] = [60.0, 300.0, 900.0];
 
 /// A step command's broadcast value and the ticks still owed to a new client.
 /// `ServerTickRateManager.updateStepTicks` sends the former immediately;
@@ -316,6 +318,10 @@ pub struct FixedStep {
     tick_times: [i64; SAMPLES],
     aggregated: i64,
     tick_count: i64,
+    /// The ticks a second over the last [`TPS_WINDOWS`], decayed once a second ([`Self::tps`]).
+    tps: [f64; 3],
+    /// When the second being counted started (at a recorded tick's end) and the ticks since.
+    tps_second: Option<(std::time::Instant, u32)>,
     /// A server's client: its level's tick rate only slows the timer down
     /// (`Minecraft.getTickTargetMillis`), since the server runs the ticks.
     client: bool,
@@ -349,6 +355,8 @@ impl FixedStep {
             tick_times: [0; SAMPLES],
             aggregated: 0,
             tick_count: 0,
+            tps: [20.0; 3],
+            tps_second: None,
             client: false,
             step_changes: 0,
             step_requested: 0,
@@ -437,14 +445,15 @@ impl FixedStep {
     /// `TickRateManager.tick` for one tick, then whether the world runs
     /// (`runsNormally`). Also the sprint check that opens a sprint tick.
     pub fn world_runs(&mut self) -> bool {
+        // MinecraftServer checks for a finished sprint before tickServer
+        // asks the tick-rate manager whether the levels should run.
+        if self.manager.is_sprinting() && self.manager.remaining_sprint_ticks() == 0 {
+            self.sprint_report = Some(self.manager.finish_tick_sprint());
+        }
         self.manager.base.tick();
         self.sprint_checked = false;
         if self.manager.is_sprinting() {
-            let (_, report) = self.manager.check_should_sprint_this_tick(self.now_ns());
-            self.sprint_checked = report.is_none();
-            if report.is_some() {
-                self.sprint_report = report;
-            }
+            self.sprint_checked = self.manager.check_should_sprint_this_tick(self.now_ns()).0;
         }
         self.manager.base.runs_normally()
     }
@@ -529,6 +538,41 @@ impl FixedStep {
             let end = self.now_ns() + took;
             self.manager.end_tick_work(end);
         }
+        self.count_tick(std::time::Instant::now());
+    }
+    /// A recorded tick ended at `now`: once a second has passed since the second being
+    /// counted started, its ticks a second join each average of [`Self::tps`], weighted as a
+    /// load average is (`exp(-elapsed / window)` kept of the old value).
+    fn count_tick(&mut self, now: std::time::Instant) {
+        let Some((start, ticks)) = &mut self.tps_second else {
+            self.tps_second = Some((now, 0));
+            return;
+        };
+        *ticks += 1;
+        let elapsed = now.saturating_duration_since(*start).as_secs_f64();
+        if elapsed < 1.0 {
+            return;
+        }
+        let rate = f64::from(*ticks) / elapsed;
+        for (average, window) in self.tps.iter_mut().zip(TPS_WINDOWS) {
+            let kept = (-elapsed / window).exp();
+            *average = *average * kept + rate * (1.0 - kept);
+        }
+        self.tps_second = Some((now, 0));
+    }
+    /// The ticks a second the server kept over the last one, five and fifteen minutes (what
+    /// Bukkit's `Server.getTPS` reports; vanilla keeps no such average): measured between
+    /// recorded tick ends, so paused passes count where they are recorded. Starts at 20.
+    pub fn tps(&self) -> [f64; 3] {
+        self.tps
+    }
+    /// `getTickTimesNanos` as vanilla lays it out: the tick numbered `n` (from 1, as
+    /// `MinecraftServer.tickCount` after its increment) at index `n % 100`, so the
+    /// newest is at the recorded ticks' count `% 100`; 0 where no tick was recorded yet.
+    pub fn tick_times_nanos(&self) -> Vec<u64> {
+        (0..SAMPLES)
+            .map(|i| self.tick_times[(i + SAMPLES - 1) % SAMPLES].max(0) as u64)
+            .collect()
     }
     /// `getAverageTickTimeNanos`.
     pub fn average_nanos(&self) -> u64 {
@@ -545,6 +589,51 @@ impl FixedStep {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Twenty ticks a second keep 20; ten a second pull the one-minute average down
+    /// fastest; a second not yet over changes nothing.
+    #[test]
+    fn tps_averages_follow_the_ticks_a_second() {
+        let mut clock = FixedStep::new(false);
+        let t0 = std::time::Instant::now();
+        let ms = std::time::Duration::from_millis;
+        for i in 0..=40 {
+            clock.count_tick(t0 + ms(50 * i));
+        }
+        assert_eq!(
+            clock.tps().map(|v| (v * 1000.0).round() / 1000.0),
+            [20.0; 3]
+        );
+        let slow = t0 + ms(2000);
+        for i in 1..=10 {
+            clock.count_tick(slow + ms(100 * i));
+        }
+        let [one, five, fifteen] = clock.tps();
+        assert!(
+            one < five && five < fifteen && fifteen < 20.0,
+            "{:?}",
+            clock.tps()
+        );
+        assert!((one - (20.0 - 10.0 * (1.0 - (-1.0f64 / 60.0).exp()))).abs() < 1e-9);
+        clock.count_tick(slow + ms(1050));
+        assert_eq!(clock.tps(), [one, five, fifteen]);
+    }
+
+    /// The tick times sit where vanilla's array has them: tick n at n % 100.
+    #[test]
+    fn tick_times_are_laid_out_as_vanillas() {
+        let mut clock = FixedStep::new(false);
+        assert_eq!(clock.tick_times_nanos(), vec![0; SAMPLES]);
+        for n in 1..=150u64 {
+            clock.record(std::time::Duration::from_nanos(n));
+        }
+        let times = clock.tick_times_nanos();
+        assert_eq!(times.len(), SAMPLES);
+        assert_eq!(times[50], 150, "the newest, tick 150");
+        assert_eq!(times[51], 51, "tick 51, overwritten by none yet");
+        assert_eq!(times[0], 100);
+        assert_eq!(times[1], 101);
+    }
 
     #[test]
     fn timer_carries_fractions_and_caps_nothing_itself() {
@@ -576,6 +665,25 @@ mod tests {
         }
         m.base.tick();
         assert!(!m.base.runs_normally());
+    }
+    #[test]
+    fn a_finished_sprint_restores_freeze_before_the_next_world_tick() {
+        for was_frozen in [false, true] {
+            let mut clock = FixedStep::default();
+            clock.set_frozen(was_frozen);
+            assert_eq!(clock.world_runs(), !was_frozen);
+
+            assert!(!clock.start_sprint(1));
+            assert!(clock.world_runs());
+            assert!(!clock.frozen());
+            assert!(clock.take_sprint_report().is_none());
+
+            assert_eq!(clock.world_runs(), !was_frozen);
+            assert_eq!(clock.frozen(), was_frozen);
+            assert!(clock.take_sprint_report().is_some());
+            assert_eq!(clock.world_runs(), !was_frozen);
+            assert!(clock.take_sprint_report().is_none());
+        }
     }
     #[test]
     fn the_camera_keeps_interpolating_in_a_frozen_level() {
