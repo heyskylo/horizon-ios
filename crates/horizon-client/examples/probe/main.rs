@@ -46,6 +46,7 @@ mod entity_particles_probe;
 mod entity_sound_packet_fixture;
 mod environment_attribute_modifier_fixture;
 mod environment_fixture;
+mod environment_system_fixture;
 mod finalize_spawn_fixture;
 mod fire_starter_sound_probe;
 mod firework_tooltip_fixture;
@@ -152,6 +153,7 @@ probes! {
     entity_particles_probe,
     environment_attribute_modifier_fixture,
     environment_fixture,
+    environment_system_fixture,
     finalize_spawn_fixture,
     fire_starter_sound_probe,
     zombie_cure_sound_probe,
