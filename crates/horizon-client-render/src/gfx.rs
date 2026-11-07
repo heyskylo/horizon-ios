@@ -1034,6 +1034,25 @@ pub struct ScreenshotRequest {
     /// `Renderer::screenshot_quality`, not the window's.
     pub scaled: bool,
 }
+/// A solid terrain pipeline without HDR output's lighting (terrain.wgsl's `HDR_LIGHTING`),
+/// for the frames HDR is off, and with it where the display offers HDR output: the
+/// lighting's code, even never run, slows the shader on Apple GPUs (~15% of the solid
+/// pass at Retina sizes).
+pub struct SolidPipeline {
+    plain: wgpu::RenderPipeline,
+    hdr: Option<wgpu::RenderPipeline>,
+}
+
+impl SolidPipeline {
+    /// The pipeline for a frame with HDR output on (`hdr`) or off.
+    pub fn get(&self, hdr: bool) -> &wgpu::RenderPipeline {
+        match &self.hdr {
+            Some(lit) if hdr => lit,
+            _ => &self.plain,
+        }
+    }
+}
+
 pub struct Renderer {
     instance: wgpu::Instance,
     adapter: wgpu::Adapter,
@@ -1085,10 +1104,10 @@ pub struct Renderer {
     /// operation fails on a lost device (no error scope sees it).
     device_lost: Arc<std::sync::atomic::AtomicBool>,
     pub config: wgpu::SurfaceConfiguration,
-    solid: wgpu::RenderPipeline,
+    solid: SolidPipeline,
     /// `solid` split in two passes for the world pass (terrain.wgsl's `opaque_quad`).
-    solid_opaque: wgpu::RenderPipeline,
-    solid_cutout: wgpu::RenderPipeline,
+    solid_opaque: SolidPipeline,
+    solid_cutout: SolidPipeline,
     translucent: wgpu::RenderPipeline,
     translucent_mark: wgpu::RenderPipeline,
     /// Flat section draws (`flat`), where multi-draw is emulated.
@@ -1858,9 +1877,10 @@ impl wgpu::rwh::HasDisplayHandle for WindowDisplay {
 }
 /// The backends to open a device on, each tried in turn until one gives a
 /// device. `api` is the player's choice (`GraphicsApi::with_env` applied);
-/// `os` is `std::env::consts::OS`; `wgpu_backend`: whether `WGPU_BACKEND` is set,
-/// which picks the backends itself. Auto tries DirectX 12 first on Windows ARM64,
-/// then Vulkan, based on the device-loss observed in a Windows ARM64 test. Other
+/// `os` is `std::env::consts::OS`; `arch` the machine's (`system::machine_arch`), not the
+/// build's; `wgpu_backend`: whether `WGPU_BACKEND` is set, which picks the backends itself.
+/// Auto tries DirectX 12 first on Windows ARM64, the x64 build emulated there included,
+/// then Vulkan, based on the device losses seen there (#7513). Other
 /// Windows systems try Vulkan, then DirectX 12, then OpenGL; Linux tries Vulkan then
 /// OpenGL. Each is tried when the one before has no surface, adapter or device. A native
 /// crash in the driver can't be
@@ -2024,7 +2044,8 @@ async fn open_device(
     for (order, allow_cpu) in device_search(
         api.with_env(),
         std::env::consts::OS,
-        std::env::consts::ARCH,
+        // The machine's: the x64 build emulated on a Windows ARM64 PC has its GPU too (#7513).
+        horizon_telemetry::system::machine_arch(),
         wgpu_backend,
     ) {
         match open_device_with(window, offscreen, &order, layers, allow_cpu).await {
@@ -2729,16 +2750,24 @@ impl Renderer {
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &debug_line_attributes,
         })];
-        let pipeline_in = |layout: &wgpu::PipelineLayout,
-                           label: &str,
-                           vertex: &str,
-                           fragment: &str,
-                           buffers: &[Option<wgpu::VertexBufferLayout<'_>>],
-                           topology: wgpu::PrimitiveTopology,
-                           cull: Option<wgpu::Face>,
-                           depth_write: bool,
-                           depth_test: bool,
-                           blend: Option<wgpu::BlendState>| {
+        // The solid terrain's fragment constants without HDR output's lighting, for the
+        // frames HDR is off (`SolidPipeline`).
+        let plain_constants = [
+            sprite_constants[0],
+            sprite_constants[1],
+            ("HDR_LIGHTING", 0.0),
+        ];
+        let pipeline_with = |constants: &[(&str, f64)],
+                             layout: &wgpu::PipelineLayout,
+                             label: &str,
+                             vertex: &str,
+                             fragment: &str,
+                             buffers: &[Option<wgpu::VertexBufferLayout<'_>>],
+                             topology: wgpu::PrimitiveTopology,
+                             cull: Option<wgpu::Face>,
+                             depth_write: bool,
+                             depth_test: bool,
+                             blend: Option<wgpu::BlendState>| {
             kept.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(layout),
@@ -2769,7 +2798,7 @@ impl Renderer {
                     module: &shader,
                     entry_point: Some(fragment),
                     compilation_options: wgpu::PipelineCompilationOptions {
-                        constants: &sprite_constants,
+                        constants,
                         ..Default::default()
                     },
                     targets: &[Some(wgpu::ColorTargetState {
@@ -2781,6 +2810,57 @@ impl Renderer {
                 multiview_mask: None,
                 cache: None,
             })
+        };
+        let pipeline_in = |layout: &wgpu::PipelineLayout,
+                           label: &str,
+                           vertex: &str,
+                           fragment: &str,
+                           buffers: &[Option<wgpu::VertexBufferLayout<'_>>],
+                           topology: wgpu::PrimitiveTopology,
+                           cull: Option<wgpu::Face>,
+                           depth_write: bool,
+                           depth_test: bool,
+                           blend: Option<wgpu::BlendState>| {
+            pipeline_with(
+                &sprite_constants,
+                layout,
+                label,
+                vertex,
+                fragment,
+                buffers,
+                topology,
+                cull,
+                depth_write,
+                depth_test,
+                blend,
+            )
+        };
+        // A solid terrain pipeline (back faces culled, depth written, no blend) without HDR
+        // output's lighting, and with it where the display offers HDR output.
+        let solid_in = |layout: &wgpu::PipelineLayout,
+                        label: &str,
+                        vertex: &str,
+                        fragment: &str,
+                        buffers: &[Option<wgpu::VertexBufferLayout<'_>>]| {
+            let build = |constants: &[(&str, f64)]| {
+                pipeline_with(
+                    constants,
+                    layout,
+                    label,
+                    vertex,
+                    fragment,
+                    buffers,
+                    wgpu::PrimitiveTopology::TriangleList,
+                    Some(wgpu::Face::Back),
+                    true,
+                    true,
+                    None,
+                )
+            };
+            SolidPipeline {
+                plain: build(&plain_constants),
+                hdr: hdr_output.is_some().then(|| build(&sprite_constants)),
+            }
         };
         let pipeline = |label: &str,
                         vertex: &str,
@@ -2805,41 +2885,29 @@ impl Renderer {
             )
         };
         let tri = wgpu::PrimitiveTopology::TriangleList;
-        let solid = pipeline(
+        let solid = solid_in(
+            &layout,
             "Terrain solid",
             "vs_terrain",
             "fs_solid",
             &terrain_buffers,
-            tri,
-            Some(wgpu::Face::Back),
-            true,
-            true,
-            None,
         );
         // `solid` in two passes (terrain.wgsl's `opaque_quad`, `mesher::Part`), for the
         // world pass without a shader pack: no cutout first, through a shader that never
         // discards, then the rest.
-        let solid_opaque = pipeline(
+        let solid_opaque = solid_in(
+            &layout,
             "Terrain solid opaque",
             "vs_terrain_opaque",
             "fs_opaque",
             &terrain_buffers,
-            tri,
-            Some(wgpu::Face::Back),
-            true,
-            true,
-            None,
         );
-        let solid_cutout = pipeline(
+        let solid_cutout = solid_in(
+            &layout,
             "Terrain solid cutout",
             "vs_terrain_cutout",
             "fs_solid",
             &terrain_buffers,
-            tri,
-            Some(wgpu::Face::Back),
-            true,
-            true,
-            None,
         );
         // The water mirror's camera sees the world from the other side of the plane, which
         // flips the winding: its solid terrain culls the front.
@@ -4360,6 +4428,7 @@ impl Renderer {
                         layout, label, vertex, fragment, buffers, tri, cull, true, true, blend,
                     )
                 },
+                |layout, label, vertex, fragment| solid_in(layout, label, vertex, fragment, &[]),
             )
         });
         // With flat draws' page groups the per-section solid draws read their vertices from
@@ -4373,40 +4442,24 @@ impl Renderer {
                     ..Default::default()
                 });
                 let origins = [None, terrain_buffers[1].clone()];
-                let pulled = |label: &str, vertex: &str, fragment: &str, cull| {
+                let solid = |label: &str, vertex: &str, fragment: &str| {
+                    solid_in(&pulled_layout, label, vertex, fragment, &origins)
+                };
+                (
+                    solid("Terrain solid", "vs_section", "fs_solid"),
+                    solid("Terrain solid opaque", "vs_section_opaque", "fs_opaque"),
+                    solid("Terrain solid cutout", "vs_section_cutout", "fs_solid"),
                     pipeline_in(
                         &pulled_layout,
-                        label,
-                        vertex,
-                        fragment,
-                        &origins,
-                        tri,
-                        Some(cull),
-                        true,
-                        true,
-                        None,
-                    )
-                };
-                let back = wgpu::Face::Back;
-                (
-                    pulled("Terrain solid", "vs_section", "fs_solid", back),
-                    pulled(
-                        "Terrain solid opaque",
-                        "vs_section_opaque",
-                        "fs_opaque",
-                        back,
-                    ),
-                    pulled(
-                        "Terrain solid cutout",
-                        "vs_section_cutout",
-                        "fs_solid",
-                        back,
-                    ),
-                    pulled(
                         "Terrain solid (mirrored)",
                         "vs_section",
                         "fs_solid_mirror",
-                        wgpu::Face::Front,
+                        &origins,
+                        tri,
+                        Some(wgpu::Face::Front),
+                        true,
+                        true,
+                        None,
                     ),
                 )
             }
@@ -9495,7 +9548,9 @@ impl Renderer {
             .as_ref()
             .filter(|_| !frame.title)
             .and_then(|n| Some((n.material.as_ref()?, &n.frame.group)));
-        let solid_pipeline = material.map_or(&self.solid, |(m, _)| &m.solid);
+        // Without HDR output, the solid shaders without its lighting (`SolidPipeline`).
+        let hdr = self.hdr.is_some();
+        let solid_pipeline = material.map_or(self.solid.get(hdr), |(m, _)| &m.solid);
         // Two solid passes only where a discard costs the GPU its hidden surface
         // removal: Apple's tiled GPUs, behind Metal. Elsewhere the second pass
         // would double the solid draw calls and vertex work for nothing.
@@ -9720,14 +9775,14 @@ impl Renderer {
                     let passes: &[(&wgpu::RenderPipeline, Calls, Calls)] = match pack_flat {
                         Some(p) => &[(&p.0, 0..flat.phase1_calls, 0..phase2_calls)],
                         None if split_solid => &[
-                            (&flat.solid_opaque, 0..opaque, 0..phase2_split),
+                            (flat.solid_opaque.get(hdr), 0..opaque, 0..phase2_split),
                             (
-                                &flat.solid_cutout,
+                                flat.solid_cutout.get(hdr),
                                 cutout..flat.phase1_calls,
                                 phase2_split..phase2_calls,
                             ),
                         ],
-                        None => &[(&flat.solid, 0..flat.phase1_calls, 0..phase2_calls)],
+                        None => &[(flat.solid.get(hdr), 0..flat.phase1_calls, 0..phase2_calls)],
                     };
                     let draw = |pass: &mut wgpu::RenderPass<'_>| {
                         for (pipeline, calls, _) in passes {
@@ -9780,9 +9835,13 @@ impl Renderer {
                     type Draws = std::ops::Range<u32>;
                     let passes: &[(&wgpu::RenderPipeline, Draws, Draws)] = match material {
                         None if split_solid => &[
-                            (&self.solid_opaque, 0..opaque, phase1_draws..phase2_cutout),
                             (
-                                &self.solid_cutout,
+                                self.solid_opaque.get(hdr),
+                                0..opaque,
+                                phase1_draws..phase2_cutout,
+                            ),
+                            (
+                                self.solid_cutout.get(hdr),
                                 cutout..phase1_draws,
                                 phase2_cutout..solid_draws,
                             ),
@@ -12725,6 +12784,77 @@ mod tests {
         for (count, gl) in [(1, 2), (2, 2), (5, 5), (6, 7), (12, 13), (2048, 2048)] {
             assert_eq!(super::array_layers(count, true), gl);
             assert_eq!(super::array_layers(count, false), count);
+        }
+    }
+    #[test]
+    fn plain_solid_shaders_translate_for_every_backend() {
+        // `SolidPipeline::plain` builds terrain.wgsl's solid entries with `HDR_LIGHTING`
+        // off on every backend: they must still translate (the other test translates them
+        // with the constants' defaults).
+        let module = naga::front::wgsl::parse_str(include_str!("terrain.wgsl")).unwrap();
+        let info = naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .unwrap();
+        let stage = naga::ShaderStage::Fragment;
+        let constants = [("HDR_LIGHTING".to_owned(), 0.0)].into_iter().collect();
+        for entry in ["fs_solid", "fs_opaque"] {
+            let (module, info) = naga::back::pipeline_constants::process_overrides(
+                &module,
+                &info,
+                Some((stage, entry)),
+                &constants,
+            )
+            .unwrap();
+            let msl = naga::back::msl::write_string(
+                &module,
+                &info,
+                &naga::back::msl::Options {
+                    fake_missing_bindings: true,
+                    ..Default::default()
+                },
+                &naga::back::msl::PipelineOptions {
+                    entry_point: Some((stage, entry.to_owned())),
+                    ..Default::default()
+                },
+            );
+            // Metal compiles the lighting out from this constant.
+            assert!(
+                msl.unwrap()
+                    .0
+                    .contains("constant bool HDR_LIGHTING = false;"),
+                "{entry}"
+            );
+            let mut hlsl = String::new();
+            naga::back::hlsl::Writer::new(
+                &mut hlsl,
+                &Default::default(),
+                &naga::back::hlsl::PipelineOptions {
+                    entry_point: Some((stage, entry.to_owned())),
+                },
+            )
+            .write(&module, &info, None)
+            .unwrap_or_else(|e| panic!("{entry}: {e}"));
+            let mut glsl = String::new();
+            naga::back::glsl::Writer::new(
+                &mut glsl,
+                &module,
+                &info,
+                &naga::back::glsl::Options {
+                    version: naga::back::glsl::Version::Desktop(330),
+                    ..Default::default()
+                },
+                &naga::back::glsl::PipelineOptions {
+                    shader_stage: stage,
+                    entry_point: entry.to_owned(),
+                    multiview: None,
+                },
+                Default::default(),
+            )
+            .and_then(|mut w| w.write())
+            .unwrap_or_else(|e| panic!("{entry}: {e}"));
         }
     }
     #[test]
