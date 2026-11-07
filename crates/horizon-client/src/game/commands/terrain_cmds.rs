@@ -56,7 +56,10 @@ fn loot_location_block(
         at[axis] = origin[axis].checked_add(offset)?;
     }
     // Unloaded positions are unsupported: never load or invent a block here.
-    let chunk = chunks.get(&(at[0] >> 4, at[2] >> 4))?;
+    // `LocationPredicate.matches`: a block check fails where `Level.isLoaded` is false.
+    let Some(chunk) = chunks.get(&(at[0] >> 4, at[2] >> 4)) else {
+        return Some(false);
+    };
     let state = registry.state(chunk.block(at[0] & 15, at[1], at[2] & 15))?;
     Some(items.matches_block_state(&predicate["block"], &state.name, &state.properties))
 }
@@ -1349,7 +1352,8 @@ mod loot_location_shape_tests {
         let count = chunks.len();
         assert_eq!(
             loot_location_block(&valid, [32, 200, 32], &chunks, &registry, &items),
-            None
+            Some(false),
+            "an unloaded counterpart fails, as Level.isLoaded does"
         );
         assert_eq!(chunks.len(), count, "no chunk is loaded as a side effect");
     }
