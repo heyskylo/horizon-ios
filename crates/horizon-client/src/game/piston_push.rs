@@ -805,3 +805,122 @@ mod order_tests {
         assert!(moved[1] < 0.02, "far stone still in the way: {}", moved[1]);
     }
 }
+
+#[cfg(test)]
+mod h255_mob_piston_ground_tests {
+    use std::sync::Arc;
+    use super::*;
+    use crate::game::{Audio, Options, Progress, Settings, load_resources};
+    use horizon_client::{chunk::Chunk, motion::PlayerMotion};
+    use horizon_core::{geometry::Vec3, position::ChunkPos, random::LegacyRandom};
+    fn with_game(test: impl FnOnce(&mut Game<'_>)) {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.game_dir = Some(
+            std::path::PathBuf::from(std::env::var_os("HORIZON_HOME").unwrap())
+                .join(format!("h255-{:?}", std::thread::current().id())),
+        );
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+
+        let mut center = Chunk::empty(0, 0);
+        center.lit = true;
+        game.world.chunks.insert((0, 0), Arc::new(center));
+        game.block_ticks
+            .add_empty_chunk(ChunkPos::new(0, 0))
+            .unwrap();
+        assert!(game.run_command("difficulty normal"));
+        assert!(game.run_command("forceload add 0 0"));
+        for x in -1..=1 {
+            for z in -1..=1 {
+                if x == 0 && z == 0 { continue; }
+                let mut chunk = Chunk::empty(x, z);
+                chunk.lit = true;
+                game.world.chunks.insert((x, z), Arc::new(chunk));
+                game.block_ticks.add_empty_chunk(ChunkPos::new(x, z)).unwrap();
+            }
+        }
+        game.player = Some(PlayerMotion::new(game.motion, Vec3::new(2.5, 200.0, 2.5)).unwrap());
+        game.creative = true;
+        assert!(game.run_command("fill 0 199 0 31 199 31 stone"));
+        game.world.random = LegacyRandom::new(255);
+        game.update_chunk_tickets();
+        assert!(crate::game::ticking_chunk(&game.world, 0, 0));
+        assert!(game.tickets.levels().block_ticking(0, 0));
+        test(&mut game);
+    }
+    fn mob_index(game: &Game<'_>, n: i32) -> usize {
+        let id=game.persist.uuids.iter().find_map(|(id,u)| (*u==[255,1,0,n]).then_some(*id)).unwrap();
+        game.mobs.iter().position(|m|m.id==id).unwrap()
+    }
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn h255_real_honey_piston_lifecycle_clears_mob_ground_before_second_drag() {
+        with_game(|game| {
+            game.world.game_time=0;
+            for cmd in [
+                "gamerule spawn_mobs false", "gamerule random_tick_speed 0", "gamerule advance_time false",
+                "setblock 3 201 4 piston[facing=east]", "setblock 4 201 4 honey_block",
+                "setblock 4 201 12 honey_block", "setblock 12 200 12 piston[facing=up]", "setblock 12 201 12 stone",
+                "summon husk 4.5 202 4.5 {UUID:[I;255,1,0,1],Health:10f,NoAI:1b,NoGravity:1b,OnGround:1b,Motion:[0d,0d,0d]}",
+                "summon husk 4.5 202 12.5 {UUID:[I;255,1,0,2],Health:10f,NoAI:1b,NoGravity:1b,OnGround:1b,Motion:[0d,0d,0d]}",
+                "summon husk 12.5 202 12.5 {UUID:[I;255,1,0,3],Health:10f,NoAI:1b,NoGravity:1b,OnGround:0b,Motion:[0d,0d,0d]}",
+            ] { assert!(game.run_command(cmd),"{cmd}"); }
+            let main=mob_index(game,1);let idle=mob_index(game,2);let vertical=mob_index(game,3);
+            let id=game.mobs[main].id;let age=game.mobs[main].age;
+            assert!(game.mobs[main].on_ground);assert!(game.mobs[idle].on_ground);assert!(!game.mobs[vertical].on_ground);
+            assert_eq!(game.mobs[main].position,Vec3::new(4.5,202.0,4.5));
+            assert_eq!(game.res.facts().get(game.world.block(4,201,4)).name.as_ref(),"minecraft:honey_block");
+            assert!(game.run_command("setblock 3 201 5 redstone_block"));
+            assert!(game.run_command("setblock 13 200 12 redstone_block"));
+            let mut failures=Vec::new();
+            for tick in 1..=2 {
+                game.world.game_time+=1;
+                game.update_chunk_tickets();
+                assert!(game.entity_ticking_area()(4,4));
+                game.tick_blocks().unwrap();
+                game.tick_creature_entities().unwrap();
+                // Real block-entity ticker generates and drains the piston pushes.
+                game.tick_moving_pistons().unwrap();
+                let p=game.block_ticks.moving_pistons.iter().find(|(p,_)|*p==BlockPos::new(5,201,4)).expect("real moving honey block");
+                assert_eq!(p.1.progress,0.5*tick as f32);
+                assert_eq!(p.1.moved_state,game.pack.assets.registry.default_state("minecraft:honey_block").unwrap());
+                assert_eq!(game.mobs[main].id,id);assert_eq!(game.uuid_for(id),[255,1,0,1]);
+                assert_eq!(game.mobs[main].age,age+tick);
+                assert!(game.mobs[main].no_ai);assert_eq!(game.mobs[main].health,10.0);
+                assert_eq!(game.mobs[main].velocity,Vec3::ZERO);
+                if game.mobs[main].on_ground {failures.push(format!("tick{tick}: actual Mob still grounded"));}
+                if game.mobs[main].position!=Vec3::new(5.0,202.0,4.5) {failures.push(format!("tick{tick}: position {:?}",game.mobs[main].position));}
+                if game.mob_tree_nbt(main).get("OnGround")!=Some(&horizon_world::nbt::Tag::Byte(0)) {failures.push(format!("tick{tick}: saved ground is stale"));}
+                assert_eq!(game.mobs[idle].position,Vec3::new(4.5,202.0,12.5));assert!(game.mobs[idle].on_ground);
+                assert_eq!(game.mobs[vertical].position,Vec3::new(12.5,if tick==1 {202.51} else {203.01},12.5));assert!(!game.mobs[vertical].on_ground);
+            }
+            assert!(failures.is_empty(),"actual lifecycle failures: {failures:#?}");
+        });
+    }
+}
