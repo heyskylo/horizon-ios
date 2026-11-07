@@ -11629,6 +11629,8 @@ impl Game<'_> {
     pub(super) const MOTION_BLOCK_ENTITY: u64 = 5 << 32;
     /// A block a piston moves, by the cell it moves to (`motion_at`).
     pub(super) const MOTION_MOVING_BLOCK: u64 = 6 << 32;
+    /// The player's own model (third person, and a shader pack's shadow pass).
+    pub(super) const MOTION_OWN_PLAYER: u64 = 7 << 32;
     /// The entity whose geometry starts at vertex `start` (0: none), for frame
     /// generation to follow its own motion. Each run lasts until the next mark.
     pub(super) fn mark_motion(&self, start: usize, id: u64) {
@@ -11814,6 +11816,7 @@ impl Game<'_> {
         // In first person only a shader pack's shadow pass draws the player.
         self.mark_player(out.len(), !self.own_body_in_view());
         let player_start = out.len();
+        self.mark_motion(player_start, Self::MOTION_OWN_PLAYER);
         let player_alpha = if self.studio_replay.is_some() {
             (self.studio_virtual_tick_ms as f64 / 50.0).clamp(0.0, 1.0)
         } else {
@@ -11827,6 +11830,7 @@ impl Game<'_> {
                 .borrow_mut()
                 .extend(out.drain(player_start..));
         }
+        self.mark_motion(out.len(), 0);
         // Companions in first person, trails and auras (game/cosmetics/fx.rs).
         self.cosmetics_fx_geometry(camera, alpha, &mut out);
         self.mark_entity(out.len(), "minecraft:evoker_fangs");
