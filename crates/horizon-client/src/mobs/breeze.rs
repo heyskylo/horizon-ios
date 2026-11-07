@@ -236,12 +236,15 @@ fn whirl(m: &mut Mob, events: &mut Vec<MobEvent>) {
     if m.extra.vector[2] == 0.0 {
         let pitch = 0.7 + 0.4 * m.random.next_float();
         let volume = 0.8 + 0.2 * m.random.next_float();
-        events.push(MobEvent::LocalSound(
-            "entity.breeze.whirl",
-            [m.position.x, m.position.y, m.position.z],
-            volume,
-            pitch,
-        ));
+        // An entity-bound sound instance plays only while its entity isn't silent.
+        if !m.silent {
+            events.push(MobEvent::LocalSound(
+                "entity.breeze.whirl",
+                [m.position.x, m.position.y, m.position.z],
+                volume,
+                pitch,
+            ));
+        }
     }
 }
 /// The crumbs `Breeze.tick`'s pose arm asks `emitGroundParticles` for:
@@ -324,7 +327,9 @@ pub fn client_sounds(m: &mut Mob, events: &mut Vec<MobEvent>) {
         m.ambient_timer += 1;
         if roll < t {
             m.ambient_timer = -m.ambient_interval();
-            if let Some(s) = ambient(m) {
+            if let Some(s) = ambient(m)
+                && !m.silent
+            {
                 let at = [m.position.x, m.position.y, m.position.z];
                 events.push(MobEvent::LocalSound(s, at, 1.0, 1.0));
             }
