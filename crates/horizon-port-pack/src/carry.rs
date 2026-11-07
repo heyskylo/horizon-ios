@@ -1916,6 +1916,7 @@ mod tests {
         assert_eq!(row.status, Status::Partial);
         assert!(row.old_layout);
         assert!(row.reason.contains("1.20 or older"), "{}", row.reason);
+        assert!(!row.reason.contains("  "), "{}", row.reason);
         assert!(
             row.reason.contains("1 recipe results name `item`"),
             "{}",

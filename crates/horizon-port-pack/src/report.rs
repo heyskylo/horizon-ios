@@ -222,7 +222,9 @@ fn old_layout(work: &Path, key: &str) -> OldLayout {
         return OldLayout::NotCarried;
     }
     OldLayout::Renamed(format!(
-        "made for Minecraft 1.20 or older: {renamed} data files moved to 1.21's folder names,          their JSON still 1.20's ({} recipe results name `item`, which 26.3 skips; NBT in loot          functions, ingredients and predicates not upgraded yet)",
+        "made for Minecraft 1.20 or older: {renamed} data files moved to 1.21's folder names, \
+         their JSON still 1.20's ({} recipe results name `item`, which 26.3 skips; NBT in loot \
+         functions, ingredients and predicates not upgraded yet)",
         count("recipes_old_result")
     ))
 }
