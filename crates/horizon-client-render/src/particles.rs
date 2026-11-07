@@ -2037,8 +2037,18 @@ impl ParticleEngine {
             return;
         }
         let seed = self.seeds.next_long();
-        if let Some(particle) = self.make(options, p, v, seed) {
+        if let Some(mut particle) = self.make(options, p, v, seed) {
             *self.made.entry(options.ty.name()).or_default() += 1;
+            // Resource packs' Polytone particle modifiers (#11486), once as it spawns.
+            if let Some(registry) = &self.polytone
+                && registry.modifies_particles()
+            {
+                let id = match &options.mod_particle {
+                    Some(name) => name.clone(),
+                    None => format!("minecraft:{}", options.ty.name()),
+                };
+                polytone::modify(registry, &id, &mut particle);
+            }
             // The provider has drawn, so rejecting here keeps vanilla's RNG order.
             // shortcut: counts live plus queued particles by scanning instead of
             // vanilla's counted map; use a counter if spore spawning shows in profiles.
