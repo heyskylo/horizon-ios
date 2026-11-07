@@ -410,6 +410,11 @@ pub trait LevelAccess {
         _moved: bool,
     ) {
     }
+    /// Bukkit's `BlockRedstoneEvent`: the button, lever or pressure plate at `pos` is about
+    /// to change its signal from `old` to `new` (0 to 15). The level may change `new`; the
+    /// component then takes that signal (one equal to `old` keeps it as it is). The
+    /// default leaves it.
+    fn redstone_change(&self, _pos: BlockPos, _old: i32, _new: &mut i32) {}
     /// `BlockState.randomTick` from `ServerLevel.tickChunk`, before the block
     /// handles it. The level may change the block (`Behaviours::set_block`
     /// with `ticks`); setting `handled` skips the block's own random tick. A

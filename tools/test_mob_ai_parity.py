@@ -113,6 +113,16 @@ def scenarios():
     for i, (x, seed) in enumerate([(0.5, 240), (6.5, 241)]):
         add(f'iron_golem_village_{i}', 400, VILLAGE + [f'mob minecraft:iron_golem {x} -60 3.5 0 {seed} persistent'], 'difficulty=0')
     add('iron_golem_outside_village', 400, VILLAGE + ['mob minecraft:iron_golem 30.5 -60 3.5 0 242 persistent'], 'difficulty=0')
+    # IronGolem.doHurtTarget throws what it hits up by 0.4 scaled by max(0, 1 - knockback resistance):
+    # all of it for a zombie, a quarter for a ravager (0.75), none for a warden (1). The zombie's
+    # scenario stops before the golem kills it (the probe has no target killed within the
+    # attacker's tick). A golem holding a target restarts its anger timer every tick
+    # (NeutralMob.updatePersistentAnger), and the NoAI targets still push (LivingEntity.aiStep).
+    for i, (species, ticks) in enumerate([('zombie', 48), ('ravager', 120), ('warden', 120)]):
+        add(f'iron_golem_tosses_{species}', ticks, [
+            f'mob minecraft:iron_golem 0.5 -60 0.5 270 {330 + i} persistent',
+            f'mob minecraft:{species} 3.5 -60 0.5 90 {340 + i} persistent noai',
+        ], 'difficulty=2 time=18000')
     # An enderman in the rain teleports away again and again (LivingEntity.randomTeleport): it lands
     # on the first #entities_can_teleport_to block below the spot, at the spot's own height less the
     # blocks it went down, never into a liquid, and not onto or into #enderman_does_not_teleport_to.
