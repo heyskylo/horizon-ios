@@ -100,6 +100,9 @@ pub struct HudAtlas {
     /// A resource pack's own `core/rendertype_lines` shader for the block outline, translated;
     /// none draws the outline natively.
     pub lines_shader: Option<std::sync::Arc<horizon_shaders::CoreProgram>>,
+    /// The packs' `core/sky` and `core/stars`, when a pack replaces them.
+    pub sky_shader: Option<std::sync::Arc<horizon_shaders::CoreProgram>>,
+    pub stars_shader: Option<std::sync::Arc<horizon_shaders::CoreProgram>>,
     /// The packs' OptiFine random entity textures, whose variants this atlas packs.
     pub random_textures: horizon_optifine::random_textures::RandomTextures,
     /// Their emissive overlays (`_e`), packed here too.
@@ -845,6 +848,10 @@ impl HudAtlas {
             &[],
             &crate::gfx::core_lines::GLUE,
         );
+        let sky =
+            |name| pack_text::load_core(root, defaults, name, &[], &crate::gfx::core_sky::GLUE);
+        atlas.sky_shader = sky("sky");
+        atlas.stars_shader = sky("stars");
         Ok(atlas)
     }
     /// Empty slots written at run time: map textures (game/maps.rs), the
@@ -938,6 +945,8 @@ impl HudAtlas {
             glint_armor: (Vec::new(), 1, 1),
             text_shader: None,
             lines_shader: None,
+            sky_shader: None,
+            stars_shader: None,
             random_textures: Default::default(),
             emissive: Arc::default(),
             blinks: Default::default(),
@@ -1002,6 +1011,8 @@ impl HudAtlas {
             white,
             text_shader: None,
             lines_shader: None,
+            sky_shader: None,
+            stars_shader: None,
             random_textures: Default::default(),
             emissive: Default::default(),
             blinks: Default::default(),
@@ -1490,6 +1501,8 @@ impl HudAtlas {
             glint_armor,
             text_shader: None,
             lines_shader: None,
+            sky_shader: None,
+            stars_shader: None,
             random_textures,
             emissive,
             blinks,

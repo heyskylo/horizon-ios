@@ -162,6 +162,7 @@ mod arena;
 pub mod capture;
 pub mod compositor;
 pub(crate) mod core_lines;
+pub(crate) mod core_sky;
 mod cull;
 mod end_sky;
 pub mod entity_skin;
@@ -1165,6 +1166,8 @@ pub struct Renderer {
     lines_secondary: wgpu::RenderPipeline,
     /// A resource pack's `core/rendertype_lines`, which draws the block outline in their place.
     core_lines: Option<core_lines::CoreLines>,
+    /// The packs' `core/sky` and `core/stars`, drawn in place of the native sky and stars.
+    core_sky: Option<core_sky::CoreSky>,
     /// Gizmo lines: opaque ones (`RenderTypes.lines`, which writes depth),
     /// translucent ones (`RenderTypes.linesTranslucentNoDepthWrite`) and the
     /// always-on-top ones.
@@ -4743,6 +4746,7 @@ impl Renderer {
             lines,
             lines_secondary,
             core_lines: None,
+            core_sky: None,
             debug_lines_opaque,
             debug_lines,
             debug_lines_on_top,
@@ -5024,6 +5028,15 @@ impl Renderer {
         let format = self.frame_format;
         self.core_lines =
             program.and_then(|program| core_lines::CoreLines::new(&self.device, format, program));
+    }
+    /// The resource packs' `core/sky` and `core/stars` (`HudAtlas::sky_shader`,
+    /// `stars_shader`), or the built-in sky and stars.
+    pub fn set_sky_shaders(
+        &mut self,
+        disc: Option<&horizon_shaders::CoreProgram>,
+        stars: Option<&horizon_shaders::CoreProgram>,
+    ) {
+        self.core_sky = core_sky::CoreSky::new(&self.device, self.frame_format, disc, stars);
     }
     /// LevelRenderer.submitBlockOutline: the buffer holds `edges` per stroke, the black
     /// secondary stroke first when high contrast is on.
@@ -8799,6 +8812,39 @@ impl Renderer {
                 self.uploads.buffer(&mut encoder, core.uniform(), 0, &data);
             }
         }
+        // A pack's core/sky and core/stars: the disc with the sky colour, the stars with their
+        // brightness, both turned with the camera only (SkyRenderer's model view).
+        if let Some(core) = &self.core_sky
+            && !frame.title
+        {
+            let size = [self.config.width, self.config.height];
+            let block = crate::post_chain::Globals {
+                glint_alpha: frame.glint_alpha,
+                ..frame.post_effects.globals
+            }
+            .bytes(size, frame.post_effects.menu_blur_radius as i32);
+            let [sky_end, clouds_end, ..] = globals.fog_ends;
+            let fog = [fog[0], fog[1], fog[2], fog[3], sky_end, clouds_end];
+            let view = views.primary();
+            // Far enough for the disc's rim, 512 out: the sky draws without a depth test.
+            let fov = (2.0 * view.tan_half_fov.atan()).to_degrees();
+            let projection = jitter * world_projection(fov, view.aspect, 2048.0) * pose;
+            let [r, g, b, ..] = frame.sky.sky_color;
+            let sky =
+                core_sky::uniforms(block, projection, view.view, [r, g, b, 1.0], fog_color, fog);
+            let stars = frame.stars.map(|(rotation, brightness)| {
+                let b = brightness.clamp(0.0, 1.0);
+                core_sky::uniforms(
+                    block,
+                    projection,
+                    view.view * rotation,
+                    [b; 4],
+                    fog_color,
+                    fog,
+                )
+            });
+            core.prepare(&mut self.uploads, &mut encoder, &sky, stars.as_deref());
+        }
         let skin = frame.skin.filter(|skin| match &mut self.entity_skin {
             Some(skinner) => skinner.register(&self.device, &mut self.uploads, &mut encoder, skin),
             None => false,
@@ -9888,8 +9934,16 @@ impl Renderer {
                     {
                         Some((sky, native)) => sky.draw(&mut pass, native),
                         None => {
-                            pass.set_pipeline(&self.sky_base);
-                            pass.draw(0..3, 0..1);
+                            match self.core_sky.as_ref().filter(|c| c.draws_disc()) {
+                                Some(core) => {
+                                    core.draw_disc(&mut pass);
+                                    pass.set_bind_group(0, &self.group, &[]);
+                                }
+                                None => {
+                                    pass.set_pipeline(&self.sky_base);
+                                    pass.draw(0..3, 0..1);
+                                }
+                            }
                             if frame.sky.sunrise_color[3] > 0.001 {
                                 pass.set_pipeline(&self.sunrise_pipeline);
                                 pass.set_vertex_buffer(0, self.sunrise_buffer.slice(..));
@@ -9940,7 +9994,10 @@ impl Renderer {
                     .as_ref()
                     .is_some_and(|n| n.sky.is_some() && !n.vanilla_stars);
                 if !frame.title && frame.stars.is_some() && !pack_draws_sky && !own_stars {
-                    self.stars.draw(&mut pass);
+                    match self.core_sky.as_ref().filter(|c| c.draws_stars()) {
+                        Some(core) => core.draw_stars(&mut pass),
+                        None => self.stars.draw(&mut pass),
+                    }
                     pass.set_bind_group(0, &self.group, &[]);
                 }
                 if !frame.title && frame.dark_disc && !pack_draws_sky {
@@ -12145,7 +12202,7 @@ struct Overlay {
     hand_view_proj: Mat4,
 }
 
-fn world_projection(fov_degrees: f32, aspect: f32, far: f32) -> Mat4 {
+pub(crate) fn world_projection(fov_degrees: f32, aspect: f32, far: f32) -> Mat4 {
     Mat4::perspective_rh(fov_degrees.to_radians(), aspect, far, NEAR_PLANE)
 }
 
