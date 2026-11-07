@@ -183,24 +183,33 @@ fn wrap(module: &mut naga::Module, name: &str, blend: wgpu::BlendComponent) -> O
             members,
             span: size,
         } => {
-            let values: Vec<_> = (0..members.len())
-                .map(|i| {
-                    f.expressions.append(
+            // HUD pipelines have one target, so a pack's other colour outputs went nowhere;
+            // left in, one at location 1 would collide with the coverage.
+            let (members, values): (Vec<_>, Vec<_>) = members
+                .iter()
+                .enumerate()
+                .filter(|(_, m)| {
+                    !matches!(m.binding, Some(naga::Binding::Location { location, .. }) if location != 0)
+                })
+                .map(|(i, m)| {
+                    let value = f.expressions.append(
                         E::AccessIndex {
                             base: call,
                             index: i as u32,
                         },
                         span,
-                    )
+                    );
+                    (m.clone(), value)
                 })
-                .collect();
+                .unzip();
             let color = members
                 .iter()
                 .position(|m| {
                     matches!(m.binding, Some(naga::Binding::Location { location: 0, .. }))
                 })
                 .unwrap();
-            (members.clone(), values.clone(), values[color], *size)
+            let color = values[color];
+            (members, values, color, *size)
         }
         _ => (
             vec![naga::StructMember {
@@ -450,5 +459,27 @@ mod tests {
         )
         .validate(&module)
         .unwrap();
+    }
+
+    #[test]
+    fn coverage_replaces_a_colour_output_the_hud_has_no_target_for() {
+        let mut module = naga::front::wgsl::parse_str(
+            "struct Out { @location(0) color: vec4<f32>, @location(1) unused: vec4<f32> }
+             @fragment fn fs() -> Out { return Out(vec4(0.5), vec4(1.0)); }",
+        )
+        .unwrap();
+        wrap(&mut module, "fs", wgpu::BlendState::ALPHA_BLENDING.color).unwrap();
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .unwrap();
+        let result = module.entry_points[0].function.result.as_ref().unwrap();
+        let naga::TypeInner::Struct { members, .. } = &module.types[result.ty].inner else {
+            panic!("the wrapped entry returns a struct");
+        };
+        let names: Vec<_> = members.iter().map(|m| m.name.as_deref().unwrap()).collect();
+        assert_eq!(names, ["color", "coverage"]);
     }
 }
