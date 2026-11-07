@@ -33,13 +33,13 @@ class EnsureWorkDirTest(unittest.TestCase):
         self.assertEqual(harness_args.ensure_work_dir(DEFAULT, argv), DEFAULT)
         self.assertEqual(
             argv,
-            ['harness.py', '--reference', '/tmp/vanilla.jsonl', '--work-dir', '/scratch/default'],
+            ['harness.py', '--reference', '/tmp/vanilla.jsonl', '--work-dir', str(DEFAULT)],
         )
 
     def test_script_path_is_not_an_argument(self):
         argv = ['--work-dir/not-an-argument.py']
         harness_args.ensure_work_dir(DEFAULT, argv)
-        self.assertEqual(argv, ['--work-dir/not-an-argument.py', '--work-dir', '/scratch/default'])
+        self.assertEqual(argv, ['--work-dir/not-an-argument.py', '--work-dir', str(DEFAULT)])
 
     def test_the_last_one_wins_as_in_argparse(self):
         argv = ['harness.py', '--work-dir', '/tmp/first', '--work-dir=/tmp/second']
