@@ -84,7 +84,10 @@ def walk(x, ground):
 
 
 def arena(floor):
-    return ['step setup', 'cmd Alice time set 1000', 'cmd Alice kill @e[type=!player]',
+    # The previous case's cow drops its loot as /kill runs, after the selector picked the cow: those items would
+    # land on the new arena while the next case measures, at a wall-clock moment (item-stone and item-carpet
+    # flaked on vanilla's side, 2026-11-07). The second /kill removes them.
+    return ['step setup', 'cmd Alice time set 1000', 'cmd Alice kill @e[type=!player]', 'cmd Alice kill @e[type=item]',
             'cmd Alice fill -3 -61 -3 8 -61 5 minecraft:stone', 'cmd Alice fill -3 -60 -3 8 -57 5 minecraft:air',
             *[f'cmd Alice {command}' for command in FLOORS[floor][1]]]
 
