@@ -7,6 +7,9 @@ pub mod boot_paint;
 pub mod heap_census;
 pub mod jobs;
 pub mod process_memory;
+#[cfg(target_os = "linux")]
+pub mod sampler;
+pub mod unwind;
 
 use std::sync::{
     OnceLock,
