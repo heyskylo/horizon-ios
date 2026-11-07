@@ -2866,23 +2866,30 @@ impl Minecart {
         c.no_gravity = horizon_client::entity_nbt::flag(tag, "NoGravity");
         c.pitch = horizon_client::entity_nbt::rotation(tag)[1];
         c.previous_pitch = c.pitch;
-        let int = |k: &str| match tag.get(k) {
-            Some(Tag::Byte(v)) => Some(i32::from(*v)),
-            Some(Tag::Short(v)) => Some(i32::from(*v)),
-            Some(Tag::Int(v)) => Some(*v),
-            _ => None,
+        // ValueInput's numeric getters take any NumericTag: getIntOr is its
+        // intValue, getShortOr the low 16 bits of it, getBooleanOr
+        // `byteValue() != 0` (the low 8), getDoubleOr its doubleValue.
+        let int = |k: &str| {
+            tag.get(k)
+                .and_then(horizon_client_core::nbt_path::int_value)
         };
+        let flag = |k: &str, default: bool| int(k).map_or(default, |v| v as i8 != 0);
         let double = |k: &str| match tag.get(k) {
+            Some(Tag::Byte(v)) => f64::from(*v),
+            Some(Tag::Short(v)) => f64::from(*v),
+            Some(Tag::Int(v)) => f64::from(*v),
+            Some(Tag::Long(v)) => *v as f64,
+            Some(Tag::Float(v)) => f64::from(f32::from_bits(*v)),
             Some(Tag::Double(v)) => f64::from_bits(*v),
             _ => 0.0,
         };
-        c.flipped = int("FlippedRotation").unwrap_or(0) != 0;
-        c.first_tick = int("HasTicked").unwrap_or(0) != 0;
+        c.flipped = flag("FlippedRotation", false);
+        c.first_tick = flag("HasTicked", false);
         if kind.slots() > 0 {
             c.items = horizon_client::save::decode_items(tag.get("Items"), kind.slots());
         }
-        c.enabled = int("Enabled").unwrap_or(1) != 0;
-        c.fuel = int("Fuel").unwrap_or(0);
+        c.enabled = flag("Enabled", true);
+        c.fuel = int("Fuel").map_or(0, |v| i32::from(v as i16));
         // readAdditionalSaveData: the saved push has no y.
         c.push = Vec3::new(double("PushX"), 0.0, double("PushZ"));
         c.fuse = int("fuse").unwrap_or(-1);
