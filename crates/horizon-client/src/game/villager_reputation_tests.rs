@@ -208,7 +208,7 @@ fn guest_damage_refreshes_only_its_current_trade_with_restored_hero_and_keeps_re
     assert_eq!(game.lan_acting, Some(1));
     assert_eq!(game.hero_amplifier(), Some(3));
     assert!(
-        host.play.get(&1).is_none(),
+        !host.play.contains_key(&1),
         "outer merchant is still borrowed"
     );
     assert_eq!(

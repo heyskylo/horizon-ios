@@ -1,6 +1,6 @@
 //! Test-only logical players and merchant state; no socket or server loop.
 use super::{Game, LanHost, LanSettings};
-use crate::game::{native_machines, trading::MerchantState};
+use crate::game::{Audio, Options, Progress, Settings, load_resources, trading::MerchantState};
 use horizon_client::{
     items::ItemStack,
     lan::{
@@ -17,12 +17,51 @@ use horizon_core::geometry::Vec3;
 use std::sync::Arc;
 
 pub(in crate::game) fn game() -> Game<'static> {
-    std::env::var_os("HORIZON_HOME").expect("explicit isolated fixture home");
-    let mut game = native_machines::tests::server_game();
+    let home =
+        std::path::PathBuf::from(std::env::var_os("HORIZON_HOME").expect("isolated fixture home"));
+    let root = std::path::PathBuf::from(
+        std::env::var_os("HORIZON_TEST_RESOURCES").expect("explicit read-only fixture resources"),
+    );
+    let settings = Settings::default();
+    let loaded = load_resources(
+        root.clone(),
+        None,
+        &root,
+        &settings,
+        std::time::Instant::now(),
+        false,
+        true,
+        &Progress::new(),
+        &mut |_, _| unreachable!(),
+    )
+    .unwrap();
+    let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+    options.resources = root.clone();
+    options.game_dir = Some(home.join(format!("fixture-{:?}", std::thread::current().id())));
+    options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+    let res = Box::leak(Box::new(loaded.resources));
+    let mut game = Game::new(
+        res,
+        loaded.pack,
+        loaded.gui.unwrap(),
+        options,
+        settings,
+        Audio::silent(&root),
+        None,
+    )
+    .unwrap();
+    game.options.dedicated = Some(Vec::new());
+    game.world
+        .chunks
+        .insert((0, 0), Arc::new(horizon_client::chunk::Chunk::empty(0, 0)));
+    game.block_ticks
+        .add_empty_chunk(horizon_core::position::ChunkPos::new(0, 0))
+        .unwrap();
     game.build_registries();
     game.set_allow_commands(true);
     game
 }
+
 fn hub(root: &std::path::Path) -> Hub {
     let mut sync = SyncData::empty();
     sync.builtin = horizon_protocol::registry::Builtin::load(

@@ -12,7 +12,7 @@ import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
-import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.EntityTypes;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.ai.Brain;
@@ -75,7 +75,7 @@ public final class VanillaVillagerReputationOracle {
         Sensing sensing;
         Player trader;
         MerchantOffers offers;
-        Actor() { super(EntityType.VILLAGER, null); }
+        Actor() { super(EntityTypes.VILLAGER, null); }
         @Override public Level level() { return world; }
         @Override public boolean isAlive() { return living; }
         @Override public boolean isSpectator() { return false; }
@@ -111,9 +111,24 @@ public final class VanillaVillagerReputationOracle {
         for (var entity : memory.findAll(e -> e instanceof Villager)) ids.add(entity.getId());
         return ids.toString().replace(" ", "");
     }
+    static void bindComponents() throws Exception {
+        var repo = net.minecraft.server.packs.repository.ServerPacksSource.createVanillaTrustedRepository();
+        repo.reload();
+        repo.setSelected(List.of("vanilla"));
+        try (var resources = new net.minecraft.server.packs.resources.MultiPackResourceManager(net.minecraft.server.packs.PackType.SERVER_DATA, repo.openAllSelected())) {
+            var layers = net.minecraft.server.RegistryLayer.createRegistryAccess();
+            var tags = net.minecraft.tags.TagLoader.loadTagsForExistingRegistries(resources, layers.getLayer(net.minecraft.server.RegistryLayer.STATIC));
+            var context = net.minecraft.tags.TagLoader.buildUpdatedLookups(layers.getAccessForLoading(net.minecraft.server.RegistryLayer.WORLD), tags);
+            var worldRegistries = net.minecraft.resources.RegistryDataLoader.load(resources, context, net.minecraft.resources.RegistryDataLoader.WORLD_REGISTRIES, Runnable::run).join();
+            tags.forEach(net.minecraft.core.Registry.PendingTags::apply);
+            var access = layers.replaceFrom(net.minecraft.server.RegistryLayer.WORLD, worldRegistries).compositeAccess();
+            BuiltInRegistries.DATA_COMPONENT_INITIALIZERS.build(access).forEach(value -> value.apply());
+        }
+    }
     public static void main(String[] args) throws Exception {
         net.minecraft.SharedConstants.tryDetectVersion();
         net.minecraft.server.Bootstrap.bootStrap();
+        bindComponents();
         var u = Class.forName("sun.misc.Unsafe");
         unsafe = field(u, "theUnsafe").get(null);
         allocate = u.getMethod("allocateInstance", Class.class);

@@ -714,7 +714,7 @@ impl Game<'_> {
                     _ => {}
                 }
                 if matches!(handle, EntityHandle::Mob(_)) {
-                    self.flush_villager_reputation(entity as u32);
+                    self.flush_villager_reputation(entity);
                 }
                 let mut velocity = [push.x, push.y, push.z];
                 self.native_explosion_knockback(
