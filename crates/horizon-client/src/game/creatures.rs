@@ -9115,7 +9115,10 @@ mod breeding_orb_tests {
             let orbs = game.orbs.len();
             game.breeding_orb(7, [8.5, 64.0, 8.5]);
             assert_eq!(game.orbs.len(), orbs + 1, "a fresh orb, not merged");
-            assert_eq!(game.orbs.last().map(|o| (o.value, o.count)), Some((roll, 1)));
+            assert_eq!(
+                game.orbs.last().map(|o| (o.value, o.count)),
+                Some((roll, 1))
+            );
             values.insert(roll);
         }
         assert!(values.iter().any(|v| matches!(v, 4..=6)), "{values:?}");

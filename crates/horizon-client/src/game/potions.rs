@@ -2520,7 +2520,12 @@ mod xp_bottle_tests {
         let at = Vec3::new(8.5, 70.5, 8.5);
         // (hit face, the bottle's motion, the axis and sign the orbs leave by)
         for (face, motion, axis, sign) in [
-            (Some(([9, 70, 8], Direction::West)), Vec3::new(1.0, 0.0, 0.0), 0, -1.0),
+            (
+                Some(([9, 70, 8], Direction::West)),
+                Vec3::new(1.0, 0.0, 0.0),
+                0,
+                -1.0,
+            ),
             (None, Vec3::new(0.0, 0.0, 1.0), 2, -1.0),
         ] {
             game.orbs.clear();
