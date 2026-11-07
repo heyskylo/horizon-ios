@@ -169,8 +169,8 @@ impl SpawnLevel for PatrolCx<'_, '_, '_> {
     fn peaceful(&self) -> bool {
         self.level.peaceful()
     }
-    fn dimension(&self) -> spawn_rules::Dimension {
-        self.level.dimension()
+    fn dimension_type(&self) -> &horizon_world::dimension_type::DimensionFacts {
+        self.level.dimension_type()
     }
     fn surface_slime_chance(&self, x: i32, y: i32, z: i32) -> f32 {
         self.level.surface_slime_chance(x, y, z)

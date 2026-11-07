@@ -400,7 +400,7 @@ fn is_baby_riding_baby(m: &Mob, w: &MobWorld) -> bool {
 /// `Hoglin.isConverting` and `AbstractPiglin.isConverting`: in a dimension
 /// that is not piglin safe, a mob that is not immune and has AI.
 fn converting(m: &Mob, w: &MobWorld) -> bool {
-    !w.nether && !m.extra.flag2 && !m.no_ai
+    w.dimension_type.piglins_zombify && !m.extra.flag2 && !m.no_ai
 }
 /// `Hoglin.getAmbientSound`: the sound of the activity it is in
 /// (`HoglinAi.getSoundForCurrentActivity`).
@@ -1801,7 +1801,7 @@ pub fn ai_step(
         }
     }
     // Zombification outside the Nether (piglins without immunity, hoglins).
-    if !w.nether && !m.extra.flag2 && m.alive() {
+    if w.dimension_type.piglins_zombify && !m.extra.flag2 && m.alive() {
         m.extra.counter2 += 1;
         if m.extra.counter2 > CONVERSION {
             // `Piglin.finishConversion` runs `PiglinAi.cancelAdmiring` first:

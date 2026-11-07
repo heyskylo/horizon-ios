@@ -56,21 +56,11 @@ impl GlobalPos {
 }
 /// The identifier of a dimension as a `'static` string, for loading saves.
 pub fn dimension_id(id: &str) -> &'static str {
-    match id {
-        "minecraft:the_nether" => "minecraft:the_nether",
-        "minecraft:the_end" => "minecraft:the_end",
-        _ => "minecraft:overworld",
-    }
+    horizon_core::LevelKey::builtin_or_overworld(id).id()
 }
 /// `Level.dimension` of the level the mob ticks in.
 pub fn dimension(w: &MobWorld) -> &'static str {
-    if w.nether {
-        "minecraft:the_nether"
-    } else if w.end {
-        "minecraft:the_end"
-    } else {
-        "minecraft:overworld"
-    }
+    w.level.id()
 }
 
 /// `AllayAi.allayConsidersItemEqual`: the same item (`ItemStack.isSameItem`)

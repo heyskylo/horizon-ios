@@ -6,7 +6,7 @@
 use super::{Species, data};
 use crate::blocks::{BlockFacts, Fluid};
 use horizon_core::random::{RandomSource, slime_chunk_random};
-use horizon_world::registry::BlockStateId;
+use horizon_world::{dimension_type::DimensionFacts, registry::BlockStateId};
 
 /// `EntitySpawnReason`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -39,31 +39,6 @@ impl Reason {
         self == Self::TrialSpawner
     }
 }
-/// The dimension type's monster spawn light rules.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Dimension {
-    Overworld,
-    Nether,
-    End,
-}
-impl Dimension {
-    /// `monster_spawn_block_light_limit`.
-    fn block_light_limit(self) -> i32 {
-        match self {
-            Self::Nether => 15,
-            _ => 0,
-        }
-    }
-    /// `monster_spawn_light_level.sample`: uniform 0..=7 in the overworld.
-    fn light_test(self, random: &mut impl RandomSource) -> i32 {
-        match self {
-            Self::Overworld => random.next_int_bound(8).unwrap_or(0),
-            Self::Nether => 7,
-            Self::End => 15,
-        }
-    }
-}
-
 /// What spawn checks read from a level.
 pub trait SpawnLevel {
     fn state(&self, x: i32, y: i32, z: i32) -> BlockStateId;
@@ -80,7 +55,7 @@ pub trait SpawnLevel {
     /// `getHeight(WORLD_SURFACE, x, z)`: above the highest non-air block.
     fn world_surface(&self, x: i32, z: i32) -> i32;
     fn peaceful(&self) -> bool;
-    fn dimension(&self) -> Dimension;
+    fn dimension_type(&self) -> &DimensionFacts;
     /// The `gameplay/surface_slime_spawn_chance` environment attribute.
     fn surface_slime_chance(&self, x: i32, y: i32, z: i32) -> f32;
     fn world_seed(&self) -> i64;
@@ -278,14 +253,14 @@ pub fn is_dark_enough<L: SpawnLevel>(
     if l.sky_light(x, y, z) > random.next_int_bound(32).unwrap_or(0) {
         return false;
     }
-    let dim = l.dimension();
-    let limit = dim.block_light_limit();
+    let dim = l.dimension_type();
+    let limit = dim.monster_spawn_block_light_limit;
     if limit < 15 && l.block_light(x, y, z) > limit {
         return false;
     }
     let darken = if l.thundering() { 10 } else { l.sky_darken() };
     let brightness = raw_brightness(l, x, y, z, darken);
-    brightness <= dim.light_test(random)
+    brightness <= dim.monster_spawn_light_level.sample(random).unwrap_or(0)
 }
 /// `Animal.isBrightEnoughToSpawn`.
 fn bright<L: SpawnLevel>(l: &L, x: i32, y: i32, z: i32) -> bool {
@@ -579,7 +554,11 @@ impl SpawnLevel for super::MobWorld<'_> {
             .is_some_and(|members| members.contains(biome))
     }
     fn sky_light(&self, x: i32, y: i32, z: i32) -> i32 {
-        if self.nether || self.end {
+        // Kept as before: vanilla's End has sky light, but Horizon reads 0 there.
+        if matches!(
+            self.dimension_type.id.as_str(),
+            "minecraft:the_nether" | "minecraft:the_end"
+        ) {
             return 0;
         }
         i32::from(self.world.light(x, y, z) >> 4)
@@ -602,14 +581,8 @@ impl SpawnLevel for super::MobWorld<'_> {
     fn peaceful(&self) -> bool {
         self.difficulty.effective == 0.0
     }
-    fn dimension(&self) -> Dimension {
-        if self.nether {
-            Dimension::Nether
-        } else if self.end {
-            Dimension::End
-        } else {
-            Dimension::Overworld
-        }
+    fn dimension_type(&self) -> &DimensionFacts {
+        self.dimension_type
     }
     fn surface_slime_chance(&self, _: i32, _: i32, _: i32) -> f32 {
         let phase = self.day_time.div_euclid(24000).rem_euclid(8) as usize;
@@ -707,5 +680,60 @@ mod underwater_sky_tests {
         // Without the vanilla data under .local/horizon-client the world
         // cannot be built: the test has nothing to check.
         let _ = ran;
+    }
+}
+
+#[cfg(test)]
+mod light_draw_tests {
+    use super::*;
+    use crate::mobs::{MobWorld, world::with_built_test_world};
+    use horizon_core::random::LegacyRandom;
+
+    /// `Monster.isDarkEnoughToSpawn`: the sky roll draws one bound-32 int, then the
+    /// dimension type's light level draws as its provider does (uniform 0..=7 one
+    /// bound-8 int, a constant none).
+    #[test]
+    fn dark_enough_draws_follow_the_dimension_type_provider() {
+        with_built_test_world(
+            &[],
+            |world, _| {
+                world.chunks.insert(
+                    (0, 0),
+                    std::sync::Arc::new(crate::chunk::Chunk::empty(0, 0)),
+                );
+            },
+            |w, _| {
+                for (type_id, draws) in [
+                    ("minecraft:overworld", &[32, 8][..]),
+                    ("minecraft:the_nether", &[32][..]),
+                    ("minecraft:the_end", &[32][..]),
+                ] {
+                    let level = MobWorld {
+                        dimension_type: DimensionFacts::vanilla(type_id).unwrap(),
+                        ..w.clone()
+                    };
+                    let mut random = LegacyRandom::new(42);
+                    let dark = is_dark_enough(&level, &mut random, 0, 70, 0);
+                    let mut expected = LegacyRandom::new(42);
+                    let rolls: Vec<i32> = draws
+                        .iter()
+                        .map(|bound| expected.next_int_bound(*bound).unwrap())
+                        .collect();
+                    assert_eq!(random.next_int(), expected.next_int(), "{type_id}");
+                    let light = level
+                        .block_light(0, 70, 0)
+                        .max(level.sky_light(0, 70, 0) - level.sky_darken());
+                    let test = rolls.get(1).copied().unwrap_or(match type_id {
+                        "minecraft:the_nether" => 7,
+                        _ => 15,
+                    });
+                    assert_eq!(
+                        dark,
+                        rolls[0] >= level.sky_light(0, 70, 0) && light <= test,
+                        "{type_id}"
+                    );
+                }
+            },
+        );
     }
 }

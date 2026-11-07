@@ -4464,7 +4464,9 @@ mod fox_screech_tests {
 
             let mut end = night.clone();
             end.daylight = true;
-            end.end = true;
+            end.dimension_type =
+                horizon_world::dimension_type::DimensionFacts::vanilla("minecraft:the_end")
+                    .unwrap();
             assert!(
                 sounds(&end, types)
                     .iter()
