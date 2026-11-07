@@ -4165,6 +4165,11 @@ impl Screen {
                     let x = bar_x + i as f32 * tab_w;
                     let selected = which == tab;
                     let hover = crate::ui::hovered(cursor, x, 0.0, tab_w, TAB_HEIGHT);
+                    // Painted by hand: the bumpers look for these.
+                    crate::widgets::target_as(
+                        [x, 0.0, tab_w, TAB_HEIGHT],
+                        crate::widgets::Kind::Tab(selected),
+                    );
                     let sprite = match (selected, hover) {
                         (true, true) => "gui/sprites/widget/tab_selected_highlighted",
                         (true, false) => "gui/sprites/widget/tab_selected",

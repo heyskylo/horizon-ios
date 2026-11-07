@@ -127,6 +127,7 @@ fn fixture(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
         false,
         true,
         false,
+        false,
     ))?;
     renderer.resize(320, 180);
     assert!(
@@ -349,6 +350,7 @@ fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
         skybox: false,
         end_sky: false,
         end_sky_sprite: None,
+        boss_world_fog: false,
         environment_fog: None,
         water_fog: [0.0; 3],
         fog: None,

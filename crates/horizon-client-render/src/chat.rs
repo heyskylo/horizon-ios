@@ -1188,6 +1188,18 @@ impl SuggestLayout {
     };
 }
 
+/// A suggestion accepted by Tab or a click (`SuggestionsList.useSuggestion`).
+#[derive(Debug, PartialEq, Eq)]
+pub struct SuggestionCompletion {
+    /// The suggestion list's original input, also when cycling with Tab.
+    pub original: String,
+    /// The replaced range in `original`, as Java UTF-16 start/end offsets.
+    pub range: (usize, usize),
+    pub text: String,
+    /// The resulting input, after the text field's length limit.
+    pub input: String,
+}
+
 /// The open chat screen: vanilla's `ChatScreen` with its `EditBox` and
 /// `CommandSuggestions` (argument colouring, usage lines, parse errors,
 /// the suggestion list, Tab completion, history).
@@ -1211,6 +1223,7 @@ pub struct ChatScreen {
     /// the command up to the cursor.
     request: Option<(i32, String)>,
     suggestions: Option<SuggestionList>,
+    completion: Option<SuggestionCompletion>,
     usage: Vec<Text>,
     usage_position: i32,
     usage_width: i32,
@@ -1333,6 +1346,7 @@ impl ChatScreen {
             awaiting: None,
             request: None,
             suggestions: None,
+            completion: None,
             usage: Vec::new(),
             usage_position: 0,
             usage_width: 0,
@@ -1370,6 +1384,7 @@ impl ChatScreen {
             awaiting: None,
             request: None,
             suggestions: None,
+            completion: None,
             usage: Vec::new(),
             usage_position: 0,
             usage_width: 0,
@@ -1384,6 +1399,11 @@ impl ChatScreen {
     }
     pub fn value(&self) -> &str {
         &self.input.value
+    }
+    /// Take the most recently accepted suggestion, at most once. Call after
+    /// each key or click to observe every acceptance, including Tab cycling.
+    pub fn take_suggestion_completion(&mut self) -> Option<SuggestionCompletion> {
+        self.completion.take()
     }
     /// Replace the input for a suggest-command link and refresh completions.
     pub fn suggest_command(&mut self, m: &Measure, c: &Commands, command: &str) {
@@ -1431,6 +1451,24 @@ impl ChatScreen {
         clipboard: &mut dyn crate::clipboard::Clipboard,
     ) {
         if self.input.shortcut(m, shortcut, clipboard) {
+            self.edited(m, c);
+        }
+    }
+    /// Edit the existing input and refresh its command responder when it changes.
+    pub fn edit_input(&mut self, m: &Measure, c: &Commands, f: impl FnOnce(&mut TextField)) {
+        let before = (
+            self.input.value.clone(),
+            self.input.cursor,
+            self.input.highlight,
+        );
+        f(&mut self.input);
+        if before
+            != (
+                self.input.value.clone(),
+                self.input.cursor,
+                self.input.highlight,
+            )
+        {
             self.edited(m, c);
         }
     }
@@ -1733,6 +1771,17 @@ impl ChatScreen {
         self.select(l, l.current as isize);
         self.keep_suggestions = false;
         l.tab_cycles = true;
+        let units = |byte: usize| {
+            l.original[..byte.min(l.original.len())]
+                .encode_utf16()
+                .count()
+        };
+        self.completion = Some(SuggestionCompletion {
+            original: l.original.clone(),
+            range: (units(s.range.0), units(s.range.1)),
+            text: s.text,
+            input: self.input.value.clone(),
+        });
     }
     /// `ChatScreen.keyPressed`.
     pub fn key(
@@ -2022,6 +2071,11 @@ impl ChatScreen {
         for i in 0..limit {
             let y = ry + 12 * i as i32;
             d::fill(out, rx, y, rx + rw, y + 12, self.layout.fill);
+            // A row for the pad: nothing else can pick a suggestion without Tab.
+            crate::widgets::target_as(
+                [rx as f32, y as f32, rw as f32, 12.0],
+                crate::widgets::Kind::Row,
+            );
             if mouse.0 > rx && mouse.0 < rx + rw && mouse.1 > y && mouse.1 < y + 12 {
                 if moved {
                     self.select(l, (i + l.offset) as isize);
