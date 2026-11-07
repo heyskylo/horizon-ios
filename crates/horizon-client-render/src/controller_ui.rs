@@ -186,7 +186,7 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                         ),
                         option(
                             Opt::PadCraftOnServers,
-                            "Quick crafting with the controller on servers other than single player and LAN worlds found in the server list. A server may count it as a macro.",
+                            "Lets LT + A craft on servers other than your own worlds. Some servers count it as a macro.",
                         ),
                         option(
                             Opt::PadTriggerThreshold,
