@@ -52,16 +52,19 @@ fn horizon_material_vertex(position: vec3<f32>, uv: vec2<f32>, layer: u32, color
     light: vec2<u32>, origin: vec4<f32>) -> HorizonMaterialOut {
     let pos = horizon_material_displace(position + origin.xyz, uv, layer, color, light);
     var out = horizon_material_out(pos, uv, layer, color, vec2<f32>(light));
-    // terrain.wgsl's section fade-in (`visibility`), as how far it is from whole, in the high
-    // 16 bits of `hdr_code`: no varying of its own, and 0 (whole) where nothing fades.
-    let visibility = mix(1.0, horizon_terrain_instance_visibility(origin.w),
-        clamp((length(pos) - 16.0) / 16.0, 0.0, 1.0));
-    out.hdr_code |= u32(round((1.0 - visibility) * 65535.0)) << 16u;
+    // The section's fade-in (`RenderSection.getVisibility`), as how far it is from whole, in the
+    // high 16 bits of `hdr_code`: no varying of its own, and 0 (whole) where nothing fades. It is
+    // the same for the whole section, so the flat varying loses nothing.
+    let instance = horizon_terrain_instance_visibility(origin.w);
+    out.hdr_code |= u32(round((1.0 - instance) * 65535.0)) << 16u;
     return out;
 }
-// terrain.wgsl's fade-in: toward the fog colour, alpha kept.
+// terrain.wgsl's fade-in (terrain.vsh's chunkVisibility): whole within 16 blocks, the section's
+// own visibility from 32 out, toward the fog colour, alpha kept. The distance blend runs here on
+// the interpolated distance, as vanilla's interpolated `visibility`, not once per triangle.
 fn horizon_material_faded(in: HorizonMaterialOut, color: vec4<f32>) -> vec4<f32> {
-    let visibility = 1.0 - f32(in.hdr_code >> 16u) / 65535.0;
+    let instance = 1.0 - f32(in.hdr_code >> 16u) / 65535.0;
+    let visibility = mix(1.0, instance, clamp((in.spherical - 16.0) / 16.0, 0.0, 1.0));
     return vec4(mix(horizon_terrain_globals.fog_color.rgb, color.rgb, visibility), color.a);
 }
 // `light`: sky, block, 16 per level.
@@ -594,19 +597,22 @@ mod tests {
         report.stages.remove(0)
     }
 
-    /// The fade-in packed above the HDR code: a section at 3/4 of the way in (`section_instance`
-    /// with step 1: mantissa `1 - visibility` = 0.75), 24 blocks away, is half-way into its
-    /// 16-block blend, so 1 - (1 - 0.25) / 2 = 0.625 visible; the code's low nibble survives.
+    /// The fade-in packed above the HDR code: a section a quarter visible (`section_instance`
+    /// with step 1: mantissa `1 - visibility` = 0.75) keeps its visibility through the code, and
+    /// a fragment 24 blocks away, half-way into the 16-block blend, is 1 - (1 - 0.25) / 2 = 0.625
+    /// visible; the code's low nibble survives.
     #[test]
     fn the_fade_in_rides_the_hdr_code() {
         let w = f32::from_bits(1.0f32.to_bits() | (0.75 * 8_388_608.0) as u32);
         // `horizon_material_vertex`.
         let instance = 1.0 - (w.to_bits() & 0x7fffff) as f32 / 8_388_608.0;
-        let blend = ((24.0f32 - 16.0) / 16.0).clamp(0.0, 1.0);
-        let visibility = 1.0 + (instance - 1.0) * blend;
-        let code = 7u32 | (((1.0 - visibility) * 65535.0).round() as u32) << 16;
+        let code = 7u32 | (((1.0 - instance) * 65535.0).round() as u32) << 16;
         // `horizon_material_faded` and `horizon_material_mark`.
-        assert!((1.0 - (code >> 16) as f32 / 65535.0 - 0.625).abs() < 1.0 / 65535.0);
+        let unpacked = 1.0 - (code >> 16) as f32 / 65535.0;
+        assert!((unpacked - 0.25).abs() < 1.0 / 65535.0);
+        let blend = ((24.0f32 - 16.0) / 16.0).clamp(0.0, 1.0);
+        let visibility = 1.0 + (unpacked - 1.0) * blend;
+        assert!((visibility - 0.625).abs() < 1.0 / 65535.0);
         assert_eq!(code & 15, 7);
     }
 
