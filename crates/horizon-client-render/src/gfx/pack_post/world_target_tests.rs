@@ -420,6 +420,7 @@ fn frame(hud: &HudBatch) -> Frame<'_> {
         visible_static_block_entity_sections: &[],
         static_block_entity_stats: crate::block_entity_render::StaticCacheFrameStats::default(),
         entity_motion: &[],
+        entity_motion_posed: &[],
         colored_lights: &[],
         emissive_layers: &[],
         shadow_only: &[],
