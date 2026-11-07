@@ -144,7 +144,6 @@ impl Levels {
         self.parked.get(&dim).map(|level| &level.world)
     }
 
-    /// The worlds of the levels not in place.
     /// A parked level's world border.
     pub(super) fn parked_border(
         &self,
@@ -153,6 +152,7 @@ impl Levels {
         self.parked.get(&dim).map(|level| &level.border)
     }
 
+    /// The worlds of the levels not in place.
     pub(super) fn parked_worlds(&self) -> impl Iterator<Item = &World> {
         self.parked.values().map(|level| &level.world)
     }
