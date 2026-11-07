@@ -10,7 +10,10 @@ mod tests {
     }
     struct BlockEntityDraw(Vec<u32>);
     struct NativeWorldDraw(Vec<u32>);
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "stubs shaped like the game's, only some of them read"
+    )]
     mod stubs {
         #[derive(Clone, Copy, Debug, PartialEq)]
         pub(super) struct BlockStateId;
@@ -35,6 +38,7 @@ mod tests {
         pub(super) struct NativeLootDrops<'a>(pub &'a ());
         pub(super) struct NativeNoteBlockChange<'a>(pub &'a ());
         pub(super) struct NativeScreenView<'a>(pub &'a ());
+        pub(super) struct NativeTextField;
         pub(super) struct ClientboundPlayPacket;
         pub(super) struct EntityDataValue;
         pub(super) struct NativeGenerate;
@@ -113,7 +117,10 @@ mod tests {
             pub struct KeyEvent;
         }
     }
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "stubs shaped like the game's, only some of them read"
+    )]
     mod generated {
         mod horizon_mods {
             pub mod content {
