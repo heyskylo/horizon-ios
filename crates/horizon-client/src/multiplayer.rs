@@ -1693,7 +1693,10 @@ impl Screen {
                     *selected = Some(index);
                     // The press that selects a saved server can drag it.
                     if let Some(Row::Server(k)) = row {
-                        *held = Some(Held { row: k, moved: false });
+                        *held = Some(Held {
+                            row: k,
+                            moved: false,
+                        });
                     }
                 }
             }
@@ -1872,7 +1875,10 @@ impl Screen {
             {
                 let server = servers.remove(held.row);
                 servers.insert(to, server);
-                *held = Held { row: to, moved: true };
+                *held = Held {
+                    row: to,
+                    moved: true,
+                };
                 *selected = Some(to);
             }
         }
@@ -2668,7 +2674,12 @@ mod tests {
             ),
             _ => unreachable!(),
         };
-        let saved = || servers::load(&file).into_iter().map(|s| s.name).collect::<String>();
+        let saved = || {
+            servers::load(&file)
+                .into_iter()
+                .map(|s| s.name)
+                .collect::<String>()
+        };
         // 427x240: rows start at x 61, the first at y 35; the name, right of the icon.
         let (x, row) = (130.0, |i: f32| 37.0 + 10.0 + i * ROW_HEIGHT);
         // A press on "a"'s name selects it and holds it; dragging over "c"'s
