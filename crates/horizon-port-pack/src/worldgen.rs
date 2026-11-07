@@ -614,10 +614,10 @@ fn moogs_spacing(p: &mut Value, lost: &mut BTreeMap<String, usize>) {
     let separation = scaled("separation").min(spacing - 1);
     p["spacing"] = spacing.into();
     p["separation"] = separation.into();
-    if let Some(o) = p.as_object_mut() {
-        if o.remove("when_replacing").is_some() {
-            *lost.entry("when_replacing".into()).or_default() += 1;
-        }
+    if let Some(o) = p.as_object_mut()
+        && o.remove("when_replacing").is_some()
+    {
+        *lost.entry("when_replacing".into()).or_default() += 1;
     }
 }
 
@@ -798,10 +798,10 @@ pub fn loader_biome_tags(work: &Path) -> BTreeMap<String, Value> {
                 continue;
             };
             let declared = entry.size();
-            if let Ok(text) = budget.read_text(&mut entry, declared, crate::entry::MAX_TEXT) {
-                if let Ok(v) = serde_json::from_str(&text) {
-                    out.insert(path, v);
-                }
+            if let Ok(text) = budget.read_text(&mut entry, declared, crate::entry::MAX_TEXT)
+                && let Ok(v) = serde_json::from_str(&text)
+            {
+                out.insert(path, v);
             }
         }
     }
