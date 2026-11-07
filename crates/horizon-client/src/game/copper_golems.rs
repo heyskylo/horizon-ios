@@ -314,8 +314,7 @@ impl Game<'_> {
             let antenna = self.mobs[index].saddle_item();
             self.mobs[index].set_saddle(None);
             let id = self.mobs[index].id;
-            let ctx = self.who_context(Some(horizon_client::mobs::Who::Mob(id)), None);
-            self.post_game_event("minecraft:unequip", at, ctx);
+            self.mob_equip_event(id, at, false);
             if let Some(a) = antenna {
                 let p = self.mobs[index].position;
                 self.spawn_at_location(p, 1.5, a);

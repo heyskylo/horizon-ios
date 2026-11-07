@@ -2,6 +2,44 @@ use super::*;
 use crate::chunk::Light;
 
 #[test]
+fn padded_steps_match_coordinate_lookup_through_the_border() {
+    // Coordinate lookup is the old addressing path, independent of step_index
+    // and the direction table. Include every cell and the full two-cell halo.
+    let neighbors = [
+        (Direction::Down, [0, -1, 0]),
+        (Direction::Up, [0, 1, 0]),
+        (Direction::North, [0, 0, -1]),
+        (Direction::South, [0, 0, 1]),
+        (Direction::West, [-1, 0, 0]),
+        (Direction::East, [1, 0, 0]),
+    ];
+    for y in 0..16 {
+        for z in 0..16 {
+            for x in 0..16 {
+                let cell = (pi(0, y, z) + x as usize) as isize;
+                assert_eq!(cell as usize, pi(x, y, z));
+                for (face, [dx, dy, dz]) in neighbors {
+                    assert_eq!(
+                        (cell + OFFSETS[face as usize]) as usize,
+                        pi(x + dx, y + dy, z + dz)
+                    );
+                }
+                for dy in -2..=2 {
+                    for dz in -2..=2 {
+                        for dx in -2..=2 {
+                            assert_eq!(
+                                (cell + step_index([dx, dy, dz])) as usize,
+                                pi(x + dx, y + dy, z + dz)
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn padded_reuse_resets_missing_neighbors_and_matches_chunk_reads_across_layouts() {
     let mut pad = Padded::default();
     let mut own = Box::new([u32::MAX; 4096]);
