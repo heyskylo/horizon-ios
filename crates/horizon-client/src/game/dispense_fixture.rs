@@ -655,6 +655,8 @@ impl Game<'_> {
                 v[2].as_f64().unwrap_or(0.0),
             )
         };
+        // A new player: no combat of an earlier case's.
+        self.combat = Default::default();
         let mut player = PlayerMotion::new(self.motion, v3(&op["player"]))?;
         player.velocity = v3(&op["motion"]);
         player.fall_distance = op["fall"].as_f64().unwrap_or(0.0);
@@ -670,6 +672,7 @@ impl Game<'_> {
         let used_before = stack
             .as_ref()
             .map_or(0, |s| self.stats.get("used", &s.item));
+        let taken_before = self.stats.get("custom", "minecraft:damage_taken");
         let base = op["base"].as_f64().unwrap_or(0.0) as f32;
         let source = self.attack_source(feet);
         let (bonus, hurt) = match targets.first() {
@@ -707,11 +710,38 @@ impl Game<'_> {
         };
         self.process_level_events()?;
         let mut out = Vec::new();
+        // What the player's tick makes of its own hurt (the victim's Thorns):
+        // the combat record with its statistic, the hurt sound where it
+        // stands and the damage game event of the health it lost.
+        let events = self
+            .player
+            .as_mut()
+            .map(|p| std::mem::take(&mut p.events))
+            .unwrap_or_default();
+        self.record_combat(&events);
+        for event in &events {
+            if let horizon_client::motion::MotionEvent::HurtSound(sound) = event {
+                out.push(format!("S {} {sound}", floor_pos(feet)));
+            }
+        }
+        if self
+            .player
+            .as_ref()
+            .is_some_and(|p| p.health.health() < 20.0)
+        {
+            self.post_entity_event("minecraft:entity_damage", horizon_client::mobs::Who::Player);
+        }
         if let Some(s) = &stack {
             let used = self.stats.get("used", &s.item) - used_before;
             if used != 0 {
                 out.push(format!("stat {} minecraft:used {used}", s.item));
             }
+        }
+        let taken = self.stats.get("custom", "minecraft:damage_taken") - taken_before;
+        if taken != 0 {
+            out.push(format!(
+                "stat minecraft:damage_taken minecraft:custom {taken}"
+            ));
         }
         let source = match source.kind {
             horizon_client::mobs::DamageKind::MaceSmash => "minecraft:mace_smash",
@@ -742,6 +772,25 @@ impl Game<'_> {
                 num(v.y),
                 num(v.z)
             ));
+        }
+        // What the first target wears, worn by its Thorns.
+        if let Some(&Target::Mob(id)) = targets.first()
+            && let Some(m) = self.mobs.iter().find(|m| m.id == id)
+        {
+            use horizon_client::mobs::finalize as f;
+            for (slot, name) in [
+                (f::FEET, "feet"),
+                (f::LEGS, "legs"),
+                (f::CHEST, "chest"),
+                (f::HEAD, "head"),
+            ] {
+                if let Some(s) = f::item_stack(m, slot) {
+                    out.push(format!("W {name} {}", canon_stack(Some(&s))));
+                }
+            }
+        }
+        if let Some(p) = self.player.as_ref() {
+            out.push(format!("H {}", num(f64::from(p.health.health()))));
         }
         if let Some(p) = self.player.take() {
             let impact = p.impulse.impact_position.map_or("-".to_owned(), |i| {
@@ -1044,12 +1093,20 @@ impl Game<'_> {
         if flag("brown") && s == Species::Mooshroom {
             mob.extra.variant = 1;
         }
-        for (slot, snbt) in e["equip"].as_object().into_iter().flatten() {
+        for (name, snbt) in e["equip"].as_object().into_iter().flatten() {
             if let (Some(slot), Some(stack)) = (
-                Slot::from_name(slot),
+                Slot::from_name(name),
                 parse_stack(snbt.as_str().unwrap_or("-"))?,
             ) {
-                mob_set_slot(&mut mob, slot, stack);
+                // `setItemSlot` keeps the whole stack: a piece's enchantments and damage.
+                let kept = ["mainhand", "offhand", "feet", "legs", "chest", "head"]
+                    .iter()
+                    .position(|s| s == name)
+                    .filter(|_| stack.extra.is_some() || stack.damage > 0);
+                match kept {
+                    Some(at) => horizon_client::mobs::finalize::set_item_stack(&mut mob, at, stack),
+                    None => mob_set_slot(&mut mob, slot, stack),
+                }
             }
         }
         self.mobs.push(mob);
