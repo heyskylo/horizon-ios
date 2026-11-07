@@ -812,8 +812,6 @@ fn pieces_box(pieces: &[Piece]) -> Option<[i32; 6]> {
     }
     union.map(|b| [b.min[0], b.min[1], b.min[2], b.max[0], b.max[1], b.max[2]])
 }
-/// A saved piece's tag as the JSON `PoolPiece::from_saved` reads: compounds and lists as they
-/// are, numbers as numbers.
 /// `PiecesContainer.load`'s piece id, after its `RENAMES`: the four ids an older
 /// save wrote for a jigsaw piece (`minecraft:nvi`, `minecraft:pcp`,
 /// `minecraft:bastionremnant`, `minecraft:runtime`) are read as `minecraft:jigsaw`,
@@ -826,15 +824,15 @@ fn saved_piece_id(piece: &crate::nbt::Tag) -> Option<&'static str> {
     let crate::nbt::Tag::String(id) = map.get(&"id".into())? else {
         return None;
     };
-    match id.to_string_lossy().as_str() {
-        "minecraft:jigsaw"
-        | "minecraft:nvi"
-        | "minecraft:pcp"
-        | "minecraft:bastionremnant"
-        | "minecraft:runtime" => Some("minecraft:jigsaw"),
+    // `Identifier.parse`: an id with no namespace is `minecraft:`'s.
+    let id = id.to_string_lossy();
+    match id.strip_prefix("minecraft:").unwrap_or(&id) {
+        "jigsaw" | "nvi" | "pcp" | "bastionremnant" | "runtime" => Some("minecraft:jigsaw"),
         _ => None,
     }
 }
+/// A saved piece's tag as the JSON `PoolPiece::from_saved` reads: compounds and lists as they
+/// are, numbers as numbers.
 fn tag_json(tag: &crate::nbt::Tag) -> Value {
     use crate::nbt::Tag;
     match tag {
@@ -878,6 +876,7 @@ mod tests {
             "minecraft:pcp",
             "minecraft:bastionremnant",
             "minecraft:runtime",
+            "nvi",
         ] {
             assert_eq!(
                 saved_piece_id(&piece(id)),
