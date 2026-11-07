@@ -79,26 +79,25 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                     }
                 }
                 Class::Coral => {
-                    if !self.coral_scan_for_water(pos) {
-                        if let Some(dead) = b.data(state).link {
-                            let next = b.default_of(dead);
-                            if self.level.allow_block_fade(pos, state, next) {
-                                self.set_block(pos, next, 2);
-                            }
+                    if !self.coral_scan_for_water(pos)
+                        && let Some(dead) = b.data(state).link
+                    {
+                        let next = b.default_of(dead);
+                        if self.level.allow_block_fade(pos, state, next) {
+                            self.set_block(pos, next, 2);
                         }
                     }
                 }
                 Class::CoralFan | Class::CoralPlant | Class::CoralWallFan => {
-                    if !self.coral_plant_scan_for_water(state, pos) {
-                        if let Some(dead) = b.data(state).link {
-                            let mut next =
-                                b.table.set_bool(b.default_of(dead), p.waterlogged, false);
-                            if class == Class::CoralWallFan {
-                                next = b.table.set_dir(next, p.facing, b.facing(state));
-                            }
-                            if self.level.allow_block_fade(pos, state, next) {
-                                self.set_block(pos, next, 2);
-                            }
+                    if !self.coral_plant_scan_for_water(state, pos)
+                        && let Some(dead) = b.data(state).link
+                    {
+                        let mut next = b.table.set_bool(b.default_of(dead), p.waterlogged, false);
+                        if class == Class::CoralWallFan {
+                            next = b.table.set_dir(next, p.facing, b.facing(state));
+                        }
+                        if self.level.allow_block_fade(pos, state, next) {
+                            self.set_block(pos, next, 2);
                         }
                     }
                 }
@@ -889,15 +888,14 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                 .support_tag2
                 .as_ref()
                 .is_some_and(|tag| b.in_set(below_state, tag))
+            && let (Some(fruit), Some(stem)) = (data.link, data.link2)
         {
-            if let (Some(fruit), Some(stem)) = (data.link, data.link2) {
-                self.set_block_and_update(relative, b.default_of(fruit));
-                self.set_block_and_update(
-                    pos,
-                    b.table
-                        .set_dir(b.default_of(stem), b.props.facing, direction),
-                );
-            }
+            self.set_block_and_update(relative, b.default_of(fruit));
+            self.set_block_and_update(
+                pos,
+                b.table
+                    .set_dir(b.default_of(stem), b.props.facing, direction),
+            );
         }
     }
     /// `PitcherCropBlock.grow`.
@@ -1610,10 +1608,10 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         }
         let chance = (older + 1) as f32 / (older + same + 1) as f32;
         let modifier = if own == 0 { 0.75 } else { 1.0 };
-        if self.random().next_float() < chance * chance * modifier {
-            if let Some(next) = self.copper_next(state) {
-                self.set_block_and_update(pos, next);
-            }
+        if self.random().next_float() < chance * chance * modifier
+            && let Some(next) = self.copper_next(state)
+        {
+            self.set_block_and_update(pos, next);
         }
     }
     /// `WeatheringCopper.getNext` by registry naming.

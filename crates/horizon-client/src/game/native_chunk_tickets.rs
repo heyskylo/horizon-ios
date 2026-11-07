@@ -6,7 +6,6 @@
 use super::{Dim, Game};
 
 // Native mods use these; nothing in Horizon does.
-#[allow(dead_code)]
 impl Game<'_> {
     /// Holds chunk `chunk` (`[x, z]`, block coordinates `>> 4`) of the level
     /// in place loaded and ticking for `owner`, or, with `hold` false, lets
