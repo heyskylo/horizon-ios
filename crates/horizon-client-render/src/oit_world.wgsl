@@ -9,19 +9,22 @@ fn oit_terrain_color(in: TerrainOut) -> vec4<f32> {
 }
 // Stage 1: (-nearest, furthest, nearest device depth, nearest opaque device
 // depth), combined by max blending.
-@fragment fn fs_oit_bounds(in: TerrainOut) -> @location(0) vec4<f32> {
+@fragment fn fs_oit_bounds(wire: TerrainWire) -> @location(0) vec4<f32> {
+    let in = from_wire(wire);
     let color = oit_terrain_color(in);
     let linear = oit_linear_depth(in.clip.z);
     let opaque = select(0.0, in.clip.z, color.a > OIT_FULLY_OPAQUE_ALPHA);
     return vec4(-linear, linear, in.clip.z, opaque);
 }
 // Stage 2.
-@fragment fn fs_oit_transmittance(in: TerrainOut) -> OitCoefficients {
+@fragment fn fs_oit_transmittance(wire: TerrainWire) -> OitCoefficients {
+    let in = from_wire(wire);
     let color = oit_terrain_color(in);
     return oit_add_transmittance(1.0 - color.a, in.clip.z, in.clip.xy);
 }
 // Stage 3: premultiplied colour, weighted by the transmittance in front.
-@fragment fn fs_oit_accumulate(in: TerrainOut) -> @location(0) vec4<f32> {
+@fragment fn fs_oit_accumulate(wire: TerrainWire) -> @location(0) vec4<f32> {
+    let in = from_wire(wire);
     let color = oit_terrain_color(in);
     let seen = oit_sample_transmittance(vec2<i32>(in.clip.xy),
         oit_normalize_depth(in.clip.z, in.clip.xy), 1.0 - color.a);
