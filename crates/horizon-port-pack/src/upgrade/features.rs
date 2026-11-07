@@ -5,14 +5,13 @@ use serde_json::{Map, Value, json};
 /// Feature types 26.3 dropped for compositions of other features; a pack
 /// using them needs vanilla's composition, which the upgrade does not
 /// write.
-const REPLACED_FEATURES: [&str; 11] = [
+const REPLACED_FEATURES: [&str; 10] = [
     "basalt_columns",
     "basalt_pillar",
     "coral_mushroom",
     "desert_well",
     "glowstone_blob",
     "kelp",
-    "nether_forest_vegetation",
     "sea_pickle",
     "seagrass",
     "twisting_vines",
@@ -45,6 +44,30 @@ fn patch(config: &Value, report: &mut Report) -> Value {
     };
     json!({"type": "minecraft:simple_random_selector",
         "features": [{"feature": feature, "placement": placement}]})
+}
+
+/// 1.21.1's `nether_forest_vegetation` as 26.3 wrote vanilla's crimson and
+/// warped forest vegetation: on nylium, its block tried `spread_width²` times
+/// at `nextInt(w) - nextInt(w)` (y from `spread_height`) where there is air.
+fn nether_forest_vegetation(config: &Value, report: &mut Report) -> Value {
+    let int = |k: &str| config.get(k).and_then(Value::as_i64).unwrap_or(1).max(1);
+    let (w, h) = (int("spread_width"), int("spread_height"));
+    let trap = |n: i64| json!({"type": "minecraft:trapezoid", "min": -n, "max": n, "plateau": 0});
+    let on = |tag: &str| {
+        json!({"type": "minecraft:block_predicate_filter",
+        "predicate": {"type": "minecraft:matching_block_tag", "tag": tag}})
+    };
+    let mut nylium = on("minecraft:nylium");
+    nylium["predicate"]["offset"] = json!([0, -1, 0]);
+    let block = feature(
+        &json!({"type": "minecraft:simple_block",
+            "config": {"to_place": config.get("state_provider").cloned().unwrap_or_default()}}),
+        report,
+    );
+    json!({"type": "minecraft:simple_random_selector", "features": [{"feature": block,
+        "placement": [nylium, {"type": "minecraft:count", "count": w * w},
+            {"type": "minecraft:offset", "x": trap(w - 1), "y": trap(h - 1), "z": trap(w - 1)},
+            on("minecraft:air")]}]})
 }
 
 /// 26.2 block state provider types and their 26.3 names.
@@ -83,6 +106,9 @@ pub(super) fn feature(v: &Value, report: &mut Report) -> Value {
     };
     if PATCHES.contains(&t) {
         return patch(o.get("config").unwrap_or(&Value::Null), report);
+    }
+    if t == "nether_forest_vegetation" {
+        return nether_forest_vegetation(o.get("config").unwrap_or(&Value::Null), report);
     }
     if REPLACED_FEATURES.contains(&t) {
         report.unknown(format!("feature {t} (written as data in 26.3)"));

@@ -696,4 +696,39 @@ mod tests {
                 "shape": {"width_smoothness": 3, "y_scale": 3.0}})
         );
     }
+
+    #[test]
+    fn nether_forest_vegetation_becomes_a_spread_simple_block() {
+        // 1.21.1's feature tried spread_width² times at nextInt(w) - nextInt(w)
+        // (y: spread_height) on nylium; 26.3 writes crimson_forest_vegetation as
+        // a simple_block whose placed feature counts, offsets and filters.
+        let trap =
+            |n: i64| json!({"type": "minecraft:trapezoid", "min": -n, "max": n, "plateau": 0});
+        let (v, r) = up(
+            "data/x/worldgen/configured_feature/f.json",
+            json!({"type": "minecraft:nether_forest_vegetation", "config": {
+                "spread_width": 8, "spread_height": 4, "state_provider": {
+                    "type": "minecraft:weighted_state_provider", "entries": [
+                        {"data": {"Name": "minecraft:crimson_roots"}, "weight": 87}]}}}),
+        );
+        let tag = |offset: Option<[i64; 3]>, tag: &str| {
+            let mut p = json!({"type": "minecraft:matching_block_tag", "tag": tag});
+            if let Some(o) = offset {
+                p["offset"] = json!(o);
+            }
+            json!({"type": "minecraft:block_predicate_filter", "predicate": p})
+        };
+        assert_eq!(
+            v,
+            json!({"type": "minecraft:simple_random_selector", "features": [{
+                "feature": {"type": "minecraft:simple_block", "to_place": {
+                    "type": "minecraft:weighted", "entries": [
+                        {"data": "minecraft:crimson_roots", "weight": 87}]}},
+                "placement": [tag(Some([0, -1, 0]), "minecraft:nylium"),
+                    {"type": "minecraft:count", "count": 64},
+                    {"type": "minecraft:offset", "x": trap(7), "y": trap(3), "z": trap(7)},
+                    tag(None, "minecraft:air")]}]})
+        );
+        assert!(r.unknown.is_empty(), "{:?}", r.unknown);
+    }
 }
