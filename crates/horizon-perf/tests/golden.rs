@@ -214,7 +214,12 @@ fn watched_fields() -> Vec<Field> {
             args: vec![30.0, 1_048_576.0],
         }),
         stop(SERVER, 3.0),
-        stop(CLIENT, 3.0),
+        Field::Stop(Stop {
+            side: CLIENT,
+            t: 3.0,
+            reason: StopReason::WindowCap as i32,
+            ..Default::default()
+        }),
     ]
 }
 
