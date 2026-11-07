@@ -1,8 +1,10 @@
-use serde_json::{Value, json};
+use horizon_perf_format::v1::Unit as TickUnit;
 
+use super::rows::{Row, SpanRow as SpanOut};
 use super::{Ctx, QueryError, Reply, num};
 use crate::ids;
 use crate::view::{SpanRow, SpanTable, View, Window};
+use crate::wire::{Candidate, Unit};
 
 /// Per span: ms per tick (or per slow tick), cpu and waited, one column per capture.
 pub(super) fn spans(ctx: &Ctx) -> Result<Reply, QueryError> {
@@ -33,10 +35,10 @@ pub(super) fn spans(ctx: &Ctx) -> Result<Reply, QueryError> {
         tables.push(table);
     }
     let unit = match (slow, tables[0].unit) {
-        (true, horizon_perf_format::v1::Unit::Frame) => "ms_per_slow_frame",
-        (true, _) => "ms_per_slow_tick",
-        (false, horizon_perf_format::v1::Unit::Frame) => "ms_per_frame",
-        (false, _) => "ms_per_tick",
+        (true, TickUnit::Frame) => Unit::MsPerSlowFrame,
+        (true, _) => Unit::MsPerSlowTick,
+        (false, TickUnit::Frame) => Unit::MsPerFrame,
+        (false, _) => Unit::MsPerTick,
     };
 
     let mut order: Vec<&str> = Vec::new();
@@ -48,7 +50,7 @@ pub(super) fn spans(ctx: &Ctx) -> Result<Reply, QueryError> {
         }
     }
     let wanted = resolve_names(&order, &ctx.q.names)?;
-    let rows: Vec<Value> = order
+    let rows: Vec<Row> = order
         .iter()
         .filter(|name| {
             wanted
@@ -68,24 +70,24 @@ pub(super) fn spans(ctx: &Ctx) -> Result<Reply, QueryError> {
     Ok(reply)
 }
 
-fn row(name: &str, tables: &[SpanTable]) -> Value {
+fn row(name: &str, tables: &[SpanTable]) -> Row {
     let found: Vec<Option<&SpanRow>> = tables.iter().map(|t| t.row(name)).collect();
-    let per = |pick: &dyn Fn(&SpanRow) -> f64| -> Vec<Value> {
+    let per = |pick: &dyn Fn(&SpanRow) -> f64| -> Vec<Option<f64>> {
         found
             .iter()
             .zip(tables)
-            .map(|(r, t)| r.map_or(Value::Null, |r| num(t.per_unit(pick(r)))))
+            .map(|(r, t)| r.map(|r| num(t.per_unit(pick(r)))))
             .collect()
     };
     let first = found.iter().flatten().next();
-    json!({
-        "id": ids::span(name),
-        "name": name,
-        "parent": first.and_then(|r| r.parent.as_deref()).map(ids::span),
-        "values": per(&|r| r.wall_ms),
-        "cpu": per(&|r| r.cpu_ms),
-        "waited": per(&|r| (r.wall_ms - r.cpu_ms).max(0.0)),
-        "seen": found.iter().map(|r| r.map_or(Value::Null, |r| json!(r.seen))).collect::<Vec<_>>(),
+    Row::Span(SpanOut {
+        id: ids::span(name),
+        name: name.to_string(),
+        parent: first.and_then(|r| r.parent.as_deref()).map(ids::span),
+        values: per(&|r| r.wall_ms),
+        cpu: per(&|r| r.cpu_ms),
+        waited: per(&|r| (r.wall_ms - r.cpu_ms).max(0.0)),
+        seen: found.iter().map(|r| r.map(|r| r.seen)).collect(),
     })
 }
 
@@ -109,7 +111,7 @@ fn resolve_names(known: &[&str], wanted: &[String]) -> Result<Option<Vec<String>
         let candidates = |names: Vec<&&str>| {
             names
                 .into_iter()
-                .map(|n| (ids::span(n), n.to_string()))
+                .map(|n| Candidate::new(ids::span(n), n.to_string()))
                 .collect()
         };
         match partial.as_slice() {

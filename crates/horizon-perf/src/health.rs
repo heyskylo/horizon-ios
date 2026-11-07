@@ -1,5 +1,93 @@
 use horizon_perf_format::v1::{Capture, HealthSample, Side};
 
+use crate::wire::{HealthUnit, vocab};
+
+pub type Pick = fn(&HealthSample) -> Option<f32>;
+
+vocab! {
+    /// A field of a health sample, as `h:NAME` names it.
+    HealthField {
+        Tps = "tps",
+        MsptAvg = "mspt_avg",
+        MsptP50 = "mspt_p50",
+        MsptP95 = "mspt_p95",
+        MsptMax = "mspt_max",
+        Fps = "fps",
+        FrameMsP50 = "frame_ms_p50",
+        FrameMsP95 = "frame_ms_p95",
+        FrameMsP99 = "frame_ms_p99",
+        FrameMsMax = "frame_ms_max",
+        FrameCpuMsP50 = "frame_cpu_ms_p50",
+        FrameGpuMsP50 = "frame_gpu_ms_p50",
+        CpuProcessCores = "cpu_process_cores",
+        CpuSystemCores = "cpu_system_cores",
+        RssMb = "rss_mb",
+        PhysicalUsedMb = "physical_used_mb",
+        SwapUsedMb = "swap_used_mb",
+        AllocatorCommitMb = "allocator_commit_mb",
+        AllocsPerS = "allocs_per_s",
+        AllocMibPerS = "alloc_mib_per_s",
+        Players = "players",
+        Chunks = "chunks",
+        Entities = "entities",
+    }
+}
+
+impl HealthField {
+    pub fn unit(self) -> HealthUnit {
+        match self {
+            HealthField::Tps => HealthUnit::TicksPerS,
+            HealthField::MsptAvg
+            | HealthField::MsptP50
+            | HealthField::MsptP95
+            | HealthField::MsptMax
+            | HealthField::FrameMsP50
+            | HealthField::FrameMsP95
+            | HealthField::FrameMsP99
+            | HealthField::FrameMsMax
+            | HealthField::FrameCpuMsP50
+            | HealthField::FrameGpuMsP50 => HealthUnit::Ms,
+            HealthField::Fps => HealthUnit::FramesPerS,
+            HealthField::CpuProcessCores | HealthField::CpuSystemCores => HealthUnit::Cores,
+            HealthField::RssMb
+            | HealthField::PhysicalUsedMb
+            | HealthField::SwapUsedMb
+            | HealthField::AllocatorCommitMb => HealthUnit::Mb,
+            HealthField::AllocsPerS => HealthUnit::PerS,
+            HealthField::AllocMibPerS => HealthUnit::MibPerS,
+            HealthField::Players | HealthField::Chunks | HealthField::Entities => HealthUnit::Count,
+        }
+    }
+
+    pub fn pick(self) -> Pick {
+        match self {
+            HealthField::Tps => |h| h.tps,
+            HealthField::MsptAvg => |h| h.mspt_avg,
+            HealthField::MsptP50 => |h| h.mspt_p50,
+            HealthField::MsptP95 => |h| h.mspt_p95,
+            HealthField::MsptMax => |h| h.mspt_max,
+            HealthField::Fps => |h| h.fps,
+            HealthField::FrameMsP50 => |h| h.frame_ms_p50,
+            HealthField::FrameMsP95 => |h| h.frame_ms_p95,
+            HealthField::FrameMsP99 => |h| h.frame_ms_p99,
+            HealthField::FrameMsMax => |h| h.frame_ms_max,
+            HealthField::FrameCpuMsP50 => |h| h.frame_cpu_ms_p50,
+            HealthField::FrameGpuMsP50 => |h| h.frame_gpu_ms_p50,
+            HealthField::CpuProcessCores => |h| Some(h.cpu_process_cores),
+            HealthField::CpuSystemCores => |h| Some(h.cpu_system_cores),
+            HealthField::RssMb => |h| Some(h.rss_mb),
+            HealthField::PhysicalUsedMb => |h| Some(h.physical_used_mb),
+            HealthField::SwapUsedMb => |h| Some(h.swap_used_mb),
+            HealthField::AllocatorCommitMb => |h| h.allocator_commit_mb,
+            HealthField::AllocsPerS => |h| h.allocs_per_s,
+            HealthField::AllocMibPerS => |h| h.alloc_mib_per_s,
+            HealthField::Players => |h| Some(h.players as f32),
+            HealthField::Chunks => |h| Some(h.chunks as f32),
+            HealthField::Entities => |h| Some(h.entities as f32),
+        }
+    }
+}
+
 /// Seconds one live health sample stands for.
 const LIVE_STEP_S: f64 = 1.0;
 /// Share of a trailing window the recorded data must cover for its mean to be reported.

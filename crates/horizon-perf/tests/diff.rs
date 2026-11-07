@@ -1,100 +1,18 @@
 mod common;
 
-use common::{SERVER, TempDir, save, stop};
+use std::collections::BTreeMap;
+
+use common::blocks::{CHILDREN, server, steady};
+use common::{TempDir, save};
+use horizon_bench::compare::{Ab, Paired, Verdict as PairVerdict};
+use horizon_bench::{App, Frames, Hardware, Kind as BenchKind, Report};
+use horizon_perf::bench_diff::{AbSection, BenchReply};
 use horizon_perf::cli::{CliError, Env, run};
-use horizon_perf::diff::{DiffOptions, diff};
+use horizon_perf::diff::{DiffEnvelope, DiffOptions, diff};
+use horizon_perf::wire::{Role, Unit, Verdict};
 use horizon_perf::{Baseline, SummaryOptions, read_capture, summarize};
 use horizon_perf_format::Field;
 use horizon_perf_format::v1::*;
-use serde_json::{Value, json};
-
-/// Per-tick jitter in ms; it sums to 0 so a block mean is the base value.
-const JITTER: [f64; 12] = [
-    0.0, 0.3, -0.2, 0.1, -0.3, 0.2, 0.15, -0.15, 0.25, -0.25, 0.05, -0.15,
-];
-
-fn jitter(i: usize, shift: usize) -> f64 {
-    JITTER[(i + shift) % JITTER.len()]
-}
-
-const TICKS_PER_BLOCK: f64 = 100.0;
-
-/// A server capture of 5 s blocks: `children[c]` ran `rows[i][c]` ms per tick in block i, under a root that adds 10 ms.
-fn server(children: &[&str], rows: &[Vec<f64>], profile: &str) -> Vec<Field> {
-    let mut names = vec!["tick".to_string()];
-    names.extend(children.iter().map(|c| c.to_string()));
-    let id = |name: &str| names.iter().position(|n| n == name).unwrap() as u32 + 1;
-    let mut fields = vec![Field::Start(Start {
-        side: SERVER,
-        kind: Kind::Dedicated as i32,
-        started_unix_ms: 1_794_580_324_000,
-        build: Some(Build {
-            profile: profile.into(),
-            ..Default::default()
-        }),
-        ..Default::default()
-    })];
-    for (i, text) in names.iter().enumerate() {
-        fields.push(Field::String(StringEntry {
-            side: SERVER,
-            id: i as u32 + 1,
-            text: text.clone(),
-        }));
-    }
-    for (block, row) in rows.iter().enumerate() {
-        let root = row.iter().sum::<f64>() + 10.0;
-        let per_block = |ms: f64| (ms * TICKS_PER_BLOCK) as f32;
-        fields.push(Field::SpanBlock(SpanBlock {
-            side: SERVER,
-            thread: id("tick"),
-            block: block as u32,
-            t0: 5.0 * block as f64,
-            block_s: 5.0,
-            units: TICKS_PER_BLOCK as u32,
-            span: std::iter::once(id("tick"))
-                .chain(children.iter().map(|c| id(c)))
-                .collect(),
-            parent: std::iter::once(0)
-                .chain(children.iter().map(|_| id("tick")))
-                .collect(),
-            wall_ms: std::iter::once(per_block(root))
-                .chain(row.iter().map(|&v| per_block(v)))
-                .collect(),
-            cpu_ms: std::iter::once(per_block(root))
-                .chain(row.iter().map(|&v| per_block(v)))
-                .collect(),
-            seen: vec![TICKS_PER_BLOCK as u32; children.len() + 1],
-        }));
-        for second in 0..5 {
-            fields.push(Field::Health(HealthSample {
-                side: SERVER,
-                t: 5.0 * block as f64 + f64::from(second),
-                tps: Some(20.0),
-                mspt_avg: Some(root as f32),
-                mspt_p50: Some(root as f32),
-                mspt_p95: Some(root as f32 + 3.0),
-                ..Default::default()
-            }));
-        }
-    }
-    fields.push(stop(SERVER, 5.0 * rows.len() as f64));
-    fields
-}
-
-const CHILDREN: [&str; 3] = ["tick_lan", "streaming", "spawn_natural"];
-
-/// The baseline run: tick_lan 40 ms, streaming 6 ms, spawn_natural 4 ms, each with its own jitter.
-fn steady(blocks: usize, shift: usize) -> Vec<Vec<f64>> {
-    (0..blocks)
-        .map(|i| {
-            vec![
-                40.0 + jitter(i, shift),
-                6.0 + jitter(i, shift + 3),
-                4.0 + jitter(i, shift + 7),
-            ]
-        })
-        .collect()
-}
 
 fn capture(fields: &[Field]) -> Capture {
     read_capture(&common::write_capture(fields).bytes).unwrap()
@@ -110,7 +28,7 @@ fn a_capture_diffed_with_itself_is_within_noise_everywhere() {
     let d = compare(&fields, &fields);
     assert!(d.rows.len() >= 7, "{:?}", d.rows);
     for row in &d.rows {
-        assert_eq!(row.verdict.word(), "within_noise", "{row:?}");
+        assert_eq!(row.verdict, Verdict::WithinNoise, "{row:?}");
         assert_eq!(row.effect, Some(0.0), "{row:?}");
         assert_eq!(row.blocks, [12, 12]);
     }
@@ -126,7 +44,7 @@ fn two_ms_more_on_one_span_is_slower_with_two_inside_the_interval_and_the_rest_u
     }
     let d = compare(&a, &server(&CHILDREN, &rows_b, "release"));
     let lan = d.row("s:tick_lan").unwrap();
-    assert_eq!(lan.verdict.word(), "slower");
+    assert_eq!(lan.verdict, Verdict::Slower);
     let [lo, hi] = lan.ci.unwrap();
     assert!(0.0 < lo && lo <= 2.0 && 2.0 <= hi, "CI [{lo}, {hi}]");
     assert!((lan.effect.unwrap() - 2.0).abs() < 1e-3, "{:?}", lan.effect);
@@ -134,7 +52,7 @@ fn two_ms_more_on_one_span_is_slower_with_two_inside_the_interval_and_the_rest_u
     assert!((lan.a.unwrap() - 40.025).abs() < 1e-3 && (lan.b.unwrap() - 42.025).abs() < 1e-3);
     for id in ["s:streaming", "s:spawn_natural"] {
         let row = d.row(id).unwrap();
-        assert_eq!(row.verdict.word(), "within_noise", "{id}: {row:?}");
+        assert_eq!(row.verdict, Verdict::WithinNoise, "{id}: {row:?}");
         assert!(row.ci.unwrap()[0] <= 0.0 && 0.0 <= row.ci.unwrap()[1]);
     }
     let text = d.text("a.hzperf", "b.hzperf");
@@ -184,19 +102,15 @@ fn spans_on_one_side_only_are_new_or_gone_and_few_blocks_give_no_verdict() {
     let a = server(&CHILDREN, &steady(12, 0), "release");
     let renamed = ["tick_lan", "streaming", "generate"];
     let d = compare(&a, &server(&renamed, &steady(12, 0), "release"));
-    assert_eq!(d.row("s:spawn_natural").unwrap().verdict.word(), "gone");
-    assert_eq!(d.row("s:generate").unwrap().verdict.word(), "new");
+    assert_eq!(d.row("s:spawn_natural").unwrap().verdict, Verdict::Gone);
+    assert_eq!(d.row("s:generate").unwrap().verdict, Verdict::New);
     assert_eq!(d.row("s:generate").unwrap().effect, None);
 
     let few = compare(
         &server(&CHILDREN, &steady(5, 0), "release"),
         &server(&CHILDREN, &steady(5, 0), "release"),
     );
-    assert!(
-        few.rows
-            .iter()
-            .all(|r| r.verdict.word() == "too_few_blocks")
-    );
+    assert!(few.rows.iter().all(|r| r.verdict == Verdict::TooFewBlocks));
     assert!(few.text("a", "b").contains("? too few blocks"));
 }
 
@@ -271,23 +185,19 @@ fn json_rows_have_the_documented_shape() {
     for row in &mut rows_b {
         row[0] += 2.0;
     }
-    let json = compare(&a, &server(&CHILDREN, &rows_b, "release")).json("a.hzperf", "b.hzperf");
-    assert_eq!(json["ok"], true);
-    assert_eq!(json["unit"], "ms_per_tick");
-    let row = json["rows"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|r| r["id"] == "s:tick_lan")
-        .unwrap();
-    assert_eq!(row["a"], 40.025);
-    assert_eq!(row["b"], 42.025);
-    assert_eq!(row["diff"], 2.0);
-    assert_eq!(row["diff_pct"], 5.0);
-    assert_eq!(row["blocks"], json!([12, 12]));
-    assert_eq!(row["verdict"], "slower");
-    assert!(row["confidence"].as_f64().unwrap() >= 0.95);
-    assert_eq!(row["ci95"].as_array().unwrap().len(), 2);
+    let reply =
+        compare(&a, &server(&CHILDREN, &rows_b, "release")).envelope("a.hzperf", "b.hzperf");
+    assert!(reply.ok);
+    assert_eq!(reply.unit, Some(Unit::MsPerTick));
+    let row = reply.rows().iter().find(|r| r.id == "s:tick_lan").unwrap();
+    assert_eq!(row.a, Some(40.025));
+    assert_eq!(row.b, Some(42.025));
+    assert_eq!(row.diff, Some(2.0));
+    assert_eq!(row.diff_pct, Some(5.0));
+    assert_eq!(row.blocks, [12, 12]);
+    assert_eq!(row.verdict, Verdict::Slower);
+    assert!(row.confidence.unwrap() >= 0.95);
+    assert!(row.ci95.is_some());
 }
 
 fn summary_text(a: &[Field], b: &[Field], options: SummaryOptions) -> String {
@@ -411,8 +321,9 @@ fn the_diff_and_summary_commands_read_files() {
             .any(|l| l.starts_with("s:tick_lan") && l.ends_with("slower"))
     );
     assert!(!text.contains("s:spawn_natural"));
-    let json: Value = serde_json::from_str(&cli(&["diff", &a, &b, "--json"]).unwrap()).unwrap();
-    assert_eq!(json["captures"][1]["file"], "b.hzperf");
+    let reply: DiffEnvelope =
+        serde_json::from_str(&cli(&["diff", &a, &b, "--json"]).unwrap()).unwrap();
+    assert_eq!(reply.captures[1].file, "b.hzperf");
     let summary = cli(&["summary", &b, "--baseline", &a]).unwrap();
     assert!(
         summary.contains("baseline: a.hzperf, same build kind"),
@@ -425,40 +336,93 @@ fn the_diff_and_summary_commands_read_files() {
     ));
 }
 
-fn frames(phase: &str, values: &[f64], cpu: bool) -> Vec<Value> {
+fn frames(phase: &str, values: &[f64], cpu: bool) -> Vec<Frames> {
     values
         .iter()
         .enumerate()
-        .map(|(repeat, &p50)| {
-            let mut f = json!({"phase": phase, "repeat": repeat, "frames": 600, "seconds": 5.0, "avg_fps": 100.0,
-                "p50_ms": p50, "p95_ms": p50 * 1.5, "histogram": []});
-            if cpu && repeat % 2 == 0 {
-                f["cpu_p50_ms"] = json!(p50 / 2.0);
-            }
-            f
+        .map(|(repeat, &p50)| Frames {
+            phase: phase.into(),
+            repeat: repeat as u32,
+            frames: 600,
+            seconds: 5.0,
+            avg_fps: 100.0,
+            low_1pct_fps: 80.0,
+            low_01pct_fps: 70.0,
+            p50_ms: p50,
+            p95_ms: p50 * 1.5,
+            p99_ms: p50 * 2.0,
+            p999_ms: p50 * 3.0,
+            max_ms: p50 * 4.0,
+            cpu_p50_ms: (cpu && repeat % 2 == 0).then_some(p50 / 2.0),
+            gpu_p50_ms: None,
+            histogram: Vec::new(),
         })
         .collect()
 }
 
-fn report(frames: Vec<Value>, ab: Option<Value>) -> String {
-    let mut r = json!({"format": "horizon-benchmark-report", "version": 1, "kind": "game",
-        "created": "2026-11-07T10:00:00Z", "app": {"name": "horizon", "version": "0.1"},
-        "hardware": {}, "frames": frames});
-    if let Some(ab) = ab {
-        r["ab"] = ab;
-    }
-    r.to_string()
+fn report(frames: Vec<Frames>, ab: Option<Ab>) -> String {
+    let app = App {
+        name: "horizon".into(),
+        version: "0.1".into(),
+        ..Default::default()
+    };
+    let mut r = Report::with_hardware(BenchKind::Game, app, Hardware::default());
+    r.frames = frames;
+    r.ab = ab;
+    r.to_json()
 }
 
 #[test]
 fn benchmark_reports_with_an_ab_print_its_verdict_unchanged_and_never_recompute() {
     // The frames below are 2 ms apart and would be slower in any recomputation; the stored verdict says otherwise.
-    let ab = json!({"switch": "gpu-culling", "a": "off", "b": "on", "pairs": 4, "block_s": 4.0, "warmup_s": 2.0,
-        "first_block_outside_range": false, "result": {
-            "gpu_p50_ms": {"pairs": 4, "a": 3.66, "b": 5.63, "diff": 1.96, "diff_pct": 53.6, "ci95": [-0.5, 3.0],
-                           "confidence": 0.875, "noise": 0.1, "verdict": "within_noise"},
-            "cpu_p50_ms": {"pairs": 4, "a": 2.0, "b": 2.0, "diff": 0.0, "diff_pct": 0.0, "ci95": null,
-                           "confidence": null, "noise": null, "verdict": "too_few_pairs"}}});
+    let paired = |a, b, diff, diff_pct, ci95, confidence, noise, verdict| Paired {
+        pairs: 4,
+        a,
+        b,
+        diff,
+        diff_pct,
+        ci95,
+        confidence,
+        noise,
+        verdict,
+    };
+    let ab = Ab {
+        switch: "gpu-culling".into(),
+        a: "off".into(),
+        b: "on".into(),
+        pairs: 4,
+        block_s: 4.0,
+        warmup_s: 2.0,
+        first_block_outside_range: false,
+        result: BTreeMap::from([
+            (
+                "gpu_p50_ms".to_string(),
+                paired(
+                    3.66,
+                    5.63,
+                    1.96,
+                    Some(53.6),
+                    Some([-0.5, 3.0]),
+                    Some(0.875),
+                    Some(0.1),
+                    PairVerdict::WithinNoise,
+                ),
+            ),
+            (
+                "cpu_p50_ms".to_string(),
+                paired(
+                    2.0,
+                    2.0,
+                    0.0,
+                    Some(0.0),
+                    None,
+                    None,
+                    None,
+                    PairVerdict::TooFewPairs,
+                ),
+            ),
+        ]),
+    };
     let dir = TempDir::new("bench-ab");
     let (a, b) = (dir.path().join("a.json"), dir.path().join("b.json"));
     std::fs::write(
@@ -489,9 +453,15 @@ fn benchmark_reports_with_an_ab_print_its_verdict_unchanged_and_never_recompute(
         text.contains("warning: report B has no A/B result"),
         "{text}"
     );
-    let json: Value = serde_json::from_str(&cli(&["diff", &a, &b, "--json"]).unwrap()).unwrap();
-    assert_eq!(json["ab"][0]["report"], "a");
-    assert_eq!(json["ab"][0]["ab"], ab);
+    let reply: BenchReply =
+        serde_json::from_str(&cli(&["diff", &a, &b, "--json"]).unwrap()).unwrap();
+    assert_eq!(
+        reply.ab,
+        [AbSection {
+            report: Role::A,
+            ab
+        }]
+    );
 }
 
 #[test]
@@ -511,19 +481,20 @@ fn benchmark_reports_without_an_ab_compare_the_repeats_of_each_phase() {
         a.to_string_lossy().into_owned(),
         b.to_string_lossy().into_owned(),
     );
-    let json: Value = serde_json::from_str(&cli(&["diff", &a, &b, "--json"]).unwrap()).unwrap();
-    let rows = json["rows"].as_array().unwrap();
+    let reply: BenchReply =
+        serde_json::from_str(&cli(&["diff", &a, &b, "--json"]).unwrap()).unwrap();
+    let rows = &reply.rows;
     let find = |id: &str| {
         rows.iter()
-            .find(|r| r["id"] == id)
-            .unwrap_or_else(|| panic!("{id} in {json}"))
+            .find(|r| r.id == id)
+            .unwrap_or_else(|| panic!("{id} in {reply:?}"))
     };
-    assert_eq!(find("bench:steady.p50_ms")["verdict"], "slower");
-    assert_eq!(find("bench:steady.p50_ms")["blocks"], json!([8, 8]));
-    assert_eq!(find("bench:steady.p95_ms")["verdict"], "slower");
-    assert_eq!(find("bench:short.p50_ms")["verdict"], "too_few_blocks");
+    assert_eq!(find("bench:steady.p50_ms").verdict, Verdict::Slower);
+    assert_eq!(find("bench:steady.p50_ms").blocks, [8, 8]);
+    assert_eq!(find("bench:steady.p95_ms").verdict, Verdict::Slower);
+    assert_eq!(find("bench:short.p50_ms").verdict, Verdict::TooFewBlocks);
     assert!(
-        rows.iter().all(|r| r["id"] != "bench:steady.cpu_p50_ms"),
+        rows.iter().all(|r| r.id != "bench:steady.cpu_p50_ms"),
         "cpu is on every other repeat only"
     );
 }

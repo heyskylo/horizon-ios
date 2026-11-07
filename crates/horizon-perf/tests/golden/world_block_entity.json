@@ -1,0 +1,1 @@
+{"captures":[{"file":"hand.hzperf","kind":"dedicated","seconds":10.0,"sides":["server"]}],"ok":true,"op":"world","rows":[{"count":2,"id":"b:hopper","name":"hopper"}],"selection":{"from":0.0,"samples":null,"select":"cpu","side":"server","slow":false,"thread":"tick","ticks":10,"to":10.0,"where":{"dim":"overworld"}},"unit":"count","warnings":[]}

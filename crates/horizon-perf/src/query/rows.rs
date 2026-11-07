@@ -1,0 +1,300 @@
+//! The row of each query op (docs/perf-platform.md §6.3), exactly as it is written to JSON.
+
+use serde::{Deserialize, Serialize};
+
+use crate::wire::{
+    Amount, GpuModeName, KindName, MemoryUnit, ModKindName, SeriesUnit, SideName, StopReasonName,
+    SymbolsName, ThreadSelectionName, TriggerName, WarningCodeName,
+};
+
+/// A row of whichever op answered; each op's rows are all of one kind, except `net`'s first.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Row {
+    Span(SpanRow),
+    Tick(TickRow),
+    Series(SeriesRow),
+    Dimension(DimensionRow),
+    Count(CountRow),
+    Cost(CostRow),
+    /// Every player together: the first row of `net`.
+    NetTotal(NetTotal),
+    NetPlayer(NetPlayer),
+    Meta(MetaRow),
+    Memory(MemoryRow),
+    MemoryDiff(MemoryDiffRow),
+    Warning(WarningRow),
+    Mark(MarkRow),
+}
+
+/// One span, one value per capture asked about; a capture without the span has null.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SpanRow {
+    pub id: String,
+    pub name: String,
+    pub parent: Option<String>,
+    pub values: Vec<Option<f64>>,
+    pub cpu: Vec<Option<f64>>,
+    pub waited: Vec<Option<f64>>,
+    pub seen: Vec<Option<u64>>,
+}
+
+/// A span of a tick: name, depth, wall ms, cpu ms.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TickSpanRow(pub String, pub u32, pub f64, pub f64);
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TickRow {
+    pub id: String,
+    pub t: f64,
+    pub wall_ms: f64,
+    pub cpu_ms: f64,
+    pub before_capture: bool,
+    pub complete: bool,
+    pub spans: Vec<TickSpanRow>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SeriesRow {
+    pub field: String,
+    pub unit: SeriesUnit,
+    pub step_s: f64,
+    pub t: Vec<f64>,
+    pub values: Vec<Option<f64>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DimensionRow {
+    pub id: String,
+    pub name: String,
+    pub chunks: u64,
+    pub entities: u64,
+    pub block_entities: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CountRow {
+    pub id: String,
+    pub name: String,
+    pub count: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CostRow {
+    pub id: String,
+    pub name: String,
+    pub dimension: String,
+    pub ms_per_tick: f64,
+    pub mobs_ticked: f64,
+    pub us_per_mob: f64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NetTotal {
+    pub id: String,
+    pub players: usize,
+    pub out_bytes: u64,
+    pub in_bytes: u64,
+    pub out_kib_s: f64,
+    pub in_kib_s: f64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NetPlayer {
+    pub id: String,
+    pub index: u32,
+    pub joined_t: f64,
+    pub left_t: Option<f64>,
+    pub out_bytes: u64,
+    pub in_bytes: u64,
+    pub packets_out: u64,
+    pub packets_in: u64,
+    pub out_kib_s: f64,
+    pub in_kib_s: f64,
+    pub peak_out_kib_s: f64,
+}
+
+/// What one side recorded: the start's facts (when it has a start), the stop (when it has one) and the sections' sizes.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MetaRow {
+    pub side: SideName,
+    pub seconds: f64,
+    pub sections: Sections,
+    #[serde(flatten)]
+    pub start: Option<StartInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop: Option<StopInfo>,
+}
+
+/// How many messages of each section a side wrote.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Sections {
+    pub history: usize,
+    pub slow_history: usize,
+    pub world: usize,
+    pub marks: usize,
+    pub warnings: usize,
+    pub health: usize,
+    pub counters: usize,
+    pub slow: usize,
+    pub span_blocks: usize,
+    pub memory: usize,
+    pub spans: usize,
+    pub workers: usize,
+    pub net: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct StartInfo {
+    pub kind: KindName,
+    pub trigger: TriggerName,
+    pub started_unix_ms: i64,
+    pub uptime_s: f64,
+    pub same_process: bool,
+    pub players: u32,
+    pub world_fs_used_mb: u64,
+    pub world_fs_total_mb: u64,
+    pub build: Option<BuildInfo>,
+    pub machine: Option<MachineInfo>,
+    pub options: Option<OptionsInfo>,
+    pub settings: Option<SettingsInfo>,
+    pub mods: Vec<ModInfo>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuildInfo {
+    pub version: String,
+    pub commit: String,
+    pub profile: String,
+    pub target: String,
+    pub features: Vec<String>,
+    pub symbols: SymbolsName,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MachineInfo {
+    pub os: String,
+    pub os_version: String,
+    pub arch: String,
+    pub cpu: String,
+    pub cpu_threads: u32,
+    pub cpu_cores: u32,
+    pub ram_mb: u64,
+    pub cgroup_cpu_cores: Option<f64>,
+    pub cgroup_memory_mb: Option<u64>,
+    pub gpu: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OptionsInfo {
+    pub hz: u32,
+    pub threads: ThreadSelectionName,
+    pub ticks_over_ms: Option<f64>,
+    pub wall: bool,
+    pub timeline: bool,
+    pub gpu: GpuModeName,
+    pub samples: bool,
+    pub window_s: Option<f64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SettingsInfo {
+    pub view_distance: Option<u32>,
+    pub simulation_distance: Option<u32>,
+    pub max_players: Option<u32>,
+    pub network_compression_threshold: Option<i32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModInfo {
+    pub id: String,
+    pub version: String,
+    pub kind: ModKindName,
+    #[serde(rename = "crate")]
+    pub crate_name: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StopInfo {
+    pub t: f64,
+    pub reason: StopReasonName,
+    pub overhead: Option<OverheadInfo>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OverheadInfo {
+    pub spans_ms_per_tick: f64,
+    pub spans_share: f64,
+    pub sampler_share_of_thread: f64,
+    pub writer_core_share: f64,
+    pub dropped_samples: u64,
+    pub dropped_messages: u64,
+    pub timeline_stopped_t: Option<f64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MarkRow {
+    pub side: SideName,
+    pub t: f64,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WarningRow {
+    pub side: SideName,
+    pub t: f64,
+    pub code: WarningCodeName,
+    pub args: Vec<f64>,
+    pub text: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryRow {
+    pub id: String,
+    pub path: String,
+    pub value: Amount,
+    pub unit: MemoryUnit,
+}
+
+/// A megabyte path with its value in the first snapshot, the second and the change.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MbChange(pub String, pub f64, pub f64, pub f64);
+
+/// A count path with its value in the first snapshot, the second and the change.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CountChange(pub String, pub Amount, pub Amount, pub Amount);
+
+/// What grew and shrank between two memory snapshots.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryDiffRow {
+    pub from: String,
+    pub to: String,
+    pub seconds: f64,
+    /// Resident megabytes in the first snapshot, the second and the change.
+    pub resident_mb: Option<[f64; 3]>,
+    pub grew_mb: Vec<MbChange>,
+    pub shrank_mb: Vec<MbChange>,
+    pub counts: Vec<CountChange>,
+    pub only_in_a: Vec<String>,
+    pub only_in_b: Vec<String>,
+}

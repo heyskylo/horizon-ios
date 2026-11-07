@@ -2,14 +2,14 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use horizon_perf_format::v1::{Capture, HealthSample, Side, Unit};
-use serde_json::{Value, json};
+use horizon_perf_format::v1::{Capture, Side, Unit as TickUnit};
+use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, side_name};
-use crate::health::{live, mean};
-use crate::query::num;
+use crate::health::{HealthField, live, mean};
 use crate::stats::{self, MAX_BLOCKS, Verdict, compare, median};
 use crate::view::View;
+use crate::wire::{DiffOp, Envelope, OpName, Role, SideName, Unit, num, round1, round4};
 
 /// Seconds of a block when the capture holds no span blocks to say.
 const DEFAULT_BLOCK_S: f64 = 5.0;
@@ -18,19 +18,66 @@ pub const DEFAULT_LIMIT: usize = 25;
 
 type Points = Vec<(f64, f64)>;
 
-type Pick = fn(&HealthSample) -> Option<f32>;
+const SERVER_HEALTH: [HealthField; 3] = [
+    HealthField::MsptAvg,
+    HealthField::MsptP50,
+    HealthField::MsptP95,
+];
+const CLIENT_HEALTH: [HealthField; 4] = [
+    HealthField::FrameMsP50,
+    HealthField::FrameMsP95,
+    HealthField::FrameCpuMsP50,
+    HealthField::FrameGpuMsP50,
+];
 
-const SERVER_HEALTH: [(&str, Pick); 3] = [
-    ("mspt_avg", |h| h.mspt_avg),
-    ("mspt_p50", |h| h.mspt_p50),
-    ("mspt_p95", |h| h.mspt_p95),
-];
-const CLIENT_HEALTH: [(&str, Pick); 4] = [
-    ("frame_ms_p50", |h| h.frame_ms_p50),
-    ("frame_ms_p95", |h| h.frame_ms_p95),
-    ("frame_cpu_ms_p50", |h| h.frame_cpu_ms_p50),
-    ("frame_gpu_ms_p50", |h| h.frame_gpu_ms_p50),
-];
+/// A compared file, by the role it plays.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DiffCapture {
+    pub role: Role,
+    pub file: String,
+}
+
+/// What a capture diff compared.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DiffSelection {
+    pub side: SideName,
+    pub thread: Option<String>,
+    pub block_s: f64,
+    pub blocks: [usize; 2],
+}
+
+/// A diff row as it is written to JSON, B against A.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DiffRow {
+    pub id: String,
+    pub a: Option<f64>,
+    pub b: Option<f64>,
+    pub diff: Option<f64>,
+    pub diff_pct: Option<f64>,
+    pub ci95: Option<[f64; 2]>,
+    pub confidence: Option<f64>,
+    pub blocks: [usize; 2],
+    pub verdict: Verdict,
+}
+
+/// The reply of `diff --json` on two captures.
+pub type DiffEnvelope = Envelope<DiffRow, DiffCapture, DiffSelection>;
+
+pub(crate) fn captures(a: &str, b: &str) -> Vec<DiffCapture> {
+    vec![
+        DiffCapture {
+            role: Role::A,
+            file: a.to_string(),
+        },
+        DiffCapture {
+            role: Role::B,
+            file: b.to_string(),
+        },
+    ]
+}
 
 #[derive(Clone, Debug)]
 pub struct DiffOptions {
@@ -71,18 +118,18 @@ impl Row {
         (a != 0.0).then(|| 100.0 * effect / a)
     }
 
-    pub(crate) fn json(&self) -> Value {
-        json!({
-            "id": self.id,
-            "a": self.a.map_or(Value::Null, num),
-            "b": self.b.map_or(Value::Null, num),
-            "diff": self.effect.map_or(Value::Null, num),
-            "diff_pct": self.pct().map_or(Value::Null, |p| json!((p * 10.0).round() / 10.0)),
-            "ci95": self.ci.map_or(Value::Null, |[lo, hi]| json!([num(lo), num(hi)])),
-            "confidence": self.confidence.map_or(Value::Null, |c| json!((c * 10_000.0).round() / 10_000.0)),
-            "blocks": self.blocks,
-            "verdict": self.verdict.word(),
-        })
+    pub(crate) fn wire(&self) -> DiffRow {
+        DiffRow {
+            id: self.id.clone(),
+            a: self.a.map(num),
+            b: self.b.map(num),
+            diff: self.effect.map(num),
+            diff_pct: self.pct().map(round1),
+            ci95: self.ci.map(|[lo, hi]| [num(lo), num(hi)]),
+            confidence: self.confidence.map(round4),
+            blocks: self.blocks,
+            verdict: self.verdict,
+        }
     }
 
     pub(crate) fn text(&self, width: usize) -> String {
@@ -111,7 +158,7 @@ pub(crate) fn verdict_text(verdict: Verdict) -> &'static str {
         Verdict::WithinNoise => "~ within noise",
         Verdict::Negligible => "~ negligible",
         Verdict::TooFewBlocks => "? too few blocks",
-        other => other.word(),
+        other => other.as_str(),
     }
 }
 
@@ -172,13 +219,14 @@ fn blocks(view: &View, side: Side, thread: Option<u32>) -> Blocks {
     let at = |index: usize| (index as f64 + 0.5) * block_s;
 
     let mut rows: Vec<(String, Points)> = Vec::new();
-    let fields: &[(&str, Pick)] = if side == Side::Client {
+    let fields: &[HealthField] = if side == Side::Client {
         &CLIENT_HEALTH
     } else {
         &SERVER_HEALTH
     };
-    let mut health: Vec<(&str, Points)> = Vec::new();
-    for &(name, pick) in fields {
+    let mut health: Vec<(HealthField, Points)> = Vec::new();
+    for &name in fields {
+        let pick = name.pick();
         let mut by_block: BTreeMap<usize, Vec<f64>> = BTreeMap::new();
         for h in &samples {
             if let Some(v) = pick(h) {
@@ -238,13 +286,13 @@ fn blocks(view: &View, side: Side, thread: Option<u32>) -> Blocks {
         .collect();
 
     let preferred = if side == Side::Client {
-        ["frame_ms_p50"]
+        HealthField::FrameMsP50
     } else {
-        ["mspt_avg"]
+        HealthField::MsptAvg
     };
-    let trend = preferred
+    let trend = health
         .iter()
-        .find_map(|name| health.iter().find(|(n, _)| n == name))
+        .find(|(n, _)| *n == preferred)
         .or_else(|| health.first())
         .map(|(_, points)| points.clone())
         .or_else(|| (!roots.is_empty()).then_some(roots))
@@ -274,7 +322,7 @@ fn blocks(view: &View, side: Side, thread: Option<u32>) -> Blocks {
 #[derive(Clone, Debug)]
 pub struct Diff {
     pub side: Side,
-    pub unit: Unit,
+    pub unit: TickUnit,
     /// The span thread compared, when both captures have it.
     pub thread: Option<String>,
     pub block_s: f64,
@@ -289,11 +337,11 @@ impl Diff {
         self.rows.iter().find(|r| r.id == id)
     }
 
-    pub fn unit_name(&self) -> &'static str {
-        if self.unit == Unit::Frame {
-            "ms_per_frame"
+    pub fn reply_unit(&self) -> Unit {
+        if self.unit == TickUnit::Frame {
+            Unit::MsPerFrame
         } else {
-            "ms_per_tick"
+            Unit::MsPerTick
         }
     }
 
@@ -316,7 +364,7 @@ impl Diff {
         let mut out = format!(
             "A {a}  B {b}  ({}, {what}, {})\n",
             self.blocks_text(),
-            self.unit_name().replace("_per_", "/")
+            self.reply_unit().as_str().replace("_per_", "/")
         );
         let width = self.rows.iter().map(|r| r.id.len()).max().unwrap_or(0);
         for row in &self.rows {
@@ -329,21 +377,21 @@ impl Diff {
         out
     }
 
-    pub fn json(&self, a: &str, b: &str) -> Value {
-        json!({
-            "ok": true,
-            "op": "diff",
-            "captures": [{"role": "a", "file": a}, {"role": "b", "file": b}],
-            "selection": {
-                "side": side_name(self.side),
-                "thread": self.thread,
-                "block_s": num(self.block_s),
-                "blocks": self.blocks,
-            },
-            "unit": self.unit_name(),
-            "rows": self.rows.iter().map(Row::json).collect::<Vec<_>>(),
-            "warnings": self.warnings,
-        })
+    /// The JSON report; `a` and `b` are the files' names.
+    pub fn envelope(&self, a: &str, b: &str) -> DiffEnvelope {
+        Envelope::success(
+            OpName::Diff(DiffOp::Diff),
+            captures(a, b),
+            Some(DiffSelection {
+                side: SideName::from(self.side),
+                thread: self.thread.clone(),
+                block_s: num(self.block_s),
+                blocks: self.blocks,
+            }),
+            self.reply_unit(),
+            self.rows.iter().map(Row::wire).collect(),
+            self.warnings.clone(),
+        )
     }
 }
 

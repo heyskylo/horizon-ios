@@ -1,35 +1,40 @@
 use horizon_perf_format::v1::Side;
-use serde_json::{Value, json};
 
+use super::rows::{Row, TickRow, TickSpanRow};
 use super::{Ctx, QueryError, Reply, num};
 use crate::ids;
 use crate::view::{TickUnit, View};
+use crate::wire::{Candidate, Unit, UnitKind};
 
-fn unit_json(u: &TickUnit) -> Value {
-    json!({
-        "id": ids::tick(u.counter),
-        "t": num(u.t),
-        "wall_ms": num(u.wall_ms),
-        "cpu_ms": num(u.cpu_ms),
-        "before_capture": u.t < 0.0,
-        "complete": u.complete,
-        "spans": u.spans.iter().map(|s| json!([s.name, s.depth, num(s.wall_ms), num(s.cpu_ms)])).collect::<Vec<_>>(),
+fn unit_row(u: &TickUnit) -> Row {
+    Row::Tick(TickRow {
+        id: ids::tick(u.counter),
+        t: num(u.t),
+        wall_ms: num(u.wall_ms),
+        cpu_ms: num(u.cpu_ms),
+        before_capture: u.t < 0.0,
+        complete: u.complete,
+        spans: u
+            .spans
+            .iter()
+            .map(|s| TickSpanRow(s.name.clone(), s.depth, num(s.wall_ms), num(s.cpu_ms)))
+            .collect(),
     })
 }
 
-fn unit_name(side: Side) -> &'static str {
+fn unit_kind(side: Side) -> UnitKind {
     if side == Side::Client {
-        "frame"
+        UnitKind::Frame
     } else {
-        "tick"
+        UnitKind::Tick
     }
 }
 
-fn unit_label(side: Side) -> &'static str {
+fn unit_label(side: Side) -> Unit {
     if side == Side::Client {
-        "ms_per_frame"
+        Unit::MsPerFrame
     } else {
-        "ms_per_tick"
+        Unit::MsPerTick
     }
 }
 
@@ -48,7 +53,7 @@ pub(super) fn ticks(ctx: &Ctx) -> Result<Reply, QueryError> {
             .then(a.counter.cmp(&b.counter))
     });
     units.truncate(ctx.q.worst.unwrap_or(ctx.q.filters.limit));
-    let mut reply = Reply::new(unit_label(side), units.iter().map(unit_json).collect());
+    let mut reply = Reply::new(unit_label(side), units.iter().map(unit_row).collect());
     reply.window = Some(window);
     Ok(reply)
 }
@@ -70,17 +75,17 @@ pub(super) fn tick(ctx: &Ctx) -> Result<Reply, QueryError> {
         let kept = worst
             .iter()
             .take(10)
-            .map(|u| (ids::tick(u.counter), format!("{} ms", num(u.wall_ms))))
+            .map(|u| Candidate::new(ids::tick(u.counter), format!("{:?} ms", num(u.wall_ms))))
             .collect();
         return Err(QueryError::with(
             format!(
                 "this capture does not keep {} {counter}: it keeps the worst and the slow ones (the worst are listed)",
-                unit_name(side)
+                unit_kind(side)
             ),
             kept,
         ));
     };
-    let mut reply = Reply::new(unit_label(side), vec![unit_json(found)]);
+    let mut reply = Reply::new(unit_label(side), vec![unit_row(found)]);
     if !found.complete {
         reply
             .warnings

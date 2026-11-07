@@ -1,12 +1,12 @@
 use std::collections::BTreeMap;
 
 use horizon_perf_format::v1::{Warning, WarningCode};
-use serde_json::{Value, json};
 
+use super::rows::{CountChange, MarkRow, MbChange, MemoryDiffRow, MemoryRow, Row, WarningRow};
 use super::{Ctx, QueryError, Reply, num};
-use crate::error::side_name;
 use crate::ids::{Id, Kind};
 use crate::view::{Snapshot, is_megabytes};
+use crate::wire::{Amount, MemoryUnit, SideName, Unit, count, round1};
 
 const MIB: f64 = 1024.0 * 1024.0;
 const DIFF_COUNTS: usize = 50;
@@ -55,9 +55,15 @@ pub(super) fn marks(ctx: &Ctx) -> Result<Reply, QueryError> {
     let rows = marks
         .into_iter()
         .take(ctx.q.filters.limit)
-        .map(|m| json!({"side": side_name(m.side()), "t": num(m.t), "name": m.name}))
+        .map(|m| {
+            Row::Mark(MarkRow {
+                side: SideName::from(m.side()),
+                t: num(m.t),
+                name: m.name.clone(),
+            })
+        })
         .collect();
-    Ok(Reply::new("marks", rows))
+    Ok(Reply::new(Unit::Marks, rows))
 }
 
 pub(super) fn warnings(ctx: &Ctx) -> Result<Reply, QueryError> {
@@ -74,16 +80,16 @@ pub(super) fn warnings(ctx: &Ctx) -> Result<Reply, QueryError> {
         .into_iter()
         .take(ctx.q.filters.limit)
         .map(|w| {
-            json!({
-                "side": side_name(w.side()),
-                "t": num(w.t),
-                "code": w.code().as_str_name(),
-                "args": w.args,
-                "text": warning_text(w),
+            Row::Warning(WarningRow {
+                side: SideName::from(w.side()),
+                t: num(w.t),
+                code: w.code().into(),
+                args: w.args.clone(),
+                text: warning_text(w),
             })
         })
         .collect();
-    Ok(Reply::new("warnings", rows))
+    Ok(Reply::new(Unit::Warnings, rows))
 }
 
 /// A snapshot's biggest rows, or with `--diff` what grew and shrank between two.
@@ -124,15 +130,20 @@ pub(super) fn memory(ctx: &Ctx) -> Result<Reply, QueryError> {
         .into_iter()
         .take(ctx.q.filters.limit)
         .map(|(path, v)| {
-            json!({
-                "id": Id::new(Kind::Memory, path.as_str()).to_string(),
-                "path": path,
-                "value": if is_megabytes(path) { json!(round1(*v)) } else { count(*v) },
-                "unit": if is_megabytes(path) { "mb" } else { "count" },
+            let (value, unit) = if is_megabytes(path) {
+                (Amount::Float(round1(*v)), MemoryUnit::Mb)
+            } else {
+                (count(*v), MemoryUnit::Count)
+            };
+            Row::Memory(MemoryRow {
+                id: Id::new(Kind::Memory, path.as_str()).to_string(),
+                path: path.clone(),
+                value,
+                unit,
             })
         })
         .collect();
-    Ok(Reply::new("memory", rows))
+    Ok(Reply::new(Unit::Memory, rows))
 }
 
 fn find<'a>(snaps: &'a [Snapshot], label: &str) -> Result<&'a Snapshot, QueryError> {
@@ -143,18 +154,6 @@ fn find<'a>(snaps: &'a [Snapshot], label: &str) -> Result<&'a Snapshot, QueryErr
             labels.join(", ")
         ))
     })
-}
-
-fn round1(v: f64) -> f64 {
-    (v * 10.0).round() / 10.0
-}
-
-fn count(v: f64) -> Value {
-    if v.fract() == 0.0 && v.abs() < 1e15 {
-        json!(v as i64)
-    } else {
-        num(v)
-    }
 }
 
 /// Spec D's `memory-diff`: rows are `[path, a, b, b - a]`; megabyte rows keep a change of `min_mb`, counts the 50 biggest changes.
@@ -205,34 +204,34 @@ fn diff(ctx: &Ctx, snaps: &[Snapshot], min_mb: f64) -> Result<Reply, QueryError>
     rank(&mut shrank);
     rank(&mut counts);
     counts.truncate(DIFF_COUNTS);
-    let mb_rows = |rows: Vec<(&str, f64, f64, f64)>| -> Vec<Value> {
+    let mb_rows = |rows: Vec<(&str, f64, f64, f64)>| -> Vec<MbChange> {
         rows.into_iter()
-            .map(|(p, x, y, d)| json!([p, round1(x), round1(y), round1(d)]))
+            .map(|(p, x, y, d)| MbChange(p.to_string(), round1(x), round1(y), round1(d)))
             .collect()
     };
-    let resident = match (a.get(RESIDENT), b.get(RESIDENT)) {
-        (Some(x), Some(y)) => json!([round1(x), round1(y), round1(y - x)]),
-        _ => Value::Null,
+    let resident_mb = match (a.get(RESIDENT), b.get(RESIDENT)) {
+        (Some(x), Some(y)) => Some([round1(x), round1(y), round1(y - x)]),
+        _ => None,
     };
-    fn only<'p>(from: &BTreeMap<&'p str, f64>, not: &BTreeMap<&'p str, f64>) -> Vec<&'p str> {
+    fn only(from: &BTreeMap<&str, f64>, not: &BTreeMap<&str, f64>) -> Vec<String> {
         from.keys()
             .filter(|p| !not.contains_key(*p))
-            .copied()
+            .map(|p| p.to_string())
             .collect()
     }
-    let row = json!({
-        "from": a.label,
-        "to": b.label,
-        "seconds": round1(b.t - a.t),
-        "resident_mb": resident,
-        "grew_mb": mb_rows(grew),
-        "shrank_mb": mb_rows(shrank),
-        "counts": counts
+    let row = MemoryDiffRow {
+        from: a.label.clone(),
+        to: b.label.clone(),
+        seconds: round1(b.t - a.t),
+        resident_mb,
+        grew_mb: mb_rows(grew),
+        shrank_mb: mb_rows(shrank),
+        counts: counts
             .into_iter()
-            .map(|(p, x, y, d)| json!([p, count(x), count(y), count(d)]))
-            .collect::<Vec<_>>(),
-        "only_in_a": only(&before_map, &after_map),
-        "only_in_b": only(&after_map, &before_map),
-    });
-    Ok(Reply::new("memory_diff", vec![row]))
+            .map(|(p, x, y, d)| CountChange(p.to_string(), count(x), count(y), count(d)))
+            .collect(),
+        only_in_a: only(&before_map, &after_map),
+        only_in_b: only(&after_map, &before_map),
+    };
+    Ok(Reply::new(Unit::MemoryDiff, vec![Row::MemoryDiff(row)]))
 }

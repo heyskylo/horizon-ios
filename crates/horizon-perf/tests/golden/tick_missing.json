@@ -1,0 +1,1 @@
+{"candidates":[{"id":"k:7","name":"312.4 ms"},{"id":"k:100","name":"300.0 ms"},{"id":"k:101","name":"200.0 ms"},{"id":"k:102","name":"150.0 ms"},{"id":"k:90","name":"120.0 ms"}],"error":"this capture does not keep tick 55: it keeps the worst and the slow ones (the worst are listed)","ok":false,"op":"tick"}

@@ -2,17 +2,16 @@ use std::io::Write;
 use std::path::Path;
 
 use horizon_perf_format::v1::Capture;
-use serde_json::Value;
 
-use super::{CliError, Env, failed, file_name, parse, resolve, side_flag};
-use crate::bench_diff;
+use super::{CliError, Env, Flag, failed, file_name, json_line, parse, resolve, side_flag};
+use crate::bench_diff::{self, BenchReport};
 use crate::diff::{DEFAULT_LIMIT, DiffOptions, diff};
 use crate::read::read_capture;
 
 /// A file `diff` accepts: a finished capture or a benchmark report.
 pub(super) enum Report {
     Capture(Box<Capture>),
-    Bench(Value),
+    Bench(BenchReport),
 }
 
 pub(super) fn load(path: &Path) -> Result<Report, CliError> {
@@ -31,30 +30,36 @@ pub(super) fn load(path: &Path) -> Result<Report, CliError> {
 pub(super) fn run(args: &[String], env: &Env, out: &mut dyn Write) -> Result<(), CliError> {
     let parsed = parse(
         args,
-        &["min-ms", "side", "thread", "limit", "dir"],
-        &["json"],
+        &[
+            Flag::MinMs,
+            Flag::Side,
+            Flag::Thread,
+            Flag::Limit,
+            Flag::Dir,
+            Flag::Json,
+        ],
     )?;
     let [a, b] = parsed.positional.as_slice() else {
         return Err(CliError::Usage("diff needs two files: A B".into()));
     };
-    let dir = parsed.flags.get("dir").map(String::as_str);
+    let dir = parsed.flags.get(&Flag::Dir).map(String::as_str);
     let (path_a, path_b) = (
         resolve(Some(a), dir, env, true)?,
         resolve(Some(b), dir, env, true)?,
     );
     let options = DiffOptions {
         side: side_flag(&parsed)?,
-        thread: parsed.flags.get("thread").cloned(),
-        min_ms: parsed.number("min-ms")?.unwrap_or(0.0),
-        limit: parsed.number("limit")?.unwrap_or(DEFAULT_LIMIT),
+        thread: parsed.flags.get(&Flag::Thread).cloned(),
+        min_ms: parsed.number(Flag::MinMs)?.unwrap_or(0.0),
+        limit: parsed.number(Flag::Limit)?.unwrap_or(DEFAULT_LIMIT),
     };
     let (name_a, name_b) = (file_name(&path_a), file_name(&path_b));
-    let as_json = parsed.flags.contains_key("json");
+    let as_json = parsed.flags.contains_key(&Flag::Json);
     let text = match (load(&path_a)?, load(&path_b)?) {
         (Report::Capture(x), Report::Capture(y)) => {
             let d = diff(&x, &y, &options).map_err(failed)?;
             if as_json {
-                format!("{}\n", d.json(&name_a, &name_b))
+                json_line(&d.envelope(&name_a, &name_b))?
             } else {
                 d.text(&name_a, &name_b)
             }
@@ -62,7 +67,7 @@ pub(super) fn run(args: &[String], env: &Env, out: &mut dyn Write) -> Result<(),
         (Report::Bench(x), Report::Bench(y)) => {
             let d = bench_diff::diff(&x, &y, &options);
             if as_json {
-                format!("{}\n", d.json(&name_a, &name_b))
+                json_line(&d.reply(&name_a, &name_b))?
             } else {
                 d.text(&name_a, &name_b)
             }

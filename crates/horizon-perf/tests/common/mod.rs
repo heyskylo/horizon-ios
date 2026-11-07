@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+pub mod blocks;
 pub mod bots;
 pub mod hand;
 
@@ -9,6 +10,12 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use horizon_perf::Entry;
+use horizon_perf::query::Row;
+use horizon_perf::query::rows::{
+    CostRow, CountRow, DimensionRow, MarkRow, MemoryDiffRow, MemoryRow, MetaRow, NetPlayer,
+    NetTotal, SeriesRow, SpanRow, TickRow, WarningRow,
+};
+use horizon_perf::wire::Envelope;
 use horizon_perf_format::v1::*;
 use horizon_perf_format::{CaptureWriter, Field};
 
@@ -193,8 +200,8 @@ pub fn save(dir: &TempDir, name: &str, fields: &[Field]) -> String {
     path.to_string_lossy().into_owned()
 }
 
-/// Runs `horizon-perf query ...` and returns the JSON it printed, whether the query succeeded or not.
-pub fn query(parts: &[&str]) -> serde_json::Value {
+/// Runs `horizon-perf query ...` and returns the reply it printed, whether the query succeeded or not.
+pub fn query(parts: &[&str]) -> Envelope<Row> {
     let env = horizon_perf::cli::Env {
         horizon_home: None,
         poll: std::time::Duration::from_millis(2),
@@ -204,10 +211,78 @@ pub fn query(parts: &[&str]) -> serde_json::Value {
     let mut out = Vec::new();
     let _ = horizon_perf::cli::run(&args, &env, &mut out);
     serde_json::from_slice(&out)
-        .unwrap_or_else(|e| panic!("not JSON ({e}): {}", String::from_utf8_lossy(&out)))
+        .unwrap_or_else(|e| panic!("not a reply ({e}): {}", String::from_utf8_lossy(&out)))
 }
 
-pub fn rows(reply: &serde_json::Value) -> &Vec<serde_json::Value> {
-    assert_eq!(reply["ok"], true, "{reply}");
-    reply["rows"].as_array().unwrap()
+/// The rows of a reply that succeeded.
+pub fn rows(reply: &Envelope<Row>) -> &[Row] {
+    assert!(reply.ok, "{reply:?}");
+    reply.rows()
+}
+
+macro_rules! rows_of {
+    ($name:ident, $variant:ident, $ty:ty) => {
+        pub fn $name(reply: &Envelope<Row>) -> Vec<&$ty> {
+            rows(reply)
+                .iter()
+                .map(|row| match row {
+                    Row::$variant(row) => row,
+                    other => panic!("not a {}: {other:?}", stringify!($variant)),
+                })
+                .collect()
+        }
+    };
+}
+
+rows_of!(span_rows, Span, SpanRow);
+rows_of!(tick_rows, Tick, TickRow);
+rows_of!(series_rows, Series, SeriesRow);
+rows_of!(dimension_rows, Dimension, DimensionRow);
+rows_of!(count_rows, Count, CountRow);
+rows_of!(cost_rows, Cost, CostRow);
+rows_of!(meta_rows, Meta, MetaRow);
+rows_of!(memory_rows, Memory, MemoryRow);
+rows_of!(memory_diff_rows, MemoryDiff, MemoryDiffRow);
+rows_of!(warning_rows, Warning, WarningRow);
+rows_of!(mark_rows, Mark, MarkRow);
+
+/// The row of every player together, which `net` lists first.
+pub fn net_total(reply: &Envelope<Row>) -> &NetTotal {
+    match &rows(reply)[0] {
+        Row::NetTotal(total) => total,
+        other => panic!("not the total: {other:?}"),
+    }
+}
+
+/// The `net` rows of single players, in the order listed.
+pub fn net_players(reply: &Envelope<Row>) -> Vec<&NetPlayer> {
+    rows(reply)
+        .iter()
+        .filter_map(|row| match row {
+            Row::NetPlayer(player) => Some(player),
+            _ => None,
+        })
+        .collect()
+}
+
+pub fn net_player<'a>(reply: &'a Envelope<Row>, id: &str) -> &'a NetPlayer {
+    net_players(reply)
+        .into_iter()
+        .find(|p| p.id == id)
+        .unwrap_or_else(|| panic!("no row {id} in {reply:?}"))
+}
+
+/// The one row with this id.
+pub fn span<'a>(reply: &'a Envelope<Row>, id: &str) -> &'a SpanRow {
+    span_rows(reply)
+        .into_iter()
+        .find(|r| r.id == id)
+        .unwrap_or_else(|| panic!("no row {id} in {reply:?}"))
+}
+
+pub fn tick<'a>(reply: &'a Envelope<Row>, id: &str) -> &'a TickRow {
+    tick_rows(reply)
+        .into_iter()
+        .find(|r| r.id == id)
+        .unwrap_or_else(|| panic!("no row {id} in {reply:?}"))
 }
