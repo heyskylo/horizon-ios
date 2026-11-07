@@ -8,7 +8,7 @@
 //! exit portal, the egg and the next gateway; and its rendering and boss bar.
 use super::commands::Target;
 use super::{
-    Dim, Game,
+    Game,
     potions::{Victim, mob_can_be_affected},
 };
 use horizon_client::{
@@ -1188,7 +1188,7 @@ impl Game<'_> {
     pub(super) fn tick_fight(&mut self) {
         // A dragon outside the End (`/summon`) has no fight: `ServerLevel.getDragonFight` is
         // null there, but `EnderDragon.aiStep` still flies it.
-        if self.dim != Dim::End {
+        if !self.dimension_type().has_ender_dragon_fight {
             self.tick_dragon();
             return;
         }
@@ -1310,7 +1310,7 @@ impl Game<'_> {
     /// `EndCrystal.tick` in every dimension: the time (the spin and bob),
     /// and fire at its block where there is a dragon fight (the End).
     pub(super) fn tick_crystals(&mut self) {
-        let fire = (self.dim == Dim::End)
+        let fire = (self.dimension_type().has_ender_dragon_fight)
             .then(|| self.pack.assets.registry.default_state("minecraft:fire"))
             .flatten();
         for i in 0..self.crystals.len() {
@@ -3142,7 +3142,11 @@ impl Game<'_> {
     /// (`EnderDragonFight.dragonEvent`, visible while the fight is not won
     /// and the player is alive within 192 blocks of (0, 128, 0)).
     pub(super) fn dragon_boss_progress(&self, at: [f64; 3], alive: bool) -> Option<f32> {
-        if self.dim != Dim::End || !alive || !self.fight.loaded || self.fight.killed {
+        if !self.dimension_type().has_ender_dragon_fight
+            || !alive
+            || !self.fight.loaded
+            || self.fight.killed
+        {
             return None;
         }
         let near = at[0].powi(2) + (at[1] - 128.0).powi(2) + at[2].powi(2) <= 192.0 * 192.0;
@@ -3917,7 +3921,7 @@ impl Game<'_> {
         // EndCrystalItem.useOn: ENTITY_PLACE at the block above, by the player.
         self.post_block_game_event("minecraft:entity_place", above, self.sculk_actor(), None);
         self.world.modified.insert((above[0] >> 4, above[2] >> 4));
-        if self.dim == Dim::End {
+        if self.dimension_type().has_ender_dragon_fight {
             self.try_respawn();
         }
         if !self.creative {
@@ -4305,7 +4309,7 @@ impl Game<'_> {
     /// The dragon is the End fight's own (`EnderDragon.dragonFight`, set
     /// only for the dragon whose UUID is the fight's `dragonUUID`).
     fn is_fight_dragon(&mut self) -> bool {
-        if self.dim != Dim::End {
+        if !self.dimension_type().has_ender_dragon_fight {
             return false;
         }
         match (self.dragon.as_ref().map(|d| d.id), self.fight.dragon_uuid) {
