@@ -1033,6 +1033,13 @@ impl Game<'_> {
         let mut data = self.data_of(&target)?;
         let changed = data_cmd::modify(op, &mut data, &target_path, &sources)?;
         if changed == 0 {
+            // StorageDataAccessor.getData is the stored compound itself: an
+            // edit that changed it and still counted nothing (a wildcard set
+            // that clears an array, then rejects the value) stays. An entity's
+            // or a block's data is a copy.
+            if let DataRef::Storage(id) = &target {
+                self.score.storage.set_unsaved(id, data);
+            }
             return Err(err("commands.data.merge.failed", &[]));
         }
         self.set_data_of(&target, data)?;
