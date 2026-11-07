@@ -790,7 +790,7 @@ impl Game<'_> {
                 packed,
                 out,
             );
-            if horizon_cosmetics::enabled() {
+            if super::cosmetics::enabled() {
                 let base = horizon_client::mobs::render::base_transform(m, alpha as f32, camera);
                 self.cosmetics_geometry(
                     m,
@@ -916,7 +916,7 @@ impl Game<'_> {
             240 | 240 << 8,
             &mut verts,
         );
-        if horizon_cosmetics::enabled() {
+        if super::cosmetics::enabled() {
             let base = horizon_client::mobs::render::base_transform(&m, 1.0, camera);
             self.cosmetics_geometry(&m, true, base, None, 1.0, 240 | 240 << 8, false, &mut verts);
         }

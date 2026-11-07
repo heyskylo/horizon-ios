@@ -7666,7 +7666,7 @@ impl Game<'_> {
             // Cosmetics (game/cosmetics.rs), posed on the GPU with the mob's own jobs: culled
             // with it.
             if !layers_only
-                && horizon_cosmetics::enabled()
+                && super::cosmetics::enabled()
                 && (is_player || &*mob.kind.id == "minecraft:mannequin")
             {
                 let mark = self.skin_frame.borrow().mark();

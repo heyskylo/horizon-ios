@@ -16441,7 +16441,7 @@ impl Game<'_> {
             }
             KeyCode::KeyL if self.screen == Screen::Advancements => self.close_advancements(),
             // key.emote (Horizon's): the emote wheel, a tap again closes it.
-            KeyCode::KeyB if self.screen == Screen::Playing && horizon_cosmetics::enabled() => {
+            KeyCode::KeyB if self.screen == Screen::Playing && cosmetics::enabled() => {
                 self.open_emote_wheel();
             }
             KeyCode::KeyB if self.screen == Screen::EmoteWheel => self.close_emote_wheel(None),
@@ -21085,10 +21085,15 @@ pub fn run_with() -> Result<()> {
         #[cfg(feature = "heartbeat")]
         horizon_client::heartbeat::start();
         let player_dir = horizon_client::logging::player_dir();
-        if let Err(e) = horizon_client::multiplayer::add_official_server(&player_dir) {
+        // horizon-extras: the official and partner servers are Horizon's (docs/forking.md).
+        if cfg!(feature = "horizon-extras")
+            && let Err(e) = horizon_client::multiplayer::add_official_server(&player_dir)
+        {
             log::warn!("could not add the official server to servers.dat: {e}");
         }
-        if let Err(e) = horizon_client::multiplayer::add_partner_servers(&player_dir) {
+        if cfg!(feature = "horizon-extras")
+            && let Err(e) = horizon_client::multiplayer::add_partner_servers(&player_dir)
+        {
             log::warn!("could not add the partner servers to servers.dat: {e}");
         }
     }
