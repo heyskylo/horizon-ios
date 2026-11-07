@@ -633,6 +633,7 @@ impl Game<'_> {
         let (items_len, orbs_len) = (self.dropped.len(), self.orbs.len());
         let (mut items_kept, mut orbs_kept) = (0, 0);
         let (mut boats_gone, mut carts_gone) = (0, 0);
+        let mut destroyed_contents = Vec::new();
         for handle in self.entity_handles() {
             let handle = match handle {
                 EntityHandle::Boat(i) => EntityHandle::Boat(i - boats_gone),
@@ -684,6 +685,17 @@ impl Game<'_> {
                         if &*item.stack.item != "minecraft:nether_star" {
                             item.health = (item.health as f32 - amount) as i32;
                             destroyed = item.health <= 0;
+                            if destroyed {
+                                let at = item.position;
+                                // Health was already reduced above. Run the shared
+                                // onDestroyed path without applying damage twice.
+                                destroyed_contents.extend(
+                                    item.hurt(0)
+                                        .unwrap_or_default()
+                                        .into_iter()
+                                        .map(|stack| (stack, at)),
+                                );
+                            }
                         }
                     }
                     // `ExperienceOrb.hurtServer` takes the damage off their 5 health.
@@ -744,6 +756,9 @@ impl Game<'_> {
         }
         self.dropped.drain(items_kept..items_len);
         self.orbs.drain(orbs_kept..orbs_len);
+        // The original target walk is finished: released contents cannot be
+        // hurt or pushed by the explosion that destroyed their container.
+        self.spawn_destroyed_contents(destroyed_contents);
         self.native_leaves_flush();
         // Frames, paintings, cushions and armour stands last: vanilla lists
         // the entities in reach before hurting any, so the items they drop
