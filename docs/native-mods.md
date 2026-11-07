@@ -161,6 +161,21 @@ with no re-release for each Nightly.
 
 Hook and helper authors use [API fragments](../tools/native-hook-fragments/README.md) to request a number.
 
+The pending `hud_mode` helper fragment adds `Host::hud_mode()` and
+`Host::set_hud_mode(HudMode)`. `HudMode::AllVisible` shows the HUD and permits
+first-person hands; `NoHud` hides the HUD while permitting hands;
+`AllHidden` hides both. Spectator, sleeping, camera and death restrictions,
+and `render_hand` cancellation, still apply. `gui_render_post`'s `gui_hidden`
+and `client_state().gui_hidden` report the effective HUD visibility.
+
+A mod can keep its own three-state cycle and call `set_hud_mode` from the
+existing post-handling `input_key` callback after an F1 press, or from a client
+tick callback. No cancellable input hook is required. Without a mod, F1 keeps
+its normal all-visible/all-hidden toggle; each F1 toggle clears the independent
+hand override. The mode is window UI state, never a saved player setting.
+Writes on a server or during a borrowed server guest's turn do nothing.
+This fragment receives an API number when stamped after merge.
+
 API 2 adds the item panel beside container screens and its recipe pages (`native_panel_items`,
 `native_panel_recipes`, and the hook `native_panel_event` for the player's clicks, searches and keys over items), and
 the game's items and recipes (`native_recipes`, `native_known_recipes`, `native_place_recipe`, `native_give`): what a
@@ -545,7 +560,7 @@ are compiled into `horizon-client`; a stable API crate for mods' own crates is #
 (`crc32fast = "1"`, `{ version, features, default-features, optional }`); each must already be in Horizon's lock
 file in a version that matches, and builds in exactly that version. The crates that are there only for mods are listed in
 `crates/horizon-mod-deps/Cargo.toml` (optional dependencies, with the features mods may turn on; nothing builds them):
-`mysql` 27 (blocking MariaDB/MySQL client, `minimal-rust` + `rustls-tls-ring` + `chrono`, no default features), `redis` 1
+`mysql` 28 (blocking MariaDB/MySQL client, `minimal-rust` + `rustls-tls-ring` + `chrono`, no default features), `redis` 1
 (blocking, no default features), `tungstenite` 0.30 (websocket over a stream the mod opens, no default features),
 `rusty-opus` 1 (Opus encoder and decoder), `quinn` 0.11 (QUIC on tokio, features `runtime-tokio` + `rustls-ring`, no
 default features), `rusqlite` 0.41 (SQLite, `bundled` + `cache`, no default features; builds SQLite's C source),
@@ -3711,6 +3726,9 @@ a dimension.
 - `level.block_state(host, pos)` (`minecraft:oak_stairs[facing=east,…]`, as `/setblock` takes it), `block` (the name
   alone), `block_property(host, pos, key)`, `is_loaded`, `height` (lowest `y` and height), `game_time` and `day_time`
   read any level the server has loaded, not only the one in place. A block in a chunk that isn't loaded reads as `None`.
+- `level.seed(host)`, `difficulty` (`"normal"`, as `/difficulty` names it), `game_rule(host, "keep_inventory")` (a
+  `GameRuleValue`, `Bool` or `Int`; None for an unknown rule), `weather` (rain and thunder levels, 0.0 to 1.0; both 0
+  where the level has no weather), `is_raining` and `is_thundering` read its world settings.
 - `host.living(entity)` gives a `LivingRef` for a mob, a player, an armor stand or the dragon (vanilla's
   `LivingEntity`); `living.entity()` goes back. `living.equipment(host, EquipmentSlot::Head)` and `hand_item(host,
   Hand::Main)` read its equipment (an empty slot reads as `None`); `set_equipment(host, slot, stack)` puts a stack in a

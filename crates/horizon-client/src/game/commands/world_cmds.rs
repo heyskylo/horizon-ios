@@ -512,6 +512,10 @@ impl Game<'_> {
         if hurt {
             self.flush_villager_reputation(id);
         }
+        // Enderman.hurtServer's teleport, refused hit or not, before the command returns.
+        if let Err(e) = self.settle_hurt_teleports() {
+            log::warn!("Horizon: /damage: enderman teleport: {e}");
+        }
         hurt
     }
 
