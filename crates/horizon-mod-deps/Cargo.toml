@@ -21,13 +21,16 @@ redis = { version = "1", default-features = false, optional = true }
 tungstenite = { version = "0.30", default-features = false, optional = true }
 # Opus encoder and decoder in pure Rust (voice chat, #7759).
 rusty-opus = { version = "1", optional = true }
+# QUIC (quinn) on tokio, TLS through the rustls + ring in the lock (relays such as e4mc's, #9602).
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"], optional = true }
 
 [features]
 mysql = ["dep:mysql"]
 redis = ["dep:redis"]
 websocket = ["dep:tungstenite"]
 opus = ["dep:rusty-opus"]
-all = ["mysql", "redis", "websocket", "opus"]
+quic = ["dep:quinn"]
+all = ["mysql", "redis", "websocket", "opus", "quic"]
 
 [lints]
 workspace = true
