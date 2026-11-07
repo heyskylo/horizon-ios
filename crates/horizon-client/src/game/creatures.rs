@@ -2264,6 +2264,18 @@ impl Game<'_> {
                 MobEvent::SunProtectionWear { mob } => self.wear_sun_protection(mob),
                 MobEvent::ArmorHurt { mob, amount, kind } => self.hurt_mob_armor(mob, amount, kind),
                 MobEvent::EntityEvent { mob, event, at } => {
+                    // Ravager.roar (event 69 ends it): with mob_griefing on,
+                    // ROAR_TARGET_WITH_GRIEFING also takes the armor stands.
+                    if event == 69
+                        && self.ui.rules.bool("mob_griefing")
+                        && let Some(area) = self
+                            .mobs
+                            .iter()
+                            .find(|m| m.id == mob && m.species() == Species::Ravager)
+                            .map(|m| m.bounds().inflate(Vec3::new(4.0, 4.0, 4.0)))
+                    {
+                        self.roar_pushes_armor_stands(area, at);
+                    }
                     self.lan_entity_event(mob as i32, event, at)
                 }
                 MobEvent::LevelParticles {
