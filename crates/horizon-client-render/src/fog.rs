@@ -413,6 +413,13 @@ pub fn clear_distance_fog(fog: &mut FogData, input: &FogInputs) {
         (fog.environmental_start, fog.environmental_end) = (1e9, 2e9);
     }
 }
+/// Whether the frame draws no sky, only the clear to the fog colour: `LevelRenderer.addSkyPass`
+/// leaves the sky out in lava and powder snow and while blindness or darkness is on (`Camera`'s
+/// `doesMobEffectBlockSky`), and `GameRenderer.renderLevel` gives `LevelRenderer.render`
+/// `shouldRenderSky` false while a boss bar makes world fog (the Ender Dragon's).
+pub fn sky_pass_skipped(fog_type: FogType, effect_blocks_sky: bool, boss_world_fog: bool) -> bool {
+    matches!(fog_type, FogType::Lava | FogType::PowderSnow) || effect_blocks_sky || boss_world_fog
+}
 /// `AtmosphericFogEnvironment.updateRainFogState`.
 pub fn update_rain_fog(
     state: &mut FogState,
@@ -478,6 +485,20 @@ mod tests {
         assert_eq!(fog(surface + 0.05, 0.0), FogType::Atmospheric);
         // The eye itself is not tested: looking up, the whole plane is above it.
         assert_eq!(fog(surface - 0.01, -90.0), FogType::Atmospheric);
+    }
+    #[test]
+    fn the_dragon_fights_world_fog_leaves_out_the_sky() {
+        use FogType::*;
+        // GameRenderer.renderLevel: no sky pass under a createWorldFog boss bar, in clear air
+        // as in water.
+        assert!(sky_pass_skipped(Atmospheric, false, true));
+        assert!(sky_pass_skipped(Water, false, true));
+        // LevelRenderer.addSkyPass's own conditions.
+        assert!(sky_pass_skipped(Lava, false, false));
+        assert!(sky_pass_skipped(PowderSnow, false, false));
+        assert!(sky_pass_skipped(Atmospheric, true, false));
+        assert!(!sky_pass_skipped(Atmospheric, false, false));
+        assert!(!sky_pass_skipped(Water, false, false));
     }
     #[test]
     fn boss_world_fog_closes_in() {

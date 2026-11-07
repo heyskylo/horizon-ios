@@ -1,6 +1,7 @@
 //! Minecraft Realms screens: `RealmsMainScreen` with its `RealmsHeader`, the join-code and
 //! pending-invite screens, the owner's open/close, `RealmsPopups.infoPopupScreen` for the
-//! questions, and `GetServerDetailsTask` under `RealmsLongRunningMcoTaskScreen` for Play.
+//! questions, `GetServerDetailsTask` under `RealmsLongRunningMcoTaskScreen` for Play, and
+//! `RealmsResetWorldScreen` with its template, local-world and upload screens.
 //! Layout from the vanilla screens' behaviour and the game's own sprites.
 //!
 //! Realms is used only with the signed-in player's own Microsoft account: the session the
@@ -8,15 +9,18 @@
 //! expired token) the screen says so and makes no request. Every request runs on a worker
 //! thread; the title polls the results once a frame (`poll`).
 pub mod client;
+pub mod upload;
 
 use crate::hud::{HudAtlas, HudBatch, rgba};
 use crate::text::Text;
 use client::{
-    PendingInviteDto, PlayerInfo, RealmAddress, RealmServer, RealmSlot, RealmTierConfiguration,
-    RealmTierRange, RealmWorldOptions, RealmsClient, RealmsError, RegionDataDto,
-    RegionSelectionPreferenceDto, Subscription,
+    Backup, InviteCode, PendingInviteDto, PlayerInfo, RealmAddress, RealmServer, RealmSetting,
+    RealmSlot, RealmTierConfiguration, RealmTierRange, RealmWorldOptions, RealmsClient,
+    RealmsError, RegionDataDto, RegionSelectionPreferenceDto, Subscription, WorldTemplate,
+    WorldTemplateList,
 };
 use horizon_client_render::auth::{self, AuthSession};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -30,6 +34,8 @@ const PDP_TEXT_WIDTH: f32 = 182.0;
 
 const ROW_WIDTH: f32 = 300.0;
 const ROW_HEIGHT: f32 = 36.0;
+/// `RealmsSelectWorldTemplateScreen`'s rows (`ObjectSelectionList`'s 46).
+const TEMPLATE_ROW: f32 = 46.0;
 /// `RealmsConfigureWorldScreen`'s `MenuTabBar` height (`gui/tab_header_background`).
 const TAB_HEIGHT: f32 = 24.0;
 /// `hud::rgba` packing (ABGR): 160 grey, vanilla's red and `RealmsPopups.COLOR_INFO`.
@@ -58,6 +64,34 @@ const GAME_MODES: [&str; 3] = [
 ];
 const DIFFICULTY_DEFAULT: usize = 2;
 const GAME_MODE_DEFAULT: usize = 0;
+/// `InviteCodeExpiration`: the seven choices, the last one never expiring.
+const EXPIRATIONS: [(&str, Option<i64>); 7] = [
+    (
+        "mco.configure.world.invite_codes.expiration.30_minutes",
+        Some(30 * 60),
+    ),
+    (
+        "mco.configure.world.invite_codes.expiration.1_hour",
+        Some(60 * 60),
+    ),
+    (
+        "mco.configure.world.invite_codes.expiration.6_hours",
+        Some(6 * 60 * 60),
+    ),
+    (
+        "mco.configure.world.invite_codes.expiration.12_hours",
+        Some(12 * 60 * 60),
+    ),
+    (
+        "mco.configure.world.invite_codes.expiration.1_day",
+        Some(24 * 60 * 60),
+    ),
+    (
+        "mco.configure.world.invite_codes.expiration.7_days",
+        Some(7 * 24 * 60 * 60),
+    ),
+    ("mco.configure.world.invite_codes.expiration.never", None),
+];
 
 /// `CommonLinks.BUY_REALMS`.
 const BUY_REALMS: &str = "https://aka.ms/BuyJavaRealms";
@@ -338,6 +372,26 @@ fn slot_name(options: &RealmWorldOptions, slot: i32) -> String {
     crate::lang::tr("mco.configure.world.slot", &[&slot])
 }
 
+/// `InviteCodeExpiration.closestTo`: the choice nearest the time left on the code.
+fn closest_expiration(expiration_millis: i64) -> usize {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let left = (expiration_millis - now).max(0) / 1000;
+    let mut best = EXPIRATIONS.len() - 1;
+    let mut best_delta = i64::MAX;
+    for (i, (_, seconds)) in EXPIRATIONS.iter().enumerate() {
+        let Some(seconds) = seconds else { continue };
+        let delta = (left - seconds).abs();
+        if delta < best_delta {
+            best_delta = delta;
+            best = i;
+        }
+    }
+    best
+}
+
 /// `RealmsSubscriptionTab.daysLeftPresentation`: what the days-left line says, in the
 /// caller's language; empty when nothing is left to say.
 fn days_left_text(days_left: i32, expired: bool) -> String {
@@ -411,6 +465,86 @@ pub enum Popup {
     SwitchSlot { server: RealmServer, slot: i32 },
 }
 
+/// `RealmsResetWorldScreen`'s entry points: the slot's world is replaced. `forNewRealm`
+/// belongs to the realm-creation screen, which the port has no equivalent of.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResetKind {
+    /// `forResetSlot`: the world is replaced after a warning; the active slot's.
+    Reset,
+    /// `forEmptySlot`: the slot has no world yet.
+    Empty,
+}
+
+impl ResetKind {
+    /// The screen's title (`RealmsResetWorldScreen`'s constants).
+    fn title(self) -> &'static str {
+        match self {
+            Self::Reset => "mco.reset.world.title",
+            Self::Empty => "mco.configure.world.switch.slot",
+        }
+    }
+    /// The subtitle, and whether it is the red warning.
+    fn subtitle(self) -> (&'static str, bool) {
+        match self {
+            Self::Reset => ("mco.reset.world.warning", true),
+            Self::Empty => ("mco.configure.world.switch.slot.subtitle", false),
+        }
+    }
+    /// `RESET_WORLD_RESET_TASK_TITLE` and `CREATE_WORLD_RESET_TASK_TITLE`.
+    fn task_title(self) -> &'static str {
+        match self {
+            Self::Reset => "mco.reset.world.resetting.screen.title",
+            Self::Empty => "mco.create.world.reset.title",
+        }
+    }
+}
+
+/// The four template groups of `RealmsResetWorldScreen`'s grid, in its order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TemplateGroup {
+    Normal,
+    Adventure,
+    Experience,
+    Inspiration,
+}
+
+impl TemplateGroup {
+    const ALL: [Self; 4] = [
+        Self::Normal,
+        Self::Adventure,
+        Self::Experience,
+        Self::Inspiration,
+    ];
+
+    fn index(self) -> usize {
+        Self::ALL
+            .iter()
+            .position(|g| *g == self)
+            .expect("a group is in ALL")
+    }
+    /// `RealmsServer.WorldType`'s name: what `fetchWorldTemplates` puts in the path.
+    fn world_type(self) -> &'static str {
+        match self {
+            Self::Normal => "NORMAL",
+            Self::Adventure => "ADVENTUREMAP",
+            Self::Experience => "EXPERIENCE",
+            Self::Inspiration => "INSPIRATION",
+        }
+    }
+    fn title(self) -> &'static str {
+        match self {
+            Self::Normal => "mco.reset.world.template",
+            Self::Adventure => "mco.reset.world.adventure",
+            Self::Experience => "mco.reset.world.experience",
+            Self::Inspiration => "mco.reset.world.inspiration",
+        }
+    }
+}
+
+/// `RealmsSelectWorldTemplateScreen`'s list: a page fetched on a worker, and the next one
+/// (`0` once the service answered an empty page).
+type TemplatePages = Job<Result<(Vec<WorldTemplate>, i32), RealmsError>>;
+
 #[derive(Clone, Debug)]
 pub enum SubScreen {
     Main,
@@ -473,6 +607,41 @@ pub enum SubScreen {
         /// The highlighted row: `(preference, region)`.
         selected: Option<(i32, Option<String>)>,
     },
+    /// `RealmsInviteCodesScreen`: the Realm's shareable codes.
+    InviteCodes {
+        server: RealmServer,
+        codes: Option<Result<Vec<InviteCode>, RealmsError>>,
+        list_job: Option<Job<Result<Vec<InviteCode>, RealmsError>>>,
+        /// `createInviteCode` on a worker.
+        job: Option<Job<Result<(), RealmsError>>>,
+        error: Option<String>,
+    },
+    /// `RealmsEditInviteCodeScreen`: one code's active flag and expiration.
+    EditCode {
+        server: RealmServer,
+        code: InviteCode,
+        active: bool,
+        /// `EXPIRATIONS`' index.
+        expiration: usize,
+        job: Option<Job<Result<(), RealmsError>>>,
+        error: Option<String>,
+    },
+    /// `RealmsBackupScreen`: the Realm's automatic backups.
+    Backups {
+        server: RealmServer,
+        slot_id: i32,
+        backups: Option<Result<Vec<Backup>, RealmsError>>,
+        list_job: Option<Job<Result<Vec<Backup>, RealmsError>>>,
+        /// `RealmsClient.restoreWorld` on a worker.
+        restore_job: Option<Job<Result<(), RealmsError>>>,
+        error: Option<String>,
+    },
+    /// `RealmsBackupInfoScreen`: one backup's metadata.
+    BackupInfo {
+        server: RealmServer,
+        slot_id: i32,
+        backup: Backup,
+    },
     /// `RealmsInviteScreen`: a name to invite to the Realm.
     Invite {
         server: RealmServer,
@@ -488,6 +657,58 @@ pub enum SubScreen {
         scroll: crate::ui::Scroll,
         /// The list's drawn height, measured in [`Screen::draw`] and read by the wheel.
         content: std::cell::Cell<f32>,
+    },
+    /// `RealmsResetWorldScreen`: the 3x2 tiles that replace the slot's world.
+    ResetWorld {
+        server: RealmServer,
+        slot: i32,
+        kind: ResetKind,
+        /// `init`'s fetcher: page 1 of each group's templates, in `TemplateGroup::ALL`'s order.
+        templates: Option<[Result<WorldTemplateList, RealmsError>; 4]>,
+        job: Option<Job<[Result<WorldTemplateList, RealmsError>; 4]>>,
+        /// The template reset (`ResettingTemplateWorldTask`) while it runs, then its answer.
+        reset: Option<Job<Result<(), RealmsError>>>,
+        error: Option<String>,
+    },
+    /// `RealmsSelectWorldTemplateScreen`: a world type's templates, a page at a time.
+    TemplateList {
+        server: RealmServer,
+        slot: i32,
+        kind: ResetKind,
+        /// `None` for the minigame list, which switches the Realm instead of resetting it.
+        group: Option<TemplateGroup>,
+        templates: Vec<WorldTemplate>,
+        selected: Option<usize>,
+        scroll: crate::ui::Scroll,
+        job: Option<TemplatePages>,
+        /// `SwitchMinigameTask` on a worker, from the minigame list's Select.
+        select: Option<Job<Result<(), RealmsError>>>,
+        /// `Entry.websiteButton`/`trailerButton` as drawn: (row, rect, trailer) — the
+        /// click needs the row's version width, which only the draw measures.
+        icons: std::cell::RefCell<Vec<(usize, [f32; 4], bool)>>,
+        error: Option<String>,
+    },
+    /// `RealmsSelectFileToUploadScreen`: the local worlds an upload can pick.
+    UploadSelect {
+        server: RealmServer,
+        slot: i32,
+        kind: ResetKind,
+        worlds: Vec<crate::title::WorldEntry>,
+        selected: Option<usize>,
+        scroll: crate::ui::Scroll,
+    },
+    /// `RealmsUploadScreen`: the pack and the body on a worker, its numbers and its answer.
+    Uploading {
+        server: RealmServer,
+        slot: i32,
+        world: crate::title::WorldEntry,
+        progress: Arc<upload::UploadProgress>,
+        job: Option<Job<Result<(), upload::UploadError>>>,
+        error: Option<upload::UploadError>,
+        /// The worker answered (done or failed): Cancel gives way to Done.
+        done: bool,
+        /// When the screen opened: the dots' blink (`tickCount / 10` at 20 ticks a second).
+        started: Instant,
     },
     Popup(Popup),
     /// `RealmsLongRunningMcoTaskScreen` running `GetServerDetailsTask`: the join request is on
@@ -510,6 +731,9 @@ pub struct Screen {
     /// Leaving a Realm (`RealmsMainScreen.leaveServer`): the list reloads when it's done.
     leaving: Option<Job<Result<(), RealmsError>>>,
     pub last_click: Option<(usize, SystemTime)>,
+    /// The game's `saves` folder: `RealmsSelectFileToUploadScreen` lists it
+    /// (`minecraft.gameDirectory`'s `saves`).
+    saves: Option<PathBuf>,
 }
 
 pub enum Outcome {
@@ -517,6 +741,8 @@ pub enum Outcome {
     Back,
     Connect(String),
     OpenUri(String),
+    /// `KeyboardHandler.setClipboard` for the title's own clipboard.
+    Copy(String),
 }
 
 impl Default for Screen {
@@ -579,17 +805,89 @@ fn pdp_entries() -> [(&'static str, &'static str, &'static [&'static str]); 4] {
     ]
 }
 
+/// `RealmsSelectWorldTemplateScreen.fetchTemplatesAsync`: the pages after `start`, up to the
+/// first empty one (vanilla keeps asking until a page comes back empty).
+fn fetch_template_pages(
+    client: &RealmsClient,
+    world_type: &str,
+    start: i32,
+    page_size: i32,
+) -> Result<(Vec<WorldTemplate>, i32), RealmsError> {
+    let mut templates = Vec::new();
+    let mut page = start;
+    // Vanilla's loop has no bound; 20 pages (200 templates) is far past any world type's list.
+    for _ in 0..20 {
+        let answer = client.fetch_world_templates(page, page_size, world_type)?;
+        if answer.templates.is_empty() {
+            return Ok((templates, 0));
+        }
+        templates.extend(answer.templates);
+        page += 1;
+    }
+    Ok((templates, page))
+}
+
 fn wrap_lines(text: &str, atlas: &HudAtlas, width: f32) -> Vec<String> {
     crate::multiplayer::wrap(text, width, atlas)
 }
-
 fn centered(batch: &mut HudBatch, atlas: &HudAtlas, text: &str, cx: f32, y: f32, color: u32) {
     let w = HudBatch::text_width(atlas, text);
     batch.text(atlas, text, cx - (w / 2.0).floor(), y, color, true);
 }
 
+/// `RealmsResetWorldScreen.init`'s grid: three 60-wide tiles with 16 padding a side, and a
+/// 16-tall spacer between the two rows (`FrameButton` is 60 by 60 plus its label).
+fn reset_tile(cx: f32, i: usize) -> (f32, f32) {
+    let column = (i % 3) as f32;
+    let row = (i / 3) as f32;
+    (cx - 122.0 + column * 92.0, 56.0 + row * 85.0)
+}
+
+/// `Unit.humanReadable`: binary units, a tenth at GB (`mco.upload.failed.too_big`).
+fn human_readable(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
+    if bytes < 1024 {
+        return format!("{bytes} B");
+    }
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == UNITS.len() - 1 {
+        format!("{value:.1} {}", UNITS[unit])
+    } else {
+        format!("{value:.0} {}", UNITS[unit])
+    }
+}
+
+/// The row `y` falls on in a list that starts at `top` and has scrolled `offset` pixels.
+fn row_at(
+    x: f32,
+    y: f32,
+    w: f32,
+    top: f32,
+    bottom: f32,
+    height: f32,
+    offset: f32,
+) -> Option<usize> {
+    let rx = ((w - ROW_WIDTH) / 2.0).floor();
+    if y < top || y >= bottom || x < rx || x > rx + ROW_WIDTH {
+        return None;
+    }
+    let row = (y - top - 2.0 + offset) / height;
+    (row >= 0.0).then(|| row.floor() as usize)
+}
+
 impl Screen {
     pub fn new() -> Self {
+        Self::with_saves(None)
+    }
+
+    /// The screen with the game's `saves` folder, which `RealmsSelectFileToUploadScreen`
+    /// lists (`new RealmsSelectFileToUploadScreen` reads the level list).
+    pub fn with_saves(saves: Option<PathBuf>) -> Self {
         let mut screen = Self {
             state: FetchState::Unauthenticated,
             subscreen: SubScreen::Main,
@@ -597,6 +895,7 @@ impl Screen {
             joining: None,
             leaving: None,
             last_click: None,
+            saves,
         };
         screen.refresh();
         screen
@@ -653,6 +952,10 @@ impl Screen {
         let mut refetch_detail = false;
         let mut slot_options_saved = false;
         let mut open_region_screen = false;
+        let mut saved_code = false;
+        let mut refetch_codes = false;
+        let mut refetch_backups = false;
+        let mut back_to_worlds: Option<RealmServer> = None;
         match &mut self.subscreen {
             SubScreen::JoinCode { error, job, .. } => {
                 if let Some(result) = job.as_ref().and_then(take) {
@@ -835,11 +1138,133 @@ impl Screen {
                     }
                 }
             }
+            SubScreen::Backups {
+                backups,
+                list_job,
+                restore_job,
+                error,
+                ..
+            } => {
+                if let Some(result) = list_job.as_ref().and_then(take) {
+                    *list_job = None;
+                    *backups = Some(result);
+                }
+                if let Some(result) = restore_job.as_ref().and_then(take) {
+                    *restore_job = None;
+                    match result {
+                        // The restore is done: the list reads again.
+                        Ok(()) => refetch_backups = true,
+                        Err(e) => *error = Some(e.text()),
+                    }
+                }
+            }
+            SubScreen::InviteCodes {
+                codes,
+                list_job,
+                job,
+                error,
+                ..
+            } => {
+                if let Some(result) = list_job.as_ref().and_then(take) {
+                    *list_job = None;
+                    *codes = Some(result);
+                }
+                if let Some(result) = job.as_ref().and_then(take) {
+                    *job = None;
+                    match result {
+                        // A create or delete: the list reads again.
+                        Ok(()) => refetch_codes = true,
+                        Err(e) => *error = Some(e.text()),
+                    }
+                }
+            }
+            SubScreen::ResetWorld {
+                server,
+                templates,
+                job,
+                reset,
+                error,
+                ..
+            } => {
+                if let Some(result) = job.as_ref().and_then(take) {
+                    *job = None;
+                    *templates = Some(result);
+                }
+                if let Some(result) = reset.as_ref().and_then(take) {
+                    *reset = None;
+                    match result {
+                        // `resetWorldRunnable`: the configuration screen again, the list
+                        // reloaded (`RealmsMainScreen.refreshServerList`).
+                        Ok(()) => {
+                            refresh = true;
+                            back_to_worlds = Some(server.clone());
+                        }
+                        Err(e) => *error = Some(e.text()),
+                    }
+                }
+            }
+            SubScreen::EditCode { job, error, .. } => {
+                if let Some(result) = job.as_ref().and_then(take) {
+                    *job = None;
+                    match result {
+                        // The update or delete is saved: back to the list, which reads again.
+                        Ok(()) => saved_code = true,
+                        Err(e) => *error = Some(e.text()),
+                    }
+                }
+            }
+            SubScreen::TemplateList {
+                server,
+                templates,
+                job,
+                select,
+                error,
+                ..
+            } => {
+                if let Some(result) = job.as_ref().and_then(take) {
+                    *job = None;
+                    match result {
+                        Ok((page, _next)) => templates.extend(page),
+                        Err(e) => *error = Some(e.text()),
+                    }
+                }
+                if let Some(result) = select.as_ref().and_then(take) {
+                    *select = None;
+                    match result {
+                        // `SwitchMinigameTask`: the configuration screen again.
+                        Ok(()) => back_to_worlds = Some(server.clone()),
+                        Err(e) => *error = Some(e.text()),
+                    }
+                }
+            }
+            SubScreen::Uploading {
+                job, error, done, ..
+            } => {
+                if let Some(result) = job.as_ref().and_then(take) {
+                    *job = None;
+                    *done = true;
+                    if let Err(e) = result {
+                        *error = Some(e);
+                    }
+                }
+            }
             SubScreen::Connecting { .. } => return self.poll_join(),
             _ => {}
         }
+        if refetch_codes {
+            self.start_invite_codes();
+        }
+        if refetch_backups {
+            self.start_backups();
+        }
+        if saved_code {
+            self.back_to_codes();
+        }
         if open_region_screen {
             self.open_region_preference();
+        }
+        if let Some(server) = back_to_worlds {
+            self.back_to_configure_worlds(server);
         }
         if slot_options_saved {
             self.back_to_worlds();
@@ -952,12 +1377,62 @@ impl Screen {
     pub fn tab(&mut self) {}
 
     /// Escape: a sub-screen goes back to the list (cancelling a join); the list goes back to
-    /// the title (true).
+    /// the title (true). The reset screens keep vanilla's parents: the configuration screen
+    /// for the reset screen, the reset screen for the two lists.
     pub fn escape(&mut self) -> bool {
-        if matches!(self.subscreen, SubScreen::Main) {
-            return true;
+        enum Escape {
+            Title,
+            List,
+            Reset(RealmServer, i32, ResetKind),
+            Configure(RealmServer),
         }
-        self.back_to_list();
+        let action = match &self.subscreen {
+            SubScreen::Main => Escape::Title,
+            SubScreen::ResetWorld { server, reset, .. } => {
+                // `RealmsLongRunningMcoTaskScreen` blocks Escape while the reset runs.
+                if reset.is_some() {
+                    return false;
+                }
+                Escape::Configure(server.clone())
+            }
+            SubScreen::TemplateList {
+                server, slot, kind, ..
+            }
+            | SubScreen::UploadSelect {
+                server, slot, kind, ..
+            } => Escape::Reset(server.clone(), *slot, *kind),
+            SubScreen::Uploading {
+                server,
+                progress,
+                done,
+                ..
+            } => {
+                if *done {
+                    Escape::Configure(server.clone())
+                } else {
+                    // `RealmsUploadScreen.keyPressed`: Escape cancels the body.
+                    progress.cancel();
+                    return false;
+                }
+            }
+            _ => Escape::List,
+        };
+        match action {
+            Escape::Title => return true,
+            Escape::List => self.back_to_list(),
+            Escape::Reset(server, slot, kind) => {
+                self.subscreen = SubScreen::ResetWorld {
+                    server,
+                    slot,
+                    kind,
+                    templates: None,
+                    job: None,
+                    reset: None,
+                    error: None,
+                };
+            }
+            Escape::Configure(server) => self.back_to_configure_worlds(server),
+        }
         false
     }
 
@@ -1300,6 +1775,117 @@ impl Screen {
         }
     }
 
+    /// `RealmsInviteCodesScreen.refreshInviteCodes`: the list reads again.
+    fn start_invite_codes(&mut self) {
+        let SubScreen::InviteCodes {
+            server, list_job, ..
+        } = &mut self.subscreen
+        else {
+            return;
+        };
+        if list_job.is_some() {
+            return;
+        }
+        if let Some(client) = client() {
+            let id = server.id;
+            *list_job = Some(spawn(move || client.invite_codes(id)));
+        }
+    }
+
+    /// `RealmsEditInviteCodeScreen`'s save or delete done: back to the codes list, which
+    /// reads again.
+    fn back_to_codes(&mut self) {
+        let SubScreen::EditCode { server, .. } = &self.subscreen else {
+            return;
+        };
+        let server = server.clone();
+        self.subscreen = SubScreen::InviteCodes {
+            server,
+            codes: None,
+            list_job: None,
+            job: None,
+            error: None,
+        };
+        self.start_invite_codes();
+    }
+
+    /// `RealmsBackupScreen.refresh`: the backup list reads again.
+    fn start_backups(&mut self) {
+        let SubScreen::Backups {
+            server, list_job, ..
+        } = &mut self.subscreen
+        else {
+            return;
+        };
+        if list_job.is_some() {
+            return;
+        }
+        if let Some(client) = client() {
+            let id = server.id;
+            *list_job = Some(spawn(move || client.backups_for(id)));
+        }
+    }
+
+    /// Back to the worlds tab from the backup screens.
+    fn back_to_worlds_tab(&mut self) {
+        let server = match &self.subscreen {
+            SubScreen::Backups { server, .. } | SubScreen::BackupInfo { server, .. } => {
+                server.clone()
+            }
+            _ => return,
+        };
+        self.subscreen = SubScreen::Configure {
+            server,
+            tab: ConfigureTab::Worlds,
+            subscription: None,
+            subscription_job: None,
+            detail: None,
+            detail_job: None,
+            deleting: None,
+            member_job: None,
+            settings: None,
+            tier: None,
+            tier_job: None,
+            regions: None,
+            regions_job: None,
+            saving: None,
+            error: None,
+            job: None,
+        };
+        self.start_configure_subscription();
+        self.start_configure_detail();
+    }
+
+    /// Back to the players tab from the codes screens.
+    fn back_to_players_tab(&mut self) {
+        let server = match &self.subscreen {
+            SubScreen::InviteCodes { server, .. } | SubScreen::EditCode { server, .. } => {
+                server.clone()
+            }
+            _ => return,
+        };
+        self.subscreen = SubScreen::Configure {
+            server,
+            tab: ConfigureTab::Players,
+            subscription: None,
+            subscription_job: None,
+            detail: None,
+            detail_job: None,
+            deleting: None,
+            member_job: None,
+            settings: None,
+            tier: None,
+            tier_job: None,
+            regions: None,
+            regions_job: None,
+            saving: None,
+            error: None,
+            job: None,
+        };
+        self.start_configure_subscription();
+        self.start_configure_detail();
+    }
+
     /// `RealmsInviteScreen.onClose`: back to the players tab.
     fn back_to_players(&mut self) {
         let SubScreen::Invite { server, .. } = &self.subscreen else {
@@ -1326,6 +1912,271 @@ impl Screen {
         };
         self.start_configure_subscription();
         self.start_configure_detail();
+    }
+
+    /// `RealmsConfigureWorldScreen` with the worlds tab, its data read again: the screen a
+    /// finished reset (or upload) leaves (`resetWorldRunnable`, `getNewScreen`).
+    fn back_to_configure_worlds(&mut self, server: RealmServer) {
+        self.subscreen = SubScreen::Configure {
+            server,
+            tab: ConfigureTab::Worlds,
+            subscription: None,
+            subscription_job: None,
+            detail: None,
+            detail_job: None,
+            deleting: None,
+            member_job: None,
+            settings: None,
+            tier: None,
+            tier_job: None,
+            regions: None,
+            regions_job: None,
+            saving: None,
+            error: None,
+            job: None,
+        };
+        self.start_configure_subscription();
+        self.start_configure_detail();
+    }
+
+    /// `RealmsWorldsTab.resetButtonPressed`: a minigame Realm picks another template, any other
+    /// Realm replaces the active slot's world.
+    fn reset_button(&mut self) {
+        let SubScreen::Configure {
+            server,
+            tab: ConfigureTab::Worlds,
+            detail: Some(Ok(detail)),
+            ..
+        } = &self.subscreen
+        else {
+            return;
+        };
+        let server = server.clone();
+        let slot = server.active_slot;
+        if server.world_type == "MINIGAME" {
+            self.open_template_list(server, slot, ResetKind::Reset, None);
+            return;
+        }
+        let empty = detail
+            .slots
+            .get(&detail.active_slot)
+            .is_none_or(|slot| slot.options.empty);
+        let kind = if empty {
+            ResetKind::Empty
+        } else {
+            ResetKind::Reset
+        };
+        self.open_reset_world(server, slot, kind);
+    }
+
+    /// `new RealmsResetWorldScreen`: `init` asks the service for page 1 of each group.
+    fn open_reset_world(&mut self, server: RealmServer, slot: i32, kind: ResetKind) {
+        let job = client().map(|client| {
+            spawn(move || {
+                [
+                    client.fetch_world_templates(1, 10, "NORMAL"),
+                    client.fetch_world_templates(1, 10, "ADVENTUREMAP"),
+                    client.fetch_world_templates(1, 10, "EXPERIENCE"),
+                    client.fetch_world_templates(1, 10, "INSPIRATION"),
+                ]
+            })
+        });
+        self.subscreen = SubScreen::ResetWorld {
+            server,
+            slot,
+            kind,
+            templates: None,
+            job,
+            reset: None,
+            error: None,
+        };
+    }
+
+    /// `new RealmsSelectWorldTemplateScreen`: its first page (the reset screen's when it has
+    /// one) and the rest of the pages, then the list.
+    fn open_template_list(
+        &mut self,
+        server: RealmServer,
+        slot: i32,
+        kind: ResetKind,
+        group: Option<TemplateGroup>,
+    ) {
+        let prefetched = match (&self.subscreen, group) {
+            (
+                SubScreen::ResetWorld {
+                    templates: Some(lists),
+                    ..
+                },
+                Some(wanted),
+            ) => lists[wanted.index()].clone().ok(),
+            _ => None,
+        };
+        let (templates, next_page, page_size) = match prefetched {
+            Some(page) => (page.templates, page.page + 1, page.size.max(10)),
+            // `new WorldTemplatePaginatedList(10)`: page 0 of ten, so page 1 is next.
+            None => (Vec::new(), 1, 10),
+        };
+        let job = client().map(|client| {
+            let world_type = group
+                .map_or("MINIGAME", TemplateGroup::world_type)
+                .to_owned();
+            spawn(move || fetch_template_pages(&client, world_type.as_str(), next_page, page_size))
+        });
+        self.subscreen = SubScreen::TemplateList {
+            server,
+            slot,
+            kind,
+            group,
+            templates,
+            selected: None,
+            scroll: crate::ui::Scroll::default(),
+            job,
+            select: None,
+            icons: std::cell::RefCell::new(Vec::new()),
+            error: None,
+        };
+    }
+
+    /// `RealmsSelectWorldTemplateScreen.selectTemplate`: the minigame task, or the reset.
+    fn select_template(&mut self) {
+        let SubScreen::TemplateList {
+            server,
+            slot,
+            kind,
+            group,
+            templates,
+            selected,
+            ..
+        } = &self.subscreen
+        else {
+            return;
+        };
+        let Some(template) = selected.and_then(|i| templates.get(i)).cloned() else {
+            return;
+        };
+        let (server, slot, kind, group) = (server.clone(), *slot, *kind, *group);
+        if group.is_none() {
+            // `SwitchMinigameTask`: `putIntoMinigameMode`, then the configuration screen; the
+            // task asks again when the service says no (`for i = 0; i < 25`).
+            let job = client().map(|client| {
+                let (realm_id, minigame) = (server.id, template.id.clone());
+                spawn(move || {
+                    for _ in 0..25 {
+                        if client.put_into_minigame_mode(realm_id, &minigame)? {
+                            break;
+                        }
+                    }
+                    Ok(())
+                })
+            });
+            if let SubScreen::TemplateList { select, .. } = &mut self.subscreen {
+                *select = job;
+            }
+            return;
+        }
+        // `ResettingTemplateWorldTask`: the reset screen again, its task running.
+        let reset = client().map(|client| {
+            let (realm_id, active, template_id) = (server.id, server.active_slot, template.id);
+            spawn(move || {
+                // `runResetTasks`' `SwitchSlotTask`: a no is retried in vanilla; this port
+                // takes the service's answer as it came and lets the reset speak for itself.
+                if slot != active {
+                    client.switch_slot(realm_id, slot)?;
+                }
+                let template_id = template_id.parse::<i64>().map_err(|_| RealmsError::Parse)?;
+                client
+                    .reset_world_with_template(realm_id, template_id)
+                    .map(drop)
+            })
+        });
+        self.subscreen = SubScreen::ResetWorld {
+            server,
+            slot,
+            kind,
+            templates: None,
+            job: None,
+            reset,
+            error: None,
+        };
+    }
+
+    /// `RealmsUploadScreen`: the local world's folder on a worker, packed and posted.
+    fn start_upload(&mut self, server: RealmServer, slot: i32, world: crate::title::WorldEntry) {
+        let Some(saves) = self.saves.clone() else {
+            return;
+        };
+        let progress = Arc::new(upload::UploadProgress::default());
+        let job = client().map(|client| {
+            let progress = Arc::clone(&progress);
+            let active = server.active_slot;
+            let options =
+                RealmWorldOptions {
+                    // `RealmsWorldOptions.createFromSettings`: the world's own settings, its saved
+                    // version as the world version.
+                    spawn_protection: 0,
+                    force_game_mode: false,
+                    difficulty: crate::save::Level::read_summary(&saves.join(&world.folder))
+                        .map_or(2, |level| {
+                            crate::title::DIFFICULTIES
+                                .iter()
+                                .position(|d| *d == level.difficulty)
+                                .unwrap_or(2) as i32
+                        }),
+                    game_mode: world.game_mode,
+                    slot_name: world.name.clone(),
+                    version: world.version.clone(),
+                    compatibility: "UNVERIFIABLE".into(),
+                    template_id: -1,
+                    template_image: None,
+                    empty: false,
+                };
+            let realm_slot = RealmSlot {
+                slot_id: slot,
+                options,
+                settings: vec![RealmSetting {
+                    name: "hardcore".into(),
+                    value: world.hardcore.to_string(),
+                }],
+            };
+            let world_dir = saves.join(&world.folder);
+            spawn(move || {
+                // `RealmsUploadScreen.init`: `SwitchSlotTask` first, when the slot isn't active.
+                if slot != active {
+                    client
+                        .switch_slot(server.id, slot)
+                        .map_err(|e| upload::UploadError::Failed(e.text()))?;
+                }
+                upload::upload_world(&client, server.id, &realm_slot, &world_dir, &progress)
+            })
+        });
+        self.subscreen = SubScreen::Uploading {
+            server,
+            slot,
+            world,
+            progress,
+            job,
+            error: None,
+            done: false,
+            started: Instant::now(),
+        };
+    }
+
+    /// `new RealmsSelectFileToUploadScreen`: the game's own worlds (`WorldSelectionList`), as the
+    /// title screen lists them.
+    fn open_upload_select(&mut self, server: RealmServer, slot: i32, kind: ResetKind) {
+        let worlds = self
+            .saves
+            .as_deref()
+            .map(crate::title::list_worlds)
+            .unwrap_or_default();
+        self.subscreen = SubScreen::UploadSelect {
+            server,
+            slot,
+            kind,
+            worlds,
+            selected: None,
+            scroll: crate::ui::Scroll::default(),
+        };
     }
 
     pub fn click(&mut self, hit: Option<u8>, x: f32, y: f32, (w, h): (f32, f32)) -> Outcome {
@@ -1430,6 +2281,130 @@ impl Screen {
                 Outcome::None
             }
             // The configuration screen's tabs (60..=63) and its footer: Play (64).
+            // RealmsWorldsTab's reset/new-world button.
+            Some(90) => {
+                self.reset_button();
+                Outcome::None
+            }
+            // RealmsResetWorldScreen's tiles: Upload (71) and the four template groups (72..=75).
+            // Generate New World (70) needs the create-world flow the port does not feed into
+            // an upload yet, so the tile is drawn disabled and does nothing.
+            Some(tile @ 71..=75) => {
+                if let SubScreen::ResetWorld {
+                    server, slot, kind, ..
+                } = &self.subscreen
+                {
+                    let (server, slot, kind) = (server.clone(), *slot, *kind);
+                    if tile == 71 {
+                        self.open_upload_select(server, slot, kind);
+                    } else if let Some(group) = TemplateGroup::ALL.get(usize::from(tile - 72)) {
+                        self.open_template_list(server, slot, kind, Some(*group));
+                    }
+                }
+                Outcome::None
+            }
+            // `RealmsResetWorldScreen.onClose`: the configuration screen.
+            Some(76) => {
+                if let SubScreen::ResetWorld { server, .. } = &self.subscreen {
+                    let server = server.clone();
+                    self.back_to_configure_worlds(server);
+                }
+                Outcome::None
+            }
+            Some(77) => {
+                self.select_template();
+                Outcome::None
+            }
+            // `RealmsSelectWorldTemplateScreen.onClose`: `callback.accept(null)`, the reset screen.
+            Some(78) => {
+                if let SubScreen::TemplateList {
+                    server, slot, kind, ..
+                } = &self.subscreen
+                {
+                    let (server, slot, kind) = (server.clone(), *slot, *kind);
+                    self.subscreen = SubScreen::ResetWorld {
+                        server,
+                        slot,
+                        kind,
+                        templates: None,
+                        job: None,
+                        reset: None,
+                        error: None,
+                    };
+                }
+                Outcome::None
+            }
+            // The selected template's trailer and publisher page (`ConfirmLinkScreen`).
+            Some(which @ (79 | 92)) => {
+                if let SubScreen::TemplateList {
+                    templates,
+                    selected,
+                    ..
+                } = &self.subscreen
+                    && let Some(template) = selected.and_then(|i| templates.get(i))
+                {
+                    let link = if which == 79 {
+                        template.trailer.clone()
+                    } else {
+                        template.link.clone()
+                    };
+                    if let Some(link) = link {
+                        return Outcome::OpenUri(link);
+                    }
+                }
+                Outcome::None
+            }
+            // `RealmsSelectFileToUploadScreen`'s Upload and Back.
+            Some(82) => {
+                if let SubScreen::UploadSelect {
+                    server,
+                    slot,
+                    worlds,
+                    selected,
+                    ..
+                } = &self.subscreen
+                    && let Some(world) = selected.and_then(|i| worlds.get(i)).cloned()
+                {
+                    let (server, slot) = (server.clone(), *slot);
+                    self.start_upload(server, slot, world);
+                }
+                Outcome::None
+            }
+            Some(83) => {
+                if let SubScreen::UploadSelect {
+                    server, slot, kind, ..
+                } = &self.subscreen
+                {
+                    let (server, slot, kind) = (server.clone(), *slot, *kind);
+                    self.subscreen = SubScreen::ResetWorld {
+                        server,
+                        slot,
+                        kind,
+                        templates: None,
+                        job: None,
+                        reset: None,
+                        error: None,
+                    };
+                }
+                Outcome::None
+            }
+            // `RealmsUploadScreen.onCancel`: the body's reader stops.
+            Some(84) => {
+                if let SubScreen::Uploading { progress, done, .. } = &self.subscreen
+                    && !*done
+                {
+                    progress.cancel();
+                }
+                Outcome::None
+            }
+            // `RealmsUploadScreen.onBack`: the configuration screen.
+            Some(85) => {
+                if let SubScreen::Uploading { server, .. } = &self.subscreen {
+                    let server = server.clone();
+                    self.back_to_configure_worlds(server);
+                }
+                Outcome::None
+            }
             Some(sel @ 60..=63) => {
                 if let SubScreen::Configure { server, tab, .. } = &mut self.subscreen
                     && let Some(wanted) = ConfigureTab::ALL.get(usize::from(sel - 60))
@@ -1475,6 +2450,70 @@ impl Screen {
                         job: None,
                         error: None,
                     };
+                }
+                Outcome::None
+            }
+            // RealmsWorldsTab's Backup button: the backup list.
+            Some(93) => {
+                if let SubScreen::Configure {
+                    server,
+                    detail: Some(Ok(detail)),
+                    ..
+                } = &self.subscreen
+                    && let Some(client) = client()
+                {
+                    let (server, slot_id, id) = (server.clone(), detail.active_slot, server.id);
+                    self.subscreen = SubScreen::Backups {
+                        server,
+                        slot_id,
+                        backups: None,
+                        list_job: Some(spawn(move || client.backups_for(id))),
+                        restore_job: None,
+                        error: None,
+                    };
+                }
+                Outcome::None
+            }
+            // RealmsBackupScreen: a row's Restore (170+row) and Back (190).
+            Some(btn @ 170..=189) => {
+                if let SubScreen::Backups {
+                    server,
+                    backups,
+                    restore_job,
+                    ..
+                } = &mut self.subscreen
+                {
+                    let row = usize::from(btn - 170);
+                    if restore_job.is_none()
+                        && let Some(Ok(list)) = backups
+                        && let Some(backup) = list.get(row)
+                        && let Some(client) = client()
+                    {
+                        let (id, backup_id) = (server.id, backup.backup_id.clone());
+                        *restore_job = Some(spawn(move || client.restore_world(id, &backup_id)));
+                    }
+                }
+                Outcome::None
+            }
+            Some(190) => {
+                self.back_to_worlds_tab();
+                Outcome::None
+            }
+            Some(191) => {
+                if let SubScreen::BackupInfo {
+                    server, slot_id, ..
+                } = &self.subscreen
+                {
+                    let server = server.clone();
+                    self.subscreen = SubScreen::Backups {
+                        server,
+                        slot_id: *slot_id,
+                        backups: None,
+                        list_job: None,
+                        restore_job: None,
+                        error: None,
+                    };
+                    self.start_backups();
                 }
                 Outcome::None
             }
@@ -1577,6 +2616,86 @@ impl Screen {
                 }
                 Outcome::None
             }
+            // RealmsInviteCodesScreen: the Players tab's second button.
+            Some(68) => {
+                if let SubScreen::Configure { server, .. } = &self.subscreen
+                    && let Some(client) = client()
+                {
+                    let id = server.id;
+                    self.subscreen = SubScreen::InviteCodes {
+                        server: server.clone(),
+                        codes: None,
+                        list_job: Some(spawn(move || client.invite_codes(id))),
+                        job: None,
+                        error: None,
+                    };
+                }
+                Outcome::None
+            }
+            // RealmsInviteCodesScreen: Create (160) and Back (161).
+            Some(160) => {
+                if let SubScreen::InviteCodes { server, job, .. } = &mut self.subscreen
+                    && job.is_none()
+                    && let Some(client) = client()
+                {
+                    let id = server.id;
+                    *job = Some(spawn(move || client.create_invite_code(id, true, None)));
+                }
+                Outcome::None
+            }
+            Some(161) => {
+                self.back_to_players_tab();
+                Outcome::None
+            }
+            // RealmsEditInviteCodeScreen: Active (162), Copy (163), Delete (164), Done
+            // (165) and Back (166).
+            Some(162) => {
+                if let SubScreen::EditCode { active, .. } = &mut self.subscreen {
+                    *active = !*active;
+                }
+                Outcome::None
+            }
+            Some(163) => {
+                if let SubScreen::EditCode { code, .. } = &self.subscreen {
+                    return Outcome::Copy(code.code.clone());
+                }
+                Outcome::None
+            }
+            Some(164) => {
+                if let SubScreen::EditCode { job, code, .. } = &mut self.subscreen
+                    && job.is_none()
+                    && let Some(client) = client()
+                {
+                    let code = code.code.clone();
+                    *job = Some(spawn(move || client.delete_invite_code(&code)));
+                }
+                Outcome::None
+            }
+            Some(165) => {
+                if let SubScreen::EditCode {
+                    server,
+                    code,
+                    active,
+                    expiration,
+                    job,
+                    ..
+                } = &mut self.subscreen
+                    && job.is_none()
+                    && let Some(client) = client()
+                {
+                    let (id, code_text) = (server.id, code.code.clone());
+                    let (enabled, index) = (*active, *expiration);
+                    *job = Some(spawn(move || {
+                        let seconds = EXPIRATIONS[index.min(EXPIRATIONS.len() - 1)].1;
+                        client.update_invite_code(id, &code_text, enabled, seconds)
+                    }));
+                }
+                Outcome::None
+            }
+            Some(166) => {
+                self.back_to_players_tab();
+                Outcome::None
+            }
             // RealmsSlotOptionsScreen: cycle, toggle, Done and Cancel.
             Some(95) => {
                 if let SubScreen::SlotOptions {
@@ -1645,6 +2764,9 @@ impl Screen {
                     Pending(bool, String),
                     Member(bool, i64, String),
                     Uninvite(RealmServer, PlayerInfo),
+                    Copy(String),
+                    Edit(InviteCode),
+                    DeleteCode(String),
                 }
                 let row = match &self.subscreen {
                     SubScreen::PendingInvites { invites, job } if job.is_none() => {
@@ -1656,6 +2778,20 @@ impl Screen {
                                 None => Row::Nothing,
                             },
                             None => Row::Nothing,
+                        }
+                    }
+                    SubScreen::InviteCodes {
+                        codes: Some(Ok(list)),
+                        job,
+                        ..
+                    } => {
+                        let index = usize::from((btn - 130) / 3);
+                        let which = (btn - 130) % 3;
+                        match list.get(index) {
+                            Some(code) if which == 0 => Row::Copy(code.code.clone()),
+                            Some(code) if which == 1 => Row::Edit(code.clone()),
+                            Some(code) if job.is_none() => Row::DeleteCode(code.code.clone()),
+                            _ => Row::Nothing,
                         }
                     }
                     SubScreen::Configure {
@@ -1718,6 +2854,33 @@ impl Screen {
                     Row::Uninvite(server, player) => {
                         self.subscreen = SubScreen::Popup(Popup::Uninvite { server, player });
                     }
+                    Row::Copy(code) => return Outcome::Copy(code),
+                    Row::Edit(code) => {
+                        if let SubScreen::InviteCodes { server, .. } = &self.subscreen {
+                            let server = server.clone();
+                            let expiration = code
+                                .expiration_date
+                                .map(closest_expiration)
+                                .unwrap_or(EXPIRATIONS.len() - 1);
+                            let active = code.enabled;
+                            self.subscreen = SubScreen::EditCode {
+                                server,
+                                code,
+                                active,
+                                expiration,
+                                job: None,
+                                error: None,
+                            };
+                        }
+                    }
+                    Row::DeleteCode(code) => {
+                        if let SubScreen::InviteCodes { job, .. } = &mut self.subscreen
+                            && job.is_none()
+                            && let Some(client) = client()
+                        {
+                            *job = Some(spawn(move || client.delete_invite_code(&code)));
+                        }
+                    }
                 }
                 Outcome::None
             }
@@ -1766,6 +2929,33 @@ impl Screen {
                         *tab = *wanted;
                     }
                     return Outcome::None;
+                }
+                // RealmsBackupScreen: a row (not its Restore button) opens the backup's
+                // metadata.
+                if let SubScreen::Backups {
+                    server,
+                    slot_id,
+                    backups: Some(Ok(list)),
+                    ..
+                } = &self.subscreen
+                {
+                    let rx = ((w - ROW_WIDTH) / 2.0).floor();
+                    let row_y = |i: usize| 36.0 + 22.0 + 2.0 + i as f32 * ROW_HEIGHT;
+                    if (rx..rx + ROW_WIDTH).contains(&x) {
+                        for (i, backup) in list.iter().enumerate() {
+                            let y0 = row_y(i);
+                            if (y0..y0 + ROW_HEIGHT).contains(&y) {
+                                let (server, slot_id, backup) =
+                                    (server.clone(), *slot_id, backup.clone());
+                                self.subscreen = SubScreen::BackupInfo {
+                                    server,
+                                    slot_id,
+                                    backup,
+                                };
+                                return Outcome::None;
+                            }
+                        }
+                    }
                 }
                 // RealmsSettingsTab's two fields: the click moves the caret between them.
                 // The two distance sliders: a click on the track sets the value, as the
@@ -1831,6 +3021,20 @@ impl Screen {
                         *selected = Some(pick.clone());
                     }
                     return Outcome::None;
+                }
+                // RealmsEditInviteCodeScreen's expiration slider: a click picks the
+                // nearest of the seven choices.
+                if let SubScreen::EditCode {
+                    active, expiration, ..
+                } = &mut self.subscreen
+                    && *active
+                {
+                    let left = (w / 2.0).floor() - 154.0;
+                    if (72.0..92.0).contains(&y) && (left..left + 308.0).contains(&x) {
+                        let value = crate::ui::slider_value(left, 308.0, x);
+                        *expiration = (value * (EXPIRATIONS.len() - 1) as f32).round() as usize;
+                        return Outcome::None;
+                    }
                 }
                 // RealmsSlotOptionsScreen's spawn-protection slider: a click on the track
                 // sets the value (there is no drag event on this screen yet).
@@ -2010,6 +3214,87 @@ impl Screen {
     }
 
     fn click_list(&mut self, x: f32, y: f32, (w, h): (f32, f32)) -> Outcome {
+        // `RealmsResetWorldScreen`'s tiles are drawn, not widgets: the click is a rectangle.
+        if let SubScreen::ResetWorld {
+            server,
+            slot,
+            kind,
+            reset,
+            ..
+        } = &self.subscreen
+        {
+            if reset.is_some() {
+                return Outcome::None;
+            }
+            let cx = (w / 2.0).floor();
+            let tile = (0..6).find(|i| {
+                let (tx, ty) = reset_tile(cx, *i);
+                x >= tx && x < tx + 60.0 && y >= ty && y < ty + 60.0
+            });
+            if let Some(tile) = tile {
+                let (server, slot, kind) = (server.clone(), *slot, *kind);
+                if tile == 1 {
+                    self.open_upload_select(server, slot, kind);
+                } else if tile >= 2
+                    && let Some(group) = TemplateGroup::ALL.get(tile - 2)
+                {
+                    self.open_template_list(server, slot, kind, Some(*group));
+                }
+            }
+            return Outcome::None;
+        }
+        // The template and upload lists pick a row; a double click selects the template at
+        // once (`Entry.mouseClicked`'s `doubleClick && isFocused`).
+        let picked = match &self.subscreen {
+            SubScreen::TemplateList {
+                group,
+                templates,
+                scroll,
+                icons,
+                ..
+            } => {
+                // `Entry.mouseClicked` checks its two buttons before the list.
+                if let Some(link) = icons.borrow().iter().find_map(|(row, rect, trailer)| {
+                    let [ix, iy, iw, ih] = *rect;
+                    if x < ix || x >= ix + iw || y < iy || y >= iy + ih {
+                        return None;
+                    }
+                    let template = templates.get(*row)?;
+                    if *trailer {
+                        template.trailer.clone()
+                    } else {
+                        template.link.clone()
+                    }
+                }) {
+                    return Outcome::OpenUri(link);
+                }
+                let top = if group.is_none() { 51.0 } else { 30.0 };
+                row_at(x, y, w, top, h - 44.0, TEMPLATE_ROW, scroll.amount)
+                    .filter(|row| *row < templates.len())
+                    .map(|row| (row, true))
+            }
+            SubScreen::UploadSelect { worlds, scroll, .. } => {
+                row_at(x, y, w, 32.0, h - 48.0, ROW_HEIGHT, scroll.amount)
+                    .filter(|row| *row < worlds.len())
+                    .map(|row| (row, false))
+            }
+            _ => None,
+        };
+        if let Some((row, template)) = picked {
+            let now = SystemTime::now();
+            let double = matches!(self.last_click, Some((last, at)) if last == row
+                && now.duration_since(at).is_ok_and(|d| d.as_millis() < 350));
+            self.last_click = Some((row, now));
+            match &mut self.subscreen {
+                SubScreen::TemplateList { selected, .. } => *selected = Some(row),
+                SubScreen::UploadSelect { selected, .. } => *selected = Some(row),
+                _ => {}
+            }
+            if double && template {
+                self.select_template();
+            }
+            return Outcome::None;
+        }
         if !matches!(self.subscreen, SubScreen::Main) {
             return Outcome::None;
         }
@@ -2038,16 +3323,38 @@ impl Screen {
         Outcome::None
     }
 
-    /// `AbstractScrollArea.mouseScrolled` over the product page's list.
+    /// `AbstractScrollArea.mouseScrolled` over the product page's list and the template and
+    /// upload lists.
     pub fn wheel(&mut self, delta: f32, cursor: (f32, f32), (_, h): (f32, f32)) {
-        let SubScreen::AddRealm { scroll, content } = &mut self.subscreen else {
-            return;
+        let (top, bottom, content, step) = match &self.subscreen {
+            SubScreen::AddRealm { content, .. } => (44.0, h - 40.0, content.get(), 10.0),
+            SubScreen::TemplateList {
+                group, templates, ..
+            } => (
+                if group.is_none() { 51.0 } else { 30.0 },
+                h - 44.0,
+                templates.len() as f32 * TEMPLATE_ROW,
+                TEMPLATE_ROW / 2.0,
+            ),
+            SubScreen::UploadSelect { worlds, .. } => (
+                32.0,
+                h - 48.0,
+                worlds.len() as f32 * ROW_HEIGHT,
+                ROW_HEIGHT / 2.0,
+            ),
+            _ => return,
         };
-        let (top, bottom) = (44.0, h - 40.0);
         if cursor.1 < top || cursor.1 >= bottom {
             return;
         }
-        scroll.wheel(delta, 10.0, top, bottom, content.get());
+        match &mut self.subscreen {
+            SubScreen::AddRealm { scroll, .. }
+            | SubScreen::TemplateList { scroll, .. }
+            | SubScreen::UploadSelect { scroll, .. } => {
+                scroll.wheel(delta, step, top, bottom, content);
+            }
+            _ => {}
+        }
     }
 
     pub fn buttons(
@@ -2190,14 +3497,14 @@ impl Screen {
                         None,
                     ));
                 }
-                // RealmsWorldsTab: World Options (Backup and Reset follow in their PRs).
+                // RealmsWorldsTab: World Options and Backup side by side, the Reset/New World
+                // button below them; vanilla stacks the three, the port keeps the shorter
+                // rows their height.
                 if *tab == ConfigureTab::Worlds
                     && let Some(Ok(detail)) = detail
-                    && let Some(slot) = detail.slots.get(&detail.active_slot)
-                    && !slot.options.empty
                 {
                     buttons.push((
-                        cx - 76.0,
+                        cx - 154.0,
                         h - 96.0,
                         152.0,
                         t("mco.configure.world.buttons.options"),
@@ -2205,6 +3512,25 @@ impl Screen {
                         94,
                         None,
                     ));
+                    buttons.push((
+                        cx + 2.0,
+                        h - 96.0,
+                        152.0,
+                        t("mco.configure.world.backup"),
+                        !server.expired,
+                        93,
+                        None,
+                    ));
+                    let active = detail.slots.get(&detail.active_slot);
+                    let empty = active.is_none_or(|slot| slot.options.empty);
+                    let reset = if server.world_type == "MINIGAME" {
+                        t("mco.configure.world.buttons.switchminigame")
+                    } else if empty {
+                        t("mco.configure.world.buttons.newworld")
+                    } else {
+                        t("mco.configure.world.buttons.resetworld")
+                    };
+                    buttons.push((cx - 76.0, h - 68.0, 152.0, reset, !server.expired, 90, None));
                 }
                 // RealmsPlayersTab: a row's Op/Deop/Remove, then Invite Player.
                 if *tab == ConfigureTab::Players
@@ -2237,12 +3563,21 @@ impl Screen {
                         }
                     }
                     buttons.push((
-                        cx - 100.0,
+                        cx - 102.0,
                         h - 60.0,
-                        200.0,
+                        100.0,
                         t("mco.configure.world.buttons.invite"),
                         true,
                         67,
+                        None,
+                    ));
+                    buttons.push((
+                        cx + 2.0,
+                        h - 60.0,
+                        100.0,
+                        t("mco.configure.world.buttons.invite_codes"),
+                        true,
+                        68,
                         None,
                     ));
                 }
@@ -2321,6 +3656,127 @@ impl Screen {
                 ));
                 buttons.push((cx + 2.0, h - 36.0, 100.0, t("gui.cancel"), true, 99, None));
             }
+            SubScreen::Backups {
+                backups,
+                restore_job,
+                ..
+            } => {
+                if let Some(Ok(list)) = backups {
+                    let rx = ((w - ROW_WIDTH) / 2.0).floor();
+                    for (i, _) in list.iter().enumerate().take(40) {
+                        let row_y = 36.0 + 22.0 + 2.0 + i as f32 * ROW_HEIGHT;
+                        if row_y + ROW_HEIGHT > h - 48.0 {
+                            break;
+                        }
+                        buttons.push((
+                            rx + ROW_WIDTH - 88.0,
+                            row_y + 8.0,
+                            84.0,
+                            t("mco.backup.button.restore"),
+                            restore_job.is_none(),
+                            170 + i as u8,
+                            None,
+                        ));
+                    }
+                }
+                buttons.push((cx - 100.0, h - 36.0, 200.0, t("gui.back"), true, 190, None));
+            }
+            SubScreen::BackupInfo { .. } => {
+                buttons.push((cx - 100.0, h - 36.0, 200.0, t("gui.back"), true, 191, None));
+            }
+            SubScreen::InviteCodes {
+                codes,
+                list_job,
+                job,
+                ..
+            } => {
+                if let Some(Ok(list)) = codes {
+                    let rx = ((w - ROW_WIDTH) / 2.0).floor();
+                    for (i, _) in list.iter().enumerate().take(40) {
+                        let row_y = 36.0 + 22.0 + 2.0 + i as f32 * ROW_HEIGHT;
+                        if row_y + ROW_HEIGHT > h - 48.0 {
+                            break;
+                        }
+                        let id = 130 + i as u8 * 3;
+                        buttons.push((
+                            rx + ROW_WIDTH - 146.0,
+                            row_y + 8.0,
+                            46.0,
+                            t("mco.configure.world.invite_codes.copy"),
+                            true,
+                            id,
+                            None,
+                        ));
+                        buttons.push((
+                            rx + ROW_WIDTH - 98.0,
+                            row_y + 8.0,
+                            46.0,
+                            t("mco.configure.world.invite_codes.edit"),
+                            true,
+                            id + 1,
+                            None,
+                        ));
+                        buttons.push((
+                            rx + ROW_WIDTH - 50.0,
+                            row_y + 8.0,
+                            48.0,
+                            t("mco.configure.world.invite_codes.delete"),
+                            job.is_none(),
+                            id + 2,
+                            None,
+                        ));
+                    }
+                }
+                buttons.push((
+                    cx - 100.0,
+                    h - 60.0,
+                    200.0,
+                    t("mco.configure.world.invite_codes.create"),
+                    list_job.is_none() && job.is_none(),
+                    160,
+                    None,
+                ));
+                buttons.push((cx - 100.0, h - 36.0, 200.0, t("gui.back"), true, 161, None));
+            }
+            SubScreen::EditCode { active, job, .. } => {
+                let on_off = if *active {
+                    t("options.on")
+                } else {
+                    t("options.off")
+                };
+                buttons.push((
+                    cx + 66.0,
+                    6.0,
+                    100.0,
+                    format!(
+                        "{}: {on_off}",
+                        t("mco.configure.world.invite_codes.edit.active")
+                    ),
+                    job.is_none(),
+                    162,
+                    None,
+                ));
+                buttons.push((
+                    cx - 152.0,
+                    h - 36.0,
+                    74.0,
+                    t("mco.configure.world.invite_codes.copy"),
+                    true,
+                    163,
+                    None,
+                ));
+                buttons.push((
+                    cx - 76.0,
+                    h - 36.0,
+                    74.0,
+                    t("mco.configure.world.invite_codes.delete"),
+                    job.is_none(),
+                    164,
+                    None,
+                ));
+                buttons.push((cx, h - 36.0, 74.0, t("gui.done"), job.is_none(), 165, None));
+                buttons.push((cx + 76.0, h - 36.0, 74.0, t("gui.back"), true, 166, None));
+            }
             SubScreen::Invite { job, .. } => {
                 buttons.push((
                     cx - 100.0,
@@ -2365,6 +3821,83 @@ impl Screen {
                     t("gui.cancel")
                 };
                 buttons.push((cx - 100.0, mid + 40.0, 200.0, label, true, 52, None));
+            }
+            SubScreen::ResetWorld { reset, .. } => {
+                // `RealmsLongRunningMcoTaskScreen` while the reset runs: the screen has no
+                // buttons of its own then (vanilla's task screen only offers its Cancel).
+                if reset.is_none() {
+                    buttons.push((cx - 100.0, h - 36.0, 200.0, t("gui.back"), true, 76, None));
+                }
+            }
+            SubScreen::TemplateList {
+                templates,
+                selected,
+                select,
+                ..
+            } => {
+                // `RealmsSelectWorldTemplateScreen`'s footer: trailer, select, cancel and the
+                // publisher page, four 100-wide buttons vanilla lets run past a narrow
+                // window; the port gives them the 320 the tab bar uses.
+                let chosen = selected.and_then(|i| templates.get(i));
+                let x = |i: usize| cx - 160.0 + i as f32 * 82.0;
+                buttons.push((
+                    x(0),
+                    h - 36.0,
+                    74.0,
+                    t("mco.template.button.trailer"),
+                    chosen.is_some_and(|template| template.trailer.is_some()),
+                    79,
+                    None,
+                ));
+                buttons.push((
+                    x(1),
+                    h - 36.0,
+                    74.0,
+                    t("mco.template.button.select"),
+                    chosen.is_some() && select.is_none(),
+                    77,
+                    None,
+                ));
+                buttons.push((x(2), h - 36.0, 74.0, t("gui.cancel"), true, 78, None));
+                buttons.push((
+                    x(3),
+                    h - 36.0,
+                    74.0,
+                    t("mco.template.button.publisher"),
+                    chosen.is_some_and(|template| template.link.is_some()),
+                    92,
+                    None,
+                ));
+            }
+            SubScreen::UploadSelect {
+                worlds, selected, ..
+            } => {
+                buttons.push((
+                    cx - 102.0,
+                    h - 36.0,
+                    100.0,
+                    t("mco.upload.button.name"),
+                    selected.is_some_and(|i| i < worlds.len()),
+                    82,
+                    None,
+                ));
+                buttons.push((cx + 2.0, h - 36.0, 100.0, t("gui.back"), true, 83, None));
+            }
+            SubScreen::Uploading { progress, done, .. } => {
+                if *done {
+                    buttons.push((cx - 100.0, h - 36.0, 200.0, t("gui.done"), true, 85, None));
+                } else {
+                    // `RealmsUploadScreen`'s Cancel: disabled while the answer is verified.
+                    buttons.push((
+                        cx - 100.0,
+                        h - 36.0,
+                        200.0,
+                        t("gui.cancel"),
+                        !progress.completed(),
+                        84,
+                        None,
+                    ));
+                }
             }
             SubScreen::Main => {
                 let signed_in = session().is_some();
@@ -3075,6 +4608,207 @@ impl Screen {
                     }
                 }
             }
+            SubScreen::Backups { backups, error, .. } => {
+                // `RealmsBackupScreen`: a row per backup with its date.
+                centered(
+                    batch,
+                    atlas,
+                    &t("mco.configure.world.backup"),
+                    cx,
+                    14.0,
+                    u32::MAX,
+                );
+                match backups {
+                    Some(Ok(list)) if list.is_empty() => {
+                        centered(batch, atlas, &t("mco.backup.nobackups"), cx, 80.0, GREY);
+                    }
+                    Some(Ok(list)) => {
+                        let rx = ((w - ROW_WIDTH) / 2.0).floor();
+                        for (i, backup) in list.iter().enumerate() {
+                            let row_y = 36.0 + 22.0 + 2.0 + i as f32 * ROW_HEIGHT;
+                            if row_y + ROW_HEIGHT > h - 48.0 {
+                                break;
+                            }
+                            let label = crate::lang::tr(
+                                "mco.backup.entry",
+                                &[&start_date_text(backup.last_modified)
+                                    as &dyn std::fmt::Display],
+                            );
+                            batch.text(atlas, &label, rx + 4.0, row_y + 10.0, u32::MAX, true);
+                        }
+                    }
+                    Some(Err(e)) => {
+                        for (i, line) in wrap_lines(&e.text(), atlas, w - 40.0).iter().enumerate() {
+                            centered(batch, atlas, line, cx, 60.0 + i as f32 * 10.0, RED);
+                        }
+                    }
+                    None => centered(
+                        batch,
+                        atlas,
+                        &t("mco.configure.world.loading"),
+                        cx,
+                        60.0,
+                        u32::MAX,
+                    ),
+                }
+                if let Some(e) = error {
+                    for (i, line) in wrap_lines(e, atlas, w - 40.0).iter().enumerate() {
+                        centered(batch, atlas, line, cx, h - 56.0 + i as f32 * 10.0, RED);
+                    }
+                }
+            }
+            SubScreen::BackupInfo { backup, .. } => {
+                // `RealmsBackupInfoScreen`: the metadata's key/value rows.
+                centered(
+                    batch,
+                    atlas,
+                    &t("mco.backup.info.title"),
+                    cx,
+                    14.0,
+                    u32::MAX,
+                );
+                let left = cx - 150.0;
+                let mut y = 40.0;
+                for (key, value) in &backup.metadata {
+                    if y > h - 50.0 {
+                        break;
+                    }
+                    let value = match value {
+                        serde_json::Value::String(text) => text.clone(),
+                        other => other.to_string(),
+                    };
+                    let label = {
+                        let candidate = format!("mco.backup.entry.{key}");
+                        if crate::lang::has(&candidate) {
+                            crate::lang::get(&candidate)
+                        } else {
+                            key.clone()
+                        }
+                    };
+                    batch.text(atlas, &label, left, y, GREY, true);
+                    batch.text(atlas, &value, left + 110.0, y, u32::MAX, true);
+                    y += 12.0;
+                }
+            }
+            SubScreen::InviteCodes { codes, error, .. } => {
+                // `RealmsInviteCodesScreen`: the count in the title, the subtitle, a row
+                // per code with its expiration, then Create and Back.
+                let (count, max) = match codes {
+                    Some(Ok(list)) => (list.len(), 5usize),
+                    _ => (0, 5),
+                };
+                centered(
+                    batch,
+                    atlas,
+                    &crate::lang::tr(
+                        "mco.configure.world.invite_codes.title",
+                        &[&count as &dyn std::fmt::Display, &max],
+                    ),
+                    cx,
+                    14.0,
+                    u32::MAX,
+                );
+                centered(
+                    batch,
+                    atlas,
+                    &crate::lang::tr(
+                        "mco.configure.world.invite_codes.subtitle",
+                        &[&max as &dyn std::fmt::Display],
+                    ),
+                    cx,
+                    26.0,
+                    GREY,
+                );
+                match codes {
+                    Some(Ok(list)) if list.is_empty() => {}
+                    Some(Ok(list)) => {
+                        let rx = ((w - ROW_WIDTH) / 2.0).floor();
+                        for (i, code) in list.iter().enumerate() {
+                            let row_y = 36.0 + 22.0 + 2.0 + i as f32 * ROW_HEIGHT;
+                            if row_y + ROW_HEIGHT > h - 48.0 {
+                                break;
+                            }
+                            batch.text(
+                                atlas,
+                                &code.code,
+                                rx + 4.0,
+                                row_y + 4.0,
+                                if code.enabled { u32::MAX } else { GREY },
+                                true,
+                            );
+                            let expires = match code.expiration_date {
+                                Some(millis) => crate::lang::tr(
+                                    "mco.configure.world.invite_codes.edit.expires",
+                                    &[&start_date_text(millis) as &dyn std::fmt::Display],
+                                ),
+                                None => t("mco.configure.world.invite_codes.expiration.never"),
+                            };
+                            batch.text(atlas, &expires, rx + 4.0, row_y + 16.0, GREY, true);
+                        }
+                    }
+                    Some(Err(e)) => {
+                        for (i, line) in wrap_lines(&e.text(), atlas, w - 40.0).iter().enumerate() {
+                            centered(batch, atlas, line, cx, 60.0 + i as f32 * 10.0, RED);
+                        }
+                    }
+                    None => centered(
+                        batch,
+                        atlas,
+                        &t("mco.configure.world.invite_codes.loading"),
+                        cx,
+                        60.0,
+                        u32::MAX,
+                    ),
+                }
+                if let Some(e) = error {
+                    for (i, line) in wrap_lines(e, atlas, w - 40.0).iter().enumerate() {
+                        centered(batch, atlas, line, cx, h - 76.0 + i as f32 * 10.0, RED);
+                    }
+                }
+            }
+            SubScreen::EditCode {
+                code,
+                active,
+                expiration,
+                error,
+                ..
+            } => {
+                // `RealmsEditInviteCodeScreen`: the code, its expiration line, Active, and
+                // the expiration slider.
+                centered(
+                    batch,
+                    atlas,
+                    &t("mco.configure.world.invite_codes.edit.title"),
+                    cx,
+                    14.0,
+                    u32::MAX,
+                );
+                batch.text(atlas, &code.code, cx - 154.0, 34.0, u32::MAX, true);
+                let (key, _) = EXPIRATIONS[*expiration];
+                let expires = crate::lang::tr(
+                    "mco.configure.world.invite_codes.edit.expires",
+                    &[&t(key) as &dyn std::fmt::Display],
+                );
+                batch.text(atlas, &expires, cx - 154.0, 48.0, GREY, true);
+                let value = *expiration as f32 / (EXPIRATIONS.len() - 1) as f32;
+                crate::ui::slider(
+                    batch,
+                    atlas,
+                    cx - 154.0,
+                    72.0,
+                    308.0,
+                    &Text::literal(t(EXPIRATIONS[*expiration].0)),
+                    value,
+                    crate::ui::hovered(cursor, cx - 154.0, 72.0, 308.0, 20.0),
+                    *active,
+                    false,
+                );
+                if let Some(e) = error {
+                    for (i, line) in wrap_lines(e, atlas, w - 40.0).iter().enumerate() {
+                        centered(batch, atlas, line, cx, 108.0 + i as f32 * 10.0, RED);
+                    }
+                }
+            }
             SubScreen::Invite {
                 name, job, error, ..
             } => {
@@ -3243,6 +4977,342 @@ impl Screen {
                         }
                     }
                     None => centered(batch, atlas, loading_dots(), cx, mid - 10.0, GREY),
+                }
+            }
+            SubScreen::ResetWorld {
+                kind, reset, error, ..
+            } => {
+                let (title, subtitle) = (kind.title(), kind.subtitle());
+                centered(batch, atlas, &t(title), cx, 12.0, u32::MAX);
+                centered(
+                    batch,
+                    atlas,
+                    &t(subtitle.0),
+                    cx,
+                    24.0,
+                    if subtitle.1 { RED } else { GREY },
+                );
+                if let Some(e) = error {
+                    // `RealmsLongRunningMcoTaskScreen`'s error text, under the tiles here.
+                    for (i, line) in wrap_lines(e, atlas, w - 40.0).iter().enumerate() {
+                        centered(batch, atlas, line, cx, h - 56.0 + i as f32 * 10.0, RED);
+                    }
+                }
+                if reset.is_some() {
+                    // `RealmsLongRunningMcoTaskScreen`: the task's title while it runs.
+                    centered(batch, atlas, &t(kind.task_title()), cx, mid, u32::MAX);
+                    centered(batch, atlas, loading_dots(), cx, mid + 14.0, GREY);
+                } else {
+                    // `RealmsResetWorldScreen.init`'s tiles: Generate New World, Upload, the four
+                    // groups. Generate New World needs the create-world flow wired to an upload
+                    // and is drawn disabled (vanilla's own tile opens CreateWorldScreen).
+                    let tiles = [
+                        ("mco.reset.world.generate", "gui/realms/new_world"),
+                        ("mco.upload.select.world.title", "gui/realms/upload"),
+                        ("mco.reset.world.template", "gui/realms/survival_spawn"),
+                        ("mco.reset.world.adventure", "gui/realms/adventure"),
+                        ("mco.reset.world.experience", "gui/realms/experience"),
+                        ("mco.reset.world.inspiration", "gui/realms/inspiration"),
+                    ];
+                    for (i, (label, image)) in tiles.iter().enumerate() {
+                        let (x, y) = reset_tile(cx, i);
+                        let enabled = i != 0;
+                        let hover = enabled && crate::ui::hovered(cursor, x, y, 60.0, 60.0);
+                        let frame = if enabled {
+                            if hover { 0xFF90_9090 } else { u32::MAX }
+                        } else {
+                            0xFF60_6060
+                        };
+                        batch.fill(atlas, x + 2.0, y + 2.0, 56.0, 56.0, 0xFF20_2020);
+                        // `FrameButton`: the picture inside `widget/slot_frame`.
+                        crate::ui::blit_sprite(
+                            batch,
+                            atlas,
+                            image,
+                            x + 2.0,
+                            y + 2.0,
+                            56.0,
+                            56.0,
+                            frame,
+                        );
+                        crate::ui::blit_sprite(
+                            batch,
+                            atlas,
+                            "gui/sprites/widget/slot_frame",
+                            x,
+                            y,
+                            60.0,
+                            60.0,
+                            frame,
+                        );
+                        let color = if !enabled {
+                            0xFF50_5050
+                        } else if hover {
+                            GREY
+                        } else {
+                            u32::MAX
+                        };
+                        let text = t(label);
+                        let width = HudBatch::text_width(atlas, &text);
+                        batch.text(
+                            atlas,
+                            &text,
+                            x + 30.0 - (width / 2.0).floor(),
+                            y - 12.0,
+                            color,
+                            true,
+                        );
+                    }
+                }
+            }
+            SubScreen::TemplateList {
+                group,
+                templates,
+                selected,
+                scroll,
+                job,
+                icons,
+                error,
+                ..
+            } => {
+                let title = group.map_or("mco.template.title.minigame", TemplateGroup::title);
+                centered(batch, atlas, &t(title), cx, 12.0, u32::MAX);
+                let top = if group.is_none() { 51.0 } else { 30.0 };
+                if group.is_none() {
+                    // `mco.minigame.world.info.line1`/`line2`: the switch's two warnings.
+                    for (i, key) in [
+                        "mco.minigame.world.info.line1",
+                        "mco.minigame.world.info.line2",
+                    ]
+                    .iter()
+                    .enumerate()
+                    {
+                        centered(batch, atlas, &t(key), cx, 25.0 + i as f32 * 11.0, INFO);
+                    }
+                }
+                let bottom = h - 44.0;
+                crate::ui::list_background(batch, atlas, top, bottom, false);
+                let rx = ((w - ROW_WIDTH) / 2.0).floor();
+                let content = templates.len() as f32 * TEMPLATE_ROW;
+                crate::ui::scrollbar(
+                    batch,
+                    atlas,
+                    rx + ROW_WIDTH + 2.0,
+                    top,
+                    bottom,
+                    content,
+                    scroll.amount,
+                );
+                let mut icons = icons.borrow_mut();
+                icons.clear();
+                for (i, template) in templates.iter().enumerate() {
+                    let y = top + 2.0 + i as f32 * TEMPLATE_ROW - scroll.amount;
+                    if y + TEMPLATE_ROW <= top || y >= bottom {
+                        continue;
+                    }
+                    if *selected == Some(i) {
+                        batch.fill(atlas, rx, y, ROW_WIDTH, TEMPLATE_ROW, 0xFF30_3030);
+                    }
+                    // The template's picture comes from the service (`RealmsTextureManager`);
+                    // the port draws the frame it would sit in.
+                    batch.fill(atlas, rx + 2.0, y + 3.0, 38.0, 38.0, 0xFF20_2020);
+                    crate::ui::blit_sprite(
+                        batch,
+                        atlas,
+                        "gui/sprites/widget/slot_frame",
+                        rx,
+                        y + 2.0,
+                        42.0,
+                        42.0,
+                        u32::MAX,
+                    );
+                    batch.text(atlas, &template.name, rx + 60.0, y + 5.0, u32::MAX, true);
+                    let version = HudBatch::text_width(atlas, &template.version);
+                    batch.text(
+                        atlas,
+                        &template.version,
+                        rx + ROW_WIDTH - version - 5.0,
+                        y + 5.0,
+                        GREY,
+                        true,
+                    );
+                    // `Entry`: the website and trailer buttons, left of the version.
+                    for (trailer, offset) in [(false, 10.0), (true, 15.0 + 15.0)] {
+                        let present = if trailer {
+                            template.trailer.is_some()
+                        } else {
+                            template.link.is_some()
+                        };
+                        if !present {
+                            continue;
+                        }
+                        let x = rx + ROW_WIDTH - version - 15.0 - offset;
+                        let hovered = crate::ui::hovered(cursor, x, y, 15.0, 15.0);
+                        let sprite = match (trailer, hovered) {
+                            (false, false) => "gui/sprites/icon/link",
+                            (false, true) => "gui/sprites/icon/link_highlighted",
+                            (true, false) => "gui/sprites/icon/video_link",
+                            (true, true) => "gui/sprites/icon/video_link_highlighted",
+                        };
+                        crate::ui::blit_sprite(batch, atlas, sprite, x, y, 15.0, 15.0, u32::MAX);
+                        icons.push((i, [x, y, 15.0, 15.0], trailer));
+                    }
+                    batch.text(atlas, &template.author, rx + 60.0, y + 19.0, GREY, true);
+                    if !template.recommended_players.is_empty() {
+                        batch.text(
+                            atlas,
+                            &template.recommended_players,
+                            rx + 60.0,
+                            y + TEMPLATE_ROW - 12.0,
+                            0xFF70_7070,
+                            true,
+                        );
+                    }
+                }
+                if templates.is_empty() {
+                    if let Some(e) = error {
+                        for (i, line) in wrap_lines(e, atlas, w - 40.0).iter().enumerate() {
+                            centered(batch, atlas, line, cx, top + 10.0 + i as f32 * 10.0, RED);
+                        }
+                    } else if job.is_some() {
+                        centered(batch, atlas, loading_dots(), cx, top + 10.0, GREY);
+                    } else {
+                        // `mco.template.select.none`: its link's text without a link.
+                        let none = crate::lang::tr(
+                            "mco.template.select.none",
+                            &[&t("mco.template.select.none.linkTitle")],
+                        );
+                        for (i, line) in wrap_lines(&none, atlas, w - 40.0).iter().enumerate() {
+                            centered(batch, atlas, line, cx, top + 10.0 + i as f32 * 10.0, GREY);
+                        }
+                    }
+                }
+            }
+            SubScreen::UploadSelect {
+                worlds,
+                selected,
+                scroll,
+                ..
+            } => {
+                centered(
+                    batch,
+                    atlas,
+                    &t("mco.upload.select.world.title"),
+                    cx,
+                    12.0,
+                    u32::MAX,
+                );
+                let (top, bottom) = (32.0, h - 48.0);
+                crate::ui::list_background(batch, atlas, top, bottom, false);
+                let rx = ((w - ROW_WIDTH) / 2.0).floor();
+                let content = worlds.len() as f32 * ROW_HEIGHT;
+                crate::ui::scrollbar(
+                    batch,
+                    atlas,
+                    rx + ROW_WIDTH + 2.0,
+                    top,
+                    bottom,
+                    content,
+                    scroll.amount,
+                );
+                for (i, world) in worlds.iter().enumerate() {
+                    let y = top + 2.0 + i as f32 * ROW_HEIGHT - scroll.amount;
+                    if y + ROW_HEIGHT <= top || y >= bottom {
+                        continue;
+                    }
+                    if *selected == Some(i) {
+                        batch.fill(atlas, rx, y, ROW_WIDTH, ROW_HEIGHT, 0xFF30_3030);
+                    }
+                    batch.text(atlas, &world.name, rx + 4.0, y + 5.0, u32::MAX, true);
+                    let info = format!("{} · {}", world.folder, world.version);
+                    batch.text(atlas, &info, rx + 4.0, y + 18.0, GREY, true);
+                }
+                if worlds.is_empty() {
+                    centered(
+                        batch,
+                        atlas,
+                        &t("mco.upload.select.world.none"),
+                        cx,
+                        top + 10.0,
+                        GREY,
+                    );
+                }
+            }
+            SubScreen::Uploading {
+                world,
+                progress,
+                error,
+                done,
+                started,
+                ..
+            } => {
+                // `RealmsUploadScreen.extractRenderState`: the status, dots, the bar and the
+                // error lines; the upload speed is not shown (the port keeps no rate).
+                let running = if progress.completed() {
+                    t("mco.upload.verifying")
+                } else if progress.started() {
+                    crate::lang::tr("mco.upload.uploading", &[&world.name])
+                } else {
+                    t("mco.upload.preparing")
+                };
+                let status = match error {
+                    Some(upload::UploadError::Cancelled) => t("mco.upload.cancelled"),
+                    Some(upload::UploadError::WorldNotClosed) => t("mco.upload.close.failure"),
+                    Some(upload::UploadError::Failed(message)) => {
+                        crate::lang::tr("mco.upload.failed", &[message])
+                    }
+                    Some(upload::UploadError::TooLarge) => running.clone(),
+                    None if *done => t("mco.upload.done"),
+                    None => running,
+                };
+                centered(batch, atlas, &status, cx, 50.0, u32::MAX);
+                if !*done {
+                    let elapsed = started.elapsed().as_millis() / 500;
+                    let dots = ["", ".", ". .", ". . ."][elapsed as usize % 4];
+                    let width = HudBatch::text_width(atlas, &status);
+                    batch.text(atlas, dots, cx + width / 2.0 + 5.0, 50.0, u32::MAX, true);
+                }
+                if progress.started() {
+                    let percentage = progress.percentage();
+                    let left = (w - 200.0) / 2.0;
+                    let right = left + (200.0 * percentage as f32).round();
+                    batch.fill(atlas, left - 1.0, 79.0, right - left + 2.0, 17.0, u32::MAX);
+                    batch.fill(
+                        atlas,
+                        left,
+                        80.0,
+                        (right - left).max(0.0),
+                        15.0,
+                        0xFF80_8080,
+                    );
+                    let percent = format!("{:.1}", percentage * 100.0);
+                    centered(
+                        batch,
+                        atlas,
+                        &crate::lang::tr("mco.upload.percent", &[&percent]),
+                        cx,
+                        84.0,
+                        u32::MAX,
+                    );
+                }
+                if let Some(upload::UploadError::TooLarge) = error {
+                    centered(
+                        batch,
+                        atlas,
+                        &t("mco.upload.failed.too_big.title"),
+                        cx,
+                        110.0,
+                        RED,
+                    );
+                    let size = human_readable(upload::SIZE_LIMIT);
+                    centered(
+                        batch,
+                        atlas,
+                        &crate::lang::tr("mco.upload.failed.too_big.description", &[&size]),
+                        cx,
+                        122.0,
+                        RED,
+                    );
                 }
             }
             SubScreen::Main => self.draw_main(batch, atlas, w, h),
@@ -3416,6 +5486,7 @@ mod tests {
             joining: None,
             leaving: None,
             last_click: None,
+            saves: None,
         }
     }
 
@@ -3601,6 +5672,22 @@ mod tests {
         assert_eq!(enabled(15), Some(false), "invites");
     }
 
+    /// `InviteCodeExpiration.closestTo`: an existing expiration reads back as the choice
+    /// nearest to the time left.
+    #[test]
+    fn an_expiration_reads_back_as_the_closest_choice() {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        assert_eq!(closest_expiration(now + 30 * 60 * 1000), 0);
+        assert_eq!(closest_expiration(now + 60 * 60 * 1000), 1);
+        assert_eq!(closest_expiration(now + 6 * 24 * 60 * 60 * 1000), 5);
+        // A week is the longest timed choice: anything further reads back as it. (The
+        // "never" row is the fallback for a code with no expiration, not a nearest.)
+        assert_eq!(closest_expiration(now + 30 * 24 * 60 * 60 * 1000), 5);
+    }
+
     /// `RealmsSettingsTab.updateData`: the draft starts from the Realm's own name,
     /// description and region preference; a Realm without one is automatic by owner
     /// (`RegionSelectionPreferenceDto.DEFAULT`), and only a manual choice sends its region.
@@ -3683,6 +5770,7 @@ mod tests {
             joining: None,
             leaving: None,
             last_click: None,
+            saves: None,
         };
         screen.invite_clicked();
         let SubScreen::Invite { error, job, .. } = &screen.subscreen else {
@@ -3788,6 +5876,26 @@ mod tests {
         crate::lang::tr("mco.configure.world.slot", &[&slot])
     }
 
+    /// `InviteCodeExpiration.closestTo`: the choice nearest the time left on the code.
+    fn closest_expiration(expiration_millis: i64) -> usize {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let left = (expiration_millis - now).max(0) / 1000;
+        let mut best = EXPIRATIONS.len() - 1;
+        let mut best_delta = i64::MAX;
+        for (i, (_, seconds)) in EXPIRATIONS.iter().enumerate() {
+            let Some(seconds) = seconds else { continue };
+            let delta = (left - seconds).abs();
+            if delta < best_delta {
+                best_delta = delta;
+                best = i;
+            }
+        }
+        best
+    }
+
     /// `RealmsSubscriptionTab.daysLeftPresentation`, compared with the same translations
     /// so the check reads in any language.
     #[test]
@@ -3849,5 +5957,33 @@ mod tests {
         };
         assert_eq!(changed_distance(Some(8), Some(&default)), None);
         assert_eq!(changed_distance(Some(9), Some(&default)), Some(9));
+    }
+
+    /// `RealmsResetWorldScreen.init`'s grid: 60-wide tiles, 16 padding a side, the spacer row.
+    #[test]
+    fn the_reset_tiles_are_three_columns_with_vanillas_spacer() {
+        assert_eq!(reset_tile(200.0, 0), (78.0, 56.0));
+        assert_eq!(reset_tile(200.0, 2), (262.0, 56.0));
+        assert_eq!(reset_tile(200.0, 3), (78.0, 141.0));
+        assert_eq!(reset_tile(200.0, 5), (262.0, 141.0));
+    }
+
+    #[test]
+    fn the_template_groups_are_vanillas_four_in_its_order() {
+        let types: Vec<&str> = TemplateGroup::ALL.iter().map(|g| g.world_type()).collect();
+        assert_eq!(
+            types,
+            ["NORMAL", "ADVENTUREMAP", "EXPERIENCE", "INSPIRATION"]
+        );
+        let titles: Vec<&str> = TemplateGroup::ALL.iter().map(|g| g.title()).collect();
+        assert_eq!(
+            titles,
+            [
+                "mco.reset.world.template",
+                "mco.reset.world.adventure",
+                "mco.reset.world.experience",
+                "mco.reset.world.inspiration"
+            ]
+        );
     }
 }

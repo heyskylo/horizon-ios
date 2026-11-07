@@ -14,20 +14,38 @@ description = "Registry crates native mods may depend on (docs/native-mods.md). 
 # the lot (`cargo check -p horizon-mod-deps --features all`).
 [dependencies]
 # MariaDB / MySQL client, blocking. Its default features build zlib from C.
-mysql = { version = "27", default-features = false, features = ["minimal-rust", "rustls-tls-ring"], optional = true }
+# `chrono` maps DATETIME/TIMESTAMP columns to the chrono already in the lock.
+mysql = { version = "27", default-features = false, features = ["minimal-rust", "rustls-tls-ring", "chrono"], optional = true }
 # Redis client, blocking (pub/sub included).
 redis = { version = "1", default-features = false, optional = true }
 # Websocket protocol (e.g. a Discord gateway) over a stream the mod opens, TLS through rustls.
 tungstenite = { version = "0.30", default-features = false, optional = true }
 # Opus encoder and decoder in pure Rust (voice chat, #7759).
 rusty-opus = { version = "1", optional = true }
+# QUIC (quinn) on tokio, TLS through the rustls + ring in the lock (relays such as e4mc's, #9602).
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"], optional = true }
+# SQLite (e.g. a Bukkit plugin's .db file). `bundled` compiles SQLite's C source with the cc already in the
+# lock (ring needs a C compiler too), so no system libsqlite3; no default features, which would lock the wasm backend.
+rusqlite = { version = "0.41", default-features = false, features = ["bundled", "cache"], optional = true }
+# YAML 1.2 reader and writer in safe Rust (a Bukkit plugin's config.yml). Its default `encoding` feature would
+# lock a second, older encoding_rs, so input must be UTF-8.
+yaml-rust2 = { version = "0.13", default-features = false, optional = true }
+# GIF decoder and encoder (image files a mod reads, e.g. map art).
+gif = { version = "0.14", optional = true }
+# Snappy compression (raw and framed), no dependencies.
+snap = { version = "1", optional = true }
 
 [features]
 mysql = ["dep:mysql"]
 redis = ["dep:redis"]
 websocket = ["dep:tungstenite"]
 opus = ["dep:rusty-opus"]
-all = ["mysql", "redis", "websocket", "opus"]
+quic = ["dep:quinn"]
+sqlite = ["dep:rusqlite"]
+yaml = ["dep:yaml-rust2"]
+gif = ["dep:gif"]
+snappy = ["dep:snap"]
+all = ["mysql", "redis", "websocket", "opus", "quic", "sqlite", "yaml", "gif", "snappy"]
 
 [lints]
 workspace = true
