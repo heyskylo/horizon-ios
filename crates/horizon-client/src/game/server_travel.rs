@@ -289,7 +289,7 @@ impl Game<'_> {
                         });
                         return true;
                     }
-                    self.start_server_trip(host, conn, plan.dim, Some(plan));
+                    self.start_server_trip(host, conn, plan.dim, Some(plan), false);
                 }
             }
             "end_portal" => {
@@ -297,7 +297,7 @@ impl Game<'_> {
                 // Entity.canTeleport: out of the End only after the credits.
                 if !from_end || seen_credits {
                     let target = if from_end { Dim::Overworld } else { Dim::End };
-                    self.start_server_trip(host, conn, target, None);
+                    self.start_server_trip(host, conn, target, None, false);
                 }
             }
             _ => self.start_gateway_trip(host, conn, pos),
