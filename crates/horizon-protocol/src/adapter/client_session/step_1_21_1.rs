@@ -367,7 +367,7 @@ mod tests {
     /// Through the reader and back: `payload` (1.21.1's) must come out as it went in.
     fn round_trip(id: i32, payload: &[u8]) {
         let session = Session::new(ServerVersion::V1_21_1);
-        let up = translate::v1_21_1::clientbound(&session, State::Play, id, payload)
+        let up = translate::client_layout_v1_21_1::clientbound(&session, State::Play, id, payload)
             .unwrap()
             .expect("the reader changes this packet");
         let down = clientbound(State::Play, id, &up)
@@ -384,7 +384,7 @@ mod tests {
         assert_eq!(down.len(), 21);
         assert_eq!(down[20], 0);
         let session = Session::new(ServerVersion::V1_21_1);
-        let up = translate::v1_21_1::clientbound(&session, State::Login, id, &down)
+        let up = translate::client_layout_v1_21_1::clientbound(&session, State::Login, id, &down)
             .unwrap()
             .unwrap();
         assert_eq!(up, profile);

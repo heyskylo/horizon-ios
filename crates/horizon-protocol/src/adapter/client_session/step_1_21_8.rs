@@ -152,7 +152,7 @@ mod tests {
 
     /// 1.21.8's packet, read by translate's 1.21.8 reader, then written back by this step.
     fn round_trip(session: &Session, id: i32, body: &[u8]) -> Vec<u8> {
-        let up = translate::v1_21_8::clientbound(session, State::Play, id, body)
+        let up = translate::client_layout_v1_21_8::clientbound(session, State::Play, id, body)
             .unwrap()
             .expect("1.21.8 packet has a 1.21.10 layout");
         clientbound(State::Play, id, &up)
@@ -237,7 +237,7 @@ mod tests {
         assert_eq!(round_trip(&session, id, &body), body);
 
         // And the 1.21.10 side the pinned reader sees: the radius and count it was given, no block particles.
-        let up = translate::v1_21_8::clientbound(&session, State::Play, id, &body)
+        let up = translate::client_layout_v1_21_8::clientbound(&session, State::Play, id, &body)
             .unwrap()
             .unwrap();
         let mut up = up;
@@ -277,7 +277,7 @@ mod tests {
         );
         // The way back, by translate's reader, gives 1.21.10's order again, minus the shoulders.
         let mut back = d.clone();
-        translate::v1_21_8::entity_data(&session, &mut back);
+        translate::client_layout_v1_21_8::entity_data(&session, &mut back);
         assert_eq!(
             back.values,
             vec![
