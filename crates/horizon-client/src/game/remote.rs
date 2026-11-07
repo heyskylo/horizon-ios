@@ -610,6 +610,8 @@ pub(super) struct Remote {
     /// follows (`horizon:menu_extra`).
     menu_extra: Option<horizon_protocol::menu_extra::Message>,
     entities: HashMap<i32, Tracked>,
+    /// Complete network riding graph, including invisible plugin seat entities.
+    pub(super) passenger_vehicles: HashMap<u32, u32>,
     lerps: HashMap<i32, Lerp>,
     /// The minecarts the server moves with `ClientboundMoveMinecartPacket`
     /// (`NewMinecartBehavior`), which have no interpolation handler.
@@ -1158,6 +1160,7 @@ impl Game<'_> {
             use_target: None,
             menu_extra: None,
             entities: HashMap::new(),
+            passenger_vehicles: HashMap::new(),
             lerps: HashMap::new(),
             cart_lerps: HashMap::new(),
             stepped: HashMap::new(),
@@ -2374,6 +2377,7 @@ impl Game<'_> {
             self.pickups.clear();
             if let Some(r) = self.remote.as_mut() {
                 r.entities.clear();
+                r.passenger_vehicles.clear();
                 r.lerps.clear();
                 r.cart_lerps.clear();
                 r.stepped.clear();
@@ -3117,6 +3121,7 @@ impl Game<'_> {
         if let Some(r) = self.remote.as_mut() {
             r.glowing.remove(&id);
             r.entities.remove(&id);
+            r.passenger_vehicles.remove(&(id as u32));
             r.lerps.remove(&id);
             r.cart_lerps.remove(&id);
             r.stepped.remove(&id);
@@ -6620,6 +6625,8 @@ impl Game<'_> {
         }
         // A stand riding the player follows this move (tickPassenger).
         self.seat_own_stands();
+        // Other players on this player (possibly through a plugin seat) follow this tick too.
+        self.position_riders();
         // The server owns health and hunger.
         self.apply_remote_health();
         self.tick_avatar(before, false);
@@ -11542,6 +11549,127 @@ mod tests {
         // The chat is a screen too: a second call doesn't replace what's typed.
         assert!(game.native_open_chat("hello").is_err());
         assert_eq!(game.ui.chat_screen.as_ref().unwrap().input.value, "/tp ");
+    }
+
+    /// The packet riding graph must retain invisible intermediary entities. A custom
+    /// sit plugin can use an area-effect cloud, whose server position stops updating
+    /// while it rides a player, with a player or marker stand as its own passenger.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn plugin_player_stack_follows_network_moves_and_local_carriers() {
+        use super::super::{
+            Audio, Game, Options, Progress, Settings, execution_role::ExecutionRole, load_resources,
+        };
+        use horizon_client::{motion::PlayerMotion, sprint::Keys};
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = ExecutionRole::Client;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        let (client, _server) = horizon_protocol::connection::Pipe::pair();
+        game.connect_local(client, "SeatTest").unwrap();
+        game.remote.as_mut().unwrap().entity_id = 7;
+        game.player = Some(PlayerMotion::new(game.motion, Vec3::ZERO).unwrap());
+        game.spawn_entity(40, "minecraft:player", [2.0, 64.0, 3.0], [0.0; 3]);
+        game.spawn_entity(41, "minecraft:player", [0.0, 64.0, 0.0], [0.0; 3]);
+        game.spawn_entity(42, "minecraft:area_effect_cloud", [0.0; 3], [0.0; 3]);
+        let set = |g: &mut Game<'_>, vehicle, passengers: Vec<i32>| {
+            g.handle_packet(C::SetPassengers(play::SetPassengers {
+                vehicle,
+                passengers,
+            }))
+            .unwrap();
+        };
+        set(&mut game, 40, vec![42]);
+        set(&mut game, 42, vec![7, 41]);
+        let close = |at: Vec3, x: f64, y: f64, z: f64| {
+            assert!(
+                (at.x - x).abs() < 1e-5 && (at.y - y).abs() < 1e-5 && (at.z - z).abs() < 1e-5,
+                "position {at:?}, expected [{x}, {y}, {z}]"
+            );
+        };
+        assert!(game.remote_ride(Keys::default(), 0).unwrap());
+        close(game.player.as_ref().unwrap().position, 2.0, 65.7, 3.0);
+        close(
+            game.mobs.iter().find(|m| m.id == 41).unwrap().position,
+            2.0,
+            65.7,
+            3.0,
+        );
+        game.handle_packet(C::EntityPositionSync(play::EntityPositionSync {
+            id: 40,
+            path: play::PositionPath::Linear([12.0, 67.0, -4.0]),
+            yaw: 45.0,
+            pitch: 0.0,
+            on_ground: true,
+        }))
+        .unwrap();
+        for _ in 0..4 {
+            game.tick_remote_entities(true);
+            game.remote_ride(Keys::default(), 0).unwrap();
+        }
+        close(game.player.as_ref().unwrap().position, 12.0, 68.7, -4.0);
+        close(
+            game.mobs.iter().find(|m| m.id == 41).unwrap().position,
+            12.0,
+            68.7,
+            -4.0,
+        );
+        // The intermediary's packet position must remain unchanged for relative decoding.
+        assert_eq!(
+            game.remote.as_ref().unwrap().tracked(42).unwrap().1,
+            [0.0; 3]
+        );
+        // A remote player riding the local player must follow our own movement too.
+        set(&mut game, 42, vec![41]);
+        set(&mut game, 7, vec![42]);
+        game.player.as_mut().unwrap().position = Vec3::new(20.0, 70.0, 25.0);
+        game.position_riders();
+        close(
+            game.mobs.iter().find(|m| m.id == 41).unwrap().position,
+            20.0,
+            71.7,
+            25.0,
+        );
+        // A direct stack has no intermediary's 0.5-height offset.
+        set(&mut game, 40, vec![7, 41]);
+        game.remote_ride(Keys::default(), 0).unwrap();
+        close(game.player.as_ref().unwrap().position, 12.0, 68.2, -4.0);
+        close(
+            game.mobs.iter().find(|m| m.id == 41).unwrap().position,
+            12.0,
+            68.2,
+            -4.0,
+        );
+        // Removing the carrier detaches passengers even without a final empty packet.
+        game.remove_entity(40);
+        assert_eq!(game.riding, None);
+        assert_eq!(
+            game.mobs.iter().find(|m| m.id == 41).unwrap().extra.mount,
+            None
+        );
     }
 
     /// A mod's chat goes out only from a joined player, and only what the

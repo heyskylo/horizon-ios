@@ -564,7 +564,16 @@ impl Game<'_> {
         };
         let m = &self.mobs[i];
         let mut at = Vec3::new(m.position.x, m.position.y + seat(m.species()), m.position.z);
-        if horizon_client::mobs::camel::is_camel(m.species()) {
+        if &*m.kind.id == "minecraft:player" || &*m.kind.id == "minecraft:mannequin" {
+            // Avatar attachments follow pose and minecraft:scale, just as for
+            // remote avatars riding other avatars. Do not guess a standing height.
+            at = horizon_client::mobs::riders::seat(
+                horizon_client::mobs::riders::passenger_attachment(m),
+                f64::from(0.6_f32),
+                m.position,
+                m.yaw,
+            );
+        } else if horizon_client::mobs::camel::is_camel(m.species()) {
             // Camel.getPassengerAttachmentPoint: the driver half a block
             // forward, at the body anchor (lower while sitting), turned with
             // the camel.
