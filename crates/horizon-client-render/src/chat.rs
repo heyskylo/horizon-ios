@@ -2071,6 +2071,11 @@ impl ChatScreen {
         for i in 0..limit {
             let y = ry + 12 * i as i32;
             d::fill(out, rx, y, rx + rw, y + 12, self.layout.fill);
+            // A row for the pad: nothing else can pick a suggestion without Tab.
+            crate::widgets::target_as(
+                [rx as f32, y as f32, rw as f32, 12.0],
+                crate::widgets::Kind::Row,
+            );
             if mouse.0 > rx && mouse.0 < rx + rw && mouse.1 > y && mouse.1 < y + 12 {
                 if moved {
                     self.select(l, (i + l.offset) as isize);
