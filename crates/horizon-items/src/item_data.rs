@@ -156,6 +156,12 @@ impl StackData {
             "minecraft:banner_patterns" => {
                 self.banner_patterns = crate::banner_layer::layers_from_nbt(tag.as_ref());
             }
+            // `set_book_cover` (and `set_components`) write the book's title,
+            // author, generation and pages as one component: the fields the
+            // tooltip and the reading screen use come back out of it.
+            "minecraft:written_book_content" => {
+                self.written = tag.as_ref().map(written_book_from_tag);
+            }
             "minecraft:trim" => {
                 self.trim = match (value["material"].as_str(), value["pattern"].as_str()) {
                     (Some(material), Some(pattern)) => {
@@ -538,6 +544,28 @@ fn plain_component(t: &Tag) -> Tag {
     }
     t.clone()
 }
+/// `WrittenBookContent` from its component: the title and author (a
+/// `Filterable`'s raw text), the generation and the pages, whose component
+/// tags are kept apart from their plain text for click events.
+fn written_book_from_tag(b: &Tag) -> WrittenBook {
+    WrittenBook {
+        title: b.get("title").and_then(filterable_text).unwrap_or_default(),
+        author: b.get("author").and_then(string).unwrap_or_default(),
+        generation: b.get("generation").and_then(int).unwrap_or(0).clamp(0, 3) as u8,
+        pages: match b.get("pages") {
+            Some(Tag::List(pages)) => pages.iter().filter_map(filterable_text).collect(),
+            _ => Vec::new(),
+        },
+        page_tags: match b.get("pages") {
+            Some(Tag::List(pages)) => pages
+                .iter()
+                .map(|p| plain_component(p.get("raw").unwrap_or(p)))
+                .collect(),
+            _ => Vec::new(),
+        },
+    }
+}
+
 fn filterable_text(t: &Tag) -> Option<String> {
     match t.get("raw") {
         Some(raw) => read_text(raw),
@@ -1047,22 +1075,7 @@ pub fn decode_components(components: Option<&Tag>) -> (u32, Option<Box<StackData
         },
         written: c
             .get("minecraft:written_book_content")
-            .map(|b| WrittenBook {
-                title: b.get("title").and_then(filterable_text).unwrap_or_default(),
-                author: b.get("author").and_then(string).unwrap_or_default(),
-                generation: b.get("generation").and_then(int).unwrap_or(0).clamp(0, 3) as u8,
-                pages: match b.get("pages") {
-                    Some(Tag::List(pages)) => pages.iter().filter_map(filterable_text).collect(),
-                    _ => Vec::new(),
-                },
-                page_tags: match b.get("pages") {
-                    Some(Tag::List(pages)) => pages
-                        .iter()
-                        .map(|p| plain_component(p.get("raw").unwrap_or(p)))
-                        .collect(),
-                    _ => Vec::new(),
-                },
-            }),
+            .map(written_book_from_tag),
         fireworks: c
             .get("minecraft:fireworks")
             .map(|f| {
@@ -1229,6 +1242,36 @@ mod tests {
             .data_mut()
             .set_loot_component("minecraft:banner_patterns", &serde_json::Value::Null);
         assert!(stack.data().is_none_or(|d| d.banner_patterns.is_empty()));
+    }
+
+    /// `set_book_cover` (and `set_components`) hand a written book's content
+    /// over as a component; the fields the tooltip and the reading screen read
+    /// have to come out of it, not just sit in `other` unread.
+    #[test]
+    fn a_loot_written_book_component_fills_the_book() {
+        let mut stack = ItemStack::new("minecraft:written_book", 1);
+        stack.data_mut().set_loot_component(
+            "minecraft:written_book_content",
+            &serde_json::json!({
+                "title": {"raw": "A Guide"},
+                "author": "Cartographer",
+                "generation": 2,
+                "pages": [{"raw": "page one"}, {"raw": "page two"}],
+            }),
+        );
+        let book = stack
+            .data()
+            .and_then(|d| d.written.as_ref())
+            .expect("content");
+        assert_eq!(book.title, "A Guide");
+        assert_eq!(book.author, "Cartographer");
+        assert_eq!(book.generation, 2);
+        assert_eq!(book.pages, ["page one", "page two"]);
+        // A null component is no component.
+        stack
+            .data_mut()
+            .set_loot_component("minecraft:written_book_content", &serde_json::Value::Null);
+        assert!(stack.data().is_none_or(|d| d.written.is_none()));
     }
 
     fn check_lodestone_saved_default(decoded: bool) {
