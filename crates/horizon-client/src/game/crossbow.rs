@@ -349,6 +349,7 @@ impl Game<'_> {
                     1.0,
                 );
                 self.launch_angled_rocket(at, shot.velocity, ammo, Some(Who::Player));
+                self.player_projectile_shot();
             }
             if !rocket {
                 let effect = super::dispenser::tipped_effect(ammo).or_else(|| {
@@ -382,7 +383,7 @@ impl Game<'_> {
                 );
                 self.native_entity_shoot_bow(player, &name, projectile, power as f32);
             }
-            self.player_projectile_shot();
+            // Ordinary arrows post from ArrowState on their first tick.
             let pitch = if index == 0 {
                 1.0
             } else {
