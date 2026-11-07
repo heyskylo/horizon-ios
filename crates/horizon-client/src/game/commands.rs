@@ -2281,6 +2281,30 @@ impl Game<'_> {
         let _ = self.in_target_level(t, |g| g.kill_target_in_level(t));
     }
     fn kill_target_in_level(&mut self, t: Target) {
+        // Entity.kill (BlockAttachedEntity.kill; ArmorStand's generic_kill hit,
+        // which bypasses its invulnerability; a vehicle is no LivingEntity):
+        // removed, then ENTITY_DIE by the entity itself. Mobs post theirs as
+        // they die, the crystal and the dragon on their own paths, and an item
+        // entity can dampen it (ItemEntity.dampensVibrations), so it is not here.
+        let died = matches!(
+            t,
+            Target::Stand(_)
+                | Target::Frame(_)
+                | Target::Painting(_)
+                | Target::Boat(_)
+                | Target::Cart(_)
+                | Target::Orb(_)
+                | Target::Projectile(_)
+                | Target::Fangs(_)
+                | Target::Tnt(_)
+                | Target::Falling(_)
+                | Target::Rocket(_)
+                | Target::Trident(_)
+                | Target::Spawner(_)
+                | Target::Cloud(_)
+        )
+        .then(|| self.target_position(t))
+        .flatten();
         match t {
             Target::Guest(_) => {
                 self.for_player(t, |g| g.kill_target(Target::Player));
@@ -2356,6 +2380,9 @@ impl Game<'_> {
         }
         // The orbs marked for removal are gone (Entity.kill removes them).
         self.orbs.retain(|o| o.age < u32::MAX / 2);
+        if let Some(at) = died {
+            self.entity_killed_event(at, false);
+        }
         self.native_leaves_flush();
     }
     fn cmd_kill(&mut self, ctx: &Context) -> R<i32> {
