@@ -509,7 +509,12 @@ enum OwnProfile {
 
 pub(super) struct Remote {
     pub session: Session,
+    /// The single-player save this connection plays, by its folder in
+    /// `saves/`: the window's own server thread, or P1's for a splitscreen
+    /// seat. None on a server.
+    pub(super) save_folder: Option<String>,
     pub brand: String,
+    pub(super) recipe_transfer: bool,
     /// This connection's configured feature flags, carried through reconfiguration.
     pub(super) features: Vec<String>,
     /// The server announced it runs mods' quiet commands.
@@ -1099,7 +1104,9 @@ impl Game<'_> {
             });
         self.remote = Some(Remote {
             session,
+            save_folder: None,
             brand: "unknown".into(),
+            recipe_transfer: false,
             features: vec!["minecraft:vanilla".into()],
             quiet_commands: false,
             mod_net: false,
@@ -1420,6 +1427,7 @@ impl Game<'_> {
         let mut e = horizon_client::effects::EffectInstance::new(id, p.duration, p.amplifier);
         e.ambient = p.flags & 1 != 0;
         e.visible = p.flags & 2 != 0;
+        e.show_icon = p.flags & 4 != 0;
         let list = &mut self.potions.effects.list;
         match list.iter_mut().find(|x| x.id == id) {
             // forceAddEffect's copyBlendState: an updated effect keeps its fade.
@@ -3348,6 +3356,9 @@ impl Game<'_> {
                     }
                     Err(e) => log::debug!("Horizon: a bad menu extra payload: {e}"),
                 }
+            }
+            C::CustomPayload(p) if p.channel == horizon_client::lan::recipes::TRANSFER_CHANNEL => {
+                self.remote_recipe_transfer(&p.data);
             }
             // The server's recipes its native mods asked to send.
             C::CustomPayload(p) if p.channel == horizon_client::lan::recipes::CONTENT_CHANNEL => {
@@ -6295,6 +6306,8 @@ impl Game<'_> {
         self.tick_hand();
         if running {
             self.tick_particles();
+        } else if self.clock.still() {
+            self.settle_rain_fog();
         }
         self.tick_frame_visuals(running);
         // Under `HORIZON_STILL` they wait for the world too: endermen's and blazes' particles
@@ -10162,13 +10175,20 @@ impl Game<'_> {
         self.send(S::ClientCommand(play::ClientCommand { action: 0 }));
     }
 
+    /// A connection's screen is over the world: connecting, reconfiguring, or
+    /// the level loading screen, a portal's included (`remote_overlay`).
+    pub(super) fn remote_screen_up(&self) -> bool {
+        self.remote
+            .as_ref()
+            .is_some_and(|r| self.player.is_none() || r.level_load.is_active())
+    }
     /// Connecting / loading screens; true when it covered the frame.
     pub(super) fn remote_overlay(&mut self, batch: &mut HudBatch) -> bool {
-        let Some(r) = &self.remote else { return false };
-        let loading = r.level_load.is_active();
-        if self.player.is_some() && !loading {
+        if !self.remote_screen_up() {
             return false;
         }
+        let Some(r) = &self.remote else { return false };
+        let loading = r.level_load.is_active();
         let (w, h) = (batch.width, batch.height);
         if let Some(since) = r.reconfiguring {
             // ServerReconfigScreen narrates its title.

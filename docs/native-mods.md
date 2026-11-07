@@ -3946,6 +3946,34 @@ give it what Horizon's own rows use, without reading `Game`'s fields:
 
 Bundles need `"hooks": @API:health_hud_state@`.
 
+### What a client HUD reads
+
+A minimap, a coordinates line or a waypoint mod reads the player and the session through helpers, not `Game`'s fields.
+They answer the same on a server's client, a LAN guest and single player's window, which is a client of its own server
+thread:
+
+- `native_player()` is the player's feet this tick, their yaw and pitch as the mouse turned them this frame, and their
+  dimension. `native_camera()` is the frame's interpolated camera, and `native_clock()` the time of day.
+- `native_client_state()` (None on a server) has, besides `gui_hidden` (F1):
+  - `screen`, what covers the world: `Playing` (nothing), `Chat`, `Death` (the death screen) or `Other` (the pause
+    menu, an inventory or container, a sign, a book, a dialog or prompt, the loading screen, the title's screens). Xaero's
+    minimap draws on `Playing` and `Chat` only.
+  - `debug_screen`: F3's debug screen is showing.
+  - `world`, the world joined, for a mod's data per world: `NativeWorldId::Singleplayer(folder)` is the save's folder in
+    `saves/` (its LAN host and splitscreen seats too), `Server(address)` the address as the player joined it
+    (`mc.example.com:25565`). A friend's world is `friend:` and what its invite shows anyone, its host's addresses and
+    its relay nameplate, never the invite's secret; the host's code is new each time it shares, so this names that
+    sharing only, as a LAN world's port does. None before a world is joined. A later Horizon may add kinds, so match
+    it with a `_` arm.
+  - `sleeping_pos`: the head of the bed the player sleeps in, as the server says (`LivingEntity.getSleepingPos`); None
+    while awake. `native_block(pos)` names the bed.
+- `native_biome(pos)` is the biome at a block (`minecraft:plains`, a data pack's own), as `Level.getBiome` picks it
+  through `BiomeManager`'s zoom; None where that chunk isn't loaded.
+- `native_data_dir(mod_id)` is the mod's own folder, `horizon-mods/.horizon-mod-data/<id>/` in the instance; the helper
+  doesn't make it. Every world shares it: keep a world's files in a folder named from `world`.
+
+Bundles need `"hooks": @API:session_state@`.
+
 ### Toasts a mod hides
 
 `native_toast_add(kind, id, cancel)` (client) is NeoForge's `ToastAddEvent`: it is heard once for each new toast, just

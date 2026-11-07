@@ -994,6 +994,7 @@ use super::{
     native_reload_listeners::NativeReloadListener,
     native_world_draw::NativeWorldDraw,
 };
+use crate::mod_api::NativeTextField;
 use horizon_assets::item_model::StackView;
 use horizon_client::mod_api::EntityDataValue;
 use horizon_client::mod_api::{
@@ -2802,8 +2803,8 @@ impl Game<'_> {
     /// (`HealthHud::layout`, not under F1): `inputs` carries the health,
     /// food, air and vehicle state the layout reads, `wi`/`hi` the screen's
     /// GUI size. A mod that sets `draws` replaces every row — armour,
-    /// hearts, food, air and the heights (`left_height`/`right_height`)
-    /// above the hotbar are the answer's to give; `bubble_pop_sound` too.
+    /// hearts, food and air are the answer's to give; `bubble_pop_sound`
+    /// too.
     /// Nothing set draws Horizon's own.
     pub(super) fn native_health_hud(
         &mut self,
@@ -3522,6 +3523,9 @@ impl Game<'_> {
     /// sent and whenever its block changes, on the server thread or, for a
     /// saved chunk sent past the view distance (`lan::far`), another one; a client's copy of the block
     /// entity (made by `native_block_entity` there) merges it into its `nbt`.
+    /// An owner can merge `entity.take_client_update_fields()` into this tag
+    /// for one-shot fields that are neither saved nor cloned. The tag is
+    /// constructed once before a block change is broadcast to its viewers.
     /// Leave it unset to send nothing. API 45.
     pub(super) fn native_block_entity_update_tag(
         pos: [i32; 3],
@@ -3996,6 +4000,24 @@ impl Game<'_> {
             canceled,
         );
     }
+    pub(super) fn native_screen_text_field_char_typed_pre(
+        &self,
+        screen: &NativeScreenView<'_>,
+        field: &mut NativeTextField,
+        character: char,
+        modifiers: u32,
+        canceled: &mut bool,
+    ) {
+        mod_api::dispatch_screen_text_field_char_typed_pre(
+            self,
+            mod_api::mods(),
+            screen,
+            field,
+            character,
+            modifiers,
+            canceled,
+        );
+    }
     /// The open screen as a native mod sees it (`NativeScreenView`): its id,
     /// the open menu's type and title, its slot count, and its panel's
     /// rectangle, with the mouse and the partial tick. `screen` is the screen
@@ -4169,6 +4191,12 @@ impl Game<'_> {
         let Some(text) = text else {
             return;
         };
+        if self.types_text()
+            && let Some(result) = self.type_text_field_input(text)
+        {
+            Self::report_text_input_result(result);
+            return;
+        }
         let Some(screen) = self.screen_view_now() else {
             return;
         };
@@ -10937,10 +10965,7 @@ impl Game<'_> {
         Some(screen.extra.as_ref().map_or(&[], |e| e.data.as_slice()))
     }
     /// Horizon's own health HUD state, for a mod answering
-    /// `native_health_hud`. `left_height`/`right_height` as they stand when
-    /// the hook returns place the selected item's name and the action bar
-    /// (vanilla's `Hud.leftHeight`/`rightHeight`): set them when you draw
-    /// more or fewer rows. `layout` draws Horizon's rows and advances their
+    /// `native_health_hud`. `layout` draws Horizon's rows and advances their
     /// frame state (the hearts' blink, the bubble pop sound), so call it at
     /// most once a frame, and only when you keep some of its rows.
     /// API @API:health_hud_state@.
@@ -10969,6 +10994,15 @@ impl Game<'_> {
     pub(super) fn native_block(&self, pos: [i32; 3]) -> String {
         let state = self.world.block(pos[0], pos[1], pos[2]);
         self.res.facts().get(state).name.to_string()
+    }
+    /// The biome at `pos` (`minecraft:plains`, a data pack's own), as
+    /// `Level.getBiome` picks it through `BiomeManager`'s zoom: on a client,
+    /// from the chunks the server sent. None where that chunk isn't loaded.
+    /// API @API:session_state@.
+    pub(super) fn native_biome(&self, pos: [i32; 3]) -> Option<String> {
+        let at = BlockPos::new(pos[0], pos[1], pos[2]);
+        let [x, y, z] = self.streaming.biome_zoom.quart_at_block(at);
+        self.biome_name_at_block([x << 2, y << 2, z << 2])
     }
     /// The most recently extracted world frame's camera, if one exists.
     /// During GUI rendering this is the current frame, including bob/spin and FOV.
@@ -11115,7 +11149,9 @@ impl Game<'_> {
     }
     /// A native mod's own folder: `horizon-mods/.horizon-mod-data/<id>/`,
     /// where the WebAssembly mod of the same id kept its storage, so a
-    /// player's settings carry over. Not created here.
+    /// player's settings carry over. Every world shares it: keep a world's
+    /// files under a folder named from `NativeClientState.world`. Not
+    /// created here. API @API:session_state@.
     pub(super) fn native_data_dir(&self, mod_id: &str) -> PathBuf {
         let mods = Self::game_dir().join(mod_list::DIR);
         mods.join(".horizon-mod-data").join(mod_id)
@@ -11272,6 +11308,11 @@ impl Game<'_> {
     /// player's book doesn't hold; one missing items shows as a ghost.
     pub(super) fn native_place_recipe(&mut self, book_id: i32, all: bool) -> Result<(), String> {
         self.recipe_place(book_id, all)
+    }
+    /// Move ingredients for a viewer recipe into the open crafting grid.
+    /// Unlike the recipe book click, this doesn't require learning the recipe.
+    pub(super) fn native_transfer_recipe(&mut self, book_id: i32) {
+        self.transfer_viewer_recipe(book_id);
     }
     /// Creative mode only: gives the player `count` of `item`
     /// (`minecraft:diamond`) as taking it from the creative inventory does

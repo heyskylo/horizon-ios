@@ -17,6 +17,7 @@
 //! copied after the test, which tells which ones it saw: each run of a page
 //! reserves room for all of its draws, the copy packs the seen ones at its
 //! start, and the run is drawn indirectly with the count the copy reached.
+use super::SolidPipeline;
 use super::arena::GRAIN;
 
 /// One section draw for `flatten.wgsl`: index count, first sorted index (or
@@ -86,12 +87,12 @@ pub struct Call {
 pub struct Flat {
     /// The solid draws in one pass (`fs_solid`), where the GPU doesn't hide pixels
     /// by tiles (`split_solid` in `Renderer::draw_frame`: elsewhere than Metal).
-    pub solid: wgpu::RenderPipeline,
+    pub solid: SolidPipeline,
     /// The solid draws in two passes, each over its own part of the draws (terrain.wgsl's
     /// `opaque_quad`): the quads with no cutout first, through a shader that never discards,
     /// then the rest.
-    pub solid_opaque: wgpu::RenderPipeline,
-    pub solid_cutout: wgpu::RenderPipeline,
+    pub solid_opaque: SolidPipeline,
+    pub solid_cutout: SolidPipeline,
     /// The solid draws as the water mirror's camera draws them (`fs_solid_mirror`).
     pub solid_mirror: wgpu::RenderPipeline,
     pub translucent: wgpu::RenderPipeline,
@@ -357,7 +358,8 @@ fn plan(
 impl Flat {
     /// `pipeline(layout, label, vertex entry, fragment entry, blend, cull, pulled)` builds a
     /// terrain pipeline as the per-section ones, without the origin buffer, and without
-    /// vertex buffers when `pulled` (its vertex shader reads the page, `ARENA_BINDING`).
+    /// vertex buffers when `pulled` (its vertex shader reads the page, `ARENA_BINDING`);
+    /// `solid(layout, label, vertex entry, fragment entry)` a pulled solid one.
     pub fn new(
         device: &wgpu::Device,
         terrain_layout: &wgpu::BindGroupLayout,
@@ -372,6 +374,7 @@ impl Flat {
             Option<wgpu::Face>,
             bool,
         ) -> wgpu::RenderPipeline,
+        solid: impl Fn(&wgpu::PipelineLayout, &str, &str, &str) -> SolidPipeline,
     ) -> Self {
         let vertex = wgpu::ShaderStages::VERTEX;
         let compute = wgpu::ShaderStages::COMPUTE;
@@ -432,32 +435,23 @@ impl Flat {
         Self {
             // The solid draws read either layout of the solid quads (`mesher::packed`) from
             // the page; translucent ones keep their vertex buffer.
-            solid: pipeline(
+            solid: solid(
                 &layout,
                 "Terrain solid (flat)",
                 "vs_section_flat",
                 "fs_solid",
-                None,
-                back,
-                true,
             ),
-            solid_opaque: pipeline(
+            solid_opaque: solid(
                 &layout,
                 "Terrain solid opaque (flat)",
                 "vs_section_flat_opaque",
                 "fs_opaque",
-                None,
-                back,
-                true,
             ),
-            solid_cutout: pipeline(
+            solid_cutout: solid(
                 &layout,
                 "Terrain solid cutout (flat)",
                 "vs_section_flat_cutout",
                 "fs_solid",
-                None,
-                back,
-                true,
             ),
             // The mirror flips the winding: its solid terrain culls the front.
             solid_mirror: pipeline(

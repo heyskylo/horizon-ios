@@ -274,12 +274,7 @@ pub fn serverbound(
         (State::Play, sb::PUNCH) => {
             let mut w = Writer::new();
             w.varint(0);
-            let swing = if session.version.at_most(ServerVersion::V1_21_11) {
-                v1_21_11::SWING
-            } else {
-                V26_2_SWING
-            };
-            Ok(Some((swing, w.data)))
+            Ok(Some((swing_id(session.version), w.data)))
         }
         (State::Play, sb::SET_CREATIVE_MODE_SLOT | sb::CONTAINER_CLICK) => {
             let p = play::Serverbound::decode(id, payload)?;
@@ -295,6 +290,15 @@ pub fn serverbound(
 
 /// 26.2's serverbound `swing` (play), which 26.3 replaced with `punch`.
 const V26_2_SWING: i32 = 63;
+
+/// The id an older `version` numbers its serverbound `swing` (play) by.
+pub(super) fn swing_id(version: ServerVersion) -> i32 {
+    if version.at_most(ServerVersion::V1_21_11) {
+        v1_21_11::SWING
+    } else {
+        V26_2_SWING
+    }
+}
 
 /// A play packet decoded with the older version's ids renumbered as they are read.
 fn decode_play(ids: &'static Ids, id: i32, payload: &[u8]) -> Result<play::Clientbound> {
@@ -382,7 +386,7 @@ fn respawn(payload: &[u8]) -> Result<Vec<u8>> {
 /// The column's sections with their block states renumbered and packed for the pinned palette width (a
 /// section on the older global palette uses fewer bits per entry), and its light masks as 26.3 sends them.
 /// Biomes are the server's own registry and stay as they are.
-fn chunk(ids: &'static Ids, payload: &[u8]) -> Result<Vec<u8>> {
+pub(super) fn chunk(ids: &'static Ids, payload: &[u8]) -> Result<Vec<u8>> {
     let mut r = Reader::new(payload);
     let x = r.i32()?;
     let z = r.i32()?;
@@ -447,7 +451,7 @@ fn light(r: &mut Reader) -> Result<crate::chunk::LightData> {
     })
 }
 
-fn light_update(payload: &[u8]) -> Result<Vec<u8>> {
+pub(super) fn light_update(payload: &[u8]) -> Result<Vec<u8>> {
     let mut r = Reader::new(payload);
     let x = r.varint()?;
     let z = r.varint()?;
@@ -524,7 +528,7 @@ fn advancements(ids: &'static Ids, payload: &[u8]) -> Result<Vec<u8>> {
 
 /// 26.2: flags, position, spread, one max speed, an Int count, then the particle. 26.3 sends the particle
 /// first, a speed per axis, a VarInt count and how the spread is drawn (0, gaussian, as 26.2 did).
-fn particles(ids: &'static Ids, payload: &[u8]) -> Result<Vec<u8>> {
+pub(super) fn particles(ids: &'static Ids, payload: &[u8]) -> Result<Vec<u8>> {
     let mut r = Reader::new(payload);
     let override_limiter = r.bool()?;
     let always_show = r.bool()?;
@@ -555,7 +559,7 @@ fn particles(ids: &'static Ids, payload: &[u8]) -> Result<Vec<u8>> {
 
 /// 26.2 sends a move as three Short deltas (1/4096 of a block) then on-ground, and a turn as the two angles
 /// then on-ground; 26.3 packs on-ground with the delta's step count, and sends it before the angles.
-fn move_entity(payload: &[u8], pos: bool, rot: bool) -> Result<Vec<u8>> {
+pub(super) fn move_entity(payload: &[u8], pos: bool, rot: bool) -> Result<Vec<u8>> {
     let mut r = Reader::new(payload);
     let id = r.varint()?;
     let delta = if pos {
@@ -582,7 +586,7 @@ fn move_entity(payload: &[u8], pos: bool, rot: bool) -> Result<Vec<u8>> {
 
 /// 26.2: the entity, PositionMoveRotation (position, motion, the two angles), on-ground. 26.3 sends where it
 /// goes as a path, then the angles; the motion is no longer sent.
-fn position_sync(payload: &[u8]) -> Result<Vec<u8>> {
+pub(super) fn position_sync(payload: &[u8]) -> Result<Vec<u8>> {
     let mut r = Reader::new(payload);
     let id = r.varint()?;
     let position = [r.f64()?, r.f64()?, r.f64()?];
@@ -606,7 +610,7 @@ fn position_sync(payload: &[u8]) -> Result<Vec<u8>> {
 
 /// 26.2's animate swings hands too (0 main, 3 off), which 26.3 sends as `swing_animation`; the others were
 /// renumbered (wake up 2 -> 0, critical hits 4, 5 -> 1, 2).
-fn animate(payload: &[u8]) -> Result<(i32, Vec<u8>)> {
+pub(super) fn animate(payload: &[u8]) -> Result<(i32, Vec<u8>)> {
     let mut r = Reader::new(payload);
     let id = r.varint()?;
     let action = r.u8()?;
@@ -1286,5 +1290,21 @@ mod tests {
         assert_eq!(action(0), Some(0)); // start destroying
         assert_eq!(action(1), None); // change_destroy_direction, new in 26.3
         assert_eq!(action(3), Some(2)); // stop destroying: 3 in 26.3, 2 in 26.2
+    }
+}
+
+/// 26.2's readers, for the tests of the layout written for a 26.2 client (`layout_26_2`).
+#[cfg(test)]
+pub(super) mod tests_support {
+    use super::*;
+
+    pub fn login_26_2(payload: &[u8]) -> Result<Vec<u8>> {
+        login(payload)
+    }
+    pub fn respawn_26_2(payload: &[u8]) -> Result<Vec<u8>> {
+        respawn(payload)
+    }
+    pub fn advancements_26_2(ids: &'static Ids, payload: &[u8]) -> Result<Vec<u8>> {
+        advancements(ids, payload)
     }
 }

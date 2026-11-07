@@ -1,9 +1,6 @@
 """Six real UUID-bound pig loads, plus actual tag commands and a live rewrite."""
 import json
-if __package__:
-    from .command_exec_corpus import cmd, setup
-else:
-    from command_exec_corpus import cmd, setup
+from command_exec_corpus import cmd, setup
 
 UNIQUE = [f"h252_{i:04d}" for i in range(1025)]
 DUPLICATES = ["h252_repeat"] * 1024 + ["h252_late"]
