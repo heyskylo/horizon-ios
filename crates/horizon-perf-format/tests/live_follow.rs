@@ -114,6 +114,17 @@ fn synthetic_fields() -> Vec<Field> {
         });
     }
     for s in [Side::Server as i32, Side::Client as i32] {
+        fields.push(Field::Samples(SampleProfile {
+            side: s,
+            block_s: 5.0,
+            weights: Some(Weights {
+                node: vec![0, 1],
+                slow: vec![false, true],
+                count: vec![7, 3],
+                ..Default::default()
+            }),
+            ..Default::default()
+        }));
         fields.push(Field::Stop(Stop {
             side: s,
             t: 200.0,

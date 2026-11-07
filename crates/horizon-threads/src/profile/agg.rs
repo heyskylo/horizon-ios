@@ -12,6 +12,8 @@ const PENDING_MAX: usize = 4096;
 const BUCKETS: usize = 96;
 const WORST: usize = 10;
 const PSEUDO: u64 = 1 << 63;
+/// Time blocks a session is cut into; later samples fall in the last one.
+pub const MAX_TIME_BLOCKS: usize = 32;
 
 /// What a sample measures.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -29,6 +31,7 @@ pub struct Key {
     pub node: u32,
     pub state: State,
     pub slow: bool,
+    pub time_block: u8,
     pub span: u16,
     pub entity: u16,
     pub block: u16,
@@ -127,6 +130,9 @@ pub struct Aggregate {
     pub counts: HashMap<Key, u64>,
     pub threads: Vec<String>,
     pub ticks: HashMap<u16, TickStats>,
+    /// Ticks or frames that ended in each time block, per thread.
+    pub block_ticks: HashMap<u16, Vec<u32>>,
+    time_block: u8,
     pending: HashMap<u16, Pending>,
     slow_ns: u64,
     /// Samples whose stack was cut short at `MAX_NODES`.
@@ -148,6 +154,8 @@ impl Aggregate {
             counts: HashMap::new(),
             threads: Vec::new(),
             ticks: HashMap::new(),
+            block_ticks: HashMap::new(),
+            time_block: 0,
             pending: HashMap::new(),
             slow_ns,
             truncated: 0,
@@ -156,6 +164,18 @@ impl Aggregate {
             wall_samples: 0,
             tick_markers: 0,
         }
+    }
+
+    /// Makes `block` (clamped to the last one) the time block of everything added from now on.
+    pub fn set_time_block(&mut self, block: usize) {
+        self.time_block = block.min(MAX_TIME_BLOCKS - 1) as u8;
+    }
+
+    /// Time blocks that received a sample or a tick.
+    pub fn time_blocks(&self) -> usize {
+        let counted = self.counts.keys().map(|k| k.time_block as usize + 1);
+        let ticked = self.block_ticks.values().map(Vec::len);
+        counted.chain(ticked).max().unwrap_or(0)
     }
 
     pub fn nodes(&self) -> usize {
@@ -216,6 +236,10 @@ impl Aggregate {
                 stats.add(tick, ns);
                 let slow = ns >= self.slow_ns;
                 stats.slow += u64::from(slow);
+                let ticked = self.block_ticks.entry(thread).or_default();
+                let block = self.time_block as usize;
+                ticked.resize(ticked.len().max(block + 1), 0);
+                ticked[block] += 1;
                 for (mut key, at) in self.pending.remove(&thread).unwrap_or_default().samples {
                     key.slow = slow && at == tick;
                     self.count(key);
@@ -263,6 +287,7 @@ impl Aggregate {
             node,
             state,
             slow: false,
+            time_block: self.time_block,
             span: ctx.span,
             entity: ctx.entity_type,
             block: ctx.block,

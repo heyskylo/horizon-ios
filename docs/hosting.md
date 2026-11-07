@@ -371,7 +371,9 @@ The same command also writes `reports/profile-<time>Z.hzperf`, a capture the per
 ([perf-platform.md](perf-platform.md)): the settings and machine, the health history from before it (TPS and
 MSPT over the last 10 minutes to 7 days), a sample each second, the counters and the slow ticks with their steps.
 `horizon-server report` prints only that path and address; the text summary stays in `perf-<time>.txt`. Past 30 files or 1 GiB the oldest `profile-*.hzperf` is deleted;
-a file you renamed is never touched. `--no-samples` is accepted (the call-tree samples arrive with a later piece).
+a file you renamed is never touched. On Linux the tick thread is also sampled 250 times a second (about 0.05 % of the tick
+thread), and the capture holds where the CPU time went, by function and by what the server was doing (step, entity type, block,
+dimension, chunk); `--no-samples` leaves that out. Finishing the file after the window can take a few seconds and does not stall ticks.
 
 To see a slow stretch tick by tick, `horizon-trace [SECONDS]` (30 by default, up to 300) writes every thread's timed
 steps to `reports/trace-<time>.json`; [ui.perfetto.dev](https://ui.perfetto.dev) opens it as a timeline, one row per

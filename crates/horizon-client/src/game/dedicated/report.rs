@@ -17,6 +17,7 @@ use horizon_perf_format::{
     files,
     v1::{Start, StopReason, Trigger},
 };
+use horizon_world::level::BlockId;
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
@@ -65,17 +66,24 @@ pub(super) fn parse(words: &[&str]) -> Result<Command, ()> {
     }
 }
 
-/// Ends the capture beside a report, if one runs, and logs where it went.
+/// Ends the capture beside a report, if one runs, waits for its file and logs where it went.
 pub(super) fn finish_capture(perf: &mut ServerPerf, t: f64, reason: StopReason) {
-    match perf.stop_capture(t, reason) {
-        None => {}
-        Some(Ok(saved)) => {
-            for path in &saved.deleted {
-                log::info!("Horizon: removed the oldest capture {}", path.display());
+    perf.begin_stop(t, reason);
+    log_saved(perf, true);
+}
+
+/// Logs the captures whose files are done; with `wait`, every one still being finished.
+pub(super) fn log_saved(perf: &mut ServerPerf, wait: bool) {
+    for saved in perf.take_saved(wait) {
+        match saved {
+            Ok(saved) => {
+                for path in &saved.deleted {
+                    log::info!("Horizon: removed the oldest capture {}", path.display());
+                }
+                log::info!("Horizon: {}", files::saved_line(&saved.path));
             }
-            log::info!("Horizon: {}", files::saved_line(&saved.path));
+            Err(e) => log::error!("Horizon: could not write the performance capture: {e}"),
         }
-        Some(Err(e)) => log::error!("Horizon: could not write the performance capture: {e}"),
     }
 }
 /// The worst ticks a report lists with their spans.
@@ -351,7 +359,12 @@ fn span_cost_nanos() -> f64 {
 
 impl Game<'_> {
     /// Opens the `.hzperf` that records beside a report, and logs where it goes.
-    pub(super) fn start_perf_capture(&self, state: &mut super::ServerState, seconds: u32) {
+    pub(super) fn start_perf_capture(
+        &self,
+        state: &mut super::ServerState,
+        seconds: u32,
+        samples: bool,
+    ) {
         let start = Start {
             build: Some(server_perf::build()),
             machine: Some(server_perf::machine(server_perf::hardware())),
@@ -368,12 +381,22 @@ impl Game<'_> {
             window_s: f64::from(seconds),
             trigger: Trigger::Console,
             start,
+            samples,
+            block_names: self.block_names(),
         };
         let t = state.perf_epoch.elapsed().as_secs_f64();
         match state.perf.start_capture(t, Path::new("reports"), options) {
             Ok(path) => log::info!("Horizon: capturing to {}", path.display()),
             Err(e) => log::error!("Horizon: could not start the performance capture: {e}"),
         }
+    }
+
+    /// Every block's name by the id the sampler's context holds.
+    fn block_names(&self) -> Vec<String> {
+        let table = &self.res.behaviours().table;
+        (0..table.block_count() as u16)
+            .map(|id| table.info(BlockId(id)).name.to_string())
+            .collect()
     }
 
     /// What the health samples count: players, chunks and mobs in every level.

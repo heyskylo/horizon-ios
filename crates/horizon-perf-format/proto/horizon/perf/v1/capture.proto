@@ -38,7 +38,9 @@ message Capture {
   repeated SpanSummary spans = 16;
   // end
   repeated Workers workers = 17;
-  // Numbers 18-19 (samples, gpu) are allocated in §3.5 to later pieces.
+  // end: the call-tree aggregate of the sampler.
+  repeated SampleProfile samples = 18;
+  // Number 19 (gpu) is allocated in §3.5 to a later piece.
   // end: servers, and a client's own bytes.
   repeated NetTraffic net = 20;
   // Numbers 21-22 (bench, attachments) are allocated in §3.5 to later pieces.
@@ -489,4 +491,105 @@ message NetTraffic {
   Side side = 1;
   float block_s = 2;
   repeated PlayerTraffic players = 3;
+}
+
+enum SampleSource {
+  SAMPLE_SOURCE_UNSPECIFIED = 0;
+  SAMPLE_SOURCE_CPU = 1;
+  SAMPLE_SOURCE_WALL = 2;
+  SAMPLE_SOURCE_ALLOC = 3;
+}
+
+enum SampleUnit {
+  SAMPLE_UNIT_UNSPECIFIED = 0;
+  SAMPLE_UNIT_MS = 1;
+  SAMPLE_UNIT_BYTES = 2;
+}
+
+// What one counted sample weighs: count * period in unit.
+message SampleKind {
+  SampleSource source = 1;
+  SampleUnit unit = 2;
+  double period = 3;
+}
+
+message SampledThread {
+  // String id of the thread name.
+  uint32 name = 1;
+  // Ticks or frames the thread ran during the capture.
+  uint64 units = 2;
+  // Units at or over SampleProfile.slow_over_ms.
+  uint64 slow_units = 3;
+  Unit unit = 4;
+}
+
+// units[b] is the ticks or frames of threads[thread] that ended in time block b.
+message BlockUnits {
+  // Index into SampleProfile.threads.
+  uint32 thread = 1;
+  repeated uint32 units = 2;
+}
+
+// Columnar and deduplicated: one row per function, however many addresses of it were sampled.
+message Functions {
+  // String ids.
+  repeated uint32 name = 1;
+  repeated uint32 file = 2;
+  repeated uint32 line = 3;
+  repeated uint32 crate = 4;
+  // Module-relative address of the first sampled instruction, for symbolizing offline.
+  repeated uint64 addr = 5;
+}
+
+// Columnar call tree; parents come before their children.
+message Nodes {
+  // Index into this table; unused for a root.
+  repeated uint32 parent = 1;
+  // Index into Functions.
+  repeated uint32 function = 2;
+  // 0 for an inner node; for a root, 1 + the index into SampleProfile.threads of the thread whose stacks start here.
+  repeated uint32 thread_root = 3;
+}
+
+// Columnar, one row per distinct context; string id 0 means none.
+message Contexts {
+  repeated uint32 span = 1;
+  repeated uint32 entity = 2;
+  repeated uint32 block = 3;
+  repeated uint32 dim = 4;
+  repeated sint32 chunk_x = 5;
+  repeated sint32 chunk_z = 6;
+}
+
+// Columnar; row i counts count[i] samples that ended at node[i], one row per distinct combination.
+message Weights {
+  repeated uint32 node = 1;
+  // Index into SampleProfile.threads.
+  repeated uint32 thread = 2;
+  // Index into SampleProfile.kinds.
+  repeated uint32 kind = 3;
+  // 0 for a CPU sample, 1 for a wall sample of a running thread, 2 for a wall sample of a waiting one.
+  repeated uint32 state = 4;
+  // The sample belongs to a tick or frame at or over slow_over_ms.
+  repeated bool slow = 5;
+  // Index into Contexts.
+  repeated uint32 context = 6;
+  // Time block, from 0.
+  repeated uint32 block = 7;
+  repeated uint64 count = 8;
+}
+
+message SampleProfile {
+  Side side = 1;
+  repeated SampleKind kinds = 2;
+  repeated SampledThread threads = 3;
+  // Seconds per time block; the last block takes whatever follows it.
+  float block_s = 4;
+  repeated BlockUnits block_units = 5;
+  Functions functions = 6;
+  Nodes nodes = 7;
+  Contexts contexts = 8;
+  Weights weights = 9;
+  // The duration from which a tick or frame counts as slow.
+  float slow_over_ms = 10;
 }

@@ -100,6 +100,7 @@ pub fn push(expected: &mut Capture, field: Field) {
         Field::Memory(m) => expected.memory.push(m),
         Field::Spans(m) => expected.spans.push(m),
         Field::Workers(m) => expected.workers.push(m),
+        Field::Samples(m) => expected.samples.push(m),
         Field::Net(m) => expected.net.push(m),
         Field::Stop(m) => expected.stop.push(m),
     }

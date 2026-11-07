@@ -21,11 +21,47 @@ pub struct Sym {
 #[derive(Default)]
 pub struct Symbols {
     frames: HashMap<u64, Vec<Sym>>,
+    offsets: HashMap<u64, u64>,
 }
 
 impl Symbols {
     pub fn frames(&self, addr: u64) -> &[Sym] {
         self.frames.get(&addr).map_or(&[], Vec::as_slice)
+    }
+
+    /// `addr` relative to the start of its module, or 0 when it is in none.
+    pub fn module_offset(&self, addr: u64) -> u64 {
+        self.offsets.get(&addr).copied().unwrap_or(0)
+    }
+}
+
+/// What the running binary can name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SymbolQuality {
+    /// Line tables: file, line and inlined functions.
+    Dwarf,
+    /// Function names only.
+    Symtab,
+    None,
+}
+
+/// How well [`symbolize`] can name the functions of the running executable.
+pub fn symbol_quality() -> SymbolQuality {
+    let opened = std::env::current_exe().and_then(File::open).ok();
+    // SAFETY: the mapping is read-only and dropped before this returns; see `resolve_module`.
+    let map = opened.and_then(|f| unsafe { memmap2::Mmap::map(&f) }.ok());
+    let Some(object) = map.as_deref().and_then(|m| object::File::parse(m).ok()) else {
+        return SymbolQuality::None;
+    };
+    if object
+        .section_by_name(".debug_line")
+        .is_some_and(|s| s.size() > 0)
+    {
+        SymbolQuality::Dwarf
+    } else if object.symbols().any(|s| s.kind() == SymbolKind::Text) {
+        SymbolQuality::Symtab
+    } else {
+        SymbolQuality::None
     }
 }
 
@@ -57,7 +93,7 @@ fn from_symbol_table(symbols: &[FnSym], svma: u64) -> Option<&str> {
     (s.1 == 0 || svma < s.0 + s.1).then_some(s.2.as_str())
 }
 
-fn resolve_module(module: &Loaded, addrs: &[u64], out: &mut HashMap<u64, Vec<Sym>>) {
+fn resolve_module(module: &Loaded, addrs: &[u64], out: &mut Symbols) {
     let Some(file) = File::open(&module.path).ok() else {
         return;
     };
@@ -126,7 +162,8 @@ fn resolve_module(module: &Loaded, addrs: &[u64], out: &mut HashMap<u64, Vec<Sym
                 line,
             })
             .collect();
-        out.insert(addr, resolved);
+        out.frames.insert(addr, resolved);
+        out.offsets.insert(addr, svma);
     }
 }
 
@@ -141,15 +178,15 @@ pub fn symbolize(addrs: impl IntoIterator<Item = u64>) -> Symbols {
             None => unmapped.push(addr),
         }
     }
-    let mut frames = HashMap::new();
+    let mut symbols = Symbols::default();
     for (module, addrs) in modules.iter().zip(&by_module) {
         if !addrs.is_empty() {
-            resolve_module(module, addrs, &mut frames);
+            resolve_module(module, addrs, &mut symbols);
         }
     }
     for addr in unmapped {
         let name = format!("[unmapped 0x{addr:x}]");
-        frames.insert(
+        symbols.frames.insert(
             addr,
             vec![Sym {
                 name,
@@ -158,5 +195,5 @@ pub fn symbolize(addrs: impl IntoIterator<Item = u64>) -> Symbols {
             }],
         );
     }
-    Symbols { frames }
+    symbols
 }

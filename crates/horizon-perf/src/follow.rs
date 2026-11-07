@@ -37,6 +37,7 @@ impl Entry {
             Entry::Field(Field::Memory(m)) => capture.memory.push(m),
             Entry::Field(Field::Spans(m)) => capture.spans.push(m),
             Entry::Field(Field::Workers(m)) => capture.workers.push(m),
+            Entry::Field(Field::Samples(m)) => capture.samples.push(m),
             Entry::Field(Field::Net(m)) => capture.net.push(m),
             Entry::Field(Field::Stop(m)) => capture.stop.push(m),
         }
@@ -156,6 +157,8 @@ fn decode_entry(number: u32, bytes: &[u8]) -> Result<Entry, Error> {
         Field::Spans(m)
     } else if let Some(m) = c.workers.pop() {
         Field::Workers(m)
+    } else if let Some(m) = c.samples.pop() {
+        Field::Samples(m)
     } else if let Some(m) = c.net.pop() {
         Field::Net(m)
     } else if let Some(m) = c.stop.pop() {

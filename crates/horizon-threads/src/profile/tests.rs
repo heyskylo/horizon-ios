@@ -500,3 +500,51 @@ fn a_live_session_puts_the_function_that_ran_longest_first() {
     assert!(fast > 0 && slow > 3 * fast, "{slow} vs {fast}");
     assert!(slow <= flame.total);
 }
+
+#[test]
+fn symbols_keep_the_module_offset_and_the_binary_has_names() {
+    let at = spin_fast as *const () as u64 + 1;
+    let symbols = symbolize([at, 0x10]);
+    let offset = symbols.module_offset(at);
+    assert!(offset > 0 && offset < at, "{offset:#x} for {at:#x}");
+    assert_eq!(symbols.module_offset(0x10), 0);
+    assert_eq!(symbols.module_offset(0x99), 0);
+    assert_ne!(symbol_quality(), SymbolQuality::None);
+}
+
+#[test]
+fn samples_and_ticks_fall_in_the_time_block_current_when_they_were_added() {
+    let mut agg = Aggregate::new(50_000_000);
+    for (block, tick) in [(0, 1), (2, 2), (2, 3), (99, 4)] {
+        agg.set_time_block(block);
+        agg.add("t", &synthetic(Kind::Cpu, tick, 0, &[0x1000]));
+        agg.add("t", &synthetic(Kind::Tick, tick, 1_000_000, &[]));
+    }
+    agg.finish();
+    let mut per_block = [0u64; MAX_TIME_BLOCKS];
+    for (key, n) in &agg.counts {
+        per_block[key.time_block as usize] += n;
+    }
+    assert_eq!((per_block[0], per_block[2], per_block[31]), (1, 2, 1));
+    assert_eq!(per_block.iter().sum::<u64>(), 4);
+    assert_eq!(agg.block_ticks[&0][..3], [1, 0, 2]);
+    assert_eq!(agg.block_ticks[&0].len(), MAX_TIME_BLOCKS);
+    assert_eq!(agg.time_blocks(), MAX_TIME_BLOCKS);
+}
+
+fn long_spin() {
+    spin_fast(450);
+}
+
+#[test]
+fn a_live_session_cuts_its_samples_into_blocks_of_block_s() {
+    let config = Config {
+        block_s: 0.1,
+        ..config(false)
+    };
+    let (profile, _) = profiled("p-blocks", config, long_spin);
+    let blocks: std::collections::BTreeSet<u8> =
+        profile.agg.counts.keys().map(|k| k.time_block).collect();
+    assert!(blocks.len() >= 3, "{blocks:?}");
+    assert!(blocks.iter().all(|&b| b <= 6), "{blocks:?}");
+}

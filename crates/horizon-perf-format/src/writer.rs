@@ -34,6 +34,7 @@ pub enum Field {
     Memory(v1::MemorySnapshot),
     Spans(v1::SpanSummary),
     Workers(v1::Workers),
+    Samples(v1::SampleProfile),
     Net(v1::NetTraffic),
     Stop(v1::Stop),
 }
@@ -55,6 +56,7 @@ impl Field {
             Field::Memory(m) => m.side(),
             Field::Spans(m) => m.side(),
             Field::Workers(m) => m.side(),
+            Field::Samples(m) => m.side(),
             Field::Net(m) => m.side(),
             Field::Stop(m) => m.side(),
         }
@@ -78,6 +80,7 @@ impl Field {
             Field::Memory(m) => c.memory.push(m),
             Field::Spans(m) => c.spans.push(m),
             Field::Workers(m) => c.workers.push(m),
+            Field::Samples(m) => c.samples.push(m),
             Field::Net(m) => c.net.push(m),
             Field::Stop(m) => c.stop.push(m),
         }

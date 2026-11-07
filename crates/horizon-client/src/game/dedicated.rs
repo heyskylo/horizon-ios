@@ -1390,12 +1390,11 @@ impl Game<'_> {
                 && let Some(recording) = state.report.take()
             {
                 self.finish_report(recording, state.view, state.max_players);
-                report::finish_capture(
-                    &mut state.perf,
-                    state.perf_epoch.elapsed().as_secs_f64(),
-                    StopReason::Normal,
-                );
+                state
+                    .perf
+                    .begin_stop(state.perf_epoch.elapsed().as_secs_f64(), StopReason::Normal);
             }
+            report::log_saved(&mut state.perf, false);
             if horizon_client::spans::trace::due()
                 && let Some(events) = horizon_client::spans::trace::stop()
             {
@@ -1701,8 +1700,7 @@ impl Game<'_> {
                     Some(recording) => {
                         log("INFO", "Stopping the performance report: writing it now");
                         self.finish_report(recording, state.view, state.max_players);
-                        report::finish_capture(
-                            &mut state.perf,
+                        state.perf.begin_stop(
                             state.perf_epoch.elapsed().as_secs_f64(),
                             StopReason::Normal,
                         );
@@ -1713,9 +1711,9 @@ impl Game<'_> {
                     Some(recording) => log("INFO", &recording.status()),
                     None => log("INFO", "No performance report is being recorded"),
                 },
-                Ok(report::Command::Record { seconds, .. }) if state.report.is_none() => {
+                Ok(report::Command::Record { seconds, samples }) if state.report.is_none() => {
                     state.report = Some(report::Recording::start(seconds, self.wire_bytes()));
-                    self.start_perf_capture(state, seconds);
+                    self.start_perf_capture(state, seconds, samples);
                     log(
                         "INFO",
                         &format!("Recording a performance report for {seconds} s (reports/)"),
