@@ -68,8 +68,9 @@ pub struct Row {
     /// Unported dependencies, kept apart so the launcher can translate the fixed sentence.
     #[serde(default)]
     pub waiting: usize,
-    /// Made for 1.20 or older (data folders named as before 1.21): not carried, and not one
-    /// Port can carry over either.
+    /// Made for 1.20 or older (data folders named as before 1.21). Carried under 1.21's
+    /// folder names, it is partial at best; not carried (an older build's carry), it is not
+    /// one Port can carry over.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub old_layout: bool,
 }
@@ -198,12 +199,32 @@ fn plain_not_needed(class: &str) -> &'static str {
     }
 }
 
-/// Whether the carry found the mod made for 1.20 or older ([`crate::carry::old_layout`]).
-fn old_layout(work: &Path, key: &str) -> bool {
-    std::fs::read(work.join("mods").join(key).join("carry-report.json"))
+/// What the carry found of a mod made for 1.20 or older ([`crate::carry::old_layout`]).
+enum OldLayout {
+    /// Not one, or not carried yet.
+    No,
+    /// Found by an older build, which carried nothing.
+    NotCarried,
+    /// Carried under 1.21's folder names: why it is partial.
+    Renamed(String),
+}
+
+fn old_layout(work: &Path, key: &str) -> OldLayout {
+    let carry = std::fs::read(work.join("mods").join(key).join("carry-report.json"))
         .ok()
-        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
-        .is_some_and(|c| c["old_layout"] == true)
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok());
+    let Some(carry) = carry.filter(|c| c["old_layout"] == true) else {
+        return OldLayout::No;
+    };
+    let count = |k: &str| carry[k].as_u64().unwrap_or(0);
+    let renamed = count("folders_renamed");
+    if renamed == 0 {
+        return OldLayout::NotCarried;
+    }
+    OldLayout::Renamed(format!(
+        "made for Minecraft 1.20 or older: {renamed} data files moved to 1.21's folder names,          their JSON still 1.20's ({} recipe results name `item`, which 26.3 skips; NBT in loot          functions, ingredients and predicates not upgraded yet)",
+        count("recipes_old_result")
+    ))
 }
 
 /// A carried-over mod: ported when its harness passes with nothing left
@@ -345,20 +366,25 @@ pub fn build(records: &[Record], work: &Path) -> Vec<Row> {
             if r.path.starts_with("resourcepacks/") || r.path.starts_with("shaderpacks/") {
                 return resource_row(&r.path, resourcepacks.files.get(&r.path), Some(r));
             }
-            let old = old_layout(work, &r.key);
+            let layout = old_layout(work, &r.key);
+            let old = !matches!(layout, OldLayout::No);
             let (status, reason) = if r.class == "unknown" {
                 let why =
                     "unclassified: its jar (mods.toml, file census) or a reviewed row decides";
                 (Status::NotYet, why.to_owned())
             } else if r.tier == "none" || matches!(r.class.as_str(), "library" | "performance") {
                 (Status::NotNeeded, not_needed(&r.class).to_owned())
-            } else if old {
+            } else if matches!(layout, OldLayout::NotCarried) {
                 let why = "made for Minecraft 1.20 or older: its data folders (recipes/, \
                            loot_tables/, tags/blocks/...) are named as before 1.21, which 26.3 \
                            does not read; not carried";
                 (Status::NotYet, why.to_owned())
-            } else if let Some(c) = carried(work, &r.key) {
-                c
+            } else if let Some((status, why)) = carried(work, &r.key) {
+                match layout {
+                    // Its harness checks blocks and items, not 1.20's recipes and loot tables.
+                    OldLayout::Renamed(old) => (Status::Partial, format!("{old}; {why}")),
+                    _ => (status, why),
+                }
             } else {
                 let mut why = not_yet(&r.tier).to_owned();
                 if r.tier == "data" && r.jar.is_some() {
@@ -443,7 +469,7 @@ pub fn summary(rows: &[Row]) -> Summary {
             Status::NotNeeded => continue,
             Status::Ported => s.carried += 1,
             Status::Partial => (s.carried, s.partial) = (s.carried + 1, s.partial + 1),
-            // Not one port can carry over: the 1.20 data would not load.
+            // Not carried by an older build: not one Port can carry over.
             Status::NotYet if r.old_layout => s.later += 1,
             Status::NotYet if r.class == "content" && r.tier == "data" => s.ready += 1,
             Status::NotYet
