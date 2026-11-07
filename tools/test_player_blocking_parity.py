@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import tempfile
 try:
     from . import lab, test_rust_parity as base
     from .integration_env import run_game
@@ -64,8 +65,10 @@ def main():
     resources = args.resources or lab.LOCAL / 'horizon-client' / lock['minecraft']['version']
     rust = work / 'rust.txt'
     rust.unlink(missing_ok=True)
-    run_game([str(binary.resolve()), '--headless', '--resources', str(resources.resolve())], cwd=work, check=True, timeout=args.timeout,
-             env=lab.game_env(HORIZON_DISPENSE_FIXTURE=f'{cases.resolve()},{rust.resolve()}'))
+    with tempfile.TemporaryDirectory(prefix='hz-player-blocking-') as game_dir:
+        run_game([str(binary.resolve()), '--headless', '--game-dir', game_dir,
+                  '--resources', str(resources.resolve())], cwd=game_dir, check=True, timeout=args.timeout,
+                 env=lab.game_env(HORIZON_DISPENSE_FIXTURE=f'{cases.resolve()},{rust.resolve()}'))
     expected = native.read_text(encoding='utf-8').splitlines()
     rust_lines = rust.read_text(encoding='utf-8').splitlines()
     actual = [line for line in rust_lines
