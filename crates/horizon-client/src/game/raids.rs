@@ -187,7 +187,7 @@ impl PatrolLevel for PatrolCx<'_, '_, '_> {
         self.level.game.ui.rules.bool("spawn_patrols")
     }
     fn bright_outside(&self) -> bool {
-        self.level.game.dim == Dim::Overworld && self.level.game.sky_darken() < 4
+        !self.level.game.dimension_type().has_fixed_time && self.level.game.sky_darken() < 4
     }
     /// `PatrolSpawner.tick` picks from `level.players()`: the local player
     /// and every guest in the level.
@@ -371,7 +371,7 @@ impl Game<'_> {
                     .clone()
             })
             .unwrap_or_default();
-        attributes.value(key, self.dim.id(), &biome, self.world.day_time)
+        attributes.value(key, &self.dimension_type().id, &biome, self.world.day_time)
     }
 
     /// `BadOmenMobEffect` and `RaidOmenMobEffect.applyEffectTick` for the
