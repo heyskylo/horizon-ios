@@ -29,7 +29,7 @@
 //!   31 types), so the ids table's runs are the only change (see adapter.rs V1_21_1).
 use crate::{
     Error, Result, State,
-    buf::{Codec, Opt, Reader, Vec3d, Writer},
+    buf::{Codec, Reader, Vec3d, Writer},
     entity_data::Particle,
     ids as packet_ids,
     packets::{login::Property, play},
