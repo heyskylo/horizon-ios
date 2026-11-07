@@ -25,7 +25,7 @@ pub(super) struct Raiding {
     patrol: PatrolSpawner,
     siege: Siege,
     /// The raids of the dimension the player is in, and that dimension.
-    raids: Raids,
+    pub(super) raids: Raids,
     loaded: Option<Dim>,
     /// `ServerPlayer.raidOmenPosition` (`raid_omen_position`), read from the
     /// player data on first use.
