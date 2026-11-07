@@ -457,11 +457,26 @@ for it. No countdowns, scarcity, buyer counts, "limited" wording or loot boxes.
   What the catalogue doesn't price isn't sold, so items the service puts on sale
   (`COSMETICS_ON_SALE`) show up by themselves. The currency is guessed from the system locale
   (francs in CH/LI, pounds in GB, euros in the euro area, else dollars) and can be switched.
-- **Cards** per collection (sets first), the founder set while it can be claimed, the Supporter badge.
-  Choosing a card tries it on the account's own skin, over what it wears (`shop::try_on`), in the
-  Wardrobe's 3D view (the live view above, a camera of its own): drag to turn, scroll to zoom.
+- **Laid out like a game's item shop** (Ludovic, 2026-11-07: "you just don't see the items"): the
+  first collection's `pack` (else its largest set) across the top, big, with its name, item count,
+  price and *Buy*; then *Looks* (the other sets), each collection's items, and the founder set and
+  the Supporter badge. A tile is the thing itself drawn, its name and its price, nothing else; it
+  lifts under the pointer. Very little text anywhere.
+- **Pictures** (`shop/thumbs.rs`): drawn by the Wardrobe's renderer (`preview::fitted_view` frames
+  an item on itself) at the screen's pixels, twice as fine then halved, on background threads, kept
+  by the item files' hashes (and the skin). An item alone at an angle (a back item from behind, an
+  aura from above, a trail's particles grown), a shirt on a plain figure, an emote on the player at
+  its fullest move, a look on the player, the pack as its looks side by side. Name tags show as the
+  game draws them.
+- **A tile opens it big**: the account's own player in 3D wearing it over what it wears
+  (`shop::try_on`; drag to turn, scroll to zoom; an emote plays, again each time it ends), its name,
+  price and line, a look's or the pack's items, *Buy* (not for what the account owns) and *Gift*
+  (the friend's Minecraft name, then *Pay … in your browser*, priced without what they own). Each
+  is one checkout of that offer (`POST /v1/web/checkout`); "Ask whoever pays before you buy.
+  Refunds within 14 days for any reason." sits under the buttons.
 - **The founder set**: *Claim for free* where Paddle doesn't sell (`Claim::here`), else Paddle's free
   checkout in the browser (`POST /v1/web/checkout` with `founder_set`).
 - **A catalogue that doesn't load** shows "The shop didn't load." with *Retry*; nothing else changes.
 - `HORIZON_LAUNCHER_PAGE=shop` in a development build shows it for the made-up account of the
-  Wardrobe's preview, the founder set tried on.
+  Wardrobe's preview; `HORIZON_COSMETICS_CATALOGUE=<file>` gives it a saved `GET /v1/catalogue`
+  (prices, sets), `HORIZON_COSMETICS_SKIN=<png>` a skin, `HORIZON_SHOP_OPEN=<id>` an offer open.

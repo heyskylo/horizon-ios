@@ -109,17 +109,7 @@ fn skin(account: &account::Account) -> Option<(Arc<Texture>, bool)> {
     let (url, model) = account.skin.as_ref()?;
     let png =
         horizon_launcher::heads::cached_skin(url, &backend::data_dir().join("profile-heads"))?;
-    let image = image::load_from_memory(&png).ok()?.to_rgba8();
-    (image.dimensions() == (64, 64)).then(|| {
-        (
-            Arc::new(Texture {
-                width: 64,
-                height: 64,
-                rgba: image.into_raw(),
-            }),
-            model == "slim",
-        )
-    })
+    Some((skin_texture(&png)?, model == "slim"))
 }
 
 /// A plain figure's texture, for an account without a skin the preview can read: head and arms,
@@ -142,6 +132,25 @@ fn plain() -> Texture {
         height: 64,
         rgba,
     }
+}
+
+/// `plain()`, made once: the views compare skins by their file.
+fn plain_skin() -> Arc<Texture> {
+    static PLAIN: std::sync::LazyLock<Arc<Texture>> =
+        std::sync::LazyLock::new(|| Arc::new(plain()));
+    PLAIN.clone()
+}
+
+/// A 64×64 skin's PNG as the preview takes it.
+fn skin_texture(png: &[u8]) -> Option<Arc<Texture>> {
+    let image = image::load_from_memory(png).ok()?.to_rgba8();
+    (image.dimensions() == (64, 64)).then(|| {
+        Arc::new(Texture {
+            width: 64,
+            height: 64,
+            rgba: image.into_raw(),
+        })
+    })
 }
 
 /// What the view shows: each slot's item, the hovered card's choice in its own slot.
@@ -558,7 +567,8 @@ impl Launcher {
     /// `HORIZON_LAUNCHER_PAGE=wardrobe` (or `shop`) in a development build: the page for a made-up account
     /// that owns the items of `HORIZON_COSMETICS_LOCAL` and wears the first of each slot, for
     /// screenshots. Nothing is asked of Mojang or the service, and nothing is saved.
-    /// `HORIZON_WARDROBE_STATE=offline|failed|empty|no_paddle` shows that state instead.
+    /// `HORIZON_WARDROBE_STATE=offline|failed|empty|no_paddle` shows that state instead, and
+    /// `HORIZON_COSMETICS_CATALOGUE=<file>` the shop of a saved `GET /v1/catalogue`.
     pub(super) fn wardrobe_preview(&mut self) {
         use horizon_launcher::wardrobe::{Claim, Entry, Me, Purchase};
         let Some(dir) = std::env::var_os("HORIZON_COSMETICS_LOCAL") else {
@@ -596,7 +606,15 @@ impl Launcher {
                 .entry(slot(i).to_owned())
                 .or_insert_with(|| i.id.clone());
         }
-        let ids: Vec<String> = items.iter().map(|i| i.id.clone()).collect();
+        // `HORIZON_COSMETICS_CATALOGUE=<file>`: a catalogue as the service answers it (prices,
+        // sets, collections), the account owning only its founder set.
+        let sold: Option<Catalogue> = std::env::var_os("HORIZON_COSMETICS_CATALOGUE")
+            .and_then(|f| serde_json::from_slice(&std::fs::read(f).ok()?).ok());
+        let mut ids: Vec<String> = items.iter().map(|i| i.id.clone()).collect();
+        if let Some(c) = &sold {
+            ids.retain(|id| c.claim.items.contains(id));
+            equipped.retain(|_, id| ids.contains(id));
+        }
         let claim = Claim {
             state: ClaimState::Open,
             items: ids.clone(),
@@ -644,6 +662,13 @@ impl Launcher {
             collections: Vec::new(),
             supporter: None,
         };
+        let catalogue = match sold {
+            Some(c) => Catalogue {
+                claim: claim.clone(),
+                ..c
+            },
+            None => catalogue,
+        };
         let account = account::Account {
             uuid: "00000000000000000000000000000001".into(),
             name: "Preview".into(),
@@ -687,7 +712,10 @@ impl Launcher {
                 .collect(),
             session: (state != "empty")
                 .then(|| Arc::new(Session::preview(&account.uuid, &account.name))),
-            skin: None,
+            // `HORIZON_COSMETICS_SKIN=<png>`: a skin to wear.
+            skin: std::env::var_os("HORIZON_COSMETICS_SKIN")
+                .and_then(|f| skin_texture(&std::fs::read(f).ok()?))
+                .map(|s| (s, false)),
             status: match state.as_str() {
                 "offline" => Status::Offline,
                 "failed" => {
@@ -710,15 +738,13 @@ impl Launcher {
     /// The player in 3D, handed what it wears now (with the hovered card's item tried on) when
     /// that changed: after this frame, so that the page never reads the view while it renders.
     fn wardrobe_dress(&mut self, cx: &mut Context<Self>) -> Option<gpui::Entity<Viewer>> {
-        static PLAIN: std::sync::LazyLock<Arc<Texture>> =
-            std::sync::LazyLock::new(|| Arc::new(plain()));
         let w = self.wardrobe.as_mut()?;
         let me = w.saved.me.as_ref()?;
         let viewer = w
             .viewer
             .get_or_insert_with(|| cx.new(|_| Viewer::new()))
             .clone();
-        let (skin, slim) = w.skin.clone().unwrap_or_else(|| (PLAIN.clone(), false));
+        let (skin, slim) = w.skin.clone().unwrap_or_else(|| (plain_skin(), false));
         let outfit = Outfit {
             skin,
             slim,
@@ -931,21 +957,30 @@ impl Launcher {
                     .child(tr("Drag to turn, scroll to zoom.")),
             )
             .child(reset);
-        let player =
-            glass::plate(radius::PANEL)
-                .flex()
-                .flex_col()
-                .items_center()
-                .justify_center()
-                .gap(px(10.))
-                .flex_1()
-                .min_w(px(240.))
-                .p(px(20.))
-                .child(name_tag)
-                .child(div().w(px(viewer::W)).h(px(viewer::H)).children(
-                    viewer.map(|v| viewer::frame(v, w.dragging, Self::wardrobe_drag(cx))),
-                ))
-                .child(controls);
+        let player = glass::plate(radius::PANEL)
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap(px(10.))
+            .flex_1()
+            .min_w(px(240.))
+            .p(px(20.))
+            .child(name_tag)
+            .child(
+                div()
+                    .w(px(viewer::W))
+                    .h(px(viewer::H))
+                    .children(viewer.map(|v| {
+                        viewer::frame(
+                            v,
+                            (viewer::W, viewer::H),
+                            w.dragging,
+                            Self::wardrobe_drag(cx),
+                        )
+                    })),
+            )
+            .child(controls);
         // What the account owns for the chosen slot, "Nothing" first.
         let slot = w.slot;
         let label = SLOTS.iter().find(|(s, _)| *s == slot).map_or("", |s| s.1);
