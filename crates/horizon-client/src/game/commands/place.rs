@@ -94,9 +94,29 @@ impl Game<'_> {
                 let pos = self.place_pos(ctx, "pos")?;
                 let (cx, cz) = (pos[0] >> 4, pos[2] >> 4);
                 self.place_check_loaded([cx - 1, cz - 1], [cx + 1, cz + 1])?;
-                // Inline features are not built by the live feature registry.
+                // ResourceOrHolderArgument: an inline feature value goes
+                // through the same codec and `Feature.place`; a value that
+                // does not decode keeps the plain failure.
                 if raw.starts_with('{') {
-                    return Err(err("command.failed", &[]));
+                    let (tag, _) = horizon_world::nbt::parse_snbt(&raw)
+                        .map_err(|_| err("command.failed", &[]))?;
+                    let json = horizon_client::scoreboard::tag_to_json(&tag).to_string();
+                    let at = horizon_core::position::BlockPos::new(pos[0], pos[1], pos[2]);
+                    let placed = self
+                        .with_level(|b, level, ticks| {
+                            b.place_inline_feature(level, ticks, &json, at)
+                        })
+                        .ok_or_else(|| err("command.failed", &[]))?;
+                    self.process_level_events()
+                        .map_err(|_| err("command.failed", &[]))?;
+                    if !placed {
+                        return Err(err("commands.place.feature.failed", &[]));
+                    }
+                    self.feedback(Text::translate(
+                        "commands.place.feature.success.inline",
+                        &[num(pos[0]), num(pos[1]), num(pos[2])],
+                    ));
+                    return Ok(1);
                 }
                 let name = if raw.contains(':') {
                     raw

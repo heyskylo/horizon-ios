@@ -326,6 +326,8 @@ mod pick_entity;
 mod pickups;
 mod piglins;
 mod piston_push;
+#[cfg(test)]
+mod place_feature_tests;
 mod player_equip;
 mod postprocess;
 mod potent_sulfur;
