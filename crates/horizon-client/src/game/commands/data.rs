@@ -206,6 +206,11 @@ impl Game<'_> {
                 let i = self.tnts.iter().position(|t| t.id == id)?;
                 self.tnt_nbt(i)
             }
+            Target::Cushion(id) => {
+                let uuid = self.uuid_for(id);
+                let c = self.cushions.iter().find(|c| c.id == id)?;
+                entity_nbt::cushion_to_nbt(c, uuid, self.persist.raw.get(&id))
+            }
             Target::Falling(id) => {
                 let f = self.falling.iter().find(|f| f.id == id)?.clone();
                 let (uuid, raw) = match &f.saved {
@@ -508,6 +513,7 @@ impl Game<'_> {
         | Target::Boat(id)
         | Target::Cart(id)
         | Target::Tnt(id)
+        | Target::Cushion(id)
         | Target::Other(id)
         | Target::Fangs(id) = t
         {
@@ -544,6 +550,7 @@ impl Game<'_> {
             // `tags_of` reads a primed TNT's compound; without this arm
             // `/tag` wrote nothing and still reported success.
             | Target::Tnt(id)
+            | Target::Cushion(id)
             | Target::Orb(id)
             | Target::Projectile(id)
             | Target::Crystal(id)
@@ -1183,6 +1190,8 @@ impl Game<'_> {
             Some(Target::Other(id))
         } else if self.tnts.iter().any(|t| t.id == id) {
             Some(Target::Tnt(id))
+        } else if self.cushions.iter().any(|c| c.id == id) {
+            Some(Target::Cushion(id))
         } else if self.falling.iter().any(|f| f.id == id) {
             Some(Target::Falling(id))
         } else if self.rockets.iter().any(|r| r.id == id) {
