@@ -632,8 +632,7 @@ impl Game<'_> {
         }
     }
 
-    /// A saved primed TNT.
-    // PrimedTnt.readAdditionalSaveData: its fuse (80 when absent) and motion.
+    /// `PrimedTnt.readAdditionalSaveData`: its numeric short fuse (80 when absent) and motion.
     // Its Passengers ride it (EntityType.loadEntityRecursive forces them on).
     pub(super) fn load_tnt(&mut self, tag: Tag, uuid: Option<[i32; 4]>) {
         let mut tag = tag;
@@ -641,10 +640,13 @@ impl Game<'_> {
         if let Some(position) = entity_nbt::position(&tag) {
             self.next_entity += 1;
             let id = self.next_entity;
-            let fuse = match tag.get("fuse") {
-                Some(Tag::Short(f)) => i32::from(*f),
-                _ => 80,
-            };
+            // getShortOr uses NumericTag.shortValue: floor floating values
+            // to int before short narrowing; integer tags narrow directly.
+            let fuse = i32::from(match tag.get("fuse") {
+                Some(Tag::Float(v)) => f32::from_bits(*v).floor() as i32 as i16,
+                Some(Tag::Double(v)) => f64::from_bits(*v).floor() as i32 as i16,
+                other => horizon_client::save::number(other).unwrap_or(80) as i16,
+            });
             self.tnts.push(super::tnt::PrimedTnt {
                 rotation: [0.0, 0.0],
                 join: Default::default(),
@@ -941,6 +943,11 @@ impl Game<'_> {
     fn load_other(&mut self, mut tag: Tag, kind: &str) -> Option<u32> {
         strip_finalize(&mut tag);
         let position = entity_nbt::position(&tag)?;
+        let item_transformation = if kind == "minecraft:item_display" {
+            super::native_entities::ItemDisplayTransformation::from_tag(tag.get("transformation"))
+        } else {
+            None
+        };
         let rotation = match tag.get("Rotation") {
             Some(Tag::List(l)) => {
                 let f = |i: usize| match l.get(i) {
@@ -961,6 +968,7 @@ impl Game<'_> {
             position,
             yaw: rotation[0],
             pitch: rotation[1],
+            item_transformation,
         });
         Some(id)
     }
@@ -991,6 +999,9 @@ impl Game<'_> {
                 ]),
             );
             c.insert("UUID".into(), Tag::IntArray(uuid.to_vec()));
+            if let Some(transformation) = o.item_transformation {
+                c.insert("transformation".into(), transformation.to_tag());
+            }
             if matches!(o.kind.as_str(), "minecraft:interaction" | "interaction") {
                 // Interaction.addAdditionalSaveData always writes these settings.
                 c.entry("width".into())
@@ -1757,8 +1768,12 @@ impl Game<'_> {
         keys.contains(&chunk_of(at)).then(|| {
             let id = self.dropped[i].id;
             let uuid = self.uuid_for(id);
-            let tag =
-                entity_nbt::item_entity_to_nbt(&self.dropped[i], uuid, self.persist.raw.get(&id));
+            let tag = entity_nbt::item_entity_to_nbt_with_items(
+                &self.dropped[i],
+                uuid,
+                self.persist.raw.get(&id),
+                self.items(),
+            );
             (chunk_of(at), tag)
         })
     }
@@ -2801,5 +2816,310 @@ mod loaded_tag_tests {
             failures.is_empty(),
             "actual load/getter/save/mutation failures: {failures:#?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod item_display_saved_transform_tests {
+    use super::*;
+    use crate::game::{Audio, Options, Progress, Settings, commands::Target, load_resources};
+    use horizon_client::{chunk::Chunk, motion::PlayerMotion};
+    use horizon_core::{geometry::Vec3, position::ChunkPos, random::LegacyRandom};
+    fn with_game(test: impl FnOnce(&mut Game<'_>)) {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.game_dir = Some(
+            std::path::PathBuf::from(std::env::var_os("HORIZON_HOME").unwrap())
+                .join(format!("h132-{:?}", std::thread::current().id())),
+        );
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+
+        game.world
+            .chunks
+            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        game.block_ticks
+            .add_empty_chunk(ChunkPos::new(0, 0))
+            .unwrap();
+        assert!(game.run_command("difficulty normal"));
+        assert!(game.run_command("forceload add 0 0"));
+        for (x, z) in [(0, 1), (1, 0), (1, 1)] {
+            game.world
+                .chunks
+                .insert((x, z), Arc::new(Chunk::empty(x, z)));
+            game.block_ticks
+                .add_empty_chunk(ChunkPos::new(x, z))
+                .unwrap();
+        }
+        game.player = Some(PlayerMotion::new(game.motion, Vec3::new(2.5, 200.0, 2.5)).unwrap());
+        game.creative = true;
+        assert!(game.run_command("fill 0 199 0 31 199 31 stone"));
+        assert!(
+            game.run_command("summon pig 13.5 200 2.5 {UUID:[I;132,0,0,99],NoAI:1b,NoGravity:1b}")
+        );
+        game.world.random = LegacyRandom::new(132);
+        test(&mut game);
+    }
+    const IDENTITY: &str = "{translation:[0f,0f,0f],left_rotation:[0f,0f,0f,1f],scale:[1f,1f,1f],right_rotation:[0f,0f,0f,1f]}";
+    const CHANGED: &str = "{translation:[1.25f,-2.5f,3f],left_rotation:[0f,1f,0f,0f],scale:[2f,3f,4f],right_rotation:[0f,0f,0f,1f]}";
+    fn expected(translation: [f32; 3], left: [f32; 4], scale: [f32; 3]) -> Tag {
+        let floats = |v: &[f32]| Tag::List(v.iter().map(|x| Tag::Float(x.to_bits())).collect());
+        Tag::Compound(
+            [
+                ("translation".into(), floats(&translation)),
+                ("left_rotation".into(), floats(&left)),
+                ("scale".into(), floats(&scale)),
+                ("right_rotation".into(), floats(&[0.0, 0.0, 0.0, 1.0])),
+            ]
+            .into_iter()
+            .collect(),
+        )
+    }
+    fn summon(game: &mut Game<'_>, n: i32, transform: Option<&str>) -> u32 {
+        let suffix = transform
+            .map(|t| format!(",transformation:{t}"))
+            .unwrap_or_default();
+        assert!(game.run_command(&format!("summon item_display 6.5 200 6.5 {{UUID:[I;132,0,0,{n}],Rotation:[12.5f,-20f],NoGravity:1b,CustomName:\"display\",Tags:[\"h132\"],item:{{id:\"minecraft:diamond\",count:2,components:{{\"minecraft:custom_data\":{{h132:7}}}}}}{suffix}}}")));
+        let o = game
+            .others
+            .iter()
+            .find(|o| game.persist.uuid_of(o.id) == Some([132, 0, 0, n]))
+            .unwrap();
+        assert_eq!(o.kind, "minecraft:item_display");
+        assert_eq!(o.position, Vec3::new(6.5, 200.0, 6.5));
+        assert_eq!([o.yaw, o.pitch], [12.5, -20.0]);
+        let id = o.id;
+        let saved = game.entity_nbt(Target::Other(id)).unwrap();
+        let stack = horizon_client::save::item_from_nbt(saved.get("item").unwrap()).unwrap();
+        assert_eq!(&*stack.item, "minecraft:diamond");
+        assert_eq!(stack.count, 2);
+        assert_eq!(
+            saved
+                .get("item")
+                .unwrap()
+                .get("components")
+                .unwrap()
+                .get("minecraft:custom_data")
+                .unwrap()
+                .get("h132"),
+            Some(&Tag::Int(7))
+        );
+        id
+    }
+    #[test]
+    #[ignore = "prepared resources; actual item-display registered load and no-raw save"]
+    fn omitted_item_display_transformation_is_saved_as_typed_identity() {
+        with_game(|game| {
+            let clock = game.world.game_time;
+            let id = summon(game, 1, None);
+            let identity = expected([0.0; 3], [0.0, 0.0, 0.0, 1.0], [1.0; 3]);
+            let tag = game.entity_nbt(Target::Other(id)).unwrap();
+            assert_eq!(tag.get("transformation"), Some(&identity));
+            let raw = game.persist.raw.remove(&id).unwrap();
+            let fresh = game.entity_nbt(Target::Other(id)).unwrap();
+            assert_eq!(fresh.get("transformation"), Some(&identity));
+            assert_eq!(fresh.get("UUID"), tag.get("UUID"));
+            assert_eq!(fresh.get("Pos"), tag.get("Pos"));
+            for key in [
+                "interpolation_duration",
+                "teleport_duration",
+                "start_interpolation",
+            ] {
+                assert!(fresh.get(key).is_none());
+            }
+            game.persist.raw.insert(id, raw);
+            assert_eq!(game.world.game_time, clock);
+        });
+    }
+    #[test]
+    #[ignore = "prepared resources; actual explicit load must survive removal of raw source"]
+    fn admitted_compound_item_transforms_are_actual_saved_state() {
+        with_game(|game| {
+            let clock = game.world.game_time;
+            for (n, text, want) in [
+                (
+                    2,
+                    CHANGED,
+                    expected([1.25, -2.5, 3.0], [0.0, 1.0, 0.0, 0.0], [2.0, 3.0, 4.0]),
+                ),
+                (
+                    3,
+                    IDENTITY,
+                    expected([0.0; 3], [0.0, 0.0, 0.0, 1.0], [1.0; 3]),
+                ),
+            ] {
+                let id = summon(game, n, Some(text));
+                let before = game.entity_nbt(Target::Other(id)).unwrap();
+                assert_eq!(before.get("transformation"), Some(&want));
+                let raw = game.persist.raw.remove(&id).unwrap();
+                let fresh = game.entity_nbt(Target::Other(id)).unwrap();
+                assert_eq!(
+                    fresh.get("transformation"),
+                    Some(&want),
+                    "real loaded state survives without raw"
+                );
+                game.persist.raw.insert(id, raw);
+            }
+            assert_eq!(game.world.game_time, clock);
+        });
+    }
+    #[test]
+    #[ignore = "prepared resources; actual native setter, stale raw and no-raw writer"]
+    fn existing_native_item_display_setter_carries_only_transform_state() {
+        use crate::game::native_entities::NativeDisplay;
+        with_game(|game| {
+            // Same actual server-context setup as existing native machine/contact fixtures.
+            game.options.dedicated = Some(Vec::new());
+            let id = summon(game, 4, None);
+            let uuid = game.persist.uuid_of(id);
+            let clock = game.world.game_time;
+            let update = NativeDisplay {
+                translation: [9.0, 8.0, 7.0],
+                scale: [2.0; 3],
+                interpolation: 13,
+                teleport: 5,
+                ..NativeDisplay::default()
+            };
+            assert!(game.native_set_display("minecraft:overworld", id, &update));
+            let raw = game.persist.raw.get_mut(&id).unwrap();
+            assert_eq!(raw.get("interpolation_duration"), Some(&Tag::Int(13)));
+            assert_eq!(raw.get("teleport_duration"), Some(&Tag::Int(5)));
+            assert_eq!(raw.get("start_interpolation"), Some(&Tag::Int(0)));
+            let Tag::Compound(c) = raw else {
+                panic!("compound")
+            };
+            c.insert(
+                "transformation".into(),
+                expected([0.0; 3], [0.0, 0.0, 0.0, 1.0], [1.0; 3]),
+            );
+            let want = expected([9.0, 8.0, 7.0], [0.0, 0.0, 0.0, 1.0], [2.0; 3]);
+            assert_eq!(
+                game.entity_nbt(Target::Other(id))
+                    .unwrap()
+                    .get("transformation"),
+                Some(&want)
+            );
+            let raw = game.persist.raw.remove(&id).unwrap();
+            let fresh = game.entity_nbt(Target::Other(id)).unwrap();
+            assert_eq!(fresh.get("transformation"), Some(&want));
+            for key in [
+                "interpolation_duration",
+                "teleport_duration",
+                "start_interpolation",
+            ] {
+                assert!(fresh.get(key).is_none());
+            }
+            game.persist.raw.insert(id, raw);
+            let invalid = NativeDisplay {
+                left_rotation: [0.0; 4],
+                ..update
+            };
+            let before = game.persist.raw.get(&id).unwrap().clone();
+            assert!(!game.native_set_display("minecraft:overworld", id, &invalid));
+            assert_eq!(game.persist.raw.get(&id), Some(&before));
+            assert_eq!(
+                game.entity_nbt(Target::Other(id))
+                    .unwrap()
+                    .get("transformation"),
+                Some(&want)
+            );
+            assert_eq!(game.persist.uuid_of(id), uuid);
+            assert_eq!(game.world.game_time, clock);
+        });
+    }
+    #[test]
+    #[ignore = "prepared resources; preservation controls, not Java matrix/invalid admission"]
+    fn unprojected_forms_and_non_item_classes_keep_their_existing_saved_route() {
+        with_game(|game| {
+            for (n, form) in [
+                (5, "[1f,0f,0f,0f,0f,1f,0f,0f,0f,0f,1f,0f,0f,0f,0f,1f]"),
+                (6, "{}"),
+                (7, "\"invalid\""),
+            ] {
+                assert!(game.run_command(&format!("summon item_display 6.5 200 6.5 {{UUID:[I;132,0,0,{n}],transformation:{form},item:{{id:\"minecraft:diamond\",count:1}}}}")));
+                let id = game
+                    .others
+                    .iter()
+                    .find(|o| game.persist.uuid_of(o.id) == Some([132, 0, 0, n]))
+                    .unwrap()
+                    .id;
+                let before = game
+                    .persist
+                    .raw
+                    .get(&id)
+                    .unwrap()
+                    .get("transformation")
+                    .unwrap()
+                    .clone();
+                assert_eq!(
+                    game.entity_nbt(Target::Other(id))
+                        .unwrap()
+                        .get("transformation"),
+                    Some(&before)
+                );
+                let raw = game.persist.raw.remove(&id).unwrap();
+                assert!(
+                    game.entity_nbt(Target::Other(id))
+                        .unwrap()
+                        .get("transformation")
+                        .is_none()
+                );
+                game.persist.raw.insert(id, raw);
+            }
+            for (n, kind, extra) in [
+                (8, "marker", ",data:{audit:7}"),
+                (9, "leash_knot", ""),
+                (10, "text_display", ",text:\"control\""),
+            ] {
+                assert!(game.run_command(&format!(
+                    "summon {kind} 10.5 200 10.5 {{UUID:[I;132,0,0,{n}]{extra}}}"
+                )));
+                let id = game
+                    .others
+                    .iter()
+                    .find(|o| game.persist.uuid_of(o.id) == Some([132, 0, 0, n]))
+                    .unwrap()
+                    .id;
+                assert!(
+                    game.entity_nbt(Target::Other(id))
+                        .unwrap()
+                        .get("transformation")
+                        .is_none()
+                );
+            }
+            assert_eq!(
+                game.mobs
+                    .iter()
+                    .find(|m| game.persist.uuid_of(m.id) == Some([132, 0, 0, 99]))
+                    .unwrap()
+                    .health,
+                10.0
+            );
+        });
     }
 }

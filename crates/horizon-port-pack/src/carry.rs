@@ -339,6 +339,30 @@ pub fn renamed_ids(v: &mut Value) -> bool {
     }
 }
 
+/// Every string of a model or block state file that is a renamed id's block or
+/// item model or texture (`minecraft:block/chain`, `item/chain`) set to the
+/// new one's, in place; whether any was. 26.3 has only `iron_chain`'s.
+pub fn renamed_assets(v: &mut Value) -> bool {
+    match v {
+        Value::String(s) => {
+            let path = s.strip_prefix("minecraft:").unwrap_or(s);
+            let renamed = RENAMED_IDS.iter().find_map(|(old, new)| {
+                let (old, new) = (
+                    old.strip_prefix("minecraft:")?,
+                    new.strip_prefix("minecraft:")?,
+                );
+                ["block/", "item/"].iter().find_map(|kind| {
+                    (path.strip_prefix(kind)? == old).then(|| format!("minecraft:{kind}{new}"))
+                })
+            });
+            renamed.map(|new| *s = new).is_some()
+        }
+        Value::Array(a) => a.iter_mut().fold(false, |c, x| renamed_assets(x) | c),
+        Value::Object(o) => o.values_mut().fold(false, |c, x| renamed_assets(x) | c),
+        _ => false,
+    }
+}
+
 /// A 1.21.1 advancement in 26.3's shape, in place: an `enter_block`
 /// criterion names its block as `blocks`, which 26.3 reads as a block list.
 /// 26.3 skips the old `block` field, so the criterion matched any block the
@@ -990,6 +1014,14 @@ pub fn carry(
                 && (rel.starts_with("worldgen/") || rel.starts_with("structure/"))
             {
                 report.worldgen += 1;
+            }
+            if name.starts_with("assets/")
+                && (rel.starts_with("models/") || rel.starts_with("blockstates/"))
+                && name.ends_with(".json")
+                && let Ok(mut model) = serde_json::from_slice::<Value>(&bytes)
+                && renamed_assets(&mut model)
+            {
+                bytes = serde_json::to_vec_pretty(&model).unwrap_or(bytes);
             }
             if let Some(file) = rel
                 .strip_prefix("recipe/")
@@ -2431,6 +2463,53 @@ mod tests {
         assert_eq!(report.copied, 0);
         assert!(report.outside.is_empty());
         assert!(!dir.join("evil.json").exists());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A 1.21.1 model drawing vanilla's chain is carried with 26.3's
+    /// `iron_chain` model and texture; other ids that start alike stay.
+    #[test]
+    fn carried_models_name_the_renamed_chain() {
+        let dir =
+            std::env::temp_dir().join(format!("horizon-port-pack-chain-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let jar = dir.join("pulley-1.0.jar");
+        let mut zip = zip::ZipWriter::new(fs::File::create(&jar).unwrap());
+        for (name, text) in [
+            (
+                "META-INF/neoforge.mods.toml",
+                "license = \"MIT\"\n[[mods]]\nmodId = \"pulley\"\nversion = \"1.0\"\n",
+            ),
+            (
+                "assets/pulley/models/block/pulley.json",
+                r#"{"parent": "block/chain", "textures": {"0": "minecraft:block/chain",
+                    "1": "item/chain", "2": "pulley:block/chain",
+                    "3": "minecraft:block/chain_command_block_back"}}"#,
+            ),
+        ] {
+            zip.start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(text.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+        let info = crate::jar::read(&jar).unwrap();
+        let out = dir.join("work/mods/pulley");
+        let pack = Pack {
+            loaded: &|_| true,
+            mods: &|_| false,
+        };
+        carry(&jar, &info, &out, None, &|_| true, &pack, &BTreeMap::new()).unwrap();
+        let model: Value = serde_json::from_slice(
+            &fs::read(out.join("carry/assets/pulley/models/block/pulley.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            model,
+            json!({"parent": "minecraft:block/iron_chain", "textures": {
+                "0": "minecraft:block/iron_chain", "1": "minecraft:item/iron_chain",
+                "2": "pulley:block/chain", "3": "minecraft:block/chain_command_block_back"}})
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 }

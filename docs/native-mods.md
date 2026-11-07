@@ -1,5 +1,7 @@
 # Native mods
 
+`native_chat_suggestion_applied(original, start, end, suggestion, input)` reports a suggestion accepted in the open chat by Tab or a mouse click, after the text and caret have changed. `original` is the suggestion list's input before any completion; `start` and `end` are the replaced range in that string, in Java UTF-16 units (end exclusive). They keep referring to `original` when Tab cycles through the list. `suggestion` is the selected replacement text, and `input` is the actual resulting field value, including any length-limit truncation. This is a read-only notification: previews, list navigation, server replies, ordinary typing and command-block editors do not fire it. Trait mods implement `Hooks::chat_suggestion_applied`; mixin bundles use `chat_suggestion_applied`, hook version 1. Bundles need "hooks": @API:chat_suggestion_applied@ (assigned at merge).
+
 API 362 adds `native_compute_fov_modifier(player, base, modifier)` on the client each tick for the local player's FOV scale, after vanilla effects and before zoom and camera easing. `player` contains the calculation inputs and `base` is the original scale. Non-finite modifiers or values outside 0.01..=10 fall back to `base`. It does not affect a spectator camera on a mob. Bundles need "hooks": 362.
 
 The client hook `native_client_packet(packet)` hears each play packet the server sends, decoded (`ClientboundPlayPacket`, `horizon_protocol`'s `play::Clientbound`), just before the game handles it, custom payloads included and in the order they came. It only reads: the game handles the packet as it would without the mod. Packets the network thread handles itself (keep-alives, bundle delimiters, resource packs, cookies, server links, transfers, disconnects, the configuration switch, `minecraft:brand`, far terrain tiles) and the configuration phase are not heard. Bundles need "hooks": 408.
@@ -543,7 +545,7 @@ are compiled into `horizon-client`; a stable API crate for mods' own crates is #
 (`crc32fast = "1"`, `{ version, features, default-features, optional }`); each must already be in Horizon's lock
 file in a version that matches, and builds in exactly that version. The crates that are there only for mods are listed in
 `crates/horizon-mod-deps/Cargo.toml` (optional dependencies, with the features mods may turn on; nothing builds them):
-`mysql` 27 (blocking MariaDB/MySQL client, `minimal-rust` + `rustls-tls-ring` + `chrono`, no default features), `redis` 1
+`mysql` 28 (blocking MariaDB/MySQL client, `minimal-rust` + `rustls-tls-ring` + `chrono`, no default features), `redis` 1
 (blocking, no default features), `tungstenite` 0.30 (websocket over a stream the mod opens, no default features),
 `rusty-opus` 1 (Opus encoder and decoder), `quinn` 0.11 (QUIC on tokio, features `runtime-tokio` + `rustls-ring`, no
 default features), `rusqlite` 0.41 (SQLite, `bundled` + `cache`, no default features; builds SQLite's C source),
@@ -3709,6 +3711,9 @@ a dimension.
 - `level.block_state(host, pos)` (`minecraft:oak_stairs[facing=east,…]`, as `/setblock` takes it), `block` (the name
   alone), `block_property(host, pos, key)`, `is_loaded`, `height` (lowest `y` and height), `game_time` and `day_time`
   read any level the server has loaded, not only the one in place. A block in a chunk that isn't loaded reads as `None`.
+- `level.seed(host)`, `difficulty` (`"normal"`, as `/difficulty` names it), `game_rule(host, "keep_inventory")` (a
+  `GameRuleValue`, `Bool` or `Int`; None for an unknown rule), `weather` (rain and thunder levels, 0.0 to 1.0; both 0
+  where the level has no weather), `is_raining` and `is_thundering` read its world settings.
 - `host.living(entity)` gives a `LivingRef` for a mob, a player, an armor stand or the dragon (vanilla's
   `LivingEntity`); `living.entity()` goes back. `living.equipment(host, EquipmentSlot::Head)` and `hand_item(host,
   Hand::Main)` read its equipment (an empty slot reads as `None`); `set_equipment(host, slot, stack)` puts a stack in a
@@ -5000,3 +5005,13 @@ The client `tooltip_color` hook changes the background and top and bottom border
 # Camera and collision reads
 
 The `native_camera()` helper returns the most recently extracted world frame's camera, or none before one exists. Its position, interpolated eye height, partial tick, angles, final FOV, near/far planes and dimension accompany column-major view and projection matrices. The view is camera-relative and includes bob and spin; projection uses reversed Z. Earlier callbacks in a frame can see the previous frame. `native_block_collision(pos)` returns block-local `[min_x, min_y, min_z, max_x, max_y, max_z]` boxes with an empty collision context; unloaded blocks and collision errors give no boxes.
+
+### Wind burst block protection
+
+The pending `wind_burst` hook receives `dimension`, `center` and mutable `blocks`
+just before wind-charge, breeze-charge or Wind Burst mace block interactions.
+Remove positions to keep their doors, levers, candles and other reactive blocks
+unchanged. The list has already been shuffled; entity knockback and the shuffle's
+random draws are unaffected. A breeze blocked by `mob_griefing` does not call the hook.
+This is separate from `explosion_detonate`, and does not cancel the burst's sound,
+particles or entity effects. The pending fragment assigns its API number at merge.
