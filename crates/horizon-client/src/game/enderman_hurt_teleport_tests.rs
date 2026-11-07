@@ -9,7 +9,7 @@ use horizon_client::{
 use horizon_core::{
     geometry::Vec3,
     position::ChunkPos,
-    random::{LegacyRandom, RandomSource},
+    random::LegacyRandom,
 };
 use std::sync::Arc;
 
@@ -134,21 +134,24 @@ fn an_infested_endermans_silverfish_come_out_where_it_was_hurt() {
     let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
     let mut game = floored_game(&root);
     let at = Vec3::new(8.5, 4.0, 8.5);
-    // A seed whose first draw passes the effect's 1-in-10 chance (`nextFloat() <= 0.1`).
-    let seed = (0..)
-        .find(|&s| LegacyRandom::new(s).next_float() <= 0.1)
-        .unwrap();
-    let mut mob = enderman(&game, 600, at, seed);
-    mob.add_effect("minecraft:infested", 200, 0);
-    // What `Mob::damage` leaves for a projectile's hit: the effect's spawn and
-    // `repeatedlyTryToTeleport`.
-    let velocities = horizon_client::mobs::infested_silverfish(&mut mob.random, mob.view_vector());
-    let from = [at.x, at.y + f64::from(mob.height()) / 2.0, at.z];
-    mob.outbox.push(MobEvent::Infested {
-        at: from,
-        velocities,
-    });
-    mob.extra.counter2 = 64;
+    // A hurt with nothing living behind it, from a seed whose draws after the
+    // hurt sound pass the effect's 1-in-10 chance and then `nextInt(10) != 0`:
+    // `Mob::damage` leaves the silverfish and one `teleport()`.
+    let hurt = |seed| {
+        let mut mob = enderman(&game, 600, at, seed);
+        mob.add_effect("minecraft:infested", 200, 0);
+        mob.damage(1.0, horizon_client::mobs::Damage::of(horizon_client::mobs::DamageKind::Generic));
+        mob
+    };
+    let mob = (0..10_000)
+        .map(hurt)
+        .find(|m| {
+            m.extra.counter2 == 1
+                && m.outbox
+                    .iter()
+                    .any(|e| matches!(e, MobEvent::Infested { .. }))
+        })
+        .expect("no seed spawns silverfish and teleports");
     game.mobs.push(mob);
     game.settle_hurt_teleports().unwrap();
     let ender = game.mobs.iter().find(|m| m.id == 600).unwrap();

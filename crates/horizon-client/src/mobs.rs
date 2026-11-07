@@ -3175,16 +3175,20 @@ pub fn infested_silverfish(random: &mut LegacyRandom, look: [f64; 3]) -> Vec<Vec
     let count = 1 + random.next_int_bound(2).unwrap_or(0);
     (0..count)
         .map(|_| {
-            // Mth.randomBetween(-PI / 2, PI / 2), then the look direction
-            // scaled by (0.3, 0.45, 0.3) and turned about the y axis.
+            // Mth.randomBetween(-PI / 2, PI / 2), then in floats (JOML
+            // Vector3f): the look direction `.mul(0.3f).mul(1, 1.5f, 1)`,
+            // `.rotateY(angle)`.
             let half = std::f32::consts::FRAC_PI_2;
             let angle = random.next_float() * (2.0 * half) - half;
-            let (sin, cos) = angle.sin_cos();
-            let (x, z) = (look[0] * 0.3, look[2] * 0.3);
+            let sin = horizon_assets::math::joml_sin(angle);
+            let cos = horizon_assets::math::cos_from_sin(sin, angle);
+            let x = look[0] as f32 * 0.3;
+            let y = look[1] as f32 * 0.3 * 1.5;
+            let z = look[2] as f32 * 0.3;
             Vec3::new(
-                f64::from(x as f32 * cos + z as f32 * sin),
-                look[1] * 0.3 * 1.5,
-                f64::from(-x as f32 * sin + z as f32 * cos),
+                f64::from(x * cos + z * sin),
+                f64::from(y),
+                f64::from(-x * sin + z * cos),
             )
         })
         .collect()
