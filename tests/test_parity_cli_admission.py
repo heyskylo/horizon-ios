@@ -21,7 +21,7 @@ class RunnerAdmissionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
             folder = Path(directory)
             stack.enter_context(mock.patch.object(sys, 'path', [str(TOOLS), *sys.path]))
-            runner = importlib.import_module('test_command_exec_parity')
+            runner = importlib.import_module('tools.test_command_exec_parity')
             events = []
             row = {'cmd': '/say cli', 'messages': [], 'results': [[True, 1]]}
             argv = ['parity.py', '--work-dir', str(folder)]
@@ -91,7 +91,7 @@ class SpecializedHarnessRoutingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
             folder = Path(directory)
             stack.enter_context(mock.patch.object(sys, 'path', [str(TOOLS), *sys.path]))
-            module = importlib.import_module('test_' + name + '_parity')
+            module = importlib.import_module('tools.test_' + name + '_parity')
             runner = module.runner
             # Pot admission independently requires two unchanged before/after sources.
             program = [dict(op='cmd', cmd='/source ' + source, expect_result=1,
@@ -158,7 +158,7 @@ class SpecializedHarnessRoutingTests(unittest.TestCase):
 class MobDiscardArgumentsTests(unittest.TestCase):
     def parse(self, argv, environment):
         with mock.patch.object(sys, 'path', [str(TOOLS), *sys.path]), mock.patch.dict(os.environ, environment, clear=True):
-            module = importlib.import_module('test_mob_discard_parity')
+            module = importlib.import_module('tools.test_mob_discard_parity')
             return module, module.parse_args(argv)
 
     def test_normal_cli_uses_prepared_resources_without_environment(self):
