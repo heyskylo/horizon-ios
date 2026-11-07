@@ -19,6 +19,7 @@ use horizon_client::{
     mobs::{Damage, DamageKind, Who},
     particles::{ParticleOptions, ParticleType},
     projectiles::ProjectileKind,
+    random_source,
     text::Text,
 };
 use horizon_core::position::BlockPos;
@@ -3908,9 +3909,7 @@ impl Game<'_> {
             return false;
         }
         // EndCrystal's constructor: `this.random.nextInt(100000)`, the crystal's own random.
-        let drawn = super::dispenser::entity_random()
-            .next_int_bound(100_000)
-            .unwrap_or(0);
+        let drawn = random_source::entity().next_int_bound(100_000).unwrap_or(0);
         let at = Vec3::new(x + 0.5, y, z + 0.5);
         let time = Crystal::start_time(at, drawn, self.clock.still());
         // EndCrystal's constructor takes an id from the entity counter, so
@@ -4258,7 +4257,8 @@ impl Game<'_> {
     /// It becomes the fight's dragon (`dragonUUID = dragon.getUUID()`).
     fn create_new_dragon(&mut self) {
         let yaw = self.world.random.next_float() * 360.0;
-        let seed = self.world.random.next_long();
+        // The dragon's own random (`Entity.random`), not the level's.
+        let seed = random_source::unique_seed();
         let mut d = Dragon::new(Vec3::new(0.0, 128.0, 0.0), yaw, seed);
         // `dragon.getPhaseManager().setPhase(EnderDragonPhase.HOLDING_PATTERN)`.
         d.phase = Phase::Holding {
@@ -4462,7 +4462,7 @@ impl Game<'_> {
         let _ = self.world.random.triangle(0.0, 0.114_850_000_000_000_01);
         let _ = self.world.random.next_float();
         // The dragon's own random (`Entity.random`), not the level's.
-        let seed = super::dispenser::entity_random().next_long();
+        let seed = random_source::unique_seed();
         let mut dragon = Dragon::new(position, yaw, seed);
         dragon.id = self.next_entity + 1;
         self.next_entity += 9;

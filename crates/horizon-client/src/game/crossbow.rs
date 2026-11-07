@@ -10,6 +10,7 @@ use horizon_client::{
     items::ItemStack,
     mobs::Who,
     projectiles::{Projectile, ProjectileKind},
+    random_source,
 };
 use horizon_core::{geometry::Vec3, random::RandomSource};
 
@@ -342,12 +343,7 @@ impl Game<'_> {
             if rocket {
                 let at = Vec3::new(eye[0], eye[1] - f64::from(0.15f32), eye[2]);
                 let mut shot = Projectile::new(ProjectileKind::Snowball, at, None);
-                shot.shoot(
-                    &mut super::dispenser::entity_random(),
-                    dir.to_array(),
-                    power,
-                    1.0,
-                );
+                shot.shoot(&mut random_source::entity(), dir.to_array(), power, 1.0);
                 self.launch_angled_rocket(at, shot.velocity, ammo, Some(Who::Player));
             }
             if !rocket {

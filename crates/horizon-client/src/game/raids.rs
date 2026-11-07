@@ -14,6 +14,7 @@ use horizon_client::{
     },
     patrol::{GameplayAttributes, Member, PatrolLevel, PatrolSpawner},
     raid::{self, Action, BarName, RaidLevel, RaidPlayer, RaiderInfo, RaiderType, Raids, Spawn},
+    random_source,
 };
 use horizon_core::{geometry::Vec3, random::RandomSource};
 use horizon_world::nbt::Tag;
@@ -283,7 +284,9 @@ impl Game<'_> {
         self.raiding.loaded = Some(self.dim);
         self.raiding.bar_hurts.clear();
         self.raiding.homes.clear();
-        let seed = self.world.random.next_long();
+        // Each loaded raid's own random: the Raid constructor's
+        // `RandomSource.create()`, not the level's.
+        let seed = random_source::unique_seed();
         self.raiding.raids = match horizon_client::save::read_dat(&self.raids_path(self.dim))
             .and_then(|tag| tag.get("data").cloned())
         {
@@ -436,7 +439,8 @@ impl Game<'_> {
         }
         self.load_raids();
         let center = raid::raid_center(at, &self.village_pois());
-        let seed = self.world.random.next_long();
+        // The new raid's own random: `RandomSource.create()`, not the level's.
+        let seed = random_source::unique_seed();
         let difficulty = self.difficulty_id();
         let (id, triggered) = self
             .raiding

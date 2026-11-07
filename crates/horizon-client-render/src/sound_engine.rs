@@ -1580,27 +1580,6 @@ impl SoundEngine {
     pub fn active_instances(&self) -> Vec<InstanceId> {
         self.instance_to_channel.iter().map(|(i, _)| *i).collect()
     }
-    /// A fresh unseeded random (`RandomSource.create()`).
-    pub fn unseeded() -> LegacyRandom {
-        LegacyRandom::new(unique_seed())
-    }
-}
-/// `RandomSupport.generateUniqueSeed`.
-pub fn unique_seed() -> i64 {
-    use std::sync::atomic::{AtomicI64, Ordering};
-    static UNIQUIFIER: AtomicI64 = AtomicI64::new(8_682_522_807_148_012);
-    let mut current = UNIQUIFIER.load(Ordering::Relaxed);
-    let next = loop {
-        let next = current.wrapping_mul(1_181_783_497_276_652_981);
-        match UNIQUIFIER.compare_exchange(current, next, Ordering::Relaxed, Ordering::Relaxed) {
-            Ok(_) => break next,
-            Err(v) => current = v,
-        }
-    };
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos() as i64);
-    next ^ nanos
 }
 /// The `SoundManager` calls game code makes.
 pub trait Sounds {
@@ -1774,7 +1753,7 @@ mod tests {
             silent: false,
             underwater: false,
         };
-        let mut s = SoundInstance::riding_happy_ghast(&ghast, SoundEngine::unseeded());
+        let mut s = SoundInstance::riding_happy_ghast(&ghast, crate::random_source::create());
         assert_eq!(s.volume, 0.0);
         let mut ctx = TickContext {
             ridden: Some(ghast),
@@ -1821,7 +1800,7 @@ mod tests {
             attack_scale: 0.0,
             sniffer_digging: true,
         };
-        let mut s = SoundInstance::sniffer(3, SoundEngine::unseeded());
+        let mut s = SoundInstance::sniffer(3, crate::random_source::create());
         assert_eq!(s.position, [0.0; 3]);
         assert!(!s.looping);
         let mut ctx = TickContext {
@@ -1836,7 +1815,7 @@ mod tests {
         s.tick(&ctx);
         assert!(s.stopped);
         // Removed (missing): stop.
-        let mut s = SoundInstance::sniffer(3, SoundEngine::unseeded());
+        let mut s = SoundInstance::sniffer(3, crate::random_source::create());
         ctx.mobs.clear();
         s.tick(&ctx);
         assert!(s.stopped);
@@ -1850,7 +1829,7 @@ mod tests {
             silent: false,
             underwater: true,
         };
-        let mut s = SoundInstance::riding_nautilus(&nautilus, SoundEngine::unseeded());
+        let mut s = SoundInstance::riding_nautilus(&nautilus, crate::random_source::create());
         let mut ctx = TickContext {
             ridden: Some(nautilus),
             ..TickContext::default()
@@ -1953,7 +1932,7 @@ mod tests {
             position: [10.0, 64.0, 5.0],
             speed: 0.0,
         };
-        let mut s = SoundInstance::minecart(&cart, SoundEngine::unseeded());
+        let mut s = SoundInstance::minecart(&cart, crate::random_source::create());
         assert!(s.can_start_silent);
         assert_eq!(s.volume, 0.0);
 
@@ -1993,8 +1972,10 @@ mod tests {
             position: [0.0, 60.0, 0.0],
             speed: 0.4,
         };
-        let mut surface = SoundInstance::riding_minecart(&cart, false, SoundEngine::unseeded());
-        let mut underwater = SoundInstance::riding_minecart(&cart, true, SoundEngine::unseeded());
+        let mut surface =
+            SoundInstance::riding_minecart(&cart, false, crate::random_source::create());
+        let mut underwater =
+            SoundInstance::riding_minecart(&cart, true, crate::random_source::create());
 
         let mut ctx = TickContext {
             vehicle: Some(99),

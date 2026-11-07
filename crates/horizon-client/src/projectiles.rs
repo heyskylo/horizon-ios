@@ -11,17 +11,6 @@ use horizon_core::{
     random::RandomSource,
 };
 
-/// A new projectile entity's own random: vanilla seeds every entity's random
-/// unpredictably, and a projectile's spread (and an arrow's base damage) come
-/// from it, never from the shooter's random.
-pub fn own_random(shooter: &crate::mobs::Mob) -> horizon_core::random::LegacyRandom {
-    horizon_core::random::LegacyRandom::new(
-        i64::from(shooter.id).wrapping_mul(0x9E37_79B9)
-            ^ i64::from(shooter.age)
-            ^ shooter.position.x.to_bits() as i64,
-    )
-}
-
 /// a content mod's thrown item projectile, a copy of `Snowball` that deals
 /// `damage` and flies as its `item`.
 #[derive(Debug, PartialEq)]
@@ -436,11 +425,9 @@ impl Projectile {
             fire_ticks: 0,
             item,
             arrow: kind_is_arrow.then(|| {
-                // Entity.random: seeded unpredictably, the position stands in.
+                // The arrow's own random (`Entity.random`).
                 Box::new(crate::arrows::ArrowState::new(
-                    horizon_core::random::LegacyRandom::new(
-                        position.x.to_bits() as i64 ^ position.z.to_bits().rotate_left(17) as i64,
-                    ),
+                    crate::random_source::entity(),
                 ))
             }),
         }

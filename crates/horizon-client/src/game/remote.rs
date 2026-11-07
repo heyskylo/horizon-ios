@@ -23,6 +23,7 @@ use horizon_client::{
     mobs::{Mob, MobType, Who},
     motion::{MotionWorld, PlayerMotion},
     net::{Event, Session},
+    random_source,
     save::SaveDir,
     screen_effects,
     sprint::Keys,
@@ -7474,7 +7475,7 @@ impl Game<'_> {
         let mut lava_random = None;
         let mut next_float = || {
             lava_random
-                .get_or_insert_with(super::dispenser::entity_random)
+                .get_or_insert_with(random_source::entity)
                 .next_float()
         };
         if running {
