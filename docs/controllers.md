@@ -369,7 +369,7 @@ Steam + X opens it at any time. "On-Screen Keyboard: Auto / Horizon / Steam"
 Both modes send the same pointer events, but neither reaches everything. Focus mode
 registers targets on: the title menus (main, world list and its search, create
 and edit world, delete, multiplayer list and its edit screens), every options
-page (vanilla's and Horizon Settings with the pages it opens except Replay Studio, key and
+page (vanilla's and Horizon Settings with the pages it opens, key and
 controller binds, language list), pause and Play with Friends, death, chat, signs and books (their buttons), the
 survival and creative inventories, every container and station (chests,
 furnaces, brewing, crafter, crafting table with its recipe book, anvil,
@@ -377,7 +377,7 @@ grindstone, smithing, stonecutter, loom, cartography, enchanting, beacon,
 villager and wandering-trader trades, mount inventories), and the LAN /
 world options. Where a screen draws something clickable no target names
 (the advancements map, the statistics lists, the pack screen's rows, the
-book's page text), the pad drives the pointer instead, as it does on Replay Studio, which registers nothing yet.
+book's page text), the pad drives the pointer instead.
 
 ## Glyphs
 

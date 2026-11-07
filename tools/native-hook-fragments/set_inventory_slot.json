@@ -1,0 +1,12 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "set_inventory_slot", "target": "horizon_client::game::native_inventories::Game<'_>::native_set_inventory_slot"},
+    {"name": "take_stacks", "target": "horizon_client::game::native_inventories::Game<'_>::native_take_stacks"}
+  ],
+  "rust_summary": "one checked slot of a player's inventory set, and exact stacks taken all or none (`native_set_inventory_slot`, `native_take_stacks`).",
+  "doc_summary": "`native_set_inventory_slot(uuid, kind, slot, expected, new)` puts a stack in one slot of a player's inventory or ender chest (armour and the off hand too), which must still hold exactly `expected`, and returns what was there (Bukkit's `setItem`); `native_take_stacks(uuid, slots)` takes exact stacks out of the given inventory slots, all or none. Both are checked like `native_move_stack` and work live or on the player's file. Bundles need \"hooks\": @API:set_inventory_slot@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_inventories.rs"
+  ]
+}

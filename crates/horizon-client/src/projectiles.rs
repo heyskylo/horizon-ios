@@ -1134,9 +1134,9 @@ impl Projectile {
                 },
             );
         }
-        let mut seen = std::collections::HashSet::new();
-        for p in cells {
-            if !seen.insert(p) {
+        // Each block once, in the sweep's order: a handful of cells, no set.
+        for (i, &p) in cells.iter().enumerate() {
+            if cells[..i].contains(&p) {
                 continue;
             }
             let Some((drag, surface)) = w.bubble_column([p.x, p.y, p.z]) else {

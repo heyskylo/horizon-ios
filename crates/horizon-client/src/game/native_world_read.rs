@@ -8,7 +8,6 @@ use horizon_client::{
 use horizon_world::{chunk::BlockState, registry::BlockRegistry};
 
 /// Why a server block or tag cannot be read.
-#[allow(dead_code)]
 #[derive(Debug, PartialEq, Eq)]
 pub enum NativeBlockReadError {
     /// The context is stale or the call is outside its server tick hook.
@@ -37,7 +36,7 @@ impl Game<'_> {
     }
 
     /// Test a block state's name in an active server tick hook. API 28.
-    #[allow(dead_code)]
+    #[allow(dead_code, reason = "native mod API (docs/native-mods.md)")]
     pub(super) fn native_block_in_tag(
         &self,
         context: &NativeLifecycleContext,
@@ -51,7 +50,7 @@ impl Game<'_> {
     }
 
     /// Test an item stack in an active server tick hook. API 28.
-    #[allow(dead_code)]
+    #[allow(dead_code, reason = "native mod API (docs/native-mods.md)")]
     pub(super) fn native_item_in_tag(
         &self,
         context: &NativeLifecycleContext,
@@ -65,7 +64,6 @@ impl Game<'_> {
     }
 
     /// Test a block state's name against the server's merged block tags.
-    #[allow(dead_code)]
     pub(super) fn native_server_block_in_tag(
         &self,
         state: &BlockState,
@@ -75,7 +73,6 @@ impl Game<'_> {
     }
 
     /// Test an item stack against the server's merged item tags.
-    #[allow(dead_code)]
     pub(super) fn native_server_item_in_tag(
         &self,
         stack: &ItemStack,
@@ -95,7 +92,6 @@ impl Game<'_> {
     /// `create:fan_transparent`) of the server's merged tags, as
     /// `BlockState.is(TagKey)`: what `native_server_block_in_tag` answers for
     /// a state of that block, from any server hook. API @API:host_bridge@.
-    #[allow(dead_code)]
     pub(super) fn native_block_name_in_tag(
         &self,
         block: &str,
@@ -106,7 +102,7 @@ impl Game<'_> {
 
     /// Read a loaded block in a server tick hook, without loading a chunk.
     /// The returned name and properties are owned and remain valid after the hook.
-    #[allow(dead_code)]
+    #[allow(dead_code, reason = "native mod API (docs/native-mods.md)")]
     pub(super) fn native_server_block(
         &self,
         context: &NativeLifecycleContext,
@@ -138,7 +134,6 @@ impl Game<'_> {
     /// the dimension isn't available (a client has only the level it is in,
     /// a server also its parked ones), so a caller can keep its last answer.
     /// API @API:fluid_flow@.
-    #[allow(dead_code)]
     pub(super) fn native_fluid_flow(&self, dimension: &str, pos: [i32; 3]) -> Option<[f64; 3]> {
         let dim = match dimension {
             "minecraft:overworld" => Dim::Overworld,

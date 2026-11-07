@@ -1,0 +1,17 @@
+{
+  "hooks": [
+    {
+      "name": "player_teleport",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_player_teleport",
+      "neoforge": "EntityTeleportEvent (Bukkit's PlayerTeleportEvent)",
+      "side": "server",
+      "cancellable": true,
+      "mod_api": {
+        "contract": "cancel",
+        "out": "cancel"
+      }
+    }
+  ],
+  "rust_summary": "a server player about to be teleported, with the cause, both levels and the position packet's relative flags, which a mod may change or cancel (`native_player_teleport`).",
+  "doc_summary": "a server player's teleport before it reaches their client: `native_player_teleport(player, name, cause, from_dimension, from, to_dimension, to, relative, cancel)` (Bukkit's `PlayerTeleportEvent`, NeoForge's `EntityTeleportEvent`) for commands, ender pearls, chorus fruit, a spectator's teleport menu, a dismount and other server moves. A mod may move `to`, cancel, or set the look and motion bits of `relative` (0x1f8 keeps a pearl's speed). No `self`. Bundles that use it need `\"hooks\": @API:player_teleport@`."
+}

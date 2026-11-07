@@ -42,6 +42,8 @@ pub struct Interaction {
     pub sound: Option<&'static str>,
     /// The custom statistic the player earns (`use_cauldron`, ...).
     pub stat: Option<&'static str>,
+    /// `lowerFillLevel` posts BLOCK_CHANGE with the new state.
+    pub lower_fill_level: bool,
 }
 
 fn state(name: &str, level: Option<u8>) -> BlockState {
@@ -60,6 +62,7 @@ fn pass() -> Interaction {
         block: None,
         sound: None,
         stat: None,
+        lower_fill_level: false,
     }
 }
 
@@ -126,7 +129,18 @@ fn changed(block: BlockState, sound: Option<&'static str>, stat: &'static str) -
         block: Some(block),
         sound,
         stat: Some(stat),
+        lower_fill_level: false,
     }
+}
+
+fn changed_lowered(
+    cauldron: &BlockState,
+    sound: Option<&'static str>,
+    stat: &'static str,
+) -> Interaction {
+    let mut result = changed(lowered(cauldron), sound, stat);
+    result.lower_fill_level = true;
+    result
 }
 
 const COLORS: [&str; 16] = [
@@ -183,7 +197,7 @@ pub fn interact(
             stack.data_mut().dyed_color = None;
             stack.tidy();
         }
-        return changed(lowered(cauldron), None, "clean_armor");
+        return changed_lowered(cauldron, None, "clean_armor");
     }
     let fill_bucket = |player: &mut dyn Player, new: &str, can_fill: bool, sound| {
         if !can_fill {
@@ -208,6 +222,7 @@ pub fn interact(
                     block: None,
                     sound: None,
                     stat: None,
+                    lower_fill_level: false,
                 }
             } else {
                 empty_bucket(
@@ -231,6 +246,7 @@ pub fn interact(
                     block: None,
                     sound: None,
                     stat: None,
+                    lower_fill_level: false,
                 }
             } else {
                 empty_bucket(
@@ -266,11 +282,7 @@ pub fn interact(
                 ItemStack::new("minecraft:potion", 1).with_potion("minecraft:water"),
                 true,
             );
-            changed(
-                lowered(cauldron),
-                Some("minecraft:item.bottle.fill"),
-                "use_cauldron",
-            )
+            changed_lowered(cauldron, Some("minecraft:item.bottle.fill"), "use_cauldron")
         }
         ("water", "minecraft:potion") => {
             if level == 3 || !water_potion {
@@ -298,7 +310,7 @@ pub fn interact(
             cleaned.data_mut().banner_patterns.pop();
             cleaned.tidy();
             filled(player, cleaned, false);
-            changed(lowered(cauldron), None, "clean_banner")
+            changed_lowered(cauldron, None, "clean_banner")
         }
         ("water", name)
             if name
@@ -307,7 +319,7 @@ pub fn interact(
                 .is_some_and(|c| COLORS.contains(&c)) =>
         {
             filled(player, held.transmute("minecraft:shulker_box", 1), false);
-            changed(lowered(cauldron), None, "clean_shulker_box")
+            changed_lowered(cauldron, None, "clean_shulker_box")
         }
         ("lava", "minecraft:bucket") => fill_bucket(
             player,
