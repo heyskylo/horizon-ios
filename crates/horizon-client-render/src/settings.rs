@@ -830,6 +830,7 @@ pub enum Opt {
     /// Horizon's controller settings (`horizon-controller.txt`).
     PadEnabled,
     PadVibration,
+    PadPlayInBackground,
     PadAdaptiveTriggers,
     PadLightbar,
     PadLookSensitivity,

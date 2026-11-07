@@ -2350,7 +2350,8 @@ impl Game<'_> {
                 // A mob's own `gameEvent(..)` calls: Armadillo.rollUp/rollOut's
                 // ENTITY_ACTION, Creeper.tick's PRIME_FUSE, Mob.ate's EAT, the
                 // shulker's lid (Shulker.setRawPeekAmount), an evoker's vexes
-                // (ENTITY_PLACE), Enderman.teleport's TELEPORT where it was.
+                // (ENTITY_PLACE), Enderman.teleport's TELEPORT,
+                // LivingEntity.onEquipItem's EQUIP/UNEQUIP.
                 MobEvent::GameEvent {
                     event, at, source, ..
                 } if matches!(
@@ -2362,6 +2363,8 @@ impl Game<'_> {
                         | "minecraft:container_close"
                         | "minecraft:entity_place"
                         | "minecraft:teleport"
+                        | "minecraft:equip"
+                        | "minecraft:unequip"
                 ) =>
                 {
                     let ctx = self.who_context(Some(Who::Mob(source)), None);
@@ -6171,6 +6174,7 @@ impl Game<'_> {
         let center = m.center();
         // Wolf armor the owner takes off with shears or leaves a dropped stack of.
         let mut armor_drop: Option<ItemStack> = None;
+        let mut equip_event: Option<bool> = None;
         let mut consume = false;
         let mut give: Option<&str> = None;
         let mut sound: Option<&str> = None;
@@ -6319,6 +6323,7 @@ impl Game<'_> {
                 m.extra.body = None;
                 m.extra.body_damage = 0;
                 eat = Some(("item.armor.unequip_wolf", 1.0, 1.0));
+                equip_event = Some(false);
                 self.damage_held_tool();
             }
             // Wolf.mobInteract: heal, dye the collar or sit/stand when tame;
@@ -6348,6 +6353,7 @@ impl Game<'_> {
                 m.extra.body_extra = held_extra;
                 consume = true;
                 eat = Some(("item.armor.equip_wolf", 1.0, 1.0));
+                equip_event = Some(true);
             }
             // Wolf.mobInteract: an armadillo scute repairs a sitting wolf's
             // armor by an eighth of its durability.
@@ -6795,6 +6801,11 @@ impl Game<'_> {
             let target = self.mob_entity(&self.mobs[index]);
             self.trigger_item_entity("minecraft:player_sheared_equipment", &stack, &target);
             self.spawn_item(stack, [center[0], center[1] + 0.5, center[2]], [0.0; 3], 10);
+        }
+        if let Some(equip) = equip_event {
+            let id = self.mobs[index].id;
+            let pos = self.mobs[index].position;
+            self.mob_equip_event(id, [pos.x, pos.y, pos.z], equip);
         }
         if let Some((at, height)) = shear_puff {
             self.mooshroom_shear_puff(at, height);

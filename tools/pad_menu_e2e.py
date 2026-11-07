@@ -1956,6 +1956,125 @@ def osk_stays_open(game, check, what):
     check(game.menu()['keyboard'], f'{what}: deleting closed the keyboard')
 
 
+def osk_book(args, name):
+    """A on a book and quill's page opens the keyboard, a new line keeps it open, and B closes it."""
+    game = Game(args, name, world=True)
+    check = Check()
+    try:
+        game.ctl('command', 'give @s writable_book')
+        time.sleep(1)
+        game.ctl('pad', 'trigger', 'left', 1)
+        time.sleep(0.4)
+        game.ctl('pad', 'trigger', 'left', 0)
+        time.sleep(1.5)
+        menu = game.menu()
+        check(menu['mode'] == 'pointer', f"no book open: {menu['mode']}")
+        field = next((t for t in menu['targets'] if t['kind'] == 'field'), None)
+        check(field is not None, f"the page isn't a field: {menu['targets']}")
+        x, y, w, h = field['rect']
+        for _ in range(40):
+            pointer = game.menu()['pointer']
+            if pointer and x <= pointer[0] < x + w and y <= pointer[1] < y + h:
+                break
+            step = 'left' if pointer and pointer[0] >= x + w else 'right' if pointer and pointer[0] < x else 'up' if pointer and pointer[1] >= y + h else 'down'
+            game.pad(step)
+        game.pad('south')
+        check(game.menu()['keyboard'], 'A on the page opened no keyboard')
+    finally:
+        game.quit()
+    return check.failures
+
+
+def osk_sign(args, name):
+    """A keeps a sign's keyboard to hand: Enter goes to the next line, and B then A opens it again."""
+    game = Game(args, name, world=True)
+    check = Check()
+    try:
+        game.ctl('command', 'give @s oak_sign')
+        game.ctl('command', 'setblock ~ ~-1 ~ stone')
+        time.sleep(1)
+        game.ctl('turn', '0', '90')
+        time.sleep(0.5)
+        game.ctl('pad', 'trigger', 'left', 1)
+        time.sleep(0.4)
+        game.ctl('pad', 'trigger', 'left', 0)
+        time.sleep(1.5)
+        check(game.menu()['keyboard'], 'a sign the pad placed opened no keyboard')
+        game.pad('east')
+        check(not game.menu()['keyboard'], 'B did not close the keyboard')
+        game.pad('south')
+        check(game.menu()['keyboard'], 'A did not open the keyboard again')
+    finally:
+        game.quit()
+    return check.failures
+
+
+def recipe_search_keyboard(args, name):
+    """A on the recipe book's search box opens the keyboard."""
+    game = Game(args, name, world=True)
+    check = Check()
+    try:
+        game.ctl('command', 'gamemode survival')
+        game.ctl('key', 'e', 'tap')
+        time.sleep(SETTLE)
+        game.wait_targets()
+        x, y, w, h = next(t for t in game.ctl('screen')['recipe_book']['targets'] if t[2:] == [20.0, 18.0])
+        crosshair_walk(game, x + w / 2, y + h / 2)
+        game.pad('south')
+        time.sleep(SETTLE)
+        field = next((t for t in game.menu()['targets'] if t['kind'] == 'field'), None)
+        check(field is not None, 'the search box is not a field')
+        if field:
+            x, y, w, h = field['rect']
+            crosshair_walk(game, x + w / 2, y + h / 2)
+            game.pad('south')
+            check(game.menu()['keyboard'], 'A on the search box opened no keyboard')
+    finally:
+        game.quit()
+    return check.failures
+
+
+def chat_suggestion_rows(args, name):
+    """A command's suggestions are rows the pad can reach."""
+    game = Game(args, name, world=True)
+    check = Check()
+    try:
+        game.ctl('key', 't', 'tap')
+        time.sleep(SETTLE)
+        game.ctl('type', '/ga')
+        time.sleep(SETTLE)
+        check(any(t['kind'] == 'row' for t in game.menu()['targets']),
+              f"no suggestion rows: {game.menu()['targets']}")
+    finally:
+        game.quit()
+    return check.failures
+
+
+def server_list_bumpers(args, name):
+    """The bumpers move the selected server, and the list saves it."""
+    game = Game(args, name, seed=seed_servers)
+    check = Check()
+    try:
+        game.press_through('south', 'down', 'south')
+        game.wait_targets()
+        first = game.rows()[0]['id']
+        game.focus_on(first)
+        game.pad('south')
+        before = [row.get('label') for row in game.rows()[:2]]
+        check(before[0] and before[1], f'no rows: {before}')
+        game.pad('rb')
+        time.sleep(SETTLE)
+        after = [row.get('label') for row in game.rows()[:2]]
+        check(after == before[::-1], f'the first server did not move down: {before} then {after}')
+        game.pad('lb')
+        time.sleep(SETTLE)
+        back = [row.get('label') for row in game.rows()[:2]]
+        check(back == before, f'it did not move back up: {after} then {back}')
+    finally:
+        game.quit()
+    return check.failures
+
+
 def osk_social(args, name):
     game = Game(args, name, world=True)
     check = Check()
@@ -2412,6 +2531,11 @@ CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': releas
          'prompt_keeps_typing': prompt_keeps_typing,
          'prompt_keeps_crosshair': prompt_keeps_crosshair,
          'osk_social': osk_social,
+         'osk_book': osk_book,
+         'recipe_search_keyboard': recipe_search_keyboard,
+         'chat_suggestion_rows': chat_suggestion_rows,
+         'server_list_bumpers': server_list_bumpers,
+         'osk_sign': osk_sign,
          'osk_debug_options': osk_debug_options,
          'osk_command_block': osk_command_block,
          'osk_jigsaw': osk_jigsaw,

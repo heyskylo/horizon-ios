@@ -569,9 +569,50 @@ impl Game<'_> {
                 None => false,
             },
             Slot::Mob(id, key) => {
-                let Some(m) = self.mobs.iter_mut().find(|m| m.id == *id) else {
+                let Some(index) = self.mobs.iter().position(|m| m.id == *id) else {
                     return false;
                 };
+                let m = &self.mobs[index];
+                let first_tick = m.first_tick;
+                let at = [m.position.x, m.position.y, m.position.z];
+                let old = match *key {
+                    "mainhand" => m
+                        .extra
+                        .main_hand_stack()
+                        .cloned()
+                        .or_else(|| m.extra.main_hand.as_ref().map(|i| ItemStack::new(i, 1))),
+                    "offhand" => m.extra.off_hand.as_ref().map(|i| ItemStack::new(i, 1)),
+                    "head" => m.extra.armor[0]
+                        .clone()
+                        .or_else(|| m.extra.head.as_ref().map(|i| ItemStack::new(i, 1))),
+                    "chest" => m.extra.armor[1]
+                        .clone()
+                        .or_else(|| m.extra.chest.as_ref().map(|i| ItemStack::new(i, 1))),
+                    "legs" => m.extra.armor[2]
+                        .clone()
+                        .or_else(|| m.extra.legs.as_ref().map(|i| ItemStack::new(i, 1))),
+                    "feet" => m.extra.armor[3]
+                        .clone()
+                        .or_else(|| m.extra.feet.as_ref().map(|i| ItemStack::new(i, 1))),
+                    "body" => m.extra.body.as_ref().map(|i| ItemStack::new(i, 1)),
+                    "saddle" => m.saddle_item(),
+                    _ => None,
+                };
+                let same = match (old.as_ref(), stack.as_ref()) {
+                    (None, None) => true,
+                    (Some(a), Some(b)) => a.same_item_same_components(b),
+                    _ => false,
+                };
+                let equippable = stack.as_ref().is_some_and(|s| {
+                    let data = s.data();
+                    !data.is_some_and(|d| d.other("!minecraft:equippable").is_some())
+                        && (data.is_some_and(|d| d.other("minecraft:equippable").is_some())
+                            || self
+                                .items()
+                                .get(&s.item)
+                                .is_some_and(|i| i.equip_slot.is_some()))
+                });
+                let m = &mut self.mobs[index];
                 let item = stack.as_ref().map(|s| s.item.clone());
                 // The worn armour stack goes with the id: a kept stack of the
                 // previous piece would otherwise still be what the mob wears.
@@ -595,6 +636,9 @@ impl Game<'_> {
                     "feet" => m.extra.feet = item,
                     "saddle" => m.set_saddle(stack),
                     _ => return false,
+                }
+                if !first_tick && !same && self.remote.is_none() {
+                    self.mob_equip_event(*id, at, equippable);
                 }
                 true
             }
