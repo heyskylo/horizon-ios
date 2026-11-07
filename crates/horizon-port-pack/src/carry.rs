@@ -388,7 +388,25 @@ pub fn renamed_assets(v: &mut Value) -> bool {
             renamed.map(|new| *s = new).is_some()
         }
         Value::Array(a) => a.iter_mut().fold(false, |c, x| renamed_assets(x) | c),
-        Value::Object(o) => o.values_mut().fold(false, |c, x| renamed_assets(x) | c),
+        Value::Object(o) => {
+            // 1.21.1's `template_farmland` (`dirt`, `top`) is 26.3's indented cube, its dirt the side and bottom.
+            let farmland = o.get("parent").and_then(Value::as_str).is_some_and(|p| {
+                p.strip_prefix("minecraft:").unwrap_or(p) == "block/template_farmland"
+            });
+            if farmland {
+                o.insert(
+                    "parent".into(),
+                    json!("minecraft:block/template_cube_bottom_top_indented"),
+                );
+                if let Some(t) = o.get_mut("textures").and_then(Value::as_object_mut)
+                    && let Some(dirt) = t.get("dirt").cloned()
+                {
+                    t.entry("side").or_insert(dirt.clone());
+                    t.entry("bottom").or_insert(dirt);
+                }
+            }
+            o.values_mut().fold(farmland, |c, x| renamed_assets(x) | c)
+        }
         _ => false,
     }
 }
@@ -2708,5 +2726,20 @@ mod tests {
                 "2": "pulley:block/chain", "3": "minecraft:block/chain_command_block_back"}})
         );
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// 1.21.1's farmland template (`dirt` and `top`) is 26.3's `template_cube_bottom_top_indented`, whose
+    /// dirt is its `side` and `bottom` (26.3's farmland model).
+    #[test]
+    fn farmland_template_is_26_3s_indented_cube() {
+        let mut model = json!({"parent": "block/template_farmland",
+            "textures": {"dirt": "minecraft:block/gravel", "top": "m:block/raked"}});
+        assert!(renamed_assets(&mut model));
+        assert_eq!(
+            model,
+            json!({"parent": "minecraft:block/template_cube_bottom_top_indented", "textures": {
+                "dirt": "minecraft:block/gravel", "side": "minecraft:block/gravel",
+                "bottom": "minecraft:block/gravel", "top": "m:block/raked"}})
+        );
     }
 }
