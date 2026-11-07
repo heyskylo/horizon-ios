@@ -115,7 +115,9 @@ pub fn register(m: &mut Mob) {
     };
     let g = &mut m.ai.goals;
     g.add(0, Float);
-    g.add(1, Panic::new(1.25));
+    // `FrogAi.initCoreActivity`: `AnimalPanic(2.0)` — the panic speed
+    // multiplier is 2.0, not the 1.25 its temptation uses.
+    g.add(1, Panic::new(2.0));
     // `FrogAi.initIdleActivity`: `AnimalMakeLove` first, then `FollowTemptation(1.25)`.
     g.add(2, Breed::new(1.0));
     g.add(3, Unless(is_pregnant, Tempt::new(1.25, food, false)));
