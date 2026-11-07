@@ -1,4 +1,4 @@
-//! Paired A/B comparison of benchmark blocks (docs/benchmark-report.md, "A/B runs"): the same numbers as `tools/bench_stats.py`.
+//! Paired A/B comparison of benchmark blocks (docs/benchmark-report.md, "A/B runs").
 
 use std::collections::BTreeMap;
 
@@ -214,7 +214,7 @@ mod tests {
     use super::*;
     use crate::{App, Kind, Report};
 
-    // Expected values: exact-rational Walsh averages and a brute-force sign enumeration, run once outside this code; tests/test_bench_stats.py has the same vectors.
+    // Expected values: exact-rational Walsh averages and a brute-force sign enumeration, run once outside this code.
     fn check(
         a: &[f64],
         b: &[f64],

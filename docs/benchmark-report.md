@@ -119,14 +119,13 @@ Bucket *i* counts frames from edge *i* (included) to edge *i* + 1; the last buck
 
 **`ab`.** Optional, present only in A/B runs (one setting switched between arms A and B). The blocks are ordinary
 `frames` entries with phase `ab.a` or `ab.b`, `repeat` being the block's position in time (`0..2*pairs-1`, order B A A B
-B A A B...), so `result` can be recomputed from the file alone (`python3 tools/bench_stats.py REPORT.json`, which exits 1
-when the stored result differs). Fields: `switch`, `a`, `b` (the setting and its two values), `pairs`, `block_s`,
+B A A B...), so `result` can be recomputed from the file alone (`horizon_bench::compare::Ab::from_frames`). Fields: `switch`, `a`, `b` (the setting and its two values), `pairs`, `block_s`,
 `warmup_s`, `first_block_outside_range` (block 0, measured before any switch, lies outside the later B blocks: switching
 may reset what is measured) and `result`, by `gpu_p50_ms`, `cpu_p50_ms` and `frame_p50_ms` (a metric any block lacks is
 left out). Each is `pairs`, `a` and `b` (medians of the arm's block values), `diff` (B minus A), `diff_pct` (null when `a`
 is 0), `ci95` and `confidence` (null with fewer than 6 pairs), `noise` and `verdict`.
 
-The statistic, the same in `horizon_bench::compare` and `tools/bench_stats.py`, exact and deterministic:
+The statistic, in `horizon_bench::compare`, exact and deterministic:
 
 1. A block's value is the median of its frames; pair k is blocks 2k and 2k+1, adjacent in time, so linear drift cancels.
 2. `diff` is the Hodges-Lehmann estimate: the median of the Walsh averages `(d_i + d_j) / 2`, `i <= j`, of the per-pair differences `d = b - a`.
