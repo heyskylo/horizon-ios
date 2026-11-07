@@ -290,9 +290,6 @@ impl Launcher {
             .flex_col()
             .gap(px(8.))
             .child(section_title("Found on this computer", "folder", &t))
-            .child(text(theme::CAPTION).text_color(t.muted).child(tr(
-                "Modpacks other launchers keep here. Import makes a copy; theirs stays as it is.",
-            )))
             .child(list)
     }
 

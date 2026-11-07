@@ -513,6 +513,11 @@ mod tests {
         assert_eq!(found_slug(&found[0]), "fabric-1-21");
         assert_eq!(found_folder(&found[1]), cf.join("All the Mods 10"));
         assert_eq!(found_slug(&found[1]), "all-the-mods-10");
+        // The slug is the one importing it gives.
+        for f in &found {
+            let pack = horizon_port_pack::import::import(&found_folder(f)).unwrap();
+            assert_eq!(found_slug(f), slug(&pack.name));
+        }
         assert_eq!(
             found_summary(&found[0]),
             "Prism Launcher  ·  Minecraft 1.21.1"
