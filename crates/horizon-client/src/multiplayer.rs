@@ -83,6 +83,12 @@ fn player_list(players: &serde_json::Value, online: i64) -> Vec<Text> {
     lines
 }
 type Pings = Arc<Mutex<HashMap<String, Ping>>>;
+/// A saved server being dragged: where it is now, and whether it moved.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Held {
+    row: usize,
+    moved: bool,
+}
 /// Server icons by address as 64x64 RGBA (FaviconTexture), from servers.dat
 /// and then from each ping's favicon.
 type Icons = Arc<Mutex<HashMap<String, Arc<Vec<u8>>>>>;
@@ -97,6 +103,10 @@ pub enum Screen {
         /// Worlds announced on the local network, listed after the servers.
         lan: Scanner,
         scroll: crate::ui::Scroll,
+        /// The saved server held by a press that selected it, which the
+        /// pointer drags to another place in the list (Horizon's; vanilla
+        /// moves servers only with Shift+arrows and the icon's arrows).
+        held: Option<Held>,
     },
     /// Add (index None) or edit a server entry.
     Edit {
@@ -718,6 +728,7 @@ impl Screen {
             icons,
             lan: Scanner::start(),
             scroll: crate::ui::Scroll::default(),
+            held: None,
         }
     }
     pub fn buttons(&self, w: f32, h: f32) -> Vec<ButtonSpec> {
@@ -1079,6 +1090,7 @@ impl Screen {
                 icons,
                 lan,
                 scroll,
+                ..
             } => {
                 let (w, h) = (w.ceil(), h.ceil());
                 let title = crate::lang::get_or("multiplayer.title", "Play Multiplayer");
@@ -1629,6 +1641,7 @@ impl Screen {
                     selected,
                     lan,
                     scroll,
+                    held,
                     ..
                 },
                 None,
@@ -1686,6 +1699,13 @@ impl Screen {
                         return Outcome::Connect { address, lan };
                     }
                     *selected = Some(index);
+                    // The press that selects a saved server can drag it.
+                    if let Some(Row::Server(k)) = row {
+                        *held = Some(Held {
+                            row: k,
+                            moved: false,
+                        });
+                    }
                 }
             }
             // CycleButton: Enabled, Disabled, Prompt, and round again.
@@ -1839,27 +1859,52 @@ impl Screen {
             }
         }
     }
-    /// The pointer moved: a held scrollbar follows it.
+    /// The pointer moved: a held scrollbar follows it, and a held server
+    /// moves to the saved server's row under the pointer, the others closing
+    /// up behind it; it stays selected.
     pub fn drag(&mut self, y: f32, size: (f32, f32)) {
         if let Self::List {
             servers,
+            selected,
             lan,
             scroll,
+            held,
             ..
         } = self
         {
-            let (top, bottom, _) = list_area(size.0.ceil(), size.1.ceil());
-            scroll.drag(
-                y,
-                top,
-                bottom,
-                content_height(servers.len(), lan.games().len()),
-            );
+            let (w, h) = (size.0.ceil(), size.1.ceil());
+            let (top, bottom, left) = list_area(w, h);
+            let games = lan.games().len();
+            scroll.drag(y, top, bottom, content_height(servers.len(), games));
+            if let Some(held) = held
+                && let Some(Row::Server(to)) =
+                    row_at(servers.len(), games, (left + 1.0, y), (w, h), scroll.amount)
+                && to != held.row
+            {
+                let server = servers.remove(held.row);
+                servers.insert(to, server);
+                *held = Held {
+                    row: to,
+                    moved: true,
+                };
+                *selected = Some(to);
+            }
         }
     }
-    pub fn release(&mut self) {
-        if let Self::List { scroll, .. } = self {
+    /// The button was released: a server that was dragged somewhere else is
+    /// saved there.
+    pub fn release(&mut self, saves: &Path) {
+        if let Self::List {
+            servers,
+            scroll,
+            held,
+            ..
+        } = self
+        {
             scroll.release();
+            if held.take().is_some_and(|h| h.moved) {
+                save_servers(&servers_file(saves), servers);
+            }
         }
     }
     /// The focused box, in GUI pixels: name at 66, address at 106
@@ -2172,6 +2217,7 @@ mod tests {
                 address: address.into(),
             }]),
             scroll: Default::default(),
+            held: None,
         };
         for (index, expected_lan) in [(0, false), (1, true)] {
             if let Screen::List { selected, .. } = &mut screen {
@@ -2662,6 +2708,70 @@ mod tests {
             }
             _ => panic!("Enter did not join the second server"),
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_server_dragged_by_its_row_moves_and_is_saved_on_release() {
+        let dir = std::env::temp_dir().join(format!("horizon-mp-drag-{}", std::process::id()));
+        let saves = dir.join("saves");
+        std::fs::create_dir_all(&saves).unwrap();
+        let file = servers_file(&saves);
+        let list: Vec<ServerEntry> = ["a", "b", "c", "d"]
+            .iter()
+            .map(|n| ServerEntry::new(n, &format!("{n}.example:25565")))
+            .collect();
+        servers::save(&file, &list).unwrap();
+        let mut screen = Screen::list(&saves);
+        let size = (427.0, 240.0);
+        let order = |screen: &Screen| match screen {
+            Screen::List {
+                servers, selected, ..
+            } => (
+                servers.iter().map(|s| s.name.clone()).collect::<String>(),
+                *selected,
+            ),
+            _ => unreachable!(),
+        };
+        let saved = || {
+            servers::load(&file)
+                .into_iter()
+                .map(|s| s.name)
+                .collect::<String>()
+        };
+        // 427x240: rows start at x 61, the first at y 35; the name, right of the icon.
+        let (x, row) = (130.0, |i: f32| 37.0 + 10.0 + i * ROW_HEIGHT);
+        // A press on "a"'s name selects it and holds it; dragging over "c"'s
+        // row puts it there, "b" and "c" close up, and nothing is saved yet.
+        assert!(matches!(
+            screen.click(None, x, row(0.0), size, &saves),
+            Outcome::None
+        ));
+        screen.drag(row(1.0), size);
+        screen.drag(row(2.0), size);
+        assert_eq!(order(&screen), ("bcad".into(), Some(2)));
+        assert_eq!(saved(), "abcd");
+        // Past the last server it stays the last.
+        screen.drag(row(3.0), size);
+        screen.drag(row(6.0), size);
+        assert_eq!(order(&screen), ("bcda".into(), Some(3)));
+        screen.release(&saves);
+        assert_eq!(saved(), "bcda");
+        // The held server is dropped: moving the pointer moves nothing now.
+        screen.drag(row(0.0), size);
+        assert_eq!(order(&screen).0, "bcda");
+        // A press on the selected server joins, as vanilla's does, and holds nothing.
+        match screen.click(None, x, row(3.0), size, &saves) {
+            Outcome::Connect { address, .. } => assert_eq!(address, "a.example:25565"),
+            _ => panic!("the selected server joins"),
+        }
+        screen.drag(row(0.0), size);
+        assert_eq!(order(&screen).0, "bcda");
+        // A press and release with no move saves nothing new.
+        std::fs::remove_file(&file).unwrap();
+        screen.click(None, x, row(1.0), size, &saves);
+        screen.release(&saves);
+        assert!(!file.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

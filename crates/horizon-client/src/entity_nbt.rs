@@ -7764,6 +7764,23 @@ mod generic_home_nbt_tests {
     }
 
     #[test]
+    fn spawned_trader_home_restricts_and_survives_save() {
+        let mut m = mob(Species::WanderingTrader, "minecraft:wandering_trader");
+        crate::mobs::trader::start_visit(&mut m, [4, 201, 0]);
+        m.position = Vec3::new(19.5, 201.0, 0.5);
+        assert!(crate::mobs::trader::within_home(&m));
+        m.position = Vec3::new(20.5, 201.0, 0.5);
+        assert!(!crate::mobs::trader::within_home(&m));
+        let saved = mob_to_nbt(&m, [0; 4], None, None, |_| None);
+        assert_eq!(saved.get("home_radius"), Some(&Tag::Int(16)));
+        assert_eq!(saved.get("home_pos"), Some(&Tag::IntArray(vec![4, 201, 0])));
+        let mut loaded = mob(Species::WanderingTrader, "minecraft:wandering_trader");
+        loaded.position = m.position;
+        read_mob_home(&mut loaded, &saved);
+        assert!(!crate::mobs::trader::within_home(&loaded));
+    }
+
+    #[test]
     fn generic_home_output_uses_model_and_removes_stale_raw_fields() {
         let mut m = mob(Species::Pig, "minecraft:pig");
         let raw = stale();

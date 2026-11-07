@@ -138,6 +138,18 @@ mod tests {
                 pub struct GuiDraw;
             }
         }
+        mod horizon_client_core {
+            pub mod text {
+                pub struct Text;
+            }
+        }
+        mod horizon_protocol {
+            pub mod packets {
+                pub mod login {
+                    pub struct Property;
+                }
+            }
+        }
         include!(concat!(env!("OUT_DIR"), "/mod_api_generated.rs"));
     }
     use generated::*;

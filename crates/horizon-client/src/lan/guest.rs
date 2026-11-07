@@ -115,6 +115,9 @@ pub struct Guest {
     pub brand: String,
     /// The chunk radius this client is sent.
     pub view_distance: i32,
+    /// A native mod's limit on `view_distance` for this player alone
+    /// (`native_set_player_view_distance`); None: the server's.
+    pub view_limit: Option<i32>,
     pub position: [f64; 3],
     pub previous_position: [f64; 3],
     pub yaw: f32,
@@ -371,9 +374,16 @@ pub struct Guest {
     /// Root command names the mods took out of this player's command tree
     /// (`native_player_commands_sent`); their tree is sent without them.
     pub hidden_commands: Vec<String>,
+    /// Root commands above this player's level that the mods put back into
+    /// their tree (`native_player_commands_sent_v2`).
+    pub granted_commands: Vec<String>,
     /// `Abilities.flyingSpeed`: vanilla's 0.05, unless a server mod set
     /// another (`native_set_flying_speed`). Saved with the player.
     pub flying_speed: f32,
+    /// `Abilities.mayfly` in a mode that does not give it: a server mod let the
+    /// player fly (`native_set_flight`), until their game mode changes or they
+    /// respawn. Not saved.
+    pub allow_flight: bool,
     /// The level the player is in (`ServerPlayer.level().dimension()`): the
     /// hub's level passes only reach the players in theirs.
     pub dimension: String,
@@ -431,6 +441,7 @@ impl Guest {
             sender: j.sender,
             latency: j.latency,
             view_distance: i32::from(j.info.view_distance).max(2).min(view_distance),
+            view_limit: None,
             info: j.info,
             brand: j.brand,
             position,
@@ -552,7 +563,9 @@ impl Guest {
             quiet_leave: false,
             released: false,
             hidden_commands: Vec::new(),
+            granted_commands: Vec::new(),
             flying_speed: 0.05,
+            allow_flight: false,
             dimension: "minecraft:overworld".into(),
             menu: None,
             next_window: 0,
@@ -693,6 +706,8 @@ impl Guest {
         if mode != self.game_mode {
             self.previous_game_mode = Some(self.game_mode);
             self.game_mode = mode;
+            // GameType.updatePlayerAbilities sets mayfly for the new mode.
+            self.allow_flight = false;
         }
     }
     pub fn spectator(&self) -> bool {
@@ -707,7 +722,7 @@ impl Guest {
         if self.flying || self.spectator() {
             f |= 2;
         }
-        if self.creative() || self.spectator() {
+        if self.creative() || self.spectator() || self.allow_flight {
             f |= 4;
         }
         if self.creative() {
