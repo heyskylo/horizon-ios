@@ -2068,8 +2068,13 @@ impl FallingBlock {
 /// (x and z wrap at 2048 blocks and y at 1024; two block entities that far apart in one frame's
 /// view are told apart by their vertex counts, as `PackEntities` matches only equal runs).
 fn motion_block_entity(pos: [i32; 3]) -> u64 {
+    motion_at(Game::MOTION_BLOCK_ENTITY, pos)
+}
+
+/// `tag` with a block position packed into its low 32 bits (`motion_block_entity`).
+fn motion_at(tag: u64, pos: [i32; 3]) -> u64 {
     let [x, y, z] = pos.map(|c| c as u32);
-    Game::MOTION_BLOCK_ENTITY | u64::from((x & 0x7FF) | (z & 0x7FF) << 11 | (y & 0x3FF) << 22)
+    tag | u64::from((x & 0x7FF) | (z & 0x7FF) << 11 | (y & 0x3FF) << 22)
 }
 
 fn falling_block_visible(state: BlockStateId, cell: BlockStateId) -> bool {
@@ -11622,6 +11627,8 @@ impl Game<'_> {
     pub(super) const MOTION_FRAME_ITEM: u64 = 4 << 32;
     /// A block entity, by its position (`motion_block_entity`).
     pub(super) const MOTION_BLOCK_ENTITY: u64 = 5 << 32;
+    /// A block a piston moves, by the cell it moves to (`motion_at`).
+    pub(super) const MOTION_MOVING_BLOCK: u64 = 6 << 32;
     /// The entity whose geometry starts at vertex `start` (0: none), for frame
     /// generation to follow its own motion. Each run lasts until the next mark.
     pub(super) fn mark_motion(&self, start: usize, id: u64) {
