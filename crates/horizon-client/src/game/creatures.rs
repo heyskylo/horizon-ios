@@ -863,11 +863,9 @@ impl Game<'_> {
                     "leash": m.extra.leash.map(|h| format!("{h:?}")),
                     "tame": m.extra.tame,
                     "sitting": m.extra.sitting,
-                    "temper": if horizon_client::mobs::camel::is_camel(m.species()) {
-                        m.extra.camel_temper
-                    } else {
-                        i32::from(m.extra.variant3)
-                    },
+                    "temper": if horizon_client::mobs::equine::is_equine(m.species()) {
+                        horizon_client::mobs::equine::temper(m)
+                    } else { i32::from(m.extra.variant3) },
                     "chested": m.extra.chested,
                 });
                 // Set apart: one json! with every key goes past the default macro recursion
