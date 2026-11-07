@@ -5,10 +5,17 @@ use std::time::Duration;
 
 use super::*;
 
-const HZ_1K: Config = Config {
-    hz: 1000,
-    ring_slots: 4096,
-};
+const fn at_1khz(unwind: Unwind, ring_samples: usize) -> Config {
+    Config {
+        hz: 1000,
+        ring_samples,
+        unwind,
+        stack_copy_kib: 16,
+    }
+}
+
+const HZ_1K: Config = at_1khz(Unwind::Auto, 256);
+const COPY_1K: Config = at_1khz(Unwind::StackCopy, 256);
 
 fn cpu_ns() -> u64 {
     os::thread_cpu_ns()
@@ -30,7 +37,36 @@ fn spin_known(cpu_ms: u64) {
 
 fn in_spin_known(record: &Record) -> bool {
     let f = spin_known as *const () as usize;
-    record.stack().iter().any(|a| (f..f + 256).contains(a))
+    record.stack().iter().any(|a| (f..f + 512).contains(a))
+}
+
+/// Frames of `recurse` in a record's stack.
+fn recurse_frames(record: &Record) -> usize {
+    let f = recurse as *const () as usize;
+    record
+        .stack()
+        .iter()
+        .filter(|a| (f..f + 512).contains(a))
+        .count()
+}
+
+#[inline(never)]
+fn recurse(depth: u32, cpu_ms: u64) -> u64 {
+    if black_box(depth) == 0 {
+        spin_known(cpu_ms);
+        return 0;
+    }
+    black_box(recurse(depth - 1, cpu_ms)) + u64::from(depth)
+}
+
+/// Runs `f` with at least 20 KiB of live stack above it, so a 16 KiB copy is full.
+#[inline(never)]
+fn on_deep_stack<T>(f: impl FnOnce() -> T) -> T {
+    let pad = [1u8; 20 << 10];
+    black_box(&pad);
+    let out = f();
+    black_box(&pad);
+    out
 }
 
 /// Runs `body` on a thread sampled under `name`, draining its ring as it goes.
@@ -68,22 +104,8 @@ fn cpu(records: &[Record]) -> Vec<&Record> {
     records.iter().filter(|r| r.kind == Kind::Cpu).collect()
 }
 
-fn frame_pointers() -> bool {
-    let present = unwind::frame_pointers_present();
-    if !present {
-        eprintln!(
-            "skipped: this test binary was built without frame pointers (-C force-frame-pointers=yes)"
-        );
-    }
-    present
-}
-
-#[test]
-fn a_busy_function_is_in_its_threads_samples() {
-    if !frame_pointers() {
-        return;
-    }
-    let (records, stats, ()) = sampled("t-busy", HZ_1K, || spin_known(200));
+fn busy_function_is_in_its_threads_samples(name: &'static str, config: Config) {
+    let (records, stats, ()) = sampled(name, config, || spin_known(200));
     let samples = cpu(&records);
     let found = samples.iter().filter(|r| in_spin_known(r)).count();
     assert!(
@@ -100,8 +122,42 @@ fn a_busy_function_is_in_its_threads_samples() {
 }
 
 #[test]
+fn a_busy_function_is_in_its_threads_samples() {
+    busy_function_is_in_its_threads_samples("t-busy", HZ_1K);
+}
+
+#[test]
+fn a_busy_function_is_found_by_unwinding_a_stack_copy() {
+    busy_function_is_in_its_threads_samples("t-busy-copy", COPY_1K);
+}
+
+fn deep_recursion_unwinds(name: &'static str, config: Config) {
+    let (records, ..) = sampled(name, config, || {
+        recurse(40, 150);
+    });
+    let samples = cpu(&records);
+    let deep = samples.iter().filter(|r| recurse_frames(r) >= 35).count();
+    assert!(samples.len() > 80, "{} samples", samples.len());
+    assert!(
+        deep * 10 >= samples.len() * 8,
+        "{deep} of {} samples hold at least 35 of the 41 recurse frames",
+        samples.len()
+    );
+}
+
+#[test]
+fn a_forty_deep_recursion_unwinds_from_a_stack_copy() {
+    deep_recursion_unwinds("t-deep-copy", COPY_1K);
+}
+
+#[test]
+fn a_forty_deep_recursion_unwinds_in_this_builds_default_mode() {
+    deep_recursion_unwinds("t-deep", HZ_1K);
+}
+
+#[test]
 fn an_allocating_thread_survives_ten_seconds_of_signals() {
-    let (_, stats, (loops, bad)) = sampled("t-alloc", HZ_1K, || {
+    let (_, stats, (loops, bad)) = sampled("t-alloc", COPY_1K, || {
         let (mut loops, mut bad, mut keep) = (0u64, 0u64, Vec::<Vec<u8>>::new());
         let until = cpu_ns() + 10_000_000_000;
         while cpu_ns() < until {
@@ -176,26 +232,17 @@ fn only_the_slow_ticks_samples_are_kept() {
         .map(|r| r.ctx.tick)
         .collect();
     assert_eq!(markers, [1, 2, 3, 4, 5, 6]);
-    if frame_pointers() {
-        let found = kept.iter().filter(|r| in_spin_known(r)).count();
-        assert!(
-            found * 10 >= kept.len() * 8,
-            "{found} of {} kept samples hold spin_known",
-            kept.len()
-        );
-    }
+    let found = kept.iter().filter(|r| in_spin_known(r)).count();
+    assert!(
+        found * 10 >= kept.len() * 8,
+        "{found} of {} kept samples hold spin_known",
+        kept.len()
+    );
 }
 
 #[test]
 fn a_full_ring_drops_and_counts() {
-    let (records, stats, ()) = sampled(
-        "t-full",
-        Config {
-            hz: 1000,
-            ring_slots: 4,
-        },
-        || spin_known(100),
-    );
+    let (records, stats, ()) = sampled("t-full", at_1khz(Unwind::StackCopy, 4), || spin_known(100));
     assert_eq!(
         records.len() as u64,
         stats.samples,
@@ -274,18 +321,23 @@ fn handler_cost_per_sample() {
         black_box(x);
         cpu_ns() - started
     };
-    for hz in [250, 1000] {
+    for (hz, unwind) in [
+        (250, Unwind::StackCopy),
+        (1000, Unwind::StackCopy),
+        (250, Unwind::FramePointer),
+    ] {
         let (mut extra, mut own) = (Vec::new(), Vec::new());
         for _ in 0..31 {
-            let off = fixed_work();
+            let off = on_deep_stack(fixed_work);
             let session = start_session(
                 Config {
                     hz,
+                    unwind,
                     ..Config::default()
                 },
                 "t-cost",
             );
-            let on = fixed_work();
+            let on = on_deep_stack(fixed_work);
             let stats = session.stop(|_, _| {});
             extra.push((on as f64 - off as f64) / stats.samples.max(1) as f64);
             own.push(stats.handler_ns.unwrap_or(0.0));
@@ -293,8 +345,33 @@ fn handler_cost_per_sample() {
         extra.sort_by(f64::total_cmp);
         own.sort_by(f64::total_cmp);
         eprintln!(
-            "{hz} Hz: extra CPU per sample median {:.0} ns, quartiles {:.0} to {:.0} (31 pairs); handler's own clock median {:.0} ns",
+            "{hz} Hz {unwind:?}, 16 KiB of stack: extra CPU per sample median {:.0} ns, quartiles {:.0} to {:.0} (31 pairs); handler's own clock median {:.0} ns",
             extra[15], extra[7], extra[23], own[15]
+        );
+    }
+}
+
+#[test]
+#[ignore = "measurement: cargo test -p horizon-threads --release unwind_cost -- --ignored --nocapture"]
+fn unwind_cost_per_sample() {
+    eprintln!(
+        "frame pointers in this build: {}",
+        unwind::frame_pointers_present()
+    );
+    for depth in [0, 40] {
+        let (records, stats, _) = match depth {
+            0 => sampled("t-unwind-0", COPY_1K, || on_deep_stack(|| recurse(0, 1500))),
+            _ => sampled("t-unwind-40", COPY_1K, || {
+                on_deep_stack(|| recurse(40, 1500))
+            }),
+        };
+        let frames = cpu(&records).iter().map(|r| r.stack().len()).sum::<usize>();
+        eprintln!(
+            "recursion {depth}: {} samples, {:.1} frames each, unwind {:.0} ns per sample (wall, writer thread), handler {:.0} ns",
+            records.len(),
+            frames as f64 / cpu(&records).len().max(1) as f64,
+            stats.unwind_ns.unwrap_or(0.0),
+            stats.handler_ns.unwrap_or(0.0)
         );
     }
 }

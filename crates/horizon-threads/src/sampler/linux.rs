@@ -78,19 +78,25 @@ pub fn thread_cpu_ns() -> u64 {
 }
 
 #[cfg(target_arch = "x86_64")]
-fn registers(uc: &libc::ucontext_t) -> (usize, usize, usize) {
+fn registers(uc: &libc::ucontext_t) -> super::Regs {
     let g = &uc.uc_mcontext.gregs;
-    (
-        g[libc::REG_RIP as usize] as usize,
-        g[libc::REG_RBP as usize] as usize,
-        g[libc::REG_RSP as usize] as usize,
-    )
+    super::Regs {
+        pc: g[libc::REG_RIP as usize] as usize,
+        fp: g[libc::REG_RBP as usize] as usize,
+        sp: g[libc::REG_RSP as usize] as usize,
+        lr: 0,
+    }
 }
 
 #[cfg(target_arch = "aarch64")]
-fn registers(uc: &libc::ucontext_t) -> (usize, usize, usize) {
+fn registers(uc: &libc::ucontext_t) -> super::Regs {
     let m = &uc.uc_mcontext;
-    (m.pc as usize, m.regs[29] as usize, m.sp as usize)
+    super::Regs {
+        pc: m.pc as usize,
+        fp: m.regs[29] as usize,
+        sp: m.sp as usize,
+        lr: m.regs[30] as usize,
+    }
 }
 
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
@@ -98,8 +104,8 @@ extern "C" fn handler(_: libc::c_int, _: *mut libc::siginfo_t, uc: *mut libc::c_
     // SAFETY: errno is thread-local; saving it keeps the interrupted code's value (async-signal-safe practice).
     let errno = unsafe { *libc::__errno_location() };
     // SAFETY: the kernel passes a valid ucontext_t to an SA_SIGINFO handler.
-    let (pc, fp, sp) = registers(unsafe { &*(uc as *const libc::ucontext_t) });
-    super::on_sample(pc, fp, sp);
+    let regs = registers(unsafe { &*(uc as *const libc::ucontext_t) });
+    super::on_sample(regs);
     // SAFETY: restores the value saved above.
     unsafe { *libc::__errno_location() = errno };
 }
