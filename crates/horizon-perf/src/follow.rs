@@ -26,12 +26,18 @@ impl Entry {
             Entry::Field(Field::String(m)) => capture.strings.push(m),
             Entry::Field(Field::History(m)) => capture.history.push(m),
             Entry::Field(Field::SlowHistory(m)) => capture.slow_history.push(m),
+            Entry::Field(Field::World(m)) => capture.world.push(m),
             Entry::Field(Field::Mark(m)) => capture.marks.push(m),
             Entry::Field(Field::Warning(m)) => capture.warnings.push(m),
             Entry::Field(Field::Health(m)) => capture.health.push(m),
             Entry::Field(Field::CounterDef(m)) => capture.counter_defs.push(m),
             Entry::Field(Field::Counters(m)) => capture.counters.push(m),
             Entry::Field(Field::Slow(m)) => capture.slow.push(m),
+            Entry::Field(Field::SpanBlock(m)) => capture.span_blocks.push(m),
+            Entry::Field(Field::Memory(m)) => capture.memory.push(m),
+            Entry::Field(Field::Spans(m)) => capture.spans.push(m),
+            Entry::Field(Field::Workers(m)) => capture.workers.push(m),
+            Entry::Field(Field::Net(m)) => capture.net.push(m),
             Entry::Field(Field::Stop(m)) => capture.stop.push(m),
         }
     }
@@ -128,6 +134,8 @@ fn decode_entry(number: u32, bytes: &[u8]) -> Result<Entry, Error> {
         Field::History(m)
     } else if let Some(m) = c.slow_history.pop() {
         Field::SlowHistory(m)
+    } else if let Some(m) = c.world.pop() {
+        Field::World(m)
     } else if let Some(m) = c.marks.pop() {
         Field::Mark(m)
     } else if let Some(m) = c.warnings.pop() {
@@ -140,6 +148,16 @@ fn decode_entry(number: u32, bytes: &[u8]) -> Result<Entry, Error> {
         Field::Counters(m)
     } else if let Some(m) = c.slow.pop() {
         Field::Slow(m)
+    } else if let Some(m) = c.span_blocks.pop() {
+        Field::SpanBlock(m)
+    } else if let Some(m) = c.memory.pop() {
+        Field::Memory(m)
+    } else if let Some(m) = c.spans.pop() {
+        Field::Spans(m)
+    } else if let Some(m) = c.workers.pop() {
+        Field::Workers(m)
+    } else if let Some(m) = c.net.pop() {
+        Field::Net(m)
     } else if let Some(m) = c.stop.pop() {
         Field::Stop(m)
     } else {

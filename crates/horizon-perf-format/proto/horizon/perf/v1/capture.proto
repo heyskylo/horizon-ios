@@ -14,7 +14,8 @@ message Capture {
   repeated HealthWindow history = 4;
   // start: the slow ring from before the capture.
   repeated SlowEvent slow_history = 5;
-  // Number 6 (world) is allocated in §3.5 to piece S1b.
+  // start and end: label "start" / "stop".
+  repeated WorldSnapshot world = 6;
 
   // live: typed by the person profiling.
   repeated Mark marks = 7;
@@ -28,7 +29,19 @@ message Capture {
   repeated CounterSample counters = 11;
   // live: ticks or frames over the slow threshold.
   repeated SlowEvent slow = 12;
-  // Numbers 13-22 (span_blocks … attachments) are allocated in §3.5 to later pieces.
+  // live: one per block per thread.
+  repeated SpanBlock span_blocks = 13;
+  // live: start, every 10 s, stop.
+  repeated MemorySnapshot memory = 14;
+  // Number 15 (timeline) is allocated in §3.5 to piece T1.
+  // end
+  repeated SpanSummary spans = 16;
+  // end
+  repeated Workers workers = 17;
+  // Numbers 18-19 (samples, gpu) are allocated in §3.5 to later pieces.
+  // end: servers, and a client's own bytes.
+  repeated NetTraffic net = 20;
+  // Numbers 21-22 (bench, attachments) are allocated in §3.5 to later pieces.
 
   // end: the side's last field.
   repeated Stop stop = 23;
@@ -337,4 +350,143 @@ message Overhead {
   uint64 dropped_messages = 6;
   // Set when the timeline stopped early.
   optional double timeline_stopped_t = 7;
+}
+
+// Per thread, per block of block_s (default 5 s); span[i] ran under parent[i] (string ids, 0 for a root).
+message SpanBlock {
+  Side side = 1;
+  // String id of the thread name.
+  uint32 thread = 2;
+  uint32 block = 3;
+  double t0 = 4;
+  float block_s = 5;
+  // Ticks or frames in the block.
+  uint32 units = 6;
+  repeated uint32 span = 7;
+  repeated uint32 parent = 8;
+  // Sums over the block's units.
+  repeated float wall_ms = 9;
+  repeated float cpu_ms = 10;
+  // Units of the block in which the span ran.
+  repeated uint32 seen = 11;
+}
+
+// A span's totals over the whole capture; ms per unit is wall_ms / SpanSummary.count.
+message SpanTotal {
+  // String id of the span name.
+  uint32 name = 1;
+  // String id of the enclosing span; 0 for a root.
+  uint32 parent = 2;
+  uint32 depth = 3;
+  double wall_ms = 4;
+  double cpu_ms = 5;
+  // Units in which the span ran.
+  uint64 seen = 6;
+}
+
+// counts[i] holds the units with a wall time in [edges_ms[i-1], edges_ms[i]), the first from 0; the last bucket is open.
+message Histogram {
+  repeated float edges_ms = 1;
+  repeated uint64 counts = 2;
+}
+
+// A tick or frame kept with its whole span tree, parents before children.
+message WorstUnit {
+  double t = 1;
+  uint64 counter = 2;
+  float wall_ms = 3;
+  float cpu_ms = 4;
+  repeated SpanCost spans = 5;
+}
+
+message SpanSummary {
+  Side side = 1;
+  // String id of the thread name.
+  uint32 thread = 2;
+  Unit unit = 3;
+  // Ticks or frames recorded.
+  uint64 count = 4;
+  repeated SpanTotal spans = 5;
+  Histogram histogram = 6;
+  // The 16 worst units, worst first.
+  repeated WorstUnit worst = 7;
+  // The units' own wall and cpu time, summed.
+  double wall_ms_total = 8;
+  double cpu_ms_total = 9;
+}
+
+// Chunk-worker CPU by job kind.
+message WorkerKind {
+  // String id of the job kind, for example generate.
+  uint32 kind = 1;
+  uint64 jobs = 2;
+  float cpu_cores = 3;
+  float ms_per_job = 4;
+}
+
+message Workers {
+  Side side = 1;
+  repeated WorkerKind kinds = 2;
+}
+
+// path[i] has value_mb[i].
+message MemorySnapshot {
+  Side side = 1;
+  double t = 2;
+  // String id of the snapshot's name: start, a seconds mark, or stop.
+  uint32 label = 3;
+  // String ids of the flattened paths of horizon-ctl memory's reply.
+  repeated uint32 path = 4;
+  // Megabytes when the path's last key ends in _mb, otherwise a count.
+  repeated double value_mb = 5;
+}
+
+message TypeCount {
+  // String id of a registry id.
+  uint32 type = 1;
+  uint32 count = 2;
+}
+
+message DimensionCounts {
+  // String id of the dimension, for example overworld.
+  uint32 dimension = 1;
+  uint32 chunks = 2;
+  repeated TypeCount entities = 3;
+  repeated TypeCount block_entities = 4;
+}
+
+// Sampled tick cost of one entity type in one dimension.
+message EntityCost {
+  uint32 dimension = 1;
+  uint32 entity = 2;
+  float ms_per_tick = 3;
+  float mobs_ticked_per_tick = 4;
+  float us_per_mob = 5;
+}
+
+message WorldSnapshot {
+  Side side = 1;
+  double t = 2;
+  // String id of the snapshot's name: start or stop.
+  uint32 label = 3;
+  repeated DimensionCounts dims = 4;
+  repeated EntityCost entity_costs = 5;
+}
+
+// Bytes and packets per block from the capture's start; blocks before a player joined are 0.
+message PlayerTraffic {
+  // Join order, from 1.
+  uint32 index = 1;
+  double joined_t = 2;
+  optional double left_t = 3;
+  repeated uint64 bytes_in = 4;
+  repeated uint64 bytes_out = 5;
+  repeated uint32 packets_in = 6;
+  repeated uint32 packets_out = 7;
+}
+
+message NetTraffic {
+  Side side = 1;
+  float block_s = 2;
+  repeated PlayerTraffic players = 3;
 }

@@ -1,5 +1,6 @@
 mod common;
 
+use common::hand::{NAMES, Names, capture};
 use common::{Rng, expected_entries, synthetic_fields, write_capture};
 use horizon_perf::{Error, Follower};
 use horizon_perf_format::v1::Side;
@@ -93,4 +94,22 @@ fn a_flipped_byte_in_the_deflate_data_is_reported_not_swallowed() {
     let mut follower = Follower::new();
     let result = follower.push(&file);
     assert!(matches!(result, Err(Error::Corrupt(_))), "{result:?}");
+}
+
+#[test]
+fn the_span_world_net_memory_and_worker_fields_arrive_whole_in_order() {
+    let fields = capture(&Names::new(&NAMES));
+    let expected = expected_entries(&fields);
+    let file = write_capture(&fields).bytes;
+    let mut rng = Rng(7);
+    let mut follower = Follower::new();
+    let mut got = Vec::new();
+    let mut at = 0;
+    while at < file.len() {
+        let n = (1 + rng.below(97) as usize).min(file.len() - at);
+        got.extend(follower.push(&file[at..at + n]).unwrap());
+        at += n;
+    }
+    assert_eq!(got, expected);
+    assert!(follower.is_finished());
 }

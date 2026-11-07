@@ -1,5 +1,8 @@
 #![allow(dead_code)]
 
+pub mod bots;
+pub mod hand;
+
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -181,4 +184,30 @@ pub fn expected_entries(fields: &[Field]) -> Vec<Entry> {
     std::iter::once(Entry::Format(1))
         .chain(fields.iter().cloned().map(Entry::Field))
         .collect()
+}
+
+/// Writes `fields` as a finished capture file and returns its path.
+pub fn save(dir: &TempDir, name: &str, fields: &[Field]) -> String {
+    let path = dir.path().join(name);
+    std::fs::write(&path, write_capture(fields).bytes).unwrap();
+    path.to_string_lossy().into_owned()
+}
+
+/// Runs `horizon-perf query ...` and returns the JSON it printed, whether the query succeeded or not.
+pub fn query(parts: &[&str]) -> serde_json::Value {
+    let env = horizon_perf::cli::Env {
+        horizon_home: None,
+        poll: std::time::Duration::from_millis(2),
+    };
+    let mut args = vec!["query".to_string()];
+    args.extend(parts.iter().map(|s| s.to_string()));
+    let mut out = Vec::new();
+    let _ = horizon_perf::cli::run(&args, &env, &mut out);
+    serde_json::from_slice(&out)
+        .unwrap_or_else(|e| panic!("not JSON ({e}): {}", String::from_utf8_lossy(&out)))
+}
+
+pub fn rows(reply: &serde_json::Value) -> &Vec<serde_json::Value> {
+    assert_eq!(reply["ok"], true, "{reply}");
+    reply["rows"].as_array().unwrap()
 }

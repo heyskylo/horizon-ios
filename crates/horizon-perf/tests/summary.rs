@@ -189,7 +189,7 @@ fn a_budget_cuts_rows_from_the_bottom_and_never_mid_row() {
     let full = format!("{SERVER_TEXT}{CLIENT_TEXT}");
     let options = |budget_tokens| SummaryOptions {
         budget_tokens,
-        side: None,
+        ..Default::default()
     };
     let one_row_short = summarize(&both_sides(), NAME, &options(full.len() / 4 - 1)).unwrap();
     let expected: Vec<&str> = full.lines().collect();

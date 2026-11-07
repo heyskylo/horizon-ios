@@ -1,0 +1,238 @@
+use std::collections::BTreeMap;
+
+use horizon_perf_format::v1::{Warning, WarningCode};
+use serde_json::{Value, json};
+
+use super::{Ctx, QueryError, Reply, num};
+use crate::error::side_name;
+use crate::ids::{Id, Kind};
+use crate::view::{Snapshot, is_megabytes};
+
+const MIB: f64 = 1024.0 * 1024.0;
+const DIFF_COUNTS: usize = 50;
+const DEFAULT_MIN_MB: f64 = 1.0;
+const RESIDENT: &str = "process.resident_mb";
+
+/// A warning in words: codes carry numbers so each tool words them itself.
+pub fn warning_text(w: &Warning) -> String {
+    let arg = |i: usize| w.args.get(i).copied().unwrap_or(0.0);
+    match w.code() {
+        WarningCode::ServerNotHorizon => {
+            "the connected server does not run Horizon, so only the client side was captured".into()
+        }
+        WarningCode::ServerDenied => {
+            "the server refused the capture: operator level 4 is required".into()
+        }
+        WarningCode::ServerAlreadyRunning => "the server already runs a capture".into(),
+        WarningCode::ServerPartIncomplete => {
+            "the client disconnected while the server's side was being sent".into()
+        }
+        WarningCode::TimelineCapped => format!(
+            "the timeline hit its cap after {:.0} s ({:.1} MiB written)",
+            arg(0),
+            arg(1) / MIB
+        ),
+        WarningCode::Unspecified => format!("unknown warning {:?}", w.args),
+    }
+}
+
+/// Marks typed by the person profiling, in time order.
+pub(super) fn marks(ctx: &Ctx) -> Result<Reply, QueryError> {
+    let view = &ctx.views[0];
+    let sides = ctx.sides(0)?;
+    let first = sides
+        .first()
+        .copied()
+        .ok_or_else(|| QueryError::new("this capture has no data"))?;
+    let window = ctx.window(0, first, f64::NEG_INFINITY)?;
+    let mut marks: Vec<_> = view
+        .capture
+        .marks
+        .iter()
+        .filter(|m| sides.contains(&m.side()) && window.contains(m.t))
+        .collect();
+    marks.sort_by(|a, b| a.t.total_cmp(&b.t));
+    let rows = marks
+        .into_iter()
+        .take(ctx.q.filters.limit)
+        .map(|m| json!({"side": side_name(m.side()), "t": num(m.t), "name": m.name}))
+        .collect();
+    Ok(Reply::new("marks", rows))
+}
+
+pub(super) fn warnings(ctx: &Ctx) -> Result<Reply, QueryError> {
+    let view = &ctx.views[0];
+    let sides = ctx.sides(0)?;
+    let mut all: Vec<_> = view
+        .capture
+        .warnings
+        .iter()
+        .filter(|w| sides.contains(&w.side()))
+        .collect();
+    all.sort_by(|a, b| a.t.total_cmp(&b.t));
+    let rows = all
+        .into_iter()
+        .take(ctx.q.filters.limit)
+        .map(|w| {
+            json!({
+                "side": side_name(w.side()),
+                "t": num(w.t),
+                "code": w.code().as_str_name(),
+                "args": w.args,
+                "text": warning_text(w),
+            })
+        })
+        .collect();
+    Ok(Reply::new("warnings", rows))
+}
+
+/// A snapshot's biggest rows, or with `--diff` what grew and shrank between two.
+pub(super) fn memory(ctx: &Ctx) -> Result<Reply, QueryError> {
+    let side = ctx.side(0)?;
+    let snaps = ctx.views[0].snapshots(side);
+    if snaps.is_empty() {
+        return Err(QueryError::new(
+            "this capture has no memory snapshots for the selected side",
+        ));
+    }
+    let min_mb = ctx.q.min_mb;
+    if ctx.q.diff {
+        return diff(ctx, &snaps, min_mb.unwrap_or(DEFAULT_MIN_MB));
+    }
+    let snap = match ctx.q.args.as_slice() {
+        [] => snaps.last(),
+        [label] => Some(find(&snaps, label)?),
+        _ => {
+            return Err(QueryError::new(
+                "memory takes one label, or none for the last snapshot",
+            ));
+        }
+    };
+    let snap = snap.expect("snapshots are not empty");
+    let mut rows: Vec<&(String, f64)> = snap
+        .values
+        .iter()
+        .filter(|(p, v)| !is_megabytes(p) || *v >= min_mb.unwrap_or(0.0))
+        .collect();
+    rows.sort_by(|a, b| {
+        is_megabytes(&b.0)
+            .cmp(&is_megabytes(&a.0))
+            .then(b.1.total_cmp(&a.1))
+            .then_with(|| a.0.cmp(&b.0))
+    });
+    let rows = rows
+        .into_iter()
+        .take(ctx.q.filters.limit)
+        .map(|(path, v)| {
+            json!({
+                "id": Id::new(Kind::Memory, path.as_str()).to_string(),
+                "path": path,
+                "value": if is_megabytes(path) { json!(round1(*v)) } else { count(*v) },
+                "unit": if is_megabytes(path) { "mb" } else { "count" },
+            })
+        })
+        .collect();
+    Ok(Reply::new("memory", rows))
+}
+
+fn find<'a>(snaps: &'a [Snapshot], label: &str) -> Result<&'a Snapshot, QueryError> {
+    snaps.iter().find(|s| s.label == label).ok_or_else(|| {
+        let labels: Vec<&str> = snaps.iter().map(|s| s.label.as_str()).collect();
+        QueryError::new(format!(
+            "no memory snapshot labelled {label}; labels: {}",
+            labels.join(", ")
+        ))
+    })
+}
+
+fn round1(v: f64) -> f64 {
+    (v * 10.0).round() / 10.0
+}
+
+fn count(v: f64) -> Value {
+    if v.fract() == 0.0 && v.abs() < 1e15 {
+        json!(v as i64)
+    } else {
+        num(v)
+    }
+}
+
+/// Spec D's `memory-diff`: rows are `[path, a, b, b - a]`; megabyte rows keep a change of `min_mb`, counts the 50 biggest changes.
+fn diff(ctx: &Ctx, snaps: &[Snapshot], min_mb: f64) -> Result<Reply, QueryError> {
+    let (a, b) = match ctx.q.args.as_slice() {
+        [] if snaps.len() >= 2 => (&snaps[0], &snaps[snaps.len() - 1]),
+        [] => {
+            return Err(QueryError::new(
+                "a diff needs two snapshots; this capture has one",
+            ));
+        }
+        [x, y] => (find(snaps, x)?, find(snaps, y)?),
+        _ => {
+            return Err(QueryError::new(
+                "memory --diff takes two labels, or none for the first and last",
+            ));
+        }
+    };
+    let before_map: BTreeMap<&str, f64> = a.values.iter().map(|(p, v)| (p.as_str(), *v)).collect();
+    let after_map: BTreeMap<&str, f64> = b.values.iter().map(|(p, v)| (p.as_str(), *v)).collect();
+    let mut paths: Vec<&str> = before_map.keys().chain(after_map.keys()).copied().collect();
+    paths.sort_unstable();
+    paths.dedup();
+    let (mut grew, mut shrank, mut counts) = (Vec::new(), Vec::new(), Vec::new());
+    for path in &paths {
+        let (before, after) = (
+            before_map.get(path).copied().unwrap_or(0.0),
+            after_map.get(path).copied().unwrap_or(0.0),
+        );
+        let delta = after - before;
+        if *path == RESIDENT {
+            continue;
+        }
+        if is_megabytes(path) {
+            if delta.abs() >= min_mb && delta > 0.0 {
+                grew.push((*path, before, after, delta));
+            } else if delta.abs() >= min_mb && delta < 0.0 {
+                shrank.push((*path, before, after, delta));
+            }
+        } else if delta != 0.0 {
+            counts.push((*path, before, after, delta));
+        }
+    }
+    let rank = |rows: &mut Vec<(&str, f64, f64, f64)>| {
+        rows.sort_by(|x, y| y.3.abs().total_cmp(&x.3.abs()).then(x.0.cmp(y.0)))
+    };
+    rank(&mut grew);
+    rank(&mut shrank);
+    rank(&mut counts);
+    counts.truncate(DIFF_COUNTS);
+    let mb_rows = |rows: Vec<(&str, f64, f64, f64)>| -> Vec<Value> {
+        rows.into_iter()
+            .map(|(p, x, y, d)| json!([p, round1(x), round1(y), round1(d)]))
+            .collect()
+    };
+    let resident = match (a.get(RESIDENT), b.get(RESIDENT)) {
+        (Some(x), Some(y)) => json!([round1(x), round1(y), round1(y - x)]),
+        _ => Value::Null,
+    };
+    fn only<'p>(from: &BTreeMap<&'p str, f64>, not: &BTreeMap<&'p str, f64>) -> Vec<&'p str> {
+        from.keys()
+            .filter(|p| !not.contains_key(*p))
+            .copied()
+            .collect()
+    }
+    let row = json!({
+        "from": a.label,
+        "to": b.label,
+        "seconds": round1(b.t - a.t),
+        "resident_mb": resident,
+        "grew_mb": mb_rows(grew),
+        "shrank_mb": mb_rows(shrank),
+        "counts": counts
+            .into_iter()
+            .map(|(p, x, y, d)| json!([p, count(x), count(y), count(d)]))
+            .collect::<Vec<_>>(),
+        "only_in_a": only(&before_map, &after_map),
+        "only_in_b": only(&after_map, &before_map),
+    });
+    Ok(Reply::new("memory_diff", vec![row]))
+}

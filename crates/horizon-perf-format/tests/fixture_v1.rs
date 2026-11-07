@@ -252,6 +252,7 @@ fn expected() -> Capture {
                 }),
             },
         ],
+        ..Default::default()
     }
 }
 

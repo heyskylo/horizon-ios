@@ -29,52 +29,67 @@ pub fn trailing_mean(
     pick: fn(&HealthSample) -> Option<f32>,
 ) -> Option<f64> {
     let (lo, hi) = (end - window_s, end);
-    let mut sources: Vec<Vec<(Span, f64)>> = Vec::new();
-    sources.push(
-        live(capture, side)
-            .into_iter()
-            .filter_map(|h| pick(h).map(|v| ((h.t, h.t + LIVE_STEP_S), f64::from(v))))
-            .collect(),
-    );
-    let mut tiers: Vec<_> = capture
-        .history
-        .iter()
-        .filter(|w| w.side() == side && w.step_s > 0.0)
-        .collect();
-    tiers.sort_by(|a, b| a.step_s.total_cmp(&b.step_s));
-    for tier in tiers {
-        let step = f64::from(tier.step_s);
+    Series::new(capture, side, pick).mean(lo, hi, MIN_COVERAGE * window_s)
+}
+
+/// One health field as spans of time with a value each, in priority order: live samples, then the history tiers, finest first.
+pub struct Series {
+    sources: Vec<Vec<(Span, f64)>>,
+}
+
+impl Series {
+    pub fn new(capture: &Capture, side: Side, pick: fn(&HealthSample) -> Option<f32>) -> Self {
+        let mut sources: Vec<Vec<(Span, f64)>> = Vec::new();
         sources.push(
-            tier.samples
-                .iter()
-                .enumerate()
-                .filter_map(|(i, h)| {
-                    let from = tier.t0 + step * i as f64;
-                    pick(h).map(|v| ((from, from + step), f64::from(v)))
-                })
+            live(capture, side)
+                .into_iter()
+                .filter_map(|h| pick(h).map(|v| ((h.t, h.t + LIVE_STEP_S), f64::from(v))))
                 .collect(),
         );
+        let mut tiers: Vec<_> = capture
+            .history
+            .iter()
+            .filter(|w| w.side() == side && w.step_s > 0.0)
+            .collect();
+        tiers.sort_by(|a, b| a.step_s.total_cmp(&b.step_s));
+        for tier in tiers {
+            let step = f64::from(tier.step_s);
+            sources.push(
+                tier.samples
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, h)| {
+                        let from = tier.t0 + step * i as f64;
+                        pick(h).map(|v| ((from, from + step), f64::from(v)))
+                    })
+                    .collect(),
+            );
+        }
+        Self { sources }
     }
 
-    let mut covered: Vec<Span> = Vec::new();
-    let (mut weighted, mut length) = (0.0, 0.0);
-    for source in sources {
-        let mut taken: Vec<Span> = Vec::new();
-        for ((from, to), value) in source {
-            let clipped = (from.max(lo), to.min(hi));
-            if clipped.0 >= clipped.1 {
-                continue;
+    /// Time-weighted mean over `lo..hi`; None when the recorded data covers less than `min_covered` seconds of it.
+    pub fn mean(&self, lo: f64, hi: f64, min_covered: f64) -> Option<f64> {
+        let mut covered: Vec<Span> = Vec::new();
+        let (mut weighted, mut length) = (0.0, 0.0);
+        for source in &self.sources {
+            let mut taken: Vec<Span> = Vec::new();
+            for &((from, to), value) in source {
+                let clipped = (from.max(lo), to.min(hi));
+                if clipped.0 >= clipped.1 {
+                    continue;
+                }
+                for (a, b) in uncovered(clipped, &covered) {
+                    weighted += value * (b - a);
+                    length += b - a;
+                    taken.push((a, b));
+                }
             }
-            for (a, b) in uncovered(clipped, &covered) {
-                weighted += value * (b - a);
-                length += b - a;
-                taken.push((a, b));
-            }
+            covered.extend(taken);
+            covered = merge(covered);
         }
-        covered.extend(taken);
-        covered = merge(covered);
+        (length > 0.0 && length >= min_covered).then(|| weighted / length)
     }
-    (length >= MIN_COVERAGE * window_s && length > 0.0).then(|| weighted / length)
 }
 
 fn uncovered(span: Span, covered: &[Span]) -> Vec<Span> {

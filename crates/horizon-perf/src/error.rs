@@ -10,6 +10,7 @@ pub enum Error {
     Unfinished { side: Side },
     Empty,
     NoSuchSide { side: Side },
+    NoSuchThread { detail: String },
 }
 
 pub fn side_name(side: Side) -> &'static str {
@@ -35,6 +36,7 @@ impl fmt::Display for Error {
                 side_name(*side)
             ),
             Error::Empty => write!(f, "this capture has no data yet: it is still being written"),
+            Error::NoSuchThread { detail } => f.write_str(detail),
             Error::NoSuchSide { side } => {
                 write!(f, "this capture has no {} side", side_name(*side))
             }
