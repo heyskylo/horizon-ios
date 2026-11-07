@@ -1662,6 +1662,24 @@ impl Game<'_> {
                 self.start_riding(id);
                 return Ok(());
             }
+            // An armor stand, a display, a marker, an interaction or any entity Horizon keeps as its
+            // compound: the forced ride takes it too, and the rider sits on its passenger point.
+            Target::Stand(id) | Target::Other(id) => {
+                let Some(seat) = self.seat(id) else {
+                    return Err(generic());
+                };
+                if let Some(rider) = rider {
+                    if !self.try_mount_mob(rider, id) {
+                        return Err(generic());
+                    }
+                } else {
+                    if !self.native_may_board(id) {
+                        return Err(generic());
+                    }
+                    self.board_seat(id, seat);
+                }
+                return Ok(());
+            }
             _ => {}
         }
         // Mobs carry players and mobs.
@@ -1703,6 +1721,10 @@ impl Game<'_> {
             Target::Boat(id)
         } else if self.carts.iter().any(|c| c.id == id) {
             Target::Cart(id)
+        } else if self.armor_stands.iter().any(|a| a.id == id) {
+            Target::Stand(id)
+        } else if self.others.iter().any(|o| o.id == id) {
+            Target::Other(id)
         } else {
             Target::Mob(id)
         })

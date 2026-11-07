@@ -344,6 +344,7 @@ mod screen_info;
 mod screens;
 mod sculk;
 mod sculk_fixture;
+mod seats;
 mod server_links;
 mod server_packs;
 mod server_travel;
