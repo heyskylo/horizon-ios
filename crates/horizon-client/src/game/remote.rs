@@ -147,7 +147,7 @@ pub(super) fn remote_text(tag: &Tag) -> horizon_client::text::Text {
 /// player. An entity this client doesn't track is still named, as not a player.
 fn own_hurt_attacker(
     cause: Option<i32>,
-    is_player: impl Fn(u32) -> Option<bool>,
+    mut is_player: impl FnMut(u32) -> Option<bool>,
 ) -> (Option<u32>, bool) {
     let attacker = cause.and_then(|id| u32::try_from(id).ok());
     let player = attacker.and_then(is_player).unwrap_or(false);
