@@ -7,6 +7,7 @@ pub mod v1 {
 }
 
 mod counters;
+pub mod files;
 mod health;
 mod slow;
 mod strings;

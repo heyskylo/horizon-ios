@@ -129,6 +129,7 @@ pub mod sound_playback;
 pub use horizon_server_files as server;
 pub mod controller_notice;
 pub mod server_packs;
+pub mod server_perf;
 pub mod shadows;
 pub mod spear;
 pub mod spectator_menu;

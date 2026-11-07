@@ -367,6 +367,12 @@ hold no names, UUIDs or addresses, so you can attach them to an issue as they ar
 `horizon-report [SECONDS]`; `horizon-report stop` writes the report now and `horizon-report status` says how far
 it is. Nothing restarts: the report runs beside the game.
 
+The same command also writes `reports/profile-<time>Z.hzperf`, a capture the performance tools read
+([perf-platform.md](perf-platform.md)): the settings and machine, the health history from before it (TPS and
+MSPT over the last 10 minutes to 7 days), a sample each second, the counters and the slow ticks with their steps.
+`horizon-server report` prints only that path and address; the text summary stays in `perf-<time>.txt`. Past 30 files or 1 GiB the oldest `profile-*.hzperf` is deleted;
+a file you renamed is never touched. `--no-samples` is accepted (the call-tree samples arrive with a later piece).
+
 To see a slow stretch tick by tick, `horizon-trace [SECONDS]` (30 by default, up to 300) writes every thread's timed
 steps to `reports/trace-<time>.json`; [ui.perfetto.dev](https://ui.perfetto.dev) opens it as a timeline, one row per
 thread. `horizon-trace stop` ends it early. It holds step names and times only.
