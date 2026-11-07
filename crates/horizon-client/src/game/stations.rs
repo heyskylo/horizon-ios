@@ -695,6 +695,38 @@ impl Game<'_> {
             None => String::new(),
         }
     }
+    /// NeoForge's `AnvilUpdateEvent` (`CommonHooks.onAnvilUpdate`) about
+    /// `result`, vanilla's for `left`, `right` and the rename box's
+    /// `item_name`: the mods' answer takes its place. `player` (`name`) is
+    /// who uses the anvil: the window's own player, or a host's guest.
+    pub(super) fn anvil_update(
+        &mut self,
+        player: u128,
+        name: &str,
+        left: &ItemStack,
+        right: Option<&ItemStack>,
+        item_name: Option<&str>,
+        result: &mut AnvilResult,
+    ) {
+        let material = i32::try_from(result.repair_item_count_cost).unwrap_or(i32::MAX);
+        let mut output = result.result.clone();
+        let (mut xp_cost, mut material_cost, mut canceled) = (result.cost, material, false);
+        self.native_anvil_update(
+            player,
+            name,
+            left,
+            right,
+            item_name,
+            result.result.as_ref(),
+            result.cost,
+            material,
+            &mut output,
+            &mut xp_cost,
+            &mut material_cost,
+            &mut canceled,
+        );
+        result.answer_update(canceled, output, xp_cost, material_cost);
+    }
     /// `slotsChanged` / `createResult` for the open station.
     pub(super) fn station_changed(&mut self) {
         let Some(mut s) = self.station.take() else {
@@ -739,6 +771,13 @@ impl Game<'_> {
                     &hover,
                     creative,
                 );
+                // NeoForge's AnvilUpdateEvent, where the client menu's createResult ends.
+                // The player is the one the server knows, as its own call names it.
+                if let Some(left) = s.inputs[0].as_ref() {
+                    let (player, player_name) = (self.own_uuid(), self.own_profile_name());
+                    let right = s.inputs[1].as_ref();
+                    self.anvil_update(player, &player_name, left, right, Some(&name), &mut s.anvil);
+                }
                 s.result = s.anvil.result.clone();
             }
             Kind::Grindstone => {
