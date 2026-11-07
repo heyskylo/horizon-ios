@@ -1,0 +1,7 @@
+syntax = "proto3";
+package lint.bad;
+
+message Sample {
+  uint32 field_1 = 1;
+  uint32 field1 = 2;
+}
