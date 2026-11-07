@@ -1240,6 +1240,15 @@ impl Game<'_> {
             set_key(&mut tag, "home_pos", Tag::IntArray(home.to_vec()));
         }
         place_summoned(&mut tag, pos);
+        // ServerLevel.tryAddFreshEntityWithPassengers: a UUID of the tree that
+        // an entity in the level holds refuses the whole tree, before any of
+        // it joins (players are not looked at here).
+        if self.summon_tree_uuids(&tag).into_iter().any(|u| {
+            self.target_with_uuid(u)
+                .is_some_and(|t| t != Target::Player)
+        }) {
+            return Err(err("commands.summon.failed.uuid", &[]));
+        }
         let from = self.mobs.len();
         let canceled = self.persist.joins_canceled;
         let target = self.spawn_entity_from_nbt(tag);
