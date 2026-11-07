@@ -32,6 +32,8 @@ CASES = [
     ('ridden_fire', 'oak_boat', 'fire', '', True, True, 0),
     # Leaving the water it started in puts it out.
     ('burning_water_exit', 'oak_boat', 'water', ',Fire:160s,Motion:[0d,2d,0d]', True, False, 0),
+    # Out of the water and into the fire beside it in one move: put out, then lit.
+    ('water_to_fire', 'oak_boat', 'water_fire', ',Motion:[2d,0d,0d]', False, False, 0),
     # 40 damage wears off before Fire 20 burns it: it survives at 40.
     ('ridden_damaged', 'oak_boat', None, ',Fire:29s', True, True, 4),
 ]
@@ -50,6 +52,9 @@ def program(cmd, setup):
                      '/kill @e[type=item,x=8.5,y=200,z=8.5,distance=..8]')
         if environment == 'wide_fire':
             out.append(cmd('/fill 7 200 7 9 200 9 fire', expect_result=9))
+        elif environment == 'water_fire':
+            out += [cmd('/setblock 8 200 8 water', expect_result=1),
+                    cmd('/setblock 10 200 8 fire', expect_result=1)]
         elif environment:
             out.append(cmd(f'/setblock 8 200 8 {environment}', expect_result=1))
         out.append(cmd(f'/summon {kind} 8.5 200 8.5 {{UUID:[I;512,0,0,{n}],Rotation:[0f,0f]{fields}}}',

@@ -1166,14 +1166,9 @@ impl Game<'_> {
     /// `PowderSnowBlock.entityInside` for a boat: the powder snow cells its box, and the box it
     /// had before its move, reach into (`Entity.checkInsideBlocks` along the move).
     fn boat_powder_snow_cells(&self, b: &Boat) -> Vec<[i32; 3]> {
-        self.boat_inside_cells(b, |p| self.is_powder_snow(p))
-    }
-    /// The cells of the blocks `wanted` picks that boat `b`'s box, and the box it had before its
-    /// move, reach into (`Entity.checkInsideBlocks` along the move).
-    fn boat_inside_cells(&self, b: &Boat, wanted: impl Fn([i32; 3]) -> bool) -> Vec<[i32; 3]> {
-        let mut cells = powder_snow_cells(b.bounds(), &wanted);
+        let mut cells = powder_snow_cells(b.bounds(), |p| self.is_powder_snow(p));
         if b.previous != b.position {
-            for p in powder_snow_cells(Boat::bounds_at(b.previous), &wanted) {
+            for p in powder_snow_cells(Boat::bounds_at(b.previous), |p| self.is_powder_snow(p)) {
                 if !cells.contains(&p) {
                     cells.push(p);
                 }
@@ -1205,51 +1200,67 @@ impl Game<'_> {
         self.boats[i].fire_ticks -= 1;
         burn && self.burn_boat(i, 1.0)
     }
-    /// The fire of the two `applyEffectsFromBlocks` in `AbstractBoat.tick`:
-    /// fire blocks light the boat once a pass (`BaseFireBlock.fireIgnite`, a
-    /// cooldown tick at a time) and each burns it; a burning boat melts the
-    /// powder snow it is in (with `mob_griefing`); water, powder snow and rain
-    /// put it out; and a boat neither burning nor lit has its cooldown
+    /// The fire of the two `applyEffectsFromBlocks` in `AbstractBoat.tick`.
+    /// `Entity.checkInsideBlocks` meets the blocks of the box the boat started
+    /// its move in first, then the ones it reached, each block once; in each
+    /// step fire blocks light it (`BaseFireBlock.fireIgnite`, a cooldown tick
+    /// at a time) and each burns it, then a burning boat melts the powder snow
+    /// (with `mob_griefing`) and water and powder snow put it out. Rain puts
+    /// it out too, and a boat neither burning nor lit has its cooldown
     /// cleared. True when the fire broke it.
     fn boat_fire_passes(&mut self, i: usize) -> bool {
         let b = &self.boats[i];
-        let fires: Vec<f32> = self
-            .boat_inside_cells(b, |p| self.fire_damage_at(p).is_some())
-            .into_iter()
-            .filter_map(|p| self.fire_damage_at(p))
-            .collect();
-        // Water along the move puts it out, where it started too.
-        let water = self.in_fluid(b.bounds(), Fluid::Water)
-            || self.in_fluid(Boat::bounds_at(b.previous), Fluid::Water);
+        let mut steps = vec![Boat::bounds_at(b.previous)];
+        if b.previous != b.position {
+            steps.push(b.bounds());
+        }
         let (at, top) = (b.position, b.bounds().max_position().y);
         let rain = self.in_rain(at, top);
         for _ in 0..2 {
             let before = self.boats[i].fire_ticks;
-            if !fires.is_empty() {
-                let fire = &mut self.boats[i].fire_ticks;
-                if *fire < 0 {
-                    *fire += 1;
-                }
-                if *fire >= 0 {
-                    // igniteForSeconds(8)
-                    *fire = (*fire).max(160);
-                }
-                for &damage in &fires {
-                    if self.burn_boat(i, damage) {
-                        return true;
+            let mut seen = Vec::new();
+            for &bounds in &steps {
+                let cells = powder_snow_cells(bounds, |p| !seen.contains(&p));
+                seen.extend_from_slice(&cells);
+                let fires: Vec<f32> = cells
+                    .iter()
+                    .filter_map(|&p| self.fire_damage_at(p))
+                    .collect();
+                if !fires.is_empty() {
+                    let fire = &mut self.boats[i].fire_ticks;
+                    if *fire < 0 {
+                        *fire += 1;
+                    }
+                    if *fire >= 0 {
+                        // igniteForSeconds(8)
+                        *fire = (*fire).max(160);
+                    }
+                    for &damage in &fires {
+                        if self.burn_boat(i, damage) {
+                            return true;
+                        }
                     }
                 }
-            }
-            // A burning boat may have melted it in the pass before.
-            let snow = self.boat_powder_snow_cells(&self.boats[i]);
-            if self.boats[i].fire_ticks > 0 && self.ui.rules.bool("mob_griefing") {
-                for &cell in &snow {
-                    self.powder_snow_melt(BlockPos::new(cell[0], cell[1], cell[2]));
+                let low = bounds.min_position().y;
+                let water = cells.iter().any(|&p| self.water_reaches(p, low));
+                let snow: Vec<[i32; 3]> = cells
+                    .iter()
+                    .copied()
+                    .filter(|&p| self.is_powder_snow(p))
+                    .collect();
+                if self.boats[i].fire_ticks > 0 && self.ui.rules.bool("mob_griefing") {
+                    for &cell in &snow {
+                        self.powder_snow_melt(BlockPos::new(cell[0], cell[1], cell[2]));
+                    }
+                }
+                if water || !snow.is_empty() {
+                    // clearFire
+                    let fire = &mut self.boats[i].fire_ticks;
+                    *fire = (*fire).min(0);
                 }
             }
             let fire = &mut self.boats[i].fire_ticks;
-            if water || !snow.is_empty() || rain {
-                // clearFire
+            if rain {
                 *fire = (*fire).min(0);
             }
             let now = *fire;
@@ -1261,6 +1272,12 @@ impl Game<'_> {
             }
         }
         false
+    }
+    /// Whether the water at cell `p` reaches a box whose bottom is `low`
+    /// (`Entity.collidedWithFluid`, the box deflated by 1e-5).
+    fn water_reaches(&self, p: [i32; 3], low: f64) -> bool {
+        self.fluid_height_of(p[0], p[1], p[2], Some(Fluid::Water))
+            .is_some_and(|(height, _)| low + 1.0e-5 < f64::from(p[1]) + f64::from(height))
     }
     /// `VehicleEntity.hurtServer` for fire (`inFire`, `onFire`), which an
     /// `Invulnerable` boat ignores. True when the boat broke.
@@ -1318,16 +1335,12 @@ impl Game<'_> {
     /// Whether a vehicle's box, deflated by 1e-5, reaches into lava below its
     /// surface (`Entity.collidedWithFluid`).
     pub(super) fn in_lava(&self, bb: Aabb) -> bool {
-        self.in_fluid(bb, Fluid::Lava)
-    }
-    /// Whether a box, deflated by 1e-5, reaches into `fluid` below its surface.
-    fn in_fluid(&self, bb: Aabb, fluid: Fluid) -> bool {
         let (lo, hi) = (bb.min_position(), bb.max_position());
         let e = 1.0e-5;
         for x in (lo.x + e).floor() as i32..=(hi.x - e).floor() as i32 {
             for y in (lo.y + e).floor() as i32..=(hi.y - e).floor() as i32 {
                 for z in (lo.z + e).floor() as i32..=(hi.z - e).floor() as i32 {
-                    if let Some((height, _)) = self.fluid_height_of(x, y, z, Some(fluid))
+                    if let Some((height, _)) = self.fluid_height_of(x, y, z, Some(Fluid::Lava))
                         && lo.y + e < f64::from(y) + f64::from(height)
                     {
                         return true;
