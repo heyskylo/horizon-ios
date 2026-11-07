@@ -252,6 +252,7 @@ mod native_item_container;
 mod native_item_energy;
 mod native_item_fluids;
 mod native_level_refs;
+mod native_level_world;
 mod native_lifecycle;
 mod native_living_refs;
 mod native_machines;
