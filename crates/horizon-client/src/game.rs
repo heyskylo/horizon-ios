@@ -114,6 +114,7 @@ mod decorated_pot;
 mod dedicated;
 mod deflect;
 mod dialogs;
+#[cfg(feature = "discord")]
 mod discord;
 mod dispense_fixture;
 mod dispenser;
@@ -143,6 +144,11 @@ mod fishing;
 mod fov;
 mod foxes;
 mod frames;
+#[cfg(feature = "friends")]
+mod friends;
+// Without Play with Friends: nothing shared, no Friends button (game/friends_off.rs).
+#[cfg(not(feature = "friends"))]
+#[path = "game/friends_off.rs"]
 mod friends;
 mod functions;
 mod game_mode;
@@ -3270,6 +3276,7 @@ struct Game<'a> {
     /// This game is that server thread's (game/integrated.rs).
     serving: Option<integrated::Serving>,
     /// The open world is shared behind an invite code (game/friends.rs).
+    #[cfg(feature = "friends")]
     friends: Option<friends::Sharing>,
     /// The Social Interactions screen and the players whose chat is hidden (game/social.rs).
     social: social::Social,
@@ -9173,6 +9180,7 @@ impl Game<'_> {
         batch
     }
     fn hud_layers(&mut self, size: [u32; 2]) -> HudBatch {
+        self.pad.guide_shown.clear();
         let mut batch = HudBatch::new(size);
         batch.glint_colour = self.settings.extras.pvp.tweaks.glint_texel();
         // GlobalSettingsUniform's GameTime, for a resource pack's text shader.
@@ -9261,8 +9269,11 @@ impl Game<'_> {
         let (wi, hi) = (w as i32, h as i32);
         let in_studio = self.studio_replay.is_some();
         let show_hud = !self.ui.hide_gui && !in_studio;
+        // What the gameplay guide keeps off starts after the view's full overlays.
+        let mut guide_from = 0;
         if show_hud {
             self.draw_spyglass(&mut batch);
+            guide_from = batch.vertices.len();
             // Hud.extractCrosshair / extractItemHotbar / extractPlayerHealth /
             // extractVehicleHealth and the experience bar, laid out by hud_layout.
             // Combat feel Legacy hides the attack indicator unless the player keeps it.
@@ -9551,11 +9562,16 @@ impl Game<'_> {
             Screen::DebugOptions => self.draw_debug_options(&mut batch),
             Screen::HudEditor => self.draw_hud_editor(&mut batch),
             Screen::Inventory => {
+                let from = batch.vertices.len();
                 self.draw_inventory(&mut batch);
                 self.draw_mod_browser(&mut batch);
+                self.draw_pad_menu_guide(&mut batch, from);
             }
             Screen::Creative => {
+                let from = batch.vertices.len();
                 self.draw_creative(&mut batch);
+                self.draw_mod_browser(&mut batch);
+                self.draw_pad_menu_guide(&mut batch, from);
             }
             Screen::Chat => self.draw_chat_screen(&mut batch),
             Screen::Playing | Screen::Options | Screen::Win => {}
@@ -9575,6 +9591,9 @@ impl Game<'_> {
             self.remote_hud(&mut batch);
             self.draw_sign_editor(&mut batch);
             self.draw_book(&mut batch);
+        }
+        if show_hud {
+            self.draw_pad_guide(&mut batch, guide_from);
         }
         batch
     }
@@ -15113,17 +15132,18 @@ impl Game<'_> {
     fn hand_geometry(&mut self, alpha: f64) -> (Vec<Vertex>, Vec<(u32, i32)>) {
         let mut out = Vec::new();
         let mut runs = Vec::new();
-        // GameRenderer.renderItemInHand: F1 hides the hand with the HUD.
-        if self.spectator()
-            || self.ui.hide_gui
-            || self.sleeping.is_some()
-            || !self.camera_type.first_person()
-            || self.studio_replay.is_some()
-            || self
-                .player
-                .as_ref()
-                .is_none_or(|p| p.health.dead_or_dying())
-            || self.screen == Screen::Dead
+        // F1 hides both; a native HUD mode may keep the hands visible. A
+        // studio replay never draws them.
+        if self.studio_replay.is_some()
+            || !self.ui.hands_drawn(
+                self.spectator(),
+                self.sleeping.is_some(),
+                self.camera_type.first_person(),
+                self.player
+                    .as_ref()
+                    .is_some_and(|p| !p.health.dead_or_dying()),
+                self.screen == Screen::Dead,
+            )
         {
             return (out, runs);
         }
@@ -16335,6 +16355,9 @@ impl Game<'_> {
         );
     }
     fn click_creative(&mut self, right: bool) {
+        if self.mod_browser_press(right) {
+            return;
+        }
         let Some(size) = self
             .renderer
             .as_ref()
@@ -17669,6 +17692,9 @@ impl Game<'_> {
         {
             return Ok(());
         }
+        if key == KeyCode::Escape && self.mod_browser_back() {
+            return Ok(());
+        }
         if self.remote.is_some() && self.remote_key(key)? {
             return Ok(());
         }
@@ -17687,6 +17713,7 @@ impl Game<'_> {
                 }
                 Screen::Creative => {
                     self.pad_clear_focus();
+                    self.mod_browser_closed();
                     self.carried = None;
                     self.screen = Screen::Playing;
                     self.capture(true);
@@ -18685,6 +18712,16 @@ impl Game<'_> {
                 self.physical_keys.remove(&key);
             }
         }
+        if matches!(
+            &event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                ..
+            }
+        ) && !self.pad.menu.synthetic
+        {
+            self.pad.keyboard_took_over = true;
+        }
         if let WindowEvent::MouseInput { state, button, .. } = &event {
             if *state == ElementState::Pressed {
                 self.physical_buttons.insert(*button);
@@ -18770,6 +18807,19 @@ impl Game<'_> {
             return;
         }
         // Fullscreen is a window shortcut, before screens consume keyboard input.
+        // Not Alt or Super on their own: leaving the window isn't playing with the keyboard.
+        if let WindowEvent::KeyboardInput { event, .. } = &event
+            && event.state == ElementState::Pressed
+            && !event.repeat
+            && !matches!(
+                event.physical_key,
+                PhysicalKey::Code(
+                    KeyCode::AltLeft | KeyCode::AltRight | KeyCode::SuperLeft | KeyCode::SuperRight
+                )
+            )
+        {
+            self.pad.keyboard_took_over = true;
+        }
         if let WindowEvent::KeyboardInput { event, .. } = &event
             && event.state == ElementState::Pressed
             && let PhysicalKey::Code(key) = event.physical_key
@@ -19682,6 +19732,7 @@ impl Game<'_> {
                 WindowEvent::KeyboardInput { event, .. }
                     if self.screen == Screen::Creative
                         && self.creative_screen.tab().search
+                        && !self.mod_browser_typing()
                         && event.state == ElementState::Pressed
                         && !matches!(event.physical_key, PhysicalKey::Code(KeyCode::Escape)) =>
                 {
@@ -19952,7 +20003,9 @@ impl Game<'_> {
                     self.track_toggle_screens();
                     self.heal_hold_latches();
                     // For the "I'm playing" ping: an atomic, sent on when it changes.
+                    #[cfg(feature = "heartbeat")]
                     horizon_client::heartbeat::set_lan(self.is_published());
+                    #[cfg(feature = "discord")]
                     self.update_discord_presence();
                     let steps = self.clock.advance(elapsed);
                     for _ in 0..steps {
@@ -20790,6 +20843,7 @@ impl<'a> Game<'a> {
             test_defs: std::cell::RefCell::new(HashMap::new()),
             test_highlights: HashMap::new(),
             game_tests: game_tests::GameTests::default(),
+            #[cfg(feature = "friends")]
             friends: None,
             social: Default::default(),
             debug_keys: Default::default(),
@@ -22734,6 +22788,7 @@ fn run_event_loop(mut game: Game<'_>) -> Result<()> {
     narrator::stop();
     leave_fullscreen_after(&result, &mut game.settings);
     result?;
+    #[cfg(feature = "discord")]
     horizon_client::discord_presence::stop();
     write_report(&game)?;
     if let Some(e) = game.error.take() {
@@ -23267,6 +23322,7 @@ fn run_loading(
         App::Loading(loading) => leave_fullscreen_after(&result, &mut loading.settings),
     }
     result?;
+    #[cfg(feature = "discord")]
     horizon_client::discord_presence::stop();
     match app {
         App::Ready(mut split) => {
@@ -23359,6 +23415,7 @@ pub fn run_with() -> Result<()> {
     // for a server, a benchmark, a run that quits by itself, a harness's fixture or a run that
     // horizon-ctl drives: those start in a source checkout and wrote the list there.
     if !options.offscreen && !synchronous_startup(&options) {
+        #[cfg(feature = "heartbeat")]
         horizon_client::heartbeat::start();
         let player_dir = horizon_client::logging::player_dir();
         if let Err(e) = horizon_client::multiplayer::add_official_server(&player_dir) {
@@ -23391,6 +23448,7 @@ pub fn run_with() -> Result<()> {
         narrator::start(&early_settings);
     }
     // "Playing Horizon" on Discord: never for a server; an automated run only talks to a test's fake Discord.
+    #[cfg(feature = "discord")]
     if options.dedicated.is_none() {
         let automated = options.benchmark.is_some()
             || options.offscreen
