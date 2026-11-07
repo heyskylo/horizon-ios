@@ -726,6 +726,12 @@ impl Game<'_> {
                     );
                     out.push('\n');
                 }
+                "map_carried" => {
+                    self.harness_owner(|g| {
+                        g.tick_maps();
+                        Ok(())
+                    })?;
+                }
                 "craft_menu_click" | "craft_menu_state" | "craft_menu_close" => {
                     let owner = self.serving.as_ref().ok_or("no server")?.owner;
                     let state = self.in_owner_level(|g| -> Result<Value> {
@@ -824,10 +830,21 @@ impl Game<'_> {
                     let id = op["id"].as_i64().ok_or("command harness: map id")? as i32;
                     let value = self.harness_owner(|g| {
                         Ok(match g.map(id) {
-                            Some(m) => format!(
-                                "scale={},locked={},center={},{}",
-                                m.scale, m.locked, m.center[0], m.center[1]
-                            ),
+                            Some(m) => {
+                                let mut value = format!(
+                                    "scale={},locked={},center={},{}",
+                                    m.scale, m.locked, m.center[0], m.center[1]
+                                );
+                                if op["red_x"].as_bool().unwrap_or(false) {
+                                    let count = m
+                                        .decorations
+                                        .iter()
+                                        .filter(|d| d.sprite == "map/decorations/red_x")
+                                        .count();
+                                    value.push_str(&format!(",red_x={count}"));
+                                }
+                                value
+                            }
                             None => "missing".to_owned(),
                         })
                     })?;

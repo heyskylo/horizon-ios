@@ -18,6 +18,17 @@ pub fn encode_item(stack: &crate::items::ItemStack) -> Vec<(&'static str, Tag)> 
 pub fn item_to_nbt(stack: &crate::items::ItemStack) -> Tag {
     Tag::compound(encode_item(stack))
 }
+/// ItemStack.CODEC saved against the actual loaded item prototype.
+pub fn item_to_nbt_with_items(stack: &crate::items::ItemStack, items: &crate::items::Items) -> Tag {
+    let mut entries = vec![
+        ("id", string(&stack.item)),
+        ("count", Tag::Int(stack.count as i32)),
+    ];
+    if let Some(components) = crate::item_data::encode_components_with_items(stack, items) {
+        entries.push(("components", components));
+    }
+    Tag::compound(entries)
+}
 /// ItemStack.CODEC's count range is independent of the item's stack limit;
 /// an out-of-range count uses the field's default of one. The id is read as an
 /// `Identifier`: `stone` is `minecraft:stone` (a summoned display's or a

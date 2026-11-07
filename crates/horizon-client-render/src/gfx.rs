@@ -48,6 +48,7 @@ mod entity_outline;
 mod fluid;
 #[cfg(test)]
 mod inter_stage_tests;
+mod terrain_model;
 #[cfg(test)]
 pub(crate) mod test_gpu;
 mod weather;
@@ -55,9 +56,10 @@ mod world_text;
 use entity_batch::EntityBatch;
 pub use entity_batch::{
     DISSOLVE_OVERLAY, DRAGON_RAYS_OVERLAY, ENERGY_SWIRL_OVERLAY, FLUID_OVERLAY, OIT_ENTITY,
-    SHADOW_OVERLAY, TEXT_POLYGON_OFFSET_OVERLAY, TRANSLUCENT_GLINT_ITEM_OVERLAY,
+    SHADOW_OVERLAY, TERRAIN_MODEL_CUTOUT_MIPPED_OVERLAY, TERRAIN_MODEL_CUTOUT_OVERLAY,
+    TERRAIN_MODEL_SOLID_OVERLAY, TEXT_POLYGON_OFFSET_OVERLAY, TRANSLUCENT_GLINT_ITEM_OVERLAY,
     TRANSLUCENT_ITEM_OVERLAY, TRANSLUCENT_PARTICLE_OVERLAY, WATER_MASK_OVERLAY, WORLD_TEXT_OVERLAY,
-    WORLD_TEXT_POLYGON_OFFSET_OVERLAY, mark_oit,
+    WORLD_TEXT_POLYGON_OFFSET_OVERLAY, is_native_terrain, mark_oit,
 };
 pub use view::{View, ViewSet};
 
@@ -227,6 +229,13 @@ fn sky_open(frame: &Frame) -> bool {
 /// The Overworld-style sky (disc, sunset, stars, void) draws this frame.
 fn sky_visible(frame: &Frame) -> bool {
     !frame.title && frame.skybox && sky_open(frame)
+}
+
+/// The End during the dragon fight, whose world fog leaves out vanilla's sky: a shader pack's
+/// `gbuffers_skybasic` still draws a fan around the horizon (`pack_sky`), as our probe packs read
+/// it in Iris 1.11.7.
+fn end_fog_sky(frame: &Frame) -> bool {
+    !frame.title && frame.end_sky && frame.boss_world_fog
 }
 
 /// The world pass's part that draws a shader pack's solid terrain: the world's colour and
@@ -885,6 +894,8 @@ pub struct Frame<'a> {
     pub end_sky: bool,
     /// End sky atlas bounds (u0, v0, u1, v1); absent when the sprite is missing.
     pub end_sky_sprite: Option<[f32; 4]>,
+    /// A boss bar makes world fog (`BossHealthOverlay.shouldCreateWorldFog`: the Ender Dragon's).
+    pub boss_world_fog: bool,
     /// Environmental fog start/end (Nether 10..96), if any.
     pub environment_fog: Option<(f32, f32)>,
     pub water_fog: [f32; 3],
@@ -1207,6 +1218,7 @@ pub struct Renderer {
     text_polygon_offset_pipeline: wgpu::RenderPipeline,
     world_text_pipeline: wgpu::RenderPipeline,
     fluid_pipeline: wgpu::RenderPipeline,
+    terrain_model_pipelines: [wgpu::RenderPipeline; 3],
     celestial_pipeline: wgpu::RenderPipeline,
     celestial_buffer: wgpu::Buffer,
     end_sky: end_sky::EndSky,
@@ -1244,6 +1256,8 @@ pub struct Renderer {
     group: wgpu::BindGroup,
     fluid_group: wgpu::BindGroup,
     fluid_sampler: wgpu::Sampler,
+    terrain_model_group: wgpu::BindGroup,
+    terrain_model_sampler: wgpu::Sampler,
     globals: wgpu::Buffer,
     /// Resource-pack normal/specular maps, split like the colour sprite arrays.
     pbr_maps: Option<Vec<[wgpu::Texture; 2]>>,
@@ -2784,6 +2798,13 @@ impl Renderer {
             config.format.remove_srgb_suffix(),
             &sprite_constants,
         );
+        let terrain_model_pipelines = terrain_model::pipelines(
+            &device,
+            Some(&layout),
+            &shader,
+            config.format.remove_srgb_suffix(),
+            &sprite_constants,
+        );
         let instance_attributes = wgpu::vertex_attr_array![5=>Float32x4];
         let terrain_buffers = [
             Some(wgpu::VertexBufferLayout {
@@ -3350,6 +3371,22 @@ impl Renderer {
             &globals,
             &sprite_views,
             &fluid_sampler,
+            &lightmap_view,
+            &lightmap_sampler,
+            &emission_stats.view,
+        );
+        let terrain_model_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Native cutout model (unmipped)"),
+            lod_max_clamp: 0.0,
+            ..fluid::SAMPLER
+        });
+        let terrain_model_group = terrain_group(
+            &device,
+            "Native cutout model resources",
+            &bindings,
+            &globals,
+            &sprite_views,
+            &terrain_model_sampler,
             &lightmap_view,
             &lightmap_sampler,
             &emission_stats.view,
@@ -4744,6 +4781,7 @@ impl Renderer {
             text_polygon_offset_pipeline,
             world_text_pipeline,
             fluid_pipeline,
+            terrain_model_pipelines,
             celestial_pipeline,
             celestial_buffer,
             end_sky: end_sky::EndSky::default(),
@@ -4778,6 +4816,8 @@ impl Renderer {
             group,
             fluid_group,
             fluid_sampler,
+            terrain_model_group,
+            terrain_model_sampler,
             globals,
             pbr_maps,
             lightmap,
@@ -6629,6 +6669,7 @@ impl Renderer {
                 post,
                 self.frame_format,
                 world,
+                &std::sync::atomic::AtomicBool::new(false),
             )
         });
         self.pack_loading = None;
@@ -6745,6 +6786,8 @@ impl Renderer {
             .map(|f| f.draw_layout.clone());
         let terrain = self.pack_atlas.is_some();
         let clouds = self.cloud_bindings.clone();
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancelled = cancel.clone();
         let build = move || {
             let instance = wgpu::vertex_attr_array![5=>Float32x4];
             let vertex = wgpu::VertexBufferLayout {
@@ -6779,7 +6822,7 @@ impl Renderer {
                 weather: true,
                 hand: true,
             };
-            pack_post::PackPost::new(&device, &queue, &adapter, pack, format, world)
+            pack_post::PackPost::new(&device, &queue, &adapter, pack, format, world, &cancelled)
         };
         // A pack is not the game's code: a panic building it turns the pack off (#3525).
         let thread = std::thread::Builder::new()
@@ -6794,9 +6837,15 @@ impl Renderer {
                     thread,
                     label,
                     started,
+                    _cancel: CancelOnDrop(cancel),
                 });
             }
-            Err(e) => log::error!("shader pack {label}: no thread to build it on: {e}"),
+            Err(e) => {
+                log::error!("shader pack {label}: no thread to build it on: {e}");
+                // Off for this dimension, as a pack that fails, not tried again every frame.
+                self.pack_loading = None;
+                self.pack_post = Some((dimension, None));
+            }
         }
     }
     /// The pack `load_shader_pack` builds, once its thread is done: it runs from now on, as
@@ -7135,6 +7184,17 @@ impl Renderer {
             &self.lightmap_sampler,
             &self.emission_stats.view,
         );
+        self.terrain_model_group = terrain_group(
+            &self.device,
+            "Native cutout model resources",
+            &self.terrain_layout,
+            &self.globals,
+            &self.sprite_views,
+            &self.terrain_model_sampler,
+            &self.lightmap_view,
+            &self.lightmap_sampler,
+            &self.emission_stats.view,
+        );
     }
     /// Block sprite layers per array on this device: a sprite's array is its layer over it, its
     /// layer in that array the rest (`block_sprites::Lookup`).
@@ -7180,6 +7240,24 @@ impl Renderer {
         Frustum {
             planes: frustum(views.cull().view_proj(bob)),
         }
+    }
+    /// A conservative view for geometry built before TAA chooses this frame's
+    /// jitter. Cover a whole rendered pixel on each side, at the configured
+    /// resolution scale/upscale, rather than borrowing the previous frame's size.
+    pub fn camera_frustum_with_jitter(
+        &self,
+        fov_degrees: f32,
+        yaw: f32,
+        pitch: f32,
+        bob: Mat4,
+        depth_far: f32,
+    ) -> Frustum {
+        let views = ViewSet::single(self.screen_view(fov_degrees, yaw, pitch, depth_far));
+        taa_frustum(
+            views.cull().view_proj(bob),
+            self.world_post
+                .taa_render_size([self.config.width, self.config.height]),
+        )
     }
     fn screen_view(&self, fov_degrees: f32, yaw: f32, pitch: f32, far: f32) -> View {
         let aspect = self.config.width as f32 / self.config.height.max(1) as f32;
@@ -8779,6 +8857,9 @@ impl Renderer {
             fluid_quads,
             world_text_quads,
             world_text_offset_quads,
+            native_solid_quads,
+            native_cutout_quads,
+            native_cutout_mipped_quads,
         ] = self.entity_batch.update(
             entities,
             frame.additive,
@@ -8807,7 +8888,10 @@ impl Renderer {
             + oit_entity_quads
             + fluid_quads
             + world_text_quads
-            + world_text_offset_quads;
+            + world_text_offset_quads
+            + native_solid_quads
+            + native_cutout_quads
+            + native_cutout_mipped_quads;
         laps.lap("r_draw_lists");
         // Where the tail of materials the classic and the improved passes
         // both draw ends: the shadows, particles and items count back from it.
@@ -8815,7 +8899,10 @@ impl Renderer {
             - oit_entity_quads
             - fluid_quads
             - world_text_quads
-            - world_text_offset_quads;
+            - world_text_offset_quads
+            - native_solid_quads
+            - native_cutout_quads
+            - native_cutout_mipped_quads;
         let native_clouds = self.native.as_ref().is_none_or(|n| n.vanilla_clouds);
         let cloud_quads = if let Some(input) = frame.clouds.as_ref().filter(|_| native_clouds) {
             let (rebuilt, uniform) =
@@ -10247,6 +10334,36 @@ impl Renderer {
                 }
                 pass.set_bind_group(0, &self.group, &[]);
             }
+            // Native terrain models use the block sprite arrays with their own
+            // alpha/mipmap policies and ordinary opaque depth. Storage follows
+            // the existing materials without moving their indices or frame tails.
+            let mut first =
+                world_quads - native_solid_quads - native_cutout_quads - native_cutout_mipped_quads;
+            for (i, count) in [
+                native_solid_quads,
+                native_cutout_quads,
+                native_cutout_mipped_quads,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                if count > 0 {
+                    pass.set_pipeline(&self.terrain_model_pipelines[i]);
+                    pass.set_bind_group(
+                        0,
+                        if i == 1 {
+                            &self.terrain_model_group
+                        } else {
+                            &self.fluid_group
+                        },
+                        &[],
+                    );
+                    pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
+                    pass.draw_indexed(0..count * 6, (first * 4) as i32, 0..1);
+                }
+                first += count;
+            }
+            pass.set_bind_group(0, &self.group, &[]);
             // Still-fluid block entities draw as their own ordinary sorted
             // translucent material, before terrain transparency. This material
             // always writes depth and never joins the improved-transparency queues.
@@ -12171,6 +12288,16 @@ fn shadow_casters(view_proj: Mat4, light: Vec3) -> [Frustum; 2] {
     });
     [a, b]
 }
+fn taa_frustum(view_proj: Mat4, rendered_size: [u32; 2]) -> Frustum {
+    // TAA shifts clip x/y by at most half a rendered pixel times clip w.
+    // Widen x/y before extracting the planes: this includes every such shifted
+    // view, including a posed camera, without changing the near/far planes.
+    let [x, y] = rendered_size.map(|size| 1.0 / (1.0 + 2.0 / size.max(1) as f32));
+    Frustum {
+        planes: frustum(Mat4::from_scale(Vec3::new(x, y, 1.0)) * view_proj),
+    }
+}
+
 fn frustum(m: Mat4) -> [Vec4; 6] {
     let r = |i| m.row(i);
     let planes = [
@@ -12186,6 +12313,57 @@ fn frustum(m: Mat4) -> [Vec4; 6] {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn taa_culling_covers_jittered_view_edges_but_still_rejects_behind_the_camera() {
+        use super::*;
+
+        let mut outside_unjittered = 0;
+        for size in [[1, 1], [320, 180], [1280, 720], [3840, 2160]] {
+            for (yaw, pitch) in [(0.0, 0.0), (73.0, -35.0), (-142.0, 79.0)] {
+                let pose = Mat4::from_translation(Vec3::new(0.03, -0.02, 0.01))
+                    * Mat4::from_scale(Vec3::new(1.1, 0.9, 1.0))
+                    * crate::camera::view_matrix(yaw, pitch);
+                let matrix = world_projection(70.0, 16.0 / 9.0, 512.0) * pose;
+                let guarded = taa_frustum(matrix, size);
+                let ordinary = Frustum {
+                    planes: frustum(matrix),
+                };
+                for x in [-1.0, 1.0] {
+                    for y in [-1.0, 1.0] {
+                        let jitter = Mat4::from_translation(Vec3::new(
+                            x / size[0] as f32,
+                            y / size[1] as f32,
+                            0.0,
+                        ));
+                        let inverse = (jitter * matrix).inverse();
+                        for clip_x in [-1.0, 0.0, 1.0] {
+                            for clip_y in [-1.0, 0.0, 1.0] {
+                                for depth in [0.001, 0.5, 0.999] {
+                                    // Independent oracle: a point on an actual jittered
+                                    // viewport edge, transformed back into world space.
+                                    let point = inverse * Vec4::new(clip_x, clip_y, depth, 1.0);
+                                    let point = point.truncate() / point.w;
+                                    assert!(guarded.intersects_sphere(point, 1.0e-4));
+                                    let slack = Vec3::splat(1.0e-4);
+                                    assert!(guarded.intersects(point - slack, point + slack));
+                                    if !ordinary.intersects_sphere(point, 0.0) {
+                                        outside_unjittered += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                let behind = pose.inverse().transform_point3(Vec3::new(0.0, 0.0, 10.0));
+                assert!(!guarded.intersects_sphere(behind, 0.3));
+            }
+        }
+        assert!(
+            outside_unjittered > 0,
+            "the test must need the jitter guard"
+        );
+    }
+
     #[test]
     fn depth_culling_keeps_jittered_edges_and_depth_crossing_models() {
         use super::*;
@@ -12714,7 +12892,7 @@ mod tests {
         let mut batch = super::EntityBatch::default();
         let counts = batch.update(&entities, &quad(3, 5), &quad(0, 6), &quad(0, 8), false);
         let vertices = &batch.combined;
-        assert_eq!(counts, [4, 1, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0]);
+        assert_eq!(counts, [4, 1, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(
             vertices
                 .as_chunks::<4>()
@@ -14394,12 +14572,25 @@ mod shadow_caster_tests {
 
 /// A `shaders/` pack building on its own thread (`Renderer::load_shader_pack`): the dimension it
 /// is for, the thread (a panic in it contained), and what the game named it with and when.
+/// Dropping it (another pack, none, or another dimension) cancels the build: the thread stops at
+/// the next program instead of compiling the rest for nothing.
 struct PackLoading {
     dimension: i32,
+    /// Held to be dropped with it: that cancels the build.
+    _cancel: CancelOnDrop,
     #[allow(clippy::type_complexity)]
     thread: std::thread::JoinHandle<
         std::result::Result<std::result::Result<pack_post::PackPost, pack_post::Refused>, String>,
     >,
     label: String,
     started: std::time::Instant,
+}
+
+/// Sets its flag when dropped: `PackLoading`'s cancel, which `PackPost::new` checks per program.
+struct CancelOnDrop(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
 }

@@ -169,6 +169,10 @@ impl Split<'_> {
             }
         }
         self.forget_lost();
+        // Presses in another window aren't asking to join this one.
+        if !self.host.pad_has_window() {
+            presses.clear();
+        }
         for (id, button) in presses {
             if Some(id) == self.p1_pad.owner || self.guests.iter().any(|g| g.pad == Some(id)) {
                 continue;
