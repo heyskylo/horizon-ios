@@ -10680,6 +10680,9 @@ impl Game<'_> {
         let predicting = self.remote.is_some();
         if !predicting {
             self.register_exploration_maps(made);
+            for (item, count) in std::mem::take(&mut menu.crafted_counts) {
+                self.award_stat("crafted", &item, count);
+            }
         }
         if let Some(s) = menu.merchant.take() {
             self.merchant_sync_out(s);
