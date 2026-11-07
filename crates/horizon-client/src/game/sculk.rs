@@ -612,6 +612,18 @@ impl Game<'_> {
         }
     }
 
+    /// `LivingEntity.onEquipItem`'s game event for a mob: EQUIP when the new
+    /// stack is equippable in that slot, UNEQUIP when the slot is emptied.
+    pub(super) fn mob_equip_event(&mut self, id: u32, at: [f64; 3], equip: bool) {
+        let event = if equip {
+            "minecraft:equip"
+        } else {
+            "minecraft:unequip"
+        };
+        let ctx = self.who_context(Some(Who::Mob(id)), None);
+        self.post_game_event(event, at, ctx);
+    }
+
     // ---- posting ----
 
     /// `Level.gameEvent`: tell the listeners within reach.
