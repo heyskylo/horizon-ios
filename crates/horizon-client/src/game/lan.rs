@@ -1757,10 +1757,10 @@ impl Game<'_> {
     /// network player who joined; every statistic goes out on the first
     /// request (`PlayerList.placeNewPlayer`'s `markAllDirty`).
     fn load_guest_records(&mut self, host: &mut LanHost, conn: u32) {
-        let Some(uuid) = host
+        let Some((uuid, name)) = host
             .hub
             .guest(conn)
-            .and_then(|g| self.records_uuid(host, g.uuid))
+            .and_then(|g| Some((self.records_uuid(host, g.uuid)?, g.name.clone())))
         else {
             return;
         };
@@ -1780,8 +1780,13 @@ impl Game<'_> {
             g.advancements = progress;
             g.advancements_loaded = true;
         }
-        let mut stats =
-            super::stats::Stats::read(&super::stats::player_json(&self.world_root, "stats", uuid));
+        // PlayerList.getPlayerStats: locateStatsFile moves an old name-based file first.
+        let mut stats = super::stats::Stats::read(&super::stats::locate_player_json(
+            &self.world_root,
+            "stats",
+            uuid,
+            &name,
+        ));
         stats.mark_all_dirty();
         host.play.entry(conn).or_default().stats = stats;
     }
