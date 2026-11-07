@@ -2487,8 +2487,33 @@ pub struct Seen {
     pub hurt_recently: bool,
     /// `Hoglin.canBeHunted`: an adult hoglin without `CannotBeHunted`.
     pub huntable: bool,
+    /// A happy ghast's `isOnStillTimeout` (a player on its back holds it).
+    pub still: bool,
+    /// `Entity.isVehicle`: something rides it.
+    pub carrying: bool,
 }
 impl Seen {
+    /// Whether `canBeCollidedWith` can ever hold for this kind: the slots
+    /// [`MobWorld::others_solid`] lists.
+    pub fn may_block_mobs(&self) -> bool {
+        matches!(self.species, Species::Shulker | Species::HappyGhast)
+    }
+    /// `canBeCollidedWith(mover)` for a mob of species `mover` moving into
+    /// it (`EntityGetter.getEntityCollisions`): a living shulker
+    /// (`Shulker`), or an adult happy ghast held still, or carrying someone
+    /// when the mover is a happy ghast too (`HappyGhast`). Every other mob
+    /// keeps `Entity`'s false.
+    pub fn blocks_mob(&self, mover: Species) -> bool {
+        match self.species {
+            Species::Shulker => self.alive,
+            Species::HappyGhast => {
+                self.alive
+                    && !self.baby
+                    && (self.still || (self.carrying && mover == Species::HappyGhast))
+            }
+            _ => false,
+        }
+    }
     /// `LivingEntity.hasEffect`, by id without namespace.
     pub fn has_effect(&self, effect: &str) -> bool {
         self.effects.contains(&effect)
@@ -2678,6 +2703,8 @@ impl Mob {
             lying: m.species() == Species::Cat && (m.extra.flag || m.extra.relax_one),
             ridden: m.rider.is_some() || m.extra.rider.is_some() || m.extra.mount.is_some(),
             is_vehicle: equine::is_vehicle(m),
+            still: m.species() == Species::HappyGhast && happy_ghast::on_still_timeout(m),
+            carrying: m.rider.is_some() || m.extra.rider.is_some(),
             knockback_resistance: m.attrs.knockback_resistance,
             effects: m
                 .extra
@@ -3055,6 +3082,9 @@ pub struct MobWorld<'a> {
     /// keeps them (the mob ticks: a slot keeps its mob, and its species, all
     /// tick). Each zombie looking for a village read every slot.
     pub others_villagers: Option<&'a [u32]>,
+    /// The slots of `others` that may stop a moving mob
+    /// ([`Seen::may_block_mobs`]), when the caller keeps them; None: any.
+    pub others_solid: Option<&'a [u32]>,
     pub daylight: bool,
     /// The `gameplay/monsters_burn` attribute: the overworld day timeline's
     /// step track, false in every other dimension.
@@ -4253,11 +4283,10 @@ impl Mob {
         if self.species() == Species::HappyGhast {
             return 1.0;
         }
-        // Parrot.getVoicePitch: `getPitch(random)`, the plain range, so a baby
-        // parrot does not take the 1.5 that AgeableMob raises a baby by.
-        if self.species() == Species::Parrot {
-            return (self.random.next_float() - self.random.next_float()) * 0.2 + 1.0;
-        }
+        // Parrot.getVoicePitch is `getPitch(random)`, the plain 1.0 ± 0.2 an
+        // adult gets below: a parrot is never a baby (`Parrot.canBeABaby`), so
+        // the 1.5 `AgeableMob` gives a baby cannot reach it and the override
+        // needs no arm of its own.
         // ZombieVillager.getVoicePitch: babies are 2.0, not 1.5.
         let baby = if self.species() == Species::ZombieVillager {
             2.0

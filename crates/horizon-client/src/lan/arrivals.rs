@@ -102,6 +102,10 @@ impl Settings {
 pub struct Transfers {
     pub settings: Settings,
     pub expected: Arc<Mutex<Expectations>>,
+    /// The server has begun to stop (`/stop` or a stop signal; the game sets it, and a stop is not
+    /// taken back): no player is expected, imported or placed any more, but the players here can
+    /// still be exported and released, which is their way out.
+    pub stopping: bool,
 }
 
 impl Transfers {
@@ -110,7 +114,11 @@ impl Transfers {
             settings.max_expected,
             settings.max_expect,
         )));
-        Self { settings, expected }
+        Self {
+            settings,
+            expected,
+            stopping: false,
+        }
     }
 
     /// The table, locked. A thread that panicked while holding it left it
@@ -219,9 +227,14 @@ impl Expectations {
 
     /// How many expectations are still alive at `now`, without sweeping the others.
     pub fn alive(&self, now: Instant) -> usize {
+        self.holding(None, now)
+    }
+
+    /// The places the live expectations of players other than `except` hold at `now`.
+    pub fn holding(&self, except: Option<u128>, now: Instant) -> usize {
         self.until
-            .values()
-            .filter(|deadline| now < **deadline)
+            .iter()
+            .filter(|(uuid, deadline)| Some(**uuid) != except && now < **deadline)
             .count()
     }
 
@@ -515,15 +528,28 @@ fn error(message: &str) -> serde_json::Value {
 /// The reply to every `player-*` request on a server with transfers off.
 pub const OFF: &str = "transfers are off on this server";
 
+/// The reply to `player-expect` when the players here and those expected take every place.
+pub const FULL: &str = "the server is full";
+
+/// The reply to `player-expect`, `player-import` and `player-confirm` once the server has begun
+/// to stop: a player must not arrive on a server that is about to close.
+pub const STOPPING: &str = "the server is stopping";
+
 /// `player-expect <uuid> [seconds]`: the player will log in within that time
 /// (`[transfer]`'s `expect_seconds` by default, `max_expect_seconds` at most).
 /// The reply says whether an earlier expectation was renewed. The login uses
 /// the expectation up when it starts; one that no login used is reported when
-/// it runs out.
+/// it runs out. Each expectation holds a place: once the places the player limit
+/// counts and those of the other expected players reach `max-players`, the
+/// request is refused as full, unless the player is an op who bypasses the limit
+/// (`PlayerList.canPlayerLogin`). It is refused too once the server has begun to stop.
 pub fn expect_request(hub: &mut Hub, args: &str, now: Instant) -> serde_json::Value {
     let Some(transfers) = &hub.transfers else {
         return error(OFF);
     };
+    if transfers.stopping {
+        return error(STOPPING);
+    }
     let mut parts = args.split_whitespace();
     let Some(uuid) = parts.next().and_then(parse_uuid) else {
         return error("player-expect needs the player's unique id");
@@ -541,7 +567,18 @@ pub fn expect_request(hub: &mut Hub, args: &str, now: Instant) -> serde_json::Va
     if hub.guests.iter().any(|g| g.uuid == uuid) {
         return error("that player is already connected to this server");
     }
+    let shared = &hub.lan.shared;
+    let (online, max_players) = (shared.online(), shared.max_players());
+    let bypass = shared
+        .config
+        .bypasses_limit
+        .as_ref()
+        .is_some_and(|b| b(uuid));
     let mut table = transfers.table();
+    // A renewal holds no second place.
+    if !bypass && online + table.holding(Some(uuid), now) >= max_players {
+        return error(FULL);
+    }
     match table.expect(uuid, ttl, now) {
         Ok(renewed) => serde_json::json!({
             "ok": true,
@@ -572,6 +609,7 @@ pub fn status_request(hub: &Hub, now: Instant) -> serde_json::Value {
         "online": online,
         "max_players": max_players,
         "full": online >= max_players,
+        "stopping": transfers.stopping,
     })
 }
 
@@ -617,7 +655,8 @@ pub fn drop_request(hub: &mut Hub, args: &str) -> serde_json::Value {
 /// `player-confirm <uuid> <hand-over>`: the held player whose record of that hand-over was
 /// imported, ready to be placed (`Hub::imported_arrival`). The game writes its file, then places
 /// it (`Hub::confirm_arrival`). Until then `player-drop` removes it without a save or a word to
-/// anyone.
+/// anyone. Once the server has begun to stop it is refused, though a retry after the commit is
+/// still answered.
 pub fn confirm_args(hub: &Hub, args: &str) -> Result<(u128, u128), String> {
     let mut parts = args.split_whitespace();
     let Some(uuid) = parts.next().and_then(parse_uuid) else {
@@ -630,6 +669,9 @@ pub fn confirm_args(hub: &Hub, args: &str) -> Result<(u128, u128), String> {
         return Err("player-confirm takes a unique id and a hand-over id".into());
     }
     if hub.placed_arrival(uuid, id).is_none() {
+        if hub.transfers.as_ref().is_some_and(|t| t.stopping) {
+            return Err(STOPPING.into());
+        }
         hub.imported_arrival(uuid, id)?;
     }
     Ok((uuid, id))
@@ -873,10 +915,13 @@ mod hub_tests {
     use std::time::{Duration, Instant};
 
     fn hub() -> Hub {
-        let config = NetConfig {
+        hub_with(NetConfig {
             announce: false,
             ..NetConfig::loopback(0, "ArrivalsTest".into(), 4)
-        };
+        })
+    }
+
+    fn hub_with(config: NetConfig) -> Hub {
         let mut sync = data::SyncData::empty();
         // The entity types the tracker names: the player, as id 0.
         sync.builtin.registries.insert(
@@ -1333,7 +1378,7 @@ mod hub_tests {
         assert_eq!(
             super::status_request(&hub, now),
             serde_json::json!({"ok": true, "players": 0, "held": 0, "expected": 0, "frozen": 0,
-                "online": 0, "max_players": 4, "full": false})
+                "online": 0, "max_players": 4, "full": false, "stopping": false})
         );
         let (mut placed, _a) = guest(1, 1, "Placed");
         placed.placed = true;
@@ -1360,7 +1405,7 @@ mod hub_tests {
         assert_eq!(
             super::status_request(&hub, now),
             serde_json::json!({"ok": true, "players": 2, "held": 1, "expected": 1, "frozen": 1,
-                "online": 3, "max_players": 4, "full": false})
+                "online": 3, "max_players": 4, "full": false, "stopping": false})
         );
         assert!(hub.lan.shared.try_admit(address, 6, "p").is_none());
         let status = super::status_request(&hub, now);
@@ -1449,6 +1494,8 @@ mod hub_tests {
     #[test]
     fn player_expect_refuses_when_the_table_is_full() {
         let mut hub = hub();
+        // Places for every expectation: it is the table that is full, not the server.
+        hub.lan.shared.set_max_players(1000);
         let now = Instant::now();
         for n in 0..super::Settings::default().max_expected as u128 {
             let reply = super::expect_request(&mut hub, &format!("{:032x}", 1000 + n), now);
@@ -1459,6 +1506,88 @@ mod hub_tests {
             reply["error"].as_str().unwrap().contains("too many"),
             "{reply}"
         );
+    }
+
+    /// Each expectation holds a place: once the logins and the other expected players take every
+    /// place, a new expectation is refused as a login would be, though not for an op who bypasses
+    /// the limit. A renewal holds no second place, and one past its time frees its place.
+    #[test]
+    fn player_expect_refuses_a_full_server_and_the_expected_hold_their_places() {
+        const OP: u128 = 0xF;
+        let mut hub = hub_with(NetConfig {
+            announce: false,
+            bypasses_limit: Some(std::sync::Arc::new(|uuid| uuid == OP)),
+            ..NetConfig::loopback(0, "ArrivalsTest".into(), 2)
+        });
+        let now = Instant::now();
+        let expect = |hub: &mut Hub, uuid: u128, at: Instant| {
+            super::expect_request(hub, &format!("{uuid:032x}"), at)
+        };
+        let address = "127.0.0.1:25565".parse().unwrap();
+        assert!(hub.lan.shared.try_admit(address, 1, "p").is_none());
+        assert_eq!(expect(&mut hub, 2, now)["ok"], true);
+        assert_eq!(expect(&mut hub, 2, now)["renewed"], true);
+        let full = serde_json::json!({ "error": super::FULL });
+        assert_eq!(expect(&mut hub, 3, now), full);
+        assert_eq!(expect(&mut hub, OP, now)["ok"], true);
+        assert_eq!(table(&hub).len(), 2);
+        // Player 2's expectation ran out: its place is free again.
+        let later = now + Duration::from_secs(11);
+        assert_eq!(expect(&mut hub, 3, later)["ok"], true);
+        assert_eq!(expect(&mut hub, 4, later), full);
+        // A login gives a place back when it ends (`Shared::release`).
+        hub.lan.shared.release(1);
+        assert_eq!(expect(&mut hub, 4, later)["ok"], true);
+    }
+
+    /// Once the server has begun to stop, no player is expected, imported or placed any more, and
+    /// `transfer-status` says so; a player here can still be exported and released, which is its
+    /// way out, and a held one dropped.
+    #[test]
+    fn a_server_that_is_stopping_takes_no_one_in_but_lets_its_players_go() {
+        let stopping = serde_json::json!({ "error": super::STOPPING });
+        let stop = |hub: &mut Hub| hub.transfers.as_mut().unwrap().stopping = true;
+        let mut hub = hub();
+        let now = Instant::now();
+        stop(&mut hub);
+        assert_eq!(super::expect_request(&mut hub, UUID, now), stopping);
+        assert!(table(&hub).is_empty());
+        assert_eq!(super::status_request(&hub, now)["stopping"], true);
+        // A player here is exported and released as before.
+        let (mut mover, _rx) = guest(1, UUID_N, "Mover");
+        mover.placed = true;
+        hub.guests.push(mover);
+        assert!(super::export_record(&mut hub, 0, true, Default::default()).is_ok());
+        let (mut hub, _seen, _mine, h) = frozen_with_a_watcher();
+        stop(&mut hub);
+        let reply = super::release_request(&mut hub, &format!("{UUID} {h} moved"));
+        assert_eq!(reply["released"], "moved");
+        // The record of a held player cannot be imported...
+        let (record, mut hub, _seen, _mine) = held_in_a_second_hub();
+        stop(&mut hub);
+        let error =
+            import_player(&mut hub, UUID_N, &serde_json::json!({ "record": record })).unwrap_err();
+        assert_eq!(error, super::STOPPING);
+        assert!(hub.guests[1].held && !hub.guests[1].imported);
+        // ... nor one already imported confirmed, but it can be dropped.
+        let (mut hub, seen, _mine) = import_without_placing(serde_json::json!({}));
+        stop(&mut hub);
+        assert_eq!(confirm(&mut hub, UUID), stopping);
+        assert!(hub.guests[1].held && !hub.guests[1].placed);
+        assert_eq!(super::drop_request(&mut hub, UUID)["held"], true);
+        assert_eq!(ids(&seen), Vec::<i32>::new());
+    }
+
+    /// After the commit, a retry finds the player placed from that hand-over whatever came since:
+    /// a stop that began meanwhile does not turn the retry into a refusal.
+    #[test]
+    fn a_retry_after_the_commit_is_answered_on_a_server_that_is_stopping() {
+        let (mut hub, _seen, _mine) = import_without_placing(serde_json::json!({}));
+        let id = hub.guests[1].arrival_handover.unwrap();
+        let args = format!("{UUID} {}", super::handover_text(id));
+        assert_eq!(confirm(&mut hub, &args)["placed"], true);
+        hub.transfers.as_mut().unwrap().stopping = true;
+        assert_eq!(super::confirm_args(&hub, &args), Ok((UUID_N, id)));
     }
 
     /// Dropping a held player disconnects it and says nothing to the world.

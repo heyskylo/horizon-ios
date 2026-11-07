@@ -187,9 +187,57 @@ pub enum OmenTick {
     /// It added this effect, then returned false.
     Add(EffectInstance),
 }
-/// A saved player's effect: id, duration, amplifier, ambient, particles
-/// visible, icon shown (`MobEffectInstance.Details`).
-pub type SavedEffect = (String, i32, i32, bool, bool, bool);
+/// A saved player's effect: `MobEffectInstance.Details` under its `id`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SavedEffect {
+    pub id: String,
+    pub duration: i32,
+    pub amplifier: i32,
+    pub ambient: bool,
+    /// `show_particles`.
+    pub particles: bool,
+    /// `show_icon`.
+    pub icon: bool,
+    /// `hidden_effect`: the weaker, longer instance of the same effect that
+    /// comes back when this one ends.
+    pub hidden: Option<Box<SavedEffect>>,
+}
+impl SavedEffect {
+    /// Ambient off, particles and icon shown, nothing hidden: the codec's
+    /// defaults.
+    pub fn new(id: impl Into<String>, duration: i32, amplifier: i32) -> Self {
+        Self {
+            id: id.into(),
+            duration,
+            amplifier,
+            ambient: false,
+            particles: true,
+            icon: true,
+            hidden: None,
+        }
+    }
+    fn of(e: &EffectInstance) -> Self {
+        Self {
+            id: potions::namespaced(e.id).to_owned(),
+            duration: e.duration,
+            amplifier: e.amplifier,
+            ambient: e.ambient,
+            particles: e.visible,
+            icon: e.show_icon,
+            hidden: e.hidden.as_deref().map(|h| Box::new(Self::of(h))),
+        }
+    }
+    /// `new MobEffectInstance(effect, details)`: the hidden chain comes back
+    /// with it.
+    fn instance(&self, id: &'static str) -> EffectInstance {
+        let mut e = EffectInstance::new(id, self.duration, self.amplifier);
+        e.ambient = self.ambient;
+        e.visible = self.particles;
+        e.show_icon = self.icon;
+        e.hidden = self.hidden.as_deref().map(|h| Box::new(h.instance(id)));
+        e
+    }
+}
 #[derive(Clone, Debug, Default)]
 pub struct PlayerEffects {
     pub list: Vec<EffectInstance>,
@@ -222,36 +270,20 @@ impl PlayerEffects {
     pub fn clear(&mut self) {
         self.list.clear();
     }
-    /// The effects of a saved player (`Player.active_effects`: id,
-    /// duration, amplifier, ambient, particles visible, icon shown).
+    /// The effects of a saved player (`Player.active_effects`), each with
+    /// the instances it hides.
     pub fn from_saved(saved: &[SavedEffect]) -> Self {
         let mut effects = Self::default();
-        for (id, duration, amplifier, ambient, particles, icon) in saved {
-            if let Some(def) = potions::effect(id) {
-                let mut e = EffectInstance::new(def.id, *duration, *amplifier);
-                e.ambient = *ambient;
-                e.visible = *particles;
-                e.show_icon = *icon;
-                effects.add(e);
+        for s in saved {
+            if let Some(def) = potions::effect(&s.id) {
+                effects.add(s.instance(def.id));
             }
         }
         effects
     }
     /// `Player.active_effects` for the save.
     pub fn saved(&self) -> Vec<SavedEffect> {
-        self.list
-            .iter()
-            .map(|e| {
-                (
-                    potions::namespaced(e.id).to_owned(),
-                    e.duration,
-                    e.amplifier,
-                    e.ambient,
-                    e.visible,
-                    e.show_icon,
-                )
-            })
-            .collect()
+        self.list.iter().map(SavedEffect::of).collect()
     }
     /// ClientboundUpdateMobEffectPacket's flags without blending: ambient,
     /// particles visible and the icon shown.
@@ -579,7 +611,10 @@ mod tests {
         let saved = fx.saved();
         assert_eq!(
             saved,
-            [("minecraft:speed".to_owned(), 100, 0, false, true, false)]
+            [SavedEffect {
+                icon: false,
+                ..SavedEffect::new("minecraft:speed", 100, 0)
+            }]
         );
         let loaded = PlayerEffects::from_saved(&saved);
         assert_eq!(PlayerEffects::flags(loaded.get("speed").unwrap()), 2);
@@ -620,6 +655,21 @@ mod tests {
         assert_eq!(fx.get("speed").unwrap().duration, 49);
         assert_eq!(fx.get("raid_omen").unwrap().amplifier, 1);
     }
+    #[test]
+    fn a_reloaded_effect_falls_back_to_the_one_it_hid() {
+        // /effect give poison 6 s level II over poison 30 s level I, saved
+        // and loaded: when level II runs out, level I resumes with what is
+        // left of its 30 s.
+        let mut fx = PlayerEffects::default();
+        fx.add(EffectInstance::new("poison", 600, 0));
+        fx.add(EffectInstance::new("poison", 120, 1));
+        let mut loaded = PlayerEffects::from_saved(&fx.saved());
+        for _ in 0..120 {
+            loaded.tick();
+        }
+        let poison = loaded.get("poison").expect("level I resumed");
+        assert_eq!((poison.amplifier, poison.duration), (0, 480));
+    }
     /// The only test here that registers mod effects (once per process).
     #[test]
     fn a_mod_effect_saves_under_its_namespace() {
@@ -635,11 +685,11 @@ mod tests {
             1,
         ));
         let saved = fx.saved();
-        assert_eq!(saved, [("ruby:glow".to_owned(), 600, 1, false, true, true)]);
+        assert_eq!(saved, [SavedEffect::new("ruby:glow", 600, 1)]);
         assert_eq!(PlayerEffects::from_saved(&saved).list, fx.list);
         // Without its mod the saved effect is dropped, as an unknown id is.
         assert!(
-            PlayerEffects::from_saved(&[("gone:glow".into(), 600, 1, false, true, true)])
+            PlayerEffects::from_saved(&[SavedEffect::new("gone:glow", 600, 1)])
                 .list
                 .is_empty()
         );

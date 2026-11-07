@@ -75,19 +75,19 @@ pub(super) fn feature(v: &Value, report: &mut Report) -> Value {
 fn nested(v: &mut Value, report: &mut Report) {
     match v {
         Value::Object(o) => {
-            if let Some(t) = kind(&Value::Object(o.clone())) {
-                if let Some(to) = provider(t) {
-                    if t == "simple_state_provider" {
-                        // A direct provider is a state object: a bare string
-                        // would name a provider in its registry instead.
-                        *v = match o.get("state").cloned().unwrap_or_default() {
-                            id @ Value::String(_) => json!({"id": id}),
-                            state => state,
-                        };
-                        return;
-                    }
-                    o.insert("type".into(), vanilla(to));
+            if let Some(t) = kind(&Value::Object(o.clone()))
+                && let Some(to) = provider(t)
+            {
+                if t == "simple_state_provider" {
+                    // A direct provider is a state object: a bare string
+                    // would name a provider in its registry instead.
+                    *v = match o.get("state").cloned().unwrap_or_default() {
+                        id @ Value::String(_) => json!({"id": id}),
+                        state => state,
+                    };
+                    return;
                 }
+                o.insert("type".into(), vanilla(to));
             }
             // An inline placed feature: {feature, placement}.
             if o.contains_key("placement") && o.contains_key("feature") {

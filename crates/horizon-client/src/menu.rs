@@ -1425,10 +1425,7 @@ impl Menu {
                         .is_some_and(|m| m.contains(&*stack.item))
             }
             Role::Ingredient => env.brewing.is_reagent(stack),
-            Role::BrewFuel => env
-                .items
-                .get(&stack.item)
-                .is_some_and(|i| i.brewing_fuel.is_some()),
+            Role::BrewFuel => crate::brewing::brewing_fuel(env.items, stack).is_some(),
             Role::LoomBanner => Self::is_banner(stack),
             Role::LoomDye => env.banners.loom_dye(env.items, stack).is_some(),
             Role::LoomPattern => env.banners.is_pattern_item(env.items, stack),
@@ -1763,7 +1760,11 @@ impl Menu {
         }
         let result = env
             .recipes
-            .find(&self.containers[GRID], self.grid_size)
+            .find_with(&self.containers[GRID], self.grid_size, &|id| {
+                env.maps
+                    .and_then(|maps| maps.state(id))
+                    .map(|(_, scale)| scale)
+            })
             .and_then(|(id, stack)| {
                 if env.limited_crafting {
                     // `RecipeCraftingHolder.setRecipeUsed`: special recipes or known recipes craft.
@@ -1787,7 +1788,7 @@ impl Menu {
     }
 
     /// `ResultSlot.onTake` and the other `Slot.onTake` overrides.
-    fn on_take(&mut self, env: &Env, s: usize, taken: &ItemStack) {
+    fn on_take(&mut self, env: &Env, s: usize, taken: &mut ItemStack) {
         if self.slots[s].role == Role::Potion {
             // BrewingStandMenu.PotionSlot.onTake: a stack with potion contents.
             if matches!(
@@ -1892,16 +1893,26 @@ impl Menu {
         if self.slots[s].role != Role::CraftResult {
             return;
         }
+        // ResultSlot.checkTakeAchievements -> Item.onCraftedBy mutates the
+        // actual taken stack, before the inputs are consumed.
+        if taken.count > 0 {
+            Self::map_crafted(env.maps, taken);
+        }
         let n = self.grid_size;
         let grid = self.containers[GRID].clone();
-        if let Some((id, _)) = env.recipes.find(&grid, n) {
+        let map_scale = |id| {
+            env.maps
+                .and_then(|maps| maps.state(id))
+                .map(|(_, scale)| scale)
+        };
+        if let Some((id, _)) = env.recipes.find_with(&grid, n, &map_scale) {
             self.crafted.push((format!("minecraft:{id}"), grid.clone()));
             self.item_crafted
                 .push((format!("minecraft:{id}"), taken.clone()));
         }
         let remaining = env
             .recipes
-            .find(&grid, n)
+            .find_with(&grid, n, &map_scale)
             .map(|(id, _)| env.recipes.remainders(id, &grid, n))
             .unwrap_or_else(|| {
                 // CraftingRecipe.defaultCraftingReminder
@@ -1987,7 +1998,7 @@ impl Menu {
         max_amount: u32,
     ) -> Option<ItemStack> {
         let mut result = self.try_remove(env, s, amount, max_amount)?;
-        self.on_take(env, s, &result);
+        self.on_take(env, s, &mut result);
         if self.slots[s].role == Role::CartoResult {
             Self::map_crafted(env.maps, &mut result);
         }
@@ -2191,7 +2202,7 @@ impl Menu {
     /// (None when nothing moved).
     fn quick_move(&mut self, env: &Env, index: usize) -> Option<ItemStack> {
         let mut stack = self.slot(index)?.clone();
-        let clicked = stack.clone();
+        let mut clicked = stack.clone();
         let total = self.slots.len();
         let mut check_count = true;
         let mut after_take = false;
@@ -2267,11 +2278,7 @@ impl Menu {
                     if !self.move_to(env, &mut stack, 5, 41, true) {
                         return None;
                     }
-                } else if env
-                    .items
-                    .get(&clicked.item)
-                    .is_some_and(|i| i.brewing_fuel.is_some())
-                {
+                } else if crate::brewing::brewing_fuel(env.items, &clicked).is_some() {
                     let moved = self.move_to(env, &mut stack, 4, 5, false);
                     if moved
                         || (env.brewing.is_reagent(&stack)
@@ -2619,6 +2626,10 @@ impl Menu {
             Kind::Crafting => {
                 after_take = true;
                 if index == 0 {
+                    // CraftingMenu.quickMoveStack processes the live result
+                    // before transfer; ResultSlot then processes its original copy.
+                    Self::map_crafted(env.maps, &mut stack);
+                    self.containers[RESULT][0] = Some(stack.clone());
                     if !self.move_to(env, &mut stack, 10, 46, true) {
                         return None;
                     }
@@ -2687,10 +2698,12 @@ impl Menu {
             return None;
         }
         if after_take || matches!(self.kind, Kind::Inventory | Kind::Crafting) {
+            // A merchant result reports the stack it moved, a crafting result the copy it
+            // takes (which Item.onCraftedBy may still change).
             let taken = if self.slots[index].role == Role::MerchantResult {
-                &stack
+                &mut stack
             } else {
-                &clicked
+                &mut clicked
             };
             self.on_take(env, index, taken);
         }
@@ -2950,10 +2963,11 @@ impl Menu {
                     };
                     if let Some(mut taken) = self.try_remove(env, s, amount, u32::MAX) {
                         self.carried = Some(taken.clone());
-                        self.on_take(env, s, &taken);
+                        self.on_take(env, s, &mut taken);
                         if self.slots[s].role == Role::CartoResult {
-                            // onTake's onCraftedBy edits the carried stack.
                             Self::map_crafted(env.maps, &mut taken);
+                        }
+                        if matches!(self.slots[s].role, Role::CartoResult | Role::CraftResult) {
                             self.carried = Some(taken);
                         }
                     }
@@ -2984,7 +2998,7 @@ impl Menu {
                             if let Some(c) = self.carried.as_mut() {
                                 c.count += taken.count;
                             }
-                            self.on_take(env, s, &taken);
+                            self.on_take(env, s, &mut taken);
                             if self.slots[s].role == Role::CartoResult {
                                 // onCraftedBy edits the taken stack, not the carried one.
                                 Self::map_crafted(env.maps, &mut taken);
@@ -3008,12 +3022,14 @@ impl Menu {
             return;
         }
         match (source, target_stack) {
-            (None, Some(taken)) => {
+            (None, Some(mut taken)) => {
                 if self.may_pickup(env, target) {
                     self.containers[PLAYER][inv_slot] = Some(taken.clone());
                     self.set_by_player(env, target, None);
-                    self.on_take(env, target, &taken);
-                    if self.slots[target].role == Role::CartoResult
+                    self.on_take(env, target, &mut taken);
+                    if self.slots[target].role == Role::CraftResult {
+                        self.containers[PLAYER][inv_slot] = Some(taken);
+                    } else if self.slots[target].role == Role::CartoResult
                         && let Some(stack) = self.containers[PLAYER][inv_slot].as_mut()
                     {
                         Self::map_crafted(env.maps, stack);
@@ -3040,14 +3056,14 @@ impl Menu {
                         let part = split(&mut source, max);
                         self.containers[PLAYER][inv_slot] = Some(source);
                         self.set_by_player(env, target, Some(part));
-                        self.on_take(env, target, &taken);
+                        self.on_take(env, target, &mut taken);
                         if !self.inventory_add(env, &mut taken) {
                             self.drop_stack(&taken);
                         }
                     } else {
                         self.containers[PLAYER][inv_slot] = Some(taken.clone());
                         self.set_by_player(env, target, Some(source));
-                        self.on_take(env, target, &taken);
+                        self.on_take(env, target, &mut taken);
                     }
                 }
             }
@@ -3416,6 +3432,45 @@ pub(crate) mod tests {
         let mut menu = Menu::new(kind);
         menu.creative = true;
         test(&env, &mut menu);
+    }
+
+    /// `BrewingStandMenu.FuelSlot` and `quickMoveStack` use the same component.
+    #[test]
+    fn brewing_fuel_slot_and_quick_move_use_stack_components() {
+        let items = Items::for_tests(Default::default());
+        let root = std::path::Path::new("");
+        let recipes = Recipes::empty();
+        let brewing = Brewing::load(root, &items, &PackOverlay::NONE);
+        let banners = Banners::default();
+        let station_recipes = crate::stations::StationRecipes::default();
+        let enchantments = crate::enchant::Enchantments::default();
+        let names = crate::creative::Names::default();
+        let env = Env {
+            items: &items,
+            recipes: &recipes,
+            brewing: &brewing,
+            banners: &banners,
+            station_recipes: &station_recipes,
+            enchantments: &enchantments,
+            names: &names,
+            trade: None,
+            maps: None,
+            limited_crafting: false,
+            known_recipes: None,
+        };
+        let mut fuel = ItemStack::new("minecraft:stone", 2);
+        fuel.data_mut().set_loot_component(
+            "minecraft:brewing_fuel",
+            &serde_json::json!({"uses": 7, "speed_multiplier": 2.5}),
+        );
+        let mut menu = Menu::new(Kind::Brewing);
+        assert!(menu.may_place(&env, 4, &fuel));
+        menu.set_slot(&env, 5, Some(fuel));
+        assert_eq!(menu.quick_move_landing(&env, 5), vec![4]);
+        let ordinary = ItemStack::new("minecraft:stone", 2);
+        assert!(!menu.may_place(&env, 4, &ordinary));
+        menu.set_slot(&env, 5, Some(ordinary));
+        assert!(!menu.quick_move_landing(&env, 5).contains(&4));
     }
 
     /// MerchantResultSlot's removal tally and quick-craft check reset before onTake.

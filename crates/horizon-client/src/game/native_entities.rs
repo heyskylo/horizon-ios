@@ -125,7 +125,7 @@ pub(super) fn target_id(t: Target) -> Option<u32> {
     }
 }
 
-#[allow(dead_code)]
+#[allow(dead_code, reason = "native mod API (docs/native-mods.md)")]
 impl Game<'_> {
     /// Whether this game simulates the level `dimension`.
     fn native_simulates_level(&self, dimension: &str) -> bool {
