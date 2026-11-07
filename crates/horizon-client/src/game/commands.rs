@@ -2590,8 +2590,22 @@ impl Game<'_> {
             .resolve(&state)
             .map_err(|_| err("argument.block.id.invalid", &[&b.id]))
     }
-    /// BlockPredicateArgument test.
-    fn block_matches(&self, b: &BlockInput, state: BlockStateId) -> bool {
+    /// BlockPredicateArgument test of the block at `p`: its state, then any
+    /// `{...}` against the block entity's `saveWithFullMetadata`
+    /// (`NbtUtils.compareNbt(…, true)`); no block entity fails.
+    fn block_matches(&self, b: &BlockInput, p: [i32; 3]) -> bool {
+        let state = self.world.block(p[0], p[1], p[2]);
+        if !self.block_state_matches(b, state) {
+            return false;
+        }
+        let Some(nbt) = &b.nbt else { return true };
+        let Ok((pattern, _)) = horizon_world::nbt::parse_snbt(nbt) else {
+            return false;
+        };
+        horizon_client::nbt_path::compare_nbt(&pattern, self.block_entity_nbt(p).as_ref())
+    }
+    /// The state part of `block_matches`: name or tag, then properties.
+    fn block_state_matches(&self, b: &BlockInput, state: BlockStateId) -> bool {
         block_input_matches(
             self.pack.assets.registry,
             [&self.res.items().block_tags, &self.items().block_tags],
@@ -2969,12 +2983,17 @@ impl Game<'_> {
                         continue;
                     }
                     if let Some(f) = &filter {
-                        let ok = match matched.get(&current) {
-                            Some(&ok) => ok,
-                            None => {
-                                let ok = self.block_matches(f, current);
-                                matched.insert(current, ok);
-                                ok
+                        // (a filter with NBT reads each block's own block entity)
+                        let ok = if f.nbt.is_some() {
+                            self.block_matches(f, [x, y, z])
+                        } else {
+                            match matched.get(&current) {
+                                Some(&ok) => ok,
+                                None => {
+                                    let ok = self.block_state_matches(f, current);
+                                    matched.insert(current, ok);
+                                    ok
+                                }
                             }
                         };
                         if !ok {
@@ -3058,7 +3077,7 @@ impl Game<'_> {
                         continue;
                     }
                     if let Some(f) = &filter
-                        && !self.block_matches(f, s)
+                        && !self.block_matches(f, [x, y, z])
                     {
                         continue;
                     }

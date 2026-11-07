@@ -1018,8 +1018,7 @@ impl Game<'_> {
             let Some(Arg::Block(b)) = c.get("block").cloned() else {
                 return Ok((false, 0));
             };
-            let state = self.world.block(p[0], p[1], p[2]);
-            return Ok(flag(self.block_matches(&b, state)));
+            return Ok(flag(self.block_matches(&b, p)));
         }
         if c.has("biome") {
             let p = self.block_pos_arg(c, "pos")?;
