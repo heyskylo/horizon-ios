@@ -4011,6 +4011,7 @@ impl Game<'_> {
         ));
         Ok(count as i32)
     }
+    /// `SayCommand.register`: resolve the source name and broadcast unsigned announcements.
     fn cmd_say(&mut self, id: &str, ctx: &Context) -> R<i32> {
         let raw = match ctx.get(if id == "me" { "action" } else { "message" }) {
             Some(Arg::Str(s)) => s.clone(),
@@ -4018,13 +4019,47 @@ impl Game<'_> {
         };
         let message = self.expand_selectors(&raw);
         // CommandSourceStack.getDisplayName: the executing entity's name.
-        let name = match self.command_source.map(|s| s.entity) {
-            Some(Some(t)) => self.target_name(t),
-            Some(None) => Text::literal("Server"),
+        let name = match self.command_source {
+            Some(source) => match source.entity {
+                Some(target) => self.target_name(target),
+                None => source
+                    .block
+                    .and_then(|pos| match self.world.block_entities.get(&pos) {
+                        Some(horizon_client::containers::BlockEntity::CommandBlock(block)) => {
+                            Some(block.name())
+                        }
+                        _ => None,
+                    })
+                    .or_else(|| {
+                        source.cart.and_then(|id| {
+                            self.carts
+                                .iter()
+                                .find(|cart| cart.id == id)
+                                .map(|cart| cart.command.name())
+                        })
+                    })
+                    .unwrap_or_else(|| Text::literal("Server")),
+            },
             None => self.player_display_name(),
         };
+        // A player's command whose output is captured (a function, `execute …
+        // run say`, the command harness) gets the announcement with that
+        // output, in order; everyone else gets the broadcast.
+        let captured_for = self.chat_capture.as_ref().and(self.lan_acting);
         let line = match id {
-            "say" => Text::translate("chat.type.announcement", &[name, message]),
+            "say" => {
+                // SayCommand broadcasts independently of the command source's feedback.
+                if let Some(host) = &self.lan {
+                    use horizon_client::lan::data::component_nbt;
+                    host.hub.broadcast_source_chat(
+                        "say_command",
+                        component_nbt(&name.component()),
+                        component_nbt(&message.component()),
+                        captured_for,
+                    );
+                }
+                Text::translate("chat.type.announcement", &[name, message])
+            }
             "me" => Text::translate("chat.type.emote", &[name, message]),
             _ => {
                 let _ = self.entities(ctx, "targets", true)?;
@@ -4044,6 +4079,27 @@ impl Game<'_> {
                 .italic()
             }
         };
+        if id == "say" {
+            if self.lan.is_some() && self.options.dedicated.is_some() {
+                self.lan_log_event(horizon_client::lan::hub::HostEvent::Chat {
+                    line: line.plain(),
+                    secure: false,
+                });
+            }
+            if self.lan.is_some() && self.chat_capture.is_some() {
+                // The broadcast skipped the acting player: their copy goes with
+                // the captured output. Without one (the console), the broadcast
+                // reached everyone and the console logged it above.
+                if captured_for.is_some()
+                    && let Some(capture) = self.chat_capture.as_mut()
+                {
+                    capture.push(line);
+                }
+                return Ok(1);
+            }
+            self.player_message(line);
+            return Ok(1);
+        }
         if let Some(capture) = self.chat_capture.as_mut() {
             capture.push(line.clone());
         }

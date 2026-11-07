@@ -194,6 +194,19 @@ impl Game<'_> {
         let duration = swing_duration(animation, dig_speed, fatigue);
         if self.swing.start_if_able(hand, animation, duration) {
             self.swings_started += 1;
+            if let Some(r) = self.remote.as_ref()
+                && r.session.is_recording()
+            {
+                let pkt = horizon_protocol::packets::play::Clientbound::SwingAnimation(
+                    horizon_protocol::packets::play::SwingAnimation {
+                        id: r.entity_id,
+                        hand: if hand == Hand::Off { 1 } else { 0 },
+                        kind: animation.kind as i32,
+                        duration,
+                    },
+                );
+                r.session.record_clientbound(&pkt);
+            }
         }
     }
     /// `swing(hand)` for the hand that acts, with the default animation.
@@ -536,6 +549,24 @@ impl Game<'_> {
             }
         }
     }
+
+    /// A replay owns its held-item and equip animation state. Reset it when a
+    /// standalone replay closes so a later world cannot inherit lowered hands
+    /// or the replay player's visible stacks.
+    pub(super) fn reset_studio_hand_state(&mut self) {
+        let main = self.inventory.get(self.selected).cloned().flatten();
+        self.visible_hands = [(self.selected, main), (OFFHAND, self.offhand.clone())];
+        self.hands_replaced = [false; 2];
+        self.heights = horizon_client::first_person::HandHeights {
+            main: 1.0,
+            old_main: 1.0,
+            off: 1.0,
+            old_off: 1.0,
+        };
+        self.swing = Default::default();
+        self.sway = Default::default();
+    }
+
     /// `Minecraft.crosshairPickEntity` when it is a `LivingEntity`: whether
     /// it is alive (the nearest entity under the crosshair, before any block).
     pub(super) fn crosshair_living(&self) -> Option<bool> {

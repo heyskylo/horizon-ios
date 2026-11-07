@@ -542,6 +542,7 @@ impl Game<'_> {
         self.pitch = g.pitch;
         std::mem::swap(&mut self.inventory, &mut g.inventory);
         std::mem::swap(&mut self.armor, &mut g.armor);
+        std::mem::swap(&mut self.location_armor, &mut g.location_armor);
         std::mem::swap(&mut self.offhand, &mut g.offhand);
         std::mem::swap(&mut self.carried, &mut g.carried);
         let selected = std::mem::replace(&mut self.selected, g.selected);
@@ -1046,6 +1047,7 @@ impl Game<'_> {
         g.selected = std::mem::replace(&mut self.selected, selected);
         std::mem::swap(&mut self.inventory, &mut g.inventory);
         std::mem::swap(&mut self.armor, &mut g.armor);
+        std::mem::swap(&mut self.location_armor, &mut g.location_armor);
         std::mem::swap(&mut self.offhand, &mut g.offhand);
         std::mem::swap(&mut self.carried, &mut g.carried);
         // A teleport with a rotation (commands) turns the guest. `/rotate`
@@ -2425,6 +2427,9 @@ impl Game<'_> {
                     .border
                     .contains(f64::from(p.pos[0]), f64::from(p.pos[2]))
                 {
+                    if spectator && self.spectator_use_portal(host, conn, gi, p.pos) {
+                        return;
+                    }
                     let logged = self.world.block_log.as_ref().map_or(0, Vec::len);
                     let heard = self.audio.capture.as_ref().map_or(0, Vec::len);
                     let used = self.as_guest(host, conn, |g| {
@@ -2796,6 +2801,9 @@ impl Game<'_> {
             }
             S::CustomPayload(p) if p.channel == horizon_client::lod_net::CHANNEL => {
                 self.guest_far_terrain(host, conn, &p.data)
+            }
+            S::CustomPayload(p) if p.channel == horizon_client::lan::recipes::TRANSFER_CHANNEL => {
+                self.guest_recipe_transfer(host, conn, &p.data);
             }
             S::ChatCommandSigned(p) => self.guest_signed_command(host, conn, p),
             S::ChangeDifficulty(p) if host.hub.guests[gi].permission >= 2 => {

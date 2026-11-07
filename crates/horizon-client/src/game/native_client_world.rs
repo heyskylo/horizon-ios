@@ -172,7 +172,6 @@ impl NativeClientBiomes {
     }
 }
 
-#[allow(dead_code)]
 impl Game<'_> {
     /// For a client mod: the client world's chunks from chunk `from` to chunk `to` (`[x, z]`, both included, in
     /// either order) as they are now, to read on any thread, shared with the world rather than copied. On a client

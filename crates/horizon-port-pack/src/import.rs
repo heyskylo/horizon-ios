@@ -307,11 +307,10 @@ fn instance(dir: &Path) -> Result<Pack, String> {
     }
     // A CurseForge app instance has no `mmc-pack.json`; fill only when that
     // file gave no Minecraft version, so Prism behaviour is unchanged.
-    if pack.minecraft.is_empty() {
-        if let Some((minecraft, loader, loader_version)) = curseforge_instance_target(dir) {
-            (pack.minecraft, pack.loader, pack.loader_version) =
-                (minecraft, loader, loader_version);
-        }
+    if pack.minecraft.is_empty()
+        && let Some((minecraft, loader, loader_version)) = curseforge_instance_target(dir)
+    {
+        (pack.minecraft, pack.loader, pack.loader_version) = (minecraft, loader, loader_version);
     }
     let game = game_dir(dir)?;
     let mods = if game.join("mods").is_dir() {
