@@ -4,8 +4,8 @@ use crate::{
     Error, Result,
     buf::{Reader, write_varint},
 };
-use flate2::{Compression, Decompress, FlushDecompress, Status, write::ZlibEncoder};
-use std::io::Write;
+use flate2::{Compress, Compression, Decompress, FlushCompress, FlushDecompress, Status};
+use std::cell::RefCell;
 
 /// Frames are at most three VarInt bytes long (21 bits).
 pub const MAX_FRAME: usize = (1 << 21) - 1;
@@ -31,11 +31,12 @@ pub fn contents(body: &[u8], threshold: Option<usize>) -> Result<Vec<u8>> {
             v
         }
         Some(_) => {
-            let mut v = Vec::with_capacity(body.len() / 2 + 8);
+            // The data length, then the stream: zlib's bound for it is a
+            // little over the body's length.
+            let mut v = Vec::with_capacity(body.len() + (body.len() >> 10) + 72);
             write_varint(&mut v, body.len() as i32);
-            let mut z = ZlibEncoder::new(v, Compression::default());
-            z.write_all(body)?;
-            z.finish()?
+            deflate_into(body, &mut v)?;
+            v
         }
     };
     if inner.len() > MAX_FRAME {
@@ -45,6 +46,40 @@ pub fn contents(body: &[u8], threshold: Option<usize>) -> Result<Vec<u8>> {
         )));
     }
     Ok(inner)
+}
+
+thread_local! {
+    /// This thread's zlib compressor, reset for each packet. A new one per
+    /// packet allocated and cleared zlib's window and hash tables (some
+    /// 300 KiB) every time, which cost more than compressing a small packet.
+    static DEFLATER: RefCell<Option<Compress>> = const { RefCell::new(None) };
+}
+
+/// `body` as one zlib stream at the default level, appended to `out`: the
+/// bytes a new `ZlibEncoder` writes for it, from a reset compressor.
+fn deflate_into(body: &[u8], out: &mut Vec<u8>) -> Result<()> {
+    DEFLATER.with_borrow_mut(|deflater| {
+        let z = deflater.get_or_insert_with(|| Compress::new(Compression::default(), true));
+        z.reset();
+        let start = z.total_in();
+        // ZlibEncoder's calls: the whole input without a flush, then finish.
+        let mut flush = FlushCompress::None;
+        loop {
+            let at = (z.total_in() - start) as usize;
+            if at == body.len() {
+                flush = FlushCompress::Finish;
+            }
+            if out.capacity() - out.len() < 64 {
+                out.reserve(32 << 10);
+            }
+            let status = z
+                .compress_vec(&body[at..], out, flush)
+                .map_err(|e| Error::new(format!("compression failed: {e}")))?;
+            if status == Status::StreamEnd {
+                return Ok(());
+            }
+        }
+    })
 }
 
 /// A frame: the length prefix, then the [`contents`].
@@ -139,6 +174,59 @@ pub fn body(frame: &[u8], threshold: Option<usize>, inflater: &mut Inflater) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use flate2::write::ZlibEncoder;
+    use std::io::Write;
+
+    /// What a new encoder for every packet wrote, before the compressor was kept.
+    fn fresh_contents(body: &[u8]) -> Vec<u8> {
+        let mut v = Vec::new();
+        write_varint(&mut v, body.len() as i32);
+        let mut z = ZlibEncoder::new(v, Compression::default());
+        z.write_all(body).unwrap();
+        z.finish().unwrap()
+    }
+
+    /// The kept compressor writes the bytes a new one does, whatever it
+    /// compressed before: small, large (several output blocks), repetitive
+    /// and random bodies, in an order that puts each size after the others.
+    #[test]
+    fn a_reused_compressor_writes_the_same_bytes() {
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut random = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let mut bodies: Vec<Vec<u8>> = Vec::new();
+        for n in [256usize, 257, 300, 1000, 4096, 40_000, 70_000, 300_000] {
+            bodies.push((0..n).map(|i| (i * 7 % 13) as u8).collect());
+            bodies.push((0..n).map(|_| random() as u8).collect());
+            // Runs and noise, like a chunk's sections and light.
+            bodies.push(
+                (0..n)
+                    .map(|i| {
+                        if i % 512 < 300 {
+                            0
+                        } else {
+                            random() as u8 & 15
+                        }
+                    })
+                    .collect(),
+            );
+        }
+        for round in 0..2 {
+            for body in &bodies {
+                assert_eq!(
+                    contents(body, Some(256)).unwrap(),
+                    fresh_contents(body),
+                    "{} bytes, round {round}",
+                    body.len()
+                );
+            }
+            bodies.reverse();
+        }
+    }
 
     /// Split one complete frame off the front of `buffer`, if available.
     fn split(buffer: &mut Vec<u8>) -> Result<Option<Vec<u8>>> {

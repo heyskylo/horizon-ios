@@ -118,12 +118,11 @@ impl<'r> BlockCollisionRegistry<'r> {
                     | (u8::from(empty) << 2)
                     | (u8::from(contextual.contains_key(&id)) << 3),
             );
-            if cached.cached_shape(id)?.is_none() {
-                if let Some(rule) =
+            if cached.cached_shape(id)?.is_none()
+                && let Some(rule) =
                     DynamicSupport::from_state(cached.registry().state(id).unwrap())?
-                {
-                    dynamic.insert(id, rule);
-                }
+            {
+                dynamic.insert(id, rule);
             }
         }
         let pistons = PistonBlockBindings::new(cached.registry()).ok();

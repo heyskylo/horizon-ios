@@ -720,10 +720,13 @@ impl Game<'_> {
             .as_ref()
             .filter(|d| !command || d.command)
             .map(|d| d.text.clone());
-        self.open_chat(draft.as_deref().unwrap_or(prefix));
+        self.open_chat(draft.as_deref().unwrap_or(prefix), draft.is_some());
         self.ui.chat_draft_shown = draft.is_some() && self.ui.chat_screen.is_some();
     }
-    pub(super) fn open_chat(&mut self, initial: &str) {
+    /// Open the chat box on `initial`; `is_draft` when that text is the saved
+    /// draft (`ChatComponent.createScreen`), which draws grey italic until it
+    /// is edited.
+    pub(super) fn open_chat(&mut self, initial: &str, is_draft: bool) {
         if self.player.is_none() {
             return;
         }
@@ -743,6 +746,7 @@ impl Game<'_> {
             &m,
             &c,
             initial,
+            is_draft,
             self.ui.chat.recent.len(),
             b.width as i32,
             b.height as i32,
@@ -866,11 +870,13 @@ impl Game<'_> {
                     .map_or_else(String::new, |s| s.value().to_owned());
                 self.close_chat(ChatExit::Interrupted);
                 if !text.is_empty() {
-                    self.open_chat(&text);
+                    // InBedChatScreen.onPlayerWokeUp: a new ChatScreen with
+                    // the typed text, not a draft.
+                    self.open_chat(&text, false);
                 }
             }
         } else if self.sleeping.is_some() && self.screen == Screen::Playing {
-            self.open_chat("");
+            self.open_chat("", false);
             self.ui.in_bed_chat = self.screen == Screen::Chat;
         }
     }
@@ -1660,6 +1666,10 @@ impl Game<'_> {
     /// F2: ScreenShot.grab into `screenshots/` with vanilla's file name. The
     /// file it will write, `None` without a window to draw.
     pub(super) fn take_screenshot(&mut self) -> Option<std::path::PathBuf> {
+        // Its grab would take a sequence's frame.
+        if self.screenshot_sequence.is_some() {
+            return None;
+        }
         let dir = horizon_client::logging::player_dir().join("screenshots");
         if std::fs::create_dir_all(&dir).is_err() {
             return None;
@@ -2106,6 +2116,7 @@ mod tests {
             &m,
             &c,
             "",
+            false,
             0,
             width as i32,
             height as i32,

@@ -65,7 +65,6 @@ pub(super) trait Entity: EntityRules {
     fn velocity(&self) -> Vec3;
     fn velocity_mut(&mut self) -> &mut Vec3;
     /// `Entity.getYRot` and `getXRot`: yaw, pitch.
-    #[allow(dead_code)] // read by the entity-interface slices that follow
     fn rotation(&self) -> [f32; 2];
     /// The rotation part of `Entity.teleportSetPosition`: `setYRot`, `setXRot`
     /// (clamped to -90..90), then `setOldRot`.
@@ -690,7 +689,7 @@ macro_rules! define_entity_handles {
             /// cursor per list. Static dispatch and nothing allocated. Checked:
             /// a list out of join order, or an entity that never joined, stops
             /// the walk with the entity at fault.
-            #[allow(dead_code)] // read by the tick order slices that follow
+            #[allow(dead_code, reason = "the tick order work that reads this has not landed yet")]
             pub(super) fn walk_in_join_order(
                 self,
                 visit: impl FnMut(EntityHandle, JoinSeq),
@@ -758,7 +757,10 @@ pub(crate) use define_entity_handles;
 
 /// Why [`EntityLists::walk_in_join_order`] stopped.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)] // read by the tick order slices that follow
+#[allow(
+    dead_code,
+    reason = "the tick order work that reads this has not landed yet"
+)]
 pub(super) enum JoinOrderError {
     /// Never put in its list through the list's own `push`, so it has no
     /// join number.
@@ -772,7 +774,10 @@ pub(super) enum JoinOrderError {
 /// lengths, `seq(list, i)` the join number of entity `i` of a list, `handle`
 /// names it. Each step takes the lowest next number among the `N` cursors
 /// (a stack array; no allocation).
-#[allow(dead_code)] // read by the tick order slices that follow
+#[allow(
+    dead_code,
+    reason = "the tick order work that reads this has not landed yet"
+)]
 fn merge_in_join_order<const N: usize>(
     lens: [usize; N],
     seq: impl Fn(usize, usize) -> JoinSeq,

@@ -199,7 +199,6 @@ pub struct NativeClientProfile {
     pub skin: String,
 }
 
-#[allow(dead_code)]
 impl Game<'_> {
     /// A screenshot as F2 takes it (`ScreenShot.grab`): of the next frame, at
     /// the game's resolution times Screenshot Quality, into `screenshots/` with
