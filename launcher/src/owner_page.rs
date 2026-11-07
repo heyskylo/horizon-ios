@@ -154,11 +154,9 @@ impl Launcher {
                         .items_start()
                         .gap(px(4.))
                         .when(!microsoft::has_private_window(), |col| {
-                            col.child(
-                                shell::text(theme::night::CAPTION, shell::c(n.muted)).child(tr(
-                                    "Open this link in a private window to pick another account.",
-                                )),
-                            )
+                            col.child(shell::text(theme::night::CAPTION, shell::c(n.muted)).child(
+                                tr("Open this link in a private window to pick another account."),
+                            ))
                         })
                         .child(
                             div()
@@ -182,7 +180,9 @@ impl Launcher {
                                 })
                                 .child(
                                     shell::action("owner-other", shell::Action::Quiet, &t)
-                                        .child(shell::label(tr("Use a different Microsoft account")))
+                                        .child(shell::label(tr(
+                                            "Use a different Microsoft account",
+                                        )))
                                         .on_click(move |_, _, cx| {
                                             microsoft::use_different_account(&other_uri, cx)
                                         }),
@@ -376,21 +376,24 @@ impl Launcher {
                         .items_start()
                         .gap(px(4.))
                         .when(!microsoft::has_private_window(), |col| {
-                            col.child(
-                                ui::text(13., FontWeight::NORMAL, ink::QUIET).child(tr(
-                                    "Open this link in a private window to pick another account.",
-                                )),
-                            )
+                            col.child(ui::text(13., FontWeight::NORMAL, ink::QUIET).child(tr(
+                                "Open this link in a private window to pick another account.",
+                            )))
                         })
                         .child(
                             div()
                                 .flex()
                                 .gap(px(8.))
                                 .child(if microsoft::has_private_window() {
-                                    ui::quiet("owner-private", tr("Open in private window"), 32., &t)
-                                        .on_click(move |_, _, cx| {
-                                            microsoft::open_private(&private_uri, cx)
-                                        })
+                                    ui::quiet(
+                                        "owner-private",
+                                        tr("Open in private window"),
+                                        32.,
+                                        &t,
+                                    )
+                                    .on_click(
+                                        move |_, _, cx| microsoft::open_private(&private_uri, cx),
+                                    )
                                 } else {
                                     ui::quiet("owner-copy-link", tr("Copy link"), 32., &t).on_click(
                                         move |_, _, cx| {
@@ -408,9 +411,11 @@ impl Launcher {
                                         32.,
                                         &t,
                                     )
-                                    .on_click(move |_, _, cx| {
-                                        microsoft::use_different_account(&other_uri, cx)
-                                    }),
+                                    .on_click(
+                                        move |_, _, cx| {
+                                            microsoft::use_different_account(&other_uri, cx)
+                                        },
+                                    ),
                                 ),
                         ),
                 )

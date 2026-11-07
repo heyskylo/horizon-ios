@@ -224,9 +224,13 @@ pub fn detected() -> Option<&'static Detected> {
 /// Opens `url` (https only) in the default browser's private window.
 pub fn open(url: &str) -> io::Result<()> {
     if !url.starts_with("https://") {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "not an https link"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "not an https link",
+        ));
     }
-    let detected = detected().ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no browser"))?;
+    let detected =
+        detected().ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no browser"))?;
     let launch = launch(detected, url);
     let mut child = Command::new(PathBuf::from(&launch.program))
         .args(&launch.args)
@@ -272,7 +276,12 @@ mod tests {
         ] {
             assert_eq!(Browser::from_id(id), Some(browser), "{id}");
         }
-        for id in ["", "AppX4hxtad77fbk3jkkeerkrm0ze94wjf3s9", "com.apple.safari", "epiphany.desktop"] {
+        for id in [
+            "",
+            "AppX4hxtad77fbk3jkkeerkrm0ze94wjf3s9",
+            "com.apple.safari",
+            "epiphany.desktop",
+        ] {
             assert_eq!(Browser::from_id(id), None, "{id}");
         }
     }
@@ -281,7 +290,12 @@ mod tests {
     fn each_family_gets_its_own_private_flag() {
         assert_eq!(Browser::Edge.private_flag(), "--inprivate");
         assert_eq!(Browser::Firefox.private_flag(), "--private-window");
-        for browser in [Browser::Chrome, Browser::Chromium, Browser::Brave, Browser::Vivaldi] {
+        for browser in [
+            Browser::Chrome,
+            Browser::Chromium,
+            Browser::Brave,
+            Browser::Vivaldi,
+        ] {
             assert_eq!(browser.private_flag(), "--incognito");
         }
     }
@@ -315,7 +329,10 @@ mod tests {
             words(l),
             "-n -b com.google.chrome --args --incognito https://www.microsoft.com/link"
         );
-        let firefox = found(Browser::Firefox, Target::Bundle("org.mozilla.firefox".into()));
+        let firefox = found(
+            Browser::Firefox,
+            Target::Bundle("org.mozilla.firefox".into()),
+        );
         assert_eq!(
             words(launch(&firefox, url)),
             "-b org.mozilla.firefox --args --private-window https://www.microsoft.com/link"
@@ -329,7 +346,9 @@ mod tests {
             Some(r"C:\Program Files\Mozilla Firefox\firefox.exe".into())
         );
         assert_eq!(
-            windows_program(r#"  "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --single-argument %1"#),
+            windows_program(
+                r#"  "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --single-argument %1"#
+            ),
             Some(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe".into())
         );
         assert_eq!(
@@ -349,12 +368,18 @@ mod tests {
             { "LSHandlerURLScheme": "http", "LSHandlerRoleAll": "com.brave.browser" },
             { "LSHandlerURLScheme": "https", "LSHandlerRoleAll": "com.google.chrome" },
         ]});
-        assert_eq!(macos_https_handler(&prefs).as_deref(), Some("com.google.chrome"));
+        assert_eq!(
+            macos_https_handler(&prefs).as_deref(),
+            Some("com.google.chrome")
+        );
         // http alone is enough when https was never set.
         let http_only = json!({ "LSHandlers": [
             { "LSHandlerURLScheme": "HTTP", "LSHandlerRoleViewer": "org.mozilla.firefox" },
         ]});
-        assert_eq!(macos_https_handler(&http_only).as_deref(), Some("org.mozilla.firefox"));
+        assert_eq!(
+            macos_https_handler(&http_only).as_deref(),
+            Some("org.mozilla.firefox")
+        );
         // Never chosen: the system default.
         assert_eq!(macos_https_handler(&json!({ "LSHandlers": [] })), None);
         assert_eq!(macos_https_handler(&json!({})), None);
@@ -362,7 +387,12 @@ mod tests {
 
     #[test]
     fn only_https_pages_are_opened() {
-        for url in ["http://example.com", "file:///etc/passwd", "javascript:alert(1)", ""] {
+        for url in [
+            "http://example.com",
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "",
+        ] {
             let err = open(url).unwrap_err();
             assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "{url}");
         }

@@ -4619,8 +4619,13 @@ impl Launcher {
             let (private_uri, link_uri) = (uri.clone(), uri.clone());
             // A private window picks the account; without one the link is for the player to carry over.
             let private = if microsoft::has_private_window() {
-                button("sign-in-private", "Open in private window", Kind::Secondary, &t)
-                    .on_click(move |_, _, cx| microsoft::open_private(&private_uri, cx))
+                button(
+                    "sign-in-private",
+                    "Open in private window",
+                    Kind::Secondary,
+                    &t,
+                )
+                .on_click(move |_, _, cx| microsoft::open_private(&private_uri, cx))
             } else {
                 button("sign-in-copy-link", "Copy link", Kind::Secondary, &t).on_click(
                     move |_, _, cx| {
