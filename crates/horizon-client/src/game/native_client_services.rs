@@ -66,7 +66,6 @@ pub struct NativeClientProfile {
     pub skin: String,
 }
 
-#[allow(dead_code)]
 impl Game<'_> {
     /// Client/window/connection state, including when menus cover the world.
     pub(super) fn native_client_state(&self) -> Option<NativeClientState> {

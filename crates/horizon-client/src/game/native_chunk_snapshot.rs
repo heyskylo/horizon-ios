@@ -75,7 +75,6 @@ impl NativeChunkSnapshot {
 }
 
 // Native mods use these; nothing in Horizon does.
-#[allow(dead_code)]
 impl Game<'_> {
     /// A snapshot of loaded chunk `chunk` (`[x, z]`) of the level `dimension`
     /// (`minecraft:the_nether`), in place or open with nobody in it. None off
