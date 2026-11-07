@@ -95,6 +95,28 @@ fn sample_history(uv: vec2<f32>) -> vec3<f32> {
     return max(c / weight, vec3(0.0));
 }
 
+fn to_ycocg(c: vec3<f32>) -> vec3<f32> {
+    return vec3(0.25 * (c.r + 2.0 * c.g + c.b), 0.5 * (c.r - c.b), 0.25 * (2.0 * c.g - c.r - c.b));
+}
+
+fn from_ycocg(c: vec3<f32>) -> vec3<f32> {
+    return max(vec3(c.x + c.y - c.z, c.x + c.z, c.x - c.y - c.z), vec3(0.0));
+}
+
+// Moves `c` toward the box's centre until it lies inside (clipping keeps the
+// colour's hue where a per-channel clamp would shift it).
+fn clip_box(c: vec3<f32>, lo: vec3<f32>, hi: vec3<f32>) -> vec3<f32> {
+    let mid = 0.5 * (hi + lo);
+    let half_size = max(0.5 * (hi - lo), vec3(0.0001));
+    let d = c - mid;
+    let unit = abs(d / half_size);
+    let far = max(unit.x, max(unit.y, unit.z));
+    if far > 1.0 {
+        return mid + d / far;
+    }
+    return c;
+}
+
 // It runs at the history's size, which upscaling makes larger than the world's.
 // The history is unjittered: each output pixel takes the world pixel whose
 // jittered sample lands nearest its centre, weighted by how near it lands.
@@ -106,17 +128,24 @@ fn sample_history(uv: vec2<f32>) -> vec3<f32> {
     let last = vec2<i32>(size) - 1;
     let p = clamp(vec2<i32>(floor(drawn)), vec2(0), last);
     let centre = textureLoad(world, p, 0);
-    var lo = centre.rgb;
-    var hi = centre.rgb;
+    var lo = to_ycocg(centre.rgb);
+    var hi = lo;
+    // Mean and spread of the 3x3 (YCoCg): the history is clipped to a box around
+    // the mean a few deviations wide, tighter than min..max, so that what changed
+    // does not linger as a smear.
+    var m1 = vec3(0.0);
+    var m2 = vec3(0.0);
     // Reversed depth: the nearest of the 3x3 is the largest, and its motion keeps
     // the edges of what is in front from trailing.
     var near = 0.0;
     for (var y = -1; y <= 1; y++) {
         for (var x = -1; x <= 1; x++) {
             let q = clamp(p + vec2(x, y), vec2(0), last);
-            let c = textureLoad(world, q, 0).rgb;
+            let c = to_ycocg(textureLoad(world, q, 0).rgb);
             lo = min(lo, c);
             hi = max(hi, c);
+            m1 += c;
+            m2 += c * c;
             near = max(near, textureLoad(depth, q, 0).r);
         }
     }
@@ -126,12 +155,19 @@ fn sample_history(uv: vec2<f32>) -> vec3<f32> {
     if taa.jitter.z > 0.0 || any(uv != clamp(uv, vec2(0.0), vec2(1.0))) {
         return vec4(centre.rgb, centre.a);
     }
-    let past = clamp(sample_history(uv), lo, hi);
+    // How far this pixel moved since the last frame, in output pixels.
+    let speed = length((uv - in.uv) * vec2<f32>(textureDimensions(history)));
+    let moving = clamp(speed / 6.0, 0.0, 1.0);
+    let mean = m1 / 9.0;
+    let sigma = sqrt(max(m2 / 9.0 - mean * mean, vec3(0.0)));
+    let wide = mix(1.25, 0.75, moving) * sigma;
+    let past = from_ycocg(clip_box(to_ycocg(sample_history(uv)), max(lo, mean - wide), min(hi, mean + wide)));
     // How far the sample landed from this pixel's centre, in output pixels: a
     // Gaussian of it scales the new frame's share, so that frames whose sample
-    // fell far away (most of them when upscaling) barely move the pixel.
+    // fell far away (most of them when upscaling) barely move the pixel. Under
+    // motion the history is resampled every frame and blurs, so new frames weigh more.
     let off = (drawn - (vec2<f32>(p) + 0.5)) * vec2<f32>(textureDimensions(history)) / size;
-    let share = 0.1 * exp(-2.0 * dot(off, off));
+    let share = mix(0.1, 0.3, moving) * exp(-2.0 * dot(off, off));
     // The alpha carries the emissive mark through to HDR output (hdr.wgsl).
     return vec4(mix(past, centre.rgb, share), centre.a);
 }
