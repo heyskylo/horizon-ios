@@ -79,3 +79,32 @@ pub(super) fn sign_in_button(id: &'static str, t: &Theme) -> Stateful<Div> {
                 .child(tr("Sign in with Microsoft").to_string()),
         )
 }
+
+/// How long the logout page gets before the code page opens after it.
+const LOGOUT_WAIT: Duration = Duration::from_millis(2500);
+
+/// Whether the player's default browser has a private window to open the code page in. The
+/// first call asks the system (`begin_sign_in` warms it).
+pub(super) fn has_private_window() -> bool {
+    horizon_launcher::private_window::detected().is_some()
+}
+
+/// Opens the code page in the default browser's private window, where no Microsoft account is
+/// signed in; in the normal window if the browser can't be started.
+pub(super) fn open_private(uri: &str, cx: &mut App) {
+    if horizon_launcher::private_window::open(uri).is_err() {
+        cx.open_url(uri);
+    }
+}
+
+/// "Use a different Microsoft account": Microsoft's logout page first, then the code page, in
+/// the player's normal browser.
+pub(super) fn use_different_account(uri: &str, cx: &mut App) {
+    cx.open_url(horizon_launcher::private_window::LOGOUT_URL);
+    let uri = uri.to_owned();
+    cx.spawn(async move |cx| {
+        cx.background_executor().timer(LOGOUT_WAIT).await;
+        cx.update(|cx| cx.open_url(&uri));
+    })
+    .detach();
+}

@@ -413,6 +413,12 @@ pub fn clear_distance_fog(fog: &mut FogData, input: &FogInputs) {
         (fog.environmental_start, fog.environmental_end) = (1e9, 2e9);
     }
 }
+/// What `AtmosphericFogEnvironment.updateRainFogState` eases the rain fog toward: the rain, where
+/// the sky reaches the eye, halved in a biome without precipitation.
+pub fn rain_fog_target(rain: f32, sky_light: u8, biome_rains: bool) -> f32 {
+    let sky = ((f32::from(sky_light) - 8.0) / 7.0).clamp(0.0, 1.0);
+    rain * sky * if biome_rains { 1.0 } else { 0.5 }
+}
 /// Whether the frame draws no sky, only the clear to the fog colour: `LevelRenderer.addSkyPass`
 /// leaves the sky out in lava and powder snow and while blindness or darkness is on (`Camera`'s
 /// `doesMobEffectBlockSky`), and `GameRenderer.renderLevel` gives `LevelRenderer.render`
@@ -428,9 +434,13 @@ pub fn update_rain_fog(
     biome_rains: bool,
     delta_ticks: f32,
 ) {
-    let sky = ((f32::from(sky_light) - 8.0) / 7.0).clamp(0.0, 1.0);
-    let target = rain * sky * if biome_rains { 1.0 } else { 0.5 };
+    let target = rain_fog_target(rain, sky_light, biome_rains);
     state.rain_fog_multiplier += (target - state.rain_fog_multiplier) * delta_ticks * 0.2;
+}
+/// The rain fog at its target at once: a frozen world under `HORIZON_STILL`, where the rain sits
+/// at its level and easing would wait for ticks that do not come.
+pub fn settle_rain_fog(state: &mut FogState, rain: f32, sky_light: u8, biome_rains: bool) {
+    state.rain_fog_multiplier = rain_fog_target(rain, sky_light, biome_rains);
 }
 fn rgb(c: u32) -> [f32; 3] {
     [
@@ -725,6 +735,30 @@ mod tests {
         let clear = setup_fog(&tables, &fresh, &input);
         assert_eq!(clear.environmental_end, settled.environmental_end);
         assert_eq!(clear.color, settled.color);
+    }
+    /// Settling puts the rain fog at its target exactly, where a tick of easing moves it a fifth
+    /// of the way, as before.
+    #[test]
+    fn settled_rain_fog_is_its_target_and_easing_is_unchanged() {
+        assert_eq!(
+            rain_fog_target(1.0, 15, false),
+            0.5,
+            "a dry biome halves it"
+        );
+        assert_eq!(rain_fog_target(1.0, 8, true), 0.0, "no sky, no rain fog");
+        let start = FogState {
+            rain_fog_multiplier: 0.1,
+            ..FogState::default()
+        };
+        let mut settled = start;
+        settle_rain_fog(&mut settled, 0.5, 15, true);
+        assert_eq!(settled.rain_fog_multiplier, 0.5);
+        let mut eased = start;
+        update_rain_fog(&mut eased, 0.5, 15, true, 1.0);
+        assert_eq!(
+            eased.rain_fog_multiplier.to_bits(),
+            (0.1f32 + (0.5f32 - 0.1) * 1.0 * 0.2).to_bits()
+        );
     }
     #[test]
     fn rain_fog_pulls_fog_in() {

@@ -1,6 +1,5 @@
 //! Shared by the audio fixtures: a backend recording what an OpenAL source
 //! would hold, and the per-step dump the Java oracles print.
-#![allow(dead_code)]
 use horizon_client::sound_engine::{Backend, ChannelId, InstanceId, PlayResult, SoundEngine};
 use horizon_client::sound_events::Sound;
 use std::collections::HashMap;

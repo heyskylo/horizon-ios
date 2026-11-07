@@ -73,14 +73,17 @@ fn columns_loaded_past_the_render_distance_mesh_when_they_come_in_range() {
     streaming.radius = 4;
     let mut world = World::new(BlockStateId(0), 0);
     let mut meshed = HashSet::new();
-    let mut settle_at = |streaming: &mut Streaming, center: (i32, i32)| {
+    let settle_at = |streaming: &mut Streaming,
+                     world: &mut World,
+                     center: (i32, i32),
+                     meshed: &mut HashSet<(i32, i32, i32)>| {
         streaming.center = center;
         let deadline = Instant::now() + Duration::from_secs(60);
         let mut quiet = 0;
         while quiet < 40 {
             assert!(Instant::now() < deadline, "streaming never settled");
             let before = (world.chunks.len(), meshed.len());
-            let (uploads, _) = streaming.update(&mut world);
+            let (uploads, _) = streaming.update(world);
             meshed.extend(uploads.iter().map(|(key, _)| *key));
             // As the game does once they are uploaded: a worker frees them,
             // and nothing comes back (`pending` empties).
@@ -92,25 +95,35 @@ fn columns_loaded_past_the_render_distance_mesh_when_they_come_in_range() {
     };
     // Columns up to three chunks past the render distance load around the
     // first position; the second brings some of them within it.
-    settle_at(&mut streaming, (0, 0));
-    settle_at(&mut streaming, (3, 0));
+    settle_at(&mut streaming, &mut world, (0, 0), &mut meshed);
+    settle_at(&mut streaming, &mut world, (3, 0), &mut meshed);
     let (cx, cz): (i32, i32) = (3, 0);
-    let mut checked = 0;
-    for x in cx - 4..=cx + 4 {
-        for z in cz - 4..=cz + 4 {
-            if (x - cx).pow(2) + (z - cz).pow(2) > 16 {
-                continue;
+    let all_in_range = |meshed: &HashSet<(i32, i32, i32)>| {
+        let mut checked = 0;
+        for x in cx - 4..=cx + 4 {
+            for z in cz - 4..=cz + 4 {
+                if (x - cx).pow(2) + (z - cz).pow(2) > 16 {
+                    continue;
+                }
+                for sy in 0..HEIGHT / 16 {
+                    assert!(
+                        meshed.contains(&(x, sy, z)),
+                        "section {x} {sy} {z} is in range but was never meshed"
+                    );
+                }
+                checked += 1;
             }
-            for sy in 0..HEIGHT / 16 {
-                assert!(
-                    meshed.contains(&(x, sy, z)),
-                    "section {x} {sy} {z} is in range but was never meshed"
-                );
-            }
-            checked += 1;
         }
-    }
-    assert_eq!(checked, 49);
+        checked
+    };
+    assert_eq!(all_in_range(&meshed), 49);
+
+    // `LevelExtractor.allChanged` (F3+A and a changed render distance) drops
+    // every displayed section. Streaming must produce all of them again.
+    meshed.clear();
+    streaming.reload_sections(&mut world);
+    settle_at(&mut streaming, &mut world, (3, 0), &mut meshed);
+    assert_eq!(all_in_range(&meshed), 49);
 }
 
 /// A one-block cave under the sky: a stone floor at y 62 with a glowstone,

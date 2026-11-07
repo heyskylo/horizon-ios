@@ -52,7 +52,6 @@ fn corners(b: Aabb) -> [f64; 6] {
 }
 
 // Native mods use these; nothing in Horizon does.
-#[allow(dead_code)]
 impl Game<'_> {
     /// One tick of the server player `uuid`'s own movement from `input`, as their client would
     /// play it (`LocalPlayer.aiStep` and `Player.travel`): walking and strafing (`forward` and
