@@ -119,6 +119,8 @@ impl Game<'_> {
     /// What the mods sent this tick leaves; the tick's allowances start over.
     pub(super) fn flush_native_net(&mut self, host: &mut LanHost) {
         self.flush_native_profiles(host);
+        // The mods' kicks (native_packets.rs) leave with their messages.
+        self.flush_native_kicks(host);
         for (player, data) in std::mem::take(&mut self.native_net.to_players) {
             if let Some(g) = host
                 .hub

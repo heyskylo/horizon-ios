@@ -100,6 +100,35 @@ pub fn main_with(mods: crate::mod_api::Mods) {
     {
         log::warn!("Native data-load hooks already installed; keeping the first callbacks");
     }
+    if horizon_world::worldgen::native_generate::install(
+        horizon_world::worldgen::native_generate::NativeGenerateHooks {
+            chunk_generate: |dimension, chunk, seed, flat, chunk_out, generate| {
+                crate::mod_api::dispatch_chunk_generate(
+                    crate::mod_api::mods(),
+                    dimension,
+                    chunk,
+                    seed,
+                    flat,
+                    chunk_out,
+                    generate,
+                );
+            },
+            lod_column: |dimension, column, seed, flat, column_out| {
+                crate::mod_api::dispatch_lod_column(
+                    crate::mod_api::mods(),
+                    dimension,
+                    column,
+                    seed,
+                    flat,
+                    column_out,
+                );
+            },
+        },
+    )
+    .is_err()
+    {
+        log::warn!("Native generation hooks already installed; keeping the first callbacks");
+    }
     if crate::native_client_hooks::install(crate::native_client_hooks::NativeClientHooks {
         menu_slot_rules: |menu, slot, stack, may_place, max_stack| {
             crate::mod_api::dispatch_menu_slot_rules(
