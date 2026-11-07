@@ -996,9 +996,9 @@ use super::{
 };
 use horizon_assets::item_model::StackView;
 use horizon_client::mod_api::{
-    self, HudMode, NativeCamera, NativeCommand, NativeDispensed, NativeFluidAction, NativeFluidDrain,
-    NativeFluidStack, NativeFluidTankView, NativeLifecycleContext, NativeNoteBlockChange,
-    NativeServerPlayer, RecipeBookCategory, ServerTickPhase, WorldPhase,
+    self, HudMode, NativeCamera, NativeCommand, NativeDispensed, NativeFluidAction,
+    NativeFluidDrain, NativeFluidStack, NativeFluidTankView, NativeLifecycleContext,
+    NativeNoteBlockChange, NativeServerPlayer, RecipeBookCategory, ServerTickPhase, WorldPhase,
 };
 use horizon_client::mod_api::{AttachmentResult, Attachments, Holder, LayerDefinition, Suggestion};
 pub(crate) use horizon_client::mod_api::{
@@ -2589,18 +2589,6 @@ impl Game<'_> {
     /// says is taken.
     pub(super) fn native_hud(&mut self, batch: &mut HudBatch, corners: &mut Corners) {
         mod_api::dispatch_hud(self, mod_api::mods(), batch, corners);
-    }
-    /// Effective HUD mode. Pending API @API:hud_mode@.
-    pub(super) fn native_hud_mode(&self) -> HudMode {
-        self.ui.hud_mode()
-    }
-    /// Set HUD and hand visibility, including from the post-handling input notice.
-    /// Client only, outside a borrowed server guest's turn. This changes no
-    /// other restrictions on first-person rendering.
-    pub(super) fn native_set_hud_mode(&mut self, mode: HudMode) {
-        if self.native_window() && self.lan_acting.is_none() {
-            self.ui.set_hud_mode(mode);
-        }
     }
     /// After the complete normal GUI batch, including screens, prompts, toasts,
     /// debug overlays, the pad cursor and IME. Fires even with F1 or a menu open;
@@ -8974,6 +8962,18 @@ impl GameLevel<'_> {
 // Native mods use these; nothing in Horizon does.
 #[allow(dead_code)]
 impl Game<'_> {
+    /// Effective HUD mode. Pending API @API:hud_mode@.
+    pub(super) fn native_hud_mode(&self) -> HudMode {
+        self.ui.hud_mode()
+    }
+    /// Set HUD and hand visibility, including from the post-handling input notice.
+    /// Client only, outside a borrowed server guest's turn. This changes no
+    /// other restrictions on first-person rendering.
+    pub(super) fn native_set_hud_mode(&mut self, mode: HudMode) {
+        if self.native_window() && self.lan_acting.is_none() {
+            self.ui.set_hud_mode(mode);
+        }
+    }
     /// Access a server-owned holder's attachment map. On a client it is the
     /// copy of what the server synced: `set` and `remove` change only the copy.
     pub(super) fn native_attachments(
