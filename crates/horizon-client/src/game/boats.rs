@@ -1519,8 +1519,12 @@ impl Game<'_> {
             for stack in b.items.iter().flatten() {
                 self.spawn_item(stack.clone(), at, super::dispenser::new_item_motion(), 10);
             }
-            // `VehicleEntity.destroy(level, dropItem)` drops the boat item on
-            // the death path only, and only with `entity_drops` on.
+            // `VehicleEntity.destroy(level, dropItem)`: `kill` (the boat's own
+            // ENTITY_DIE), then the boat item on the death path only, and only
+            // with `entity_drops` on.
+            if !creative {
+                self.entity_killed_event(at, false);
+            }
             if !creative && self.ui.rules.bool("entity_drops") {
                 let item = b.entity_type();
                 self.spawn_item(

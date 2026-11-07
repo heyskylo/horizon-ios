@@ -1,6 +1,6 @@
 ProtocolSwapHandler.handleInboundTerminalPacket	port	crates/horizon-client/src/net.rs::configure	the configuration phase ends on FinishConfiguration and play starts in run; no Netty handler swap
 ProtocolSwapHandler.handleOutboundTerminalPacket	port	crates/horizon-client/src/net.rs::configure	the client's FinishConfiguration reply is sent inside configure
-RateKickingConnection.tickSecond	missing		minor: server.properties rate-limit (default 10) is read but no connection is kicked for a packet flood
+RateKickingConnection.tickSecond	inline	crates/horizon-client/src/lan/conn.rs::PacketRate::received	the rate-limit window counts packets per second and the connection is dropped when it is exceeded
 UnconfiguredPipelineHandler.Inbound.channelRead	skip:other		Netty guard for packets before a protocol is set; Horizon's connection loops only read their own phase
 UnconfiguredPipelineHandler.Inbound.write	skip:other		Netty guard for configuration tasks on the inbound pipeline; no pipeline in Horizon
 UnconfiguredPipelineHandler.Outbound.write	skip:other		Netty guard for packets sent before a protocol is set; no pipeline in Horizon
