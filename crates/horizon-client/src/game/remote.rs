@@ -1390,6 +1390,7 @@ impl Game<'_> {
             use_target: None,
             menu_extra: None,
             entities: HashMap::new(),
+            passenger_vehicles: HashMap::new(),
             lerps: HashMap::new(),
             cart_lerps: HashMap::new(),
             stepped: HashMap::new(),
@@ -3352,6 +3353,7 @@ impl Game<'_> {
             r.glowing.remove(&id);
             r.entities.remove(&id);
             r.passenger_vehicles.remove(&(id as u32));
+            r.passenger_vehicles.retain(|_, v| *v != id as u32);
             r.lerps.remove(&id);
             r.cart_lerps.remove(&id);
             r.stepped.remove(&id);
@@ -6857,8 +6859,14 @@ impl Game<'_> {
         }
         // A stand riding the player follows this move (tickPassenger).
         self.seat_own_stands();
-        // Other players on this player (possibly through a plugin seat) follow this tick too.
-        self.position_riders();
+        // Other players on this player (possibly through a plugin seat) follow this tick too;
+        // the full pass only when something rides this player.
+        if self.remote.as_ref().is_some_and(|r| {
+            let me = r.entity_id as u32;
+            r.passenger_vehicles.values().any(|&v| v == me)
+        }) {
+            self.position_riders();
+        }
         // The server owns health and hunger.
         self.apply_remote_health();
         self.tick_avatar(before, false);
