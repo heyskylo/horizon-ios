@@ -80,7 +80,7 @@ def install_datapack_fixtures(world, predicates, functions, jar, advancements=No
         target.write_text(json.dumps(recipe), encoding='utf-8')
 
 
-def main():
+def main(*, reference_admission=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--prepare', action='store_true')
     parser.add_argument('--raid-village-fixture', action='store_true', help='match the existing development command trees in the isolated Java/native fixture processes')
@@ -376,6 +376,11 @@ def main():
                 any(len(r.get('bits', [])) != 3 or
                     any(re.fullmatch(r'[0-9a-f]{1,16}', b) is None for b in r['bits']) for r in direct)):
             sys.exit('Java direct underwater reference prerequisite failed')
+    # Specialized harnesses qualify the fresh reference before any native build
+    # or execution. Their strict raw-record checks also apply to normal CI runs.
+    if reference_admission is not None:
+        reference_admission([json.loads(line) for line in
+                             (build / 'vanilla.jsonl').read_text(encoding='utf-8').splitlines()])
     if args.reference_only:
         reference = [json.loads(line) for line in (build / 'vanilla.jsonl').read_text().splitlines()]
         recorded = [op for op in script if op['op'] in ('player_state', 'player_loop', 'map_state', 'frame_map_state', 'mob_anger', 'raid_state', 'menu_state') or
@@ -447,8 +452,8 @@ def main():
         native = json.loads((build / 'rust-client-config.json').read_text())
         if native.get('render_setting') != 2 or native.get('simulation_setting') != 2 or not native.get('joined'):
             sys.exit(f'native settings/join prerequisite failed: {native}')
-    vanilla = [json.loads(l) for l in (build / 'vanilla.jsonl').open(encoding='utf-8')]
-    rust = [json.loads(l) for l in (build / 'rust.jsonl').open(encoding='utf-8')]
+    vanilla = [json.loads(l) for l in (build / 'vanilla.jsonl').read_text(encoding='utf-8').splitlines()]
+    rust = [json.loads(l) for l in (build / 'rust.jsonl').read_text(encoding='utf-8').splitlines()]
     if len(vanilla) != len(rust):
         sys.exit(f'record count differs: vanilla {len(vanilla)} rust {len(rust)}')
     recorded_ops = [op for op in script if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'chunk_ready', 'server_distances', 'map_state', 'frame_map_state', 'light', 'player_state', 'player_loop', 'mob_anger', 'raid_state', 'menu_state') or

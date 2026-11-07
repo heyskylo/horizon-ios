@@ -3,18 +3,24 @@
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import zipfile
 import lab
 
 
-def main():
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--game-dir', type=Path, default=lab.GAME)
-    parser.add_argument('--resources', type=Path, required=True)
+    parser.add_argument('--resources', type=Path,
+                        default=Path(os.environ.get('HORIZON_TEST_RESOURCES') or lab.RESOURCES))
     parser.add_argument('--java-home', type=Path)
-    args = parser.parse_args()
+    return parser.parse_args(argv)
+
+
+def main():
+    args = parse_args()
     build = lab.LOCAL / 'rust-mob-discard-parity'
     build.mkdir(parents=True, exist_ok=True)
     report = build / 'report.json'

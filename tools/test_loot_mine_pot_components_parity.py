@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Actual loot-mine pot component boundary; raw snapshots and clocks retained.
 
+The default mode validates Java before building or running native.
 Admit fresh Java with --reference-only --work-dir REF; compare each archived
 normal Game against --reference-dir REF with a fresh --work-dir OUT.
 """
@@ -92,8 +93,7 @@ def main():
         sys.argv.append("--allow-gaps")
     folder = Path(sys.argv[sys.argv.index("--work-dir") + 1]).resolve()
     if reference is None:
-        assert "--reference-only" in sys.argv, "admit Java before the native pair"
-        runner.main()
+        runner.main(reference_admission=lambda rows: admit(program, rows))
     else:
         assert "--reference-only" not in sys.argv
         native_from_reference(reference, folder, program)
