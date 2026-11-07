@@ -925,6 +925,17 @@ public final class VanillaCommandExecOracle {
                             throw new IllegalStateException(e);
                         }
                     }
+                    case "map_carried" -> {
+                        // The harness has no player network listener; invoke the
+                        // real map update normally reached from its player tick.
+                        for (int i = 0; i < player.getInventory().getContainerSize(); i++) {
+                            var stack = player.getInventory().getItem(i);
+                            var id = stack.get(net.minecraft.core.component.DataComponents.MAP_ID);
+                            if (id == null) continue;
+                            var map = net.minecraft.world.item.MapItem.getSavedData(id, player.level());
+                            if (map != null) map.tickCarriedBy(player, stack, null);
+                        }
+                    }
                     case "craft_menu_click" -> {
                         if (!(player.containerMenu instanceof net.minecraft.world.inventory.CraftingMenu))
                             throw new IllegalStateException("craft fixture: crafting menu not open");
@@ -977,6 +988,12 @@ public final class VanillaCommandExecOracle {
                             new net.minecraft.world.level.saveddata.maps.MapId(id), player.level());
                         String value = map == null ? "missing" : "scale=" + map.scale + ",locked=" + map.locked
                             + ",center=" + map.centerX + "," + map.centerZ;
+                        if (map != null && op.has("red_x")) {
+                            int targets = 0;
+                            for (var decoration : map.getDecorations())
+                                if (decoration.type().is(net.minecraft.world.level.saveddata.maps.MapDecorationTypes.RED_X)) targets++;
+                            value += ",red_x=" + targets;
+                        }
                         JsonObject record = new JsonObject();
                         record.addProperty("cmd", "#map_state " + id);
                         JsonArray messages = new JsonArray();

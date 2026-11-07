@@ -394,7 +394,7 @@ impl Launcher {
                             .hover(|s| s.text_color(white(ink::FULL)))
                             .child(tr("All notes"))
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                this.go(Page::Notes);
+                                this.go(Page::Versions);
                                 cx.notify();
                             })),
                     ),
