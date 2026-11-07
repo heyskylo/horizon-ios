@@ -32,7 +32,10 @@ Cases:
 - long_label: a label too wide for its button slides, beside its glyph.
 - every_screen_has_targets: the title's submenus and every options page give the focus something to land on.
 - pause_icon: the pause menu's icons are targets, and A presses one.
+- studio_rows: the D-pad walks Replay Studio's recordings to its buttons, and B leaves.
 - erase_checkbox: the D-pad reaches Optimize World's Erase Cached Data box, and A ticks it.
+- extras_shell: Horizon Extras on the settings shell: the D-pad walks its rows and scrolls through the hidden ones, past
+  a greyed row, the right stick scrolls it, A changes and saves a toggle, the strip follows the row, B leaves.
 Needs built fast binaries (`cargo build --profile fast -p horizon-client -p horizon-client-lib --bins`)
 and prepared resources in .local/horizon-client/26.3. Exit status 0 when every case passes.
 """
@@ -45,6 +48,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import zipfile
 import zlib
 from pathlib import Path
 
@@ -1486,14 +1490,108 @@ OPTIONS_PAGES = ('main', 'video', 'sound', 'controls', 'keybinds', 'controller',
                  'accessibility', 'language', 'font', 'packs', 'mods', 'shader-packs', 'graphics', 'graphics-advanced',
                  'graphics-hdr', 'extras', 'pvp', 'credits', 'horizon', 'agent')
 # Screens allowed to draw no target, and why. The pad falls back to the crosshair on these.
-NO_TARGETS = {'studio': 'its buttons and rows only paint, nothing registers them yet'}
 TARGETS_WAIT = 5
+STUDIO_RECORDINGS, STUDIO_BUTTONS = 12, 3
+
+
+EXTRAS_ABOUT = 'Optional additions, all off by default'
+AUTO_RECONNECT = 'Auto-reconnect'
+AUTO_RECONNECT_ABOUT = 'Rejoins a server after a lost connection or a restart'
+FIRST_EXTRA = 'Own name tag'
+LAST_MENU_EXTRA = 'Resource pack browser'
+GREYED_EXTRA = 'Sort key'
+ROW_WALK = 40
+
+
+def label_of(game, text):
+    """The widget whose label has this in it, or None while the list hides it."""
+    return next((w for w in game.widgets() if text in w.get('label', '')), None)
+
+
+def ring_on(game, rect):
+    """Whether a white ring is drawn along the top of this rectangle, by the pixels: state can't show a stale one."""
+    path = game.home / 'ring.png'
+    game.ctl('screenshot', path, timeout=120)
+    rows, width, channels = png_rows(path)
+    scale = width / game.ctl('ui')['gui_size'][0]
+    x, y, w, _ = rect
+    pixel = rows[int((y + 0.5) * scale)][int((x + w / 2) * scale) * channels:][:3]
+    return pixel == bytes((255, 255, 255))
+
+
+def extras_saved(game):
+    path = game.game_home / 'horizon-extras.txt'
+    return path.read_text() if path.exists() else ''
+
+
+def extras_shell(args, name):
+    game = Game(args, name)
+    check = Check()
+    try:
+        game.press_through('west')
+        game.ctl('options', 'extras')
+        time.sleep(SETTLE)
+        game.wait_targets()
+        check(declared(game).get('Done') is True, f'Extras declares {declared(game)}')
+        check(game.menu()['undeclared'] == [], f"undeclared: {game.menu()['undeclared']}")
+        check(has_label(game, EXTRAS_ABOUT), f'the strip does not say what the page holds: {labels(game)}')
+        check(label_of(game, LAST_MENU_EXTRA) is None, 'the page fits: this case cannot see it scroll')
+        shot(game, 'extras-open')
+
+        # From the search field across to the first row, then down: a greyed row is stepped over, hidden rows scroll in.
+        game.pad('right')
+        check(FIRST_EXTRA in (game.focused_label() or ''), f'the D-pad never reached {FIRST_EXTRA}: {game.focused_label()}')
+        # A presses with a click: the row it pressed doesn't stay lit once the focus moves on.
+        game.pad('south')
+        pressed = game.focus()
+        game.pad('down')
+        check(game.focus() != pressed, 'the D-pad did not leave the row A pressed')
+        check(not ring_on(game, pressed), f'the row A pressed keeps a ring at {pressed} with the focus gone')
+        reached = {game.focused_label()}
+        for _ in range(ROW_WALK):
+            game.pad('down')
+            reached.add(game.focused_label())
+            if LAST_MENU_EXTRA in (game.focused_label() or ''):
+                break
+        check(any(LAST_MENU_EXTRA in (r or '') for r in reached), f'the D-pad never scrolled to the last rows: {reached}')
+        check(not any(GREYED_EXTRA in (r or '') for r in reached), f'the focus landed on a greyed row: {reached}')
+        shot(game, 'extras-scrolled')
+
+        # Back up the list to a row near its top; the right stick moves the list and the focus stays on it.
+        for _ in range(ROW_WALK):
+            if AUTO_RECONNECT in (game.focused_label() or ''):
+                break
+            game.pad('up')
+        label = game.focused_label()
+        check(AUTO_RECONNECT in (label or ''), f'the D-pad never came back to {AUTO_RECONNECT}: {label}')
+        check(has_label(game, AUTO_RECONNECT_ABOUT), f'the strip does not follow the row: {labels(game)}')
+        check(AUTO_RECONNECT in (label or '') and label.endswith('Off'), f'{AUTO_RECONNECT} reads {label}')
+        shot(game, 'extras-described')
+        y = game.focus()[1]
+        game.stick()
+        moved = game.focus()
+        check(game.focused_label() == label, f'the stick moved the focus from {label} to {game.focused_label()}')
+        check(moved and moved[1] < y, f'the stick did not scroll the list: {y} to {moved}')
+
+        # A changes the toggle: what the row reads, and the file it is saved in.
+        check('autoReconnect:true' not in extras_saved(game), 'Auto-reconnect began on')
+        game.pad('south')
+        label = game.focused_label()
+        check(label and label.endswith('On'), f'A left {AUTO_RECONNECT} as {label}')
+        check('autoReconnect:true' in extras_saved(game), 'the toggle was not saved to horizon-extras.txt')
+        shot(game, 'extras-toggled')
+
+        # B presses Done.
+        game.pad('east')
+        game.wait_targets()
+        check(not has_label(game, AUTO_RECONNECT), f'B did not leave Extras: {labels(game)}')
+    finally:
+        game.quit()
+    return check.failures
 
 
 def check_has_targets(game, check, screen):
     """A focus-mode screen draws a target soon after it opens; pointer screens (packs) use the crosshair by design."""
-    if screen in NO_TARGETS:
-        return
     end = time.time() + TARGETS_WAIT
     while True:
         menu = game.menu()
@@ -1530,6 +1628,56 @@ def every_screen_has_targets(game, check, single, options, quit_game):
     time.sleep(SETTLE)
     click_widget(game, widget(game, 'studio'))
     check_has_targets(game, check, 'studio')
+
+
+def seed_recordings(game_home):
+    """More saved recordings than the Studio page shows at once."""
+    folder = game_home / 'recordings'
+    folder.mkdir()
+    for i in range(STUDIO_RECORDINGS):
+        with zipfile.ZipFile(folder / f'run{i:02}.mcpr', 'w') as archive:
+            archive.writestr('metaData.json', json.dumps({'serverName': f'Server{i:02}', 'date': i, 'duration': 1000}))
+
+
+def studio_rows(args, name):
+    """The D-pad walks Replay Studio's recordings, scrolling the hidden ones, to its buttons."""
+    game = Game(args, name, seed=seed_recordings)
+    check = Check()
+    try:
+        game.wait_targets()
+        game.ctl('options', 'horizon')
+        time.sleep(SETTLE)
+        click_widget(game, widget(game, 'studio'))
+        time.sleep(SETTLE)
+        game.wait_targets()
+        first = game.rows()[0]['label']
+        for _ in range(4):
+            game.stick()
+        check(game.rows()[0]['label'] != first, f'the right stick did not scroll the list: {first} still on top')
+        for _ in range(8):
+            game.stick(1)
+        check(game.rows()[0]['label'] == first, f'the right stick did not scroll back: {game.rows()[0]["label"]} on top')
+        kinds = [t['kind'] for t in game.menu()['targets']]
+        check(kinds.count('row') > 0 and kinds.count('row') < STUDIO_RECORDINGS, f'recordings in view: {kinds}')
+        check(kinds.count('button') == STUDIO_BUTTONS, f'its buttons: {kinds}')
+        game.pad('down')
+        walked = set()
+        for _ in range(STUDIO_RECORDINGS + STUDIO_BUTTONS):
+            walked.add(game.focused_label())
+            before = game.focus()
+            kind = next((t['kind'] for t in game.menu()['targets'] if tuple(t['rect']) == before), None)
+            if kind == 'button':
+                break
+            game.pad('down')
+        check(kind == 'button', f'the D-pad never left the list for the buttons: on {kind}')
+        check(len(walked) >= STUDIO_RECORDINGS, f'the D-pad skipped hidden recordings: {sorted(map(str, walked))}')
+        check(game.menu()['actions'], 'Done declares no button')
+        game.pad('east')
+        time.sleep(SETTLE)
+        check(not any(w['id'] == 'open-folder' for w in game.widgets()), 'B stayed on the Studio page')
+    finally:
+        game.quit()
+    return check.failures
 
 
 def pause_icon(args, name):
@@ -1807,6 +1955,125 @@ def osk_stays_open(game, check, what):
     check(game.menu()['keyboard'], f'{what}: deleting closed the keyboard')
 
 
+def osk_book(args, name):
+    """A on a book and quill's page opens the keyboard, a new line keeps it open, and B closes it."""
+    game = Game(args, name, world=True)
+    check = Check()
+    try:
+        game.ctl('command', 'give @s writable_book')
+        time.sleep(1)
+        game.ctl('pad', 'trigger', 'left', 1)
+        time.sleep(0.4)
+        game.ctl('pad', 'trigger', 'left', 0)
+        time.sleep(1.5)
+        menu = game.menu()
+        check(menu['mode'] == 'pointer', f"no book open: {menu['mode']}")
+        field = next((t for t in menu['targets'] if t['kind'] == 'field'), None)
+        check(field is not None, f"the page isn't a field: {menu['targets']}")
+        x, y, w, h = field['rect']
+        for _ in range(40):
+            pointer = game.menu()['pointer']
+            if pointer and x <= pointer[0] < x + w and y <= pointer[1] < y + h:
+                break
+            step = 'left' if pointer and pointer[0] >= x + w else 'right' if pointer and pointer[0] < x else 'up' if pointer and pointer[1] >= y + h else 'down'
+            game.pad(step)
+        game.pad('south')
+        check(game.menu()['keyboard'], 'A on the page opened no keyboard')
+    finally:
+        game.quit()
+    return check.failures
+
+
+def osk_sign(args, name):
+    """A keeps a sign's keyboard to hand: Enter goes to the next line, and B then A opens it again."""
+    game = Game(args, name, world=True)
+    check = Check()
+    try:
+        game.ctl('command', 'give @s oak_sign')
+        game.ctl('command', 'setblock ~ ~-1 ~ stone')
+        time.sleep(1)
+        game.ctl('turn', '0', '90')
+        time.sleep(0.5)
+        game.ctl('pad', 'trigger', 'left', 1)
+        time.sleep(0.4)
+        game.ctl('pad', 'trigger', 'left', 0)
+        time.sleep(1.5)
+        check(game.menu()['keyboard'], 'a sign the pad placed opened no keyboard')
+        game.pad('east')
+        check(not game.menu()['keyboard'], 'B did not close the keyboard')
+        game.pad('south')
+        check(game.menu()['keyboard'], 'A did not open the keyboard again')
+    finally:
+        game.quit()
+    return check.failures
+
+
+def recipe_search_keyboard(args, name):
+    """A on the recipe book's search box opens the keyboard."""
+    game = Game(args, name, world=True)
+    check = Check()
+    try:
+        game.ctl('command', 'gamemode survival')
+        game.ctl('key', 'e', 'tap')
+        time.sleep(SETTLE)
+        game.wait_targets()
+        x, y, w, h = next(t for t in game.ctl('screen')['recipe_book']['targets'] if t[2:] == [20.0, 18.0])
+        crosshair_walk(game, x + w / 2, y + h / 2)
+        game.pad('south')
+        time.sleep(SETTLE)
+        field = next((t for t in game.menu()['targets'] if t['kind'] == 'field'), None)
+        check(field is not None, 'the search box is not a field')
+        if field:
+            x, y, w, h = field['rect']
+            crosshair_walk(game, x + w / 2, y + h / 2)
+            game.pad('south')
+            check(game.menu()['keyboard'], 'A on the search box opened no keyboard')
+    finally:
+        game.quit()
+    return check.failures
+
+
+def chat_suggestion_rows(args, name):
+    """A command's suggestions are rows the pad can reach."""
+    game = Game(args, name, world=True)
+    check = Check()
+    try:
+        game.ctl('key', 't', 'tap')
+        time.sleep(SETTLE)
+        game.ctl('type', '/ga')
+        time.sleep(SETTLE)
+        check(any(t['kind'] == 'row' for t in game.menu()['targets']),
+              f"no suggestion rows: {game.menu()['targets']}")
+    finally:
+        game.quit()
+    return check.failures
+
+
+def server_list_bumpers(args, name):
+    """The bumpers move the selected server, and the list saves it."""
+    game = Game(args, name, seed=seed_servers)
+    check = Check()
+    try:
+        game.press_through('south', 'down', 'south')
+        game.wait_targets()
+        first = game.rows()[0]['id']
+        game.focus_on(first)
+        game.pad('south')
+        before = [row.get('label') for row in game.rows()[:2]]
+        check(before[0] and before[1], f'no rows: {before}')
+        game.pad('rb')
+        time.sleep(SETTLE)
+        after = [row.get('label') for row in game.rows()[:2]]
+        check(after == before[::-1], f'the first server did not move down: {before} then {after}')
+        game.pad('lb')
+        time.sleep(SETTLE)
+        back = [row.get('label') for row in game.rows()[:2]]
+        check(back == before, f'it did not move back up: {after} then {back}')
+    finally:
+        game.quit()
+    return check.failures
+
+
 def osk_social(args, name):
     game = Game(args, name, world=True)
     check = Check()
@@ -1984,8 +2251,9 @@ CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': releas
          'controller_settings_keys': controller_settings_keys,
          'controller_notices': controller_notices,
          'every_screen_has_targets': every_screen_has_targets,
-         'pause_icon': pause_icon,
+         'studio_rows': studio_rows, 'pause_icon': pause_icon,
          'erase_checkbox': erase_checkbox,
+         'extras_shell': extras_shell,
          'glyph_art': glyph_art,
          'glyph_art_world': glyph_art_world,
          'key_row_a_x': key_row_a_x,
@@ -1994,6 +2262,11 @@ CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': releas
          'prompt_keeps_typing': prompt_keeps_typing,
          'prompt_keeps_crosshair': prompt_keeps_crosshair,
          'osk_social': osk_social,
+         'osk_book': osk_book,
+         'recipe_search_keyboard': recipe_search_keyboard,
+         'chat_suggestion_rows': chat_suggestion_rows,
+         'server_list_bumpers': server_list_bumpers,
+         'osk_sign': osk_sign,
          'osk_debug_options': osk_debug_options,
          'osk_command_block': osk_command_block,
          'osk_jigsaw': osk_jigsaw,
