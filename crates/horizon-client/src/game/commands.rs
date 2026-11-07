@@ -3633,7 +3633,9 @@ impl Game<'_> {
                         _ => false,
                     }
                 }
-                _ => present.is_some(),
+                // Count is a pseudo-component, not a catalog component.
+                _ if id == "minecraft:count" => present.is_some(),
+                _ => self.stack_component_present(stack, &id),
             };
             result != negated
         };
@@ -3641,6 +3643,23 @@ impl Game<'_> {
             .iter()
             .filter(|t| !t.trim().is_empty())
             .all(|term| split_top_level(term, '|').iter().any(|alt| test(alt)))
+    }
+    /// `ItemPredicateArgument.createComponentExistencePredicate`: the stack's
+    /// effective component presence, with its patch ahead of its prototype.
+    fn stack_component_present(&self, stack: &ItemStack, id: &str) -> bool {
+        // Read the modeled patch before saved-default elision. A removal wins
+        // even when the actual item prototype supplies the component.
+        if let Some(patch) = horizon_client::item_data::components_tag(stack.damage, stack.data()) {
+            if patch.get(&format!("!{id}")).is_some() {
+                return false;
+            }
+            if patch.get(id).is_some() {
+                return true;
+            }
+        }
+        self.items()
+            .get(&stack.item)
+            .is_some_and(|item| item.components.iter().any(|key| key == id))
     }
     fn cmd_clear(&mut self, ctx: &Context) -> R<i32> {
         let targets = if ctx.get("targets").is_some() {
@@ -4718,5 +4737,128 @@ mod query_feedback_tests {
         assert!(game.run_command("scoreboard players get #t q"));
         let lines = game.chat_capture.take().unwrap();
         assert!(lines[0].plain().contains("1234"), "{:?}", lines[0].plain());
+    }
+}
+
+#[cfg(test)]
+mod effective_presence_tests {
+    use super::super::native_machines::tests::server_game;
+    use super::*;
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and scratch homes/cwd"]
+    fn registered_presence_uses_actual_catalog_and_stack_patch() {
+        let mut game = server_game();
+        game.build_registries();
+        game.set_allow_commands(true);
+        let key = "minecraft:jukebox_playable";
+        assert!(
+            game.items()
+                .get("minecraft:music_disc_cat")
+                .unwrap()
+                .components
+                .iter()
+                .any(|k| k == key)
+        );
+        assert!(
+            !game
+                .items()
+                .get("minecraft:stone")
+                .unwrap()
+                .components
+                .iter()
+                .any(|k| k == key)
+        );
+        assert!(game.run_command("forceload add 0 0 15 15"));
+        assert!(game.world.loaded(4, 4));
+        assert!(game.run_command("setblock 4 199 4 stone"));
+        assert!(game.run_command("setblock 4 200 4 chest{Items:[{Slot:0b,id:\"minecraft:music_disc_cat\",count:1},{Slot:1b,id:\"minecraft:stone\",count:1},{Slot:2b,id:\"minecraft:stone\",count:1,components:{\"minecraft:jukebox_playable\":\"minecraft:cat\",\"minecraft:custom_data\":{h193:1}}},{Slot:3b,id:\"minecraft:music_disc_cat\",count:1,components:{\"!minecraft:jukebox_playable\":{},\"minecraft:custom_data\":{h193:1}}}]}"));
+        assert!(game.run_command("scoreboard objectives add h193 dummy"));
+        let clock = game.world.game_time;
+        let horizon_client::containers::BlockEntity::Chest(stacks) =
+            game.world.block_entities.get(&(4, 200, 4)).unwrap()
+        else {
+            panic!("actual chest missing")
+        };
+        let stacks = stacks.clone();
+        assert_eq!(stacks.len(), 27);
+        assert!(
+            stacks[0].as_ref().unwrap().extra.is_none(),
+            "plain modeled stack has no patch"
+        );
+        assert!(
+            stacks[2]
+                .as_ref()
+                .unwrap()
+                .extra
+                .as_ref()
+                .unwrap()
+                .other(key)
+                .is_some()
+        );
+        assert!(
+            stacks[3]
+                .as_ref()
+                .unwrap()
+                .extra
+                .as_ref()
+                .unwrap()
+                .other("!minecraft:jukebox_playable")
+                .is_some()
+        );
+        let saved = game.block_entity_nbt([4, 200, 4]).unwrap();
+        let mut failures = Vec::new();
+        for (slot, present) in [true, false, true, false].into_iter().enumerate() {
+            let stack = stacks[slot].as_ref().unwrap();
+            assert_eq!(stack.count, 1);
+            for neg in [false, true] {
+                let expected = present != neg;
+                let term = format!("{}minecraft:jukebox_playable", if neg { "!" } else { "" });
+                let predicate = ItemInput {
+                    id: String::new(),
+                    tag: false,
+                    any: true,
+                    components: Some(format!("[{term}]")),
+                };
+                if game.stack_matches(&predicate, stack) != expected {
+                    failures.push(format!("direct slot{slot} {term}"));
+                }
+                for sign in ["if", "unless"] {
+                    for (name, n) in [("r", 91), ("s", 17)] {
+                        assert!(
+                            game.run_command(&format!("scoreboard players set #{name} h193 {n}"))
+                        );
+                    }
+                    let accepted = game.run_command(&format!("execute store result score #r h193 store success score #s h193 {sign} items block 4 200 4 container.{slot} *[{term}]"));
+                    let yes = if sign == "if" { expected } else { !expected };
+                    let score = |name| game.score.board.score(name, "h193").unwrap().value;
+                    if (accepted, score("#r"), score("#s")) != (yes, i32::from(yes), i32::from(yes))
+                    {
+                        failures.push(format!("command slot{slot} {sign} {term}"));
+                    }
+                }
+            }
+        }
+        let plain = ItemStack::new("minecraft:music_disc_cat", 1);
+        assert!(plain.extra.is_none());
+        let p = ItemInput {
+            id: String::new(),
+            tag: false,
+            any: true,
+            components: Some("[minecraft:jukebox_playable]".into()),
+        };
+        if !game.stack_matches(&p, &plain) {
+            failures.push("no-raw modeled prototype".into());
+        }
+        assert_eq!(
+            game.block_entity_nbt([4, 200, 4]).unwrap(),
+            saved,
+            "read-only saved inventory"
+        );
+        assert_eq!(game.world.game_time, clock, "zero actor ticks");
+        assert!(game.world.loaded(4, 4));
+        assert!(
+            failures.is_empty(),
+            "actual effective component presence mismatches: {failures:?}"
+        );
     }
 }
