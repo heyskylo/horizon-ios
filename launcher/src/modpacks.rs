@@ -9,6 +9,7 @@
 use crate::backend;
 use crate::browser::horizon::pack as horizon_pack;
 use horizon_port_pack::{
+    datapacks,
     fetch::{Fetched, How},
     import::Pack,
     pipeline::{self, Log},
@@ -56,11 +57,13 @@ pub struct Imported {
     pub resourcepacks: usize,
     /// Index-listed resource packs the port step can obtain (separate from Java mods).
     pub indexed_resources: usize,
+    /// Data packs from jars that hold nothing else; new worlds in the profile start with them.
+    pub datapacks: usize,
 }
 
 impl Imported {
     pub fn can_play(&self) -> bool {
-        !self.mods.is_empty() || self.resourcepacks > 0
+        !self.mods.is_empty() || self.resourcepacks > 0 || self.datapacks > 0
     }
     pub fn can_port(&self) -> bool {
         self.portable > 0 || self.indexed_resources > 0
@@ -249,6 +252,7 @@ pub fn load(work: &Path) -> Result<Imported, String> {
     Ok(Imported {
         resourcepacks,
         indexed_resources,
+        datapacks: datapacks::installed(work),
         slug: work
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -347,9 +351,9 @@ pub fn outcome(pack: &Imported) -> String {
     let not = pack.count(Status::NotYet);
     format!(
         "{} is imported{}: {} of its {} files carried over ({} ported, {} partly), {} don't \
-         yet, {} aren't needed{}. {} resource packs available; enable them in Resource Packs. Its list says why.",
+         yet, {} aren't needed{}. {} resource packs available; enable them in Resource Packs. {} data packs on in new worlds. Its list says why.",
         pack.title(),
-        if pack.mods.is_empty() {
+        if pack.mods.is_empty() && pack.datapacks == 0 {
             ""
         } else {
             " and ported"
@@ -365,6 +369,7 @@ pub fn outcome(pack: &Imported) -> String {
             n => format!("; {n} are left off (listed under the pack)"),
         },
         pack.resourcepacks,
+        pack.datapacks,
     )
 }
 
@@ -393,8 +398,14 @@ pub fn apply_profile(cmd: &mut Command, work: &Path) -> Result<(), String> {
     }
     // Only mods that load together: the game would refuse the later of two sharing a namespace.
     let (mods, _) = pipeline::loadable(&carried(work));
-    if mods.is_empty() && resourcepacks::available(work).is_empty() {
-        return Err("No content mods or resource packs are available: port the pack first.".into());
+    if mods.is_empty()
+        && resourcepacks::available(work).is_empty()
+        && datapacks::installed(work) == 0
+    {
+        return Err(
+            "No content mods, data packs or resource packs are available: port the pack first."
+                .into(),
+        );
     }
     prepare_resourcepacks(work);
     let home = profile_home(work);
@@ -541,6 +552,34 @@ mod tests {
             .any(|l| l.contains("Conflict") && l.contains("look.zip")));
         assert!(outcome(&pack).contains("2 resource packs available"));
         apply_profile(&mut Command::new("true"), &work).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_profile_with_only_data_packs_plays_and_its_game_folder_holds_them() {
+        let root = std::env::temp_dir().join(format!(
+            "horizon-launcher-datapack-profile-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let work = root.join("ports/sky");
+        fs::create_dir_all(&work).unwrap();
+        pipeline::write_json(&work.join("pack.json"), &Pack::default()).unwrap();
+        assert!(!load(&work).unwrap().can_play());
+        let pack = datapacks::folder(&work).join("void");
+        fs::create_dir_all(&pack).unwrap();
+        fs::write(pack.join("pack.mcmeta"), b"{}").unwrap();
+        let p = load(&work).unwrap();
+        assert!(p.can_play());
+        assert_eq!(p.datapacks, 1);
+        assert!(outcome(&p).contains("1 data packs on in new worlds"));
+        let mut cmd = Command::new("true");
+        apply_profile(&mut cmd, &work).unwrap();
+        assert_eq!(cmd.get_args().count(), 0);
+        // The game finds them in its game folder, the profile's home.
+        let home = profile_home(&work);
+        assert_eq!(cmd.get_current_dir(), Some(home.as_path()));
+        assert!(pack.starts_with(&home));
         fs::remove_dir_all(root).unwrap();
     }
 
