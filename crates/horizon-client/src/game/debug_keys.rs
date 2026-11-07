@@ -15,11 +15,26 @@ use horizon_client::{
 use horizon_core::geometry::{Axis, Vec3};
 use horizon_protocol::packets::play::{BlockEntityTagQuery, EntityTagQuery, Serverbound};
 use horizon_world::nbt::Tag;
+use std::time::{Duration, Instant};
 use winit::keyboard::KeyCode;
 
 /// `ChatFormatting.YELLOW` and `RED`.
 const YELLOW: u32 = 0xFF_FF55;
 const RED: u32 = 0xFF_5555;
+
+/// The overlay's CPU name. Reading it can start a process (`reg`, `sysctl`), which the render
+/// thread shouldn't wait for, so [`warm_debug_cpu`] reads it ahead.
+static DEBUG_CPU: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Reads the overlay's CPU name in the background when the window opens, for F3's first frame.
+pub(super) fn warm_debug_cpu() {
+    // A thread that can't start only leaves the read to that first frame.
+    let _ = std::thread::Builder::new()
+        .name("debug-cpu-name".into())
+        .spawn(|| {
+            DEBUG_CPU.get_or_init(horizon_client::crash::cpu);
+        });
+}
 
 /// The game as `KeyboardHandler` sees it while it runs one key event.
 struct Host<'g, 'a> {
@@ -67,9 +82,6 @@ impl Game<'_> {
     /// own handling. Returns true when it is used up (a debug combination,
     /// F3 itself, F3+Escape).
     pub(super) fn debug_key(&mut self, key: KeyCode, action: KeyAction) -> bool {
-        if self.title.is_some() {
-            return false;
-        }
         let Some(name) = keybinds::key_name(key) else {
             return false;
         };
@@ -292,7 +304,8 @@ impl Game<'_> {
     }
     /// `DebugScreenOverlay.extractRenderState`: the enabled entries' lines
     /// (`debug-profile.json`), at the debug GUI scale, and the charts while
-    /// the overlay is open. F1 hides it unless a screen is open.
+    /// the overlay is open. F1 hides it unless a screen is open. Horizon paints
+    /// it 20 times a second and copies those vertices in between.
     pub(super) fn draw_debug_overlay_under(&self, batch: &mut HudBatch, size: [u32; 2]) {
         let screen_open = self.screen != Screen::Playing;
         let reduced = self.reduced_debug_info();
@@ -300,8 +313,19 @@ impl Game<'_> {
             || !self.debug_entries.any_enabled(self.debug, reduced)
             || (self.ui.hide_gui && !screen_open)
         {
+            // Nothing reads the server's lines now: it stops computing them each tick.
+            if let Some(server) = &self.integrated {
+                server.request_debug(None);
+            }
             return;
         }
+        let now = Instant::now();
+        let layout = (size, batch.scale.to_bits(), self.gui.atlas.font.epoch());
+        if let Some(vertices) = self.debug_paint.borrow().fresh(now, layout) {
+            batch.vertices.extend_from_slice(vertices);
+            return;
+        }
+        let first_vertex = batch.vertices.len();
         let framebuffer = size.map(|v| v as i32);
         let (scale, [width, height]) = debug_overlay::scale(
             framebuffer,
@@ -346,6 +370,33 @@ impl Game<'_> {
             draws.push(hud_layout::GuiDraw::Pop);
         }
         hud_layout::paint(batch, atlas, &draws);
+        self.debug_paint
+            .borrow_mut()
+            .store(now, layout, &batch.vertices[first_vertex..]);
+    }
+    /// Whether the overlay is listing GPU pass times (its `system_specs` lines), the only reason
+    /// it has to time passes.
+    pub(super) fn debug_lists_gpu_passes(&self) -> bool {
+        self.debug
+            && self.title.is_none()
+            && !(self.ui.hide_gui && self.screen == Screen::Playing)
+            && self.debug_entry("system_specs")
+    }
+    /// The monitor's refresh rate in millihertz, asked of the OS at most once a second (on
+    /// Windows, winit calls `EnumDisplaySettingsExW` each time).
+    fn debug_refresh_rate(&self) -> Option<u32> {
+        if let Some((at, rate)) = self.debug_refresh.get()
+            && at.elapsed() < Duration::from_secs(1)
+        {
+            return rate;
+        }
+        let rate = self
+            .window
+            .as_ref()
+            .and_then(|w| w.current_monitor())
+            .and_then(|m| m.refresh_rate_millihertz());
+        self.debug_refresh.set(Some((Instant::now(), rate)));
+        rate
     }
     /// `DebugEntryFps`.
     pub(super) fn debug_fps_line(&self, d: &mut debug_overlay::Displayer) {
@@ -360,14 +411,9 @@ impl Game<'_> {
                 wgpu::PresentMode::FifoRelaxed => " (fifo relaxed)",
                 _ => "",
             });
-        let refresh = self
-            .window
-            .as_ref()
-            .and_then(|w| w.current_monitor())
-            .and_then(|m| m.refresh_rate_millihertz())
-            .map_or("0".into(), |mhz| {
-                debug_overlay::refresh_rate_label(f64::from(mhz) / 1000.0)
-            });
+        let refresh = self.debug_refresh_rate().map_or("0".into(), |mhz| {
+            debug_overlay::refresh_rate_label(f64::from(mhz) / 1000.0)
+        });
         // Horizon: with frame generation running, the frames reaching the screen too.
         let generated = self
             .renderer
@@ -423,12 +469,11 @@ impl Game<'_> {
         framebuffer: [i32; 2],
     ) {
         if let Some(r) = self.renderer.as_ref() {
-            static CPU: std::sync::OnceLock<String> = std::sync::OnceLock::new();
             d.group(
                 "system",
                 [format!(
                     "CPU: {}",
-                    CPU.get_or_init(horizon_client::crash::cpu)
+                    DEBUG_CPU.get_or_init(horizon_client::crash::cpu)
                 )],
             );
             let info = &r.info;
@@ -448,7 +493,8 @@ impl Game<'_> {
             );
             if let Some(w) = self.window.as_ref() {
                 let density = w.scale_factor();
-                let logical = w.inner_size().to_logical::<f64>(density);
+                let logical = winit::dpi::PhysicalSize::new(framebuffer[0], framebuffer[1])
+                    .to_logical::<f64>(density);
                 d.group(
                     "system",
                     [format!(
@@ -713,6 +759,9 @@ impl Game<'_> {
                 self.debug_charts.toggle_lightmap(&mut self.debug);
                 true
             }
+            // The debug options screen is not wired over the title screen yet:
+            // leave F6 unhandled there rather than half-open it.
+            DebugAction::DebugOptions if self.title.is_some() => false,
             DebugAction::DebugOptions => {
                 self.toggle_debug_options();
                 true
@@ -802,7 +851,7 @@ impl Game<'_> {
             "client"
         };
         if self.entity_targeted()
-            && let Some((index, _)) = self.mob_hit()
+            && let Some((index, _, _)) = self.mob_hit()
         {
             let (kind, position, id) = {
                 let m = &self.mobs[index];

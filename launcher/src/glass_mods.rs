@@ -79,15 +79,34 @@ impl Launcher {
                 })),
             );
         }
-        let header = div()
-            .flex()
-            .items_end()
-            .justify_between()
-            .gap(px(20.))
-            .pt(px(40. - crate::glass::CONTENT_INSET))
-            .mb(px(28.))
-            .child(head.min_w_0())
-            .child(tabs);
+        let wide = self.window_width >= crate::glass_home::SIDE_BY_SIDE;
+        let header = if wide {
+            div()
+                .flex()
+                .flex_row()
+                .items_end()
+                .justify_between()
+                .gap(px(20.))
+                .pt(px(40. - crate::glass::CONTENT_INSET))
+                .mb(px(28.))
+                .child(head.min_w_0())
+                .child(tabs)
+        } else {
+            div()
+                .flex()
+                .flex_col()
+                .items_start()
+                .gap(px(16.))
+                .pt(px(40. - crate::glass::CONTENT_INSET))
+                .mb(px(28.))
+                .child(head.w_full().min_w_0())
+                .child(
+                    tabs.id("mods-kind-tabs")
+                        .w_full()
+                        .overflow_x_scroll()
+                        .on_scroll(|_, _, cx| cx.stop_propagation()),
+                )
+        };
 
         // Installation can pause for consent in either view. Keep the notice before
         // the project or results, rather than below a potentially long detail card.
@@ -166,15 +185,15 @@ impl Launcher {
         let detail = self.glass_mod_detail(&instance, cx).map(|d| {
             let down = self.mods_sticky.offset(&self.content_scroll.handle);
             d.flex_none()
-                .w(px(DETAIL))
-                .top(px(down))
+                .when(wide, |d| d.w(px(DETAIL)).top(px(down)))
+                .when(!wide, |d| d.w_full())
                 .child(self.mods_sticky.panel())
         });
         let cards = div()
             .relative()
             .flex()
-            .items_start()
-            .gap(px(10.))
+            .when(wide, |d| d.flex_row().items_start().gap(px(10.)))
+            .when(!wide, |d| d.flex_col().gap(px(10.)))
             .child(self.mods_sticky.row(&self.content_scroll.handle))
             .child(list)
             .children(detail);
@@ -540,7 +559,9 @@ impl Launcher {
         if !p.author.is_empty() {
             by.push(trf("by {author}", &[("author", &p.author)]));
         }
-        by.push(trf("from {source}", &[("source", p.source.label())]));
+        if let Some(source) = p.source.shown_for(&p.id) {
+            by.push(trf("from {source}", &[("source", source)]));
+        }
         if !p.license.is_empty() {
             by.push(p.license.clone());
         }

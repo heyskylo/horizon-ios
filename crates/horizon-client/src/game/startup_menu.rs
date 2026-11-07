@@ -45,8 +45,14 @@ pub(super) struct StartupMenu {
     key_synthetic: bool,
     /// The screen the keyboard's focus is on (`key_screen`).
     key_screen: u64,
+    /// The screen (`Self::key_screen`) the title's click focus belongs to:
+    /// another one in front drops it, as `Gui.setScreen` drops the focus of
+    /// the screen it leaves (`Screen.clearFocus`).
+    focus_screen: u64,
     pub pending: Option<PendingWorldEntry>,
     pub reload_packs: bool,
+    /// Browse mods' worker (`mod_browser`).
+    mod_jobs: super::mod_browser::Jobs,
     pub perf: horizon_client::telemetry::Session,
 }
 
@@ -417,7 +423,18 @@ impl Loading {
                 }
             }
         }
+        self.drive_menu_mod_browser();
         self.restart_menu_resources()
+    }
+    /// The startup menu's Browse mods, as `Game::drive_mod_browser`.
+    fn drive_menu_mod_browser(&mut self) {
+        let menu = &mut self.menu;
+        if menu
+            .mod_jobs
+            .poll(&mut menu.options.mod_browser, &mut self.settings.mods)
+        {
+            self.settings.save(&Game::options_path());
+        }
     }
     pub(super) fn apply_menu_settings(&mut self) {
         if let Some(renderer) = &mut self.renderer {
@@ -559,7 +576,24 @@ impl Loading {
                     let _ = std::fs::create_dir_all(&dir);
                     packs::open_folder(&dir);
                 }
+                Event::BrowseMods => {
+                    let ui = &mut self.menu.options.mod_browser;
+                    self.menu.mod_jobs.browse(ui, Game::game_dir());
+                }
+                Event::InstallMod(id) => {
+                    let ui = &mut self.menu.options.mod_browser;
+                    self.menu.mod_jobs.install(ui, Game::game_dir(), id);
+                }
+                Event::OpenModPage(url) => packs::open_uri(&url),
                 Event::ListShaderPacks => {
+                    let (key, _) = horizon_client::shader_pack_list::resolve(
+                        &Game::shader_packs_dir(),
+                        &self.settings.horizon.shader_pack,
+                    );
+                    if key != self.settings.horizon.shader_pack {
+                        self.settings.horizon.shader_pack = key;
+                        self.save_menu_settings();
+                    }
                     self.settings.shader_packs =
                         horizon_client::shader_pack_list::scan(&Game::shader_packs_dir());
                 }
@@ -611,7 +645,8 @@ impl Loading {
                     super::packs::open_uri(super::options::ACCESSIBILITY_HELP_LINK)
                 }
                 // Mods' settings pages open only in a running game.
-                Event::NativeSettings(_) | Event::NativeButton(..) => {}
+                // The HUD editor needs a world: its button is inactive here.
+                Event::NativeSettings(_) | Event::NativeButton(..) | Event::HudEditor => {}
                 // The startup menu runs before the game opens a control socket,
                 // and before its sound engine (no clicks, no volume previews,
                 // and no music tracks to list or play).
@@ -1172,6 +1207,16 @@ impl Loading {
             horizon_client::ui_theme::draw_boot(&self.boot, batch, &logs);
             return;
         };
+        // `Gui.setScreen` clears the focus of the screen it leaves
+        // (`Screen.clearFocus`): the title behind the options, and the one
+        // that comes back, start with no button highlighted.
+        let screen = self.menu.key_screen();
+        if super::pad_menu::another_screen_is_front(&mut self.menu.focus_screen, screen) {
+            self.menu.options.clear_click_focus();
+            if let Some(title) = self.menu.title.as_mut() {
+                title.focused_button = None;
+            }
+        }
         if self.menu.pending.is_some() {
             horizon_client::level_loading::draw_loading_overlay(
                 batch,

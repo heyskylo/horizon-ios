@@ -371,6 +371,8 @@ impl Game<'_> {
                     a.fired_from_weapon = Some(weapon.clone());
                     a.pierce = pierce;
                 }
+                // Flame: the arrow is spawned burning (EnchantmentHelper.onProjectileSpawned).
+                self.ignite_spawned_arrow(&weapon, &mut arrow);
                 arrow.shoot(&mut self.world.random, dir.to_array(), power, 1.0);
                 self.add_projectile(arrow);
                 let (player, name, projectile) = (
@@ -486,6 +488,39 @@ mod tests {
             .map(|s| s.position)
             .collect();
         assert_eq!(at, vec![feet]);
+    }
+
+    /// `AbstractArrow`'s constructor runs `EnchantmentHelper.onProjectileSpawned`
+    /// for the weapon the arrow is fired from, bow or crossbow, so a Flame
+    /// crossbow shoots burning arrows: Flame's 5 second ignite, 100 ticks, on
+    /// every arrow of a Multishot volley (#10482).
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_flame_crossbow_shoots_burning_arrows() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let (mut game, _) = game_with_player(&root);
+        // Shoots a crossbow with `enchantments` and one arrow loaded per shot,
+        // and returns how long each new arrow burns for.
+        let mut shoot = |enchantments: &[&str], shots: usize| -> Vec<i32> {
+            let mut crossbow = ItemStack::new(CROSSBOW, 1);
+            for id in enchantments {
+                crossbow.enchant(id, 1);
+            }
+            crossbow.data_mut().charged = vec![ItemStack::new(ARROW, 1); shots];
+            *game.held_mut() = Some(crossbow);
+            let before = game.creatures.projectiles.len();
+            game.shoot_crossbow();
+            game.creatures.projectiles[before..]
+                .iter()
+                .map(|p| p.arrow.as_ref().expect("an arrow").fire_ticks)
+                .collect()
+        };
+        assert_eq!(shoot(&[], 1), vec![0]);
+        assert_eq!(shoot(&["minecraft:flame"], 1), vec![100]);
+        assert_eq!(
+            shoot(&["minecraft:flame", "minecraft:multishot"], 3),
+            vec![100; 3]
+        );
     }
 
     /// A charge that crosses a point between two ticks plays that point's

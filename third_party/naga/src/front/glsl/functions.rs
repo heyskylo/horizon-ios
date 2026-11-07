@@ -352,6 +352,40 @@ impl Frontend {
                     }
                 }
             }
+            // A vector with a component for each of the matrix's (`mat2(vec4)`) fills it column
+            // by column, as several arguments do (GLSL 4.60, 5.4.2).
+            TypeInner::Vector { size, .. } if size as u32 >= columns as u32 * rows as u32 => {
+                let vector_ty = ctx.module.types.insert(
+                    Type {
+                        name: None,
+                        inner: TypeInner::Vector {
+                            size: rows,
+                            scalar: element_scalar,
+                        },
+                    },
+                    meta,
+                );
+                for c in 0..columns as u32 {
+                    let column = (0..rows as u32)
+                        .map(|r| {
+                            ctx.add_expression(
+                                Expression::AccessIndex {
+                                    base: value,
+                                    index: c * rows as u32 + r,
+                                },
+                                meta,
+                            )
+                        })
+                        .collect::<Result<_>>()?;
+                    components.push(ctx.add_expression(
+                        Expression::Compose {
+                            ty: vector_ty,
+                            components: column,
+                        },
+                        meta,
+                    )?);
+                }
+            }
             _ => {
                 components = iter::repeat_n(value, columns as usize).collect();
             }

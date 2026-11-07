@@ -130,7 +130,7 @@ passes on without checking it).
 | Open to LAN | Pause > Open to LAN | part | no | yes | yes | `lan open\|close\|status` |
 | Play with Friends: host, stop, status | Pause | part | no | yes | yes | `friends host\|stop\|status` |
 | Vanilla options, every page | Options | yes | part | yes | yes | `options-get`, `options-set` (all of options.txt, typed); `options PAGE` was socket-only |
-| Horizon Settings: Graphics, Controller, Extras, Mods, AI Agent | Horizon Settings | part | part | yes | yes | `options horizon\|graphics\|extras\|agent...`, then `ui`/`click`/`set` |
+| Horizon Settings: Extras, PvP & HUD, AI Agent; the graphics screen (Video Settings); Controller (Controls) | Horizon Settings, Video Settings, Controls | part | part | yes | yes | `options horizon\|graphics\|extras\|agent...`, then `ui`/`click`/`set` |
 | Agent control on or off, status, connection details | Horizon Settings > AI Agent | no | no | yes | yes | new page (#1353) |
 | Key binds | Controls > Key Binds | yes | yes | yes | yes | `options-set key_key.jump key.keyboard.j` |
 | Resource packs | Options > Resource Packs | part | part | yes | yes | `options packs`, then `ui` rows and `click`; `options-set resourcePacks` |
@@ -398,7 +398,8 @@ of the frame ([#8750](https://github.com/horizon-rust/horizon/issues/8750)).
   mob AI during a step, can differ when other server work drew on them first, and ids follow the
   order the server loads and creates entities in, which loading changes from run to run. What an
   id seeds can then differ: a minecart's offset against z-fighting, a mob's client random. Give
-  facings and variants in the command (`{Rotation:[0f,0f]}`) for a repeatable scene.
+  facings and variants in the command (`{Rotation:[0f,0f]}`) for a repeatable scene. An end
+  crystal's spin and bob start from its position instead, so they are the same in every run.
 - A script should wait until the world has loaded before it changes it: a command that acts on
   what is loaded (`kill @e`, `fill`) finds more or less of it otherwise.
 - The player still ticks while frozen, as in vanilla: stand the player on a block (it falls

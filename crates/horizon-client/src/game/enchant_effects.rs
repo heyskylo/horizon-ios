@@ -11,6 +11,7 @@ use horizon_client::{
     enchant::{EffectContext, Enchantments, level_value},
     items::ItemStack,
     mobs::Who,
+    projectiles::Projectile,
 };
 use horizon_core::{position::BlockPos, random::RandomSource};
 use horizon_world::{fluid::FluidKind, level::LevelAccess, registry::BlockStateId};
@@ -654,17 +655,27 @@ impl Game<'_> {
             ) == 0.0;
         (f64::from(power), infinity)
     }
-    /// `EnchantmentHelper.onProjectileSpawned` ignite effects of the held bow
-    /// (flame): the seconds the new arrow burns for.
-    pub(super) fn bow_projectile_ignite(&mut self) -> Option<f32> {
-        let bow = self.held().cloned()?;
+    /// `EnchantmentHelper.onProjectileSpawned`, which `AbstractArrow`'s
+    /// constructor runs for every arrow fired from a weapon, bow or crossbow:
+    /// the weapon's `projectile_spawned` ignite effects (Flame) spawn the arrow
+    /// burning.
+    pub(super) fn ignite_spawned_arrow(&mut self, weapon: &ItemStack, arrow: &mut Projectile) {
+        if let Some(seconds) = self.projectile_spawned_ignite(weapon)
+            && let Some(a) = arrow.arrow.as_mut()
+        {
+            a.ignite_for_seconds(seconds);
+        }
+    }
+    /// The `projectile_spawned` ignite effects of `weapon` (Flame): the seconds
+    /// the new arrow burns for, the longest when several apply.
+    fn projectile_spawned_ignite(&mut self, weapon: &ItemStack) -> Option<f32> {
         let ctx = EffectContext {
             this: Some("minecraft:arrow"),
             items: Some(world_items!(self)),
             ..Default::default()
         };
         let mut ignite: Option<f32> = None;
-        for (id, level) in bow.enchantments() {
+        for (id, level) in weapon.enchantments() {
             let Some(def) = world_stations!(self).enchantments.get(id) else {
                 continue;
             };
@@ -829,16 +840,26 @@ impl Game<'_> {
         let at = [p.position.x, p.position.y, p.position.z];
         let on_ground = p.ground.on_ground;
         let cell = |v: [f64; 3]| v.map(|c| c.floor() as i32);
-        if cell(from) == cell(at) && !(on_ground && !was_on_ground) {
+        // LivingEntity.collectEquipmentChanges: newly worn armor runs its
+        // location_changed effects at once, even when standing still.
+        let changed = armor_changes(&mut self.location_armor, &self.armor);
+        let moved = cell(from) != cell(at) || (on_ground && !was_on_ground);
+        if !moved && !changed.iter().any(|c| *c) {
             return;
         }
         let riding = self.riding.is_some();
-        let disks = location_disks(
-            &self.stations().enchantments,
-            self.armor.iter().zip(["head", "chest", "legs", "feet"]),
-            on_ground,
-            riding,
-        );
+        let slots = ["head", "chest", "legs", "feet"];
+        let mut disks = Vec::new();
+        for i in 0..4 {
+            if moved || changed[i] {
+                disks.extend(location_disks(
+                    &self.stations().enchantments,
+                    std::iter::once((&self.armor[i], slots[i])),
+                    on_ground,
+                    riding,
+                ));
+            }
+        }
         for (effect, level) in disks {
             self.replace_disk(&effect, level, at, Who::Player);
         }
@@ -1171,9 +1192,43 @@ fn location_requirements(req: &Value, on_ground: bool, riding: bool) -> bool {
     }
 }
 
+/// `LivingEntity.collectEquipmentChanges`: which armor slots differ from the
+/// `snapshot` taken at the last look, which is then brought up to date.
+fn armor_changes(
+    snapshot: &mut [Option<ItemStack>; 4],
+    armor: &[Option<ItemStack>; 4],
+) -> [bool; 4] {
+    let changed: [bool; 4] = std::array::from_fn(|i| armor[i] != snapshot[i]);
+    // Only a changed slot is copied: the check runs every tick for every player.
+    for ((kept, worn), changed) in snapshot.iter_mut().zip(armor).zip(changed) {
+        if changed {
+            kept.clone_from(worn);
+        }
+    }
+    changed
+}
+
 #[cfg(test)]
 mod tests {
-    use super::block_break_speed_factor;
+    use super::{armor_changes, block_break_speed_factor};
+    use horizon_client::items::ItemStack;
+
+    /// The snapshot reports a newly worn piece once, then settles.
+    #[test]
+    fn armor_changes_settle_after_one_look() {
+        let worn = [
+            None,
+            None,
+            None,
+            Some(ItemStack::new("minecraft:iron_boots", 1)),
+        ];
+        let mut snapshot: [Option<ItemStack>; 4] = Default::default();
+        assert_eq!(
+            armor_changes(&mut snapshot, &worn),
+            [false, false, false, true]
+        );
+        assert_eq!(armor_changes(&mut snapshot, &worn), [false; 4]);
+    }
 
     /// #4094: `BLOCK_BREAK_SPEED` is a multiplier on the destroy speed.
     #[test]
