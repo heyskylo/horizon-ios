@@ -967,7 +967,6 @@ def minecart_numeric_fields():
         ops += [cmd(f'/data get entity @e[tag={tag},limit=1] {path}')]
     return ops + setup(*[f'/kill @e[tag=cart_num_{i}]' for i in range(len(cases))],
                        '/tick unfreeze', '/forceload remove 0 0 15 15')
-    return ops
 
 
 def snbt_trailing_commas():
