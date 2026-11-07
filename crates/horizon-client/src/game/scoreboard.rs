@@ -391,7 +391,7 @@ impl Game<'_> {
                 }
             }
             if ok && !s.advancements.is_empty() {
-                ok = t == Target::Player && self.advancements_match(&s.advancements);
+                ok = self.advancements_match(t, &s.advancements);
             }
             if ok {
                 pass.insert(t);
@@ -400,21 +400,30 @@ impl Game<'_> {
         pass
     }
 
-    /// `advancements=` of a selector, against the player's progress.
+    /// `advancements=` of a selector, against the selected player's progress.
     fn advancements_match(
         &self,
+        target: Target,
         wanted: &[(String, horizon_client::command::args::AdvCondition)],
     ) -> bool {
         use horizon_client::command::args::AdvCondition;
+        let progress = match target {
+            Target::Player => &self.adv.progress,
+            Target::Guest(conn) => match self.command_guest(conn) {
+                Some(guest) => &guest.advancements,
+                None => return false,
+            },
+            _ => return false,
+        };
         wanted.iter().all(|(id, cond)| {
             let Some(a) = self.adv.tree.get(id) else {
                 return false;
             };
             match cond {
-                AdvCondition::Done(want) => self.adv.progress.done(a) == *want,
+                AdvCondition::Done(want) => progress.done(a) == *want,
                 AdvCondition::Criteria(list) => list.iter().all(|(c, want)| {
                     a.criteria.iter().any(|criterion| criterion.name == *c)
-                        && self.adv.progress.has(id, c) == *want
+                        && progress.has(id, c) == *want
                 }),
             }
         })
@@ -1186,3 +1195,5 @@ mod criterion_tests;
 
 #[cfg(test)]
 mod empty_tag_tests;
+#[cfg(test)]
+mod guest_advancement_tests;
