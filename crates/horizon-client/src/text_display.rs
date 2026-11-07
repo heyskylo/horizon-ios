@@ -344,7 +344,7 @@ pub fn text_display_data(tag: &Tag, all: bool) -> Vec<(u8, i32, Value)> {
 /// `Transformation.EXTENDED_CODEC`'s translation, left rotation, scale and
 /// right rotation: all four parts, or a `MATRIX4F` (sixteen floats, row-major)
 /// that `new Transformation(matrix)` decomposes (`MatrixUtil.svdDecompose`).
-fn transformation(tag: &Tag) -> Option<([f32; 3], [f32; 4], [f32; 3], [f32; 4])> {
+pub fn transformation(tag: &Tag) -> Option<([f32; 3], [f32; 4], [f32; 3], [f32; 4])> {
     use horizon_assets::math::{
         Mat4, normalize_quaternion, quaternion_from_axis_angle, svd_decompose,
     };
