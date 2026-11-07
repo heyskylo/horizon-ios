@@ -392,15 +392,15 @@ impl TreeDecorator {
                 else {
                     return Ok(());
                 };
-                if d.run.random.next_float() < *ground {
-                    if let Some(patch) = patch {
-                        nested(
-                            patch,
-                            d.run.world,
-                            d.run.random,
-                            tb::offset(origin, 0, 1, 0),
-                        )?;
-                    }
+                if d.run.random.next_float() < *ground
+                    && let Some(patch) = patch
+                {
+                    nested(
+                        patch,
+                        d.run.world,
+                        d.run.random,
+                        tb::offset(origin, 0, 1, 0),
+                    )?;
                 }
                 for (positions, chance) in [(&lists.logs, *trunk), (&lists.leaves, *leaves)] {
                     for &pos in positions {
