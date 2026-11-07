@@ -433,6 +433,25 @@ pub enum Entry {
     /// A modifier of a type not ported yet (`ListModifier.append`, `MobSpawnSettingsModifier`
     /// `overlay`): kept, and applying it leaves the value as it was.
     Unported(Json),
+    /// An entry computed when it applies, from the value so far (not vanilla: a resource pack's
+    /// expression). `None` leaves the value as it was.
+    Dynamic(Dynamic),
+}
+
+/// The function behind [`Entry::Dynamic`]; two are equal when they are the same function.
+#[derive(Clone)]
+pub struct Dynamic(pub std::sync::Arc<dyn Fn(&Value) -> Option<Entry> + Send + Sync>);
+
+impl std::fmt::Debug for Dynamic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Dynamic")
+    }
+}
+
+impl PartialEq for Dynamic {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
+    }
 }
 
 /// `BooleanModifier`.
@@ -621,6 +640,10 @@ impl Entry {
         };
         match (self, subject) {
             (Self::Override(v), _) => v.clone(),
+            (Self::Dynamic(f), subject) => match (f.0)(subject) {
+                Some(entry) => entry.apply(subject),
+                None => subject.clone(),
+            },
             (Self::AlphaBlendFloat { value, alpha }, Float(s)) => Float(s + alpha * (value - s)),
             (Self::Add(Float(b)), Float(a)) => Float(a + b),
             (Self::Subtract(Float(b)), Float(a)) => Float(a - b),
