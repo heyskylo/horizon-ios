@@ -2413,6 +2413,7 @@ mod tests {
                 controlling_player_movement: None,
                 nearest_player: None,
                 others: &others,
+                who_lookup: None,
                 dragon: None,
                 leash_boats: &[],
                 others_grid: None,
