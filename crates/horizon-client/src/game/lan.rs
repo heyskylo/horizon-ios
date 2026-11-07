@@ -3307,12 +3307,12 @@ impl Game<'_> {
                     .map(|chunk| (chunk, 1)),
             )
             // A portal ticket keeps the area around the exit loaded and
-            // ticking (its entity-ticking chunks and their neighbours).
-            .chain(
-                self.portal_ticket_chunks(self.dim)
-                    .into_iter()
-                    .map(|chunk| (chunk, 1)),
-            )
+            // ticking (its entity-ticking chunks and their neighbours), and
+            // at least the chunks its expiry waits for (`portal_ticket_can_expire`).
+            .chain(self.portal_tickets_in(self.dim).iter().map(|t| {
+                let entity_ticking = i32::from(horizon_client::ticket_levels::ENTITY_TICKING);
+                (t.chunk, (entity_ticking - t.level).max(1))
+            }))
             .collect();
     }
 

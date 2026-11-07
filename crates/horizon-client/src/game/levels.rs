@@ -18,9 +18,15 @@ use super::{
     ominous_item_spawner, persist, raids::Raiding, sculk::SculkState, tnt, trident,
 };
 use horizon_client::{
-    Result, block_entity_anim::BlockEntityAnims, random_tick_sections::RandomTickSections,
-    save::SaveDir, streaming::Streaming, tick_chunk_membership::TickChunkMembership,
-    ticket_levels::ChunkTickets, vanillagen::VanillaTerrain, world::World,
+    Result,
+    block_entity_anim::BlockEntityAnims,
+    random_tick_sections::RandomTickSections,
+    save::SaveDir,
+    streaming::Streaming,
+    tick_chunk_membership::TickChunkMembership,
+    ticket_levels::{ChunkTickets, PortalTicket},
+    vanillagen::VanillaTerrain,
+    world::World,
 };
 use horizon_world::level::{LevelEvent, Ticks};
 use std::{
@@ -243,6 +249,7 @@ impl Game<'_> {
         world.attachments = save.load_attachments();
         world.shape = self.level_shapes.get(dim.id());
         world.fast_lava = dim == Dim::Nether;
+        let tickets = ChunkTickets::with_saved_portal(save.load_portal_tickets());
         Ok(Parked {
             world,
             streaming,
@@ -250,7 +257,7 @@ impl Game<'_> {
             save,
             block_ticks: Ticks::new(self.level.seed as i32),
             tick_chunks: Default::default(),
-            tickets: Default::default(),
+            tickets,
             random_tick_sections: Default::default(),
             level_events: Vec::new(),
             portal_states: HashMap::new(),
@@ -296,6 +303,30 @@ impl Game<'_> {
             border: self.load_border(dim),
             border_sent: None,
         })
+    }
+
+    /// `MinecraftServer.prepareLevels` activates every level's saved tickets:
+    /// a level holding saved `PORTAL` tickets opens with the world and ticks
+    /// while they hold it (`shouldKeepDimensionActive`).
+    pub(super) fn open_saved_portal_levels(&mut self) -> Result<()> {
+        if self.options.execution_role.is_client() {
+            return Ok(());
+        }
+        let back = self.dim;
+        for dim in [Dim::Overworld, Dim::Nether, Dim::End] {
+            if dim == back || self.levels.parked.contains_key(&dim) {
+                continue;
+            }
+            let save = SaveDir::new(
+                horizon_client::save::dimension_dir(&self.world_root, dim.id()),
+                self.level_shapes.get(dim.id()),
+            );
+            if !save.load_portal_tickets().is_empty() {
+                self.enter_level(None, dim)?;
+                self.enter_level(None, back)?;
+            }
+        }
+        Ok(())
     }
 
     /// Exchange the level in place with `p`.
@@ -735,7 +766,7 @@ impl Game<'_> {
                     || !self.arrival_chunks(*d).is_empty()
                     // A portal ticket keeps its dimension active
                     // (`TicketType.shouldKeepDimensionActive`).
-                    || !self.portal_ticket_chunks(*d).is_empty()
+                    || !self.portal_tickets_in(*d).is_empty()
             })
             .collect();
         if dims.is_empty() {
@@ -744,15 +775,15 @@ impl Game<'_> {
         dims
     }
 
-    /// The chunks holding a portal ticket in `dim`'s level (`placePortalTicket`).
-    pub(super) fn portal_ticket_chunks(&self, dim: Dim) -> Vec<(i32, i32)> {
+    /// The portal tickets of `dim`'s level (`placePortalTicket`, or saved).
+    pub(super) fn portal_tickets_in(&self, dim: Dim) -> &[PortalTicket] {
         if dim == self.dim {
-            self.tickets.portal_chunks().collect()
+            self.tickets.portal_tickets()
         } else {
             self.levels
                 .parked
                 .get(&dim)
-                .map_or_else(Vec::new, |p| p.tickets.portal_chunks().collect())
+                .map_or(&[], |p| p.tickets.portal_tickets())
         }
     }
 
