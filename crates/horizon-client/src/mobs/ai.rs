@@ -1241,14 +1241,24 @@ fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
                 m.air = 300;
             }
         } else {
-            // LivingEntity.baseTick's air supply (LivingBreatheEvent): an
-            // entity with its eyes in water that can't breathe there loses
-            // air, any other gains it.
-            let drowns = m.fluids.eye_in_water && !m.kind.flags.breathes_water;
+            // LivingEntity.baseTick / MobEffectUtil: bubble columns and breathing
+            // effects protect submerged mobs. Nautilus alone holds air rather
+            // than refilling it; Water Breathing or Conduit Power still refill.
+            let submerged = m.fluids.eye_in_water
+                && w.block_name(
+                    m.position.x.floor() as i32,
+                    m.eye_y().floor() as i32,
+                    m.position.z.floor() as i32,
+                ) != "minecraft:bubble_column";
+            let water_breathing = m.has_effect("minecraft:water_breathing")
+                || m.has_effect("minecraft:conduit_power");
+            let nautilus = m.has_effect("minecraft:breath_of_the_nautilus");
+            let drowns = submerged && !m.kind.flags.breathes_water && !water_breathing && !nautilus;
+            let held = submerged && nautilus && !water_breathing;
             let vanilla = Breath {
                 can_breathe: !drowns,
                 consume: 1,
-                refill: if drowns { 0 } else { 4 },
+                refill: if drowns || held { 0 } else { 4 },
             };
             let breath = breathe(m.id, &m.kind.id, vanilla);
             if let Some(drowning) = drown(m.id, &m.kind.id, &mut m.air, breath, true) {
@@ -5272,6 +5282,125 @@ mod flight_effect_fall_tests {
             },
         );
         assert!(ran, "prepared resources must run the integration fixture");
+    }
+}
+
+#[cfg(test)]
+mod breathing_effect_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn breathing_effects_and_bubble_columns_preserve_mob_air() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let ran = crate::mobs::world::with_resource_test_world(
+            &root,
+            &[],
+            true,
+            true,
+            |world, registry| {
+                world
+                    .chunks
+                    .insert((0, 0), Arc::new(crate::chunk::Chunk::empty(0, 0)));
+                for (x0, name) in [(6, "minecraft:water"), (10, "minecraft:bubble_column")] {
+                    let state = registry.default_state(name).unwrap();
+                    for x in x0..=x0 + 1 {
+                        for z in 2..=3 {
+                            for y in 63..=67 {
+                                world.set(x, y, z, state).unwrap();
+                            }
+                        }
+                    }
+                }
+                // Mixed columns distinguish the eye-block query from feet position.
+                for (x0, bubble_at_eye) in [(6, true), (10, false)] {
+                    for x in x0..=x0 + 1 {
+                        for z in 6..=7 {
+                            for y in 63..=67 {
+                                let bubble = (y >= 65) == bubble_at_eye;
+                                let name = if bubble {
+                                    "minecraft:bubble_column"
+                                } else {
+                                    "minecraft:water"
+                                };
+                                world
+                                    .set(x, y, z, registry.default_state(name).unwrap())
+                                    .unwrap();
+                            }
+                        }
+                    }
+                }
+            },
+            |world, types| {
+                let kind = Arc::new(types.types["minecraft:cow"].clone());
+                assert!(!kind.flags.needs_water && !kind.flags.breathes_water);
+                let mut rows = Vec::new();
+                let mut failures = Vec::new();
+                for (scene, x, z) in [
+                    (0, 2.5, 2.5),
+                    (1, 6.5, 2.5),
+                    (2, 10.5, 2.5),
+                    (3, 6.5, 6.5),
+                    (4, 10.5, 6.5),
+                ] {
+                    for mask in 0..8 {
+                        for air in [301, 300, 10, 0, -19, -20, -21] {
+                            let mut mob = Mob::new(1, kind.clone(), Vec3::new(x, 64.0, z), 0.0);
+                            mob.air = air;
+                            for (bit, effect) in [
+                                (1, "minecraft:water_breathing"),
+                                (2, "minecraft:conduit_power"),
+                                (4, "minecraft:breath_of_the_nautilus"),
+                            ] {
+                                if mask & bit != 0 {
+                                    mob.add_effect(effect, 100, 0);
+                                }
+                            }
+                            base_tick(&mut mob, world, &mut Vec::new());
+                            assert_eq!(
+                                mob.fluids.eye_in_water,
+                                scene != 0,
+                                "invalid fixture immersion"
+                            );
+                            rows.push(format!(
+                                "{scene} {mask} {air} {} {:08x}",
+                                mob.air,
+                                mob.health.to_bits()
+                            ));
+                            // Selected independent goldens from the pinned Cow.baseTick
+                            // oracle. The parity harness compares all 280 air/health rows.
+                            let expected = match (scene, mask, air) {
+                                (1, 1, 10)
+                                | (1, 2, 10)
+                                | (1, 5, 10)
+                                | (2, 0, 10)
+                                | (2, 4, 10)
+                                | (0, 4, 10)
+                                | (3, 0, 10) => Some((14, 10.0)),
+                                (1, 4, 10) | (4, 4, 10) => Some((10, 10.0)),
+                                (4, 0, 10) => Some((9, 10.0)),
+                                (1, 0, -19) => Some((0, 8.0)),
+                                _ => None,
+                            };
+                            if let Some(expected) = expected
+                                && (mob.air, mob.health) != expected
+                            {
+                                failures.push((scene, mask, air, mob.air, mob.health));
+                            }
+                        }
+                    }
+                }
+                if let Some(path) = std::env::var_os("HORIZON_MOB_BREATHING_OUTPUT") {
+                    std::fs::write(path, rows.join("\n") + "\n").unwrap();
+                }
+                assert!(failures.is_empty(), "mob air/health differs: {failures:?}");
+            },
+        );
+        assert!(
+            ran,
+            "prepared resources must run the production breathing fixture"
+        );
     }
 }
 
