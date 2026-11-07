@@ -65,8 +65,9 @@ impl Game<'_> {
         for t in self.living_targets(ctx)? {
             let changed = match t {
                 Target::Player | Target::Guest(_) => {
-                    let mut instance = EffectInstance::new(effect.id, duration, amplifier);
-                    instance.visible = particles;
+                    // `new MobEffectInstance(effect, duration, amplifier, false, particles)`.
+                    let instance = EffectInstance::new(effect.id, duration, amplifier)
+                        .with_flags(false, particles);
                     self.for_player(t, |g| g.add_player_effect(instance))
                         .unwrap_or(false)
                 }

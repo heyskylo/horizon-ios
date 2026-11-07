@@ -2,6 +2,7 @@
 name = "horizon-prepare"
 version = "0.1.0"
 edition = "2021"
+rust-version.workspace = true
 license = "MIT"
 description = "Prepares Horizon's resources from the player's own Minecraft: imports and checks the pinned jars, runs the vanilla exporters, writes the resource folder"
 

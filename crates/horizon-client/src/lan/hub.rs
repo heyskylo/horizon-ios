@@ -1437,6 +1437,12 @@ impl Hub {
         // for, to a Horizon client only.
         if g.brand == "horizon" {
             send_recipe_content(g);
+            g.send(&C::CustomPayload(
+                horizon_protocol::packets::configuration::CustomPayload {
+                    channel: super::recipes::TRANSFER_CHANNEL.into(),
+                    data: Vec::new(),
+                },
+            ));
         }
         // PlayerList.sendPlayerPermissionLevel, then the recipe book.
         self.send_permission_level(i);
@@ -5338,6 +5344,108 @@ mod tests {
         bob.dimension = "minecraft:overworld".into();
         hub.guests.push(bob);
         (hub, rx)
+    }
+
+    #[test]
+    fn transient_client_update_fields_reach_all_viewers_once_and_wait_without_viewers() {
+        use crate::containers::{BlockEntity, ModBlockEntity, ModBlockEntityFields};
+        use horizon_world::nbt::Compound;
+        use std::sync::atomic::AtomicUsize;
+        static CONSTRUCTIONS: AtomicUsize = AtomicUsize::new(0);
+        CONSTRUCTIONS.store(0, Ordering::Relaxed);
+        let (mut hub, first) = hub_with_a_guest();
+        let builtin = horizon_protocol::registry::Builtin::parse(
+            r#"{"minecraft:block_entity_type":{"entries":{"test:machine":{"protocol_id":49}}}}"#,
+        )
+        .unwrap();
+        let states = ["minecraft:air", "test:machine"].map(|n| (Arc::<str>::from(n), false));
+        hub.encoder = ChunkEncoder::new(states, &builtin, &[], &[]);
+        hub.encoder.mod_update_tag = Some(|_, entity| {
+            CONSTRUCTIONS.fetch_add(1, Ordering::Relaxed);
+            let mut tag = entity.nbt.clone();
+            tag.extend(entity.take_client_update_fields());
+            Some(tag)
+        });
+        let (pos, retained) = (
+            (1, 64, 3),
+            Compound::from([("progress".into(), Tag::Int(7))]),
+        );
+        let mut world = World::new(horizon_world::registry::BlockStateId(0), 0);
+        let mut chunk = Chunk::empty(0, 0);
+        chunk.set(pos.0, pos.1, pos.2, 1);
+        world.chunks.insert((0, 0), Arc::new(chunk));
+        let mut machine = ModBlockEntity::new(ModBlockEntityFields {
+            id: "test:machine".into(),
+            nbt: retained.clone(),
+            ..Default::default()
+        });
+        let revision = machine.revision();
+        let effects = Tag::List(vec![Tag::Int(23)]);
+        machine.set_client_update_fields(Compound::from([("effects".into(), effects.clone())]));
+        world
+            .block_entities
+            .insert(pos, BlockEntity::Mod(Box::new(machine)));
+        world.block_log = Some(vec![pos]);
+        // No recipient has the chunk yet: an attempted broadcast must not
+        // construct a tag, or consume an effect before a client can see it.
+        hub.broadcast_block_changes(&mut world);
+        assert_eq!(CONSTRUCTIONS.load(Ordering::Relaxed), 0);
+        assert!(first.try_recv().is_err());
+        hub.guests[0].sent_chunks.insert((0, 0));
+        let (tx, second) = std::sync::mpsc::channel();
+        let mut other = Guest::new(
+            crate::lan::Joined {
+                conn: 2,
+                uuid: 2,
+                name: "Ada".into(),
+                properties: Vec::new(),
+                info: horizon_protocol::packets::configuration::ClientInformation::new(8),
+                brand: "vanilla".into(),
+                sender: crate::lan::PlayerSender::new(tx, Arc::default()),
+                latency: Arc::new(std::sync::atomic::AtomicI32::new(0)),
+                address: "127.0.0.1:25566".parse().unwrap(),
+                expected: false,
+                configured: Default::default(),
+            },
+            2,
+            [0.5, 64.0, 0.5],
+            8,
+        );
+        other.placed = true;
+        other.dimension = "minecraft:overworld".into();
+        other.sent_chunks.insert((0, 0));
+        hub.guests.push(other);
+        let tags = |rx: &std::sync::mpsc::Receiver<crate::lan::Out>| {
+            let mut tags = Vec::new();
+            while let Ok(crate::lan::Out::Packet(body)) = rx.try_recv() {
+                let mut r = horizon_protocol::buf::Reader::new(&body);
+                let id = r.varint().unwrap();
+                if let Ok(C::BlockEntityData(packet)) = C::decode(id, r.rest()) {
+                    assert_eq!(packet.pos, [pos.0, pos.1, pos.2]);
+                    tags.push(packet.tag);
+                }
+            }
+            tags
+        };
+        world.block_log.as_mut().unwrap().extend([pos, pos]);
+        hub.broadcast_block_changes(&mut world);
+        let mut expected = retained.clone();
+        expected.insert("effects".into(), effects);
+        for recipient in [&first, &second] {
+            assert_eq!(tags(recipient), [Tag::Compound(expected.clone())]);
+        }
+        assert_eq!(CONSTRUCTIONS.load(Ordering::Relaxed), 1);
+        world.block_log.as_mut().unwrap().push(pos);
+        hub.broadcast_block_changes(&mut world);
+        for recipient in [&first, &second] {
+            assert_eq!(tags(recipient), [Tag::Compound(retained.clone())]);
+        }
+        assert_eq!(CONSTRUCTIONS.load(Ordering::Relaxed), 2);
+        let BlockEntity::Mod(machine) = &world.block_entities[&pos] else {
+            unreachable!();
+        };
+        assert_eq!(machine.revision(), revision);
+        assert_eq!(machine.nbt, retained);
     }
 
     /// `store_mod_commands` keeps a new mod tree without sending it (the
