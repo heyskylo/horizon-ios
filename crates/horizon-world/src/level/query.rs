@@ -218,30 +218,30 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     /// which made a lever on the piston's back pop off when it retracted.
     pub(super) fn support_state(&self, pos: BlockPos) -> BlockStateId {
         let state = self.state(pos);
-        if self.b.is_block(state, self.b.named.moving_piston) {
-            if let Some(piston) = self.moving_piston(pos) {
-                // `PistonMovingBlockEntity.getCollisionShape`: only a piston base.
-                if piston.source
-                    && !piston.extending
-                    && (self.b.is_block(piston.moved_state, self.b.named.piston)
-                        || self
-                            .b
-                            .is_block(piston.moved_state, self.b.named.sticky_piston))
-                {
-                    return self
+        if self.b.is_block(state, self.b.named.moving_piston)
+            && let Some(piston) = self.moving_piston(pos)
+        {
+            // `PistonMovingBlockEntity.getCollisionShape`: only a piston base.
+            if piston.source
+                && !piston.extending
+                && (self.b.is_block(piston.moved_state, self.b.named.piston)
+                    || self
                         .b
-                        .table
-                        .set_bool(piston.moved_state, self.b.props.extended, true);
-                }
-                // The same method for any other moving block: its collision shape
-                // is `movedState.getCollisionShape(..).move(dir * extendedProgress)`,
-                // and `getExtendedProgress` is 0 once progress reaches 1.0, so a
-                // finished-but-not-yet-placed block supports like itself (a wall
-                // coral fan keeps its slime block while the column lands). At 0 or
-                // 0.5 progress the shape is shifted off the cell, a face never full.
-                if !piston.source && piston.progress >= 1.0 {
-                    return piston.moved_state;
-                }
+                        .is_block(piston.moved_state, self.b.named.sticky_piston))
+            {
+                return self
+                    .b
+                    .table
+                    .set_bool(piston.moved_state, self.b.props.extended, true);
+            }
+            // The same method for any other moving block: its collision shape
+            // is `movedState.getCollisionShape(..).move(dir * extendedProgress)`,
+            // and `getExtendedProgress` is 0 once progress reaches 1.0, so a
+            // finished-but-not-yet-placed block supports like itself (a wall
+            // coral fan keeps its slime block while the column lands). At 0 or
+            // 0.5 progress the shape is shifted off the cell, a face never full.
+            if !piston.source && piston.progress >= 1.0 {
+                return piston.moved_state;
             }
         }
         state
