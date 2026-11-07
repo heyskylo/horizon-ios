@@ -2653,10 +2653,9 @@ impl Game<'_> {
         if self.studio_replay.is_some() {
             return true;
         }
-        self.remote.as_ref().is_none_or(|r| {
-            let range = r.view_distance.max(2) + 3;
-            (x - r.chunk_center.0).abs() <= range && (z - r.chunk_center.1).abs() <= range
-        })
+        self.remote
+            .as_ref()
+            .is_none_or(|r| in_storage_range(r.view_distance, r.chunk_center, x, z))
     }
     /// The columns a moved or resized storage no longer holds.
     fn drop_remote_chunks_out_of_range(&mut self) {
@@ -3648,8 +3647,11 @@ impl Game<'_> {
                     r.reduced_debug_info = p.reduced_debug_info;
                     r.do_limited_crafting = p.limited_crafting;
                 }
-                self.streaming.radius =
-                    self.settings.render_distance.min(p.chunk_radius + 1).max(2);
+                self.streaming.radius = self
+                    .settings
+                    .render_distance
+                    .min(p.chunk_radius.saturating_add(1))
+                    .max(2);
                 // handleLogin: startWaitingForNewLevel(.., Reason.OTHER).
                 self.enter_remote_dimension(
                     &p.spawn,
@@ -5474,7 +5476,11 @@ impl Game<'_> {
                 }
             }
             C::SetChunkCacheRadius(p) => {
-                self.streaming.radius = self.settings.render_distance.min(p.distance + 1).max(2);
+                self.streaming.radius = self
+                    .settings
+                    .render_distance
+                    .min(p.distance.saturating_add(1))
+                    .max(2);
                 if let Some(r) = self.remote.as_mut() {
                     r.view_distance = p.distance;
                 }
@@ -11505,7 +11511,7 @@ impl Remote {
     /// How far the server sends chunks: its view distance and the ring
     /// around (`ChunkTrackingView`), at least two.
     pub(super) fn sent_radius(&self) -> i32 {
-        self.view_distance.max(2) + 1
+        self.view_distance.max(2).saturating_add(1)
     }
     /// A player entity's profile name: the one it was created with, else its
     /// player-list entry's (an entity the list named after it spawned).
@@ -11656,8 +11662,36 @@ fn client_has_level(logged_in: bool, reconfiguring: Option<u64>) -> bool {
     logged_in && reconfiguring.is_none()
 }
 
+/// `ClientChunkCache.Storage.inRange`: whether column `x`, `z` is within `calculateStorageRange`
+/// (the server's radius, at least two, plus three) of the view centre. The radius and the centre
+/// are the server's to send, any `i32`: the distances are taken without overflow, which panicked
+/// a debug build and, wrapping in release, dropped every loaded chunk.
+fn in_storage_range(view_distance: i32, center: (i32, i32), x: i32, z: i32) -> bool {
+    let range = view_distance.max(2).saturating_add(3).unsigned_abs();
+    x.abs_diff(center.0) <= range && z.abs_diff(center.1) <= range
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_chunk_storage_takes_any_radius_and_centre_a_server_sends() {
+        use super::in_storage_range;
+        // Vanilla's storage: radius at least 2, plus 3, each way from the centre.
+        assert!(in_storage_range(10, (0, 0), 13, -13));
+        assert!(!in_storage_range(10, (0, 0), 14, 0));
+        assert!(in_storage_range(-5, (100, 100), 105, 95));
+        assert!(!in_storage_range(0, (100, 100), 106, 100));
+        // Out of i32's range, as a server may send: no overflow, and the sums a wrap got wrong.
+        assert!(in_storage_range(i32::MAX, (0, 0), i32::MAX, i32::MIN + 1));
+        assert!(!in_storage_range(10, (i32::MIN, 0), i32::MAX, 0));
+        assert!(in_storage_range(
+            10,
+            (i32::MIN, i32::MAX),
+            i32::MIN + 13,
+            i32::MAX - 13
+        ));
+    }
+
     use super::{
         boat_interact_passes, client_has_level, hold_server_fire, item_frame_interact_passes,
         keep_client_state, open_hash_order, remote_object_swings, remote_use_swings, shape_meets,
