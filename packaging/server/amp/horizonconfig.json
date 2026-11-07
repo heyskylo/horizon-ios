@@ -1,0 +1,107 @@
+[
+    {
+        "DisplayName": "Accept the Minecraft EULA",
+        "Category": "Horizon:public",
+        "Subcategory": "Server:dns:1",
+        "Description": "Ticked accepts the Minecraft EULA for this server. The first start fails until it is ticked.",
+        "Keywords": "horizon,eula",
+        "FieldName": "HorizonEula",
+        "InputType": "checkbox",
+        "ParamFieldName": "HorizonEula",
+        "DefaultValue": "false",
+        "EnumValues": {
+            "False": "false",
+            "True": "true"
+        }
+    },
+    {
+        "DisplayName": "Horizon release",
+        "Category": "Horizon:public",
+        "Subcategory": "Server:dns:1",
+        "Description": "The GitHub release tag to install: nightly (the current Nightly) or an exact tag. Read at install and reinstall only.",
+        "Keywords": "horizon,version",
+        "FieldName": "HorizonVersion",
+        "InputType": "text",
+        "ParamFieldName": "HorizonVersion",
+        "DefaultValue": "nightly",
+        "EnumValues": {}
+    },
+    {
+        "DisplayName": "World name",
+        "Category": "Horizon:public",
+        "Subcategory": "Server:dns:1",
+        "Description": "The world's folder name. Read on the first start only.",
+        "Keywords": "horizon,world",
+        "FieldName": "HorizonWorld",
+        "InputType": "text",
+        "ParamFieldName": "HorizonWorld",
+        "DefaultValue": "world",
+        "EnumValues": {}
+    },
+    {
+        "DisplayName": "World seed",
+        "Category": "Horizon:public",
+        "Subcategory": "Server:dns:1",
+        "Description": "The world's seed; empty picks a random one. Read on the first start only.",
+        "Keywords": "horizon,seed",
+        "FieldName": "HorizonSeed",
+        "InputType": "text",
+        "ParamFieldName": "HorizonSeed",
+        "DefaultValue": "",
+        "EnumValues": {}
+    },
+    {
+        "DisplayName": "Whitelist",
+        "Category": "Horizon:public",
+        "Subcategory": "Server:dns:1",
+        "Description": "Ticked turns the whitelist on, as in vanilla. Read on the first start only.",
+        "Keywords": "horizon,whitelist",
+        "FieldName": "HorizonWhitelist",
+        "InputType": "checkbox",
+        "ParamFieldName": "HorizonWhitelist",
+        "DefaultValue": "true",
+        "EnumValues": {
+            "False": "false",
+            "True": "true"
+        }
+    },
+    {
+        "DisplayName": "Whitelisted players",
+        "Category": "Horizon:public",
+        "Subcategory": "Server:dns:1",
+        "Description": "Names separated by commas, added to the whitelist. Read on the first start only.",
+        "Keywords": "horizon,players",
+        "FieldName": "HorizonPlayers",
+        "InputType": "text",
+        "ParamFieldName": "HorizonPlayers",
+        "DefaultValue": "",
+        "EnumValues": {}
+    },
+    {
+        "DisplayName": "Operator",
+        "Category": "Horizon:public",
+        "Subcategory": "Server:dns:1",
+        "Description": "A player to make an operator. Read on the first start only.",
+        "Keywords": "horizon,op",
+        "FieldName": "HorizonOp",
+        "InputType": "text",
+        "ParamFieldName": "HorizonOp",
+        "DefaultValue": "",
+        "EnumValues": {}
+    },
+    {
+        "DisplayName": "Online mode",
+        "Category": "Horizon:public",
+        "Subcategory": "Server:dns:1",
+        "Description": "Ticked checks players' Minecraft accounts, as vanilla's online mode does (docs/hosting.md). Read on the first start only.",
+        "Keywords": "horizon,online",
+        "FieldName": "HorizonOnline",
+        "InputType": "checkbox",
+        "ParamFieldName": "HorizonOnline",
+        "DefaultValue": "true",
+        "EnumValues": {
+            "False": "false",
+            "True": "true"
+        }
+    }
+]
