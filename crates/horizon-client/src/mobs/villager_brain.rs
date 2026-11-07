@@ -435,12 +435,15 @@ fn make_brain(m: &mut Mob, packed: Memories, shuffle_seed: i64, w_times: (i64, i
 /// Builds the villager's brain as its constructor does, at this game time:
 /// the memories it remembers (job site, bed, bell) come from the mob.
 pub fn init(m: &mut Mob, game_time: i64, day_time: i64, shuffle_seed: i64) {
-    let mut packed = Memories::default();
-    packed.job_site.set_opt(m.extra.home);
-    packed.home.set_opt(m.extra.bed);
-    packed.meeting_point.set_opt(m.extra.meeting);
-    if let Some(t) = super::villager::ext(m).and_then(|e| e.last_slept) {
-        packed.last_slept.set(t);
+    let saved = super::villager::ext_mut(m).saved_memories.take();
+    let mut packed = saved.as_deref().cloned().unwrap_or_default();
+    if saved.is_none() {
+        packed.job_site.set_opt(m.extra.home);
+        packed.home.set_opt(m.extra.bed);
+        packed.meeting_point.set_opt(m.extra.meeting);
+        if let Some(t) = super::villager::ext(m).and_then(|e| e.last_slept) {
+            packed.last_slept.set(t);
+        }
     }
     let b = make_brain(m, packed, shuffle_seed, (game_time, day_time));
     super::villager::ext_mut(m).brain = Some(Box::new(b));
@@ -3600,6 +3603,12 @@ fn harvest_tick(
             }
             cx.events.push(MobEvent::SetBlock {
                 pos: p,
+                state: crop,
+            });
+            cx.events.push(MobEvent::GameEvent {
+                event: "minecraft:block_place",
+                at: p.map(|v| f64::from(v) + 0.5),
+                source: m.id,
                 state: crop,
             });
             cx.events.push(MobEvent::Sound(

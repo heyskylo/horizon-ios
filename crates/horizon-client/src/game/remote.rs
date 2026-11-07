@@ -136,6 +136,18 @@ pub(super) fn remote_text(tag: &Tag) -> horizon_client::text::Text {
     comp_text(&tag_to_json(tag))
 }
 
+/// Who hurt the local player, for `native_client_hurt`: the damage event's
+/// causing entity (`sourceCauseId`) and whether `is_player` knows it as a
+/// player. An entity this client doesn't track is still named, as not a player.
+fn own_hurt_attacker(
+    cause: Option<i32>,
+    is_player: impl FnMut(u32) -> Option<bool>,
+) -> (Option<u32>, bool) {
+    let attacker = cause.and_then(|id| u32::try_from(id).ok());
+    let player = attacker.and_then(is_player).unwrap_or(false);
+    (attacker, player)
+}
+
 /// `Player.getVoicePitch`: a constant 1.0
 /// (`javap -p -c -constants net.minecraft.world.entity.player.Player`:
 /// `0: fconst_1  1: freturn`), so a player's own hurt and death sounds are
@@ -497,6 +509,10 @@ enum OwnProfile {
 
 pub(super) struct Remote {
     pub session: Session,
+    /// The single-player save this connection plays, by its folder in
+    /// `saves/`: the window's own server thread, or P1's for a splitscreen
+    /// seat. None on a server.
+    pub(super) save_folder: Option<String>,
     pub brand: String,
     /// This connection's configured feature flags, carried through reconfiguration.
     pub(super) features: Vec<String>,
@@ -1087,6 +1103,7 @@ impl Game<'_> {
             });
         self.remote = Some(Remote {
             session,
+            save_folder: None,
             brand: "unknown".into(),
             features: vec!["minecraft:vanilla".into()],
             quiet_commands: false,
@@ -1408,6 +1425,7 @@ impl Game<'_> {
         let mut e = horizon_client::effects::EffectInstance::new(id, p.duration, p.amplifier);
         e.ambient = p.flags & 1 != 0;
         e.visible = p.flags & 2 != 0;
+        e.show_icon = p.flags & 4 != 0;
         let list = &mut self.potions.effects.list;
         match list.iter_mut().find(|x| x.id == id) {
             // forceAddEffect's copyBlendState: an updated effect keeps its fade.
@@ -4261,6 +4279,12 @@ impl Game<'_> {
                 let own = me == Some(p.id);
                 self.pvp_hurt(p.id, own, p.direct.map(|d| Some(d) == me));
                 if own {
+                    let (attacker, player) = own_hurt_attacker(p.cause, |id| {
+                        self.mob_index
+                            .get(&self.mobs, id)
+                            .map(|m| &*m.kind.id == "minecraft:player")
+                    });
+                    self.native_client_hurt(attacker, player);
                     let at = self
                         .player
                         .as_ref()
@@ -9266,6 +9290,11 @@ impl Game<'_> {
                     id: self.mobs[i].id as i32,
                 }));
                 self.pvp_attacked(self.mobs[i].id as i32, distance);
+                let (target, player) = (
+                    self.mobs[i].id,
+                    &*self.mobs[i].kind.id == "minecraft:player",
+                );
+                self.native_client_attack(target, player);
                 self.remote_player_attack(i);
                 self.reset_attack_strength();
             }
@@ -10139,13 +10168,20 @@ impl Game<'_> {
         self.send(S::ClientCommand(play::ClientCommand { action: 0 }));
     }
 
+    /// A connection's screen is over the world: connecting, reconfiguring, or
+    /// the level loading screen, a portal's included (`remote_overlay`).
+    pub(super) fn remote_screen_up(&self) -> bool {
+        self.remote
+            .as_ref()
+            .is_some_and(|r| self.player.is_none() || r.level_load.is_active())
+    }
     /// Connecting / loading screens; true when it covered the frame.
     pub(super) fn remote_overlay(&mut self, batch: &mut HudBatch) -> bool {
-        let Some(r) = &self.remote else { return false };
-        let loading = r.level_load.is_active();
-        if self.player.is_some() && !loading {
+        if !self.remote_screen_up() {
             return false;
         }
+        let Some(r) = &self.remote else { return false };
+        let loading = r.level_load.is_active();
         let (w, h) = (batch.width, batch.height);
         if let Some(since) = r.reconfiguring {
             // ServerReconfigScreen narrates its title.
@@ -11417,6 +11453,88 @@ mod tests {
         // Interaction entities honor response.
         assert!(remote_object_swings(Some(true), false));
         assert!(!remote_object_swings(Some(false), false));
+    }
+
+    /// The local player's attacker for `native_client_hurt`: the cause the
+    /// server named, a player only when this client knows it as one.
+    #[test]
+    fn own_hurt_names_the_cause_and_whether_it_is_a_player() {
+        let known = |id: u32| match id {
+            7 => Some(true),
+            9 => Some(false),
+            _ => None,
+        };
+        assert_eq!(super::own_hurt_attacker(Some(7), known), (Some(7), true));
+        assert_eq!(super::own_hurt_attacker(Some(9), known), (Some(9), false));
+        // Out of this client's tracking range: named, not a player.
+        assert_eq!(super::own_hurt_attacker(Some(40), known), (Some(40), false));
+        // Fall damage, lava, a cactus: no cause.
+        assert_eq!(super::own_hurt_attacker(None, known), (None, false));
+        assert_eq!(super::own_hurt_attacker(Some(-1), known), (None, false));
+    }
+
+    /// A mod's pre-filled chat opens only over the world, with its text
+    /// typed in and nothing sent.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn mod_open_chat_fills_the_box_only_over_the_world() {
+        use super::super::{
+            Audio, Game, Options, Progress, Screen, Settings, execution_role::ExecutionRole,
+            load_resources,
+        };
+
+        let root = std::path::PathBuf::from(
+            std::env::var_os("HORIZON_TEST_RESOURCES")
+                .expect("set HORIZON_TEST_RESOURCES to prepared resources"),
+        );
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!("no menu handoff"),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = ExecutionRole::Client;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+
+        // No player: the title screen.
+        game.player = None;
+        assert!(game.native_open_chat("/tp ").is_err());
+        assert!(game.ui.chat_screen.is_none());
+        game.player = Some(
+            horizon_client::motion::PlayerMotion::new(
+                game.motion,
+                horizon_core::geometry::Vec3::ZERO,
+            )
+            .unwrap(),
+        );
+        game.screen = Screen::Paused;
+        assert!(game.native_open_chat("/tp ").is_err());
+        assert!(game.ui.chat_screen.is_none());
+        game.screen = Screen::Playing;
+        assert!(game.native_open_chat("/tp ").is_ok());
+        assert!(game.screen == Screen::Chat);
+        assert_eq!(game.ui.chat_screen.as_ref().unwrap().input.value, "/tp ");
+        // The chat is a screen too: a second call doesn't replace what's typed.
+        assert!(game.native_open_chat("hello").is_err());
+        assert_eq!(game.ui.chat_screen.as_ref().unwrap().input.value, "/tp ");
     }
 
     /// A mod's chat goes out only from a joined player, and only what the

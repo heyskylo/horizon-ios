@@ -158,6 +158,7 @@ impl Game<'_> {
                     from: Some([p.previous.x, p.previous.y, p.previous.z]),
                     attacker_species: owner_breeze.then_some(Species::Breeze),
                 };
+                let mut hurt = false;
                 if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
                     // Breeze.isInvulnerableTo: its own kind's charges.
                     if owner_breeze && m.species() == Species::Breeze {
@@ -168,10 +169,14 @@ impl Game<'_> {
                     if horizon_client::mobs::wither::armor_refuses(m, &p.kind) {
                         return;
                     }
-                    m.damage(1.0, source);
+                    hurt = m.damage(1.0, source);
                 }
                 if p.owner == Some(Who::Player) {
                     self.last_hurt_by_player.insert(id, self.lan_acting);
+                }
+                if hurt {
+                    let charge = "minecraft:wind_charge";
+                    self.shot_post_attack(p, who, charge, charge);
                 }
             }
         }

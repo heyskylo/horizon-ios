@@ -136,8 +136,9 @@ impl Game<'_> {
             }
             Target::Boat(id) => {
                 let uuid = self.uuid_for(id);
-                let b = self.boats.iter().find(|b| b.id == id)?;
-                entity_nbt::boat_to_nbt(
+                let i = self.boats.iter().position(|b| b.id == id)?;
+                let b = &self.boats[i];
+                let mut tag = entity_nbt::boat_to_nbt(
                     &b.entity_type(),
                     b.position,
                     b.velocity,
@@ -145,7 +146,10 @@ impl Game<'_> {
                     uuid,
                     self.persist.raw.get(&id),
                     b.chest.then_some(&b.items[..]),
-                )
+                );
+                // AbstractBoat.addAdditionalSaveData: the live or pending leash.
+                self.write_boat_leash(&mut tag, i);
+                tag
             }
             Target::Cart(id) => {
                 let uuid = self.uuid_for(id);
@@ -313,6 +317,7 @@ impl Game<'_> {
                 return Err(err("commands.data.entity.invalid", &[]));
             }
             Target::Mob(id) => {
+                Self::normalize_loaded_mob_tags(&mut tag);
                 let uuid = self.uuid_for(id);
                 let kind = self
                     .mobs

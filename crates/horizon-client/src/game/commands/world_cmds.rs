@@ -195,9 +195,37 @@ impl Game<'_> {
             _ => by.and_then(|t| self.target_position(t)),
         };
         // Destruction can remove the target before its success message is built.
-        let discarded_name = matches!(target, Target::Item(_) | Target::Boat(_) | Target::Cart(_))
+        let item_name = matches!(target, Target::Item(_) | Target::Boat(_) | Target::Cart(_))
             .then(|| self.target_name(target));
-        let hurt = match target {
+        let hurt = self.damage_target(target, amount, &ty, cause, by, from);
+        if !hurt {
+            return Err(err("commands.damage.invulnerable", &[]));
+        }
+        let name = item_name.unwrap_or_else(|| self.target_name(target));
+        self.feedback(Text::translate(
+            "commands.damage.success",
+            &[
+                Text::literal(horizon_client::snbt::java_float(amount)),
+                name,
+            ],
+        ));
+        Ok(1)
+    }
+
+    /// `DamageCommand.damage`'s hurt: `target` takes `amount` of `ty` (`minecraft:mob_attack`)
+    /// from the causing entity `cause` and the direct one `by` (the causing one is either when
+    /// the other is none), from `from` (the knockback's direction): whether it was hurt. Also
+    /// `native_hurt_entity`'s.
+    pub(in crate::game) fn damage_target(
+        &mut self,
+        target: Target,
+        amount: f32,
+        ty: &str,
+        cause: Option<Target>,
+        by: Option<Target>,
+        from: Option<[f64; 3]>,
+    ) -> bool {
+        match target {
             // The causing mob is the one the hit is credited to and thorns
             // answer; the source position gives the knockback its direction.
             Target::Player | Target::Guest(_) => {
@@ -217,9 +245,9 @@ impl Game<'_> {
                         return false;
                     }
                     if let Some(name) = named {
-                        g.note_direct_entity(&ty, name);
+                        g.note_direct_entity(ty, name);
                     }
-                    g.hurt_player_from(amount, from, &ty, attacker)
+                    g.hurt_player_from(amount, from, ty, attacker)
                 })
                 .unwrap_or(false)
             }
@@ -234,7 +262,7 @@ impl Game<'_> {
                     _ => None,
                 };
                 let damage = Damage {
-                    kind: Self::damage_kind(&ty),
+                    kind: Self::damage_kind(ty),
                     attacker,
                     from,
                     attacker_species,
@@ -264,15 +292,15 @@ impl Game<'_> {
                     self.command_damage_mob(id, amount, damage)
                 }
             }
-            Target::Item(id) => self.command_damage_item(id, amount, &ty, cause.or(by)),
+            Target::Item(id) => self.command_damage_item(id, amount, ty, cause.or(by)),
             Target::Boat(_) | Target::Cart(_) => {
-                self.command_damage_vehicle(target, amount, &ty, cause.or(by))
+                self.command_damage_vehicle(target, amount, ty, cause.or(by))
             }
             Target::Dragon(id) => self.command_damage_dragon(
                 id,
                 amount,
-                &ty,
-                Self::damage_kind(&ty),
+                ty,
+                Self::damage_kind(ty),
                 (
                     by,
                     cause.or(by),
@@ -280,22 +308,10 @@ impl Game<'_> {
                 ),
             ),
             Target::Crystal(id) => {
-                self.command_damage_crystal(id, &ty, Self::damage_kind(&ty), cause.or(by))
+                self.command_damage_crystal(id, ty, Self::damage_kind(ty), cause.or(by))
             }
             _ => false,
-        };
-        if !hurt {
-            return Err(err("commands.damage.invulnerable", &[]));
         }
-        let name = discarded_name.unwrap_or_else(|| self.target_name(target));
-        self.feedback(Text::translate(
-            "commands.damage.success",
-            &[
-                Text::literal(horizon_client::snbt::java_float(amount)),
-                name,
-            ],
-        ));
-        Ok(1)
     }
 
     /// `VehicleEntity.hurtServer`: report acceptance even when the vehicle survives.
@@ -1509,6 +1525,20 @@ impl Game<'_> {
             return Ok(0);
         };
         let vehicle_name = self.target_name(vehicle);
+        self.ride_mount(target, vehicle)?;
+        self.feedback(Text::translate(
+            "commands.ride.mount.success",
+            &[name, vehicle_name],
+        ));
+        Ok(1)
+    }
+
+    /// `RideCommand.mount` once the targets are known: `target` (the player
+    /// in place or a mob) rides `vehicle`, as `startRiding(vehicle, true,
+    /// true)` forces it (also for `native_mount`).
+    pub(in crate::game) fn ride_mount(&mut self, target: Target, vehicle: Target) -> R<()> {
+        let name = self.target_name(target);
+        let vehicle_name = self.target_name(vehicle);
         if let Some(current) = self.ride_vehicle(target) {
             let current = self.target_name(current);
             return Err(err(
@@ -1574,11 +1604,7 @@ impl Game<'_> {
                     // sendEventAndTriggers: START_RIDING_TRIGGER.
                     self.start_riding(id);
                 }
-                self.feedback(Text::translate(
-                    "commands.ride.mount.success",
-                    &[name, vehicle_name],
-                ));
-                return Ok(1);
+                return Ok(());
             }
             Target::Cart(id) => {
                 if target != Target::Player
@@ -1588,11 +1614,7 @@ impl Game<'_> {
                     return Err(generic());
                 }
                 self.start_riding(id);
-                self.feedback(Text::translate(
-                    "commands.ride.mount.success",
-                    &[name, vehicle_name],
-                ));
-                return Ok(1);
+                return Ok(());
             }
             _ => {}
         }
@@ -1608,11 +1630,7 @@ impl Game<'_> {
             if !self.try_mount_mob(rider, mob_id) {
                 return Err(generic());
             }
-            self.feedback(Text::translate(
-                "commands.ride.mount.success",
-                &[name, vehicle_name],
-            ));
-            return Ok(1);
+            return Ok(());
         }
         if !self.native_may_board(mob_id) {
             return Err(generic());
@@ -1625,11 +1643,7 @@ impl Game<'_> {
         self.mount.jump_ticks = 0;
         self.mount.jump_scale = 0.0;
         self.start_riding(mob_id);
-        self.feedback(Text::translate(
-            "commands.ride.mount.success",
-            &[name, vehicle_name],
-        ));
-        Ok(1)
+        Ok(())
     }
 
     /// Entity.getVehicle: the player's mount, or a mob's.
