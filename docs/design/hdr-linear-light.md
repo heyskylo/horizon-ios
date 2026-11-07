@@ -263,9 +263,9 @@ may need a tone-weighted resolve so bright pixels don't sparkle. Frame generatio
 4. **HDR look against today**: the same captures within a tolerance, with the differences allowed above (Light above
    white without marks) shown, and screenshots in the pull request,
    including the vignette and the world border's red warning over bright light, the crosshair, chat over a torch,
-   a blurred menu, and translucent black and coloured HUD at UI Brightness 50% and 100%. While the groups move to
-   written light, also a marked draw over written light (a particle or a held torch in front of lit terrain), and a
-   short sequence of frames with the camera moving and TAA on, for smearing and sparkle a still picture can't show.
+   a blurred menu, and translucent black and coloured HUD at UI Brightness 50% and 100%. Once light is written, also
+   blended draws over lit terrain (a particle, glass, water, a held torch in front of it), and a short sequence of
+   frames with the camera moving and TAA on, for smearing and sparkle a still picture can't show.
 5. **Cost**: GPU time and memory, HDR on, against today at 1080p and 1440p, on a desktop GPU and an integrated one.
 6. **Linear blending**: a 0.2 test pack with `blend = "linear"` draws solid surfaces as with gamma, and glass over
    them as linear blending gives.
@@ -282,11 +282,18 @@ Behind `HORIZON_HDR_FRAME=float` until the last step, each a small pull request:
    display pass does today, moved there), so that the camera overlays, the blur and the composite after it see light
    and the display pass lifts nothing; camera overlays before `keep_world`, the HUD's target and coverage, the
    display pass's composite, the blur; then the tone curve, after that pass, taking over the easing into the peak.
-4. Light written instead of marked, one group of shaders a pull request (terrain and fluids, particles and the sky,
-   entities and items, the rest), each leaving alpha 1 so the pass from step 3 leaves its light alone, with
-   anti-aliasing and TAA history taking light above white where a group first needs it; the rebuild when the
-   frame's case changes, and the 0.1 path split off; marks no longer written outside it, and the pass gone with
-   them.
+4. Light written instead of marked, a whole frame at a time. Where a blended draw meets a surface of the other kind
+   (glass, water, clouds or a particle over lit terrain, or the other way round), the pixel keeps one mark for both:
+   the pass from step 3 would clip the written light and lift it again, or leave the marked part unlifted. So a frame
+   is all written or all marked, and the step goes path by path, not group by group. First the rebuild when the
+   frame's case changes: the lane, written or marked, picked again whenever what decides it changes (HDR, a pack, the
+   frame's switch, Improved Transparency, the visibility buffer), and TAA's history reset when it does. Then every
+   shader that marks the frame writes light instead on the default path, in one pull request (the shaders that draw
+   work out the marks, so one function, shared with the pass, turns each into light), alpha 1 where opaque and
+   coverage where blended, without the passes that only write marks or the pass from step 3, and with anti-aliasing
+   and TAA taking light above white; Improved Transparency (OIT) and the visibility buffer keep the marked frame
+   while they are switched on, whether or not a frame draws through them, until a pull request each moves them. Then
+   the 0.1 path split off, marks no longer written outside it, and the pass gone with them.
 5. On by default and the switch removed, and 0.1 no longer served (see 0.1 packs). The shim goes with it: the
    pipeline variants that write marks and the HDR pass's lift from them, in a pull request of its own.
 
