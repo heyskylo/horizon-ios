@@ -116,8 +116,9 @@ pub enum EffectAction {
 }
 /// `shouldApplyEffectTickThisTick` + `applyEffectTick` for the periodic effects.
 fn periodic(id: &str, tick: i32, amp: i32) -> Option<EffectAction> {
+    // Java's `>>` and `<<` take the shift distance modulo 32 (`wrapping_*`).
     let every = |base: i32| {
-        let interval = base >> amp;
+        let interval = base.wrapping_shr(amp as u32);
         interval <= 0 || tick % interval == 0
     };
     match id {
@@ -126,10 +127,12 @@ fn periodic(id: &str, tick: i32, amp: i32) -> Option<EffectAction> {
         "wither" if every(40) => Some(EffectAction::Hurt("minecraft:wither", 1.0)),
         "hunger" => Some(EffectAction::Exhaust(0.005 * (amp + 1) as f32)),
         "saturation" if tick >= 1 => Some(EffectAction::Eat(amp + 1, 1.0)),
-        "instant_health" if tick >= 1 => Some(EffectAction::Heal((4 << amp.min(30)) as f32)),
+        "instant_health" if tick >= 1 => Some(EffectAction::Heal(
+            4i32.wrapping_shl(amp as u32).max(0) as f32,
+        )),
         "instant_damage" if tick >= 1 => Some(EffectAction::Hurt(
             "minecraft:magic",
-            (6 << amp.min(30)) as f32,
+            6i32.wrapping_shl(amp as u32) as f32,
         )),
         _ => None,
     }
@@ -139,11 +142,11 @@ fn periodic(id: &str, tick: i32, amp: i32) -> Option<EffectAction> {
 pub fn instant(id: &str, amp: i32, scale: f64) -> Option<EffectAction> {
     match id {
         "instant_health" => Some(EffectAction::Heal(
-            (scale * f64::from(4 << amp.min(30)) + 0.5) as i32 as f32,
+            (scale * f64::from(4i32.wrapping_shl(amp as u32)) + 0.5) as i32 as f32,
         )),
         "instant_damage" => Some(EffectAction::Hurt(
             "minecraft:magic",
-            (scale * f64::from(6 << amp.min(30)) + 0.5) as i32 as f32,
+            (scale * f64::from(6i32.wrapping_shl(amp as u32)) + 0.5) as i32 as f32,
         )),
         "saturation" => Some(EffectAction::Eat(amp + 1, 1.0)),
         _ => None,
@@ -494,6 +497,44 @@ pub fn effect_modifier(effect: &str) -> Option<(&'static str, &'static str, f64,
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// `HealOrHarmMobEffect`: Java's `<<` shifts by the amplifier modulo
+    /// 32 and wraps, so amplifier 32 is amplifier 0 again; a ticked heal is
+    /// at least 0 (#11386).
+    #[test]
+    fn heal_and_harm_shift_like_java() {
+        let magic = "minecraft:magic";
+        assert_eq!(
+            instant("instant_health", 32, 1.0),
+            Some(EffectAction::Heal(4.0))
+        );
+        assert_eq!(
+            instant("instant_damage", 33, 1.0),
+            Some(EffectAction::Hurt(magic, 12.0))
+        );
+        assert_eq!(
+            instant("instant_health", 1, 0.5),
+            Some(EffectAction::Heal(4.0))
+        );
+        assert_eq!(
+            periodic("instant_health", 1, 32),
+            Some(EffectAction::Heal(4.0))
+        );
+        // 4 << 29 is i32::MIN: the heal stops at 0. 6 << 30 wraps to i32::MIN.
+        assert_eq!(
+            periodic("instant_health", 1, 29),
+            Some(EffectAction::Heal(0.0))
+        );
+        assert_eq!(
+            periodic("instant_damage", 1, 30),
+            Some(EffectAction::Hurt(magic, i32::MIN as f32))
+        );
+        // Regeneration: 50 >> 32 is 50 again, not 0 (which would heal each tick).
+        assert_eq!(periodic("regeneration", 49, 32), None);
+        assert_eq!(
+            periodic("regeneration", 50, 32),
+            Some(EffectAction::Heal(1.0))
+        );
+    }
 
     #[test]
     fn adding_counts_a_change_only_when_the_effect_changed() {

@@ -6236,11 +6236,12 @@ impl Game<'_> {
     /// One falling block's `tick`: places or drops its block in its own tick,
     /// so a block falling onto one that just landed lands on top of it. `i` is
     /// its place in the list; the caller has checked it is ticking.
-    fn tick_one_falling(&mut self, i: usize) -> Result<()> {
+    /// `entities` are the boxes that stop its move (`Game::item_entity_collisions`).
+    fn tick_one_falling(&mut self, i: usize, entities: &[Aabb]) -> Result<()> {
         let entity_drops = self.ui.rules.bool("entity_drops");
         let mut f = self.falling.remove(i);
         let original = f.clone();
-        match self.fall_step(&mut f, entity_drops) {
+        match self.fall_step(&mut f, entity_drops, entities) {
             Ok(FallStep::Falling) => self.falling.insert(i.min(self.falling.len()), f),
             Ok(FallStep::Gone) => {}
             Ok(FallStep::Dropped(at)) => self.drop_falling_block(f.state, at),
@@ -6253,7 +6254,12 @@ impl Game<'_> {
         Ok(())
     }
     /// One `FallingBlockEntity.tick` move of `f`.
-    fn fall_step(&mut self, f: &mut FallingBlock, entity_drops: bool) -> Result<FallStep> {
+    fn fall_step(
+        &mut self,
+        f: &mut FallingBlock,
+        entity_drops: bool,
+        entities: &[Aabb],
+    ) -> Result<FallStep> {
         f.previous = f.position;
         f.age = f.age.wrapping_add(1);
         f.velocity.y -= horizon_client::entity_rules::EntityRules::get_gravity(f);
@@ -6287,10 +6293,11 @@ impl Game<'_> {
             false,
         );
         // On an error the caller keeps the block as it was before this tick.
-        // Entity.collide: the world border's walls stop it too.
+        // Entity.collide: the world border's walls and the entities that
+        // `canBeCollidedWith` it (a boat, a shulker) stop it too.
         let movement = collisions::EntityCollisions {
             blocks: scene,
-            entities: &[],
+            entities,
             border: Some((self.border.geometry(), [f.position.x, f.position.z])),
         }
         .resolve_with_context(
@@ -15273,7 +15280,7 @@ impl Game<'_> {
             self.settings.horizon.api,
             self.settings.horizon.translucent_batching,
             self.settings.horizon.wide_frame(),
-            shader_packs::picked_pack_draws_flat(&self.settings),
+            shader_packs::picked_pack_shape(&self.settings),
             (
                 self.settings.file.int("textureFiltering"),
                 self.settings.file.int("maxAnisotropyBit"),
@@ -15314,7 +15321,7 @@ impl Game<'_> {
             self.settings.horizon.api,
             self.settings.horizon.translucent_batching,
             self.settings.horizon.wide_frame(),
-            shader_packs::picked_pack_draws_flat(&self.settings),
+            shader_packs::picked_pack_shape(&self.settings),
             (
                 self.settings.file.int("textureFiltering"),
                 self.settings.file.int("maxAnisotropyBit"),
@@ -22019,7 +22026,7 @@ fn build_renderer(
     // HDR with Smooth Gradients (`Graphics::wide_frame`): a 16-bit frame where HDR output is
     // offered (`Renderer::new`).
     wide_frame: bool,
-    shader_pack: bool,
+    shader_pack: shader_packs::PickedPack,
     filtering: (i32, i32),
 ) -> Result<Renderer> {
     let assets = &pack.render;
@@ -22058,7 +22065,8 @@ fn build_renderer(
         api,
         translucent_batching,
         wide_frame,
-        shader_pack,
+        shader_pack.draws_flat,
+        shader_pack.linear,
     ))?;
     renderer.hud.sprite_animations = atlas
         .sprite_animations
@@ -22128,6 +22136,7 @@ fn loading_renderer(
         // It draws no terrain.
         false,
         // An 8-bit frame, which HDR output takes as well.
+        false,
         false,
         false,
     ))?;
@@ -22747,7 +22756,7 @@ impl Loading {
                 self.settings.horizon.api,
                 self.settings.horizon.translucent_batching,
                 self.settings.horizon.wide_frame(),
-                shader_packs::picked_pack_draws_flat(&self.settings),
+                shader_packs::picked_pack_shape(&self.settings),
                 (
                     self.settings.file.int("textureFiltering"),
                     self.settings.file.int("maxAnisotropyBit"),
