@@ -43,7 +43,7 @@ impl<T> CheckerboardBiomeSource<T> {
         if self.biomes.is_empty() {
             return Err(CheckerboardError::EmptyBiomes);
         }
-        let shift = self.scale.wrapping_add(2) as u32;
+        let shift = self.scale.max(0).wrapping_add(2) as u32;
         let cell = quart[0]
             .wrapping_shr(shift)
             .wrapping_add(quart[2].wrapping_shr(shift));

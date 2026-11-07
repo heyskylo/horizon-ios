@@ -329,6 +329,7 @@ cargo run -p horizon-port-pack -- fetch ~/.horizon/ports/pack         # the port
 cargo run -p horizon-port-pack -- carry ~/.horizon/ports/pack         # content mods with a jar, or name them
 #   --resources <prepared root>: only templates Horizon's tables have
 cargo run -p horizon-port-pack -- report ~/.horizon/ports/pack        # coverage.json and coverage.md
+cargo run -p horizon-port-pack -- events ~/.horizon/ports/pack/jars   # NeoForge events the mods listen to, and their hooks
 cargo run -p horizon-port-pack -- port ~/Downloads/pack.zip ~/.horizon/ports/pack [--from <folder>] [--resources <root>]
 ```
 
@@ -370,6 +371,30 @@ Fences, Windows and Furniture, Ecologics, Compressed Blocks, More Decorative Blo
 Nether Structures are Partly; Sodium and GeckoLib don't run (Mixins, renderers, nothing to port);
 Fabric API doesn't run (its id has a dash, which content mods can't use). A check takes 0.2 s to
 3 s, and 24 s for Compressed Blocks (18 MB, 9,360 recipes, writing the carry dominates).
+
+`events <jar or folder> [--hooks <native-hooks.json>]` reads the same class files for the NeoForge
+events a mod listens to and the capabilities it uses. A listener is an `@SubscribeEvent` method's
+parameter, or a method reference or lambda that takes one event
+(`NeoForge.EVENT_BUS.addListener(this::onTick)`). It looks each name up in the hook catalog's
+`neoforge` names ([native-hooks-neoforge.md](native-hooks-neoforge.md)). Over a folder of jars it
+ranks the names by how many mods use them. Each name gets one of four answers:
+
+- a hook;
+- another phase's hook (`player_tick` for `PlayerTickEvent.Pre`);
+- a hook whose label says why it isn't quite the counterpart;
+- none.
+
+Names NeoForge changed after 1.21.1 (`Capabilities.ItemHandler`, `Capabilities.EnergyStorage`,
+`AddReloadListenerEvent`) are looked up under their new ones. The report reads names only, never
+code: it says where a port starts, for a human to check.
+
+On ATM10's 498 jars (2026-11-05, 8 s), 416 of 497 mods listen to events or use capabilities: 6,616
+uses of 326 names. Main's catalog had a hook for 23% of those uses, and 43% once #9924 labelled 32
+core hooks. The most used names with no hook are mod setup and registration
+(`FMLClientSetupEvent` 208 mods, `RegisterPayloadHandlersEvent` 180,
+`RegisterCapabilitiesEvent` 162, `RegisterMenuScreensEvent` 143), which a Horizon mod does its own
+way. After those come `ClientTickEvent.Post` and `.Pre` (95, 46), `RenderLevelStageEvent` (81) and
+`ClientPlayerNetworkEvent.LoggingOut` and `.LoggingIn` (53, 35).
 
 `fetch` gets each jar the player's way, never from us: copied from a folder they have (matched
 by SHA-1, or through a CurseForge app instance's `minecraftinstance.json`), else downloaded from

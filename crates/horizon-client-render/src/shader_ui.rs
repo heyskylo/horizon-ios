@@ -64,7 +64,7 @@ fn picked(s: &Settings) -> Option<(usize, Kind)> {
     let i = s
         .shader_packs
         .iter()
-        .position(|p| !s.horizon.shader_pack.is_empty() && p.file == s.horizon.shader_pack)?;
+        .position(|p| !s.horizon.shader_pack.is_empty() && p.key == s.horizon.shader_pack)?;
     Some((i, s.shader_packs[i].kind))
 }
 
@@ -360,7 +360,7 @@ impl ShaderUi {
             Item::Pack(i) => Some(
                 s.shader_packs
                     .get(usize::from(i))
-                    .is_some_and(|p| p.file == s.horizon.shader_pack),
+                    .is_some_and(|p| p.key == s.horizon.shader_pack),
             ),
             Item::Option(i) => match picked(s)? {
                 (p, Kind::Horizon) => {
@@ -406,7 +406,7 @@ impl ShaderUi {
                     Kind::Horizon => "A Horizon shader pack.",
                     Kind::Classic => "An OptiFine or Iris shader pack.",
                 });
-                let what = lang::get(if pack.file == s.horizon.shader_pack {
+                let what = lang::get(if pack.key == s.horizon.shader_pack {
                     "In use: press to turn shaders off."
                 } else {
                     "Press to use it."
@@ -588,8 +588,14 @@ impl ShaderUi {
         // The picked pack's own screens go under its name, apart from Horizon's pack list.
         if side.len() > 1 {
             let [x, y, w, _] = cols.page(1);
-            let pack = &s.horizon.shader_pack;
-            let pack = pack.strip_suffix(".zip").unwrap_or(pack);
+            let pack = match picked(s) {
+                Some((i, Kind::Horizon)) => s.shader_packs[i].title.as_str(),
+                _ => s
+                    .horizon
+                    .shader_pack
+                    .strip_suffix(".zip")
+                    .unwrap_or(&s.horizon.shader_pack),
+            };
             let caption = lang::tr("%s settings", &[&pack]);
             let rect = [x + 2.0, y + 6.0, w - 4.0, 8.0];
             crate::widgets::record(&caption, rect, false);
@@ -854,10 +860,10 @@ impl ShaderUi {
                 let Some(p) = s.shader_packs.get(usize::from(i)) else {
                     return Vec::new();
                 };
-                s.horizon.shader_pack = if s.horizon.shader_pack == p.file {
+                s.horizon.shader_pack = if s.horizon.shader_pack == p.key {
                     String::new()
                 } else {
-                    p.file.clone()
+                    p.key.clone()
                 };
                 vec![Action::ButtonClick, Action::Picked]
             }
@@ -1107,6 +1113,7 @@ mod tests {
     fn entry(file: &str, kind: Kind) -> Entry {
         Entry {
             file: file.into(),
+            key: file.into(),
             title: file.into(),
             kind,
             options: Vec::new(),
@@ -1174,14 +1181,20 @@ mod tests {
 
     #[test]
     fn picking_a_pack_and_picking_it_again_turns_shaders_off() {
-        let mut s = settings();
-        let mut ui = ShaderUi::default();
-        let actions = ui.activate(&mut s, Item::Pack(1), false, None);
-        assert_eq!(actions, [Action::ButtonClick, Action::Picked]);
-        assert_eq!(s.horizon.shader_pack, "B.zip");
-        ui.activate(&mut s, Item::Pack(1), false, None);
-        assert_eq!(s.horizon.shader_pack, "");
-        assert_eq!(ShaderUi::switch(Item::Pack(0), &s), Some(false));
+        for (kind, key) in [(Kind::Classic, "B.zip"), (Kind::Horizon, "horizon:warm")] {
+            let mut s = settings();
+            s.shader_packs[1].kind = kind;
+            s.shader_packs[1].key = key.into();
+            let mut ui = ShaderUi::default();
+            let actions = ui.activate(&mut s, Item::Pack(1), false, None);
+            assert_eq!(actions, [Action::ButtonClick, Action::Picked]);
+            assert_eq!(s.horizon.shader_pack, key);
+            assert_eq!(picked(&s), Some((1, kind)));
+            assert_eq!(ShaderUi::switch(Item::Pack(1), &s), Some(true));
+            ui.activate(&mut s, Item::Pack(1), false, None);
+            assert_eq!(s.horizon.shader_pack, "");
+            assert_eq!(ShaderUi::switch(Item::Pack(0), &s), Some(false));
+        }
     }
 
     #[test]
@@ -1251,6 +1264,7 @@ mod tests {
     #[test]
     fn a_horizon_packs_slider_drag_is_saved_once_when_let_go() {
         let mut pack = entry("H", Kind::Horizon);
+        pack.key = "horizon:slider_test".into();
         pack.options = vec![horizon_shader_api::PackOption {
             id: "strength".into(),
             name: "Strength".into(),
@@ -1267,7 +1281,7 @@ mod tests {
             shader_packs: vec![pack],
             ..Settings::default()
         };
-        s.horizon.shader_pack = "H".into();
+        s.horizon.shader_pack = "horizon:slider_test".into();
         let mut ui = ShaderUi::default();
         ui.open(Tab::Screen(0));
         let cols = Columns::of(SIZE.0, SIZE.1);
