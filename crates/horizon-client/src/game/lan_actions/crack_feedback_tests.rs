@@ -22,6 +22,7 @@ fn observer(conn: u32, position: [f64; 3], dimension: &str) -> (Guest, mpsc::Rec
             latency: Arc::new(AtomicI32::new(0)),
             address: "127.0.0.1:25565".parse().unwrap(),
             expected: false,
+            configured: Default::default(),
         },
         conn as i32,
         position,
