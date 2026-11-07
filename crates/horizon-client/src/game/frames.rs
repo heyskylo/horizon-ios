@@ -116,12 +116,7 @@ impl Game<'_> {
         ));
         let supported = behind.legacy_solid || (s[1] == 0 && behind.has_class("DiodeBlock"));
         // canCoexist(true): only hanging entities facing the same way block it.
-        let overlaps = |o: ([f64; 3], [f64; 3])| (0..3).all(|i| o.0[i] < hi[i] && lo[i] < o.1[i]);
-        supported
-            && !self
-                .item_frames
-                .iter()
-                .any(|o| o.id != f.id && o.facing == f.facing && overlaps(o.bounds()))
+        supported && super::paintings::frame_coexists(f, &self.item_frames, &self.paintings)
     }
     /// Asks the mods whether the acting guest may place a hanging entity
     /// of type `kind` at `pos` (`native_hanging_place`): true when one
@@ -163,21 +158,6 @@ impl Game<'_> {
             "minecraft:glow_item_frame" => true,
             _ => return false,
         };
-        let entity_data = stack.extra.as_ref().and_then(|extra| {
-            extra.other.iter().find_map(|(k, v)| {
-                (k == "minecraft:entity_data" || k == "entity_data").then_some(v)
-            })
-        });
-        let invisible = entity_data
-            .and_then(|v| horizon_client::save::number(v.get("Invisible")))
-            .unwrap_or(0)
-            != 0;
-        // `applyComponentsFromItemStack` sets `CUSTOM_NAME`, then `entity_data`
-        // loads (`updateCustomEntityTag`): a missing `CustomName` clears it.
-        let custom_name = match entity_data {
-            Some(data) => data.get("CustomName").cloned(),
-            None => stack.data().and_then(|d| d.custom_name.clone()),
-        };
         let pos: [i32; 3] = std::array::from_fn(|i| hit.pos[i] + hit.face[i]);
         // `ItemFrameItem.mayPlace`: `Level.isInsideBuildHeight(blockPos)`, so a frame is not
         // placed on the top face of the highest block or under the lowest one.
@@ -189,7 +169,7 @@ impl Game<'_> {
             self.use_failed = true;
             return true;
         }
-        let frame = ItemFrame {
+        let mut frame = ItemFrame {
             id: self.next_entity + 1,
             pos,
             facing: facing_of(hit.face),
@@ -198,20 +178,29 @@ impl Game<'_> {
             rotation: 0,
             drop_chance: 1.0,
             fixed: false,
-            invisible,
+            invisible: false,
             check_interval: 0,
-            custom_name,
+            // `applyComponentsFromItemStack` sets `CUSTOM_NAME`.
+            custom_name: stack.data().and_then(|d| d.custom_name.clone()),
         };
+        // `EntityType.createDefaultStackConfig`: the item's `custom_data`, then its
+        // `entity_data` merged over the frame (`TypedEntityData.loadInto`), before
+        // `survives` runs on the configured frame.
+        let kind = frame.kind();
+        let own = horizon_client::entity_nbt::item_frame_to_nbt(&frame, [0; 4], None);
+        let configured =
+            horizon_client::block_entity_item::stack_configured_entity(stack, kind, &own);
+        if let Some(mut loaded) =
+            horizon_client::entity_nbt::item_frame_from_nbt(&configured, frame.id)
+        {
+            loaded.glow = glow;
+            frame = loaded;
+        }
         // HangingEntity.survives false: CONSUME, which ItemStack.useOn still counts as a use.
         if !self.frame_survives(&frame) {
             self.award_stat("used", &stack.item, 1);
             return true;
         }
-        let kind = if glow {
-            "minecraft:glow_item_frame"
-        } else {
-            "minecraft:item_frame"
-        };
         if self.hanging_place_cancelled(kind, pos) {
             return true;
         }
@@ -223,6 +212,12 @@ impl Game<'_> {
         let ctx = self.player_context(None);
         self.post_game_event("minecraft:entity_place", center(&frame), ctx);
         self.world.modified.insert((pos[0] >> 4, pos[2] >> 4));
+        // The unmodelled rest of the loaded data (`data`, `Tags`...) stays with the frame.
+        let mut raw = configured;
+        if let horizon_world::nbt::Tag::Compound(map) = &mut raw {
+            map.remove(&"UUID".into());
+        }
+        self.persist.raw.insert(frame.id, raw);
         self.item_frames.push(frame);
         if !self.creative {
             self.consume_held();
@@ -288,6 +283,13 @@ impl Game<'_> {
             let Some(held) = self.held().cloned() else {
                 return false;
             };
+            // A map tracking more than 256 counted markers stays in the hand
+            // (InteractionResult.FAIL): nothing else is tried, no swing (#11383).
+            if let Some(id) = super::maps::map_id(&held)
+                && self.map(id).is_some_and(|m| m.tracked_over_limit(256))
+            {
+                return true;
+            }
             self.item_frames[i].item = Some(ItemStack { count: 1, ..held });
             action = "put";
             self.audio
@@ -361,6 +363,10 @@ impl Game<'_> {
         );
         if !with_frame {
             self.item_frames[i].item = None;
+        } else {
+            // BlockAttachedEntity.kill, before dropItem. A frame holding an
+            // item only gives the item up (ItemFrame.hurtServer).
+            self.entity_killed_event(at, true);
         }
         self.drop_frame_items(&f, with_frame, true);
         self.world.modified.insert((f.pos[0] >> 4, f.pos[2] >> 4));
@@ -468,6 +474,7 @@ impl Game<'_> {
                 continue;
             }
             let f = self.item_frames.remove(i);
+            self.entity_killed_event(center(&f), false);
             self.audio
                 .play(&sound(&f, "break"), Some(center(&f)), 1.0, 1.0);
             self.drop_frame_items(&f, true, false);
@@ -495,6 +502,7 @@ impl Game<'_> {
                 if !self.frame_survives(&f) && !self.hanging_break_cancelled(f.kind(), f.pos, false)
                 {
                     self.item_frames.remove(i);
+                    self.entity_killed_event(center(&f), false);
                     self.audio
                         .play(&sound(&f, "break"), Some(center(&f)), 1.0, 1.0);
                     self.drop_frame_items(&f, true, false);
@@ -707,5 +715,78 @@ impl Game<'_> {
                 self.cull_entity_vertices(out, entity_start);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod map_limit_tests {
+    use super::super::maps::{Decoration, Key, MapData};
+    use super::super::native_machines::tests::server_game;
+    use super::*;
+
+    fn frame(id: u32) -> ItemFrame {
+        ItemFrame {
+            id,
+            pos: [0, 64, id as i32],
+            facing: 3,
+            glow: false,
+            item: None,
+            rotation: 0,
+            drop_chance: 1.0,
+            fixed: false,
+            invisible: false,
+            check_interval: 0,
+            custom_name: None,
+        }
+    }
+    /// A map whose `count` frame markers all count toward the limit.
+    fn map_tracking(count: i32) -> MapData {
+        let mut map = MapData::fresh(0.0, 0.0, 0, "minecraft:overworld");
+        map.decorations = (0..count)
+            .map(|i| Decoration {
+                sprite: "map/decorations/frame",
+                x: 0,
+                y: 0,
+                rot: 0,
+                name: None,
+                key: Key::Frame(1000 + i),
+            })
+            .collect();
+        map
+    }
+    fn filled_map(id: i32) -> ItemStack {
+        let mut stack = ItemStack::new("minecraft:filled_map", 1);
+        stack.data_mut().map_id = Some(id);
+        stack
+    }
+    fn at(id: u32) -> Option<InteractTarget> {
+        Some(InteractTarget {
+            id: id as i32,
+            location: [0.0; 3],
+        })
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources (HORIZON_TEST_RESOURCES)"]
+    fn a_map_tracking_more_than_256_markers_stays_in_the_hand() {
+        let mut game = server_game();
+        game.item_frames = vec![frame(1), frame(2)];
+        game.maps.data.insert(7, map_tracking(257));
+        game.maps.data.insert(8, map_tracking(256));
+
+        // ItemFrame.interact: FAIL, the frame stays empty and the map is kept.
+        *game.held_mut() = Some(filled_map(7));
+        assert!(
+            game.interact_frame(at(1)),
+            "the refusal ends the interaction"
+        );
+        assert!(game.item_frames[0].item.is_none());
+        assert_eq!(game.held().and_then(|s| s.data()?.map_id), Some(7));
+
+        // At the limit (not over it) the map goes in.
+        *game.held_mut() = Some(filled_map(8));
+        assert!(game.interact_frame(at(2)));
+        let framed = game.item_frames[1].item.as_ref();
+        assert_eq!(framed.and_then(|s| s.data()?.map_id), Some(8));
     }
 }

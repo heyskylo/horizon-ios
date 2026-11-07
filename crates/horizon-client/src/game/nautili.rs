@@ -117,19 +117,25 @@ impl Game<'_> {
                 let sound = nautilus::saddle_sound(m);
                 self.nautilus_sound(index, sound);
                 self.consume_held();
+                let id = self.mobs[index].id;
+                let pos = self.mobs[index].position;
+                self.mob_equip_event(id, [pos.x, pos.y, pos.z], true);
                 return true;
             }
             if item.ends_with("_nautilus_armor") && tame && m.extra.body.is_none() {
                 m.extra.body = Some(item.into());
                 self.nautilus_sound(index, "item.armor.equip_nautilus");
                 self.consume_held();
+                let id = self.mobs[index].id;
+                let pos = self.mobs[index].position;
+                self.mob_equip_event(id, [pos.x, pos.y, pos.z], true);
                 return true;
             }
         }
         if tame && !food {
             // doPlayerRide.
             let id = self.mobs[index].id;
-            if !self.may_board() || !self.native_may_board(id) {
+            if !self.native_may_board(id) {
                 return true;
             }
             self.break_leash(id, true, false);

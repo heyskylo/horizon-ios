@@ -612,10 +612,30 @@ impl Game<'_> {
         }
     }
 
+    /// `LivingEntity.onEquipItem`'s game event for a mob: EQUIP when the new
+    /// stack is equippable in that slot, UNEQUIP when the slot is emptied.
+    pub(super) fn mob_equip_event(&mut self, id: u32, at: [f64; 3], equip: bool) {
+        let event = if equip {
+            "minecraft:equip"
+        } else {
+            "minecraft:unequip"
+        };
+        let ctx = self.who_context(Some(Who::Mob(id)), None);
+        self.post_game_event(event, at, ctx);
+    }
+
     // ---- posting ----
 
     /// `Level.gameEvent`: tell the listeners within reach.
     pub(super) fn post_game_event(&mut self, event: &'static str, pos: [f64; 3], ctx: Context) {
+        #[cfg(test)]
+        TEST_POSTED_EVENTS.with(|events| {
+            if let Some(events) = events.borrow_mut().as_mut() {
+                events.push((event, pos, ctx.source));
+            }
+        });
+        #[cfg(test)]
+        super::item_use::interact_vibration_tests::record_event(event, pos, ctx.source);
         self.post_game_event_with(event, pos, |_| ctx);
     }
     /// [`Self::post_game_event`] with the context worked out only when some
@@ -1435,9 +1455,11 @@ impl Game<'_> {
         {
             return;
         }
-        let mut effect =
-            horizon_client::effects::EffectInstance::new("darkness", warden::DARKNESS_DURATION, 0);
-        effect.visible = false;
+        // `new MobEffectInstance(DARKNESS, 260, 0, false, false)`: no
+        // particles and no icon (#11385).
+        let effect =
+            horizon_client::effects::EffectInstance::new("darkness", warden::DARKNESS_DURATION, 0)
+                .with_flags(false, false);
         self.potions.effects.add(effect);
     }
 
@@ -1621,7 +1643,7 @@ impl Game<'_> {
         self.particles
             .add(&ParticleOptions::sculk_charge(roll), at, speed);
     }
-    /// `LevelEvent` 3007: ten shrieks rising from the shrieker, and the shriek.
+    /// `LevelEventHandler.levelEvent` 3007: ten shrieks and a local sound.
     pub(super) fn shriek_event(&mut self, pos: BlockPos) {
         let top = f64::from(pos.y) + 0.5;
         for i in 0..10 {
@@ -1634,7 +1656,7 @@ impl Game<'_> {
         let state = self.world.block(pos.x, pos.y, pos.z);
         if self.state_property(state, "waterlogged") != Some("true") {
             let pitch = 0.6 + self.particles.random().next_float() * 0.4;
-            self.audio.play(
+            self.audio.play_unshared(
                 "minecraft:block.sculk_shrieker.shriek",
                 Some([f64::from(pos.x) + 0.5, top, f64::from(pos.z) + 0.5]),
                 2.0,
@@ -2272,6 +2294,17 @@ impl Game<'_> {
             ctx,
         );
     }
+    /// `Entity.kill` for an entity that is no mob (`BlockAttachedEntity.kill`,
+    /// `ArmorStand.kill`, `VehicleEntity.destroy`): removed, then
+    /// `gameEvent(ENTITY_DIE, attributedTo != null ? attributedTo : this)` at
+    /// the entity's position. `by_player`: the player's hit killed it, so the
+    /// player is the source. Otherwise the source is the entity itself (or a
+    /// bolt), which no listener tells apart from none: it is not living,
+    /// sneaking, a spectator or a warden.
+    pub(super) fn entity_killed_event(&mut self, at: [f64; 3], by_player: bool) {
+        let ctx = self.who_context(by_player.then_some(Who::Player), None);
+        self.post_game_event("minecraft:entity_die", at, ctx);
+    }
 }
 
 /// `MobEffects.DARKNESS`'s `setBlendDuration(22)`: its fade in, its fade out,
@@ -2401,5 +2434,289 @@ mod tests {
         assert_eq!(center((1, 2, 3)), [1.5, 2.5, 3.5]);
         assert_eq!(block_of([1.5, 2.5, -0.5]), [1, 2, -1]);
         assert_eq!(dist_sqr([0, 0, 0], (3, 4, 0)), 25);
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(super) static TEST_POSTED_EVENTS: std::cell::RefCell<Option<Vec<(&'static str, [f64; 3], Option<Who>)>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+mod command_damage_listener_tests {
+    use super::*;
+    use crate::game::{Audio, Options, Progress, Settings, load_resources};
+    use horizon_client::chunk::Chunk;
+    use horizon_core::position::ChunkPos;
+    use std::sync::Arc;
+
+    fn selected(game: &Game<'_>, key: (i32, i32, i32)) -> Option<(Info, i64)> {
+        let Some(BlockEntity::Sculk(sensor)) = game.world.block_entities.get(&key) else {
+            panic!("actual command-created sensor must be registered");
+        };
+        sensor.vibration.selector.current
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and scratch homes/cwd"]
+    fn command_damage_posts_before_teleport_and_deduplicates_the_scan() {
+        let root = std::path::PathBuf::from(
+            std::env::var_os("HORIZON_TEST_RESOURCES").expect("prepared resources required"),
+        );
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        for x in 0..=2 {
+            game.world
+                .chunks
+                .insert((x, 0), Arc::new(Chunk::empty(x, 0)));
+            game.block_ticks
+                .add_empty_chunk(ChunkPos::new(x, 0))
+                .unwrap();
+        }
+        assert!(game.run_command("forceload add 0 0 47 15"));
+        assert!(game.run_command("fill 0 199 0 47 199 15 stone"));
+        assert_eq!(
+            game.world.block(4, 199, 4),
+            game.pack
+                .assets
+                .registry
+                .default_state("minecraft:stone")
+                .unwrap()
+        );
+        let origin = (7, 200, 4);
+        let destination = (39, 200, 4);
+        for (index, accepted) in [true, false].into_iter().enumerate() {
+            if index != 0 {
+                assert!(game.run_command("setblock 7 200 4 air strict"));
+                assert!(game.run_command("setblock 39 200 4 air strict"));
+            }
+            let uuid = format!("00000071-0000-0000-0000-{:012x}", index + 1);
+            assert!(game.run_command(&format!(
+                "summon pig 4.5 200 4.5 {{UUID:[I;113,0,0,{}],Health:10f,NoAI:1b,NoGravity:1b,Invulnerable:{}b,Motion:[0d,0d,0d]}}",
+                index + 1, if accepted {0} else {1},
+            )));
+            let id = game.mobs.last().expect("actual summon must create pig").id;
+            assert_eq!(game.uuid_for(id), [113, 0, 0, index as i32 + 1]);
+            assert!(game.run_command("setblock 7 200 4 sculk_sensor strict"));
+            assert!(game.run_command("setblock 39 200 4 sculk_sensor strict"));
+            game.sculk_prepare();
+            game.sculk_sync_index();
+            assert!(selected(&game, origin).is_none());
+            assert!(selected(&game, destination).is_none());
+            let before = game.world.game_time;
+            let mob = game.mobs.iter().find(|m| m.id == id).unwrap();
+            assert_eq!(mob.species(), Species::Pig);
+            assert_eq!(mob.health, 10.0);
+            assert!(mob.no_ai && mob.no_gravity);
+            assert_eq!(mob.position, Vec3::new(4.5, 200.0, 4.5));
+            assert_eq!(
+                game.run_command(&format!("damage {uuid} 2 minecraft:cactus")),
+                accepted
+            );
+            let mob = game.mobs.iter().find(|m| m.id == id).unwrap();
+            assert_eq!(mob.health, if accepted { 8.0 } else { 10.0 });
+            if accepted {
+                let (event, tick) =
+                    selected(&game, origin).expect("accepted command hit must already be heard");
+                assert_eq!(event.event, "minecraft:entity_damage");
+                assert_eq!(event.pos, [4.5, 200.0, 4.5]);
+                assert_eq!(event.source, Some(Who::Mob(id)));
+                assert_eq!(tick, before);
+                assert_eq!(
+                    game.sculk.damaged.get(&id).copied(),
+                    mob.last_damage.map(|(_, tick)| tick)
+                );
+            } else {
+                assert!(selected(&game, origin).is_none());
+                assert!(!game.sculk.damaged.contains_key(&id));
+            }
+            assert!(game.run_command(&format!("tp {uuid} 36.5 200 4.5")));
+            assert_eq!(game.world.game_time, before);
+            assert_eq!(
+                game.mobs.iter().find(|m| m.id == id).unwrap().position,
+                Vec3::new(36.5, 200.0, 4.5)
+            );
+            assert!(selected(&game, destination).is_none());
+            if accepted {
+                assert_eq!(selected(&game, origin).unwrap().0.pos, [4.5, 200.0, 4.5]);
+            }
+            game.world.game_time += 1;
+            game.tick_mob_sculk_events();
+            assert!(
+                selected(&game, destination).is_none(),
+                "end-of-tick scan must not post the old hit again at the moved victim"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod shriek_capture_tests {
+    use super::*;
+    use crate::game::{Audio, Options, Progress, Settings, load_resources};
+    use horizon_client::chunk::Chunk;
+    use horizon_core::{position::ChunkPos, random::LegacyRandom};
+    use horizon_world::level::LevelEvent;
+    use std::sync::Arc;
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and scratch homes/cwd"]
+    fn level_event_shriek_keeps_local_play_and_random_but_not_shared_capture() {
+        let root = std::path::PathBuf::from(
+            std::env::var_os("HORIZON_TEST_RESOURCES").expect("prepared resources required"),
+        );
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.world
+            .chunks
+            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        game.block_ticks
+            .add_empty_chunk(ChunkPos::new(0, 0))
+            .unwrap();
+        assert!(game.run_command("forceload add 0 0"));
+        assert!(game.run_command("setblock 4 200 4 sculk_shrieker[waterlogged=false] strict"));
+        assert!(game.run_command("setblock 7 200 4 sculk_shrieker[waterlogged=true] strict"));
+        assert_eq!(
+            game.state_property(game.world.block(4, 200, 4), "waterlogged"),
+            Some("false")
+        );
+        assert_eq!(
+            game.state_property(game.world.block(7, 200, 4), "waterlogged"),
+            Some("true")
+        );
+        game.particles.requested = Some(Vec::new());
+        game.particles.seed_randoms(6500, 6501, 6502);
+        let mut random = LegacyRandom::new(6500);
+        let clock = game.world.game_time;
+        let mut world_random = game.world.random.clone();
+        let effect = "minecraft:block.sculk_shrieker.shriek";
+        let before = "minecraft:block.note_block.pling";
+        let after = "minecraft:block.amethyst_block.chime";
+        game.audio.capture = Some(Vec::new());
+        game.audio
+            .play_on(4, before, Some([1.5, 200.0, 4.5]), 1.0, 1.0);
+        game.level_events.push(LevelEvent::LevelEvent {
+            id: 3007,
+            pos: BlockPos::new(4, 200, 4),
+            data: 0,
+        });
+        game.process_level_events().unwrap();
+        assert_eq!(
+            game.audio.heard.get(effect),
+            Some(&1),
+            "dry effect must still play locally"
+        );
+        random.next_float(); // Same single pitch draw after the particle requests.
+        assert_eq!(
+            game.particles.random().next_long(),
+            random.next_long(),
+            "dry random continuation"
+        );
+        game.level_events.push(LevelEvent::LevelEvent {
+            id: 3007,
+            pos: BlockPos::new(7, 200, 4),
+            data: 0,
+        });
+        game.process_level_events().unwrap();
+        assert_eq!(
+            game.audio.heard.get(effect),
+            Some(&1),
+            "waterlogged effect stays silent"
+        );
+        assert_eq!(
+            game.particles.random().next_long(),
+            random.next_long(),
+            "wet branch consumes no pitch draw"
+        );
+        let requests = game.particles.requested.as_ref().unwrap();
+        assert_eq!(requests.len(), 20);
+        for (i, (options, position, velocity)) in requests.iter().enumerate() {
+            assert_eq!(options.ty, ParticleType::Shriek);
+            assert_eq!(options.scale, ((i % 10) * 5) as f32);
+            assert_eq!(*position, [if i < 10 { 4.5 } else { 7.5 }, 200.5, 4.5]);
+            assert_eq!(*velocity, [0.0; 3]);
+        }
+        game.audio
+            .play_on(4, after, Some([2.5, 200.0, 4.5]), 0.5, 1.25);
+        assert_eq!(game.audio.heard.get(before), Some(&1));
+        assert_eq!(game.audio.heard.get(after), Some(&1));
+        assert_eq!(game.world.game_time, clock);
+        assert_eq!(
+            game.world.random.next_long(),
+            world_random.next_long(),
+            "level random continuation"
+        );
+        let shared = game
+            .audio
+            .capture
+            .as_ref()
+            .expect("shared capture restored");
+        assert_eq!(
+            shared.iter().map(|s| s.event.as_str()).collect::<Vec<_>>(),
+            vec![before, after],
+            "client-level shriek entered shared capture"
+        );
+        for (sound, (position, volume, pitch)) in shared.iter().zip([
+            ([1.5, 200.0, 4.5], 1.0, 1.0),
+            ([2.5, 200.0, 4.5], 0.5, 1.25),
+        ]) {
+            assert_eq!(
+                (sound.position, sound.volume, sound.pitch, sound.source),
+                (position, volume, pitch, 4)
+            );
+            assert_eq!((sound.entity, sound.except_entity), (None, None));
+        }
     }
 }

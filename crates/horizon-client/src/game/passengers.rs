@@ -4,7 +4,10 @@
 //! Saving riders under `Passengers` lives in `persist.rs`.
 use super::Game;
 use horizon_client::mobs::{Species, riders};
-use horizon_core::{geometry::Vec3, random::RandomSource};
+use horizon_core::{
+    geometry::{Aabb, Vec3},
+    random::RandomSource,
+};
 use std::collections::HashMap;
 
 /// The mobs riding each vehicle, by the vehicle's id: their indices, in the mobs' order.
@@ -73,6 +76,7 @@ impl Game<'_> {
         }
         let boats: std::collections::HashSet<u32> = self.boats.iter().map(|b| b.id).collect();
         let carts: std::collections::HashSet<u32> = self.carts.iter().map(|c| c.id).collect();
+        let cushions: std::collections::HashSet<u32> = self.cushions.iter().map(|c| c.id).collect();
         let tnts: std::collections::HashSet<u32> = self
             .tnts
             .iter()
@@ -108,6 +112,7 @@ impl Game<'_> {
                 && (boats.contains(&v)
                     || carts.contains(&v)
                     || tnts.contains(&v)
+                    || cushions.contains(&v)
                     || index
                         .get(&v)
                         .is_some_and(|&j| self.mobs[j].alive() && !self.mobs[j].removed));
@@ -140,6 +145,7 @@ impl Game<'_> {
         self.seat_boat_mobs(&riders);
         self.seat_cart_mobs(&riders);
         self.seat_tnt_mobs(&riders);
+        self.seat_cushion_mobs(&riders);
         let index: HashMap<u32, usize> = self
             .mobs
             .iter()
@@ -167,6 +173,9 @@ impl Game<'_> {
                     let m = &mut self.mobs[i];
                     // EntityType.TEXT_DISPLAY's box is zero wide.
                     let offset = riders::vehicle_attachment(m, 0.0);
+                    // EntityType.TEXT_DISPLAY's box is a point at the seat.
+                    let seat = Vec3::new(at.x, at.y, at.z);
+                    m.seated(v, offset, Aabb::new(seat, seat));
                     m.position = Vec3::new(at.x, at.y - offset, at.z);
                     m.previous = Vec3::new(before.x, before.y - offset, before.z);
                     m.velocity = Vec3::ZERO;
@@ -218,8 +227,10 @@ impl Game<'_> {
                 let (yaw, prev_yaw) = (vehicle.yaw, vehicle.previous_yaw);
                 let (body, prev_body) = (vehicle.body_yaw, vehicle.previous_body_yaw);
                 let vehicle_width = vehicle.width();
+                let vehicle_box = vehicle.bounds();
                 let m = &mut self.mobs[i];
                 let offset = riders::vehicle_attachment(m, vehicle_width);
+                m.seated(v, offset, vehicle_box);
                 m.position = riders::seat(attach, offset, pos, yaw);
                 m.previous = riders::seat(attach, offset, prev, prev_yaw);
                 m.velocity = Vec3::ZERO;
@@ -327,7 +338,7 @@ impl Game<'_> {
 
     /// `Entity.getPassengerRidingPosition` of a vehicle: where the feet of a
     /// passenger whose own vehicle attachment is 0 land.
-    fn passenger_riding_position(
+    pub(super) fn passenger_riding_position(
         &self,
         vehicle: u32,
         me: Option<u32>,
