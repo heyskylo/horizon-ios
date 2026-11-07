@@ -1307,7 +1307,7 @@ impl Game<'_> {
                     "minecraft:experience_orb",
                     [p.x, p.y, p.z],
                     [v.x, v.y, v.z],
-                    "",
+                    &format!("value={}", o.value),
                 ));
             }
         }

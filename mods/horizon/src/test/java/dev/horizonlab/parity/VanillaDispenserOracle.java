@@ -352,6 +352,7 @@ public final class VanillaDispenserOracle {
         }
         if (f.has("rules")) {
             for (var rule : f.getAsJsonObject("rules").entrySet()) {
+                if (rule.getKey().equals("block_drops")) w.rules.set(GameRules.BLOCK_DROPS, rule.getValue().getAsBoolean(), null);
                 if (rule.getKey().equals("tnt_explodes")) w.rules.set(GameRules.TNT_EXPLODES, rule.getValue().getAsBoolean(), null);
                 if (rule.getKey().equals("spawner_blocks_work")) w.rules.set(GameRules.SPAWNER_BLOCKS_WORK, rule.getValue().getAsBoolean(), null);
                 if (rule.getKey().equals("block_explosion_drop_decay")) w.rules.set(GameRules.BLOCK_EXPLOSION_DROP_DECAY, rule.getValue().getAsBoolean(), null);
@@ -472,6 +473,7 @@ public final class VanillaDispenserOracle {
             line.append(' ').append(num(v.x)).append(' ').append(num(v.y)).append(' ').append(num(v.z));
             if (e instanceof ItemEntity item) line.append(' ').append(ParityData.canon(item.getItem()));
             if (e instanceof PrimedTnt tnt) line.append(" fuse=").append(tnt.getFuse());
+            if (e instanceof ExperienceOrb orb) line.append(" value=").append(orb.getValue());
             // An orb that took others in (ExperienceOrb.tryMergeToExisting) prints once per
             // count: whether orbs merge depends on entity ids, which Horizon doesn't share.
             for (int n = e instanceof ExperienceOrb orb ? orbCount(orb) : 1; n > 0; n--) result.add(line.toString());

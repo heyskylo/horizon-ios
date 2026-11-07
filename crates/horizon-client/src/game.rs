@@ -6504,13 +6504,16 @@ impl Game<'_> {
                         self.mob_poof(id);
                     }
                 }
-                // SpawnerBlock.spawnAfterBreak pops its experience whatever the tool.
+                // Block.tryDropExperience samples before Silk Touch removes the XP.
+                // SpawnerBlock.spawnAfterBreak ignores Silk Touch. Both sample even
+                // when Block.popExperience suppresses the award via block_drops.
+                let sampled_xp = self.block_experience(&facts.name);
                 let xp = if silk && &*facts.name != "minecraft:spawner" {
                     0
                 } else {
-                    self.block_experience(&facts.name)
+                    sampled_xp
                 };
-                if xp > 0 {
+                if xp > 0 && self.ui.rules.bool("block_drops") {
                     self.spawn_orbs(
                         [
                             f64::from(pos[0]) + 0.5,
@@ -12223,8 +12226,9 @@ impl Game<'_> {
             }
             _ => (0, 0),
         };
-        if max == 0 {
-            return 0;
+        // ConstantInt.sample (sculk) does not advance the level random.
+        if min == max {
+            return min as u32;
         }
         (min + self.world.random.next_int_bound(max - min + 1).unwrap_or(0)) as u32
     }
