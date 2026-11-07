@@ -150,6 +150,12 @@ impl StackData {
     pub fn set_loot_component(&mut self, id: &str, value: &serde_json::Value) {
         let tag = (!value.is_null()).then(|| horizon_client_core::scoreboard::json_to_tag(value));
         match id {
+            // `set_book_cover` (and `set_components`) write the book's title,
+            // author, generation and pages as one component: the fields the
+            // tooltip and the reading screen use come back out of it.
+            "minecraft:written_book_content" => {
+                self.written = tag.as_ref().map(written_book_from_tag);
+            }
             "minecraft:trim" => {
                 self.trim = match (value["material"].as_str(), value["pattern"].as_str()) {
                     (Some(material), Some(pattern)) => {
@@ -532,6 +538,28 @@ fn plain_component(t: &Tag) -> Tag {
     }
     t.clone()
 }
+/// `WrittenBookContent` from its component: the title and author (a
+/// `Filterable`'s raw text), the generation and the pages, whose component
+/// tags are kept apart from their plain text for click events.
+fn written_book_from_tag(b: &Tag) -> WrittenBook {
+    WrittenBook {
+        title: b.get("title").and_then(filterable_text).unwrap_or_default(),
+        author: b.get("author").and_then(string).unwrap_or_default(),
+        generation: b.get("generation").and_then(int).unwrap_or(0).clamp(0, 3) as u8,
+        pages: match b.get("pages") {
+            Some(Tag::List(pages)) => pages.iter().filter_map(filterable_text).collect(),
+            _ => Vec::new(),
+        },
+        page_tags: match b.get("pages") {
+            Some(Tag::List(pages)) => pages
+                .iter()
+                .map(|p| plain_component(p.get("raw").unwrap_or(p)))
+                .collect(),
+            _ => Vec::new(),
+        },
+    }
+}
+
 fn filterable_text(t: &Tag) -> Option<String> {
     match t.get("raw") {
         Some(raw) => read_text(raw),
@@ -1041,22 +1069,7 @@ pub fn decode_components(components: Option<&Tag>) -> (u32, Option<Box<StackData
         },
         written: c
             .get("minecraft:written_book_content")
-            .map(|b| WrittenBook {
-                title: b.get("title").and_then(filterable_text).unwrap_or_default(),
-                author: b.get("author").and_then(string).unwrap_or_default(),
-                generation: b.get("generation").and_then(int).unwrap_or(0).clamp(0, 3) as u8,
-                pages: match b.get("pages") {
-                    Some(Tag::List(pages)) => pages.iter().filter_map(filterable_text).collect(),
-                    _ => Vec::new(),
-                },
-                page_tags: match b.get("pages") {
-                    Some(Tag::List(pages)) => pages
-                        .iter()
-                        .map(|p| plain_component(p.get("raw").unwrap_or(p)))
-                        .collect(),
-                    _ => Vec::new(),
-                },
-            }),
+            .map(written_book_from_tag),
         fireworks: c
             .get("minecraft:fireworks")
             .map(|f| {
