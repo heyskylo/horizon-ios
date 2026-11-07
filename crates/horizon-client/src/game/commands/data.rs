@@ -179,6 +179,21 @@ impl Game<'_> {
             }
             Target::Projectile(id) => {
                 let uuid = self.uuid_for(id);
+                // A homing bullet's `Target` is the entity's, not the raw
+                // compound's, as `save_projectile` writes it.
+                let who = self
+                    .creatures
+                    .projectiles
+                    .iter()
+                    .find(|p| p.id == id)
+                    .and_then(|p| match &p.kind {
+                        horizon_client::projectiles::ProjectileKind::ShulkerBullet {
+                            target: Some(who),
+                            ..
+                        } => Some(*who),
+                        _ => None,
+                    });
+                let target = who.and_then(|who| self.save_who_uuid(who));
                 let p = self.creatures.projectiles.iter().find(|p| p.id == id)?;
                 let owner = if p.owner == Some(horizon_client::mobs::Who::Player) {
                     player_uuid
@@ -196,7 +211,7 @@ impl Game<'_> {
                 entity_nbt::arrow_to_nbt(p, uuid, p.owner_uuid.or(owner), in_block, raw)
                     .or_else(|| entity_nbt::fireball_to_nbt(p, uuid, owner, raw))
                     .or_else(|| entity_nbt::throwable_to_nbt(p, uuid, owner, raw))
-                    .or_else(|| entity_nbt::spit_or_bullet_to_nbt(p, uuid, owner, raw))?
+                    .or_else(|| entity_nbt::spit_or_bullet_to_nbt(p, uuid, owner, target, raw))?
             }
             Target::Crystal(id) => {
                 let c = self.crystals.iter().find(|c| c.id == id)?;
