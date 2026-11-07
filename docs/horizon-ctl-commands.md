@@ -140,7 +140,7 @@ Every command `horizon-ctl` takes, its MCP tool in `horizon-ctl mcp` (the launch
 | `script [FILE] [--keep-going]` | CLI only | Run commands from FILE (or stdin), one per line | none |
 | `sleep SECONDS` | CLI only | Wait (in scripts) | none |
 | `mcp` | CLI only | Serve the Model Context Protocol on stdin/stdout, one tool per command | none |
-| `bench SECONDS` | `bench` | Reset frame stats, wait, reply with the summary | `seconds` (number, required): how long to measure |
+| `bench SECONDS [raw]` | `bench` | Reset frame stats, wait, reply with the summary | `seconds` (number, required): how long to measure<br>`raw` (boolean): every frame time too (frame_ms, cpu_ms, gpu_ms) |
 | `stats [reset] [raw]` | `stats` | Frame-time summary since the last reset | `reset` (boolean): start counting again<br>`raw` (boolean): every frame time too (frame_ms, cpu_ms, gpu_ms) |
 | `gpu-passes [on\|off]` | CLI only | Time Horizon's own render passes on the GPU, shown in F3 and in stats and bench | `mode` (on, off): on or off; without it, only reports |
 | `trace [FILE [SECONDS] \| stop]` | CLI only | Write every thread's timed spans to FILE as a timeline that ui.perfetto.dev opens, for SECONDS or until stop | none |

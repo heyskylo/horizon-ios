@@ -54,12 +54,88 @@ const FLIGHT_SECONDS: f64 = 12.0;
 const SETTLE: Duration = Duration::from_secs(2);
 const LOAD_LIMIT: Duration = Duration::from_secs(600);
 
-/// `standard` flies every scene; a scene's name flies only that one.
-pub fn scenes(scenario: &str) -> Option<Vec<Scene>> {
-    match scenario {
-        "standard" => Some(SCENES.to_vec()),
-        name => SCENES.iter().find(|s| s.0 == name).map(|s| vec![*s]),
+/// Where the trip starts and ends: 512 blocks at 16 blocks/s, the pace that scrambles section ids.
+const TRAVEL_FROM: [f64; 3] = [-960.0, 150.0, -176.0];
+const TRAVEL_TO: [f64; 3] = [-960.0, 150.0, 336.0];
+const TRAVEL_PITCH: f64 = 30.0;
+const TRAVEL_SECONDS: f64 = 32.0;
+const HOLD_BLOCKS: u32 = 4;
+const BLOCK_SECONDS: f64 = 4.0;
+/// Frame-rate settings the benchmark can set for a run; `a` is the default.
+pub struct Switch {
+    pub name: &'static str,
+    pub word: &'static str,
+    pub key: &'static str,
+    pub a: &'static str,
+    pub b: &'static str,
+}
+pub const SWITCHES: [Switch; 4] = [
+    Switch {
+        name: "gpu-culling",
+        word: "gpu-culling",
+        key: "gpu_culling",
+        a: "off",
+        b: "on",
+    },
+    Switch {
+        name: "section-cull",
+        word: "section-cull",
+        key: "cull",
+        a: "on",
+        b: "off",
+    },
+    Switch {
+        name: "section-sides",
+        word: "section-sides",
+        key: "sides",
+        a: "on",
+        b: "off",
+    },
+    Switch {
+        name: "section-draws",
+        word: "section-draws",
+        key: "flat",
+        a: "flat",
+        b: "indirect",
+    },
+];
+
+/// What `--benchmark` runs.
+pub enum Scenario {
+    /// `standard` flies every scene; a scene's name flies only that one.
+    Scenes(Vec<Scene>),
+    /// A 512-block flight, then held at its end.
+    Travel,
+}
+
+impl Scenario {
+    pub fn parse(name: &str) -> Result<Scenario, String> {
+        match name {
+            "standard" => Ok(Scenario::Scenes(SCENES.to_vec())),
+            "travel" => Ok(Scenario::Travel),
+            name => SCENES
+                .iter()
+                .find(|s| s.0 == name)
+                .map(|s| Scenario::Scenes(vec![*s]))
+                .ok_or_else(|| {
+                    format!("unknown benchmark {name}: standard, village, forest, ocean, mountain or travel")
+                }),
+        }
     }
+}
+
+/// `--benchmark-set SWITCH=VALUE`: the value must be one of the switch's two.
+pub fn parse_set(value: &str) -> Result<(String, String), String> {
+    let (name, setting) = value.split_once('=').ok_or("expected SWITCH=VALUE")?;
+    let names = || SWITCHES.map(|s| s.name).join(", ");
+    let switch = SWITCHES
+        .iter()
+        .find(|s| s.name == name)
+        .ok_or_else(|| format!("unknown switch {name}: {}", names()))?;
+    if setting != switch.a && setting != switch.b {
+        return Err(format!("{name} is {} or {}", switch.a, switch.b));
+    }
+    Ok((name.to_owned(), setting.to_owned()))
 }
 
 /// What the game knows about the run before it starts.
@@ -73,6 +149,8 @@ pub struct Setup {
     pub fps_cap: Option<u32>,
     pub offscreen: bool,
     pub game_dir: PathBuf,
+    /// `--benchmark-set`: a switch and its value, applied before the world opens.
+    pub set: Option<(String, String)>,
 }
 
 /// Starts the driver; the game quits when it is done, and the report's path is printed.
@@ -150,8 +228,7 @@ fn time_passes(control: &Control, scene: &str, report: &mut Report) -> Result<bo
 }
 
 fn run(control: &Control, setup: Setup) -> Result<PathBuf, String> {
-    let scenes =
-        scenes(&setup.scenario).ok_or_else(|| format!("unknown scenario {}", setup.scenario))?;
+    let scenario = Scenario::parse(&setup.scenario)?;
     let mut report = Report::new(Kind::Game, setup.app.clone());
     let pid = std::process::id();
     report.conditions.load_avg_1m = horizon_bench::load_average();
@@ -191,6 +268,9 @@ fn run(control: &Control, setup: Setup) -> Result<PathBuf, String> {
         horizon_telemetry::system::storage(&setup.game_dir).map(str::to_owned);
     report.hardware.display = serde_json::from_value(title["display"].clone()).ok();
 
+    if let Some((name, value)) = &setup.set {
+        apply_set(control, name, value)?;
+    }
     replace_world(&setup.game_dir)?;
     control.call(&format!("open {WORLD} {SEED} creative"))?;
     // The world opens on a worker: its folder may not exist yet when `open` replies.
@@ -204,72 +284,28 @@ fn run(control: &Control, setup: Setup) -> Result<PathBuf, String> {
     report.metric("startup.world_ms", &[ms(loaded - setup.started)]);
 
     let mut steady = Vec::new();
-    for (name, start, end, pitch) in scenes {
-        control.call("time 6000")?;
-        let meshed = control.status()["meshed_sections"].as_f64().unwrap_or(0.0);
-        let generated = control.status()["generated_chunks"].as_f64().unwrap_or(0.0);
-        let [x, y, z] = start;
-        control.call(&format!("tp {x} {y} {z}"))?;
-        let teleported = Instant::now();
-        // A zero-length flight holds the player at the start, flying.
-        control.call(&format!("fly {x} {y} {z} {x} {y} {z} 0.1 {pitch}"))?;
-        control.call(&format!("look {:.3} {pitch}", yaw(start, end)))?;
-        let near = |p: &Value| {
-            let p: Vec<f64> = p
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(Value::as_f64)
-                .collect();
-            p.len() == 3 && (0..3).map(|i| (p[i] - start[i]).powi(2)).sum::<f64>() < 4.0
-        };
-        let loaded = wait_loaded(control, near)?;
-        let load = loaded - teleported;
-        report.metric(&format!("chunks.{name}.load_ms"), &[ms(load)]);
-        let status = control.status();
-        let meshes = status["meshed_sections"].as_f64().unwrap_or(0.0) - meshed;
-        let chunks = status["generated_chunks"].as_f64().unwrap_or(0.0) - generated;
-        report.metric(&format!("chunks.{name}.meshed_count"), &[meshes]);
-        report.metric(&format!("chunks.{name}.generated_count"), &[chunks]);
-        if load.as_secs_f64() > 0.0 {
-            report.metric(
-                &format!("chunks.{name}.generated_per_s"),
-                &[chunks / load.as_secs_f64()],
-            );
+    match scenario {
+        Scenario::Scenes(scenes) => {
+            for (name, start, end, pitch) in scenes {
+                control.call("time 6000")?;
+                load_scene(control, name, start, end, pitch, &mut report)?;
+                if !time_passes(control, name, &mut report)? {
+                    thread::sleep(SETTLE);
+                }
+                let frames = fly(
+                    control,
+                    name,
+                    start,
+                    end,
+                    FLIGHT_SECONDS,
+                    pitch,
+                    &mut steady,
+                )?;
+                fps_metrics(&mut report, name, std::slice::from_ref(&frames));
+                report.frames.push(frames);
+            }
         }
-        if !time_passes(control, name, &mut report)? {
-            thread::sleep(SETTLE);
-        }
-        let [ex, ey, ez] = end;
-        let begin = Instant::now();
-        let flight = control.call(&format!(
-            "fly {x} {y} {z} {ex} {ey} {ez} {FLIGHT_SECONDS} {pitch} raw"
-        ))?;
-        steady.push((begin, Instant::now()));
-        let series = |key: &str| -> Vec<f32> {
-            flight[key]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(Value::as_f64)
-                .map(|v| v as f32)
-                .collect()
-        };
-        let frames = Frames::of(
-            name,
-            0,
-            &series("frame_ms"),
-            &series("cpu_ms"),
-            &series("gpu_ms"),
-        )
-        .ok_or("the flight drew no frames")?;
-        report.metric(&format!("fps.{name}.avg_fps"), &[frames.avg_fps]);
-        report.metric(&format!("fps.{name}.low_1pct_fps"), &[frames.low_1pct_fps]);
-        report.metric(
-            &format!("fps.{name}.low_01pct_fps"),
-            &[frames.low_01pct_fps],
-        );
-        report.frames.push(frames);
+        Scenario::Travel => travel(control, &mut report, &mut steady)?,
     }
 
     let status = control.status();
@@ -287,8 +323,9 @@ fn run(control: &Control, setup: Setup) -> Result<PathBuf, String> {
     c.vsync = Some(setup.vsync);
     c.fps_cap = setup.fps_cap;
     c.offscreen = Some(setup.offscreen);
-    c.repeats = Some(1);
-    c.warmup_s = Some(SETTLE.as_secs_f64());
+    let travelling = setup.scenario == "travel";
+    c.repeats = Some(if travelling { HOLD_BLOCKS } else { 1 });
+    c.warmup_s = (!travelling).then(|| SETTLE.as_secs_f64());
     if let Some(bytes) = renderer["gpu_allocated_bytes"].as_f64() {
         report.metric("memory.gpu_mb", &[bytes / f64::from(1 << 20)]);
     }
@@ -315,6 +352,169 @@ fn run(control: &Control, setup: Setup) -> Result<PathBuf, String> {
     report
         .write_to(&setup.game_dir.join("benchmarks"))
         .map_err(|e| e.to_string())
+}
+
+/// Sets a switch with its control word; a refusal (GPU culling not offered) is the game's reason.
+fn apply_set(control: &Control, name: &str, value: &str) -> Result<(), String> {
+    let switch = SWITCHES
+        .iter()
+        .find(|s| s.name == name)
+        .ok_or("unknown switch")?;
+    control.call(&format!("{} {value}", switch.word)).map(drop)
+}
+
+/// Teleports to a scene's start, holds there and waits for the view to load, reporting the load.
+fn load_scene(
+    control: &Control,
+    name: &str,
+    start: [f64; 3],
+    end: [f64; 3],
+    pitch: f64,
+    report: &mut Report,
+) -> Result<(), String> {
+    let meshed = control.status()["meshed_sections"].as_f64().unwrap_or(0.0);
+    let generated = control.status()["generated_chunks"].as_f64().unwrap_or(0.0);
+    let [x, y, z] = start;
+    control.call(&format!("tp {x} {y} {z}"))?;
+    let teleported = Instant::now();
+    // A zero-length flight holds the player at the start, flying.
+    control.call(&format!("fly {x} {y} {z} {x} {y} {z} 0.1 {pitch}"))?;
+    control.call(&format!("look {:.3} {pitch}", yaw(start, end)))?;
+    let loaded = wait_loaded(control, near(start))?;
+    let load = loaded - teleported;
+    report.metric(&format!("chunks.{name}.load_ms"), &[ms(load)]);
+    let status = control.status();
+    let meshes = status["meshed_sections"].as_f64().unwrap_or(0.0) - meshed;
+    let chunks = status["generated_chunks"].as_f64().unwrap_or(0.0) - generated;
+    report.metric(&format!("chunks.{name}.meshed_count"), &[meshes]);
+    report.metric(&format!("chunks.{name}.generated_count"), &[chunks]);
+    if load.as_secs_f64() > 0.0 {
+        report.metric(
+            &format!("chunks.{name}.generated_per_s"),
+            &[chunks / load.as_secs_f64()],
+        );
+    }
+    Ok(())
+}
+
+/// Whether a status position is within 2 blocks of `target`.
+fn near(target: [f64; 3]) -> impl Fn(&Value) -> bool {
+    move |p| {
+        let p: Vec<f64> = p
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_f64)
+            .collect();
+        p.len() == 3 && (0..3).map(|i| (p[i] - target[i]).powi(2)).sum::<f64>() < 4.0
+    }
+}
+
+/// Flies the camera from `start` to `end` and returns the flight's frames.
+fn fly(
+    control: &Control,
+    phase: &str,
+    start: [f64; 3],
+    end: [f64; 3],
+    seconds: f64,
+    pitch: f64,
+    steady: &mut Vec<(Instant, Instant)>,
+) -> Result<Frames, String> {
+    let ([x, y, z], [ex, ey, ez]) = (start, end);
+    let begin = Instant::now();
+    let flight = control.call(&format!(
+        "fly {x} {y} {z} {ex} {ey} {ez} {seconds} {pitch} raw"
+    ))?;
+    steady.push((begin, Instant::now()));
+    frames_of(&flight, phase, 0)
+}
+
+/// The frames of a `fly ... raw` or `bench ... raw` reply.
+fn frames_of(reply: &Value, phase: &str, repeat: u32) -> Result<Frames, String> {
+    let series = |key: &str| -> Vec<f32> {
+        reply[key]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_f64)
+            .map(|v| v as f32)
+            .collect()
+    };
+    Frames::of(
+        phase,
+        repeat,
+        &series("frame_ms"),
+        &series("cpu_ms"),
+        &series("gpu_ms"),
+    )
+    .ok_or_else(|| format!("{phase} drew no frames"))
+}
+
+/// The phase's frame figures over its blocks (one for a flight).
+fn fps_metrics(report: &mut Report, phase: &str, blocks: &[Frames]) {
+    let each = |f: fn(&Frames) -> f64| blocks.iter().map(f).collect::<Vec<_>>();
+    report.metric(&format!("fps.{phase}.avg_fps"), &each(|b| b.avg_fps));
+    report.metric(
+        &format!("fps.{phase}.low_1pct_fps"),
+        &each(|b| b.low_1pct_fps),
+    );
+    report.metric(
+        &format!("fps.{phase}.low_01pct_fps"),
+        &each(|b| b.low_01pct_fps),
+    );
+}
+
+/// The median CPU and GPU time of a frame over the phase's blocks, where measured.
+fn timing_metrics(report: &mut Report, phase: &str, blocks: &[Frames]) {
+    let cpu: Vec<f64> = blocks.iter().filter_map(|b| b.cpu_p50_ms).collect();
+    let gpu: Vec<f64> = blocks.iter().filter_map(|b| b.gpu_p50_ms).collect();
+    report.metric(&format!("cpu.{phase}.p50_ms"), &cpu);
+    report.metric(&format!("gpu.{phase}.p50_ms"), &gpu);
+}
+
+/// The state that matters: fly 512 blocks over terrain that loads and unloads, then hold at the end.
+fn travel(
+    control: &Control,
+    report: &mut Report,
+    steady: &mut Vec<(Instant, Instant)>,
+) -> Result<(), String> {
+    for line in [
+        "command gamerule advance_time false",
+        "command gamerule advance_weather false",
+        "command weather clear",
+        "time 6000",
+    ] {
+        control.call(line)?;
+    }
+    let (from, to) = (TRAVEL_FROM, TRAVEL_TO);
+    load_scene(control, "travel", from, to, TRAVEL_PITCH, report)?;
+    let flight = fly(
+        control,
+        "travel",
+        from,
+        to,
+        TRAVEL_SECONDS,
+        TRAVEL_PITCH,
+        steady,
+    )?;
+    let blocks = std::slice::from_ref(&flight);
+    fps_metrics(report, "travel", blocks);
+    timing_metrics(report, "travel", blocks);
+    report.frames.push(flight);
+
+    let [x, y, z] = to;
+    control.call(&format!("fly {x} {y} {z} {x} {y} {z} 0.1 {TRAVEL_PITCH}"))?;
+    control.call(&format!("look {:.3} {TRAVEL_PITCH}", yaw(from, to)))?;
+    wait_loaded(control, near(to))?;
+    let mut blocks = Vec::new();
+    for repeat in 0..HOLD_BLOCKS {
+        let held = control.call(&format!("bench {BLOCK_SECONDS} raw"))?;
+        blocks.push(frames_of(&held, "hold", repeat)?);
+    }
+    fps_metrics(report, "hold", &blocks);
+    timing_metrics(report, "hold", &blocks);
+    report.frames.extend(blocks);
+    Ok(())
 }
 
 /// Removes the previous run's world, never one the benchmark didn't create.
@@ -474,9 +674,34 @@ mod tests {
 
     #[test]
     fn scenarios() {
-        assert_eq!(scenes("standard").unwrap().len(), 4);
-        assert_eq!(scenes("ocean").unwrap()[0].0, "ocean");
-        assert!(scenes("nether").is_none());
+        let scenes = |name: &str| match Scenario::parse(name) {
+            Ok(Scenario::Scenes(scenes)) => scenes,
+            _ => panic!("{name} is not scenes"),
+        };
+        assert_eq!(scenes("standard").len(), 4);
+        assert_eq!(scenes("ocean")[0].0, "ocean");
+        assert!(matches!(Scenario::parse("travel"), Ok(Scenario::Travel)));
+        let Err(e) = Scenario::parse("nether") else {
+            panic!("nether is no scenario")
+        };
+        assert!(e.contains("travel") && e.contains("mountain"), "{e}");
+    }
+
+    #[test]
+    fn a_set_names_a_switch_and_one_of_its_two_values() {
+        assert_eq!(
+            parse_set("gpu-culling=on"),
+            Ok(("gpu-culling".into(), "on".into()))
+        );
+        assert_eq!(
+            parse_set("section-draws=indirect"),
+            Ok(("section-draws".into(), "indirect".into()))
+        );
+        let nope = parse_set("gpu-culling=maybe").unwrap_err();
+        assert!(nope.contains("off or on"), "{nope}");
+        let unknown = parse_set("fog=on").unwrap_err();
+        assert!(unknown.contains("gpu-culling") && unknown.contains("section-draws"));
+        assert!(parse_set("gpu-culling").is_err());
     }
 
     #[test]
@@ -586,6 +811,147 @@ mod tests {
             "Metal's overlapping passes are not timed: {lines:?}"
         );
         assert!(metrics.is_empty());
+    }
+
+    /// A fake game for the trip: the player stands where `tp` or `fly` put it and counts settle.
+    fn trip_server(rx: mpsc::Receiver<Request>) -> thread::JoinHandle<Vec<String>> {
+        thread::spawn(move || {
+            let (mut lines, mut at, mut polls) = (Vec::new(), [0.0_f64; 3], 0_u64);
+            while let Ok(request) = rx.recv() {
+                let words: Vec<&str> = request.line.split(' ').collect();
+                let reply = match words[0] {
+                    "status" => {
+                        polls += 1;
+                        let mut s: Value =
+                            serde_json::from_str(&status(400 + polls.min(3))).unwrap();
+                        s["player"]["position"] = serde_json::json!(at);
+                        s
+                    }
+                    "bench" | "fly" if words.contains(&"raw") => {
+                        serde_json::json!({
+                            "frames": 200,
+                            "frame_ms": vec![5.0; 200],
+                            "cpu_ms": vec![2.0; 200],
+                            "gpu_ms": vec![4.0; 200],
+                        })
+                    }
+                    _ => serde_json::json!({ "ok": true }),
+                };
+                if matches!(words[0], "tp" | "fly") {
+                    let n: Vec<f64> = words[1..4].iter().filter_map(|w| w.parse().ok()).collect();
+                    at = [n[0], n[1], n[2]];
+                    polls = 0;
+                }
+                let _ = request.reply.send(reply.to_string());
+                lines.push(request.line);
+            }
+            lines
+        })
+    }
+
+    #[test]
+    fn the_trip_flies_512_blocks_then_holds_four_blocks_at_its_end() {
+        let (tx, rx) = mpsc::channel::<Request>();
+        let server = trip_server(rx);
+        let mut report = Report::new(Kind::Game, App::default());
+        let control = Control(tx);
+        let mut steady = Vec::new();
+        travel(&control, &mut report, &mut steady).expect("the trip runs");
+        drop(control);
+        let lines: Vec<String> = server
+            .join()
+            .unwrap()
+            .into_iter()
+            .filter(|l| l != "status")
+            .map(|l| l.replace("-0.000", "0.000"))
+            .collect();
+        // Facing +Z is yaw 0, which the formatter may print as -0.
+        let mut expected = vec![
+            "command gamerule advance_time false",
+            "command gamerule advance_weather false",
+            "command weather clear",
+            "time 6000",
+            "tp -960 150 -176",
+            "fly -960 150 -176 -960 150 -176 0.1 30",
+            "look 0.000 30",
+            "fly -960 150 -176 -960 150 336 32 30 raw",
+            "fly -960 150 336 -960 150 336 0.1 30",
+            "look 0.000 30",
+        ];
+        expected.extend(["bench 4 raw"; 4]);
+        assert_eq!(lines, expected);
+
+        let phases: Vec<_> = report
+            .frames
+            .iter()
+            .map(|f| (f.phase.as_str(), f.repeat))
+            .collect();
+        assert_eq!(
+            phases,
+            [
+                ("travel", 0),
+                ("hold", 0),
+                ("hold", 1),
+                ("hold", 2),
+                ("hold", 3)
+            ]
+        );
+        assert_eq!(steady.len(), 1);
+        let metric = |name: &str| report.metrics.get(name).map(|s| (s.n, s.mean));
+        assert_eq!(metric("fps.travel.avg_fps"), Some((1, 200.0)));
+        assert_eq!(metric("fps.hold.avg_fps"), Some((4, 200.0)));
+        assert_eq!(metric("cpu.hold.p50_ms"), Some((4, 2.0)));
+        assert_eq!(metric("gpu.hold.p50_ms"), Some((4, 4.0)));
+        assert_eq!(metric("gpu.travel.p50_ms"), Some((1, 4.0)));
+        assert!(metric("chunks.travel.load_ms").is_some());
+    }
+
+    #[test]
+    fn a_refused_command_ends_the_trip_with_the_games_reason() {
+        let (tx, rx) = mpsc::channel::<Request>();
+        let server = thread::spawn(move || {
+            while let Ok(request) = rx.recv() {
+                let reply = if request.line.starts_with("command weather") {
+                    serde_json::json!({ "error": "no such weather" })
+                } else {
+                    serde_json::json!({ "ok": true })
+                };
+                let _ = request.reply.send(reply.to_string());
+            }
+        });
+        let mut report = Report::new(Kind::Game, App::default());
+        let control = Control(tx);
+        let error = travel(&control, &mut report, &mut Vec::new()).unwrap_err();
+        assert!(error.contains("no such weather"), "{error}");
+        assert!(report.frames.is_empty());
+        drop(control);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn a_refused_switch_is_the_games_reason() {
+        let (tx, rx) = mpsc::channel::<Request>();
+        let server = thread::spawn(move || {
+            let mut lines = Vec::new();
+            while let Ok(request) = rx.recv() {
+                let reply = match request.line.as_str() {
+                    "gpu-culling on" => serde_json::json!({ "error": "not offered here" }),
+                    _ => serde_json::json!({ "ok": true }),
+                };
+                let _ = request.reply.send(reply.to_string());
+                lines.push(request.line);
+            }
+            lines
+        });
+        let control = Control(tx);
+        apply_set(&control, "section-draws", "indirect").unwrap();
+        let error = apply_set(&control, "gpu-culling", "on").unwrap_err();
+        assert!(error.contains("not offered here"), "{error}");
+        drop(control);
+        assert_eq!(
+            server.join().unwrap(),
+            ["section-draws indirect", "gpu-culling on"]
+        );
     }
 
     #[test]

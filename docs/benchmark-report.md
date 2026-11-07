@@ -90,6 +90,7 @@ confidence interval of the mean, Student's t, null when `n` is 1). The unit is t
 | `memory.gpu_mb`, `memory.<phase>.gpu_mb` | video memory the game allocated (or NVIDIA attributes to it), where readable |
 | `memory.<phase>.rss_mb` | resident memory, median over that phase's flight (perf_bench) |
 | `cpu.<phase>.p50_ms` | median CPU time of a frame (the frame minus its waits for the GPU, the display and the limiter; Horizon only) |
+| `gpu.<phase>.p50_ms` | median GPU time of a frame (timestamp queries; not on every device). Over a phase's blocks, as `cpu.<phase>.p50_ms`: the `travel` flight and the `hold` blocks of `--benchmark travel` |
 | `tick.<phase>.client_ms` | mean time of one client tick during the phase (vanilla: `Minecraft.tick`; Horizon: the frames' tick phase over the ticks run) |
 | `gpu_pass.<phase>.<pass>_ms` | GPU time of one of the game's render passes (`world`, `world_after_culling`, `occlusion_test`, `hud`...), the median of the last 15 timed frames in the 2 s before the flight, at its start; the flight itself is not timed per pass. Not on Metal, where passes overlap |
 | `power.package_w`, `power.battery_drain_pct` | power draw, battery used per hour (laptops; planned) |

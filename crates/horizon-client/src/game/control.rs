@@ -60,7 +60,7 @@ const HELP: &[&str] = &[
     "options [PAGE]                 open the options (video sound controls keybinds mouse chat accessibility language font packs mods graphics graphics-advanced graphics-hdr video-vanilla)",
     "stats [reset] [raw]            frame-time summary since the last reset (raw: every frame time too)",
     "narration                      the narrator's status and the last messages it was asked to say",
-    "bench SECONDS                  reset stats, wait, then reply with the summary",
+    "bench SECONDS [raw]            reset stats, wait, then reply with the summary (raw: every frame time too)",
     "fly X1 Y1 Z1 X2 Y2 Z2 SECONDS [PITCH [raw]]  fly the camera along a line at constant speed, then reply with the frame summary (raw: every frame time too)",
     "open WORLD [SEED] [creative]   open or create a world from the title screen",
     "save                           save the world",
@@ -125,9 +125,7 @@ impl Game<'_> {
             summary["tick_ms"] = (flight.tick_ms.iter().sum::<f32>() / n).into();
             summary["tick_ms_max"] = flight.tick_ms.iter().copied().fold(0.0, f32::max).into();
             if flight.raw {
-                summary["frame_ms"] = self.frame_stats.frame_millis().into();
-                summary["cpu_ms"] = self.frame_stats.cpu_millis().into();
-                summary["gpu_ms"] = self.frame_stats.gpu_millis().into();
+                self.frame_stats.add_series(&mut summary);
             }
             let _ = flight.reply.send(summary.to_string());
         }
@@ -184,11 +182,15 @@ impl Game<'_> {
         }
     }
     pub(super) fn poll_control(&mut self, event_loop: &dyn EventLoopCtl) {
-        if let Some((deadline, reply)) = self.pending_bench.take() {
+        if let Some((deadline, reply, raw)) = self.pending_bench.take() {
             if Instant::now() >= deadline {
-                let _ = reply.send(self.summary_with_passes().to_string());
+                let mut summary = self.summary_with_passes();
+                if raw {
+                    self.frame_stats.add_series(&mut summary);
+                }
+                let _ = reply.send(summary.to_string());
             } else {
-                self.pending_bench = Some((deadline, reply));
+                self.pending_bench = Some((deadline, reply, raw));
             }
         }
         horizon_client::widgets::end_frame(self.frames);
@@ -1116,9 +1118,7 @@ impl Game<'_> {
             "stats" => {
                 let mut summary = self.summary_with_passes();
                 if words[1..].contains(&"raw") {
-                    summary["frame_ms"] = self.frame_stats.frame_millis().into();
-                    summary["cpu_ms"] = self.frame_stats.cpu_millis().into();
-                    summary["gpu_ms"] = self.frame_stats.gpu_millis().into();
+                    self.frame_stats.add_series(&mut summary);
                 }
                 if words[1..].contains(&"reset") {
                     self.reset_frame_stats();
@@ -1134,6 +1134,7 @@ impl Game<'_> {
                 self.pending_bench = Some((
                     Instant::now() + Duration::from_secs_f64(seconds),
                     reply.clone(),
+                    words[2..].contains(&"raw"),
                 ));
                 Ok(None)
             }
@@ -1733,6 +1734,34 @@ mod tests {
             "key nope up",
         ] {
             assert_eq!(released_modifier(line), None, "{line}");
+        }
+    }
+
+    #[test]
+    fn a_benchmark_set_only_goes_with_the_trip() {
+        let parse = |args: &[&str]| {
+            super::super::Options::parse(args.iter().map(|a| a.to_string())).map(|o| o.unwrap())
+        };
+        let set = parse(&["--benchmark", "travel", "--benchmark-set", "gpu-culling=on"]).unwrap();
+        assert_eq!(set.benchmark_set, Some(("gpu-culling".into(), "on".into())));
+        let before = parse(&["--benchmark-set", "gpu-culling=on", "--benchmark", "travel"]);
+        assert!(before.is_ok());
+        for args in [
+            &[
+                "--benchmark",
+                "standard",
+                "--benchmark-set",
+                "gpu-culling=on",
+            ][..],
+            &["--benchmark-set", "gpu-culling=on"],
+            &[
+                "--benchmark",
+                "travel",
+                "--benchmark-set",
+                "gpu-culling=auto",
+            ],
+        ] {
+            assert!(parse(args).is_err(), "{args:?}");
         }
     }
 }
