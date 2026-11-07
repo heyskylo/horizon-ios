@@ -64,6 +64,7 @@ pub(in crate::game) struct ExecState {
     pub returned: Option<Option<i32>>,
     /// Depth of function calls.
     pub function_depth: u32,
+    pub prepared_function: Option<super::super::functions::PreparedFunctionCall>,
 }
 
 /// A modifier that brings the sources to `max_command_forks` ends the chain
@@ -332,6 +333,9 @@ impl Game<'_> {
         // on, a non-terminal if/unless) makes later errors silent
         // (CommandSourceStack.handleError with `forked`).
         let mut forked = false;
+        // Nested execute/conditional/other modifier variants retain the old path.
+        let mut function_batch_path = ctx.range.0 <= 1 && self.exec.function_depth == 0;
+        let mut function_as_seen = false;
         loop {
             let word = c
                 .literals
@@ -348,11 +352,30 @@ impl Game<'_> {
                     if last.command.is_none() {
                         return Err(err("command.unknown.command", &[]));
                     }
+                    let mut prepared = if function_batch_path
+                        && function_as_seen
+                        && command.literals.first().map(String::as_str) == Some("function")
+                    {
+                        self.prepare_function_batch(last, &sources)
+                            .map(Vec::into_iter)
+                    } else {
+                        None
+                    };
                     let mut total = 0;
                     let many = sources.len() > 1;
                     let mut failure = None;
                     for s in sources {
-                        match self.with_source(s, |g| g.run_chain(command, last)) {
+                        let result = if let Some(tasks) = prepared.as_mut() {
+                            self.exec.prepared_function = tasks.next();
+                            let result = self.with_source(s, |g| g.run_chain(command, last));
+                            // Includes a command-cost rejection before the leaf and
+                            // a return/error after the slot was consumed.
+                            self.exec.prepared_function = None;
+                            result
+                        } else {
+                            self.with_source(s, |g| g.run_chain(command, last))
+                        };
+                        match result {
                             Ok(n) => total += n,
                             Err(_) if forked => {}
                             // Several sources: report each failure and carry on.
@@ -369,6 +392,7 @@ impl Game<'_> {
                     };
                 }
                 "if" | "unless" => {
+                    function_batch_path = false;
                     let want = word == "if";
                     if c.child.is_none() {
                         return self.run_conditional_terminal(c, sources, want, forked);
@@ -387,6 +411,12 @@ impl Game<'_> {
                     sources = kept;
                 }
                 _ => {
+                    if word == "as" {
+                        function_batch_path &= !function_as_seen;
+                        function_as_seen = true;
+                    } else if word != "store" {
+                        function_batch_path = false;
+                    }
                     forked |= match word {
                         "as" | "at" | "on" => true,
                         "positioned" | "rotated" => c.has("as"),
