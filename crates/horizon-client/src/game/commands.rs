@@ -4042,6 +4042,10 @@ impl Game<'_> {
             },
             None => self.player_display_name(),
         };
+        // A player's command whose output is captured (a function, `execute …
+        // run say`, the command harness) gets the announcement with that
+        // output, in order; everyone else gets the broadcast.
+        let captured_for = self.chat_capture.as_ref().and(self.lan_acting);
         let line = match id {
             "say" => {
                 // SayCommand broadcasts independently of the command source's feedback.
@@ -4051,6 +4055,7 @@ impl Game<'_> {
                         "say_command",
                         component_nbt(&name.component()),
                         component_nbt(&message.component()),
+                        captured_for,
                     );
                 }
                 Text::translate("chat.type.announcement", &[name, message])
@@ -4081,9 +4086,15 @@ impl Game<'_> {
                     secure: false,
                 });
             }
-            // SayCommand sends no feedback: the broadcast above already reached
-            // the guest whose command is being captured.
             if self.lan.is_some() && self.chat_capture.is_some() {
+                // The broadcast skipped the acting player: their copy goes with
+                // the captured output. Without one (the console), the broadcast
+                // reached everyone and the console logged it above.
+                if captured_for.is_some()
+                    && let Some(capture) = self.chat_capture.as_mut()
+                {
+                    capture.push(line);
+                }
                 return Ok(1);
             }
             self.player_message(line);
