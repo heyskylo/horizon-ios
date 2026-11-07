@@ -673,3 +673,37 @@ fn a_screen_background_hook_can_cancel_vanilla_gradient() {
         "inventory cancels vanilla gradient for blur/custom draw"
     );
 }
+
+#[test]
+fn wind_burst_filter_preserves_order_and_context() {
+    use horizon_client::mod_api::{WindBurstEvent, dispatch_wind_burst};
+    struct TestHost;
+    impl Host for TestHost {}
+    struct Claims;
+    impl Hooks for Claims {
+        fn wind_burst(&self, _host: &mut dyn Host, event: &mut WindBurstEvent<'_>) {
+            assert_eq!(event.dimension, "minecraft:the_nether");
+            assert_eq!(event.center, [1.5, 70.0, -2.5]);
+            event.blocks.retain(|p| p[0] != 1);
+        }
+    }
+    let original = vec![[3, 70, -2], [1, 70, -2], [2, 70, -2]];
+    let mut blocks = original.clone();
+    dispatch_wind_burst(
+        &mut TestHost,
+        &[],
+        "minecraft:the_nether",
+        [1.5, 70.0, -2.5],
+        &mut blocks,
+    );
+    assert_eq!(blocks, original);
+    let mods: Vec<Box<dyn Hooks>> = vec![Box::new(Claims)];
+    dispatch_wind_burst(
+        &mut TestHost,
+        &mods,
+        "minecraft:the_nether",
+        [1.5, 70.0, -2.5],
+        &mut blocks,
+    );
+    assert_eq!(blocks, vec![[3, 70, -2], [2, 70, -2]]);
+}

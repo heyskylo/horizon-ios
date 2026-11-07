@@ -5000,3 +5000,13 @@ The client `tooltip_color` hook changes the background and top and bottom border
 # Camera and collision reads
 
 The `native_camera()` helper returns the most recently extracted world frame's camera, or none before one exists. Its position, interpolated eye height, partial tick, angles, final FOV, near/far planes and dimension accompany column-major view and projection matrices. The view is camera-relative and includes bob and spin; projection uses reversed Z. Earlier callbacks in a frame can see the previous frame. `native_block_collision(pos)` returns block-local `[min_x, min_y, min_z, max_x, max_y, max_z]` boxes with an empty collision context; unloaded blocks and collision errors give no boxes.
+
+### Wind burst block protection
+
+The pending `wind_burst` hook receives `dimension`, `center` and mutable `blocks`
+just before wind-charge, breeze-charge or Wind Burst mace block interactions.
+Remove positions to keep their doors, levers, candles and other reactive blocks
+unchanged. The list has already been shuffled; entity knockback and the shuffle's
+random draws are unaffected. A breeze blocked by `mob_griefing` does not call the hook.
+This is separate from `explosion_detonate`, and does not cancel the burst's sound,
+particles or entity effects. The pending fragment assigns its API number at merge.

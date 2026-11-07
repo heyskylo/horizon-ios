@@ -8250,6 +8250,18 @@ impl Game<'_> {
     ) {
         mod_api::dispatch_right_click_block(self, mod_api::mods(), pos, face, canceled);
     }
+    /// A wind burst is about to interact with its shuffled block positions.
+    /// Remove positions to protect their blocks. Knockback and the vanilla
+    /// shuffle have already run; this does not change either. Server-side.
+    /// Pending API @API:wind_burst@.
+    pub(super) fn native_wind_burst(
+        &mut self,
+        dimension: &str,
+        center: [f64; 3],
+        blocks: &mut Vec<[i32; 3]>,
+    ) {
+        mod_api::dispatch_wind_burst(self, mod_api::mods(), dimension, center, blocks);
+    }
     /// An explosion at `center` in `dimension` (`minecraft:overworld`) is
     /// about to break `blocks`: `ServerExplosion.explode` with its `toBlow`,
     /// before any block is hit. Take out the positions to spare; they keep
