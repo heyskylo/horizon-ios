@@ -27,7 +27,7 @@ command above to inspect the selection rather than relying on historical counts.
 
 | # | Area (commits) | Files | Checks |
 |---|---|---|---|
-| 1 | Game loop, tick order, frame pacing (554) | `L/game.rs` (`fn tick`, `fn tick_world`, `fn render`, `about_to_wait`), `L/clock.rs`, `N/window.rs`, `R/spans.rs` | game_loop, frame_limiter, interaction_input, tick |
+| 1 | Game loop, tick order, frame pacing (554) | `L/game.rs` (`fn tick`, `fn tick_world`, `fn render`), `G/window_handler.rs` (`about_to_wait`), `L/clock.rs`, `N/window.rs`, `R/spans.rs` | game_loop, frame_limiter, interaction_input, tick |
 | 2 | Mobs in the game loop, spawning (166) | `G/creatures.rs`, `G/natural_spawning.rs`, `L/mobs/spawning.rs`, `L/mobs/spawn_rules.rs`, `L/mobs/spawn_selection.rs`, `L/mobs/finalize.rs`, `G/spawner.rs`, `G/trial_spawner.rs` | natural_spawn, spawn_rules, finalize_spawn, spawner, trial_spawner, mob_ai |
 | 3 | World save and load (163) | `L/save.rs`, `G/saving.rs`, `G/persist.rs` (entities), `L/entity_nbt.rs`, `K/block_entity_nbt.rs`, `W/region.rs`, `W/nbt.rs` | save_roundtrip, world_reopen, world, datafix |
 | 4 | World generation (153) | `W/worldgen.rs`, `W/worldgen/` (`generator*.rs`, `feature_graph.rs`, `structure/`, `placement/`), `L/vanillagen.rs` | chunk_generation, worldgen, server_world_gen, world_spawn, feature_graph, feature_placement, decoration and the other worldgen harnesses |
