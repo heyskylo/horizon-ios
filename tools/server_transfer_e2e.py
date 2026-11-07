@@ -24,7 +24,8 @@ Steps, in docs/server.md's order ("A hand-over, in order"), each checked:
    writes no file for it, before or after it stops.
 
 `transfer-status` is read on the way: after 2 (B expects one player), after 4 (B holds it, A has it placed and
-frozen) and after 7 (the player is on B, A has nobody).
+frozen) and after 7 (the player is on B, A has nobody). B runs with `max-players=1`: a second player is refused
+as full after 2 (the expectation holds the place) and after 7 (the player takes it).
 
 Then the cancels: a hand-over from B back to A is aborted (`player-drop` on A, `player-release ... abort` on B)
 and the player plays on on B; a late `moved` for it is refused.
@@ -254,12 +255,12 @@ class Relay:
 # ---- an engine and its control socket ------------------------------------------------------------
 
 class Engine:
-    def __init__(self, bins, resources, folder, out, label):
+    def __init__(self, bins, resources, folder, out, label, **extra):
         self.label = label
         self.folder = folder
         folder.mkdir(parents=True)
         self.port = lab.free_port()
-        props = dict(PROPERTIES, **{'server-port': str(self.port), 'motd': f'transfer e2e {label}'})
+        props = dict(PROPERTIES, **extra, **{'server-port': str(self.port), 'motd': f'transfer e2e {label}'})
         (folder / 'server.properties').write_text(''.join(f'{k}={v}\n' for k, v in props.items()))
         (folder / 'eula.txt').write_text('eula=true\n')
         (folder / 'forwarding.secret').write_bytes(SECRET + b'\n')
@@ -426,7 +427,9 @@ def run(bins, resources, scratch, out):
         relay_log.flush()
 
     a = Engine(bins, resources, scratch / 'a', out, 'a')
-    b = Engine(bins, resources, scratch / 'b', out, 'b')
+    # One place on B: the player moved there takes it.
+    b = Engine(bins, resources, scratch / 'b', out, 'b', **{'max-players': '1'})
+    stranger = str(offline_uuid('Stranger'))
     relays, bots = [], []
     try:
         a.ready()
@@ -474,6 +477,9 @@ def run(bins, resources, scratch, out):
         steps.check('2. transfer-status on B counts the player as expected, and B is not full',
                     status.get('expected') == 1 and status.get('players') == 0 and status.get('full') is False,
                     status=status)
+        reply = b.ask(f'player-expect {stranger}')
+        steps.check("2. B's one place is the expected player's: a second player-expect is refused as full",
+                    reply == {'error': 'the server is full'}, reply=reply)
 
         # 3. A exports it, frozen; a repeat answers the same bytes.
         reply = a.ask(f'player-export {player_uuid} freeze')
@@ -570,6 +576,10 @@ def run(bins, resources, scratch, out):
                     status_b.get('players') == 1 and status_b.get('held') == 0
                     and status_a.get('players') == 0 and status_a.get('frozen') == 0,
                     a=status_a, b=status_b)
+        reply = b.ask(f'player-expect {stranger}')
+        steps.check('7. B is full with the player on it: player-expect is refused, and transfer-status says full',
+                    reply == {'error': 'the server is full'} and status_b.get('full') is True
+                    and status_b.get('stopping') is False, reply=reply)
 
         # The cancel: from B back to A, aborted.
         reply = a.ask(f'player-expect {player_uuid}')
