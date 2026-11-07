@@ -4487,6 +4487,10 @@ impl Renderer {
         });
         let static_entity_index_quads = 1 << 14;
         let static_entity_indices = Self::quad_indices(&device, static_entity_index_quads);
+        let indirect_execution = adapter
+            .get_downlevel_capabilities()
+            .flags
+            .contains(wgpu::DownlevelFlags::INDIRECT_EXECUTION);
         let flat_wanted = flat::wanted(&adapter, &device);
         // Metal draws solid terrain in two passes (`split_solid`): meshes put all
         // their opaque quads first, so each pass draws its part in a run or two.
@@ -4521,6 +4525,7 @@ impl Renderer {
                 &bindings,
                 arena.page_vertices(),
                 min_sections,
+                indirect_execution,
                 |layout, label, vertex, fragment, blend, cull, pulled| {
                     let buffers: &[Option<wgpu::VertexBufferLayout<'_>>] =
                         if pulled { &[] } else { &buffers };
@@ -4581,10 +4586,7 @@ impl Renderer {
         let multi_draw = device
             .features()
             .contains(wgpu::Features::INDIRECT_FIRST_INSTANCE)
-            && adapter
-                .get_downlevel_capabilities()
-                .flags
-                .contains(wgpu::DownlevelFlags::INDIRECT_EXECUTION);
+            && indirect_execution;
         let batchable = translucent_batchable(&adapter.get_info(), multi_draw);
         crate::graphics::offer_translucent_batching(batchable);
         let translucent_batching = batchable && translucent_batching;
