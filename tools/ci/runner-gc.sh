@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Keeps the Mac mini's Horizon runners from filling its disk. launchd runs a copy taken from main
-# (~/.actions-runners/runner-gc.sh, never a pull request's checkout) every 6 hours; see docs/release-flow.md.
+# (~/.actions-runners/runner-gc.sh, never a pull request's checkout) every 30 minutes; see docs/release-flow.md.
 #   - A runner in the middle of a job is left alone.
 #   - A checkout whose cargo build folders (target/ and the harness probes' targets under .local/, the
 #     directories holding a CACHEDIR.TAG) pass MAX_TARGET_GB loses them: sccache (tools/ci/runner-env.sh)
