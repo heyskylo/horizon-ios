@@ -12,7 +12,6 @@ use horizon_client::{
 use std::path::PathBuf;
 
 // Native mods use these; nothing in Horizon calls them.
-#[allow(dead_code)]
 impl Game<'_> {
     /// What the player's client told the server (brand, `ClientInformation`) and what the server
     /// sent it, as Paper's `getClientBrandName`, `locale` and `getClientViewDistance` read it.
