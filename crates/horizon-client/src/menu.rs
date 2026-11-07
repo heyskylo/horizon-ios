@@ -357,6 +357,10 @@ pub struct Menu {
     /// A crafting grid's result taken (`ResultSlot.onTake`): the recipe and
     /// the stack taken, for the caller (`native_item_crafted`).
     pub item_crafted: Vec<(String, ItemStack)>,
+    /// `ItemStack.onCraftedBy` counts from merchant result callbacks, without a recipe id.
+    pub crafted_counts: Vec<(Arc<str>, i32)>,
+    /// `MerchantResultSlot.removeCount`, reset by checkTakeAchievements.
+    merchant_remove_count: i32,
     /// Potions taken from a brewing stand's bottle slots
     /// (`PotionSlot.onTake`), for the caller.
     pub brewed: Vec<ItemStack>,
@@ -818,6 +822,8 @@ impl Menu {
             player_sounds: Vec::new(),
             crafted: Vec::new(),
             item_crafted: Vec::new(),
+            crafted_counts: Vec::new(),
+            merchant_remove_count: 0,
             brewed: Vec::new(),
             equipped: Vec::new(),
             merchant: None,
@@ -1653,6 +1659,10 @@ impl Menu {
     /// `Slot.remove`: the container's `removeItem`.
     fn remove(&mut self, env: &Env, s: usize, amount: u32) -> Option<ItemStack> {
         let slot = self.slots[s];
+        if slot.role == Role::MerchantResult {
+            let count = amount.min(self.slot(s).map_or(0, |stack| stack.count));
+            self.merchant_remove_count = self.merchant_remove_count.wrapping_add(count as i32);
+        }
         // ResultContainer.removeItem takes the whole stack; the loom's result
         // is a SimpleContainer slot and splits.
         if slot.container == RESULT && slot.role != Role::LoomResult {
@@ -1789,6 +1799,7 @@ impl Menu {
             return;
         }
         if self.slots[s].role == Role::MerchantResult {
+            self.merchant_check_take_achievements(taken);
             self.merchant_take(env);
             return;
         }
@@ -2541,6 +2552,11 @@ impl Menu {
                     if !self.move_to(env, &mut stack, 3, 39, true) {
                         return None;
                     }
+                    // Slot.onQuickCraft uses the original copy and the moved count.
+                    self.merchant_remove_count = self
+                        .merchant_remove_count
+                        .wrapping_add((clicked.count - stack.count) as i32);
+                    self.merchant_check_take_achievements(&clicked);
                     if let Some(m) = self.merchant.as_mut() {
                         m.events.push(crate::merchant::Event::TradeSound);
                     }
@@ -2671,7 +2687,12 @@ impl Menu {
             return None;
         }
         if after_take || matches!(self.kind, Kind::Inventory | Kind::Crafting) {
-            self.on_take(env, index, &clicked);
+            let taken = if self.slots[index].role == Role::MerchantResult {
+                &stack
+            } else {
+                &clicked
+            };
+            self.on_take(env, index, taken);
         }
         // What the result slot's move left over is dropped.
         if (index == 0 && matches!(self.kind, Kind::Inventory | Kind::Crafting))
@@ -3211,6 +3232,18 @@ impl Menu {
         let has = self.containers[RESULT][0].is_some();
         m.notify_trade_updated(has);
     }
+    /// `MerchantResultSlot.checkTakeAchievements`: award the tallied count, then reset it.
+    fn merchant_check_take_achievements(&mut self, stack: &ItemStack) {
+        // ItemStack.getItem returns AIR for the emptied quick-move remainder.
+        let item = if stack.count == 0 {
+            "minecraft:air".into()
+        } else {
+            stack.item.clone()
+        };
+        self.crafted_counts
+            .push((item, std::mem::take(&mut self.merchant_remove_count)));
+    }
+
     /// `MerchantResultSlot.onTake`: the payment is taken and the merchant
     /// told (`notifyTrade`).
     fn merchant_take(&mut self, env: &Env) {
@@ -3383,6 +3416,82 @@ pub(crate) mod tests {
         let mut menu = Menu::new(kind);
         menu.creative = true;
         test(&env, &mut menu);
+    }
+
+    /// MerchantResultSlot's removal tally and quick-craft check reset before onTake.
+    #[test]
+    fn merchant_takes_record_crafted_counts_once() {
+        let items = Items::for_tests(Default::default());
+        let recipes = Recipes::empty();
+        let brewing = Brewing::load(std::path::Path::new(""), &items, &PackOverlay::NONE);
+        let banners = Banners::default();
+        let station_recipes = crate::stations::StationRecipes::default();
+        let enchantments = crate::enchant::Enchantments::default();
+        let names = crate::creative::Names::default();
+        let env = Env {
+            items: &items,
+            recipes: &recipes,
+            brewing: &brewing,
+            banners: &banners,
+            station_recipes: &station_recipes,
+            enchantments: &enchantments,
+            names: &names,
+            trade: None,
+            maps: None,
+            limited_crafting: false,
+            known_recipes: None,
+        };
+        for (input, payment) in [
+            (Input::Pickup, 8),
+            (Input::QuickMove, 8),
+            (Input::Pickup, 3),
+        ] {
+            let offer = crate::merchant::MerchantOffer {
+                base_cost_a: crate::merchant::ItemCost {
+                    stack: ItemStack::new("minecraft:emerald", 4),
+                },
+                cost_b: None,
+                result: ItemStack::new("minecraft:glass", 3),
+                uses: 0,
+                max_uses: 100,
+                reward_exp: false,
+                special_price_diff: 0,
+                demand: 0,
+                price_multiplier: 0.0,
+                xp: 1,
+            };
+            let mut menu = Menu::new(Kind::Merchant);
+            menu.merchant = Some(Box::new(crate::merchant::Session::new(vec![offer], true)));
+            menu.set_slot(&env, 0, stack("emerald", payment));
+            assert_eq!(menu.slot(2).map(|s| s.count), (payment >= 4).then_some(3));
+            assert!(menu.crafted_counts.is_empty(), "a preview is not a take");
+            assert_eq!(menu.merchant.as_ref().unwrap().offers[0].uses, 0);
+            menu.click(&env, 2, 0, input).unwrap();
+            if payment < 4 {
+                assert!(menu.crafted_counts.is_empty());
+                assert_eq!(menu.slot(0).map(|s| s.count), Some(3));
+                assert!(menu.carried.is_none());
+                assert_eq!(menu.merchant.as_ref().unwrap().offers[0].uses, 0);
+                continue;
+            }
+            if input == Input::Pickup {
+                assert_eq!(menu.carried.as_ref().map(|s| s.count), Some(3));
+                menu.click(&env, 31, 0, Input::Pickup).unwrap();
+                menu.click(&env, 2, 0, Input::Pickup).unwrap();
+            }
+            let mut expected = Vec::new();
+            for _ in 0..2 {
+                expected.push((Arc::<str>::from("minecraft:glass"), 3));
+                if input == Input::QuickMove {
+                    expected.push((Arc::<str>::from("minecraft:air"), 0));
+                }
+            }
+            assert_eq!(menu.crafted_counts, expected);
+            assert_eq!(menu.merchant_remove_count, 0);
+            assert_eq!(menu.merchant.as_ref().unwrap().offers[0].uses, 2);
+            assert!(menu.slot(0).is_none());
+            assert!(menu.slot(2).is_none());
+        }
     }
 
     /// The Mouse Tweaks wheel's targets: vanilla's routing of one item.
@@ -3655,14 +3764,19 @@ pub(crate) mod tests {
                     }
                 },
                 player_chat: |_, _, _, _, _| {},
+                sound_play: |_, _, _, _| {},
                 living_heal: |_, _, _| {},
                 living_breathe: |_, _, _, _, _| {},
                 living_drown: |_, _, _, _, _, _| {},
                 living_fall: |_, _, _, _, _| {},
                 living_jump: |_, _| {},
                 register_goals: |_| {},
+                player_pre_login: |_, _, _, _| {},
+                player_profile: |_, _, _| {},
                 ingredient: |_, _, _| {},
                 ingredient_test: |_, _, _, _| {},
+                log_line: |_, _, _, _| {},
+                handshake: |_, _, _, _, _| {},
             });
         assert!(installed.is_ok());
         let kind = Kind::Mod(Box::leak(Box::new(crate::containers::ModMenuType {

@@ -323,7 +323,7 @@ fn check_values(level: &Level) -> Result<(), String> {
     if level
         .active_effects
         .iter()
-        .any(|(_, _, amplifier, _, _)| !(0..=255).contains(amplifier))
+        .any(|(_, _, amplifier, ..)| !(0..=255).contains(amplifier))
     {
         return Err("the record holds an effect no player can have".into());
     }

@@ -278,6 +278,13 @@ impl ItemStack {
             extra: None,
         }
     }
+    /// The stack `ItemStack.CODEC` reads from `tag` (`id`, `count`,
+    /// `components`), as `item_nbt::item_from_nbt` does; None for air or an
+    /// id that is no valid identifier. The id is not looked up in a registry.
+    /// API @API:item_from_snbt@.
+    pub fn from_nbt(tag: &horizon_world::nbt::Compound) -> Option<Self> {
+        crate::item_nbt::item_from_nbt(&Tag::Compound(tag.clone()))
+    }
     pub fn data(&self) -> Option<&StackData> {
         self.extra.as_deref()
     }
@@ -1283,6 +1290,22 @@ mod tests {
     #[test]
     fn lodestone_tracker_saved_default_fresh_model() {
         check_lodestone_saved_default(false);
+    }
+
+    #[test]
+    fn a_stack_reads_from_its_compound_as_from_snbt() {
+        let snbt = r#"{id:"diamond_sword",count:2,components:{"minecraft:damage":5}}"#;
+        let Tag::Compound(compound) = horizon_world::nbt::parse_snbt(snbt).unwrap().0 else {
+            panic!("a compound");
+        };
+        let stack = ItemStack::from_nbt(&compound).unwrap();
+        assert_eq!(&*stack.item, "minecraft:diamond_sword");
+        assert_eq!((stack.count, stack.damage), (2, 5));
+        assert_eq!(parse_stack(snbt).unwrap(), Some(stack));
+        let Tag::Compound(air) = horizon_world::nbt::parse_snbt(r#"{id:"air"}"#).unwrap().0 else {
+            panic!("a compound");
+        };
+        assert_eq!(ItemStack::from_nbt(&air), None);
     }
 
     #[test]

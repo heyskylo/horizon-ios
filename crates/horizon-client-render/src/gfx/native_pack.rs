@@ -101,7 +101,15 @@ impl NativePack {
         let settings = chosen
             .as_ref()
             .map(|settings| super::native_shadow::fitted(device, settings));
-        let mut frame = NativeFrame::new(device, settings.as_ref(), textures, lights, terrain.pbr);
+        let api = report.manifest.api;
+        let mut frame = NativeFrame::new(
+            device,
+            settings.as_ref(),
+            textures,
+            lights,
+            terrain.pbr,
+            api,
+        );
         // `[displacement]`, unless its option is off; nothing to displace without heights.
         let displacement = report
             .manifest
@@ -222,8 +230,13 @@ impl NativePack {
                 )
             })
             .transpose()?;
-        let post = (!post.is_empty())
-            .then(|| NativePost::new(device, post, &report.manifest, constants, format, &frame))
+        // A 0.2 pack always has one: its decode and tonemap run without a chain too.
+        let tonemap = others.iter().find(|s| s.kind == StageKind::Tonemap);
+        let post = (!post.is_empty() || api == horizon_shader_api::Api::V0_2)
+            .then(|| {
+                let manifest = &report.manifest;
+                NativePost::new(device, post, manifest, constants, format, &frame, tonemap)
+            })
             .transpose()?;
         let mut labels: Vec<String> = sky.iter().map(|s| s.label.clone()).collect();
         labels.extend(

@@ -2270,9 +2270,17 @@ impl crate::auto_jump::AutoJumpWorld for MotionWorld<'_, '_, '_> {
         Ok(binding.collision_shape_with_context(&mut self.collisions(), state, p, &context)?)
     }
     fn collision_boxes(&mut self, bounds: Aabb) -> Result<Vec<Aabb>> {
+        // EntityGetter.getEntityCollisions queries with a small inflation, and
+        // CollisionGetter.getCollisions returns these before block shapes.
+        let query = bounds.inflate(Vec3::new(1.0e-7, 1.0e-7, 1.0e-7));
+        let mut boxes: Vec<_> = self
+            .entities
+            .iter()
+            .copied()
+            .filter(|b| b.intersects(query))
+            .collect();
         let context = self.context();
         let mut scene = self.collisions();
-        let mut boxes = Vec::new();
         for hit in horizon_world::block_collision_scan::BlockCollisionScan::new(
             &mut scene, context, bounds, false, 1_000_000,
         )? {
@@ -3021,19 +3029,23 @@ fn fly_into_wall_damage(before: f64, after: f64) -> f32 {
 /// `Entity.getBlockSpeedFactor` for a kind that keeps no motion world of its
 /// own (mobs, boats): the factor of the block at `position`, else of the one
 /// below it, through the same port the player's move uses.
+struct MovementBlocks<'a>(&'a World);
+impl MovementBlockProvider for MovementBlocks<'_> {
+    type Error = std::convert::Infallible;
+    fn movement_block_state(
+        &mut self,
+        p: BlockPos,
+    ) -> std::result::Result<BlockStateId, Self::Error> {
+        Ok(self.0.block(p.x, p.y, p.z))
+    }
+}
+
 pub fn block_speed_factor_at(
     world: &World,
     properties: &BoundMovementProperties,
     position: Vec3,
     supporting_block: Option<BlockPos>,
 ) -> f32 {
-    struct Blocks<'a>(&'a World);
-    impl MovementBlockProvider for Blocks<'_> {
-        type Error = ();
-        fn movement_block_state(&mut self, p: BlockPos) -> std::result::Result<BlockStateId, ()> {
-            Ok(self.0.block(p.x, p.y, p.z))
-        }
-    }
     let location = movement_support::MovementLocation {
         position,
         block_position: BlockPos::new(
@@ -3043,7 +3055,7 @@ pub fn block_speed_factor_at(
         ),
         supporting_block,
     };
-    let mut view = Blocks(world);
+    let mut view = MovementBlocks(world);
     movement_support::block_speed_factor(
         &mut RegistryMovementWorld {
             properties,
@@ -3052,6 +3064,25 @@ pub fn block_speed_factor_at(
         location,
     )
     .unwrap_or(1.0)
+}
+
+/// `Entity.getOnPosLegacy` with the world's bound fence and wall tags.
+pub(crate) fn legacy_block_support_at(
+    world: &World,
+    properties: &BoundMovementProperties,
+    position: Vec3,
+    supporting_block: Option<BlockPos>,
+) -> BlockPos {
+    movement_support::support_position(
+        &mut RegistryMovementWorld {
+            properties,
+            world: &mut MovementBlocks(world),
+        },
+        position,
+        supporting_block,
+        movement_support::LEGACY_SUPPORT_OFFSET,
+    )
+    .expect("loaded world block reads are infallible")
 }
 
 #[cfg(test)]
@@ -3304,6 +3335,39 @@ mod tests {
         assert_eq!(base(&mut back, "minecraft:max_health"), 30.0);
         assert_eq!(back.attribute("minecraft:max_health").unwrap(), 45.0);
         assert_eq!(back.health.health(), 40.0);
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn auto_jump_detects_collidable_entities() {
+        let root = std::path::PathBuf::from(
+            std::env::var_os("HORIZON_TEST_RESOURCES").expect("HORIZON_TEST_RESOURCES"),
+        );
+        let assets = Assets::load(&root).unwrap();
+        let render = assets.reload(&root).unwrap();
+        let binding = crate::collisions::load(&root, assets.registry).unwrap();
+        let resources = MotionResources::load(&root, &assets).unwrap();
+        let mut scene = World::test_scene(&assets, &render, 1).unwrap();
+        let mut player = PlayerMotion::new(&resources, Vec3::new(10.0, 100.0, 10.0)).unwrap();
+        player.auto_jump_enabled = true;
+        player.ground.on_ground = true;
+        player.move_vector = [0.0, 1.0];
+        let entities = [Aabb::new(
+            Vec3::new(9.5, 100.0, 10.5),
+            Vec3::new(10.5, 100.8, 11.5),
+        )];
+        MotionWorld {
+            entities: &entities,
+            player: &mut player,
+            scene: &mut scene,
+            assets: &assets,
+            collision_binding: &binding,
+            resources: &resources,
+            health: &resources.health,
+        }
+        .update_auto_jump(0.0, 0.1)
+        .unwrap();
+        assert_eq!(player.auto_jump_time, 1);
     }
 
     #[test]

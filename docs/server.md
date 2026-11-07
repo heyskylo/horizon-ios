@@ -161,8 +161,8 @@ max_hold_seconds = 60        # the longest a player arriving from another server
 The supervisor passes the section to the engine as `--transfers expect_seconds=10,...`, beside
 `--control-socket`, and not as a `server.properties` key: that file stays vanilla's. The section has nothing to do
 with vanilla's `accepts-transfers`, which is about the transfer packet a server sends a client. While it is off,
-every `player-*` request is answered `{"error": "transfers are off on this server"}`, the engine keeps no table
-and does nothing for transfers on a tick.
+every `player-*` request and `transfer-status` are answered `{"error": "transfers are off on this server"}`, the
+engine keeps no table and does nothing for transfers on a tick.
 
 With it on, the engine refuses to start unless Velocity forwarding is on (`forwarding.secret`,
 [velocity-forwarding.md](velocity-forwarding.md)). The proxy must be the only way in: a player who joined a
@@ -177,6 +177,19 @@ run any console command.
 Answers are one JSON line, `{"ok": true, ...}` or `{"error": "..."}`, and a refused request changes nothing. A
 unique id is written as 32 hexadecimal digits with or without dashes in a request, and as lowercase text with
 dashes in an answer (`123e4567-e89b-12d3-a456-426614174000`). A hand-over id is 32 lowercase hexadecimal digits.
+
+`transfer-status` is what a proxy reads before it sends players to a server. It names no player and changes nothing:
+
+```json
+{"ok": true, "players": 12, "held": 1, "expected": 2, "frozen": 0, "online": 13, "max_players": 20, "full": false}
+```
+
+`players` are the players placed in the world (a player a `moved` release took out is no longer counted), `held`
+the logins held for a hand-over, `expected` the expectations still alive, and `frozen` the players this server is
+handing over. `online` is what the player limit counts: the placed and the held players and the logins still
+joining. `full` is `online` at `max_players` or above: an ordinary login, held or not, is then refused as
+`multiplayer.disconnect.server_full`, unless the player is an operator with `bypassesPlayerLimit`. A proxy asks it
+often, so it writes nothing to the log.
 
 `player-expect <uuid> [seconds]` tells the target server that the player is about to log in: within
 `expect_seconds` by default, `max_expect_seconds` at most (a longer time is cut to it), and at most
