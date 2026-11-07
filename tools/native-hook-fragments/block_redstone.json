@@ -1,0 +1,15 @@
+{
+  "hooks": [
+    {
+      "name": "block_redstone",
+      "target": "horizon_client::game::native_hooks::GameLevel<'_>::native_block_redstone",
+      "neoforge": "none (NeoForge has no such event; Bukkit's BlockRedstoneEvent)",
+      "side": "server",
+      "mod_api": {
+        "contract": "listen"
+      }
+    }
+  ],
+  "rust_summary": "a button's, lever's or pressure plate's signal change, which a mod may change or hold (`native_block_redstone`).",
+  "doc_summary": "`native_block_redstone(dimension, pos, old, new)`: a button, lever or pressure plate about to change its signal from `old` to `new` (0 to 15), as Bukkit's `BlockRedstoneEvent`; change `new` and the component takes it, one equal to `old` keeps it as it is (a held button or plate is asked again). Bundles need \"hooks\": @API:block_redstone@."
+}

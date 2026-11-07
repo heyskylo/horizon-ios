@@ -371,7 +371,7 @@ impl Game<'_> {
                 "if" | "unless" => {
                     let want = word == "if";
                     if c.child.is_none() {
-                        return self.run_conditional_terminal(c, sources, want);
+                        return self.run_conditional_terminal(c, sources, want, forked);
                     }
                     forked = true;
                     let mut kept = Vec::new();
@@ -411,11 +411,14 @@ impl Game<'_> {
         }
     }
     /// A conditional that ends the chain runs as a command: a test per source.
+    /// `CommandSourceStack.handleError`: error delivery depends on the fork flag,
+    /// including a fork that yielded only one source; success feedback is unchanged.
     fn run_conditional_terminal(
         &mut self,
         c: &Context,
         sources: Vec<Source>,
         want: bool,
+        forked: bool,
     ) -> R<i32> {
         let numeric = ["entity", "data", "blocks", "items", "slots"]
             .iter()
@@ -429,10 +432,12 @@ impl Game<'_> {
                 Ok(v) => v,
                 Err(e) => {
                     self.deliver(s.store, false, 0);
-                    if many {
-                        self.command_failure(e.message);
-                    } else {
-                        failure = Some(e);
+                    if !forked {
+                        if many {
+                            self.command_failure(e.message);
+                        } else {
+                            failure = Some(e);
+                        }
                     }
                     continue;
                 }
@@ -457,10 +462,12 @@ impl Game<'_> {
                 } else {
                     err("commands.execute.conditional.fail", &[])
                 };
-                if many {
-                    self.command_failure(e.message);
-                } else {
-                    failure = Some(e);
+                if !forked {
+                    if many {
+                        self.command_failure(e.message);
+                    } else {
+                        failure = Some(e);
+                    }
                 }
             }
         }
@@ -946,16 +953,17 @@ impl Game<'_> {
         let (matched, count) = self.condition_matches(c)?;
         Ok((matched == want, count))
     }
-    /// `if function`/`unless function`: the source stays when a function
-    /// returns a non-zero (`if`) or zero (`unless`) value; one that does not
-    /// return leaves it out either way.
+    /// `FallthroughTask.execute`: a fallthrough supplies failure/zero to the
+    /// function-condition continuation. Preserve explicit-result decisions
+    /// and direct function callbacks.
     fn condition_function(&mut self, c: &Context, want: bool) -> R<(bool, i32)> {
         let Some(Arg::Resource(name)) = c.get("name").cloned() else {
             return Ok((false, 0));
         };
         let results = self.call_function_ref(&name, None)?;
         let keep = results.iter().any(|r| r.is_some_and(|v| (v != 0) == want));
-        Ok((keep, 0))
+        let fallthrough = !results.is_empty() && results.iter().all(Option::is_none);
+        Ok((keep || (!want && fallthrough), 0))
     }
     /// `ExecuteCommand.isChunkLoaded`: an entity-ticking loading status and
     /// completed entity loading, rather than merely a retained lit column.
@@ -1214,5 +1222,142 @@ mod tests {
         assert!(!is_player_in_place(GUEST, a, Some(OWNER)));
         // No level player at all (a dedicated server): nobody is in place without a guest.
         assert!(!is_player_in_place(OWNER, None, None));
+    }
+}
+
+#[cfg(test)]
+mod terminal_fork_tests {
+    use super::Game;
+    use crate::game::{Audio, Options, Progress, Settings, load_resources};
+    use horizon_client::chunk::Chunk;
+    use horizon_core::position::ChunkPos;
+    use std::sync::Arc;
+
+    fn capture(game: &mut Game<'_>, command: &str) -> (Vec<String>, Vec<(bool, i32)>) {
+        game.chat_capture = Some(Vec::new());
+        game.cmds.results = Some(Vec::new());
+        game.as_console(|g| g.run_command(command));
+        let messages = game
+            .chat_capture
+            .take()
+            .unwrap()
+            .iter()
+            .map(|t| t.plain())
+            .collect();
+        (messages, game.cmds.results.take().unwrap())
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn terminal_conditions_keep_the_fork_state_and_callbacks() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.game_dir = Some(std::env::current_dir().unwrap().join("game"));
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        let mut chunk = Chunk::empty(0, 0);
+        let stone = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:stone")
+            .unwrap();
+        for x in 0..16 {
+            for z in 0..16 {
+                chunk.set(x, 199, z, stone.0);
+            }
+        }
+        game.world.chunks.insert((0, 0), Arc::new(chunk));
+        game.block_ticks
+            .add_empty_chunk(ChunkPos::new(0, 0))
+            .unwrap();
+        assert!(game.run_command("forceload add 0 0"));
+        assert!(game.run_command("scoreboard objectives add h147 dummy"));
+        assert!(game.run_command("scoreboard players set zero h147 0"));
+        for n in [1, 2] {
+            assert!(game.run_command(&format!("summon pig {} 200 4.5 {{UUID:[I;147,0,0,{n}],Health:10f,NoAI:1b,NoGravity:1b,Tags:[\"h147\"]}}", n as f64 + 0.5)));
+            assert!(
+                game.mobs
+                    .iter()
+                    .any(|m| game.persist.uuids.get(&m.id) == Some(&[147, 0, 0, n])
+                        && m.kind.id == "minecraft:pig"
+                        && m.health == 10.0)
+            );
+        }
+        let time = game.world.game_time;
+        let a = "00000093-0000-0000-0000-000000000001";
+        let positive = capture(
+            &mut game,
+            &format!("execute as {a} if score zero h147 matches 0"),
+        );
+        assert_eq!(positive.0.len(), 1);
+        assert_eq!(positive.1, vec![(true, 1)]);
+        let direct = capture(&mut game, "execute if score zero h147 matches 1");
+        assert_eq!(direct.0.len(), 1);
+        assert_eq!(direct.1, vec![(false, 0)]);
+        for tail in [
+            format!("as {a} if score zero h147 matches 1"),
+            format!("at {a} if block ~ ~-1 ~ air"),
+            format!("as {a} if score zero h147_missing matches 1"),
+        ] {
+            assert!(game.run_command("scoreboard players set result h147 -99"));
+            assert!(game.run_command("scoreboard players set success h147 -99"));
+            let (messages, callbacks) = capture(
+                &mut game,
+                &format!(
+                    "execute store result score result h147 store success score success h147 {tail}"
+                ),
+            );
+            assert_eq!(callbacks, vec![(false, 0)]);
+            assert_eq!(
+                game.score.board.score("result", "h147").map(|s| s.value),
+                Some(0)
+            );
+            assert_eq!(
+                game.score.board.score("success", "h147").map(|s| s.value),
+                Some(0)
+            );
+            assert!(messages.is_empty(), "forked terminal error: {messages:?}");
+        }
+        let many = capture(
+            &mut game,
+            "execute as @e[type=pig,tag=h147] if score zero h147 matches 1",
+        );
+        assert!(many.0.is_empty());
+        assert_eq!(many.1, vec![(false, 0), (false, 0)]);
+        let missing = capture(&mut game, "execute if score zero h147_missing matches 1");
+        assert_eq!(missing.0.len(), 1);
+        assert_eq!(missing.1, vec![(false, 0)]);
+        let empty = capture(
+            &mut game,
+            "execute as @e[tag=h147_none] if score zero h147 matches 1",
+        );
+        assert!(empty.0.is_empty() && empty.1.is_empty());
+        assert_eq!(game.world.game_time, time);
     }
 }
