@@ -1,27 +1,31 @@
 """CLI admission/routing contracts; every Java, Cargo and native launch is stubbed."""
 from contextlib import ExitStack, redirect_stdout
 import copy
-import importlib
 import io
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
+import textwrap
 from types import SimpleNamespace
 import unittest
 from unittest import mock
 
+from tools import test_command_exec_parity as command_runner
+from tools import test_loaded_pig_tags_parity, test_loot_mine_pot_components_parity
+from tools import test_mob_discard_parity
 
-TOOLS = Path(__file__).resolve().parents[1] / 'tools'
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 class RunnerAdmissionTests(unittest.TestCase):
     def run_fixture(self, *, reject=False, reference_only=False, binary=False):
         with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
             folder = Path(directory)
-            stack.enter_context(mock.patch.object(sys, 'path', [str(TOOLS), *sys.path]))
-            runner = importlib.import_module('test_command_exec_parity')
+            runner = command_runner
             events = []
             row = {'cmd': '/say cli', 'messages': [], 'results': [[True, 1]]}
             argv = ['parity.py', '--work-dir', str(folder)]
@@ -90,8 +94,8 @@ class SpecializedHarnessRoutingTests(unittest.TestCase):
     def run_fixture(self, name, mode, invalid=False):
         with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
             folder = Path(directory)
-            stack.enter_context(mock.patch.object(sys, 'path', [str(TOOLS), *sys.path]))
-            module = importlib.import_module('test_' + name + '_parity')
+            module = {'loaded_pig_tags': test_loaded_pig_tags_parity,
+                      'loot_mine_pot_components': test_loot_mine_pot_components_parity}[name]
             runner = module.runner
             # Pot admission independently requires two unchanged before/after sources.
             program = [dict(op='cmd', cmd='/source ' + source, expect_result=1,
@@ -157,9 +161,8 @@ class SpecializedHarnessRoutingTests(unittest.TestCase):
 
 class MobDiscardArgumentsTests(unittest.TestCase):
     def parse(self, argv, environment):
-        with mock.patch.object(sys, 'path', [str(TOOLS), *sys.path]), mock.patch.dict(os.environ, environment, clear=True):
-            module = importlib.import_module('test_mob_discard_parity')
-            return module, module.parse_args(argv)
+        with mock.patch.dict(os.environ, environment, clear=True):
+            return test_mob_discard_parity, test_mob_discard_parity.parse_args(argv)
 
     def test_normal_cli_uses_prepared_resources_without_environment(self):
         module, args = self.parse([], {})
@@ -176,3 +179,33 @@ class MobDiscardArgumentsTests(unittest.TestCase):
     def test_cli_resource_directory_overrides_environment(self):
         _, args = self.parse(['--resources', '/fixture/argument'], {'HORIZON_TEST_RESOURCES': '/fixture/environment'})
         self.assertEqual(args.resources, Path('/fixture/argument'))
+
+
+class ImportOrderRegressionTests(unittest.TestCase):
+    def test_full_discovery_keeps_test_module_and_tools_helper_distinct(self):
+        program = textwrap.dedent('''
+            import importlib
+            import unittest
+            loader = unittest.TestLoader()
+            # Populate the real colliding discovery name first, with no cache edits.
+            loader.discover('tests', pattern='test_rust_parity.py')
+            loader.discover('tests')
+            discovered_test = importlib.import_module('test_rust_parity')
+            from tools import test_rust_parity as helper
+            from tools import test_command_exec_parity as runner
+            from tools import test_loaded_pig_tags_parity as pigs
+            from tools import test_loot_mine_pot_components_parity as pots
+            from tools import test_mob_discard_parity as discard
+            assert discovered_test is not helper
+            assert runner.base is helper and callable(helper.verify_artifacts)
+            assert pigs.runner is runner and pots.runner is runner
+            assert discard.lab is runner.lab
+            tests = loader.loadTestsFromName('test_parity_cli_admission.RunnerAdmissionTests')
+            assert tests.countTestCases() == 4
+            result = unittest.TextTestRunner(verbosity=2).run(tests)
+            raise SystemExit(not result.wasSuccessful())
+        ''')
+        result = subprocess.run([sys.executable, '-c', program], cwd=ROOT,
+                                env=dict(os.environ, PYTHONNOUSERSITE='1'),
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
