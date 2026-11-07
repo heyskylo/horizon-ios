@@ -646,6 +646,7 @@ impl Game<'_> {
         let was_empty = c.is_empty(view);
         let max = c.max_stack(&stack);
         let mut success = false;
+        let mut filled_empty = false;
         let Some(target) = self.slot_mut_at(view, slot) else {
             return (Some(stack), false);
         };
@@ -663,6 +664,7 @@ impl Game<'_> {
                 });
                 stack.count = 0;
                 success = true;
+                filled_empty = true;
             }
             Some(current)
                 // HopperBlockEntity.canMergeItems
@@ -675,6 +677,17 @@ impl Game<'_> {
                 success = count > 0;
             }
             Some(_) => {}
+        }
+        // tryMoveInItem's setItem on an empty slot: AbstractFurnaceBlockEntity.setItem restarts
+        // the cooking for a new input (a merge only grows the stack, and keeps it).
+        let recipes = world_recipes!(self);
+        if filled_empty
+            && let Some((pos, 0)) = view.locate(slot)
+            && let Some(BlockEntity::Furnace(furnace)) = self.world.block_entities.get_mut(&pos)
+        {
+            use horizon_client::furnace::FurnaceCooking;
+            let input = furnace.items[0].take();
+            furnace.set_input(recipes, input);
         }
         if success && was_empty && view.kind == Kind::Hopper {
             let dest = view.parts[0].0;
