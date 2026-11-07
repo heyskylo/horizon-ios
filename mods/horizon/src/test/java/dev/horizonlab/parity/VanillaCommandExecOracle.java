@@ -988,6 +988,17 @@ public final class VanillaCommandExecOracle {
                     case "light" -> {
                         JsonArray p = op.getAsJsonArray("pos");
                         BlockPos pos = new BlockPos(p.get(0).getAsInt(), p.get(1).getAsInt(), p.get(2).getAsInt());
+                        // ThreadedLevelLightEngine runs the checkBlock tasks a /fill queues at most 1000 per update,
+                        // so after a large fill the light lags by many ticks on a loaded runner (command_reinforcements
+                        // read block light 10 in its sealed room, 2026-11-07). Read it once the tasks queued so far ran.
+                        var pending = player.level().getChunkSource().getLightEngine().waitForPendingTasks(
+                            pos.getX() >> 4, pos.getZ() >> 4);
+                        long lightDeadline = System.nanoTime() + 120_000_000_000L;
+                        while (!pending.isDone()) {
+                            if (System.nanoTime() > lightDeadline) throw new IllegalStateException("light updates did not finish");
+                            tick();
+                            try { Thread.sleep(5); } catch (InterruptedException e) { throw new RuntimeException(e); }
+                        }
                         JsonObject record = new JsonObject();
                         record.addProperty("cmd", "#light " + p);
                         record.add("messages", new JsonArray());
