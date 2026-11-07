@@ -513,13 +513,7 @@ impl StructureState {
     }
     /// A saved `minecraft:jigsaw` piece, or `None` for any other piece or one that does not decode.
     fn saved_pool_piece(&self, piece: &crate::nbt::Tag) -> Option<Piece> {
-        let crate::nbt::Tag::Compound(map) = piece else {
-            return None;
-        };
-        let id = map.get(&"id".into())?;
-        if !matches!(id, crate::nbt::Tag::String(s) if s.to_string_lossy() == "minecraft:jigsaw") {
-            return None;
-        }
+        saved_piece_id(piece)?;
         PoolPiece::from_saved(&tag_json(piece), &self.resources, &self.bindings)
             .ok()
             .map(Piece::Pool)
@@ -820,6 +814,27 @@ fn pieces_box(pieces: &[Piece]) -> Option<[i32; 6]> {
 }
 /// A saved piece's tag as the JSON `PoolPiece::from_saved` reads: compounds and lists as they
 /// are, numbers as numbers.
+/// `PiecesContainer.load`'s piece id, after its `RENAMES`: the four ids an older
+/// save wrote for a jigsaw piece (`minecraft:nvi`, `minecraft:pcp`,
+/// `minecraft:bastionremnant`, `minecraft:runtime`) are read as `minecraft:jigsaw`,
+/// which is what vanilla's table maps them to. `None` for a piece of another type
+/// (its NBT is not a pool piece's) and for one with no id.
+fn saved_piece_id(piece: &crate::nbt::Tag) -> Option<&'static str> {
+    let crate::nbt::Tag::Compound(map) = piece else {
+        return None;
+    };
+    let crate::nbt::Tag::String(id) = map.get(&"id".into())? else {
+        return None;
+    };
+    match id.to_string_lossy().as_str() {
+        "minecraft:jigsaw"
+        | "minecraft:nvi"
+        | "minecraft:pcp"
+        | "minecraft:bastionremnant"
+        | "minecraft:runtime" => Some("minecraft:jigsaw"),
+        _ => None,
+    }
+}
 fn tag_json(tag: &crate::nbt::Tag) -> Value {
     use crate::nbt::Tag;
     match tag {
