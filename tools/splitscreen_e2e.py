@@ -38,6 +38,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import zipfile
 from pathlib import Path
 
 try:
@@ -1018,6 +1019,37 @@ def scenario_packs():
         files.shutdown()
         shutil.rmtree(folder, ignore_errors=True)
 
+def scenario_pack_overlay():
+    print("pack_overlay: a player's pack reload leaves P1's selected pack and vanilla's files in place")
+
+    def seed(home):
+        (home / 'resourcepacks').mkdir()
+        meta = {'pack': {'pack_format': 9999, 'supported_formats': {'min_inclusive': 6, 'max_inclusive': 9999},
+                         'description': 'pack_overlay'}}
+        with zipfile.ZipFile(home / 'resourcepacks/overlay.zip', 'w') as z:
+            z.writestr('pack.mcmeta', json.dumps(meta))
+        (home / 'options.txt').write_text('resourcePacks:["vanilla","file/overlay.zip"]\n')
+        (home / 'shaderpacks').mkdir()
+        with zipfile.ZipFile(home / 'shaderpacks/shader.zip', 'w') as z:
+            z.writestr('shaders/final.fsh', 'void main() {}\n')
+
+    g = Game(2, seed=seed, args=('--offscreen',))
+    try:
+        log = g.home / 'logs/latest.log'
+        stone = 'assets/minecraft/textures/block/stone.png'
+        overlays = [d for d in (g.home / '.horizon-cache/resourcepacks').iterdir() if d.is_dir()]
+        check('one overlay for the selection', len(overlays), 1)
+        check("vanilla's stone in it before", (overlays[0] / stone).exists(), True)
+        # The first shader pack of a session turns material maps on, which reloads the packs.
+        g.ctl(2, 'options', 'shader-packs')
+        g.press(2, 'shader.zip')
+        g.wait(lambda: 'shader pack shader.zip' in log.read_text(errors='replace'), "P2's shader pack", seconds=60)
+        check("vanilla's stone in it after", (overlays[0] / stone).exists(), True)
+        check('the reload succeeded', 'resource reload failed' in log.read_text(errors='replace'), False)
+    finally:
+        g.quit()
+
+
 def scenario_server():
     print('server: P1 on a dedicated server; the others join it, a kicked one drops out, all leave with P1')
     with dedicated() as (server, port):
@@ -1383,6 +1415,7 @@ SCENARIOS = {
     'pausemenu': scenario_pausemenu,
     'server': scenario_server,
     'packs': scenario_packs,
+    'pack_overlay': scenario_pack_overlay,
     'dedicated_profiles': scenario_dedicated_profiles,
     'integrated_profiles': scenario_integrated_profiles,
     'launcher': scenario_launcher,

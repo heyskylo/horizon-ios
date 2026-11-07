@@ -1505,12 +1505,19 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                 if layers < max_height.min(8) {
                     let to = b.table.set_int(state, p.layers, layers + 1);
                     if self.level.allow_block_form(top, state, to) {
+                        self.emit(LevelEvent::BlockEvent {
+                            pos: top,
+                            state,
+                            kind: "push_entities_up",
+                        });
                         self.set_block_and_update(top, to);
                     }
                 }
             } else {
                 let to = b.default_of(b.named.snow);
                 if self.level.allow_block_form(top, state, to) {
+                    // Vanilla creates the first snow layer without `pushEntitiesUp`
+                    // (only an added layer over existing snow lifts).
                     self.set_block_and_update(top, to);
                 }
             }

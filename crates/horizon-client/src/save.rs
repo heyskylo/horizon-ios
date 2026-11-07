@@ -2135,10 +2135,14 @@ fn compress_records(
     records: &[((i32, i32), &Record)],
     timestamp: u32,
 ) -> Vec<std::io::Result<Option<ChunkRecord>>> {
+    // `RegionFile.getVersion`: the version `region-file-compression` selected
+    // (`RegionFileVersion.getSelected`), zlib unless a dedicated server said
+    // otherwise.
+    let compression = Compression::selected();
     let compress = |record: &Record| {
         record
             .tag()
-            .map(|tag| ChunkRecord::from_nbt(&tag, Compression::Zlib, timestamp, Limits::saved()))
+            .map(|tag| ChunkRecord::from_nbt(&tag, compression, timestamp, Limits::saved()))
             .transpose()
     };
     let helpers = horizon_threads::worker_count()
@@ -3125,6 +3129,50 @@ fn back_up_unreadable_player(path: &Path) {
 }
 /// Write a gzip NBT file the way vanilla does (`<name>_new`, keep `_old`).
 pub fn write_dat(path: &Path, tag: Tag) -> Result<()> {
+    write_dat_as(path, tag, false)
+}
+
+/// [`write_dat`], synced to the disk: the new file before it is renamed into place, and the
+/// folder after, so a power loss leaves the old file or the new one. A hand-over's commit
+/// point (`player-confirm`) replies only once its files are.
+pub fn write_dat_durable(path: &Path, tag: Tag) -> Result<()> {
+    write_dat_as(path, tag, true)
+}
+
+/// `bytes` written to `path` through `<name>_new` and a rename, synced to the disk as
+/// [`write_dat_durable`] syncs: never a half-written file in place.
+pub fn write_durable(path: &Path, bytes: &[u8]) -> Result<()> {
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    let file = path.file_name().and_then(|n| n.to_str()).unwrap_or("data");
+    let temporary = path.with_file_name(format!("{file}_new"));
+    write_synced(&temporary, bytes)?;
+    fs::rename(&temporary, path)?;
+    sync_folder(path)?;
+    Ok(())
+}
+
+fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut file = fs::File::create(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()
+}
+
+/// The folder of `path` synced, so that a rename into it is on the disk (POSIX; Windows has
+/// no folder handle to sync, and its rename is journaled by NTFS).
+fn sync_folder(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    if let Some(dir) = path.parent() {
+        fs::File::open(dir)?.sync_all()?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
+fn write_dat_as(path: &Path, tag: Tag, durable: bool) -> Result<()> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }
@@ -3142,7 +3190,11 @@ pub fn write_dat(path: &Path, tag: Tag) -> Result<()> {
         .and_then(|n| n.to_str())
         .unwrap_or("data.dat");
     let temporary = path.with_file_name(format!("{file}_new"));
-    fs::write(&temporary, compressed)?;
+    if durable {
+        write_synced(&temporary, &compressed)?;
+    } else {
+        fs::write(&temporary, compressed)?;
+    }
     if path.exists() {
         let old = match file.strip_suffix(".dat") {
             Some(stem) => path.with_file_name(format!("{stem}.dat_old")),
@@ -3152,6 +3204,9 @@ pub fn write_dat(path: &Path, tag: Tag) -> Result<()> {
         fs::rename(path, old).map_err(|e| format!("{}: {e}", path.display()))?;
     }
     fs::rename(temporary, path)?;
+    if durable {
+        sync_folder(path)?;
+    }
     Ok(())
 }
 /// `SavedDataStorage`: `{data: ..., DataVersion}` under `data/minecraft/`.
@@ -3694,6 +3749,9 @@ pub struct Level {
     pub motion: [f64; 3],
     pub fall_distance: f64,
     pub on_ground: bool,
+    /// `LivingEntity.addAdditionalSaveData`'s `FallFlying`: the player was
+    /// gliding (shared flag 7), so the glide goes on after the load.
+    pub fall_flying: bool,
     pub food_exhaustion: f32,
     pub food_tick_timer: i32,
     /// Abilities.flying: whether creative/spectator flight is active.
@@ -3928,6 +3986,9 @@ impl Level {
         self.selected_slot = n("SelectedItemSlot").unwrap_or(0) as i32;
         self.fall_distance = f("fall_distance").unwrap_or(0.0);
         self.on_ground = n("OnGround").unwrap_or(0) != 0;
+        // LivingEntity.readAdditionalSaveData: `getBooleanOr("FallFlying",
+        // false)` sets shared flag 7; any numeric tag counts, as a byte.
+        self.fall_flying = n("FallFlying").unwrap_or(0) != 0;
         self.seen_credits = n("seenCredits").unwrap_or(0) != 0;
         self.post_effects = match p.get("post_effects") {
             Some(Tag::List(list)) => list
@@ -4136,6 +4197,9 @@ impl Level {
             ("Motion", doubles(&self.motion)),
             ("OnGround", Tag::Byte(i8::from(self.on_ground))),
             ("fall_distance", Tag::Double(self.fall_distance.to_bits())),
+            // LivingEntity.addAdditionalSaveData: `putBoolean("FallFlying",
+            // isFallFlying())`, always written.
+            ("FallFlying", Tag::Byte(i8::from(self.fall_flying))),
             ("Health", Tag::Float(self.health.to_bits())),
             ("AbsorptionAmount", Tag::Float(self.absorption.to_bits())),
             ("foodLevel", Tag::Int(self.food)),
@@ -4156,19 +4220,28 @@ impl Level {
                     self.active_effects
                         .iter()
                         .map(|(id, duration, amplifier, ambient, particles)| {
-                            Tag::compound([
-                                ("id", string(id)),
-                                ("duration", Tag::Int(*duration)),
+                            let mut effect =
+                                vec![("id", string(id)), ("duration", Tag::Int(*duration))];
+                            // MobEffectInstance.Details: amplifier defaults to zero.
+                            if *amplifier != 0 {
                                 // Same unsigned byte the codec writes:
                                 // `Mth.clamp` to 0..=255, then `byteValue`.
-                                (
+                                effect.push((
                                     "amplifier",
                                     Tag::Byte((*amplifier).clamp(0, 255) as u8 as i8),
-                                ),
-                                ("ambient", Tag::Byte(i8::from(*ambient))),
-                                ("show_particles", Tag::Byte(i8::from(*particles))),
-                                ("show_icon", Tag::Byte(i8::from(*particles))),
-                            ])
+                                ));
+                            }
+                            // optionalFieldOf("ambient", false) and
+                            // ("show_particles", true): defaults are not written;
+                            // show_icon is always written.
+                            if *ambient {
+                                effect.push(("ambient", Tag::Byte(1)));
+                            }
+                            if !*particles {
+                                effect.push(("show_particles", Tag::Byte(0)));
+                            }
+                            effect.push(("show_icon", Tag::Byte(i8::from(*particles))));
+                            Tag::compound(effect)
                         })
                         .collect(),
                 ),
@@ -4270,7 +4343,6 @@ impl Level {
                 ("seenCredits", Tag::Byte(0)),
                 ("HurtTime", Tag::Short(0)),
                 ("DeathTime", Tag::Short(0)),
-                ("FallFlying", Tag::Byte(0)),
             ] {
                 map.entry(key.into()).or_insert(value);
             }
@@ -5936,6 +6008,39 @@ mod tests {
         assert_eq!(share_out(0, 4, squares, || true), Vec::<usize>::new());
     }
 
+    /// `RegionFile.getVersion` writes a chunk with the version
+    /// `region-file-compression` selected: `compress_records` asks
+    /// `Compression::selected()` for every record it encodes, so a server told
+    /// to write lz4, gzip or uncompressed regions does
+    /// (`RegionFileVersion.configure`).
+    #[test]
+    fn a_chunk_is_written_with_the_selected_region_version() {
+        use super::{Record, compress_records};
+        let tag = Arc::new(NamedTag {
+            name: "".into(),
+            tag: Tag::compound([("xPos", Tag::Int(3))]),
+        });
+        let records = [((3, 4), Record::Tag(Arc::clone(&tag)))];
+        let refs: Vec<_> = records.iter().map(|(k, r)| (*k, r)).collect();
+        for name in ["none", "lz4", "gzip", "deflate"] {
+            assert!(Compression::configure(name), "{name}");
+            let written = compress_records(&refs, 99)
+                .pop()
+                .expect("one record")
+                .expect("an encoded record")
+                .expect("a chunk, not a deletion");
+            assert_eq!(
+                written.compression,
+                Compression::selected(),
+                "written with {name}"
+            );
+            // The bytes are that codec's, and read back as the chunk.
+            assert_eq!(written.nbt(Limits::default()).unwrap(), *tag);
+        }
+        // Leave the default behind for the rest of this process's tests.
+        assert!(Compression::configure("deflate"));
+    }
+
     #[test]
     fn records_compressed_on_helpers_match_one_thread_in_order() {
         use super::{Record, compress_records};
@@ -5962,7 +6067,9 @@ mod tests {
         for ((_, record), got) in records.iter().zip(compressed) {
             let want = record
                 .tag()
-                .map(|t| ChunkRecord::from_nbt(&t, Compression::Zlib, 1234, Limits::default()))
+                .map(|t| {
+                    ChunkRecord::from_nbt(&t, Compression::selected(), 1234, Limits::default())
+                })
                 .transpose()
                 .unwrap();
             let got = got.unwrap();
@@ -7058,6 +7165,74 @@ mod tests {
         level.player_extra = Some(loaded);
         level.active_effects.clear();
         assert!(level.player_tag().get("active_effects").is_none());
+    }
+
+    #[test]
+    fn effect_amplifier_default_is_omitted_from_saved_players() {
+        let effects = vec![
+            ("minecraft:luck".into(), -1, 0, false, false),
+            ("minecraft:speed".into(), 200, 1, true, false),
+            ("minecraft:regeneration".into(), 40, 128, false, true),
+            ("minecraft:strength".into(), -1, 255, false, true),
+        ];
+        for raw in [
+            None,
+            Some(Tag::compound([
+                ("H100Keep", Tag::Int(7)),
+                (
+                    "active_effects",
+                    Tag::List(vec![Tag::compound([
+                        ("id", string("minecraft:luck")),
+                        ("amplifier", Tag::Byte(42)),
+                    ])]),
+                ),
+            ])),
+        ] {
+            let level = Level {
+                active_effects: effects.clone(),
+                player_extra: raw.clone(),
+                ..Level::default()
+            };
+            let saved = level.player_tag();
+            let Some(Tag::List(entries)) = saved.get("active_effects") else {
+                panic!("modeled live effects must be saved even without raw input")
+            };
+            assert_eq!(entries.len(), 4);
+            assert_eq!(
+                entries
+                    .iter()
+                    .map(|e| e.get("amplifier").cloned())
+                    .collect::<Vec<_>>(),
+                vec![
+                    None,
+                    Some(Tag::Byte(1)),
+                    Some(Tag::Byte(-128)),
+                    Some(Tag::Byte(-1))
+                ],
+            );
+            for (entry, (id, duration, _, ambient, particles)) in entries.iter().zip(&effects) {
+                assert_eq!(entry.get("id"), Some(&string(id)));
+                assert_eq!(entry.get("duration"), Some(&Tag::Int(*duration)));
+                // MobEffectInstance.Details.MAP_CODEC leaves out ambient false
+                // and show_particles true.
+                let ambient_tag = ambient.then_some(Tag::Byte(1));
+                assert_eq!(entry.get("ambient"), ambient_tag.as_ref());
+                let particles_tag = (!*particles).then_some(Tag::Byte(0));
+                assert_eq!(entry.get("show_particles"), particles_tag.as_ref());
+                assert_eq!(
+                    entry.get("show_icon"),
+                    Some(&Tag::Byte(i8::from(*particles)))
+                );
+            }
+            assert_eq!(
+                level.active_effects, effects,
+                "saving must not mutate live state"
+            );
+            assert_eq!(
+                saved.get("H100Keep"),
+                raw.as_ref().and_then(|t| t.get("H100Keep"))
+            );
+        }
     }
 
     #[test]

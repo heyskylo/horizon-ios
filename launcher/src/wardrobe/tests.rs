@@ -390,7 +390,7 @@ fn entry(id: &str, hash: &str) -> Entry {
         hash: hash.into(),
         slot: "head".into(),
         names: BTreeMap::new(),
-        theme: None,
+        ..Default::default()
     }
 }
 
@@ -611,7 +611,9 @@ fn the_free_claim_is_offered_only_where_the_service_says_and_grants_once() {
     let (m, service) = serve(|_| {});
     let session = sign_in(&m, &service);
     assert!(!service.me(&session).unwrap().claim.here());
-    assert_eq!(service.claim(&session).unwrap_err(), Error::Service(403));
+    let refused = service.claim(&session).unwrap_err();
+    assert!(refused.use_checkout(), "{refused:?}");
+    assert!(!refused.retry_later());
     // Where it doesn't: offered, then the set is the account's and the offer is gone.
     let (m, service) = serve(|m| m.no_paddle = true);
     let session = sign_in(&m, &service);
@@ -628,4 +630,26 @@ fn the_free_claim_is_offered_only_where_the_service_says_and_grants_once() {
     });
     let session = sign_in(&m, &service);
     assert!(!service.me(&session).unwrap().claim.here());
+}
+
+#[test]
+fn each_claim_refusal_says_what_to_do_instead_of_a_bare_failure() {
+    // The service's answers to `POST /v1/claim` (horizon-cosmetics' README): each one gets its
+    // own words, never the "had a problem" line a 403 used to show (Discord, 2026-11-05).
+    let generic = Error::Service(403).message();
+    let paddle = Error::Shop("paddle".into()).message();
+    let mut said = std::collections::BTreeSet::new();
+    for code in [
+        "use_checkout",
+        "not_offered_here",
+        "claim_not_open",
+        "claimed",
+    ] {
+        let e = Error::Shop(code.into());
+        assert_ne!(e.message(), generic, "{code}");
+        assert_ne!(e.message(), paddle, "{code}");
+        said.insert(e.message());
+    }
+    assert_eq!(said.len(), 4, "{said:#?}");
+    assert!(!Error::Shop("not_offered_here".into()).use_checkout());
 }
