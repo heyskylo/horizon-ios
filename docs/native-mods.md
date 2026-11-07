@@ -3309,6 +3309,12 @@ state (not connected, not joined yet or being reconfigured), when the trimmed me
 blocks it: Commands Only blocks chat, Hidden blocks chat and commands. The server's own spam limits apply as they do to
 typed chat. Bundles need `"hooks": 404`.
 
+`native_open_chat(text)` (API @API:open_chat@, same file) opens the chat screen with `text` typed in and the cursor at
+its end, as T and / open it: a command macro can fill in `/tp ` for the player to finish. Nothing is sent: the player
+edits and sends it, or presses Escape, and it goes into the chat history then like anything typed. The box keeps its
+256-character limit and its character filter. It is an error with no player in a world, and while another screen
+(the chat itself included) is open. Bundles need `"hooks": @API:open_chat@`.
+
 ### Packets a client mod sends
 
 API 409, `crates/horizon-client/src/game/native_net.rs`: `native_send_packet(packet)` sends one
