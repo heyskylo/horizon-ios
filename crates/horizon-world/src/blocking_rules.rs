@@ -38,10 +38,10 @@ impl<S: Copy> DamageReduction<S> {
         if angle > f64::from(0.017_453_292_f32 * self.horizontal_angle) {
             return Ok(0.0);
         }
-        if let Some(set) = self.types {
-            if !world.source_in_set(set)? {
-                return Ok(0.0);
-            }
+        if let Some(set) = self.types
+            && !world.source_in_set(set)?
+        {
+            return Ok(0.0);
         }
         Ok(clamp(self.base + self.factor * damage, damage))
     }
