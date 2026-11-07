@@ -76,7 +76,9 @@ pub fn clientbound(
     // A release at a time: an older server's packets are brought to 26.2's layout first, oldest step first.
     let mut before: Option<Vec<u8>> = None;
     type Step = fn(&Session, State, i32, &[u8]) -> Result<Option<Vec<u8>>>;
-    let steps: [(ServerVersion, Step); 2] = [
+    let steps: [(ServerVersion, Step); 4] = [
+        (ServerVersion::V1_21_5, v1_21_5::clientbound),
+        (ServerVersion::V1_21_8, v1_21_8::clientbound),
         (ServerVersion::V1_21_11, v1_21_11::clientbound),
         (ServerVersion::V26_1, v26_1::clientbound),
     ];
@@ -180,6 +182,10 @@ pub fn clientbound(
         (State::Play, cb::SET_ENTITY_DATA) if session.version.at_most(ServerVersion::V1_21_11) => {
             let mut p = decode_play(ids, id, payload)?;
             if let play::Clientbound::SetEntityData(d) = &mut p {
+                // 1.21.8's layout first: the 1.21.10 steps below expect 1.21.10's indexes.
+                if session.version.at_most(ServerVersion::V1_21_8) {
+                    v1_21_8::entity_data(session, d);
+                }
                 if session.version.at_most(ServerVersion::V1_21_10) {
                     v1_21_10::entity_data(session, d);
                 }
@@ -258,6 +264,16 @@ pub fn serverbound(
         (State::Play, sb::ATTACK) if session.version.at_most(ServerVersion::V1_21_11) => {
             v1_21_11::attack(payload)
         }
+        // 1.21.6 names a test by a VarInt id, 26.3 by its identifier: a named test is dropped (v1_21_6).
+        (State::Play, sb::TEST_INSTANCE_BLOCK_ACTION)
+            if session.version.at_most(ServerVersion::V1_21_6) =>
+        {
+            if v1_21_6::names_test(payload)? {
+                Ok(None)
+            } else {
+                renumbered(id, payload.to_vec())
+            }
+        }
         // 26.1 is told the entity a spectator picked by its UUID (spectate_entity, at the same id).
         (State::Play, sb::SPECTATOR_ACTION) if session.version == ServerVersion::V26_1 => {
             v26_1::spectate(session, payload)
@@ -275,6 +291,14 @@ pub fn serverbound(
                 strip_id(p.encode())
             };
             renumbered(id, payload)
+        }
+        // 1.21.5 numbers player_command's actions two up (its sneak press and release came first); it reads the
+        // sneak from player_input as well, which is sent with a press or release (v1_21_5).
+        (State::Play, sb::PLAYER_COMMAND) if session.version.at_most(ServerVersion::V1_21_5) => {
+            v1_21_5::player_command(session, id, payload)
+        }
+        (State::Play, sb::PLAYER_INPUT) if session.version.at_most(ServerVersion::V1_21_5) => {
+            v1_21_5::player_input(session, id, payload)
         }
         _ => renumbered(id, payload.to_vec()),
     }
@@ -1066,6 +1090,271 @@ pub(crate) mod v26_1 {
                 panic!("{p:?}")
             };
             assert_eq!(t.parameters.unwrap().color, None);
+        }
+    }
+}
+
+/// 1.21.6 to 1.21.8. Clientbound nothing changes for a server: 1.21.6 sends set_equipment without the saddle
+/// slot (7), which 1.21.8 added, and entity data is laid out alike (the serializer ids differ only from 1.21.9,
+/// see adapter.rs). Serverbound, 1.21.8's `test_instance_block_action` names its test by identifier and 1.21.6
+/// by a VarInt id in a registry.
+pub(crate) mod v1_21_6 {
+    use super::*;
+
+    /// Whether a serverbound `test_instance_block_action` (play) names a test: the position, the action, then
+    /// the test's presence flag, which is the only field that differs. A test is an identifier in 26.3 and an
+    /// id in 1.21.6, which needs the registry's entries in the server's order; Horizon doesn't keep those.
+    // TODO(step3): translate a named test to 1.21.6's VarInt id. Until then a packet that names one is dropped.
+    pub(crate) fn names_test(payload: &[u8]) -> Result<bool> {
+        let mut r = Reader::new(payload);
+        r.i64()?;
+        r.varint()?;
+        r.bool()
+    }
+}
+
+/// 1.21.5 to 1.21.6 (protocol 770 to 771). Clientbound nothing changes for a server: 1.21.6 adds packets
+/// (waypoints, dialogs), which the id tables drop for a 1.21.5 server, and changes no field, enum or entity data
+/// serializer (checked against both Packets pages and both Entity metadata pages). Serverbound, `player_command`
+/// lost its sneak press and release (actions 0 and 1) and its other actions are numbered two lower in 1.21.6; the
+/// sneak itself is `player_input`'s bit 0x20 in both versions.
+///
+/// Not translated (see the TODOs): 1.21.6's item components (`attribute_modifiers` with a display, `equippable`
+/// with `can_be_sheared` and `shearing_sound`) and its dialog registries, which 1.21.5 lacks.
+pub(crate) mod v1_21_5 {
+    use super::*;
+
+    /// Nothing: see the module doc.
+    pub fn clientbound(
+        _session: &Session,
+        _state: State,
+        _id: i32,
+        _payload: &[u8],
+    ) -> Result<Option<Vec<u8>>> {
+        Ok(None)
+    }
+
+    /// The pinned `player_command` with 1.21.5's actions: 26.3's leave bed (0) to start flying with an elytra
+    /// (6) are 1.21.5's 2 to 8. The jump boost is kept.
+    pub fn player_command(
+        session: &Session,
+        id: i32,
+        payload: &[u8],
+    ) -> Result<Option<(i32, Vec<u8>)>> {
+        let mut r = Reader::new(payload);
+        let entity = r.varint()?;
+        let action = r.varint()?;
+        let jump = r.varint()?;
+        if !(0..=6).contains(&action) {
+            return Ok(None);
+        }
+        let mut w = Writer::new();
+        w.varint(entity);
+        w.varint(action + 2);
+        w.varint(jump);
+        Ok(session
+            .version
+            .serverbound_id(State::Play, id)
+            .map(|mapped| (mapped, w.data)))
+    }
+
+    /// The pinned `player_input` goes as it is (its sneak bit 0x20 is 1.21.5's too). 1.21.5's server also takes a
+    /// sneak from `player_command`'s press (0) and release (1), so one of those is queued after each input, as
+    /// the bit says: the server sets the same state each time, so repeats do nothing to it.
+    // TODO(step3): unverified against 1.21.5's handlePlayerCommand: that its press and release only set the sneak state.
+    pub fn player_input(
+        session: &Session,
+        id: i32,
+        payload: &[u8],
+    ) -> Result<Option<(i32, Vec<u8>)>> {
+        let sneak = Reader::new(payload).u8()? & 0x20 != 0;
+        if let Some(command) = session
+            .version
+            .serverbound_id(State::Play, packet_ids::play::serverbound::PLAYER_COMMAND)
+        {
+            let mut w = Writer::new();
+            w.varint(command);
+            w.varint(0); // the player's entity: the vanilla server ignores it
+            w.varint(if sneak { 0 } else { 1 });
+            w.varint(0);
+            session.outgoing.lock().unwrap().push(w.data);
+        }
+        Ok(session
+            .version
+            .serverbound_id(State::Play, id)
+            .map(|mapped| (mapped, payload.to_vec())))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn a_sprint_is_1_21_5_s_action_three() {
+            let session = Session::new(ServerVersion::V1_21_5);
+            let mut w = Writer::new();
+            w.varint(9);
+            w.varint(1); // start sprinting in 26.3
+            w.varint(0);
+            let id = packet_ids::play::serverbound::PLAYER_COMMAND;
+            let (mapped, body) = player_command(&session, id, &w.data).unwrap().unwrap();
+            assert_eq!(
+                Some(mapped),
+                ServerVersion::V1_21_5.serverbound_id(State::Play, id)
+            );
+            let mut r = Reader::new(&body);
+            assert_eq!((r.varint().unwrap(), r.varint().unwrap()), (9, 3));
+        }
+
+        #[test]
+        fn a_sneaking_input_queues_a_sneak_press_after_it() {
+            let session = Session::new(ServerVersion::V1_21_5);
+            let input = packet_ids::play::serverbound::PLAYER_INPUT;
+            let (mapped, _) = player_input(&session, input, &[0x21]).unwrap().unwrap();
+            assert_eq!(
+                Some(mapped),
+                ServerVersion::V1_21_5.serverbound_id(State::Play, input)
+            );
+            let sent = session.take_outgoing();
+            let command = ServerVersion::V1_21_5
+                .serverbound_id(State::Play, packet_ids::play::serverbound::PLAYER_COMMAND)
+                .unwrap();
+            let mut r = Reader::new(&sent[0]);
+            assert_eq!(r.varint().unwrap(), command);
+            r.varint().unwrap(); // the entity
+            assert_eq!(r.varint().unwrap(), 0); // press sneak key
+        }
+    }
+}
+
+/// 1.21.8 to 1.21.10: the mirror of `client_session::step_1_21_8`. What 1.21.8 lays out differently:
+/// add_entity and set_entity_motion carry their velocity as three shorts (1/8000 of a block per tick) and
+/// 1.21.10 as an LpVec3; set_default_spawn_position names the dimension and has a yaw and a pitch where 1.21.8
+/// has one angle; player_rotation has a relative flag after each angle; explode lacks the radius, the block
+/// count and the block particles; and a player's main hand and displayed skin parts moved into Avatar. The
+/// packets 1.21.10 added (the debug ones, code_of_conduct) and the serverbound debug subscription need no step:
+/// the id tables drop them.
+pub(crate) mod v1_21_8 {
+    use super::*;
+    use crate::buf::LpVec3;
+
+    /// 1.21.8's velocity unit: the shorts of add_entity and set_entity_motion count 1/8000 of a block per tick.
+    pub(crate) const VELOCITY_UNIT: f64 = 8000.0;
+    // TODO(step1.21.8): 1.21.8 sends no radius and no block count: 3.0 and 0 are guesses.
+    const EXPLODE_RADIUS: f32 = 3.0;
+
+    /// A clientbound packet `id` (pinned) of 1.21.8 with `payload` in 1.21.8's layout, in 1.21.10's; `None` when
+    /// laid out alike.
+    pub fn clientbound(
+        _session: &Session,
+        state: State,
+        id: i32,
+        payload: &[u8],
+    ) -> Result<Option<Vec<u8>>> {
+        use packet_ids::play::clientbound as cb;
+        if state != State::Play {
+            return Ok(None);
+        }
+        Ok(match id {
+            cb::ADD_ENTITY => Some(add_entity(payload)?),
+            cb::SET_ENTITY_MOTION => Some(set_entity_motion(payload)?),
+            cb::SET_DEFAULT_SPAWN_POSITION => Some(spawn_position(payload)?),
+            cb::PLAYER_ROTATION => Some(player_rotation(payload)?),
+            cb::EXPLODE => Some(explode(payload)?),
+            _ => None,
+        })
+    }
+
+    /// add_entity: the three trailing shorts become an LpVec3 after the position.
+    fn add_entity(payload: &[u8]) -> Result<Vec<u8>> {
+        let mut r = Reader::new(payload);
+        let mut w = Writer::new();
+        w.varint(r.varint()?);
+        w.uuid(r.uuid()?);
+        w.varint(r.varint()?);
+        for _ in 0..3 {
+            w.f64(r.f64()?);
+        }
+        let angles = [r.u8()?, r.u8()?, r.u8()?];
+        let data = r.varint()?;
+        let velocity = [r.i16()?, r.i16()?, r.i16()?].map(|s| f64::from(s) / VELOCITY_UNIT);
+        LpVec3::write(&velocity, &mut w);
+        w.bytes(&angles);
+        w.varint(data);
+        Ok(w.data)
+    }
+
+    /// set_entity_motion: the three shorts become an LpVec3.
+    fn set_entity_motion(payload: &[u8]) -> Result<Vec<u8>> {
+        let mut r = Reader::new(payload);
+        let mut w = Writer::new();
+        w.varint(r.varint()?);
+        let velocity = [r.i16()?, r.i16()?, r.i16()?].map(|s| f64::from(s) / VELOCITY_UNIT);
+        LpVec3::write(&velocity, &mut w);
+        Ok(w.data)
+    }
+
+    /// set_default_spawn_position: 1.21.8 does not say which dimension the spawn is in, so the overworld is
+    /// named. The one angle is the yaw; the pitch is 0.
+    // TODO(step1.21.8): a spawn in another dimension would be sent under the overworld's name.
+    fn spawn_position(payload: &[u8]) -> Result<Vec<u8>> {
+        let mut r = Reader::new(payload);
+        let position = r.i64()?;
+        let angle = r.f32()?;
+        let mut w = Writer::new();
+        w.string("minecraft:overworld");
+        w.i64(position);
+        w.f32(angle);
+        w.f32(0.0);
+        Ok(w.data)
+    }
+
+    /// player_rotation: 1.21.10 adds a relative flag after each angle; 1.21.8 only has absolute angles.
+    fn player_rotation(payload: &[u8]) -> Result<Vec<u8>> {
+        let mut r = Reader::new(payload);
+        let yaw = r.f32()?;
+        let pitch = r.f32()?;
+        let mut w = Writer::new();
+        w.f32(yaw);
+        w.bool(false);
+        w.f32(pitch);
+        w.bool(false);
+        Ok(w.data)
+    }
+
+    /// explode: the centre stays; 1.21.10 puts the radius and the block count after it, and the block particles
+    /// (a prefixed array, empty here) after the sound.
+    fn explode(payload: &[u8]) -> Result<Vec<u8>> {
+        let mut r = Reader::new(payload);
+        let mut w = Writer::new();
+        w.bytes(r.bytes(24)?);
+        w.f32(EXPLODE_RADIUS);
+        w.i32(0);
+        w.bytes(r.rest());
+        w.varint(0);
+        Ok(w.data)
+    }
+
+    /// Player entity data: 1.21.10's Avatar has the main hand (15) and the displayed skin parts (16), and the
+    /// player's additional hearts (17) and score (18) follow them. 1.21.8 had the hearts and the score at 15 and
+    /// 16 and the skin parts and the main hand at 17 and 18. The shoulder data (19, 20) is an NBT in 1.21.8,
+    /// which is where decoding stops. `session` knows the entity's kind; other kinds are left alone.
+    // TODO(step1.21.8): translate the shoulder data into 1.21.10's Optional VarInt instead of dropping it.
+    pub fn entity_data(session: &Session, data: &mut play::SetEntityData) {
+        let Some(kind) = session.kinds.lock().unwrap().get(&data.id).copied() else {
+            return;
+        };
+        if kind != v1_21_10::PLAYER {
+            return;
+        }
+        for (index, _, _) in &mut data.values {
+            *index = match *index {
+                15 => 17,
+                16 => 18,
+                17 => 16,
+                18 => 15,
+                other => other,
+            };
         }
     }
 }

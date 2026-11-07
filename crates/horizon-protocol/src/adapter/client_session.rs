@@ -21,6 +21,9 @@ use std::{
 
 mod step_1_21_10;
 mod step_1_21_11;
+mod step_1_21_5;
+mod step_1_21_6;
+mod step_1_21_8;
 mod step_26_1;
 mod world;
 
@@ -304,6 +307,9 @@ impl ClientSession {
                 if self.version.at_most(ServerVersion::V1_21_10) {
                     step_1_21_10::entity_data(kind, d);
                 }
+                if self.version.at_most(ServerVersion::V1_21_8) {
+                    step_1_21_8::entity_data(kind, d);
+                }
                 return Ok(Some(strip_id(p.encode())));
             }
             _ => {}
@@ -332,10 +338,11 @@ impl ClientSession {
             return Ok(None);
         }
         type Step = fn(State, i32, &[u8]) -> Result<Option<Vec<u8>>>;
-        let steps: [(ServerVersion, Step); 3] = [
+        let steps: [(ServerVersion, Step); 4] = [
             (ServerVersion::V26_1, step_26_1::clientbound),
             (ServerVersion::V1_21_11, step_1_21_11::clientbound),
             (ServerVersion::V1_21_10, step_1_21_10::clientbound),
+            (ServerVersion::V1_21_8, step_1_21_8::clientbound),
         ];
         for (to, step) in steps {
             if v.at_most(to)
@@ -343,6 +350,20 @@ impl ClientSession {
             {
                 payload = next;
             }
+        }
+        // 1.21.8 is newer than 1.21.6: its packets are brought down after the steps above.
+        if v.at_most(ServerVersion::V1_21_6) {
+            match step_1_21_6::clientbound(state, id, &payload)? {
+                step_1_21_6::Out::Untouched => {}
+                step_1_21_6::Out::Rewritten(p) => payload = p,
+                step_1_21_6::Out::Dropped => return Ok(None),
+            }
+        }
+        // 1.21.5 is older than 1.21.6 (and than every step above): its packets are brought down last.
+        if v.at_most(ServerVersion::V1_21_5)
+            && let Some(next) = step_1_21_5::clientbound(state, id, &payload)?
+        {
+            payload = next;
         }
         Ok(Some(payload))
     }
@@ -353,10 +374,26 @@ impl ClientSession {
         &self,
         state: State,
         pinned: i32,
-        payload: Vec<u8>,
+        mut payload: Vec<u8>,
     ) -> Result<Option<(i32, Vec<u8>)>> {
         use packet_ids::play::serverbound as sb;
         let v = self.version;
+        // 1.21.5 is the oldest step: its packets are read before 1.21.6's.
+        if v.at_most(ServerVersion::V1_21_5) {
+            match step_1_21_5::serverbound(state, pinned, &payload)? {
+                step_1_21_5::Out::Untouched => {}
+                step_1_21_5::Out::Rewritten(p) => payload = p,
+                step_1_21_5::Out::Dropped => return Ok(None),
+            }
+        }
+        // 1.21.6 is the oldest of these: its packets are read first.
+        if v.at_most(ServerVersion::V1_21_6) {
+            match step_1_21_6::serverbound(state, pinned, &payload)? {
+                step_1_21_6::Out::Untouched => {}
+                step_1_21_6::Out::Rewritten(p) => payload = p,
+                step_1_21_6::Out::Dropped => return Ok(None),
+            }
+        }
         if v.at_most(ServerVersion::V1_21_11) && (state, pinned) == (State::Play, sb::INTERACT) {
             let mut r = Reader::new(&payload);
             let _entity = r.varint()?;
