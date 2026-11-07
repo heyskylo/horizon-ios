@@ -279,6 +279,7 @@ mod native_scene;
 mod native_server;
 mod native_shaders;
 mod native_structures;
+mod native_terrain_model;
 pub mod native_text_field;
 mod native_ticks;
 mod native_travel;

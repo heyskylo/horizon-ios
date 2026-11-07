@@ -13,7 +13,6 @@ use horizon_world::nbt::{Compound, JavaString, Tag};
 use std::sync::Arc;
 
 /// A block's energy as a side reaches it (`native_energy`).
-#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct NativeEnergy {
     pub(crate) amount: i32,
@@ -54,7 +53,7 @@ fn extract_amount(buffer: &ModEnergyBuffer, energy: i32, asked: i32) -> i32 {
 }
 
 // Native mods use these; nothing in Horizon does.
-#[allow(dead_code)]
+#[allow(dead_code, reason = "native mod API (docs/native-mods.md)")]
 impl Game<'_> {
     /// The buffer of the mod block at `pos` in the level in place,
     /// `dimension`, and the energy it holds (its block entity's, and not the
