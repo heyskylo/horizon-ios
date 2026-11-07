@@ -2802,8 +2802,8 @@ impl Game<'_> {
     /// (`HealthHud::layout`, not under F1): `inputs` carries the health,
     /// food, air and vehicle state the layout reads, `wi`/`hi` the screen's
     /// GUI size. A mod that sets `draws` replaces every row — armour,
-    /// hearts, food, air and the heights (`left_height`/`right_height`)
-    /// above the hotbar are the answer's to give; `bubble_pop_sound` too.
+    /// hearts, food and air are the answer's to give; `bubble_pop_sound`
+    /// too.
     /// Nothing set draws Horizon's own.
     pub(super) fn native_health_hud(
         &mut self,
@@ -10937,10 +10937,7 @@ impl Game<'_> {
         Some(screen.extra.as_ref().map_or(&[], |e| e.data.as_slice()))
     }
     /// Horizon's own health HUD state, for a mod answering
-    /// `native_health_hud`. `left_height`/`right_height` as they stand when
-    /// the hook returns place the selected item's name and the action bar
-    /// (vanilla's `Hud.leftHeight`/`rightHeight`): set them when you draw
-    /// more or fewer rows. `layout` draws Horizon's rows and advances their
+    /// `native_health_hud`. `layout` draws Horizon's rows and advances their
     /// frame state (the hearts' blink, the bubble pop sound), so call it at
     /// most once a frame, and only when you keep some of its rows.
     /// API @API:health_hud_state@.

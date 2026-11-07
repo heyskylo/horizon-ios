@@ -7643,12 +7643,18 @@ impl Game<'_> {
             .instrument(&stack)
             .map(|i| i.use_ticks().max(0) as u32)
         {
-            // InstrumentItem.getUseDuration: held up that long, nothing more.
-            self.using = (ticks + 1 < duration).then_some((slot, ticks + 1));
+            // InstrumentItem.getUseDuration: held up that long. When it runs
+            // out, LivingEntity.stopUsingItem ends the use and causes the
+            // interaction vibration; letting go of the button already does.
+            if ticks + 1 < duration {
+                self.using = Some((slot, ticks + 1));
+            } else {
+                self.stop_using_item(&stack);
+            }
             return;
         }
         if &*stack.item == "minecraft:brush" {
-            self.tick_brush(slot, ticks);
+            self.tick_brush(&stack, slot, ticks);
             return;
         }
         if info.bundle {
@@ -9254,8 +9260,6 @@ impl Game<'_> {
             } else {
                 self.draw_mount_hud(&mut batch, wi, hi)
             };
-            // Without the survival bars only the mount's hearts raise it.
-            bar_height = 39 + 10 * ((vehicle_hearts + 9) / 10);
             // The one bar above the hotbar: the mount's jump bar, the locator
             // bar (with its background) or the experience bar, with the level
             // number that a survival player always has.
@@ -9348,10 +9352,6 @@ impl Game<'_> {
                 self.gui_layer("minecraft:player_health", &mut batch, |g, batch| {
                     hud_layout::paint(batch, &g.gui.atlas, &draws);
                 });
-                bar_height = self
-                    .health_hud
-                    .left_height
-                    .max(self.health_hud.right_height);
                 // Hud.playAirBubblePoppedSound: Player.playSound (PLAYERS), heard
                 // by this client only.
                 if let Some((volume, pitch)) = self.health_hud.bubble_pop_sound.take() {
@@ -9367,7 +9367,7 @@ impl Game<'_> {
             }
             if !spectator {
                 self.gui_layer("minecraft:selected_item_name", &mut batch, |g, batch| {
-                    g.draw_selected_name(batch, bar_height, !g.creative);
+                    g.draw_selected_name(batch, !g.creative);
                 });
             }
         }
@@ -9378,7 +9378,7 @@ impl Game<'_> {
         });
         if show_hud {
             self.gui_layer("minecraft:overlay_message", &mut batch, |g, batch| {
-                g.draw_overlay_message(batch, bar_height);
+                g.draw_overlay_message(batch);
             });
             self.gui_layer("minecraft:title", &mut batch, |g, batch| {
                 g.draw_title(batch);
@@ -12385,8 +12385,12 @@ impl Game<'_> {
         if let Some(hit) = self.tick_mob {
             return hit;
         }
+        self.mob_hit_within(self.entity_reach)
+    }
+    /// [`Game::mob_hit`] out to `reach` instead of the entity interaction range
+    /// (`ProjectileUtil.getHitResultOnViewVector` with another range).
+    pub(super) fn mob_hit_within(&self, reach: f64) -> Option<(usize, f64, [f64; 3])> {
         let (eye, dir) = self.aim()?;
-        let reach: f64 = self.entity_reach;
         let mut best: Option<(usize, f64, [f64; 3])> = None;
         for (i, m) in self.mobs.iter().enumerate() {
             // ProjectileUtil.getEntityHitResult: the mob the player rides
@@ -17679,6 +17683,7 @@ impl Game<'_> {
             _ if self.screen == Screen::Dead => {
                 self.death_key(key)?;
             }
+            _ if self.screen == Screen::Stats => self.stats_key(raw),
             _ => {}
         }
         Ok(())
