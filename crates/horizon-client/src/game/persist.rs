@@ -81,13 +81,6 @@ pub(super) fn mark_fresh(tag: &mut Tag) {
 /// it doesn't join the level again. Taken off like [`FRESH_ADD`].
 const SAME_LEVEL_MOVE: &str = "horizon:same_level_move";
 
-/// Queue `tag` with the chunk loads as an entity moving within its level.
-pub(super) fn mark_moved(tag: &mut Tag) {
-    if let Tag::Compound(c) = tag {
-        c.insert(SAME_LEVEL_MOVE.into(), Tag::Byte(1));
-    }
-}
-
 /// Whether `tag` was queued as a move within its level; the mark comes off.
 fn take_moved(tag: &mut Tag) -> bool {
     match tag {
