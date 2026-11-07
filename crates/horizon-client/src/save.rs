@@ -52,6 +52,8 @@ use std::{
 pub const VERSION_NAME: &str = horizon_core::VANILLA_VERSION;
 
 mod gateway;
+#[cfg(test)]
+mod loot_tests;
 
 /// Snapshot live block entities and custom names for a save batch without
 /// mutating the world. Each map is visited once, retaining its iteration order
@@ -526,6 +528,26 @@ impl SaveTables {
 
 pub use crate::chunk::{ChunkExtras, RolledLoot, SavedProto};
 
+/// A container was opened, or a command's tag dropped or replaced its roll: the
+/// table it was loaded with is no longer what it holds.
+pub fn consume_container_loot(extras: &mut ChunkExtras, pos: (i32, i32, i32)) {
+    let before = extras.rolled_loot.len();
+    extras.rolled_loot.retain(|r| r.pos != pos);
+    if extras.rolled_loot.len() == before {
+        return;
+    }
+    // The source compound participates in the save overlay. From here on,
+    // even an emptied chest must not inherit its old loot table from there.
+    for (source_pos, source) in &mut extras.block_entity_sources {
+        if *source_pos == pos
+            && let Tag::Compound(map) = source
+        {
+            map.remove(&"LootTable".into());
+            map.remove(&"LootTableSeed".into());
+        }
+    }
+}
+
 fn tick_list(ticks: &[SavedTick], name: impl Fn(u32) -> Option<String>) -> Tag {
     Tag::List(
         ticks
@@ -837,7 +859,9 @@ fn roll_loaded_loot(
     let crate::containers::BlockEntity::Chest(slots) = &mut be.1 else {
         return None;
     };
-    let table = text(tag.get("LootTable"))?;
+    // `tryLoadLootTable`: a key the codec rejects is no table at all.
+    let table = text(tag.get("LootTable"))
+        .and_then(|id| horizon_client_core::identifier::normalize_id(&id))?;
     if slots.iter().any(Option::is_some) {
         return None;
     }
@@ -931,9 +955,17 @@ pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::contain
         return Some((pos, BlockEntity::CreakingHeart(Box::new(heart))));
     }
     if id == "minecraft:lectern" {
+        // `LecternBlockEntity.loadAdditional`: the page is `Mth.clamp(Page, 0,
+        // getPageCount(book) - 1)`, so a stored page before the book's first
+        // page or past its last comes back as the page the block holds. No
+        // book, or a book with no pages, counts 0 pages: the maximum is then
+        // -1, and `Mth.clamp` (`Math.min(Math.max(value, min), max)`) answers
+        // it, -1.
+        let book = tag.get("Book").and_then(item_from_nbt);
+        let count = book.as_ref().map_or(0, crate::menu::book_pages) as i32;
         let lectern = crate::containers::Lectern {
-            book: tag.get("Book").and_then(item_from_nbt),
-            page: int("Page").unwrap_or(0),
+            book,
+            page: int("Page").unwrap_or(0).max(0).min(count - 1),
         };
         return Some((pos, BlockEntity::Lectern(lectern)));
     }
@@ -969,7 +1001,16 @@ pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::contain
     };
     let mut entity = BlockEntity::for_block(block)?;
     match &mut entity {
-        BlockEntity::Chest(items) => *items = decode_items(tag.get("Items"), items.len()),
+        BlockEntity::Chest(items) => {
+            // Randomizable containers reset their inventory, then load Items only
+            // when tryLoadLootTable did not read a valid loot-table key.
+            let has_table = text(tag.get("LootTable"))
+                .and_then(|id| horizon_client_core::identifier::normalize_id(&id))
+                .is_some();
+            if !has_table {
+                *items = decode_items(tag.get("Items"), items.len());
+            }
+        }
         BlockEntity::Furnace(f) => {
             let items = decode_items(tag.get("Items"), 3);
             f.items = [items[0].clone(), items[1].clone(), items[2].clone()];
@@ -2094,10 +2135,14 @@ fn compress_records(
     records: &[((i32, i32), &Record)],
     timestamp: u32,
 ) -> Vec<std::io::Result<Option<ChunkRecord>>> {
+    // `RegionFile.getVersion`: the version `region-file-compression` selected
+    // (`RegionFileVersion.getSelected`), zlib unless a dedicated server said
+    // otherwise.
+    let compression = Compression::selected();
     let compress = |record: &Record| {
         record
             .tag()
-            .map(|tag| ChunkRecord::from_nbt(&tag, Compression::Zlib, timestamp, Limits::saved()))
+            .map(|tag| ChunkRecord::from_nbt(&tag, compression, timestamp, Limits::saved()))
             .transpose()
     };
     let helpers = horizon_threads::worker_count()
@@ -2562,16 +2607,18 @@ impl SaveDir {
             let Some(root) = self.read_record_raw("region", pos.x, pos.z) else {
                 continue;
             };
-            let old = match root.tag.get("DataVersion") {
-                Some(Tag::Int(version)) => *version < 4997,
-                _ => true,
-            } || root.tag.get("blending_data").is_some();
-            if old {
+            if record_is_old(&root) {
                 let index = ((pos.x & 31) + (pos.z & 31) * 32) as usize;
                 bits[index / 64] |= 1 << (index % 64);
             }
         }
         bits
+    }
+    /// Whether the saved chunk at `x, z` is old ([`Self::old_chunk_bits`]'s test), from its
+    /// record alone: false for a chunk not saved.
+    pub fn is_old_chunk(&self, x: i32, z: i32) -> bool {
+        self.read_record_raw("region", x, z)
+            .is_some_and(|root| record_is_old(&root))
     }
     /// A saved chunk brought to the current version, for the readers of its
     /// fields that `load` does not decode (`blending_data`).
@@ -3082,6 +3129,50 @@ fn back_up_unreadable_player(path: &Path) {
 }
 /// Write a gzip NBT file the way vanilla does (`<name>_new`, keep `_old`).
 pub fn write_dat(path: &Path, tag: Tag) -> Result<()> {
+    write_dat_as(path, tag, false)
+}
+
+/// [`write_dat`], synced to the disk: the new file before it is renamed into place, and the
+/// folder after, so a power loss leaves the old file or the new one. A hand-over's commit
+/// point (`player-confirm`) replies only once its files are.
+pub fn write_dat_durable(path: &Path, tag: Tag) -> Result<()> {
+    write_dat_as(path, tag, true)
+}
+
+/// `bytes` written to `path` through `<name>_new` and a rename, synced to the disk as
+/// [`write_dat_durable`] syncs: never a half-written file in place.
+pub fn write_durable(path: &Path, bytes: &[u8]) -> Result<()> {
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    let file = path.file_name().and_then(|n| n.to_str()).unwrap_or("data");
+    let temporary = path.with_file_name(format!("{file}_new"));
+    write_synced(&temporary, bytes)?;
+    fs::rename(&temporary, path)?;
+    sync_folder(path)?;
+    Ok(())
+}
+
+fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut file = fs::File::create(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()
+}
+
+/// The folder of `path` synced, so that a rename into it is on the disk (POSIX; Windows has
+/// no folder handle to sync, and its rename is journaled by NTFS).
+fn sync_folder(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    if let Some(dir) = path.parent() {
+        fs::File::open(dir)?.sync_all()?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
+fn write_dat_as(path: &Path, tag: Tag, durable: bool) -> Result<()> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }
@@ -3099,7 +3190,11 @@ pub fn write_dat(path: &Path, tag: Tag) -> Result<()> {
         .and_then(|n| n.to_str())
         .unwrap_or("data.dat");
     let temporary = path.with_file_name(format!("{file}_new"));
-    fs::write(&temporary, compressed)?;
+    if durable {
+        write_synced(&temporary, &compressed)?;
+    } else {
+        fs::write(&temporary, compressed)?;
+    }
     if path.exists() {
         let old = match file.strip_suffix(".dat") {
             Some(stem) => path.with_file_name(format!("{stem}.dat_old")),
@@ -3109,6 +3204,9 @@ pub fn write_dat(path: &Path, tag: Tag) -> Result<()> {
         fs::rename(path, old).map_err(|e| format!("{}: {e}", path.display()))?;
     }
     fs::rename(temporary, path)?;
+    if durable {
+        sync_folder(path)?;
+    }
     Ok(())
 }
 /// `SavedDataStorage`: `{data: ..., DataVersion}` under `data/minecraft/`.
@@ -3651,6 +3749,9 @@ pub struct Level {
     pub motion: [f64; 3],
     pub fall_distance: f64,
     pub on_ground: bool,
+    /// `LivingEntity.addAdditionalSaveData`'s `FallFlying`: the player was
+    /// gliding (shared flag 7), so the glide goes on after the load.
+    pub fall_flying: bool,
     pub food_exhaustion: f32,
     pub food_tick_timer: i32,
     /// Abilities.flying: whether creative/spectator flight is active.
@@ -3885,6 +3986,9 @@ impl Level {
         self.selected_slot = n("SelectedItemSlot").unwrap_or(0) as i32;
         self.fall_distance = f("fall_distance").unwrap_or(0.0);
         self.on_ground = n("OnGround").unwrap_or(0) != 0;
+        // LivingEntity.readAdditionalSaveData: `getBooleanOr("FallFlying",
+        // false)` sets shared flag 7; any numeric tag counts, as a byte.
+        self.fall_flying = n("FallFlying").unwrap_or(0) != 0;
         self.seen_credits = n("seenCredits").unwrap_or(0) != 0;
         self.post_effects = match p.get("post_effects") {
             Some(Tag::List(list)) => list
@@ -3985,10 +4089,19 @@ impl Level {
                 .filter_map(|e| {
                     let id = text(e.get("id"))?;
                     let get = |k: &str| number(e.get(k));
+                    // `MobEffectInstance.Details` stores `amplifier` as
+                    // `ExtraCodecs.UNSIGNED_BYTE`: the NBT byte is signed, and
+                    // `UnsignedBytes.toInt` maps it back to 0..=255. A plain
+                    // sign-extend turns 255 (byte -1) into -1, which
+                    // `EffectInstance::new` then clamps to the lowest level.
+                    let amplifier = match e.get("amplifier") {
+                        Some(Tag::Byte(v)) => i32::from(*v as u8),
+                        other => number(other).unwrap_or(0) as i32,
+                    };
                     Some((
                         id,
                         get("duration").unwrap_or(0) as i32,
-                        get("amplifier").unwrap_or(0) as i32,
+                        amplifier,
                         get("ambient").unwrap_or(0) != 0,
                         get("show_particles").is_none_or(|v| v != 0),
                     ))
@@ -4084,6 +4197,9 @@ impl Level {
             ("Motion", doubles(&self.motion)),
             ("OnGround", Tag::Byte(i8::from(self.on_ground))),
             ("fall_distance", Tag::Double(self.fall_distance.to_bits())),
+            // LivingEntity.addAdditionalSaveData: `putBoolean("FallFlying",
+            // isFallFlying())`, always written.
+            ("FallFlying", Tag::Byte(i8::from(self.fall_flying))),
             ("Health", Tag::Float(self.health.to_bits())),
             ("AbsorptionAmount", Tag::Float(self.absorption.to_bits())),
             ("foodLevel", Tag::Int(self.food)),
@@ -4104,14 +4220,28 @@ impl Level {
                     self.active_effects
                         .iter()
                         .map(|(id, duration, amplifier, ambient, particles)| {
-                            Tag::compound([
-                                ("id", string(id)),
-                                ("duration", Tag::Int(*duration)),
-                                ("amplifier", Tag::Byte(*amplifier as i8)),
-                                ("ambient", Tag::Byte(i8::from(*ambient))),
-                                ("show_particles", Tag::Byte(i8::from(*particles))),
-                                ("show_icon", Tag::Byte(i8::from(*particles))),
-                            ])
+                            let mut effect =
+                                vec![("id", string(id)), ("duration", Tag::Int(*duration))];
+                            // MobEffectInstance.Details: amplifier defaults to zero.
+                            if *amplifier != 0 {
+                                // Same unsigned byte the codec writes:
+                                // `Mth.clamp` to 0..=255, then `byteValue`.
+                                effect.push((
+                                    "amplifier",
+                                    Tag::Byte((*amplifier).clamp(0, 255) as u8 as i8),
+                                ));
+                            }
+                            // optionalFieldOf("ambient", false) and
+                            // ("show_particles", true): defaults are not written;
+                            // show_icon is always written.
+                            if *ambient {
+                                effect.push(("ambient", Tag::Byte(1)));
+                            }
+                            if !*particles {
+                                effect.push(("show_particles", Tag::Byte(0)));
+                            }
+                            effect.push(("show_icon", Tag::Byte(i8::from(*particles))));
+                            Tag::compound(effect)
                         })
                         .collect(),
                 ),
@@ -4213,7 +4343,6 @@ impl Level {
                 ("seenCredits", Tag::Byte(0)),
                 ("HurtTime", Tag::Short(0)),
                 ("DeathTime", Tag::Short(0)),
-                ("FallFlying", Tag::Byte(0)),
             ] {
                 map.entry(key.into()).or_insert(value);
             }
@@ -5064,6 +5193,15 @@ impl<G: ChunkGenerator> ChunkGenerator for Persistent<G> {
     }
 }
 
+/// `IOWorker.createOldDataForRegion`'s test of one record: saved before DataVersion 4997, or
+/// with `blending_data`.
+fn record_is_old(root: &NamedTag) -> bool {
+    let before_blending = match root.tag.get("DataVersion") {
+        Some(Tag::Int(version)) => *version < 4997,
+        _ => true,
+    };
+    before_blending || root.tag.get("blending_data").is_some()
+}
 #[cfg(test)]
 mod tests {
     use crate::mobs::spawner::SpawnDataExt;
@@ -5870,6 +6008,39 @@ mod tests {
         assert_eq!(share_out(0, 4, squares, || true), Vec::<usize>::new());
     }
 
+    /// `RegionFile.getVersion` writes a chunk with the version
+    /// `region-file-compression` selected: `compress_records` asks
+    /// `Compression::selected()` for every record it encodes, so a server told
+    /// to write lz4, gzip or uncompressed regions does
+    /// (`RegionFileVersion.configure`).
+    #[test]
+    fn a_chunk_is_written_with_the_selected_region_version() {
+        use super::{Record, compress_records};
+        let tag = Arc::new(NamedTag {
+            name: "".into(),
+            tag: Tag::compound([("xPos", Tag::Int(3))]),
+        });
+        let records = [((3, 4), Record::Tag(Arc::clone(&tag)))];
+        let refs: Vec<_> = records.iter().map(|(k, r)| (*k, r)).collect();
+        for name in ["none", "lz4", "gzip", "deflate"] {
+            assert!(Compression::configure(name), "{name}");
+            let written = compress_records(&refs, 99)
+                .pop()
+                .expect("one record")
+                .expect("an encoded record")
+                .expect("a chunk, not a deletion");
+            assert_eq!(
+                written.compression,
+                Compression::selected(),
+                "written with {name}"
+            );
+            // The bytes are that codec's, and read back as the chunk.
+            assert_eq!(written.nbt(Limits::default()).unwrap(), *tag);
+        }
+        // Leave the default behind for the rest of this process's tests.
+        assert!(Compression::configure("deflate"));
+    }
+
     #[test]
     fn records_compressed_on_helpers_match_one_thread_in_order() {
         use super::{Record, compress_records};
@@ -5896,7 +6067,9 @@ mod tests {
         for ((_, record), got) in records.iter().zip(compressed) {
             let want = record
                 .tag()
-                .map(|t| ChunkRecord::from_nbt(&t, Compression::Zlib, 1234, Limits::default()))
+                .map(|t| {
+                    ChunkRecord::from_nbt(&t, Compression::selected(), 1234, Limits::default())
+                })
                 .transpose()
                 .unwrap();
             let got = got.unwrap();
@@ -6117,6 +6290,187 @@ mod tests {
                 .expect("update tag");
         assert!(update.get("Items").is_some() && update.get("CookingTimes").is_none());
     }
+    /// `LecternBlockEntity.loadAdditional`: `Page` is clamped to
+    /// `0..getPageCount(book) - 1`, so a stored page outside the book loads as
+    /// the first or last page the block holds. A bookless lectern counts no
+    /// pages and loads page -1.
+    #[test]
+    fn a_lecterns_page_loads_within_its_book() {
+        let page_of = |tag: &str| {
+            let tag = horizon_world::nbt::parse_snbt(tag).unwrap().0;
+            let (_, entity) = decode_block_entity(&tag).expect("lectern");
+            let crate::containers::BlockEntity::Lectern(l) = entity else {
+                panic!("not a lectern");
+            };
+            l.page
+        };
+        let book = |pages: &str| {
+            format!(
+                r#"id:"minecraft:written_book",count:1,components:{{
+                    "minecraft:written_book_content":{{title:"t",author:"a",pages:[{pages}]}}
+                }}"#
+            )
+        };
+        // Two pages: a stored 7 is the last page, a stored -3 the first.
+        assert_eq!(
+            page_of(&format!(
+                r#"{{id:"minecraft:lectern",x:1,y:64,z:2,Page:7,Book:{{{}}}}}"#,
+                book(r#""one","two""#)
+            )),
+            1
+        );
+        assert_eq!(
+            page_of(&format!(
+                r#"{{id:"minecraft:lectern",x:1,y:64,z:2,Page:-3,Book:{{{}}}}}"#,
+                book(r#""one","two""#)
+            )),
+            0
+        );
+        // No book counts no pages, so any page loads as -1, as vanilla's.
+        assert_eq!(
+            page_of(r#"{id:"minecraft:lectern",x:1,y:64,z:2,Page:4}"#),
+            -1
+        );
+        // A page already inside the book is kept, and saved back as it is.
+        let tag = format!(
+            r#"{{id:"minecraft:lectern",x:1,y:64,z:2,Page:1,Book:{{{}}}}}"#,
+            book(r#""one","two","three""#)
+        );
+        let tag = horizon_world::nbt::parse_snbt(&tag).unwrap().0;
+        let (pos, entity) = decode_block_entity(&tag).expect("lectern");
+        let crate::containers::BlockEntity::Lectern(l) = entity else {
+            panic!("not a lectern");
+        };
+        assert_eq!(l.page, 1);
+        let saved = encode_block_entity(
+            pos,
+            &crate::containers::BlockEntity::Lectern(l),
+            "minecraft:lectern",
+        );
+        assert_eq!(number(saved.get("Page")), Some(1));
+    }
+    #[test]
+    fn a_chest_loot_table_takes_precedence_over_saved_items() {
+        let mut saved = horizon_world::nbt::parse_snbt(
+            r#"{id:"minecraft:chest",x:1,y:2,z:3,Items:[{Slot:3b,id:"minecraft:diamond",count:7}],LootTable:"minecraft:chests/simple_dungeon",LootTableSeed:42L}"#,
+        )
+        .unwrap()
+        .0;
+        let (_, mut chest) = decode_block_entity(&saved).expect("chest");
+        assert!(
+            chest.slots().iter().all(Option::is_none),
+            "ChestBlockEntity.loadAdditional ignores Items when a loot table loads"
+        );
+        // The command path rolls an empty inventory and keeps the table/seed
+        // for data get and saving. No loot resources are needed to keep that state.
+        let rolled = crate::structure_blocks::roll_container(
+            chest.slots_mut(),
+            None,
+            "minecraft:chests/simple_dungeon".into(),
+            Some(42),
+            (1, 2, 3),
+            "minecraft:plains",
+        );
+        let mut stored = block_entity_data((1, 2, 3), &chest, "minecraft:chest", None);
+        let Tag::Compound(fields) = &mut stored else {
+            panic!("compound");
+        };
+        assert!(rolled.restore(fields));
+        assert_eq!(stored.get("LootTable"), saved.get("LootTable"));
+        assert_eq!(stored.get("LootTableSeed"), saved.get("LootTableSeed"));
+        assert!(stored.get("Items").is_none());
+        let Tag::Compound(fields) = &mut saved else {
+            panic!("compound");
+        };
+        fields.remove(&"LootTable".into());
+        let (_, chest) = decode_block_entity(&saved).expect("chest without table");
+        let item = chest.slots()[3].as_ref().expect("saved item");
+        assert_eq!(item.item.as_ref(), "minecraft:diamond");
+        assert_eq!(item.count, 7);
+    }
+
+    /// `tryLoadLootTable` in every `RandomizableContainer`'s `loadAdditional`
+    /// (barrel, shulker boxes, hopper, dispenser, dropper):
+    /// a valid table leaves the saved `Items` unread, as for the chest.
+    #[test]
+    fn every_randomizable_container_lets_its_loot_table_win_over_saved_items() {
+        for (id, size) in [
+            ("minecraft:barrel", 27),
+            ("minecraft:shulker_box", 27),
+            ("minecraft:white_shulker_box", 27),
+            ("minecraft:hopper", crate::containers::HOPPER_SLOTS),
+            ("minecraft:dispenser", 9),
+            ("minecraft:dropper", 9),
+        ] {
+            let mut saved = horizon_world::nbt::parse_snbt(&format!(
+                r#"{{id:"{id}",x:1,y:2,z:3,Items:[{{Slot:3b,id:"minecraft:diamond",count:7}}],LootTable:"minecraft:chests/simple_dungeon",LootTableSeed:42L}}"#
+            ))
+            .unwrap()
+            .0;
+            let (_, mut container) = decode_block_entity(&saved).expect(id);
+            assert_eq!(container.slots().len(), size, "{id}");
+            assert!(
+                container.slots().iter().all(Option::is_none),
+                "{id}: loadAdditional ignores Items when a loot table loads"
+            );
+            let rolled = crate::structure_blocks::roll_container(
+                container.slots_mut(),
+                None,
+                "minecraft:chests/simple_dungeon".into(),
+                Some(42),
+                (1, 2, 3),
+                "minecraft:plains",
+            );
+            let mut stored = block_entity_data((1, 2, 3), &container, id, None);
+            let Tag::Compound(fields) = &mut stored else {
+                panic!("compound");
+            };
+            assert!(rolled.restore(fields), "{id}");
+            assert_eq!(stored.get("LootTable"), saved.get("LootTable"), "{id}");
+            assert_eq!(
+                stored.get("LootTableSeed"),
+                saved.get("LootTableSeed"),
+                "{id}"
+            );
+            assert!(stored.get("Items").is_none(), "{id}");
+            let Tag::Compound(fields) = &mut saved else {
+                panic!("compound");
+            };
+            fields.remove(&"LootTable".into());
+            let (_, container) = decode_block_entity(&saved).expect(id);
+            let item = container.slots()[3].as_ref().expect("saved item");
+            assert_eq!(item.item.as_ref(), "minecraft:diamond", "{id}");
+            assert_eq!(item.count, 7, "{id}");
+        }
+    }
+
+    #[test]
+    fn invalid_container_loot_tables_leave_saved_items_intact() {
+        for id in [
+            "minecraft:chest",
+            "minecraft:trapped_chest",
+            "minecraft:barrel",
+            "minecraft:shulker_box",
+            "minecraft:hopper",
+            "minecraft:dispenser",
+            "minecraft:dropper",
+        ] {
+            for invalid in ["INVALID TABLE", "bad:table/with spaces", "bad@id"] {
+                let saved = horizon_world::nbt::parse_snbt(&format!(
+                    r#"{{id:"{id}",x:1,y:2,z:3,Items:[{{Slot:0b,id:"minecraft:diamond",count:3}}],LootTable:"{invalid}"}}"#
+                ))
+                .unwrap()
+                .0;
+                let (_, container) = decode_block_entity(&saved).expect(id);
+                let item = container.slots()[0]
+                    .as_ref()
+                    .expect("saved item with invalid table");
+                assert_eq!(item.item.as_ref(), "minecraft:diamond");
+                assert_eq!(item.count, 3);
+            }
+        }
+    }
+
     /// `LockCode`: a chest's `lock` is not in Horizon's model, so `data get`
     /// takes it from the tag the block entity was loaded (or set) with.
     #[test]
@@ -6814,6 +7168,108 @@ mod tests {
     }
 
     #[test]
+    fn effect_amplifier_default_is_omitted_from_saved_players() {
+        let effects = vec![
+            ("minecraft:luck".into(), -1, 0, false, false),
+            ("minecraft:speed".into(), 200, 1, true, false),
+            ("minecraft:regeneration".into(), 40, 128, false, true),
+            ("minecraft:strength".into(), -1, 255, false, true),
+        ];
+        for raw in [
+            None,
+            Some(Tag::compound([
+                ("H100Keep", Tag::Int(7)),
+                (
+                    "active_effects",
+                    Tag::List(vec![Tag::compound([
+                        ("id", string("minecraft:luck")),
+                        ("amplifier", Tag::Byte(42)),
+                    ])]),
+                ),
+            ])),
+        ] {
+            let level = Level {
+                active_effects: effects.clone(),
+                player_extra: raw.clone(),
+                ..Level::default()
+            };
+            let saved = level.player_tag();
+            let Some(Tag::List(entries)) = saved.get("active_effects") else {
+                panic!("modeled live effects must be saved even without raw input")
+            };
+            assert_eq!(entries.len(), 4);
+            assert_eq!(
+                entries
+                    .iter()
+                    .map(|e| e.get("amplifier").cloned())
+                    .collect::<Vec<_>>(),
+                vec![
+                    None,
+                    Some(Tag::Byte(1)),
+                    Some(Tag::Byte(-128)),
+                    Some(Tag::Byte(-1))
+                ],
+            );
+            for (entry, (id, duration, _, ambient, particles)) in entries.iter().zip(&effects) {
+                assert_eq!(entry.get("id"), Some(&string(id)));
+                assert_eq!(entry.get("duration"), Some(&Tag::Int(*duration)));
+                // MobEffectInstance.Details.MAP_CODEC leaves out ambient false
+                // and show_particles true.
+                let ambient_tag = ambient.then_some(Tag::Byte(1));
+                assert_eq!(entry.get("ambient"), ambient_tag.as_ref());
+                let particles_tag = (!*particles).then_some(Tag::Byte(0));
+                assert_eq!(entry.get("show_particles"), particles_tag.as_ref());
+                assert_eq!(
+                    entry.get("show_icon"),
+                    Some(&Tag::Byte(i8::from(*particles)))
+                );
+            }
+            assert_eq!(
+                level.active_effects, effects,
+                "saving must not mutate live state"
+            );
+            assert_eq!(
+                saved.get("H100Keep"),
+                raw.as_ref().and_then(|t| t.get("H100Keep"))
+            );
+        }
+    }
+
+    #[test]
+    fn effect_amplifier_255_reloads_as_an_unsigned_byte() {
+        // `MobEffectInstance.MAX_AMPLIFIER` is 255. `Details.MAP_CODEC` writes
+        // it with `ExtraCodecs.UNSIGNED_BYTE`: `255.byteValue()` is -1 and
+        // `128.byteValue()` is -128; `UnsignedBytes.toInt` restores both.
+        let effects = vec![
+            ("minecraft:strength".into(), -1, 255, false, true),
+            ("minecraft:regeneration".into(), -1, 128, false, true),
+            ("minecraft:speed".into(), 40, 1, false, true),
+        ];
+        let level = Level {
+            active_effects: effects.clone(),
+            ..Level::default()
+        };
+        let tag = level.player_tag();
+        let Tag::List(saved) = tag.get("active_effects").expect("active_effects") else {
+            panic!("active_effects list");
+        };
+        assert_eq!(
+            saved
+                .iter()
+                .map(|e| e.get("amplifier").cloned())
+                .collect::<Vec<_>>(),
+            vec![
+                Some(Tag::Byte(-1)),
+                Some(Tag::Byte(-128)),
+                Some(Tag::Byte(1)),
+            ]
+        );
+        let mut loaded = Level::default();
+        loaded.read_player(&tag);
+        assert_eq!(loaded.active_effects, effects);
+    }
+
+    #[test]
     fn creative_flight_status_persists_in_save_and_resets_for_survival() {
         let mut level = Level {
             creative: true,
@@ -7440,6 +7896,30 @@ mod tests {
         let upgraded = nether.raw_chunk(0, 0).expect("the chunk reads");
         assert!(upgraded.tag.get("blending_data").is_none());
         assert_ne!(nether.old_chunk_bits(0, 0)[0] & 1, 0);
+        // One chunk's record tells the same, without the region's other chunks; a chunk this
+        // version saved, and one not saved, are not old.
+        let current = Record::Tag(Arc::new(NamedTag {
+            name: "".into(),
+            tag: Tag::compound([
+                ("DataVersion", Tag::Int(DATA_VERSION)),
+                ("xPos", Tag::Int(1)),
+                ("zPos", Tag::Int(0)),
+                ("yPos", Tag::Int(0)),
+                ("Status", string("minecraft:full")),
+                ("sections", Tag::List(Vec::new())),
+            ]),
+        }));
+        super::write_region_records(
+            &nether.root,
+            &nether.regions,
+            "region",
+            &[((1, 0), &current)],
+        )
+        .unwrap();
+        assert!(nether.is_old_chunk(0, 0));
+        assert!(!nether.is_old_chunk(1, 0));
+        assert!(!nether.is_old_chunk(2, 0));
+        assert_eq!(nether.old_chunk_bits(0, 0)[0] & 0b110, 0);
         // A POI record of before 1.14.4 (no DataVersion, read as 1945): its
         // sections at the root, which 1946 moved under `Sections`.
         let overworld = SaveDir::new(

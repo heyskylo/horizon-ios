@@ -1742,6 +1742,18 @@ impl std::fmt::Display for NoOwner {
     }
 }
 
+impl NoOwner {
+    /// The same refusal for the window, which has Settings rather than a command to name.
+    pub fn in_window() -> String {
+        use crate::i18n::tr;
+        format!(
+            "{}. {}",
+            tr(NEEDS_OWNER),
+            tr("Open Settings and sign in under Account.")
+        )
+    }
+}
+
 /// The owner gate's pass for one launch.
 #[derive(Debug, Default)]
 pub struct Launch {

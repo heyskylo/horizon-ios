@@ -105,6 +105,29 @@ impl Game<'_> {
         self.set_has_record(pos, false);
         self.jukebox_changed(pos);
     }
+    pub(super) fn jukebox_set_item(&mut self, pos: [i32; 3], stack: Option<ItemStack>) {
+        let song = stack
+            .as_ref()
+            .and_then(|s| self.res.items().get(&s.item))
+            .and_then(|info| info.jukebox_song.clone());
+        let has_record = stack.is_some();
+        let Some(BlockEntity::Jukebox(j)) =
+            self.world.block_entities.get_mut(&(pos[0], pos[1], pos[2]))
+        else {
+            return;
+        };
+        let was_playing = j.playing;
+        j.items[0] = stack;
+        j.playing = song.is_some();
+        j.ticks = 0;
+        self.set_has_record(pos, has_record);
+        match song {
+            Some(song) => self.start_song(pos, &song),
+            None if was_playing => self.stop_song(pos),
+            None => {}
+        }
+        self.jukebox_changed(pos);
+    }
     /// `JukeboxBlock.useItemOn` / `useWithoutItem` on the jukebox at `pos`.
     pub(super) fn use_jukebox(&mut self, pos: [i32; 3], held: Option<&ItemStack>) -> bool {
         if &*self
@@ -302,6 +325,11 @@ impl Game<'_> {
             self.start_song(pos, &song);
         }
         if ticks % 20 == 0 {
+            // `JukeboxSongPlayer.tick`: `gameEvent(JUKEBOX_PLAY, pos,
+            // Context.of(state))` every twenty ticks while a song plays, for
+            // the sculk listeners and the allays around it.
+            let state = self.world.block(pos[0], pos[1], pos[2]);
+            self.post_block_game_event("minecraft:jukebox_play", pos, None, Some(state));
             let color = f64::from(self.world.random.next_int_bound(4).unwrap_or(0)) / 24.0;
             let at = [
                 f64::from(pos[0]) + 0.5,
@@ -406,5 +434,102 @@ mod tests {
         // A level that plays its own jukebox: also until the jukebox stops.
         assert!(keeps_song(true, false, true));
         assert!(!keeps_song(true, false, false));
+    }
+}
+
+#[cfg(test)]
+mod jukebox_play_tests {
+    use super::*;
+
+    /// A windowless game from the prepared resources with a jukebox at
+    /// (0, 64, 0), a disc in hand and its song started, ticked `ticks` times:
+    /// the game events it posted, in order. `None` without the resources.
+    fn playing(ticks: i32) -> Option<Vec<String>> {
+        use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES")?);
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .ok()?;
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        // `World::set` writes into a resident chunk only.
+        game.world.chunks.insert(
+            (0, 0),
+            std::sync::Arc::new(horizon_client::chunk::Chunk::empty(0, 0)),
+        );
+        let jukebox = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:jukebox")?;
+        game.world.set(0, 64, 0, jukebox).unwrap();
+        let disc = ItemStack::new("minecraft:music_disc_cat", 1);
+        crate::game::dispense_fixture::start_recording();
+        assert!(
+            game.use_jukebox([0, 64, 0], Some(&disc)),
+            "the disc goes in"
+        );
+        for _ in 0..ticks {
+            game.tick_jukebox((0, 64, 0));
+        }
+        Some(crate::game::dispense_fixture::stop_recording())
+    }
+
+    /// `JukeboxSongPlayer.tick` posts `JUKEBOX_PLAY` at the jukebox every
+    /// `PLAY_EVENT_INTERVAL_TICKS` (20) ticks of a song, next to the note
+    /// particle it already drew. Horizon drew the particle and kept the
+    /// listeners deaf: a sculk sensor beside a playing jukebox never clicked.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_playing_jukebox_posts_jukebox_play_every_twenty_ticks() {
+        let Some(lines) = playing(41) else { return };
+        let plays: Vec<&String> = lines
+            .iter()
+            .filter(|l| l.ends_with("minecraft:jukebox_play"))
+            .collect();
+        assert_eq!(
+            plays,
+            vec![
+                &"G 0,64,0 minecraft:jukebox_play".to_owned(),
+                &"G 0,64,0 minecraft:jukebox_play".to_owned(),
+                &"G 0,64,0 minecraft:jukebox_play".to_owned(),
+            ],
+            "{lines:?}"
+        );
+        // The song is still playing after 41 ticks.
+        assert!(
+            lines.iter().all(|l| l.ends_with("minecraft:jukebox_play")),
+            "{lines:?}"
+        );
+    }
+
+    /// A jukebox whose song is stopped posts no play event: only the twenty
+    /// ticks of a playing song do.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_stopped_jukebox_posts_no_play_event() {
+        let Some(lines) = playing(0) else { return };
+        assert!(lines.is_empty(), "{lines:?}");
     }
 }

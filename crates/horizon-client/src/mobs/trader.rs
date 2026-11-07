@@ -11,10 +11,16 @@ use super::{
 };
 use horizon_core::random::RandomSource;
 
-// Trader state: `point` the wander target, `home` the place it is tied to
-// with `ints[4]` the radius, `ints[5]` the despawn delay, `flag2` whether
+// Trader state: `point` the wander target, `ints[5]` the despawn delay, `flag2` whether
 // a player is trading with it and `using_item` how long it has been
 // drinking.
+
+/// `WanderingTraderSpawner.spawn`: set the trader's visit and home.
+pub fn start_visit(m: &mut Mob, reference: [i32; 3]) {
+    m.extra.ints[5] = DESPAWN_DELAY;
+    m.extra.point = Some(reference.map(f64::from));
+    m.ai.restore_home(reference, 16);
+}
 
 /// `WanderingTraderSpawner`: how long a spawned trader stays.
 pub const DESPAWN_DELAY: i32 = 48000;
@@ -101,7 +107,10 @@ impl Goal for DrinkItem {
         0
     }
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
-        if cx.w.nether {
+        // Level.isDarkOutside / isBrightOutside: a dimension with a fixed
+        // time (the Nether and the End) is neither dark nor bright outside,
+        // so neither potion is drunk.
+        if cx.w.nether || cx.w.end {
             return false;
         }
         if self.dark {
@@ -248,15 +257,15 @@ impl Goal for WanderToPosition {
 }
 /// `Mob.isWithinHome`.
 pub fn within_home(m: &Mob) -> bool {
-    let Some(h) = m.extra.home else { return true };
-    let r = m.extra.ints[4];
-    if r <= 0 {
+    let Some((home, radius)) = m.ai.home else {
         return true;
-    }
-    let d = (h[0] - m.position.x.floor() as i32).pow(2)
-        + (h[1] - m.position.y.floor() as i32).pow(2)
-        + (h[2] - m.position.z.floor() as i32).pow(2);
-    d < r * r
+    };
+    let pos = [
+        m.position.x.floor() as i32,
+        m.position.y.floor() as i32,
+        m.position.z.floor() as i32,
+    ];
+    super::goals::within_home(home, radius, pos)
 }
 /// `MoveTowardsRestrictionGoal`.
 #[derive(Clone, Debug)]
@@ -281,7 +290,9 @@ impl Goal for MoveTowardsRestriction {
         if within_home(m) {
             return false;
         }
-        let Some(h) = m.extra.home else { return false };
+        let Some((h, _)) = m.ai.home else {
+            return false;
+        };
         let to = [
             f64::from(h[0]) + 0.5,
             f64::from(h[1]),
@@ -318,5 +329,68 @@ mod tests {
     #[test]
     fn despawn_delay_is_two_days() {
         assert_eq!(DESPAWN_DELAY, 2 * 24000);
+    }
+
+    /// `UseItemGoal` for the wandering trader: the End has a fixed time, so
+    /// it is neither dark nor bright outside and the trader drinks nothing.
+    #[test]
+    fn a_trader_does_not_drink_in_the_end() {
+        use crate::mobs::world::with_test_world;
+        use horizon_core::geometry::Vec3;
+        use horizon_core::random::LegacyRandom;
+        use std::sync::Arc;
+        let _ = with_test_world(&[], |w, types| {
+            let kind = Arc::new(types.types["minecraft:wandering_trader"].clone());
+            let mut m = Mob::new(1, kind, Vec3::new(0.5, 80.0, 0.5), 0.0);
+            let mut potion = DrinkItem {
+                item: "minecraft:potion",
+                finish_sound: "entity.wandering_trader.disappeared",
+                dark: true,
+            };
+            let mut milk = DrinkItem {
+                item: "minecraft:milk_bucket",
+                finish_sound: "entity.wandering_trader.reappeared",
+                dark: false,
+            };
+            let decide =
+                |world: &MobWorld, m: &mut Mob, potion: &mut DrinkItem, milk: &mut DrinkItem| {
+                    let mut lr = LegacyRandom::new(1);
+                    let mut events = Vec::new();
+                    let mut cx = Cx {
+                        w: world,
+                        lr: &mut lr,
+                        events: &mut events,
+                    };
+                    let dark = potion.can_use(m, &mut cx);
+                    let day = milk.can_use(m, &mut cx);
+                    (dark, day)
+                };
+            let mut night = w.clone();
+            night.daylight = false;
+            night.end = false;
+            night.nether = false;
+            assert_eq!(
+                decide(&night, &mut m, &mut potion, &mut milk),
+                (true, false)
+            );
+            let mut end_dark = night.clone();
+            end_dark.end = true;
+            assert_eq!(
+                decide(&end_dark, &mut m, &mut potion, &mut milk),
+                (false, false)
+            );
+            m.extra.effects.push((INVISIBILITY, 3600, 0));
+            let mut day = w.clone();
+            day.daylight = true;
+            day.end = false;
+            day.nether = false;
+            assert_eq!(decide(&day, &mut m, &mut potion, &mut milk), (false, true));
+            let mut end_bright = day.clone();
+            end_bright.end = true;
+            assert_eq!(
+                decide(&end_bright, &mut m, &mut potion, &mut milk),
+                (false, false)
+            );
+        });
     }
 }

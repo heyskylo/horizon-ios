@@ -21,6 +21,48 @@ use horizon_core::{
 };
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
+/// Velocity `AbstractMinecart.push` adds: the cart, and a quarter on the stand.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CartShove {
+    cart_x: f64,
+    cart_z: f64,
+    stand_x: f64,
+    stand_z: f64,
+}
+/// `ArmorStand.pushEntities` for one cart. `None` when the cart is not the
+/// plain rideable kind, the boxes miss, `distanceToSqr` is past 0.2, the
+/// stand is a passenger of the cart, or the horizontal gap is under
+/// `1.0E-4F` (where `AbstractMinecart.push` does nothing).
+fn armor_stand_cart_shove(
+    stand_pos: Vec3,
+    stand_box: Aabb,
+    cart_pos: Vec3,
+    cart_box: Aabb,
+    kind: super::minecarts::CartKind,
+    cart_carries_stand: bool,
+) -> Option<CartShove> {
+    if kind != super::minecarts::CartKind::Rideable
+        || cart_carries_stand
+        || !stand_box.intersects(cart_box)
+    {
+        return None;
+    }
+    let (dx, dy, dz) = (
+        stand_pos.x - cart_pos.x,
+        stand_pos.y - cart_pos.y,
+        stand_pos.z - cart_pos.z,
+    );
+    if dx * dx + dy * dy + dz * dz > 0.2 {
+        return None;
+    }
+    let (xa, za) = super::minecarts::cart_push_from(stand_pos, cart_pos)?;
+    Some(CartShove {
+        cart_x: -xa,
+        cart_z: -za,
+        stand_x: xa / 4.0,
+        stand_z: za / 4.0,
+    })
+}
 /// `EquipmentLayerRenderer.getColorForLayer`: a dyeable layer (one with a
 /// colour when undyed) takes the stack's `minecraft:dyed_color`, else that
 /// colour; any other layer stays white, dyed or not. The result is in the
@@ -317,8 +359,26 @@ impl Game<'_> {
                     .into_iter()
                     .zip(["helmet", "chestplate", "leggings", "boots"])
             }));
+        // The smithing screen's preview stand wears the result slot's item.
+        let preview = self
+            .station
+            .as_ref()
+            .filter(|s| s.kind == super::stations::Kind::Smithing)
+            .and_then(|s| s.result.as_ref())
+            .map(|stack| {
+                let equip = items.get(&stack.item).and_then(|i| i.equip_slot.as_deref());
+                let layer = match preview_slot(equip) {
+                    2 => "boots",
+                    3 => "leggings",
+                    4 => "chestplate",
+                    5 => "helmet",
+                    _ => "",
+                };
+                (Some(stack), layer)
+            });
+        let stacks = stacks.map(|(s, l)| (s.as_ref(), l)).chain(preview);
         for (stack, layer) in stacks {
-            let Some(stack) = stack.as_ref().filter(|s| s.extra.is_some()) else {
+            let Some(stack) = stack.filter(|s| s.extra.is_some()) else {
                 continue;
             };
             let Some(asset) = items
@@ -454,10 +514,39 @@ impl Game<'_> {
         if &*stack.item != "minecraft:armor_stand" {
             return false;
         }
-        let Some((pos, stand)) = self.armor_stand_spawn(hit, stack) else {
+        let Some((pos, mut stand)) = self.armor_stand_spawn(hit, stack) else {
             return false;
         };
+        // EntityType.create(.., tryMoveDown, movedUp): the new stand falls onto what is under it,
+        // up to two blocks (a bottom slab, the block under replaced grass).
+        let drop = self.drop_offset_from(0.5, 1.975, (pos[0], pos[1], pos[2]), true);
+        stand.position.y = f64::from(pos[1]) + drop;
+        stand.previous = stand.position;
+        // `EntityType.createDefaultStackConfig`: the item's `custom_data`, then its
+        // `entity_data` merged over the stand; `ArmorStandItem.useOn` then snaps it
+        // to the placement yaw with pitch 0.
+        let own = horizon_client::entity_nbt::armor_stand_to_nbt(&stand, [0; 4], None);
+        let mut raw = horizon_client::block_entity_item::stack_configured_entity(
+            stack,
+            "minecraft:armor_stand",
+            &own,
+        );
+        if let Some(mut loaded) = horizon_client::entity_nbt::armor_stand_from_nbt(&raw, stand.id) {
+            loaded.first_tick = stand.first_tick;
+            loaded.yaw = stand.yaw;
+            loaded.previous_yaw = stand.previous_yaw;
+            loaded.pitch = 0.0;
+            loaded.previous = loaded.position;
+            stand = loaded;
+        }
+        if let horizon_world::nbt::Tag::Compound(map) = &mut raw {
+            map.remove(&"UUID".into());
+        }
+        self.persist.raw.insert(stand.id, raw);
         let foot = stand.position;
+        // EntityType.create's spawn yaw, `level.getRandom().nextFloat() * 360`, before
+        // ArmorStandItem.useOn turns the stand to face the player.
+        self.world.random.next_float();
         self.next_entity += 1;
         self.audio.play(
             "minecraft:entity.armor_stand.place",
@@ -465,11 +554,16 @@ impl Game<'_> {
             0.75,
             0.8,
         );
+        // ArmorStandItem.useOn: the stand's ENTITY_PLACE, by the player.
+        let ctx = self.player_context(None);
+        self.post_game_event("minecraft:entity_place", [foot.x, foot.y, foot.z], ctx);
         self.world.modified.insert((pos[0] >> 4, pos[2] >> 4));
         self.armor_stands.push(stand);
         if !self.creative {
             self.consume_held();
         }
+        // ItemStack.useOn counts the use.
+        self.award_stat("used", &stack.item, 1);
         // ArmorStandItem.useOn returns SUCCESS: the hand swings.
         self.swing_arm();
         true
@@ -814,6 +908,8 @@ impl Game<'_> {
             let a = &mut self.armor_stands[i];
             a.previous = a.position;
             a.previous_yaw = a.yaw;
+            // Entity.baseTick clears firstTick only when the entity actually ticks.
+            a.first_tick = false;
             // aiStep's freezing step (removeFrost) makes the speed instance.
             a.speed_instance = true;
             let (water_height, lava_height) =
@@ -853,7 +949,9 @@ impl Game<'_> {
             if in_water {
                 a.enchantment_fall_distance = 0.0;
             } else {
-                a.enchantment_fall_distance += (a.previous.y - a.position.y).max(0.0);
+                // Entity.checkFallDamage narrows each movement before adding to the double.
+                a.enchantment_fall_distance +=
+                    f64::from((a.previous.y - a.position.y).max(0.0) as f32);
             }
             let landed = a.on_ground && a.enchantment_fall_distance > 0.0;
             if a.on_ground {
@@ -866,6 +964,12 @@ impl Game<'_> {
                 self.armor_stand_location_effects(i, true);
             }
             self.armor_stand_turtle_eggs(i, landed)?;
+            if landed {
+                let stand = &self.armor_stands[i];
+                let (position, bounds) = (stand.position, stand.bounds());
+                self.post_landing_event(position, bounds, true);
+            }
+            self.armor_stands[i].apply_honey_slide(&self.world, self.res.facts());
             let a = &self.armor_stands[i];
             if !a.marker && !a.no_gravity {
                 self.entity_powder_snow_particles(
@@ -876,6 +980,9 @@ impl Game<'_> {
                     true,
                 );
             }
+            // LivingEntity.aiStep calls pushEntities after travel. The stand's
+            // own doPush is empty; only this shove runs.
+            self.push_rideable_minecarts(i);
             let a = &mut self.armor_stands[i];
             if !a.environment_tick(&self.world, self.res.facts(), self.pack.assets.registry) {
                 dead.push(i);
@@ -885,6 +992,50 @@ impl Game<'_> {
             self.break_armor_stand_by_anything(i);
         }
         Ok(())
+    }
+    /// `ArmorStand.pushEntities`: a plain minecart (`RIDABLE_MINECARTS`,
+    /// `AbstractMinecart.isRideable`) whose box meets the stand's is shoved
+    /// when `distanceToSqr` is at most 0.2. `AbstractMinecart.push` of a
+    /// non-cart adds the push to the cart and a quarter of it to the stand
+    /// (`Entity.push(double)` does not consult `isPushable`). A stand with no
+    /// physics (`Marker` or `NoGravity`, `ArmorStand.hasPhysics` / `noPhysics`)
+    /// or one riding that cart does not shove it.
+    fn push_rideable_minecarts(&mut self, i: usize) {
+        let stand = &self.armor_stands[i];
+        if stand.marker || stand.no_gravity {
+            return;
+        }
+        let stand_pos = stand.position;
+        let stand_box = stand.bounds();
+        let vehicle = stand.vehicle;
+        let mut applied = Vec::new();
+        for (j, cart) in self.carts.iter().enumerate() {
+            let Some(shove) = armor_stand_cart_shove(
+                stand_pos,
+                stand_box,
+                cart.position,
+                cart.bounds(),
+                cart.kind,
+                vehicle == Some(cart.id),
+            ) else {
+                continue;
+            };
+            applied.push((j, shove));
+        }
+        let mut stand_x = 0.0;
+        let mut stand_z = 0.0;
+        for (j, shove) in applied {
+            let cart = &mut self.carts[j];
+            cart.velocity.x += shove.cart_x;
+            cart.velocity.z += shove.cart_z;
+            stand_x += shove.stand_x;
+            stand_z += shove.stand_z;
+        }
+        if stand_x != 0.0 || stand_z != 0.0 {
+            let stand = &mut self.armor_stands[i];
+            stand.velocity.x += stand_x;
+            stand.velocity.z += stand_z;
+        }
     }
     /// An armor stand is a `LivingEntity`, so the egg under it
     /// (`getOnPosLegacy`) cracks like under a mob: `TurtleEggBlock.fallOn` one
@@ -948,7 +1099,6 @@ impl Game<'_> {
         // The stands' models posed on the GPU path (`mobs::skin`), when it runs this frame.
         let skinning = self.skinning();
         for a in &self.armor_stands {
-            let entity_start = out.len();
             // ArmorStand.shouldRenderAtSqrDistance: 256 times the box's mean
             // edge (4 for a marker's empty box), whatever the entity distance.
             // LivingEntityRenderer grows the culling box by 0.5 for a dragon head.
@@ -978,6 +1128,11 @@ impl Game<'_> {
             ) {
                 continue;
             }
+            let culling = self.entity_cull_decision(a, alpha);
+            if culling.hides_entity() {
+                continue;
+            }
+            let entity_start = out.len();
             // EntityRenderer: drawn between last tick's position and this one's.
             let at = a.render_position(alpha);
             let p = super::entity_culling::at(at) - camera;
@@ -994,12 +1149,13 @@ impl Game<'_> {
                 )
                 * glam::Mat4::from_scale(glam::Vec3::new(-1.0, -1.0, 1.0))
                 * glam::Mat4::from_translation(glam::Vec3::new(0.0, -1.501, 0.0));
-            let light = self.world.light(
-                at.x.floor() as i32,
-                (at.y + 0.5).floor() as i32,
-                at.z.floor() as i32,
-            );
-            let packed = (u32::from(light >> 4) * 16) | ((u32::from(light & 15) * 16) << 8);
+            // `EntityRenderer.getPackedLightCoords`: the block
+            // `ArmorStand.getLightProbePosition` gives - the brightest cell of a
+            // marker's own box, else the stand's eye - at 15 block light while
+            // it burns.
+            let probe = a.light_probe(alpha, |x, y, z| self.world.light(x, y, z));
+            let light = self.world.light(probe[0], probe[1], probe[2]);
+            let packed = a.render_light(light);
             let skinned = if skinning {
                 let mut models = self.skin_models.borrow_mut();
                 let mut frame = self.skin_frame.borrow_mut();
@@ -1011,7 +1167,9 @@ impl Game<'_> {
                 self.armor_stand_vertices(a, base, packed, None, out);
                 None
             };
-            self.cull_skinned(out, entity_start, skinned);
+            if !self.entity_glowing(a.id) {
+                self.cull_skinned(out, entity_start, skinned);
+            }
         }
     }
     /// `ArmorStandRenderer.submit` for stand `a` under `base` (its
@@ -1382,6 +1540,10 @@ impl Game<'_> {
         }) {
             return true;
         }
+        // Counted on the server only, before the swap.
+        if self.remote.is_none() {
+            self.award_stat("used", &stack.item, 1);
+        }
         let swap = swap_with_equipment_slot(stack, current, self.creative);
         self.armor[index] = Some(swap.worn.clone());
         // Player.setItemSlot: onEquipItem plays the equip sound.
@@ -1507,8 +1669,8 @@ impl Game<'_> {
                 .extra
                 .as_deref()
                 .and_then(|d| d.other.iter().find(|(k, _)| k == "minecraft:profile"))
-                .map(|(_, t)| horizon_client::scoreboard::tag_to_json(t))
-                .unwrap_or(serde_json::Value::Null);
+                .map(|(_, t)| self.skin_profiles.borrow_mut().head_profile_nbt(t))
+                .unwrap_or_else(|| std::sync::Arc::new(serde_json::Value::Null));
             self.pack.item_renderer.submit_special(
                 &special,
                 &profile,
@@ -1677,6 +1839,84 @@ mod burn_drop_tests {
         let (pos, drops) = broken_armor_stand_equipment(stand);
         assert_eq!(pos, [-1, 5, 0]);
         assert_eq!(drops, vec![kept]);
+    }
+}
+#[cfg(test)]
+mod push_tests {
+    use super::super::minecarts::{CartKind, Minecart};
+    use super::*;
+
+    fn boxes(kind: CartKind, cart_at: Vec3) -> (Aabb, Aabb) {
+        let stand = ArmorStand::new(1, Vec3::ZERO, 0.0);
+        let cart = Minecart::new(2, kind, cart_at);
+        (stand.bounds(), cart.bounds())
+    }
+
+    #[test]
+    fn a_rideable_minecart_inside_the_0_2_gate_is_shoved() {
+        // 0.25² is inside the 0.2 gate; 0.5² is not. The function's Some/None is the check.
+        let near = Vec3::new(0.25, 0.0, 0.0);
+        let far = Vec3::new(0.5, 0.0, 0.0);
+        let (stand_box, cart_box) = boxes(CartKind::Rideable, near);
+        let shove = armor_stand_cart_shove(
+            Vec3::ZERO,
+            stand_box,
+            near,
+            cart_box,
+            CartKind::Rideable,
+            false,
+        )
+        .expect("a rideable cart 0.25 away is shoved");
+        // AbstractMinecart.push: gap 0.25, length 0.25, pow capped at 1, then 0.1F * 0.5.
+        // The cart moves east, away from the stand; the stand takes a quarter west.
+        let scale = f64::from(0.1_f32) * 0.5;
+        assert_eq!(shove.cart_x, scale);
+        assert_eq!(shove.cart_z, 0.0);
+        assert_eq!(shove.stand_x, -scale / 4.0);
+        assert_eq!(shove.stand_z, 0.0);
+
+        let (stand_box, cart_box) = boxes(CartKind::Rideable, far);
+        assert!(
+            armor_stand_cart_shove(
+                Vec3::ZERO,
+                stand_box,
+                far,
+                cart_box,
+                CartKind::Rideable,
+                false
+            )
+            .is_none(),
+            "past 0.2 the cart stays"
+        );
+        for kind in [
+            CartKind::Chest,
+            CartKind::Hopper,
+            CartKind::Furnace,
+            CartKind::Tnt,
+            CartKind::CommandBlock,
+            CartKind::Spawner,
+        ] {
+            let (stand_box, cart_box) = boxes(kind, near);
+            assert!(
+                armor_stand_cart_shove(Vec3::ZERO, stand_box, near, cart_box, kind, false)
+                    .is_none(),
+                "{} is not a rideable minecart",
+                kind.id()
+            );
+        }
+        let (stand_box, cart_box) = boxes(CartKind::Rideable, near);
+        assert!(
+            armor_stand_cart_shove(
+                Vec3::ZERO,
+                stand_box,
+                near,
+                cart_box,
+                CartKind::Rideable,
+                true
+            )
+            .is_none(),
+            "a cart does not shove the stand riding it"
+        );
     }
 }
 #[cfg(test)]

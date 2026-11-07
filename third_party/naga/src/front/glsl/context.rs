@@ -559,11 +559,18 @@ impl<'a> Context<'a> {
                     // Don't try to generate `AccessIndex` if in a LHS position, since it
                     // wouldn't produce a pointer.
                     ExprPos::Lhs => None,
-                    _ => self
-                        .module
-                        .to_ctx()
-                        .get_const_val_from(index, &self.expressions)
-                        .ok(),
+                    // A global initializer's index is in the global arena, not the function's.
+                    _ => {
+                        let arena = if self.is_const {
+                            &self.module.global_expressions
+                        } else {
+                            &self.expressions
+                        };
+                        self.module
+                            .to_ctx()
+                            .get_const_val_from(index, arena)
+                            .ok()
+                    }
                 };
 
                 let base = self
@@ -594,7 +601,17 @@ impl<'a> Context<'a> {
                 pointer
             }
             HirExprKind::Select { base, ref field } => {
-                let base = self.lower_expect_inner(stmt, frontend, base, pos)?.0;
+                // A member read loads the member through a pointer, as an array element does,
+                // instead of taking it out of a loaded copy of the whole value: a member an
+                // atomic function uses becomes atomic (`atomic_upgrade`), and only a load of it
+                // gives its value. A constant expression keeps its value form: it has no memory.
+                let base_pos = match pos {
+                    ExprPos::Rhs if !self.is_const => ExprPos::AccessBase {
+                        constant_index: true,
+                    },
+                    other => other,
+                };
+                let base = self.lower_expect_inner(stmt, frontend, base, base_pos)?.0;
 
                 frontend.field_selection(self, pos, base, field, meta)?
             }
@@ -1036,6 +1053,12 @@ impl<'a> Context<'a> {
 
                     var.expr
                 }
+                // In a constant expression (a global initializer) the access is folded in the
+                // global arena: its base is the constant itself, not the function's handle.
+                ExprPos::AccessBase { .. } if self.is_const && var.constant.is_some() => {
+                    let (constant, _) = var.constant.unwrap();
+                    self.add_expression(Expression::Constant(constant), meta)?
+                }
                 ExprPos::AccessBase { constant_index } => {
                     // If the index isn't constant all accesses backed by a constant base need
                     // to be done through a proxy local variable, since constants have a non
@@ -1332,6 +1355,23 @@ impl<'a> Context<'a> {
                                 meta,
                             });
                         }
+                        if self.is_const {
+                            // `.length()` of an explicitly sized array is a constant expression
+                            // whether or not the array is (GLSL 4.60, 4.3.3, as #8463 quotes
+                            // it): the array is lowered outside the constant context, for its
+                            // type only.
+                            self.is_const = false;
+                            let size = self.constant_array_size(stmt, frontend, object, meta);
+                            self.is_const = true;
+                            if let Some(size) = size? {
+                                let mut array_length = self.add_expression(
+                                    Expression::Literal(Literal::U32(size.get())),
+                                    meta,
+                                )?;
+                                self.forced_conversion(&mut array_length, meta, Scalar::I32)?;
+                                return Ok((Some(array_length), meta));
+                            }
+                        }
                         let lowered_array = self.lower_expect_inner(stmt, frontend, object, pos)?.0;
                         let array_type = self.resolve_type(lowered_array, meta)?;
 
@@ -1393,6 +1433,31 @@ impl<'a> Context<'a> {
         log::trace!("Lowered {expr:?}\n\tKind = {kind:?}\n\tPos = {pos:?}\n\tResult = {handle:?}");
 
         Ok((Some(handle), meta))
+    }
+
+    /// The size of the array `object` is, through a pointer or not, if it has one.
+    fn constant_array_size(
+        &mut self,
+        stmt: &StmtContext,
+        frontend: &mut Frontend,
+        object: Handle<HirExpr>,
+        meta: Span,
+    ) -> Result<Option<core::num::NonZeroU32>> {
+        let pos = ExprPos::AccessBase {
+            constant_index: true,
+        };
+        let array = self.lower_expect_inner(stmt, frontend, object, pos)?.0;
+        let ty = match *self.resolve_type(array, meta)? {
+            TypeInner::Pointer { base, .. } => &self.module.types[base].inner,
+            ref ty => ty,
+        };
+        Ok(match *ty {
+            TypeInner::Array {
+                size: crate::ArraySize::Constant(size),
+                ..
+            } => Some(size),
+            _ => None,
+        })
     }
 
     pub fn expr_scalar_components(

@@ -7,8 +7,10 @@
 //! (crate::auth): the login joins the server through the session service and
 //! encrypts the connection (ClientHandshakePacketListenerImpl.handleHello).
 use crate::auth::AuthSession;
+use crate::studio::{Metadata, RecorderStatus, StudioRecorder};
 use horizon_protocol::{
     PROTOCOL_VERSION,
+    buf::Reader,
     connection::{ConnReader, ConnWriter, Connection, Counters},
     crypto::{generate_secret, offline_uuid, server_hash},
     packets::{Empty, configuration as cfg, handshake, login, play},
@@ -114,6 +116,8 @@ pub struct Session {
     debug: bool,
     /// The far terrain requests waiting for the server (`lod_net`).
     far: Arc<crate::lod_net::Inbox>,
+    /// Active packet recorder for Studio replay recordings.
+    pub recorder: Arc<Mutex<Option<StudioRecorder>>>,
 }
 impl Session {
     /// Start connecting in the background, as `auth`'s account when there is one.
@@ -209,6 +213,8 @@ impl Session {
         let thread_configuring = configuring.clone();
         let far = Arc::new(crate::lod_net::Inbox::default());
         let thread_far = far.clone();
+        let recorder = Arc::new(Mutex::new(None));
+        let thread_recorder = recorder.clone();
         let (address_owned, name_owned) = (address.to_owned(), name.to_owned());
         let thread = std::thread::Builder::new()
             .name("horizon-net".into())
@@ -229,6 +235,7 @@ impl Session {
                     transferred,
                     &resources,
                     lan,
+                    &thread_recorder,
                 );
                 thread_far.cancel();
                 let from_server = result.is_ok();
@@ -255,11 +262,39 @@ impl Session {
             cookies,
             debug,
             far,
+            recorder,
         }
     }
     /// Everything received since the last poll.
     pub fn poll(&self) -> Vec<Event> {
         self.events.try_iter().collect()
+    }
+    /// Start recording network packets to `.mcpr` format at `path`.
+    pub fn start_recording(
+        &self,
+        path: impl Into<PathBuf>,
+        metadata: Metadata,
+    ) -> std::io::Result<()> {
+        let rec = StudioRecorder::start(path.into(), metadata)?;
+        *self.recorder.lock().unwrap() = Some(rec);
+        Ok(())
+    }
+    /// Stop recording and finalize the `.mcpr` archive.
+    pub fn stop_recording(&self) -> Option<std::io::Result<PathBuf>> {
+        let rec = self.recorder.lock().unwrap().take()?;
+        Some(rec.stop())
+    }
+    /// Whether recording is currently active.
+    pub fn is_recording(&self) -> bool {
+        self.recorder
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|r| r.is_active())
+    }
+    /// Status of the active recording, if any.
+    pub fn recorder_status(&self) -> Option<RecorderStatus> {
+        self.recorder.lock().unwrap().as_ref().map(|r| r.status())
     }
     /// Send a play packet; silently dropped once the connection is gone,
     /// and while the server has the connection back in configuration (a
@@ -616,6 +651,7 @@ fn run(
     transferred: bool,
     resources: &Path,
     lan: bool,
+    recorder: &Arc<Mutex<Option<StudioRecorder>>>,
 ) -> Result<Reason, Reason> {
     let (host, port, mut c) = if let Some(pipe) = local {
         (address.to_owned(), 0, Connection::local(pipe))
@@ -760,8 +796,8 @@ fn run(
         }
     };
     status(send, &tr(lang, "connect.joining"));
-    c.send(&cfg::Serverbound::ClientInformation(info).encode())
-        .map_err(e)?;
+    // ClientHandshakePacketListenerImpl.handleLoginFinished: the brand, then
+    // the client information.
     c.send(
         &cfg::Serverbound::CustomPayload(cfg::CustomPayload {
             channel: "minecraft:brand".into(),
@@ -770,6 +806,8 @@ fn run(
         .encode(),
     )
     .map_err(e)?;
+    c.send(&cfg::Serverbound::ClientInformation(info).encode())
+        .map_err(e)?;
     let (mut reader, writer) = c.split();
     *shared_writer.lock().unwrap() = Some(writer);
     let registries = configure(
@@ -795,6 +833,7 @@ fn run(
         cookies,
         far,
         resources,
+        recorder,
     )
 }
 
@@ -807,6 +846,7 @@ fn receive_play(
     cookies: &Cookies,
     far: &crate::lod_net::Inbox,
     resources: &Path,
+    recorder: &Arc<Mutex<Option<StudioRecorder>>>,
 ) -> Result<Reason, Reason> {
     loop {
         let (id, payload) = reader
@@ -825,6 +865,15 @@ fn receive_play(
                 continue;
             }
         };
+        // Only while a recording runs: the filter copies what it keeps, and re-encodes
+        // AddEntity with a fresh UUID.
+        if let Some(rec) = recorder.lock().unwrap().as_ref()
+            && rec.is_active()
+            && let Some((recorded_id, recorded_payload)) =
+                studio_recording_packet(&packet, id, &payload)
+        {
+            rec.record_packet(recorded_id, &recorded_payload);
+        }
         let reply = |p: play::Serverbound| {
             if let Some(w) = shared_writer.lock().unwrap().as_mut() {
                 let _ = w.send(&p.encode());
@@ -897,6 +946,52 @@ fn receive_play(
     }
 }
 
+/// Return the packet bytes safe to persist in a Studio recording.
+///
+/// Unknown packets fail closed so a newly added protocol packet cannot bypass
+/// the privacy policy. `AddEntity` retains its entity id and state, but gets a
+/// fresh UUID so the recording cannot link that entity to an account UUID.
+fn studio_recording_packet<'a>(
+    packet: &play::Clientbound,
+    packet_id: i32,
+    payload: &'a [u8],
+) -> Option<(i32, std::borrow::Cow<'a, [u8]>)> {
+    use play::Clientbound as P;
+    use std::borrow::Cow;
+    match packet {
+        P::AddEntity(entity) => {
+            let mut anonymous = entity.clone();
+            anonymous.uuid = u128::from_be_bytes(generate_secret().ok()?);
+            let encoded = P::AddEntity(anonymous).encode();
+            let mut reader = Reader::new(&encoded);
+            let id = reader.varint().ok()?;
+            Some((id, Cow::Owned(reader.rest().to_vec())))
+        }
+        P::CookieRequest(_)
+        | P::CustomChatCompletions(_)
+        | P::CustomPayload(_)
+        | P::DeleteChat(_)
+        | P::Disconnect(_)
+        | P::DisguisedChat(_)
+        | P::PlayerChat(_)
+        | P::PlayerCombatKill(_)
+        | P::PlayerInfoRemove(_)
+        | P::PlayerInfoUpdate(_)
+        | P::ResetScore(_)
+        | P::ResourcePackPush(_)
+        | P::ServerLinks(_)
+        | P::SetPlayerTeam(_)
+        | P::SetScore(_)
+        | P::StoreCookie(_)
+        | P::SystemChat(_)
+        | P::TabList(_)
+        | P::TrackedWaypoint(_)
+        | P::Transfer(_)
+        | P::Unknown(..) => None,
+        _ => Some((packet_id, Cow::Borrowed(payload))),
+    }
+}
+
 /// The configuration phase: registries, tags and known packs until the
 /// server finishes it (ClientConfigurationPacketListenerImpl).
 fn configure(
@@ -966,16 +1061,18 @@ fn configure(
                 receive_brand(&p, send);
             }
             cfg::Clientbound::Ping(p) => reply(cfg::Serverbound::Pong(p))?,
-            // Know no packs: the server then sends every registry entry in full.
-            cfg::Clientbound::SelectKnownPacks(_) => {
+            cfg::Clientbound::SelectKnownPacks(p) => {
                 reply(cfg::Serverbound::SelectKnownPacks(cfg::SelectKnownPacks {
-                    packs: vec![],
+                    packs: select_known_packs(p.packs),
                 }))?
             }
             cfg::Clientbound::UpdateEnabledFeatures(p) => {
                 let _ = send.send(Event::Features(p.features));
             }
-            cfg::Clientbound::RegistryData(r) => registries.add(r),
+            cfg::Clientbound::RegistryData(mut r) => {
+                fill_known_entries(&mut r, resources);
+                registries.add(r);
+            }
             cfg::Clientbound::UpdateTags(t) => registries.add_tags(&t),
             cfg::Clientbound::CodeOfConduct(c) => {
                 let _ = send.send(Event::CodeOfConduct(c.text));
@@ -1025,6 +1122,50 @@ fn configure(
                 return Ok(registries);
             }
             _ => {}
+        }
+    }
+}
+
+/// `KnownPacksManager.trySelectingPacks`: the packs of the server's list the
+/// client has too. Horizon carries vanilla's core pack (the prepared
+/// resources' `data/`), so it names that one when the server offers it, and
+/// the server leaves that pack's entries' data out (`fill_known_entries`).
+fn select_known_packs(offered: Vec<cfg::KnownPack>) -> Vec<cfg::KnownPack> {
+    let (namespace, id, version) = crate::lan::data::CORE_PACK;
+    offered
+        .into_iter()
+        .filter(|p| p.namespace == namespace && p.id == id && p.version == version)
+        .collect()
+}
+
+/// `RegistryDataCollector`: an entry of a pack both sides know comes without
+/// its data, which the client reads from its own copy of the pack
+/// (`data/<namespace>/<registry path>/<path>.json`, `Registries.elementsDirPath`).
+fn fill_known_entries(r: &mut cfg::RegistryData, resources: &Path) {
+    let (registry_ns, registry_path) = r
+        .registry
+        .split_once(':')
+        .unwrap_or(("minecraft", r.registry.as_str()));
+    let dir = if registry_ns == "minecraft" {
+        registry_path.to_owned()
+    } else {
+        format!("{registry_ns}/{registry_path}")
+    };
+    for entry in r.entries.iter_mut().filter(|e| e.data.is_none()) {
+        let (ns, path) = entry
+            .id
+            .split_once(':')
+            .unwrap_or(("minecraft", entry.id.as_str()));
+        let file = resources
+            .join("data")
+            .join(ns)
+            .join(&dir)
+            .join(format!("{path}.json"));
+        let json = std::fs::read(&file)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+        if let Some(json) = json {
+            entry.data = Some(crate::lan::data::json_to_nbt(&json));
         }
     }
 }
@@ -1236,6 +1377,79 @@ fn continues_after_failed_join(lan: bool, signed_in: bool) -> bool {
 mod tests {
     use super::*;
 
+    fn pack(namespace: &str, id: &str, version: &str) -> cfg::KnownPack {
+        cfg::KnownPack {
+            namespace: namespace.into(),
+            id: id.into(),
+            version: version.into(),
+        }
+    }
+
+    #[test]
+    fn the_client_knows_vanilla_core_pack_of_its_own_version_only() {
+        let core = pack("minecraft", "core", horizon_protocol::GAME_VERSION);
+        let offered = vec![
+            core.clone(),
+            pack(
+                "minecraft",
+                "trade_rebalance",
+                horizon_protocol::GAME_VERSION,
+            ),
+            pack("example", "server_pack", "1"),
+        ];
+        assert_eq!(select_known_packs(offered), vec![core]);
+        assert_eq!(
+            select_known_packs(vec![pack("minecraft", "core", "1.21.11")]),
+            vec![]
+        );
+        assert_eq!(select_known_packs(vec![]), vec![]);
+    }
+
+    #[test]
+    fn a_known_entry_takes_its_data_from_the_clients_pack() {
+        let root = std::env::temp_dir().join(format!("hz-known-entries-{}", std::process::id()));
+        let dir = root.join("data/minecraft/damage_type");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("in_fire.json"),
+            br#"{"message_id": "inFire", "exhaustion": 0.1, "scaling": "when_caused_by_living_non_player"}"#,
+        )
+        .unwrap();
+        let sent = Tag::compound(vec![(
+            "message_id",
+            Tag::String(JavaString::from("custom")),
+        )]);
+        let mut r = cfg::RegistryData {
+            registry: "minecraft:damage_type".into(),
+            entries: vec![
+                cfg::RegistryEntry {
+                    id: "minecraft:in_fire".into(),
+                    data: None,
+                },
+                cfg::RegistryEntry {
+                    id: "minecraft:custom".into(),
+                    data: Some(sent.clone()),
+                },
+                cfg::RegistryEntry {
+                    id: "minecraft:missing".into(),
+                    data: None,
+                },
+            ],
+        };
+        fill_known_entries(&mut r, &root);
+        std::fs::remove_dir_all(&root).unwrap();
+        let Some(Tag::Compound(filled)) = &r.entries[0].data else {
+            panic!("in_fire was not filled: {:?}", r.entries[0].data);
+        };
+        assert_eq!(
+            filled.get(&JavaString::from("message_id")),
+            Some(&Tag::String(JavaString::from("inFire")))
+        );
+        // Data the server sent stays; an entry the client has no file for stays empty.
+        assert_eq!(r.entries[1].data, Some(sent));
+        assert_eq!(r.entries[2].data, None);
+    }
+
     /// Launchers find the last server joined in `latest.log` by vanilla's line.
     #[test]
     fn the_connecting_line_is_vanillas() {
@@ -1252,6 +1466,170 @@ mod tests {
             "Connecting to play.example.net, 25577"
         );
         assert_eq!(line("[::1]:25566"), "Connecting to ::1, 25566");
+    }
+
+    #[test]
+    fn studio_recording_drops_packets_with_direct_player_identity_or_private_text() {
+        use horizon_protocol::packets::configuration::{
+            ResourcePackPush, ServerLink, ServerLinkKind, ServerLinks, StoreCookie, Transfer,
+        };
+        use play::{
+            ChatTypeBound, Clientbound as P, CustomChatCompletions, PlayerInfo, PlayerInfoRemove,
+            PlayerInfoUpdate, ResetScore, SetPlayerTeam, SetScore, TrackedWaypoint, WaypointId,
+            WaypointTarget,
+        };
+
+        let packets = [
+            P::CookieRequest(cfg::CookieRequest {
+                key: "private_cookie".into(),
+            }),
+            P::CustomChatCompletions(CustomChatCompletions {
+                action: 2,
+                entries: vec!["/msg PlayerName private text".into()],
+            }),
+            P::CustomPayload(cfg::CustomPayload {
+                channel: "private:channel".into(),
+                data: b"private payload".to_vec(),
+            }),
+            P::DeleteChat(play::DeleteChat {
+                signature: (3, Some(vec![1, 2, 3])),
+            }),
+            P::DisguisedChat(play::DisguisedChat {
+                message: Tag::String("private message".into()),
+                chat_type: ChatTypeBound {
+                    chat_type: 0,
+                    name: Tag::String("PlayerName".into()),
+                    target: None,
+                },
+            }),
+            P::PlayerCombatKill(play::PlayerCombatKill {
+                id: 7,
+                message: Tag::String("PlayerName was slain".into()),
+            }),
+            P::PlayerChat(play::PlayerChat {
+                global_index: 1,
+                sender: 7,
+                index: 2,
+                signature: None,
+                content: "private message".into(),
+                timestamp: 3,
+                salt: 4,
+                last_seen: vec![],
+                unsigned_content: None,
+                filter: (0, vec![]),
+                chat_type: ChatTypeBound {
+                    chat_type: 0,
+                    name: Tag::String("PlayerName".into()),
+                    target: None,
+                },
+            }),
+            P::ResetScore(ResetScore {
+                owner: "PlayerName".into(),
+                objective: Some("deaths".into()),
+            }),
+            P::SetScore(SetScore {
+                owner: "PlayerName".into(),
+                objective: "deaths".into(),
+                score: 1,
+                display: None,
+                number_format: None,
+            }),
+            P::PlayerInfoRemove(PlayerInfoRemove { uuids: vec![7] }),
+            P::PlayerInfoUpdate(PlayerInfoUpdate {
+                actions: 1,
+                entries: vec![PlayerInfo {
+                    uuid: 7,
+                    name: Some("PlayerName".into()),
+                    ..PlayerInfo::default()
+                }],
+            }),
+            P::ResourcePackPush(ResourcePackPush {
+                id: 8,
+                url: "https://private.example/pack.zip".into(),
+                hash: "hash".into(),
+                required: false,
+                prompt: None,
+            }),
+            P::ServerLinks(ServerLinks {
+                links: vec![ServerLink {
+                    kind: ServerLinkKind::Known(0),
+                    link: "https://private.example".into(),
+                }],
+            }),
+            P::SetPlayerTeam(SetPlayerTeam {
+                name: "red".into(),
+                method: 3,
+                parameters: None,
+                players: vec!["PlayerName".into()],
+            }),
+            P::StoreCookie(StoreCookie {
+                key: "private_cookie".into(),
+                payload: b"secret".to_vec(),
+            }),
+            P::SystemChat(play::SystemChat {
+                content: Tag::String("private message".into()),
+                overlay: false,
+            }),
+            P::TabList(play::TabList {
+                header: Tag::String("PlayerName".into()),
+                footer: Tag::End,
+            }),
+            P::TrackedWaypoint(TrackedWaypoint {
+                operation: play::waypoint_operation::TRACK,
+                id: WaypointId::Uuid(7),
+                style: "minecraft:default".into(),
+                color: None,
+                target: WaypointTarget::Empty,
+            }),
+            P::Transfer(Transfer {
+                host: "private.example".into(),
+                port: 25565,
+            }),
+            P::Disconnect(cfg::Disconnect {
+                reason: Tag::String("PlayerName was disconnected".into()),
+            }),
+            P::Unknown(999, b"unclassified private payload".to_vec()),
+        ];
+
+        for packet in packets {
+            assert!(
+                studio_recording_packet(&packet, packet.id(), b"raw packet payload").is_none(),
+                "{} should be excluded from recordings",
+                packet.name()
+            );
+        }
+    }
+
+    #[test]
+    fn studio_recording_replaces_entity_uuids_but_keeps_entity_state() {
+        let original = play::AddEntity {
+            id: 18,
+            uuid: 0x0102_0304_0506_0708_090a_0b0c_0d0e_0f10,
+            kind: 42,
+            position: [1.0, 64.0, -2.0],
+            velocity: [0.0, 0.0, 0.0],
+            pitch: 1,
+            yaw: 2,
+            head_yaw: 3,
+            data: 4,
+        };
+        let packet = play::Clientbound::AddEntity(original.clone());
+        let (id, payload) = studio_recording_packet(&packet, packet.id(), b"unused").unwrap();
+        let play::Clientbound::AddEntity(recorded) =
+            play::Clientbound::decode(id, &payload).unwrap()
+        else {
+            panic!("sanitized packet changed type")
+        };
+
+        assert_ne!(recorded.uuid, original.uuid);
+        assert_eq!(recorded.id, original.id);
+        assert_eq!(recorded.kind, original.kind);
+        assert_eq!(recorded.position, original.position);
+        assert_eq!(recorded.velocity, original.velocity);
+        assert_eq!(recorded.pitch, original.pitch);
+        assert_eq!(recorded.yaw, original.yaw);
+        assert_eq!(recorded.head_yaw, original.head_yaw);
+        assert_eq!(recorded.data, original.data);
     }
 
     #[test]
@@ -1304,11 +1682,7 @@ mod tests {
                 login::Serverbound::decode(id, &body).unwrap(),
                 login::Serverbound::LoginAcknowledged(_)
             ));
-            let (id, body) = server.recv().unwrap();
-            assert!(matches!(
-                cfg::Serverbound::decode(id, &body).unwrap(),
-                cfg::Serverbound::ClientInformation(_)
-            ));
+            // handleLoginFinished: the brand first, then the information.
             let (id, body) = server.recv().unwrap();
             assert_eq!(
                 cfg::Serverbound::decode(id, &body).unwrap(),
@@ -1317,6 +1691,11 @@ mod tests {
                     data: b"\x07vanilla".to_vec(),
                 })
             );
+            let (id, body) = server.recv().unwrap();
+            assert!(matches!(
+                cfg::Serverbound::decode(id, &body).unwrap(),
+                cfg::Serverbound::ClientInformation(_)
+            ));
             server
                 .send(
                     &cfg::Clientbound::CustomPayload(cfg::CustomPayload {
@@ -1425,6 +1804,7 @@ mod tests {
                 &Cookies::default(),
                 &crate::lod_net::Inbox::default(),
                 Path::new("."),
+                &Arc::new(Mutex::new(None)),
             ));
         });
         let ended = result
@@ -1544,6 +1924,7 @@ mod tests {
                 cookies: Cookies::default(),
                 debug: false,
                 far: Arc::default(),
+                recorder: Arc::new(Mutex::new(None)),
             };
             let started = std::time::Instant::now();
             if explicit_disconnect {
@@ -1593,6 +1974,7 @@ mod tests {
                 &Cookies::default(),
                 &crate::lod_net::Inbox::default(),
                 Path::new("."),
+                &Arc::new(Mutex::new(None)),
             )
         });
         let mut server = Connection::local(server);
@@ -1645,9 +2027,13 @@ mod tests {
             cookies: Cookies::default(),
             debug: false,
             far: Arc::default(),
+            recorder: Arc::new(Mutex::new(None)),
         };
-        let (thread_writer, thread_configuring) =
-            (session.writer.clone(), session.configuring.clone());
+        let (thread_writer, thread_configuring, thread_recorder) = (
+            session.writer.clone(),
+            session.configuring.clone(),
+            session.recorder.clone(),
+        );
         let thread = std::thread::spawn(move || {
             receive_play(
                 &mut reader,
@@ -1658,6 +2044,7 @@ mod tests {
                 &Cookies::default(),
                 &crate::lod_net::Inbox::default(),
                 Path::new("."),
+                &thread_recorder,
             )
         });
         let mut server = Connection::local(server);
@@ -1706,6 +2093,7 @@ mod tests {
                 &thread_cookies,
                 &crate::lod_net::Inbox::default(),
                 Path::new("."),
+                &Arc::new(Mutex::new(None)),
             )
         });
         let mut server = Connection::local(server);
@@ -1867,5 +2255,98 @@ mod tests {
                 !goes_on
             );
         }
+    }
+
+    #[test]
+    fn session_studio_recording_tap_records_packets_to_mcpr() {
+        let (client, server) = horizon_protocol::connection::Pipe::pair();
+        let (mut reader, writer) = Connection::local(client).split();
+        let (send, events) = channel();
+        let session = Session {
+            events,
+            writer: Arc::new(Mutex::new(Some(writer))),
+            configuring: Arc::new(AtomicBool::new(false)),
+            thread: None,
+            address: "local".into(),
+            name: "StudioTester".into(),
+            counters: Arc::new(Mutex::new(None)),
+            cookies: Cookies::default(),
+            debug: false,
+            far: Arc::default(),
+            recorder: Arc::new(Mutex::new(None)),
+        };
+
+        let temp_dir = std::env::temp_dir().join(format!(
+            "horizon-studio-test-{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let mcpr_path = temp_dir.join("test_tap.mcpr");
+
+        let meta = Metadata::new("Singleplayer World".into(), true, "26.3".into());
+        session.start_recording(&mcpr_path, meta).unwrap();
+        assert!(session.is_recording());
+
+        let (thread_writer, thread_configuring, thread_recorder) = (
+            session.writer.clone(),
+            session.configuring.clone(),
+            session.recorder.clone(),
+        );
+        let thread = std::thread::spawn(move || {
+            receive_play(
+                &mut reader,
+                &thread_writer,
+                &thread_configuring,
+                &Language::new(),
+                &send,
+                &Cookies::default(),
+                &crate::lod_net::Inbox::default(),
+                Path::new("."),
+                &thread_recorder,
+            )
+        });
+
+        let mut server = Connection::local(server);
+        let pos_pkt = play::Clientbound::PlayerPosition(play::PlayerPosition {
+            teleport: 1,
+            position: [100.0, 64.0, -200.0],
+            delta: [0.0; 3],
+            yaw: 45.0,
+            pitch: 10.0,
+            relatives: 0,
+        });
+        server.send(&pos_pkt.encode()).unwrap();
+
+        // Disconnect ends receive_play loop
+        let disc_pkt = play::Clientbound::Disconnect(cfg::Disconnect {
+            reason: Tag::String("Replay tap test completed".into()),
+        });
+        server.send(&disc_pkt.encode()).unwrap();
+
+        let _ = thread.join().unwrap();
+
+        let saved_path = session.stop_recording().unwrap().unwrap();
+        assert_eq!(saved_path, mcpr_path);
+        assert!(!session.is_recording());
+        assert!(mcpr_path.exists());
+
+        // Verify that the recording archive contains the clientbound packets.
+        let mut recording = crate::studio::McprReader::open(&mcpr_path).unwrap();
+        assert_eq!(recording.total_packets(), 1);
+        assert_eq!(recording.metadata.server_name, "Singleplayer World");
+        assert!(recording.metadata.singleplayer);
+        assert!(recording.metadata.players.is_empty());
+
+        let packet1 = recording.next_packet().unwrap().unwrap();
+        assert!(recording.next_packet().unwrap().is_none());
+
+        let decoded1 = play::Clientbound::decode(packet1.id, &packet1.payload).unwrap();
+        assert_eq!(decoded1, pos_pkt);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

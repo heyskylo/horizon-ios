@@ -191,6 +191,12 @@ impl Levels {
         self.get(x, z)
             .is_none_or(|(l, s)| l <= ENTITY_TICKING && s <= ENTITY_TICKING)
     }
+    /// `DistanceManager.inEntityTickingRange` alone: the simulation level,
+    /// whatever the chunk's own status. `ChunkMap.tick` sends an entity's
+    /// changes there only (or when it changed section or needs sync).
+    pub fn in_entity_ticking_range(&self, x: i32, z: i32) -> bool {
+        self.get(x, z).is_none_or(|(_, s)| s <= ENTITY_TICKING)
+    }
     /// `inBlockTickingRange` in a block-ticking chunk: where scheduled ticks,
     /// block events and block entities run.
     pub fn block_ticking(&self, x: i32, z: i32) -> bool {
@@ -208,6 +214,12 @@ impl Levels {
     /// no forced chunk and no `PORTAL` one, so nothing random ticks.
     pub fn random_tick_bounds(&self) -> Option<(i32, i32, i32, i32)> {
         self.1
+    }
+    /// The loading track has `FullChunkStatus.ENTITY_TICKING`, independently
+    /// of whether the simulation tracker also permits entities to tick.
+    pub fn loaded_entity_ticking(&self, x: i32, z: i32) -> bool {
+        self.get(x, z)
+            .is_none_or(|(loading, _)| loading <= ENTITY_TICKING)
     }
     /// `ChunkHolder.getFullStatus` is block ticking or more: the chunk's
     /// ticking future can complete (its saved ticks unpack then).
@@ -475,6 +487,9 @@ mod tests {
         assert!(l.random_ticking(-4, 4) && !l.random_ticking(0, 5));
         assert!(l.block_ticking(5, 5) && !l.block_ticking(6, 0));
         assert!(l.loaded_ticking(9, 9) && !l.loaded_ticking(10, 0));
+        // A command asks the loading status, not the smaller simulation area.
+        assert!(l.loaded_entity_ticking(8, 8));
+        assert!(!l.loaded_entity_ticking(9, 0));
     }
 
     #[test]
@@ -486,6 +501,10 @@ mod tests {
         assert!(l.entity_ticking(4, 0) && !l.entity_ticking(5, 0));
         assert!(l.random_ticking(5, 0) && !l.random_ticking(6, 0));
         assert!(l.block_ticking(5, 5) && !l.block_ticking(6, 0));
+        assert!(l.loaded_entity_ticking(4, 0));
+        assert!(!l.loaded_entity_ticking(5, 0));
+        // ChunkMap.tick's sendChanges reads the simulation level alone.
+        assert!(l.in_entity_ticking_range(10, 0) && !l.in_entity_ticking_range(11, 0));
     }
 
     #[test]

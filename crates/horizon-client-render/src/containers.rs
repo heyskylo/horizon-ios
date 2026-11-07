@@ -215,6 +215,13 @@ impl Campfire {
         }
         changed
     }
+    pub fn idle(&self, lit: bool) -> bool {
+        if lit {
+            self.items.iter().all(Option::is_none)
+        } else {
+            self.progress.iter().all(|&p| p <= 0)
+        }
+    }
 }
 impl Skull {
     pub fn new(
@@ -727,6 +734,56 @@ mod tests {
         assert!(!menu_reaches("vanilla", "ruby:press"));
         assert!(!menu_reaches("fabric", "ruby:press"));
         assert!(menu_reaches("vanilla", "minecraft:generic_9x3"));
+    }
+
+    #[test]
+    fn a_campfire_is_idle_only_while_its_tick_changes_nothing() {
+        let mut c = Campfire::default();
+        assert!(c.idle(true) && c.idle(false));
+        assert!(c.place_food(&mut ItemStack::new("minecraft:beef", 1), 600));
+        assert!(!c.idle(true));
+        assert!(c.idle(false));
+        c.cook_tick();
+        assert!(!c.idle(false));
+        c.cooldown_tick();
+        assert!(c.idle(false));
+    }
+
+    /// The campfire sleeps while `idle`, so the tick its block runs (`cook_tick` lit,
+    /// `cooldown_tick` unlit) must change nothing then, and must change an awake one.
+    #[test]
+    fn an_idle_campfire_tick_changes_nothing() {
+        let tick = |c: &mut Campfire, lit: bool| {
+            if lit {
+                !c.cook_tick().is_empty()
+            } else {
+                c.cooldown_tick()
+            }
+        };
+        let empty = Campfire::default();
+        let mut food = Campfire::default();
+        assert!(food.place_food(&mut ItemStack::new("minecraft:beef", 1), 600));
+        let mut warm = food.clone();
+        warm.cook_tick();
+        let mut cooled = warm.clone();
+        while cooled.cooldown_tick() {}
+        for (before, lit) in [
+            (&empty, true),
+            (&empty, false),
+            (&food, false),
+            (&cooled, false),
+        ] {
+            assert!(before.idle(lit), "{before:?} lit {lit}");
+            let mut after = before.clone();
+            assert!(!tick(&mut after, lit));
+            assert_eq!(&after, before, "lit {lit}");
+        }
+        for (before, lit) in [(&food, true), (&warm, false)] {
+            assert!(!before.idle(lit), "{before:?} lit {lit}");
+            let mut after = before.clone();
+            tick(&mut after, lit);
+            assert_ne!(&after, before, "lit {lit}");
+        }
     }
 
     #[test]

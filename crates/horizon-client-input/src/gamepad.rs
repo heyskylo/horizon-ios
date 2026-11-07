@@ -1,11 +1,17 @@
 //! Controllers: Horizon's own feature (vanilla 26.3 has no gamepad input).
-//! The default layout is Bedrock Edition's; see docs/controllers.md.
+//! Its default buttons are Horizon's own; analog walking and toggle sneak follow Bedrock Edition on
+//! consoles. See docs/controllers.md.
 //!
 //! This module is the backend-free part: positional buttons, the action
 //! bindings, deadzones and the look curve, button edges from successive pad
 //! states, and `horizon-controller.txt`, kept next to `options.txt` so that
 //! file stays exactly vanilla's. The game reads the pads with gilrs.
-use std::{collections::BTreeMap, fs, path::Path};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::Path,
+    time::{Duration, Instant},
+};
 
 pub const FILE: &str = "horizon-controller.txt";
 
@@ -119,6 +125,19 @@ impl Button {
             ][face],
         }
     }
+    /// The face button that plays this one's part on a Nintendo pad going by its letters
+    /// (`PadSettings::nintendo_letters`): the A it prints on the right is South, which confirms
+    /// and jumps as A does on a Switch; B (bottom) is East, X (top) West, Y (left) North. It is
+    /// its own inverse, so it turns a part into the button playing it and back.
+    pub fn by_letter(self) -> Button {
+        match self {
+            Button::South => Button::East,
+            Button::East => Button::South,
+            Button::West => Button::North,
+            Button::North => Button::West,
+            other => other,
+        }
+    }
 }
 
 /// A pad's inputs at one moment. Sticks are `[x, y]` with right and up
@@ -141,6 +160,14 @@ impl PadState {
     }
     pub fn held(&self, button: Button) -> bool {
         self.buttons & button.bit() != 0
+    }
+    /// A Nintendo pad's buttons read by their letters (`Button::by_letter`).
+    pub fn by_letter(&self) -> PadState {
+        let mut state = *self;
+        for part in [Button::South, Button::East, Button::West, Button::North] {
+            state.set(part, self.held(part.by_letter()));
+        }
+        state
     }
     /// Two sources at once (a real pad and `horizon-ctl pad`): buttons held on
     /// either, sticks and triggers added.
@@ -179,12 +206,13 @@ impl PadState {
 #[derive(Clone, Debug, Default)]
 pub struct Edges {
     held: u32,
+    suppressed: u32,
 }
 impl Edges {
     pub fn update(&mut self, state: &PadState, threshold: f32) -> Vec<(Button, bool)> {
         let mut now = state.buttons;
         for (trigger, button) in [(0, Button::LeftTrigger), (1, Button::RightTrigger)] {
-            let was = self.held & button.bit() != 0;
+            let was = (self.held | self.suppressed) & button.bit() != 0;
             let value = state.triggers[trigger];
             let on = if was {
                 value >= (threshold - 0.1).max(0.05)
@@ -197,6 +225,8 @@ impl Edges {
                 now &= !button.bit();
             }
         }
+        self.suppressed &= now;
+        now &= !self.suppressed;
         let changed = now ^ self.held;
         self.held = now;
         Button::ALL
@@ -217,6 +247,50 @@ impl Edges {
     pub fn is_held(&self, button: Button) -> bool {
         self.held & button.bit() != 0
     }
+    /// Cancel a context without turning its still-held buttons into new presses.
+    pub fn cancel(&mut self) -> Vec<(Button, bool)> {
+        self.suppressed |= self.held;
+        self.release_all()
+    }
+}
+
+/// Intentional activity may take input ownership; an unchanged hold may not.
+#[derive(Default)]
+pub struct Activity {
+    buttons: u32,
+    sticks: [[f32; 2]; 2],
+}
+impl Activity {
+    pub fn observe(&mut self, state: &PadState, settings: &PadSettings) -> bool {
+        let mut buttons = state.buttons;
+        for (i, button) in [(0, Button::LeftTrigger), (1, Button::RightTrigger)] {
+            let threshold = if self.buttons & button.bit() != 0 {
+                (settings.trigger_threshold - 0.1).max(0.05)
+            } else {
+                settings.trigger_threshold
+            };
+            if state.triggers[i] >= threshold {
+                buttons |= button.bit();
+            }
+        }
+        let mut activity = buttons & !self.buttons != 0;
+        self.buttons = buttons;
+        for (i, (stick, deadzone)) in [
+            (state.left, settings.move_deadzone),
+            (state.right, settings.look_deadzone),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if length(stick) <= deadzone {
+                self.sticks[i] = [0.0; 2];
+            } else if length([stick[0] - self.sticks[i][0], stick[1] - self.sticks[i][1]]) > 0.08 {
+                activity = true;
+                self.sticks[i] = stick;
+            }
+        }
+        activity
+    }
 }
 
 /// Horizon's pad-only actions (no vanilla key mapping).
@@ -228,7 +302,7 @@ pub const HOTBAR_NEXT: &str = "pad.hotbarNext";
 /// always pause / back and isn't listed.
 pub const ACTIONS: &[(&str, Option<Button>)] = &[
     ("key.jump", Some(Button::South)),
-    ("key.drop", Some(Button::East)),
+    ("key.drop", Some(Button::DPadDown)),
     ("key.swapOffhand", Some(Button::West)),
     ("key.inventory", Some(Button::North)),
     (HOTBAR_PREVIOUS, Some(Button::LeftBumper)),
@@ -237,16 +311,71 @@ pub const ACTIONS: &[(&str, Option<Button>)] = &[
     ("key.attack", Some(Button::RightTrigger)),
     ("key.sprint", Some(Button::LeftStick)),
     ("key.sneak", Some(Button::RightStick)),
-    ("key.togglePerspective", Some(Button::DPadUp)),
+    ("key.togglePerspective", Some(Button::Select)),
     ("key.pickItem", Some(Button::DPadLeft)),
-    ("key.chat", Some(Button::DPadRight)),
-    ("key.advancements", Some(Button::DPadDown)),
-    ("key.playerlist", Some(Button::Select)),
+    ("key.chat", Some(Button::DPadUp)),
+    ("key.advancements", None),
+    ("key.playerlist", None),
     ("key.command", None),
     ("key.screenshot", None),
     ("key.toggleGui", None),
     ("key.smoothCamera", None),
+    // Horizon's emote wheel: no button is free by default; the stick's cursor picks.
+    ("key.emote", None),
+    ("key.fullscreen", None),
+    ("key.socialInteractions", None),
+    ("key.quickActions", None),
+    ("key.saveToolbarActivator", None),
+    ("key.loadToolbarActivator", None),
+    ("key.hotbar.1", None),
+    ("key.hotbar.2", None),
+    ("key.hotbar.3", None),
+    ("key.hotbar.4", None),
+    ("key.hotbar.5", None),
+    ("key.hotbar.6", None),
+    ("key.hotbar.7", None),
+    ("key.hotbar.8", None),
+    ("key.hotbar.9", None),
 ];
+
+/// How a bindable action reaches the game: one of its own handlers, shared
+/// with the keyboard where the keyboard has one, or else the vanilla default
+/// key or button of its mapping, as a rebound keyboard key would.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Route {
+    HotbarStep {
+        next: bool,
+    },
+    /// Held, or flipped when the pad's toggle sneak is on.
+    Sneak,
+    Screenshot,
+    SmoothCamera,
+    Fullscreen,
+    /// Does nothing by itself: what reads it asks whether the button is held
+    /// (`Minecraft.handleKeybinds`' toolbar keys, held with a hotbar key).
+    Held,
+    Key(winit::keyboard::KeyCode),
+    Mouse(winit::event::MouseButton),
+}
+
+/// The route of a bindable action; `None` for one the pad can't reach.
+pub fn route(action: &str) -> Option<Route> {
+    match action {
+        HOTBAR_PREVIOUS => Some(Route::HotbarStep { next: false }),
+        HOTBAR_NEXT => Some(Route::HotbarStep { next: true }),
+        "key.sneak" => Some(Route::Sneak),
+        "key.screenshot" => Some(Route::Screenshot),
+        "key.smoothCamera" => Some(Route::SmoothCamera),
+        "key.fullscreen" => Some(Route::Fullscreen),
+        "key.saveToolbarActivator" | "key.loadToolbarActivator" => Some(Route::Held),
+        _ => {
+            let default = crate::keybinds::KeyBinds::default_of(action);
+            crate::keybinds::mouse_button(default)
+                .map(Route::Mouse)
+                .or_else(|| crate::keybinds::key_code(default).map(Route::Key))
+        }
+    }
+}
 
 /// An action's name in the binds list: vanilla's translation key, or
 /// Horizon's own English for the pad-only actions.
@@ -255,6 +384,46 @@ pub fn action_caption(action: &str) -> &str {
         HOTBAR_PREVIOUS => "Hotbar: Previous Slot",
         HOTBAR_NEXT => "Hotbar: Next Slot",
         other => other,
+    }
+}
+
+/// How long a held drop button throws single items before it throws the rest of the stack.
+pub const DROP_STACK_HOLD: Duration = Duration::from_secs(1);
+
+/// What a held drop button does now, past its press.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DropStep {
+    /// Held key.drop (a repeat reaches `KeyMapping.click` as a press).
+    One,
+    /// Control + key.drop: a pad has no Control to hold, so holding on is how it asks.
+    Stack,
+}
+
+/// A held drop button's repeats: a tap throws one item, as Q does; held, it repeats at the pad's
+/// repeat delay and interval; and held for [`DROP_STACK_HOLD`] it throws what's left.
+#[derive(Clone, Copy, Debug)]
+pub struct HeldDrop {
+    since: Instant,
+    next: Instant,
+}
+impl HeldDrop {
+    pub fn new(now: Instant, delay: Duration) -> Self {
+        Self {
+            since: now,
+            next: now + delay,
+        }
+    }
+    /// The step due at `now`, if any; at most one per call.
+    pub fn due(&mut self, now: Instant, interval: Duration) -> Option<DropStep> {
+        if now < self.next {
+            return None;
+        }
+        self.next = now + interval;
+        Some(if now.duration_since(self.since) >= DROP_STACK_HOLD {
+            DropStep::Stack
+        } else {
+            DropStep::One
+        })
     }
 }
 
@@ -301,39 +470,22 @@ impl GlyphStyle {
         GlyphStyle::PlayStation,
         GlyphStyle::Nintendo,
     ];
-    /// The style for a pad by its USB vendor (Sony, Nintendo; Microsoft,
-    /// Valve's Steam Deck and Steam Input's virtual pad, and everything else
-    /// look like Xbox).
-    pub fn of_vendor(vendor: Option<u16>) -> Self {
-        match vendor {
-            Some(0x054c) => GlyphStyle::PlayStation,
-            Some(0x057e) => GlyphStyle::Nintendo,
+    /// The style for a pad by its USB ids: Sony's and Nintendo's own, and a few officially licensed
+    /// third-party pads made for their consoles. Microsoft, Valve's Steam Deck and Steam Input's
+    /// virtual pad, and everything else look like Xbox.
+    pub fn of_device(vendor: Option<u16>, product: Option<u16>) -> Self {
+        match (vendor, product) {
+            (Some(0x054c), _) => GlyphStyle::PlayStation,
+            (Some(0x057e), _) => GlyphStyle::Nintendo,
+            // HORIPAD 4 FPS and FPS Plus; Razer Raiju; Nacon Revolution Pro.
+            (Some(0x0f0d), Some(0x0055 | 0x0066))
+            | (Some(0x1532), Some(0x1000))
+            | (Some(0x146b), Some(0x0d01)) => GlyphStyle::PlayStation,
+            // HORIPAD for Nintendo Switch; PowerA Wired Plus; PDP Faceoff Wired Pro.
+            (Some(0x0f0d), Some(0x00c1))
+            | (Some(0x20d6), Some(0xa711))
+            | (Some(0x0e6f), Some(0x0180)) => GlyphStyle::Nintendo,
             _ => GlyphStyle::Xbox,
-        }
-    }
-}
-
-/// How a controller drives menus (docs/controllers.md, "Menus and
-/// inventories").
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum MenuNav {
-    /// A console-style highlight moved between widgets and slots.
-    #[default]
-    Focus,
-    /// A virtual mouse pointer.
-    Pointer,
-}
-impl MenuNav {
-    pub fn name(self) -> &'static str {
-        match self {
-            MenuNav::Focus => "focus",
-            MenuNav::Pointer => "pointer",
-        }
-    }
-    pub fn parse(name: &str) -> Self {
-        match name {
-            "pointer" => MenuNav::Pointer,
-            _ => MenuNav::Focus,
         }
     }
 }
@@ -399,9 +551,16 @@ pub struct PadSettings {
     /// holding it, unless vanilla's toggle crouch is on already.
     pub toggle_sneak: bool,
     pub glyphs: GlyphStyle,
-    /// How the pad drives menus: a focus highlight or a virtual pointer.
-    pub menu_nav: MenuNav,
+    /// A Nintendo pad's face buttons go by their letters (A confirms and jumps, as on the
+    /// Switch's own menus and keyboard) instead of their places (B, at the bottom, does): on
+    /// by default on the Switch only.
+    pub nintendo_letters: bool,
     pub keyboard: TextKeyboard,
+    /// Menu pointer multiplier, scroll lines/second, and repeat times in seconds.
+    pub pointer_speed: f32,
+    pub scroll_speed: f32,
+    pub repeat_delay: f32,
+    pub repeat_interval: f32,
     /// Action name -> button, `None` for unbound; missing means the default.
     bindings: BTreeMap<&'static str, Option<Button>>,
 }
@@ -420,8 +579,12 @@ impl Default for PadSettings {
             trigger_threshold: 0.4,
             toggle_sneak: true,
             glyphs: GlyphStyle::Auto,
-            menu_nav: MenuNav::Focus,
+            nintendo_letters: cfg!(target_os = "horizon"),
             keyboard: TextKeyboard::Auto,
+            pointer_speed: 1.0,
+            scroll_speed: 12.0,
+            repeat_delay: 0.35,
+            repeat_interval: 0.09,
             bindings: BTreeMap::new(),
         }
     }
@@ -462,6 +625,13 @@ impl PadSettings {
                     .filter(|v| v.is_finite())
                     .map_or(d, |v| v.clamp(0.0, 1.0))
             };
+            let bounded = |default: f32, min: f32, max: f32| {
+                value
+                    .parse::<f32>()
+                    .ok()
+                    .filter(|v| v.is_finite())
+                    .map_or(default, |v| v.clamp(min, max))
+            };
             match key.trim() {
                 "enabled" => s.enabled = flag(s.enabled),
                 "vibration" => s.vibration = flag(s.vibration),
@@ -477,8 +647,12 @@ impl PadSettings {
                 }
                 "toggleSneak" => s.toggle_sneak = flag(s.toggle_sneak),
                 "glyphs" => s.glyphs = GlyphStyle::parse(value),
-                "menuNavigation" => s.menu_nav = MenuNav::parse(value),
+                "nintendoLetters" => s.nintendo_letters = flag(s.nintendo_letters),
                 "keyboard" => s.keyboard = TextKeyboard::parse(value),
+                "pointerSpeed" => s.pointer_speed = bounded(s.pointer_speed, 0.25, 3.0),
+                "scrollSpeed" => s.scroll_speed = bounded(s.scroll_speed, 1.0, 36.0),
+                "repeatDelay" => s.repeat_delay = bounded(s.repeat_delay, 0.1, 1.0),
+                "repeatInterval" => s.repeat_interval = bounded(s.repeat_interval, 0.03, 0.3),
                 other => {
                     if let Some(action) = other.strip_prefix("bind_") {
                         let button = if value == "none" {
@@ -493,11 +667,29 @@ impl PadSettings {
                 }
             }
         }
+        // A file from before these defaults: its player's buttons stay where they were.
+        if !text.is_empty() && !text.lines().any(|line| line.starts_with("bindLayout:")) {
+            for (action, button) in [
+                ("key.drop", Button::East),
+                ("key.togglePerspective", Button::DPadUp),
+                ("key.chat", Button::DPadRight),
+                ("key.playerlist", Button::Select),
+                ("key.advancements", Button::DPadDown),
+            ] {
+                // A button saved by hand stays, even one that's now this action's default.
+                if !text
+                    .lines()
+                    .any(|line| line.starts_with(&format!("bind_{action}:")))
+                {
+                    s.bindings.entry(action).or_insert(Some(button));
+                }
+            }
+        }
         s
     }
     pub fn serialize(&self) -> String {
         let mut text = format!(
-            "enabled:{}\nvibration:{}\nadaptiveTriggers:{}\nlightbar:{}\nlookSensitivity:{}\ninvertX:{}\ninvertY:{}\nmoveDeadzone:{}\nlookDeadzone:{}\ntriggerThreshold:{}\ntoggleSneak:{}\nglyphs:{}\nmenuNavigation:{}\nkeyboard:{}\n",
+            "enabled:{}\nvibration:{}\nadaptiveTriggers:{}\nlightbar:{}\nlookSensitivity:{}\ninvertX:{}\ninvertY:{}\nmoveDeadzone:{}\nlookDeadzone:{}\ntriggerThreshold:{}\ntoggleSneak:{}\nglyphs:{}\nnintendoLetters:{}\nkeyboard:{}\n",
             bool_text(self.enabled),
             bool_text(self.vibration),
             bool_text(self.adaptive_triggers),
@@ -510,15 +702,20 @@ impl PadSettings {
             self.trigger_threshold,
             bool_text(self.toggle_sneak),
             self.glyphs.name(),
-            self.menu_nav.name(),
+            bool_text(self.nintendo_letters),
             self.keyboard.name(),
         );
+        text.push_str(&format!(
+            "pointerSpeed:{}\nscrollSpeed:{}\nrepeatDelay:{}\nrepeatInterval:{}\n",
+            self.pointer_speed, self.scroll_speed, self.repeat_delay, self.repeat_interval,
+        ));
         for (action, button) in &self.bindings {
             text.push_str(&format!(
                 "bind_{action}:{}\n",
                 button.map_or("none", Button::name)
             ));
         }
+        text.push_str("bindLayout:1\n");
         text
     }
     pub fn default_of(action: &str) -> Option<Button> {
@@ -595,6 +792,29 @@ pub fn stick_axes(
     }
 }
 
+/// The tilt from which a stick holds a key in [`eight_direction_keys`]: holding one is full speed,
+/// so the small tilts past the deadzone stay still.
+const KEY_TILT: f32 = 0.3;
+/// tan(22.5 degrees): where one of the 8 sectors meets the next.
+const SECTOR_EDGE: f32 = 0.414_213_57;
+
+/// The movement keys (forward, backward, left, right) a move vector (`[left, forward]`) holds: the
+/// one of the 8 headings it is nearest, so it is at most 22.5 degrees off. An edge goes to the
+/// straight heading.
+pub fn eight_direction_keys([left, forward]: [f32; 2]) -> [bool; 4] {
+    if length([left, forward]) < KEY_TILT {
+        return [false; 4];
+    }
+    let along = forward.abs() > SECTOR_EDGE * left.abs();
+    let across = left.abs() > SECTOR_EDGE * forward.abs();
+    [
+        along && forward > 0.0,
+        along && forward < 0.0,
+        across && left > 0.0,
+        across && left < 0.0,
+    ]
+}
+
 /// A radial deadzone: inside it the stick is centred; beyond it the rest of
 /// the travel is rescaled to 0..1 in the same direction, so diagonals aren't
 /// clipped and the first movement past the deadzone is small.
@@ -641,15 +861,6 @@ pub fn look_delta(
         x * YAW_SPEED * speed * seconds,
         -y * PITCH_SPEED * speed * seconds,
     )
-}
-
-/// The hotbar slot after a bumper: one step with wrap-around.
-pub fn hotbar_step(selected: usize, forward: bool) -> usize {
-    if forward {
-        (selected + 1) % 9
-    } else {
-        (selected + 8) % 9
-    }
 }
 
 /// Menu cursor speed in GUI pixels per second at full tilt.
@@ -711,6 +922,98 @@ pub fn stick_direction(stick: [f32; 2], threshold: f32) -> Option<Button> {
     } else {
         Button::DPadDown
     })
+}
+
+/// How far a stick already stepping must fall back to let go: between this and
+/// the step threshold it holds its direction, so a stick resting on the
+/// threshold doesn't step again.
+pub const STICK_RELEASE: f32 = 0.35;
+/// How much more a stick must lean along another axis to change direction, so
+/// a stick resting on a diagonal doesn't flip between the two.
+const STICK_TURN: f32 = 1.5;
+
+/// [`stick_direction`] for a stick that may already be stepping `held`: it stays
+/// that way until the stick falls back past [`STICK_RELEASE`] or clearly turns.
+pub fn stick_direction_held(
+    stick: [f32; 2],
+    threshold: f32,
+    held: Option<Button>,
+) -> Option<Button> {
+    let fresh = stick_direction(stick, threshold);
+    let Some((axis, positive)) = held.and_then(direction) else {
+        return fresh;
+    };
+    if length(stick) < STICK_RELEASE {
+        return None;
+    }
+    // `direction`'s y runs down the screen, a stick's up.
+    let toward = stick[axis] * if positive == (axis == 0) { 1.0 } else { -1.0 };
+    if toward > 0.0 && stick[1 - axis].abs() <= toward * STICK_TURN {
+        held
+    } else {
+        fresh
+    }
+}
+
+/// A list drawn with a scrollbar (`ui::scrollbar`), how far it is scrolled (a list
+/// moving a whole row a notch draws the same rectangles, so they can't tell) and
+/// the ways it can still scroll.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScrollArea {
+    pub rect: Rect,
+    pub amount: f32,
+    pub up: bool,
+    pub down: bool,
+}
+
+impl ScrollArea {
+    /// A row counts while any of it is in view: the stick can leave the focus on one nearly gone.
+    pub fn holds(&self, r: &Rect) -> bool {
+        let x = r[0] + r[2] / 2.0;
+        let [ax, ay, aw, ah] = self.rect;
+        (ax..ax + aw).contains(&x) && r[1] < ay + ah && r[1] + r[3] > ay
+    }
+    /// All of a row is in view.
+    fn shows(&self, r: &Rect) -> bool {
+        let [_, ay, _, ah] = self.rect;
+        self.holds(r) && r[1] + 0.5 >= ay && r[1] + r[3] <= ay + ah + 0.5
+    }
+}
+
+/// A vertical focus step, with lists: the strict step, unless it would land
+/// outside the view of the list `from` is in, or only partly in it, while that
+/// list can still scroll that way, when there is none (`None`) and the list
+/// scrolls instead: its hidden rows come first and whole, as vanilla's arrow
+/// keys walk a selection list's entries (`ensureVisible`).
+pub fn list_step(
+    from: Rect,
+    button: Button,
+    targets: &[Rect],
+    areas: &[ScrollArea],
+) -> Option<usize> {
+    let step = focus_step_strict(from, button, targets)?;
+    let can_scroll = |a: &ScrollArea| {
+        if button == Button::DPadUp {
+            a.up
+        } else {
+            a.down
+        }
+    };
+    let leaves = areas
+        .iter()
+        .find(|a| a.holds(&from))
+        .is_some_and(|a| can_scroll(a) && !a.shows(&targets[step]));
+    (!leaves).then_some(step)
+}
+
+/// The farthest centres of two neighbouring slots: 18 apart, 22 over the hotbar's gap.
+const SLOT_NEIGHBOUR: f32 = 24.0;
+
+/// A held direction's repeat stops at the edge of the slots it is walking: it
+/// goes on only from a slot to a slot next to it (the hotbar's small gap
+/// included). A fresh press may go anywhere.
+pub fn repeat_crosses_slots(from: (f32, f32), to: (f32, f32), to_slot: bool) -> bool {
+    !to_slot || (to.0 - from.0).abs().max((to.1 - from.1).abs()) > SLOT_NEIGHBOUR
 }
 
 /// Arrow-key focus navigation as vanilla does it
@@ -808,12 +1111,25 @@ pub fn focus_step_vague(from: Rect, button: Button, targets: &[Rect]) -> Option<
 
 /// How far a list scrolled between two frames' targets: the vertical shift
 /// most targets of the same position and size agree on (targets that didn't
-/// move, outside the list, don't count). `None` when nothing moved.
-pub fn scroll_shift(before: &[Rect], after: &[Rect]) -> Option<f32> {
+/// move, outside the list, don't count), for a list scrolled towards its end
+/// (`down`: the rows moved up) or its start. `None` when nothing moved that way.
+/// It takes the direction because half a row's scroll votes the same both ways.
+pub fn scroll_shift(before: &[Rect], after: &[Rect], down: bool) -> Option<f32> {
     let same = |a: &Rect, b: &Rect| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 0.5);
     if before.len() == after.len() && before.iter().zip(after).all(|(a, b)| same(a, b)) {
         return None;
     }
+    // Most votes; among equals the smallest move (the next row, not a far one).
+    shift_votes(before, after)
+        .into_iter()
+        .filter(|v| (v.0 < 0.0) == down)
+        .max_by(|a, b| a.1.cmp(&b.1).then(b.0.abs().total_cmp(&a.0.abs())))
+        .map(|v| v.0)
+}
+
+/// Every vertical shift that would carry a `before` target onto an `after`
+/// target of the same position and size, with how many it would.
+fn shift_votes(before: &[Rect], after: &[Rect]) -> Vec<(f32, usize)> {
     let mut votes: Vec<(f32, usize)> = Vec::new();
     for b in before {
         for a in after {
@@ -830,11 +1146,94 @@ pub fn scroll_shift(before: &[Rect], after: &[Rect]) -> Option<f32> {
             }
         }
     }
-    // Most votes; among equals the smallest move (the next row, not a far one).
     votes
+}
+
+/// Where the focus goes when the right stick scrolled a list (`down`: towards
+/// its end, so the rows moved up): the rectangle moved by the list's shift;
+/// the same rectangle, for a widget outside the list; or, its row out of view,
+/// the nearest target of its kind (`after`'s flag), the list's rows before
+/// anything fixed. `None` when nothing moved that way, or none of its kind is
+/// left. It takes the direction because half a row's scroll votes the same
+/// both ways once a new row comes into view.
+pub fn follow_scroll(
+    focus: Rect,
+    down: bool,
+    before: &[Rect],
+    after: &[(Rect, bool)],
+) -> Option<usize> {
+    let rects: Vec<Rect> = after.iter().map(|t| t.0).collect();
+    // A column that stayed put isn't the list, even spaced like its shift.
+    let column = |of: &[Rect], r: &Rect| -> Vec<f32> {
+        let same = |o: &&Rect| o[0] == r[0] && o[2] == r[2] && o[3] == r[3];
+        of.iter().filter(same).map(|o| o[1]).collect()
+    };
+    let moving = |r: &&Rect| column(before, r) != column(&rects, r);
+    let was: Vec<Rect> = before.iter().filter(moving).copied().collect();
+    let now: Vec<Rect> = rects.iter().filter(moving).copied().collect();
+    let dy = shift_votes(&was, &now)
         .into_iter()
-        .max_by(|a, b| a.1.cmp(&b.1).then(b.0.abs().total_cmp(&a.0.abs())))
-        .map(|v| v.0)
+        .filter(|v| (v.0 < 0.0) == down)
+        .max_by(|a, b| a.1.cmp(&b.1).then(b.0.abs().total_cmp(&a.0.abs())))?
+        .0;
+    let same = |a: &Rect, b: &Rect| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 0.5);
+    let moved = [focus[0], focus[1] + dy, focus[2], focus[3]];
+    let found = |at: &Rect| rects.iter().position(|r| same(r, at));
+    if !moving(&&focus) {
+        return found(&focus);
+    }
+    if let Some(i) = found(&moved).or_else(|| found(&focus)) {
+        return Some(i);
+    }
+    let in_list = |r: &Rect| {
+        let was = [r[0], r[1] - dy, r[2], r[3]];
+        before.iter().any(|b| same(b, &was))
+    };
+    let centre = (moved[0] + moved[2] / 2.0, moved[1] + moved[3] / 2.0);
+    let distance = |r: &Rect| (r[0] + r[2] / 2.0 - centre.0).hypot(r[1] + r[3] / 2.0 - centre.1);
+    after
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| t.1)
+        .min_by(|(_, a), (_, b)| {
+            in_list(&b.0)
+                .cmp(&in_list(&a.0))
+                .then(distance(&a.0).total_cmp(&distance(&b.0)))
+        })
+        .map(|(i, _)| i)
+}
+
+/// The target a focus rectangle stands for once the screen's size changed:
+/// the same widget, by its place in the draw order when the screen drew as
+/// many; else the target nearest where its centre falls at the new size.
+pub fn refind_resized(
+    focus: Rect,
+    before: &[Rect],
+    after: &[Rect],
+    old: (f32, f32),
+    new: (f32, f32),
+) -> Option<usize> {
+    let same = |r: &Rect| r.iter().zip(&focus).all(|(a, b)| (a - b).abs() < 0.5);
+    if before.len() == after.len()
+        && let Some(i) = before.iter().position(same)
+    {
+        return Some(i);
+    }
+    let at = rescaled(
+        (focus[0] + focus[2] / 2.0, focus[1] + focus[3] / 2.0),
+        old,
+        new,
+    );
+    let centres: Vec<(f32, f32)> = after
+        .iter()
+        .map(|r| (r[0] + r[2] / 2.0, r[1] + r[3] / 2.0))
+        .collect();
+    nearest(at, &centres, f32::INFINITY)
+}
+
+/// A point at the same place, proportionally, on a screen of another size.
+pub fn rescaled(at: (f32, f32), old: (f32, f32), new: (f32, f32)) -> (f32, f32) {
+    (at.0 * new.0 / old.0.max(1.0), at.1 * new.1 / old.1.max(1.0))
 }
 
 /// The target a remembered focus rectangle stands for in a new frame: the
@@ -1164,7 +1563,178 @@ mod tests {
     use super::*;
 
     #[test]
-    fn defaults_follow_bedrock() {
+    fn every_bindable_action_reaches_the_game() {
+        for (action, _) in ACTIONS {
+            assert!(route(action).is_some(), "{action} has nowhere to go");
+        }
+    }
+
+    #[test]
+    fn a_held_drop_repeats_then_throws_the_stack() {
+        let t = Instant::now();
+        let at = |ms: u64| t + Duration::from_millis(ms);
+        let (delay, interval) = (Duration::from_millis(350), Duration::from_millis(90));
+        let mut held = HeldDrop::new(t, delay);
+        assert_eq!(held.due(at(100), interval), None, "a tap is one item");
+        assert_eq!(held.due(at(349), interval), None);
+        assert_eq!(held.due(at(350), interval), Some(DropStep::One));
+        assert_eq!(held.due(at(400), interval), None, "not before the interval");
+        assert_eq!(held.due(at(440), interval), Some(DropStep::One));
+        assert_eq!(held.due(at(999), interval), Some(DropStep::One));
+        assert_eq!(held.due(at(1000), interval), None);
+        assert_eq!(held.due(at(1100), interval), Some(DropStep::Stack));
+        assert_eq!(held.due(at(1200), interval), Some(DropStep::Stack));
+        assert_eq!(held.due(at(1201), interval), None);
+    }
+
+    #[test]
+    fn the_later_actions_have_no_default_button_and_leave_saved_bindings() {
+        let defaults = PadSettings::default();
+        for action in [
+            "key.fullscreen",
+            "key.socialInteractions",
+            "key.quickActions",
+            "key.saveToolbarActivator",
+            "key.loadToolbarActivator",
+            "key.hotbar.1",
+            "key.hotbar.9",
+        ] {
+            assert_eq!(defaults.binding(action), None, "{action}");
+        }
+        let read = PadSettings::parse(
+            "bindLayout:1
+bind_key.jump:east
+bind_key.hotbar.2:north
+",
+        );
+        assert_eq!(read.binding("key.jump"), Some(Button::East));
+        assert_eq!(read.binding("key.inventory"), Some(Button::North));
+        assert_eq!(
+            read.actions_of(Button::North),
+            ["key.inventory", "key.hotbar.2"]
+        );
+    }
+
+    #[test]
+    fn navigation_preferences_migrate_and_stay_with_each_player() {
+        let dir = std::env::temp_dir().join(format!(
+            "horizon-pad-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let p2 = dir.join("P2");
+        fs::create_dir_all(&p2).unwrap();
+        let fresh = PadSettings::load(&dir);
+        assert_eq!(fresh, PadSettings::default());
+        // An older file, with the removed menuNavigation key: bindings kept.
+        let legacy =
+            PadSettings::parse("menuNavigation:pointer\nbind_key.jump:east\nlookSensitivity:0.7\n");
+        assert_eq!(legacy.binding("key.jump"), Some(Button::East));
+        assert_eq!(legacy.look_sensitivity, 0.7);
+        fresh.save(&dir);
+        assert!(!dir.join(FILE).exists(), "defaults write no file");
+        let mut other = legacy;
+        other.pointer_speed = 2.5;
+        other.scroll_speed = 24.0;
+        other.repeat_delay = 0.6;
+        other.repeat_interval = 0.12;
+        other.save(&p2);
+        assert_eq!(PadSettings::load(&p2), other);
+        assert_eq!(PadSettings::load(&dir), fresh, "P2 did not write P1");
+        let invalid = PadSettings::parse(
+            "pointerSpeed:NaN\nscrollSpeed:inf\nrepeatDelay:-10\nrepeatInterval:20\n",
+        );
+        assert_eq!((invalid.pointer_speed, invalid.scroll_speed), (1.0, 12.0));
+        assert_eq!((invalid.repeat_delay, invalid.repeat_interval), (0.1, 0.3));
+        let bounded = PadSettings::parse(
+            "pointerSpeed:10\nscrollSpeed:-1\nrepeatDelay:NaN\nrepeatInterval:inf\n",
+        );
+        assert_eq!((bounded.pointer_speed, bounded.scroll_speed), (3.0, 1.0));
+        assert_eq!(
+            (bounded.repeat_delay, bounded.repeat_interval),
+            (0.35, 0.09)
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn ownership_requires_new_activity_and_ignores_drift() {
+        let settings = PadSettings::default();
+        let mut p1 = Activity::default();
+        let mut p2 = Activity::default();
+        let mut state = PadState {
+            left: [0.04, 0.03],
+            ..PadState::default()
+        };
+        assert!(!p1.observe(&state, &settings));
+        state.set(Button::South, true);
+        assert!(p1.observe(&state, &settings));
+        assert!(
+            !p1.observe(&state, &settings),
+            "held pad cannot reclaim mouse ownership"
+        );
+        assert!(
+            p2.observe(&state, &settings),
+            "another player's tracker is independent"
+        );
+        state.set(Button::South, false);
+        assert!(!p1.observe(&state, &settings));
+        state.left = [0.5, 0.0];
+        assert!(p1.observe(&state, &settings));
+        state.left = [0.52, 0.0];
+        assert!(!p1.observe(&state, &settings));
+        for x in [0.54, 0.56] {
+            state.left = [x, 0.0];
+            assert!(!p1.observe(&state, &settings));
+        }
+        state.left = [0.6, 0.0];
+        assert!(
+            p1.observe(&state, &settings),
+            "slow intentional movement accumulates"
+        );
+        state.left = [0.0; 2];
+        state.triggers[0] = 0.5;
+        assert!(p1.observe(&state, &settings));
+        state.triggers[0] = 0.35;
+        assert!(!p1.observe(&state, &settings));
+        state.triggers[0] = 0.45;
+        assert!(
+            !p1.observe(&state, &settings),
+            "trigger threshold noise is not new activity"
+        );
+    }
+
+    #[test]
+    fn cancelled_holds_stay_released_until_neutral_then_press_again() {
+        let mut edges = Edges::default();
+        let mut state = PadState::default();
+        state.set(Button::South, true);
+        state.triggers[1] = 0.8;
+        assert_eq!(
+            edges.update(&state, 0.4),
+            vec![(Button::South, true), (Button::RightTrigger, true)]
+        );
+        assert_eq!(
+            edges.cancel(),
+            vec![(Button::South, false), (Button::RightTrigger, false)]
+        );
+        assert!(edges.update(&state, 0.4).is_empty());
+        state.triggers[1] = 0.35;
+        assert!(edges.update(&state, 0.4).is_empty());
+        assert!(edges.update(&PadState::default(), 0.4).is_empty());
+        assert_eq!(edges.update(&state, 0.4), vec![(Button::South, true)]);
+        state.triggers[1] = 0.7;
+        assert_eq!(
+            edges.update(&state, 0.4),
+            vec![(Button::RightTrigger, true)]
+        );
+    }
+
+    #[test]
+    fn every_action_has_its_default() {
         let s = PadSettings::default();
         assert_eq!(s.actions_of(Button::South), ["key.jump"]);
         assert_eq!(s.actions_of(Button::RightTrigger), ["key.attack"]);
@@ -1172,14 +1742,44 @@ mod tests {
         assert_eq!(s.actions_of(Button::North), ["key.inventory"]);
         assert_eq!(s.actions_of(Button::RightBumper), [HOTBAR_NEXT]);
         assert!(s.actions_of(Button::Start).is_empty());
-        // Every default action names a vanilla mapping or a pad action.
+        // Every default action names a key mapping or a pad action.
         for (action, _) in ACTIONS {
             assert!(
                 action.starts_with("pad.")
-                    || crate::keybinds::MAPPINGS.iter().any(|m| m.0 == *action),
+                    || crate::keybinds::all_mappings().any(|m| m.0 == *action),
                 "{action}"
             );
         }
+    }
+
+    #[test]
+    fn a_file_from_before_these_defaults_keeps_its_buttons() {
+        // Saved settings that never bound D-pad down: it stays on the advancements.
+        let s = PadSettings::parse("vibration:false\nbind_key.chat:up\n");
+        assert_eq!(s.binding("key.advancements"), Some(Button::DPadDown));
+        assert_eq!(s.binding("key.chat"), Some(Button::DPadUp));
+        assert_eq!(s.binding("key.drop"), Some(Button::East));
+        assert_eq!(s.binding("key.togglePerspective"), Some(Button::DPadUp));
+        assert_eq!(s.binding("key.playerlist"), Some(Button::Select));
+        assert!(!s.conflicts("key.advancements"));
+        // Advancements moved by hand stays moved, and the file stays this way from then on.
+        let s = PadSettings::parse("bind_key.advancements:left\nbind_key.drop:down\n");
+        assert_eq!(s.binding("key.advancements"), Some(Button::DPadLeft));
+        assert_eq!(s.binding("key.drop"), Some(Button::DPadDown));
+        assert_eq!(PadSettings::parse(&s.serialize()), s);
+    }
+
+    #[test]
+    fn a_new_player_drops_on_d_pad_down_and_chats_on_d_pad_up() {
+        for s in [PadSettings::default(), PadSettings::parse("")] {
+            assert_eq!(s.binding("key.drop"), Some(Button::DPadDown));
+            assert_eq!(s.binding("key.chat"), Some(Button::DPadUp));
+            assert_eq!(s.binding("key.togglePerspective"), Some(Button::Select));
+            assert_eq!(s.binding("key.playerlist"), None);
+            assert_eq!(s.binding("key.advancements"), None);
+        }
+        let s = PadSettings::parse(&PadSettings::default().serialize());
+        assert_eq!(s, PadSettings::default());
     }
 
     #[test]
@@ -1192,7 +1792,9 @@ mod tests {
         s.invert_y = true;
         s.look_sensitivity = 0.75;
         s.glyphs = GlyphStyle::PlayStation;
+        s.nintendo_letters = !s.nintendo_letters;
         let text = s.serialize();
+        assert!(text.contains(&format!("nintendoLetters:{}\n", s.nintendo_letters)));
         assert!(text.contains("bind_key.jump:east\n"));
         assert!(text.contains("bind_key.drop:none\n"));
         assert!(!text.contains("key.sneak"));
@@ -1201,8 +1803,9 @@ mod tests {
         assert_eq!(back.binding("key.drop"), None);
         assert_eq!(back.actions_of(Button::East), ["key.jump"]);
         // Garbage keeps the defaults.
-        let odd =
-            PadSettings::parse("lookSensitivity:NaN\nbind_key.nope:south\nbind_key.jump:x9\n");
+        let odd = PadSettings::parse(
+            "lookSensitivity:NaN\nbind_key.nope:south\nbind_key.jump:x9\nbindLayout:1\n",
+        );
         assert_eq!(odd, PadSettings::default());
     }
 
@@ -1236,6 +1839,84 @@ mod tests {
             false,
         );
         assert_eq!(other, ([0.0, 0.0], [1.0, 0.0]));
+    }
+
+    #[test]
+    fn a_nintendo_pad_by_its_letters_confirms_with_a() {
+        // The pad's A sits on the right (East): going by letters it plays South, confirm and jump.
+        let mut pad = PadState::default();
+        pad.set(Button::East, true);
+        pad.set(Button::LeftBumper, true);
+        pad.left = [0.5, -0.25];
+        let parts = pad.by_letter();
+        assert!(parts.held(Button::South));
+        assert!(!parts.held(Button::East));
+        // Other buttons and the sticks stay; reading by letters again gives the pad back.
+        assert!(parts.held(Button::LeftBumper));
+        assert_eq!(parts.left, [0.5, -0.25]);
+        assert_eq!(parts.by_letter(), pad);
+        // A part's glyph is the letter of the button playing it.
+        assert_eq!(Button::South.by_letter().label(GlyphStyle::Nintendo), "A");
+        assert_eq!(Button::East.by_letter().label(GlyphStyle::Nintendo), "B");
+        assert_eq!(Button::West.by_letter().label(GlyphStyle::Nintendo), "X");
+        assert_eq!(Button::North.by_letter().label(GlyphStyle::Nintendo), "Y");
+    }
+
+    #[test]
+    fn a_stick_holds_the_keys_of_its_nearest_heading() {
+        // Forward, backward, left, right, by the heading counted from forward toward left.
+        let headings = [
+            [true, false, false, false],
+            [true, false, true, false],
+            [false, false, true, false],
+            [false, true, true, false],
+            [false, true, false, false],
+            [false, true, false, true],
+            [false, false, false, true],
+            [true, false, false, true],
+        ];
+        for tenth in 0..3600 {
+            let degrees = tenth as f32 / 10.0;
+            if degrees % 45.0 == 22.5 {
+                continue;
+            }
+            for tilt in [0.31, 0.5, 1.0] {
+                let (s, c) = degrees.to_radians().sin_cos();
+                let keys = eight_direction_keys([tilt * s, tilt * c]);
+                let sector = ((degrees / 45.0).round() as usize) % 8;
+                assert_eq!(keys, headings[sector], "{degrees} at {tilt}");
+                let [left, forward] =
+                    crate::input::keyboard_direction(keys[0], keys[1], keys[2], keys[3]);
+                let off = (left.atan2(forward).to_degrees() - degrees).rem_euclid(360.0);
+                assert!(off.min(360.0 - off) <= 22.5 + 1e-3, "{degrees}: {off}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_sector_edge_goes_to_the_straight_heading() {
+        assert_eq!(
+            eight_direction_keys([0.414_213_57, 1.0]),
+            [true, false, false, false]
+        );
+        assert_eq!(
+            eight_direction_keys([0.4143, 1.0]),
+            [true, false, true, false]
+        );
+        assert_eq!(
+            eight_direction_keys([1.0, 0.414_213_57]),
+            [false, false, true, false]
+        );
+    }
+
+    #[test]
+    fn a_small_tilt_holds_no_key() {
+        assert_eq!(eight_direction_keys([0.0, 0.0]), [false; 4]);
+        assert_eq!(eight_direction_keys([0.2, 0.2]), [false; 4]);
+        assert_eq!(
+            eight_direction_keys([0.0, 0.31]),
+            [true, false, false, false]
+        );
     }
 
     #[test]
@@ -1383,6 +2064,63 @@ mod tests {
     }
 
     #[test]
+    fn follow_scroll_keeps_rows_and_fixed_widgets() {
+        // Rows 36 tall scrolled down 18: a fifth row comes into view, so +18
+        // carries as many rows as the real -18. Back, below, stays.
+        let back = [296.0, 212.0, 71.0, 20.0];
+        let rows = |ys: &[f32]| -> Vec<(Rect, bool)> {
+            let rows = ys.iter().map(|y| ([78.0, *y, 270.0, 36.0], true));
+            rows.chain([(back, false)]).collect()
+        };
+        let rects = |t: &[(Rect, bool)]| -> Vec<Rect> { t.iter().map(|t| t.0).collect() };
+        let before = rects(&rows(&[33.0, 69.0, 105.0, 141.0]));
+        let after = rows(&[15.0, 51.0, 87.0, 123.0, 159.0]);
+        assert_eq!(follow_scroll(before[1], true, &before, &after), Some(1));
+        assert_eq!(follow_scroll(back, true, &before, &after), Some(5));
+        // And back up.
+        let up = rows(&[33.0, 69.0, 105.0, 141.0]);
+        let was = rects(&after);
+        assert_eq!(follow_scroll(was[2], false, &was, &up), Some(2));
+        // Nothing moved, as on a screen with no list.
+        let still = rows(&[33.0, 69.0, 105.0, 141.0]);
+        assert_eq!(follow_scroll(before[1], true, &before, &still), None);
+        // A sidebar's tabs spaced exactly like the list's shift stay put.
+        let tab = |y: f32| [8.0, y, 112.0, 16.0];
+        let with_tabs = |t: &[(Rect, bool)]| -> Vec<(Rect, bool)> {
+            t.iter()
+                .copied()
+                .chain([(tab(100.0), true), (tab(118.0), true)])
+                .collect()
+        };
+        let was = rects(&with_tabs(&rows(&[33.0, 69.0, 105.0, 141.0])));
+        let now = with_tabs(&after);
+        assert_eq!(follow_scroll(tab(118.0), true, &was, &now), Some(7));
+    }
+
+    #[test]
+    fn follow_scroll_lands_on_the_nearest_row_when_its_row_leaves() {
+        // The row at 33 left the top; the next one is at 51. Nothing fixed.
+        let row = |y: f32| [78.0, y, 270.0, 36.0];
+        let before = [row(33.0), row(69.0), row(105.0)];
+        let after = [(row(51.0), true), (row(87.0), true)];
+        assert_eq!(follow_scroll(row(33.0), true, &before, &after), Some(0));
+        // The last row left the bottom: the list's new last row, not a fixed
+        // widget of its kind (at 200) nearer where the row went.
+        let fixed = [78.0, 200.0, 270.0, 36.0];
+        let before = [row(15.0), row(51.0), row(87.0), row(159.0), fixed];
+        let after = [
+            (row(33.0), true),
+            (row(69.0), true),
+            (row(105.0), true),
+            (fixed, true),
+        ];
+        assert_eq!(follow_scroll(row(159.0), false, &before, &after), Some(2));
+        // Nothing of its kind left.
+        let other = after.map(|t| (t.0, false));
+        assert_eq!(follow_scroll(row(159.0), false, &before, &other), None);
+    }
+
+    #[test]
     fn refind_tabs_sliders_and_stick_steps() {
         let rects: Vec<Rect> = vec![[0.0, 0.0, 10.0, 10.0], [0.0, 20.0, 10.0, 10.0]];
         assert_eq!(refind([0.0, 20.0, 10.0, 10.0], &rects, 8.0), Some(1));
@@ -1398,8 +2136,10 @@ mod tests {
             .map(|i| [10.0, 16.0 + 24.0 * i as f32, 100.0, 20.0])
             .chain([[10.0, 200.0, 50.0, 20.0]])
             .collect();
-        assert_eq!(scroll_shift(&before, &after), Some(-24.0));
-        assert_eq!(scroll_shift(&before, &before), None);
+        assert_eq!(scroll_shift(&before, &after, true), Some(-24.0));
+        // Rows this far apart line up the other way too; the direction is what tells them apart.
+        assert_eq!(scroll_shift(&before, &after, false), Some(24.0));
+        assert_eq!(scroll_shift(&before, &before, true), None);
         let tabs = [
             ([60.0, 0.0, 26.0, 32.0], false),
             ([0.0, 0.0, 26.0, 32.0], true),
@@ -1414,16 +2154,136 @@ mod tests {
         assert_eq!(stick_direction([0.9, 0.2], 0.5), Some(Button::DPadRight));
         assert_eq!(stick_direction([-0.2, -0.8], 0.5), Some(Button::DPadDown));
         assert_eq!(stick_direction([0.3, 0.3], 0.5), None);
-        let mut s = PadSettings::default();
-        assert_eq!(s.menu_nav, MenuNav::Focus);
-        s.menu_nav = MenuNav::Pointer;
-        s.keyboard = TextKeyboard::Horizon;
-        let back = PadSettings::parse(&s.serialize());
+        let s = PadSettings {
+            keyboard: TextKeyboard::Horizon,
+            ..PadSettings::default()
+        };
         assert_eq!(
-            (back.menu_nav, back.keyboard),
-            (MenuNav::Pointer, TextKeyboard::Horizon)
+            PadSettings::parse(&s.serialize()).keyboard,
+            TextKeyboard::Horizon
         );
         assert!(steam_keyboard(TextKeyboard::Steam) && !steam_keyboard(TextKeyboard::Horizon));
+    }
+
+    #[test]
+    fn a_list_step_scrolls_rather_than_leave_a_list_that_can() {
+        let rows = |n: usize| -> Vec<Rect> {
+            (0..n)
+                .map(|i| [100.0, 40.0 + i as f32 * 36.0, 270.0, 36.0])
+                .collect()
+        };
+        let back: Rect = [150.0, 220.0, 150.0, 20.0];
+        let search: Rect = [150.0, 10.0, 150.0, 20.0];
+        let mut targets = rows(4);
+        targets.extend([back, search]);
+        let area = |up, down| ScrollArea {
+            rect: [0.0, 40.0, 380.0, 144.0],
+            amount: 0.0,
+            up,
+            down,
+        };
+        let (down, up) = (Button::DPadDown, Button::DPadUp);
+        let step = |from, button, area: &[ScrollArea]| list_step(from, button, &targets, area);
+        // A row below in view comes first.
+        assert_eq!(step(targets[1], down, &[area(true, true)]), Some(2));
+        // The last row in view: more below scrolls; none leaves.
+        assert_eq!(step(targets[3], down, &[area(true, true)]), None);
+        assert_eq!(step(targets[3], down, &[area(true, false)]), Some(4));
+        // The first row in view, the same upwards.
+        assert_eq!(step(targets[0], up, &[area(true, false)]), None);
+        assert_eq!(step(targets[0], up, &[area(false, true)]), Some(5));
+        // From outside the list it enters it, and no list means a plain step.
+        assert_eq!(step(back, up, &[area(true, true)]), Some(3));
+        assert_eq!(step(targets[3], down, &[]), Some(4));
+    }
+
+    #[test]
+    fn a_list_step_shows_its_row_whole_and_starts_from_one_nearly_gone() {
+        let area = |up, down| ScrollArea {
+            rect: [0.0, 40.0, 380.0, 100.0],
+            amount: 50.0,
+            up,
+            down,
+        };
+        let (down, up) = (Button::DPadDown, Button::DPadUp);
+        // The next row is cut by the view's bottom: it scrolls first, unless that's the end.
+        let targets: Vec<Rect> = vec![[100.0, 100.0, 270.0, 25.0], [100.0, 125.0, 270.0, 25.0]];
+        assert_eq!(
+            list_step(targets[0], down, &targets, &[area(true, true)]),
+            None
+        );
+        assert_eq!(
+            list_step(targets[0], down, &targets, &[area(true, false)]),
+            Some(1)
+        );
+        // The same at its top.
+        let targets: Vec<Rect> = vec![[100.0, 30.0, 270.0, 25.0], [100.0, 55.0, 270.0, 25.0]];
+        assert_eq!(
+            list_step(targets[1], up, &targets, &[area(true, true)]),
+            None
+        );
+        // A focused row with its last pixels in view is still in the list: going up scrolls,
+        // even with something above the list to go to.
+        let row: Rect = [100.0, 18.0, 270.0, 25.0];
+        let field: Rect = [150.0, 0.0, 150.0, 15.0];
+        assert!(area(true, true).holds(&row));
+        assert_eq!(list_step(row, up, &[row, field], &[area(true, true)]), None);
+        // Above the view altogether, it isn't.
+        assert!(!area(true, true).holds(&[100.0, 10.0, 270.0, 25.0]));
+    }
+
+    #[test]
+    fn a_stick_holds_its_direction_until_it_lets_go_or_turns() {
+        let step = 0.55;
+        let (up, right) = (Some(Button::DPadUp), Some(Button::DPadRight));
+        // Only a push past the threshold starts a step.
+        assert_eq!(stick_direction_held([0.0, 0.5], step, None), None);
+        assert_eq!(stick_direction_held([0.0, 0.6], step, None), up);
+        // Wobbling on the threshold keeps it; falling back past the release lets go.
+        assert_eq!(stick_direction_held([0.0, 0.5], step, up), up);
+        assert_eq!(stick_direction_held([0.0, 0.3], step, up), None);
+        // A diagonal doesn't flip it, but a clear turn does.
+        assert_eq!(stick_direction_held([0.6, 0.55], step, up), up);
+        assert_eq!(stick_direction_held([0.55, 0.6], step, right), right);
+        assert_eq!(stick_direction_held([0.9, 0.3], step, up), right);
+        // Straight across to the other side.
+        assert_eq!(
+            stick_direction_held([0.0, -0.9], step, up),
+            Some(Button::DPadDown)
+        );
+        // Past the release on the far side, but not far enough for a step.
+        assert_eq!(stick_direction_held([0.0, -0.45], step, up), None);
+    }
+
+    #[test]
+    fn a_repeat_stops_where_the_slots_end() {
+        let at = (100.0, 100.0);
+        assert!(!repeat_crosses_slots(at, (118.0, 100.0), true));
+        // The hotbar, over its small gap, is the same run of slots.
+        assert!(!repeat_crosses_slots(at, (100.0, 122.0), true));
+        // Another block of slots, or a button.
+        assert!(repeat_crosses_slots(at, (100.0, 132.0), true));
+        assert!(repeat_crosses_slots(at, (118.0, 100.0), false));
+    }
+
+    #[test]
+    fn a_resize_keeps_the_same_widget() {
+        let before: Vec<Rect> = vec![[10.0, 10.0, 20.0, 20.0], [100.0, 10.0, 20.0, 20.0]];
+        let after: Vec<Rect> = vec![[300.0, 90.0, 20.0, 20.0], [400.0, 90.0, 20.0, 20.0]];
+        let (old, new) = ((200.0, 100.0), (800.0, 400.0));
+        // The same count: the same place in the draw order, however far it moved.
+        assert_eq!(
+            refind_resized(before[0], &before, &after, old, new),
+            Some(0)
+        );
+        // A list showing more rows: the nearest to where it would be.
+        let more: Vec<Rect> = vec![
+            [30.0, 30.0, 20.0, 20.0],
+            [395.0, 35.0, 20.0, 20.0],
+            [700.0, 300.0, 20.0, 20.0],
+        ];
+        assert_eq!(refind_resized(before[1], &before, &more, old, new), Some(1));
+        assert_eq!(refind_resized(before[0], &before, &[], old, new), None);
     }
 
     #[test]
@@ -1589,12 +2449,27 @@ mod tests {
     }
 
     #[test]
-    fn hotbar_wraps_and_glyphs_follow_the_vendor() {
-        assert_eq!(hotbar_step(8, true), 0);
-        assert_eq!(hotbar_step(0, false), 8);
-        assert_eq!(hotbar_step(3, true), 4);
-        assert_eq!(GlyphStyle::of_vendor(Some(0x054c)), GlyphStyle::PlayStation);
-        assert_eq!(GlyphStyle::of_vendor(Some(0x28de)), GlyphStyle::Xbox);
-        assert_eq!(GlyphStyle::of_vendor(None), GlyphStyle::Xbox);
+    fn glyphs_follow_the_vendor() {
+        let of = |vendor, product| GlyphStyle::of_device(Some(vendor), Some(product));
+        // Any product of the consoles' makers.
+        assert_eq!(of(0x054c, 0x0ce6), GlyphStyle::PlayStation);
+        assert_eq!(of(0x054c, 0x0001), GlyphStyle::PlayStation);
+        assert_eq!(of(0x057e, 0x2009), GlyphStyle::Nintendo);
+        // A pad made for a console by another maker, and that maker's others.
+        assert_eq!(of(0x0f0d, 0x0066), GlyphStyle::PlayStation);
+        assert_eq!(of(0x0f0d, 0x00c1), GlyphStyle::Nintendo);
+        assert_eq!(of(0x0f0d, 0x0067), GlyphStyle::Xbox);
+        assert_eq!(of(0x20d6, 0xa711), GlyphStyle::Nintendo);
+        // Valve's virtual pad, Microsoft's, nothing known, nothing reported.
+        assert_eq!(of(0x28de, 0x11ff), GlyphStyle::Xbox);
+        assert_eq!(of(0x045e, 0x0b12), GlyphStyle::Xbox);
+        assert_eq!(of(0x1234, 0x5678), GlyphStyle::Xbox);
+        assert_eq!(GlyphStyle::of_device(None, None), GlyphStyle::Xbox);
+        // A vendor alone is enough only for the consoles' makers.
+        assert_eq!(
+            GlyphStyle::of_device(Some(0x054c), None),
+            GlyphStyle::PlayStation
+        );
+        assert_eq!(GlyphStyle::of_device(Some(0x0f0d), None), GlyphStyle::Xbox);
     }
 }

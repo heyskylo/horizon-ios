@@ -7,6 +7,7 @@ use horizon_launcher::heads;
 use horizon_launcher::servers::{
     self, Applied, Backup, Entry, Fix, NewServer, Problem, Status, World,
 };
+use horizon_theme::glass::radius;
 use serde_json::Value;
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -63,10 +64,12 @@ pub(super) enum Field {
     DeleteServer,
     /// Settings' accent as hex (`themes_page.rs`).
     AccentHex,
+    /// The Shop's gift recipient (`wardrobe_page/shop/basket.rs`).
+    ShopGift,
 }
 
 impl Field {
-    const ALL: [Field; 24] = [
+    const ALL: [Field; 25] = [
         Field::Name,
         Field::Seed,
         Field::Players,
@@ -91,6 +94,7 @@ impl Field {
         Field::OfflineName,
         Field::DeleteServer,
         Field::AccentHex,
+        Field::ShopGift,
     ];
 }
 
@@ -173,6 +177,17 @@ pub(super) struct Create {
 /// What the sidebar shows of the Servers page: its list once the page has read it, and whether
 /// a server answers.
 impl Servers {
+    pub(super) fn location_busy(&self) -> bool {
+        self.busy.is_some()
+            || self.creating
+            || self.applying
+            || !self.queued.is_empty()
+            || self
+                .statuses
+                .values()
+                .any(|s| matches!(s.phase.as_str(), "running" | "starting" | "stopping"))
+    }
+
     /// A stopped server's line in the list: "Survival · stopped", as the mockup's. The open
     /// server's mode is the one its settings show now, once read; the others' (and the open one's
     /// until then) come from their files.
@@ -312,6 +327,15 @@ impl Servers {
         self.texts.get(&f).map_or("", LineEdit::text)
     }
 
+    /// Mark a field invalid without an explanatory message, or clear its previous error.
+    pub(super) fn set_field_invalid(&mut self, field: Field, invalid: bool) {
+        if invalid {
+            self.invalid = Some((field, ""));
+        } else if self.invalid.is_some_and(|(current, _)| current == field) {
+            self.invalid = None;
+        }
+    }
+
     /// Whether this field has the keyboard, as of this frame.
     pub(super) fn has_focus(&self, f: Field) -> bool {
         self.focused == Some(f)
@@ -369,6 +393,13 @@ pub(super) fn stop_on_quit() {
             let _ = api.call("POST", "/api/v1/stop", None);
         }
     }
+}
+
+/// Update closes the window to open the new launcher at once: a server is its own process and the
+/// new window finds it running, so an update doesn't end anyone's game. It stays up when that new
+/// window closes too, until it is stopped on the Servers page.
+pub(super) fn keep_running_through_update() {
+    STARTED_HERE.lock().unwrap().clear();
 }
 
 /// The player's own name, to let them in on a friends-only server: the Microsoft account that plays,
@@ -980,8 +1011,17 @@ impl Launcher {
             // tall as they are.
             crate::glass_ui::field(focused, invalid)
                 .when(
-                    matches!(f, Field::InstanceModsFilter | Field::ConsoleSearch),
-                    |d| d.h(px(36.)).px(px(12.)).rounded(px(10.)),
+                    matches!(
+                        f,
+                        Field::InstanceModsFilter
+                            | Field::ConsoleSearch
+                            | Field::Motd
+                            | Field::Port
+                            | Field::Token
+                            | Field::AddPlayer
+                            | Field::DeleteServer
+                    ),
+                    |d| d.h(px(36.)).px(px(12.)).rounded(px(radius::CONTROL)),
                 )
                 // The instance dialog's are the large `FIELD_LG`: 48 px, 15 px text, white at 6 %,
                 // 10 % while typed in.
@@ -1005,7 +1045,7 @@ impl Launcher {
                 .when(f == Field::AccentHex, |d| {
                     d.h(px(36.))
                         .px(px(12.))
-                        .rounded(px(10.))
+                        .rounded(px(radius::CONTROL))
                         .text_size(px(13.))
                         .font_weight(FontWeight::MEDIUM)
                 })
@@ -1031,9 +1071,20 @@ impl Launcher {
                     |d| {
                         let small = matches!(
                             f,
-                            Field::InstanceModsFilter | Field::ConsoleSearch | Field::AccentHex
+                            Field::InstanceModsFilter
+                                | Field::ConsoleSearch
+                                | Field::AccentHex
+                                | Field::Motd
+                                | Field::Port
+                                | Field::Token
+                                | Field::AddPlayer
+                                | Field::DeleteServer
                         );
-                        d.child(crate::glass_ui::focus_ring(if small { 10. } else { 12. }))
+                        d.child(crate::glass_ui::focus_ring(if small {
+                            radius::CONTROL
+                        } else {
+                            radius::ROW
+                        }))
                     },
                 )
         } else {
@@ -1162,6 +1213,7 @@ impl Launcher {
             }
             Field::MemoryLimit => self.memory_enter(),
             Field::OfflineName => self.offline_name_enter(),
+            Field::ShopGift => self.shop.find_soon = true,
             Field::ServerName | Field::ServerAddress => self.add_server(),
         }
     }
@@ -1434,7 +1486,11 @@ impl Launcher {
                 if !dir.join("server.toml").is_file() {
                     servers::run(&dir, &["init", "--yes"])?;
                 }
-                let entry = Entry { name, dir };
+                let entry = Entry {
+                    name,
+                    dir,
+                    host: None,
+                };
                 servers::add(entry.clone()).map_err(Problem::plain)?;
                 Ok(entry)
             })();
@@ -2373,12 +2429,14 @@ impl Launcher {
         };
         let motd = div()
             .flex()
+            .items_center()
             .gap(px(8.))
             .child(self.field(Field::Motd, tr("A Minecraft Server"), 260., cx))
             .child(save("motd-save", Field::Motd, cx))
             .into_any_element();
         let port = div()
             .flex()
+            .items_center()
             .gap(px(8.))
             .child(self.field(Field::Port, "25565", 100., cx))
             .child(save("port-save", Field::Port, cx))

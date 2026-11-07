@@ -28,16 +28,14 @@ const UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstal
 const OWN_KEY: &str = r"Software\Horizon\Launcher";
 const ASIDE_PREFIX: &str = "horizon-launcher-uninstall-";
 
-/// What the setup window shows: installing, or removing.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Mode {
-    Install,
-    Uninstall,
-}
+pub use crate::setup_args::Mode;
+use crate::setup_args::{classify, Invocation};
 
 /// The parts of the work, for the progress line.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Step {
+    /// Uninstall: asking a running launcher to quit.
+    Closing,
     Files,
     Shortcuts,
     Registry,
@@ -96,12 +94,14 @@ pub fn is_setup_exe() -> bool {
 /// The window to open instead of the launcher: the wizard for the setup exe started without
 /// arguments, the uninstaller for `uninstall`. None: this is the launcher.
 pub fn window_mode() -> Option<Mode> {
-    let args = args();
-    match args.as_slice() {
-        [] if is_setup_exe() => Some(Mode::Install),
-        [a] if a.as_str() == "uninstall" => Some(Mode::Uninstall),
+    match invocation() {
+        Invocation::Window(mode) => Some(mode),
         _ => None,
     }
+}
+
+fn invocation() -> Invocation {
+    classify(&args(), is_setup_exe())
 }
 
 /// `%LOCALAPPDATA%\Programs\Horizon Launcher`; `HORIZON_LAUNCHER_SETUP_DIR` replaces it (tests).
@@ -365,11 +365,65 @@ fn remove_all(path: &Path, left: &mut Vec<String>) {
     }
 }
 
+/// The ids of the other launchers running now (this process is a launcher too).
+fn running_launchers() -> Vec<u32> {
+    let out = crate::process::command("tasklist")
+        .args([
+            "/FO",
+            "CSV",
+            "/NH",
+            "/FI",
+            "IMAGENAME eq horizon-launcher.exe",
+        ])
+        .output();
+    out.map(|o| {
+        crate::setup_args::other_launcher_pids(
+            &String::from_utf8_lossy(&o.stdout),
+            std::process::id(),
+        )
+    })
+    .unwrap_or_default()
+}
+
+/// Asks a launcher that is still open to quit (a window closing is how it shuts down), waits a
+/// few seconds, and ends what stays: the player pressed Uninstall, and its files are going.
+/// The game a launcher started is another process and keeps running.
+fn close_running_launchers(progress: &impl Fn(Step, f32)) {
+    let taskkill = |pid: u32, force: bool| {
+        let mut cmd = crate::process::command("taskkill");
+        cmd.args(["/PID", &pid.to_string()]);
+        if force {
+            cmd.arg("/F");
+        }
+        let _ = cmd.output();
+    };
+    let mut pids = running_launchers();
+    if pids.is_empty() {
+        return;
+    }
+    progress(Step::Closing, 0.05);
+    for &pid in &pids {
+        taskkill(pid, false);
+    }
+    for _ in 0..30 {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        pids = running_launchers();
+        if pids.is_empty() {
+            return;
+        }
+    }
+    for pid in pids {
+        taskkill(pid, true);
+    }
+    std::thread::sleep(std::time::Duration::from_millis(500));
+}
+
 /// Takes the install away. Returns what could not be removed (a file in use, say).
 pub fn uninstall(remove_data: bool, progress: impl Fn(Step, f32)) -> Result<Vec<String>, String> {
     let dir = registered()
         .ok_or("Horizon Launcher is not installed for this account.")?
         .dir;
+    close_running_launchers(&progress);
     clean_aside(&dir);
     let exe = dir.join(BINARY);
     let own = backend::exe_path().to_path_buf();
@@ -488,11 +542,8 @@ pub fn after_update(version: &str) {
 pub fn run_quiet() -> Option<i32> {
     let args = args();
     let flag = |name: &str| args.iter().any(|a| a == name);
-    if !flag("--quiet") {
-        return None;
-    }
-    match args.first().map(String::as_str) {
-        Some("uninstall") => Some(match uninstall(flag("--remove-data"), |_, _| {}) {
+    match invocation() {
+        Invocation::QuietUninstall => Some(match uninstall(flag("--remove-data"), |_, _| {}) {
             Ok(left) => {
                 for item in left {
                     eprintln!("Not removed: {item}");
@@ -504,7 +555,7 @@ pub fn run_quiet() -> Option<i32> {
                 1
             }
         }),
-        Some("setup") if is_setup_exe() => {
+        Invocation::QuietSetup => {
             let mut options = Options::new();
             if let Some(dir) = args
                 .iter()

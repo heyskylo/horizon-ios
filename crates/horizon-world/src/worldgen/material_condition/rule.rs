@@ -1,11 +1,12 @@
 //! Compiled material rule composition, sharing the condition worker's context.
 use super::{
-    Compiled, Context, Facts, MaterialCondition, MaterialConditions, MaterialSurfaceQueries,
-    density::MaterialDensitySources,
+    CachedNoise, Compiled, Context, Facts, MaterialCondition, MaterialConditions,
+    MaterialSurfaceQueries, PossibleBiomes, density::MaterialDensitySources,
 };
 use crate::{registry::BlockStateId, worldgen::DecodeError};
 use horizon_core::{
     density::DensitySampler,
+    noise::Noise,
     position::BlockPos,
     random::{PositionalRandom, RandomSource},
 };
@@ -24,6 +25,10 @@ pub enum MaterialRule {
         density: Arc<dyn DensitySampler>,
         richness: Arc<dyn DensitySampler>,
         filler_gap: Arc<dyn DensitySampler>,
+        /// Inclusive y bounds outside which `density` is never positive, so
+        /// the vein places nothing there (`DensityGraph::positive_y_bounds`);
+        /// `[i32::MIN, i32::MAX]` when unknown.
+        positive_y: [i32; 2],
     },
     Sequence(Vec<MaterialRule>),
     Condition {
@@ -80,6 +85,7 @@ pub(super) enum CompiledRule<R: RandomSource> {
         raw_ore_chance: f32,
         densities: [usize; 3],
         random: R::Positional,
+        positive_y: [i32; 2],
     },
     Sequence(Vec<Self>),
     Condition {
@@ -113,6 +119,7 @@ impl<R: RandomSource> CompiledRule<R> {
                 density,
                 richness,
                 filler_gap,
+                positive_y,
             } => {
                 let density = context.surface.bind_density(density, true)?;
                 let richness = context.surface.bind_density(richness, true)?;
@@ -123,6 +130,7 @@ impl<R: RandomSource> CompiledRule<R> {
                     raw_ore_chance,
                     densities: [density, richness, gap],
                     random,
+                    positive_y,
                 }
             }
             MaterialRule::Bandlands => Self::Bandlands,
@@ -170,6 +178,7 @@ impl<R: RandomSource> CompiledRule<R> {
                 raw_ore_chance,
                 densities,
                 random,
+                ..
             } => {
                 // Densities use the context; randomness uses application coordinates.
                 let density = context.surface.density(densities[0], context.position)?;
@@ -230,12 +239,21 @@ where
                 raw_ore_chance,
                 densities,
                 random,
-            } => Self::OreVein {
-                blocks: *blocks,
-                raw_ore_chance: *raw_ore_chance,
-                densities: *densities,
-                random: random.clone(),
-            },
+                positive_y: [low, high],
+            } => {
+                // A non-positive density returns before the vein's
+                // positional random is drawn: nothing else is consumed.
+                if low > high || facts.high < *low || facts.low > *high {
+                    return Self::Empty;
+                }
+                Self::OreVein {
+                    blocks: *blocks,
+                    raw_ore_chance: *raw_ore_chance,
+                    densities: *densities,
+                    random: random.clone(),
+                    positive_y: [*low, *high],
+                }
+            }
             Self::Condition { condition, rule } => match condition.decided(facts) {
                 Some(false) => Self::Empty,
                 Some(true) => rule.specialize(facts),
@@ -268,6 +286,56 @@ where
             }
         }
     }
+    /// This rule as `compile` makes it for a chunk with `possible` biomes
+    /// (a copy without them): the biome conditions they decide are constant,
+    /// and folded away as `compile` folds them.
+    fn fold_biomes(&self, possible: Option<&PossibleBiomes>) -> Self {
+        match self {
+            Self::Empty => Self::Empty,
+            Self::Block(block) => Self::Block(*block),
+            Self::Bandlands => Self::Bandlands,
+            Self::OreVein {
+                blocks,
+                raw_ore_chance,
+                densities,
+                random,
+                positive_y,
+            } => Self::OreVein {
+                blocks: *blocks,
+                raw_ore_chance: *raw_ore_chance,
+                densities: *densities,
+                random: random.clone(),
+                positive_y: *positive_y,
+            },
+            Self::Condition { condition, rule } => {
+                let condition = match possible {
+                    Some(possible) => condition.fold_biomes(possible),
+                    None => condition.clone(),
+                };
+                let rule = rule.fold_biomes(possible);
+                match condition.constant_result() {
+                    Some(false) => Self::Empty,
+                    Some(true) => rule,
+                    None => Self::Condition {
+                        condition,
+                        rule: Box::new(rule),
+                    },
+                }
+            }
+            Self::Sequence(children) => {
+                let mut result: Vec<_> = children
+                    .iter()
+                    .map(|child| child.fold_biomes(possible))
+                    .filter(|child| !matches!(child, Self::Empty))
+                    .collect();
+                match result.len() {
+                    0 => Self::Empty,
+                    1 => result.pop().unwrap(),
+                    _ => Self::Sequence(result),
+                }
+            }
+        }
+    }
     /// Whether applying this rule never gives `None` (only an error).
     fn always_produces(&self) -> bool {
         match self {
@@ -276,95 +344,298 @@ where
             Self::Empty | Self::OreVein { .. } | Self::Condition { .. } => false,
         }
     }
-    fn inputs(&self, gradients: &mut Vec<(i32, i32)>, surface: &mut bool) {
+    /// The first y of each band in which this rule specialises differently
+    /// from the band below, unordered, and whether the preliminary surface is
+    /// asked for.
+    fn inputs(&self, starts: &mut Vec<i32>, surface: &mut bool) {
         match self {
             Self::Condition { condition, rule } => {
-                condition.inputs(gradients, surface);
-                rule.inputs(gradients, surface);
+                condition.inputs(starts, surface);
+                rule.inputs(starts, surface);
             }
             Self::Sequence(children) => {
                 for child in children {
-                    child.inputs(gradients, surface);
+                    child.inputs(starts, surface);
+                }
+            }
+            Self::OreVein {
+                positive_y: [low, high],
+                ..
+            } if low <= high => {
+                if *low != i32::MIN {
+                    starts.push(*low);
+                }
+                if *high != i32::MAX {
+                    starts.push(high + 1);
                 }
             }
             _ => {}
         }
     }
 }
+impl MaterialRule {
+    /// The highest y at which an ore vein of this rule can place a block
+    /// (`MaterialRule::OreVein::positive_y`), `i32::MIN` without veins.
+    pub fn ore_vein_top(&self) -> i32 {
+        self.ore_vein_top_within(0, &mut 0)
+    }
+    fn ore_vein_top_within(&self, depth: usize, nodes: &mut usize) -> i32 {
+        *nodes += 1;
+        // Larger rules fail to compile (`CompiledRule::compile`); do not
+        // bound them.
+        if depth >= 256 || *nodes > 65536 {
+            return i32::MAX;
+        }
+        match self {
+            Self::Block(_) | Self::Bandlands => i32::MIN,
+            Self::Reference(rule) => rule.ore_vein_top_within(depth + 1, nodes),
+            Self::OreVein {
+                positive_y: [low, high],
+                ..
+            } => {
+                if low > high {
+                    i32::MIN
+                } else {
+                    *high
+                }
+            }
+            Self::Sequence(children) => {
+                let mut top = i32::MIN;
+                for child in children {
+                    top = top.max(child.ore_vein_top_within(depth + 1, nodes));
+                }
+                top
+            }
+            Self::Condition { then_run, .. } => then_run.ore_vein_top_within(depth + 1, nodes),
+        }
+    }
+}
 /// A rule specialised (`CompiledRule::specialize`) for each band of y between
-/// its vertical gradients' bounds, and below and at or above the preliminary
-/// surface when the rule asks for it: most blocks of a column, deep stone,
-/// then evaluate only the few rules that can apply there.
+/// its vertical gradients' bounds and its ore veins' `positive_y` bounds, and
+/// below and at or above the preliminary surface when the rule asks for it:
+/// most blocks of a column, deep stone, then evaluate only the few rules that
+/// can apply there. Each variant is made when first asked for.
 pub struct SurfaceVariants {
+    /// The rule the variants specialise.
+    base: usize,
     /// The first y of each band after the first, ascending.
     starts: Vec<i32>,
-    /// The rule index per band (two per band, below then above the surface,
-    /// when `surface`).
-    rules: Vec<usize>,
+    /// Per band (two per band, below then above the surface, when
+    /// `surface`): the variant's rule index once made, `Some(None)` when it
+    /// gives no block.
+    rules: Vec<Option<Option<usize>>>,
     pub surface: bool,
 }
 impl SurfaceVariants {
-    /// The rule for a block at `y`, `above` the preliminary surface (ignored
-    /// unless `surface`).
+    /// The band holding `y`.
     #[inline]
-    pub fn rule(&self, y: i32, above: bool) -> usize {
-        let band = self.starts.partition_point(|&start| start <= y);
-        if self.surface {
-            self.rules[band * 2 + usize::from(above)]
+    pub fn band(&self, y: i32) -> usize {
+        self.starts.partition_point(|&start| start <= y)
+    }
+    /// The inclusive y bounds of `band`.
+    pub fn band_bounds(&self, band: usize) -> [i32; 2] {
+        let low = if band == 0 {
+            i32::MIN
         } else {
-            self.rules[band]
-        }
+            self.starts[band - 1]
+        };
+        let high = self.starts.get(band).map_or(i32::MAX, |&next| next - 1);
+        [low, high]
     }
 }
 impl<R: RandomSource, S: MaterialSurfaceQueries> MaterialConditions<R, S>
 where
     R::Positional: Clone,
 {
-    /// Add the specialised variants of rule `index` (`SurfaceVariants`).
+    /// The bands of the specialised variants of rule `index`
+    /// (`SurfaceVariants`); `surface_variant` makes each.
     pub fn surface_variants(&mut self, index: usize) -> Result<SurfaceVariants, MaterialRuleError> {
         let rule = self
             .rules
             .get(index)
             .ok_or(MaterialRuleError::UnknownRule)?;
-        let (mut gradients, mut surface) = (Vec::new(), false);
-        rule.inputs(&mut gradients, &mut surface);
-        // A gradient is true at and below `low`, random between, false at
-        // and above `high`: it is decided within each band these bound.
-        let mut starts: Vec<i32> = gradients
-            .iter()
-            .flat_map(|&(low, high)| [low.saturating_add(1), high])
-            .collect();
+        let (mut starts, mut surface) = (Vec::new(), false);
+        rule.inputs(&mut starts, &mut surface);
         starts.sort_unstable();
         starts.dedup();
-        let mut variants = Vec::new();
-        for band in 0..=starts.len() {
-            let low = if band == 0 {
-                i32::MIN
-            } else {
-                starts[band - 1]
-            };
-            let high = starts.get(band).map_or(i32::MAX, |&next| next - 1);
-            let sides: &[Option<bool>] = if surface {
-                &[Some(false), Some(true)]
-            } else {
-                &[None]
-            };
-            for &above_surface in sides {
-                let facts = Facts {
-                    low,
-                    high,
-                    above_surface,
-                };
-                variants.push(self.rules[index].specialize(facts));
-            }
-        }
-        let first = self.rules.len();
-        self.rules.extend(variants);
+        let sides = if surface { 2 } else { 1 };
         Ok(SurfaceVariants {
+            base: index,
+            rules: vec![None; (starts.len() + 1) * sides],
             starts,
-            rules: (first..self.rules.len()).collect(),
             surface,
         })
+    }
+    /// The rule index of the variant for `band`, `above` the preliminary
+    /// surface (ignored unless `variants.surface`), or `None` when it gives
+    /// no block at any position of the band.
+    #[inline]
+    pub fn surface_variant(
+        &mut self,
+        variants: &mut SurfaceVariants,
+        band: usize,
+        above: bool,
+    ) -> Option<usize> {
+        let slot = if variants.surface {
+            band * 2 + usize::from(above)
+        } else {
+            band
+        };
+        if let Some(rule) = variants.rules[slot] {
+            return rule;
+        }
+        self.make_surface_variant(variants, band, above, slot)
+    }
+    #[cold]
+    fn make_surface_variant(
+        &mut self,
+        variants: &mut SurfaceVariants,
+        band: usize,
+        above: bool,
+        slot: usize,
+    ) -> Option<usize> {
+        let [low, high] = variants.band_bounds(band);
+        let facts = Facts {
+            low,
+            high,
+            above_surface: variants.surface.then_some(above),
+        };
+        let rule = match self.rules[variants.base].specialize(facts) {
+            CompiledRule::Empty => None,
+            rule => {
+                self.rules.push(rule);
+                Some(self.rules.len() - 1)
+            }
+        };
+        variants.rules[slot] = Some(rule);
+        rule
+    }
+}
+/// A world's surface rule compiled once for every chunk of a generator
+/// worker: the rule before any chunk's possible biomes fold it, the noises it
+/// bound, and the densities (ore veins) it binds to each chunk's volume, in
+/// the order it bound them.
+pub struct CompiledSurfaceRule<R: RandomSource> {
+    rule: CompiledRule<R>,
+    noises: Vec<((String, bool), Arc<dyn Noise>)>,
+    densities: Vec<(Arc<dyn DensitySampler>, bool)>,
+}
+/// The densities `CompiledRule::compile` binds for `rule`, in its order,
+/// with whether it samples each over the volume now.
+fn density_bindings(rule: &MaterialRule, out: &mut Vec<(Arc<dyn DensitySampler>, bool)>) {
+    match rule {
+        MaterialRule::Reference(value) => density_bindings(value, out),
+        MaterialRule::OreVein {
+            density,
+            richness,
+            filler_gap,
+            ..
+        } => out.extend([
+            (Arc::clone(density), true),
+            (Arc::clone(richness), true),
+            (Arc::clone(filler_gap), false),
+        ]),
+        MaterialRule::Condition { then_run, .. } => density_bindings(then_run, out),
+        MaterialRule::Sequence(children) => {
+            for child in children {
+                density_bindings(child, out);
+            }
+        }
+        MaterialRule::Block(_) | MaterialRule::Bandlands => {}
+    }
+}
+impl<R: RandomSource, S: MaterialSurfaceQueries> MaterialConditions<R, S>
+where
+    R::Positional: Clone,
+{
+    /// `add_rule`, compiling `rule` only the first time `shared` is used:
+    /// later workers take the compiled rule and its noises, bind its densities
+    /// to their own volume in the same order, and fold it with their own
+    /// possible biomes as `compile` does. A worker that already holds rules or
+    /// noises, or a possible biome the surface doesn't number, compiles as
+    /// `add_rule` does.
+    pub fn add_shared_rule(
+        &mut self,
+        rule: &MaterialRule,
+        shared: &mut Option<CompiledSurfaceRule<R>>,
+    ) -> Result<usize, DecodeError> {
+        let fresh = self.rules.is_empty() && self.context.noises.is_empty();
+        if !fresh || self.rules.len() >= 8192 {
+            return self.add_rule(rule.clone());
+        }
+        let mut ids = Vec::new();
+        if let Some(names) = &self.context.possible_biomes {
+            for name in names {
+                let Some(Some(id)) = self.context.surface.biome_index(name) else {
+                    return self.add_rule(rule.clone());
+                };
+                let word = id as usize / 64;
+                if ids.len() <= word {
+                    ids.resize(word + 1, 0);
+                }
+                ids[word] |= 1 << (id % 64);
+            }
+        }
+        match shared {
+            Some(shared) => {
+                for (key, sampler) in &shared.noises {
+                    let is_3d = key.1;
+                    let index = self.context.noises.len();
+                    self.context.noises.push(CachedNoise {
+                        sampler: Arc::clone(sampler),
+                        is_3d,
+                        revision: if is_3d {
+                            self.context.block_revision
+                        } else {
+                            self.context.column_revision
+                        }
+                        .wrapping_sub(1),
+                        value: 0.0,
+                    });
+                    self.context.noise_indices.insert(key.clone(), index);
+                }
+                for (sampler, eager) in &shared.densities {
+                    self.context
+                        .surface
+                        .bind_density(Arc::clone(sampler), *eager)?;
+                }
+            }
+            None => {
+                let possible = self.context.possible_biomes.take();
+                let compiled =
+                    CompiledRule::compile(rule.clone(), &self.root, &mut self.context, 0, &mut 0);
+                self.context.possible_biomes = possible;
+                let compiled = compiled?;
+                let mut noises: Vec<_> = self
+                    .context
+                    .noise_indices
+                    .iter()
+                    .map(|(key, &index)| (index, key.clone()))
+                    .collect();
+                noises.sort_unstable_by_key(|(index, _)| *index);
+                let noises = noises
+                    .into_iter()
+                    .map(|(index, key)| (key, Arc::clone(&self.context.noises[index].sampler)))
+                    .collect();
+                let mut densities = Vec::new();
+                density_bindings(rule, &mut densities);
+                *shared = Some(CompiledSurfaceRule {
+                    rule: compiled,
+                    noises,
+                    densities,
+                });
+            }
+        }
+        let shared = shared.as_ref().expect("compiled above");
+        let possible = self
+            .context
+            .possible_biomes
+            .as_ref()
+            .map(|names| PossibleBiomes { names, ids });
+        let folded = shared.rule.fold_biomes(possible.as_ref());
+        let index = self.rules.len();
+        self.rules.push(folded);
+        Ok(index)
     }
 }
 impl<R: RandomSource, T: MaterialSurfaceQueries> MaterialConditions<R, MaterialDensitySources<T>> {

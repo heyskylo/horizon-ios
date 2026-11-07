@@ -21,6 +21,8 @@ pub struct TargetInfo {
     pub position: Vec3,
     pub eye_y: f64,
     pub bounds: Aabb,
+    /// `LivingEntity.getHitbox`: `bounds` cut below the seat of a rider.
+    pub hitbox: Aabb,
     pub alive: bool,
     pub can_be_seen_as_enemy: bool,
     pub is_player: bool,
@@ -116,6 +118,19 @@ impl MobWorld<'_> {
     }
     /// Level.clip with COLLIDER shapes (optionally stopping at any fluid): true on a miss.
     pub fn clear_between(&self, from: Vec3, to: Vec3, fluids_block: bool) -> bool {
+        self.clear_between_for(None, from, to, fluids_block)
+    }
+    /// The same for an entity whose `getY()` is `feet_y`: `ClipContext` hands
+    /// its `CollisionContext.of(entity)` to every block, so scaffolding is
+    /// solid for a viewer above it and open for one below.
+    fn clear_between_for(
+        &self,
+        feet_y: Option<f64>,
+        from: Vec3,
+        to: Vec3,
+        fluids_block: bool,
+    ) -> bool {
+        let context = feet_y.map(horizon_world::collision_context::CollisionContext::position);
         let mut scene = SceneCollisions {
             world: self.world,
             binding: self.collision,
@@ -129,10 +144,15 @@ impl MobWorld<'_> {
             if self.facts.is_air(state) {
                 return None;
             }
-            let shape = self
-                .collision
-                .collision_shape(&mut scene, state, [p.x, p.y, p.z])
-                .ok()?;
+            let shape = match &context {
+                Some(context) => self
+                    .collision
+                    .collision_shape_with_context(&mut scene, state, p, context),
+                None => self
+                    .collision
+                    .collision_shape(&mut scene, state, [p.x, p.y, p.z]),
+            }
+            .ok()?;
             shape.clip(from, to, p).map(|_| ())
         });
         matches!(result, Ok(None))
@@ -219,12 +239,16 @@ impl MobWorld<'_> {
     }
     /// LivingEntity.hasLineOfSight: eye to eye within 128 blocks.
     pub fn line_of_sight(&self, from_eye: Vec3, to: Vec3) -> bool {
+        self.line_of_sight_for(None, from_eye, to)
+    }
+    /// The same for a viewer standing at `feet_y` (its collision context).
+    pub fn line_of_sight_for(&self, feet_y: Option<f64>, from_eye: Vec3, to: Vec3) -> bool {
         let d =
             (to.x - from_eye.x).powi(2) + (to.y - from_eye.y).powi(2) + (to.z - from_eye.z).powi(2);
         if d > 128.0 * 128.0 {
             return false;
         }
-        self.clear_between(from_eye, to, false)
+        self.clear_between_for(feet_y, from_eye, to, false)
     }
     /// Level.canSeeSky: sky light 15 at the position (no roof above).
     pub fn can_see_sky(&self, x: i32, y: i32, z: i32) -> bool {
@@ -277,6 +301,15 @@ impl MobWorld<'_> {
                 position: p.position,
                 eye_y: p.eye[1],
                 bounds: p.bounds,
+                // A riding player's seat is `Avatar.DEFAULT_VEHICLE_ATTACHMENT`
+                // (0.6) above its feet.
+                hitbox: if p.passenger {
+                    let (lo, hi) = (p.bounds.min_position(), p.bounds.max_position());
+                    let y = (p.position.y + f64::from(0.6_f32)).max(lo.y);
+                    Aabb::new(Vec3::new(lo.x, y, lo.z), hi)
+                } else {
+                    p.bounds
+                },
                 alive: p.alive,
                 can_be_seen_as_enemy: true,
                 is_player: true,
@@ -287,6 +320,7 @@ impl MobWorld<'_> {
                 position: s.position,
                 eye_y: s.eye_y,
                 bounds: s.bounds,
+                hitbox: s.hitbox,
                 alive: s.alive,
                 can_be_seen_as_enemy: !s.playing_dead,
                 is_player: false,
@@ -409,20 +443,21 @@ pub(crate) fn with_built_test_world(
     build: impl FnOnce(&mut crate::world::World, &horizon_world::registry::BlockRegistry),
     f: impl FnOnce(&MobWorld<'_>, &super::MobTypes),
 ) -> bool {
-    with_built_test_world_rules(others, true, build, f)
+    with_built_test_world_rules(others, true, true, build, f)
 }
 /// `with_built_test_world` with the `mob_griefing` game rule the world reports.
 #[cfg(test)]
 pub(crate) fn with_built_test_world_rules(
     others: &[Seen],
     mob_griefing: bool,
+    mob_drops: bool,
     build: impl FnOnce(&mut crate::world::World, &horizon_world::registry::BlockRegistry),
     f: impl FnOnce(&MobWorld<'_>, &super::MobTypes),
 ) -> bool {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../.local/horizon-client")
         .join(horizon_core::VANILLA_VERSION);
-    with_resource_test_world(&root, others, mob_griefing, build, f)
+    with_resource_test_world(&root, others, mob_griefing, mob_drops, build, f)
 }
 /// The same mob world loaded from a content mod's resource root.
 #[cfg(test)]
@@ -430,6 +465,7 @@ pub(crate) fn with_resource_test_world(
     root: &std::path::Path,
     others: &[Seen],
     mob_griefing: bool,
+    mob_drops: bool,
     build: impl FnOnce(&mut crate::world::World, &horizon_world::registry::BlockRegistry),
     f: impl FnOnce(&MobWorld<'_>, &super::MobTypes),
 ) -> bool {
@@ -450,7 +486,9 @@ pub(crate) fn with_resource_test_world(
         &horizon_world::loot::PackOverlay::NONE,
     )
     .unwrap();
-    let collision = crate::collisions::load(root, registry).unwrap();
+    let collision = std::sync::Arc::new(crate::collisions::load(root, registry).unwrap());
+    let suffocation =
+        crate::mobs::suffocation::bind(collision.clone(), &motion.causes_suffocation).unwrap();
     let air = registry.default_state("minecraft:air").unwrap();
     let mut world = crate::world::World::new(air, 0);
     build(&mut world, registry);
@@ -463,6 +501,7 @@ pub(crate) fn with_resource_test_world(
         fluid_tables: &motion.fluids,
         movement: &motion.blocks,
         collision: &collision,
+        suffocation: &suffocation,
         data: &data,
         player: None,
         controlling_player_movement: None,
@@ -485,7 +524,7 @@ pub(crate) fn with_resource_test_world(
         biomes: &biomes,
         mob_griefing,
         universal_anger: false,
-        mob_drops: true,
+        mob_drops,
         max_entity_cramming: 24,
         difficulty: super::spawning::LocalDifficulty::new(2, 18000, 0, 0.0),
         end: false,
@@ -517,6 +556,9 @@ pub(crate) fn test_player(position: Vec3) -> super::PlayerView {
         main_hand: None,
         off_hand: None,
         head: None,
+        chest: None,
+        legs: None,
+        feet: None,
         armor_cover: 0.0,
         invisible: false,
         spectator: false,
@@ -537,5 +579,34 @@ pub(crate) fn test_player(position: Vec3) -> super::PlayerView {
         passenger: false,
         riding_vehicle: None,
         vehicle: None,
+    }
+}
+
+#[cfg(test)]
+mod scaffolding_sight_tests {
+    use super::*;
+
+    /// ScaffoldingBlock.getCollisionShape: a viewer below the block sees
+    /// through it, one above does not (issue 9607).
+    #[test]
+    fn scaffolding_blocks_sight_only_from_above() {
+        let ran = super::with_built_test_world(
+            &[],
+            |world, registry| {
+                world.chunks.insert(
+                    (0, 0),
+                    std::sync::Arc::new(crate::chunk::Chunk::empty(0, 0)),
+                );
+                let scaffolding = registry.default_state("minecraft:scaffolding").unwrap();
+                world.set(0, 65, 0, scaffolding).unwrap();
+            },
+            |w, _| {
+                let below = Vec3::new(0.5, 64.0 + 1.62, 0.5);
+                let above = Vec3::new(0.5, 66.0 + 1.62, 0.5);
+                assert!(w.line_of_sight_for(Some(64.0), below, above));
+                assert!(!w.line_of_sight_for(Some(66.0), above, below));
+            },
+        );
+        let _ = ran;
     }
 }

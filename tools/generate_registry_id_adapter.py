@@ -9,10 +9,16 @@ data generator reports (registries.json, blocks.json).
 VERSION --download` made. Entries are matched by name; block states by block name and properties. Each
 registry gets two tables of runs `(from, to, length)`: `<NAME>_UP` from the old server's ids to the pinned ones,
 `<NAME>_DOWN` back. An id in no run has no entry in the other version. Only registries whose ids differ are written; the rest map to themselves.
+
+With `--substitutes` (a version a Horizon server lets join, docs/hosting.md) it also writes `<NAME>_SUBSTITUTES`: for
+each pinned entry the older version lacks, the pinned entry shown in its place, picked by the rules in SUBSTITUTES
+(the first whose name the older version has) and, for a block state, the substitute block's state that keeps the
+most of its properties.
 """
 
 import argparse
 import json
+import re
 from pathlib import Path
 
 try:
@@ -52,6 +58,78 @@ REGISTRIES = [
     "minecraft:consume_effect_type",
     "minecraft:enchantment_effect_component_type",
 ]
+
+# What stands in for a pinned entry an older client lacks: (registries, pattern, replacement), the pattern matched
+# against the whole name without its namespace and tried in order; the first replacement the older version has wins.
+# A block keeps its shape (a slab for a slab), so a client's movement agrees with the server's; where no block of the
+# same shape exists, the stand-in's collision holds the original's (a client walking into what the server calls solid
+# is pulled back; one stopped short of it is not).
+BLOCKS = ("minecraft:block", "minecraft:item")
+SUBSTITUTES = [
+    (BLOCKS, r"\w+_poplar_leaves", "birch_leaves"),
+    (BLOCKS + ("minecraft:entity_type",), r"(.*)poplar(.*)", r"\1birch\2"),
+    (BLOCKS, r"\w+_(wool|concrete)_slab", "smooth_stone_slab"),
+    (BLOCKS, r"\w+_(wool|concrete)_stairs", "stone_stairs"),
+    (BLOCKS, r"straw_bed", "yellow_bed"),
+    (BLOCKS, r"red_shrub", "dead_bush"),
+    # The shelf mushroom is a solid shelf players stand and bounce on; the brown mushroom has no collision.
+    (("minecraft:block",), r"shelf_mushroom", "brown_mushroom_block"),
+    (("minecraft:item",), r"shelf_mushroom", "brown_mushroom"),
+    (("minecraft:item",), r"(\w+)_cushion", r"\1_carpet"),
+    # The explorer maps are filled maps (MapItem): an empty map would not draw their map_id.
+    (("minecraft:item",), r"\w+_map", "filled_map"),
+    (("minecraft:particle_type",), r"\w+_poplar_leaves", "cherry_leaves"),
+    (("minecraft:sound_event",), r"block\.poplar_leaves\.(\w+)", r"block.cherry_leaves.\1"),
+    (("minecraft:sound_event",), r"entity\.cushion\.(break|place)", r"block.wool.\1"),
+    (("minecraft:sound_event",), r"entity\.cushion\.\w+", "block.wool.step"),
+    (("minecraft:sound_event",), r"block\.shelf_mushroom\.(\w+)", r"block.fungus.\1"),
+    (("minecraft:sound_event",), r"block\.\w+\.(break|fall|hit|place|step)", r"block.grass.\1"),
+]
+# Registries that get substitutes, as the Substitutes fields name them.
+SUBSTITUTED = ["minecraft:block", "minecraft:item", "minecraft:entity_type", "minecraft:particle_type",
+               "minecraft:sound_event"]
+
+
+def substitute(registry, name, has):
+    """The name standing in for `name` in `registry`, one `has` accepts, or None."""
+    path = name.split(":", 1)[1]
+    for registries, pattern, replacement in SUBSTITUTES:
+        if registry in registries and re.fullmatch(pattern, path):
+            found = "minecraft:" + re.sub(pattern, replacement, path)
+            if has(found):
+                return found
+    return None
+
+
+def substitutes(registry, old, new):
+    """For each pinned id (in order), the pinned id of its stand-in when `old` lacks it, or NONE."""
+    by_id = sorted(new.items(), key=lambda kv: kv[1])
+    out = []
+    for name, _ in by_id:
+        found = None if name in old else substitute(registry, name, lambda n: n in old and n in new)
+        out.append(new[found] if found else NONE)
+    return out
+
+
+def state_substitutes(old_blocks, new_blocks):
+    """For each pinned block state, the pinned state of the substitute block that keeps the most of its
+    properties (its default state on a tie), when the older version lacks the block."""
+    old_states, new_states = states(old_blocks), states(new_blocks)
+    out = [NONE] * len(new_states)
+    for name, block in new_blocks.items():
+        if name in old_blocks:
+            continue
+        found = substitute("minecraft:block", name, lambda n: n in old_blocks and n in new_blocks)
+        if not found:
+            continue
+        candidates = [s for s in new_blocks[found]["states"]
+                      if (found, tuple(sorted(s.get("properties", {}).items()))) in old_states]
+        for state in block["states"]:
+            props = state.get("properties", {})
+            best = max(candidates, key=lambda c: (sum(props.get(k) == v for k, v in c.get("properties", {}).items()),
+                                                  c.get("default", False)))
+            out[state["id"]] = best["id"]
+    return out
 
 
 def entries(report, registry):
@@ -113,6 +191,8 @@ def main():
     parser.add_argument("--old", type=Path, required=True, help="the older version's prepared directory")
     parser.add_argument("--new", type=Path, help="the pinned version's prepared directory (default: .local)")
     parser.add_argument("--out", type=Path)
+    parser.add_argument("--substitutes", action="store_true",
+                        help="also write the stand-ins for pinned entries the older version lacks")
     parser.add_argument("--rename", action="append", default=[], metavar="REGISTRY:OLD=NEW",
                         help="an entry the pinned version knows by another name, e.g. "
                              "minecraft:command_argument_type:minecraft:color=minecraft:team_color")
@@ -134,11 +214,13 @@ def main():
     lines = [
         f"//! Registry ids of {old_info['id']} against the pinned {info['name']}: block states and the registries",
         "//! the protocol sends by id. Generated by tools/generate_registry_id_adapter.py from both versions'",
-        "//! registries and blocks reports; do not edit by hand.",
+        "//! registries and blocks reports" + (" (--substitutes)" if args.substitutes else "") + "; do not edit by hand.",
         "",
     ]
-    old_states = states(json.loads((old_reports / "blocks.json").read_text()))
-    new_states = states(json.loads((new_reports / "blocks.json").read_text()))
+    old_blocks = json.loads((old_reports / "blocks.json").read_text())
+    new_blocks = json.loads((new_reports / "blocks.json").read_text())
+    old_states = states(old_blocks)
+    new_states = states(new_blocks)
     lines.append(f"/// Block states: {len(old_states)} in {old_info['id']}, {len(new_states)} pinned.")
     lines.append(f"pub const OLD_STATES: u32 = {len(old_states)};")
     lines.append(f"pub const PINNED_STATES: u32 = {len(new_states)};")
@@ -156,6 +238,28 @@ def main():
         backward = {new: old for old, new in forward.items()}
         lines.extend(rust_table(f"{name}_UP", table(o, n, forward)))
         lines.extend(rust_table(f"{name}_DOWN", table(n, o, backward)))
+    # Data components the pinned version no longer has: the item readers read their values past and drop them.
+    old_components = entries(old_reg, "minecraft:data_component_type")
+    new_components = entries(new_reg, "minecraft:data_component_type")
+    known = renames.get("minecraft:data_component_type", {})
+    dropped = sorted((i, name) for name, i in old_components.items()
+                     if name not in new_components and name not in known)
+    lines.append(f"/// Data components {old_info['id']} has and the pinned version lacks, by their {old_info['id']} id.")
+    lines.append("pub const DROPPED_COMPONENTS: &[(u16, &str)] = &[")
+    lines.extend(f'    ({i}, "{name}"),' for i, name in dropped)
+    lines.append("];")
+    if args.substitutes:
+        lines.append(f"/// Stand-ins for pinned block states {old_info['id']} lacks, in the pinned numbering.")
+        lines.extend(rust_table("BLOCK_STATE_SUBSTITUTES", state_substitutes(old_blocks, new_blocks)))
+        for registry in SUBSTITUTED:
+            o, n = entries(old_reg, registry), entries(new_reg, registry)
+            lines.append(f"/// Stand-ins for pinned `{registry}` entries {old_info['id']} lacks, in the pinned numbering.")
+            table_ = substitutes(registry, o, n)
+            lines.extend(rust_table(f"{const_name(registry)}_SUBSTITUTES", table_))
+            by_id = sorted(n, key=n.get)
+            lacking = [by_id[i] for i, v in enumerate(table_) if v == NONE and by_id[i] not in o]
+            if lacking:
+                print(f"{registry}: no stand-in for", ", ".join(lacking))
     lines.append(f"/// Every table above, as the adapter reads them.")
     lines.append("pub const IDS: super::ids::Ids = super::ids::Ids {")
     lines.append("    quirks: super::ids::Quirks::NONE,")
@@ -168,8 +272,16 @@ def main():
         else:
             name = const_name(registry)
             lines.append(f"    {field}: super::ids::Remap::Runs {{ up: {name}_UP, down: {name}_DOWN }},")
+    lines.append("    dropped_components: DROPPED_COMPONENTS,")
     lines.append("    // Not a registry: set by hand where a version numbers EntityDataSerializers differently.")
     lines.append("    entity_data_serializer: super::ids::Remap::Same,")
+    if args.substitutes:
+        lines.append("    substitutes: super::ids::Substitutes {")
+        lines.append("        block_state: BLOCK_STATE_SUBSTITUTES,")
+        lines.extend(f"        {r.split(':', 1)[1]}: {const_name(r)}_SUBSTITUTES," for r in SUBSTITUTED)
+        lines.append("    },")
+    else:
+        lines.append("    substitutes: super::ids::Substitutes::NONE,")
     lines.append("};")
     out.write_text("\n".join(lines) + "\n")
     print(out, "same:", ", ".join(same))

@@ -26,6 +26,9 @@ pub struct SavedOldWorld {
     data: Arc<GeneratorData>,
     /// The old chunks of each region file (`SaveDir::old_chunk_bits`).
     regions: Mutex<HashMap<(i32, i32), Arc<OnceLock<[u64; 16]>>>>,
+    /// Chunks asked about one at a time in regions not scanned ([`OldWorld::is_old_chunk`]):
+    /// per region, the chunks read and the old ones among them.
+    single: Mutex<HashMap<(i32, i32), ([u64; 16], [u64; 16])>>,
     /// Each old chunk's blending data, its border columns calculated.
     blending: Mutex<HashMap<(i32, i32), Option<Arc<BlendingData>>>>,
     kept_biomes: Mutex<HashMap<(i32, i32), Option<Arc<BiomeChunk<BiomeId>>>>>,
@@ -43,6 +46,7 @@ impl SavedOldWorld {
             biomes,
             data,
             regions: Default::default(),
+            single: Default::default(),
             blending: Default::default(),
             kept_biomes: Default::default(),
         }
@@ -151,6 +155,28 @@ impl OldWorld for SavedOldWorld {
             }
         }
         false
+    }
+    fn is_old_chunk(&self, x: i32, z: i32) -> bool {
+        let key = (x >> 5, z >> 5);
+        let index = ((x & 31) + (z & 31) * 32) as usize;
+        let (word, bit) = (index / 64, 1u64 << (index % 64));
+        let scanned = (self.regions.lock().unwrap().get(&key)).and_then(|cell| cell.get().copied());
+        if let Some(bits) = scanned {
+            return bits[word] & bit != 0;
+        }
+        if let Some((read, old)) = self.single.lock().unwrap().get(&key)
+            && read[word] & bit != 0
+        {
+            return old[word] & bit != 0;
+        }
+        let old = self.save.is_old_chunk(x, z);
+        let mut single = self.single.lock().unwrap();
+        let (read, olds) = single.entry(key).or_default();
+        read[word] |= bit;
+        if old {
+            olds[word] |= bit;
+        }
+        old
     }
     fn saved_starts(&self, x: i32, z: i32) -> Vec<horizon_world::worldgen::blending::SavedStart> {
         self.save

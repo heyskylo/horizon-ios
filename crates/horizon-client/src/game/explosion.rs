@@ -454,14 +454,14 @@ impl Game<'_> {
             self.note_named_attacker(damage_type, *id, name.clone());
         }
         if let Some(p) = self.player.as_mut()
-            && let Some(id) = self.motion.health.damage.id(damage_type)
+            && let Some(id) = self.health_resources.damage.id(damage_type)
         {
             // Creative players are invulnerable to explosions.
             if !creative
                 && !spectator
                 && hurtable
                 && let Ok(o) = p.hurt_caused_by(
-                    &self.motion.health,
+                    &self.health_resources,
                     self.world.health_rules,
                     id,
                     amount,
@@ -666,16 +666,25 @@ impl Game<'_> {
                                 .filter(|&o| o != m.id)
                                 .map(horizon_client::mobs::Who::Mob),
                             from: Some(center),
+                            attacker_species: cause,
                         };
                         // `EXPLOSION_KNOCKBACK_RESISTANCE`, not `KNOCKBACK_RESISTANCE`:
                         // its base is 0 for every mob type, so iron golems and
                         // ravagers are pushed.
                         hurt_mob(m, hurtable, cause, (amount, source));
                     }
-                    // 5 health, destroyed by the explosion damage (nether stars resist).
+                    // `ItemEntity.hurtServer`: the damage comes off `Health`
+                    // (5 to start) in f32 and the item is destroyed at zero, so
+                    // a survivor keeps the health the blast left it. The nether
+                    // star is `ItemStack.canBeHurtBy`'s explosion exception, and
+                    // a blast with a source entity under `mobGriefing` off never
+                    // reaches here (`items_ignore`).
                     EntityHandle::Item(i) => {
-                        destroyed = &*self.dropped[i].stack.item != "minecraft:nether_star"
-                            && amount >= 5.0;
+                        let item = &mut self.dropped[i];
+                        if &*item.stack.item != "minecraft:nether_star" {
+                            item.health = (item.health as f32 - amount) as i32;
+                            destroyed = item.health <= 0;
+                        }
                     }
                     // `ExperienceOrb.hurtServer` takes the damage off their 5 health.
                     EntityHandle::Orb(i) => {
@@ -1143,6 +1152,7 @@ mod tests {
             knockback_resistance: 0.0,
             jump_strength: 0.42,
             attributes: Default::default(),
+            item_stack_limits: Default::default(),
             gravity: 0.08,
             safe_fall_distance: 3.0,
             fall_damage_multiplier: 1.0,

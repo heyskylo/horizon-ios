@@ -159,9 +159,9 @@ const SHADOW_COLOR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 /// staying put while the camera walks a `SNAP`-block cell. The map is distorted about its
 /// centre, so a centre that moves with the camera, even by a texel, resamples every shadow but
 /// the nearest each frame and they shimmer; a still one maps the world to the same texels until
-/// the next cell. Its depth starts 256 blocks further toward the light than `shaders/` packs'
-/// (the projection's near plane is at `-near`), so the ground over a deep cave still casts its
-/// shadow, and ends past the build height and the slant across the map below the camera.
+/// the next cell. Its depth starts 356 blocks toward the light (256 further than `shaders/`
+/// packs' default), so the ground over a deep cave still casts its shadow, and ends past the
+/// build height and the slant across the map below the camera.
 pub fn camera(settings: &Settings) -> Shadow {
     Shadow {
         resolution: settings.resolution,
@@ -169,8 +169,8 @@ pub fn camera(settings: &Settings) -> Shadow {
         render_mul: 1.0,
         interval: SNAP,
         euclidean_snap: true,
-        near: 256.0,
-        far: super::pack_uniforms::SHADOW_EYE + 2.0 * settings.distance + 384.0,
+        near: Some(-356.0),
+        far: Some(2.0 * settings.distance + 384.0),
         ..Shadow::default()
     }
 }
@@ -806,12 +806,7 @@ mod tests {
 
     #[test]
     fn what_the_camera_stands_on_is_inside_the_shadow_cameras_depth() {
-        let settings = Settings {
-            resolution: 2048,
-            distance: 128.0,
-            solid_materials: Vec::new(),
-        };
-        let shadow = camera(&settings);
+        let shadow = camera(&Settings::default());
         let (view, projection) = super::super::pack_uniforms::shadow_camera(
             glam::Vec3::new(0.3, 0.9, 0.0).normalize(),
             glam::DVec3::new(-2064.5, 246.0, -4304.5),
@@ -827,11 +822,7 @@ mod tests {
 
     #[test]
     fn the_centre_stays_near_the_player_on_both_sides_of_zero() {
-        let shadow = camera(&Settings {
-            resolution: 2048,
-            distance: 128.0,
-            solid_materials: Vec::new(),
-        });
+        let shadow = camera(&Settings::default());
         let light = glam::Vec3::Y;
         for x in [5.5, -5.5, -2064.5, 2064.5] {
             let camera = glam::DVec3::new(x, 64.0, x);

@@ -1,0 +1,9 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "health_hud_state", "target": "horizon_client::game::native_hooks::Game<'_>::native_health_hud_state"},
+    {"name": "local_attribute", "target": "horizon_client::game::native_hooks::Game<'_>::native_local_attribute"}
+  ],
+  "rust_summary": "Horizon's health HUD state for a `native_health_hud` mod (`native_health_hud_state`) and this\nclient's player's attribute values (`native_local_attribute`).",
+  "doc_summary": "`native_health_hud_state()`, Horizon's health HUD state, for a mod answering `native_health_hud`: its `left_height` and `right_height` place the item name and the action bar, and its `layout` draws Horizon's rows; and `native_local_attribute(name)`, the value of an attribute of this client's player (`minecraft:armor_toughness`). Bundles need \"hooks\": @API:health_hud_state@."
+}

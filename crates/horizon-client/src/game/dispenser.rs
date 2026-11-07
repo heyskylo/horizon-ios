@@ -767,10 +767,16 @@ impl Game<'_> {
         }
         out
     }
-    /// `EntityType.getYOffset(level, pos, false, box)`: the entity box set on
+    /// `EntityType.getYOffset(level, pos, false, box)`: [`Self::drop_offset_from`] without
+    /// `movedUp`.
+    pub(super) fn drop_offset(&self, width: f64, height: f64, p: Pos) -> f64 {
+        self.drop_offset_from(width, height, p, false)
+    }
+    /// `EntityType.getYOffset(level, pos, movedUp, box)`: the entity box set on
     /// top of the block (`setPos(x + 0.5, y + 1, z + 0.5)`) falls one block
-    /// against the collision shapes overlapping that block alone.
-    fn drop_offset(&self, width: f64, height: f64, p: Pos) -> f64 {
+    /// against the collision shapes overlapping that block, or, `moved_up`, two
+    /// blocks against those of the block and the one under it.
+    pub(super) fn drop_offset_from(&self, width: f64, height: f64, p: Pos, moved_up: bool) -> f64 {
         use horizon_world::{
             block_collision_scan::BlockCollisionScan, collision_context::CollisionContext,
         };
@@ -782,7 +788,11 @@ impl Game<'_> {
             Vec3::new(x + h, y + height, z + h),
         );
         let cell = Aabb::new(
-            Vec3::new(f64::from(p.0), f64::from(p.1), f64::from(p.2)),
+            Vec3::new(
+                f64::from(p.0),
+                f64::from(p.1) - if moved_up { 1.0 } else { 0.0 },
+                f64::from(p.2),
+            ),
             Vec3::new(
                 f64::from(p.0) + 1.0,
                 f64::from(p.1) + 1.0,
@@ -794,7 +804,7 @@ impl Game<'_> {
             binding: self.collision,
             subject: None,
         };
-        let mut amount = -1.0;
+        let mut amount = if moved_up { -2.0 } else { -1.0 };
         // Level.getCollisions(null, aabb): CollisionContext.empty().
         if let Ok(scan) = BlockCollisionScan::new(
             &mut scene,
@@ -818,6 +828,23 @@ impl Game<'_> {
         } else {
             format!("minecraft:{kind}")
         };
+        // Ender Dragons are simulated separately from `Mob` and therefore do
+        // not have a mob-type registry entry for the generic dispenser path.
+        if name == "minecraft:ender_dragon" {
+            // `EntityType.getYOffset` uses the created entity's full 16 by 8
+            // bounding box when the dispenser asks to move it down.
+            let y_off = if try_move_down {
+                self.drop_offset(16.0, 8.0, p)
+            } else {
+                0.0
+            };
+            let at = [
+                f64::from(p.0) + 0.5,
+                f64::from(p.1) + y_off,
+                f64::from(p.2) + 0.5,
+            ];
+            return self.spawn_dragon_spawned(at);
+        }
         let t = self.res.mob_types().get(&name)?.clone();
         let y_off = if try_move_down {
             self.drop_offset(t.width, t.height, p)
@@ -956,6 +983,9 @@ impl Game<'_> {
     }
     /// After `EntityType.spawn` / `MobBucketItem.spawn`: `mob.playAmbientSound()`.
     fn mob_ambient(&mut self, id: u32) -> Result<()> {
+        if self.dragon_spawn_ambient(id) {
+            return Ok(());
+        }
         let Some(i) = self.mobs.iter().position(|m| m.id == id) else {
             return Ok(());
         };

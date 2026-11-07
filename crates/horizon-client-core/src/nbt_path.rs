@@ -79,28 +79,65 @@ fn elements(tag: &Tag) -> Option<Vec<Tag>> {
         _ => return None,
     })
 }
-fn number(t: &Tag) -> Option<i64> {
-    match t {
-        Tag::Byte(v) => Some(i64::from(*v)),
-        Tag::Short(v) => Some(i64::from(*v)),
-        Tag::Int(v) => Some(i64::from(*v)),
-        Tag::Long(v) => Some(*v),
-        _ => None,
+/// `DoubleTag.intValue` / `FloatTag.intValue` floor before the i32 conversion;
+/// integral tags use their intValue narrowing. Byte arrays then keep the low byte.
+pub fn int_value(t: &Tag) -> Option<i32> {
+    Some(match t {
+        Tag::Byte(v) => i32::from(*v),
+        Tag::Short(v) => i32::from(*v),
+        Tag::Int(v) => *v,
+        Tag::Long(v) => *v as i32,
+        Tag::Float(v) => f32::from_bits(*v).floor() as i32,
+        Tag::Double(v) => f64::from_bits(*v).floor() as i32,
+        _ => return None,
+    })
+}
+/// `FloatTag.longValue` truncates; `DoubleTag.longValue` floors before narrowing.
+fn long_value(t: &Tag) -> Option<i64> {
+    Some(match t {
+        Tag::Byte(v) => i64::from(*v),
+        Tag::Short(v) => i64::from(*v),
+        Tag::Int(v) => i64::from(*v),
+        Tag::Long(v) => *v,
+        // FloatTag.longValue truncates; DoubleTag.longValue floors first.
+        Tag::Float(v) => f32::from_bits(*v) as i64,
+        Tag::Double(v) => f64::from_bits(*v).floor() as i64,
+        _ => return None,
+    })
+}
+#[derive(Clone, Copy)]
+enum ElementKind {
+    List,
+    NumericArray,
+}
+impl ElementKind {
+    // Admission only: arrays require NumericTag; lists accept every tag type.
+    fn accepts(self, value: &Tag) -> bool {
+        matches!(self, Self::List)
+            || matches!(
+                value,
+                Tag::Byte(_)
+                    | Tag::Short(_)
+                    | Tag::Int(_)
+                    | Tag::Long(_)
+                    | Tag::Float(_)
+                    | Tag::Double(_)
+            )
     }
 }
-/// Run `f` over the elements of a list/array, writing array results back.
+/// Rust view adapter: run `f` over the elements, then write arrays using their numeric accessor.
 /// None when `tag` is not list-like.
-fn with_elements<R>(tag: &mut Tag, f: impl FnOnce(&mut Vec<Tag>) -> R) -> Option<R> {
+fn with_elements<R>(tag: &mut Tag, f: impl FnOnce(&mut Vec<Tag>, ElementKind) -> R) -> Option<R> {
     match tag {
-        Tag::List(l) => Some(f(l)),
+        Tag::List(l) => Some(f(l, ElementKind::List)),
         Tag::ByteArray(_) | Tag::IntArray(_) | Tag::LongArray(_) => {
             let mut v = elements(tag)?;
-            let r = f(&mut v);
-            let nums: Vec<i64> = v.iter().filter_map(number).collect();
+            let r = f(&mut v, ElementKind::NumericArray);
             match tag {
-                Tag::ByteArray(a) => *a = nums.iter().map(|n| *n as u8).collect(),
-                Tag::IntArray(a) => *a = nums.iter().map(|n| *n as i32).collect(),
-                Tag::LongArray(a) => *a = nums,
+                // Float/double byteValue uses intValue's floor, then narrows.
+                Tag::ByteArray(a) => *a = v.iter().filter_map(int_value).map(|n| n as u8).collect(),
+                Tag::IntArray(a) => *a = v.iter().filter_map(int_value).collect(),
+                Tag::LongArray(a) => *a = v.iter().filter_map(long_value).collect(),
                 _ => {}
             }
             Some(r)
@@ -156,6 +193,20 @@ impl NbtPath {
     }
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty()
+    }
+    /// Whether this selects a compound-field chain, including filtered or quoted fields.
+    /// Matching a root or child does not change that subtree's writer provenance.
+    pub fn is_field_path(&self, fields: &[&str]) -> bool {
+        let mut fields = fields.iter();
+        for node in &self.nodes {
+            match node {
+                Node::MatchRoot(_) => {}
+                Node::Child(name) | Node::MatchChild(name, _)
+                    if fields.next().copied() == Some(name.as_str()) => {}
+                _ => return false,
+            }
+        }
+        fields.next().is_none()
     }
     fn not_found(&self, node: usize) -> PathError {
         let end = self.ends[node];
@@ -349,7 +400,7 @@ impl NbtPath {
         });
         removed
     }
-    /// `insert` (also append and prepend): into every list the path reaches.
+    /// `NbtPathArgument.NbtPath.insert`: insert accepted tags into every reached collection.
     pub fn insert(
         &self,
         index: i32,
@@ -372,19 +423,23 @@ impl NbtPath {
                 return;
             }
             let shown = crate::snbt::to_snbt(target);
-            let result = with_elements(target, |list| {
+            let result = with_elements(target, |list, kind| {
                 let start = if index < 0 {
                     list.len() as i64 + i64::from(index) + 1
                 } else {
                     i64::from(index)
                 };
                 let mut any = false;
-                for (n, v) in values.iter().enumerate() {
-                    let at = start + n as i64;
+                let mut at = start;
+                for v in values {
+                    if !kind.accepts(v) {
+                        continue;
+                    }
                     if at < 0 || at as usize > list.len() {
                         return Err(CollectionError::InvalidIndex(at as i32));
                     }
                     list.insert(at as usize, v.clone());
+                    at += 1;
                     any = true;
                 }
                 Ok(any)
@@ -428,7 +483,8 @@ fn preferred_parent(node: &Node) -> Tag {
         _ => Tag::Compound(Compound::new()),
     }
 }
-/// `getOrCreateTag` (or `getTag` without `create`): the children of `parent`.
+/// Children of `parent`; the array creation arm follows
+/// `NbtPathArgument.AllElementsNode.getOrCreateTag` admission.
 fn step_mut(
     node: &Node,
     parent: &mut Tag,
@@ -468,11 +524,14 @@ fn step_mut(
         }
         Node::AllElements => {
             let make = create;
-            let _ = with_elements(parent, |list| {
+            let _ = with_elements(parent, |list, kind| {
                 if list.is_empty() {
                     if let Some(make) = make {
-                        list.push(make());
-                        out(&mut list[0]);
+                        let value = make();
+                        if kind.accepts(&value) {
+                            list.push(value);
+                            out(&mut list[0]);
+                        }
                     }
                 } else {
                     for t in list.iter_mut() {
@@ -482,7 +541,7 @@ fn step_mut(
             });
         }
         Node::Index(i) => {
-            let _ = with_elements(parent, |list| {
+            let _ = with_elements(parent, |list, _kind| {
                 let n = list.len() as i64;
                 let idx = if *i < 0 {
                     n + i64::from(*i)
@@ -518,7 +577,8 @@ fn step_mut(
         }
     }
 }
-/// `Node.setTag`: replace the child(ren) of `parent` with `value`.
+/// Element setters follow `NbtPathArgument.AllElementsNode.setTag` and
+/// `NbtPathArgument.IndexedElementNode.setTag`; object nodes replace their children.
 fn set_tag(node: &Node, parent: &mut Tag, value: &Tag) -> usize {
     match node {
         Node::Child(name) => {
@@ -538,29 +598,36 @@ fn set_tag(node: &Node, parent: &mut Tag, value: &Tag) -> usize {
             }
             0
         }
-        Node::AllElements => with_elements(parent, |list| {
-            if list.is_empty() {
-                list.push(value.clone());
+        Node::AllElements => with_elements(parent, |list, kind| {
+            let len = list.len();
+            if len == 0 {
+                if kind.accepts(value) {
+                    list.push(value.clone());
+                }
+                // AllElementsNode returns 1 here even when addTag rejects.
                 return 1;
             }
+            // Compare the original tags, before numeric conversion.
             let changed = list.iter().filter(|t| *t != value).count();
             if changed == 0 {
                 return 0;
             }
-            for t in list.iter_mut() {
-                *t = value.clone();
+            list.clear();
+            if !kind.accepts(value) {
+                return 0;
             }
+            list.resize(len, value.clone());
             changed
         })
         .unwrap_or(0),
-        Node::Index(i) => with_elements(parent, |list| {
+        Node::Index(i) => with_elements(parent, |list, kind| {
             let n = list.len() as i64;
             let idx = if *i < 0 {
                 n + i64::from(*i)
             } else {
                 i64::from(*i)
             };
-            if (0..n).contains(&idx) && list[idx as usize] != *value {
+            if (0..n).contains(&idx) && list[idx as usize] != *value && kind.accepts(value) {
                 list[idx as usize] = value.clone();
                 1
             } else {
@@ -586,6 +653,7 @@ fn set_tag(node: &Node, parent: &mut Tag, value: &Tag) -> usize {
         Node::MatchRoot(_) => 0,
     }
 }
+/// Removal arms, including `NbtPathArgument.AllElementsNode.removeTag`.
 fn remove_tag(node: &Node, parent: &mut Tag) -> usize {
     match node {
         Node::Child(name) => match parent {
@@ -603,13 +671,13 @@ fn remove_tag(node: &Node, parent: &mut Tag) -> usize {
             }
             _ => 0,
         },
-        Node::AllElements => with_elements(parent, |l| {
+        Node::AllElements => with_elements(parent, |l, _kind| {
             let n = l.len();
             l.clear();
             n
         })
         .unwrap_or(0),
-        Node::Index(i) => with_elements(parent, |l| {
+        Node::Index(i) => with_elements(parent, |l, _kind| {
             let n = l.len() as i64;
             let idx = if *i < 0 {
                 n + i64::from(*i)
@@ -658,11 +726,16 @@ fn parse_node(text: &str, i: usize, first: bool) -> Result<(Node, usize), PathEr
                 Some(b']') => Ok((Node::AllElements, j + 1)),
                 _ => {
                     let start = j;
-                    if b.get(j) == Some(&b'-') {
+                    // StringReader.readInt scans all allowed number characters
+                    // before parsing, including malformed signs and decimal points.
+                    while b
+                        .get(j)
+                        .is_some_and(|c| c.is_ascii_digit() || matches!(c, b'-' | b'.'))
+                    {
                         j += 1;
                     }
-                    while b.get(j).is_some_and(u8::is_ascii_digit) {
-                        j += 1;
+                    if start == j {
+                        return Err(PathError::new("parsing.int.expected", vec![], start));
                     }
                     let n: i32 = text[start..j].parse().map_err(|_| {
                         PathError::new(
@@ -724,6 +797,13 @@ fn read_quoted(text: &str, i: usize) -> Result<(String, usize), PathError> {
     let mut escaped = false;
     for (o, c) in text[i + 1..].char_indices() {
         if escaped {
+            if c != quote && c != '\\' {
+                return Err(PathError::new(
+                    "parsing.quote.escape",
+                    vec![c.to_string()],
+                    i + 1 + o,
+                ));
+            }
             out.push(c);
             escaped = false;
         } else if c == '\\' {
@@ -772,6 +852,59 @@ fn parse_compound(text: &str, i: usize) -> Result<(Tag, usize), PathError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn quoted_escapes_and_index_tokens_match_brigadier() {
+        let cases = [
+            (r#""a\q""#, "parsing.quote.escape", vec!["q"], 3),
+            (r#"'a\x'"#, "parsing.quote.escape", vec!["x"], 3),
+            ("[1.0]", "parsing.int.invalid", vec!["1.0"], 1),
+            ("[.]", "parsing.int.invalid", vec!["."], 1),
+            ("[--1]", "parsing.int.invalid", vec!["--1"], 1),
+            ("[2147483648]", "parsing.int.invalid", vec!["2147483648"], 1),
+            ("[+1]", "parsing.int.expected", vec![], 1),
+            (r#""é\q""#, "parsing.quote.escape", vec!["q"], 4),
+            (r#""é"[1.0]"#, "parsing.int.invalid", vec!["1.0"], 5),
+        ];
+        let mut failures = Vec::new();
+        for (text, key, args, cursor) in cases {
+            match NbtPath::parse_prefix(text) {
+                Err(error) if error.key == key && error.args == args && error.cursor == cursor => {}
+                other => failures.push(format!("{text:?}: {other:?}")),
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn valid_quoted_escapes_still_select_the_exact_field() {
+        let root = Tag::compound([("a\"b", Tag::Int(7)), ("a\\b", Tag::Int(8))]);
+        for (path, value) in [(r#""a\"b""#, 7), (r#""a\\b""#, 8)] {
+            assert_eq!(
+                NbtPath::parse(path).unwrap().get(&root).unwrap(),
+                vec![Tag::Int(value)]
+            );
+        }
+    }
+
+    #[test]
+    fn field_provenance_handles_quotes_and_filters_without_matching_lists() {
+        for text in [
+            "blockState.properties",
+            "\"blockState\".\"properties\"",
+            "{source:1b}.blockState.properties",
+            "blockState{id:\"minecraft:piston_head\"}.properties",
+        ] {
+            let path = NbtPath::parse(text).unwrap();
+            assert!(path.is_field_path(&["blockState", "properties"]));
+            assert!(!path.is_field_path(&["blockState"]));
+        }
+        assert!(NbtPath::parse("{source:1b}").unwrap().is_field_path(&[]));
+        assert!(
+            !NbtPath::parse("blockState[].properties")
+                .unwrap()
+                .is_field_path(&["blockState", "properties"])
+        );
+    }
 
     fn tag(s: &str) -> Tag {
         parse_snbt(s).unwrap().0
@@ -885,6 +1018,100 @@ mod tests {
             path("l[0]").insert(0, &mut root, &[tag("1")]).unwrap_err(),
             CollectionError::ExpectedList(_)
         ));
+    }
+
+    #[test]
+    fn numeric_array_edits_use_the_destination_numeric_accessor() {
+        for (initial, value, inserted, indexed, all) in [
+            (
+                "{v:[B;1b,2b]}",
+                "-3.5f",
+                "{v:[B;1b,-4b,2b]}",
+                "{v:[B;-4b,2b]}",
+                "{v:[B;-4b,-4b]}",
+            ),
+            (
+                "{v:[B;1b,2b]}",
+                "-3.5d",
+                "{v:[B;1b,-4b,2b]}",
+                "{v:[B;-4b,2b]}",
+                "{v:[B;-4b,-4b]}",
+            ),
+            (
+                "{v:[I;1,2]}",
+                "-3.5f",
+                "{v:[I;1,-4,2]}",
+                "{v:[I;-4,2]}",
+                "{v:[I;-4,-4]}",
+            ),
+            (
+                "{v:[I;1,2]}",
+                "-3.5d",
+                "{v:[I;1,-4,2]}",
+                "{v:[I;-4,2]}",
+                "{v:[I;-4,-4]}",
+            ),
+            (
+                "{v:[L;1L,2L]}",
+                "-3.5f",
+                "{v:[L;1L,-3L,2L]}",
+                "{v:[L;-3L,2L]}",
+                "{v:[L;-3L,-3L]}",
+            ),
+            (
+                "{v:[L;1L,2L]}",
+                "-3.5d",
+                "{v:[L;1L,-4L,2L]}",
+                "{v:[L;-4L,2L]}",
+                "{v:[L;-4L,-4L]}",
+            ),
+        ] {
+            let value = tag(value);
+            let mut root = tag(initial);
+            assert_eq!(
+                path("v")
+                    .insert(1, &mut root, std::slice::from_ref(&value))
+                    .unwrap(),
+                1
+            );
+            assert_eq!(root, tag(inserted));
+            let mut root = tag(initial);
+            assert_eq!(path("v[0]").set(&mut root, &value).unwrap(), 1);
+            assert_eq!(root, tag(indexed));
+            let mut root = tag(initial);
+            assert_eq!(path("v[]").set(&mut root, &value).unwrap(), 2);
+            assert_eq!(root, tag(all));
+        }
+    }
+
+    #[test]
+    fn numeric_arrays_reject_nonnumeric_insert_and_indexed_set() {
+        for initial in ["{v:[B;1b,2b]}", "{v:[I;1,2]}", "{v:[L;1L,2L]}"] {
+            let original = tag(initial);
+            let value = tag("\"bad\"");
+            for index in [0, 99, -99] {
+                let mut root = original.clone();
+                assert_eq!(
+                    path("v")
+                        .insert(index, &mut root, std::slice::from_ref(&value))
+                        .unwrap(),
+                    0
+                );
+                assert_eq!(root, original);
+            }
+            let mut root = original.clone();
+            assert_eq!(path("v[0]").set(&mut root, &value).unwrap(), 0);
+            assert_eq!(root, original);
+        }
+    }
+
+    #[test]
+    fn empty_array_wildcard_set_preserves_vanillas_count_on_rejection() {
+        for initial in ["{v:[B;]}", "{v:[I;]}", "{v:[L;]}"] {
+            let mut root = tag(initial);
+            assert_eq!(path("v[]").set(&mut root, &tag("\"bad\"")).unwrap(), 1);
+            assert_eq!(root, tag(initial));
+        }
     }
 
     #[test]

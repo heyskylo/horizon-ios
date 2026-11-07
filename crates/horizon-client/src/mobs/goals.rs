@@ -647,15 +647,79 @@ impl Mob {
             return false;
         };
         let eye = Vec3::new(self.position.x, self.eye_y(), self.position.z);
-        let v = w.line_of_sight(eye, Vec3::new(t.position.x, t.eye_y, t.position.z));
+        let v = w.line_of_sight_for(
+            Some(self.position.y),
+            eye,
+            Vec3::new(t.position.x, t.eye_y, t.position.z),
+        );
         self.ai.seen_cache.push((who, v));
         v
     }
-    /// Mob.isWithinMeleeAttackRange: the box inflated by sqrt(2.04) - 0.6.
-    pub fn within_melee_range(&self, t: &TargetInfo) -> bool {
-        let reach = 2.04f32.sqrt() as f64 - 0.6;
-        let b = self.bounds().inflate(Vec3::new(reach, 0.0, reach));
-        b.intersects(t.bounds)
+    /// Mob.isWithinMeleeAttackRange: the box inflated by sqrt(2.04) - 0.6, or
+    /// for an active item with `attack_range` (the spears) by its
+    /// `effectiveMaxRange` for a mob (`max_reach * mob_factor`), and not
+    /// within its `effectiveMinRange` (`min_reach * mob_factor`).
+    pub fn within_melee_range(&self, w: &MobWorld, t: &TargetInfo) -> bool {
+        self.melee_reaches(w, t.hitbox)
+    }
+    /// [`Self::within_melee_range`] for a target's box (`getHitbox`).
+    pub fn melee_reaches(&self, w: &MobWorld, target: Aabb) -> bool {
+        // getVehicle().getBoundingBox() now: a mob vehicle's box as the
+        // snapshot has it after its own tick, else the box positionRider
+        // left for this same vehicle (a boat, a minecart, primed TNT).
+        let vehicle = self.extra.mount.and_then(|v| {
+            w.seen(v)
+                .map(|s| s.bounds)
+                .or_else(|| self.extra.seat.filter(|s| s.0 == v).map(|s| s.2))
+        });
+        self.melee_reaches_beside(vehicle, target)
+    }
+    /// [`Self::melee_reaches`] with the vehicle's box given.
+    pub fn melee_reaches_beside(&self, vehicle: Option<Aabb>, target: Aabb) -> bool {
+        let (max, min) = match self.active_attack_range() {
+            Some((max, min)) => (f64::from(max), f64::from(min)),
+            None => (2.04f32.sqrt() as f64 - 0.6, 0.0),
+        };
+        let reaches = |range: f64| self.attack_box(range, vehicle).intersects(target);
+        reaches(max) && (min <= 0.0 || !reaches(min))
+    }
+    /// The active item's `attack_range` for a mob: `effectiveMaxRange` and
+    /// `effectiveMinRange` (`max_reach` and `min_reach` times `mob_factor`).
+    /// A patch on the held stack wins (`!minecraft:attack_range` removes it;
+    /// the codec's defaults are 0, 3 and a factor of 1); else the spears'.
+    fn active_attack_range(&self) -> Option<(f32, f32)> {
+        let item = self.active_item()?;
+        let patch = (self.extra.main_hand.as_deref() == Some(item))
+            .then(|| self.extra.main_hand_stack().and_then(|s| s.data()))
+            .flatten();
+        if patch.is_some_and(|d| d.other("!minecraft:attack_range").is_some()) {
+            return None;
+        }
+        if let Some(range) = patch.and_then(|d| d.other("minecraft:attack_range")) {
+            let float = |key: &str, default: f32| match range.get(key) {
+                Some(horizon_world::nbt::Tag::Float(bits)) => f32::from_bits(*bits),
+                Some(horizon_world::nbt::Tag::Double(bits)) => f64::from_bits(*bits) as f32,
+                Some(horizon_world::nbt::Tag::Int(v)) => *v as f32,
+                _ => default,
+            };
+            let factor = float("mob_factor", 1.0);
+            return Some((
+                float("max_reach", 3.0) * factor,
+                float("min_reach", 0.0) * factor,
+            ));
+        }
+        crate::spear::Kinetic::of(item).map(|_| {
+            let r = &crate::spear::REACH;
+            (r.max * r.mob_factor, r.min * r.mob_factor)
+        })
+    }
+    /// `LivingEntity.getActiveItem`: the item being used, else the main hand's.
+    pub fn active_item(&self) -> Option<&str> {
+        if super::spear_use::is_using_item(self) && self.extra.using_off_hand {
+            self.extra.off_hand.as_deref()
+        } else {
+            self.extra.main_hand.as_deref()
+        }
     }
     /// Whether the species is a `TamableAnimal` (not the horses and llamas,
     /// which are tamed another way).
@@ -753,22 +817,12 @@ impl Mob {
         if !p.alive || p.spectator {
             return false;
         }
-        // LivingEntity.getVisibilityPercent
-        let mut visibility = if scale { p.visibility_percent() } else { 1.0 };
-        if let Some(head) = p.head.as_ref().filter(|_| scale) {
-            let skull = match self.species() {
-                Species::Zombie | Species::Husk | Species::Drowned | Species::ZombieVillager => {
-                    "minecraft:zombie_head"
-                }
-                Species::Skeleton | Species::Stray | Species::Bogged => "minecraft:skeleton_head",
-                Species::Creeper => "minecraft:creeper_head",
-                Species::Piglin | Species::PiglinBrute => "minecraft:piglin_head",
-                _ => "",
-            };
-            if &**head == skull {
-                visibility *= 0.5;
-            }
-        }
+        // LivingEntity.getVisibilityPercent, including worn mob_visibility.
+        let visibility = if scale {
+            p.visibility_percent(Some(self.kind.id.as_str()), w.items)
+        } else {
+            1.0
+        };
         let dist = (range * visibility).max(2.0);
         if self.distance_sqr(p.position) > dist * dist {
             return false;
@@ -1038,7 +1092,11 @@ impl Goal for Stroll {
     fn flags(&self) -> u8 {
         MOVE
     }
+    /// RandomStrollGoal.canUse.
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
+        if super::riders::mob_controlled(m, cx.w) {
+            return false;
+        }
         if self.gate.is_some_and(|gate| !gate(m, cx.w)) {
             return false;
         }
@@ -1088,8 +1146,9 @@ impl Goal for Stroll {
         self.force = false;
         true
     }
-    fn can_continue(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
-        !m.ai.nav.is_done()
+    /// RandomStrollGoal.canContinueToUse.
+    fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
+        !m.ai.nav.is_done() && !super::riders::mob_controlled(m, cx.w)
     }
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         m.nav_move_to(cx.w, self.wanted, self.speed);
@@ -1348,7 +1407,7 @@ impl Goal for MeleeAttack {
             return false;
         }
         let path = m.create_path_to_entity(cx.w, [t.position.x, t.position.y, t.position.z], 0);
-        let ok = path.is_some() || m.within_melee_range(&t);
+        let ok = path.is_some() || m.within_melee_range(cx.w, &t);
         m.ai.pending_path = path;
         ok
     }
@@ -1427,7 +1486,7 @@ impl Goal for MeleeAttack {
                 &t,
                 cx,
             );
-        } else if self.until_attack <= 0 && m.within_melee_range(&t) && m.sees(cx.w, who) {
+        } else if self.until_attack <= 0 && m.within_melee_range(cx.w, &t) && m.sees(cx.w, who) {
             let interval = match self.baby_interval {
                 Some(baby) if m.is_baby() => baby,
                 _ => self.interval,
@@ -1567,6 +1626,11 @@ impl NearestTarget {
     }
     pub fn interval(mut self, i: i32) -> Self {
         self.interval = reduced(i);
+        self
+    }
+    /// `TargetGoal.setUnseenMemoryTicks`.
+    pub fn unseen_memory(mut self, ticks: i32) -> Self {
+        self.target_goal.unseen_memory = ticks;
         self
     }
     /// Scale the follow distance (llamas hunt wolves within a quarter of it).
@@ -2255,14 +2319,17 @@ impl Goal for Breed {
         self.love_time += 1;
         if self.love_time >= reduced(60) && m.distance_sqr(p.position) < 9.0 {
             // Llama.getBreedOffspring and finalizeSpawnChildFromBreeding's
-            // experience, from the parent's random.
+            // experience, from the parent's random: vanilla draws it only
+            // inside the `mob_drops` check.
             let llama = super::llama::is_llama(m.species()).then(|| {
                 let o = super::llama::breed_offspring(m, &p);
-                let xp = 1 + m.random.next_int_bound(7).unwrap_or(0);
-                cx.events.push(MobEvent::Experience {
-                    at: [m.position.x, m.position.y, m.position.z],
-                    amount: xp as u32,
-                });
+                if cx.w.mob_drops {
+                    let xp = 1 + m.random.next_int_bound(7).unwrap_or(0);
+                    cx.events.push(MobEvent::Experience {
+                        at: [m.position.x, m.position.y, m.position.z],
+                        amount: xp as u32,
+                    });
+                }
                 Box::new(o)
             });
             m.extra.in_love = 0;
@@ -2626,7 +2693,7 @@ impl Goal for EatBlock {
                         drop: false,
                     });
                 }
-                super::ai::ate(m);
+                super::ai::ate(m, cx.events);
             } else if cx.w.block_name(x, y - 1, z) == "minecraft:grass_block" {
                 // The particles and the dirt `setBlock` are the same gate.
                 if cx.w.mob_griefing {
@@ -2638,7 +2705,7 @@ impl Goal for EatBlock {
                         flags: horizon_world::level::flags::UPDATE_CLIENTS,
                     });
                 }
-                super::ai::ate(m);
+                super::ai::ate(m, cx.events);
             }
         }
     }
@@ -2914,9 +2981,10 @@ mod eat_block_tests {
 
     /// A sheep on a wide grass shelf, ticked long enough for its `EatBlockGoal`
     /// (1 in 1000 a tick) to fire several times: every event it pushed, with
-    /// the `mob_griefing` game rule at `griefing`. `tufts` puts short grass at
-    /// the sheep's own feet, so the goal takes the `destroyBlock` half; without
-    /// it the sheep stands on the grass and takes the grass-to-dirt half.
+    /// the `mob_griefing` game rule at `griefing` and `mob_drops` on. `tufts`
+    /// puts short grass at the sheep's own feet, so the goal takes the
+    /// `destroyBlock` half; without it the sheep stands on the grass and takes
+    /// the grass-to-dirt half.
     fn sheep_events(griefing: bool, tufts: bool) -> Option<Vec<MobEvent>> {
         let mut out = None;
         let build = |world: &mut crate::world::World,
@@ -2939,7 +3007,7 @@ mod eat_block_tests {
                 }
             }
         };
-        with_built_test_world_rules(&[], griefing, build, |w, types| {
+        with_built_test_world_rules(&[], griefing, true, build, |w, types| {
             let kind = Arc::new(types.types["minecraft:sheep"].clone());
             let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
             let mut random = LegacyRandom::new(0);
@@ -3220,5 +3288,192 @@ mod move_to_block_tests {
         }
         let goal = MoveToBlock::new(1.0, 24, 2);
         assert_eq!(goal.walk([5, 64, 5], |_| true), Some([5, 63, 5]));
+    }
+}
+
+#[cfg(test)]
+mod breed_xp_tests {
+    use super::*;
+
+    /// Two llamas in love, two blocks apart on a flat grass shelf, ticked by
+    /// the AI until the first breeds: its own events, with the `mob_drops`
+    /// game rule at `drops`. `None` without the vanilla data.
+    fn llama_events(drops: bool) -> Option<Vec<MobEvent>> {
+        // The partner's `Seen` needs its kind, so two loads.
+        let mut kind = None;
+        crate::mobs::world::with_built_test_world_rules(&[], true, drops, shelf, |_, types| {
+            kind = Some(Arc::new(types.types["minecraft:llama"].clone()));
+        });
+        let kind = kind?;
+        let mut partner = Mob::new(2, kind.clone(), Vec3::new(2.5, 64.0, 0.5), 0.0);
+        // AbstractHorse.canParent: only tame llamas breed.
+        partner.extra.tame = true;
+        partner.extra.in_love = 600;
+        let seen = [partner.seen(None)];
+        let mut out = None;
+        crate::mobs::world::with_built_test_world_rules(&seen, true, drops, shelf, |w, _| {
+            let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+            m.extra.in_love = 600;
+            m.extra.tame = true;
+            let mut lr = LegacyRandom::new(0);
+            let mut events = Vec::new();
+            for _ in 0..600 {
+                crate::mobs::ai::tick(&mut m, w, &mut lr, &mut events);
+                if events
+                    .iter()
+                    .any(|e| matches!(e, MobEvent::Breed { parent: 1, .. }))
+                {
+                    break;
+                }
+            }
+            out = Some(events);
+        });
+        out
+    }
+
+    /// A flat grass shelf two llamas can stand on.
+    fn shelf(world: &mut crate::world::World, registry: &horizon_world::registry::BlockRegistry) {
+        let grass = registry.default_state("minecraft:grass_block").unwrap();
+        for cx in -3..3 {
+            for cz in -3..3 {
+                world
+                    .chunks
+                    .insert((cx, cz), Arc::new(crate::chunk::Chunk::empty(cx, cz)));
+            }
+        }
+        for x in -8..=8 {
+            for z in -8..=8 {
+                world.set(x, 63, z, grass).unwrap();
+            }
+        }
+    }
+
+    /// `finalizeSpawnChildFromBreeding` makes the experience draw only inside
+    /// the `mob_drops` check, from the breeding parent's own random: the
+    /// breed goal pushes one 1-7 orb with the rule on, none with it off, and
+    /// the pair breeds either way.
+    #[test]
+    fn the_breed_xp_follows_the_mob_drops_rule() {
+        let Some(on) = llama_events(true) else {
+            return;
+        };
+        let Some(off) = llama_events(false) else {
+            return;
+        };
+        let orb = |events: &[MobEvent]| {
+            events.iter().find_map(|e| match e {
+                MobEvent::Experience { amount, .. } => Some(*amount),
+                _ => None,
+            })
+        };
+        assert!(
+            orb(&on).is_some_and(|a| (1..=7).contains(&a)),
+            "mob_drops on: one orb of 1-7, got {:?}",
+            orb(&on)
+        );
+        assert!(orb(&off).is_none(), "mob_drops off: no experience draw");
+        assert!(
+            on.iter()
+                .any(|e| matches!(e, MobEvent::Breed { parent: 1, .. })),
+            "mob_drops on: the pair breeds"
+        );
+        assert!(
+            off.iter()
+                .any(|e| matches!(e, MobEvent::Breed { parent: 1, .. })),
+            "mob_drops off: the pair still breeds"
+        );
+    }
+}
+
+#[cfg(test)]
+mod melee_range_tests {
+    use super::*;
+
+    fn mob_holding(item: &str, components: Option<&str>) -> Mob {
+        let kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
+        let mut m = Mob::new(1, Arc::new(kind), Vec3::new(0.5, 64.0, 0.5), 0.0);
+        let mut stack = crate::items::ItemStack::new(item, 1);
+        if let Some(text) = components {
+            let tag = horizon_world::nbt::parse_snbt(text).unwrap().0;
+            (stack.damage, stack.extra) = crate::item_data::decode_components(Some(&tag));
+        }
+        m.extra.set_main_hand_stack(Some(stack));
+        m
+    }
+    /// A one-block target whose near face is `gap` blocks east of the mob's box.
+    fn target(m: &Mob, gap: f64) -> Aabb {
+        let x = m.bounds().max_position().x + gap;
+        Aabb::new(Vec3::new(x, 64.0, 0.0), Vec3::new(x + 1.0, 65.0, 1.0))
+    }
+
+    /// `Mob.isWithinMeleeAttackRange` with `getActiveItem().get(ATTACK_RANGE)`:
+    /// no component reaches sqrt(2.04) - 0.6 (about 0.83); a spear 4.5 and 2.0
+    /// times its mob factor 0.5; a patched component with the codec's
+    /// defaults (`mob_factor` 1, `min_reach` 0); a removed one the default.
+    #[test]
+    fn the_active_items_attack_range_sets_the_reach() {
+        let sword = mob_holding("minecraft:iron_sword", None);
+        assert!(sword.melee_reaches_beside(None, target(&sword, 0.8)));
+        assert!(!sword.melee_reaches_beside(None, target(&sword, 0.9)));
+
+        let spear = mob_holding("minecraft:iron_spear", None);
+        assert!(spear.melee_reaches_beside(None, target(&spear, 2.2)));
+        assert!(!spear.melee_reaches_beside(None, target(&spear, 2.3)));
+        assert!(
+            !spear.melee_reaches_beside(None, target(&spear, 0.5)),
+            "inside the minimum range"
+        );
+        assert!(spear.melee_reaches_beside(None, target(&spear, 1.1)));
+
+        let long = mob_holding(
+            "minecraft:iron_sword",
+            Some(r#"{"minecraft:attack_range":{max_reach:6.0f}}"#),
+        );
+        assert!(long.melee_reaches_beside(None, target(&long, 5.9)));
+        assert!(
+            long.melee_reaches_beside(None, target(&long, 0.0)),
+            "no minimum by default"
+        );
+        assert!(!long.melee_reaches_beside(None, target(&long, 6.1)));
+
+        let blunt = mob_holding(
+            "minecraft:iron_spear",
+            Some(r#"{"!minecraft:attack_range":{}}"#),
+        );
+        assert!(blunt.melee_reaches_beside(None, target(&blunt, 0.5)));
+        assert!(!blunt.melee_reaches_beside(None, target(&blunt, 2.0)));
+    }
+
+    /// `Mob.getAttackBoundingBox`: a rider's box widened on x and z to its
+    /// vehicle's (a 1.4 wide horse under a 0.6 wide zombie) before the reach
+    /// is added; `LivingEntity.getHitbox`: a rider is hit from its seat up.
+    #[test]
+    fn a_riders_attack_box_takes_its_vehicles_width() {
+        let mut rider = mob_holding("minecraft:iron_sword", None);
+        let at = rider.position;
+        let horse = Aabb::new(
+            Vec3::new(at.x - 0.7, at.y - 1.0, at.z - 0.7),
+            Vec3::new(at.x + 0.7, at.y + 0.6, at.z + 0.7),
+        );
+        // Its near face 0.9 past the zombie's box: past the default reach of
+        // the zombie alone (about 0.83), within it from the horse's side.
+        let target = target(&rider, 0.9);
+        assert!(!rider.melee_reaches_beside(None, target));
+        rider.extra.mount = Some(9);
+        rider.seated(9, 0.7, horse);
+        assert!(rider.melee_reaches_beside(Some(horse), target));
+        // Its own box keeps its height: the horse's lower box adds nothing.
+        let below = Aabb::new(
+            Vec3::new(at.x + 0.9, at.y - 1.0, at.z),
+            Vec3::new(at.x + 1.1, at.y - 0.5, at.z + 1.0),
+        );
+        assert!(!rider.melee_reaches_beside(Some(horse), below));
+
+        assert_eq!(rider.hitbox().min_position().y, at.y + 0.7);
+        // A seat left from another vehicle is not this one's.
+        rider.extra.mount = Some(10);
+        assert_eq!(rider.hitbox().min_position().y, at.y);
+        rider.extra.mount = None;
+        assert_eq!(rider.hitbox().min_position().y, at.y);
     }
 }

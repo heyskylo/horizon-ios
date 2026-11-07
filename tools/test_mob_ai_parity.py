@@ -56,6 +56,22 @@ def scenarios():
         add(f'{species}_alone', 200, [
             f'mob minecraft:{species} 0.5 -60 0.5 90 {seed * 7 + 1} persistent',
         ])
+    # A zombie holding a spear (Mob.isWithinMeleeAttackRange): the spear's attack_range times its
+    # mob_factor, 0.5 to 2.25, instead of the default reach; a player too close is out of range.
+    add('zombie_spear_player', 200, ['player 6.5 -60 0.5',
+                                     'mob minecraft:zombie 0.5 -60 0.5 0 361 persistent hand=iron_spear*1'],
+        'time=18000')
+    add('zombie_spear_close', 120, ['player 1.2 -60 0.5',
+                                    'mob minecraft:zombie 0.5 -60 0.5 270 362 persistent hand=wooden_spear*1'],
+        'time=18000')
+    # A vindicator has no SpearUseGoal, so its MeleeAttackGoal hits with the spear's range: it must keep
+    # half a block off the player and reaches 2.25 out.
+    add('vindicator_spear_player', 200, ['player 6.5 -60 0.5',
+                                         'mob minecraft:vindicator 0.5 -60 0.5 0 363 persistent hand=iron_spear*1'],
+        'time=18000')
+    add('vindicator_spear_close', 120, ['player 1.0 -60 0.5',
+                                        'mob minecraft:vindicator 0.5 -60 0.5 270 364 persistent hand=stone_spear*1'],
+        'time=18000')
     # Drowned in a pool with the player on the shore and in the water.
     add('drowned_pool', 200, ['fill -6 -64 -6 6 -61 6 minecraft:water',
                               'player 9.5 -60 0.5',
@@ -97,6 +113,36 @@ def scenarios():
     for i, (x, seed) in enumerate([(0.5, 240), (6.5, 241)]):
         add(f'iron_golem_village_{i}', 400, VILLAGE + [f'mob minecraft:iron_golem {x} -60 3.5 0 {seed} persistent'], 'difficulty=0')
     add('iron_golem_outside_village', 400, VILLAGE + ['mob minecraft:iron_golem 30.5 -60 3.5 0 242 persistent'], 'difficulty=0')
+    # IronGolem.doHurtTarget throws what it hits up by 0.4 scaled by max(0, 1 - knockback resistance):
+    # all of it for a zombie, a quarter for a ravager (0.75), none for a warden (1). The zombie's
+    # scenario stops before the golem kills it (the probe has no target killed within the
+    # attacker's tick). A golem holding a target restarts its anger timer every tick
+    # (NeutralMob.updatePersistentAnger), and the NoAI targets still push (LivingEntity.aiStep).
+    for i, (species, ticks) in enumerate([('zombie', 48), ('ravager', 120), ('warden', 120)]):
+        add(f'iron_golem_tosses_{species}', ticks, [
+            f'mob minecraft:iron_golem 0.5 -60 0.5 270 {330 + i} persistent',
+            f'mob minecraft:{species} 3.5 -60 0.5 90 {340 + i} persistent noai',
+        ], 'difficulty=2 time=18000')
+    # An enderman in the rain teleports away again and again (LivingEntity.randomTeleport): it lands
+    # on the first #entities_can_teleport_to block below the spot, at the spot's own height less the
+    # blocks it went down, never into a liquid, and not onto or into #enderman_does_not_teleport_to.
+    # The open field stops before a teleport lands past the probe's loaded 9x9 chunks.
+    add('enderman_rain_teleports', 46, ['mob minecraft:enderman 0.5 -60 0.5 0 351 persistent'], 'rain')
+    add('enderman_rain_dangers', 300, [
+        'fill -32 -61 -32 -1 -61 32 minecraft:magma_block',
+        'fill 1 -60 -32 32 -60 -1 minecraft:sweet_berry_bush[age=3]',
+        'fill 1 -60 1 32 -60 32 minecraft:wither_rose',
+        'fill -8 -61 -8 -2 -61 8 minecraft:bedrock',
+        'mob minecraft:enderman 0.5 -60 0.5 0 352 persistent',
+    ], 'rain')
+    # Not onto ground that holds water (Enderman.canRandomlyTeleportTo): a floor of waterlogged slabs.
+    add('enderman_rain_waterlogged', 190, [
+        'fill -32 -61 -32 32 -61 32 minecraft:oak_slab[type=top,waterlogged=true]',
+        'fill -3 -61 -3 3 -61 3 minecraft:stone',
+        'mob minecraft:enderman 0.5 -60 0.5 0 353 persistent',
+    ], 'rain')
+    # A NoAI enderman still teleports out of the rain's hurt (Enderman.hurtServer).
+    add('enderman_rain_noai', 46, ['mob minecraft:enderman 0.5 -60 0.5 0 354 persistent noai'], 'rain')
     # RandomStandGoal (rearing, with the ambient sound) of every equine, left alone for 800 ticks.
     for i, species in enumerate(['horse', 'donkey', 'mule', 'zombie_horse', 'skeleton_horse', 'llama']):
         # The zombie horse at night: by day it burns, and a burning horse's hurts are another matter.
@@ -118,6 +164,15 @@ def scenarios():
     add('warden_creative', 300, ['player 4.5 -60 0.5 creative', 'mob minecraft:warden 0.5 -60 0.5 0 64 digcooldown'])
     add('warden_persistent', 400, ['player 7.5 -60 0.5', 'mob minecraft:warden 0.5 -60 0.5 0 65 persistent digcooldown'])
     add('warden_emerging', 300, ['player 6.5 -60 0.5', 'mob minecraft:warden 0.5 -60 0.5 0 66 emerge'])
+    # #8832: overlapping entities must not displace a warden while it emerges.
+    # Reverse tick order to cover the other mob's pushability query. The
+    # fixture has no flag that starts a dig, so digging is covered by
+    # `warden_push_tests` in mobs/ai.rs.
+    warden = 'mob minecraft:warden 0.5 -60 0.5 0 66 emerge'
+    cow = 'mob minecraft:cow 1.0 -60 0.5 0 68 persistent noai'
+    add('warden_emerging_push_first', 5, [warden, cow])
+    add('warden_emerging_push_second', 5, [cow, warden])
+    add('warden_emerging_push_player', 5, ['player 1.0 -60 0.5 creative', warden])
     add('warden_cow', 176, ['mob minecraft:warden 0.5 -60 0.5 0 67 digcooldown', 'mob minecraft:cow 4.5 -60 0.5 0 68 persistent'])
     # Two villagers gossip (TradeWithVillager): what one heard of the player
     # passes to the other, weakened, once in 1200 ticks; idle and at the bell.

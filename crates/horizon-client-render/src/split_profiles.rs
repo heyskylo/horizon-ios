@@ -8,7 +8,7 @@ use crate::{
     gamepad::{Button as PadButton, GlyphStyle},
     graphics_style,
     hud::{HudAtlas, HudBatch, rgba},
-    lang,
+    lang, pad_glyph,
     text::Text,
     ui,
 };
@@ -351,6 +351,14 @@ impl SplitProfiles {
             if matches!(target, Target::Forget) {
                 text = text.with_color(0xFF5555);
             }
+            let action = match target {
+                Target::Keep | Target::Cancel => Some(crate::widgets::Action::Cancel),
+                Target::Back => Some(crate::widgets::Action::Back),
+                _ => None,
+            };
+            if let Some(action) = action {
+                crate::widgets::declare_action(action, [*x, *y, *bw, *bh], *enabled);
+            }
             ui::button(batch, atlas, *x, *y, *bw, *bh, &text, *enabled, hover);
             if remove {
                 crate::widgets::record(label, [*x, *y, *bw, *bh], *enabled);
@@ -403,30 +411,23 @@ impl SplitProfiles {
             None => tr("horizon.splitscreen.profiles.move", "Move where you play"),
         };
         let keys = [PadButton::LeftBumper, PadButton::RightBumper];
-        let key_width = |b: PadButton| width(b.label(style)) + 4.0;
+        let key_width = |b: PadButton| pad_glyph::width(atlas, b, style);
         let total = keys.iter().map(|&b| key_width(b) + 4.0).sum::<f32>() + 2.0 + width(&words);
         let (mut x, y) = (((batch.width - total) / 2.0).floor(), 30.0);
         for b in keys {
-            let [r, g, bl] = b.color(style);
             let kw = key_width(b);
-            // A light edge around the dark key: it stands out on the menu's dark background.
-            batch.fill(
-                atlas,
-                x - 2.0,
-                y - 3.0,
-                kw + 2.0,
-                13.0,
-                rgba(170, 170, 170, 255),
-            );
-            batch.fill(atlas, x - 1.0, y - 2.0, kw, 11.0, rgba(40, 40, 40, 255));
-            batch.text(
-                atlas,
-                b.label(style),
-                x + 1.0,
-                y,
-                rgba(r, g, bl, 255),
-                false,
-            );
+            // A light edge around a dark key: it stands out on the menu's dark background.
+            if pad_glyph::art(atlas, b, style).is_none() {
+                batch.fill(
+                    atlas,
+                    x - 2.0,
+                    y - 3.0,
+                    kw + 2.0,
+                    pad_glyph::HEIGHT + 2.0,
+                    rgba(170, 170, 170, 255),
+                );
+            }
+            pad_glyph::draw(batch, atlas, b, style, x, y);
             x += kw + 4.0;
         }
         batch.text(atlas, &words, x + 2.0, y, rgba(240, 240, 240, 255), true);

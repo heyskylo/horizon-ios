@@ -143,13 +143,13 @@ pub(super) fn set_wanted(m: &mut Mob, speed: f64) {
     m.ai.mov.operation = Operation::MoveTo;
 }
 /// AbstractCubeMob.jumpFromGround (and MagmaCube's size boost).
-pub fn jump(m: &mut Mob) {
+pub fn jump(m: &mut Mob, w: &MobWorld) {
     let boost = if m.species() == Species::MagmaCube {
         m.extra.size as f32 * 0.1
     } else {
         0.0
     };
-    m.velocity.y = f64::from(m.jump_power() + boost);
+    m.velocity.y = f64::from(m.jump_power(w) + boost);
 }
 /// `AbstractCubeMob.tick`'s landing splash: crumbs of goo (or flames) around
 /// the cube's feet, drawn by the side that ticks the mob.
@@ -246,10 +246,9 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         // Player.touch: entities within the player's box grown by (1, 0.5, 1).
         && m.bounds().intersects(p.bounds.inflate(Vec3::new(1.0, 0.5, 1.0)))
     {
-        let reach = 2.04f32.sqrt() as f64 - 0.6;
-        if m.bounds()
-            .inflate(Vec3::new(reach, 0.0, reach))
-            .intersects(p.bounds)
+        // isWithinMeleeAttackRange, with what the cube holds.
+        if w.target_info(Who::Player)
+            .is_some_and(|t| m.melee_reaches(w, t.hitbox))
             && m.sees(w, Who::Player)
         {
             events.push(MobEvent::CubeHurtPlayer {
@@ -274,7 +273,8 @@ fn attack_damage(m: &Mob) -> f32 {
 /// `AbstractCubeMob.push(entity)`: an iron golem whose `pushEntities` takes
 /// this cube (its box overlaps the cube's, `EntitySelector.pushableBy`) gets
 /// `dealDamage`: alive, `doTeamsAllowDamage`, `isWithinMeleeAttackRange`
-/// (always true for overlapping boxes) and `hasLineOfSight`, then a
+/// (true for overlapping boxes unless a held spear's minimum range refuses
+/// them) and `hasLineOfSight`, then a
 /// `mobAttack` hit for `getAttackDamage`.
 fn hurt_touching_golems(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     // canDealDamage also needs Mob.isEffectiveAi: a NoAI cube never hurts.
@@ -292,6 +292,7 @@ fn hurt_touching_golems(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
                 && o.species == Species::IronGolem
                 && o.alive
                 && o.bounds.intersects(bounds)
+                && m.melee_reaches(w, o.hitbox)
                 && crate::scoreboard::pushable_by(theirs, own, pushable)
                 && crate::scoreboard::teams_allow_damage(own, theirs)
         })
@@ -532,6 +533,9 @@ mod golem_touch_tests {
                 main_hand: None,
                 off_hand: None,
                 head: None,
+                chest: None,
+                legs: None,
+                feet: None,
                 armor_cover: 0.0,
                 invisible: false,
                 spectator: false,

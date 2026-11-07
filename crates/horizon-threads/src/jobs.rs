@@ -23,7 +23,7 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// How urgent a job is, before its source's key: every queued job of a lower
 /// class runs before any of a higher one.
@@ -114,6 +114,10 @@ struct Entry {
     /// Taken out of the pool: the worker that ends its last job tells
     /// [`Registration`]'s drop, which waits for it.
     retired: AtomicBool,
+    /// When one of its jobs last ended (or it was registered).
+    last_job: Mutex<Instant>,
+    /// It was told it is idle ([`release_quiet_sources`]) since that job.
+    quiet: AtomicBool,
 }
 
 struct Inner {
@@ -251,6 +255,8 @@ impl Pool {
                 source,
                 running: AtomicUsize::new(0),
                 retired: AtomicBool::new(false),
+                last_job: Mutex::new(Instant::now()),
+                quiet: AtomicBool::new(false),
             }));
         self.inner.notify(true);
         Registration {
@@ -359,6 +365,42 @@ fn choose(inner: &Inner) -> Option<(Arc<Entry>, bool)> {
     }
 }
 
+/// Tell each source that has had no job for the idle delay, while others keep
+/// the workers busy, that it is idle: its state in every worker
+/// ([`Source::idle`]) and what its workers share ([`Source::all_idle`]). The
+/// pool's own release needs every worker idle at once, which a client that
+/// keeps meshing after its world loaded never is, while its server's
+/// generator holds buffers and caches nothing reads until the player moves on.
+fn release_quiet_sources(inner: &Inner) {
+    let quiet: Vec<Arc<Entry>> = inner
+        .sources
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .filter(|e| {
+            !e.quiet.load(Ordering::SeqCst)
+                && e.running.load(Ordering::SeqCst) == 0
+                && lock(&e.last_job).elapsed() >= inner.idle_release
+                && e.source.next().is_none()
+        })
+        .cloned()
+        .collect();
+    let mut freed = false;
+    for entry in quiet {
+        if entry.quiet.swap(true, Ordering::SeqCst) {
+            continue;
+        }
+        for worker in 0..inner.threads.load(Ordering::Relaxed) {
+            let _ = catch_unwind(AssertUnwindSafe(|| entry.source.idle(worker)));
+        }
+        let _ = catch_unwind(AssertUnwindSafe(|| entry.source.all_idle()));
+        freed = true;
+    }
+    if freed {
+        crate::release_free_memory();
+    }
+}
+
 /// One more far job running, if fewer than `cap` are.
 fn take_far_place(inner: &Inner, cap: usize) -> bool {
     let mut n = inner.far.load(Ordering::SeqCst);
@@ -376,6 +418,11 @@ fn take_far_place(inner: &Inner, cap: usize) -> bool {
 
 fn work(inner: &Inner, worker: usize) {
     let mut released = false;
+    // When this worker last ran a job. A wake that finds no job for it (another
+    // worker took it, or a source woke the pool for nothing) doesn't restart its
+    // wait: with jobs queued every few seconds on some worker, a pool of idle
+    // workers would otherwise never free anything.
+    let mut idle_since = Instant::now();
     loop {
         let epoch = inner.epoch.load(Ordering::SeqCst);
         if let Some((entry, far)) = choose(inner) {
@@ -393,11 +440,15 @@ fn work(inner: &Inner, worker: usize) {
             if far {
                 inner.far.fetch_sub(1, Ordering::SeqCst);
             }
+            *lock(&entry.last_job) = Instant::now();
+            entry.quiet.store(false, Ordering::SeqCst);
             entry.running.fetch_sub(1, Ordering::SeqCst);
             if entry.retired.load(Ordering::SeqCst) {
                 drop(lock(&inner.sleep));
                 inner.finished.notify_all();
             }
+            idle_since = Instant::now();
+            release_quiet_sources(inner);
             continue;
         }
         let sleep = lock(&inner.sleep);
@@ -412,9 +463,10 @@ fn work(inner: &Inner, worker: usize) {
             );
             false
         } else {
+            let left = inner.idle_release.saturating_sub(idle_since.elapsed());
             let (sleep, wait) = inner
                 .wake
-                .wait_timeout_while(sleep, inner.idle_release, still)
+                .wait_timeout_while(sleep, left, still)
                 .unwrap_or_else(|e| e.into_inner());
             drop(sleep);
             wait.timed_out()
@@ -439,13 +491,14 @@ fn work(inner: &Inner, worker: usize) {
             let _ = catch_unwind(AssertUnwindSafe(|| source.idle(worker)));
         }
         if last {
-            // The allocator keeps freed pages until memory runs short: once
-            // every worker has freed its own, hand them back.
             for source in &sources {
                 let _ = catch_unwind(AssertUnwindSafe(|| source.all_idle()));
             }
-            crate::release_free_memory();
         }
+        // The allocator keeps freed pages until memory runs short: hand back
+        // what this worker just freed (its own heap), and the shared arenas'
+        // once every worker has.
+        crate::release_free_memory();
     }
 }
 
@@ -616,6 +669,72 @@ mod tests {
         }
     }
 
+    /// A pool woken far more often than its idle delay, with no job for most of
+    /// its workers (the game queues a few meshes a second long after loading):
+    /// each worker still frees its state once it has run nothing for the delay,
+    /// and the whole pool once none has.
+    #[test]
+    fn workers_woken_for_nothing_still_free_their_state() {
+        let release = Duration::from_millis(300);
+        let pool = Pool::with_idle_release(4, "test-job", release);
+        let counter = Arc::new(Counter {
+            left: Mutex::new(0),
+            done: AtomicUsize::new(0),
+            per_worker: PerWorker::new(pool.threads()),
+            idle: AtomicBool::new(false),
+            all_idle: AtomicBool::new(false),
+        });
+        let reg = pool.register(counter.clone());
+        let deadline = Instant::now() + release * 10;
+        while !counter.all_idle.load(Ordering::Relaxed) {
+            assert!(
+                Instant::now() < deadline,
+                "woken every 50 ms, the workers never released"
+            );
+            reg.notify_all();
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(counter.idle.load(Ordering::Relaxed));
+    }
+
+    /// One source idle while another keeps the workers busy (a client meshing
+    /// beside its server's generator): the idle one is still told, once.
+    #[test]
+    fn a_quiet_source_is_released_while_another_keeps_the_workers_busy() {
+        let release = Duration::from_millis(300);
+        let pool = Pool::with_idle_release(2, "test-job", release);
+        let counter = |left| {
+            Arc::new(Counter {
+                left: Mutex::new(left),
+                done: AtomicUsize::new(0),
+                per_worker: PerWorker::new(pool.threads()),
+                idle: AtomicBool::new(false),
+                all_idle: AtomicBool::new(false),
+            })
+        };
+        let (quiet, busy) = (counter(4), counter(0));
+        let quiet_reg = pool.register(quiet.clone());
+        let busy_reg = pool.register(busy.clone());
+        quiet_reg.notify_all();
+        let deadline = Instant::now() + release * 10;
+        while !quiet.all_idle.load(Ordering::Relaxed) {
+            assert!(
+                Instant::now() < deadline,
+                "the quiet source was never released"
+            );
+            *lock(&busy.left) += 1;
+            busy_reg.notify();
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert_eq!(quiet.done.load(Ordering::Relaxed), 4);
+        assert!(quiet.idle.load(Ordering::Relaxed));
+        assert!(quiet.per_worker.slots.iter().all(|s| lock(s).is_none()));
+        assert!(
+            !busy.all_idle.load(Ordering::Relaxed),
+            "the busy source is not idle"
+        );
+    }
+
     #[test]
     fn idle_workers_free_their_state() {
         let release = Duration::from_millis(300);
@@ -656,7 +775,17 @@ mod tests {
             hold: Some(gate.clone()),
         });
         let reg = pool.register(held.clone());
-        std::thread::sleep(Duration::from_millis(100));
+        // A worker takes the job off the queue before holding it on the gate: wait for
+        // that take, not a fixed sleep past it (a busy runner may start it later), so
+        // `drop(reg)` below always has a running job to wait for.
+        let picked = Instant::now();
+        while lock(&held.jobs).len() > 1 {
+            assert!(
+                picked.elapsed() < Duration::from_secs(10),
+                "no worker picked the job up"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
         let opener = {
             let gate = gate.clone();
             std::thread::spawn(move || {

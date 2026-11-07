@@ -263,6 +263,7 @@ struct MeshSettings {
     nether: bool,
     shader_pack_lighting: bool,
     separate_ao: bool,
+    shader_pack: bool,
     zoom: BiomeZoom,
     blend_radius: i32,
     smooth_lighting: bool,
@@ -502,6 +503,10 @@ pub struct Streaming {
     pub radius: i32,
     /// `/forceload`ed chunks: kept loaded whatever the distance.
     pub forced: HashSet<(i32, i32)>,
+    /// Chunks a native mod's tickets hold (NeoForge's `TicketController`):
+    /// kept loaded and ticking as forced ones are, but neither saved with
+    /// them nor listed by `/forceload`.
+    pub mod_forced: HashSet<(i32, i32)>,
     /// No work is scheduled while paused (title screen).
     pub paused: bool,
     /// Dimension flags: sky light, Nether face shading.
@@ -513,6 +518,9 @@ pub struct Streaming {
     /// OptiFine/Iris separate ambient occlusion: vertex RGB has pure tint and alpha holds AO factor
     /// (`Mesher::separate_ao`).
     pub separate_ao: bool,
+    /// A `shaders/` pack draws the terrain: fluid tops split as Iris splits them
+    /// (`Mesher::shader_pack`).
+    pub shader_pack: bool,
     /// `BiomeManager`'s zoom seed (the hashed world seed) and `biomeBlendRadius`.
     pub biome_zoom: BiomeZoom,
     pub biome_blend: i32,
@@ -536,6 +544,12 @@ pub struct Streaming {
     /// Chunks come from a server (`insert_remote`/`forget`): nothing is
     /// generated and columns are only unloaded when the server says so.
     pub remote: bool,
+    /// This server sends bulk block edits as whole columns whose light is
+    /// from before its relight (a Horizon server): a resent resident column
+    /// is lit here. Any other server's packet carries the light vanilla
+    /// applies, so it is not lit again (a proxy's next server resends its
+    /// whole world at the same coordinates).
+    pub relight_resent: bool,
     /// More areas to keep loaded (centre chunk, radius), e.g. around the
     /// players of a server. Each is a square, like vanilla's ticket levels:
     /// chunks finish out to `radius + 1` (Chebyshev) and generation reaches
@@ -569,6 +583,7 @@ struct GenerationScan {
     radius: i32,
     extra: Vec<((i32, i32), i32)>,
     forced: HashSet<(i32, i32)>,
+    mod_forced: HashSet<(i32, i32)>,
     band: Option<Band>,
     chunk_revision: u64,
     plan: Vec<(i64, i32, i32)>,
@@ -584,6 +599,7 @@ impl GenerationScan {
             && self.radius == ranges.radius
             && self.extra == ranges.extra
             && self.forced == *ranges.forced
+            && self.mod_forced == *ranges.mod_forced
             && self.band.as_ref() == ranges.band
     }
     fn unchanged(&self, ranges: &Ranges<'_>, world: &World) -> bool {
@@ -622,6 +638,7 @@ impl GenerationScan {
         self.extra.clear();
         self.extra.extend_from_slice(ranges.extra);
         self.forced.clone_from(ranges.forced);
+        self.mod_forced.clone_from(ranges.mod_forced);
         self.band = ranges.band.copied();
         self.chunk_revision = world.chunks.membership_revision();
     }
@@ -719,7 +736,7 @@ impl GenerationScan {
             } else {
                 FORCED_FEATURES_RING
             };
-            for &(fx, fz) in input.ranges.forced {
+            for &(fx, fz) in input.ranges.forced_chunks() {
                 for dz in -reach..=reach {
                     for dx in -reach..=reach {
                         let (x, z) = (fx + dx, fz + dz);
@@ -739,6 +756,7 @@ impl GenerationScan {
                 radius: input.ranges.radius,
                 extra: input.ranges.extra,
                 forced: input.ranges.forced,
+                mod_forced: input.ranges.mod_forced,
                 cover: input.ranges.cover,
                 band: input.ranges.band,
             };
@@ -824,7 +842,14 @@ impl<G: ChunkGenerator> Source for Jobs<G> {
                 Job::Mesh(..) => 5,
                 _ => 6,
             };
-            (kind, crate::spans::thread_cpu().unwrap_or_default())
+            // The other jobs (saves, light views, freed meshes) are many and short: counted, not
+            // timed, so the clock reads don't cost more than they do.
+            let cpu = if kind == 6 {
+                std::time::Duration::ZERO
+            } else {
+                crate::spans::thread_cpu().unwrap_or_default()
+            };
+            (kind, cpu)
         });
         let _tag = horizon_threads::heap_tag(match &job.job {
             Job::Generate(..) => "stream.generate",
@@ -853,8 +878,13 @@ impl<G: ChunkGenerator> Source for Jobs<G> {
             } else {
                 kind
             };
-            let cpu = crate::spans::thread_cpu().unwrap_or_default();
-            job_stats::add(kind, cpu.saturating_sub(started).as_nanos() as u64);
+            let nanos = if kind == 6 {
+                0
+            } else {
+                let cpu = crate::spans::thread_cpu().unwrap_or_default();
+                cpu.saturating_sub(started).as_nanos() as u64
+            };
+            job_stats::add(kind, nanos);
         }
         if let Some(done) = done {
             self.shared.done.send(done);
@@ -956,6 +986,7 @@ impl<G: ChunkGenerator> Jobs<G> {
                     nether_shading: settings.nether,
                     shader_pack_lighting: settings.shader_pack_lighting,
                     separate_ao: settings.separate_ao,
+                    shader_pack: settings.shader_pack,
                     zoom: settings.zoom,
                     blend_radius: settings.blend_radius,
                     smooth_lighting: settings.smooth_lighting,
@@ -1063,11 +1094,13 @@ impl Streaming {
             center: (0, 0),
             radius: 8,
             forced: HashSet::new(),
+            mod_forced: HashSet::new(),
             paused: false,
             sky_light: true,
             nether_shading: false,
             shader_pack_lighting: false,
             separate_ao: false,
+            shader_pack: false,
             biome_zoom: BiomeZoom::new(0),
             biome_blend: 2,
             smooth_lighting: true,
@@ -1081,6 +1114,7 @@ impl Streaming {
             generated_total: 0,
             meshed_total: 0,
             remote: false,
+            relight_resent: false,
             extra: Vec::new(),
             cover: None,
             mesh: true,
@@ -1127,14 +1161,15 @@ impl Streaming {
     }
     /// A resident column a server sent again whole (it changed it in bulk):
     /// its new blocks taken, the sections that did not change kept as they
-    /// were, and its light and its neighbours' worked out again here, off
-    /// the game thread, as light is for the blocks a server changes one at a
-    /// time; the sections that changed remesh (with theirs) once lit. Until
-    /// then the sections that changed show the light the packet carried (a
-    /// Horizon server sends the light from before its relight, then the
-    /// new light; another server's is already right, which matters where
-    /// the neighbours this light needs aren't all here).
-    pub fn replace_remote(&mut self, world: &mut World, mut chunk: Chunk) {
+    /// were, and (for a Horizon server's bulk edit) its light and its
+    /// neighbours' worked out again here, off the game thread, as light is for
+    /// the blocks a server changes one at a time; the sections that changed
+    /// remesh (with theirs) once lit. Until then the sections that changed
+    /// show the light the packet carried (a Horizon server sends the light
+    /// from before its relight, then the new light; another server's is already
+    /// right, which matters where the neighbours this light needs aren't all
+    /// here).
+    pub fn replace_remote(&mut self, world: &mut World, chunk: Chunk) {
         let key = (chunk.x, chunk.z);
         let Some(old) = world.chunks.get(&key).cloned() else {
             return self.insert_remote(world, chunk);
@@ -1142,34 +1177,7 @@ impl Streaming {
         if !self.lit.contains(&key) {
             return self.insert_remote(world, chunk);
         }
-        // The cells whose blocks changed, by section: they remesh with the neighbours within a block of them (as
-        // vanilla's `setBlocksDirty`), not every section round each section changed (which, for the few blocks a
-        // section often changes in a bulk edit, is mostly sections that did not).
-        let mut cells = crate::light::LightChanges::default();
-        cells.keyed(world.layout());
-        let kept = keep_unchanged_sections(&old, &mut chunk, &mut cells);
-        chunk.light_loaded = old.light_loaded;
-        chunk.lit = true;
-        world.chunks.insert(key, Arc::new(chunk));
-        world.revision = world.revision.wrapping_add(1);
-        // A section with new biomes and the same blocks remeshes now (its tint), with its neighbours, whose tint
-        // blends across the border: above and below too, as a block's tint can sample the biome quart of the
-        // section next to it (`BiomeManager.getBiome`'s zoom reaches a quart beyond the block).
-        Self::light_updated(world, key.0, key.1, &kept.biomes);
-        // A section with the same blocks and new light takes the packet's light (vanilla's
-        // `handleLevelChunkWithLight` always applies it) and remeshes as a light update would.
-        Self::light_updated(world, key.0, key.1, &kept.light);
-        if !kept.blocks {
-            return;
-        }
-        for dz in -1..=1 {
-            for dx in -1..=1 {
-                world.dirty_light.insert((key.0 + dx, key.1 + dz));
-            }
-        }
-        cells.dirty_sections(|section| {
-            world.dirty_sections.insert(section);
-        });
+        take_resent_column(world, key, &old, chunk, self.relight_resent);
     }
     /// A server's light update for a resident column: the sections whose
     /// light changed and their neighbours remesh
@@ -1737,7 +1745,7 @@ impl Streaming {
                                 > r4 * r4)
                         && !ranges.in_extra(x, z, 4)
                         && !ranges.in_band(x, z, 4)
-                        && !ranges.forced.iter().any(|f| {
+                        && !ranges.forced_chunks().any(|f| {
                             (x - f.0).abs() <= FORCED_TERRAIN_RING
                                 && (z - f.1).abs() <= FORCED_TERRAIN_RING
                         })
@@ -1808,6 +1816,7 @@ impl Streaming {
                 radius: self.radius,
                 extra: &self.extra,
                 forced: &self.forced,
+                mod_forced: &self.mod_forced,
                 cover: ExtraCover::matching(&self.cover, &self.extra),
                 band: self.band.as_ref(),
             };
@@ -1974,7 +1983,11 @@ impl Streaming {
         // vanilla draws). Sections set aside past it come back
         // when the player moves: a column that loads with its light gets no
         // other request (#228).
-        let area = (self.center, self.radius, self.forced.len());
+        let area = (
+            self.center,
+            self.radius,
+            self.forced.len() + self.mod_forced.len(),
+        );
         if self.waiting_area != area {
             self.waiting_area = area;
             let ranges = Ranges {
@@ -1982,6 +1995,7 @@ impl Streaming {
                 radius: self.radius,
                 extra: &self.extra,
                 forced: &self.forced,
+                mod_forced: &self.mod_forced,
                 cover: ExtraCover::matching(&self.cover, &self.extra),
                 band: self.band.as_ref(),
             };
@@ -2057,6 +2071,7 @@ impl Streaming {
                             nether: self.nether_shading,
                             shader_pack_lighting: self.shader_pack_lighting,
                             separate_ao: self.separate_ao,
+                            shader_pack: self.shader_pack,
                             zoom: self.biome_zoom,
                             blend_radius: self.biome_blend,
                             smooth_lighting: self.smooth_lighting,
@@ -2077,6 +2092,7 @@ impl Streaming {
                 radius: self.radius,
                 extra: &self.extra,
                 forced: &self.forced,
+                mod_forced: &self.mod_forced,
                 cover: ExtraCover::matching(&self.cover, &self.extra),
                 band: self.band.as_ref(),
             },
@@ -2210,6 +2226,7 @@ impl Streaming {
             radius: self.radius,
             extra: &self.extra,
             forced: &self.forced,
+            mod_forced: &self.mod_forced,
             cover: ExtraCover::matching(&self.cover, &self.extra),
             band: self.band.as_ref(),
         }
@@ -2486,6 +2503,8 @@ struct Ranges<'a> {
     radius: i32,
     extra: &'a [((i32, i32), i32)],
     forced: &'a HashSet<(i32, i32)>,
+    /// The chunks native mods' tickets hold, kept as forced ones are.
+    mod_forced: &'a HashSet<(i32, i32)>,
     /// `extra` indexed by a grid or buckets: coverage queries without a
     /// scan of every area.
     cover: Option<&'a ExtraCover>,
@@ -2830,10 +2849,20 @@ impl Ranges<'_> {
             .iter()
             .any(|&(c, radius)| (x - c.0).abs().max((z - c.1).abs()) <= radius + margin)
     }
+    /// Whether a `/forceload` or a native mod's ticket holds the chunk.
+    fn is_forced(&self, x: i32, z: i32) -> bool {
+        self.forced.contains(&(x, z)) || self.mod_forced.contains(&(x, z))
+    }
+    /// Every chunk a `/forceload` or a native mod's ticket holds, once each.
+    fn forced_chunks(&self) -> impl Iterator<Item = &(i32, i32)> + '_ {
+        self.forced
+            .iter()
+            .chain(self.mod_forced.iter().filter(|c| !self.forced.contains(c)))
+    }
     /// The columns meshed for drawing: those vanilla draws around the
     /// player (`in_view_distance`), and forced ones.
     fn in_view(&self, x: i32, z: i32) -> bool {
-        in_view_distance(self.center, self.radius, x, z) || self.forced.contains(&(x, z))
+        in_view_distance(self.center, self.radius, x, z) || self.is_forced(x, z)
     }
     fn in_main_range(&self, x: i32, z: i32, margin: i32) -> bool {
         let r = i64::from(self.radius + margin);
@@ -2851,8 +2880,7 @@ impl Ranges<'_> {
             3 => FORCED_TERRAIN_RING,
             _ => margin + 1,
         };
-        self.forced
-            .iter()
+        self.forced_chunks()
             .any(|f| (x - f.0).abs() <= reach && (z - f.1).abs() <= reach)
     }
 }
@@ -2999,6 +3027,51 @@ fn keep_unchanged_sections(
     }
     out
 }
+/// Takes the server's new `chunk` over the resident column `old`: the sections
+/// whose blocks did not change keep `old`'s (with `chunk`'s biomes and light),
+/// and the sections whose blocks changed remesh. `relight` says the packet's
+/// light is from before the server's relight (a Horizon server's bulk edit), so
+/// the column and its neighbours are lit here; another server's packet already
+/// carries the light vanilla applies, so no light job is queued for it.
+fn take_resent_column(
+    world: &mut World,
+    key: (i32, i32),
+    old: &Chunk,
+    mut chunk: Chunk,
+    relight: bool,
+) {
+    // The cells whose blocks changed, by section: they remesh with the neighbours within a block of them (as
+    // vanilla's `setBlocksDirty`), not every section round each section changed (which, for the few blocks a
+    // section often changes in a bulk edit, is mostly sections that did not).
+    let mut cells = crate::light::LightChanges::default();
+    cells.keyed(world.layout());
+    let kept = keep_unchanged_sections(old, &mut chunk, &mut cells);
+    chunk.light_loaded = old.light_loaded;
+    chunk.lit = true;
+    world.chunks.insert(key, Arc::new(chunk));
+    world.revision = world.revision.wrapping_add(1);
+    // A section with new biomes and the same blocks remeshes now (its tint), with its neighbours, whose tint
+    // blends across the border: above and below too, as a block's tint can sample the biome quart of the
+    // section next to it (`BiomeManager.getBiome`'s zoom reaches a quart beyond the block).
+    Streaming::light_updated(world, key.0, key.1, &kept.biomes);
+    // A section with the same blocks and new light takes the packet's light (vanilla's
+    // `handleLevelChunkWithLight` always applies it) and remeshes as a light update would.
+    Streaming::light_updated(world, key.0, key.1, &kept.light);
+    if !kept.blocks {
+        return;
+    }
+    if relight {
+        for dz in -1..=1 {
+            for dx in -1..=1 {
+                world.dirty_light.insert((key.0 + dx, key.1 + dz));
+            }
+        }
+    }
+    cells.dirty_sections(|section| {
+        world.dirty_sections.insert(section);
+    });
+}
+
 /// Whether two sections' packed light (4,096 cells) holds the same values.
 fn same_light(a: &crate::chunk::Light, b: &crate::chunk::Light) -> bool {
     a.same_as(b)
@@ -3074,6 +3147,10 @@ fn forget_pending_sections(
         }
     }
 }
+
+/// No chunk held by a native mod's ticket, for the tests' ranges.
+#[cfg(test)]
+static NO_CHUNKS: std::sync::LazyLock<HashSet<(i32, i32)>> = std::sync::LazyLock::new(HashSet::new);
 
 #[cfg(test)]
 mod tests {
@@ -3291,6 +3368,7 @@ mod tests {
             radius: 32,
             extra: &[],
             forced: &forced,
+            mod_forced: &NO_CHUNKS,
             cover: None,
             band: None,
         };
@@ -3561,6 +3639,7 @@ mod tests {
                     radius: self.radius,
                     extra: &self.extra,
                     forced: &self.forced,
+                    mod_forced: &NO_CHUNKS,
                     cover: None,
                     band: None,
                 },
@@ -3637,7 +3716,7 @@ mod tests {
         } else {
             FORCED_FEATURES_RING
         };
-        for &(fx, fz) in input.ranges.forced {
+        for &(fx, fz) in input.ranges.forced_chunks() {
             for dz in -forced_reach..=forced_reach {
                 for dx in -forced_reach..=forced_reach {
                     let (x, z) = (fx + dx, fz + dz);
@@ -3943,6 +4022,7 @@ mod tests {
                     radius,
                     extra: &[],
                     forced: &forced,
+                    mod_forced: &NO_CHUNKS,
                     cover: None,
                     band: None,
                 };
@@ -3999,6 +4079,7 @@ mod tests {
                     radius,
                     extra: &[((radius * 2 + 9, 3), 4)],
                     forced: &forced,
+                    mod_forced: &NO_CHUNKS,
                     cover: None,
                     band: None,
                 };
@@ -4035,6 +4116,7 @@ mod tests {
             radius: -1,
             extra: &extra,
             forced: &forced,
+            mod_forced: &NO_CHUNKS,
             cover: None,
             band: None,
         };
@@ -4068,6 +4150,7 @@ mod tests {
                 radius: 2,
                 extra: &extra,
                 forced: &forced,
+                mod_forced: &NO_CHUNKS,
                 cover: None,
                 band: None,
             };
@@ -4122,6 +4205,7 @@ mod tests {
             radius: 2,
             extra: &[],
             forced: &forced,
+            mod_forced: &NO_CHUNKS,
             cover: None,
             band: None,
         };
@@ -4155,6 +4239,42 @@ mod tests {
                 40 + dx,
                 -40 + dz
             );
+        }
+    }
+
+    fn resident_column(world: &mut World, light: u8) -> Chunk {
+        let mut chunk = Chunk::empty(2, -3);
+        chunk.set(1, 10, 1, 1);
+        Arc::make_mut(&mut chunk.sections[0]).light = crate::chunk::Light::Uniform(light);
+        chunk.lit = true;
+        world.chunks.insert((2, -3), Arc::new(chunk.clone()));
+        chunk
+    }
+
+    /// A server's resent column uses the light in its packet, as vanilla's
+    /// `handleLevelChunkWithLight` does: only a Horizon server's bulk edit,
+    /// whose packet light is from before its relight, is relit here. A proxy's
+    /// next server resends its whole world at the same coordinates, and
+    /// relighting every column and its neighbours is work that world never
+    /// asked for (#10273).
+    #[test]
+    fn a_resent_column_is_relit_only_for_a_horizon_servers_bulk_edit() {
+        for relight in [false, true] {
+            let mut world = World::new(horizon_world::registry::BlockStateId(0), 0);
+            let old = resident_column(&mut world, 0x50);
+            let mut new = old.clone();
+            new.set(1, 10, 1, 2);
+            Arc::make_mut(&mut new.sections[0]).light = crate::chunk::Light::Uniform(0xF0);
+            take_resent_column(&mut world, (2, -3), &old, new, relight);
+            let chunk = &world.chunks[&(2, -3)];
+            assert_eq!(chunk.block(1, 10, 1).0, 2);
+            // The packet's light is what the column shows.
+            assert_eq!(chunk.sections[0].light.get(0), 0xF0);
+            // The changed section remeshes either way.
+            assert!(world.dirty_sections.contains(&(2, 0, -3)));
+            // Only a Horizon bulk edit queues light work, for the column and
+            // its eight neighbours.
+            assert_eq!(world.dirty_light.len(), if relight { 9 } else { 0 });
         }
     }
 }
@@ -4193,6 +4313,7 @@ mod cover_tests {
                 radius: 10,
                 extra: &extra,
                 forced: &forced,
+                mod_forced: &NO_CHUNKS,
                 cover,
                 band: None,
             };
@@ -4235,6 +4356,7 @@ mod cover_tests {
                 radius: 10,
                 extra: &extra,
                 forced: &forced,
+                mod_forced: &NO_CHUNKS,
                 cover,
                 band: None,
             };
@@ -4300,6 +4422,7 @@ mod cover_tests {
                 radius: 10,
                 extra: &extra,
                 forced: &forced,
+                mod_forced: &NO_CHUNKS,
                 cover,
                 band: None,
             };

@@ -39,10 +39,13 @@ impl DensitySampler for RangeChoiceSampler {
             context.with_buffer(volume.size(), |context, outside| {
                 self.when_out_of_range
                     .sample_volume(context, outside, volume)?;
-                for i in 0..buffer.len() {
-                    if !self.contains(input[i]) {
-                        buffer[i] = outside[i];
-                    }
+                // A select rather than a conditional store, so the loop vectorizes.
+                for ((value, &input), &outside) in buffer.iter_mut().zip(&*input).zip(&*outside) {
+                    *value = if self.contains(input) {
+                        *value
+                    } else {
+                        outside
+                    };
                 }
                 Ok(())
             })
@@ -68,19 +71,46 @@ impl DensityValue {
             Self::Sampler(sampler) => sampler.sample_value(context, position),
         }
     }
+    /// Samples the volume, or with `needed` only the Ys it sets ([`DensitySampler::sample_needed`]).
     fn with_volume<T>(
         &self,
         context: &mut SamplerContext,
         volume: DensityVolume,
+        needed: Option<&[u64]>,
         use_values: impl FnOnce(&mut SamplerContext, Values<'_>) -> Result<T, SampleError>,
     ) -> Result<T, SampleError> {
         match self {
             Self::Constant(value) => use_values(context, Values::Constant(*value)),
             Self::Sampler(sampler) => context.with_buffer(volume.size(), |context, buffer| {
-                sampler.sample_volume(context, buffer, volume)?;
+                match needed {
+                    Some(needed) => sampler.sample_needed(context, buffer, volume, needed)?,
+                    None => sampler.sample_volume(context, buffer, volume)?,
+                }
                 use_values(context, Values::Buffer(buffer))
             }),
         }
+    }
+    /// For a sampled value, the Ys of each column (one bit per Y, if at most 64) whose
+    /// `alpha` reads it.
+    fn needed(
+        &self,
+        alpha: &[f32],
+        volume: DensityVolume,
+        reads: fn(f32) -> bool,
+    ) -> Option<Vec<u64>> {
+        let size_y = volume.sizes()[1];
+        if matches!(self, Self::Constant(_)) || size_y > 64 {
+            return None;
+        }
+        let columns = alpha[..volume.size()].chunks_exact(size_y);
+        Some(
+            columns
+                .map(|column| {
+                    (column.iter().enumerate())
+                        .fold(0, |bits, (y, &alpha)| bits | u64::from(reads(alpha)) << y)
+                })
+                .collect(),
+        )
     }
 }
 #[derive(Clone, Copy)]
@@ -136,14 +166,21 @@ impl DensitySampler for LerpSampler {
     ) -> Result<(), SampleError> {
         check_exact_buffer(buffer, volume)?;
         self.alpha.sample_volume(context, buffer, volume)?;
-        self.first.with_volume(context, volume, |context, first| {
-            self.second.with_volume(context, volume, |_, second| {
-                for (index, alpha) in buffer.iter_mut().enumerate() {
-                    *alpha = interpolate(*alpha, first.get(index), second.get(index));
-                }
-                Ok(())
+        // `interpolate` reads `first` only where alpha is not 1 and `second` only where it is
+        // not 0, so they need not be sampled elsewhere.
+        let first_needed = self.first.needed(buffer, volume, |alpha| alpha != 1.0);
+        let second_needed = self.second.needed(buffer, volume, |alpha| alpha != 0.0);
+        let (first_needed, second_needed) = (first_needed.as_deref(), second_needed.as_deref());
+        self.first
+            .with_volume(context, volume, first_needed, |context, first| {
+                self.second
+                    .with_volume(context, volume, second_needed, |_, second| {
+                        for (index, alpha) in buffer.iter_mut().enumerate() {
+                            *alpha = interpolate(*alpha, first.get(index), second.get(index));
+                        }
+                        Ok(())
+                    })
             })
-        })
     }
 }
 

@@ -7,7 +7,7 @@
 use super::{Game, boats::Boat, lan_mobs::guest_bounds};
 use horizon_client::{
     camera::wrap_degrees,
-    mobs::{Mob, Species, Who, drops::is_animal, equine, riders},
+    mobs::{BoxReach, Mob, Species, Who, drops::is_animal, equine, riders},
     scoreboard::pushable_by,
 };
 use horizon_core::geometry::{Aabb, Vec3};
@@ -68,6 +68,23 @@ pub(super) fn boat_pushes(boat: Aabb, other: Aabb, other_is_boat: bool) -> bool 
 impl Game<'_> {
     /// The players in boat `id`: the window's player (or the server player
     /// acting as it) and the server's other players.
+    /// Starts or ends a stretch of vehicle ticks (`tick_boats`, `tick_carts`): while one runs,
+    /// a vehicle's box query tests the mobs' positions against their [`BoxReach`] first.
+    /// Nothing a vehicle does resizes a mob, and a mob joining or leaving works it out again.
+    pub(super) fn vehicles_ticking(&self, on: bool) {
+        self.vehicle_mob_reach
+            .set(on.then(|| (self.mobs.len(), BoxReach::of(&self.mobs))));
+    }
+    /// The mobs' [`BoxReach`] while vehicles tick, none otherwise.
+    pub(super) fn vehicle_mob_reach(&self) -> Option<BoxReach> {
+        let (count, reach) = self.vehicle_mob_reach.get()?;
+        if count == self.mobs.len() {
+            return Some(reach);
+        }
+        let reach = BoxReach::of(&self.mobs);
+        self.vehicle_mob_reach.set(Some((self.mobs.len(), reach)));
+        Some(reach)
+    }
     pub(super) fn boat_players(&self, id: u32) -> usize {
         let guests = self.lan.as_ref().map_or(0, |h| {
             h.hub
@@ -150,11 +167,14 @@ impl Game<'_> {
     /// `AbstractBoat.canVehicleCollide`: the other boats, minecarts,
     /// shulkers and pushable mobs and players, but not its own passengers.
     pub(super) fn boat_obstacles(&self, id: u32, area: Aabb) -> Vec<Aabb> {
+        let reach = self.vehicle_mob_reach();
         let mut out: Vec<Aabb> = (0..self.mobs.len())
             .filter(|&j| {
                 let m = &self.mobs[j];
-                pushable(m)
+                // The box first: it turns away nearly every mob of the level.
+                reach.is_none_or(|r| r.may_meet(m, area))
                     && m.bounds().intersects(area)
+                    && pushable(m)
                     && (m.extra.mount.is_none() || self.mob_root_vehicle(j) != Some(id))
             })
             .map(|j| self.mobs[j].bounds())
@@ -203,9 +223,32 @@ impl Game<'_> {
         let pick_up = self.boat_players(id) == 0;
         // canAddPassenger, which startRiding asks after the checks below.
         let room = !self.boats[i].under_water();
+        // The box first: it turns away nearly every mob of the level, and the
+        // teams are only worked out when something touches the boat.
+        let reach = self.vehicle_mob_reach();
+        let sweep = area.union_bounds(bb);
+        let near: Vec<usize> = (0..self.mobs.len())
+            .filter(|&j| {
+                if reach.is_some_and(|r| !r.may_meet(&self.mobs[j], sweep)) {
+                    return false;
+                }
+                let mb = self.mobs[j].bounds();
+                mb.intersects(area) || mb.intersects(bb)
+            })
+            .collect();
+        let outside = self.players_outside(id);
+        let touching = !near.is_empty()
+            || outside
+                .iter()
+                .any(|(pb, _)| pb.intersects(area) || pb.intersects(bb));
         // (mob, touched by the boat's sweep, its own pushEntities reaches the boat)
-        let teams = self.mob_teams();
-        let mobs: Vec<(u32, bool, bool)> = (0..self.mobs.len())
+        let teams = if touching {
+            self.mob_teams()
+        } else {
+            Default::default()
+        };
+        let mobs: Vec<(u32, bool, bool)> = near
+            .into_iter()
             .filter_map(|j| {
                 let m = &self.mobs[j];
                 if !pushable(m) || m.extra.mount.is_some() && self.mob_root_vehicle(j) == Some(id) {
@@ -222,8 +265,7 @@ impl Game<'_> {
             })
             .collect();
         let player_team = teams.of(Who::Player);
-        let players: Vec<(Aabb, bool, bool, bool)> = self
-            .players_outside(id)
+        let players: Vec<(Aabb, bool, bool, bool)> = outside
             .into_iter()
             .map(|(pb, own)| {
                 let team = if own { player_team } else { None };
@@ -269,6 +311,7 @@ impl Game<'_> {
                         count += 1;
                         // Mob.startRiding drops its lead.
                         self.break_leash(mob, true, false);
+                        self.note_started_riding(id);
                     }
                     continue;
                 }
@@ -353,10 +396,17 @@ impl Game<'_> {
     /// `positionRider` and `clampRotation` for the mobs in boats: each sits
     /// in its seat facing the way the boat does, an animal in a full boat
     /// sideways, its head kept within its reach of its body.
-    pub(super) fn seat_boat_mobs(&mut self) {
+    pub(super) fn seat_boat_mobs(&mut self, riding: &super::passengers::Riders) {
         for i in 0..self.boats.len() {
             let id = self.boats[i].id;
-            let mobs = self.boat_mobs(id);
+            // `boat_mobs`, from the riders found in one pass.
+            let mobs: Vec<usize> = riding
+                .get(&id)
+                .into_iter()
+                .flatten()
+                .copied()
+                .filter(|&j| !self.mobs[j].removed && self.mobs[j].alive())
+                .collect();
             if mobs.is_empty() {
                 continue;
             }
@@ -365,6 +415,7 @@ impl Game<'_> {
             let b = &self.boats[i];
             let full = count == b.max_passengers();
             let delta = b.delta_rotation;
+            let boat_box = b.bounds();
             let seats: Vec<_> = mobs
                 .iter()
                 .enumerate()
@@ -387,14 +438,16 @@ impl Game<'_> {
                         .entity_has("minecraft:can_turn_in_boats", &m.kind.id);
                     (
                         j,
+                        offset,
                         b.seat(index, count, animal, offset, false),
                         b.seat(index, count, animal, offset, true),
                         turns.then_some((b.yaw + turn, b.previous_yaw + turn)),
                     )
                 })
                 .collect();
-            for (j, at, previous, facing) in seats {
+            for (j, offset, at, previous, facing) in seats {
                 let m = &mut self.mobs[j];
+                m.seated(id, offset, boat_box);
                 m.position = at;
                 m.previous = previous;
                 m.velocity = Vec3::ZERO;

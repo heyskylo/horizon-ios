@@ -431,6 +431,16 @@ pub struct SignText {
     pub glowing: bool,
     /// The `click_event` in each line's component style, as saved.
     pub click: [Option<Tag>; 4],
+    /// Each line's saved component when it is more than plain text (a colour,
+    /// siblings, a list), so its style survives loading, saving and the
+    /// network. See `SignText::message` for a line edited since.
+    pub saved: [Option<SavedLine>; 4],
+}
+/// A sign line's saved component and the text it showed when it was read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SavedLine {
+    pub text: String,
+    pub component: Tag,
 }
 /// `SignBlockEntity` / `HangingSignBlockEntity` data.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

@@ -289,37 +289,7 @@ impl<'a> Split<'a> {
         if next != self.focus {
             self.turn(self.focus);
             if let Some(game) = self.game_mut(self.focus) {
-                for key in std::mem::take(&mut game.physical_keys) {
-                    game.native_key_event(key, false, false);
-                }
-                for key in std::mem::take(&mut game.keys) {
-                    if let Err(e) = game.mapped_key(key, false, false, key) {
-                        log::warn!("Horizon: splitscreen: releasing input: {e}");
-                    }
-                }
-                for button in std::mem::take(&mut game.physical_buttons) {
-                    game.extras_mouse(button, false);
-                }
-                game.drag_button = None;
-                game.modifiers = Default::default();
-                game.left = false;
-                game.right = false;
-                game.inventory_mouse_release(false);
-                game.inventory_mouse_release(true);
-                game.inventory_pick_release();
-                game.loom_release();
-                game.creative_screen.release();
-                game.ui.options.release();
-                game.dragging = false;
-                game.stats_release();
-                game.world_options_release();
-                game.advancements_mouse(false, [0, 0]);
-                if let Some(title) = &mut game.title {
-                    title.release();
-                    title.release_field();
-                }
-                game.capture(false);
-                game.keyboard_mouse = false;
+                game.release_keyboard_mouse();
             }
         }
         self.focus = next;
@@ -405,6 +375,10 @@ impl<'a> Split<'a> {
             batching,
             self.host.settings.horizon.wide_frame(),
             shader_pack,
+            (
+                self.host.settings.file.int("textureFiltering"),
+                self.host.settings.file.int("maxAnisotropyBit"),
+            ),
         );
         let renderer = match built {
             Ok(r) => r,
@@ -425,6 +399,8 @@ impl<'a> Split<'a> {
             }
         };
         self.host.renderer = Some(renderer);
+        // The new atlas has no downloaded skins: queue them again, as after device loss.
+        self.host.skin_slots.forget();
         self.host.split_window = !self.host.options.offscreen;
         self.host.options.offscreen = true;
         self.host.options.paced_by_split = true;
@@ -483,6 +459,10 @@ impl<'a> Split<'a> {
             batching,
             self.host.settings.horizon.wide_frame(),
             shader_pack,
+            (
+                self.host.settings.file.int("textureFiltering"),
+                self.host.settings.file.int("maxAnisotropyBit"),
+            ),
         );
         let renderer = match built {
             Ok(r) => r,
@@ -496,6 +476,7 @@ impl<'a> Split<'a> {
         };
         drop(old);
         self.host.renderer = Some(renderer);
+        self.host.skin_slots.forget();
         self.host.options.offscreen = false;
         self.host.split_window = false;
         self.host.options.paced_by_split = false;
@@ -567,11 +548,16 @@ impl<'a> Split<'a> {
     /// When the windows had presented (before the GPU wait), for the frame-time readout.
     fn present(&mut self) -> Instant {
         let views = self.views();
+        let vsync = self.host.settings.vsync;
+        let paced = windows::paced_surface(self.window1_shown, self.surfaces.len());
+        // A present mode switch reconfigures a surface, and an Outdated or Lost texture
+        // may: a reconfigure waits for the GPU to come idle and reports an error when a
+        // frame is submitted while it waits. Land this turn's frames on the submit
+        // threads first (the compositor then copies views already submitted, too).
+        self.wait_queues();
         let renderers: Vec<_> = std::iter::once(&self.host.renderer)
             .chain(self.guests.iter().map(|g| &g.game.renderer))
             .collect();
-        let vsync = self.host.settings.vsync;
-        let paced = windows::paced_surface(self.window1_shown, self.surfaces.len());
         for (k, surface) in self.surfaces.iter_mut().enumerate() {
             let frames: Vec<_> = renderers
                 .iter()
@@ -591,6 +577,16 @@ impl<'a> Split<'a> {
             renderer.wait_in_flight();
         }
         presented
+    }
+    /// Every player's frame submitted by its submit thread, no device wait: before
+    /// anything reconfigures a surface, whose wait for the GPU breaks on a submission
+    /// made while it waits.
+    fn wait_queues(&mut self) {
+        let renderers = std::iter::once(&mut self.host.renderer)
+            .chain(self.guests.iter_mut().map(|g| &mut g.game.renderer));
+        for renderer in renderers.flatten() {
+            renderer.wait_submissions();
+        }
     }
 }
 
@@ -869,5 +865,60 @@ impl ApplicationHandler for Split<'_> {
             }
         }
         self.turn(0);
+    }
+}
+
+impl Game<'_> {
+    /// Keyboard and mouse go to another player: release everything they held here.
+    pub(super) fn release_keyboard_mouse(&mut self) {
+        for key in std::mem::take(&mut self.physical_keys) {
+            self.native_key_event(key, false, false);
+        }
+        // Only what the keyboard held, and a script acting as it: this player's pad keeps its
+        // presses.
+        let mut released = self
+            .keys
+            .release_source(horizon_client::held::Source::Keyboard);
+        released.extend(
+            self.keys
+                .release_source(horizon_client::held::Source::Agent),
+        );
+        for key in released {
+            if let Err(e) = self.mapped_key(
+                key,
+                false,
+                false,
+                key,
+                horizon_client::held::Source::Keyboard,
+            ) {
+                log::warn!("Horizon: splitscreen: releasing input: {e}");
+            }
+        }
+        for button in std::mem::take(&mut self.physical_buttons) {
+            self.extras_mouse(button, false);
+        }
+        self.drag_button = None;
+        self.modifiers = Default::default();
+        // A press this player's pad holds goes on, as for its keys.
+        self.left = self
+            .pad
+            .holds_action(&self.settings.controller, "key.attack");
+        self.right = self.pad.holds_action(&self.settings.controller, "key.use");
+        self.inventory_mouse_release(false);
+        self.inventory_mouse_release(true);
+        self.inventory_pick_release();
+        self.loom_release();
+        self.creative_screen.release();
+        self.ui.options.release();
+        self.dragging = false;
+        self.stats_release();
+        self.world_options_release();
+        self.advancements_mouse(false, [0, 0]);
+        if let Some(title) = &mut self.title {
+            title.release();
+            title.release_field();
+        }
+        self.capture(false);
+        self.keyboard_mouse = false;
     }
 }

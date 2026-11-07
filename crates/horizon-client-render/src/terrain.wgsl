@@ -417,6 +417,11 @@ fn arena_vertex(v: u32) -> ArenaCorner {
     let c = arena_page[v * 3u + 2u];
     return ArenaCorner(vec3(a.x, a.y, b.x), vec3(b.y, c.x, c.y));
 }
+// The offset a block corner adds on one component: `side` on the face's axis (rel 0), `du`
+// on the next axis (rel 1), `dw` on the one after (rel 2).
+fn corner_offset(rel: u32, side: u32, du: u32, dw: u32) -> u32 {
+    return select(select(dw, du, rel == 1u), side, rel == 0u);
+}
 // `packed::packed_vertex`: corner `corner` of the record whose words are lo (0 to 2) and
 // hi (3 to 5).
 fn packed_corner(lo: vec3<u32>, hi: vec3<u32>, corner: u32) -> ArenaCorner {
@@ -429,10 +434,16 @@ fn packed_corner(lo: vec3<u32>, hi: vec3<u32>, corner: u32) -> ArenaCorner {
     let step = (start + select(corner, 4u - corner, dir == 1u)) & 3u;
     let du = select(0u, 1u, step == 1u || step == 2u);
     let dw = select(0u, 1u, step >= 2u);
-    var pos = block;
-    pos[axis] = block[axis] + side;
-    pos[(axis + 1u) % 3u] = block[(axis + 1u) % 3u] + du;
-    pos[(axis + 2u) % 3u] = block[(axis + 2u) % 3u] + dw;
+    // No dynamic component stores: FXC (DirectX 12) rejects them (X3500). A component's offset
+    // from the axis (0: the axis, 1: the next, 2: the one after) picks what it gets. Scalar
+    // selects only: a vector select becomes GLSL's mix(uvec3, uvec3, bvec3), which old AMD
+    // OpenGL drivers (Radeon HD 7400M, driver 15.301) resolve to the float overload and reject.
+    let offset = vec3(
+        corner_offset((3u - axis) % 3u, side, du, dw),
+        corner_offset((4u - axis) % 3u, side, du, dw),
+        corner_offset((5u - axis) % 3u, side, du, dw),
+    );
+    let pos = block + offset;
     let sel = lo.z >> 24u;
     let us = (sel >> (2u * corner)) & 1u;
     let vs = (sel >> (2u * corner + 1u)) & 1u;
@@ -512,7 +523,8 @@ fn corner_vertex(c: ArenaCorner, origin: vec4<f32>) -> TerrainOut {
 }
 @vertex fn vs_section_flat(@builtin(vertex_index) vertex: u32) -> TerrainOut {
     let s = section_corner(vertex);
-    return corner_vertex(s.c, slot_origins[block_slots[s.slot >> 8u]]);
+    let origin = slot_origins[block_slots[s.slot >> 8u]];
+    return corner_vertex(s.c, origin);
 }
 @vertex fn vs_section_flat_opaque(@builtin(vertex_index) vertex: u32) -> TerrainOut {
     let s = section_corner(vertex);

@@ -140,6 +140,10 @@ pub(super) struct LevelTeleport {
     pub dim: Dim,
     pub at: [f64; 3],
     pub rotation: Option<[f32; 2]>,
+    /// `TeleportTransition.asPassenger`: the vehicle already moved with its tree.
+    pub vehicle: Option<u32>,
+    /// What `native_player_teleport` hears as its cause; none: not heard.
+    pub cause: Option<&'static str>,
 }
 
 /// A teleport a command made inside a level: told to the mods once it has
@@ -313,7 +317,8 @@ impl Game<'_> {
         // EndGatewayBlock.entityInside: a gateway that is not cooling down
         // takes the player at once (no transition time) and cools down
         // (triggerCooldown), even for a player still on its own cooldown.
-        if let Some(g) = gateway
+        if !riding
+            && let Some(g) = gateway
             && self.gateway_available(g)
         {
             if self.portals.player.cooldown == 0 {
@@ -608,6 +613,8 @@ impl Game<'_> {
             dim: Dim::Overworld,
             at,
             rotation: None,
+            vehicle: None,
+            cause: None,
         });
         self.run_level_teleports(host);
         self.world_spawn_trip(conn);
@@ -840,10 +847,33 @@ impl Game<'_> {
     /// keeping all data and the teleport, with no portal sound. The server
     /// leaves the body alone until the level has loaded around it.
     pub(super) fn run_level_teleports(&mut self, host: &mut LanHost) {
-        for t in std::mem::take(&mut self.level_teleports) {
+        for mut t in std::mem::take(&mut self.level_teleports) {
             let Some(i) = host.hub.guests.iter().position(|g| g.conn == t.conn) else {
                 continue;
             };
+            // PlayerTeleportEvent: the mods may stop it or move its point in that level.
+            if let Some(cause) = t.cause {
+                let g = &host.hub.guests[i];
+                let (mut to, mut relative, mut cancel) = (t.at, 0, false);
+                let (from, dimension) = (g.position, g.dimension.as_str());
+                Self::native_player_teleport(
+                    g.uuid,
+                    &g.name,
+                    cause,
+                    dimension,
+                    from,
+                    t.dim.id(),
+                    &mut to,
+                    &mut relative,
+                    &mut cancel,
+                );
+                if cancel {
+                    continue;
+                }
+                if to.iter().all(|v| v.is_finite()) {
+                    t.at = to;
+                }
+            }
             let source = self.dim;
             if t.dim != source {
                 drop_hook(host, t.conn);
@@ -858,11 +888,22 @@ impl Game<'_> {
             let origin = g.position;
             // A new body there: no fall distance or motion carried over, but
             // the player's attributes (ServerPlayer.teleport keeps the entity).
-            g.new_body(true);
+            let passenger_body = if t.vehicle.is_some() {
+                g.motion.take()
+            } else {
+                g.new_body(true);
+                None
+            };
             let cooldown = host.play.get(&t.conn).map_or(0, |p| p.portal.cooldown);
             let ctx = self.server_ctx();
             host.hub
                 .change_level(i, t.at, yaw, Some(pitch), false, cooldown, &ctx);
+            let g = &mut host.hub.guests[i];
+            g.vehicle = t.vehicle;
+            if let Some(mut body) = passenger_body {
+                body.position = Vec3::new(t.at[0], t.at[1], t.at[2]);
+                g.motion = Some(body);
+            }
             self.as_guest(host, t.conn, |g| {
                 g.trigger_dimension(source, t.dim, origin);
                 // The mods hear the teleport into another level, with the

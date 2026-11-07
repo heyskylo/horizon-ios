@@ -485,6 +485,7 @@ impl Scene {
         let f = &self.frame;
         Frame {
             weather: &[],
+            hand_items: &[],
             weather_time: crate::weather::Time::new(0, 0.0),
             camera: DVec3::from_array(f.camera),
             yaw: f.yaw,
@@ -516,6 +517,7 @@ impl Scene {
             outline: Vec::new(),
             outline_after_terrain: false,
             outline_high_contrast: false,
+            pvp: Default::default(),
             debug_lines: &[],
             debug_lines_on_top: &[],
             debug_crosshair: &[],
@@ -528,6 +530,7 @@ impl Scene {
             visible_static_block_entity_sections: &[],
             static_block_entity_stats: Default::default(),
             entity_motion: &[],
+            entity_motion_posed: &[],
             entity_spans: &[],
             skin: None,
             glowing: &[],
@@ -547,6 +550,7 @@ impl Scene {
             lightning: Default::default(),
             additive: &[],
             see_through: &[],
+            world_primitives: Default::default(),
             shadow_only: &[],
             celestial: &self.celestial,
             stars: f

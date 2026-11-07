@@ -21,22 +21,29 @@ check() {  # name, expected exit (0 or 1), output grep (may be empty), then the 
   else echo "FAIL $name (exit $rc, wanted $want, pattern '$pat')"; sed 's/^/     /' "$out"; fails=$((fails+1)); fi
 }
 
-# A fake release: an archive holding horizon-server, signed for TAG with a throwaway key.
-make_release() {  # dir tag
-  local d=$1 tag=$2
+# A fake release: an archive holding horizon-server, signed for TAG with a throwaway key. A Nightly (TAG nightly)
+# is also signed for its own version ALSO (nightly-<date>-<commit>) in SHA256SUMS.v2.sig, titled as
+# nightly-build.yml titles it.
+make_release() {  # dir tag [also]
+  local d=$1 tag=$2 also=${3:-}
   mkdir -p "$d/src/horizon-server-x" "$d/files"
   printf '#!/bin/sh\necho fake\n' > "$d/src/horizon-server-x/horizon-server"; chmod +x "$d/src/horizon-server-x/horizon-server"
   tar -czf "$d/files/horizon-server-linux-x86_64.tar.gz" -C "$d/src" horizon-server-x
-  EPHEMERAL=yes bash "$root/tools/ci/sign_release.sh" "$tag" "$d/files/horizon-server-linux-x86_64.tar.gz" > /dev/null
-  json "$d" "$tag" yes
+  ALSO_FOR=$also EPHEMERAL=yes bash "$root/tools/ci/sign_release.sh" "$tag" "$d/files/horizon-server-linux-x86_64.tar.gz" > /dev/null
+  json "$d" "$tag" yes "$(title "$tag" "$also")"
 }
-json() {  # dir tag with-sums: GitHub's release JSON, as install.sh reads it
-  local d=$1 tag=$2 sums=$3 sha
+title() {  # tag also: the release's GitHub title
+  if [ -n "$2" ]; then printf 'Nightly %s · %s' "$(printf '%s' "$2" | cut -c9-18)" "$(printf '%s' "$2" | cut -c20-)"
+  else printf '%s' "$1"; fi
+}
+json() {  # dir tag with-sums [title]: GitHub's release JSON, as install.sh reads it
+  local d=$1 tag=$2 sums=$3 name=${4:-$2} sha
   sha=$(sha256sum "$d/files/horizon-server-linux-x86_64.tar.gz" | cut -d' ' -f1)
   {
-    printf '{\n  "tag_name": "%s",\n  "name": "%s",\n  "assets": [\n' "$tag" "$tag"
+    printf '{\n  "tag_name": "%s",\n  "name": "%s",\n  "assets": [\n' "$tag" "$name"
     printf '    {\n      "name": "horizon-server-linux-x86_64.tar.gz",\n      "digest": "sha256:%s",\n      "browser_download_url": "https://dl.test/horizon-server-linux-x86_64.tar.gz"\n    }' "$sha"
-    if [ "$sums" = yes ]; then for f in SHA256SUMS SHA256SUMS.sig; do
+    if [ "$sums" = yes ]; then for f in SHA256SUMS SHA256SUMS.sig SHA256SUMS.v2.sig; do
+      [ -f "$d/files/$f" ] || continue
       printf ',\n    {\n      "name": "%s",\n      "browser_download_url": "https://dl.test/%s"\n    }' "$f" "$f"; done; fi
     printf '\n  ]\n}\n'
   } > "$d/release.json"
@@ -60,6 +67,12 @@ esac
 if [ -n "$out" ]; then cp "$src" "$out"; else cat "$src"; fi
 CURL
 chmod +x "$W/fake/curl"
+# The fake uname: install.sh picks the Linux x86-64 archive, the one these releases hold, on any machine.
+cat > "$W/fake/uname" <<'UNAME'
+#!/bin/sh
+case "$1" in -m) echo x86_64 ;; *) echo Linux ;; esac
+UNAME
+chmod +x "$W/fake/uname"
 
 # install.sh with the throwaway public key in place of the release key.
 with_key() {  # dir -> prints path of the patched copy
@@ -79,13 +92,30 @@ edit() {  # sed-expression file
   sed "$1" "$2" > "$2.tmp" && mv "$2.tmp" "$2"
 }
 mkdir -p "$W/home"
-P=/usr/bin:/bin
+# The cases get the OpenSSL 3 checked above, wherever it is: macOS's /usr/bin has LibreSSL.
+mkdir "$W/ssl"; ln -s "$(command -v openssl)" "$W/ssl/openssl"
+P=$W/ssl:/usr/bin:/bin
 
-# 1. Good signature, a Nightly (signed for the channel "nightly" under the tag nightly-2026-11-03).
-d=$W/good; make_release "$d" nightly; with_key "$d"
-edit 's/"tag_name": "nightly"/"tag_name": "nightly-2026-11-03"/' "$d/release.json"
-run "$d" "$P"; verdict "good signature installs (nightly channel)" 0 "Release signature OK" "$d"
+# 1. Good signature, a Nightly: SHA256SUMS.v2.sig signed for the version its title names.
+NIGHTLY=nightly-2026-11-03-0c02067
+d=$W/good; make_release "$d" nightly "$NIGHTLY"; with_key "$d"
+run "$d" "$P"; verdict "good signature installs (Nightly, signed for its own version)" 0 "Release signature OK" "$d"
 [ -x "$d/inst/current/horizon-server" ] || { echo "FAIL nothing installed"; fails=$((fails+1)); }
+grep -q "Downloading Horizon $NIGHTLY " "$d/out" || { echo "FAIL not installed as $NIGHTLY"; fails=$((fails+1)); }
+
+# 1b. A Nightly with only the channel's signature (published before v2): refused, never the channel's signature.
+d=$W/channel; make_release "$d" nightly; with_key "$d"; json "$d" nightly yes "$(title nightly "$NIGHTLY")"
+run "$d" "$P"; verdict "Nightly without SHA256SUMS.v2.sig refused" 1 "has no SHA256SUMS.v2.sig" "$d"
+[ ! -e "$d/inst/current" ] || { echo "FAIL a Nightly without v2 was installed"; fails=$((fails+1)); }
+
+# 1c. An older Nightly's files and signature retitled as a newer one: its v2 signature names the old version.
+d=$W/rollback; make_release "$d" nightly nightly-2026-11-01-1111111; with_key "$d"
+json "$d" nightly yes "$(title nightly "$NIGHTLY")"
+run "$d" "$P"; verdict "older Nightly passed off as a newer one refused" 1 "signature doesn't match" "$d"
+
+# 1d. A Nightly whose title doesn't name its date and commit: refused, not dated some other way.
+d=$W/title; make_release "$d" nightly "$NIGHTLY"; with_key "$d"; json "$d" nightly yes "Nightly"
+run "$d" "$P"; verdict "Nightly with an unreadable title refused" 1 "title doesn't name its date and commit" "$d"
 
 # 2. Good signature, a normal tag.
 d=$W/tag; make_release "$d" v1.2.3; with_key "$d"

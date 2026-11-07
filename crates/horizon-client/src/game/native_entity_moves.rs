@@ -40,7 +40,7 @@ impl Game<'_> {
         if !in_bounds(pos) || rotation.is_some_and(|r| !r.iter().all(|v| v.is_finite())) {
             return false;
         }
-        self.teleport_to(t, pos, rotation);
+        self.teleport_to(t, pos, rotation, true);
         true
     }
     /// Turns the entity to `yaw` and `pitch` in degrees (`Entity.setYRot`,
@@ -61,7 +61,7 @@ impl Game<'_> {
         if !yaw.is_finite() || !pitch.is_finite() {
             return false;
         }
-        self.teleport_to(t, pos, Some([yaw, pitch]));
+        self.teleport_to(t, pos, Some([yaw, pitch]), true);
         true
     }
     /// The yaw of the entity's head (`Entity.getYHeadRot`): a mob's or a

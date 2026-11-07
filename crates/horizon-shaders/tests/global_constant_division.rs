@@ -324,17 +324,26 @@ fn array_length_uses_declaration_scope() {
             .iter()
             .find(|(_, function)| function.name.as_deref() == Some("query_length"))
             .unwrap();
-        let (local, declaration) = function
+        // `n` is a local, or a module constant (a `const` with a constant initializer).
+        let local = function
             .local_variables
             .iter()
-            .find(|(_, local)| local.name.as_deref() == Some("n"))
-            .unwrap();
-        let mut value = declaration.init.or_else(|| function.body.iter().find_map(|statement| match statement {
-            naga::Statement::Store { pointer, value }
-                if matches!(function.expressions[*pointer], naga::Expression::LocalVariable(handle) if handle == local) => Some(*value),
-            _ => None,
-        })).unwrap();
-        let mut expressions = &function.expressions;
+            .find(|(_, local)| local.name.as_deref() == Some("n"));
+        let (mut value, mut expressions) = match local {
+            Some((local, declaration)) => (declaration.init.or_else(|| function.body.iter().find_map(|statement| match statement {
+                naga::Statement::Store { pointer, value }
+                    if matches!(function.expressions[*pointer], naga::Expression::LocalVariable(handle) if handle == local) => Some(*value),
+                _ => None,
+            })).unwrap(), &function.expressions),
+            None => {
+                let (_, constant) = module
+                    .constants
+                    .iter()
+                    .find(|(_, constant)| constant.name.as_deref() == Some("n"))
+                    .unwrap();
+                (constant.init, &module.global_expressions)
+            }
+        };
         loop {
             match expressions[value] {
                 naga::Expression::As { expr, .. } => value = expr,

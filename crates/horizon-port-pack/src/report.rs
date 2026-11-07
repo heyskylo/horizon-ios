@@ -34,7 +34,20 @@ impl Status {
             Status::NotNeeded => "not needed",
         }
     }
+    /// What the status leaves out, in plain words.
+    pub fn meaning(self) -> &'static str {
+        match self {
+            Status::Ported => PLAIN_PORTED,
+            Status::Partial => PLAIN_PARTIAL,
+            Status::NotYet => "It does not come over yet.",
+            Status::NotNeeded => "Nothing to port: Horizon has it built in or does not need it.",
+        }
+    }
 }
+
+const PLAIN_PORTED: &str =
+    "Its blocks and items came over and passed Horizon's checks; the mod's own code is not run.";
+const PLAIN_PARTIAL: &str = "Part of it came over, but something is left out, differs from the original or has not been checked yet; the technical detail says what.";
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Row {
@@ -47,7 +60,36 @@ pub struct Row {
     /// (non-commercial or no-derivatives), `custom` or `unknown`.
     pub license_kind: String,
     pub status: Status,
+    /// The technical reason, for modders (the `why` column of `coverage.md`).
     pub reason: String,
+    /// The same in plain words for a player. Empty in a `coverage.json` an older build wrote.
+    #[serde(default)]
+    pub plain: String,
+    /// Unported dependencies, kept apart so the launcher can translate the fixed sentence.
+    #[serde(default)]
+    pub waiting: usize,
+    /// Made for 1.20 or older (data folders named as before 1.21): not carried, and not one
+    /// Port can carry over either.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub old_layout: bool,
+}
+
+impl Row {
+    /// The standalone coverage report stays English, including the dependency count.
+    pub fn plain_text(&self) -> String {
+        let mut plain = self.plain.clone();
+        match self.waiting {
+            0 => {}
+            1 => plain.push_str(" It also waits for 1 mod it depends on that is not ported yet."),
+            n => {
+                let _ = write!(
+                    plain,
+                    " It also waits for {n} mods it depends on that are not ported yet."
+                );
+            }
+        }
+        plain
+    }
 }
 
 /// The licence family of an SPDX id or a `mods.toml` licence text.
@@ -109,6 +151,61 @@ fn not_needed(class: &str) -> &'static str {
     }
 }
 
+/// What keeps a mod that has not been carried over from coming over, in plain words.
+fn plain_not_yet(r: &Record) -> &'static str {
+    if r.class == "unknown" {
+        return "Horizon cannot tell yet what this mod does (it needs its jar or a reviewed entry), so it cannot say whether it will come over.";
+    }
+    if r.class == "integration" {
+        return "It joins other mods together, so it waits until those are ported.";
+    }
+    match r.tier.as_str() {
+        "data" if r.jar.is_some() => {
+            "Content only (blocks, items, structures). Its jar is here, but it has not been carried over yet."
+        }
+        "data" => {
+            "Content only (blocks, items, structures). It can come over once its jar is here."
+        }
+        "logic" => {
+            "Needs what blocks and items do when used, placed, broken or ticked, which Horizon's mod API cannot run from a mod yet, so it does not come over."
+        }
+        "machines" => {
+            "Needs machine-style features (block entities, menus, item, fluid and energy handling, networking) that Horizon's mod API does not have yet, so it does not come over."
+        }
+        "deep" => {
+            "Needs mobs, custom rendering and models, dimensions or new game hooks that Horizon's mod API does not have yet, so it does not come over."
+        }
+        "client" => {
+            "Needs the game's client interfaces (keys, targeting, inventory reading, interface, rendering), so it does not come over yet."
+        }
+        _ => "Horizon has not worked out what this mod needs yet.",
+    }
+}
+
+fn plain_not_needed(class: &str) -> &'static str {
+    match class {
+        "library" => {
+            "A library other mods build on. Horizon's mod API and SDK take its place, so there is nothing to port."
+        }
+        "performance" => {
+            "It makes the game faster. Horizon's own engine does that, so there is nothing to port."
+        }
+        "other" => {
+            "Pack tooling or a game feature that Horizon already has, so there is nothing to port."
+        }
+        "client-ui" => "Built into Horizon already, so there is nothing to port.",
+        _ => "Nothing to port.",
+    }
+}
+
+/// Whether the carry found the mod made for 1.20 or older ([`crate::carry::old_layout`]).
+fn old_layout(work: &Path, key: &str) -> bool {
+    std::fs::read(work.join("mods").join(key).join("carry-report.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        .is_some_and(|c| c["old_layout"] == true)
+}
+
 /// A carried-over mod: ported when its harness passes with nothing left
 /// out and nothing the templates miss; else partial, with what is missing.
 fn carried(work: &Path, key: &str) -> Option<(Status, String)> {
@@ -161,6 +258,9 @@ fn carried(work: &Path, key: &str) -> Option<(Status, String)> {
     let mut checked = 0;
     match &harness {
         Some(h) => {
+            if h["passed"].as_bool() == Some(false) {
+                gaps.push("harness failed".into());
+            }
             for (name, c) in h["checks"].as_object().into_iter().flatten() {
                 let (p, f) = (
                     c["passed"].as_u64().unwrap_or(0),
@@ -170,6 +270,9 @@ fn carried(work: &Path, key: &str) -> Option<(Status, String)> {
                 if f > 0 {
                     gaps.push(format!("{name} {p}/{}", p + f));
                 }
+            }
+            if checked == 0 {
+                gaps.push("harness has no checks".into());
             }
         }
         None => gaps.push("harness not run".into()),
@@ -212,6 +315,15 @@ fn resource_row(path: &str, outcome: Option<&Outcome>, record: Option<&Record>) 
         } else {
             Status::NotYet
         },
+        waiting: 0,
+        old_layout: false,
+        plain: match (shader, outcome.map(|o| o.state)) {
+            (true, _) => "Shader packs are not converted yet.",
+            (false, Some(State::Available)) => "Copied as a resource pack; Horizon has not checked how it renders. Turn it on in the game's Resource Packs screen.",
+            (false, None) => "Not downloaded yet; Port gets it.",
+            (false, Some(_)) => "Horizon could not use this resource pack yet; the technical detail says why.",
+        }
+        .into(),
         reason: outcome.map_or_else(
             || {
                 if shader {
@@ -233,12 +345,18 @@ pub fn build(records: &[Record], work: &Path) -> Vec<Row> {
             if r.path.starts_with("resourcepacks/") || r.path.starts_with("shaderpacks/") {
                 return resource_row(&r.path, resourcepacks.files.get(&r.path), Some(r));
             }
+            let old = old_layout(work, &r.key);
             let (status, reason) = if r.class == "unknown" {
                 let why =
                     "unclassified: its jar (mods.toml, file census) or a reviewed row decides";
                 (Status::NotYet, why.to_owned())
             } else if r.tier == "none" || matches!(r.class.as_str(), "library" | "performance") {
                 (Status::NotNeeded, not_needed(&r.class).to_owned())
+            } else if old {
+                let why = "made for Minecraft 1.20 or older: its data folders (recipes/, \
+                           loot_tables/, tags/blocks/...) are named as before 1.21, which 26.3 \
+                           does not read; not carried";
+                (Status::NotYet, why.to_owned())
             } else if let Some(c) = carried(work, &r.key) {
                 c
             } else {
@@ -260,6 +378,15 @@ pub fn build(records: &[Record], work: &Path) -> Vec<Row> {
                 license_kind: license_kind(&r.license).to_owned(),
                 status,
                 reason,
+                waiting: 0,
+                old_layout: old,
+                plain: match status {
+                    Status::NotYet if old => crate::carry::OLD_LAYOUT,
+                    Status::NotYet => plain_not_yet(r),
+                    Status::NotNeeded => plain_not_needed(&r.class),
+                    carried => carried.meaning(),
+                }
+                .into(),
             }
         })
         .collect();
@@ -277,6 +404,7 @@ pub fn build(records: &[Record], work: &Path) -> Vec<Row> {
             .collect();
         if !waiting.is_empty() {
             let _ = write!(row.reason, "; waits on {}", waiting.join(", "));
+            row.waiting = waiting.len();
         }
     }
     for (path, outcome) in &resourcepacks.files {
@@ -285,6 +413,77 @@ pub fn build(records: &[Record], work: &Path) -> Vec<Row> {
         }
     }
     rows
+}
+
+/// What a pack's mods add up to, for the headline above the numbers. It counts the report's own
+/// rows and tiers; resource packs and shader packs are not mods and are left out.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Summary {
+    /// Mods that need a port: all but the "not needed" ones.
+    pub needing: usize,
+    /// Ported or partial: carried over, as content.
+    pub carried: usize,
+    /// Of those, partial.
+    pub partial: usize,
+    /// Not yet: content of the data tier, which port can carry over.
+    pub ready: usize,
+    /// Not yet: needs mod API Horizon does not have yet (every tier above data).
+    pub blocked: usize,
+    /// Not yet, for another reason: not identified, or waiting on other mods or other work.
+    pub later: usize,
+}
+
+pub fn summary(rows: &[Row]) -> Summary {
+    let mut s = Summary::default();
+    for r in rows
+        .iter()
+        .filter(|r| !matches!(r.class.as_str(), "resourcepack" | "shaderpack"))
+    {
+        match r.status {
+            Status::NotNeeded => continue,
+            Status::Ported => s.carried += 1,
+            Status::Partial => (s.carried, s.partial) = (s.carried + 1, s.partial + 1),
+            // Not one port can carry over: the 1.20 data would not load.
+            Status::NotYet if r.old_layout => s.later += 1,
+            Status::NotYet if r.class == "content" && r.tier == "data" => s.ready += 1,
+            Status::NotYet
+                if r.class != "unknown"
+                    && matches!(r.tier.as_str(), "logic" | "machines" | "deep" | "client") =>
+            {
+                s.blocked += 1
+            }
+            Status::NotYet => s.later += 1,
+        }
+        s.needing += 1;
+    }
+    s
+}
+
+impl Summary {
+    /// The headline in plain words, one paragraph per line; none for a pack with no mod to port.
+    /// The launcher words the same lines through its translations (a test keeps them equal).
+    pub fn lines(&self) -> Vec<String> {
+        if self.needing == 0 {
+            return Vec::new();
+        }
+        let mut lines = vec![format!(
+            "{} of {} mods that need porting come over as content (blocks, items and structures); their own code does not run.",
+            self.carried, self.needing
+        )];
+        if self.ready + self.blocked + self.later > 0 {
+            lines.push(format!(
+                "Not yet: {} are content mods Port can carry over, {} need mod support Horizon does not have yet (machines, menus, behaviour, mobs, dimensions, client features), {} are not sorted yet (not identified, or waiting on other mods or other work).",
+                self.ready, self.blocked, self.later
+            ));
+        }
+        if self.partial > 0 {
+            lines.push(
+                "Partial means part of a mod came over, but something is left out, differs from the original or has not been checked yet."
+                    .into(),
+            );
+        }
+        lines
+    }
 }
 
 /// Rows counted by `field` and status.
@@ -320,25 +519,34 @@ fn table(rows: &[Row], title: &str, field: fn(&Row) -> &str) -> String {
 
 pub fn markdown(pack: &str, rows: &[Row]) -> String {
     let mut out = format!("# Coverage: {pack}\n\n");
+    let lines = summary(rows).lines();
+    if !lines.is_empty() {
+        out += &format!("**{}**\n\n", lines[0]);
+        for line in &lines[1..] {
+            out += &format!("{line}\n\n");
+        }
+        out += "The tables below use the technical terms; the last column of the list says the same in plain words.\n\n";
+    }
     out += &table(rows, "class", |r| &r.class);
     out += "\n";
     out += &table(rows, "tier", |r| &r.tier);
     out += "\n";
     out += &table(rows, "licence", |r| &r.license_kind);
     out += "\nPorts stay local. Only permissive or copyleft ports could ever be published, and only after Ludovic asks the authors.\n\n";
-    out += "| mod | class | tier | licence | status | why |\n|---|---|---|---|---|---|\n";
+    out += "| mod | class | tier | licence | status | why | in plain words |\n|---|---|---|---|---|---|---|\n";
     let mut sorted: Vec<&Row> = rows.iter().collect();
     sorted.sort_by(|a, b| (a.status, &a.key).cmp(&(b.status, &b.key)));
     for r in sorted {
         let _ = writeln!(
             out,
-            "| {} | {} | {} | {} | {} | {} |",
+            "| {} | {} | {} | {} | {} | {} | {} |",
             r.key,
             r.class,
             r.tier,
             r.license.replace('|', "/"),
             r.status.label(),
-            r.reason.replace('|', "/")
+            r.reason.replace('|', "/"),
+            r.plain_text().replace('|', "/")
         );
     }
     out
@@ -443,6 +651,90 @@ mod tests {
             "{md}"
         );
         std::fs::remove_dir_all(&work).unwrap();
+    }
+
+    #[test]
+    fn carried_harness_needs_executed_checks() {
+        for harness in [
+            serde_json::json!({"passed": false, "checks": {}}),
+            serde_json::json!({"passed": true, "checks": {}}),
+            serde_json::json!({"checks": {"blocks": {"passed": 0, "failed": 0}}}),
+            serde_json::json!({}),
+        ] {
+            let row = carried_harness_row(Some(&harness.to_string()));
+            assert_eq!(row.status, Status::Partial, "{harness}: {}", row.reason);
+            assert!(row.reason.contains("no checks"), "{}", row.reason);
+            assert!(!row.reason.contains("harness green"), "{}", row.reason);
+        }
+    }
+
+    #[test]
+    fn carried_harness_rejects_failed_verdicts() {
+        for harness in [
+            serde_json::json!({"passed": false,
+                "checks": {"blocks": {"passed": 3, "failed": 0}}}),
+            serde_json::json!({"passed": true,
+                "checks": {"blocks": {"passed": 1, "failed": 2}}}),
+            serde_json::json!({"checks": {"blocks": {"passed": 1, "failed": 2}}}),
+        ] {
+            let row = carried_harness_row(Some(&harness.to_string()));
+            assert_eq!(row.status, Status::Partial, "{harness}: {}", row.reason);
+            assert!(!row.reason.contains("harness green"), "{}", row.reason);
+            if harness["passed"] == false {
+                assert!(row.reason.contains("harness failed"), "{}", row.reason);
+            } else {
+                assert!(row.reason.contains("blocks 1/3"), "{}", row.reason);
+            }
+        }
+    }
+
+    #[test]
+    fn carried_harness_keeps_current_and_legacy_successes() {
+        for harness in [
+            serde_json::json!({"passed": true,
+                "checks": {"blocks": {"passed": 3, "failed": 0}}}),
+            serde_json::json!({"checks": {"blocks": {"passed": 3, "failed": 0}}}),
+        ] {
+            let row = carried_harness_row(Some(&harness.to_string()));
+            assert_eq!(row.status, Status::Ported, "{harness}: {}", row.reason);
+            assert!(row.reason.contains("harness green"), "{}", row.reason);
+        }
+    }
+
+    #[test]
+    fn carried_harness_keeps_missing_or_unreadable_results_partial() {
+        for harness in [None, Some("not JSON")] {
+            let row = carried_harness_row(harness);
+            assert_eq!(row.status, Status::Partial, "{}", row.reason);
+            assert!(row.reason.contains("harness not run"), "{}", row.reason);
+        }
+    }
+
+    fn carried_harness_row(harness: Option<&str>) -> Row {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let work = std::env::temp_dir().join(format!(
+            "horizon-report-verdict-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&work).unwrap();
+        let dir = work.join("mods/example");
+        std::fs::create_dir_all(dir.join("harness")).unwrap();
+        std::fs::write(
+            dir.join("carry-report.json"),
+            r#"{"blocks":{"example:block":"minecraft:stone"},"items":0}"#,
+        )
+        .unwrap();
+        if let Some(harness) = harness {
+            std::fs::write(dir.join("harness/result.json"), harness).unwrap();
+        }
+        let row = build(&[record("example", "content", "data", &[])], &work)
+            .pop()
+            .unwrap();
+        std::fs::remove_dir_all(work).unwrap();
+        row
     }
 
     #[test]

@@ -9,8 +9,9 @@
 //!
 //! Protocol (JSON over HTTPS):
 //! - `POST /v1/worn` `{"players": ["<uuid hex>", …]}` (at most `BATCH`) answers
-//!   `{"ttl": seconds, "players": {"<uuid hex>": [{"id", "hash"}, …]}}`; a
-//!   player who wears nothing is left out.
+//!   `{"ttl": seconds, "players": {"<uuid hex>": [{"id", "hash"}, …]}, "horizon": ["<uuid hex>", …]}`;
+//!   a player who wears nothing is left out of `players`, and `horizon` lists the batch's players
+//!   who play Horizon (and let it say so).
 //! - `GET /v1/items/<id>?hash=<hash>` answers the item file, which never
 //!   changes for a hash.
 
@@ -54,6 +55,8 @@ struct State {
 
 struct Entry {
     worn: Option<Worn>,
+    /// Plays Horizon, as the service last said.
+    horizon: bool,
     expires: Instant,
     seen: Instant,
 }
@@ -163,6 +166,15 @@ impl Frame<'_> {
     /// What `uuid` wears as last known (`None`: nothing, or not known yet).
     /// A player not known, or known for longer than the TTL, is asked for.
     pub fn worn(&mut self, uuid: u128) -> Option<Worn> {
+        self.look(uuid).and_then(|e| e.worn.clone())
+    }
+
+    /// Whether `uuid` plays Horizon, as last known (false until known); asked for as `worn`.
+    pub fn horizon(&mut self, uuid: u128) -> bool {
+        self.look(uuid).is_some_and(|e| e.horizon)
+    }
+
+    fn look(&mut self, uuid: u128) -> Option<&Entry> {
         let now = self.now;
         let state = &mut *self.state;
         match state.players.get_mut(&uuid) {
@@ -171,7 +183,7 @@ impl Frame<'_> {
                 if entry.expires <= now && state.pending.insert(uuid) {
                     self.asked = true;
                 }
-                entry.worn.clone()
+                Some(entry)
             }
             None => {
                 self.asked |= state.pending.insert(uuid);
@@ -197,6 +209,9 @@ fn ready(s: &State, now: Instant) -> bool {
 struct Answer {
     ttl: u64,
     players: HashMap<String, Vec<ItemRef>>,
+    /// Missing from services before it.
+    #[serde(default)]
+    horizon: Vec<String>,
 }
 
 #[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -277,6 +292,7 @@ fn work(shared: &Shared, transport: &dyn Transport, cache: &Option<PathBuf>, sav
                 // Shown until the service answers: asked again with the others.
                 s.players.entry(uuid).or_insert(Entry {
                     worn: Some(worn),
+                    horizon: false,
                     expires: now,
                     seen: now,
                 });
@@ -288,6 +304,11 @@ fn work(shared: &Shared, transport: &dyn Transport, cache: &Option<PathBuf>, sav
             return;
         }
     };
+    let horizon: HashSet<u128> = answer
+        .horizon
+        .iter()
+        .filter_map(|hex| u128::from_str_radix(hex, 16).ok())
+        .collect();
     let mut worn: HashMap<u128, Worn> = HashMap::new();
     // Players with an item the service didn't send: asked again soon.
     let mut short = HashSet::new();
@@ -344,6 +365,7 @@ fn work(shared: &Shared, transport: &dyn Transport, cache: &Option<PathBuf>, sav
             uuid,
             Entry {
                 worn: worn.remove(&uuid),
+                horizon: horizon.contains(&uuid),
                 expires: now + ttl,
                 seen,
             },
@@ -525,7 +547,8 @@ impl Transport for Http {
 }
 
 /// Item files in a folder instead of the service (`HORIZON_COSMETICS_LOCAL`): every player asked
-/// for wears the first item of each slot found there, by file name. For artists and the bench.
+/// for wears the first item of each slot found there, by file name, and plays Horizon. For artists
+/// and the bench.
 pub struct Local {
     dir: PathBuf,
 }
@@ -550,6 +573,7 @@ impl Local {
         for file in files {
             if let Some(item) = std::fs::read(&file).ok().and_then(|b| Item::parse(&b).ok())
                 && !slots.contains(&item.slot)
+                && item.slot != crate::Slot::Emote
                 && file.file_stem().is_some_and(|s| *s == *item.id)
             {
                 slots.push(item.slot);
@@ -577,9 +601,12 @@ impl Transport for Local {
             .into_iter()
             .map(|p| (p, serde_json::Value::Array(refs.clone())))
             .collect();
-        Ok(serde_json::json!({"ttl": 60, "players": players})
-            .to_string()
-            .into_bytes())
+        let horizon: Vec<&String> = players.keys().collect();
+        Ok(
+            serde_json::json!({"ttl": 60, "players": players, "horizon": horizon})
+                .to_string()
+                .into_bytes(),
+        )
     }
 
     fn get(&self, path: &str) -> Result<Vec<u8>, String> {

@@ -153,6 +153,9 @@ pub(super) struct CombatTracker {
     /// (`MobEvent::ExplosionSource`): their names, for the death messages of
     /// the mobs the blast killed.
     pub(super) exploded: Vec<(u32, Text)>,
+    /// The entity types of `exploded`: a player their blast killed is still
+    /// credited to them (`LivingEntity.getKillCredit` during the explosion).
+    pub(super) exploded_kinds: Vec<(u32, String)>,
     /// The player's fall distance before this tick's movement (as of the
     /// end of the last one).
     fall_before: f64,
@@ -295,7 +298,7 @@ impl Game<'_> {
                     continue;
                 }
                 MotionEvent::Health(HealthEvent::RecordedDamage { source, amount }) => {
-                    let Some(d) = self.motion.health.damage.definition(*source) else {
+                    let Some(d) = self.health_resources.damage.definition(*source) else {
                         continue;
                     };
                     (d.name.clone(), *amount)
@@ -329,8 +332,9 @@ impl Game<'_> {
                     self.combat.in_combat = true;
                 }
             }
-            // Player.actuallyHurt: damage_taken in tenths.
-            self.award_custom_stat("damage_taken", (amount * 10.0).round() as i32);
+            if let Some(tenths) = damage_taken_award(amount) {
+                self.award_custom_stat("damage_taken", tenths);
+            }
             self.combat.entries.push(Entry {
                 damage_type: name,
                 damage: amount,
@@ -394,7 +398,7 @@ impl Game<'_> {
         }
     }
     fn damage_in_tag(&self, name: &str, tag: &str) -> bool {
-        let damage = &self.motion.health.damage;
+        let damage = &self.health_resources.damage;
         damage.id(name).is_some_and(|id| {
             damage.in_tag(id, tag) || damage.in_tag(id, &format!("minecraft:{tag}"))
         })
@@ -472,11 +476,10 @@ impl Game<'_> {
             return Text::translate("death.attack.generic", &[me]);
         };
         let def = self
-            .motion
-            .health
+            .health_resources
             .damage
             .id(&killing.damage_type)
-            .and_then(|id| self.motion.health.damage.definition(id))
+            .and_then(|id| self.health_resources.damage.definition(id))
             .map(|d| (d.message_id.clone(), d.death_message_type.clone()))
             .unwrap_or_else(|| ("generic".into(), "default".into()));
         self.combat.entries = entries;
@@ -695,6 +698,32 @@ fn mob_name(m: &Mob) -> Text {
         (Some(text), _) => text.clone(),
         (None, Some(name)) => Text::literal(name.clone()),
         (None, None) => Text::translate(&format!("entity.{}", m.kind.id.replace(':', ".")), &[]),
+    }
+}
+
+/// `Player.actuallyHurt`'s DAMAGE_TAKEN award: `dmg * 10.0F` rounded as Java
+/// rounds a float (`jmath::round_f32`), only for damage under 3.4028235E37F.
+/// A huge hit (`/damage @s 3.4e38`) awards nothing, not a saturated count
+/// (#11339).
+fn damage_taken_award(amount: f32) -> Option<i32> {
+    (amount < 3.402_823_5e37).then(|| horizon_core::jmath::round_f32(amount * 10.0))
+}
+
+#[cfg(test)]
+mod damage_taken_tests {
+    use super::damage_taken_award;
+
+    #[test]
+    fn tenths_rounded_as_java_does_and_nothing_for_a_huge_hit() {
+        assert_eq!(damage_taken_award(2.0), Some(20));
+        // Java rounds 0.5F up to 1: ties go up.
+        assert_eq!(damage_taken_award(0.05), Some(1));
+        assert_eq!(damage_taken_award(0.04), Some(0));
+        // Below the threshold the count saturates, as Java's float rounding does.
+        assert_eq!(damage_taken_award(3.4e37), Some(i32::MAX));
+        assert_eq!(damage_taken_award(3.402_823_5e37), None);
+        assert_eq!(damage_taken_award(3.4e38), None);
+        assert_eq!(damage_taken_award(f32::INFINITY), None);
     }
 }
 

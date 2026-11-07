@@ -47,14 +47,16 @@
   "remote_fireworks": "two game windows (lan_e2e); a screenshot took ~1.5 s beside 3 other harnesses on playhorizon's runner, past the sparks' life (2026-10-27)",
   "return_to_sender": "a game window: an attack on a fireball and its flight to the ghast take ticks the check needs",
   "server_player_sculk": "two game windows (lan_e2e); failed on playhorizon's runner beside other harnesses, passes alone (2026-10-27)",
-  "world_reopen": "a game window reopening a world: failed on playhorizon's runner beside other harnesses (2026-10-27)"
+  "world_reopen": "a game window reopening a world: failed on playhorizon's runner beside other harnesses (2026-10-27)",
+  "wire_stream": "a vanilla client, a vanilla server and a Horizon client: a loaded runner delays logins past their limits"
  },
  "named_only": {
-  "lan_integration": "the whole lan_e2e suite: ~40 min a run on a loaded runner, and single checks flake under load; run it by name, or tools/lan_e2e.py"
+  "frame_identity": "fails any change that moves the picture on purpose; a pull request that must leave it alone (HDR, shader packs) carries the frame-identity label, or run it by name",
+  "lan_integration": "the whole lan_e2e suite: ~40 min a run on a loaded runner, and single checks flake under load; run it by name, or tools/lan_e2e.py",
+  "wire_stream": "a real vanilla 26.3 client on a virtual screen beside a vanilla server and a headless Horizon client, ~15 min a run; run it by name (before a pull request that changes what the client sends) or nightly"
  },
  "known_flaky": {
   "world_reopen": "counted 4 minecarts instead of 3 once on a loaded Mac mini runner, then passed at the same head (10-26)",
-  "lunge_motion": "a loaded Mac mini runner: the server catches up with two ticks for one of the jump's moves (Alice falls a tick of gravity more, -0.3015 vs -0.2277; the harness now names it), and vanilla's own run once sent an extra motion while sprinting; the same trees pass alone (#5656, 11-01)",
-  "fishing_hook_entities": "vanilla's own cast misses its target on a loaded Mac mini runner (FishingHook's throw is randomised): one_player now reruns a vanilla run its check rejects up to 5 times, yet 3 rejected runs in a row happened once (11-03)"
+  "lunge_motion": "a loaded Mac mini runner: the server catches up with two ticks for one of the jump's moves (Alice falls a tick of gravity more, -0.3015 vs -0.2277; the harness now names it), and vanilla's own run once sent an extra motion while sprinting; the same trees pass alone (#5656, 11-01)"
  }
 }

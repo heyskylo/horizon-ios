@@ -558,6 +558,15 @@ impl Mob {
     pub fn eye_height(&self) -> f64 {
         self.dims().2
     }
+    /// `EntityRenderer.getPackedLightCoords` reads the block
+    /// `Entity.getLightProbePosition(partialTick)` is in, and a living entity
+    /// leaves that as `getEyePosition`: the eye height over
+    /// `getPosition(partialTick)`, the position the frame draws, not this
+    /// tick's. A mob walking across a cell boundary is drawn lit by the cell it
+    /// is drawn in.
+    pub fn light_probe(&self, partial: f64) -> [i32; 3] {
+        eye_probe_cell(self.previous, self.position, self.eye_height(), partial)
+    }
     pub fn width(&self) -> f32 {
         self.dims().0 as f32
     }
@@ -1175,10 +1184,11 @@ impl Mob {
             self.fall_to_passengers(distance, modifier, events);
         }
         if damage > 0.0 {
-            // Llama.causeFallDamage: only a fall of six blocks or more hurts the
-            // llama and its riders.
+            // Llama.causeFallDamage: shorter damaging falls play the block
+            // sound but do not hurt the llama or its riders.
             if super::llama::is_llama(self.species()) && distance < 6.0 {
-                return false;
+                self.block_fall_sound(contact, events);
+                return true;
             }
             let at = [self.position.x, self.position.y, self.position.z];
             // Monster.getFallSounds: the hostile pair.
@@ -1192,14 +1202,38 @@ impl Mob {
             // Horses thud and llamas make no generic fall sound.
             if !horse {
                 events.push(MobEvent::Sound(sound, at, 1.0, 1.0));
+                self.block_fall_sound(contact, events);
             }
             self.damage(damage as f32, super::Damage::of(source));
             if horse {
                 self.fall_to_passengers(distance, modifier, events);
+                self.block_fall_sound(contact, events);
             }
             return true;
         }
         false
+    }
+    /// `LivingEntity.playBlockFallSound`: the block 0.2 below the feet plays
+    /// its fall sound at half its volume and three quarters of its pitch,
+    /// unless the mob is silent or the block is air.
+    fn block_fall_sound(&self, contact: Option<(&MobWorld, [i32; 3])>, events: &mut Vec<MobEvent>) {
+        if self.silent {
+            return;
+        }
+        if let Some((w, _)) = contact {
+            let pos = self.on_pos(0.2);
+            let state = w.world.block(pos[0], pos[1], pos[2]);
+            if !w.facts.is_air(state) {
+                let sounds = &w.facts.get(state).sounds;
+                let at = [self.position.x, self.position.y, self.position.z];
+                events.push(MobEvent::SoundId(
+                    sounds.fall.to_string(),
+                    at,
+                    sounds.volume * 0.5,
+                    sounds.pitch * 0.75,
+                ));
+            }
+        }
     }
     /// `Entity.propagateFallToPassengers`: the game gives the fall to each
     /// passenger (`causeFallDamage`), a mob or a player, for this mob is
@@ -1382,11 +1416,6 @@ impl Mob {
         {
             y += (0.05 * f64::from(amp + 1) - movement.y) * 0.2;
         } else {
-            // LivingEntity.travelInAir: a Slow Falling mob on its way down lands without
-            // having fallen.
-            if self.velocity.y <= 0.0 && self.has_effect("minecraft:slow_falling") {
-                self.fall_distance = 0.0;
-            }
             y -= self.effective_gravity();
         }
         // LivingEntity.shouldDiscardFriction (a breeze's, a frog's or a goat's
@@ -1560,11 +1589,11 @@ impl Mob {
             self.species(),
             super::Species::Slime | super::Species::MagmaCube | super::Species::SulfurCube
         ) {
-            super::cube::jump(self);
+            super::cube::jump(self, w);
             crate::motion::native_living_jump(self.id, &self.kind.id);
             return;
         }
-        let power = self.jump_power();
+        let power = self.jump_power(w);
         if power > 1.0e-5 {
             self.velocity.y = f64::from(power).max(self.velocity.y);
             // A sprint jump (a dashing cat or ocelot) adds 0.2 along its yaw.
@@ -1584,8 +1613,41 @@ impl Mob {
         }
         crate::motion::native_living_jump(self.id, &self.kind.id);
     }
-    pub fn jump_power(&self) -> f32 {
-        self.kind.jump_strength as f32
+    /// `LivingEntity.getJumpPower`: the jump power with a multiplier of 1.0.
+    pub fn jump_power(&self, w: &MobWorld) -> f32 {
+        self.jump_power_with(w, 1.0)
+    }
+    /// `LivingEntity.getJumpPower(float multiplier)`
+    pub fn jump_power_with(&self, w: &MobWorld, multiplier: f32) -> f32 {
+        self.attrs.jump_strength as f32 * multiplier * self.block_jump_factor(w)
+            + self.jump_boost_power()
+    }
+    /// `LivingEntity.getJumpBoostPower`: amplifier + 1 times 0.1, or 0.0 without the effect.
+    pub fn jump_boost_power(&self) -> f32 {
+        self.extra
+            .effects
+            .iter()
+            .find(|e| e.0 == "minecraft:jump_boost")
+            .map_or(0.0, |e| 0.1 * (e.2 + 1) as f32)
+    }
+    /// `Entity.getBlockJumpFactor`: the block the mob stands in, or the one
+    /// below that affects movement when the current block has a neutral jump factor of 1.0.
+    pub fn block_jump_factor(&self, w: &MobWorld) -> f32 {
+        let properties = w.movement;
+        let current = w.world.block(
+            self.position.x.floor() as i32,
+            self.position.y.floor() as i32,
+            self.position.z.floor() as i32,
+        );
+        let below = self.on_pos(0.500_001);
+        let lower = w.world.block(below[0], below[1], below[2]);
+        let current = properties
+            .get(current)
+            .map_or(1.0, |p| p.coefficients.jump_factor);
+        let lower = properties
+            .get(lower)
+            .map_or(1.0, |p| p.coefficients.jump_factor);
+        if current == 1.0 { lower } else { current }
     }
     /// LivingEntity.updateWalkAnimation (client calculateEntityAnimation).
     pub fn update_walk_animation(&mut self) {
@@ -1758,6 +1820,19 @@ impl horizon_world::water_splash::WaterSplashWorld for Splash<'_> {
     }
 }
 
+/// `Entity.getEyePosition(partialTick)` as the cell the renderer lights an
+/// entity from (`Entity.getLightProbePosition` is that position and
+/// `EntityRenderer.getPackedLightCoords` takes `BlockPos.containing` of it):
+/// `Mth.lerp(partialTick, xo, x)` on each axis, plus `getEyeHeight()` on y.
+pub fn eye_probe_cell(previous: Vec3, position: Vec3, eye_height: f64, partial: f64) -> [i32; 3] {
+    let at = previous.lerp(position, partial);
+    [
+        at.x.floor() as i32,
+        (at.y + eye_height).floor() as i32,
+        at.z.floor() as i32,
+    ]
+}
+
 /// `Entity.doWaterSplashEffect` for a mob this window is drawing.
 /// `Level.addParticle` runs on the client. `ClientLevel.playSeededSound`
 /// ignores `Entity.playSound` (`except` is null), and the SPLASH game event
@@ -1873,6 +1948,30 @@ impl RestitutionWorld for MobRestitution<'_, '_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `Entity.getLightProbePosition(partialTick)` for a living entity is
+    /// `getEyePosition`: `getEyeHeight()` over `Mth.lerp(partialTick, xo, x)`.
+    /// Horizon probed this tick's own position, so a mob walking into the next
+    /// cell was drawn lit by that cell for the whole frame before it got there,
+    /// and a falling one for a frame after it left.
+    #[test]
+    fn a_mob_probe_follows_the_frame() {
+        let eye = 1.62;
+        // Walking from x = 0.9 to 1.1: the eye is in the cell at 0 until the
+        // frame reaches the boundary, and in the cell at 1 from there on.
+        let (previous, position) = (Vec3::new(0.9, 64.0, 0.5), Vec3::new(1.1, 64.0, 0.5));
+        assert_eq!(eye_probe_cell(previous, position, eye, 0.0), [0, 65, 0]);
+        assert_eq!(eye_probe_cell(previous, position, eye, 0.5), [1, 65, 0]);
+        assert_eq!(eye_probe_cell(previous, position, eye, 1.0), [1, 65, 0]);
+        // The old probe was the tick's own position on every frame.
+        assert_eq!(position.x.floor() as i32, 1);
+        // Falling a block: the eye is at 71.62 at the start of the frame and
+        // 70.62 at its end.
+        let (previous, position) = (Vec3::new(0.5, 70.0, 0.5), Vec3::new(0.5, 69.0, 0.5));
+        assert_eq!(eye_probe_cell(previous, position, eye, 0.0), [0, 71, 0]);
+        assert_eq!(eye_probe_cell(previous, position, eye, 0.5), [0, 71, 0]);
+        assert_eq!(eye_probe_cell(previous, position, eye, 1.0), [0, 70, 0]);
+    }
     /// A pig dropped hard onto a block bounces by that block's restitution
     /// (`Entity.getBlockBounciness`): landing on a slime block sends it back
     /// up, landing on stone stops it dead. The same 8-block fall then costs the
@@ -1902,7 +2001,9 @@ mod tests {
             &horizon_world::loot::PackOverlay::NONE,
         )
         .unwrap();
-        let collision = crate::collisions::load(&root, registry).unwrap();
+        let collision = std::sync::Arc::new(crate::collisions::load(&root, registry).unwrap());
+        let suffocation =
+            crate::mobs::suffocation::bind(collision.clone(), &motion.causes_suffocation).unwrap();
         let lid_openers = std::collections::HashMap::new();
         for (ground, bounces, health) in [
             ("minecraft:slime_block", true, 10.0),
@@ -1932,6 +2033,7 @@ mod tests {
                 fluid_tables: &motion.fluids,
                 movement: &motion.blocks,
                 collision: &collision,
+                suffocation: &suffocation,
                 data: &data,
                 player: None,
                 controlling_player_movement: None,
@@ -2022,7 +2124,9 @@ mod tests {
             &horizon_world::loot::PackOverlay::NONE,
         )
         .unwrap();
-        let collision = crate::collisions::load(&root, registry).unwrap();
+        let collision = std::sync::Arc::new(crate::collisions::load(&root, registry).unwrap());
+        let suffocation =
+            crate::mobs::suffocation::bind(collision.clone(), &motion.causes_suffocation).unwrap();
         let lid_openers = std::collections::HashMap::new();
         let air = registry.default_state("minecraft:air").unwrap();
         let water = registry.default_state("minecraft:water").unwrap();
@@ -2046,6 +2150,7 @@ mod tests {
             fluid_tables: &motion.fluids,
             movement: &motion.blocks,
             collision: &collision,
+            suffocation: &suffocation,
             data: &data,
             player: None,
             controlling_player_movement: None,
@@ -2537,6 +2642,43 @@ mod tests {
             }
         });
     }
+    #[test]
+    fn damaging_mob_fall_plays_block_fall_sound() {
+        let ran = crate::mobs::world::with_built_test_world(
+            &[],
+            |world, registry| {
+                world.chunks.insert(
+                    (0, 0),
+                    std::sync::Arc::new(crate::chunk::Chunk::empty(0, 0)),
+                );
+                for (x, block) in [(0, "minecraft:stone"), (1, "minecraft:oak_planks")] {
+                    world
+                        .set(x, 0, 0, registry.default_state(block).unwrap())
+                        .unwrap();
+                }
+            },
+            |w, types| {
+                for (x, block_sound) in [
+                    (0.5, "minecraft:block.stone.fall"),
+                    (1.5, "minecraft:block.wood.fall"),
+                ] {
+                    let kind = std::sync::Arc::new(types.types["minecraft:zombie"].clone());
+                    let mut mob = Mob::new(1, kind, Vec3::new(x, 1.0, 0.5), 0.0);
+                    mob.fall_distance = 5.0;
+                    let mut events = Vec::new();
+                    mob.fall_on_block(w, &mut events);
+                    assert!(
+                        matches!(events.as_slice(), [MobEvent::Sound("entity.hostile.small_fall", _, 1.0, 1.0), MobEvent::SoundId(id, _, 0.5, 0.75), ..] if id == block_sound),
+                        "{events:?}"
+                    );
+                }
+            },
+        );
+        // Without the vanilla data under .local/horizon-client the world
+        // cannot be built: the test has nothing to check.
+        let _ = ran;
+    }
+
     /// `Entity.applyMovementEmissionAndPlaySound` asks `getMovementEmission`:
     /// a squid, a glow squid and a bat answer `EVENTS`, so a beached squid
     /// flopping across stone sends the `minecraft:step` game event and no
@@ -2600,5 +2742,128 @@ mod tests {
             assert_eq!(heard(&events), None);
             assert!(!stepped(&events), "a shulker emits nothing");
         });
+    }
+
+    /// #9058: `LivingEntity.getJumpPower` calculates
+    /// `jump_strength * multiplier * getBlockJumpFactor() + getJumpBoostPower()`.
+    /// On honey blocks the jump factor is 0.5, halving the jump impulse.
+    /// Jump Boost effects add 0.1 * (amplifier + 1.0).
+    #[test]
+    #[ignore = "requires prepared vanilla resources; run explicitly with --ignored"]
+    fn living_jump_power_respects_honey_block_and_jump_boost() {
+        let build = |world: &mut crate::world::World,
+                     registry: &horizon_world::registry::BlockRegistry| {
+            let stone = registry.default_state("minecraft:stone").unwrap();
+            let honey = registry.default_state("minecraft:honey_block").unwrap();
+            world.chunks.insert(
+                (0, 0),
+                std::sync::Arc::new(crate::chunk::Chunk::empty(0, 0)),
+            );
+            // Stone column at (0, 0, 0)
+            world.set(0, 0, 0, stone).unwrap();
+            // Honey column at (2, 0, 0)
+            world.set(2, 0, 0, honey).unwrap();
+        };
+        let ran = crate::mobs::world::with_built_test_world(&[], build, |w, types| {
+            let cow_kind = std::sync::Arc::new(types.types["minecraft:cow"].clone());
+            let close = |a: f32, b: f32| (a - b).abs() < 1.0e-5;
+
+            // 1. Baseline: On normal block (stone, factor 1.0) with no effects, jump power matches m.attrs.jump_strength.
+            let mut on_stone = Mob::new(1, cow_kind.clone(), Vec3::new(0.5, 1.0, 0.5), 0.0);
+            assert!((on_stone.attrs.jump_strength - 0.42).abs() < 1.0e-5);
+            assert!(close(on_stone.block_jump_factor(w), 1.0));
+            assert_eq!(on_stone.jump_boost_power(), 0.0);
+            assert!(close(on_stone.jump_power(w), 0.42));
+            on_stone.jump_from_ground(w);
+            assert!(
+                (on_stone.velocity.y - 0.42).abs() < 1.0e-5,
+                "stone baseline velocity.y"
+            );
+
+            // 2. Blocked negative / Reduction on honey: On honey block (jump factor 0.5), jump power is halved.
+            let mut on_honey = Mob::new(2, cow_kind.clone(), Vec3::new(2.5, 1.0, 0.5), 0.0);
+            assert!(
+                close(on_honey.block_jump_factor(w), 0.5),
+                "honey jump factor must be 0.5"
+            );
+            assert!(
+                close(on_honey.jump_power(w), 0.42 * 0.5),
+                "honey halving jump power"
+            );
+            on_honey.jump_from_ground(w);
+            assert!(
+                (on_honey.velocity.y - 0.21).abs() < 1.0e-5,
+                "honey reduced velocity.y"
+            );
+
+            // 3. Enabled positive / Jump boost: With minecraft:jump_boost effect (amp 0 and amp 1),
+            // jump power increases by +0.1 and +0.2 respectively.
+            let mut boosted_0 = Mob::new(3, cow_kind.clone(), Vec3::new(0.5, 1.0, 0.5), 0.0);
+            boosted_0
+                .extra
+                .effects
+                .push(("minecraft:jump_boost", 200, 0));
+            assert!(close(boosted_0.jump_boost_power(), 0.1));
+            assert!(close(boosted_0.jump_power(w), 0.42 + 0.1));
+            boosted_0.jump_from_ground(w);
+            assert!((boosted_0.velocity.y - 0.52).abs() < 1.0e-5);
+
+            let mut boosted_1 = Mob::new(4, cow_kind.clone(), Vec3::new(0.5, 1.0, 0.5), 0.0);
+            boosted_1
+                .extra
+                .effects
+                .push(("minecraft:jump_boost", 200, 1));
+            assert!(close(boosted_1.jump_boost_power(), 0.2));
+            assert!(close(boosted_1.jump_power(w), 0.42 + 0.2));
+            boosted_1.jump_from_ground(w);
+            assert!((boosted_1.velocity.y - 0.62).abs() < 1.0e-5);
+
+            // 4. Edge / Special case: Combined honey block + jump boost and custom modified attrs.jump_strength.
+            let mut combined = Mob::new(5, cow_kind.clone(), Vec3::new(2.5, 1.0, 0.5), 0.0);
+            combined
+                .extra
+                .effects
+                .push(("minecraft:jump_boost", 200, 1));
+            // jump_strength * 0.5 + 0.2 = 0.42 * 0.5 + 0.2 = 0.41
+            assert!(close(combined.jump_power(w), 0.42 * 0.5 + 0.2));
+            combined.jump_from_ground(w);
+            assert!((combined.velocity.y - 0.41).abs() < 1.0e-5);
+
+            // Custom modified attribute (e.g. 0.80) on honey with jump boost 0 (0.1)
+            let mut custom_attr = Mob::new(6, cow_kind, Vec3::new(2.5, 1.0, 0.5), 0.0);
+            custom_attr.attrs.jump_strength = 0.80;
+            custom_attr
+                .extra
+                .effects
+                .push(("minecraft:jump_boost", 200, 0));
+            // 0.80 * 0.5 + 0.1 = 0.50
+            assert!(close(custom_attr.jump_power(w), 0.50));
+            custom_attr.jump_from_ground(w);
+            assert!((custom_attr.velocity.y - 0.50).abs() < 1.0e-5);
+
+            // 5. Cube jump verification (Slime & MagmaCube on honey vs stone)
+            let slime_kind = std::sync::Arc::new(types.types["minecraft:slime"].clone());
+            let mut slime_stone = Mob::new(7, slime_kind.clone(), Vec3::new(0.5, 1.0, 0.5), 0.0);
+            slime_stone.jump_from_ground(w);
+            assert!((slime_stone.velocity.y - 0.42).abs() < 1.0e-5);
+
+            let mut slime_honey = Mob::new(8, slime_kind, Vec3::new(2.5, 1.0, 0.5), 0.0);
+            slime_honey.jump_from_ground(w);
+            assert!(
+                (slime_honey.velocity.y - 0.21).abs() < 1.0e-5,
+                "slime jump on honey"
+            );
+
+            let magma_kind = std::sync::Arc::new(types.types["minecraft:magma_cube"].clone());
+            let mut magma_honey = Mob::new(9, magma_kind, Vec3::new(2.5, 1.0, 0.5), 0.0);
+            magma_honey.extra.size = 2; // boost = 2 * 0.1 = 0.2
+            magma_honey.jump_from_ground(w);
+            // 0.42 * 0.5 + 0.2 = 0.41
+            assert!(
+                (magma_honey.velocity.y - 0.41).abs() < 1.0e-5,
+                "magma cube jump on honey"
+            );
+        });
+        assert!(ran, "built test world ran");
     }
 }

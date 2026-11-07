@@ -490,15 +490,6 @@ pub fn die(
         out.push(slot_drop(m, "mainhand", stack));
         clear_slot(m, "mainhand");
     }
-    // Allay: what it carries (`ints[1]` of the held item) is its inventory.
-    let allay_load = (s == Species::Allay)
-        .then(|| {
-            m.extra
-                .main_hand
-                .clone()
-                .map(|item| (item, m.extra.ints[1]))
-        })
-        .flatten();
     if let Some(table) = death_loot_table(m, d.mob_drops) {
         let params = EntityLootParams {
             this: this.clone(),
@@ -565,9 +556,9 @@ pub fn die(
     }
     // Allay.dropEquipment: its inventory, then the main-hand item unless it
     // prevents equipment drops.
-    if let Some((item, carried)) = allay_load {
-        if carried > 0 {
-            out.push(Drop::Item(loot_stack(&item, carried)));
+    if s == Species::Allay {
+        if let Some(stack) = m.extra.allay.as_mut().and_then(|st| st.inventory.take()) {
+            out.push(Drop::Stack(stack));
         }
         if let Some(stack) = slot_item(m, "mainhand")
             && !d.loot.prevents_equipment_drop(&stack)
@@ -612,13 +603,14 @@ pub fn die(
 /// The loot table `die` rolls for `m` (`LivingEntity.getLootTable`), when it
 /// rolls one: none with `doMobLoot` off, nor for a baby that isn't a monster.
 pub fn death_loot_table(m: &Mob, mob_drops: bool) -> Option<String> {
-    // Mob.getLootTable: the mob's own `DeathLootTable`, else its type's.
+    // Mob.getLootTable: the mob's own `DeathLootTable`, else its type's
+    // (`EntityType.getDefaultLootTable`: `entities/` before the type's path,
+    // in its namespace, so a content mod's type rolls its own table).
     (mob_drops && (is_monster(m.species()) || !m.is_baby())).then(|| {
         m.extra.death_loot_table.clone().unwrap_or_else(|| {
-            format!(
-                "minecraft:entities/{}",
-                m.kind.id.trim_start_matches("minecraft:")
-            )
+            let id = m.kind.id.as_str();
+            let (namespace, path) = id.split_once(':').unwrap_or(("minecraft", id));
+            format!("{namespace}:entities/{path}")
         })
     })
 }

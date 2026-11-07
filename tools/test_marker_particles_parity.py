@@ -153,11 +153,69 @@ def zoo_cases(rng):
                    seed=rng.randrange(-2 ** 63, 2 ** 63))
 
 
+def wither_rose_cases(rng):
+    """WitherRoseBlock.animateTick: three smoke puffs about the centre of the
+    block's pick shape, which the flower's `OffsetType.XZ` moves with the column,
+    from a world that is all wither rose. Every case carries that offset: a
+    flower always has one, so a run without it would compare a shifted shape."""
+    for seed in SEEDS:
+        yield dict(kind='tick', state='minecraft:wither_rose', seed=seed, offset='xz')
+    for _ in range(24):
+        yield dict(kind='tick', state='minecraft:wither_rose',
+                   seed=rng.randrange(-2 ** 63, 2 ** 63), offset='xz')
+
+
+def neighbour_cases(rng):
+    """The families whose own tick reads a neighbour, a shape or the fluid of the
+    block itself, over a world of that block above y = 64 and a floor below it:
+    a dried ghast's ambient sound wants a tagged block under it, a hive drips
+    only past the face below, a lit redstone ore skips its solid-render
+    neighbours and a stalactite tip drips the fluid above its root."""
+    dried_ghast = 'minecraft:dried_ghast[facing=north,hydration=0,waterlogged=%s]'
+    hive = 'minecraft:beehive[facing=north,honey_level=%d]'
+    nest = 'minecraft:bee_nest[facing=south,honey_level=%d]'
+    ore = 'minecraft:%sredstone_ore[lit=true]'
+    tip = 'minecraft:pointed_dripstone[thickness=%s,vertical_direction=down,waterlogged=%s]'
+    floors = ['minecraft:soul_sand', 'minecraft:soul_soil', 'minecraft:stone', 'minecraft:air']
+    for waterlogged, floor in itertools.product(('false', 'true'), floors):
+        for seed in SEEDS:
+            yield dict(kind='tick', state=dried_ghast % waterlogged, floor=floor, seed=seed)
+    for block, level in [(hive, 5), (hive, 4), (nest, 5)]:
+        for floor in [None, 'minecraft:air']:
+            for seed in SEEDS:
+                case = dict(kind='tick', state=block % level, seed=seed)
+                if floor is not None:
+                    case['floor'] = floor
+                yield case
+    for name, floor in itertools.product(('', 'deepslate_'), [None, 'minecraft:air']):
+        for seed in SEEDS:
+            case = dict(kind='tick', state=ore % name, seed=seed)
+            if floor is not None:
+                case['floor'] = floor
+            yield case
+    for seed in SEEDS:
+        yield dict(kind='tick', state='minecraft:redstone_ore[lit=false]', seed=seed)
+    for thickness, floor in itertools.product(('tip', 'middle'), [None, 'minecraft:stone', 'minecraft:water[level=0]']):
+        for seed in SEEDS:
+            case = dict(kind='tick', state=tip % (thickness, 'false'), seed=seed, offset='xz')
+            if floor is not None:
+                case['floor'] = floor
+            yield case
+    for seed in SEEDS:
+        yield dict(kind='tick', state=tip % ('tip', 'true'), seed=seed, offset='xz')
+    for _ in range(12):
+        yield dict(kind='tick', state=rng.choice([hive % 5, ore % '']),
+                   seed=rng.randrange(-2 ** 63, 2 ** 63),
+                   floor=rng.choice(['minecraft:air', 'minecraft:soul_sand', 'minecraft:stone']))
+
+
 def make_input(build):
     rng = random.Random(0x43414d50)
     cases = (marker_cases() + list(campfire_cases(rng)) + list(puff_cases(rng))
              + list(tick_cases(random.Random(0x414e494d)))
-             + list(zoo_cases(random.Random(0x5a4f4f))))
+             + list(zoo_cases(random.Random(0x5a4f4f)))
+             + list(wither_rose_cases(random.Random(0x524f5345)))
+             + list(neighbour_cases(random.Random(0x4e454947))))
     path = build / 'cases.jsonl'
     path.write_text(''.join(json.dumps(case) + '\n' for case in cases))
     return path, len(cases)
@@ -178,6 +236,15 @@ def main():
         'facings, the ender chest, the spore blossom, the mycelium, one to four candles and the candle cake, the '
         'brewing stand, six leaf blocks, three redstone wire states, two repeaters, two levers, fire, soul fire, a '
         'blinking sculk sensor and a charged respawn anchor, each at two seeds and forty of them at a random one, '
+        'and the wither rose, whose three smoke puffs sit about the centre of the pick shape the flower\'s '
+        'model offset moves with the column, at three seeds and twenty-four more at random ones, '
+        'and the families whose own tick reads a neighbour, a shape or the fluid of the block itself, '
+        'each over a world of that block above y = 64 and a named floor below it: a dried ghast, '
+        'waterlogged and not, over soul sand, soul soil, stone and air; a hive full of honey and one '
+        'short of it, and a bee nest, embedded in themselves and hanging over air; a lit redstone ore '
+        'and a deepslate one embedded and over air, and an unlit one; and stalactite tips and a middle '
+        'segment embedded, over stone and over water, a waterlogged tip, and a column of water over '
+        'hanging tips; each at two seeds and twelve more at random seeds and floors; '
         'and the campfire block entity: the real '
         'CampfireBlockEntity.particleTick for both campfire blocks, lit and unlit, signal '
         'fire on and off, all four facings and every one of the four cooking slots held or empty, ticked six times '
@@ -192,12 +259,16 @@ def main():
         'particles past their creation are outside this comparison. Families whose own tick needs something the '
         'all-one-state world cannot give it are not here: a falling block wants air below it, a drip wants a face '
         'that is not solid, the firefly bush wants a light level, the end gateway counts its visible faces and the '
-        'lightning rod the level height, the pointed dripstone and the potent sulfur want water above, the bubble '
-        'column and the fluid drips want a fluid, the dried ghast, the wither rose, the redstone ore and the beehive '
-        'read a shape or a neighbour that embedding takes away, and the enchanting table needs air between itself and '
-        'its power providers.',
+        'lightning rod the level height, the potent sulfur wants water above, the bubble column and the '
+        'fluid drips want a fluid, and the enchanting table needs air between itself and its power '
+        'providers. The stand-in world holds every sampled position and one block of neighbour either '
+        'way, its blocks below y = 64 are the case\'s floor and its fluid state is the state\'s own, so a '
+        'waterlogged block hands the loop the water source it has in the game; and the block tags these '
+        'ticks ask about (the dried ghast\'s ambient-sound tag, the hives\' impermeable tag, the speleothem '
+        'tag the stalactite branch needs) are bound from the pinned client jar the way a datapack load '
+        'binds them, where a bare bootstrap leaves every tag empty.',
         sources=[lab.ROOT / 'tools/test_marker_particles_parity.py',
-                 lab.ROOT / 'crates/horizon-client/src/animate_tick.rs'], expected_lines=402440)
+                 lab.ROOT / 'crates/horizon-client/src/animate_tick.rs'], expected_lines=462718)
 
 
 if __name__ == '__main__':

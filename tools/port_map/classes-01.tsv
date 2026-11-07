@@ -1,6 +1,7 @@
+Squid.hurtServer	inline	crates/horizon-client/src/mobs.rs::Mob::damage_with_player_context	after shared parent damage, require last living attacker for true; retain health loss and existing ink guard
 GlowSquid.aiStep	port	crates/horizon-client/src/mobs/aquatic.rs::glow_squid_ai_step	
 GlowSquid.checkGlowSquidSpawnRules	port	crates/horizon-client/src/mobs/spawn_rules.rs::check_spawn_rules	S::GlowSquid arm: 33 blocks below sea level, dark, in water
-GlowSquid.hurtServer	port	crates/horizon-client/src/mobs/aquatic.rs::hurt_server	
+GlowSquid.hurtServer	inline	crates/horizon-client/src/mobs.rs::Mob::damage_with_player_context	inherited Squid acceptance is returned after parent health effects; existing dim guard calls aquatic::hurt_server
 WolfSoundVariants	skip:data		registry bootstrap of the wolf sound sets; sounds are in species.rs and finalize.rs
 AbstractDragonPhaseInstance.getTurnSpeed	inline	crates/horizon-client/src/game/dragon.rs::Game::tick_dragon	0.7 / dist / rot turn for every phase but Landing; only applied while a fly target is set
 DragonChargePlayerPhase.doServerTick	inline	crates/horizon-client/src/game/dragon.rs::Game::tick_phase	Charging arm: 10-tick countdown once close; gap: minor: no collision re-target
@@ -32,7 +33,7 @@ Mannequin.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::Ba
 Mannequin.applyImplicitComponent	missing		minor: the profile from a spawning item is not applied; Horizon has no mannequin item, only summon with a profile tag
 Mannequin.defineSynchedData	inline	crates/horizon-client/src/game/remote_mob_data.rs::apply	slots 17 to 19: the profile, DATA_IMMOVABLE and DATA_DESCRIPTION are all read now
 Mannequin.get	skip:other		data-component getter for the PROFILE component; the profile is Mob.profile, read directly
-Mannequin.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	ticked in #3514; `Mannequin.readAdditionalSaveData` is cited at crates/horizon-client/src/entity_nbt.rs:1380 (in a comment, so `where` names the enclosing fn)
+Mannequin.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	profile, immovable and description load here; validated lowercase pose now feeds extra.avatar_pose for existing live dimensions and eye anchoring. Saved pose default/invalid getter normalization and the remaining schema are separate.
 Mannequin.updateDescription	port	crates/horizon-client/src/mobs.rs::MannequinDescription::component	the description component: the default `entity.minecraft.mannequin.label`, none when hidden, or the server's own (the text drawn under the name tag)
 Giant.createAttributes	skip:data		attributes come from entity-types.json
 ShootWhenStuck.checkExtraStartConditions	inline	crates/horizon-client/src/mobs/breeze.rs::register	
@@ -83,7 +84,7 @@ Fireball.getSlot	missing		minor: entity slot access (`/loot insert` on an entity
 Fireball.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::fireball_from_nbt	the `Item` it is drawn as goes through `setItem`, which refuses an empty stack and keeps a single one
 Fireball.setItem	port	crates/horizon-client/src/projectiles.rs::Projectile::set_item	an empty stack puts the default fire charge back, anything else is kept as one (`copyWithCount(1)`); a kind that is no `Fireball` has no item
 Fireball.shouldRenderAtSqrDistance	skip:ui		render distance rule for the first two ticks; Horizon draws the projectile as its own pass
-LargeFireball.onHit	port	crates/horizon-client/src/game/creatures.rs::Game::projectile_hit	LargeFireball arm: explosion of the given power, then the projectile is gone
+LargeFireball.onHit	port	crates/horizon-client/src/game/creatures.rs::Game::projectile_hit	LargeFireball arm: explosion power and fire flag (mob_griefing), MOB block interaction, then projectile removal. Bounded fire-presence fixture includes disabled-rule and TNT controls; exact motion/counts/geometry and UUID-view serialization are separate.
 LargeFireball.onHitEntity	port	crates/horizon-client/src/game/creatures.rs::Game::projectile_hit	LargeFireball arm: 6 damage to the entity
 SmallFireball.onHitEntity	port	crates/horizon-client/src/game/creatures.rs::Game::projectile_hit	SmallFireball arm: ignites for 5 seconds and deals 5 damage
 AbstractThrownPotion.affectEntitiesAround	port	crates/horizon-client/src/game/splash_water.rs::Game::affect_entities_around	water potion in the potion's (4, 2, 4) box: 1 indirect-magic damage to water-sensitive mobs, put out burning mobs, players and armor stands, then Axolotl.rehydrate
@@ -109,7 +110,7 @@ MinecartCommandBlock.activateMinecart	inline	crates/horizon-client/src/game/mine
 MinecartCommandBlock.defineSynchedData	port	crates/horizon-client/src/game/minecarts.rs::Minecart::new	the cart's `synced_command` and `synced_output` start empty on the cart itself, as `DATA_ID_COMMAND_NAME` and `DATA_ID_LAST_OUTPUT` do
 MinecartCommandBlock.interact	port	crates/horizon-client/src/game/remote.rs::Game::remote_use_entity	the client opens the command editor of the cart it right-clicked
 MinecartCommandBlock.onSyncedDataUpdated	inline	crates/horizon-client/src/game/command_minecarts.rs::Game::cart_command_updated	the command is the cart's own field rather than synched entity data, which `onUpdated` copies out
-MinecartCommandBlock.readAdditionalSaveData	inline	crates/horizon-client/src/game/minecarts.rs::Minecart::from_nbt	gap: minor: the saved Command text is not read
+MinecartCommandBlock.readAdditionalSaveData	inline	crates/horizon-client/src/game/minecarts.rs::Minecart::from_nbt	loads the base command block and syncs its command/output; a changed command invokes setCommand and resets SuccessCount
 MinecartCommandBlock.MinecartCommandBase.createCommandSourceStack	port	crates/horizon-client/src/game/command_minecarts.rs::Game::perform_cart_command	the due command runs with the cart as its source: its position, rotation and game master level
 MinecartCommandBlock.MinecartCommandBase.onUpdated	inline	crates/horizon-client/src/game/command_minecarts.rs::Game::cart_command_updated	copies the command and the last output into the cart's synched fields
 MinecartFurnace.addAdditionalSaveData	port	crates/horizon-client/src/game/minecarts.rs::Minecart::to_nbt	
@@ -223,3 +224,5 @@ LingeringPotionItem.createPotion	port	crates/horizon-client/src/game/potions.rs:
 LingeringPotionItem.use	inline	crates/horizon-client/src/game/potions.rs::Game::use_potion_item	lingering potion throw
 NameTagItem.interactLivingEntity	port	crates/horizon-client/src/game/names.rs::Game::name_mob	a tag with a custom name names the mob under the crosshair, makes it persistent and is used up, in creative too
 PlaceOnWaterBlockItem.use	inline	crates/horizon-client/src/game/block_items.rs::Game::apply_placed_item	placed by generic block placement; the water rule is not checked here
+Pillager.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	modeled occupied Inventory list, including empty; inherited Raider fields separate
+Pillager.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	Inventory adoption into five-slot occupied-stack model; gap: aggregation and existing pickup-flag load remain separate

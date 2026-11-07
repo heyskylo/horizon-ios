@@ -640,7 +640,7 @@ impl Game<'_> {
     fn apply_raid_action(&mut self, id: i32, action: Action) {
         match action {
             Action::Spawn { pos, wave, spawns } => self.spawn_wave(id, pos, wave, &spawns),
-            Action::Horn { pos, .. } => self.raid_horn(id, pos),
+            Action::Horn { pos, seed } => self.raid_horn(id, pos, seed),
             Action::Remove { id: mob } => {
                 if let Some(m) = self.mobs.iter_mut().find(|m| m.id == mob) {
                     let s = raider::state_mut(m);
@@ -666,20 +666,61 @@ impl Game<'_> {
             }),
         }
     }
-    /// `Raid.playSound`: the horn, 13 blocks away from the player toward the
-    /// wave, for players within 64 blocks or in the raid.
-    fn raid_horn(&mut self, id: i32, pos: [i32; 3]) {
-        let Some(p) = self.level_players().first().map(|p| p.position) else {
-            return;
-        };
+    /// `Raid.playSound`: the horn, 13 blocks from each player toward the wave,
+    /// for everyone within 64 blocks or in the raid. One seed for every packet
+    /// (`SoundSource.NEUTRAL`, volume 64, pitch 1).
+    fn raid_horn(&mut self, id: i32, pos: [i32; 3], seed: i64) {
         let in_raid = self.raiding.raids.get(id).is_some_and(|r| r.bar.player);
         let (rx, rz) = (f64::from(pos[0]) + 0.5, f64::from(pos[2]) + 0.5);
-        let distance = ((rx - p.x).powi(2) + (rz - p.z).powi(2)).sqrt();
-        if distance <= 64.0 || in_raid {
-            let k = 13.0 / distance;
-            let at = [p.x + k * (rx - p.x), p.y, p.z + k * (rz - p.z)];
+        // The raid tracks one participant (`bar.player`): the first player in
+        // the level. Everyone else is heard by distance alone.
+        let local_first = self.player.is_some();
+        if let Some(p) = self.player.as_ref()
+            && let Some(at) = raid::horn_at(
+                [p.position.x, p.position.y, p.position.z],
+                rx,
+                rz,
+                in_raid && local_first,
+            )
+        {
+            // This window only. A positioned `play` would be broadcast to
+            // every guest on top of the packet each of them is sent.
+            let capture = self.audio.capture.take();
+            let neutral = horizon_client::settings::SOUND_SOURCES
+                .iter()
+                .position(|s| *s == "neutral")
+                .unwrap_or(0);
             self.audio
-                .play("minecraft:event.raid.horn", Some(at), 64.0, 1.0);
+                .play_on(neutral, "minecraft:event.raid.horn", Some(at), 64.0, 1.0);
+            self.audio.capture = capture;
+        }
+        let Some(host) = self.lan.as_ref() else {
+            return;
+        };
+        let dim = host.hub.config.dimension.clone();
+        let spotted: Vec<(u32, [f64; 3], bool)> = host
+            .hub
+            .guests
+            .iter()
+            .map(|g| (g.conn, g.position, g.placed && g.dimension == dim))
+            .collect();
+        let neutral = horizon_client::settings::SOUND_SOURCES
+            .iter()
+            .position(|s| *s == "neutral")
+            .unwrap_or(0) as i32;
+        let mut first_guest = !local_first;
+        for (conn, position, here) in spotted {
+            if !here {
+                continue;
+            }
+            let participating = std::mem::replace(&mut first_guest, false) && in_raid;
+            let Some(at) = raid::horn_at(position, rx, rz, participating) else {
+                continue;
+            };
+            let packet =
+                host.hub
+                    .sound_packet("minecraft:event.raid.horn", at, 64.0, 1.0, neutral, seed);
+            host.hub.send_to(conn, &packet);
         }
     }
     /// `Raid.spawnGroup`: a wave of raiders at `pos`, the leader wearing the
@@ -1180,14 +1221,19 @@ impl Game<'_> {
     /// bed or bell a villager has taken): `PoiManager.isVillageCenter`.
     pub(super) fn village_centers(&self) -> HashSet<(i32, i32, i32)> {
         let mut out = HashSet::new();
+        let world = self.mob_world_base(&[]);
         for m in &self.mobs {
             if m.species() != Species::Villager || !m.alive() {
                 continue;
             }
-            for p in [m.extra.home, m.extra.bed, m.extra.meeting]
-                .into_iter()
-                .flatten()
-            {
+            // A remembered HOME is no longer an occupied village POI once its
+            // loaded bed head disappears. An unavailable chunk remains unknown.
+            let bed = m.extra.bed.filter(|&[x, y, z]| {
+                !self.world.loaded(x, z)
+                    || horizon_client::mobs::villager_brain::poi_at(&world, x, y, z)
+                        == Some(horizon_client::mobs::villager_brain::Poi::Home)
+            });
+            for p in [m.extra.home, bed, m.extra.meeting].into_iter().flatten() {
                 out.insert(section(p));
             }
         }
@@ -1479,3 +1525,95 @@ mod tests {
         assert_eq!(section([-1, -17, 15]), (-1, -2, 0));
     }
 }
+
+impl Game<'_> {
+    /// Read-only command-harness observation of the existing raid state and inputs.
+    pub(in crate::game) fn raid_fixture_state(
+        &self,
+        op: &serde_json::Value,
+    ) -> horizon_client::Result<serde_json::Value> {
+        use serde_json::json;
+        let id = op["id"].as_i64().ok_or("raid observation: missing id")? as i32;
+        let mut state = json!({"id":id,"present":self.raiding.raids.get(id).is_some()});
+        if let Some(r) = self.raiding.raids.get(id) {
+            state["status"] = json!(r.status.name());
+            state["started"] = json!(r.started);
+            state["active"] = json!(r.active);
+            state["groups_spawned"] = json!(r.groups_spawned);
+            state["center"] = json!(r.center);
+            // Observe the production answer; never substitute a corrected POI test here.
+            state["village"] = json!(Self::is_village(&self.village_centers(), r.center));
+            if op["members"].as_bool() == Some(true) {
+                state["member_present"] = json!(self.raid_members(id).next().is_some());
+            }
+        }
+        let observe = |m: &Mob| -> horizon_client::Result<serde_json::Value> {
+            let uuid = self
+                .persist
+                .uuids
+                .get(&m.id)
+                .copied()
+                .ok_or("raid observation: actor UUID is not registered")?;
+            let tag = horizon_client::entity_nbt::mob_to_nbt(
+                m,
+                uuid,
+                self.persist.raw.get(&m.id),
+                Some(self.pack.assets.registry),
+                |other| self.persist.uuid_of(other),
+            );
+            Ok(json!({"uuid":uuid,"type":m.kind.id,"health":m.health,
+                "pos":[m.position.x,m.position.y,m.position.z],"noai":m.no_ai,
+                "home":m.extra.bed.map(|p| p.to_vec()).unwrap_or_default(),
+                "raid_id":raider::state(m).and_then(|s|s.raid_id).unwrap_or(-1),
+                "nbt":horizon_client::snbt::to_snbt(&tag)}))
+        };
+        let actors = self
+            .raid_members(id)
+            .map(observe)
+            .collect::<horizon_client::Result<Vec<_>>>()?;
+        let mut villagers = Vec::new();
+        for uuid in op["villagers"]
+            .as_array()
+            .ok_or("raid observation: missing villagers")?
+        {
+            let uuid = u128::from_str_radix(
+                &uuid
+                    .as_str()
+                    .ok_or("raid observation: invalid UUID")?
+                    .replace('-', ""),
+                16,
+            )?;
+            let Some(super::commands::Target::Mob(id)) = self.target_by_uuid(uuid) else {
+                return Err("raid observation: villager UUID missing/wrong type".into());
+            };
+            let m = self
+                .mobs
+                .iter()
+                .find(|m| m.id == id && m.species() == Species::Villager)
+                .ok_or("raid observation: actor is not a villager")?;
+            villagers.push(observe(m)?);
+        }
+        let pos: [i32; 3] =
+            std::array::from_fn(|i| op["poi"][i].as_i64().unwrap_or(i64::MIN) as i32);
+        let loaded = self.world.loaded(pos[0], pos[2]);
+        let live_poi = loaded.then(|| {
+            let w = self.mob_world_base(&[]);
+            format!(
+                "{:?}",
+                horizon_client::mobs::villager_brain::poi_at(&w, pos[0], pos[1], pos[2])
+            )
+        });
+        eprintln!(
+            "raid input raw: {}",
+            json!({"label":op["label"],"id":id,"loaded":loaded,
+            "live_poi":live_poi,"claimed_pois":self.village_pois(),
+            "raid_nbt":horizon_client::snbt::to_snbt(&self.raiding.raids.to_nbt()),
+            "actors":actors,"villagers":villagers})
+        );
+        Ok(state)
+    }
+}
+
+#[cfg(test)]
+#[path = "raids/tests/bed_loss.rs"]
+mod bed_loss_tests;

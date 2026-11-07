@@ -533,6 +533,13 @@ impl Game<'_> {
             bone_meal: bone_meal(),
         }
     }
+    pub(super) fn block_can_place(&self, pos: [i32; 3], slot: usize, stack: &ItemStack) -> bool {
+        let containers = self.containers();
+        let Some(view) = containers.view((pos[0], pos[1], pos[2]), false) else {
+            return false;
+        };
+        view.kind == Kind::Shulker || containers.can_place(&view, slot, stack)
+    }
     fn slot_mut_at(&mut self, view: &View, slot: usize) -> Option<&mut Option<ItemStack>> {
         let (pos, i) = view.locate(slot)?;
         let entity = self.world.block_entities.get_mut(&pos)?;
@@ -577,6 +584,29 @@ impl Game<'_> {
             });
         }
     }
+    /// `IItemHandler.isItemValid` for a mod's container: the mods' say
+    /// (`native_container_accepts`) on `stack` in `slot`, once its
+    /// `ModContainer` lets the slot be filled. Any other container: true.
+    fn mod_container_accepts(
+        &self,
+        view: &View,
+        slot: usize,
+        stack: &ItemStack,
+        face: Option<Direction>,
+    ) -> bool {
+        if view.kind != Kind::Mod {
+            return true;
+        }
+        let Some((pos, i)) = view.locate(slot) else {
+            return false;
+        };
+        let Some(BlockEntity::Mod(entity)) = self.world.block_entities.get(&pos) else {
+            return false;
+        };
+        let mut cancel = false;
+        self.native_container_accepts([pos.0, pos.1, pos.2], entity, i, stack, face, &mut cancel);
+        !cancel
+    }
     /// `HopperBlockEntity.tryMoveInItem`.
     fn try_move_in_item(
         &mut self,
@@ -584,8 +614,9 @@ impl Game<'_> {
         view: &View,
         stack: ItemStack,
         slot: usize,
+        face: Option<Direction>,
     ) -> Option<ItemStack> {
-        let (rest, moved) = self.move_in_item(from_hopper, view, stack, slot);
+        let (rest, moved) = self.move_in_item(from_hopper, view, stack, slot, face);
         if moved {
             self.view_changed(view);
             // JukeboxBlockEntity.setTheItem through a hopper's or a dropper's
@@ -598,16 +629,18 @@ impl Game<'_> {
         rest
     }
     /// `tryMoveInItem` before its `setChanged`: the remainder, and whether
-    /// anything moved.
+    /// anything moved. `face` is the side it goes in by, for a mod's say.
     fn move_in_item(
         &mut self,
         from_hopper: Option<Pos>,
         view: &View,
         mut stack: ItemStack,
         slot: usize,
+        face: Option<Direction>,
     ) -> (Option<ItemStack>, bool) {
         let c = self.containers();
-        if !c.can_place(view, slot, &stack) {
+        if !c.can_place(view, slot, &stack) || !self.mod_container_accepts(view, slot, &stack, face)
+        {
             return (Some(stack), false);
         }
         let was_empty = c.is_empty(view);
@@ -622,7 +655,12 @@ impl Game<'_> {
         }
         match target {
             None => {
-                *target = Some(stack.clone());
+                // HopperBlockEntity.setItem limits the accepted stack, then
+                // tryMoveInItem consumes the input even when it exceeded that limit.
+                *target = Some(ItemStack {
+                    count: stack.count.min(max),
+                    ..stack.clone()
+                });
                 stack.count = 0;
                 success = true;
             }
@@ -664,7 +702,7 @@ impl Game<'_> {
         let mut rest = Some(stack);
         for slot in view.slots_to_add(face) {
             let Some(stack) = rest.take() else { break };
-            rest = self.try_move_in_item(from_hopper, view, stack, slot);
+            rest = self.try_move_in_item(from_hopper, view, stack, slot, face);
         }
         rest
     }
@@ -1237,6 +1275,8 @@ impl Game<'_> {
     /// `MinecartHopper.tick`'s `tryConsumeItems` (`suckInItems`) for an enabled
     /// hopper minecart: one item from the container above, else the item
     /// entities over it or touching it, each tick without a cooldown.
+    /// `consumedItemThisFrame` in 26.3 caps a tick at one item: the tick tries
+    /// once, and `makeStepAlongTrack` may try again, but only one succeeds.
     pub(super) fn hopper_cart_suck(&mut self, cart: &mut super::minecarts::Minecart) {
         // The cart's slots are edited as a container under the placeholder key
         // its menu uses; when that menu is open the placeholder is the live copy.
@@ -1513,6 +1553,7 @@ mod item_column_tests {
     fn item(id: u32, x: f64, y: f64, z: f64) -> ItemEntity {
         let at = Vec3::new(x, y, z);
         ItemEntity {
+            rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
             health: 5,
@@ -1661,5 +1702,82 @@ mod mod_container_tests {
         assert_eq!(view.slots_for_face(Some(Direction::North)), [1]);
         assert!(view.slots_for_face(Some(Direction::East)).is_empty());
         assert_eq!(view.slots_for_face(None), [0, 1, 2]);
+    }
+}
+
+#[cfg(test)]
+mod hopper_cart_transfer_tests {
+    use super::super::{
+        minecarts::{CartKind, Minecart},
+        native_machines::tests::server_game,
+    };
+    use super::Game;
+    use horizon_client::{containers::BlockEntity, items::ItemStack};
+    use horizon_core::geometry::Vec3;
+
+    /// Issue #8668: a hopper minecart takes one item a tick from the container
+    /// above. `MinecartHopper.tick` has no transfer cooldown in 26.3: it calls
+    /// `tryConsumeItems` every tick, and `consumedItemThisFrame` caps a tick at
+    /// one item even though `makeStepAlongTrack` may try too. A whole stack a
+    /// tick (the old behaviour) or a block hopper's eight-tick cooldown both
+    /// fail this.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn hopper_cart_takes_one_item_a_tick() {
+        let mut game = server_game();
+        let rail = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:rail")
+            .unwrap();
+        let chest = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:chest")
+            .unwrap();
+        // A rail holds the cart still; the chest sits in the block the cart
+        // pulls from (`getLevelY` is y + 0.5, so the block above is y + 1.5).
+        game.world.set(8, 64, 8, rail).unwrap();
+        game.world.set(8, 65, 8, chest).unwrap();
+        game.world.block_entities.insert(
+            (8, 65, 8),
+            BlockEntity::Chest(vec![Some(ItemStack::new("minecraft:stone", 64)); 27]),
+        );
+        game.next_entity += 1;
+        let id = game.next_entity;
+        let mut cart = Minecart::new(id, CartKind::Hopper, Vec3::new(8.5, 64.0625, 8.5));
+        cart.enabled = true;
+        game.carts.push(cart);
+        let count = |game: &Game<'_>| {
+            let in_chest: u32 = match game.world.block_entities.get(&(8, 65, 8)) {
+                Some(BlockEntity::Chest(s)) => s.iter().flatten().map(|s| s.count).sum(),
+                _ => 0,
+            };
+            let in_cart: u32 = game
+                .carts
+                .iter()
+                .find(|c| c.id == id)
+                .unwrap()
+                .items
+                .iter()
+                .flatten()
+                .map(|s| s.count)
+                .sum();
+            (in_chest, in_cart)
+        };
+        let (before_chest, before_cart) = count(&game);
+        for _ in 0..20 {
+            game.tick_carts();
+        }
+        let (after_chest, after_cart) = count(&game);
+        assert_eq!(before_chest, 27 * 64);
+        assert_eq!(before_cart, 0);
+        assert_eq!(before_chest - after_chest, after_cart - before_cart);
+        assert_eq!(
+            after_cart, 20,
+            "one item a tick, not a stack nor eight ticks"
+        );
     }
 }

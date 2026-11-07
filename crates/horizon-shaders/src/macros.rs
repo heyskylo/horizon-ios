@@ -8,17 +8,24 @@ use std::collections::BTreeMap;
 /// "Separate Hardware Shadow Samplers"): `shadowtex0`/`shadowtex1` stay plain depth samplers when
 /// hardware filtering is on, `shadowtex0HW`/`shadowtex1HW` compare; Horizon picks a comparison
 /// sampler by the declared type (`sampler2DShadow`), so they always are. `HIGHER_SHADOWCOLOR`:
-/// `shadowcolor2` to `shadowcolor7` beside the first two.
-const FEATURES: [&str; 8] = [
+/// `shadowcolor2` to `shadowcolor7` beside the first two. `FADE_VARIABLE`: terrain vertex
+/// programs can read the section's visibility transition as `mc_chunkFade`.
+const FEATURES: [&str; 9] = [
     "BLOCK_EMISSION_ATTRIBUTE",
     "COMPUTE_SHADERS",
     "CUSTOM_IMAGES",
     "ENTITY_TRANSLUCENT",
+    "FADE_VARIABLE",
     "HIGHER_SHADOWCOLOR",
     "REVERSED_CULLING",
     "SEPARATE_HARDWARE_SAMPLERS",
     "SSBO",
 ];
+
+/// Whether `name` is one of [`FEATURES`], in any case.
+fn is_feature(name: &str) -> bool {
+    FEATURES.iter().any(|f| f.eq_ignore_ascii_case(name))
+}
 
 /// `MC_VERSION` of the version Horizon plays: 26.3 → 260300.
 pub const MC_VERSION: u32 = mc_version(horizon_core::version::VERSION_ID);
@@ -77,6 +84,26 @@ pub const RENDER_STAGES: [&str; 24] = [
     "HAND_TRANSLUCENT",
 ];
 
+/// `DH_BLOCK_*`, each its index: Distant Horizons' block materials.
+pub const DH_BLOCK_MATERIALS: [&str; 16] = [
+    "UNKNOWN",
+    "LEAVES",
+    "STONE",
+    "WOOD",
+    "METAL",
+    "DIRT",
+    "LAVA",
+    "DEEPSLATE",
+    "SNOW",
+    "SAND",
+    "TERRACOTTA",
+    "NETHER_STONE",
+    "WATER",
+    "GRASS",
+    "AIR",
+    "ILLUMINATED",
+];
+
 /// The value of `MC_RENDER_STAGE_<name>` (OQ-7: its index in `RENDER_STAGES`).
 pub fn render_stage(name: &str) -> u32 {
     RENDER_STAGES
@@ -124,6 +151,22 @@ impl Macros {
         // (vanilla's `VertexSorting.byDistance`, `gfx/translucency.rs`).
         m.define("IRIS_VERSION", "11107");
         m.define("IRIS_HAS_TRANSLUCENCY_SORTING", "");
+        // Distant Horizons' block materials, which Iris defines with or without the mod (packs
+        // compare ids with them unguarded: Exposa's `blockID == DH_BLOCK_LEAVES`), numbered as
+        // the mod's `EDhApiBlockMaterial` numbers them.
+        for (i, material) in DH_BLOCK_MATERIALS.iter().enumerate() {
+            m.define(format!("DH_BLOCK_{material}"), i.to_string());
+        }
+        // The biome categories and precipitations the `biome_category` and
+        // `biome_precipitation` uniforms compare with, as custom uniforms see them (Iris's
+        // replacements define them for the stage files too: Sildur's Enhanced Default reads
+        // `biome_category == CAT_THE_END`). `BIOME_*` needs the world's registry.
+        for (i, category) in crate::biomes::CATEGORIES.iter().enumerate() {
+            m.define(format!("CAT_{category}"), i.to_string());
+        }
+        for (i, precipitation) in ["NONE", "RAIN", "SNOW"].iter().enumerate() {
+            m.define(format!("PPT_{precipitation}"), i.to_string());
+        }
         m
     }
 
@@ -138,8 +181,20 @@ impl Macros {
         self.define("MC_MIPMAP_LEVEL", mipmap_levels.to_string());
     }
 
+    /// Every feature Horizon has, as `IRIS_FEATURE_<name>`: what `shaders.properties` itself is
+    /// read with. Iris 1.11.7 defines a feature it has there whether the pack lists it as
+    /// optional, as required or not at all (probe pack), while its programs see only the optional
+    /// ones (`define_features`).
+    pub fn define_every_feature(&mut self) {
+        for feature in FEATURES {
+            self.define(format!("IRIS_FEATURE_{feature}"), "");
+        }
+    }
+
     /// `iris.features.optional`'s features Horizon has, as `IRIS_FEATURE_<name>`; a note for
-    /// each feature `iris.features.required` names that it lacks.
+    /// each feature `iris.features.required` names that it lacks. As in Iris 1.11.7, a name
+    /// matches in any case, and the macro keeps the name as the pack wrote it (`ssbo` defines
+    /// `IRIS_FEATURE_ssbo`).
     pub fn define_features(&mut self, properties: &crate::Properties) -> Vec<String> {
         let words = |key: &str| {
             properties
@@ -148,13 +203,13 @@ impl Macros {
                 .unwrap_or_default()
         };
         for feature in words("iris.features.optional") {
-            if FEATURES.contains(&feature.as_str()) {
+            if is_feature(&feature) {
                 self.define(format!("IRIS_FEATURE_{feature}"), "");
             }
         }
         words("iris.features.required")
             .into_iter()
-            .filter(|f| !FEATURES.contains(&f.as_str()))
+            .filter(|f| !is_feature(f))
             .map(|f| format!("the pack requires `{f}`, which is not supported yet"))
             .collect()
     }
@@ -162,6 +217,32 @@ impl Macros {
     pub fn define(&mut self, name: impl Into<String>, value: impl Into<String>) {
         let body = value.into();
         self.0.insert(name.into(), Macro { params: None, body });
+    }
+
+    /// The rest of a `#define` line: `NAME body`, or `NAME(a, b) body` (no space before the `(`)
+    /// for a function-like macro.
+    pub(crate) fn define_line(&mut self, rest: &str) -> Result<(), String> {
+        let len = rest
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .unwrap_or(rest.len());
+        let (name, tail) = rest.split_at(len);
+        if name.is_empty() {
+            return Err("`#define` without a name".into());
+        }
+        if let Some(params) = tail.strip_prefix('(') {
+            let Some((params, body)) = params.split_once(')') else {
+                return Err(format!("`#define {name}(` without `)`"));
+            };
+            let params = params
+                .split(',')
+                .map(|p| p.trim().to_owned())
+                .filter(|p| !p.is_empty())
+                .collect();
+            self.define_function(name, params, body.trim());
+        } else {
+            self.define(name, tail.trim());
+        }
+        Ok(())
     }
 
     pub fn define_function(&mut self, name: &str, params: Vec<String>, body: &str) {
@@ -191,67 +272,88 @@ impl Macros {
             .map(|m| m.body.as_str())
     }
 
-    /// Whether `text` calls a function-like macro whose arguments go on past its end.
-    pub(crate) fn unfinished_call(&self, text: &str) -> bool {
-        let tokens = lex(text);
-        tokens.iter().enumerate().any(|(i, t)| {
-            self.0.get(*t).is_some_and(|m| m.params.is_some())
-                && tokens[i + 1..]
-                    .iter()
-                    .find(|t| !t.trim().is_empty())
-                    .is_some_and(|t| *t == "(")
-                && arguments(&tokens, i + 1).is_none()
-        })
+    /// Whether upcoming source lines continue a call, including one whose expanded name
+    /// ends `text` and whose opening parenthesis is on the next nonempty line.
+    pub(crate) fn unfinished_call(&self, text: &str, upcoming: &[&str]) -> bool {
+        let (tokens, unfinished) = self.expand_tokens(expansion_tokens(text));
+        unfinished
+            || (tokens.iter().rfind(|t| !t.blank()).is_some_and(|t| {
+                self.0.get_key_value(&t.text).is_some_and(|(name, m)| {
+                    m.params.is_some() && !t.hidden.contains(&name.as_str())
+                })
+            }) && upcoming
+                .iter()
+                .map(|line| line.trim_start())
+                .find(|line| !line.is_empty())
+                .is_some_and(|line| line.starts_with('(')))
     }
 
     /// `text` with every macro expanded, repeatedly; a macro is not expanded again inside its own
     /// expansion, so `A` defined as `A + 1` stops. Function-like macros take their arguments
     /// (expanded first, raw beside `##`, which pastes) when a `(` follows their name.
     pub fn expand(&self, text: &str) -> String {
-        self.expand_hiding(text, &mut Vec::new())
+        self.expand_tokens(expansion_tokens(text))
+            .0
+            .iter()
+            .map(|t| t.text.as_str())
+            .collect()
     }
 
-    fn expand_hiding<'a>(&'a self, text: &str, hidden: &mut Vec<&'a str>) -> String {
-        let mut out = String::with_capacity(text.len());
-        let tokens = lex(text);
+    fn expand_tokens<'a>(
+        &'a self,
+        mut tokens: Vec<ExpansionToken<'a>>,
+    ) -> (Vec<ExpansionToken<'a>>, bool) {
         let mut i = 0;
+        let mut unfinished = false;
         while i < tokens.len() {
-            let word = tokens[i];
-            i += 1;
-            let Some((name, m)) = self.0.get_key_value(word) else {
-                out.push_str(word);
+            let Some((name, m)) = self.0.get_key_value(tokens[i].text.as_str()) else {
+                i += 1;
                 continue;
             };
-            if hidden.contains(&name.as_str()) {
-                out.push_str(word);
+            if tokens[i].hidden.contains(&name.as_str()) {
+                i += 1;
                 continue;
             }
-            let body = match &m.params {
-                None => m.body.clone(),
+            let mut hidden = tokens[i].hidden.clone();
+            let (mut body, next) = match &m.params {
+                None => (expansion_tokens(&m.body), i + 1),
                 Some(params) => {
-                    let Some((args, next)) = arguments(&tokens, i) else {
-                        out.push_str(word);
+                    let Some((args, next)) = arguments(&tokens, i + 1) else {
+                        unfinished |= tokens[i + 1..]
+                            .iter()
+                            .find(|t| !t.blank())
+                            .is_some_and(|t| t.text == "(");
+                        i += 1;
                         continue;
                     };
-                    i = next;
-                    self.substitute(params, &args, &m.body, hidden)
+                    // A call can cross a replacement boundary. Only disabling shared by
+                    // its name and closing parenthesis carries into the new replacement.
+                    hidden.retain(|h| tokens[next - 1].hidden.contains(h));
+                    (self.substitute(params, &args, &m.body), next)
                 }
             };
             hidden.push(name);
-            out.push_str(&self.expand_hiding(&body, hidden));
-            hidden.pop();
+            for token in &mut body {
+                for h in &hidden {
+                    if !token.hidden.contains(h) {
+                        token.hidden.push(h);
+                    }
+                }
+            }
+            // Rescan the replacement together with the remaining source. Its final name
+            // may consume a call there; source tokens keep their own disabling context.
+            tokens.splice(i..next, body);
         }
-        out
+        (tokens, unfinished)
     }
 
     /// A function-like macro's body with its parameters replaced.
     fn substitute<'a>(
         &'a self,
         params: &[String],
-        args: &[String],
+        args: &[Vec<ExpansionToken<'a>>],
         body: &str,
-        hidden: &mut Vec<&'a str>,
-    ) -> String {
+    ) -> Vec<ExpansionToken<'a>> {
         let tokens = lex(body);
         let pasted = |at: usize, step: isize| {
             let mut j = at as isize + step;
@@ -260,49 +362,129 @@ impl Macros {
             }
             (0..tokens.len() as isize).contains(&j) && tokens[j as usize] == "##"
         };
-        let mut out = String::new();
+        let mut out = Vec::new();
         for (at, token) in tokens.iter().enumerate() {
             match params.iter().position(|p| p == token) {
                 Some(k) => {
-                    let arg = args.get(k).map_or("", |a| a.trim());
+                    let arg = args.get(k).map_or(&[][..], |a| a.as_slice());
+                    let from = arg.iter().position(|t| !t.blank()).unwrap_or(arg.len());
+                    let end = arg.iter().rposition(|t| !t.blank()).map_or(from, |n| n + 1);
+                    let arg = arg[from..end].to_vec();
                     if pasted(at, -1) || pasted(at, 1) {
-                        out.push_str(arg);
+                        if arg.is_empty() {
+                            // An empty paste operand must not capture the preceding token.
+                            out.push(ExpansionToken::new(""));
+                        } else {
+                            out.extend(arg);
+                        }
                     } else {
-                        out.push_str(&self.expand_hiding(arg, hidden));
+                        out.extend(self.expand_tokens(arg).0);
                     }
                 }
-                None => out.push_str(token),
+                None => out.push(ExpansionToken::new(token)),
             }
         }
         // `a ## b` → `ab`.
-        let mut joined = String::with_capacity(out.len());
-        for (k, part) in out.split("##").enumerate() {
-            joined.push_str(if k == 0 { part.trim_end() } else { part.trim() });
+        let mut joined: Vec<ExpansionToken<'a>> = Vec::new();
+        let mut paste = false;
+        for token in out {
+            if token.text == "##" {
+                while joined.last().is_some_and(|t| t.blank()) {
+                    joined.pop();
+                }
+                paste = true;
+            } else if paste && token.blank() {
+                continue;
+            } else if paste {
+                if let Some(mut left) = joined.pop() {
+                    // An empty operand leaves the other token, including its hiding, intact.
+                    if left.text.is_empty() {
+                        left = token;
+                    } else if !token.text.is_empty() {
+                        left.text.push_str(&token.text);
+                        left.hidden.retain(|h| token.hidden.contains(h));
+                    }
+                    joined.push(left);
+                } else {
+                    joined.push(token);
+                }
+                paste = false;
+            } else {
+                joined.push(token);
+            }
         }
-        if out.contains("##") { joined } else { out }
+        joined.retain(|t| !t.text.is_empty());
+        // A paste that makes no single token (`b ## (`, Alpha Piscium's
+        // `colors2_colorspaces_ ## a ## _to_ ## b ##(x)`) stays the tokens it is made of, as
+        // GL drivers' preprocessors leave it: the name before the `(` is then rescanned and can
+        // call a macro.
+        joined
+            .into_iter()
+            .flat_map(|token| {
+                let parts = lex(&token.text);
+                if parts.len() < 2 {
+                    return vec![token];
+                }
+                parts
+                    .into_iter()
+                    .map(|text| ExpansionToken {
+                        text: text.into(),
+                        hidden: token.hidden.clone(),
+                    })
+                    .collect()
+            })
+            .collect()
     }
+}
+
+/// Disabling belongs to each token: rescanning a boundary must neither revive a recursive
+/// replacement token nor hide an independent invocation in the surrounding source.
+#[derive(Clone)]
+struct ExpansionToken<'a> {
+    text: String,
+    hidden: Vec<&'a str>,
+}
+
+impl ExpansionToken<'_> {
+    fn new(text: &str) -> Self {
+        Self {
+            text: text.into(),
+            hidden: Vec::new(),
+        }
+    }
+
+    fn blank(&self) -> bool {
+        !self.text.is_empty() && self.text.trim().is_empty()
+    }
+}
+
+fn expansion_tokens(text: &str) -> Vec<ExpansionToken<'_>> {
+    lex(text).into_iter().map(ExpansionToken::new).collect()
 }
 
 /// The arguments of a call whose `(` is the next non-blank token from `i`, split at top-level
 /// commas, and the index after its `)`. `None` when no `(` follows or it never closes.
-fn arguments(tokens: &[&str], mut i: usize) -> Option<(Vec<String>, usize)> {
-    while tokens.get(i)?.trim().is_empty() {
+fn arguments<'a>(
+    tokens: &[ExpansionToken<'a>],
+    mut i: usize,
+) -> Option<(Vec<Vec<ExpansionToken<'a>>>, usize)> {
+    while tokens.get(i)?.blank() {
         i += 1;
     }
-    if tokens[i] != "(" {
+    if tokens[i].text != "(" {
         return None;
     }
     let (mut depth, mut args, mut from) = (0, Vec::new(), i + 1);
     for (j, t) in tokens.iter().enumerate().skip(i + 1) {
-        match *t {
+        match t.text.as_str() {
             "(" => depth += 1,
             ")" if depth == 0 => {
-                args.push(tokens[from..j].concat());
+                args.push(tokens[from..j].to_vec());
                 return Some((args, j + 1));
             }
             ")" => depth -= 1,
             "," if depth == 0 => {
-                args.push(tokens[from..j].concat());
+                args.push(tokens[from..j].to_vec());
                 from = j + 1;
             }
             _ => {}
@@ -459,6 +641,32 @@ mod tests {
         assert!(m.is_defined("IRIS_FEATURE_HIGHER_SHADOWCOLOR") && notes.is_empty());
     }
 
+    /// Iris 1.11.7, with probe packs of our own (#8996): a feature name matches in any case, and
+    /// an optional one defines the macro with the name as written, not in upper case.
+    #[test]
+    fn feature_names_match_in_any_case() {
+        let mut m = Macros::standard();
+        let notes = m.define_features(&crate::Properties::parse(
+            "iris.features.optional = ssbo Custom_Images\n\
+             iris.features.required = compute_shaders ssbo custom_images Not_A_Feature\n",
+            &Macros::standard(),
+        ));
+        assert!(m.is_defined("IRIS_FEATURE_ssbo"));
+        assert!(m.is_defined("IRIS_FEATURE_Custom_Images"));
+        for absent in [
+            "IRIS_FEATURE_SSBO",
+            "IRIS_FEATURE_CUSTOM_IMAGES",
+            "IRIS_FEATURE_compute_shaders",
+            "IRIS_FEATURE_COMPUTE_SHADERS",
+        ] {
+            assert!(!m.is_defined(absent), "{absent}");
+        }
+        assert_eq!(
+            notes,
+            ["the pack requires `Not_A_Feature`, which is not supported yet"]
+        );
+    }
+
     #[test]
     fn versions_follow_the_documented_rule() {
         assert_eq!(mc_version("1.21"), 12100);
@@ -467,6 +675,27 @@ mod tests {
         assert_eq!(mc_version("26.3"), 260300);
         assert_eq!(MC_VERSION, 260300);
         assert_eq!(Macros::standard().get("MC_VERSION"), Some("260300"));
+    }
+
+    #[test]
+    fn distant_horizons_block_materials_are_defined_without_the_mod() {
+        let m = Macros::standard();
+        assert_eq!(m.get("DH_BLOCK_UNKNOWN"), Some("0"));
+        assert_eq!(m.get("DH_BLOCK_LEAVES"), Some("1"));
+        assert_eq!(m.get("DH_BLOCK_WATER"), Some("12"));
+        assert_eq!(m.get("DH_BLOCK_ILLUMINATED"), Some("15"));
+        assert_eq!(m.get("DISTANT_HORIZONS"), None);
+    }
+
+    #[test]
+    fn biome_categories_and_precipitations_are_macros_as_custom_uniforms_see_them() {
+        let m = Macros::standard();
+        let constants = crate::biomes::constants(&[]);
+        for (name, value) in &constants {
+            assert_eq!(m.get(name), Some(value.to_string().as_str()), "{name}");
+        }
+        assert_eq!(m.get("CAT_THE_END"), Some("8"));
+        assert_eq!(m.get("PPT_SNOW"), Some("2"));
     }
 
     #[test]

@@ -365,6 +365,9 @@ thread_local! {
 }
 pub struct Items {
     pub items: HashMap<Arc<str>, ItemInfo>,
+    /// Default `minecraft:mob_visibility` by item id, with the `equippable`
+    /// slot it applies in (`LivingEntity.getVisibilityPercent`).
+    mob_visibility: HashMap<Arc<str>, (String, MobVisibility)>,
     pub order: Vec<Arc<str>>,
     /// The same items in item registry (network id) order, as vanilla lists
     /// them; sorted by name when the registry export is missing.
@@ -591,6 +594,56 @@ fn entity_spec(tags: &HashMap<String, HashSet<String>>, spec: &str) -> HashSet<S
         None => HashSet::from([spec.to_owned()]),
     }
 }
+/// `MobVisibility`: entity types a worn item hides its wearer from, and the
+/// factor `LivingEntity.getVisibilityPercent` multiplies by.
+#[derive(Clone, Debug)]
+pub struct MobVisibility {
+    pub targeting: HashSet<String>,
+    pub visibility: f32,
+}
+/// `minecraft:mob_visibility` (`targeting_entity_types` is one id, a `#tag`,
+/// or a list) when the object is present and names at least one type.
+fn parse_mob_visibility(
+    v: &Value,
+    tags: &HashMap<String, HashSet<String>>,
+) -> Option<MobVisibility> {
+    if !v.is_object() {
+        return None;
+    }
+    let visibility = v.get("visibility")?.as_f64()? as f32;
+    let targeting = match v.get("targeting_entity_types")? {
+        Value::String(spec) => entity_spec(tags, spec),
+        Value::Array(list) => list
+            .iter()
+            .filter_map(Value::as_str)
+            .flat_map(|spec| entity_spec(tags, spec))
+            .collect(),
+        _ => return None,
+    };
+    if targeting.is_empty() {
+        return None;
+    }
+    Some(MobVisibility {
+        targeting,
+        visibility,
+    })
+}
+/// The item's `equippable.slot` and `mob_visibility`, when both are set.
+/// `getVisibilityPercent` multiplies only when the stack is in that slot.
+fn worn_mob_visibility(
+    components: &Value,
+    tags: &HashMap<String, HashSet<String>>,
+) -> Option<(String, MobVisibility)> {
+    let slot = components
+        .get("minecraft:equippable")?
+        .get("slot")?
+        .as_str()?
+        .to_owned();
+    Some((
+        slot,
+        parse_mob_visibility(components.get("minecraft:mob_visibility")?, tags)?,
+    ))
+}
 /// Every item of the last item registry loaded with its `villager_food`
 /// nutrition (0 without the component): what the mobs' villagers read, since
 /// a mob does not hold the registry (`None` until one is loaded).
@@ -682,6 +735,40 @@ impl Items {
                     .or_insert(BlockStateId(i as u32));
             }
         }
+        // Block.getItem is not an inverse of BlockItem.getBlock: several items
+        // may place the same block. Read their normal compiled bindings too.
+        #[derive(Default, serde::Deserialize)]
+        struct Bindings {
+            #[serde(default)]
+            items: HashMap<String, Binding>,
+        }
+        #[derive(serde::Deserialize)]
+        struct Binding {
+            #[serde(default)]
+            class: Vec<String>,
+            #[serde(default)]
+            fields: Fields,
+        }
+        #[derive(Default, serde::Deserialize)]
+        struct Fields {
+            block: Option<String>,
+        }
+        let bindings = match fs::read(root.join("block-behaviours.json")) {
+            Ok(bytes) => serde_json::from_slice::<Bindings>(&bytes)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Bindings::default(),
+            Err(error) => return Err(error.into()),
+        };
+        for (item, binding) in &bindings.items {
+            if binding.class.iter().any(|name| name == "BlockItem")
+                && let Some(state) = binding
+                    .fields
+                    .block
+                    .as_deref()
+                    .and_then(|block| registry.default_state(block))
+            {
+                block_for_item.entry(item).or_insert(state);
+            }
+        }
         Self::load_with(root, &block_for_item, overlay)
     }
     /// Every item's default components and the tags, without the block <->
@@ -694,7 +781,7 @@ impl Items {
         block_for_item: &HashMap<&str, BlockStateId>,
         overlay: &PackOverlay,
     ) -> Result<Self> {
-        let raw = horizon_world::item_defaults::read(root)?;
+        let raw = horizon_world::item_defaults::shared(root)?;
         let entity_tags = load_tags(root, "entity_type", overlay)?;
         let path = root.join(MOD_CRAFT_REMAINDERS);
         let mod_remainders: HashMap<String, String> = match fs::read(&path) {
@@ -706,7 +793,8 @@ impl Items {
         };
         let mut items = HashMap::new();
         let mut order = Vec::new();
-        for (name, c) in &raw {
+        let mut mob_visibility = HashMap::new();
+        for (name, c) in raw.iter() {
             let id: Arc<str> = Arc::from(name.as_str());
             let tool = c["minecraft:tool"]["rules"]
                 .as_array()
@@ -911,6 +999,9 @@ impl Items {
                     attack_speed: modifier("minecraft:attack_speed"),
                 },
             );
+            if let Some(parsed) = worn_mob_visibility(c, &entity_tags) {
+                mob_visibility.insert(id.clone(), parsed);
+            }
             order.push(id);
         }
         // Every loot table, keyed by its id (blocks/stone, entities/sheep/white,
@@ -922,6 +1013,7 @@ impl Items {
         set_villager_food(&items);
         Ok(Self {
             items,
+            mob_visibility,
             order,
             registry_order,
             block_tags: load_tags(root, "block", overlay)?,
@@ -935,6 +1027,25 @@ impl Items {
     }
     pub fn get(&self, id: &str) -> Option<&ItemInfo> {
         self.items.get(id)
+    }
+    /// `ItemStack.get(DataComponents.MOB_VISIBILITY).visibility()` when the
+    /// prototype's equippable slot is `slot` and `targeting` is in
+    /// `targetingEntityTypes`. None otherwise (`getVisibilityPercent` skips it).
+    pub fn worn_visibility(&self, item: &str, slot: &str, targeting: &str) -> Option<f32> {
+        let (equip, vis) = self.mob_visibility.get(item)?;
+        if equip == slot && vis.targeting.contains(targeting) {
+            Some(vis.visibility)
+        } else {
+            None
+        }
+    }
+    /// Record one prototype's `equippable` and `mob_visibility` the way `load`
+    /// reads them from the default-component report.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn insert_mob_visibility_component(&mut self, id: &str, components: &Value) {
+        if let Some(parsed) = worn_mob_visibility(components, &HashMap::new()) {
+            self.mob_visibility.insert(Arc::from(id), parsed);
+        }
     }
     /// The instrument a goat horn plays: its `instrument` component's
     /// registry entry or inline instrument.
@@ -952,6 +1063,7 @@ impl Items {
     pub fn tags_only(root: &Path, overlay: &PackOverlay) -> Result<Self> {
         Ok(Self {
             items: HashMap::new(),
+            mob_visibility: HashMap::new(),
             order: Vec::new(),
             registry_order: Vec::new(),
             block_tags: load_tags(root, "block", overlay)?,
@@ -968,6 +1080,7 @@ impl Items {
     pub fn for_tests(item_tags: HashMap<String, HashSet<String>>) -> Self {
         Self {
             items: HashMap::new(),
+            mob_visibility: HashMap::new(),
             order: Vec::new(),
             registry_order: Vec::new(),
             block_tags: HashMap::new(),
@@ -1058,12 +1171,21 @@ impl Items {
         table: &Value,
         random: &mut R,
     ) -> Vec<ItemStack> {
+        self.inline_loot_table_with_tool(table, None, random)
+    }
+    /// `LootCommand.dropFishingLoot`: evaluate an inline table with its TOOL.
+    pub fn inline_loot_table_with_tool<R: RandomSource>(
+        &self,
+        table: &Value,
+        held: Option<&ItemStack>,
+        random: &mut R,
+    ) -> Vec<ItemStack> {
         let empty = horizon_world::chunk::BlockProperties::new();
         let ctx = LootContext {
             items: self,
             block: "",
             properties: &empty,
-            held: None,
+            held,
             killed_by_player: false,
             explosion_radius: None,
             this_entity: false,
@@ -2184,6 +2306,62 @@ pub fn bucket_contents(
 }
 
 /// One `MobEffectInstance` of an `apply_effects` consume effect (its codec's defaults).
+/// `DeathProtection.CODEC`: the `death_effects` of a `minecraft:death_protection`
+/// component, in order (`applyEffects` runs each one). A missing or empty
+/// list, as in `death_protection={}`, has none.
+pub fn death_effects(component: &Value) -> Vec<ConsumeEffect> {
+    component
+        .get("death_effects")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(parse_consume_effect)
+        .collect()
+}
+
+#[cfg(test)]
+mod death_effects_tests {
+    use super::*;
+    #[test]
+    fn the_totems_component_reads_clear_then_three_effects() {
+        let totem = serde_json::json!({"death_effects": [
+            {"type": "minecraft:clear_all_effects"},
+            {"type": "minecraft:apply_effects", "effects": [
+                {"amplifier": 1, "duration": 900, "id": "minecraft:regeneration", "show_icon": true},
+                {"amplifier": 1, "duration": 100, "id": "minecraft:absorption", "show_icon": true},
+                {"duration": 800, "id": "minecraft:fire_resistance", "show_icon": true}
+            ]}
+        ]});
+        let effects = death_effects(&totem);
+        assert_eq!(effects.len(), 2);
+        assert_eq!(effects[0], ConsumeEffect::ClearAllEffects);
+        let ConsumeEffect::ApplyEffects {
+            effects,
+            probability,
+        } = &effects[1]
+        else {
+            panic!("second effect is apply_effects");
+        };
+        assert_eq!(*probability, 1.0);
+        let ids: Vec<_> = effects
+            .iter()
+            .map(|e| (e.id.as_str(), e.duration, e.amplifier))
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                ("minecraft:regeneration", 900, 1),
+                ("minecraft:absorption", 100, 1),
+                ("minecraft:fire_resistance", 800, 0)
+            ]
+        );
+    }
+    #[test]
+    fn an_empty_component_has_no_effects() {
+        assert!(death_effects(&serde_json::json!({})).is_empty());
+    }
+}
+
 fn consume_effect_spec(e: &Value) -> Option<ConsumeEffectSpec> {
     let flag = |key: &str, default: bool| e.get(key).and_then(|v| v.as_bool()).unwrap_or(default);
     Some(ConsumeEffectSpec {
@@ -2296,6 +2474,76 @@ mod tests {
     use super::*;
     use horizon_core::random::LegacyRandom;
     use serde_json::json;
+
+    /// `LootCommand.dropFishingLoot` carries TOOL even for an inline holder.
+    #[test]
+    fn inline_fishing_keeps_the_actual_tool_context() {
+        let mut items = Items::for_tests(HashMap::new());
+        let table = |tool| {
+            json!({"type":"minecraft:fishing","pools":[{"rolls":1,"entries":[{
+                "type":"minecraft:item","name":"minecraft:diamond",
+                "condition":{"type":"minecraft:match_tool","predicate":{"items":tool}}
+            }]}]})
+        };
+        let rod_table = table("minecraft:fishing_rod");
+        let stick_table = table("minecraft:stick");
+        let unconditioned = json!({"pools":[{"rolls":1,"entries":[{"type":"minecraft:item","name":"minecraft:diamond"}]}]});
+        items.loot = Arc::new(
+            [
+                ("test:rod".to_owned(), rod_table.clone()),
+                ("test:stick".to_owned(), stick_table.clone()),
+                ("test:plain".to_owned(), unconditioned.clone()),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let rod = ItemStack::new("minecraft:fishing_rod", 1);
+        let stick = ItemStack::new("minecraft:stick", 1);
+        let summary = |drops: Vec<ItemStack>| {
+            drops
+                .into_iter()
+                .map(|s| (s.item.to_string(), s.count))
+                .collect::<Vec<_>>()
+        };
+        for (id, table, matches) in [
+            ("test:rod", &rod_table, [false, true, false]),
+            ("test:stick", &stick_table, [false, false, true]),
+            ("test:plain", &unconditioned, [true, true, true]),
+        ] {
+            for (held, matches) in [None, Some(&rod), Some(&stick)].into_iter().zip(matches) {
+                let expected = if matches {
+                    vec![("minecraft:diamond".to_owned(), 1)]
+                } else {
+                    vec![]
+                };
+                let mut named_rng = LegacyRandom::new(41);
+                assert_eq!(
+                    summary(items.loot_table(id, false, held, &mut named_rng)),
+                    expected
+                );
+                let mut inline_rng = LegacyRandom::new(41);
+                assert_eq!(
+                    summary(items.inline_loot_table_with_tool(table, held, &mut inline_rng)),
+                    expected
+                );
+                assert_eq!(
+                    inline_rng.next_long(),
+                    named_rng.next_long(),
+                    "same evaluator draw order"
+                );
+            }
+            let mut random = LegacyRandom::new(41);
+            let legacy = summary(items.inline_loot_table(table, &mut random));
+            assert_eq!(
+                legacy,
+                if matches[0] {
+                    vec![("minecraft:diamond".to_owned(), 1)]
+                } else {
+                    vec![]
+                }
+            );
+        }
+    }
 
     #[test]
     fn a_stacks_own_blocks_attacks_component_counts() {
