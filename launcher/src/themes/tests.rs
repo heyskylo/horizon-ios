@@ -11,7 +11,12 @@ fn blend(top: u32, under: u32, alpha: f32) -> u32 {
 
 #[test]
 fn every_accent_reads_as_well_as_the_violet() {
-    for base in [NIGHT.blocks(), DAWN.blocks()] {
+    for base in [
+        NIGHT.blocks(),
+        DAWN.blocks(),
+        NORD_DARK.blocks(),
+        NORD_LIGHT.blocks(),
+    ] {
         for accent in Accent::ALL
             .into_iter()
             .chain((0..720).map(|i| Accent::custom(i as f32 * 0.5)))
@@ -59,6 +64,53 @@ fn colours_go_to_hsl_and_back() {
     assert_eq!(Accent::parse("purple"), Some(Accent::VIOLET));
     assert_eq!(Accent::parse("chartreuse"), None);
     assert_eq!(serde_json::to_string(&Accent::AMBER).unwrap(), "\"amber\"");
+}
+
+#[test]
+fn nord_text_reads_over_its_sky() {
+    use horizon_theme::night::{over, UNCARDED_STOPS};
+
+    for p in [NORD_DARK, NORD_LIGHT] {
+        let look = if p.dark { "dark" } else { "light" };
+        let texts = [
+            ("ink", p.ink),
+            ("ink_soft", p.ink_soft),
+            ("muted", p.muted),
+            ("accent_hi", p.accent_hi),
+            ("success", p.success),
+            ("warn", p.warn),
+            ("danger", p.danger),
+        ];
+        for (i, &sky) in p.sky.iter().enumerate() {
+            for (plate, top, alpha) in [
+                ("card", p.card, p.card_alpha),
+                ("card_hi", p.card_hi, p.card_hi_alpha),
+            ] {
+                let bg = over(top, alpha, sky);
+                for (tn, fg) in texts {
+                    let ratio = contrast(fg, bg);
+                    assert!(
+                        ratio >= 4.5,
+                        "{look} {tn} on {plate} over sky {i}: {ratio:.2}"
+                    );
+                }
+            }
+        }
+        for (i, &sky) in p.sky[..UNCARDED_STOPS].iter().enumerate() {
+            for (tn, fg) in &texts[..4] {
+                let ratio = contrast(*fg, sky);
+                assert!(ratio >= 4.5, "{look} {tn} on sky {i}: {ratio:.2}");
+            }
+        }
+        for (bn, bg) in [("page", p.page), ("side", p.side)] {
+            for (tn, fg) in &texts[..4] {
+                let ratio = contrast(*fg, bg);
+                assert!(ratio >= 4.5, "{look} {tn} on {bn}: {ratio:.2}");
+            }
+        }
+        let label = contrast(p.on_accent, p.accent);
+        assert!(label >= 4.5, "{look} the main action's label: {label:.2}");
+    }
 }
 
 #[test]

@@ -1,5 +1,8 @@
 //! Chat, the command registries and the per-world state behind commands
 //! (game rules, the world clock, difficulty), bound to the game.
+#[cfg(test)]
+mod suggestion_completion_tests;
+
 use super::{Game, Screen};
 use horizon_client::{
     chat::{
@@ -286,7 +289,8 @@ fn resource_ids(root: &Path) -> Arc<ResourceIds> {
     entity_types.sort();
     let (timelines, markers) = overworld_timelines(root);
     let ids = Arc::new(ResourceIds {
-        recipes: ids_under(&data.join("recipe"), "json"),
+        // `/recipe <id>` must suggest a content mod's recipes too.
+        recipes: json_ids_of_every_namespace(root, "recipe"),
         // `/loot ... loot <id>` must find a content mod's tables too.
         loot_tables: json_ids_of_every_namespace(root, "loot_table"),
         templates: templates_under(&root.join("worldgen/structure")),
@@ -358,11 +362,6 @@ fn command_export(dir: &Path, keep: bool) -> Option<Arc<Registries>> {
         cache.push((dir.to_owned(), export.clone()));
     }
     export
-}
-
-/// The `minecraft:` ids of the `extension` files under `root`, sorted.
-fn ids_under(root: &Path, extension: &str) -> Vec<String> {
-    ids_in(root, extension, "minecraft")
 }
 
 /// The ids of the `.json` files in `data/<namespace>/<kind>` of every
@@ -685,6 +684,8 @@ impl Game<'_> {
             .map(|(k, _)| k.clone())
             .collect();
         self.sync_enchantment_registries();
+        // After the export, which keys the registry with vanilla's tags.
+        self.ui.registries.sync_damage_type_ids();
     }
     /// The block the player is looking at, for coordinate suggestions, and
     /// the entity, for entity arguments (ClientSuggestionProvider).
@@ -1063,6 +1064,23 @@ impl Game<'_> {
                 self.ui.chat_screen = Some(screen);
             }
         }
+        self.notify_chat_suggestion_completion();
+    }
+    fn notify_chat_suggestion_completion(&mut self) {
+        if let Some(completion) = self
+            .ui
+            .chat_screen
+            .as_mut()
+            .and_then(ChatScreen::take_suggestion_completion)
+        {
+            self.native_chat_suggestion_applied(
+                &completion.original,
+                completion.range.0,
+                completion.range.1,
+                &completion.text,
+                &completion.input,
+            );
+        }
     }
     /// The server's completions for an `ask_server` request
     /// (ClientPacketListener.handleCommandSuggestions).
@@ -1174,6 +1192,7 @@ impl Game<'_> {
         }
         if let Some(screen) = self.ui.chat_screen.as_mut() {
             if screen.click(&m, &c, cursor.0 as f64, cursor.1 as f64) {
+                self.notify_chat_suggestion_completion();
                 return;
             }
         } else {
@@ -1666,6 +1685,10 @@ impl Game<'_> {
     /// F2: ScreenShot.grab into `screenshots/` with vanilla's file name. The
     /// file it will write, `None` without a window to draw.
     pub(super) fn take_screenshot(&mut self) -> Option<std::path::PathBuf> {
+        // Its grab would take a sequence's frame.
+        if self.screenshot_sequence.is_some() {
+            return None;
+        }
         let dir = horizon_client::logging::player_dir().join("screenshots");
         if std::fs::create_dir_all(&dir).is_err() {
             return None;
@@ -1828,6 +1851,23 @@ mod tests {
         assert_eq!(
             resource_ids(&root).loot_tables,
             ["minecraft:chests/a", "mymod:rooms/b"]
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A content mod's recipes are suggested with vanilla's, so `/recipe`
+    /// offers the ids the recipe index knows.
+    #[test]
+    fn recipes_of_every_namespace_are_listed() {
+        let root = std::env::temp_dir().join(format!("horizon-recipe-ids-{}", std::process::id()));
+        for dir in ["data/minecraft/recipe", "data/mymod/recipe/press"] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        std::fs::write(root.join("data/minecraft/recipe/stick.json"), "{}").unwrap();
+        std::fs::write(root.join("data/mymod/recipe/press/iron.json"), "{}").unwrap();
+        assert_eq!(
+            resource_ids(&root).recipes,
+            ["minecraft:stick", "mymod:press/iron"]
         );
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -2267,6 +2307,87 @@ mod enchantment_snapshot_tests {
         assert_eq!(
             game.ui.registries.by_registry["minecraft:enchantment"].tags,
             tags
+        );
+    }
+}
+
+#[cfg(test)]
+mod damage_type_registry_tests {
+    use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+
+    /// A world pack's damage type is a `/damage` type once the world opens,
+    /// beside vanilla's, and the registry keeps vanilla's tags.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_world_packs_damage_type_parses_in_damage() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+
+        let dir = std::path::PathBuf::from(std::env::var_os("HORIZON_HOME").unwrap())
+            .join("damage-type-ids");
+        let pack = dir.join("datapacks/model");
+        let types = pack.join("data/example/damage_type");
+        std::fs::create_dir_all(&types).unwrap();
+        std::fs::write(pack.join("pack.mcmeta"), "{}").unwrap();
+        std::fs::write(
+            types.join("test.json"),
+            r#"{"message_id":"example.test","scaling":"never","exhaustion":0.0}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("datapacks.json"),
+            r#"{"enabled":["file/model"],"disabled":[]}"#,
+        )
+        .unwrap();
+        game.world_root = dir;
+        (game.world_tables, game.health_resources) = game.build_world_tables(false, &[]).unwrap();
+        game.level.allow_commands = Some(true);
+        game.build_registries();
+
+        let reg = &game.ui.registries;
+        assert!(
+            reg.damage_types.contains(&"example:test".to_owned()),
+            "the damage catalog holds the pack's type"
+        );
+        let parse = |input: &str| {
+            horizon_client::command::vanilla::dispatcher()
+                .parse(input, reg)
+                .executable()
+                .map(|_| ())
+                .map_err(|e| format!("{e:?}"))
+        };
+        assert_eq!(parse("damage @s 1 example:test"), Ok(()));
+        assert_eq!(parse("damage @s 1 minecraft:magic"), Ok(()));
+        assert!(parse("damage @s 1 example:missing").is_err());
+        assert!(
+            reg.tags("minecraft:damage_type")
+                .contains(&"minecraft:is_fire".to_owned()),
+            "vanilla's damage type tags stay"
         );
     }
 }

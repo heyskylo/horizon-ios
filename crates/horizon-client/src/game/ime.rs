@@ -100,7 +100,17 @@ impl Game<'_> {
     /// Text the input method committed (`WindowEvent::Ime(Commit)`).
     pub(super) fn ime_commit(&mut self, text: &str) {
         preedit::set_preedit(None);
+        // Dialogs have their own fields; the other topmost prompts take no text.
+        if self.prompt_open() && !self.dialog_open() {
+            return;
+        }
         let text: String = text.chars().filter(|c| !c.is_control()).collect();
+        if let Some(result) = self.type_text_field_input(&text) {
+            if let Err(error) = result {
+                log::warn!("Horizon: text input: {error}");
+            }
+            return;
+        }
         // ScreenEvent.CharacterTyped.Pre: the input method's committed text
         // reaches a text box by characters, as a key's own text does, so the
         // open screen hears of each of them first and a cancelled one never

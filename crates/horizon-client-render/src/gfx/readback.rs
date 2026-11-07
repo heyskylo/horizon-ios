@@ -324,8 +324,9 @@ mod tests {
         reaches_an_8_bit_swapchain(&device, &queue, unorm, color, [0, 51, 255, 255]);
     }
 
-    /// `Rgba16Float`, the frame of a shader API 0.2 pack under `HORIZON_HDR_FRAME=float`
-    /// (`Renderer::frame_format`): what the tonemap left over 1 is clipped on the way.
+    /// `Rgba16Float`, the frame of a shader API 0.2 pack, or of HDR on without a pack, under
+    /// `HORIZON_HDR_FRAME=float` (`Renderer::frame_format`): what is left over 1 is clipped on
+    /// the way.
     #[test]
     fn a_float_frame_reaches_an_8_bit_swapchain() {
         let instance = crate::gfx::test_gpu::instance();

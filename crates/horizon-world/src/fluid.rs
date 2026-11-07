@@ -103,15 +103,14 @@ impl FluidState {
                     _ => {}
                 }
             }
-            if flowing {
-                if let Some(value) = properties
+            if flowing
+                && let Some(value) = properties
                     .get("level")
                     .and_then(serde_json::Value::as_str)
                     .and_then(crate::registry::java_integer)
                     .filter(|v| (1..=8).contains(v))
-                {
-                    state.amount = value as u8;
-                }
+            {
+                state.amount = value as u8;
             }
         }
         Ok(state)
