@@ -272,24 +272,6 @@ impl MobWorld<'_> {
             .map(|shape| shape.boxes().iter().map(|b| b.move_by(offset)).collect())
             .unwrap_or_default()
     }
-    /// `CollisionGetter.noCollision(null, bounds)` over blocks.
-    pub fn no_block_collision(&self, bounds: Aabb) -> bool {
-        let (lo, hi) = (bounds.min_position(), bounds.max_position());
-        for x in (lo.x.floor() as i32 - 1)..=(hi.x.floor() as i32 + 1) {
-            for y in (lo.y.floor() as i32 - 1)..=(hi.y.floor() as i32 + 1) {
-                for z in (lo.z.floor() as i32 - 1)..=(hi.z.floor() as i32 + 1) {
-                    if self
-                        .block_collision_boxes(x, y, z)
-                        .iter()
-                        .any(|collision| collision.intersects(bounds))
-                    {
-                        return false;
-                    }
-                }
-            }
-        }
-        true
-    }
     /// `Level.findSupportingBlock`: of the blocks whose collision shape
     /// meets `area`, the one whose centre is nearest `from` (ties: the
     /// greatest by `Vec3i.compareTo`, y then z then x).

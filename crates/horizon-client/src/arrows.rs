@@ -589,7 +589,7 @@ fn tick_with(
     };
     // Entity.setOldPosAndRot: the renderer interpolates from here, in flight
     // and stuck alike; ServerLevel.tickNonPassenger counts the tick.
-    p.begin_tick();
+    p.set_old_pos_and_rot();
     p.age += 1;
     let hit = Ticker {
         p,
@@ -730,37 +730,37 @@ impl Ticker<'_, '_, '_, '_> {
             self.st.clear_fire();
         }
         if self.st.in_ground && physics {
-            if !self.client && self.st.last_state != Some(state) && self.should_fall() {
-                self.start_falling();
-            } else {
-                if !self.client {
+            if !self.client {
+                if self.st.last_state != Some(state) && self.should_fall() {
+                    self.start_falling();
+                } else {
                     // AbstractArrow.tickDespawn.
                     self.st.life += 1;
                     if self.st.life >= 1200 {
                         self.st.removed = true;
                     }
                 }
-                self.st.in_ground_time += 1;
-                if !self.st.removed {
-                    let at = self.position();
-                    self.apply_effects_from_blocks(at, at);
-                }
-                // Arrow.tick on the server: a tipped arrow stuck for 600 ticks sends
-                // entity event 0 (the clients' burst of particles in its colour,
-                // `handleEntityEvent`) and turns into a plain arrow. The flight
-                // and ground particles are the clients' own (`Level.isClientSide`).
-                if !self.client
-                    && self.st.in_ground_time >= 600
-                    && let Some(color) = self.st.potion_color()
-                {
-                    self.st.events.push(ArrowEvent::PotionPuff {
-                        id: self.p.id,
-                        color,
-                    });
-                    self.st.pickup_item = crate::items::ItemStack::new("minecraft:arrow", 1);
-                }
-                return Hit::None;
             }
+            self.st.in_ground_time += 1;
+            if !self.st.removed {
+                let at = self.position();
+                self.apply_effects_from_blocks(at, at);
+            }
+            // Arrow.tick on the server: a tipped arrow stuck for 600 ticks sends
+            // entity event 0 (the clients' burst of particles in its colour,
+            // `handleEntityEvent`) and turns into a plain arrow. The flight
+            // and ground particles are the clients' own (`Level.isClientSide`).
+            if !self.client
+                && self.st.in_ground_time >= 600
+                && let Some(color) = self.st.potion_color()
+            {
+                self.st.events.push(ArrowEvent::PotionPuff {
+                    id: self.p.id,
+                    color,
+                });
+                self.st.pickup_item = crate::items::ItemStack::new("minecraft:arrow", 1);
+            }
+            return Hit::None;
         }
         self.st.in_ground_time = 0;
         let original = self.position();

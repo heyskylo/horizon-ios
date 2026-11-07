@@ -603,9 +603,6 @@ impl ProjectileWorld for Probe<'_, '_> {
     fn targets(&self) -> &[(Who, Aabb)] {
         &self.targets
     }
-    fn no_block_collision(&self, bounds: Aabb) -> bool {
-        self.w.no_block_collision(bounds)
-    }
     fn empty(&self, p: [i32; 3]) -> bool {
         self.w.facts.is_air(self.w.world.block(p[0], p[1], p[2]))
     }

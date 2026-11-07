@@ -179,9 +179,6 @@ impl ProjectileWorld for ProjWorld<'_, '_> {
     fn targets(&self) -> &[(Who, Aabb)] {
         &self.targets
     }
-    fn no_block_collision(&self, bounds: Aabb) -> bool {
-        self.w.no_block_collision(bounds)
-    }
     /// `BaseFireBlock.entityInside` for a thrown projectile: fire and soul
     /// fire set it alight for 160 ticks.
     fn ignites(&self, p: [i32; 3]) -> bool {

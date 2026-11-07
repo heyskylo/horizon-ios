@@ -29,7 +29,6 @@ pub(super) struct ThrownTrident {
     pub(super) previous: Vec3,
     pub(super) velocity: Vec3,
     pub(super) needs_sync: bool,
-    piston_pushed_this_tick: bool,
     pub(super) yaw: f32,
     pub(super) pitch: f32,
     pub(super) in_ground: bool,
@@ -121,7 +120,6 @@ impl ThrownTrident {
             previous: position,
             velocity: Vec3::ZERO,
             needs_sync: false,
-            piston_pushed_this_tick: false,
             yaw,
             pitch,
             in_ground: false,
@@ -142,17 +140,9 @@ impl ThrownTrident {
             deflected_by: None,
         }
     }
-    fn begin_tick(&mut self) {
-        if !self.piston_pushed_this_tick {
-            self.previous = self.position;
-        }
-        self.piston_pushed_this_tick = false;
-    }
+    /// `Entity.move(PISTON)`: the position only; `release_after_piston` follows
+    /// (`AbstractArrow.move`).
     pub(super) fn move_by_piston(&mut self, movement: Vec3) {
-        if !self.piston_pushed_this_tick {
-            self.previous = self.position;
-            self.piston_pushed_this_tick = true;
-        }
         self.position = self.position.add_vector(movement);
         self.needs_sync = true;
     }
@@ -174,17 +164,11 @@ impl ThrownTrident {
             horizon_client::projectiles::start_falling_velocity(self.velocity, &mut self.random);
         self.needs_sync = true;
     }
+    /// A slime block's bounce: the velocity only; the piston's move after it
+    /// releases a stuck trident (`AbstractArrow.move`).
     pub(super) fn piston_slime_bounce(&mut self, movement: horizon_core::geometry::Direction) {
         self.velocity = horizon_world::piston_push::bounce_velocity(movement, self.velocity);
-        self.in_ground = false;
-        self.in_ground_time = 0;
         self.needs_sync = true;
-    }
-    fn release_if_unblocked(&mut self, no_block_collision: bool) {
-        if self.in_ground && !self.no_physics && no_block_collision {
-            self.in_ground = false;
-            self.in_ground_time = 0;
-        }
     }
     /// `ThrownTrident.tick`'s Loyalty return: pulled up and towards the
     /// owner's eye.
@@ -208,7 +192,7 @@ impl ThrownTrident {
     /// a block holds it), and Loyalty pulls it back to its owner; only the
     /// server decides what it hits.
     pub(super) fn remote_tick(&mut self, w: &impl ProjectileWorld, owner_eye: Option<Vec3>) {
-        self.begin_tick();
+        self.previous = self.position;
         self.shake = self.shake.saturating_sub(1);
         if self.in_ground_time > 4 {
             self.dealt_damage = true;
@@ -514,7 +498,6 @@ impl Game<'_> {
             previous: start,
             velocity: projectile.velocity,
             needs_sync: false,
-            piston_pushed_this_tick: false,
             yaw: projectile.yaw,
             pitch: projectile.pitch,
             in_ground: false,
@@ -703,7 +686,7 @@ impl Game<'_> {
         let mut i = 0;
         while i < self.tridents.len() {
             let mut t = self.tridents.remove(i);
-            t.begin_tick();
+            t.previous = t.position;
             t.age += 1;
             // AbstractArrow.tick: `if (shakeTime > 0) --shakeTime;`.
             t.shake = t.shake.saturating_sub(1);
@@ -748,14 +731,6 @@ impl Game<'_> {
             if t.was_touching_water || in_rain {
                 t.fire_ticks = t.fire_ticks.min(0);
             }
-            let at = t.position;
-            let world = self.mob_world_base(&[]);
-            t.release_if_unblocked(
-                t.in_ground
-                    && !t.no_physics
-                    && world
-                        .no_block_collision(Aabb::new(at, at).inflate(Vec3::new(0.06, 0.06, 0.06))),
-            );
             let stuck_tick = t.in_ground && !t.no_physics;
             if t.in_ground {
                 t.in_ground_time += 1;

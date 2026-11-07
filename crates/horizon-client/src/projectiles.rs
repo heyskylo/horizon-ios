@@ -234,8 +234,6 @@ pub struct Projectile {
     pub previous_pitch: f32,
     pub age: u32,
     pub stuck: bool,
-    /// A piston moved this projectile since its last tick began.
-    piston_pushed_this_tick: bool,
     /// Whether the projectile has left its owner's box (Projectile.leftOwner).
     pub left_owner: bool,
     /// Non-arrow Projectile.hasBeenShot, independent of entity age.
@@ -294,10 +292,6 @@ pub trait ProjectileWorld {
     /// block's surface reaches the bottom of the box (deflated by 0.001).
     fn in_water(&self, bounds: Aabb) -> bool;
     fn targets(&self) -> &[(Who, Aabb)];
-    /// `CollisionGetter.noCollision(null, box)` over blocks.
-    fn no_block_collision(&self, _bounds: Aabb) -> bool {
-        false
-    }
     /// Server-only mod-block contacts along the completed movement.
     fn block_contacts(&self, _entity: i32, _kind: &str, _from: Vec3, _to: Vec3, _bounds: Aabb) {}
     /// `Level.isEmptyBlock`.
@@ -441,7 +435,6 @@ impl Projectile {
             previous_pitch: 0.0,
             age: 0,
             stuck: false,
-            piston_pushed_this_tick: false,
             left_owner: false,
             has_been_shot: false,
             shoot_event: None,
@@ -802,22 +795,9 @@ impl Projectile {
         self.previous_yaw = self.yaw;
         self.previous_pitch = self.pitch;
     }
-    /// `Entity.setOldPosAndRot`, preserving a piston move as this tick's start.
-    pub(crate) fn begin_tick(&mut self) {
-        if !self.piston_pushed_this_tick {
-            self.previous = self.position;
-        }
-        self.previous_yaw = self.yaw;
-        self.previous_pitch = self.pitch;
-        self.piston_pushed_this_tick = false;
-    }
-    /// Move with a piston while keeping the position from before the push for
-    /// this tick's renderer interpolation.
+    /// `Entity.move(PISTON)`: the position only; `release_after_piston` follows
+    /// (`AbstractArrow.move`).
     pub fn move_by_piston(&mut self, movement: Vec3) {
-        if !self.piston_pushed_this_tick {
-            self.previous = self.position;
-            self.piston_pushed_this_tick = true;
-        }
         self.position = self.position.add_vector(movement);
         self.needs_sync = true;
     }
@@ -840,14 +820,11 @@ impl Projectile {
             self.needs_sync = true;
         }
     }
-    /// Slime piston bounce launches an embedded arrow on this tick.
+    /// `PistonMovingBlockEntity.moveCollidedEntities` on a slime block: the
+    /// velocity along the axis. The piston's move after it (`AbstractArrow.move`)
+    /// is what takes a stuck arrow out, with `startFalling`'s random damping.
     pub fn piston_slime_bounce(&mut self, movement: Direction) {
         self.velocity = horizon_world::piston_push::bounce_velocity(movement, self.velocity);
-        self.stuck = false;
-        if let Some(arrow) = self.arrow.as_mut() {
-            arrow.in_ground = false;
-            arrow.in_ground_time = 0;
-        }
         self.needs_sync = true;
     }
     /// A shulker's bullet from its block toward `target`, first leaving
@@ -1263,7 +1240,7 @@ impl Projectile {
         // `Entity.setOldPosAndRot` (the previous position and rotation the
         // renderer interpolates from), kept across the `impact` flag's arrival
         // from #6279.
-        self.begin_tick();
+        self.set_old_pos_and_rot();
         self.age += 1;
         if matches!(self.kind, ProjectileKind::ShulkerBullet { .. }) {
             return self.tick_bullet(w, impact);
