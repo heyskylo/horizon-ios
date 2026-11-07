@@ -10,8 +10,10 @@ use horizon_client::{
     net::FRIEND,
 };
 use horizon_core::geometry::Vec3;
+#[cfg(feature = "friends")]
 use horizon_friends::invite::{self, Parsed};
 use std::borrow::Cow;
+#[cfg(feature = "friends")]
 use std::net::SocketAddr;
 use winit::keyboard::KeyCode;
 
@@ -101,6 +103,7 @@ impl NativeWorldId {
 /// time it shares, so a friend's world is known for that sharing only. The
 /// relay is kept beside the addresses: two hosts on other networks can share
 /// a private address and the fixed direct port.
+#[cfg(feature = "friends")]
 fn invite_public_part(code: &str) -> String {
     match invite::parse(code) {
         Some(Parsed::Short(code)) => code.nameplate,
@@ -113,6 +116,11 @@ fn invite_public_part(code: &str) -> String {
         }
         None => String::new(),
     }
+}
+/// Without Play with Friends no invite is read: a `friend:` world shows no part of it.
+#[cfg(not(feature = "friends"))]
+fn invite_public_part(_code: &str) -> String {
+    String::new()
 }
 
 /// A living entity known to the client, before interpolation. No authoritative writes.
@@ -540,6 +548,7 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "friends")]
     use horizon_friends::code::Code;
 
     #[test]
@@ -555,6 +564,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "friends")]
     fn friends_worlds_are_told_apart_by_their_hosts_never_by_their_secrets() {
         const PORT: u16 = 50000;
         const RELAY: &str = "relay.example.com:443";
