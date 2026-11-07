@@ -770,7 +770,42 @@ pub fn translate_compute(compute: &Preprocessed) -> Result<ComputeProgram, Vec<E
         })
         .collect();
     let mut images = bind_images([&c, &c], samplers.len());
+    // `workGroups` is an ivec3, `workGroupsRender` a vec2 (a third number, the depth of a 2D
+    // render, is taken as 1); anything else is not understood rather than guessed.
+    let mut sizes = |name: &str, counts: &[usize]| {
+        let v = constant(&c, name)?;
+        if !counts.contains(&v.len()) {
+            errors.push(Error {
+                file: compute.files.first().cloned().unwrap_or_default(),
+                line: 0,
+                message: format!("`{name}` must have {counts:?} numbers, not {}", v.len()),
+            });
+            return None;
+        }
+        Some(v)
+    };
+    let mut work_groups =
+        sizes("workGroups", &[3]).map(|v| [v[0] as u32, v[1] as u32, v[2] as u32]);
+    let work_groups_render =
+        sizes("workGroupsRender", &[2, 3]).map_or([1.0, 1.0], |v| [v[0] as f32, v[1] as f32]);
     let code = c.rewrite(&samplers, &uniforms);
+    let mut folded = None;
+    let code = match work_groups.map(|g| fold_work_groups(&code, g)) {
+        Some(Ok(Some((code, fold)))) => {
+            work_groups = Some(fold.dispatch);
+            folded = Some(fold);
+            code
+        }
+        Some(Err(message)) => {
+            errors.push(Error {
+                file: compute.files.first().cloned().unwrap_or_default(),
+                line: 0,
+                message,
+            });
+            code
+        }
+        _ => code,
+    };
     let code = work_group_size(&code).unwrap_or_else(|message| {
         errors.push(Error {
             file: compute.files.first().cloned().unwrap_or_default(),
@@ -800,6 +835,9 @@ pub fn translate_compute(compute: &Preprocessed) -> Result<ComputeProgram, Vec<E
         images.push(copy);
     }
     let mut main = String::from("\nvoid main() {\n");
+    if let Some(fold) = &folded {
+        main.push_str(&fold.unfold());
+    }
     main.push_str(
         "    hz_Fog = hz_FogParameters(hz_fog_color, hz_fog.x, hz_fog.y, hz_fog.z, hz_fog.w);\n",
     );
@@ -807,25 +845,11 @@ pub fn translate_compute(compute: &Preprocessed) -> Result<ComputeProgram, Vec<E
         writeln!(main, "    {name} = hz_init_{name}();").unwrap();
     }
     main.push_str("    hz_main();\n}\n");
-    let header = resources(&uniforms, &samplers, &images) + &c.prelude();
+    let mut header = resources(&uniforms, &samplers, &images) + &c.prelude();
+    if folded.is_some() {
+        header.push_str("uvec3 hz_WorkGroupID;\n");
+    }
     let text = format!("{header}{code}{main}");
-    // `workGroups` is an ivec3, `workGroupsRender` a vec2 (a third number, the depth of a 2D
-    // render, is taken as 1); anything else is not understood rather than guessed.
-    let mut sizes = |name: &str, counts: &[usize]| {
-        let v = constant(&c, name)?;
-        if !counts.contains(&v.len()) {
-            errors.push(Error {
-                file: compute.files.first().cloned().unwrap_or_default(),
-                line: 0,
-                message: format!("`{name}` must have {counts:?} numbers, not {}", v.len()),
-            });
-            return None;
-        }
-        Some(v)
-    };
-    let work_groups = sizes("workGroups", &[3]).map(|v| [v[0] as u32, v[1] as u32, v[2] as u32]);
-    let work_groups_render =
-        sizes("workGroupsRender", &[2, 3]).map_or([1.0, 1.0], |v| [v[0] as f32, v[1] as f32]);
     if !errors.is_empty() {
         return Err(errors);
     }
@@ -867,6 +891,83 @@ pub fn translate_compute(compute: &Preprocessed) -> Result<ComputeProgram, Vec<E
         work_groups,
         work_groups_render,
     })
+}
+
+/// The most work groups wgpu dispatches along one dimension (WebGPU's
+/// `maxComputeWorkgroupsPerDimension`, which wgpu's Metal backend reports too).
+pub const MAX_WORK_GROUPS_PER_DIMENSION: u32 = 65_535;
+
+/// A `workGroups` over [`MAX_WORK_GROUPS_PER_DIMENSION`] in some dimension, run as the same
+/// number of groups in the shape `dispatch`.
+#[derive(Debug, PartialEq)]
+struct Fold {
+    groups: [u32; 3],
+    dispatch: [u32; 3],
+}
+
+impl Fold {
+    /// The start of `main`: the group's place in `groups`, from its linear index in `dispatch`.
+    fn unfold(&self) -> String {
+        let ([x, y, _], [a, b, _]) = (self.groups, self.dispatch);
+        format!(
+            "    uint hz_group = gl_WorkGroupID.x + {a}u * (gl_WorkGroupID.y + {b}u * gl_WorkGroupID.z);\n    \
+             hz_WorkGroupID = uvec3(hz_group % {x}u, hz_group / {x}u % {y}u, hz_group / {}u);\n",
+            x * y
+        )
+    }
+}
+
+/// `code` for a dispatch of `groups` laid out as a [`Fold`] when a dimension is over the limit:
+/// `gl_WorkGroupID`, `gl_GlobalInvocationID` and `gl_NumWorkGroups` read what they would in
+/// `groups`. The shape uses every group exactly, so no group returns early before a `barrier()`.
+fn fold_work_groups(code: &str, groups: [u32; 3]) -> Result<Option<(String, Fold)>, String> {
+    if groups.iter().all(|&n| n <= MAX_WORK_GROUPS_PER_DIMENSION) {
+        return Ok(None);
+    }
+    let too_many = || {
+        format!(
+            "`workGroups` {groups:?} can't be dispatched: no shape of at most \
+                 {MAX_WORK_GROUPS_PER_DIMENSION} per dimension holds them"
+        )
+    };
+    let total = groups
+        .iter()
+        .try_fold(1u32, |t, &n| t.checked_mul(n))
+        .ok_or_else(too_many)?;
+    let divisor = |n: u32| {
+        (1..=n.min(MAX_WORK_GROUPS_PER_DIMENSION))
+            .rev()
+            .find(|d| n.is_multiple_of(*d))
+            .unwrap_or(1)
+    };
+    let a = divisor(total);
+    let b = divisor(total / a);
+    let c = total / a / b;
+    if c > MAX_WORK_GROUPS_PER_DIMENSION {
+        return Err(too_many());
+    }
+    let [x, y, z] = groups;
+    let mut tokens: Vec<String> = crate::macros::lex(code)
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    for t in &mut tokens {
+        match t.as_str() {
+            "gl_WorkGroupID" => *t = "hz_WorkGroupID".to_owned(),
+            "gl_GlobalInvocationID" => {
+                *t = "(hz_WorkGroupID * gl_WorkGroupSize + gl_LocalInvocationID)".to_owned()
+            }
+            "gl_NumWorkGroups" => *t = format!("uvec3({x}u, {y}u, {z}u)"),
+            _ => {}
+        }
+    }
+    Ok(Some((
+        tokens.concat(),
+        Fold {
+            groups,
+            dispatch: [a, b, c],
+        },
+    )))
 }
 
 /// `code` with `gl_WorkGroupSize` written as the constant its `layout(local_size_*)` declares:
