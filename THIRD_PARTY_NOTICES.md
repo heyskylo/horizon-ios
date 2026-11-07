@@ -225,4 +225,34 @@ THE SOFTWARE.
 
 ## Just Enough Items
 
-The Recipes settings icon is from [Just Enough Items 31.17.0.108](https://github.com/mezz/JustEnoughItems) by mezz and contributors. It is distributed under the MIT license in `crates/horizon-client-render/src/jei_recipes/LICENSE.txt`.
+The Recipes GUI sprites and settings icon under `crates/horizon-client-render/src/jei_recipes` are from
+[Just Enough Items 31.17.0.108](https://github.com/mezz/JustEnoughItems/tree/0371fa6fafa14635a356019e4604f5580b26a34f)
+by mezz and contributors, under the MIT license in that directory (`LICENSE.txt`).
+
+## Flywheel native model directional shading
+
+The two-light diffuse expression and transformed-normal policy in
+`terrain.wgsl`'s native model entries follow Flywheel 1.0.6
+(`internal/diffuse.glsl`, `instance/transformed.vert`, `internal/common.vert`).
+No Flywheel classes, compiled shaders or original model/texture assets are bundled.
+
+Copyright (c) 2021-2024 Jozufozu
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.

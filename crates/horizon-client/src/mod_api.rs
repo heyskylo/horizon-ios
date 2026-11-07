@@ -40,6 +40,7 @@ pub use crate::game::{
     NativePlayer, NativePlayerRender, NativeReloadListener, NativeShake, NativeStructureBlock,
     NativeStructureTemplate, NativeWorldDraw,
 };
+pub use crate::gamerules::Value as GameRuleValue;
 pub use crate::gfx::native_render::{
     BlockSpriteArrays, RenderHooks, RenderNeeds, RenderNeedsEvent, WorldDrawn, WorldDrawnEvent,
     wgpu,
@@ -62,6 +63,9 @@ pub use crate::recipe_book::RecipeBookCategory;
 pub use crate::sound_engine::SoundPlayback;
 /// A named step of the server tick and its wall and CPU milliseconds (`native_server_tick_timed`).
 pub use crate::spans::Span as TickSpan;
+pub use crate::terrain_model::{
+    NativeModelMaterial, NativeModelRenderOptions, NativeModelShade, NativeModelUvShift,
+};
 pub use crate::text::Text;
 pub use crate::world_primitives::{PrimitiveShape, WorldPrimitive, WorldPrimitives};
 pub use horizon_assets::item_model::{DisplayContext, StackView};
@@ -972,6 +976,8 @@ mod generated_host {
     include!(concat!(env!("OUT_DIR"), "/mod_api_generated_host.rs"));
 }
 pub use generated_host::Host;
+
+pub use crate::game::native_client_services::HudMode;
 
 /// Result of accessing or decoding an attachment.
 pub type AttachmentResult<T> = std::result::Result<T, AttachmentError>;

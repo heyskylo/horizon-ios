@@ -23,8 +23,8 @@ pub use horizon_client_render::{
     screen_effects, sculk, section_mask, server_terrain, settings, shader_options,
     shader_pack_list, signs, skins, sound_engine, sound_events, sound_preview, spans, split_layout,
     split_map, split_profiles, sprites, streaming, structure_block, tab_list, telemetry,
-    test_block, test_instance_block, testgen, title_edition, trims, ui, vault, weather, widgets,
-    world, worldborder, zip,
+    terrain_model, test_block, test_instance_block, testgen, title_edition, trims, ui, vault,
+    weather, widgets, world, worldborder, zip,
 };
 pub mod attack_strength;
 pub mod attribute_updates;
@@ -56,6 +56,7 @@ pub mod debug_overlay;
 pub mod debugworld;
 pub mod dialog;
 pub mod dialog_screen;
+#[cfg(feature = "discord")]
 pub mod discord_presence;
 pub mod end_crystal;
 pub mod end_gateway;
@@ -74,6 +75,7 @@ pub mod game_rules_screen;
 pub mod gizmos;
 pub mod gossip;
 pub mod health;
+#[cfg(feature = "heartbeat")]
 pub mod heartbeat;
 pub mod hotbar;
 pub mod hunger;
@@ -164,6 +166,7 @@ pub use horizon_client_core::text;
 pub use horizon_client_input::actions;
 pub use horizon_client_input::clipboard;
 pub use horizon_client_input::gamepad;
+pub use horizon_client_input::gameplay_guide;
 pub use horizon_client_input::held;
 pub use horizon_client_input::input;
 pub use horizon_client_input::interaction_input;

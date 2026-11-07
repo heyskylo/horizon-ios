@@ -227,6 +227,19 @@ impl ModelNormals {
         }
         self
     }
+    fn part_rotated(mut self, pose: [f32; 9], rotation: glam::Mat3) -> Self {
+        self.matrix *= rotation;
+        let scale = glam::Vec3::new(pose[6], pose[7], pose[8]);
+        if scale.x.abs() == scale.y.abs() && scale.x.abs() == scale.z.abs() {
+            if scale.min_element() < 0.0 {
+                self.matrix *= glam::Mat3::from_diagonal(scale.signum());
+            }
+        } else {
+            self.matrix *= glam::Mat3::from_diagonal(scale.recip());
+            self.trusted = false;
+        }
+        self
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -3124,6 +3137,10 @@ pub struct MobWorld<'a> {
     pub lid_openers: &'a HashMap<(i32, i32, i32), i32>,
     /// What a content mod's effects do, on a server (None on a client).
     pub mod_effects: Option<&'a dyn ModEffectTicks>,
+    /// `Level.getEntity(uuid)`, for the UUIDs a mob kept of entities that were
+    /// not in the level (a warden's anger, `AngerManagement.angerByUuid`).
+    /// None: this world keeps no entity UUIDs, so nothing is resolved.
+    pub who_lookup: Option<&'a dyn WhoLookup>,
     /// The level's world border, whose walls stop a mob's moves
     /// (`Entity.collectColliders`); None: nothing stops them there.
     pub border: Option<&'a horizon_core::geometry::border::BorderGeometry>,
@@ -3133,6 +3150,13 @@ pub struct MobWorld<'a> {
 /// native mods answer. False removes the effect.
 pub trait ModEffectTicks {
     fn tick_mod_effect(&self, effect: &str, mob: u32, tick_count: i32, amplifier: i32) -> bool;
+}
+/// `Level.getEntity(UUID)` for a reference a mob stored: the entity that UUID
+/// names while it is in the level, never some other entity as a stand-in. Only
+/// the game layer keeps entity UUIDs, so it answers this (`Game::who_by_uuid`)
+/// and the mob layer reaches it through `MobWorld`.
+pub trait WhoLookup {
+    fn who_by_uuid(&self, uuid: [i32; 4]) -> Option<Who>;
 }
 /// `Entity.getTeam` of the player and of the mobs on a team.
 #[derive(Clone, Debug, Default)]
