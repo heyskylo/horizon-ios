@@ -142,6 +142,7 @@ def main():
     parser.add_argument('--map-decoration-patch-fixture', action='store_true')
     parser.add_argument('--map-decoration-removal-diagnostic', action='store_true')
     parser.add_argument("--selector-bounds-fixture", action="store_true")
+    parser.add_argument('--item-health-fixture', action='store_true')
     parser.add_argument("--macro-source-type-fixture", action="store_true")
     parser.add_argument("--stand-fall-fixture", action="store_true")
     parser.add_argument('--orb-uuid-fixture', action='store_true')
@@ -227,6 +228,10 @@ def main():
     if args.loaded_fixture:
         groups = [('setup', corpus_module.group_setup()),
                   ('loaded ticket removal', corpus_module.loaded_ticket_removal(args.loaded_block_diagnostic))]
+    if args.item_health_fixture or args.only == 'item Health short load':
+        groups = [(name, ops) for name, ops in corpus_module.groups() if name == 'item Health short load']
+    elif not args.only:
+        groups = [(name, ops) for name, ops in groups if name not in corpus_module.ISOLATED_ITEM_HEALTH]
     if args.moving_piston_history_diagnostic:
         groups.append(('moving piston presentation diagnostic',
                        corpus_module.moving_piston_presentation_diagnostic()))
