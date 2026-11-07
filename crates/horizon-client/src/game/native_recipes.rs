@@ -370,6 +370,7 @@ impl Game<'_> {
         self.recipe_tables.incoming.clear();
         self.recipe_tables.received = None;
         self.recipe_tables.tables = None;
+        self.recipe_ui_forget_server_entries();
         self.forget_book();
     }
     /// `native_recipes_received` for the types that came, once the window
