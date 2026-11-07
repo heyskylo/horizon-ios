@@ -812,6 +812,118 @@ impl Game<'_> {
                     out.push_str(&record.to_string());
                     out.push('\n');
                 }
+                "merchant_saved_stats" => {
+                    let (state, raw) = self.harness_owner(|g| {
+                        g.load_stats();
+                        if !g.stats.loaded { return Err("merchant stats not loaded".into()); }
+                        g.save_stats();
+                        let uuid = g.level.player_uuid.ok_or("merchant stats UUID")?;
+                        let path = super::stats::player_json(&g.world_root, "stats", uuid);
+                        let raw = std::fs::read_to_string(path)?;
+                        let saved: Value = serde_json::from_str(&raw)?;
+                        let value = |ty: &str, key: &str| saved["stats"][ty][key].as_i64().unwrap_or(0);
+                        Ok((json!({"uuid":uuid,"books":value("minecraft:crafted","minecraft:bookshelf"),
+                            "glass":value("minecraft:crafted","minecraft:glass"),
+                            "trades":value("minecraft:custom","minecraft:traded_with_villager")}), raw))
+                    })?;
+                    let label = op["label"].as_str().unwrap_or("");
+                    std::fs::write(
+                        output.with_file_name(format!("native-merchant-stats-{label}.json")),
+                        raw,
+                    )?;
+                    out.push_str(
+                        &json!({"cmd":format!("#merchant_saved_stats {label}"),
+                        "messages":[],"results":[],"state":state})
+                        .to_string(),
+                    );
+                    out.push('\n');
+                }
+                "merchant_action" | "merchant_state" => {
+                    let observe = op["op"] == "merchant_state";
+                    let state = self.in_owner_level(|g| -> Result<Value> {
+                        let mut host = g.lan.take().ok_or("merchant oracle: no hub")?;
+                        let result = (|| -> Result<Value> {
+                            let owner = g
+                                .serving
+                                .as_ref()
+                                .ok_or("merchant oracle: no server")?
+                                .owner;
+                            let conn = host
+                                .hub
+                                .guests
+                                .iter()
+                                .find(|p| p.uuid == owner && p.placed)
+                                .ok_or("merchant oracle: owner not connected")?
+                                .conn;
+                            if observe {
+                                return Ok(g
+                                    .harness_merchant(&host, conn)
+                                    .ok_or("merchant oracle: no live menu")?
+                                    .2);
+                            }
+                            use horizon_protocol::packets::play::{self, Serverbound as S};
+                            let packet = match op["action"].as_str().unwrap_or("") {
+                                "open" => {
+                                    let uuid = u128::from_str_radix(
+                                        op["uuid"]
+                                            .as_str()
+                                            .ok_or("merchant oracle: UUID")?
+                                            .replace('-', "")
+                                            .as_str(),
+                                        16,
+                                    )?;
+                                    let Some(super::commands::Target::Mob(id)) =
+                                        g.target_by_uuid(uuid)
+                                    else {
+                                        return Err("merchant oracle: missing live mob".into());
+                                    };
+                                    S::Interact(play::Interact {
+                                        id: id as i32,
+                                        hand: 0,
+                                        location: [0.0; 3],
+                                        secondary: false,
+                                    })
+                                }
+                                "select" => S::SelectTrade(play::SelectTrade {
+                                    item: op["index"].as_i64().unwrap_or(0) as i32,
+                                }),
+                                "click" => {
+                                    let (container, state, _) = g
+                                        .harness_merchant(&host, conn)
+                                        .ok_or("merchant oracle: no menu")?;
+                                    S::ContainerClick(play::ContainerClick {
+                                        container,
+                                        state,
+                                        slot: op["slot"].as_i64().ok_or("merchant oracle: slot")?
+                                            as i16,
+                                        button: op["button"].as_i64().unwrap_or(0) as i8,
+                                        input: op["input"].as_i64().unwrap_or(0) as i32,
+                                        changed: Vec::new(),
+                                        carried: None,
+                                    })
+                                }
+                                "close" => S::ContainerClose(play::ContainerClose {
+                                    container: g
+                                        .harness_merchant(&host, conn)
+                                        .ok_or("merchant oracle: no menu")?
+                                        .0,
+                                }),
+                                _ => return Err("merchant oracle: unknown action".into()),
+                            };
+                            eprintln!("merchant action receipt: action={} owner={owner:032x} conn={conn} menu={:?} clock={}",
+                                op["action"], g.harness_merchant(&host, conn).map(|(w, r, _)| (w, r)), g.world.game_time);
+                            g.lan_guest_packet(&mut host, conn, packet);
+                            Ok(Value::Null)
+                        })();
+                        g.lan = Some(host);
+                        result
+                    })?;
+                    if observe {
+                        out.push_str(&json!({"cmd":format!("#merchant_state {}",op["label"].as_str().unwrap_or("")),
+                            "messages":[],"results":[],"state":state}).to_string());
+                        out.push('\n');
+                    }
+                }
                 "menu_state" => {
                     let (_, own_slots, _) = self.harness_owner_menu()?;
                     let record = json!({"cmd": format!("#menu_state {}", op["label"].as_str().unwrap_or("")),
