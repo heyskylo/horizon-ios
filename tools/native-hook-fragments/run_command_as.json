@@ -1,0 +1,11 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "run_command_as", "target": "horizon_client::game::native_server::Game<'_>::native_run_command_as"}
+  ],
+  "rust_summary": "a command run as a player typing it would, at their level, with its result and answer (`native_run_command_as`).",
+  "doc_summary": "`native_run_command_as(player, line)` runs `line` as that player typing it would (Bukkit's `Player.performCommand`): their source and operator level, mods' registered commands included; the answer goes to them and comes back in the `NativeCommandResult`. Bundles need \"hooks\": @API:run_command_as@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_server.rs"
+  ]
+}

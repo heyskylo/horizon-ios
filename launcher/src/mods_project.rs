@@ -413,7 +413,7 @@ impl Launcher {
                                 || (current.is_some()
                                     && value.is_none()
                                     && !sorts.iter().any(|(v, _)| *v == current)),
-                            |d| d.child(div().size(px(6.)).rounded_full().bg(t.accent)),
+                            |d| d.child(div().size(px(6.)).bg(t.accent)),
                         )
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.mods.browse.sort_menu = false;

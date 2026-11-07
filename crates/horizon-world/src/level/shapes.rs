@@ -146,10 +146,9 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                     .link
                     .is_some_and(|fruit| b.is_block(nstate, fruit))
                     && dir == b.facing(state)
+                    && let Some(stem) = b.data(state).link2
                 {
-                    if let Some(stem) = b.data(state).link2 {
-                        return Some(table.set_int(b.default_of(stem), p.age, 7));
-                    }
+                    return Some(table.set_int(b.default_of(stem), p.age, 7));
                 }
                 sup!()
             }

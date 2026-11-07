@@ -1,0 +1,9 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "hide_entity_from", "target": "horizon_client::game::native_server::Game<'_>::native_hide_entity_from"}
+  ],
+  "rust_summary": "an entity hidden from one player's client, or shown again (`native_hide_entity_from`), as Bukkit's `Player.hideEntity`/`showEntity`.",
+  "doc_summary": "`native_hide_entity_from(viewer, entity, hidden)` hides an entity (a mob, a display, another player) from one player's client alone, or shows it again: their client stops tracking it from the next tick, and a hidden player also leaves their Tab list. Kept while the viewer is on, for that entity id. Bundles need \"hooks\": @API:hide_entity_from@.",
+  "comments": ["crates/horizon-client/src/game/native_server.rs"]
+}

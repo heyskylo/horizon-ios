@@ -14,7 +14,6 @@ use horizon_world::nbt::{Compound, JavaString, Tag};
 use std::sync::Arc;
 
 /// A tank as a side reaches it (`native_fluid_tanks`).
-#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NativeFluidTank {
     /// Its number, for the mod's own use.
@@ -239,7 +238,6 @@ fn tank_room(tanks: &[NativeFluidTank], fluid: &str, accepts: impl Fn(usize) -> 
 }
 
 // Native mods use these; nothing in Horizon does.
-#[allow(dead_code)]
 impl Game<'_> {
     /// What holds fluids at `pos` in the level in place, `dimension`: a mod
     /// block's tanks (its block entity's, and not the placeholder standing in
