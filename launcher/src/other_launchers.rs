@@ -304,10 +304,25 @@ fn game_folders(dir: &Path, launcher: &'static str) -> Vec<Found> {
 
 /// The CurseForge app's instances: in its modding folder's `Instances/`.
 pub fn curseforge_instances(root: &Path) -> Vec<Found> {
-    game_folders(&root.join("Instances"), CURSEFORGE)
+    curseforge_instances_in(&root.join("Instances"))
+}
+
+/// The CurseForge instances in `dir`, the app's `Instances/` folder itself.
+fn curseforge_instances_in(dir: &Path) -> Vec<Found> {
+    game_folders(dir, CURSEFORGE)
         .into_iter()
         .map(with_curseforge_target)
         .collect()
+}
+
+/// `dir` is a folder of CurseForge instances: one of its folders holds the app's
+/// `minecraftinstance.json`.
+fn holds_curseforge_instances(dir: &Path) -> bool {
+    fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|e| e.path().join("minecraftinstance.json").is_file())
 }
 
 /// `found` with the Minecraft version and loader its CurseForge instance records
@@ -402,8 +417,8 @@ pub fn atlauncher_instances(root: &Path) -> Vec<Found> {
 }
 
 /// What one folder holds: an official launcher's profiles, a Prism or MultiMC root (or its
-/// `instances/`), the CurseForge app's modding folder, the Modrinth App's folder, or a single
-/// instance folder.
+/// `instances/`), the CurseForge app's modding folder (or its `Instances/`), the Modrinth App's
+/// folder, or a single instance folder.
 pub fn in_folder(dir: &Path, launcher: Option<&'static str>) -> Vec<Found> {
     if dir.join("launcher_profiles.json").is_file() {
         return official_profiles(dir);
@@ -427,6 +442,9 @@ pub fn in_folder(dir: &Path, launcher: Option<&'static str>) -> Vec<Found> {
     if dir.join("Instances").is_dir() {
         return curseforge_instances(dir);
     }
+    if holds_curseforge_instances(dir) {
+        return curseforge_instances_in(dir);
+    }
     if dir.join("profiles").is_dir() {
         return modrinth_app_profiles(dir);
     }
@@ -446,6 +464,20 @@ pub fn in_folder(dir: &Path, launcher: Option<&'static str>) -> Vec<Found> {
         Some(one) => vec![one],
         None => prism_instances(dir, launcher),
     }
+}
+
+/// The folders [`scan`] looks in, whether they exist or not.
+pub fn scanned_folders(os: Os, folders: &Folders) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    let known = sources::known_folders(os, folders)
+        .into_iter()
+        .map(|(_, d)| d);
+    for dir in known.chain(curseforge_folders(os, folders)) {
+        if !dirs.contains(&dir) {
+            dirs.push(dir);
+        }
+    }
+    dirs
 }
 
 /// Every instance the launchers on this computer keep in their default folders.
@@ -476,8 +508,13 @@ pub fn scan(os: Os, folders: &Folders) -> Vec<Found> {
 /// The CurseForge app's default modding folder on `os`.
 pub fn curseforge_folders(os: Os, folders: &Folders) -> Vec<PathBuf> {
     match os {
-        Os::Windows => vec![folders.home.join("curseforge/minecraft")],
-        Os::MacOs | Os::Linux => vec![folders.home.join("Documents/curseforge/minecraft")],
+        // One component at a time, so the path shows with one kind of separator.
+        Os::Windows => vec![folders.home.join("curseforge").join("minecraft")],
+        Os::MacOs | Os::Linux => vec![folders
+            .home
+            .join("Documents")
+            .join("curseforge")
+            .join("minecraft")],
     }
 }
 
