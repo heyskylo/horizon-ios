@@ -296,7 +296,12 @@ impl Game<'_> {
     /// NeoForge's creative page buttons, 20 square, 50 above the screen at
     /// its left and right edges: -1 or 1 for the one at `cursor`, when there
     /// is more than one page.
-    pub(super) fn creative_page_button(ox: f32, oy: f32, cursor: (f32, f32), pages: u32) -> Option<i64> {
+    pub(super) fn creative_page_button(
+        ox: f32,
+        oy: f32,
+        cursor: (f32, f32),
+        pages: u32,
+    ) -> Option<i64> {
         if pages <= 1 {
             return None;
         }
