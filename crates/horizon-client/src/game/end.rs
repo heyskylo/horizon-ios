@@ -1505,6 +1505,11 @@ impl Game<'_> {
         self.end.gateways.retain(|id, _| present.contains(id));
         let mut leaving: Vec<(u32, BlockPos)> = Vec::new();
         for (id, allowed) in ids {
+            // Only an entity in a gateway has a state: skip the others before
+            // the per-id lookups below, which walk the entity lists.
+            if !self.end.gateways.contains_key(&id) {
+                continue;
+            }
             let is_pearl = self
                 .creatures
                 .projectiles
