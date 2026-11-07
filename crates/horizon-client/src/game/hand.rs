@@ -540,6 +540,24 @@ impl Game<'_> {
             }
         }
     }
+
+    /// A replay owns its held-item and equip animation state. Reset it when a
+    /// standalone replay closes so a later world cannot inherit lowered hands
+    /// or the replay player's visible stacks.
+    pub(super) fn reset_studio_hand_state(&mut self) {
+        let main = self.inventory.get(self.selected).cloned().flatten();
+        self.visible_hands = [(self.selected, main), (OFFHAND, self.offhand.clone())];
+        self.hands_replaced = [false; 2];
+        self.heights = horizon_client::first_person::HandHeights {
+            main: 1.0,
+            old_main: 1.0,
+            off: 1.0,
+            old_off: 1.0,
+        };
+        self.swing = Default::default();
+        self.sway = Default::default();
+    }
+
     /// `Minecraft.crosshairPickEntity` when it is a `LivingEntity`: whether
     /// it is alive (the nearest entity under the crosshair, before any block).
     pub(super) fn crosshair_living(&self) -> Option<bool> {

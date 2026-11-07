@@ -652,18 +652,38 @@ impl Game<'_> {
     }
     pub(super) fn close_studio_replay(&mut self) -> bool {
         let closed = self.studio_replay.take().is_some();
+        if !closed {
+            return false;
+        }
+
+        // A standalone replay owns a synthetic Remote connection. Treat that
+        // connection as replay state even if the saved origin flag was lost;
+        // sending it through leave_server() opens the Multiplayer screen.
+        let standalone = self.studio_replay_standalone
+            || self
+                .remote
+                .as_ref()
+                .is_some_and(|remote| remote.brand == "horizon-studio");
+        self.studio_replay_standalone = false;
         if let Some(camera_type) = self.studio_replay_previous_camera_type.take() {
             self.camera_type = camera_type;
         }
         self.last_replay_tick = None;
         self.studio_virtual_tick_ms = 0.0;
         self.capture(false);
-        if self.studio_replay_standalone {
-            self.studio_replay_standalone = false;
+        if standalone {
             if let Some(mut remote) = self.remote.take() {
                 remote.session.disconnect();
             }
-            let _ = self.finish_close_world();
+            self.using = None;
+            self.end_mod_use();
+            if let Err(error) = self.finish_close_world() {
+                log::error!("Failed to close standalone Studio replay cleanly: {error}");
+            }
+            self.reset_studio_hand_state();
+            // A title-screen replay has no previous world perspective to
+            // restore. Start the next world in first person with visible hands.
+            self.camera_type = super::perspective::CameraType::FirstPerson;
             if let Some(title) = self.title.as_mut() {
                 title.mode = horizon_client::title::Mode::Main;
             }
