@@ -155,6 +155,9 @@ mod tests {
     #[test]
     fn counter_labels_are_sorted() {
         let labels = [("kind".into(), "light".into()), ("a".into(), "b".into())];
-        assert_eq!(counter("streaming.cap", &labels), "x:streaming.cap{a=b,kind=light}");
+        assert_eq!(
+            counter("streaming.cap", &labels),
+            "x:streaming.cap{a=b,kind=light}"
+        );
     }
 }

@@ -20,7 +20,9 @@ pub fn warning_text(w: &Warning) -> String {
         WarningCode::ServerNotHorizon => {
             "the connected server does not run Horizon, so only the client side was captured".into()
         }
-        WarningCode::ServerDenied => "the server refused the capture: operator level 4 is required".into(),
+        WarningCode::ServerDenied => {
+            "the server refused the capture: operator level 4 is required".into()
+        }
         WarningCode::ServerAlreadyRunning => "the server already runs a capture".into(),
         WarningCode::ServerPartIncomplete => {
             "the client disconnected while the server's side was being sent".into()
@@ -38,7 +40,10 @@ pub fn warning_text(w: &Warning) -> String {
 pub(super) fn marks(ctx: &Ctx) -> Result<Reply, QueryError> {
     let view = &ctx.views[0];
     let sides = ctx.sides(0)?;
-    let first = sides.first().copied().ok_or_else(|| QueryError::new("this capture has no data"))?;
+    let first = sides
+        .first()
+        .copied()
+        .ok_or_else(|| QueryError::new("this capture has no data"))?;
     let window = ctx.window(0, first, f64::NEG_INFINITY)?;
     let mut marks: Vec<_> = view
         .capture
@@ -58,7 +63,12 @@ pub(super) fn marks(ctx: &Ctx) -> Result<Reply, QueryError> {
 pub(super) fn warnings(ctx: &Ctx) -> Result<Reply, QueryError> {
     let view = &ctx.views[0];
     let sides = ctx.sides(0)?;
-    let mut all: Vec<_> = view.capture.warnings.iter().filter(|w| sides.contains(&w.side())).collect();
+    let mut all: Vec<_> = view
+        .capture
+        .warnings
+        .iter()
+        .filter(|w| sides.contains(&w.side()))
+        .collect();
     all.sort_by(|a, b| a.t.total_cmp(&b.t));
     let rows = all
         .into_iter()
@@ -81,7 +91,9 @@ pub(super) fn memory(ctx: &Ctx) -> Result<Reply, QueryError> {
     let side = ctx.side(0)?;
     let snaps = ctx.views[0].snapshots(side);
     if snaps.is_empty() {
-        return Err(QueryError::new("this capture has no memory snapshots for the selected side"));
+        return Err(QueryError::new(
+            "this capture has no memory snapshots for the selected side",
+        ));
     }
     let min_mb = ctx.q.min_mb;
     if ctx.q.diff {
@@ -90,7 +102,11 @@ pub(super) fn memory(ctx: &Ctx) -> Result<Reply, QueryError> {
     let snap = match ctx.q.args.as_slice() {
         [] => snaps.last(),
         [label] => Some(find(&snaps, label)?),
-        _ => return Err(QueryError::new("memory takes one label, or none for the last snapshot")),
+        _ => {
+            return Err(QueryError::new(
+                "memory takes one label, or none for the last snapshot",
+            ));
+        }
     };
     let snap = snap.expect("snapshots are not empty");
     let mut rows: Vec<&(String, f64)> = snap
@@ -122,7 +138,10 @@ pub(super) fn memory(ctx: &Ctx) -> Result<Reply, QueryError> {
 fn find<'a>(snaps: &'a [Snapshot], label: &str) -> Result<&'a Snapshot, QueryError> {
     snaps.iter().find(|s| s.label == label).ok_or_else(|| {
         let labels: Vec<&str> = snaps.iter().map(|s| s.label.as_str()).collect();
-        QueryError::new(format!("no memory snapshot labelled {label}; labels: {}", labels.join(", ")))
+        QueryError::new(format!(
+            "no memory snapshot labelled {label}; labels: {}",
+            labels.join(", ")
+        ))
     })
 }
 
@@ -142,9 +161,17 @@ fn count(v: f64) -> Value {
 fn diff(ctx: &Ctx, snaps: &[Snapshot], min_mb: f64) -> Result<Reply, QueryError> {
     let (a, b) = match ctx.q.args.as_slice() {
         [] if snaps.len() >= 2 => (&snaps[0], &snaps[snaps.len() - 1]),
-        [] => return Err(QueryError::new("a diff needs two snapshots; this capture has one")),
+        [] => {
+            return Err(QueryError::new(
+                "a diff needs two snapshots; this capture has one",
+            ));
+        }
         [x, y] => (find(snaps, x)?, find(snaps, y)?),
-        _ => return Err(QueryError::new("memory --diff takes two labels, or none for the first and last")),
+        _ => {
+            return Err(QueryError::new(
+                "memory --diff takes two labels, or none for the first and last",
+            ));
+        }
     };
     let before_map: BTreeMap<&str, f64> = a.values.iter().map(|(p, v)| (p.as_str(), *v)).collect();
     let after_map: BTreeMap<&str, f64> = b.values.iter().map(|(p, v)| (p.as_str(), *v)).collect();
@@ -153,7 +180,10 @@ fn diff(ctx: &Ctx, snaps: &[Snapshot], min_mb: f64) -> Result<Reply, QueryError>
     paths.dedup();
     let (mut grew, mut shrank, mut counts) = (Vec::new(), Vec::new(), Vec::new());
     for path in &paths {
-        let (before, after) = (before_map.get(path).copied().unwrap_or(0.0), after_map.get(path).copied().unwrap_or(0.0));
+        let (before, after) = (
+            before_map.get(path).copied().unwrap_or(0.0),
+            after_map.get(path).copied().unwrap_or(0.0),
+        );
         let delta = after - before;
         if *path == RESIDENT {
             continue;
@@ -168,7 +198,9 @@ fn diff(ctx: &Ctx, snaps: &[Snapshot], min_mb: f64) -> Result<Reply, QueryError>
             counts.push((*path, before, after, delta));
         }
     }
-    let rank = |rows: &mut Vec<(&str, f64, f64, f64)>| rows.sort_by(|x, y| y.3.abs().total_cmp(&x.3.abs()).then(x.0.cmp(y.0)));
+    let rank = |rows: &mut Vec<(&str, f64, f64, f64)>| {
+        rows.sort_by(|x, y| y.3.abs().total_cmp(&x.3.abs()).then(x.0.cmp(y.0)))
+    };
     rank(&mut grew);
     rank(&mut shrank);
     rank(&mut counts);
@@ -183,7 +215,10 @@ fn diff(ctx: &Ctx, snaps: &[Snapshot], min_mb: f64) -> Result<Reply, QueryError>
         _ => Value::Null,
     };
     fn only<'p>(from: &BTreeMap<&'p str, f64>, not: &BTreeMap<&'p str, f64>) -> Vec<&'p str> {
-        from.keys().filter(|p| !not.contains_key(*p)).copied().collect()
+        from.keys()
+            .filter(|p| !not.contains_key(*p))
+            .copied()
+            .collect()
     }
     let row = json!({
         "from": a.label,

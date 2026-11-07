@@ -18,7 +18,10 @@ pub(super) fn spans(ctx: &Ctx) -> Result<Reply, QueryError> {
             ctx.views[i].slow_table(side, View::main_unit(side), w)
         } else {
             let thread = ctx.thread(i, side)?;
-            let w = ctx.has_window().then(|| ctx.window(i, side, 0.0)).transpose()?;
+            let w = ctx
+                .has_window()
+                .then(|| ctx.window(i, side, 0.0))
+                .transpose()?;
             window.get_or_insert(w.unwrap_or(Window { from: 0.0, to: end }));
             ctx.views[i].span_table(side, thread, w).ok_or_else(|| {
                 QueryError::new(format!(
@@ -47,7 +50,11 @@ pub(super) fn spans(ctx: &Ctx) -> Result<Reply, QueryError> {
     let wanted = resolve_names(&order, &ctx.q.names)?;
     let rows: Vec<Value> = order
         .iter()
-        .filter(|name| wanted.as_ref().is_none_or(|w| w.contains(&name.to_string())))
+        .filter(|name| {
+            wanted
+                .as_ref()
+                .is_none_or(|w| w.contains(&name.to_string()))
+        })
         .take(ctx.q.filters.limit)
         .map(|name| row(name, &tables))
         .collect();
@@ -95,13 +102,24 @@ fn resolve_names(known: &[&str], wanted: &[String]) -> Result<Option<Vec<String>
             continue;
         }
         let lower = name.to_lowercase();
-        let partial: Vec<&&str> = known.iter().filter(|k| k.to_lowercase().contains(&lower)).collect();
-        let candidates = |names: Vec<&&str>| names.into_iter().map(|n| (ids::span(n), n.to_string())).collect();
+        let partial: Vec<&&str> = known
+            .iter()
+            .filter(|k| k.to_lowercase().contains(&lower))
+            .collect();
+        let candidates = |names: Vec<&&str>| {
+            names
+                .into_iter()
+                .map(|n| (ids::span(n), n.to_string()))
+                .collect()
+        };
         match partial.as_slice() {
             [one] => out.push(one.to_string()),
             [] => {
                 let list: Vec<&&str> = known.iter().take(10).collect();
-                return Err(QueryError::with(format!("no span named {name}"), candidates(list)));
+                return Err(QueryError::with(
+                    format!("no span named {name}"),
+                    candidates(list),
+                ));
             }
             _ => {
                 return Err(QueryError::with(

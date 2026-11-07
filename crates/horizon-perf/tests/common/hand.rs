@@ -36,7 +36,11 @@ impl Names {
     }
 
     pub fn id(&self, name: &str) -> u32 {
-        self.0.iter().position(|n| n == name).unwrap_or_else(|| panic!("unknown name {name}")) as u32 + 1
+        self.0
+            .iter()
+            .position(|n| n == name)
+            .unwrap_or_else(|| panic!("unknown name {name}")) as u32
+            + 1
     }
 
     pub fn fields(&self) -> Vec<Field> {
@@ -122,7 +126,13 @@ pub fn capture(n: &Names) -> Vec<Field> {
         ..Default::default()
     })];
     f.extend(n.fields());
-    f.push(Field::SlowHistory(event(-30.0, 90, 120.0, 100.0, vec![cost(n, "tick_lan", 120.0, 100.0, 0)])));
+    f.push(Field::SlowHistory(event(
+        -30.0,
+        90,
+        120.0,
+        100.0,
+        vec![cost(n, "tick_lan", 120.0, 100.0, 0)],
+    )));
     for t in 0..10 {
         f.push(Field::Health(HealthSample {
             side: SERVER,
@@ -137,23 +147,62 @@ pub fn capture(n: &Names) -> Vec<Field> {
         side: SERVER,
         id: 1,
         name: n.id("streaming.updates"),
-        labels: vec![Label { key: n.id("kind"), value: n.id("light") }],
+        labels: vec![Label {
+            key: n.id("kind"),
+            value: n.id("light"),
+        }],
         unit: 0,
         kind: CounterKind::Sum as i32,
     }));
-    for (t, total) in [(0.0, 0.0), (2.0, 100.0), (4.0, 300.0), (6.0, 600.0), (8.0, 1000.0)] {
-        f.push(Field::Counters(CounterSample { side: SERVER, t, ids: vec![1], values: vec![total] }));
+    for (t, total) in [
+        (0.0, 0.0),
+        (2.0, 100.0),
+        (4.0, 300.0),
+        (6.0, 600.0),
+        (8.0, 1000.0),
+    ] {
+        f.push(Field::Counters(CounterSample {
+            side: SERVER,
+            t,
+            ids: vec![1],
+            values: vec![total],
+        }));
     }
-    f.push(Field::Mark(Mark { side: SERVER, t: 2.0, name: "warmup done".into() }));
-    f.push(Field::Mark(Mark { side: SERVER, t: 6.5, name: "after the fix".into() }));
-    f.push(block(n, 0, 0.0, [150.0, 60.0, 10.0], [140.0, 40.0, 10.0], [5, 5, 2]));
-    f.push(block(n, 1, 5.0, [250.0, 40.0, 10.0], [240.0, 20.0, 10.0], [5, 5, 2]));
+    f.push(Field::Mark(Mark {
+        side: SERVER,
+        t: 2.0,
+        name: "warmup done".into(),
+    }));
+    f.push(Field::Mark(Mark {
+        side: SERVER,
+        t: 6.5,
+        name: "after the fix".into(),
+    }));
+    f.push(block(
+        n,
+        0,
+        0.0,
+        [150.0, 60.0, 10.0],
+        [140.0, 40.0, 10.0],
+        [5, 5, 2],
+    ));
+    f.push(block(
+        n,
+        1,
+        5.0,
+        [250.0, 40.0, 10.0],
+        [240.0, 20.0, 10.0],
+        [5, 5, 2],
+    ));
     f.push(slow(
         3.0,
         100,
         300.0,
         280.0,
-        vec![cost(n, "tick_lan", 180.0, 170.0, 0), cost(n, "streaming", 60.0, 50.0, 1)],
+        vec![
+            cost(n, "tick_lan", 180.0, 170.0, 0),
+            cost(n, "streaming", 60.0, 50.0, 1),
+        ],
     ));
     f.push(slow(
         6.0,
@@ -166,7 +215,13 @@ pub fn capture(n: &Names) -> Vec<Field> {
             cost(n, "spawn_natural", 30.0, 10.0, 1),
         ],
     ));
-    f.push(slow(9.0, 102, 150.0, 150.0, vec![cost(n, "tick_lan", 50.0, 50.0, 0)]));
+    f.push(slow(
+        9.0,
+        102,
+        150.0,
+        150.0,
+        vec![cost(n, "tick_lan", 50.0, 50.0, 0)],
+    ));
     f.push(Field::Warning(Warning {
         side: SERVER,
         t: 8.0,
@@ -219,18 +274,37 @@ pub fn capture(n: &Names) -> Vec<Field> {
             },
         ],
     }));
-    let dim = |name: &str, chunks: u32, entities: &[(&str, u32)], blocks: &[(&str, u32)]| DimensionCounts {
-        dimension: n.id(name),
-        chunks,
-        entities: entities.iter().map(|e| TypeCount { r#type: n.id(e.0), count: e.1 }).collect(),
-        block_entities: blocks.iter().map(|e| TypeCount { r#type: n.id(e.0), count: e.1 }).collect(),
+    let dim = |name: &str, chunks: u32, entities: &[(&str, u32)], blocks: &[(&str, u32)]| {
+        DimensionCounts {
+            dimension: n.id(name),
+            chunks,
+            entities: entities
+                .iter()
+                .map(|e| TypeCount {
+                    r#type: n.id(e.0),
+                    count: e.1,
+                })
+                .collect(),
+            block_entities: blocks
+                .iter()
+                .map(|e| TypeCount {
+                    r#type: n.id(e.0),
+                    count: e.1,
+                })
+                .collect(),
+        }
     };
     f.push(Field::World(WorldSnapshot {
         side: SERVER,
         t: 10.0,
         label: n.id("stop"),
         dims: vec![
-            dim("overworld", 100, &[("zombie", 5), ("item", 3)], &[("hopper", 2)]),
+            dim(
+                "overworld",
+                100,
+                &[("zombie", 5), ("item", 3)],
+                &[("hopper", 2)],
+            ),
             dim("the_nether", 10, &[("zombie", 1)], &[]),
         ],
         entity_costs: vec![
@@ -260,8 +334,18 @@ pub fn capture(n: &Names) -> Vec<Field> {
     f.push(Field::Workers(Workers {
         side: SERVER,
         kinds: vec![
-            WorkerKind { kind: n.id("light"), jobs: 10, cpu_cores: 0.5, ms_per_job: 2.0 },
-            WorkerKind { kind: n.id("generate"), jobs: 20, cpu_cores: 2.0, ms_per_job: 4.0 },
+            WorkerKind {
+                kind: n.id("light"),
+                jobs: 10,
+                cpu_cores: 0.5,
+                ms_per_job: 2.0,
+            },
+            WorkerKind {
+                kind: n.id("generate"),
+                jobs: 20,
+                cpu_cores: 2.0,
+                ms_per_job: 4.0,
+            },
         ],
     }));
     f.push(Field::Spans(SpanSummary {
@@ -270,9 +354,30 @@ pub fn capture(n: &Names) -> Vec<Field> {
         unit: Unit::Tick as i32,
         count: 10,
         spans: vec![
-            SpanTotal { name: n.id("tick_lan"), parent: 0, depth: 0, wall_ms: 400.0, cpu_ms: 380.0, seen: 10 },
-            SpanTotal { name: n.id("streaming"), parent: n.id("tick_lan"), depth: 1, wall_ms: 100.0, cpu_ms: 60.0, seen: 10 },
-            SpanTotal { name: n.id("spawn_natural"), parent: n.id("tick_lan"), depth: 1, wall_ms: 20.0, cpu_ms: 20.0, seen: 4 },
+            SpanTotal {
+                name: n.id("tick_lan"),
+                parent: 0,
+                depth: 0,
+                wall_ms: 400.0,
+                cpu_ms: 380.0,
+                seen: 10,
+            },
+            SpanTotal {
+                name: n.id("streaming"),
+                parent: n.id("tick_lan"),
+                depth: 1,
+                wall_ms: 100.0,
+                cpu_ms: 60.0,
+                seen: 10,
+            },
+            SpanTotal {
+                name: n.id("spawn_natural"),
+                parent: n.id("tick_lan"),
+                depth: 1,
+                wall_ms: 20.0,
+                cpu_ms: 20.0,
+                seen: 4,
+            },
         ],
         histogram: Some(Histogram {
             edges_ms: vec![25.0, 50.0, 100.0],

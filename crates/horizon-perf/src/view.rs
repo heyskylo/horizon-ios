@@ -63,7 +63,12 @@ impl SpanTable {
     /// The mean wall time of a unit: recorded, else the roots' time.
     pub fn mean_unit_ms(&self) -> Option<f64> {
         let total = self.wall_total_ms.filter(|t| *t > 0.0).or_else(|| {
-            let roots: f64 = self.rows.iter().filter(|r| r.depth == 0).map(|r| r.wall_ms).sum();
+            let roots: f64 = self
+                .rows
+                .iter()
+                .filter(|r| r.depth == 0)
+                .map(|r| r.wall_ms)
+                .sum();
             (roots > 0.0).then_some(roots)
         })?;
         Some(self.per_unit(total))
@@ -86,7 +91,15 @@ struct Merger {
 
 impl Merger {
     /// Adds one span's totals under one parent; `seen` units add up per parent and the most of any parent is the span's.
-    fn add(&mut self, name: &str, parent: Option<&str>, depth: u32, wall: f64, cpu: f64, seen: u64) {
+    fn add(
+        &mut self,
+        name: &str,
+        parent: Option<&str>,
+        depth: u32,
+        wall: f64,
+        cpu: f64,
+        seen: u64,
+    ) {
         let is_new = !self.by_name.contains_key(name);
         let acc = self.by_name.entry(name.to_string()).or_default();
         acc.depth = if is_new { depth } else { acc.depth.min(depth) };
@@ -115,7 +128,11 @@ impl Merger {
                 }
             })
             .collect();
-        rows.sort_by(|a, b| b.wall_ms.total_cmp(&a.wall_ms).then_with(|| a.name.cmp(&b.name)));
+        rows.sort_by(|a, b| {
+            b.wall_ms
+                .total_cmp(&a.wall_ms)
+                .then_with(|| a.name.cmp(&b.name))
+        });
         rows
     }
 }
@@ -165,7 +182,12 @@ impl Snapshot {
 
 /// A path holds megabytes when its last key, before any `[name]`, ends in `_mb`; anything else is a count.
 pub fn is_megabytes(path: &str) -> bool {
-    path.split('[').next().unwrap_or(path).rsplit('.').next().is_some_and(|key| key.ends_with("_mb"))
+    path.split('[')
+        .next()
+        .unwrap_or(path)
+        .rsplit('.')
+        .next()
+        .is_some_and(|key| key.ends_with("_mb"))
 }
 
 impl<'a> View<'a> {
@@ -238,7 +260,11 @@ impl<'a> View<'a> {
     }
 
     pub fn main_thread(side: Side) -> &'static str {
-        if side == Side::Client { "render" } else { "tick" }
+        if side == Side::Client {
+            "render"
+        } else {
+            "tick"
+        }
     }
 
     /// The threads that have spans on `side`, as (string id, name).
@@ -267,15 +293,27 @@ impl<'a> View<'a> {
     /// The requested thread, else the side's main thread (or its only thread).
     pub fn resolve_thread(&self, side: Side, requested: Option<&str>) -> Result<u32, String> {
         let threads = self.threads(side);
-        let list = || threads.iter().map(|t| t.1.as_str()).collect::<Vec<_>>().join(", ");
+        let list = || {
+            threads
+                .iter()
+                .map(|t| t.1.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
         let wanted = requested.unwrap_or(Self::main_thread(side));
         if let Some((id, _)) = threads.iter().find(|(_, name)| name == wanted) {
             return Ok(*id);
         }
         match (requested, threads.as_slice()) {
             (None, [(id, _)]) => Ok(*id),
-            (_, []) => Err(format!("this capture has no spans for its {} side", crate::error::side_name(side))),
-            _ => Err(format!("no thread named {wanted}; threads with spans: {}", list())),
+            (_, []) => Err(format!(
+                "this capture has no spans for its {} side",
+                crate::error::side_name(side)
+            )),
+            _ => Err(format!(
+                "no thread named {wanted}; threads with spans: {}",
+                list()
+            )),
         }
     }
 
@@ -289,7 +327,9 @@ impl<'a> View<'a> {
     /// Span totals of one thread: the end-of-capture summary, or the blocks that start inside `window`.
     pub fn span_table(&self, side: Side, thread: u32, window: Option<Window>) -> Option<SpanTable> {
         match window {
-            None => self.table_from_summary(side, thread).or_else(|| self.table_from_blocks(side, thread, Window::ALL)),
+            None => self
+                .table_from_summary(side, thread)
+                .or_else(|| self.table_from_blocks(side, thread, Window::ALL)),
             Some(w) => self.table_from_blocks(side, thread, w),
         }
     }
@@ -299,7 +339,14 @@ impl<'a> View<'a> {
         let mut merger = Merger::default();
         for s in &summary.spans {
             let parent = self.opt_text(side, s.parent);
-            merger.add(&self.text(side, s.name), parent.as_deref(), s.depth, s.wall_ms, s.cpu_ms, s.seen);
+            merger.add(
+                &self.text(side, s.name),
+                parent.as_deref(),
+                s.depth,
+                s.wall_ms,
+                s.cpu_ms,
+                s.seen,
+            );
         }
         Some(SpanTable {
             unit: summary.unit(),
@@ -313,12 +360,9 @@ impl<'a> View<'a> {
         let mut merger = Merger::default();
         let mut units = 0u64;
         let mut any = false;
-        for block in self
-            .capture
-            .span_blocks
-            .iter()
-            .filter(|b| b.side() == side && b.thread == thread && b.t0 >= window.from && b.t0 < window.to)
-        {
+        for block in self.capture.span_blocks.iter().filter(|b| {
+            b.side() == side && b.thread == thread && b.t0 >= window.from && b.t0 < window.to
+        }) {
             any = true;
             units += u64::from(block.units);
             for (i, &name) in block.span.iter().enumerate() {
@@ -334,7 +378,9 @@ impl<'a> View<'a> {
                 );
             }
         }
-        let unit = self.summary(side, thread).map_or(Self::main_unit(side), |s| s.unit());
+        let unit = self
+            .summary(side, thread)
+            .map_or(Self::main_unit(side), |s| s.unit());
         any.then(|| SpanTable {
             unit,
             units,
@@ -394,7 +440,9 @@ impl<'a> View<'a> {
         for event in &events {
             let mut once: HashMap<String, (u32, f64, f64)> = HashMap::new();
             for cost in &event.top {
-                let e = once.entry(self.text(side, cost.name).into_owned()).or_default();
+                let e = once
+                    .entry(self.text(side, cost.name).into_owned())
+                    .or_default();
                 e.0 = e.0.min(cost.depth);
                 e.1 += f64::from(cost.wall_ms);
                 e.2 += f64::from(cost.cpu_ms);
@@ -415,7 +463,12 @@ impl<'a> View<'a> {
     pub fn tick_units(&self, side: Side, unit: Unit) -> Vec<TickUnit> {
         let mut seen: HashMap<u64, ()> = HashMap::new();
         let mut units = Vec::new();
-        for summary in self.capture.spans.iter().filter(|s| s.side() == side && s.unit() == unit) {
+        for summary in self
+            .capture
+            .spans
+            .iter()
+            .filter(|s| s.side() == side && s.unit() == unit)
+        {
             for w in &summary.worst {
                 if seen.insert(w.counter, ()).is_none() {
                     units.push(TickUnit {
@@ -467,7 +520,12 @@ impl<'a> View<'a> {
                 labels: d
                     .labels
                     .iter()
-                    .map(|l| (self.text(side, l.key).into_owned(), self.text(side, l.value).into_owned()))
+                    .map(|l| {
+                        (
+                            self.text(side, l.key).into_owned(),
+                            self.text(side, l.value).into_owned(),
+                        )
+                    })
                     .collect(),
                 kind: d.kind(),
                 unit: self.text(side, d.unit).into_owned(),

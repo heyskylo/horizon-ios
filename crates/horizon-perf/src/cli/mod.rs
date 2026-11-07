@@ -106,8 +106,13 @@ fn parse(args: &[String], valued: &[&str], switches: &[&str]) -> Result<Parsed, 
             && valued.contains(&"where")
             && let Some(earlier) = parsed.flags.get("where").cloned()
         {
-            let value = inline.clone().or_else(|| args.next().cloned()).unwrap_or_default();
-            parsed.flags.insert("where".into(), format!("{earlier},{value}"));
+            let value = inline
+                .clone()
+                .or_else(|| args.next().cloned())
+                .unwrap_or_default();
+            parsed
+                .flags
+                .insert("where".into(), format!("{earlier},{value}"));
         } else if switches.contains(&name) && inline.is_none() {
             parsed.flags.insert(name.into(), String::new());
         } else if valued.contains(&name) {
@@ -193,7 +198,9 @@ fn side_flag(parsed: &Parsed) -> Result<Option<Side>, CliError> {
 fn summary(args: &[String], env: &Env, out: &mut dyn Write) -> Result<(), CliError> {
     let parsed = parse(args, &["budget", "side", "thread", "dir"], &["slow", "all"])?;
     if parsed.flags.contains_key("slow") && parsed.flags.contains_key("all") {
-        return Err(CliError::Usage("--slow and --all exclude each other".into()));
+        return Err(CliError::Usage(
+            "--slow and --all exclude each other".into(),
+        ));
     }
     let options = SummaryOptions {
         budget_tokens: parsed.number("budget")?.unwrap_or(DEFAULT_BUDGET),

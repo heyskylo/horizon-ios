@@ -29,7 +29,11 @@ impl PlayerRate {
 }
 
 /// Per player, the whole blocks that overlap `from..to`, and the seconds the player was on inside them.
-pub(crate) fn rates(net: &horizon_perf_format::v1::NetTraffic, from: f64, to: f64) -> Vec<PlayerRate> {
+pub(crate) fn rates(
+    net: &horizon_perf_format::v1::NetTraffic,
+    from: f64,
+    to: f64,
+) -> Vec<PlayerRate> {
     let block_s = f64::from(net.block_s).max(1e-9);
     net.players
         .iter()
@@ -69,13 +73,17 @@ pub(crate) fn rates(net: &horizon_perf_format::v1::NetTraffic, from: f64, to: f6
 pub(super) fn net(ctx: &Ctx) -> Result<Reply, QueryError> {
     let side = ctx.side(0)?;
     let Some(net) = ctx.views[0].capture.net.iter().find(|n| n.side() == side) else {
-        return Err(QueryError::new("this capture has no net section for the selected side"));
+        return Err(QueryError::new(
+            "this capture has no net section for the selected side",
+        ));
     };
     let window = ctx.window(0, side, 0.0)?;
     let (from, to) = (window.from.max(0.0), window.to.min(ctx.views[0].end(side)));
     let mut players = rates(net, from, to);
     let span = (to - from).max(1e-9);
-    let (out, inn): (u64, u64) = players.iter().fold((0, 0), |a, p| (a.0 + p.bytes_out, a.1 + p.bytes_in));
+    let (out, inn): (u64, u64) = players
+        .iter()
+        .fold((0, 0), |a, p| (a.0 + p.bytes_out, a.1 + p.bytes_in));
     let all = json!({
         "id": "n:all",
         "players": players.len(),
@@ -84,9 +92,13 @@ pub(super) fn net(ctx: &Ctx) -> Result<Reply, QueryError> {
         "out_kib_s": num(out as f64 / KIB / span),
         "in_kib_s": num(inn as f64 / KIB / span),
     });
-    players.sort_by(|a, b| b.out_kib_s().total_cmp(&a.out_kib_s()).then(a.index.cmp(&b.index)));
+    players.sort_by(|a, b| {
+        b.out_kib_s()
+            .total_cmp(&a.out_kib_s())
+            .then(a.index.cmp(&b.index))
+    });
     let mut rows = vec![all];
-    rows.extend(players.iter().take(ctx.q.filters.limit).map(|p| player_json(p)));
+    rows.extend(players.iter().take(ctx.q.filters.limit).map(player_json));
     let mut reply = Reply::new("kib_per_s", rows);
     reply.window = Some(crate::view::Window { from, to });
     Ok(reply)

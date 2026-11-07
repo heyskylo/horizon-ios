@@ -408,6 +408,18 @@ Notes on fields:
   `Warning`s are codes with numbers, so tools render them in their own language.
 - `BenchResult.report_json` embeds a `horizon-benchmark-report` v1 verbatim (or `scene_replay --json`, with
   `corpus_id`).
+- The span, world, net, memory and workers messages are spelled out in `capture.proto` (piece Q1). Their conventions:
+  - String id 0 means none: a root span's `parent`, or an unset counter unit.
+  - `SpanBlock.span[i]` ran under `parent[i]`; a span that runs under several parents is one row per parent, and tools
+    merge them by name.
+  - `SpanSummary` adds `wall_ms_total` and `cpu_ms_total`, the units' own time, so `%MSPT` has a denominator.
+  - `Histogram.counts[i]` holds the units with a wall time in `[edges_ms[i-1], edges_ms[i])`, the first from 0, and the
+    last bucket is open, so `counts` has one more entry than `edges_ms`.
+  - `WorstUnit.spans` is the whole span tree, parents before children, with `depth`.
+  - `PlayerTraffic` arrays start at the capture's start; a block before the player joined is 0.
+  - `MemorySnapshot.value_mb` holds MB when the path's last key (before any `[name]`) ends in `_mb`, otherwise a count.
+- `horizon-perf query` rounds numbers to 3 decimals. `spans --slow` averages over the slow ticks; `ticks` and `tick`
+  prefer a unit's whole tree from `spans.worst` over the 8 largest spans of `slow` and `slow_history`.
 
 ### 3.6 Health recorder and counter registry
 

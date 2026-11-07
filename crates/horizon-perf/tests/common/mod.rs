@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+pub mod bots;
 pub mod hand;
 
 use std::io::{self, Write};
@@ -202,7 +203,8 @@ pub fn query(parts: &[&str]) -> serde_json::Value {
     args.extend(parts.iter().map(|s| s.to_string()));
     let mut out = Vec::new();
     let _ = horizon_perf::cli::run(&args, &env, &mut out);
-    serde_json::from_slice(&out).unwrap_or_else(|e| panic!("not JSON ({e}): {}", String::from_utf8_lossy(&out)))
+    serde_json::from_slice(&out)
+        .unwrap_or_else(|e| panic!("not JSON ({e}): {}", String::from_utf8_lossy(&out)))
 }
 
 pub fn rows(reply: &serde_json::Value) -> &Vec<serde_json::Value> {

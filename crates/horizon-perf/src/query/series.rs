@@ -48,7 +48,9 @@ pub(super) fn series(ctx: &Ctx) -> Result<Reply, QueryError> {
     let window = ctx.window(0, side, 0.0)?;
     let every = ctx.q.every.unwrap_or(DEFAULT_EVERY_S);
     if every <= 0.0 || window.to <= window.from {
-        return Err(QueryError::new("--every must be positive and --from before --to"));
+        return Err(QueryError::new(
+            "--every must be positive and --from before --to",
+        ));
     }
     let count = ((window.to - window.from) / every).ceil() as usize;
     if count > MAX_POINTS {
@@ -58,7 +60,10 @@ pub(super) fn series(ctx: &Ctx) -> Result<Reply, QueryError> {
         )));
     }
     let starts: Vec<f64> = (0..count).map(|i| window.from + every * i as f64).collect();
-    let buckets: Vec<(f64, f64)> = starts.iter().map(|&s| (s, (s + every).min(window.to))).collect();
+    let buckets: Vec<(f64, f64)> = starts
+        .iter()
+        .map(|&s| (s, (s + every).min(window.to)))
+        .collect();
     let mut rows = Vec::new();
     for arg in &ctx.q.args {
         for field in resolve(ctx, side, arg)? {
@@ -93,9 +98,11 @@ fn resolve(ctx: &Ctx, side: Side, arg: &str) -> Result<Vec<Field>, QueryError> {
             .collect::<Vec<_>>()
     };
     if let Some(name) = arg.strip_prefix("h:") {
-        return health_named(name).map(|i| vec![Field::Health(i)]).ok_or_else(|| {
-            QueryError::with(format!("no health field named {name}"), health_candidates())
-        });
+        return health_named(name)
+            .map(|i| vec![Field::Health(i)])
+            .ok_or_else(|| {
+                QueryError::with(format!("no health field named {name}"), health_candidates())
+            });
     }
     if let Some(name) = arg.strip_prefix("span:").or_else(|| arg.strip_prefix("s:")) {
         return Ok(vec![Field::Span(span_name(ctx, side, name)?)]);
@@ -113,7 +120,9 @@ fn resolve(ctx: &Ctx, side: Side, arg: &str) -> Result<Vec<Field>, QueryError> {
         return Ok(vec![Field::Span(name)]);
     }
     Err(QueryError::with(
-        format!("{arg} is not a health field, a span or a counter; use h:, span: or x: to say which"),
+        format!(
+            "{arg} is not a health field, a span or a counter; use h:, span: or x: to say which"
+        ),
         health_candidates(),
     ))
 }
@@ -126,17 +135,31 @@ fn span_name(ctx: &Ctx, side: Side, name: &str) -> Result<String, QueryError> {
     if table.row(name).is_some() {
         return Ok(name.to_string());
     }
-    let candidates = table.rows.iter().take(10).map(|r| (ids::span(&r.name), r.name.clone())).collect();
-    Err(QueryError::with(format!("no span named {name}"), candidates))
+    let candidates = table
+        .rows
+        .iter()
+        .take(10)
+        .map(|r| (ids::span(&r.name), r.name.clone()))
+        .collect();
+    Err(QueryError::with(
+        format!("no span named {name}"),
+        candidates,
+    ))
 }
 
 /// `name` or `name{k=v,...}`: every counter with that name (and those labels).
 fn counters_named(view: &View, side: Side, text: &str) -> Result<Vec<Field>, QueryError> {
     let (name, labels) = match text.split_once('{') {
         Some((name, rest)) => {
-            let pairs = rest.trim_end_matches('}').split(',').filter(|p| !p.is_empty());
+            let pairs = rest
+                .trim_end_matches('}')
+                .split(',')
+                .filter(|p| !p.is_empty());
             let mut labels: Vec<(String, String)> = pairs
-                .filter_map(|p| p.split_once('=').map(|(k, v)| (k.to_string(), v.to_string())))
+                .filter_map(|p| {
+                    p.split_once('=')
+                        .map(|(k, v)| (k.to_string(), v.to_string()))
+                })
                 .collect();
             labels.sort();
             (name, Some(labels))
@@ -163,7 +186,10 @@ fn counters_named(view: &View, side: Side, text: &str) -> Result<Vec<Field>, Que
             .take(10)
             .map(|c| (ids::counter(&c.name, &c.labels), c.name.clone()))
             .collect();
-        return Err(QueryError::with(format!("no counter named {text}"), candidates));
+        return Err(QueryError::with(
+            format!("no counter named {text}"),
+            candidates,
+        ));
     }
     Ok(found)
 }
@@ -180,8 +206,15 @@ impl Field {
             Field::Health(i) => {
                 let (name, unit, pick) = HEALTH[*i];
                 let series = Series::new(view.capture, side, pick);
-                let values = buckets.iter().map(|&(lo, hi)| series.mean(lo, hi, 0.0)).collect();
-                Ok((Id::new(Kind::Health, name).to_string(), unit.to_string(), values))
+                let values = buckets
+                    .iter()
+                    .map(|&(lo, hi)| series.mean(lo, hi, 0.0))
+                    .collect();
+                Ok((
+                    Id::new(Kind::Health, name).to_string(),
+                    unit.to_string(),
+                    values,
+                ))
             }
             Field::Span(name) => {
                 let thread = ctx.thread(0, side)?;
@@ -196,13 +229,20 @@ impl Field {
                         (units > 0).then(|| wall / units as f64)
                     })
                     .collect();
-                let unit = if side == Side::Client { "ms_per_frame" } else { "ms_per_tick" };
+                let unit = if side == Side::Client {
+                    "ms_per_frame"
+                } else {
+                    "ms_per_tick"
+                };
                 Ok((ids::span(name), unit.to_string(), values))
             }
             Field::Counter(info) => {
                 let points = counter_points(ctx, side, info.id);
                 let rate = info.kind == CounterKind::Sum;
-                let values = buckets.iter().map(|&(lo, hi)| counter_value(&points, rate, lo, hi)).collect();
+                let values = buckets
+                    .iter()
+                    .map(|&(lo, hi)| counter_value(&points, rate, lo, hi))
+                    .collect();
                 let unit = match (rate, info.unit.as_str()) {
                     (true, "") => "per_s".to_string(),
                     (true, unit) => format!("{unit}_per_s"),
@@ -220,7 +260,13 @@ fn counter_points(ctx: &Ctx, side: Side, id: u32) -> Vec<(f64, f64)> {
         .counters
         .iter()
         .filter(|s| s.side() == side)
-        .filter_map(|s| s.ids.iter().position(|&i| i == id).and_then(|at| s.values.get(at)).map(|&v| (s.t, v)))
+        .filter_map(|s| {
+            s.ids
+                .iter()
+                .position(|&i| i == id)
+                .and_then(|at| s.values.get(at))
+                .map(|&v| (s.t, v))
+        })
         .collect();
     points.sort_by(|a, b| a.0.total_cmp(&b.0));
     points
@@ -240,7 +286,11 @@ fn counter_value(points: &[(f64, f64)], rate: bool, lo: f64, hi: f64) -> Option<
         }
         (seconds > 0.0).then(|| grown / seconds)
     } else {
-        let inside: Vec<f64> = points.iter().filter(|p| p.0 >= lo && p.0 < hi).map(|p| p.1).collect();
+        let inside: Vec<f64> = points
+            .iter()
+            .filter(|p| p.0 >= lo && p.0 < hi)
+            .map(|p| p.1)
+            .collect();
         (!inside.is_empty()).then(|| inside.iter().sum::<f64>() / inside.len() as f64)
     }
 }

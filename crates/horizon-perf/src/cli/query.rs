@@ -6,8 +6,8 @@ use crate::query::{self, Bound, DEFAULT_LIMIT, Filters, Loaded, Query};
 use crate::read::read_capture;
 
 const VALUED: [&str; 14] = [
-    "side", "thread", "select", "where", "from", "to", "limit", "dir", "names", "worst", "over", "every",
-    "min-mb", "by",
+    "side", "thread", "select", "where", "from", "to", "limit", "dir", "names", "worst", "over",
+    "every", "min-mb", "by",
 ];
 const SWITCHES: [&str; 3] = ["slow", "all", "diff"];
 const SELECTS: [&str; 6] = ["cpu", "running", "waiting", "wall", "alloc", "live"];
@@ -38,7 +38,10 @@ fn where_pairs(text: &str) -> Result<Vec<(String, String)>, CliError> {
                 .split_once('=')
                 .ok_or_else(|| CliError::Usage(format!("--where needs key=value, got {pair}")))?;
             if !WHERE_KEYS.contains(&key) {
-                return Err(CliError::Usage(format!("--where keys are {}, got {key}", WHERE_KEYS.join(", "))));
+                return Err(CliError::Usage(format!(
+                    "--where keys are {}, got {key}",
+                    WHERE_KEYS.join(", ")
+                )));
             }
             Ok((key.to_string(), value.to_string()))
         })
@@ -46,16 +49,28 @@ fn where_pairs(text: &str) -> Result<Vec<(String, String)>, CliError> {
 }
 
 fn build(parsed: &Parsed, args: Vec<String>, op: String) -> Result<Query, CliError> {
-    let select = parsed.flags.get("select").cloned().unwrap_or_else(|| "cpu".into());
+    let select = parsed
+        .flags
+        .get("select")
+        .cloned()
+        .unwrap_or_else(|| "cpu".into());
     if !SELECTS.contains(&select.as_str()) {
-        return Err(CliError::Usage(format!("--select is {}, got {select}", SELECTS.join(", "))));
+        return Err(CliError::Usage(format!(
+            "--select is {}, got {select}",
+            SELECTS.join(", ")
+        )));
     }
     let filters = Filters {
         side: side_flag(parsed)?,
         thread: parsed.flags.get("thread").cloned(),
         select,
         slow: parsed.flags.contains_key("slow"),
-        where_: parsed.flags.get("where").map(|w| where_pairs(w)).transpose()?.unwrap_or_default(),
+        where_: parsed
+            .flags
+            .get("where")
+            .map(|w| where_pairs(w))
+            .transpose()?
+            .unwrap_or_default(),
         from: bound(parsed, "from")?,
         to: bound(parsed, "to")?,
         limit: parsed.number("limit")?.unwrap_or(DEFAULT_LIMIT),
@@ -67,7 +82,12 @@ fn build(parsed: &Parsed, args: Vec<String>, op: String) -> Result<Query, CliErr
         names: parsed
             .flags
             .get("names")
-            .map(|n| n.split(',').filter(|s| !s.is_empty()).map(str::to_string).collect())
+            .map(|n| {
+                n.split(',')
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
             .unwrap_or_default(),
         worst: parsed.number("worst")?,
         over: parsed.number("over")?,
@@ -97,8 +117,10 @@ pub(super) fn query(args: &[String], env: &Env, out: &mut dyn Write) -> Result<(
     };
     let mut loaded = Vec::new();
     for path in &paths {
-        let bytes = std::fs::read(path).map_err(|e| failed(format!("cannot read {}: {e}", path.display())))?;
-        let capture = read_capture(&bytes).map_err(|e| failed(format!("{}: {e}", path.display())))?;
+        let bytes = std::fs::read(path)
+            .map_err(|e| failed(format!("cannot read {}: {e}", path.display())))?;
+        let capture =
+            read_capture(&bytes).map_err(|e| failed(format!("{}: {e}", path.display())))?;
         loaded.push(Loaded {
             file: file_name(path),
             capture,

@@ -18,11 +18,19 @@ fn unit_json(u: &TickUnit) -> Value {
 }
 
 fn unit_name(side: Side) -> &'static str {
-    if side == Side::Client { "frame" } else { "tick" }
+    if side == Side::Client {
+        "frame"
+    } else {
+        "tick"
+    }
 }
 
 fn unit_label(side: Side) -> &'static str {
-    if side == Side::Client { "ms_per_frame" } else { "ms_per_tick" }
+    if side == Side::Client {
+        "ms_per_frame"
+    } else {
+        "ms_per_tick"
+    }
 }
 
 /// The worst ticks or frames with their span trees: the summary's worst, the live slow events, then the ring from before the capture.
@@ -34,7 +42,11 @@ pub(super) fn ticks(ctx: &Ctx) -> Result<Reply, QueryError> {
         .into_iter()
         .filter(|u| window.contains(u.t) && ctx.q.over.is_none_or(|over| u.wall_ms > over))
         .collect();
-    units.sort_by(|a, b| b.wall_ms.total_cmp(&a.wall_ms).then(a.counter.cmp(&b.counter)));
+    units.sort_by(|a, b| {
+        b.wall_ms
+            .total_cmp(&a.wall_ms)
+            .then(a.counter.cmp(&b.counter))
+    });
     units.truncate(ctx.q.worst.unwrap_or(ctx.q.filters.limit));
     let mut reply = Reply::new(unit_label(side), units.iter().map(unit_json).collect());
     reply.window = Some(window);
@@ -47,11 +59,10 @@ pub(super) fn tick(ctx: &Ctx) -> Result<Reply, QueryError> {
     let [arg] = ctx.q.args.as_slice() else {
         return Err(QueryError::new("tick takes one id, for example k:48812"));
     };
-    let counter: u64 = arg
-        .strip_prefix("k:")
-        .unwrap_or(arg)
-        .parse()
-        .map_err(|_| QueryError::new(format!("{arg} is not a tick id; expected k:<counter>")))?;
+    let counter: u64 =
+        arg.strip_prefix("k:").unwrap_or(arg).parse().map_err(|_| {
+            QueryError::new(format!("{arg} is not a tick id; expected k:<counter>"))
+        })?;
     let units = ctx.views[0].tick_units(side, View::main_unit(side));
     let Some(found) = units.iter().find(|u| u.counter == counter) else {
         let mut worst: Vec<&TickUnit> = units.iter().collect();

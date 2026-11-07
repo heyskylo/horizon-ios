@@ -80,29 +80,74 @@ enum LineKind {
 struct Line {
     text: String,
     kind: LineKind,
+    /// Rank of a row in a list that is not in rank order itself; the lowest goes first when the list is cut.
+    weight: Option<f64>,
 }
 
 impl Line {
     fn fixed(text: String) -> Self {
-        Self { text, kind: LineKind::Fixed }
+        Self {
+            text,
+            kind: LineKind::Fixed,
+            weight: None,
+        }
     }
 
     fn body(text: String) -> Self {
-        Self { text, kind: LineKind::Body }
+        Self {
+            text,
+            kind: LineKind::Body,
+            weight: None,
+        }
+    }
+
+    fn ranked(text: String, weight: f64) -> Self {
+        Self {
+            text,
+            kind: LineKind::Body,
+            weight: Some(weight),
+        }
     }
 
     fn heading(text: String) -> Self {
-        Self { text, kind: LineKind::Heading }
+        Self {
+            text,
+            kind: LineKind::Heading,
+            weight: None,
+        }
     }
 }
 
-/// Shrinks the report until it fits: the longest list loses its last row (the later one on a tie), never mid-row;
-/// once every list is down to its first row, whole sections go from the bottom. Fixed lines stay.
+/// Removes the row a cut gives up first: the lowest-ranked one when rows are ranked, else the last.
+fn drop_row(part: &mut Section) {
+    let lowest = part
+        .iter()
+        .enumerate()
+        .filter_map(|(i, l)| l.weight.map(|w| (i, w)))
+        .min_by(|a, b| a.1.total_cmp(&b.1).then(b.0.cmp(&a.0)))
+        .map(|(i, _)| i);
+    match lowest {
+        Some(i) => {
+            part.remove(i);
+        }
+        None => {
+            part.pop();
+        }
+    }
+}
+
+/// Cuts the longest list's last or lowest-ranked row until it fits, then whole sections from the bottom; fixed lines stay.
 fn fit(mut parts: Vec<Section>, budget_tokens: usize) -> String {
     let size = |parts: &[Section]| -> usize {
-        parts.iter().flatten().map(|l| l.text.len() + 1).sum::<usize>() / 4
+        parts
+            .iter()
+            .flatten()
+            .map(|l| l.text.len() + 1)
+            .sum::<usize>()
+            / 4
     };
-    let cuttable = |part: &Section| !part.is_empty() && part.iter().all(|l| l.kind != LineKind::Fixed);
+    let cuttable =
+        |part: &Section| !part.is_empty() && part.iter().all(|l| l.kind != LineKind::Fixed);
     let shortest = |part: &Section| part.iter().filter(|l| l.kind == LineKind::Heading).count() + 1;
     while size(&parts) > budget_tokens {
         let longest = parts
@@ -112,7 +157,7 @@ fn fit(mut parts: Vec<Section>, budget_tokens: usize) -> String {
             .max_by_key(|(i, p)| (p.len(), *i))
             .map(|(i, _)| i);
         if let Some(i) = longest {
-            parts[i].pop();
+            drop_row(&mut parts[i]);
             continue;
         }
         match parts.iter().rposition(cuttable) {
@@ -122,7 +167,12 @@ fn fit(mut parts: Vec<Section>, budget_tokens: usize) -> String {
             None => break,
         }
     }
-    let mut text = parts.into_iter().flatten().map(|l| l.text).collect::<Vec<_>>().join("\n");
+    let mut text = parts
+        .into_iter()
+        .flatten()
+        .map(|l| l.text)
+        .collect::<Vec<_>>()
+        .join("\n");
     text.push('\n');
     text
 }

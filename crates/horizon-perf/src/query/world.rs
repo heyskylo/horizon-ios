@@ -9,16 +9,29 @@ use crate::ids::{Id, Kind};
 pub(super) fn world(ctx: &Ctx) -> Result<Reply, QueryError> {
     let side = ctx.side(0)?;
     let view = &ctx.views[0];
-    let snaps: Vec<_> = view.capture.world.iter().filter(|w| w.side() == side).collect();
+    let snaps: Vec<_> = view
+        .capture
+        .world
+        .iter()
+        .filter(|w| w.side() == side)
+        .collect();
     let label = ctx.q.args.first();
     let snap = match label {
-        Some(label) => snaps.iter().find(|w| view.text(side, w.label) == label.as_str()),
+        Some(label) => snaps
+            .iter()
+            .find(|w| view.text(side, w.label) == label.as_str()),
         None => snaps.iter().max_by(|a, b| a.t.total_cmp(&b.t)),
     };
     let Some(snap) = snap else {
-        let labels: Vec<String> = snaps.iter().map(|w| view.text(side, w.label).into_owned()).collect();
+        let labels: Vec<String> = snaps
+            .iter()
+            .map(|w| view.text(side, w.label).into_owned())
+            .collect();
         return Err(QueryError::new(match label {
-            Some(label) => format!("no world snapshot labelled {label}; labels: {}", labels.join(", ")),
+            Some(label) => format!(
+                "no world snapshot labelled {label}; labels: {}",
+                labels.join(", ")
+            ),
             None => "this capture has no world section for the selected side".to_string(),
         }));
     };
@@ -40,27 +53,41 @@ pub(super) fn world(ctx: &Ctx) -> Result<Reply, QueryError> {
             dims
         }
         .into_iter()
-            .map(|d| (view.text(side, d.dimension).into_owned(), d))
-            .filter(|(name, _)| dim_ok(name))
-            .map(|(name, d)| {
-                json!({
-                    "id": id(Kind::Dimension, &name),
-                    "name": name,
-                    "chunks": d.chunks,
-                    "entities": d.entities.iter().map(|e| u64::from(e.count)).sum::<u64>(),
-                    "block_entities": d.block_entities.iter().map(|e| u64::from(e.count)).sum::<u64>(),
-                })
+        .map(|d| (view.text(side, d.dimension).into_owned(), d))
+        .filter(|(name, _)| dim_ok(name))
+        .map(|(name, d)| {
+            json!({
+                "id": id(Kind::Dimension, &name),
+                "name": name,
+                "chunks": d.chunks,
+                "entities": d.entities.iter().map(|e| u64::from(e.count)).sum::<u64>(),
+                "block_entities": d.block_entities.iter().map(|e| u64::from(e.count)).sum::<u64>(),
             })
-            .collect(),
+        })
+        .collect(),
         "entity" | "block_entity" => {
             let mut counts: BTreeMap<String, u64> = BTreeMap::new();
-            for d in snap.dims.iter().filter(|d| dim_ok(&view.text(side, d.dimension))) {
-                let list = if by == "entity" { &d.entities } else { &d.block_entities };
+            for d in snap
+                .dims
+                .iter()
+                .filter(|d| dim_ok(&view.text(side, d.dimension)))
+            {
+                let list = if by == "entity" {
+                    &d.entities
+                } else {
+                    &d.block_entities
+                };
                 for e in list {
-                    *counts.entry(view.text(side, e.r#type).into_owned()).or_default() += u64::from(e.count);
+                    *counts
+                        .entry(view.text(side, e.r#type).into_owned())
+                        .or_default() += u64::from(e.count);
                 }
             }
-            let kind = if by == "entity" { Kind::Entity } else { Kind::Block };
+            let kind = if by == "entity" {
+                Kind::Entity
+            } else {
+                Kind::Block
+            };
             let mut ranked: Vec<_> = counts.into_iter().collect();
             ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
             ranked
