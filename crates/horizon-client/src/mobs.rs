@@ -1897,8 +1897,8 @@ pub enum MobEvent {
         kind: String,
     },
     /// The centre, the radius and the kind of the mob blowing up (it may be
-    /// gone from the list by the time the blast is handled).
-    Explode([f64; 3], f32, Species),
+    /// gone from the list by the time the blast is handled), and its `Silent`.
+    Explode([f64; 3], f32, Species, bool),
     /// `Creeper.spawnLingeringCloud`, right after its `Explode`: an `AreaEffectCloud` at the
     /// creeper with its active effects `(id, remaining ticks, amplifier)`, in their mixed colour.
     LingeringCloud {

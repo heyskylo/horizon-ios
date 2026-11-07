@@ -1352,7 +1352,13 @@ impl Game<'_> {
                 Vec3::new(x - 1.0, y, z - 1.0),
                 Vec3::new(x + 1.0, y + 2.0, z + 1.0),
             ));
-            let _ = self.server_explode(at, 6.0, interaction, false);
+            let _ = self.server_explode_from(
+                at,
+                6.0,
+                interaction,
+                false,
+                super::explosion::ExplosionSource::default().with_silence(self.entity_silent(c.id)),
+            );
             self.combat.explosion_in_water = false;
             self.fight.blast_by = None;
         }
@@ -4337,11 +4343,13 @@ impl Game<'_> {
                     c.position.x.floor() as i32 >> 4,
                     c.position.z.floor() as i32 >> 4,
                 ));
-                let _ = self.server_explode(
+                let _ = self.server_explode_from(
                     [c.position.x, c.position.y, c.position.z],
                     6.0,
                     super::explosion::BlockInteraction::Keep,
                     false,
+                    super::explosion::ExplosionSource::default()
+                        .with_silence(self.entity_silent(c.id)),
                 );
             }
         }

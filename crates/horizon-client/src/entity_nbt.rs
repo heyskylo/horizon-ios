@@ -4517,7 +4517,7 @@ mod tests {
             events
                 .iter()
                 .find_map(|e| match e {
-                    crate::mobs::MobEvent::Explode(_, radius, _) => Some(*radius),
+                    crate::mobs::MobEvent::Explode(_, radius, ..) => Some(*radius),
                     _ => None,
                 })
                 .expect("the creeper exploded")

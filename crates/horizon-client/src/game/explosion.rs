@@ -94,6 +94,18 @@ pub(super) enum BlockInteraction {
     DestroyWithDecay,
 }
 
+/// Properties of the direct entity passed to `ServerLevel.explode`.
+#[derive(Clone, Copy, Default)]
+pub(super) struct ExplosionSource {
+    silent: bool,
+}
+impl ExplosionSource {
+    pub(super) fn with_silence(mut self, silent: bool) -> Self {
+        self.silent = silent;
+        self
+    }
+}
+
 /// `ServerExplosion.hurtEntities`: an entity is hurt when its position is
 /// within the blast's diameter of the centre.
 pub(super) fn blast_reaches(center: [f64; 3], diameter: f64, at: [f64; 3]) -> bool {
@@ -865,11 +877,29 @@ impl Game<'_> {
         interaction: BlockInteraction,
         fire: bool,
     ) -> Result<()> {
+        self.server_explode_from(
+            center,
+            radius,
+            interaction,
+            fire,
+            ExplosionSource::default(),
+        )
+    }
+    /// `ServerLevel.explode`: only the direct source's `isSilent` suppresses
+    /// the sound; terrain, entity damage and the visual packet are unchanged.
+    pub(super) fn server_explode_from(
+        &mut self,
+        center: [f64; 3],
+        radius: f32,
+        interaction: BlockInteraction,
+        fire: bool,
+        source: ExplosionSource,
+    ) -> Result<()> {
         let damage_type = super::creatures::damage_type(
             horizon_client::mobs::DamageKind::Explosion,
             self.blast_attacker().is_some(),
         );
-        self.server_explode_as(center, radius, interaction, fire, damage_type, None)
+        self.server_explode_as_source(center, radius, interaction, fire, damage_type, None, source)
     }
     /// `server_explode` with the damage type the player takes and a block
     /// whose explosion resistance the damage calculator overrides.
@@ -881,6 +911,26 @@ impl Game<'_> {
         fire: bool,
         damage_type: &str,
         resists: Option<([i32; 3], f32)>,
+    ) -> Result<()> {
+        self.server_explode_as_source(
+            center,
+            radius,
+            interaction,
+            fire,
+            damage_type,
+            resists,
+            ExplosionSource::default(),
+        )
+    }
+    fn server_explode_as_source(
+        &mut self,
+        center: [f64; 3],
+        radius: f32,
+        interaction: BlockInteraction,
+        fire: bool,
+        damage_type: &str,
+        resists: Option<([i32; 3], f32)>,
+        source: ExplosionSource,
     ) -> Result<()> {
         if self.serving.is_some() || self.options.dedicated.is_some() {
             self.native_explosion_prime(center, radius);
@@ -938,9 +988,11 @@ impl Game<'_> {
                 }
             }
         }
-        let pitch = (1.0 + (client_float() - client_float()) * 0.2) * 0.7;
-        self.audio
-            .play("minecraft:entity.generic.explode", Some(center), 4.0, pitch);
+        if !source.silent {
+            let pitch = (1.0 + (client_float() - client_float()) * 0.2) * 0.7;
+            self.audio
+                .play("minecraft:entity.generic.explode", Some(center), 4.0, pitch);
+        }
         // ServerLevel.explode sends toBlow.size() whatever the interaction, and
         // `ServerExplosion.isSmall` also covers an explosion that keeps blocks.
         let block_count = targets.len();

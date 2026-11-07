@@ -1382,6 +1382,7 @@ impl Game<'_> {
                     t.age,
                     t.owner.clone(),
                     t.guest,
+                    self.entity_silent(t.id),
                     t.velocity,
                 ));
                 return false;
@@ -1410,7 +1411,7 @@ impl Game<'_> {
                 );
             }
         }
-        for (stack, at, mob, block, age, owner, guest, motion) in landed {
+        for (stack, at, mob, block, age, owner, guest, silent, motion) in landed {
             // Projectile.onHit (super.onHit of AbstractThrownPotion): a block
             // is heard at its centre, an entity at the hit.
             let heard = if mob.is_some() {
@@ -1428,7 +1429,7 @@ impl Game<'_> {
                 attacker: None,
                 guest,
             };
-            self.splash(&stack, at, mob, block, age, &owner, motion);
+            self.splash(&stack, at, mob, block, age, &owner, silent, motion);
             if item != "minecraft:experience_bottle" {
                 self.native_potion_splash(&item, [at.x, at.y, at.z]);
             }
@@ -1932,7 +1933,7 @@ impl Game<'_> {
     /// `AbstractThrownPotion.onHit` with `ThrownSplashPotion.onHitAsPotion`, or
     /// `ThrownLingeringPotion.onHitAsPotion` for a lingering potion, read from
     /// the stack's `potion_contents`; `mob` is where it hit a mob, `hit` the
-    /// block and face it hit, `age` its age, `motion` its motion as it hit.
+    /// block and face it hit, `age` its age, `silent` its Silent flag, `motion` its motion as it hit.
     pub(super) fn splash(
         &mut self,
         stack: &ItemStack,
@@ -1941,6 +1942,7 @@ impl Game<'_> {
         hit: Option<([i32; 3], Direction)>,
         age: u32,
         owner: &PotionOwner,
+        silent: bool,
         motion: Vec3,
     ) {
         let block = [at.x, at.y, at.z].map(|v| v.floor() as i32);
@@ -1948,7 +1950,9 @@ impl Game<'_> {
             // ThrownExperienceBottle.onHit: the water-coloured splash (level
             // event 2002, its sound 1053) and 3 to 11 experience.
             self.level_event_at(2002, block, 0xFF38_5DC6u32 as i32);
-            self.level_event_at(1053, block, 0);
+            if !silent {
+                self.level_event_at(1053, block, 0);
+            }
             let r = &mut self.world.random;
             let value = 3 + r.next_int_bound(5).unwrap_or(0) + r.next_int_bound(5).unwrap_or(0);
             // awardWithDirection: away from the face it hit, or back along
@@ -1978,7 +1982,9 @@ impl Game<'_> {
         });
         let color = brewing::potion_color(stack.potion());
         self.level_event_at(if instant { 2007 } else { 2002 }, block, color as i32);
-        self.level_event_at(if instant { 1054 } else { 1053 }, block, 0);
+        if !silent {
+            self.level_event_at(if instant { 1054 } else { 1053 }, block, 0);
+        }
         // AbstractThrownPotion.affectEntitiesAround: a water potion (the only
         // #rehydrates_axolotls) refills the air of the axolotls in the
         // projectile's box inflated by 4, 2 and 4 (Axolotl.rehydrate, 1800).
@@ -2550,7 +2556,16 @@ mod xp_bottle_tests {
             (None, Vec3::new(0.0, 0.0, 1.0), 2, -1.0),
         ] {
             game.orbs.clear();
-            game.splash(&bottle, at, None, face, 0, &PotionOwner::default(), motion);
+            game.splash(
+                &bottle,
+                at,
+                None,
+                face,
+                0,
+                &PotionOwner::default(),
+                false,
+                motion,
+            );
             assert!(!game.orbs.is_empty());
             let at = [at.x, at.y, at.z];
             for o in game.orbs.iter() {

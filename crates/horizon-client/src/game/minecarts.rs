@@ -1490,6 +1490,7 @@ impl Game<'_> {
         let at = [c.position.x, c.position.y, c.position.z];
         // The cart is the explosion's source: it is gone before the blast
         // looks for entities, so it can't hit itself.
+        let silent = self.entity_silent(c.id);
         if let Some(i) = self.carts.iter().position(|x| x.id == c.id) {
             self.eject_cart_mobs(i);
         }
@@ -1501,7 +1502,15 @@ impl Game<'_> {
         // fell unprimed blows rails up like any blast.
         self.combat.rail_proof_blast = c.fuse >= 0;
         self.combat.explosion_in_water = self.bounds_in_water(c.bounds());
-        let _ = self.with_hive_emptying_blast(|g| g.server_explode(at, power, interaction, false));
+        let _ = self.with_hive_emptying_blast(|g| {
+            g.server_explode_from(
+                at,
+                power,
+                interaction,
+                false,
+                super::explosion::ExplosionSource::default().with_silence(silent),
+            )
+        });
         self.combat.explosion_in_water = false;
         self.combat.rail_proof_blast = false;
     }
