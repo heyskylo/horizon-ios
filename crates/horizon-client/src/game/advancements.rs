@@ -2926,7 +2926,11 @@ mod structure_tag_tests {
         let game_tags = pack.join("data/minecraft/tags/worldgen/structure");
         std::fs::create_dir_all(&tags).unwrap();
         std::fs::create_dir_all(&game_tags).unwrap();
-        std::fs::write(pack.join("pack.mcmeta"), "{}").unwrap();
+        std::fs::write(
+            pack.join("pack.mcmeta"),
+            r#"{"pack":{"description":"fixture"}}"#,
+        )
+        .unwrap();
         std::fs::write(
             tags.join("village.json"),
             r##"{"values": ["#minecraft:village", "minecraft:igloo"]}"##,

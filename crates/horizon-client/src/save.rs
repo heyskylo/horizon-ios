@@ -7771,7 +7771,7 @@ mod tests {
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(path, text).unwrap();
         };
-        write("p", "pack.mcmeta", "{}");
+        write("p", "pack.mcmeta", r#"{"pack":{"description":"fixture"}}"#);
         // A pack's dimension of another id is not vanilla-like.
         write(
             "p",

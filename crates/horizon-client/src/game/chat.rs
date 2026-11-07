@@ -2399,7 +2399,11 @@ mod enchantment_snapshot_tests {
         let pack = dir.join("datapacks/model");
         let tags = pack.join("data/h024/tags/enchantment");
         std::fs::create_dir_all(&tags).unwrap();
-        std::fs::write(pack.join("pack.mcmeta"), "{}").unwrap();
+        std::fs::write(
+            pack.join("pack.mcmeta"),
+            r#"{"pack":{"description":"fixture"}}"#,
+        )
+        .unwrap();
         std::fs::write(tags.join("empty.json"), r#"{"values":[]}"#).unwrap();
         std::fs::write(
             dir.join("datapacks.json"),

@@ -141,7 +141,8 @@ impl DataPack {
 pub fn discover(world: &Path) -> Vec<DataPack> {
     discover_folder(&world.join("datapacks"))
 }
-/// Packs in Create World's temporary pack folder, before a world exists.
+/// `FolderRepositorySource.loadPacks`: packs in Create World's temporary
+/// folder or a world's data-pack directory, with required folder metadata.
 pub fn discover_folder(dir: &Path) -> Vec<DataPack> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
@@ -150,7 +151,7 @@ pub fn discover_folder(dir: &Path) -> Vec<DataPack> {
     for e in entries.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
         let path = e.path();
-        if path.is_dir() && path.join("pack.mcmeta").exists() {
+        if path.is_dir() && folder_metadata_present(&path) {
             packs.push(DataPack {
                 id: format!("file/{name}"),
                 source: Source::Dir(path),
@@ -167,6 +168,22 @@ pub fn discover_folder(dir: &Path) -> Vec<DataPack> {
     }
     packs.sort_by(|a, b| a.id.cmp(&b.id));
     packs
+}
+/// `Pack.readPackMetadata`: even its fallback codec requires a pack section
+/// and description. Keep this folder gate separate from format compatibility
+/// and the existing interpretation of the description component.
+fn folder_metadata_present(path: &Path) -> bool {
+    let Some(meta) = std::fs::read(path.join("pack.mcmeta"))
+        .ok()
+        .and_then(|bytes| crate::packs::parse_meta(&bytes))
+    else {
+        return false;
+    };
+    meta.as_object()
+        .and_then(|root| root.get("pack"))
+        .and_then(serde_json::Value::as_object)
+        .and_then(|pack| pack.get("description"))
+        .is_some_and(|description| !description.is_null())
 }
 /// The resources root's built-in feature packs (`ServerPacksSource`
 /// scanning the game's `data/minecraft/datapacks`): every folder with a
@@ -925,6 +942,97 @@ mod tests {
     use super::*;
 
     #[test]
+    fn folder_metadata_is_required_before_contents_are_discovered() {
+        let root =
+            std::env::temp_dir().join(format!("horizon-folder-metadata-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for (name, metadata) in [
+            ("broken", Some("{")),
+            ("root_empty", Some("{}")),
+            ("root_array", Some("[]")),
+            ("pack_empty", Some(r#"{"pack":{}}"#)),
+            ("pack_string", Some(r#"{"pack":"bad"}"#)),
+            ("missing", None),
+            (
+                "full",
+                Some(
+                    r#"{"pack":{"description":"full","pack_format":121,"min_format":[121,0],"max_format":[121,0]}}"#,
+                ),
+            ),
+            (
+                "description",
+                Some(r#"{"pack":{"description":"description only"}}"#),
+            ),
+            ("numeric", Some(r#"{"pack":{"description":42}}"#)),
+            ("null", Some(r#"{"pack":{"description":null}}"#)),
+            ("bom", Some("\u{feff}{\"pack\":{\"description\":\"BOM\"}}")),
+            (
+                "comment",
+                Some("{\"pack\":{\"description\":\"comment\"}}\n// trailing"),
+            ),
+        ] {
+            let dir = root.join(name);
+            std::fs::create_dir_all(dir.join("data/h146/function")).unwrap();
+            std::fs::write(
+                dir.join(format!("data/h146/function/{name}.mcfunction")),
+                "scoreboard players set admitted h146 1\n",
+            )
+            .unwrap();
+            if let Some(metadata) = metadata {
+                std::fs::write(dir.join("pack.mcmeta"), metadata).unwrap();
+            }
+        }
+        let packs = discover_folder(&root);
+        assert_eq!(
+            packs.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
+            [
+                "file/bom",
+                "file/comment",
+                "file/description",
+                "file/full",
+                "file/numeric"
+            ]
+        );
+        let store = DataStore::load(&packs.iter().collect::<Vec<_>>());
+        assert_eq!(
+            store
+                .functions
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            [
+                "h146:bom",
+                "h146:comment",
+                "h146:description",
+                "h146:full",
+                "h146:numeric"
+            ]
+        );
+        let numeric = packs.iter().find(|p| p.id == "file/numeric").unwrap();
+        let raw: serde_json::Value =
+            serde_json::from_slice(&numeric.read("pack.mcmeta").unwrap()).unwrap();
+        assert_eq!(raw["pack"]["description"], 42);
+        // Builtin and feature construction still have their independent paths.
+        let resources = root.join("resources");
+        let feature = resources.join("data/minecraft/datapacks/feature");
+        std::fs::create_dir_all(&feature).unwrap();
+        std::fs::write(
+            feature.join("pack.mcmeta"),
+            r#"{"pack":{"description":"feature"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            feature_packs(&resources)
+                .iter()
+                .map(|p| p.id.as_str())
+                .collect::<Vec<_>>(),
+            ["feature"]
+        );
+        assert_eq!(DataPack::builtin(&resources).id, "vanilla");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn data_map_files_are_content_files_keyed_by_map_namespace_and_registry() {
         assert_eq!(
             content_id("data/mymod/data_maps/item/fuel.json").as_deref(),
@@ -961,7 +1069,7 @@ mod tests {
             std::fs::write(path, t).unwrap();
         };
         for pack in ["a", "b", "off"] {
-            write(pack, "pack.mcmeta", "{}");
+            write(pack, "pack.mcmeta", r#"{"pack":{"description":"fixture"}}"#);
             write(pack, "data/minecraft/worldgen/noise/cave.json", pack);
             write(pack, "data/p/structure/room/a.nbt", pack);
             write(
@@ -1216,13 +1324,13 @@ mod tests {
         write(
             "fns",
             "pack.mcmeta",
-            r#"{"pack":{"min_format":121,"max_format":121}}"#,
+            r#"{"pack":{"description":"fixture","min_format":121,"max_format":121}}"#,
         );
         write("fns", "data/x/function/f.mcfunction", "say hi");
         write(
             "off",
             "pack.mcmeta",
-            r#"{"pack":{"min_format":121,"max_format":121}}"#,
+            r#"{"pack":{"description":"fixture","min_format":121,"max_format":121}}"#,
         );
         std::fs::create_dir_all(&dir).unwrap();
         let mut zip = zip::ZipWriter::new(std::fs::File::create(dir.join("old.zip")).unwrap());
