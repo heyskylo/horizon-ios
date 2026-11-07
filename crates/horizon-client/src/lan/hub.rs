@@ -378,6 +378,9 @@ pub struct Hub {
     /// The names a server mod shows over players' heads
     /// (`native_set_name_tag`), by UUID: their list entries' profile name.
     pub name_tags: std::collections::HashMap<u128, String>,
+    /// The name the server's user cache knew a joining player by, by UUID, looked up before the
+    /// cache learns the new one (PlayerList.placeNewPlayer's `oldName`); taken by the join line.
+    pub former_names: std::collections::HashMap<u128, String>,
     last_clock: i64,
     last_rate: f32,
     ticking: (f32, bool),
@@ -548,6 +551,26 @@ impl Hub {
             "uuid": horizon_protocol::crypto::uuid_string(uuid), "name": name});
         c["insertion"] = name.into();
         crate::scoreboard::component_tag(&c)
+    }
+}
+
+impl Hub {
+    /// PlayerList.placeNewPlayer's join line: `multiplayer.player.joined`, or
+    /// `multiplayer.player.joined.renamed` with the cached old name when the
+    /// player's name changed (ignoring case) since the user cache last saw it.
+    fn joined_line(&mut self, uuid: u128, name: &str) -> Tag {
+        let display = self.player_display_name(uuid, name);
+        match self
+            .former_names
+            .remove(&uuid)
+            .filter(|old| !old.eq_ignore_ascii_case(name))
+        {
+            Some(old) => yellow_names(
+                "multiplayer.player.joined.renamed",
+                vec![display, string(&old)],
+            ),
+            None => yellow_names("multiplayer.player.joined", vec![display]),
+        }
     }
 }
 
@@ -747,6 +770,7 @@ impl Hub {
             list_names: std::collections::HashMap::new(),
             display_names: std::collections::HashMap::new(),
             name_tags: std::collections::HashMap::new(),
+            former_names: std::collections::HashMap::new(),
         }
     }
 
@@ -1454,10 +1478,7 @@ impl Hub {
         // not placed.
         if !held {
             let joined = C::SystemChat(play::SystemChat {
-                content: yellow_names(
-                    "multiplayer.player.joined",
-                    vec![self.player_display_name(self.guests[i].uuid, &name)],
-                ),
+                content: self.joined_line(uuid, &name),
                 overlay: false,
             })
             .encode();
@@ -1625,10 +1646,7 @@ impl Hub {
         };
         if announce {
             let joined = C::SystemChat(play::SystemChat {
-                content: yellow_names(
-                    "multiplayer.player.joined",
-                    vec![self.player_display_name(uuid, &name)],
-                ),
+                content: self.joined_line(uuid, &name),
                 overlay: false,
             })
             .encode();
