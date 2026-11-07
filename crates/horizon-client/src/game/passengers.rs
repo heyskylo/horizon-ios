@@ -159,6 +159,13 @@ impl Game<'_> {
                     continue;
                 };
                 let Some(&j) = index.get(&v) else {
+                    // Boats, minecarts, primed TNT and cushions seated their
+                    // riders above, each in its own seat and from the
+                    // vehicle's drawn position; re-seating them here from the
+                    // shared seat 0 yanked boat riders between two places.
+                    if self.seats_own_riders(v) {
+                        continue;
+                    }
                     // A mob on a text display: NPC plugins seat their sitting
                     // NPCs on one. The server's position for a passenger
                     // gives way to its seat, as `rideTick` places it.
@@ -355,6 +362,14 @@ impl Game<'_> {
             stand.previous = before;
             stand.velocity = Vec3::ZERO;
         }
+    }
+
+    /// A vehicle whose `seat_*_mobs` pass places its mob riders itself.
+    fn seats_own_riders(&self, vehicle: u32) -> bool {
+        self.boats.iter().any(|b| b.id == vehicle)
+            || self.carts.iter().any(|c| c.id == vehicle)
+            || self.cushions.iter().any(|c| c.id == vehicle)
+            || self.tnts.iter().any(|t| t.id == vehicle && t.id != 0)
     }
 
     /// `Entity.getPassengerRidingPosition` of a vehicle: where the feet of a
