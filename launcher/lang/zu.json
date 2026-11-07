@@ -1245,6 +1245,9 @@
   "Couldn't connect to {host}: {reason}": "Couldn't connect to {host}: {reason}",
   "Couldn't connect to {host}.": "Couldn't connect to {host}.",
   "horizon-server on {host} failed in {dir}.": "horizon-server on {host} failed in {dir}.",
+  "Open in private window": "Vula efasiteleni eliyimfihlo",
+  "Open this link in a private window to pick another account.": "Vula lesi sixhumanisi efasiteleni eliyimfihlo ukuze ukhethe elinye i-akhawunti.",
+  "Use a different Microsoft account": "Sebenzisa enye i-akhawunti ye-Microsoft",
   "Buy": "Thenga",
   "Gift": "Nikeza njengesipho",
   "Looks": "Ukubukeka"

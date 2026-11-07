@@ -1245,6 +1245,9 @@
   "Couldn't connect to {host}: {reason}": "Couldn't connect to {host}: {reason}",
   "Couldn't connect to {host}.": "Couldn't connect to {host}.",
   "horizon-server on {host} failed in {dir}.": "horizon-server on {host} failed in {dir}.",
+  "Open in private window": "在无痕窗口中打开",
+  "Open this link in a private window to pick another account.": "在无痕窗口中打开此链接，即可选择其他账户。",
+  "Use a different Microsoft account": "使用其他 Microsoft 账户",
   "Buy": "购买",
   "Gift": "赠送",
   "Looks": "造型"

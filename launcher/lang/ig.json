@@ -1245,6 +1245,9 @@
   "Couldn't connect to {host}: {reason}": "Couldn't connect to {host}: {reason}",
   "Couldn't connect to {host}.": "Couldn't connect to {host}.",
   "horizon-server on {host} failed in {dir}.": "horizon-server on {host} failed in {dir}.",
+  "Open in private window": "Mepee na windo nzuzo",
+  "Open this link in a private window to pick another account.": "Mepee njikọ a na windo nzuzo ka ịhọrọ akaụntụ ọzọ.",
+  "Use a different Microsoft account": "Jiri akaụntụ Microsoft ọzọ",
   "Buy": "Zụta",
   "Gift": "Nye onyinye",
   "Looks": "Ọdịdị"

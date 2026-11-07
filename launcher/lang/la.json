@@ -1245,6 +1245,9 @@
   "Couldn't connect to {host}: {reason}": "Couldn't connect to {host}: {reason}",
   "Couldn't connect to {host}.": "Couldn't connect to {host}.",
   "horizon-server on {host} failed in {dir}.": "horizon-server on {host} failed in {dir}.",
+  "Open in private window": "Aperi in fenestra privata",
+  "Open this link in a private window to pick another account.": "Aperi hoc link in fenestra privata ut aliam rationem eligas.",
+  "Use a different Microsoft account": "Aliam Microsoft rationem adhibe",
   "Buy": "Eme",
   "Gift": "Dona",
   "Looks": "Habitus"

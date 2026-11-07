@@ -1245,6 +1245,9 @@
   "Couldn't connect to {host}: {reason}": "Couldn't connect to {host}: {reason}",
   "Couldn't connect to {host}.": "Couldn't connect to {host}.",
   "horizon-server on {host} failed in {dir}.": "horizon-server on {host} failed in {dir}.",
+  "Open in private window": "Ouvrir dans une fenêtre de navigation privée",
+  "Open this link in a private window to pick another account.": "Ouvrez ce lien dans une fenêtre de navigation privée pour choisir un autre compte.",
+  "Use a different Microsoft account": "Utiliser un autre compte Microsoft",
   "Buy": "Acheter",
   "Gift": "Offrir",
   "Looks": "Tenues"

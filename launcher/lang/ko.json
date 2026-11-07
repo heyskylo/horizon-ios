@@ -1245,6 +1245,9 @@
   "Couldn't connect to {host}: {reason}": "Couldn't connect to {host}: {reason}",
   "Couldn't connect to {host}.": "Couldn't connect to {host}.",
   "horizon-server on {host} failed in {dir}.": "horizon-server on {host} failed in {dir}.",
+  "Open in private window": "시크릿 창에서 열기",
+  "Open this link in a private window to pick another account.": "다른 계정을 선택하려면 이 링크를 시크릿 창에서 여세요.",
+  "Use a different Microsoft account": "다른 Microsoft 계정 사용",
   "Buy": "구매",
   "Gift": "선물하기",
   "Looks": "룩"

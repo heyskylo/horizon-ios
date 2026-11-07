@@ -1245,6 +1245,9 @@
   "Couldn't connect to {host}: {reason}": "Couldn't connect to {host}: {reason}",
   "Couldn't connect to {host}.": "Couldn't connect to {host}.",
   "horizon-server on {host} failed in {dir}.": "horizon-server on {host} failed in {dir}.",
+  "Open in private window": "Buksan sa private window",
+  "Open this link in a private window to pick another account.": "Buksan ang link na ito sa private window para pumili ng ibang account.",
+  "Use a different Microsoft account": "Gumamit ng ibang Microsoft account",
   "Buy": "Bilhin",
   "Gift": "Iregalo",
   "Looks": "Mga look"

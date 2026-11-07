@@ -1245,6 +1245,9 @@
   "Couldn't connect to {host}: {reason}": "Couldn't connect to {host}: {reason}",
   "Couldn't connect to {host}.": "Couldn't connect to {host}.",
   "horizon-server on {host} failed in {dir}.": "horizon-server on {host} failed in {dir}.",
+  "Open in private window": "தனிப்பட்ட சாளரத்தில் திற",
+  "Open this link in a private window to pick another account.": "வேறொரு கணக்கைத் தேர்ந்தெடுக்க, இந்த இணைப்பைத் தனிப்பட்ட சாளரத்தில் திறக்கவும்.",
+  "Use a different Microsoft account": "வேறு Microsoft கணக்கைப் பயன்படுத்தவும்",
   "Buy": "வாங்கு",
   "Gift": "பரிசளி",
   "Looks": "தோற்றங்கள்"

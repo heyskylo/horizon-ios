@@ -1245,6 +1245,9 @@
   "Couldn't connect to {host}: {reason}": "Couldn't connect to {host}: {reason}",
   "Couldn't connect to {host}.": "Couldn't connect to {host}.",
   "horizon-server on {host} failed in {dir}.": "horizon-server on {host} failed in {dir}.",
+  "Open in private window": "Fosgail ann an uinneag phrìobhaideach",
+  "Open this link in a private window to pick another account.": "Fosgail an ceangal seo ann an uinneag phrìobhaideach gus cunntas eile a thaghadh.",
+  "Use a different Microsoft account": "Cleachd cunntas Microsoft eile",
   "Buy": "Ceannaich",
   "Gift": "Thoir mar thiodhlac",
   "Looks": "Coltasan"

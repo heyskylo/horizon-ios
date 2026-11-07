@@ -1245,6 +1245,9 @@
   "Couldn't connect to {host}: {reason}": "Couldn't connect to {host}: {reason}",
   "Couldn't connect to {host}.": "Couldn't connect to {host}.",
   "horizon-server on {host} failed in {dir}.": "horizon-server on {host} failed in {dir}.",
+  "Open in private window": "プライベートウィンドウで開く",
+  "Open this link in a private window to pick another account.": "別のアカウントを選ぶには、このリンクをプライベートウィンドウで開いてください。",
+  "Use a different Microsoft account": "別の Microsoft アカウントを使用",
   "Buy": "購入",
   "Gift": "ギフト",
   "Looks": "コーデ"

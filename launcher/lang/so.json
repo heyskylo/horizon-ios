@@ -1245,6 +1245,9 @@
   "Couldn't connect to {host}: {reason}": "Couldn't connect to {host}: {reason}",
   "Couldn't connect to {host}.": "Couldn't connect to {host}.",
   "horizon-server on {host} failed in {dir}.": "horizon-server on {host} failed in {dir}.",
+  "Open in private window": "Ku fur daaqad gaar ah",
+  "Open this link in a private window to pick another account.": "Ku fur isku xirkan daaqad gaar ah si aad u doorato xisaab kale.",
+  "Use a different Microsoft account": "Isticmaal xisaab Microsoft oo kale",
   "Buy": "Iibso",
   "Gift": "Hadiyad sii",
   "Looks": "Muuqaalo"

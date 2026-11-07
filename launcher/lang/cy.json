@@ -1245,6 +1245,9 @@
   "Couldn't connect to {host}: {reason}": "Couldn't connect to {host}: {reason}",
   "Couldn't connect to {host}.": "Couldn't connect to {host}.",
   "horizon-server on {host} failed in {dir}.": "horizon-server on {host} failed in {dir}.",
+  "Open in private window": "Agor mewn ffenestr breifat",
+  "Open this link in a private window to pick another account.": "Agorwch y ddolen hon mewn ffenestr breifat i ddewis cyfrif arall.",
+  "Use a different Microsoft account": "Defnyddio cyfrif Microsoft gwahanol",
   "Buy": "Prynu",
   "Gift": "Rhoi fel anrheg",
   "Looks": "Gwisgoedd"

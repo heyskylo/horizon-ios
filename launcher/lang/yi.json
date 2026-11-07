@@ -1245,6 +1245,9 @@
   "Couldn't connect to {host}: {reason}": "Couldn't connect to {host}: {reason}",
   "Couldn't connect to {host}.": "Couldn't connect to {host}.",
   "horizon-server on {host} failed in {dir}.": "horizon-server on {host} failed in {dir}.",
+  "Open in private window": "עפענען אין אַ פּריוואַטן פֿענצטער",
+  "Open this link in a private window to pick another account.": "עפֿן דעם לינק אין אַ פּריוואַטן פֿענצטער צו קלייַבן אַן אַנדער חשבון.",
+  "Use a different Microsoft account": "נוצן אַן אַנדער Microsoft חשבון",
   "Buy": "קויפן",
   "Gift": "שענקען",
   "Looks": "אויסזעענישן"

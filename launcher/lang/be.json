@@ -1245,6 +1245,9 @@
   "Couldn't connect to {host}: {reason}": "Couldn't connect to {host}: {reason}",
   "Couldn't connect to {host}.": "Couldn't connect to {host}.",
   "horizon-server on {host} failed in {dir}.": "horizon-server on {host} failed in {dir}.",
+  "Open in private window": "Адкрыць у прыватным акне",
+  "Open this link in a private window to pick another account.": "Адкрыйце гэту спасылку ў прыватным акне, каб выбраць іншы ўліковы запіс.",
+  "Use a different Microsoft account": "Выкарыстаць іншы ўліковы запіс Microsoft",
   "Buy": "Купіць",
   "Gift": "Падараваць",
   "Looks": "Вобразы"

@@ -1245,6 +1245,9 @@
   "Couldn't connect to {host}: {reason}": "Couldn't connect to {host}: {reason}",
   "Couldn't connect to {host}.": "Couldn't connect to {host}.",
   "horizon-server on {host} failed in {dir}.": "horizon-server on {host} failed in {dir}.",
+  "Open in private window": "გახსნა პირად ფანჯარაში",
+  "Open this link in a private window to pick another account.": "სხვა ანგარიშის ასარჩევად გახსენით ეს ბმული პირად ფანჯარაში.",
+  "Use a different Microsoft account": "გამოიყენეთ სხვა Microsoft-ის ანგარიში",
   "Buy": "ყიდვა",
   "Gift": "ჩუქება",
   "Looks": "იერსახეები"

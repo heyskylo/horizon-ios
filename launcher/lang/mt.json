@@ -1245,6 +1245,9 @@
   "Couldn't connect to {host}: {reason}": "Couldn't connect to {host}: {reason}",
   "Couldn't connect to {host}.": "Couldn't connect to {host}.",
   "horizon-server on {host} failed in {dir}.": "horizon-server on {host} failed in {dir}.",
+  "Open in private window": "Iftaħ f'tieqa privata",
+  "Open this link in a private window to pick another account.": "Iftaħ dan il-link f'tieqa privata biex tagħżel kont ieħor.",
+  "Use a different Microsoft account": "Uża kont Microsoft differenti",
   "Buy": "Ixtri",
   "Gift": "Agħti rigal",
   "Looks": "Dehriet"

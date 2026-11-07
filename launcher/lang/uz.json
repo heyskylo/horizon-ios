@@ -1245,6 +1245,9 @@
   "Couldn't connect to {host}: {reason}": "Couldn't connect to {host}: {reason}",
   "Couldn't connect to {host}.": "Couldn't connect to {host}.",
   "horizon-server on {host} failed in {dir}.": "horizon-server on {host} failed in {dir}.",
+  "Open in private window": "Maxfiy oynada ochish",
+  "Open this link in a private window to pick another account.": "Boshqa hisobni tanlash uchun bu havolani maxfiy oynada oching.",
+  "Use a different Microsoft account": "Boshqa Microsoft hisob qaydnomasidan foydalanish",
   "Buy": "Sotib olish",
   "Gift": "Sovgʻa qilish",
   "Looks": "Obrazlar"

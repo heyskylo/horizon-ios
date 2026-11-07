@@ -1245,6 +1245,9 @@
   "Couldn't connect to {host}: {reason}": "Couldn't connect to {host}: {reason}",
   "Couldn't connect to {host}.": "Couldn't connect to {host}.",
   "horizon-server on {host} failed in {dir}.": "horizon-server on {host} failed in {dir}.",
+  "Open in private window": "Vèrxi in na finestra privada",
+  "Open this link in a private window to pick another account.": "Vèrxi sto link in na finestra privada par scoeger on altro conto.",
+  "Use a different Microsoft account": "Dòpara on altro conto Microsoft",
   "Buy": "Cronpa",
   "Gift": "Regała",
   "Looks": "Stiłi"
