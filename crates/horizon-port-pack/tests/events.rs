@@ -167,6 +167,33 @@ fn labels_give_counterparts_phases_notes_and_new_names() {
 }
 
 #[test]
+fn trade_events_are_answered_by_the_trade_registries() {
+    let c = Catalog::parse(LABELS).unwrap();
+    let data = (
+        Status::Data(vec!["trade_set".to_owned(), "villager_trade".to_owned()]),
+        None,
+    );
+    assert_eq!(c.status("VillagerTradesEvent"), data);
+    assert_eq!(c.status("WandererTradesEvent"), data);
+    let mut mods = BTreeMap::new();
+    mods.insert(
+        "trader".to_owned(),
+        BTreeSet::from(["VillagerTradesEvent".to_owned()]),
+    );
+    let report = events::table(&mods, &c);
+    assert!(
+        report.contains("1 names: 0 with a hook, 0 with another phase's, 0 noted as not quite one, 1 made data, 0 with none."),
+        "{report}"
+    );
+    assert!(
+        report.contains(
+            "| 1 | `VillagerTradesEvent` | data: `trade_set`, `villager_trade` | trader |"
+        ),
+        "{report}"
+    );
+}
+
+#[test]
 fn a_parent_is_hooked_when_each_of_its_events_is() {
     let all = r#"{"hooks": [
         {"name": "config_loading", "neoforge": "ModConfigEvent.Loading"},
