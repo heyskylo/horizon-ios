@@ -1687,7 +1687,8 @@ impl Game<'_> {
             }
             // `VehicleEntity.destroy(level, dropItem)`: `kill` (the boat's own
             // ENTITY_DIE), then the boat item on the death path only, and only
-            // with `entity_drops` on.
+            // with `entity_drops` on, by `spawnAtLocation` (an ItemEntity's own
+            // random motion).
             if !creative {
                 self.entity_killed_event(at, false);
             }
@@ -1701,7 +1702,7 @@ impl Game<'_> {
                         extra: None,
                     },
                     at,
-                    [0.0, 0.1, 0.0],
+                    super::dispenser::new_item_motion(),
                     10,
                 );
             }
