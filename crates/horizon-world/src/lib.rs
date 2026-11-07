@@ -38,6 +38,7 @@ pub mod damage_immunity;
 pub mod damage_reduction;
 pub mod damage_source;
 pub mod datafix;
+pub mod dimension_type;
 pub mod dynamic_support;
 pub mod edge_backoff;
 pub mod effect_attribute_modifiers;

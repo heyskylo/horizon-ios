@@ -1,0 +1,12 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "entity_by_uuid", "target": "horizon_client::game::native_npcs::Game<'_>::native_entity_by_uuid"},
+    {"name": "merge_entity_nbt", "target": "horizon_client::game::native_npcs::Game<'_>::native_merge_entity_nbt"}
+  ],
+  "rust_summary": "an entity found by its UUID in any loaded level (`native_entity_by_uuid`) and `/data merge entity` in\nany loaded level (`native_merge_entity_nbt`).",
+  "doc_summary": "`native_entity_by_uuid(uuid)`, the dimension, id and type of the entity with that UUID in any loaded level, a server's player included (Bukkit's `Server.getEntity(UUID)`), and `native_merge_entity_nbt(dimension, id, nbt)`, `native_entity_merge_nbt` for any loaded level (`execute in <dimension> run data merge entity`). Bundles need \"hooks\": @API:npc_entity_by_uuid@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_npcs.rs"
+  ]
+}
