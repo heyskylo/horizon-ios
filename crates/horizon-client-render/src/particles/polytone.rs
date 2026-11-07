@@ -1193,8 +1193,13 @@ pub(super) fn make(
     let hidden = def.render_type == RenderType::Invisible
         || (def.render.contains_key("model") && model.is_none())
         || def.gpu.is_some();
-    match engine.mod_sets.get(name) {
-        Some(&(set, _)) => {
+    // A mod's sprite set, or for a type replacing a vanilla one, that type's.
+    let set = engine.mod_sets.get(name).map(|&(set, _)| set).or_else(|| {
+        let vanilla = name.strip_prefix("minecraft:")?;
+        engine.sets.get(&ParticleType::from_name(vanilla)?).copied()
+    });
+    match set {
+        Some(set) => {
             let sprites = engine.set_sprites.get(set as usize)?;
             frames = sprites.len();
             particle.set = Some(set);
@@ -2087,6 +2092,32 @@ mod tests {
         p.stopped_by_collision = true;
         engine.tick_particle(&mut p, &level);
         assert!(p.removed);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_pack_custom_particle_replaces_the_vanilla_type_of_its_id() {
+        let root = pack(&[(
+            "assets/minecraft/polytone/custom_particles/flame.json",
+            serde_json::json!({"has_physics": false, "initializer": {"lifetime": "33", "size": "0.75"}}),
+        )]);
+        let mut engine = engine(Registry::read(&root, Default::default(), blocks()));
+        // The vanilla flame's sprite set (what the pack's particles/flame.json lists).
+        engine.sets.insert(ParticleType::Flame, 1);
+        engine.set_sprites.push(vec![20, 21]);
+        engine.create(
+            &ParticleOptions::simple(ParticleType::Flame),
+            [1.0, 65.0, 1.0],
+            [0.0; 3],
+        );
+        assert_eq!(engine.pending.len(), 1);
+        let p = &engine.pending[0];
+        assert!(
+            p.controller.is_some(),
+            "the pack's particle, not vanilla's flame"
+        );
+        assert_eq!((p.lifetime, p.size), (33, 0.75));
+        assert!(matches!(p.sprite, Sprite::Index(20)));
         std::fs::remove_dir_all(root).unwrap();
     }
 }
