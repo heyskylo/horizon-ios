@@ -334,6 +334,8 @@ mod piston_push;
 mod play_input;
 mod player_equip;
 mod pointer_capture;
+#[cfg(test)]
+mod portal_ticking_tests;
 mod postprocess;
 mod potent_sulfur;
 mod potions;
