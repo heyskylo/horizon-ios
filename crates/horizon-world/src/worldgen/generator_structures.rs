@@ -862,6 +862,49 @@ mod tests {
     use super::*;
     use crate::worldgen::structure::stronghold::{ring_positions, ring_searches};
 
+    /// `PiecesContainer.load` reads a piece whose id is one of the four names an
+    /// older save wrote for a jigsaw piece as a jigsaw piece (its `RENAMES`
+    /// table); any other piece id keeps the start on the generator's rebuild.
+    #[test]
+    fn an_old_saves_jigsaw_piece_ids_are_read_as_jigsaw() {
+        let piece = |id: &str| {
+            crate::nbt::Tag::compound([
+                ("id", crate::nbt::Tag::String(id.into())),
+                ("PosX", crate::nbt::Tag::Int(16)),
+            ])
+        };
+        for id in [
+            "minecraft:nvi",
+            "minecraft:pcp",
+            "minecraft:bastionremnant",
+            "minecraft:runtime",
+        ] {
+            assert_eq!(
+                saved_piece_id(&piece(id)),
+                Some("minecraft:jigsaw"),
+                "{id} is a renamed jigsaw piece"
+            );
+        }
+        assert_eq!(
+            saved_piece_id(&piece("minecraft:jigsaw")),
+            Some("minecraft:jigsaw")
+        );
+        // The monument, stronghold and jungle temple pieces are their own types: a
+        // pool piece's reader would not decode them.
+        for id in ["minecraft:OMB", "minecraft:SHCC", "minecraft:TeJP"] {
+            assert_eq!(saved_piece_id(&piece(id)), None, "{id} is not a pool piece");
+        }
+        // No id, or not a compound at all: nothing to read.
+        assert_eq!(
+            saved_piece_id(&crate::nbt::Tag::compound([(
+                "PosX",
+                crate::nbt::Tag::Int(16)
+            )])),
+            None
+        );
+        assert_eq!(saved_piece_id(&crate::nbt::Tag::Int(1)), None);
+    }
+
     /// The start cache keeps the first starts built for a chunk, spreads a
     /// chunk's 289 reference lookups over the shards, and forgets on clear.
     #[test]
