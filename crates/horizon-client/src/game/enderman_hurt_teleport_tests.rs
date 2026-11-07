@@ -6,11 +6,7 @@ use horizon_client::{
     chunk::Chunk,
     mobs::{Mob, MobEvent},
 };
-use horizon_core::{
-    geometry::Vec3,
-    position::ChunkPos,
-    random::LegacyRandom,
-};
+use horizon_core::{geometry::Vec3, position::ChunkPos, random::LegacyRandom};
 use std::sync::Arc;
 
 /// A game over 5x5 empty chunks around (0, 0) with a stone floor at y = 3:
@@ -140,7 +136,10 @@ fn an_infested_endermans_silverfish_come_out_where_it_was_hurt() {
     let hurt = |seed| {
         let mut mob = enderman(&game, 600, at, seed);
         mob.add_effect("minecraft:infested", 200, 0);
-        mob.damage(1.0, horizon_client::mobs::Damage::of(horizon_client::mobs::DamageKind::Generic));
+        mob.damage(
+            1.0,
+            horizon_client::mobs::Damage::of(horizon_client::mobs::DamageKind::Generic),
+        );
         mob
     };
     let mob = (0..10_000)

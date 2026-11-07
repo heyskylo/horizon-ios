@@ -1072,7 +1072,8 @@ pub fn main() -> horizon_client::Result<()> {
                     // effect=<name>:<amplifier>, never running out.
                     x if x.starts_with("effect=") => {
                         let (name, amp) = x[7..].split_once(':').unwrap();
-                        let name: &'static str = Box::leak(format!("minecraft:{name}").into_boxed_str());
+                        let name: &'static str =
+                            Box::leak(format!("minecraft:{name}").into_boxed_str());
                         m.add_effect(name, -1, amp.parse().unwrap());
                     }
                     "leashed" => m.extra.leash = Some(horizon_client::mobs::leash::Holder::Player),
