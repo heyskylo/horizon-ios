@@ -83,6 +83,7 @@ def install_datapack_fixtures(world, predicates, functions, jar, advancements=No
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--prepare', action='store_true')
+    parser.add_argument('--function-admission-fixture', action='store_true', help='compile initial Java functions at its actual GAMEMASTER permission, matching reload and native')
     parser.add_argument('--raid-village-fixture', action='store_true', help='match the existing development command trees in the isolated Java/native fixture processes')
     parser.add_argument('--raid-release-command-diagnostic', action='store_true', help='retain the unmatched native release-tree admission prerequisite diagnostic')
     parser.add_argument('--advancement-loot-inline-parser-diagnostic', action='store_true',
@@ -401,6 +402,8 @@ def main():
         direct_input = build / 'orb-water-inputs.json'
         direct_input.write_text(json.dumps(arithmetic_inputs()), encoding='utf-8')
         java_options = ['-Dhorizon.orbWaterArithmetic=' + str(direct_input)]
+    if args.function_admission_fixture:
+        java_options.append('-Dhorizon.functionAdmissionFixture=true')
     run(['java', '-Xmx3G', '-Duser.timezone=UTC', *(['-Dhorizon.loadedFixture=true'] if args.loaded_fixture else []), *java_options, '-cp', os.pathsep.join([str(classes), str(jars['server']), dependency_path]),
          'dev.horizonlab.parity.VanillaCommandExecOracle', vanilla_dir / 'universe', script_path, build / 'vanilla.jsonl', SEED], 'java', cwd=vanilla_dir)
 

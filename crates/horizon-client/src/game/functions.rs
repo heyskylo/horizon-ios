@@ -171,6 +171,8 @@ impl Game<'_> {
         }
         self.reload_datapacks(false);
     }
+    /// `ServerFunctionLibrary.reload`: validate the candidate functions with
+    /// the current content before exposing them to execution.
     pub(super) fn reload_datapacks(&mut self, run_load: bool) {
         let stack = pack_stack(
             &self.world_root,
@@ -180,7 +182,7 @@ impl Game<'_> {
         );
         self.fns.packs = stack.packs;
         self.fns.enabled = stack.enabled;
-        self.rebuild_store();
+        let store = self.load_store();
         self.fns.loaded = true;
         self.fns.load_pending = true;
         // An explicit reload (`/reload`, `/datapack`) reloads the content
@@ -189,12 +191,12 @@ impl Game<'_> {
         if run_load {
             self.reload_world_tables();
         }
-        let _ = run_load;
+        self.admit_store(store);
         if self.fns.schedule.is_empty() {
             self.load_schedule();
         }
     }
-    fn rebuild_store(&mut self) {
+    fn load_store(&self) -> DataStore {
         // The built-in pack first (lowest priority), unless disabled.
         let stack = pack_stack(
             &self.world_root,
@@ -203,7 +205,52 @@ impl Game<'_> {
             &self.level.enabled_features,
         );
         let packs: Vec<&DataPack> = stack.builtin.iter().chain(stack.enabled_packs()).collect();
-        let store = DataStore::load(&packs);
+        DataStore::load(&packs)
+    }
+    /// `CommandFunction.parseCommand`: compile ordinary lines without running them.
+    /// Macro lines are parsed
+    /// only after substitution, but ordinary lines in a macro file still
+    /// have to compile (`CommandFunction.fromLines`).
+    fn admit_store(&mut self, mut store: DataStore) {
+        // On explicit reload the actual content tables have already refreshed.
+        // The candidate's named predicates/modifiers must also be available to
+        // argument codecs before any of its functions can be exposed.
+        self.sync_enchantment_registries();
+        let mut registries = self.ui.registries.clone();
+        registries.permission = self.fns.command_level();
+        registries.functions = store.functions.keys().cloned().collect();
+        registries.function_tags = store.function_tags.keys().cloned().collect();
+        registries.predicates = store.predicates.keys().cloned().collect();
+        registries.item_modifiers = store.item_modifiers.keys().cloned().collect();
+        for (id, ids) in [
+            ("minecraft:predicate", &registries.predicates),
+            ("minecraft:item_modifier", &registries.item_modifiers),
+        ] {
+            if let Some(entry) = registries.by_registry.get_mut(id) {
+                entry.ids.clone_from(ids);
+            }
+        }
+        let dispatcher = horizon_client::command::vanilla::game_dispatcher_with_features(
+            &self.level.enabled_features,
+        );
+        store.functions.retain(|id, function| {
+            for line in &function.lines {
+                if let datapack::FunctionLine::Command(line) = line
+                    && let Err(error) = dispatcher.parse(line, &registries).executable()
+                {
+                    store.errors.push((
+                        id.clone(),
+                        format!(
+                            "Invalid command {line:?}: {} at position {}",
+                            error.message.plain(),
+                            error.cursor
+                        ),
+                    ));
+                    return false;
+                }
+            }
+            true
+        });
         for (id, e) in &store.errors {
             log::warn!("Horizon: failed to load function {id}: {e}");
         }
@@ -989,9 +1036,10 @@ impl Game<'_> {
     /// tables with the functions.
     fn apply_pack_change(&mut self) {
         self.save_datapack_settings();
-        self.rebuild_store();
+        let store = self.load_store();
         self.fns.load_pending = true;
         self.reload_world_tables();
+        self.admit_store(store);
     }
 
     // ---- predicates -------------------------------------------------------------------
@@ -1043,6 +1091,169 @@ const FEATURE_PACKS: &[(&str, &str)] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn function_pack_rejects_invalid_ordinary_lines_before_execution() {
+        use crate::game::{Audio, Options, Settings, load_resources};
+        use std::time::Instant;
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            Instant::now(),
+            false,
+            true,
+            &crate::game::Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        let dir =
+            std::env::temp_dir().join(format!("horizon-function-admission-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let pack = dir.join("datapacks/admission");
+        let functions = pack.join("data/h144/function");
+        let predicates = pack.join("data/h144/predicate");
+        std::fs::create_dir_all(&functions).unwrap();
+        std::fs::create_dir_all(&predicates).unwrap();
+        std::fs::write(pack.join("pack.mcmeta"), r#"{"pack":{"description":"Function admission","pack_format":121,"min_format":[121,0],"max_format":[121,0]}}"#).unwrap();
+        std::fs::write(
+            predicates.join("ready.json"),
+            r#"{"type":"minecraft:all_of","terms":[]}"#,
+        )
+        .unwrap();
+        for (name, text) in [
+            (
+                "good",
+                "execute if predicate h144:ready run scoreboard players add good h144 1\n",
+            ),
+            (
+                "bad",
+                "scoreboard players set bad h144 1\nh144_unknown_command\nscoreboard players set bad h144 2\n",
+            ),
+            (
+                "forbidden",
+                "scoreboard players set forbidden h144 1\ntick freeze\nscoreboard players set forbidden h144 2\n",
+            ),
+            (
+                "macro",
+                "$h144_unknown_$(name)\nscoreboard players set macro h144 1\n",
+            ),
+            ("macro_bad", "$say $(name)\nh144_unknown_command\n"),
+            (
+                "sequence",
+                "scoreboard players \\\nset sequence h144 17\nreturn 5\n",
+            ),
+            ("slash", "/say invalid\n"),
+        ] {
+            std::fs::write(functions.join(format!("{name}.mcfunction")), text).unwrap();
+        }
+        game.world_root = dir.clone();
+        let run = |game: &mut Game<'_>, line: &str| {
+            game.exec = ExecState::default();
+            let source = game.player_source();
+            game.execute_line(line, source)
+        };
+        run(&mut game, "scoreboard objectives add h144 dummy").unwrap();
+        for name in ["good", "bad", "forbidden", "macro", "sequence"] {
+            run(
+                &mut game,
+                &format!("scoreboard players set {name} h144 -99"),
+            )
+            .unwrap();
+        }
+        let clock = game.world.game_time;
+        // This is the actual pack loader. Admission must not run any line.
+        game.reload_datapacks(false);
+        for name in ["good", "bad", "forbidden", "macro", "sequence"] {
+            assert_eq!(game.score.board.score(name, "h144").unwrap().value, -99);
+        }
+        // Intended old failure: the invalid file previously ran both valid lines.
+        assert!(run(&mut game, "function h144:bad").is_err());
+        assert_eq!(game.score.board.score("bad", "h144").unwrap().value, -99);
+        for name in ["bad", "forbidden", "macro_bad", "slash"] {
+            assert!(
+                !game
+                    .fns
+                    .store
+                    .functions
+                    .contains_key(&format!("h144:{name}"))
+            );
+            assert!(
+                !game
+                    .ui
+                    .registries
+                    .functions
+                    .contains(&format!("h144:{name}"))
+            );
+            assert!(
+                game.fns
+                    .store
+                    .errors
+                    .iter()
+                    .any(|(id, _)| id == &format!("h144:{name}"))
+            );
+        }
+        assert!(run(&mut game, "function h144:forbidden").is_err());
+        assert!(game.fns.store.functions.contains_key("h144:macro"));
+        assert!(game.fns.store.functions["h144:macro"].is_macro());
+        run(&mut game, "function h144:good").unwrap();
+        assert_eq!(game.score.board.score("good", "h144").unwrap().value, -98);
+        run(&mut game, "function h144:sequence").unwrap();
+        assert_eq!(
+            game.score.board.score("sequence", "h144").unwrap().value,
+            17
+        );
+        assert_eq!(game.ui.registries.permission, 4);
+        // A fresh same-pack predicate must be in the compilation snapshot on reload.
+        std::fs::write(
+            predicates.join("reloaded.json"),
+            r#"{"type":"minecraft:all_of","terms":[]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            functions.join("good.mcfunction"),
+            "execute if predicate h144:reloaded run scoreboard players add good h144 1\n",
+        )
+        .unwrap();
+        game.reload_datapacks(true);
+        assert!(game.fns.store.functions.contains_key("h144:good"));
+        assert!(!game.fns.store.functions.contains_key("h144:forbidden"));
+        assert!(
+            !game
+                .ui
+                .registries
+                .functions
+                .contains(&"h144:forbidden".into())
+        );
+        assert_eq!(game.score.board.score("good", "h144").unwrap().value, -98);
+        run(&mut game, "function h144:good").unwrap();
+        assert_eq!(game.score.board.score("good", "h144").unwrap().value, -97);
+        assert_eq!(
+            game.score.board.score("forbidden", "h144").unwrap().value,
+            -99
+        );
+        assert_eq!(game.world.game_time, clock);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
