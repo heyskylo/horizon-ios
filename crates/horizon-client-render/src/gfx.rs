@@ -11141,10 +11141,18 @@ impl Renderer {
             );
         }
         laps.lap("r_passes");
+        // What an SDR picture of the frame shows: on HDR output's layered frame its HUD target,
+        // the HUD over the world clipped to white.
+        let sdr_texture = self
+            .hdr
+            .as_ref()
+            .and_then(|h| h.hud())
+            .cloned()
+            .unwrap_or_else(|| target_texture.clone());
         // Under `HORIZON_FRAMEGEN_DEBUG=generated` a screenshot is the made frame.
         let shown_texture = match &fg_frames {
             Some((_, generated)) if fg_made && frame_gen::generated_only() => generated,
-            _ => &target_texture,
+            _ => &sdr_texture,
         };
         let readback = readback.or_else(|| {
             self.screenshot
@@ -11182,7 +11190,7 @@ impl Renderer {
             (Some(_), None) => {
                 if let Some(image) = &self.offscreen {
                     self.readback
-                        .draw_onto(&self.device, &mut encoder, &target_texture, image);
+                        .draw_onto(&self.device, &mut encoder, &sdr_texture, image);
                 }
             }
             (None, _) => {}
@@ -11373,8 +11381,15 @@ impl Renderer {
         } else {
             None
         };
+        // HDR output's layered frame keeps the world after the hand and the camera overlays,
+        // as light (`Hdr::layered`); else it is kept here, before them.
+        let layered = self.hdr.as_ref().is_some_and(|h| h.layered());
         if let Some(hdr) = &self.hdr {
-            hdr.keep_world(encoder, timing.as_mut());
+            if layered {
+                hdr.begin(&self.queue, !frame.title);
+            } else {
+                hdr.keep_world(encoder, timing.as_mut());
+            }
         }
         if overlay.hand_quads > 0 {
             let attachments = [Some(wgpu::RenderPassColorAttachment {
@@ -11413,7 +11428,14 @@ impl Renderer {
             drop(pass);
             if let Some(hdr) = &self.hdr {
                 hdr.mark_hand(encoder, timing.as_mut());
-                if let Some(view) = hdr.hand_light_view() {
+                // On the layered frame the hand's marks go to the frame, before they become
+                // light with the world's.
+                let marks = if layered {
+                    Some(view_target.clone())
+                } else {
+                    hdr.hand_light_view()
+                };
+                if let Some(view) = marks {
                     // The light sources in the hand may shine, the rest of it stays at the
                     // world's brightness: nothing the world kept here shows through it.
                     let attachments = [Some(wgpu::RenderPassColorAttachment {
@@ -11449,6 +11471,14 @@ impl Renderer {
                     pass.draw_indexed(quads, overlay.first_hand_vertex, 0..1);
                 }
             }
+        }
+        // The layered frame's marks become light: what draws from here draws on light, and
+        // nothing is lifted after.
+        if layered
+            && !frame.title
+            && let Some(hdr) = &self.hdr
+        {
+            hdr.resolve(encoder, timing.as_mut());
         }
         // A native mod's turn after the hand, on the real frame only.
         if overlay.real && !frame.title {
@@ -11582,6 +11612,16 @@ impl Renderer {
                 }
             }
         }
+        if layered && let Some(hdr) = &self.hdr {
+            hdr.keep_world(encoder, timing.as_mut());
+        }
+        // What the HUD and menus draw on: the layered frame's HUD target, else the frame.
+        let hud = self
+            .hdr
+            .as_ref()
+            .and_then(|h| h.hud())
+            .map(|t| t.create_view(&Default::default()));
+        let hud_target = hud.as_ref().unwrap_or(view_target);
         let coverage = self.hdr.as_ref().and_then(|h| h.coverage_view());
         if let Some(view) = &coverage {
             hud_coverage::clear(encoder, view);
@@ -11590,7 +11630,7 @@ impl Renderer {
         // the screen effects.
         if overlay.crosshair > 0 {
             let mut attachments = vec![Some(wgpu::RenderPassColorAttachment {
-                view: view_target,
+                view: hud_target,
                 resolve_target: None,
                 depth_slice: None,
                 ops: wgpu::Operations {
@@ -11631,7 +11671,7 @@ impl Renderer {
         let blur_at = menu_blur.map_or(0, |_| frame.hud.blur_at);
         self.hud.draw_range(
             encoder,
-            view_target,
+            hud_target,
             coverage.as_ref(),
             &self.depth,
             frame.hud,
@@ -11643,18 +11683,38 @@ impl Renderer {
             let format = self.frame_format;
             let device = &self.device;
             let software = is_software(self.info.device_type);
-            self.menu_blur
-                .get_or_insert_with(|| crate::menu_blur::MenuBlur::new(device, format, software))
-                .apply(
-                    &self.device,
+            let blur = self
+                .menu_blur
+                .get_or_insert_with(|| crate::menu_blur::MenuBlur::new(device, format, software));
+            let size = [self.config.width, self.config.height];
+            match self.hdr.as_ref().filter(|_| layered) {
+                // The blur keeps light above white: it blurs the picture so far, the HUD over
+                // the world's light, which becomes the world the menu draws over.
+                Some(hdr) => {
+                    let (_, source) = blur.source(device, size);
+                    hdr.composite(encoder, &source, timing.as_mut());
+                    blur.blur(
+                        device,
+                        &self.queue,
+                        encoder,
+                        view_target,
+                        size,
+                        radius,
+                        timing.as_mut(),
+                    );
+                    hdr.keep_world(encoder, timing.as_mut());
+                }
+                None => blur.apply(
+                    device,
                     &self.queue,
                     encoder,
                     target_texture,
                     view_target,
-                    [self.config.width, self.config.height],
+                    size,
                     radius,
                     timing.as_mut(),
-                );
+                ),
+            }
             if let Some(view) = &coverage {
                 hud_coverage::clear(encoder, view);
             }
@@ -11663,7 +11723,7 @@ impl Renderer {
         }
         self.hud.draw_range(
             encoder,
-            view_target,
+            hud_target,
             coverage.as_ref(),
             &self.depth,
             frame.hud,
