@@ -6122,7 +6122,7 @@ impl Game<'_> {
             self.swing_arm();
             return Ok(true);
         }
-        if let Some(sheared) = self.shear_pig_saddle(index, &item) {
+        if let Some(sheared) = self.shear_saddle(index, &item) {
             if sheared {
                 self.swing_arm();
             }

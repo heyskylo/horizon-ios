@@ -138,12 +138,28 @@ impl Game<'_> {
         let id = self.riding?;
         self.mobs.iter().position(|m| m.id == id)
     }
-    /// `Entity.interact` / `Mob.canShearEquipment` / `Mob.shearItem`:
-    /// the pig's ordinary saddle comes off before Pig.mobInteract can ride it.
-    /// An occupied pig consumes no equipment interaction and cannot be mounted.
-    pub(super) fn shear_pig_saddle(&mut self, index: usize, item: &str) -> Option<bool> {
+    /// `Entity.interact` / `Mob.canShearEquipment` / `Mob.attemptToShearEquipment`
+    /// / `Mob.shearItem`: the saddle of a `#can_equip_saddle` mob comes off
+    /// before its mobInteract can ride it, with the saddle's shearing sound.
+    /// An occupied mount consumes no equipment interaction and cannot be mounted.
+    pub(super) fn shear_saddle(&mut self, index: usize, item: &str) -> Option<bool> {
         let m = &self.mobs[index];
-        if item != "minecraft:shears" || m.species() != Species::Pig || m.is_baby() || !m.alive() {
+        // EntityTypeTags.CAN_EQUIP_SADDLE.
+        let saddleable = matches!(
+            m.species(),
+            Species::Horse
+                | Species::SkeletonHorse
+                | Species::ZombieHorse
+                | Species::Donkey
+                | Species::Mule
+                | Species::Pig
+                | Species::Strider
+                | Species::Camel
+                | Species::CamelHusk
+                | Species::Nautilus
+                | Species::ZombieNautilus
+        );
+        if item != "minecraft:shears" || !saddleable || m.is_baby() || !m.alive() {
             return None;
         }
         let id = m.id;
@@ -160,10 +176,20 @@ impl Game<'_> {
         if self.keys.held(Action::Sneak) {
             return None;
         }
+        // attemptToShearEquipment takes the body slot before the saddle: horse
+        // and nautilus armor come off first (not modelled here).
+        if m.extra
+            .body
+            .as_deref()
+            .is_some_and(|b| b.ends_with("_horse_armor") || b.ends_with("_nautilus_armor"))
+        {
+            return None;
+        }
         let saddle = m.saddle_item()?;
         if &*saddle.item != "minecraft:saddle" {
             return None;
         }
+        let silent = m.silent;
         let at = m.position;
         let offset = horizon_client::mobs::riders::passenger_attachment(m)[1];
         self.damage_held_tool();
@@ -174,6 +200,15 @@ impl Game<'_> {
         self.spawn_at_location(at, offset, saddle.clone());
         let target = self.mob_entity(&self.mobs[index]);
         self.trigger_item_entity("minecraft:player_sheared_equipment", &saddle, &target);
+        // attemptToShearEquipment: playSound(equippable.shearingSound()).
+        if !silent {
+            self.audio.play(
+                "minecraft:item.saddle.unequip",
+                Some([at.x, at.y, at.z]),
+                1.0,
+                1.0,
+            );
+        }
         Some(true)
     }
     /// `Pig` / `Strider.mobInteract`: saddle an adult, or ride a saddled one.
