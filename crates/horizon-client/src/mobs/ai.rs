@@ -19,6 +19,9 @@ use horizon_core::{
 };
 
 #[cfg(test)]
+#[path = "fall_flying_tests.rs"]
+mod fall_flying_tests;
+#[cfg(test)]
 #[path = "wet_fire_tests.rs"]
 mod wet_fire_tests;
 
@@ -684,6 +687,7 @@ pub fn tick(
         super::villager_brain::woken(m, w.game_time);
     }
     if m.no_ai {
+        update_fall_flying(m, w, events);
         reset_effect_fall_distance(m);
         // Mob.aiStep still runs without AI (only serverAiStep is skipped),
         // so undead still burn in daylight and the endermite's life keeps
@@ -739,6 +743,7 @@ pub fn tick(
     } else {
         ai_step(m, w, level_random, events);
     }
+    count_fall_fly_ticks(m);
     effects_from_blocks(m, w, level_random, events);
     extinguish_if_wet(m, w, was_on_fire, events);
     if m.species() == Species::SulfurCube && m.alive() {
@@ -1585,6 +1590,70 @@ fn ageable_step(
     }
 }
 
+/// `LivingEntity.updateFallFlying` on the server, which `aiStep` calls while
+/// the glide flag is set, with or without AI: a mob that cannot glide
+/// (`canGlide`: on the ground, riding, levitating, or no slot holding a
+/// glider whose next damage will not break it, `canGlideUsing`) stops
+/// gliding; else on every 20th glide tick one of its gliders, picked with
+/// `Util.getRandom` from the mob's own random, takes a point of wear.
+/// `checkFallDistanceAccumulation` and the `ELYTRA_GLIDE` game event of
+/// every 10th tick are not ported here.
+fn update_fall_flying(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
+    use horizon_world::player_inventory::EquipmentSlot;
+    if !m.extra.fall_flying {
+        return;
+    }
+    let gliders: Vec<EquipmentSlot> = match w.items {
+        Some(items) => EquipmentSlot::ALL
+            .into_iter()
+            .filter(|&slot| {
+                super::finalize::equipment_stack(m, slot).is_some_and(|stack| {
+                    crate::item_sync::can_glide_using(&stack, glider_slot_name(slot), items)
+                })
+            })
+            .collect(),
+        None => Vec::new(),
+    };
+    if m.on_ground
+        || m.extra.mount.is_some()
+        || m.has_effect("minecraft:levitation")
+        || gliders.is_empty()
+    {
+        m.extra.fall_flying = false;
+        return;
+    }
+    let ticks = m.extra.fall_fly_ticks + 1;
+    if ticks % 10 == 0 && (ticks / 10) % 2 == 0 {
+        let pick = m.random.next_int_bound(gliders.len() as i32).unwrap_or(0) as usize;
+        events.push(MobEvent::GliderWear {
+            mob: m.id,
+            slot: gliders[pick],
+        });
+    }
+}
+/// `EquipmentSlot`'s serialized name, which `equippable` names its slot by.
+fn glider_slot_name(slot: horizon_world::player_inventory::EquipmentSlot) -> &'static str {
+    use horizon_world::player_inventory::EquipmentSlot as S;
+    match slot {
+        S::MainHand => "mainhand",
+        S::OffHand => "offhand",
+        S::Feet => "feet",
+        S::Legs => "legs",
+        S::Chest => "chest",
+        S::Head => "head",
+        S::Body => "body",
+        S::Saddle => "saddle",
+    }
+}
+/// `LivingEntity.tick` after `aiStep`: the glide's tick count.
+fn count_fall_fly_ticks(m: &mut Mob) {
+    m.extra.fall_fly_ticks = if m.extra.fall_flying {
+        m.extra.fall_fly_ticks + 1
+    } else {
+        0
+    };
+}
+
 /// `LivingEntity.aiStep`: both flight effects discard accumulated fall before
 /// travel, even when NoAI skips the server AI step.
 fn reset_effect_fall_distance(m: &mut Mob) {
@@ -1649,6 +1718,7 @@ fn ai_step(m: &mut Mob, w: &MobWorld, level_random: &mut LegacyRandom, events: &
         f64::from(m.ai.yya),
         f64::from(m.ai.zza),
     );
+    update_fall_flying(m, w, events);
     reset_effect_fall_distance(m);
     if super::equine::moved_by_client(m) {
         // LivingEntity.travelRidden: the rider's client moves it
