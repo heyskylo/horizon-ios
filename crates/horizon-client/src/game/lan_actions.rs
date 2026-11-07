@@ -2802,6 +2802,9 @@ impl Game<'_> {
             S::CustomPayload(p) if p.channel == horizon_client::lod_net::CHANNEL => {
                 self.guest_far_terrain(host, conn, &p.data)
             }
+            S::CustomPayload(p) if p.channel == horizon_client::lan::recipes::TRANSFER_CHANNEL => {
+                self.guest_recipe_transfer(host, conn, &p.data);
+            }
             S::ChatCommandSigned(p) => self.guest_signed_command(host, conn, p),
             S::ChangeDifficulty(p) if host.hub.guests[gi].permission >= 2 => {
                 if !self.level.difficulty_locked && (0..=3).contains(&p.difficulty) {
@@ -5313,6 +5316,11 @@ impl Game<'_> {
             if g.fall_flying != gliding {
                 g.fall_flying = gliding;
                 changed = Some((g.uuid, g.name.clone(), gliding));
+            } else if !gliding {
+                // A refused start changes nothing on the server, so no flags
+                // update would follow; force one, so the client that predicted
+                // the glide takes the cleared bit and ends it.
+                g.sent_shared ^= -128;
             }
         }
         if let Some((uuid, name, gliding)) = changed {
