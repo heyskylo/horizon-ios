@@ -3179,3 +3179,209 @@ mod item_display_saved_transform_tests {
         });
     }
 }
+
+#[cfg(test)]
+mod mob_inventory_merge_tests {
+    use super::*;
+    use crate::game::{Audio, Options, Progress, Settings, commands::Target, load_resources};
+    use horizon_client::motion::PlayerMotion;
+
+    fn with_game(test: impl FnOnce(&mut Game<'_>)) {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.game_dir = Some(
+            std::path::PathBuf::from(std::env::var_os("HORIZON_HOME").unwrap())
+                .join(format!("h138-{:?}", std::thread::current().id())),
+        );
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.world
+            .chunks
+            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        game.block_ticks
+            .add_empty_chunk(ChunkPos::new(0, 0))
+            .unwrap();
+        assert!(game.run_command("forceload add 0 0"));
+        game.player = Some(PlayerMotion::new(game.motion, Vec3::new(2.5, 200.0, 2.5)).unwrap());
+        game.creative = true;
+        test(&mut game);
+    }
+    fn mob(game: &Game<'_>, n: i32) -> usize {
+        let i: Vec<usize> = (0..game.mobs.len())
+            .filter(|&i| game.persist.uuid_of(game.mobs[i].id) == Some([138, 0, 0, n]))
+            .collect();
+        assert_eq!(i.len(), 1, "one live mob with UUID {n}");
+        i[0]
+    }
+    /// The live inventory: (item, count, custom_data h138) per stack, in order.
+    fn live(game: &Game<'_>, i: usize) -> Vec<(String, u32, Option<i32>)> {
+        let m = &game.mobs[i];
+        let stacks = if m.species() == horizon_client::mobs::Species::Villager {
+            horizon_client::mobs::villager::ext(m)
+                .map(|e| e.inventory.clone())
+                .unwrap_or_default()
+        } else {
+            m.extra.inventory.clone()
+        };
+        stacks
+            .iter()
+            .map(|s| {
+                let saved = horizon_client::save::item_to_nbt(s);
+                let data = match saved
+                    .get("components")
+                    .and_then(|c| c.get("minecraft:custom_data"))
+                    .and_then(|d| d.get("h138"))
+                {
+                    Some(Tag::Int(v)) => Some(*v),
+                    _ => None,
+                };
+                (s.item.to_string(), s.count, data)
+            })
+            .collect()
+    }
+    /// The saved Inventory, read the same way.
+    fn saved(game: &mut Game<'_>, i: usize) -> Vec<(String, u32, Option<i32>)> {
+        let tag = game
+            .entity_nbt(Target::Mob(game.mobs[i].id))
+            .expect("saved mob");
+        let Some(Tag::List(list)) = tag.get("Inventory") else {
+            return Vec::new();
+        };
+        list.iter()
+            .filter_map(horizon_client::save::item_from_nbt)
+            .map(|s| {
+                let saved = horizon_client::save::item_to_nbt(&s);
+                let data = match saved
+                    .get("components")
+                    .and_then(|c| c.get("minecraft:custom_data"))
+                    .and_then(|d| d.get("h138"))
+                {
+                    Some(Tag::Int(v)) => Some(*v),
+                    _ => None,
+                };
+                (s.item.to_string(), s.count, data)
+            })
+            .collect()
+    }
+
+    /// Expected values from the official 26.3 server: SimpleContainer
+    /// .fromItemList adds each saved stack with addItem, which fills earlier
+    /// stacks of the same item and components up to the limit, then empty
+    /// slots, and drops what does not fit in the eight.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and a scratch HORIZON_HOME"]
+    fn a_piglin_and_a_villager_merge_their_saved_inventory_stacks() {
+        with_game(|game| {
+            let it = |id: &str, n: u32| format!("{{id:\"minecraft:{id}\",count:{n}}}");
+            let tagged = |n: u32, v: i32| {
+                format!(
+                    "{{id:\"minecraft:stone\",count:{n},components:{{\"minecraft:custom_data\":{{h138:{v}}}}}}}"
+                )
+            };
+            let s = |id: &str, n: u32, d: Option<i32>| (format!("minecraft:{id}"), n, d);
+            let cases: Vec<(&str, Vec<String>, Vec<(String, u32, Option<i32>)>)> = vec![
+                (
+                    "two_three",
+                    vec![it("stone", 2), it("stone", 3)],
+                    vec![s("stone", 5, None)],
+                ),
+                (
+                    "forty",
+                    vec![it("stone", 40), it("stone", 40)],
+                    vec![s("stone", 64, None), s("stone", 16, None)],
+                ),
+                (
+                    "pearls",
+                    vec![it("ender_pearl", 10), it("ender_pearl", 10)],
+                    vec![s("ender_pearl", 16, None), s("ender_pearl", 4, None)],
+                ),
+                (
+                    "interleaved",
+                    vec![it("stone", 40), it("dirt", 1), it("stone", 40)],
+                    vec![
+                        s("stone", 64, None),
+                        s("dirt", 1, None),
+                        s("stone", 16, None),
+                    ],
+                ),
+                (
+                    "components",
+                    vec![tagged(2, 1), tagged(3, 2)],
+                    vec![s("stone", 2, Some(1)), s("stone", 3, Some(2))],
+                ),
+                (
+                    "same_components",
+                    vec![tagged(2, 1), tagged(3, 1)],
+                    vec![s("stone", 5, Some(1))],
+                ),
+                (
+                    "different",
+                    vec![it("stone", 2), it("dirt", 3)],
+                    vec![s("stone", 2, None), s("dirt", 3, None)],
+                ),
+                (
+                    "nine_full",
+                    vec![it("stone", 64); 9],
+                    vec![s("stone", 64, None); 8],
+                ),
+            ];
+            let mut failures = Vec::new();
+            let mut n = 0;
+            for kind in ["piglin", "villager"] {
+                for (name, items, want) in &cases {
+                    n += 1;
+                    let extra = if kind == "piglin" {
+                        ",IsImmuneToZombification:1b"
+                    } else {
+                        ""
+                    };
+                    assert!(game.run_command(&format!(
+                        "summon minecraft:{kind} 4.5 200 4.5 {{UUID:[I;138,0,0,{n}],NoAI:1b,PersistenceRequired:1b,Silent:1b{extra},Inventory:[{}]}}",
+                        items.join(",")
+                    )));
+                    let i = mob(game, n);
+                    // No raw echo: the load's compound is gone, only the model is left.
+                    game.persist.raw.remove(&game.mobs[i].id);
+                    if &live(game, i) != want {
+                        failures.push(format!("{kind} {name}: live {:?}", live(game, i)));
+                    }
+                    if &saved(game, i) != want {
+                        failures.push(format!("{kind} {name}: saved {:?}", saved(game, i)));
+                    }
+                }
+            }
+            // The model is what saves: a change to it shows in the next save.
+            let i = mob(game, 1);
+            game.mobs[i].extra.inventory[0].count = 7;
+            if saved(game, i) != vec![s("stone", 7, None)] {
+                failures.push(format!("piglin mutation: saved {:?}", saved(game, i)));
+            }
+            assert!(failures.is_empty(), "mob inventory merge: {failures:#?}");
+        });
+    }
+}

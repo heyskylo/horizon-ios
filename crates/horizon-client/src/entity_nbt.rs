@@ -1972,12 +1972,9 @@ pub fn mob_from_nbt(
         if m.species() == crate::mobs::Species::Piglin
             && let Some(Tag::List(items)) = tag.get("Inventory")
         {
-            // InventoryCarrier.readInventoryFromTag (eight slots).
-            m.extra.inventory = items
-                .iter()
-                .filter_map(crate::save::item_from_nbt)
-                .take(8)
-                .collect();
+            // InventoryCarrier.readInventoryFromTag -> SimpleContainer
+            // .fromItemList (eight slots).
+            m.extra.inventory = crate::mobs::villager::load_container(&m, items, 8);
         }
     }
     if matches!(

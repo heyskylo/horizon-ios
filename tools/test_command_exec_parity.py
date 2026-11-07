@@ -147,6 +147,8 @@ def main():
     parser.add_argument("--macro-source-type-fixture", action="store_true")
     parser.add_argument("--stand-fall-fixture", action="store_true")
     parser.add_argument('--orb-uuid-fixture', action='store_true')
+    parser.add_argument('--mob-inventory-merge-fixture', action='store_true', help='Piglin and Villager saved inventories loaded as SimpleContainer.addItem does')
+    parser.add_argument('--mob-inventory-merge-raw-diagnostic', action='store_true', help='add each mob\'s whole entity data')
     parser.add_argument("--mob-pickup-save-fixture", action="store_true")
     parser.add_argument('--merchant-crafted-fixture', action='store_true')
     parser.add_argument('--mob-name-presentation-diagnostic', action='store_true',
@@ -329,6 +331,9 @@ def main():
     if args.selector_bounds_fixture:
         from selector_bounds_corpus import selector_bounds
         groups = [("setup", corpus_module.group_setup()), ("selector entity bounds", selector_bounds())]
+    if args.mob_inventory_merge_fixture:
+        from mob_inventory_merge_corpus import mob_inventory_merge
+        groups = [('setup', corpus_module.group_setup()), ('mob inventory merge', mob_inventory_merge(args.mob_inventory_merge_raw_diagnostic))]
     if args.boat_leash_view_fixture:
         from boat_leash_view_corpus import cases as boat_leash_views
         groups = [('setup', corpus_module.group_setup()),

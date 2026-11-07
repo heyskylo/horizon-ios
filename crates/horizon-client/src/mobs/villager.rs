@@ -428,6 +428,45 @@ pub fn is_farmer(m: &Mob) -> bool {
 /// `SimpleContainer(8)`: stacks the villager carries.
 const INVENTORY_SLOTS: usize = 8;
 
+/// `SimpleContainer.addItem` on a container of `slots` slots held as its
+/// occupied stacks in slot order: fill the stacks of the same item and
+/// components below `max_stack`, then free slots; the part that did not fit
+/// is returned.
+pub fn add_to_container(
+    inventory: &mut Vec<ItemStack>,
+    mut stack: ItemStack,
+    max_stack: u32,
+    slots: usize,
+) -> Option<ItemStack> {
+    for s in inventory.iter_mut() {
+        if stack.count > 0 && s.same_item_same_components(&stack) && s.count < max_stack {
+            let n = (max_stack - s.count).min(stack.count);
+            s.count += n;
+            stack.count -= n;
+        }
+    }
+    while stack.count > 0 && inventory.len() < slots {
+        let n = stack.count.min(max_stack);
+        inventory.push(ItemStack {
+            count: n,
+            ..stack.clone()
+        });
+        stack.count -= n;
+    }
+    (stack.count > 0).then_some(stack)
+}
+
+/// `SimpleContainer.fromItemList`: clear, then `addItem` each saved stack
+/// at the type's limit for it; what does not fit is dropped.
+pub fn load_container(m: &Mob, items: &[horizon_world::nbt::Tag], slots: usize) -> Vec<ItemStack> {
+    let mut inventory = Vec::new();
+    for stack in items.iter().filter_map(crate::save::item_from_nbt) {
+        let max = m.kind.inventory_stack_limit(&stack);
+        let _ = add_to_container(&mut inventory, stack, max, slots);
+    }
+    inventory
+}
+
 impl Ext {
     /// `countFoodPointsInInventory`.
     pub fn food_in_inventory(&self) -> i32 {
@@ -477,23 +516,8 @@ impl Ext {
     }
     /// `SimpleContainer.addItem`: merge into stacks, then free slots; the
     /// part that did not fit is returned.
-    pub fn add_item(&mut self, mut stack: ItemStack, max_stack: u32) -> Option<ItemStack> {
-        for s in &mut self.inventory {
-            if stack.count > 0 && s.same_item_same_components(&stack) && s.count < max_stack {
-                let n = (max_stack - s.count).min(stack.count);
-                s.count += n;
-                stack.count -= n;
-            }
-        }
-        while stack.count > 0 && self.inventory.len() < INVENTORY_SLOTS {
-            let n = stack.count.min(max_stack);
-            self.inventory.push(ItemStack {
-                count: n,
-                ..stack.clone()
-            });
-            stack.count -= n;
-        }
-        (stack.count > 0).then_some(stack)
+    pub fn add_item(&mut self, stack: ItemStack, max_stack: u32) -> Option<ItemStack> {
+        add_to_container(&mut self.inventory, stack, max_stack, INVENTORY_SLOTS)
     }
     /// `SimpleContainer.removeItemType`: take up to `count` of the item from
     /// the first stacks that hold it.
@@ -984,12 +1008,10 @@ pub fn read_nbt(m: &mut Mob, tag: &horizon_world::nbt::Tag) {
         _ => None,
     };
     let asleep = e.sleeping_pos.is_some();
+    // InventoryCarrier.readInventoryFromTag -> SimpleContainer.fromItemList.
     if let Some(Tag::List(items)) = tag.get("Inventory") {
-        e.inventory = items
-            .iter()
-            .filter_map(crate::save::item_from_nbt)
-            .take(INVENTORY_SLOTS)
-            .collect();
+        let inventory = load_container(m, items, INVENTORY_SLOTS);
+        ext_mut(m).inventory = inventory;
     }
     if asleep {
         m.extra.ints[1] = bed_facing_code(None);
