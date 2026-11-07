@@ -799,6 +799,7 @@ impl Game<'_> {
             let (wood, chest) = super::boats::any_boat_wood(k).unwrap_or(("oak", false));
             let mut b = super::boats::Boat::new(id, std::sync::Arc::from(wood), position, yaw);
             b.no_gravity = entity_nbt::flag(&tag, "NoGravity");
+            b.fire_ticks = super::boats::saved_fire(&tag);
             b.pitch = entity_nbt::rotation(&tag)[1];
             if chest {
                 b = b.with_chest();
@@ -1165,15 +1166,7 @@ impl Game<'_> {
         if self.boats.iter().any(|b| b.id == root) {
             let uuid = self.uuid_for(root);
             let b = self.boats.iter().find(|b| b.id == root)?;
-            let mut tag = entity_nbt::boat_to_nbt(
-                &b.entity_type(),
-                b.position,
-                b.velocity,
-                [b.yaw, b.pitch],
-                uuid,
-                self.persist.raw.get(&root),
-                b.chest.then_some(&b.items[..]),
-            );
+            let mut tag = b.to_nbt(uuid, self.persist.raw.get(&root));
             self.put_mob_passengers(&mut tag, root);
             return Some(tag);
         }
@@ -2067,15 +2060,7 @@ impl Game<'_> {
             return None;
         }
         let uuid = self.saved_uuid_or_random(id);
-        let mut tag = entity_nbt::boat_to_nbt(
-            &b.entity_type(),
-            b.position,
-            b.velocity,
-            [b.yaw, b.pitch],
-            uuid,
-            self.persist.raw.get(&id),
-            b.chest.then_some(&b.items[..]),
-        );
+        let mut tag = b.to_nbt(uuid, self.persist.raw.get(&id));
         self.put_mob_passengers(&mut tag, id);
         // AbstractBoat.addAdditionalSaveData: the lead's holder.
         self.write_boat_leash(&mut tag, i);

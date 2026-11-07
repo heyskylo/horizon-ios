@@ -294,14 +294,9 @@ impl Game<'_> {
         }
         let mut ejected = false;
         if let Some(i) = boat {
-            // AbstractBoat.tick on the server for a boat its rider drives:
-            // only the hurt animation and the damage wear off here.
-            let b = &mut self.boats[i];
-            b.hurt_time = (b.hurt_time - 1).max(0);
-            b.damage = (b.damage - 1.0).max(0.0);
             // `Entity.ejectPassengers`: every player in the boat must see
             // the request; the common boat tick clears it once nobody rides.
-            ejected = b.eject_riders;
+            ejected = self.boats[i].eject_riders;
         }
         // ServerGamePacketListenerImpl.tick: the vehicle's last good position
         // is where it is now, so a move the server made (a piston, a push)
