@@ -5881,16 +5881,28 @@ def command_zombie_reinforcements(once=False, raw=False, legacy=False):
 ISOLATED_REINFORCEMENTS = frozenset({'command zombie reinforcements', 'command reinforcement once'})
 # These overlays replace built-in recipes, never beside the corpus's fixed vanilla recipe-count controls.
 ISOLATED_RECIPES = frozenset({'crafting recipe priority', 'crafting base recipe control', 'transmute result patches'})
+ISOLATED_FRAME_MAPS = frozenset({'frame live map detachment'})
+ISOLATED_SPECTRAL_DURATION = frozenset({'spectral saved duration'})
+ISOLATED_FRAME_MAPS = frozenset({'frame live map detachment'})
+ISOLATED_ITEM_HEALTH = frozenset({'item Health short load'})
 ISOLATED_FRAME_MAPS = frozenset({'frame live map detachment', 'treasure map copies'})
 ISOLATED_MAP_CRAFTING = frozenset({'craft map takes'})
 ISOLATED_MACRO_TYPE = frozenset({'macro source type error'})
 ISOLATED_PICKUP_SAVE = frozenset({'mob saved pickup loot'})
 ISOLATED_ORB_UUID = frozenset({'orb saved UUID'})
 ISOLATED_STAND_FALL = frozenset({'stand saved fall distance'})
-ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_MAP_CRAFTING | ISOLATED_MACRO_TYPE | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL
+ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_SPECTRAL_DURATION | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL | ISOLATED_MAP_CRAFTING | ISOLATED_MACRO_TYPE | ISOLATED_ITEM_HEALTH
 
 
 def groups():
+    try:
+        from .spectral_duration_corpus import cases as spectral_saved_duration
+    except ImportError:
+        from spectral_duration_corpus import cases as spectral_saved_duration
+    try:
+        from .item_health_load_corpus import cases as item_health_load
+    except ImportError:
+        from item_health_load_corpus import cases as item_health_load
     try:
         from .vehicle_kill_corpus import vehicle_kill_contents
     except ImportError:
@@ -5939,6 +5951,8 @@ def groups():
         from item_merge_corpus import stack_limit_merges
     result = [
         ('setup', group_setup()),
+        ('spectral saved duration', spectral_saved_duration(cmd, setup)),
+        ('item Health short load', item_health_load(cmd, setup)),
         ('macro source type error', macro_source_type_error()),
         ('stand saved fall distance', stand_saved_fall()),
         ('orb saved UUID', orb_saved_uuid()),

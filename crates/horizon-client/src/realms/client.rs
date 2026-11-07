@@ -105,8 +105,19 @@ pub struct Ops {
 pub struct RealmSetting {
     #[serde(default, deserialize_with = "nullable")]
     pub name: String,
-    #[serde(default, deserialize_with = "nullable")]
+    #[serde(default, deserialize_with = "setting_value")]
     pub value: String,
+}
+
+/// `JsonPrimitive.getAsString`: the service sends a setting's value as a JSON bool or
+/// number where Gson reads a string, so either reads as its text.
+fn setting_value<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    Ok(match serde_json::Value::deserialize(d)? {
+        serde_json::Value::Bool(value) => value.to_string(),
+        serde_json::Value::Number(value) => value.to_string(),
+        serde_json::Value::String(value) => value,
+        _ => String::new(),
+    })
 }
 
 /// `RealmsSlot`: one of the Realm's world slots.
@@ -385,7 +396,24 @@ pub struct InviteCode {
 #[derive(Clone, Debug, Deserialize, Default)]
 struct InviteCodeListResponse {
     #[serde(default, deserialize_with = "nullable")]
-    invite_codes: Vec<InviteCode>,
+    result: Vec<InviteCode>,
+}
+
+impl InviteCode {
+    /// `InviteCodeList.parse`: the answer is an array, or an object whose `result` is one;
+    /// an entry without its code is dropped, as `InviteCode.parse`'s null is.
+    pub fn parse_list(json: &str) -> Vec<Self> {
+        let list = if let Ok(list) = serde_json::from_str::<Vec<Self>>(json) {
+            list
+        } else {
+            serde_json::from_str::<InviteCodeListResponse>(json)
+                .unwrap_or_default()
+                .result
+        };
+        list.into_iter()
+            .filter(|code| !code.code.is_empty())
+            .collect()
+    }
 }
 
 /// `Backup`: one of the Realm's automatic backups.
@@ -883,6 +911,12 @@ impl RealmsClient {
 
     /// `RealmsClient.execute`: the body of a 2xx answer, else the error.
     fn execute(request: ureq::Request, body: Option<&str>) -> Result<String, RealmsError> {
+        // `Request.Post`: a body goes out as application/json (the frontend answers 415
+        // to a text/plain POST).
+        let request = match body {
+            Some(_) => request.set("Content-Type", "application/json; charset=utf-8"),
+            None => request,
+        };
         let result = match body {
             Some(body) => request.send_string(body),
             None => request.call(),
@@ -976,9 +1010,9 @@ impl RealmsClient {
         Self::execute(self.request("PUT", &url, READ_TIMEOUT), Some("")).map(drop)
     }
 
-    /// `RealmsClient.subscriptionFor`: the configuration screen's subscription tab.
+    /// `RealmsClient.subscriptionFor`: `GET subscriptions/{id}` (no `worlds/` prefix).
     pub fn subscription_for(&self, realm_id: i64) -> Result<Subscription, RealmsError> {
-        let url = self.url(&format!("worlds/{realm_id}/subscription"));
+        let url = self.url(&format!("subscriptions/{realm_id}"));
         let json = Self::execute(self.request("GET", &url, READ_TIMEOUT), None)?;
         serde_json::from_str(&json).map_err(|_| RealmsError::Parse)
     }
@@ -1309,9 +1343,7 @@ impl RealmsClient {
             &format!("api/v1.0/invite/codes?realmId={realm_id}"),
             None,
         )?;
-        serde_json::from_str::<InviteCodeListResponse>(&json)
-            .map(|r| r.invite_codes)
-            .map_err(|_| RealmsError::Parse)
+        Ok(InviteCode::parse_list(&json))
     }
 
     /// `RealmsClient.createInviteCode`: `POST api/v1.0/invite/codes` with
@@ -1590,6 +1622,20 @@ mod tests {
         );
     }
 
+    /// `InviteCodeList.parse`: the answer is an array or `{"result":[...]}`, and an entry
+    /// without its code is dropped.
+    #[test]
+    fn the_invite_code_list_reads_an_array_or_its_result() {
+        let array = r#"[{"code":"A","enabled":true},{"code":"","enabled":true}]"#;
+        let codes = InviteCode::parse_list(array);
+        assert_eq!(codes.len(), 1, "an entry without a code is dropped");
+        assert_eq!(codes[0].code, "A");
+        assert!(codes[0].enabled);
+        let wrapped = r#"{"result":[{"code":"B","expirationDate":17}]}"#;
+        let codes = InviteCode::parse_list(wrapped);
+        assert_eq!(codes.len(), 1);
+        assert_eq!(codes[0].expiration_date, Some(17));
+    }
     #[test]
     fn server_list_reads_camel_case_and_nulls() {
         let raw = r#"{"servers":[{"id":12345,"remoteSubscriptionId":"sub","name":"Test Realm",

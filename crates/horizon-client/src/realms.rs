@@ -606,6 +606,9 @@ pub enum SubScreen {
         regions: Vec<RegionDataDto>,
         /// The highlighted row: `(preference, region)`.
         selected: Option<(i32, Option<String>)>,
+        /// The settings tab's data, carried back so its save can run at once.
+        detail: Option<Result<RealmServer, RealmsError>>,
+        tier: Option<Result<RealmTierConfiguration, RealmsError>>,
     },
     /// `RealmsInviteCodesScreen`: the Realm's shareable codes.
     InviteCodes {
@@ -615,6 +618,8 @@ pub enum SubScreen {
         /// `createInviteCode` on a worker.
         job: Option<Job<Result<(), RealmsError>>>,
         error: Option<String>,
+        /// The highlighted row (`InviteCodeSelectionList`).
+        selected: Option<usize>,
     },
     /// `RealmsEditInviteCodeScreen`: one code's active flag and expiration.
     EditCode {
@@ -1012,6 +1017,12 @@ impl Screen {
                 }
                 if let Some(result) = detail_job.as_ref().and_then(take) {
                     *detail_job = None;
+                    // `RealmsConfigureWorldScreen.fetchServerData`: the detail *is* the
+                    // screen's server copy (its region preference is what the settings
+                    // draft starts from; the list's copy does not carry it).
+                    if let Ok(fetched) = &result {
+                        *server = fetched.clone();
+                    }
                     *detail = Some(result);
                 }
                 if let Some(result) = tier_job.as_ref().and_then(take) {
@@ -1576,17 +1587,23 @@ impl Screen {
     }
 
     /// A chosen region preference: back to the settings tab with it.
-    fn back_to_settings(&mut self, server: RealmServer, settings: SettingsDraft) {
+    fn back_to_settings(
+        &mut self,
+        server: RealmServer,
+        settings: SettingsDraft,
+        detail: Option<Result<RealmServer, RealmsError>>,
+        tier: Option<Result<RealmTierConfiguration, RealmsError>>,
+    ) {
         self.subscreen = SubScreen::Configure {
             server,
             tab: ConfigureTab::Settings,
             subscription: None,
             subscription_job: None,
-            detail: None,
+            detail,
             detail_job: None,
             deleting: None,
             member_job: None,
-            tier: None,
+            tier,
             tier_job: None,
             settings: Some(settings),
             regions: None,
@@ -1669,6 +1686,8 @@ impl Screen {
             server,
             settings: Some(draft),
             regions: Some(Ok(list)),
+            detail,
+            tier,
             ..
         } = &self.subscreen
         else {
@@ -1681,6 +1700,8 @@ impl Screen {
             settings,
             regions,
             selected,
+            detail: detail.clone(),
+            tier: tier.clone(),
         };
     }
 
@@ -1805,6 +1826,7 @@ impl Screen {
             list_job: None,
             job: None,
             error: None,
+            selected: None,
         };
         self.start_invite_codes();
     }
@@ -2557,6 +2579,8 @@ impl Screen {
                     server,
                     settings,
                     selected,
+                    detail,
+                    tier,
                     ..
                 } = &self.subscreen
                     && let Some((preference, region)) = selected
@@ -2565,18 +2589,22 @@ impl Screen {
                     let mut settings = settings.clone();
                     settings.preference = *preference;
                     settings.region = region.clone();
-                    self.back_to_settings(server, settings);
+                    self.back_to_settings(server, settings, detail.clone(), tier.clone());
                 }
                 Outcome::None
             }
             Some(86) => {
                 if let SubScreen::RegionPreference {
-                    server, settings, ..
+                    server,
+                    settings,
+                    detail,
+                    tier,
+                    ..
                 } = &self.subscreen
                 {
                     let server = server.clone();
                     let settings = settings.clone();
-                    self.back_to_settings(server, settings);
+                    self.back_to_settings(server, settings, detail.clone(), tier.clone());
                 }
                 Outcome::None
             }
@@ -2586,6 +2614,8 @@ impl Screen {
                     server,
                     settings: Some(draft),
                     regions,
+                    detail,
+                    tier,
                     ..
                 } = &self.subscreen
                 {
@@ -2605,6 +2635,8 @@ impl Screen {
                                 settings: draft,
                                 regions,
                                 selected,
+                                detail: detail.clone(),
+                                tier: tier.clone(),
                             };
                         }
                     } else if let SubScreen::Configure { regions_job, .. } = &mut self.subscreen
@@ -2628,6 +2660,7 @@ impl Screen {
                         list_job: Some(spawn(move || client.invite_codes(id))),
                         job: None,
                         error: None,
+                        selected: None,
                     };
                 }
                 Outcome::None
@@ -2886,7 +2919,17 @@ impl Screen {
             }
             // The tab bar draws its own tabs (`MenuTabBar`), so a click there carries no
             // button id: the tab bar's geometry decides.
-            None if matches!(self.subscreen, SubScreen::Configure { .. }) => {
+            // Clicks that miss every button: the tab bar, the screens' drawn fields and
+            // lists (the Configure guard covers its tab bar; the others their rows).
+            None if matches!(
+                self.subscreen,
+                SubScreen::Configure { .. }
+                    | SubScreen::RegionPreference { .. }
+                    | SubScreen::EditCode { .. }
+                    | SubScreen::SlotOptions { .. }
+                    | SubScreen::InviteCodes { .. }
+            ) =>
+            {
                 let (bar_x, tab_w) = tab_geometry(w);
                 if y < TAB_HEIGHT && x >= bar_x {
                     let index = ((x - bar_x) / tab_w).floor() as usize;
@@ -3006,8 +3049,21 @@ impl Screen {
                         }
                     }
                 }
-                // RealmsPreferredRegionSelectionScreen: a row is the preference (the region
-                // rows are MANUAL + that region).
+                // `RealmsInviteCodesScreen`: a row takes the selection (`Entry
+                // .mouseClicked`), 28 high from the contents' top.
+                if let SubScreen::InviteCodes {
+                    codes, selected, ..
+                } = &mut self.subscreen
+                    && let Some(Ok(list)) = codes
+                {
+                    let top = 33.0;
+                    let rx = ((w - 308.0) / 2.0).floor();
+                    if x >= rx && x < rx + 308.0 && y >= top {
+                        let row = ((y - top - 2.0) / 28.0).floor() as usize;
+                        *selected = (row < list.len()).then_some(row);
+                    }
+                    return Outcome::None;
+                }
                 if let SubScreen::RegionPreference {
                     regions, selected, ..
                 } = &mut self.subscreen
@@ -3022,8 +3078,6 @@ impl Screen {
                     }
                     return Outcome::None;
                 }
-                // RealmsEditInviteCodeScreen's expiration slider: a click picks the
-                // nearest of the seven choices.
                 if let SubScreen::EditCode {
                     active, expiration, ..
                 } = &mut self.subscreen
@@ -3583,8 +3637,10 @@ impl Screen {
                 }
             }
             SubScreen::RegionPreference { .. } => {
-                buttons.push((cx - 102.0, h - 36.0, 100.0, t("gui.done"), true, 87, None));
-                buttons.push((cx + 2.0, h - 36.0, 100.0, t("gui.cancel"), true, 86, None));
+                // `RealmsPreferredRegionSelectionScreen`: two 150-wide buttons 8 apart.
+                let x = (w - 308.0) / 2.0;
+                buttons.push((x, h - 26.0, 150.0, t("gui.done"), true, 87, None));
+                buttons.push((x + 158.0, h - 26.0, 150.0, t("gui.cancel"), true, 86, None));
             }
             SubScreen::SlotOptions {
                 server,
@@ -3688,55 +3744,62 @@ impl Screen {
                 codes,
                 list_job,
                 job,
+                selected,
                 ..
             } => {
-                if let Some(Ok(list)) = codes {
-                    let rx = ((w - ROW_WIDTH) / 2.0).floor();
-                    for (i, _) in list.iter().enumerate().take(40) {
-                        let row_y = 36.0 + 22.0 + 2.0 + i as f32 * ROW_HEIGHT;
-                        if row_y + ROW_HEIGHT > h - 48.0 {
-                            break;
-                        }
-                        let id = 130 + i as u8 * 3;
-                        buttons.push((
-                            rx + ROW_WIDTH - 146.0,
-                            row_y + 8.0,
-                            46.0,
-                            t("mco.configure.world.invite_codes.copy"),
-                            true,
-                            id,
-                            None,
-                        ));
-                        buttons.push((
-                            rx + ROW_WIDTH - 98.0,
-                            row_y + 8.0,
-                            46.0,
-                            t("mco.configure.world.invite_codes.edit"),
-                            true,
-                            id + 1,
-                            None,
-                        ));
-                        buttons.push((
-                            rx + ROW_WIDTH - 50.0,
-                            row_y + 8.0,
-                            48.0,
-                            t("mco.configure.world.invite_codes.delete"),
-                            job.is_none(),
-                            id + 2,
-                            None,
-                        ));
-                    }
-                }
+                // `RealmsInviteCodesScreen`: a footer of two rows, Copy/Delete/Edit 97
+                // wide over Create/Back 150 wide, 8 apart (`FOOTER_HEIGHT` 64).
+                let fetched = matches!(codes, Some(Ok(_)));
+                let count = codes
+                    .as_ref()
+                    .and_then(|r| r.as_ref().ok())
+                    .map_or(0, |list| list.len());
+                let busy = list_job.is_some() || job.is_some();
+                let idle = |enabled: bool| enabled && !busy;
+                let row1 = h - 56.0;
+                let x0 = ((w - 307.0) / 2.0).floor();
+                // The selected code's Copy (+0), Edit (+1) and Delete (+2), in the ids the
+                // `100..=200` arm reads as a code's row (130 + 3 * row): below the Backup
+                // screen's 170..=189, which that match tries first.
+                let row_id = |which: u8| 130 + 3 * selected.unwrap_or(0) as u8 + which;
                 buttons.push((
-                    cx - 100.0,
-                    h - 60.0,
-                    200.0,
+                    x0,
+                    row1,
+                    97.0,
+                    t("mco.configure.world.invite_codes.copy"),
+                    idle(selected.is_some()),
+                    row_id(0),
+                    None,
+                ));
+                buttons.push((
+                    x0 + 105.0,
+                    row1,
+                    97.0,
+                    t("mco.configure.world.invite_codes.delete"),
+                    idle(selected.is_some()),
+                    row_id(2),
+                    None,
+                ));
+                buttons.push((
+                    x0 + 210.0,
+                    row1,
+                    97.0,
+                    t("mco.configure.world.invite_codes.edit"),
+                    idle(selected.is_some()),
+                    row_id(1),
+                    None,
+                ));
+                let x = ((w - 308.0) / 2.0).floor();
+                buttons.push((
+                    x,
+                    h - 28.0,
+                    150.0,
                     t("mco.configure.world.invite_codes.create"),
-                    list_job.is_none() && job.is_none(),
+                    idle(fetched && count < 5),
                     160,
                     None,
                 ));
-                buttons.push((cx - 100.0, h - 36.0, 200.0, t("gui.back"), true, 161, None));
+                buttons.push((x + 158.0, h - 28.0, 150.0, t("gui.back"), true, 161, None));
             }
             SubScreen::EditCode { active, job, .. } => {
                 let on_off = if *active {
@@ -4542,9 +4605,40 @@ impl Screen {
                         .is_some_and(|(p, r)| p == preference && *r == *region);
                     let label = preference_label(*preference, region.as_deref());
                     if picked {
-                        batch.fill(atlas, left, y, 300.0, 14.0, 0xFF30_3030);
+                        // `AbstractSelectionList.extractSelection`: the entry black, its
+                        // outline white (the list is focused).
+                        batch.fill(atlas, left, y, 300.0, 14.0, 0xFFFF_FFFF);
+                        batch.fill(atlas, left + 1.0, y + 1.0, 298.0, 12.0, 0xFF00_0000);
                     }
                     batch.text(atlas, &label, left + 5.0, y + 2.0, u32::MAX, true);
+                    // `Entry.extractContent`: the region's `ServiceQuality` icon, 10x8 at
+                    // the row's right (`ping_5` great to `ping_2` poor, `ping_unknown`).
+                    if let Some(region) = region
+                        && let Some(quality) = regions
+                            .iter()
+                            .find(|data| &data.region == region)
+                            .map(|data| data.service_quality)
+                    {
+                        let icon = match quality {
+                            1 => "gui/sprites/icon/ping_5",
+                            2 => "gui/sprites/icon/ping_4",
+                            3 => "gui/sprites/icon/ping_3",
+                            4 => "gui/sprites/icon/ping_2",
+                            _ => "gui/sprites/icon/ping_unknown",
+                        };
+                        if atlas.sprites.contains_key(icon) {
+                            crate::ui::blit_sprite(
+                                batch,
+                                atlas,
+                                icon,
+                                left + 300.0 - 18.0,
+                                y + 2.0,
+                                10.0,
+                                8.0,
+                                u32::MAX,
+                            );
+                        }
+                    }
                 }
             }
             SubScreen::SlotOptions {
@@ -4695,60 +4789,66 @@ impl Screen {
                     y += 12.0;
                 }
             }
-            SubScreen::InviteCodes { codes, error, .. } => {
-                // `RealmsInviteCodesScreen`: the count in the title, the subtitle, a row
-                // per code with its expiration, then Create and Back.
-                let (count, max) = match codes {
-                    Some(Ok(list)) => (list.len(), 5usize),
-                    _ => (0, 5),
-                };
-                centered(
-                    batch,
-                    atlas,
-                    &crate::lang::tr(
+            SubScreen::InviteCodes {
+                codes,
+                error,
+                selected,
+                ..
+            } => {
+                // `RealmsInviteCodesScreen`: the count in the title once fetched (the
+                // subtitle only over an empty list), then a 28-high row per code whose
+                // selection is `extractSelection`'s, or the loading dots with no list.
+                let loaded = matches!(codes, Some(Ok(_)));
+                let count = codes
+                    .as_ref()
+                    .and_then(|r| r.as_ref().ok())
+                    .map_or(0, |list| list.len());
+                let title = if loaded {
+                    crate::lang::tr(
                         "mco.configure.world.invite_codes.title",
-                        &[&count as &dyn std::fmt::Display, &max],
-                    ),
-                    cx,
-                    14.0,
-                    u32::MAX,
-                );
-                centered(
-                    batch,
-                    atlas,
-                    &crate::lang::tr(
+                        &[&count as &dyn std::fmt::Display, &5usize],
+                    )
+                } else {
+                    t("mco.configure.world.buttons.invite_codes")
+                };
+                centered(batch, atlas, &title, cx, 12.0, u32::MAX);
+                let mut top = 33.0;
+                if loaded && count == 0 {
+                    let subtitle = crate::lang::tr(
                         "mco.configure.world.invite_codes.subtitle",
-                        &[&max as &dyn std::fmt::Display],
-                    ),
-                    cx,
-                    26.0,
-                    GREY,
-                );
+                        &[&5usize as &dyn std::fmt::Display],
+                    );
+                    for line in wrap_lines(&subtitle, atlas, 308.0) {
+                        centered(batch, atlas, &line, cx, top, GREY);
+                        top += 10.0;
+                    }
+                }
+                let bottom = h - 64.0;
                 match codes {
-                    Some(Ok(list)) if list.is_empty() => {}
                     Some(Ok(list)) => {
-                        let rx = ((w - ROW_WIDTH) / 2.0).floor();
+                        crate::ui::list_background(batch, atlas, top, bottom, false);
+                        let rx = ((w - 308.0) / 2.0).floor();
+                        let content = list.len() as f32 * 28.0;
+                        crate::ui::scrollbar(
+                            batch,
+                            atlas,
+                            rx + 308.0 + 2.0,
+                            top,
+                            bottom,
+                            content,
+                            0.0,
+                        );
                         for (i, code) in list.iter().enumerate() {
-                            let row_y = 36.0 + 22.0 + 2.0 + i as f32 * ROW_HEIGHT;
-                            if row_y + ROW_HEIGHT > h - 48.0 {
+                            let y = top + 2.0 + i as f32 * 28.0;
+                            if y + 28.0 > bottom {
                                 break;
                             }
-                            batch.text(
-                                atlas,
-                                &code.code,
-                                rx + 4.0,
-                                row_y + 4.0,
-                                if code.enabled { u32::MAX } else { GREY },
-                                true,
-                            );
-                            let expires = match code.expiration_date {
-                                Some(millis) => crate::lang::tr(
-                                    "mco.configure.world.invite_codes.edit.expires",
-                                    &[&start_date_text(millis) as &dyn std::fmt::Display],
-                                ),
-                                None => t("mco.configure.world.invite_codes.expiration.never"),
-                            };
-                            batch.text(atlas, &expires, rx + 4.0, row_y + 16.0, GREY, true);
+                            if *selected == Some(i) {
+                                batch.fill(atlas, rx + 2.0, y + 2.0, 304.0, 24.0, 0xFFFF_FFFF);
+                                batch.fill(atlas, rx + 3.0, y + 3.0, 302.0, 22.0, 0xFF00_0000);
+                            }
+                            // `Entry.extractContent`: the code alone, centred in its row.
+                            batch.text(atlas, &code.code, rx + 10.0, y + 10.0, u32::MAX, true);
                         }
                     }
                     Some(Err(e)) => {
@@ -4756,14 +4856,18 @@ impl Screen {
                             centered(batch, atlas, line, cx, 60.0 + i as f32 * 10.0, RED);
                         }
                     }
-                    None => centered(
-                        batch,
-                        atlas,
-                        &t("mco.configure.world.invite_codes.loading"),
-                        cx,
-                        60.0,
-                        u32::MAX,
-                    ),
+                    // Loading: the dots over the plain background, no list behind them.
+                    None => {
+                        centered(
+                            batch,
+                            atlas,
+                            &t("mco.configure.world.invite_codes.loading"),
+                            cx,
+                            mid - 6.0,
+                            u32::MAX,
+                        );
+                        centered(batch, atlas, loading_dots(), cx, mid + 8.0, GREY);
+                    }
                 }
                 if let Some(e) = error {
                     for (i, line) in wrap_lines(e, atlas, w - 40.0).iter().enumerate() {
