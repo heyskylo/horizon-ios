@@ -48,6 +48,7 @@ mod entity_outline;
 mod fluid;
 #[cfg(test)]
 mod inter_stage_tests;
+mod terrain_model;
 #[cfg(test)]
 pub(crate) mod test_gpu;
 mod weather;
@@ -55,9 +56,10 @@ mod world_text;
 use entity_batch::EntityBatch;
 pub use entity_batch::{
     DISSOLVE_OVERLAY, DRAGON_RAYS_OVERLAY, ENERGY_SWIRL_OVERLAY, FLUID_OVERLAY, OIT_ENTITY,
-    SHADOW_OVERLAY, TEXT_POLYGON_OFFSET_OVERLAY, TRANSLUCENT_GLINT_ITEM_OVERLAY,
+    SHADOW_OVERLAY, TERRAIN_MODEL_CUTOUT_MIPPED_OVERLAY, TERRAIN_MODEL_CUTOUT_OVERLAY,
+    TERRAIN_MODEL_SOLID_OVERLAY, TEXT_POLYGON_OFFSET_OVERLAY, TRANSLUCENT_GLINT_ITEM_OVERLAY,
     TRANSLUCENT_ITEM_OVERLAY, TRANSLUCENT_PARTICLE_OVERLAY, WATER_MASK_OVERLAY, WORLD_TEXT_OVERLAY,
-    WORLD_TEXT_POLYGON_OFFSET_OVERLAY, mark_oit,
+    WORLD_TEXT_POLYGON_OFFSET_OVERLAY, is_native_terrain, mark_oit,
 };
 pub use view::{View, ViewSet};
 
@@ -1207,6 +1209,7 @@ pub struct Renderer {
     text_polygon_offset_pipeline: wgpu::RenderPipeline,
     world_text_pipeline: wgpu::RenderPipeline,
     fluid_pipeline: wgpu::RenderPipeline,
+    terrain_model_pipelines: [wgpu::RenderPipeline; 3],
     celestial_pipeline: wgpu::RenderPipeline,
     celestial_buffer: wgpu::Buffer,
     end_sky: end_sky::EndSky,
@@ -1244,6 +1247,8 @@ pub struct Renderer {
     group: wgpu::BindGroup,
     fluid_group: wgpu::BindGroup,
     fluid_sampler: wgpu::Sampler,
+    terrain_model_group: wgpu::BindGroup,
+    terrain_model_sampler: wgpu::Sampler,
     globals: wgpu::Buffer,
     /// Resource-pack normal/specular maps, split like the colour sprite arrays.
     pbr_maps: Option<Vec<[wgpu::Texture; 2]>>,
@@ -2784,6 +2789,13 @@ impl Renderer {
             config.format.remove_srgb_suffix(),
             &sprite_constants,
         );
+        let terrain_model_pipelines = terrain_model::pipelines(
+            &device,
+            Some(&layout),
+            &shader,
+            config.format.remove_srgb_suffix(),
+            &sprite_constants,
+        );
         let instance_attributes = wgpu::vertex_attr_array![5=>Float32x4];
         let terrain_buffers = [
             Some(wgpu::VertexBufferLayout {
@@ -3350,6 +3362,22 @@ impl Renderer {
             &globals,
             &sprite_views,
             &fluid_sampler,
+            &lightmap_view,
+            &lightmap_sampler,
+            &emission_stats.view,
+        );
+        let terrain_model_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Native cutout model (unmipped)"),
+            lod_max_clamp: 0.0,
+            ..fluid::SAMPLER
+        });
+        let terrain_model_group = terrain_group(
+            &device,
+            "Native cutout model resources",
+            &bindings,
+            &globals,
+            &sprite_views,
+            &terrain_model_sampler,
             &lightmap_view,
             &lightmap_sampler,
             &emission_stats.view,
@@ -4744,6 +4772,7 @@ impl Renderer {
             text_polygon_offset_pipeline,
             world_text_pipeline,
             fluid_pipeline,
+            terrain_model_pipelines,
             celestial_pipeline,
             celestial_buffer,
             end_sky: end_sky::EndSky::default(),
@@ -4778,6 +4807,8 @@ impl Renderer {
             group,
             fluid_group,
             fluid_sampler,
+            terrain_model_group,
+            terrain_model_sampler,
             globals,
             pbr_maps,
             lightmap,
@@ -7135,6 +7166,17 @@ impl Renderer {
             &self.lightmap_sampler,
             &self.emission_stats.view,
         );
+        self.terrain_model_group = terrain_group(
+            &self.device,
+            "Native cutout model resources",
+            &self.terrain_layout,
+            &self.globals,
+            &self.sprite_views,
+            &self.terrain_model_sampler,
+            &self.lightmap_view,
+            &self.lightmap_sampler,
+            &self.emission_stats.view,
+        );
     }
     /// Block sprite layers per array on this device: a sprite's array is its layer over it, its
     /// layer in that array the rest (`block_sprites::Lookup`).
@@ -8779,6 +8821,9 @@ impl Renderer {
             fluid_quads,
             world_text_quads,
             world_text_offset_quads,
+            native_solid_quads,
+            native_cutout_quads,
+            native_cutout_mipped_quads,
         ] = self.entity_batch.update(
             entities,
             frame.additive,
@@ -8807,7 +8852,10 @@ impl Renderer {
             + oit_entity_quads
             + fluid_quads
             + world_text_quads
-            + world_text_offset_quads;
+            + world_text_offset_quads
+            + native_solid_quads
+            + native_cutout_quads
+            + native_cutout_mipped_quads;
         laps.lap("r_draw_lists");
         // Where the tail of materials the classic and the improved passes
         // both draw ends: the shadows, particles and items count back from it.
@@ -8815,7 +8863,10 @@ impl Renderer {
             - oit_entity_quads
             - fluid_quads
             - world_text_quads
-            - world_text_offset_quads;
+            - world_text_offset_quads
+            - native_solid_quads
+            - native_cutout_quads
+            - native_cutout_mipped_quads;
         let native_clouds = self.native.as_ref().is_none_or(|n| n.vanilla_clouds);
         let cloud_quads = if let Some(input) = frame.clouds.as_ref().filter(|_| native_clouds) {
             let (rebuilt, uniform) =
@@ -10247,6 +10298,36 @@ impl Renderer {
                 }
                 pass.set_bind_group(0, &self.group, &[]);
             }
+            // Native terrain models use the block sprite arrays with their own
+            // alpha/mipmap policies and ordinary opaque depth. Storage follows
+            // the existing materials without moving their indices or frame tails.
+            let mut first =
+                world_quads - native_solid_quads - native_cutout_quads - native_cutout_mipped_quads;
+            for (i, count) in [
+                native_solid_quads,
+                native_cutout_quads,
+                native_cutout_mipped_quads,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                if count > 0 {
+                    pass.set_pipeline(&self.terrain_model_pipelines[i]);
+                    pass.set_bind_group(
+                        0,
+                        if i == 1 {
+                            &self.terrain_model_group
+                        } else {
+                            &self.fluid_group
+                        },
+                        &[],
+                    );
+                    pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
+                    pass.draw_indexed(0..count * 6, (first * 4) as i32, 0..1);
+                }
+                first += count;
+            }
+            pass.set_bind_group(0, &self.group, &[]);
             // Still-fluid block entities draw as their own ordinary sorted
             // translucent material, before terrain transparency. This material
             // always writes depth and never joins the improved-transparency queues.
@@ -12714,7 +12795,7 @@ mod tests {
         let mut batch = super::EntityBatch::default();
         let counts = batch.update(&entities, &quad(3, 5), &quad(0, 6), &quad(0, 8), false);
         let vertices = &batch.combined;
-        assert_eq!(counts, [4, 1, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0]);
+        assert_eq!(counts, [4, 1, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(
             vertices
                 .as_chunks::<4>()
