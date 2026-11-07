@@ -28,7 +28,8 @@ try:
 except Reached:
     pass
 build = local / seen['name']
-print(seen['binary'], '/'.join(build.relative_to(local).parts[:1]), build.is_dir())
+binary = seen['binary'] and seen['binary'].relative_to(local)
+print(binary, '/'.join(build.relative_to(local).parts[:1]), build.is_dir())
 '''
 
 
@@ -50,8 +51,8 @@ class SoundHarnessInvocationTest(unittest.TestCase):
     def test_explicit_arguments_still_win(self):
         for name in ['test_mob_local_sound_parity', 'test_ominous_warning_sound_parity']:
             with self.subTest(harness=name):
-                self.assertEqual(self.run_harness(name, '--binary', '/bin/game', '--work-dir', '{local}/chosen'),
-                                 ['/bin/game', 'chosen', 'True'])
+                self.assertEqual(self.run_harness(name, '--binary', '{local}/game', '--work-dir', '{local}/chosen'),
+                                 ['game', 'chosen', 'True'])
 
 
 if __name__ == '__main__':
