@@ -1068,6 +1068,9 @@ impl Game<'_> {
         self.eye = eye.1;
         std::mem::swap(&mut self.player, &mut player);
         if let Some(mut m) = player {
+            // Travel can end a glide on a climbable. Keep the shared flag in
+            // step with the server's player before the next guest action.
+            g.fall_flying = m.fall_flying;
             g.health = m.health.health();
             g.food = m.health.food.food;
             g.saturation = m.health.food.saturation;
