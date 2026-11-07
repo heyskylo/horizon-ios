@@ -11735,6 +11735,9 @@ impl Renderer {
         if let Some(Some(timer)) = Self::pass_timer(&mut self.pack_post, &mut self.native) {
             timer.submitted(&self.queue);
         }
+        if let Some(timer) = &mut self.own_timing {
+            timer.submitted(&self.queue);
+        }
         if offscreen && let Some(submission) = submission {
             self.in_flight.push_back(submission);
             if !self.paced_elsewhere {
