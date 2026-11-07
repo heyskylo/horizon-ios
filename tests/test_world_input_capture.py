@@ -18,14 +18,17 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def method(source, name):
-    start = source.index(f"    fn {name}(")
+    # A method moved out of game.rs is `pub(super)` in its own file; the fixtures paste it as a
+    # private one.
+    plain, moved = f"    fn {name}(", f"    pub(super) fn {name}("
+    start = source.index(plain if plain in source else moved)
     opening = source.index("{", start)
     depth = 1
     end = opening + 1
     while depth:
         depth += (source[end] == "{") - (source[end] == "}")
         end += 1
-    return source[start:end]
+    return source[start:end].replace("pub(super) fn", "fn", 1)
 
 
 def function(source, name):
@@ -57,7 +60,8 @@ class WorldInputCaptureTests(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("rustc"), "requires Rust")
     def test_capture_lifecycle(self):
-        source = (ROOT / "crates/horizon-client/src/game.rs").read_text(encoding="utf-8")
+        source = "".join((ROOT / "crates/horizon-client/src" / path).read_text(encoding="utf-8")
+                         for path in ("game.rs", "game/pointer_capture.rs"))
         mouse = (ROOT / "crates/horizon-client-input/src/mouse.rs").read_text(encoding="utf-8")
         fixture = r'''
 use std::cell::Cell;

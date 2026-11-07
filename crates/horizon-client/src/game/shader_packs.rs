@@ -88,10 +88,20 @@ fn picked_pack(settings: &horizon_client::settings::Settings) -> &str {
     )
 }
 
-/// Whether the pack picked (`picked_pack`) draws flat where the device can (`pack_draws_flat`):
-/// a renderer made now lays the sections out for it before the first world frame loads it
-/// (`Renderer::new`).
-pub(super) fn picked_pack_draws_flat(settings: &horizon_client::settings::Settings) -> bool {
+/// What a renderer made now readies for the pack picked (`picked_pack`) before the first world
+/// frame loads it (`Renderer::new`).
+#[derive(Clone, Copy)]
+pub(crate) struct PickedPack {
+    /// It draws flat where the device can (`pack_draws_flat`): the sections are laid out so.
+    pub draws_flat: bool,
+    /// It is a shader API 0.2 pack under `HORIZON_HDR_FRAME=float`: the frame is float.
+    pub linear: bool,
+    /// No pack runs (none picked, or its mod is off), and HDR is on under `HORIZON_HDR_FRAME=float`:
+    /// the frame is float where HDR output is offered (docs/design/hdr-linear-light.md, step 3).
+    pub hdr_float: bool,
+}
+
+pub(super) fn picked_pack_shape(settings: &horizon_client::settings::Settings) -> PickedPack {
     let picked = picked_pack(settings);
     let dir = Game::shader_packs_dir();
     let path = if dev_pack().is_some() {
@@ -99,11 +109,20 @@ pub(super) fn picked_pack_draws_flat(settings: &horizon_client::settings::Settin
     } else {
         horizon_client::shader_pack_list::resolve(&dir, picked).1
     };
-    !picked.is_empty()
+    let active = !picked.is_empty()
         && path
             .file_name()
-            .is_none_or(|f| !active_pack(&f.to_string_lossy(), &settings.mods).is_empty())
-        && pack_draws_flat(&path)
+            .is_none_or(|f| !active_pack(&f.to_string_lossy(), &settings.mods).is_empty());
+    let linear = || {
+        super::native_shaders::linear_frame_switch()
+            && horizon_shader_api::Pack::read_manifest(&path)
+                .is_ok_and(|m| m.api == horizon_shader_api::Api::V0_2)
+    };
+    PickedPack {
+        draws_flat: active && pack_draws_flat(&path),
+        linear: active && linear(),
+        hdr_float: !active && settings.horizon.hdr && super::native_shaders::linear_frame_switch(),
+    }
 }
 
 /// Whether the pack at `path` has passes that draw the terrain flat where the device can,
@@ -240,6 +259,8 @@ impl Game<'_> {
                     );
                 }
                 Ok(None) => {}
+                // Stopped because it isn't wanted any more: not the pack's failure.
+                Err(refused) if refused.is_cancelled() => {}
                 Err(refused) => {
                     for note in refused.notes {
                         log::warn!("shader pack {name}: {note}");

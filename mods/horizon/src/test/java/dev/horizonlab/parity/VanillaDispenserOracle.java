@@ -823,6 +823,18 @@ public final class VanillaDispenserOracle {
         player.setId(w.getNextEntityId());
         VanillaBlockUpdateOracle.set(LivingEntity.class, player, "attributes",
             new net.minecraft.world.entity.ai.attributes.AttributeMap(net.minecraft.world.entity.player.Player.createAttributes().build()));
+        // What the constructor gives a player and hurtServer reads, for the
+        // target's Thorns: the player's own random rolls the damage.
+        VanillaBlockUpdateOracle.set(Entity.class, player, "random", net.minecraft.util.RandomSource.create());
+        VanillaBlockUpdateOracle.set(LivingEntity.class, player, "combatTracker", new net.minecraft.world.damagesource.CombatTracker(player));
+        VanillaBlockUpdateOracle.set(LivingEntity.class, player, "activeEffects", new HashMap<>());
+        VanillaBlockUpdateOracle.set(LivingEntity.class, player, "useItem", ItemStack.EMPTY);
+        VanillaBlockUpdateOracle.set(LivingEntity.class, player, "lastClimbablePos", Optional.empty());
+        VanillaBlockUpdateOracle.set(net.minecraft.world.entity.player.Player.class, player, "foodData", new net.minecraft.world.food.FoodData());
+        for (String shoulder : new String[] {"shoulderEntityLeft", "shoulderEntityRight"}) {
+            VanillaBlockUpdateOracle.set(net.minecraft.server.level.ServerPlayer.class, player, shoulder, new net.minecraft.nbt.CompoundTag());
+        }
+        player.setHealth(player.getMaxHealth());
         player.setUUID(new UUID(0L, 1L));
         VanillaBlockUpdateOracle.set(net.minecraft.world.entity.player.Player.class, player, "gameProfile",
             new com.mojang.authlib.GameProfile(new UUID(0L, 1L), "Player"));
@@ -868,6 +880,14 @@ public final class VanillaDispenserOracle {
             }
             out.add("V " + i + " " + health + " " + num(v.x) + " " + num(v.y) + " " + num(v.z));
         }
+        // What the first target wears (its Thorns wear it) and the player's health.
+        if (!(target instanceof net.minecraft.world.entity.decoration.ArmorStand)) {
+            for (EquipmentSlot slot : new EquipmentSlot[] {EquipmentSlot.FEET, EquipmentSlot.LEGS, EquipmentSlot.CHEST, EquipmentSlot.HEAD}) {
+                ItemStack worn = target.getItemBySlot(slot);
+                if (!worn.isEmpty()) out.add("W " + slot.getName() + " " + ParityData.canon(worn));
+            }
+        }
+        out.add("H " + num(player.getHealth()));
         var v = player.getDeltaMovement();
         var impact = player.currentImpulseImpactPos;
         Field grace = LivingEntity.class.getDeclaredField("currentImpulseContextResetGraceTime");
