@@ -124,7 +124,7 @@ SetAttributesFunction	missing		minor: set_attributes is not ported; no vanilla l
 SetAttributesFunction.ModifierBuilder.build	skip:java		builder
 SetBannerPatternFunction.run	missing		minor: banner pattern layers from loot are not set; no vanilla loot table uses set_banner_pattern
 SetBannerPatternFunction.Builder	skip:java		builder
-SetBookCoverFunction.apply	missing		minor: no vanilla loot table uses set_book_cover
+SetBookCoverFunction.apply	port	crates/horizon-world/src/loot.rs::Context::run	the written book's title (raw text, filtered kept), author and generation, over the component the stack already has, pages kept; `crates/horizon-items/src/item_data.rs::StackData::set_loot_component` then reads it into the book's fields
 SetComponentsFunction.run	port	crates/horizon-world/src/loot.rs::Context::run	loot tables apply set_components when the stack becomes an item (trial chamber trims included), not only /item modify
 SetComponentsFunction.setComponent	skip:java		builder factory
 SetContainerContents.run	missing		minor: no vanilla loot table uses set_contents
