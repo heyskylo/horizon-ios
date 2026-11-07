@@ -274,10 +274,11 @@ impl<'a> Reader<'a, '_> {
                 let mut values = Vec::with_capacity(len);
                 for _ in 0..len {
                     let mut value = self.payload(element_id, depth + 1)?;
-                    if let Tag::Compound(map) = &mut value {
-                        if map.len() == 1 && map.contains_key(&JavaString::default()) {
-                            value = map.remove(&JavaString::default()).unwrap();
-                        }
+                    if let Tag::Compound(map) = &mut value
+                        && map.len() == 1
+                        && map.contains_key(&JavaString::default())
+                    {
+                        value = map.remove(&JavaString::default()).unwrap();
                     }
                     values.push(value);
                 }
@@ -384,10 +385,11 @@ impl ListElements<'_, '_, '_> {
         }
         self.left -= 1;
         let mut value = self.reader.payload(self.element_id, self.depth)?;
-        if let Tag::Compound(map) = &mut value {
-            if map.len() == 1 && map.contains_key(&JavaString::default()) {
-                value = map.remove(&JavaString::default()).unwrap();
-            }
+        if let Tag::Compound(map) = &mut value
+            && map.len() == 1
+            && map.contains_key(&JavaString::default())
+        {
+            value = map.remove(&JavaString::default()).unwrap();
         }
         Ok(Some(value))
     }

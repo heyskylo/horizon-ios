@@ -339,6 +339,7 @@ impl Game<'_> {
                         at,
                         rotation: Some(rotation),
                         vehicle: game.vehicle_by_uuid(mount),
+                        cause: None,
                     });
             }
             game.native_joins_flush(false, 0);

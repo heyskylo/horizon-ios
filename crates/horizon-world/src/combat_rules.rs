@@ -34,14 +34,14 @@ pub fn after_armor<W: ArmorWorld>(
     let divisor = 2.0 + toughness / 4.0;
     let protection = clamp(armor - damage / divisor, armor * 0.2, 20.0);
     let mut effectiveness = protection / 25.0;
-    if let Some(weapon) = world.weapon()? {
-        if let Some(level) = world.server_level()? {
-            effectiveness = clamp(
-                world.modify_armor_effectiveness(level, weapon, effectiveness)?,
-                0.0,
-                1.0,
-            );
-        }
+    if let Some(weapon) = world.weapon()?
+        && let Some(level) = world.server_level()?
+    {
+        effectiveness = clamp(
+            world.modify_armor_effectiveness(level, weapon, effectiveness)?,
+            0.0,
+            1.0,
+        );
     }
     Ok(damage * (1.0 - effectiveness))
 }

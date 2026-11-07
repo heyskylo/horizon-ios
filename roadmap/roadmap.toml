@@ -629,16 +629,6 @@ classes. Option to look at again: a bridge for simple Fabric mods."""
 links = ["#527"]
 
 [[item]]
-id = "alt-accounts"
-title = "Ely.by and other sign-in providers"
-status = "later"
-area = "servers"
-plain = """Sign in with other account providers, such as Ely.by or any Yggdrasil-compatible one, beside Microsoft."""
-dev = """Issue #1270 asks for Ely.by and Yggdrasil-compatible servers with an account selector in the launcher. It \
-builds on the Microsoft sign-in (docs/microsoft-account.md)."""
-links = ["#1270", "docs/microsoft-account.md"]
-
-[[item]]
 id = "older-servers"
 title = "Join servers on older versions"
 status = "later"

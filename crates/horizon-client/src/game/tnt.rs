@@ -71,6 +71,22 @@ impl PrimedTnt {
         border: Option<&horizon_core::geometry::border::BorderGeometry>,
         blocks: Option<&horizon_world::movement_properties::BoundMovementProperties>,
     ) -> Result<Vec<BlockPos>> {
+        self.tick_among(world, collision, assets, facts, fluids, border, blocks, &[])
+    }
+    /// [`Self::tick`], its move also stopped by `entities`: the boxes of the
+    /// entities that `canBeCollidedWith` it (`EntityGetter.getEntityCollisions`).
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn tick_among(
+        &mut self,
+        world: &horizon_client::world::World,
+        collision: &horizon_world::block_collision::BlockCollisionRegistry<'_>,
+        assets: &horizon_client::assets::Assets,
+        facts: &horizon_client::blocks::BlockFacts,
+        fluids: &horizon_client::motion::FluidResources,
+        border: Option<&horizon_core::geometry::border::BorderGeometry>,
+        blocks: Option<&horizon_world::movement_properties::BoundMovementProperties>,
+        entities: &[Aabb],
+    ) -> Result<Vec<BlockPos>> {
         self.previous = self.position;
         self.velocity.y -= self.get_gravity();
         let scene = SceneCollisions {
@@ -79,10 +95,11 @@ impl PrimedTnt {
             subject: None,
         };
         let wanted = self.velocity;
-        // Entity.collide: the world border's walls stop it too.
+        // Entity.collide: the world border's walls and the entities that
+        // `canBeCollidedWith` it (a boat, a shulker) stop it too.
         let border = border.map(|b| (b, [self.position.x, self.position.z]));
         let moved = scene
-            .resolve_in_border(self.bounds(), wanted, 0.0, self.on_ground, border)
+            .resolve_in_border_with(self.bounds(), wanted, 0.0, self.on_ground, border, entities)
             .unwrap_or(Vec3::ZERO);
         if horizon_client::entities::move_applies(wanted, moved) {
             self.position = Vec3::new(
@@ -259,9 +276,10 @@ impl Game<'_> {
     /// tick). TNT primed by an explosion starts ticking next tick.
     /// One primed TNT's `tick`: it moves, and explodes when its fuse is out.
     /// `i` is its place in the list; the caller has checked it is ticking.
-    pub(super) fn tick_one_tnt(&mut self, i: usize) -> Result<()> {
+    /// `entities` are the boxes that stop its move (`Game::item_entity_collisions`).
+    pub(super) fn tick_one_tnt(&mut self, i: usize, entities: &[Aabb]) -> Result<()> {
         let t = &mut self.tnts[i];
-        let tops = t.tick(
+        let tops = t.tick_among(
             &self.world,
             self.collision,
             &self.pack.assets,
@@ -269,6 +287,7 @@ impl Game<'_> {
             &self.res.motion().fluids,
             Some(self.border.geometry()),
             Some(&self.res.motion().blocks),
+            entities,
         )?;
         let snow = (t.previous, t.position, t.bounds(), t.velocity);
         self.entity_powder_snow_particles(snow.0, snow.1, snow.2, snow.3, false);
@@ -1302,3 +1321,111 @@ mod tests {
     }
 }
 horizon_client::impl_joined!(PrimedTnt);
+
+#[cfg(test)]
+mod entity_collision_tests {
+    use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+    use horizon_client::chunk::Chunk;
+    use horizon_core::position::ChunkPos;
+    use std::sync::Arc;
+
+    /// `Entity.collide` for primed TNT, a falling block and an experience orb:
+    /// a boat holds the TNT and the orb up, a shulker the sand, as they hold
+    /// up a dropped item (`canBeCollidedWith`).
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn tnt_sand_and_orbs_land_on_boats_and_shulkers() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.game_dir = Some(
+            std::env::temp_dir().join(format!("horizon-tnt-boat-unit-{}", std::process::id())),
+        );
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.ui.difficulty = 2;
+        let registry = &game.pack.assets.registry;
+        let stone = registry.default_state("minecraft:stone").unwrap();
+        let sand = registry.default_state("minecraft:sand").unwrap();
+        let mut chunk = Chunk::empty(0, 0);
+        for x in 0..16 {
+            for z in 0..16 {
+                chunk.set(x, 199, z, stone.0);
+            }
+        }
+        game.world.chunks.insert((0, 0), Arc::new(chunk));
+        game.block_ticks
+            .add_empty_chunk(ChunkPos::new(0, 0))
+            .unwrap();
+        assert!(game.run_command("forceload add 0 0"));
+        assert!(game.run_command("summon oak_boat 4.5 200 4.5"));
+        assert!(game.run_command("summon oak_boat 12.5 200 12.5"));
+        assert!(game.run_command("summon shulker 8.5 200 8.5 {NoAI:1b}"));
+        assert!(game.run_command("summon tnt 4.5 202 4.5 {fuse:80}"));
+        assert!(game.run_command("summon tnt 4.5 202 12.5 {fuse:80}"));
+        assert!(game.run_command(
+            "summon falling_block 8.5 203 8.5 {BlockState:{Name:\"minecraft:sand\"},Time:1}"
+        ));
+        assert!(game.run_command("summon experience_orb 12.5 202 12.5 {Value:1}"));
+        for _ in 0..40 {
+            game.tick_world(true).unwrap();
+        }
+        let boat_top = game.boats[0].bounds().max_position().y;
+        let tnt_at = |z: f64| {
+            game.tnts
+                .iter()
+                .find(|t| (t.position.z - z).abs() < 0.5)
+                .map(|t| t.position.y)
+                .unwrap()
+        };
+        assert_eq!(tnt_at(4.5), boat_top, "the TNT rests on the boat");
+        assert_eq!(tnt_at(12.5), 200.0, "the other TNT lands on the stone");
+        assert_eq!(
+            game.orbs[0].position.y, boat_top,
+            "the orb rests on the boat"
+        );
+        // FallingBlockEntity.tick: it stops on the shulker, but the air
+        // under it would let it fall on (`wouldContinueFalling`), so it breaks
+        // into an item there instead of passing through to the stone.
+        assert_ne!(
+            game.world.block(8, 200, 8),
+            sand,
+            "the sand does not fall through"
+        );
+        assert_ne!(
+            game.world.block(8, 201, 8),
+            sand,
+            "nor is it placed over air"
+        );
+        assert!(
+            game.dropped
+                .iter()
+                .any(|i| &*i.stack.item == "minecraft:sand"),
+            "the sand breaks into an item"
+        );
+    }
+}

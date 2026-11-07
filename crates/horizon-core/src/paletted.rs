@@ -505,7 +505,7 @@ impl PalettedContainer {
         // Four bits a linear palette's usual width: a whole word of them is a
         // row of 16, and immediate shifts for the compiler to unroll.
         if self.bits == 4 {
-            for (row, &word) in out.chunks_exact_mut(16).zip(&self.words) {
+            for (row, &word) in out.as_chunks_mut::<16>().0.iter_mut().zip(&self.words) {
                 for (x, cell) in row.iter_mut().enumerate() {
                     *cell = map[((word >> (x * 4)) & 0xF) as usize];
                 }
@@ -1273,8 +1273,8 @@ mod tests {
             let y = i >> 8;
             let r = rng(&mut state);
             terrain.push(match y {
-                0..=8 if r % 40 == 0 => 2000 + (r >> 8) as u32 % 6,
-                0..=8 if r % 13 == 0 => 0,
+                0..=8 if r.is_multiple_of(40) => 2000 + (r >> 8) as u32 % 6,
+                0..=8 if r.is_multiple_of(13) => 0,
                 0..=8 => 1,
                 9..=10 => 10,
                 11 => 9,

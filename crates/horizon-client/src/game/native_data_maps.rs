@@ -182,7 +182,7 @@ impl DataMaps {
 }
 
 // Native mods use these; nothing in Horizon does.
-#[allow(dead_code)]
+#[allow(dead_code, reason = "native mod API (docs/native-mods.md)")]
 impl Game<'_> {
     /// The merged data map of `type_id` for `registry`, none unless this is a
     /// server whose tables were built from packs or mods' files.

@@ -666,7 +666,7 @@ impl ItemEntity {
                 wanted
             } else {
                 // `Entity.collide`: the entities that `canBeCollidedWith` the item stop it
-                // too (a boat, a minecart, a shulker, a happy ghast held still), and
+                // too (a boat, a shulker, a happy ghast held still; not a minecart), and
                 // so does the world border (`Entity.collectColliders`).
                 crate::collisions::EntityCollisions {
                     blocks: scene,
@@ -1314,6 +1314,35 @@ impl ExperienceOrb {
         fluids: &crate::motion::FluidResources,
         on_sound: &mut dyn FnMut([f64; 3], f32),
     ) -> bool {
+        self.tick_among(
+            world,
+            facts,
+            collision,
+            player,
+            server,
+            next_float,
+            border,
+            fluids,
+            on_sound,
+            &[],
+        )
+    }
+    /// [`Self::tick`], its move also stopped by `entities`: the boxes of the
+    /// entities that `canBeCollidedWith` it (`EntityGetter.getEntityCollisions`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn tick_among(
+        &mut self,
+        world: &World,
+        facts: &BlockFacts,
+        collision: &BlockCollisionRegistry<'_>,
+        player: Option<[f64; 3]>,
+        server: bool,
+        next_float: &mut dyn FnMut() -> f32,
+        border: Option<&BorderGeometry>,
+        fluids: &crate::motion::FluidResources,
+        on_sound: &mut dyn FnMut([f64; 3], f32),
+        entities: &[Aabb],
+    ) -> bool {
         self.ticks += 1;
         self.previous = self.position;
         self.update_fluids(world, fluids);
@@ -1374,10 +1403,11 @@ impl ExperienceOrb {
         // `double fallSpeed = getDeltaMovement().y`, taken after the stuck
         // push and before the move.
         let wanted = self.velocity;
-        // Entity.collide: the world border's walls stop the orb too.
+        // Entity.collide: the world border's walls and the entities that
+        // `canBeCollidedWith` it (a boat, a shulker) stop the orb too.
         let border = border.map(|b| (b, [self.position.x, self.position.z]));
         let moved = scene
-            .resolve_in_border(bounds, wanted, 0.0, self.on_ground, border)
+            .resolve_in_border_with(bounds, wanted, 0.0, self.on_ground, border, entities)
             .unwrap_or(Vec3::ZERO);
         self.position = Vec3::new(
             self.position.x + moved.x,
