@@ -2618,13 +2618,7 @@ impl Game<'_> {
             let mut states = std::mem::take(&mut host.states);
             if has_guests {
                 self.lan_assign_ids();
-                let guests: Vec<(u32, i32)> = host
-                    .hub
-                    .guests
-                    .iter()
-                    .filter_map(|g| Some((g.vehicle?, g.entity_id)))
-                    .collect();
-                self.lan_riding(&guests, &mut host.hub.riding);
+                self.lan_riding(&host.hub.guests, &mut host.hub.riding);
                 // Idle states are kept only when the players' moves are in:
                 // the clients that could pair are known. The range scale is
                 // the one the tracker gets below.

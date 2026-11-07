@@ -23,9 +23,9 @@ impl Launcher {
             .map(|(tab, _)| *tab)
             .find(|tab| *tab == self.home_tab)
             .unwrap_or(HomeTab::Overview);
-        let compact = self.window_width < 1200.;
-        let very_compact = self.window_width < 960.;
-        let super_compact = self.window_width < 750.;
+        let compact = self.window_width < crate::glass_home::SIDE_BY_SIDE;
+        let very_compact = self.window_width < crate::glass_home::NARROW;
+        let super_compact = self.window_width < crate::glass_home::NARROWEST;
         let pad = if super_compact {
             4.
         } else if very_compact {
@@ -51,10 +51,15 @@ impl Launcher {
             .px(px(8.))
             .pt(px(8.))
             .pb(px(4.))
-            .w_full()
-            .min_w_0()
-            .overflow_x_scroll()
-            .on_scroll(|_, _, cx| cx.stop_propagation())
+            // At its own size the strip leaves room for `glass::tabbed`'s notch; on a narrow
+            // window it takes the panel's width and scrolls sideways instead.
+            .when(!compact, |d| d.flex_none())
+            .when(compact, |d| {
+                d.w_full()
+                    .min_w_0()
+                    .overflow_x_scroll()
+                    .on_scroll(|_, _, cx| cx.stop_propagation())
+            })
             .child(crate::glass::measure(self.home_strip.clone()))
             .children(tabs.into_iter().map(|(tab, count)| {
                 let (name, icon) = match tab {
@@ -132,7 +137,7 @@ impl Launcher {
 
     /// Overview: the last screenshots and the patch log side by side, then `rows`.
     fn glass_overview(&mut self, rows: Div, cx: &mut Context<Self>) -> Div {
-        let wide = self.window_width >= 1200.;
+        let wide = self.window_width >= crate::glass_home::SIDE_BY_SIDE;
         let shots = self.overview_shots(cx);
         let patch = div()
             .relative()
