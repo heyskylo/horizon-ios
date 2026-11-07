@@ -240,29 +240,39 @@ pub fn buffer_index(name: &str) -> Option<usize> {
 impl Config {
     /// Reads one preprocessed fragment stage file.
     pub fn read(&mut self, pp: &Preprocessed) {
-        self.read_stage(pp, true, true);
+        self.read_stage(pp, true, true, true);
     }
 
     /// Reads only the colortex formats of one preprocessed fragment stage file, as [`Self::read`]
     /// reads them.
     pub fn read_formats(&mut self, pp: &Preprocessed) {
-        self.read_stage(pp, true, false);
+        self.read_stage(pp, true, false, false);
+    }
+
+    /// Reads the colortex formats and the shadow settings of one preprocessed fragment stage
+    /// file: `shadow.fsh` of a pack without a shadow pass. Iris 1.11.7 applied `shadowDistance`
+    /// and `sunPathRotation` declared only there (its shadow projection and sun position), with a
+    /// probe pack of ours whose shadow buffers nothing read (#10490).
+    pub fn read_formats_and_shadow(&mut self, pp: &Preprocessed) {
+        self.read_stage(pp, true, true, false);
     }
 
     /// Reads one preprocessed vertex stage file. Its colortex formats don't count: Iris 1.11.7
     /// ignored a `colortexNFormat` declared only in `composite.vsh`, `final.vsh`, `deferred.vsh`,
     /// `gbuffers_terrain.vsh` or `shadow.vsh` of probe packs p9063a, p9063c and p9063s (ours),
-    /// while it honoured the same line in each program's fragment shader.
+    /// while it honoured the same line in each program's fragment shader. Nor do the shadow
+    /// settings of [`VERTEX_IGNORED`].
     pub fn read_vertex(&mut self, pp: &Preprocessed) {
-        self.read_stage(pp, false, true);
+        self.read_stage(pp, false, false, true);
     }
 
-    /// `formats`: whether colortex formats count; `others`: whether every other setting does.
-    fn read_stage(&mut self, pp: &Preprocessed, formats: bool, others: bool) {
+    /// `formats`: whether colortex formats count; `shadow`: whether the shadow settings do (those
+    /// of [`VERTEX_IGNORED`] only with it); `others`: whether every other setting does.
+    fn read_stage(&mut self, pp: &Preprocessed, formats: bool, shadow: bool, others: bool) {
         let line = |at: usize| pp.locate(code_line(&pp.code, at));
         for (at, ty, name, value) in constants(&pp.code) {
             let place = line(at);
-            self.constant(&place, ty, name, value, formats, others);
+            self.constant(&place, ty, name, value, [formats, shadow, others]);
         }
         for (origin, comment) in &pp.comments {
             for (at, ty, name, value) in constants(comment) {
@@ -278,22 +288,16 @@ impl Config {
                 // honoured one indented, one followed by text or by `*/`, and the first of two.
                 let starts_line = (comment[..at].rfind('\n'))
                     .is_some_and(|n| comment[n + 1..at].trim().is_empty());
-                self.constant(&place, ty, name, value, formats && starts_line, others);
+                let reads = [formats && starts_line, shadow, others];
+                self.constant(&place, ty, name, value, reads);
             }
         }
     }
 
-    /// `formats`: whether a colortex format declared here counts; `others`: whether any other
-    /// setting does.
-    fn constant(
-        &mut self,
-        place: &str,
-        ty: &str,
-        name: &str,
-        value: &str,
-        formats: bool,
-        others: bool,
-    ) {
+    /// `reads`: whether a colortex format declared here counts, whether a shadow setting does
+    /// (those of [`VERTEX_IGNORED`] only with it), and whether any other setting does.
+    fn constant(&mut self, place: &str, ty: &str, name: &str, value: &str, reads: [bool; 3]) {
+        let [formats, shadow, others] = reads;
         // Like a colortex format, it counts from fragment shaders only, those of shadow programs
         // with no shadow pass too: Iris 1.11.7 made `noisetex` 64 wide from a declaration in our
         // probes' `composite.fsh`, `deferred.fsh`, `gbuffers_textured.fsh`, `final.fsh` or
@@ -305,10 +309,17 @@ impl Config {
             return;
         }
         let format = ty == "int" && name.strip_suffix("Format").and_then(buffer_index).is_some();
-        if !others && !format {
+        if !shadow && VERTEX_IGNORED.contains(&name) {
             return;
         }
-        if self.shadow_constant(ty, name, value) {
+        // Any other shadow setting (`shadow_constant` knows the names) where `shadow` or `others`.
+        if Config::default().shadow_constant(ty, name, value) {
+            if shadow || others {
+                self.shadow_constant(ty, name, value);
+            }
+            return;
+        }
+        if !others && !format {
             return;
         }
         let settings = [
@@ -356,6 +367,17 @@ impl Config {
         }
     }
 }
+
+/// Shadow settings a vertex stage's `const` doesn't set: Iris 1.11.7 ignored each declared only in
+/// `final.vsh`, `gbuffers_textured.vsh` or `shadow.vsh` of probe packs of ours (#10490), with
+/// and without a shadow pass. The other shadow settings were not probed there.
+const VERTEX_IGNORED: [&str; 5] = [
+    "shadowDistance",
+    "sunPathRotation",
+    "shadowIntervalSize",
+    "shadowNearPlane",
+    "shadowFarPlane",
+];
 
 impl Config {
     /// A shadow setting of 6.3 or 7.1; true when `name` is one (read or not).
@@ -586,6 +608,30 @@ mod tests {
         // p9063b of ours; OptiFine's RGBA32F rule doesn't apply.
         assert_eq!(b[1].format, Format::RGBA8, "gdepth");
         assert!(config.notes.is_empty(), "{:?}", config.notes);
+    }
+
+    /// Iris 1.11.7 with probe packs of ours (#10490): these five set in a vertex stage didn't
+    /// change its shadow projection, shadow camera or sun; in a fragment stage they did.
+    #[test]
+    fn some_shadow_settings_count_only_in_fragment_shaders() {
+        let text = "const float shadowDistance = 48.0;\nconst float sunPathRotation = 20.0;\n\
+                    const float shadowIntervalSize = 8.0;\nconst float shadowNearPlane = 0.5;\n\
+                    const float shadowFarPlane = 64.0;\nconst int shadowMapResolution = 1024;\n";
+        let settings = |s: &Shadow| (s.distance, s.sun_path_rotation, s.interval, s.near, s.far);
+        let mut vertex = Config::default();
+        vertex.read_vertex(&stage(text));
+        assert_eq!(
+            settings(&vertex.shadow),
+            settings(&Config::default().shadow)
+        );
+        // One not probed in a vertex stage still counts there, as before.
+        assert_eq!(vertex.shadow.resolution, 1024);
+        let mut fragment = Config::default();
+        fragment.read(&stage(text));
+        assert_eq!(
+            settings(&fragment.shadow),
+            (48.0, 20.0, 8.0, Some(0.5), Some(64.0))
+        );
     }
 
     #[test]

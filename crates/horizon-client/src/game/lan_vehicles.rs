@@ -442,6 +442,13 @@ impl Game<'_> {
         if g.awaiting_teleport.is_some() || !g.client_loaded() {
             return;
         }
+        // Only the vehicle's controlling passenger moves it: the move of a
+        // player in a boat's second seat is ignored (#11541).
+        if g.vehicle
+            .is_some_and(|v| !self.guest_controls_vehicle(host, conn, v))
+        {
+            return;
+        }
         let owner = host.hub.singleplayer_owner == Some(g.uuid);
         let (vehicle, good) = (g.vehicle, g.vehicle_good);
         let back = |host: &mut LanHost, position: Vec3, yaw: f32| {
@@ -616,5 +623,166 @@ impl Game<'_> {
             b.paddling = paddles;
             b.paddle_controller = true;
         }
+    }
+}
+
+#[cfg(test)]
+mod controller_tests {
+    use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+    use horizon_client::chunk::Chunk;
+    use horizon_client::lan::{Joined, NetConfig, PlayerSender, guest::Guest, hub::HubConfig};
+    use horizon_core::position::ChunkPos;
+    use horizon_protocol::packets::{configuration::ClientInformation, play};
+    use std::sync::{Arc, atomic::AtomicI32, mpsc};
+
+    fn guest(conn: u32, uuid: u128) -> Guest {
+        let (tx, _rx) = mpsc::channel();
+        let mut g = Guest::new(
+            Joined {
+                conn,
+                uuid,
+                name: format!("Rider{conn}"),
+                properties: Vec::new(),
+                info: ClientInformation::new(2),
+                brand: "test".into(),
+                sender: PlayerSender::new(tx, Arc::default()),
+                latency: Arc::new(AtomicI32::new(0)),
+                address: "127.0.0.1:25565".parse().unwrap(),
+                expected: false,
+                configured: Default::default(),
+            },
+            1000 + conn as i32,
+            [4.5, 200.0, 4.5],
+            2,
+        );
+        g.dimension = "minecraft:overworld".into();
+        g.placed = true;
+        g.loaded = true;
+        // PlayerLoaded came in: its moves count.
+        g.load_timeout = 0;
+        g
+    }
+
+    /// Two players in one boat: the one that got in first drives it
+    /// (`getControllingPassenger`), whichever joined the server first. Its
+    /// client hears it sits first, and only its moves count; the second
+    /// seat's client, which still sends where it sees the boat, used to put
+    /// the boat back every tick (#11541).
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn the_first_rider_in_drives_the_boat() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.game_dir = Some(
+            std::env::temp_dir().join(format!("horizon-boat-driver-unit-{}", std::process::id())),
+        );
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        let stone = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:stone")
+            .unwrap()
+            .0;
+        let mut chunk = Chunk::empty(0, 0);
+        for x in 0..16 {
+            for z in 0..16 {
+                chunk.set(x, 199, z, stone);
+            }
+        }
+        game.world.chunks.insert((0, 0), Arc::new(chunk));
+        game.block_ticks
+            .add_empty_chunk(ChunkPos::new(0, 0))
+            .unwrap();
+        assert!(game.run_command("forceload add 0 0"));
+        assert!(game.run_command("summon minecraft:oak_boat 4.5 200 4.5"));
+        let boat = game.boats[0].id;
+        let start = game.boats[0].position;
+        game.lan_host(
+            super::super::lan::LanSettings {
+                port: 0,
+                guest_commands: true,
+                force_game_mode: false,
+            },
+            NetConfig {
+                announce: false,
+                ..NetConfig::loopback(0, "boat-driver-test".into(), 3)
+            },
+            HubConfig {
+                default_game_mode: 0,
+                guest_commands: true,
+                force_game_mode: false,
+                hardcore: false,
+                view_distance: 2,
+                simulation_distance: 2,
+                dimension: "minecraft:overworld".into(),
+                allow_flight: false,
+                seed: 0,
+                max_players: 3,
+                integrated: false,
+                levels: Default::default(),
+            },
+        )
+        .unwrap();
+        let mut host = game.lan.take().unwrap();
+        // The second seat's player joined the server first; the driver got
+        // into the boat first.
+        let (mut passenger, mut driver) = (guest(2, 21), guest(3, 22));
+        (driver.vehicle, driver.vehicle_order) = (Some(boat), 1);
+        (passenger.vehicle, passenger.vehicle_order) = (Some(boat), 2);
+        let (passenger_id, driver_id) = (passenger.entity_id, driver.entity_id);
+        host.hub.guests.push(passenger);
+        host.hub.guests.push(driver);
+
+        game.lan_riding(&host.hub.guests, &mut host.hub.riding);
+        assert_eq!(
+            host.hub.riding.passengers(boat as i32),
+            [driver_id, passenger_id],
+            "the driver sits first"
+        );
+
+        let move_to = |x: f64| play::MoveVehicleRequest {
+            position: [x, start.y, start.z],
+            yaw: 0.0,
+            pitch: 0.0,
+            on_ground: true,
+        };
+        game.guest_move_vehicle(&mut host, 2, &move_to(start.x + 0.3));
+        assert_eq!(
+            game.boats[0].position, start,
+            "the second seat moves nothing"
+        );
+        game.guest_move_vehicle(&mut host, 3, &move_to(start.x + 0.3));
+        assert!(
+            (game.boats[0].position.x - (start.x + 0.3)).abs() < 1.0e-9,
+            "the driver moves the boat: {:?}",
+            game.boats[0].position
+        );
     }
 }

@@ -994,6 +994,7 @@ use super::{
     native_reload_listeners::NativeReloadListener,
     native_world_draw::NativeWorldDraw,
 };
+use crate::mod_api::NativeTextField;
 use horizon_assets::item_model::StackView;
 use horizon_client::mod_api::EntityDataValue;
 use horizon_client::mod_api::{
@@ -1166,7 +1167,6 @@ pub(super) use horizon_world::level::flags;
 
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
-#[allow(dead_code)]
 pub(crate) const NATIVE_HOOKS_API: u32 = 411;
 
 impl GameLevel<'_> {
@@ -2026,7 +2026,6 @@ impl OpenNativeScreen {
 }
 
 /// The player as a native mod reads it.
-#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq)]
 pub struct NativePlayer {
     pub x: f64,
@@ -2051,7 +2050,7 @@ pub struct NativeClock {
 }
 
 /// How the panel lays out a recipe of `native_panel_recipes`.
-#[allow(dead_code)]
+#[allow(dead_code, reason = "native mod API (docs/native-mods.md)")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum NativeRecipeLayout {
     /// A crafting grid of `width` x `height` slots, an arrow and the result.
@@ -2088,7 +2087,6 @@ pub(crate) struct NativeRecipeView {
 /// and the components it has beyond the item's own, in vanilla's item
 /// syntax (`[minecraft:potion_contents={potion:"minecraft:swiftness"}]`),
 /// or "".
-#[allow(dead_code)]
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct NativeRecipeStack {
     pub(crate) item: u32,
@@ -2097,7 +2095,6 @@ pub(crate) struct NativeRecipeStack {
 }
 
 /// The station a recipe is made at.
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum NativeRecipeKind {
     CraftingShaped,
@@ -2112,7 +2109,6 @@ pub(crate) enum NativeRecipeKind {
 }
 
 /// A recipe of [`NativeRecipes`].
-#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct NativeRecipe {
     /// `minecraft:oak_planks`.
@@ -2143,7 +2139,6 @@ pub(crate) struct NativeRecipe {
 }
 
 /// An item of [`NativeRecipes::items`].
-#[allow(dead_code)]
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct NativeItem {
     /// `minecraft:diamond`, `<mod>:<path>`.
@@ -2158,7 +2153,6 @@ pub(crate) struct NativeItem {
 /// registry's order, which each [`NativeRecipeStack::item`] indexes; the
 /// recipes are the book's in its order, then campfire, stonecutting,
 /// smithing and brewing.
-#[allow(dead_code)]
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct NativeRecipes {
     pub(crate) items: Vec<NativeItem>,
@@ -2167,7 +2161,6 @@ pub(crate) struct NativeRecipes {
 
 /// The mappings `native_mapping` answers for, with the key their default
 /// binding is (none: a mouse button, attack or use).
-#[allow(dead_code)]
 const MAPPINGS: [(&str, Option<KeyCode>); 9] = [
     ("key.forward", Some(KeyCode::KeyW)),
     ("key.left", Some(KeyCode::KeyA)),
@@ -2802,8 +2795,8 @@ impl Game<'_> {
     /// (`HealthHud::layout`, not under F1): `inputs` carries the health,
     /// food, air and vehicle state the layout reads, `wi`/`hi` the screen's
     /// GUI size. A mod that sets `draws` replaces every row — armour,
-    /// hearts, food, air and the heights (`left_height`/`right_height`)
-    /// above the hotbar are the answer's to give; `bubble_pop_sound` too.
+    /// hearts, food and air are the answer's to give; `bubble_pop_sound`
+    /// too.
     /// Nothing set draws Horizon's own.
     pub(super) fn native_health_hud(
         &mut self,
@@ -3522,6 +3515,9 @@ impl Game<'_> {
     /// sent and whenever its block changes, on the server thread or, for a
     /// saved chunk sent past the view distance (`lan::far`), another one; a client's copy of the block
     /// entity (made by `native_block_entity` there) merges it into its `nbt`.
+    /// An owner can merge `entity.take_client_update_fields()` into this tag
+    /// for one-shot fields that are neither saved nor cloned. The tag is
+    /// constructed once before a block change is broadcast to its viewers.
     /// Leave it unset to send nothing. API 45.
     pub(super) fn native_block_entity_update_tag(
         pos: [i32; 3],
@@ -3996,6 +3992,24 @@ impl Game<'_> {
             canceled,
         );
     }
+    pub(super) fn native_screen_text_field_char_typed_pre(
+        &self,
+        screen: &NativeScreenView<'_>,
+        field: &mut NativeTextField,
+        character: char,
+        modifiers: u32,
+        canceled: &mut bool,
+    ) {
+        mod_api::dispatch_screen_text_field_char_typed_pre(
+            self,
+            mod_api::mods(),
+            screen,
+            field,
+            character,
+            modifiers,
+            canceled,
+        );
+    }
     /// The open screen as a native mod sees it (`NativeScreenView`): its id,
     /// the open menu's type and title, its slot count, and its panel's
     /// rectangle, with the mouse and the partial tick. `screen` is the screen
@@ -4169,6 +4183,12 @@ impl Game<'_> {
         let Some(text) = text else {
             return;
         };
+        if self.types_text()
+            && let Some(result) = self.type_text_field_input(text)
+        {
+            Self::report_text_input_result(result);
+            return;
+        }
         let Some(screen) = self.screen_view_now() else {
             return;
         };
@@ -9736,7 +9756,7 @@ fn dimension_id(dimension: LevelDimension) -> &'static str {
 }
 
 /// Server-level helpers for native mods.
-#[allow(dead_code)]
+#[allow(dead_code, reason = "native mod API (docs/native-mods.md)")]
 impl GameLevel<'_> {
     /// Play a sound event for nearby players in this server level. The return
     /// value means queued, not heard. A `minecraft:` event must be registered:
@@ -9954,7 +9974,7 @@ impl GameLevel<'_> {
 
 /// Helpers for native mods, kept as stable as the hook points.
 // Native mods use these; nothing in Horizon does.
-#[allow(dead_code)]
+#[allow(dead_code, reason = "native mod API (docs/native-mods.md)")]
 impl Game<'_> {
     /// Plays `sound` to that player alone, as Bukkit's `Player.playSound`:
     /// at `at` in their level, or where they stand when it leaves (None),
@@ -10937,10 +10957,7 @@ impl Game<'_> {
         Some(screen.extra.as_ref().map_or(&[], |e| e.data.as_slice()))
     }
     /// Horizon's own health HUD state, for a mod answering
-    /// `native_health_hud`. `left_height`/`right_height` as they stand when
-    /// the hook returns place the selected item's name and the action bar
-    /// (vanilla's `Hud.leftHeight`/`rightHeight`): set them when you draw
-    /// more or fewer rows. `layout` draws Horizon's rows and advances their
+    /// `native_health_hud`. `layout` draws Horizon's rows and advances their
     /// frame state (the hearts' blink, the bubble pop sound), so call it at
     /// most once a frame, and only when you keep some of its rows.
     /// API @API:health_hud_state@.
@@ -11283,6 +11300,11 @@ impl Game<'_> {
     /// player's book doesn't hold; one missing items shows as a ghost.
     pub(super) fn native_place_recipe(&mut self, book_id: i32, all: bool) -> Result<(), String> {
         self.recipe_place(book_id, all)
+    }
+    /// Move ingredients for a viewer recipe into the open crafting grid.
+    /// Unlike the recipe book click, this doesn't require learning the recipe.
+    pub(super) fn native_transfer_recipe(&mut self, book_id: i32) {
+        self.transfer_viewer_recipe(book_id);
     }
     /// Creative mode only: gives the player `count` of `item`
     /// (`minecraft:diamond`) as taking it from the creative inventory does
@@ -12249,7 +12271,6 @@ fn finite(v: f32, lo: f32, hi: f32) -> f32 {
 
 /// An item entity as `native_item_entities` lists it. API 42.
 /// Read by mods only.
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct NativeItemEntity {
     /// The entity's ID, for `native_set_item_entity`.
