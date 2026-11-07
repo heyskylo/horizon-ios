@@ -270,7 +270,8 @@ page `servers.json` (the list), `servers/<name>/` (the servers created there) an
   game starts. `horizon-launcher game-args "<line>"` sets them too, and `play --arg <ARG>` passes
   one for a single run.
 - **Proxy**: when the internet here needs one (a school's, an office's, a country where a host is
-  unreachable), Settings' Proxy takes the `http://host:port` address your proxy app listens on, and
+  unreachable), Settings' Proxy takes the `http://host:port` or `socks5://host:port` address your
+  proxy app listens on, and
   every download goes through it: Horizon's releases and the launcher's own update, Minecraft's
   files and Java from Mojang, Modrinth, CurseForge, Horizon's mod registry, pictures, Microsoft
   sign-in, and the jars a modpack import fetches. It is kept as `proxy` in `settings.json`, and
@@ -285,9 +286,10 @@ page `servers.json` (the list), `servers/<name>/` (the servers created there) an
 Long pages, dialogs, the server console and data previews have a visible scrollbar when
 their content overflows. Drag the thumb or click the track to navigate without a mouse wheel.
 
-Pages and Home's landscape fill the window as it resizes. Windows uses a matching title
-bar with native dragging, resizing, Snap,
-minimize, maximize/restore and close; macOS and Linux keep their system title bars.
+Pages and Home's landscape fill the window as it resizes. The title bar is transparent over the
+launcher on every platform: Windows keeps native dragging, resizing, Snap, minimize,
+maximize/restore and close; Linux keeps the same controls in its client-side title bar, while
+macOS keeps its native traffic-light controls.
 
 ## Updates
 

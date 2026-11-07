@@ -558,6 +558,15 @@ impl Mob {
     pub fn eye_height(&self) -> f64 {
         self.dims().2
     }
+    /// `EntityRenderer.getPackedLightCoords` reads the block
+    /// `Entity.getLightProbePosition(partialTick)` is in, and a living entity
+    /// leaves that as `getEyePosition`: the eye height over
+    /// `getPosition(partialTick)`, the position the frame draws, not this
+    /// tick's. A mob walking across a cell boundary is drawn lit by the cell it
+    /// is drawn in.
+    pub fn light_probe(&self, partial: f64) -> [i32; 3] {
+        eye_probe_cell(self.previous, self.position, self.eye_height(), partial)
+    }
     pub fn width(&self) -> f32 {
         self.dims().0 as f32
     }
@@ -1175,10 +1184,11 @@ impl Mob {
             self.fall_to_passengers(distance, modifier, events);
         }
         if damage > 0.0 {
-            // Llama.causeFallDamage: only a fall of six blocks or more hurts the
-            // llama and its riders.
+            // Llama.causeFallDamage: shorter damaging falls play the block
+            // sound but do not hurt the llama or its riders.
             if super::llama::is_llama(self.species()) && distance < 6.0 {
-                return false;
+                self.block_fall_sound(contact, events);
+                return true;
             }
             let at = [self.position.x, self.position.y, self.position.z];
             // Monster.getFallSounds: the hostile pair.
@@ -1192,14 +1202,38 @@ impl Mob {
             // Horses thud and llamas make no generic fall sound.
             if !horse {
                 events.push(MobEvent::Sound(sound, at, 1.0, 1.0));
+                self.block_fall_sound(contact, events);
             }
             self.damage(damage as f32, super::Damage::of(source));
             if horse {
                 self.fall_to_passengers(distance, modifier, events);
+                self.block_fall_sound(contact, events);
             }
             return true;
         }
         false
+    }
+    /// `LivingEntity.playBlockFallSound`: the block 0.2 below the feet plays
+    /// its fall sound at half its volume and three quarters of its pitch,
+    /// unless the mob is silent or the block is air.
+    fn block_fall_sound(&self, contact: Option<(&MobWorld, [i32; 3])>, events: &mut Vec<MobEvent>) {
+        if self.silent {
+            return;
+        }
+        if let Some((w, _)) = contact {
+            let pos = self.on_pos(0.2);
+            let state = w.world.block(pos[0], pos[1], pos[2]);
+            if !w.facts.is_air(state) {
+                let sounds = &w.facts.get(state).sounds;
+                let at = [self.position.x, self.position.y, self.position.z];
+                events.push(MobEvent::SoundId(
+                    sounds.fall.to_string(),
+                    at,
+                    sounds.volume * 0.5,
+                    sounds.pitch * 0.75,
+                ));
+            }
+        }
     }
     /// `Entity.propagateFallToPassengers`: the game gives the fall to each
     /// passenger (`causeFallDamage`), a mob or a player, for this mob is
@@ -1382,11 +1416,6 @@ impl Mob {
         {
             y += (0.05 * f64::from(amp + 1) - movement.y) * 0.2;
         } else {
-            // LivingEntity.travelInAir: a Slow Falling mob on its way down lands without
-            // having fallen.
-            if self.velocity.y <= 0.0 && self.has_effect("minecraft:slow_falling") {
-                self.fall_distance = 0.0;
-            }
             y -= self.effective_gravity();
         }
         // LivingEntity.shouldDiscardFriction (a breeze's, a frog's or a goat's
@@ -1791,6 +1820,19 @@ impl horizon_world::water_splash::WaterSplashWorld for Splash<'_> {
     }
 }
 
+/// `Entity.getEyePosition(partialTick)` as the cell the renderer lights an
+/// entity from (`Entity.getLightProbePosition` is that position and
+/// `EntityRenderer.getPackedLightCoords` takes `BlockPos.containing` of it):
+/// `Mth.lerp(partialTick, xo, x)` on each axis, plus `getEyeHeight()` on y.
+pub fn eye_probe_cell(previous: Vec3, position: Vec3, eye_height: f64, partial: f64) -> [i32; 3] {
+    let at = previous.lerp(position, partial);
+    [
+        at.x.floor() as i32,
+        (at.y + eye_height).floor() as i32,
+        at.z.floor() as i32,
+    ]
+}
+
 /// `Entity.doWaterSplashEffect` for a mob this window is drawing.
 /// `Level.addParticle` runs on the client. `ClientLevel.playSeededSound`
 /// ignores `Entity.playSound` (`except` is null), and the SPLASH game event
@@ -1906,6 +1948,30 @@ impl RestitutionWorld for MobRestitution<'_, '_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `Entity.getLightProbePosition(partialTick)` for a living entity is
+    /// `getEyePosition`: `getEyeHeight()` over `Mth.lerp(partialTick, xo, x)`.
+    /// Horizon probed this tick's own position, so a mob walking into the next
+    /// cell was drawn lit by that cell for the whole frame before it got there,
+    /// and a falling one for a frame after it left.
+    #[test]
+    fn a_mob_probe_follows_the_frame() {
+        let eye = 1.62;
+        // Walking from x = 0.9 to 1.1: the eye is in the cell at 0 until the
+        // frame reaches the boundary, and in the cell at 1 from there on.
+        let (previous, position) = (Vec3::new(0.9, 64.0, 0.5), Vec3::new(1.1, 64.0, 0.5));
+        assert_eq!(eye_probe_cell(previous, position, eye, 0.0), [0, 65, 0]);
+        assert_eq!(eye_probe_cell(previous, position, eye, 0.5), [1, 65, 0]);
+        assert_eq!(eye_probe_cell(previous, position, eye, 1.0), [1, 65, 0]);
+        // The old probe was the tick's own position on every frame.
+        assert_eq!(position.x.floor() as i32, 1);
+        // Falling a block: the eye is at 71.62 at the start of the frame and
+        // 70.62 at its end.
+        let (previous, position) = (Vec3::new(0.5, 70.0, 0.5), Vec3::new(0.5, 69.0, 0.5));
+        assert_eq!(eye_probe_cell(previous, position, eye, 0.0), [0, 71, 0]);
+        assert_eq!(eye_probe_cell(previous, position, eye, 0.5), [0, 71, 0]);
+        assert_eq!(eye_probe_cell(previous, position, eye, 1.0), [0, 70, 0]);
+    }
     /// A pig dropped hard onto a block bounces by that block's restitution
     /// (`Entity.getBlockBounciness`): landing on a slime block sends it back
     /// up, landing on stone stops it dead. The same 8-block fall then costs the
@@ -2576,6 +2642,43 @@ mod tests {
             }
         });
     }
+    #[test]
+    fn damaging_mob_fall_plays_block_fall_sound() {
+        let ran = crate::mobs::world::with_built_test_world(
+            &[],
+            |world, registry| {
+                world.chunks.insert(
+                    (0, 0),
+                    std::sync::Arc::new(crate::chunk::Chunk::empty(0, 0)),
+                );
+                for (x, block) in [(0, "minecraft:stone"), (1, "minecraft:oak_planks")] {
+                    world
+                        .set(x, 0, 0, registry.default_state(block).unwrap())
+                        .unwrap();
+                }
+            },
+            |w, types| {
+                for (x, block_sound) in [
+                    (0.5, "minecraft:block.stone.fall"),
+                    (1.5, "minecraft:block.wood.fall"),
+                ] {
+                    let kind = std::sync::Arc::new(types.types["minecraft:zombie"].clone());
+                    let mut mob = Mob::new(1, kind, Vec3::new(x, 1.0, 0.5), 0.0);
+                    mob.fall_distance = 5.0;
+                    let mut events = Vec::new();
+                    mob.fall_on_block(w, &mut events);
+                    assert!(
+                        matches!(events.as_slice(), [MobEvent::Sound("entity.hostile.small_fall", _, 1.0, 1.0), MobEvent::SoundId(id, _, 0.5, 0.75), ..] if id == block_sound),
+                        "{events:?}"
+                    );
+                }
+            },
+        );
+        // Without the vanilla data under .local/horizon-client the world
+        // cannot be built: the test has nothing to check.
+        let _ = ran;
+    }
+
     /// `Entity.applyMovementEmissionAndPlaySound` asks `getMovementEmission`:
     /// a squid, a glow squid and a bat answer `EVENTS`, so a beached squid
     /// flopping across stone sends the `minecraft:step` game event and no

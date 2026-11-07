@@ -3,6 +3,7 @@
 //! (`native_hooks.rs`); WebAssembly code mods don't run any more.
 use super::Game;
 use horizon_client::{
+    lang,
     mod_list::{self, Installed},
     text::Text,
 };
@@ -14,6 +15,22 @@ pub(super) struct ModsState {
     pub(super) dev: Vec<PathBuf>,
     /// The WebAssembly mods found that no longer run, for the one-time notice.
     stopped: Vec<String>,
+    /// Browse mods' worker (`mod_browser`).
+    pub(super) jobs: super::mod_browser::Jobs,
+    /// The content mods the loaded resources were built with: a switch the
+    /// game can apply live moves it to the player's choice (`switch_mods`).
+    pub(super) applied: Option<std::collections::BTreeSet<String>>,
+    /// A live switch's resource reload is running: when it applied, the server
+    /// reloads its data from the new root. Its start, for the log.
+    pub(super) live: Option<std::time::Instant>,
+    /// The content mods installed, and those of them with only assets and
+    /// data (`mod_content::live_switch`): they switch with a world open.
+    content_ids: std::collections::BTreeSet<String>,
+    live_ids: std::collections::BTreeSet<String>,
+    /// The server's data comes from a root a live switch built, not the one
+    /// `res` was loaded from: the world tables are built from it even with no
+    /// data pack (`build_world_tables`).
+    pub(super) data_switched: bool,
 }
 
 /// Freeze native component IDs before reading content or opening a connection.
@@ -61,6 +78,13 @@ pub(super) fn register_standalone_models() {
     let mut names = Vec::new();
     Game::native_standalone_models(&mut names);
     horizon_client::models::register_standalone(names);
+}
+/// The native mods' entity model layers (`native_layer_definitions`), kept
+/// once at start for `native_bake_layer`.
+pub(super) fn register_layer_definitions() {
+    let mut layers = Vec::new();
+    Game::native_layer_definitions(&mut layers);
+    horizon_client::mobs::model_layers::register(layers);
 }
 
 /// `root` with the content mods that are on layered over it
@@ -308,6 +332,29 @@ fn native_mods_detail(built: &str) -> Option<String> {
     (!list.is_empty()).then_some(list)
 }
 
+/// Notes a content mod's id, and whether its files can switch with a world
+/// open (`mod_content::live_switch`).
+fn live_switch_of(
+    path: &std::path::Path,
+    package: &horizon_mods::Package,
+    content_ids: &mut std::collections::BTreeSet<String>,
+    live_ids: &mut std::collections::BTreeSet<String>,
+) {
+    let id = &package.manifest.id;
+    content_ids.insert(id.clone());
+    let content = horizon_mods::Content::read(path, &package.manifest);
+    match content
+        .as_ref()
+        .map(horizon_client::mod_content::live_switch)
+    {
+        Ok(Ok(())) if package.wasm.is_none() => {
+            live_ids.insert(id.clone());
+        }
+        Ok(Err(why)) => log::debug!("Horizon: mod {id} switches on a restart: {why}"),
+        _ => {}
+    }
+}
+
 /// A row for each native mod the launcher installed in `dir` (`<id>.hnmod`) that this game wasn't
 /// built with (`built`: its [`BUILD_INFO`], empty for a release or Nightly) and that has no row
 /// yet. The page said "No mods" before, and players copied the files into `horizon-mods` (#4770).
@@ -360,6 +407,7 @@ impl Game<'_> {
         let mut paths = horizon_mods::find(&dir);
         paths.retain(|p| !self.mods.dev.contains(p));
         paths.extend(self.mods.dev.iter().cloned());
+        let (mut content_ids, mut live_ids) = Default::default();
         self.settings.mods.installed = paths
             .iter()
             .map(|path| {
@@ -379,6 +427,7 @@ impl Game<'_> {
                 };
                 let m = &package.manifest;
                 let problem = package.wasm.is_some().then(|| STOPPED.to_owned());
+                live_switch_of(path, &package, &mut content_ids, &mut live_ids);
                 Installed {
                     id: m.id.clone(),
                     title: format!("{} {}", m.name, m.version),
@@ -389,8 +438,14 @@ impl Game<'_> {
                 }
             })
             .collect();
+        (self.mods.content_ids, self.mods.live_ids) = (content_ids, live_ids);
+        self.ui.options.mods_live = self.mods_live_now();
+        if self.mods.applied.is_none() {
+            self.mods.applied = Some(self.settings.mods.enabled.clone());
+        }
         // A mod with a native version built in says so instead, and isn't news.
         self.list_native_mods();
+        self.sync_native_switches();
         let built = std::env::current_exe()
             .ok()
             .and_then(|exe| std::fs::read_to_string(exe.with_file_name(BUILD_INFO)).ok())
@@ -418,6 +473,116 @@ impl Game<'_> {
             .filter(|row| row.problem.as_deref() == Some(STOPPED))
             .map(|row| row.title.clone())
             .collect();
+    }
+    /// The content mods the Mods page lets the player switch with a world
+    /// open: in single player and on an open LAN world, those with only
+    /// assets and data; none on another server, which owns its data.
+    pub(super) fn mods_live_now(&self) -> std::collections::BTreeSet<String> {
+        match self.integrated.is_some() || self.remote.is_none() {
+            true => self.mods.live_ids.clone(),
+            false => Default::default(),
+        }
+    }
+    /// The content mods the resources load with: the ones applied, which a
+    /// switch that needs a restart doesn't change.
+    pub(super) fn applied_mods(&self) -> std::collections::BTreeSet<String> {
+        self.mods
+            .applied
+            .clone()
+            .unwrap_or_else(|| self.settings.mods.enabled.clone())
+    }
+    /// The player turned content mods on or off (Options > Mods, or an
+    /// install from Browse Mods): those with only assets and data apply now
+    /// (docs/design/mod-hotload.md), through the resource reload and then the
+    /// server's data reload (`mods_reloaded`); those that add blocks, items or
+    /// worldgen wait for a restart, and the Mods page says so.
+    pub(super) fn switch_mods(&mut self) {
+        let Some(applied) = self.mods.applied.clone() else {
+            return;
+        };
+        let wanted = self.settings.mods.enabled.clone();
+        if applied == wanted {
+            return;
+        }
+        // Native mods' `mod.<id>` lines follow the player's choice as they are
+        // (`sync_native_switches`); a content mod with blocks, items or
+        // worldgen keeps the state it loaded with until a restart.
+        let content = &self.mods.content_ids;
+        let mut next = wanted.clone();
+        let mut waiting = Vec::new();
+        for id in applied.symmetric_difference(&wanted) {
+            if !content.contains(id) || self.mods.live_ids.contains(id) {
+                continue;
+            }
+            log::info!("Horizon: mod {id} needs a restart to switch");
+            waiting.push(id.clone());
+            if applied.contains(id) {
+                next.insert(id.clone());
+            } else {
+                next.remove(id);
+            }
+        }
+        self.ui.options.mods_note = (!waiting.is_empty())
+            .then(|| lang::tr("horizon.mods.switch.restart", &[&waiting.join(", ")]));
+        let changed = applied
+            .symmetric_difference(&next)
+            .any(|id| content.contains(id));
+        if !changed {
+            self.mods.applied = Some(next);
+            return;
+        }
+        log::info!(
+            "Horizon: content mods switched live: {:?} -> {:?}",
+            applied,
+            next
+        );
+        self.mods.applied = Some(next);
+        self.mods.live = Some(std::time::Instant::now());
+        self.reload_packs();
+    }
+    /// A live switch's resources applied: the server reloads its data packs
+    /// from the new root, as `/reload` does (recipes, tags, loot tables,
+    /// advancements, functions), and sends them to its players.
+    pub(super) fn mods_reloaded(&mut self, applied: bool) {
+        let Some(started) = self.mods.live.take() else {
+            return;
+        };
+        let resources_ms = started.elapsed().as_millis();
+        if !applied {
+            return;
+        }
+        let root = self.options.resources.clone();
+        let enabled = self.applied_mods();
+        let reload = move |g: &mut Game<'_>| {
+            let at = std::time::Instant::now();
+            g.options.resources = root;
+            g.settings.mods.enabled = enabled.clone();
+            g.mods.applied = Some(enabled);
+            g.mods.data_switched = true;
+            if g.world_root.as_os_str().is_empty() {
+                return;
+            }
+            g.reload_datapacks(true);
+            log::info!(
+                "Horizon: content mods switched live: server data reloaded in {} ms",
+                at.elapsed().as_millis()
+            );
+        };
+        log::info!("Horizon: content mods switched live: resources reloaded in {resources_ms} ms");
+        if let Some(server) = &self.integrated {
+            server.post(reload);
+        } else if self.remote.is_none() {
+            reload(self);
+        }
+    }
+    /// Trait mods follow the player's switches at once
+    /// (`mod_api::set_mod_on`): the next dispatch skips a mod turned off.
+    /// Mixin code checks `native_on` itself.
+    pub(super) fn sync_native_switches(&self) {
+        for id in horizon_client::mod_api::mod_ids() {
+            let on = !self.settings.mods.disabled.contains(*id);
+            horizon_client::mod_api::set_mod_on(id, on);
+        }
     }
     /// Once, in the first world after the update: which WebAssembly mods stopped.
     pub(super) fn tell_native_now(&mut self) {
@@ -479,6 +644,82 @@ pub(super) fn living_mod_types()
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sound_mod_dispatch_changes_real_channels_and_cancellation_short_circuits() {
+        use crate::mod_api::{Flow, Hooks, SoundPlayEvent};
+        use horizon_client::sound_engine::{
+            Attenuation, PlayResult, SoundEngine, SoundInstance, test_backend,
+        };
+        use horizon_client::sound_events::SoundRegistry;
+        use horizon_core::random::LegacyRandom;
+        struct First;
+        impl Hooks for First {
+            fn sound_play(&self, event: &mut SoundPlayEvent<'_>) -> Flow {
+                assert_eq!(event.sound.identifier, "test:beep");
+                event.volume *= 0.5;
+                Flow::Continue
+            }
+        }
+        struct Second;
+        impl Hooks for Second {
+            fn sound_play(&self, event: &mut SoundPlayEvent<'_>) -> Flow {
+                assert_eq!(event.volume, 0.4);
+                event.pitch = 2.0;
+                Flow::Continue
+            }
+        }
+        struct Cancel;
+        impl Hooks for Cancel {
+            fn sound_play(&self, _: &mut SoundPlayEvent<'_>) -> Flow {
+                Flow::Cancel
+            }
+        }
+        struct Never;
+        impl Hooks for Never {
+            fn sound_play(&self, _: &mut SoundPlayEvent<'_>) -> Flow {
+                panic!("dispatch after cancellation")
+            }
+        }
+        static MODS: std::sync::LazyLock<Vec<Box<dyn Hooks>>> =
+            std::sync::LazyLock::new(|| vec![Box::new(First), Box::new(Second)]);
+        static CANCEL: std::sync::LazyLock<Vec<Box<dyn Hooks>>> =
+            std::sync::LazyLock::new(|| vec![Box::new(Cancel), Box::new(Never)]);
+        let mut registry = SoundRegistry::default();
+        registry.add_file("test", br#"{"beep":{"sounds":["beep"]}}"#, &|_, _| true);
+        let mut engine = SoundEngine::new(registry);
+        engine.listening = true;
+        let mut backend = test_backend::Null::default();
+        let instance = || {
+            SoundInstance::new(
+                "test:beep",
+                4,
+                0.8,
+                1.0,
+                LegacyRandom::new(1),
+                false,
+                0,
+                Attenuation::None,
+                [0.0; 3],
+                true,
+            )
+        };
+        engine.set_test_playback_hook(|sound, volume, pitch, cancel| {
+            crate::mod_api::dispatch_sound_play(&MODS, sound, volume, pitch, cancel)
+        });
+        let (id, result) = engine.play_new(instance(), false, &mut backend);
+        assert_eq!(result, PlayResult::Started);
+        let channel = engine.channel(id).unwrap();
+        assert_eq!(backend.volume[&channel], 0.4);
+        assert_eq!(backend.pitch[&channel], 2.0);
+        let notifications = engine.notifications.len();
+        engine.set_test_playback_hook(|sound, volume, pitch, cancel| {
+            crate::mod_api::dispatch_sound_play(&CANCEL, sound, volume, pitch, cancel)
+        });
+        let (_, result) = engine.play_new(instance(), false, &mut backend);
+        assert_eq!(result, PlayResult::NotStarted);
+        assert_eq!(backend.volume.len(), 1);
+        assert_eq!(engine.notifications.len(), notifications);
+    }
     use super::*;
     use std::io::Write;
 
@@ -509,7 +750,8 @@ mod tests {
             Mob::new(2, ghoul.clone(), at, 0.0),
         );
         assert_eq!(ghoul.health, 40.0);
-        let saved = |m: &Mob| horizon_client::entity_nbt::mob_to_nbt(m, [0, 0, 0, 2], None, None);
+        let saved =
+            |m: &Mob| horizon_client::entity_nbt::mob_to_nbt(m, [0, 0, 0, 2], None, None, |_| None);
         let keys = |tag: &horizon_world::nbt::Tag| -> Vec<String> {
             let horizon_world::nbt::Tag::Compound(map) = tag else {
                 panic!("a mob saves a compound");
@@ -560,7 +802,8 @@ mod tests {
         let trader = Mob::new(1, types["minecraft:wandering_trader"].clone(), at, 0.0);
         let merchant = Mob::new(2, merchant.clone(), at, 0.0);
         assert!(merchant.ai.goals.has("Float") && trader.ai.goals.has("Float"));
-        let saved = |m: &Mob| horizon_client::entity_nbt::mob_to_nbt(m, [0, 0, 0, 2], None, None);
+        let saved =
+            |m: &Mob| horizon_client::entity_nbt::mob_to_nbt(m, [0, 0, 0, 2], None, None, |_| None);
         let keys = |tag: &Tag| -> Vec<String> {
             let Tag::Compound(map) = tag else {
                 panic!("a mob saves a compound");
@@ -715,6 +958,7 @@ mod tests {
             std::sync::LazyLock::new(|| vec![Box::new(Guards)]);
         let installed = install(NativeClientHooks {
             menu_slot_rules: |_, _, _, _, _| {},
+            sound_play: |_, _, _, _| {},
             living_heal: |_, _, _| {},
             player_chat: |_, _, _, _, _| {},
             living_breathe: |_, _, _, _, _| {},
@@ -722,8 +966,12 @@ mod tests {
             living_fall: |_, _, _, _, _| {},
             living_jump: |_, _| {},
             register_goals: |mob| dispatch_register_goals(&MODS, mob),
+            player_pre_login: |_, _, _, _| {},
+            player_profile: |_, _, _| {},
             ingredient: |_, _, _| {},
             ingredient_test: |_, _, _, _| {},
+            log_line: |_, _, _, _| {},
+            handshake: |_, _, _, _, _| {},
         });
         assert!(installed.is_ok());
 

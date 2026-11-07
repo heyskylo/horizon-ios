@@ -12,6 +12,7 @@
 //! it by the rope either. Here the pull lands on the server's copy and the
 //! rider's client overwrites it the same way (`tick_boats`).
 use super::{Game, boats::Boat};
+use horizon_client::actions::Action;
 use horizon_client::mobs::leash::{self, Holder, HolderState, Pending};
 use horizon_core::geometry::Vec3;
 use horizon_world::nbt::Tag;
@@ -418,7 +419,7 @@ impl Game<'_> {
         let id = self.boats[i].id;
         // The sneak branch: the player's mobs and boats on leads are re-tied
         // to this boat.
-        let sneaking = self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft);
+        let sneaking = self.keys.held(Action::Sneak);
         if sneaking
             && self.tie_player_leads(glam::DVec3::new(c.x, c.y, c.z), Holder::Boat(id), None)
         {

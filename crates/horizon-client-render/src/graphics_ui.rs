@@ -639,12 +639,20 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
 /// BlueMap download radii, in chunks.
 const BLUE_MAP_RADII: [u32; 5] = [16, 32, 64, 128, 256];
 const UPLOAD_STEPS: [u32; 8] = [0, 256, 512, 1024, 2048, 4096, 8192, 16384];
-/// What the LOD Distance slider stops at, in chunks: off, then each doubling
+/// What the LOD Distance slider stops at, in chunks: off, fine steps up to 256
+/// for a short ring of far terrain past a small render distance (a phone or an
+/// integrated GPU at 8 chunks wants LOD to 12 or 16, not 64), then each doubling
 /// up to the whole world.
-const LOD_STEPS: [u32; 18] = [
+const LOD_STEPS: [u32; 24] = [
     0,
+    16,
+    24,
+    32,
+    48,
     64,
+    96,
     128,
+    192,
     256,
     512,
     1024,
@@ -1576,7 +1584,7 @@ impl GraphicsUi {
             &cols,
             &lines,
             self.scroll.amount,
-            Page::name,
+            |page| lang::get(page.name()),
             |batch, setting: Setting, y| {
                 let item = setting.item;
                 let rect = cols.row(y);
@@ -1840,9 +1848,10 @@ impl GraphicsUi {
         self.scroll.release();
         self.dragging.take().is_some()
     }
-    /// The mouse wheel at the cursor. It scrolls the list, except that a hovered value
-    /// stepped by `<` `>` takes the step (`CycleButton.mouseScrolled`: up goes back)
-    /// while the "Scroll wheel changes settings" extra is on. A slider, a tick box and a
+    /// The mouse wheel at the cursor. It scrolls the list, as vanilla's does
+    /// (`AbstractScrollArea.mouseScrolled`), except that a hovered value stepped by
+    /// `<` `>` takes the step (up goes back) while the "Scroll wheel changes settings"
+    /// extra is on. A slider, a tick box and a
     /// focused row don't take it, wherever the focus came from: the keyboard and a
     /// controller step them with Left and Right.
     pub fn wheel(
@@ -2527,6 +2536,25 @@ mod tests {
     }
 
     #[test]
+    fn a_hovered_value_takes_the_wheel_only_with_the_extra_on() {
+        let mut s = Settings::default();
+        let mut ui = GraphicsUi::default();
+        let item = Item::Vanilla(Opt::AttackIndicator);
+        let r = row(&mut ui, &s, item);
+        let before = format!("{s:?}");
+        let actions = ui.wheel(&mut s, SIZE, (r[0] + 4.0, r[1] + 4.0), FB, -1.0);
+        assert_eq!(format!("{s:?}"), before, "the hovered value stays put");
+        assert!(actions.is_empty());
+
+        s.extras.wheel_cycles_settings = true;
+        let r = row(&mut ui, &s, item);
+        let before = format!("{s:?}");
+        let actions = ui.wheel(&mut s, SIZE, (r[0] + 4.0, r[1] + 4.0), FB, -1.0);
+        assert_ne!(format!("{s:?}"), before, "the hovered value steps");
+        assert!(!actions.is_empty());
+    }
+
+    #[test]
     fn the_arrows_move_between_rows_in_view_and_over_to_the_page_list() {
         let mut s = Settings::default();
         let mut ui = GraphicsUi::default();
@@ -2672,12 +2700,21 @@ mod tests {
             item.label(&s).plain(),
             format!("LOD Distance: {} chunks", crate::lod::MAX_CHUNKS)
         );
-        item.set_slider(&mut s, 5.0 / 17.0);
+        item.set_slider(&mut s, 11.0 / 23.0);
         assert_eq!(s.horizon.lod_distance, 1024);
         assert_eq!(item.label(&s).plain(), "LOD Distance: 1024 chunks");
+        // The fine stops: a ring of far terrain just past a small render
+        // distance, which the doubling steps skipped (#9694).
+        item.set_slider(&mut s, 1.0 / 23.0);
+        assert_eq!(s.horizon.lod_distance, 16);
+        assert_eq!(item.label(&s).plain(), "LOD Distance: 16 chunks");
+        item.set_slider(&mut s, 2.0 / 23.0);
+        assert_eq!(s.horizon.lod_distance, 24);
         // A distance between stops (from the file) sits on the next one.
         s.horizon.lod_distance = 3000;
-        assert_eq!(item.slider(&s), Some(7.0 / 17.0));
+        assert_eq!(item.slider(&s), Some(13.0 / 23.0));
+        s.horizon.lod_distance = 12;
+        assert_eq!(item.slider(&s), Some(1.0 / 23.0));
         assert_eq!(
             Item::Vanilla(Opt::RenderDistance).label(&s).plain(),
             format!("Full Detail Distance: {near} chunks")
