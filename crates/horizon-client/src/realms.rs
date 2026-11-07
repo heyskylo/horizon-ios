@@ -2059,7 +2059,6 @@ impl Screen {
                     | SubScreen::RegionPreference { .. }
                     | SubScreen::EditCode { .. }
                     | SubScreen::SlotOptions { .. }
-                    | SubScreen::CreateRealm { .. }
                     | SubScreen::InviteCodes { .. }
             ) =>
             {
@@ -3632,18 +3631,7 @@ impl Screen {
                                 break;
                             }
                             if *selected == Some(i) {
-                                batch.fill(
-                                    atlas,
-                                    rx + 2.0,
-                                    y + 2.0,
-                                    304.0,
-                                    24.0,
-                                    if list_focused {
-                                        0xFFFF_FFFF
-                                    } else {
-                                        0xFF80_8080
-                                    },
-                                );
+                                batch.fill(atlas, rx + 2.0, y + 2.0, 304.0, 24.0, 0xFFFF_FFFF);
                                 batch.fill(atlas, rx + 3.0, y + 3.0, 302.0, 22.0, 0xFF00_0000);
                             }
                             // `Entry.extractContent`: the code alone, centred in its row.
