@@ -1,5 +1,5 @@
 //! Non-player entities simulated on the client world. Dropped items follow
-//! `ItemEntity.tick`: gravity 0.04, 0.98 drag (block friction on the ground),
+//! `ItemEntity.tick`: gravity 0.04, 0.98F drag (block friction on the ground),
 //! a ground bounce of -0.5, slime landing restitution (0.8, including a moving
 //! piston that is carrying slime), water buoyancy, pickup delay, 6000-tick despawn,
 //! `HoneyBlock.entityInside` when falling against a honey block's side, and
@@ -575,6 +575,22 @@ impl ItemEntity {
             speed,
         );
     }
+    /// `ItemEntity.setUnderwaterMovement` / `setUnderLavaMovement`: horizontal
+    /// drag is a float (`0.99F` / `0.95F`), and a slow item is lifted by
+    /// `5.0E-4F` while slower than `0.06F`.
+    fn set_fluid_movement(&mut self, drag: f32) {
+        let drag = f64::from(drag);
+        let lift = if self.velocity.y < f64::from(0.06_f32) {
+            f64::from(5.0e-4_f32)
+        } else {
+            0.0
+        };
+        self.velocity = Vec3::new(
+            self.velocity.x * drag,
+            self.velocity.y + lift,
+            self.velocity.z * drag,
+        );
+    }
     /// `ItemEntity.tick` up to the blocks' push. The game has just run the
     /// fluid push (`Entity::push_by_fluid`) and passes the heights it found;
     /// it pushes by a bubble column next (`Entity::push_by_bubble_column`) and
@@ -624,18 +640,11 @@ impl ItemEntity {
         let old_velocity = self.velocity;
         let in_water = water_height > f64::from(0.1f32);
         if in_water {
-            // ItemEntity.setUnderwaterMovement
-            self.velocity = Vec3::new(
-                self.velocity.x * 0.99,
-                self.velocity.y + if self.velocity.y < 0.06 { 5.0e-4 } else { 0.0 },
-                self.velocity.z * 0.99,
-            );
+            // ItemEntity.setUnderwaterMovement: 0.99F, 5.0E-4F, 0.06F.
+            self.set_fluid_movement(0.99_f32);
         } else if lava_height > f64::from(0.1f32) {
-            self.velocity = Vec3::new(
-                self.velocity.x * 0.95,
-                self.velocity.y + if self.velocity.y < 0.06 { 5.0e-4 } else { 0.0 },
-                self.velocity.z * 0.95,
-            );
+            // ItemEntity.setUnderLavaMovement: 0.95F, 5.0E-4F, 0.06F.
+            self.set_fluid_movement(0.95_f32);
         } else {
             self.velocity.y -= self.get_gravity();
         }
@@ -804,18 +813,22 @@ impl ItemEntity {
             if !no_physics {
                 self.slime_step_on(world, facts);
             }
-            let mut friction = 0.98;
+            // `float friction = getAirDrag()` (0.98F); on the ground, times
+            // the block's friction as a float, then widened for the scale.
+            let mut friction = 0.98_f32;
             if self.on_ground {
                 let below = world.block(
                     self.position.x.floor() as i32,
                     (self.position.y - 0.999_999).floor() as i32,
                     self.position.z.floor() as i32,
                 );
-                friction = f64::from(facts.get(below).friction) * 0.98;
+                friction *= facts.get(below).friction;
             }
+            let friction = f64::from(friction);
+            let air = f64::from(0.98_f32);
             self.velocity = Vec3::new(
                 self.velocity.x * friction,
-                self.velocity.y * 0.98,
+                self.velocity.y * air,
                 self.velocity.z * friction,
             );
             if self.on_ground && self.velocity.y < 0.0 {
@@ -3612,10 +3625,51 @@ mod slime_bounce_tests {
 
     #[test]
     fn a_slime_landing_stays_upward_after_item_friction() {
-        // ItemEntity then multiplies Y by 0.98 and applies -0.5 only if still
+        // ItemEntity then multiplies Y by 0.98F and applies -0.5 only if still
         // negative on the ground. A slime bounce must remain positive.
-        let bounced = vertical_collision_velocity(-1.0, -0.5, ITEM_GRAVITY, true, true) * 0.98;
+        let bounced =
+            vertical_collision_velocity(-1.0, -0.5, ITEM_GRAVITY, true, true) * f64::from(0.98_f32);
         assert!(bounced > 0.0);
+    }
+
+    #[test]
+    fn item_air_drag_widens_get_air_drag() {
+        // ItemEntity.tick: getAirDrag 0.98F, not the f64 0.98 (#6814).
+        let mut item = super::honey_slide_tests::falling_item(0.5, 64.0, 0.5, 0.1, 0.2, -0.1);
+        let world = World::new(horizon_world::registry::BlockStateId(0), 0);
+        let facts = BlockFacts {
+            states: Vec::new(),
+            air: horizon_world::registry::BlockStateId(0),
+            woods: Default::default(),
+        };
+        item.tick_settle(
+            &world,
+            &facts,
+            true,
+            ItemStep {
+                old_velocity: item.velocity,
+                movement: Some(item.velocity),
+                clipped_vertical: false,
+            },
+        );
+        assert_eq!(item.velocity.x.to_bits(), 0x3fb9_1687_3333_3334);
+        assert_eq!(item.velocity.y.to_bits(), 0x3fc9_1687_3333_3334);
+        assert_eq!(item.velocity.z.to_bits(), 0xbfb9_1687_3333_3334);
+    }
+
+    #[test]
+    fn item_fluid_drags_widen_float_constants() {
+        // setUnderwaterMovement 0.99F / 5.0E-4F; setUnderLavaMovement 0.95F.
+        let mut water = super::honey_slide_tests::falling_item(0.5, 64.0, 0.5, 0.1, 0.01, -0.2);
+        water.set_fluid_movement(0.99_f32);
+        assert_eq!(water.velocity.x.to_bits(), 0x3fb9_5810_6666_6667);
+        assert_eq!(water.velocity.y.to_bits(), 0x3f85_8106_25ae_147b);
+        assert_eq!(water.velocity.z.to_bits(), 0xbfc9_5810_6666_6667);
+        let mut lava = super::honey_slide_tests::falling_item(0.5, 64.0, 0.5, 0.1, 0.01, -0.2);
+        lava.set_fluid_movement(0.95_f32);
+        assert_eq!(lava.velocity.x.to_bits(), 0x3fb8_51eb_8000_0000);
+        assert_eq!(lava.velocity.y.to_bits(), 0x3f85_8106_25ae_147b);
+        assert_eq!(lava.velocity.z.to_bits(), 0xbfc8_51eb_8000_0000);
     }
 
     #[test]
