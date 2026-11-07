@@ -17732,4 +17732,6 @@ fn write_level_for_role(
 }
 
 #[cfg(test)]
+mod orb_data_tests;
+#[cfg(test)]
 mod vibration_tests;

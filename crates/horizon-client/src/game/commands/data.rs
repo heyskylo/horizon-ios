@@ -491,6 +491,41 @@ impl Game<'_> {
                 // Runtime id/join, owner binding and guest attribution stay live.
                 set_key(&mut tag, "UUID", Tag::IntArray(uuid.to_vec()));
             }
+            Target::Orb(id) => {
+                // Entity.load and ExperienceOrb.readAdditionalSaveData on the
+                // resident orb: its runtime id, join and tick count stay.
+                let new = entity_nbt::orbs_from_nbt(&tag)
+                    .into_iter()
+                    .next()
+                    .ok_or_else(stale)?;
+                let uuid = self.uuid_for(id);
+                let orb = self
+                    .orbs
+                    .iter_mut()
+                    .find(|o| o.id == id)
+                    .ok_or_else(stale)?;
+                orb.rotation = new.rotation;
+                orb.position = new.position;
+                orb.previous = new.previous;
+                orb.velocity = new.velocity;
+                orb.value = new.value;
+                orb.age = new.age;
+                orb.on_ground = new.on_ground;
+                orb.count = new.count;
+                orb.health = new.health;
+                orb.no_gravity = new.no_gravity;
+                // Entity.load reads portalCooldown and leaves the portal
+                // process as it is.
+                if let Some(portal) = self.portals.entities.get_mut(&id) {
+                    portal.cooldown = match tag.get("PortalCooldown") {
+                        Some(Tag::Int(cooldown)) => *cooldown,
+                        _ => 0,
+                    };
+                } else {
+                    self.restore_portal_cooldown(id, &tag);
+                }
+                set_key(&mut tag, "UUID", Tag::IntArray(uuid.to_vec()));
+            }
             Target::Cart(id) => {
                 let uuid = self.uuid_for(id);
                 let i = self
@@ -534,6 +569,7 @@ impl Game<'_> {
         | Target::Boat(id)
         | Target::Cart(id)
         | Target::Tnt(id)
+        | Target::Orb(id)
         | Target::Other(id)
         | Target::Fangs(id) = t
         {
