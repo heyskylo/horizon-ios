@@ -483,7 +483,9 @@ impl Game<'_> {
                 Event::Narrator => self.narrator_status_changed(),
                 Event::OpenStudioReplay(path) => {
                     let path = path.to_string_lossy().to_string();
-                    let _ = self.open_studio_replay(&path);
+                    if let Err(e) = self.open_studio_replay(&path) {
+                        log::warn!("Horizon Studio: could not open {path}: {e}");
+                    }
                 }
                 Event::OpenStudioFolder => {
                     let dir = std::path::PathBuf::from("recordings");

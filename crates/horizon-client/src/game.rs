@@ -20863,7 +20863,9 @@ impl Game<'_> {
             }
             Some(PendingWorldEntry::StudioReplay(path)) => {
                 let path_str = path.to_string_lossy().to_string();
-                let _ = self.open_studio_replay(&path_str);
+                if let Err(e) = self.open_studio_replay(&path_str) {
+                    log::warn!("Horizon Studio: could not open {path_str}: {e}");
+                }
             }
             None => {}
         }
