@@ -1360,18 +1360,29 @@ impl Items {
         self.block_drops_in(registry, state, held, random, None)
     }
     /// `LootCommand.dropBlockLoot`: only replacement retains empty result positions.
+    /// `this_entity`: the command has a source entity (the optional THIS_ENTITY).
     pub fn block_drops_for_command<R: RandomSource>(
         &self,
         registry: &BlockRegistry,
         state: BlockStateId,
         held: Option<&ItemStack>,
         random: &mut R,
+        this_entity: bool,
         keep_empty: bool,
     ) -> Vec<ItemStack> {
         if !keep_empty {
-            return self.block_drops(registry, state, held, random);
+            return self.block_drops_exploded(
+                registry,
+                state,
+                held,
+                &[],
+                random,
+                None,
+                None,
+                this_entity,
+            );
         }
-        self.block_drops_raw(registry, state, held, random, None, None, false, true)
+        self.block_drops_raw(registry, state, held, random, None, None, this_entity, true)
             .into_iter()
             .filter(|drop| !drop.item.starts_with(DYNAMIC))
             .collect()
