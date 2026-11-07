@@ -9,6 +9,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import shutil
 import time
 
 import test_hostile_sound_categories_parity as sound
@@ -145,17 +146,20 @@ def run(label, command, client_command, build, world, spec):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--binary', type=Path, required=True)
-    parser.add_argument('--work-dir', type=Path, required=True)
+    parser.add_argument('--binary', type=Path, help="default: build this checkout's game")
+    parser.add_argument('--work-dir', type=Path, help='default: a fresh .local/mob-local-sound-parity')
     parser.add_argument('--reference-only', action='store_true')
     parser.add_argument('--reference-dir', type=Path)
     args=parser.parse_args()
+    if args.work_dir is None:
+        args.work_dir=net.lab.LOCAL/'mob-local-sound-parity'
+        shutil.rmtree(args.work_dir,ignore_errors=True)
     build=args.work_dir.resolve(); build.mkdir(parents=True,exist_ok=False)
     spec=program(); (build/'program.json').write_text(json.dumps(spec,indent=2)+'\n')
     script=Path(__file__).read_bytes()
     (build/'manifest.json').write_text(json.dumps(dict(script_sha256=hashlib.sha256(script).hexdigest(),
         declared_at=sound.now(), program_sha256=hashlib.sha256((build/'program.json').read_bytes()).hexdigest()),indent=2)+'\n')
-    _,_,java,native,client=net.sides(str(build.relative_to(net.lab.LOCAL)),args.binary.resolve())
+    _,_,java,native,client=net.sides(str(build.relative_to(net.lab.LOCAL)),args.binary and args.binary.resolve())
     reference=args.reference_dir.resolve() if args.reference_dir else build
     if not args.reference_dir:
         world=sound.generate(java,build)
