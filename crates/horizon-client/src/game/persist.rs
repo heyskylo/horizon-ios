@@ -632,8 +632,7 @@ impl Game<'_> {
         }
     }
 
-    /// A saved primed TNT.
-    // PrimedTnt.readAdditionalSaveData: its fuse (80 when absent) and motion.
+    /// `PrimedTnt.readAdditionalSaveData`: its numeric short fuse (80 when absent) and motion.
     // Its Passengers ride it (EntityType.loadEntityRecursive forces them on).
     pub(super) fn load_tnt(&mut self, tag: Tag, uuid: Option<[i32; 4]>) {
         let mut tag = tag;
@@ -641,10 +640,13 @@ impl Game<'_> {
         if let Some(position) = entity_nbt::position(&tag) {
             self.next_entity += 1;
             let id = self.next_entity;
-            let fuse = match tag.get("fuse") {
-                Some(Tag::Short(f)) => i32::from(*f),
-                _ => 80,
-            };
+            // getShortOr uses NumericTag.shortValue: floor floating values
+            // to int before short narrowing; integer tags narrow directly.
+            let fuse = i32::from(match tag.get("fuse") {
+                Some(Tag::Float(v)) => f32::from_bits(*v).floor() as i32 as i16,
+                Some(Tag::Double(v)) => f64::from_bits(*v).floor() as i32 as i16,
+                other => horizon_client::save::number(other).unwrap_or(80) as i16,
+            });
             self.tnts.push(super::tnt::PrimedTnt {
                 rotation: [0.0, 0.0],
                 join: Default::default(),
@@ -1766,8 +1768,12 @@ impl Game<'_> {
         keys.contains(&chunk_of(at)).then(|| {
             let id = self.dropped[i].id;
             let uuid = self.uuid_for(id);
-            let tag =
-                entity_nbt::item_entity_to_nbt(&self.dropped[i], uuid, self.persist.raw.get(&id));
+            let tag = entity_nbt::item_entity_to_nbt_with_items(
+                &self.dropped[i],
+                uuid,
+                self.persist.raw.get(&id),
+                self.items(),
+            );
             (chunk_of(at), tag)
         })
     }

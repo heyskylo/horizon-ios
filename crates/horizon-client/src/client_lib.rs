@@ -56,6 +56,7 @@ pub mod debug_overlay;
 pub mod debugworld;
 pub mod dialog;
 pub mod dialog_screen;
+#[cfg(feature = "discord")]
 pub mod discord_presence;
 pub mod end_crystal;
 pub mod end_gateway;
@@ -74,6 +75,7 @@ pub mod game_rules_screen;
 pub mod gizmos;
 pub mod gossip;
 pub mod health;
+#[cfg(feature = "heartbeat")]
 pub mod heartbeat;
 pub mod hotbar;
 pub mod hunger;

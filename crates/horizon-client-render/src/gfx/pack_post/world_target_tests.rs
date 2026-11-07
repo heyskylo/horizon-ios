@@ -304,6 +304,7 @@ fn pack_with(
             weather: false,
             hand: false,
         },
+        &Default::default(),
     )
     .expect("the pack runs");
     assert!(post.notes.is_empty(), "{:?}", post.notes);
