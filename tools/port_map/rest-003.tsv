@@ -77,7 +77,7 @@ Minecraft.run	port	crates/horizon-client/src/game.rs::run_event_loop	the loop th
 Minecraft.saveReport	port	crates/horizon-client-render/src/crash.rs::Report::save	
 Minecraft.saveReportAndShutdownSoundManager	port	crates/horizon-client-render/src/crash.rs::Report::save	gap: minor: sound shutdown is not part of Report::save
 Minecraft.selfTest	skip:debug		dev self-test, disabled in vanilla (the IS_RUNNING_IN_IDE && false check)
-Minecraft.exitWorldAndClose	port	crates/horizon-client/src/game.rs::Game::close_world	
+Minecraft.exitWorldAndClose	port	crates/horizon-client/src/game/world_session.rs::Game::close_world	
 Minecraft.close	port	crates/horizon-client/src/game.rs::Game::finish_close_world	shutdown of the session
 Minecraft.renderFrame	port	crates/horizon-client/src/game.rs::Game::render	
 Minecraft.pauseIfInactive	port	crates/horizon-client/src/game/window_handler.rs::Game::window_event	gap: minor: pauses at the focus-lost event, not after 500 ms without focus
@@ -91,7 +91,7 @@ Minecraft.isLevelRunningNormally	port	crates/horizon-client/src/clock.rs::TickRa
 Minecraft.isMultiplayerServer	skip:other		no single predicate; remote and LAN code test their own state
 Minecraft.getQuickActionsDialog	port	crates/horizon-client/src/game/quick_actions.rs::Game::open_quick_actions	key.quickActions opens the tag's dialog, or minecraft:quick_actions when it names several
 Minecraft.disconnectFromWorld	port	crates/horizon-client/src/game/remote.rs::Game::leave_server	gap: minor: only the remote exit; local worlds exit via close_world
-Minecraft.disconnectWithProgressScreen	inline	crates/horizon-client/src/game.rs::Game::close_world	the exit is folded into the world close
+Minecraft.disconnectWithProgressScreen	inline	crates/horizon-client/src/game/world_session.rs::Game::close_world	the exit is folded into the world close
 Minecraft.clearClientLevel	inline	crates/horizon-client/src/game/remote.rs::Game::leave_server	level teardown is part of leave_server
 Minecraft.setScreenAndShow	skip:other		Horizon switches the screen field; no forced frame render needed
 Minecraft.updateLevelInEngines	skip:other		one world state in Horizon; no engines to update
