@@ -223,13 +223,8 @@ impl Game<'_> {
             (true, None) => {
                 let was = window.fullscreen().is_some();
                 if !was {
-                    if window.is_maximized() {
-                        window.set_maximized(false);
-                    }
-                    let monitor = window
-                        .current_monitor()
-                        .or_else(|| window.primary_monitor());
-                    window.set_fullscreen(Some(Fullscreen::Borderless(monitor)));
+                    let borderless = horizon_client::window::borderless_fullscreen(window);
+                    horizon_client::window::enter_fullscreen(window, borderless);
                 }
                 self.ui.options.calibration_fullscreen = Some(was);
             }
@@ -634,12 +629,11 @@ impl Game<'_> {
             }
             if let Some(w) = &self.window {
                 let on = w.fullscreen().is_none();
-                if on && w.is_maximized() {
-                    w.set_maximized(false);
-                }
-                let monitor = w.current_monitor().or_else(|| w.primary_monitor());
-                w.set_fullscreen(on.then_some(Fullscreen::Borderless(monitor)));
-                if !on {
+                if on {
+                    let borderless = horizon_client::window::borderless_fullscreen(w);
+                    horizon_client::window::enter_fullscreen(w, borderless);
+                } else {
+                    w.set_fullscreen(None);
                     windowed_again(w);
                 }
             }

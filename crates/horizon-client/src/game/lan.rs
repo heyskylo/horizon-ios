@@ -262,6 +262,11 @@ pub(super) struct LanHost {
     /// Native mods' commands and the level each needs, once asked
     /// (game/native_server.rs).
     pub native_commands: Option<HashMap<String, u8>>,
+    /// The permission node of each native mod's command that has one
+    /// (`NativeCommand::permission`), in registration order.
+    pub native_command_nodes: Vec<(String, String)>,
+    /// The usages behind them, as the mods registered them.
+    pub native_usages: Vec<horizon_client::mod_api::NativeCommand>,
     /// The players a native mod leaves out of the sleep count when they
     /// aren't in bed (`native_sleep_ignored`).
     pub sleep_ignored: std::collections::HashSet<u128>,
@@ -1450,6 +1455,8 @@ impl Game<'_> {
             quiet: std::collections::VecDeque::new(),
             far,
             native_commands: None,
+            native_command_nodes: Vec::new(),
+            native_usages: Vec::new(),
             sleep_ignored: Default::default(),
             states: Default::default(),
             states_next_entity: None,
@@ -2082,12 +2089,16 @@ impl Game<'_> {
                 }
                 HostEvent::Joined(conn) => {
                     // The mods may refuse the login before the player is placed.
-                    if let Some((uuid, name)) =
-                        host.hub.guest(conn).map(|g| (g.uuid, g.name.clone()))
+                    if let Some((uuid, name, permission)) = host
+                        .hub
+                        .guest(conn)
+                        .map(|g| (g.uuid, g.name.clone(), g.permission))
                     {
                         let mut cancel = false;
                         let mut reason = None;
+                        self.native_login_permission = Some((uuid, permission));
                         self.native_player_login(uuid, &name, &mut cancel, &mut reason);
+                        self.native_login_permission = None;
                         if cancel {
                             let reason = match reason {
                                 Some(text) => {
@@ -2158,6 +2169,8 @@ impl Game<'_> {
                     {
                         self.lan = Some(host);
                         self.native_player_logged_in(uuid, &name);
+                        // What the client said in its configuration (native_packets.rs).
+                        self.configuration_heard(uuid, &name);
                         // A hook's command can close the hub.
                         host = self.lan.take()?;
                     }
@@ -2172,6 +2185,11 @@ impl Game<'_> {
                             let conn = guest.conn;
                             let at = host.hub.guests.len();
                             host.hub.guests.push(*guest);
+                            // Bukkit's PlayerQuitEvent: the mods hear them leave while
+                            // they are still here.
+                            if !host.players_told_left {
+                                host = self.tell_mods_logging_out(host, conn)?;
+                            }
                             self.guest_disconnected(&mut host, conn);
                             *guest = host.hub.guests.remove(at);
                         }
@@ -2404,13 +2422,21 @@ impl Game<'_> {
                 .take()
                 .expect("the hub is back after the advancement grants");
         }
-        if !host.hub.native_menu_events.is_empty() {
+        if !host.hub.native_menu_events.is_empty() || !host.hub.native_menu_returns.is_empty() {
             self.lan = Some(host);
             horizon_client::spans::time("lan_menu_events", || self.run_native_menu_events());
             host = self
                 .lan
                 .take()
                 .expect("the hub is back after the menu events");
+        }
+        if !self.native_moves.is_empty() {
+            self.lan = Some(host);
+            horizon_client::spans::time("lan_native_moves", || self.run_native_moves());
+            host = self
+                .lan
+                .take()
+                .expect("the hub is back after the mods' moves");
         }
         host.states = entities;
         self.level_pass.packets_drained = true;
@@ -2549,6 +2575,7 @@ impl Game<'_> {
         // What the tick sends a guest goes to its connection at the end.
         let holding = lan::Holding::start();
         self.register_native_commands(&mut host);
+        self.resend_native_trees(&mut host);
         // The host's own commands' (and command blocks') players moving
         // to another level, and their broadcastToAdmins lines.
         if !self.level_teleports.is_empty() {
@@ -2591,13 +2618,7 @@ impl Game<'_> {
             let mut states = std::mem::take(&mut host.states);
             if has_guests {
                 self.lan_assign_ids();
-                let guests: Vec<(u32, i32)> = host
-                    .hub
-                    .guests
-                    .iter()
-                    .filter_map(|g| Some((g.vehicle?, g.entity_id)))
-                    .collect();
-                self.lan_riding(&guests, &mut host.hub.riding);
+                self.lan_riding(&host.hub.guests, &mut host.hub.riding);
                 // Idle states are kept only when the players' moves are in:
                 // the clients that could pair are known. The range scale is
                 // the one the tracker gets below.
@@ -2765,7 +2786,7 @@ impl Game<'_> {
                 .take()
                 .expect("the hub is back after the advancement grants");
         }
-        if !host.hub.native_menu_events.is_empty() {
+        if !host.hub.native_menu_events.is_empty() || !host.hub.native_menu_returns.is_empty() {
             self.lan = Some(host);
             self.run_native_menu_events();
             host = self
@@ -2803,6 +2824,7 @@ impl Game<'_> {
         drop(holding);
         self.flush_attachment_sync(&mut host);
         self.flush_native_net(&mut host);
+        self.flush_native_player_fx(&mut host);
         self.flush_far_terrain(&mut host);
         lan::flush_all(host.hub.guests.iter().map(|g| &g.sender));
         self.lan = Some(host);
@@ -2869,6 +2891,27 @@ impl Game<'_> {
             g.health = 20.0;
             g.food = 20;
             g.dimension = super::Dim::Overworld.id().to_owned();
+        }
+        // Spigot's PlayerSpawnLocationEvent: the mods may place them elsewhere.
+        let (mut dimension, mut position, mut rotation) =
+            (g.dimension.clone(), g.position, [g.yaw, g.pitch]);
+        self.native_player_spawn_location(
+            g.uuid,
+            &g.name,
+            &mut dimension,
+            &mut position,
+            &mut rotation,
+        );
+        if dimension != g.dimension && super::Dim::from_id(&dimension).id() == dimension {
+            g.dimension = dimension;
+        }
+        if position != g.position && position.iter().all(|v| v.is_finite()) {
+            g.position = position;
+            g.previous_position = position;
+        }
+        if rotation != [g.yaw, g.pitch] && rotation.iter().all(|v| v.is_finite()) {
+            (g.yaw, g.pitch) = (rotation[0], rotation[1]);
+            g.head_yaw = g.yaw;
         }
         // A server places each player in their own level (`PlayerList.placeNewPlayer`).
         let back = self.dim;

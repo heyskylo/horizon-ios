@@ -116,12 +116,7 @@ impl Game<'_> {
         ));
         let supported = behind.legacy_solid || (s[1] == 0 && behind.has_class("DiodeBlock"));
         // canCoexist(true): only hanging entities facing the same way block it.
-        let overlaps = |o: ([f64; 3], [f64; 3])| (0..3).all(|i| o.0[i] < hi[i] && lo[i] < o.1[i]);
-        supported
-            && !self
-                .item_frames
-                .iter()
-                .any(|o| o.id != f.id && o.facing == f.facing && overlaps(o.bounds()))
+        supported && super::paintings::frame_coexists(f, &self.item_frames, &self.paintings)
     }
     /// Asks the mods whether the acting guest may place a hanging entity
     /// of type `kind` at `pos` (`native_hanging_place`): true when one
@@ -288,6 +283,13 @@ impl Game<'_> {
             let Some(held) = self.held().cloned() else {
                 return false;
             };
+            // A map tracking more than 256 counted markers stays in the hand
+            // (InteractionResult.FAIL): nothing else is tried, no swing (#11383).
+            if let Some(id) = super::maps::map_id(&held)
+                && self.map(id).is_some_and(|m| m.tracked_over_limit(256))
+            {
+                return true;
+            }
             self.item_frames[i].item = Some(ItemStack { count: 1, ..held });
             action = "put";
             self.audio
@@ -707,5 +709,78 @@ impl Game<'_> {
                 self.cull_entity_vertices(out, entity_start);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod map_limit_tests {
+    use super::super::maps::{Decoration, Key, MapData};
+    use super::super::native_machines::tests::server_game;
+    use super::*;
+
+    fn frame(id: u32) -> ItemFrame {
+        ItemFrame {
+            id,
+            pos: [0, 64, id as i32],
+            facing: 3,
+            glow: false,
+            item: None,
+            rotation: 0,
+            drop_chance: 1.0,
+            fixed: false,
+            invisible: false,
+            check_interval: 0,
+            custom_name: None,
+        }
+    }
+    /// A map whose `count` frame markers all count toward the limit.
+    fn map_tracking(count: i32) -> MapData {
+        let mut map = MapData::fresh(0.0, 0.0, 0, "minecraft:overworld");
+        map.decorations = (0..count)
+            .map(|i| Decoration {
+                sprite: "map/decorations/frame",
+                x: 0,
+                y: 0,
+                rot: 0,
+                name: None,
+                key: Key::Frame(1000 + i),
+            })
+            .collect();
+        map
+    }
+    fn filled_map(id: i32) -> ItemStack {
+        let mut stack = ItemStack::new("minecraft:filled_map", 1);
+        stack.data_mut().map_id = Some(id);
+        stack
+    }
+    fn at(id: u32) -> Option<InteractTarget> {
+        Some(InteractTarget {
+            id: id as i32,
+            location: [0.0; 3],
+        })
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources (HORIZON_TEST_RESOURCES)"]
+    fn a_map_tracking_more_than_256_markers_stays_in_the_hand() {
+        let mut game = server_game();
+        game.item_frames = vec![frame(1), frame(2)];
+        game.maps.data.insert(7, map_tracking(257));
+        game.maps.data.insert(8, map_tracking(256));
+
+        // ItemFrame.interact: FAIL, the frame stays empty and the map is kept.
+        *game.held_mut() = Some(filled_map(7));
+        assert!(
+            game.interact_frame(at(1)),
+            "the refusal ends the interaction"
+        );
+        assert!(game.item_frames[0].item.is_none());
+        assert_eq!(game.held().and_then(|s| s.data()?.map_id), Some(7));
+
+        // At the limit (not over it) the map goes in.
+        *game.held_mut() = Some(filled_map(8));
+        assert!(game.interact_frame(at(2)));
+        let framed = game.item_frames[1].item.as_ref();
+        assert_eq!(framed.and_then(|s| s.data()?.map_id), Some(8));
     }
 }

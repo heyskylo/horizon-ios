@@ -214,7 +214,7 @@ impl Launcher {
                     })),
             )
             .child(self.field(Field::AccentHex, "#6b4bff", 96., cx).ml(px(4.)));
-        let wide = self.window_width >= 1280.;
+        let wide = self.window_width >= crate::glass_home::WIDE;
         let control = div()
             .flex()
             .flex_col()
