@@ -390,6 +390,12 @@ Notes on fields:
   the health bar.
 - `SampleProfile.weights.state` is 0 for a CPU sample, 1 for wall running, 2 for wall waiting (as
   `perf/sampler-viewer:…/profile/agg.rs:17-37`).
+- `SampleProfile` as built (S2): `nodes` has no row for the thread or the wall-state frames, because `weights.thread` and
+  `weights.state` carry them; a root node has `thread_root = 1 + thread index`. An inlined call is a chain of nodes, and
+  `weights.node` is the innermost. `slow_over_ms` is the duration from which a tick counts as slow; read it there, because
+  `Start.options.ticks_over_ms` is left unset. Nodes are unique per (parent, function): addresses of one function under one
+  caller share a node. Time blocks are `block_s` long (5 s, or window / 32 when longer than 160 s); the last block takes whatever follows it.
+- Q2: `meta`'s `Sections` has no `samples` count, so a capture's sample section is invisible to it.
 - `functions` is deduplicated, unlike the viewer blob's per-node names. This is what makes function ids (§5.2) and
   bottom-up views cheap.
 - `addr` is the module-relative address, kept so that a later split-debug-file design can symbolize offline (the

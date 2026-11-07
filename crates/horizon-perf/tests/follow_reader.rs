@@ -113,3 +113,24 @@ fn the_span_world_net_memory_and_worker_fields_arrive_whole_in_order() {
     assert_eq!(got, expected);
     assert!(follower.is_finished());
 }
+
+#[test]
+fn the_end_only_samples_field_arrives_whole() {
+    use horizon_perf_format::Field;
+    use horizon_perf_format::v1::{Functions, SampleProfile};
+    let samples = SampleProfile {
+        side: Side::Server as i32,
+        block_s: 5.0,
+        functions: Some(Functions {
+            name: vec![1, 2],
+            line: vec![10, 20],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let fields = vec![Field::Samples(samples)];
+    let expected = expected_entries(&fields);
+    let file = write_capture(&fields).bytes;
+    let mut follower = Follower::new();
+    assert_eq!(follower.push(&file).unwrap(), expected);
+}

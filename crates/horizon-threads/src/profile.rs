@@ -12,8 +12,8 @@ mod agg;
 mod symbols;
 mod tree;
 
-pub use agg::{Aggregate, Frame, Key, State, TickStats};
-pub use symbols::{Sym, Symbols, symbolize};
+pub use agg::{Aggregate, Frame, Key, MAX_TIME_BLOCKS, State, TickStats};
+pub use symbols::{Sym, SymbolQuality, Symbols, symbol_quality, symbolize};
 pub use tree::{FNode, Interner, ROOT, Resolved, Row, top_functions, weights};
 
 const DRAIN_EVERY: Duration = Duration::from_millis(100);
@@ -43,6 +43,8 @@ pub struct Config {
     pub threads: Vec<String>,
     /// Ticks (or frames) at least this long count as slow.
     pub ticks_over_ms: f64,
+    /// Seconds per time block; a session longer than `MAX_TIME_BLOCKS` of them keeps the rest in the last block.
+    pub block_s: f32,
     pub names: Names,
 }
 
@@ -52,6 +54,7 @@ impl Default for Config {
             sampler: sampler::Config::default(),
             threads: Vec::new(),
             ticks_over_ms: 50.0,
+            block_s: 5.0,
             names: Names::default(),
         }
     }
@@ -111,6 +114,8 @@ pub fn start(config: Config) -> io::Result<Session> {
     })?;
     let shared = Arc::new(Shared::default());
     let slow_ns = (config.ticks_over_ms.max(0.0) * 1e6) as u64;
+    let block = Duration::from_secs_f32(config.block_s.max(0.001));
+    let begun = Instant::now();
     let (stop, stopped) = mpsc::channel::<()>();
     let publish = shared.clone();
     let writer = thread::Builder::new()
@@ -118,7 +123,11 @@ pub fn start(config: Config) -> io::Result<Session> {
         .spawn(move || {
             let cpu0 = sampler::thread_cpu_ns();
             let mut agg = Aggregate::new(slow_ns);
+            let in_block = |agg: &mut Aggregate| {
+                agg.set_time_block((begun.elapsed().as_secs_f64() / block.as_secs_f64()) as usize)
+            };
             while stopped.recv_timeout(DRAIN_EVERY) == Err(mpsc::RecvTimeoutError::Timeout) {
+                in_block(&mut agg);
                 session.drain(|name, record| agg.add(name, record));
                 publish.cpu_samples.store(agg.cpu_samples, Relaxed);
                 publish.wall_samples.store(agg.wall_samples, Relaxed);
@@ -126,6 +135,7 @@ pub fn start(config: Config) -> io::Result<Session> {
                 publish.dropped.store(session.stats().dropped, Relaxed);
                 publish.nodes.store(agg.nodes() as u64, Relaxed);
             }
+            in_block(&mut agg);
             let stats = session.stop(|name, record| agg.add(name, record));
             agg.finish();
             Finished {

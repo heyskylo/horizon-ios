@@ -28,6 +28,8 @@ fn options(window_s: f64) -> CaptureOptions {
             settings: Some(settings(10, 8, 20, 256)),
             ..Start::default()
         },
+        samples: false,
+        block_names: Vec::new(),
     }
 }
 
@@ -228,4 +230,105 @@ fn a_slow_tick_without_detail_has_no_spans_and_no_invented_cpu_time() {
     assert_eq!(c.slow[0].wall_ms, 400.0);
     assert_eq!(c.slow[0].cpu_ms, 0.0);
     assert!(c.slow[0].top.is_empty());
+}
+
+#[test]
+fn a_capture_without_the_samples_flag_has_no_samples_field() {
+    let scratch = Scratch::new("nosamples");
+    let mut perf = ServerPerf::new(0.0, 250.0);
+    perf.start_capture(0.0, &scratch.0, options(5.0)).unwrap();
+    run(&mut perf, 0, 1, 20, &[]);
+    let saved = perf.stop_capture(1.0, R::Normal).unwrap().unwrap();
+    let c = read(&saved.path);
+    assert!(c.samples.is_empty());
+    assert!(!c.start[0].options.as_ref().unwrap().samples);
+}
+
+#[cfg(target_os = "linux")]
+mod sampled {
+    use super::*;
+    use horizon_threads::{sampler, work};
+    use std::collections::HashMap;
+    use std::hint::black_box;
+
+    #[inline(never)]
+    fn spin_unit(cpu_ms: u64) {
+        let until = sampler::thread_cpu_ns() + cpu_ms * 1_000_000;
+        let mut x = 1u64;
+        while sampler::thread_cpu_ns() < until {
+            for _ in 0..1 << 14 {
+                x = black_box(x.wrapping_mul(6364136223846793005).wrapping_add(1));
+            }
+        }
+        black_box(x);
+    }
+
+    #[test]
+    fn a_sampled_capture_reads_back_with_the_entity_shares_of_the_work() {
+        let scratch = Scratch::new("samples");
+        let mut perf = ServerPerf::new(0.0, 250.0);
+        let on = CaptureOptions {
+            samples: true,
+            block_names: vec!["minecraft:air".into()],
+            ..options(5.0)
+        };
+        perf.start_capture(0.0, &scratch.0, on).unwrap();
+        let (a, b) = (work::entity_id("test:a"), work::entity_id("test:b"));
+        for unit in 0..4u32 {
+            work::tick_start();
+            work::set_entity(if unit < 3 { a } else { b });
+            let started = sampler::thread_cpu_ns();
+            spin_unit(40);
+            work::clear_work();
+            let ns = sampler::thread_cpu_ns() - started;
+            work::tick_end(ns);
+            perf.tick(
+                f64::from(unit) * 0.05,
+                ns as f32 / 1e6,
+                None,
+                WorldCounts::default,
+            );
+        }
+        let saved = perf.stop_capture(1.0, R::Normal).unwrap().unwrap();
+        let c = read(&saved.path);
+
+        let options = c.start[0].options.as_ref().unwrap();
+        assert!(options.samples && options.hz == sampler::DEFAULT_HZ);
+        let overhead = c.stop[0].overhead.as_ref().expect("the sampler's cost");
+        assert!(overhead.writer_core_share >= 0.0 && overhead.sampler_share_of_thread >= 0.0);
+
+        let profile = &c.samples[0];
+        assert_eq!(profile.side(), S::Server);
+        assert_eq!(text(&c, profile.threads[0].name), "tick");
+        assert_eq!(profile.threads[0].units, 4);
+        let (w, ctx) = (
+            profile.weights.as_ref().unwrap(),
+            profile.contexts.as_ref().unwrap(),
+        );
+        let mut by: HashMap<&str, u64> = HashMap::new();
+        for i in 0..w.node.len() {
+            let entity = ctx.entity[w.context[i] as usize];
+            *by.entry(if entity == 0 { "" } else { text(&c, entity) })
+                .or_default() += w.count[i];
+        }
+        let total = (by["test:a"] + by["test:b"]) as f64;
+        let share_a = by["test:a"] as f64 / total;
+        let share_b = by["test:b"] as f64 / total;
+        assert!(
+            (share_a - 0.75).abs() < 0.1 && (share_b - 0.25).abs() < 0.1,
+            "{by:?}"
+        );
+
+        let f = profile.functions.as_ref().unwrap();
+        let mut seen = std::collections::HashSet::new();
+        for row in 0..f.name.len() {
+            assert!(
+                seen.insert((f.name[row], f.file[row])),
+                "{} twice",
+                text(&c, f.name[row])
+            );
+        }
+        let names: Vec<_> = f.name.iter().map(|&n| text(&c, n)).collect();
+        assert!(names.iter().any(|n| n.ends_with("spin_unit")), "{names:?}");
+    }
 }

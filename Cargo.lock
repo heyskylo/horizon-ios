@@ -1645,6 +1645,7 @@ dependencies = [
  "horizon-mod-api-gen",
  "horizon-narrator",
  "horizon-optifine",
+ "horizon-perf-format",
  "horizon-protocol",
  "horizon-shader-api",
  "horizon-shaders",

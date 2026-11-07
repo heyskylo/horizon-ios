@@ -1,19 +1,24 @@
 //! A dedicated server's .hzperf capture (docs/perf-platform.md §3, §4.1) and the always-on health history and slow ring behind it.
 use crate::spans::Span;
 use horizon_perf_format::files;
-use horizon_perf_format::v1::{Kind, Options, Side, Start, Stop, StopReason, Trigger, Unit};
+use horizon_perf_format::v1::{
+    Kind, Options, Overhead, Side, Start, Stop, StopReason, ThreadSelection, Trigger, Unit,
+};
 use horizon_perf_format::{
     CounterReporter, Field, FieldSender, HealthRecorder, Interner, SlowRecord, SlowRing, SlowSpan,
     WriterThread, counter_registry,
 };
 use std::fs::File;
 use std::path::{Path, PathBuf};
+use std::thread::{self, JoinHandle};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(test)]
 mod tests;
 
+mod samples;
 mod system;
+use samples::{Sampling, Stopped};
 use system::SystemProbe;
 pub use system::{build, hardware, machine, settings, warm_hardware};
 
@@ -37,6 +42,10 @@ pub struct CaptureOptions {
     pub trigger: Trigger,
     /// Settings, machine and build for `Start`; the capture fills the rest.
     pub start: Start,
+    /// Whether the tick thread is sampled (where the platform can).
+    pub samples: bool,
+    /// Block names by id, for the samples' contexts.
+    pub block_names: Vec<String>,
 }
 
 /// A finished capture: where it is and the older files retention removed.
@@ -55,6 +64,13 @@ struct Session {
     cursor: u64,
     strings: Interner,
     counters: CounterReporter,
+    sampling: Option<Sampling>,
+    block_names: Vec<String>,
+}
+
+enum Ending {
+    Running(JoinHandle<std::io::Result<Saved>>),
+    Done(std::io::Result<Saved>),
 }
 
 /// The server's health tiers and slow ring, always on, and the capture running from them, if any.
@@ -66,6 +82,7 @@ pub struct ServerPerf {
     gauges_at: f64,
     system: SystemProbe,
     session: Option<Session>,
+    ending: Vec<Ending>,
 }
 
 impl ServerPerf {
@@ -79,6 +96,7 @@ impl ServerPerf {
             gauges_at: start,
             system: SystemProbe::default(),
             session: None,
+            ending: Vec::new(),
         }
     }
 
@@ -144,7 +162,7 @@ impl ServerPerf {
         }
     }
 
-    /// Opens `dir/profile-<time>Z.hzperf` and writes what the server knew before: `Start`, the health tiers and the slow ring.
+    /// Opens `dir/profile-<time>Z.hzperf` with `Start`, the health tiers and the slow ring; call it on the tick thread, which it samples.
     pub fn start_capture(
         &mut self,
         t: f64,
@@ -158,6 +176,10 @@ impl ServerPerf {
         let (file, path) = files::create(dir, now_ms.div_euclid(1000))?;
         let writer = WriterThread::spawn(file)?;
         let tx = writer.sender();
+        let sampling = options
+            .samples
+            .then(|| Sampling::start(options.window_s, self.slow.threshold_ms()))
+            .flatten();
         self.health.advance(t);
         let (_, pushed) = self.health.samples_since(u64::MAX, t);
         let partial = (t - self.base).fract() > 1e-9;
@@ -170,6 +192,8 @@ impl ServerPerf {
             cursor: pushed + u64::from(partial),
             strings: Interner::default(),
             counters: CounterReporter::new(Side::Server),
+            sampling,
+            block_names: options.block_names,
         };
         let mut start = options.start;
         start.side = Side::Server as i32;
@@ -178,10 +202,22 @@ impl ServerPerf {
         start.started_unix_ms = now_ms;
         start.uptime_s = t - self.base;
         let window = Some(options.window_s);
+        let sampled = session.sampling.is_some();
+        let threads = if sampled {
+            ThreadSelection::Main
+        } else {
+            ThreadSelection::Unspecified
+        };
         start.options = Some(Options {
             window_s: window,
+            hz: if sampled { Sampling::hz() } else { 0 },
+            threads: threads as i32,
+            samples: sampled,
             ..start.options.unwrap_or_default()
         });
+        if sampled && let Some(build) = &mut start.build {
+            build.symbols = Sampling::symbols() as i32;
+        }
         session.tx.send(Field::Start(start));
         for event in self.slow.snapshot(Side::Server, t, &mut session.strings) {
             session.entries();
@@ -195,18 +231,56 @@ impl ServerPerf {
         Ok(path)
     }
 
-    /// Ends the running capture: the seconds closed so far, a last counters sample and `Stop`; None when none runs.
-    pub fn stop_capture(&mut self, t: f64, reason: StopReason) -> Option<std::io::Result<Saved>> {
-        let mut session = self.session.take()?;
+    /// Ends the running capture and finishes its file off the tick thread; false when none runs.
+    pub fn begin_stop(&mut self, t: f64, reason: StopReason) -> bool {
+        let Some(mut session) = self.session.take() else {
+            return false;
+        };
         self.health.advance(t);
         session.pump(&self.health, t);
-        session.tx.send(Field::Stop(Stop {
-            side: Side::Server as i32,
-            t: t - session.origin,
-            reason: reason as i32,
-            overhead: None,
-        }));
-        Some(session.finish())
+        let stop_t = t - session.origin;
+        let ending = match session.sampling.take().and_then(Sampling::stop) {
+            None => Ending::Done(session.finish(None, stop_t, reason)),
+            Some(stopped) => {
+                let worker = thread::Builder::new()
+                    .name("horizon-perf-finish".into())
+                    .spawn(move || session.finish(Some(stopped), stop_t, reason));
+                match worker {
+                    Ok(handle) => Ending::Running(handle),
+                    Err(e) => Ending::Done(Err(e)),
+                }
+            }
+        };
+        self.ending.push(ending);
+        true
+    }
+
+    /// The captures whose files are done, oldest first; with `wait`, every one that was begun.
+    pub fn take_saved(&mut self, wait: bool) -> Vec<std::io::Result<Saved>> {
+        let mut saved = Vec::new();
+        for ending in std::mem::take(&mut self.ending) {
+            match ending {
+                Ending::Done(result) => saved.push(result),
+                Ending::Running(handle) if wait || handle.is_finished() => {
+                    saved.push(handle.join().unwrap_or_else(|_| {
+                        Err(std::io::Error::other(
+                            "the capture's finishing thread panicked",
+                        ))
+                    }))
+                }
+                running => self.ending.push(running),
+            }
+        }
+        saved
+    }
+
+    /// Ends the running capture and waits for its file; None when none runs.
+    pub fn stop_capture(&mut self, t: f64, reason: StopReason) -> Option<std::io::Result<Saved>> {
+        self.begin_stop(t, reason).then(|| {
+            self.take_saved(true)
+                .pop()
+                .unwrap_or_else(|| Err(std::io::Error::other("the capture vanished")))
+        })
     }
 }
 
@@ -251,7 +325,26 @@ impl Session {
         self.tx.send(Field::Counters(report.sample));
     }
 
-    fn finish(self) -> std::io::Result<Saved> {
+    /// Writes the samples (when there are any) and `Stop`, closes the file and applies retention.
+    fn finish(
+        mut self,
+        stopped: Option<Stopped>,
+        stop_t: f64,
+        reason: StopReason,
+    ) -> std::io::Result<Saved> {
+        let mut overhead = None::<Overhead>;
+        if let Some(stopped) = stopped {
+            let done = stopped.finish(&self.block_names, &mut self.strings);
+            self.entries();
+            self.tx.send(Field::Samples(done.samples));
+            overhead = Some(done.overhead);
+        }
+        self.tx.send(Field::Stop(Stop {
+            side: Side::Server as i32,
+            t: stop_t,
+            reason: reason as i32,
+            overhead,
+        }));
         let Session {
             writer,
             tx,
