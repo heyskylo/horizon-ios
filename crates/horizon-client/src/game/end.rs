@@ -1241,6 +1241,12 @@ impl Game<'_> {
         let pitch = 0.33 + r * (0.5 - 0.33);
         self.audio
             .play("minecraft:entity.ender_eye.launch", Some(at), 1.0, pitch);
+        // CriteriaTriggers.USED_ENDER_EYE, against the feature's block.
+        let (dx, dz) = (
+            at[0] - f64::from(nearest.x * 16),
+            at[2] - f64::from(nearest.z * 16),
+        );
+        self.trigger_used_ender_eye(dx * dx + dz * dz);
         self.consume_held();
         self.award_stat("used", "minecraft:ender_eye", 1);
         self.swing_arm();
