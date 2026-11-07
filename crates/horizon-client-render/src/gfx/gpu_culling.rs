@@ -3197,8 +3197,7 @@ mod tests {
         );
     }
 
-    /// A detail frame times every dispatch of both phases and the uploads, and
-    /// leaves the draws and counts as an untimed frame's.
+    /// Detail times both phases and the uploads and leaves counts and draws as an untimed frame's.
     #[test]
     fn detail_times_both_phases_and_leaves_the_draws_alone() {
         on_each_device(|device, queue| {
