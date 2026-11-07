@@ -1584,6 +1584,93 @@ mod mob_equipment_command_tests {
         test(&mut game);
     }
 
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn world_pack_enchantments_reach_actual_game_catalog() {
+        use horizon_client::enchant::EffectContext;
+        use horizon_core::random::LegacyRandom;
+        with_game(|game| {
+            let clock = game.world.game_time;
+            game.world_root = std::path::PathBuf::from(std::env::var_os("HORIZON_HOME").unwrap())
+                .join("enchantment-catalog-world");
+            let pack = game.world_root.join("datapacks/catalog");
+            let definitions = pack.join("data/wpenchant/enchantment");
+            std::fs::create_dir_all(&definitions).unwrap();
+            std::fs::write(
+                pack.join("pack.mcmeta"),
+                r#"{"pack":{"description":"World enchantment catalog fixture"}}"#,
+            )
+            .unwrap();
+            let definition = serde_json::json!({
+                "description": "World catalog loaded", "supported_items": "minecraft:diamond_sword",
+                "weight": 1, "max_level": 1,
+                "min_cost": {"base": 1, "per_level_above_first": 0},
+                "max_cost": {"base": 1, "per_level_above_first": 0},
+                "anvil_cost": 1, "slots": ["mainhand"],
+                "effects": {"minecraft:damage": [{"effect": {"type": "minecraft:add", "value": 2.0}}]}
+            });
+            std::fs::write(
+                definitions.join("loaded.json"),
+                serde_json::to_vec(&definition).unwrap(),
+            )
+            .unwrap();
+            std::fs::write(
+                game.world_root.join("datapacks.json"),
+                r#"{"enabled":["file/catalog"]}"#,
+            )
+            .unwrap();
+            let functions = pack.join("data/wpenchant/function");
+            std::fs::create_dir_all(&functions).unwrap();
+            std::fs::write(functions.join("ready.mcfunction"), "return 1\n").unwrap();
+            game.reload_datapacks(false);
+            assert!(game.fns.store.functions.contains_key("wpenchant:ready"));
+            game.reload_world_tables();
+            let raw_present = game
+                .pack_files()
+                .kind("enchantment")
+                .any(|(id, files)| id == "wpenchant:loaded" && !files.is_empty());
+            assert!(
+                raw_present,
+                "pack function admitted, but enchantment raw file absent; actual catalog entry present={}",
+                game.enchantments().get("wpenchant:loaded").is_some()
+            );
+            assert!(std::sync::Arc::ptr_eq(
+                &game.items().enchantments,
+                &game.stations().enchantments
+            ));
+            assert!(game.enchantments().get("minecraft:mending").is_some());
+            assert!(game.enchantments().get("wpenchant:missing").is_none());
+            let entry = game
+                .enchantments()
+                .get("wpenchant:loaded")
+                .expect("the active Game catalog must adopt the loaded world-pack definition");
+            assert_eq!(entry.description, "World catalog loaded");
+            assert_eq!(entry.max_level, 1);
+            assert!(game.enchantments().can_enchant(
+                game.items(),
+                "wpenchant:loaded",
+                "minecraft:diamond_sword"
+            ));
+            assert!(!game.enchantments().can_enchant(
+                game.items(),
+                "wpenchant:loaded",
+                "minecraft:stone"
+            ));
+            assert_eq!(
+                game.enchantments().modify_value_with(
+                    "wpenchant:loaded",
+                    1,
+                    "minecraft:damage",
+                    &EffectContext::default(),
+                    &mut LegacyRandom::new(0),
+                    1.0
+                ),
+                3.0
+            );
+            assert_eq!(game.world.game_time, clock);
+        });
+    }
+
     fn actor(game: &mut Game<'_>, kind: &str, n: i32) -> (String, u32) {
         let uuid = format!("00000019-0000-0000-0000-{n:012x}");
         assert!(game.run_command(&format!("summon {kind} 4.5 200 5.5 {{UUID:[I;25,0,0,{n}],NoAI:1b,NoGravity:1b,Silent:1b,h025_raw:7,Tags:[h025]}}")), "{kind}/{n}: {:?}", game.ui.chat.recent_lines(3));
