@@ -359,8 +359,26 @@ impl Game<'_> {
                     .into_iter()
                     .zip(["helmet", "chestplate", "leggings", "boots"])
             }));
+        // The smithing screen's preview stand wears the result slot's item.
+        let preview = self
+            .station
+            .as_ref()
+            .filter(|s| s.kind == super::stations::Kind::Smithing)
+            .and_then(|s| s.result.as_ref())
+            .map(|stack| {
+                let equip = items.get(&stack.item).and_then(|i| i.equip_slot.as_deref());
+                let layer = match preview_slot(equip) {
+                    2 => "boots",
+                    3 => "leggings",
+                    4 => "chestplate",
+                    5 => "helmet",
+                    _ => "",
+                };
+                (Some(stack), layer)
+            });
+        let stacks = stacks.map(|(s, l)| (s.as_ref(), l)).chain(preview);
         for (stack, layer) in stacks {
-            let Some(stack) = stack.as_ref().filter(|s| s.extra.is_some()) else {
+            let Some(stack) = stack.filter(|s| s.extra.is_some()) else {
                 continue;
             };
             let Some(asset) = items
@@ -504,6 +522,27 @@ impl Game<'_> {
         let drop = self.drop_offset_from(0.5, 1.975, (pos[0], pos[1], pos[2]), true);
         stand.position.y = f64::from(pos[1]) + drop;
         stand.previous = stand.position;
+        // `EntityType.createDefaultStackConfig`: the item's `custom_data`, then its
+        // `entity_data` merged over the stand; `ArmorStandItem.useOn` then snaps it
+        // to the placement yaw with pitch 0.
+        let own = horizon_client::entity_nbt::armor_stand_to_nbt(&stand, [0; 4], None);
+        let mut raw = horizon_client::block_entity_item::stack_configured_entity(
+            stack,
+            "minecraft:armor_stand",
+            &own,
+        );
+        if let Some(mut loaded) = horizon_client::entity_nbt::armor_stand_from_nbt(&raw, stand.id) {
+            loaded.first_tick = stand.first_tick;
+            loaded.yaw = stand.yaw;
+            loaded.previous_yaw = stand.previous_yaw;
+            loaded.pitch = 0.0;
+            loaded.previous = loaded.position;
+            stand = loaded;
+        }
+        if let horizon_world::nbt::Tag::Compound(map) = &mut raw {
+            map.remove(&"UUID".into());
+        }
+        self.persist.raw.insert(stand.id, raw);
         let foot = stand.position;
         // EntityType.create's spawn yaw, `level.getRandom().nextFloat() * 360`, before
         // ArmorStandItem.useOn turns the stand to face the player.

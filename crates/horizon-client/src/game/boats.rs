@@ -1376,7 +1376,6 @@ impl Game<'_> {
         if sneaking
             || self.boats[i].out_of_control >= 60.0
             || self.riding.is_some()
-            || !self.may_board()
             || self.ridden_by_guest(self.boats[i].id)
             || !self.boat_has_room(i)
         {
@@ -1489,7 +1488,12 @@ impl Game<'_> {
         self.hurt_boat_result(i, damage, creative).unwrap_or(false)
     }
     /// None means a canceled hit; Some records whether an accepted hit destroyed it.
-    fn hurt_boat_result(&mut self, i: usize, mut damage: f32, creative: bool) -> Option<bool> {
+    pub(super) fn hurt_boat_result(
+        &mut self,
+        i: usize,
+        mut damage: f32,
+        creative: bool,
+    ) -> Option<bool> {
         let mut cancel = false;
         self.native_vehicle_damage("boat", &mut damage, &mut cancel);
         if cancel {
