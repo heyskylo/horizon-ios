@@ -458,6 +458,29 @@ impl Hub {
         Ok(out)
     }
 
+    /// `PlayerList.broadcastChatMessage` for a non-player command source:
+    /// an unsigned message with the source's display name, visible as player chat.
+    /// `except` is a connection that gets the line another way (with its
+    /// command's captured output).
+    pub fn broadcast_source_chat(
+        &self,
+        chat_type: &str,
+        name: Tag,
+        message: Tag,
+        except: Option<u32>,
+    ) {
+        let bound = play::ChatTypeBound {
+            chat_type: self.chat_type_id(chat_type),
+            name,
+            target: None,
+        };
+        for (k, guest) in self.guests.iter().enumerate() {
+            if guest.placed && Some(guest.conn) != except {
+                self.send_disguised(k, message.clone(), bound.clone());
+            }
+        }
+    }
+
     /// A message command's chat (SayCommand, EmoteCommands): to everyone,
     /// bound to `chat_type` and the sender's name.
     pub fn broadcast_command_chat(

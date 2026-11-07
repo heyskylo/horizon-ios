@@ -212,6 +212,7 @@ fn actual_thrown_contents_match_pinned_methods() {
             None,
             1,
             &PotionOwner::default(),
+            Vec3::ZERO,
         );
         if row["kind"] == "lingering" {
             // Existence is checked before new raw metadata assertions, so stock

@@ -892,5 +892,9 @@
   "Editing: %s": "Editing: %s",
   "Press the button for this. %s cancels.": "Press the button for this. %s cancels.",
   "This button also does: %s": "This button also does: %s",
-  "horizon.pad.notice.connected.press": "Press to use it"
+  "horizon.pad.notice.connected.press": "Press to use it",
+  "horizon.recipe_transfer.missing": "Missing Items",
+  "horizon.recipe_transfer.no_room": "Inventory full",
+  "horizon.recipe_transfer.unavailable": "Recipe does not fit this menu",
+  "horizon.recipe_transfer.unsupported": "Server requires a known recipe"
 }
