@@ -325,6 +325,7 @@ impl Goal for RandomSitting {
             && m.on_ground
             && m.rider.is_none()
             && !super::riders::mob_controlled(m, cx.w)
+            && can_change_pose(m, cx.w)
             && m.random.next_int_bound(4).unwrap_or(1) == 0
     }
     fn can_continue(&mut self, _m: &mut Mob, _cx: &mut Cx) -> bool {
