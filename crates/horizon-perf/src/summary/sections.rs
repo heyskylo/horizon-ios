@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use horizon_perf_format::v1::{Side, Stop};
 
 use super::{Line, Section, SummaryOptions, megabytes, thousands};
+use crate::diff::{Diff, signed};
 use crate::error::Error;
 use crate::ids;
 use crate::query::traffic::{self, PlayerRate};
@@ -26,9 +27,10 @@ pub(super) fn all(
     view: &View,
     side: Side,
     options: &SummaryOptions,
+    base: Option<&Diff>,
 ) -> Result<Vec<Section>, Error> {
     let parts = [
-        phases(view, side, options)?,
+        phases(view, side, options, base)?,
         worst(view, side),
         net(view, side),
         memory(view, side),
@@ -130,7 +132,13 @@ fn tree_order(rows: &[SpanRow]) -> Vec<(&SpanRow, usize)> {
     out
 }
 
-fn phases(view: &View, side: Side, options: &SummaryOptions) -> Result<Vec<Line>, Error> {
+fn phases(
+    view: &View,
+    side: Side,
+    options: &SummaryOptions,
+    base: Option<&Diff>,
+) -> Result<Vec<Line>, Error> {
+    let base = base.filter(|_| !options.slow);
     let Some(table) = phase_table(view, side, options)? else {
         return Ok(Vec::new());
     };
@@ -168,32 +176,63 @@ fn phases(view: &View, side: Side, options: &SummaryOptions) -> Result<Vec<Line>
     } else {
         format!("{unit} phases")
     };
-    let mut lines = vec![Line::heading(format!(
-        "{:<w$}{:>8}{:>8}{:>8}{:>8}",
-        what,
-        format!("ms/{unit}"),
-        share,
-        "cpu ms",
-        "waited",
-        w = width + 2
-    ))];
+    let mut lines = vec![Line::heading(match base {
+        Some(_) => format!(
+            "{:<w$}{:>8}{:>8}  verdict",
+            what,
+            format!("ms/{unit}"),
+            "Δ ms",
+            w = width + 2
+        ),
+        None => format!(
+            "{:<w$}{:>8}{:>8}{:>8}{:>8}",
+            what,
+            format!("ms/{unit}"),
+            share,
+            "cpu ms",
+            "waited",
+            w = width + 2
+        ),
+    })];
     for (row, depth) in ordered {
         let wall = table.per_unit(row.wall_ms);
         let cpu = table.per_unit(row.cpu_ms);
-        let pct = mean.map_or_else(|| "-".to_string(), |m| format!("{:.1}", wall / m * 100.0));
-        lines.push(Line::ranked(
+        let id = ids::span(&row.name);
+        let label = format!("{}{}", "  ".repeat(depth), row.name);
+        let text = if let Some(d) = base {
+            let found = d.row(&id);
+            let delta = found
+                .and_then(|r| r.effect)
+                .map_or_else(|| "-".to_string(), signed);
+            let verdict = found.map_or("-", |r| r.verdict.mark());
+            format!("  {label:<width$}{wall:>8.1}{delta:>8}  {verdict:<8}  [{id}]")
+        } else {
+            let pct = mean.map_or_else(|| "-".to_string(), |m| format!("{:.1}", wall / m * 100.0));
             format!(
-                "  {:<w$}{:>8.1}{:>8}{:>8.1}{:>8.1}   [{}]",
-                format!("{}{}", "  ".repeat(depth), row.name),
-                wall,
-                pct,
-                cpu,
-                (wall - cpu).max(0.0),
-                ids::span(&row.name),
-                w = width
-            ),
-            row.wall_ms,
-        ));
+                "  {label:<width$}{wall:>8.1}{pct:>8}{cpu:>8.1}{:>8.1}   [{id}]",
+                (wall - cpu).max(0.0)
+            )
+        };
+        lines.push(Line::ranked(text, row.wall_ms));
+    }
+    if let Some(d) = base {
+        for gone in d
+            .rows
+            .iter()
+            .filter(|r| r.id.starts_with("s:") && r.verdict == crate::stats::Verdict::Gone)
+        {
+            let delta = signed(-gone.a.unwrap_or(0.0));
+            lines.push(Line::ranked(
+                format!(
+                    "  {:<width$}{:>8}{delta:>8}  {:<8}  [{}]",
+                    gone.id.trim_start_matches("s:"),
+                    "-",
+                    gone.verdict.mark(),
+                    gone.id
+                ),
+                0.0,
+            ));
+        }
     }
     Ok(lines)
 }
