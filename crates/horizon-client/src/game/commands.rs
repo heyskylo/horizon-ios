@@ -3159,6 +3159,19 @@ impl Game<'_> {
                 };
             }
         }
+        // LevelTicks.copyAreaFrom: the block ticks pending anywhere in the
+        // source box go to the same offset in the destination, before the
+        // command can fail on an empty count.
+        {
+            use horizon_core::position::BlockPos;
+            self.block_ticks.blocks.copy_area(
+                horizon_core::ticks::TickArea::new(
+                    BlockPos::new(min[0], min[1], min[2]),
+                    BlockPos::new(max[0], max[1], max[2]),
+                ),
+                BlockPos::new(dest[0] - min[0], dest[1] - min[1], dest[2] - min[2]),
+            );
+        }
         if count == 0 {
             return Err(err("commands.clone.failed", &[]));
         }
