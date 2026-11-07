@@ -3,13 +3,15 @@
 //! `HORIZON_SHADER_PACK_TIMING=1`. One frame
 //! at a time is timed, and the CPU never waits for it: its timestamps are resolved in a later
 //! frame, once the GPU has finished it (Metal resolves them without waiting for the passes that
-//! write them), then read back when mapped. The next frame after that is timed again.
+//! write them), then read back when mapped. The next frame after that is timed again, once `gap`
+//! has passed since the last.
 
 use std::collections::VecDeque;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
+use std::time::{Duration, Instant};
 
 const REPORT: usize = 30;
 /// Passes timed per frame at most (two timestamps each).
@@ -43,6 +45,10 @@ pub struct PassTiming {
     /// `mark`'s pipeline, for the target format it was made for.
     marker: Option<(wgpu::TextureFormat, wgpu::RenderPipeline)>,
     reports: usize,
+    /// Least time between timed frames.
+    pub gap: Duration,
+    /// When the last timed frame began.
+    timed_at: Option<Instant>,
 }
 
 impl PassTiming {
@@ -81,6 +87,8 @@ impl PassTiming {
             log: Self::logging(),
             marker: None,
             reports: 0,
+            gap: Duration::ZERO,
+            timed_at: None,
         })
     }
 
@@ -123,9 +131,12 @@ impl PassTiming {
             }
             _ => {}
         }
-        if matches!(self.stage, Stage::Idle) {
+        if matches!(self.stage, Stage::Idle)
+            && self.timed_at.is_none_or(|at| at.elapsed() >= self.gap)
+        {
             self.names.clear();
             self.stage = Stage::Recording;
+            self.timed_at = Some(Instant::now());
         }
     }
 
