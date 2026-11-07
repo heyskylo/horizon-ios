@@ -2803,3 +2803,135 @@ mod loaded_tag_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod camel_pose_saved_tests {
+    use super::*;
+    use crate::game::{Audio, Options, Progress, Settings, load_resources};
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and scratch homes/cwd"]
+    fn loaded_camel_pose_timestamps_survive_actual_save_and_tick() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.game_dir = Some(std::env::current_dir().unwrap().join("game"));
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        let mut chunk = Chunk::empty(0, 0);
+        let stone = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:stone")
+            .unwrap();
+        for x in 0..16 {
+            for z in 0..16 {
+                chunk.set(x, 199, z, stone.0);
+            }
+        }
+        game.world.chunks.insert((0, 0), Arc::new(chunk));
+        game.block_ticks
+            .add_empty_chunk(ChunkPos::new(0, 0))
+            .unwrap();
+        assert!(game.run_command("forceload add 0 0"));
+        assert!(game.run_command("tick freeze"));
+        let initial = game.world.game_time;
+        assert!(game.run_command("tick step 128"));
+        for _ in 0..128 {
+            game.tick_server(false).unwrap();
+        }
+        let now = game.world.game_time;
+        assert_eq!(now, initial + 128);
+        let cases = [
+            None,
+            Some(0),
+            Some(now - 24),
+            Some(-(now - 24)),
+            Some(now + 20),
+        ];
+        let mut actors = Vec::new();
+        for (n, value) in cases.into_iter().enumerate() {
+            let number = n as i32 + 1;
+            let field = value
+                .map(|value| format!(",LastPoseTick:{value}L"))
+                .unwrap_or_default();
+            assert!(game.run_command(&format!("summon camel {} 200 4.5 {{UUID:[I;94,0,0,{number}],NoAI:1b,NoGravity:1b,PersistenceRequired:1b,Health:32f,Temper:17,Tags:[\"h094\"]{field}}}", 2.5 + n as f64 * 2.5)));
+            let mob = game
+                .mobs
+                .iter()
+                .find(|m| game.persist.uuids.get(&m.id) == Some(&[94, 0, 0, number]))
+                .unwrap();
+            // Prove the real decoder adopted the value before reading saved NBT.
+            assert_eq!(mob.extra.pose_change_tick, value.unwrap_or(0));
+            assert_eq!(
+                mob.extra.variant3, 17,
+                "Camel's legacy temper path stays independent"
+            );
+            actors.push((mob.id, value.unwrap_or(0)));
+        }
+        for elapsed in 0..=1 {
+            assert_eq!(game.world.game_time, now + elapsed);
+            for &(id, value) in &actors {
+                let index = game.mobs.iter().position(|m| m.id == id).unwrap();
+                let mob = &game.mobs[index];
+                assert!(mob.no_ai && mob.alive());
+                assert_eq!(mob.age, elapsed as u32, "actual entity tick admission");
+                assert_eq!(mob.health, 32.0);
+                assert_eq!(mob.extra.variant3, 17);
+                assert_eq!(horizon_client::mobs::camel::sitting(mob), value < 0);
+                assert_eq!(
+                    horizon_client::mobs::camel::refuse_to_move(mob),
+                    value < 0 || value == now - 24 || value == now + 20
+                );
+                let saved = game.mob_tree_nbt(index);
+                assert_eq!(
+                    saved.get("LastPoseTick"),
+                    Some(&Tag::Long(value)),
+                    "loaded timestamp {value} at delta {elapsed}"
+                );
+                assert_eq!(
+                    saved.get("Tags"),
+                    Some(&Tag::List(vec![Tag::String("h094".into())]))
+                );
+                // The authoritative Game save must also work without source NBT.
+                let raw = game.persist.raw.remove(&id);
+                assert_eq!(
+                    game.mob_tree_nbt(index).get("LastPoseTick"),
+                    Some(&Tag::Long(value))
+                );
+                if let Some(raw) = raw {
+                    game.persist.raw.insert(id, raw);
+                }
+            }
+            if elapsed == 0 {
+                assert!(game.run_command("tick step 1"));
+                game.tick_server(false).unwrap();
+            }
+        }
+    }
+}
