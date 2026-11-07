@@ -401,6 +401,7 @@ fn visibility(pad: &Padded, info: &[Info]) -> u64 {
 }
 /// The section's cells that are not `isSolidRender`, by row (`y << 4 | z`, bit
 /// x), from the padded rows of `MeshScratch::solid_rows`.
+#[cfg(test)]
 fn open_rows(solid: &[u32]) -> [u16; 256] {
     std::array::from_fn(|r| {
         let (y, z) = ((r >> 4) as i32, (r & 15) as i32);
@@ -977,10 +978,11 @@ impl Padded {
         // The section itself is unpacked in one pass and copied row by row;
         // the border cells of the neighbouring sections are read in runs, from
         // sections found once per layer.
-        own.fill(0);
         let center = region[1][1];
         if let Some(c) = center {
             c.sections[sy as usize].unpack(own);
+        } else {
+            own.fill(0);
         }
         for y in -B..16 + B {
             let wy = base_y + y;
@@ -1065,6 +1067,18 @@ fn fill_run(
         },
     }
 }
+// Direction order is the same as Direction::ALL; all values are evaluated at compile time.
+const DIRECTIONS: [(Direction, [i32; 3], u8); 6] = [
+    direction_info(Direction::Down),
+    direction_info(Direction::Up),
+    direction_info(Direction::North),
+    direction_info(Direction::South),
+    direction_info(Direction::West),
+    direction_info(Direction::East),
+];
+const fn direction_info(d: Direction) -> (Direction, [i32; 3], u8) {
+    (d, d.normal(), d.opposite() as u8)
+}
 /// Per-worker temporary arrays. They never hold resource-pack references or
 /// geometry still owned by the renderer, and total about 150 KiB per worker
 /// (the leaf mask adds 8,000 cells, depths and a queue).
@@ -1080,21 +1094,63 @@ pub struct MeshScratch {
 /// Fills `rows` with the padded section's `isSolidRender` blocks, one bit each (`MeshScratch::solid_rows`).
 fn solid_rows(pad: &Padded, solid: &[bool], rows: &mut Vec<u32>) {
     rows.clear();
-    rows.extend(pad.blocks.as_chunks::<P>().0.iter().map(|row| {
-        row.iter().enumerate().fold(0u32, |bits, (x, &id)| {
-            bits | u32::from(solid[id as usize]) << x
-        })
-    }));
+    for row in pad.blocks.as_chunks::<P>().0 {
+        let mut bits = 0;
+        for (x, &id) in row.iter().enumerate() {
+            bits |= u32::from(solid[id as usize]) << x;
+        }
+        rows.push(bits);
+    }
 }
-/// Whether the block at `(x, y, z)` (section-local) and its six neighbours
-/// are all `isSolidRender`: none of its faces can show.
-#[inline]
-fn hidden(rows: &[u32], x: i32, y: i32, z: i32) -> bool {
-    let row = |y: i32, z: i32| rows[((y + B) as usize) * P + (z + B) as usize];
-    let r = row(y, z);
-    let around =
-        r & r << 1 & r >> 1 & row(y - 1, z) & row(y + 1, z) & row(y, z - 1) & row(y, z + 1);
-    around >> (x + B) & 1 != 0
+/// Open and fully surrounded cells in each inner row.
+fn row_masks(rows: &[u32]) -> ([u16; 256], [u16; 256]) {
+    let mut open = [0; 256];
+    let mut hidden = [0; 256];
+    for y in 0..16 {
+        for z in 0..16 {
+            let i = (y + B as usize) * P + z + B as usize;
+            let r = rows[i];
+            let around =
+                r & r << 1 & r >> 1 & rows[i - P] & rows[i + P] & rows[i - 1] & rows[i + 1];
+            open[y * 16 + z] = !(r >> B) as u16;
+            hidden[y * 16 + z] = (around >> B) as u16;
+        }
+    }
+    (open, hidden)
+}
+#[cfg(test)]
+#[test]
+fn row_masks_match_cell_definition() {
+    let mut seed = 42u32;
+    for _ in 0..100 {
+        let rows: Vec<u32> = (0..P * P)
+            .map(|_| {
+                seed ^= seed << 13;
+                seed ^= seed >> 17;
+                seed ^= seed << 5;
+                seed & ((1 << P) - 1)
+            })
+            .collect();
+        let (open, hidden) = row_masks(&rows);
+        for y in 0..16 {
+            for z in 0..16 {
+                let cell = |x: usize, y: usize, z: usize| (rows[y * P + z] >> x) & 1 != 0;
+                for x in 0..16 {
+                    let (x, py, pz) = (x + B as usize, y + B as usize, z + B as usize);
+                    let occupied = cell(x, py, pz);
+                    let enclosed = occupied
+                        && cell(x - 1, py, pz)
+                        && cell(x + 1, py, pz)
+                        && cell(x, py - 1, pz)
+                        && cell(x, py + 1, pz)
+                        && cell(x, py, pz - 1)
+                        && cell(x, py, pz + 1);
+                    assert_eq!((open[y * 16 + z] >> (x - B as usize)) & 1 != 0, !occupied);
+                    assert_eq!((hidden[y * 16 + z] >> (x - B as usize)) & 1 != 0, enclosed);
+                }
+            }
+        }
+    }
 }
 #[cfg(test)]
 mod leaf_culling_tests;
@@ -1463,7 +1519,8 @@ impl Mesher<'_> {
         let pad = &scratch.padded;
         solid_rows(pad, &self.tables.solid, &mut scratch.solid_rows);
         let opaque = &scratch.solid_rows;
-        out.visibility = visibility_rows(&open_rows(opaque));
+        let (open, hidden) = row_masks(opaque);
+        out.visibility = visibility_rows(&open);
         let base_y = center.min_y() + sy * 16;
         if self.leaf_culling.is_interior() {
             scratch
@@ -1497,7 +1554,7 @@ impl Mesher<'_> {
                         out.lights
                             .push(([center.x * 16 + x, base_y + y, center.z * 16 + z], id));
                     }
-                    if hidden(opaque, x, y, z) {
+                    if hidden[(y * 16 + z) as usize] >> x & 1 != 0 {
                         continue;
                     }
                     if state.fluid.kind() != FluidKind::Empty {
@@ -1538,12 +1595,11 @@ impl Mesher<'_> {
                     let interior_leaf = state.leaves
                         && self.leaf_culling.is_interior()
                         && scratch.leaf.interior(self.leaf_culling, x, y, z);
-                    for d in Direction::ALL {
-                        let [dx, dy, dz] = d.normal();
+                    for (d, [dx, dy, dz], opposite) in DIRECTIONS {
                         let neighbor = pad.blocks[pi(x + dx, y + dy, z + dz)];
                         // `should_render_face`'s first test, without its lookups: a
                         // full occlusion face toward this block hides the face.
-                        if full_faces[neighbor as usize] >> d.opposite() as u8 & 1 != 0 {
+                        if full_faces[neighbor as usize] >> opposite & 1 != 0 {
                             continue;
                         }
                         let other = &info[neighbor as usize];
