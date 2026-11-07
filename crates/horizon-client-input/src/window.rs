@@ -393,38 +393,17 @@ impl FullscreenState {
         let reapply = self.set_exclusive(exclusive);
         self.set_preferred_mode(preferred);
         let mode_change = !in_video_screen && self.take_mode_change();
-        if wanted && window.is_maximized() {
-            window.set_maximized(false);
-            window.set_fullscreen(Some(fullscreen_request(
+        match request {
+            Some(false) => window.set_fullscreen(None),
+            Some(true) => enter_fullscreen(
                 window,
-                exclusive,
-                preferred.as_ref(),
-            )));
-        } else {
-            match request {
-                Some(false) => window.set_fullscreen(None),
-                Some(true) => {
-                    if window.is_maximized() {
-                        window.set_maximized(false);
-                    }
-                    window.set_fullscreen(Some(fullscreen_request(
-                        window,
-                        exclusive,
-                        preferred.as_ref(),
-                    )));
-                }
-                None if reapply || mode_change => {
-                    if window.is_maximized() {
-                        window.set_maximized(false);
-                    }
-                    window.set_fullscreen(Some(fullscreen_request(
-                        window,
-                        exclusive,
-                        preferred.as_ref(),
-                    )));
-                }
-                None => {}
-            }
+                fullscreen_request(window, exclusive, preferred.as_ref()),
+            ),
+            None if reapply || mode_change => enter_fullscreen(
+                window,
+                fullscreen_request(window, exclusive, preferred.as_ref()),
+            ),
+            None => {}
         }
     }
 
@@ -600,6 +579,34 @@ fn monitor_current_mode(
         .video_modes()
         .filter(|m| m.size() == size)
         .max_by_key(|m| (m.refresh_rate_millihertz(), m.bit_depth()))
+}
+
+/// `window.set_fullscreen(Some(fullscreen))`. On Windows a maximized window leaves its maximized
+/// state first: winit keeps a maximized window's client area inside the work area, so a
+/// borderless fullscreen kept the taskbar over its bottom and pushed its top off screen (#9984).
+pub fn enter_fullscreen(window: &winit::window::Window, fullscreen: winit::window::Fullscreen) {
+    #[cfg(target_os = "windows")]
+    if window.is_maximized() {
+        window.set_maximized(false);
+    }
+    window.set_fullscreen(Some(fullscreen));
+}
+
+/// Borderless fullscreen on the window's own monitor (the primary one when it has none).
+pub fn borderless_fullscreen(window: &winit::window::Window) -> winit::window::Fullscreen {
+    winit::window::Fullscreen::Borderless(
+        window
+            .current_monitor()
+            .or_else(|| window.primary_monitor()),
+    )
+}
+
+/// A window created fullscreen that the system also marked maximized enters it again
+/// unmaximized ([`enter_fullscreen`]); only Windows does that.
+pub fn settle_created_fullscreen(window: &winit::window::Window, fullscreen: bool) {
+    if cfg!(target_os = "windows") && fullscreen && window.is_maximized() {
+        enter_fullscreen(window, borderless_fullscreen(window));
+    }
 }
 
 /// `Window.applyFullscreen`: the fullscreen the window asks for. Exclusive fullscreen takes
