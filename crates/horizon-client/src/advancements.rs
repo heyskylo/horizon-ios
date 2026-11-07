@@ -343,8 +343,17 @@ impl Tree {
         out.sort_unstable();
         out
     }
+    pub fn find_id(&self, id: &str) -> Option<usize> {
+        self.by_id.get(id).copied().or_else(|| {
+            if let Some(rest) = id.strip_prefix("minecraft:") {
+                self.by_id.get(rest).copied()
+            } else {
+                self.by_id.get(full(id).as_ref()).copied()
+            }
+        })
+    }
     pub fn get(&self, id: &str) -> Option<&Advancement> {
-        self.by_id.get(id).map(|&i| &self.list[i])
+        self.find_id(id).map(|i| &self.list[i])
     }
 }
 
@@ -467,7 +476,7 @@ fn parse(id: &str, v: &Value) -> Option<Advancement> {
     };
     Some(Advancement {
         id: id.to_owned(),
-        parent: v["parent"].as_str().map(str::to_owned),
+        parent: v["parent"].as_str().map(|p| full(p).into_owned()),
         display,
         criteria,
         requirements,
@@ -1652,8 +1661,8 @@ impl Tree {
             pending.retain(|&i| {
                 let parent = match &self.list[i].parent {
                     None => None,
-                    Some(p) => match self.by_id.get(p) {
-                        Some(&p) if inserted[p] => Some(p),
+                    Some(p) => match self.find_id(p) {
+                        Some(p) if inserted[p] => Some(p),
                         _ => return true,
                     },
                 };
@@ -3100,5 +3109,166 @@ mod tests {
             date_millis("2026-10-17 05:30:00 +0000")
         );
         assert_eq!(date_millis("not a date"), None);
+    }
+
+    #[test]
+    fn simulate_progression_advancements() {
+        let mut tree = Tree::default();
+        let advs = [
+            ("minecraft:story/root", None),
+            ("minecraft:story/mine_stone", Some("story/root")),
+            (
+                "minecraft:story/upgrade_tools",
+                Some("minecraft:story/mine_stone"),
+            ),
+            ("minecraft:story/smelt_iron", Some("story/upgrade_tools")),
+            (
+                "minecraft:story/obtain_armor",
+                Some("minecraft:story/smelt_iron"),
+            ),
+            (
+                "minecraft:story/lava_bucket",
+                Some("minecraft:story/smelt_iron"),
+            ),
+            (
+                "minecraft:story/iron_tools",
+                Some("minecraft:story/smelt_iron"),
+            ),
+            (
+                "minecraft:story/deflect_arrow",
+                Some("minecraft:story/obtain_armor"),
+            ),
+            (
+                "minecraft:story/form_obsidian",
+                Some("minecraft:story/lava_bucket"),
+            ),
+            (
+                "minecraft:story/mine_diamond",
+                Some("minecraft:story/iron_tools"),
+            ),
+            (
+                "minecraft:story/enter_the_nether",
+                Some("minecraft:story/form_obsidian"),
+            ),
+            (
+                "minecraft:story/shiny_gear",
+                Some("minecraft:story/mine_diamond"),
+            ),
+            (
+                "minecraft:story/enchant_item",
+                Some("minecraft:story/mine_diamond"),
+            ),
+            (
+                "minecraft:story/cure_zombie_villager",
+                Some("minecraft:story/enter_the_nether"),
+            ),
+            (
+                "minecraft:story/follow_ender_eye",
+                Some("minecraft:story/enter_the_nether"),
+            ),
+            (
+                "minecraft:story/enter_the_end",
+                Some("minecraft:story/follow_ender_eye"),
+            ),
+        ];
+        for (id, parent) in advs {
+            let a = parse(
+                id,
+                &serde_json::json!({
+                    "parent": parent,
+                    "criteria": {"crit": {"trigger": "minecraft:tick"}},
+                    "display": {"icon": {"id": "minecraft:stone"}, "title": "t", "description": "d"}
+                }),
+            )
+            .unwrap();
+            tree.by_id.insert(id.to_string(), tree.list.len());
+            tree.list.push(a);
+        }
+        for i in 16..124 {
+            let id = format!("minecraft:custom/{i}");
+            let a = parse(
+                &id,
+                &serde_json::json!({
+                    "criteria": {"crit": {"trigger": "minecraft:tick"}},
+                    "display": {"icon": {"id": "minecraft:stone"}, "title": "t", "description": "d"}
+                }),
+            )
+            .unwrap();
+            tree.by_id.insert(id, tree.list.len());
+            tree.list.push(a);
+        }
+
+        fn get_list(tree: &Tree, target: Option<&str>, mode: &str) -> Vec<usize> {
+            match target {
+                None => (0..tree.list.len()).collect(),
+                Some(id) => {
+                    let i = *tree.by_id.get(id).unwrap();
+                    let mut out = Vec::new();
+                    if mode == "until" || mode == "through" {
+                        let mut p = tree.list[i].parent.as_ref();
+                        while let Some(&pi) = p.and_then(|pid| tree.by_id.get(pid)) {
+                            out.push(pi);
+                            p = tree.list[pi].parent.as_ref();
+                        }
+                    }
+                    out.push(i);
+                    if mode == "from" || mode == "through" {
+                        let kids = tree.children();
+                        fn add(kids: &[Vec<usize>], i: usize, out: &mut Vec<usize>) {
+                            for &c in &kids[i] {
+                                out.push(c);
+                                add(kids, c, out);
+                            }
+                        }
+                        add(&kids, i, &mut out);
+                    }
+                    out
+                }
+            }
+        }
+
+        fn grant(tree: &Tree, prog: &mut Progress, list: &[usize]) -> i32 {
+            let mut count = 0;
+            for &i in list {
+                let a = &tree.list[i];
+                if prog.done(a) {
+                    continue;
+                }
+                for c in &a.criteria {
+                    prog.grant(&a.id, &c.name, "now");
+                }
+                count += 1;
+            }
+            count
+        }
+
+        fn revoke(tree: &Tree, prog: &mut Progress, list: &[usize]) -> i32 {
+            let mut count = 0;
+            for &i in list {
+                let a = &tree.list[i];
+                let mut any = false;
+                for c in &a.criteria {
+                    any |= prog.revoke(&a.id, &c.name);
+                }
+                if any {
+                    count += 1;
+                }
+            }
+            count
+        }
+
+        let mut p = Progress::default();
+        let until = get_list(&tree, Some("minecraft:story/smelt_iron"), "until");
+        assert_eq!(grant(&tree, &mut p, &until), 4);
+
+        let from = get_list(&tree, Some("minecraft:story/root"), "from");
+        assert_eq!(grant(&tree, &mut p, &from), 12);
+
+        let through = get_list(&tree, Some("minecraft:story/iron_tools"), "through");
+        assert_eq!(revoke(&tree, &mut p, &through), 8);
+
+        let all = get_list(&tree, None, "everything");
+        let granted_everything = grant(&tree, &mut p, &all);
+        assert_eq!(granted_everything, 116);
     }
 }
