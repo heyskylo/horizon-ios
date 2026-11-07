@@ -63,6 +63,11 @@ struct Globals {
 // which then samples exactly as before.
 override SPRITE_ARRAYS: u32 = 1u;
 override SPRITE_SPLIT: u32 = 2048u;
+// Whether the solid shaders carry HDR output's lighting (a pipeline constant): the
+// renderer builds its solid terrain without it for the frames HDR is off, where
+// `hdr_light.z` is 0, since even a branch never taken costs Apple GPUs ~15% of a
+// solid pixel's time (gfx.rs's `SolidPipeline`).
+override HDR_LIGHTING: bool = true;
 // A sprite sampled with the given gradients, from whichever array holds its layer.
 fn sprite_grad(uv: vec2<f32>, layer: u32, dx: vec2<f32>, dy: vec2<f32>) -> vec4<f32> {
     let l = i32(layer % SPRITE_SPLIT);
@@ -417,6 +422,11 @@ fn arena_vertex(v: u32) -> ArenaCorner {
     let c = arena_page[v * 3u + 2u];
     return ArenaCorner(vec3(a.x, a.y, b.x), vec3(b.y, c.x, c.y));
 }
+// The offset a block corner adds on one component: `side` on the face's axis (rel 0), `du`
+// on the next axis (rel 1), `dw` on the one after (rel 2).
+fn corner_offset(rel: u32, side: u32, du: u32, dw: u32) -> u32 {
+    return select(select(dw, du, rel == 1u), side, rel == 0u);
+}
 // `packed::packed_vertex`: corner `corner` of the record whose words are lo (0 to 2) and
 // hi (3 to 5).
 fn packed_corner(lo: vec3<u32>, hi: vec3<u32>, corner: u32) -> ArenaCorner {
@@ -430,9 +440,15 @@ fn packed_corner(lo: vec3<u32>, hi: vec3<u32>, corner: u32) -> ArenaCorner {
     let du = select(0u, 1u, step == 1u || step == 2u);
     let dw = select(0u, 1u, step >= 2u);
     // No dynamic component stores: FXC (DirectX 12) rejects them (X3500). A component's offset
-    // from the axis (0: the axis, 1: the next, 2: the one after) picks what it gets.
-    let rel = (vec3(0u, 1u, 2u) + vec3(3u - axis)) % vec3(3u);
-    let pos = block + select(select(vec3(dw), vec3(du), rel == vec3(1u)), vec3(side), rel == vec3(0u));
+    // from the axis (0: the axis, 1: the next, 2: the one after) picks what it gets. Scalar
+    // selects only: a vector select becomes GLSL's mix(uvec3, uvec3, bvec3), which old AMD
+    // OpenGL drivers (Radeon HD 7400M, driver 15.301) resolve to the float overload and reject.
+    let offset = vec3(
+        corner_offset((3u - axis) % 3u, side, du, dw),
+        corner_offset((4u - axis) % 3u, side, du, dw),
+        corner_offset((5u - axis) % 3u, side, du, dw),
+    );
+    let pos = block + offset;
     let sel = lo.z >> 24u;
     let us = (sel >> (2u * corner)) & 1u;
     let vs = (sel >> (2u * corner + 1u)) & 1u;
@@ -609,7 +625,7 @@ fn hdr_mark(tier: u32, y: f32) -> f32 {
 }
 // `fs_solid` for the opaque pass (`opaque_quad`): no fade, no cutout, no discard.
 @fragment fn fs_opaque(in: TerrainOut) -> @location(0) vec4<f32> {
-    if globals.hdr_light.z != 0.0 {
+    if HDR_LIGHTING && globals.hdr_light.z != 0.0 {
         hdr_normal = normalize(cross(dpdy(in.local), dpdx(in.local)));
     }
     let texel = sprite(in.uv, in.layer & 0x7fffu);
@@ -626,7 +642,7 @@ fn hdr_mark(tier: u32, y: f32) -> f32 {
 fn solid_color(in: TerrainOut) -> vec4<f32> {
     let dx = dpdx(in.local);
     let dy = dpdy(in.local);
-    if globals.hdr_light.z != 0.0 {
+    if HDR_LIGHTING && globals.hdr_light.z != 0.0 {
         hdr_normal = normalize(cross(dy, dx));
     }
     if faded(in.fade, in.local, dx, dy) { discard; }
@@ -654,7 +670,7 @@ fn solid_finish_at(in: TerrainOut, texel: vec4<f32>, color: vec4<f32>, du: vec2<
     // fully fogged mountain would stand out from the fog behind it.
     // Without HDR output nothing reads the alpha, so its lighting is not worked out.
     var emissive = 1.0;
-    if globals.hdr_light.z != 0.0 {
+    if HDR_LIGHTING && globals.hdr_light.z != 0.0 {
         let fogged = max(linear_fog(in.spherical, globals.fog.x, globals.fog.y),
             linear_fog(in.cylindrical, globals.fog.z, globals.fog.w)) * globals.fog_color.a;
         emissive = hdr_scene_alpha(mix(hdr_scene(in.scene.x, in.scene.y, hdr_facing()),

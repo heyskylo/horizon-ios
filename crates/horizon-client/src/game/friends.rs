@@ -233,7 +233,7 @@ impl Game<'_> {
             // The system browser, as the folder buttons open their folders.
             Action::Help => {
                 if let Some(url) = &view.help {
-                    super::packs::open_folder(std::path::Path::new(url));
+                    super::packs::open_uri(url);
                 }
             }
             Action::Done => self.screen = super::Screen::Paused,

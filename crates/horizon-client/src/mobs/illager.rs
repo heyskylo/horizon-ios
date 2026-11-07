@@ -14,6 +14,9 @@ use horizon_core::geometry::trig::{DEG_TO_RAD, Mth};
 use horizon_core::{geometry::Vec3, random::RandomSource};
 use std::f32::consts::PI;
 
+/// The target selector of `Pillager.registerGoals`,
+/// `Vindicator.registerGoals` and `Evoker.registerGoals`; the evoker's player
+/// and villager goals keep an unseen target 300 ticks (`setUnseenMemoryTicks`).
 fn targets(m: &mut Mob, villagers_seen: bool) {
     let mut hurt = HurtByTarget::new().alert();
     hurt.ignore = vec![
@@ -26,13 +29,20 @@ fn targets(m: &mut Mob, villagers_seen: bool) {
         Species::Ravager,
     ];
     m.ai.targets.add(1, hurt);
-    m.ai.targets.add(2, NearestTarget::player(true));
+    let memory = if m.species() == Species::Evoker {
+        300
+    } else {
+        60
+    };
+    m.ai.targets
+        .add(2, NearestTarget::player(true).unseen_memory(memory));
     m.ai.targets.add(
         3,
         NearestTarget::species(
             &[Species::Villager, Species::WanderingTrader],
             villagers_seen,
-        ),
+        )
+        .unseen_memory(memory),
     );
     m.ai.targets
         .add(3, NearestTarget::species(&[Species::IronGolem], true));
@@ -334,6 +344,17 @@ fn summon_vexes(m: &mut Mob, cx: &mut Cx) {
                 life: Some(life),
                 ..Default::default()
             },
+        });
+        // `serverLevel.gameEvent(ENTITY_PLACE, pos, Context.of(evoker))` after each vex.
+        cx.events.push(MobEvent::GameEvent {
+            event: "minecraft:entity_place",
+            at: [
+                f64::from(p[0]) + 0.5,
+                f64::from(p[1]) + 0.5,
+                f64::from(p[2]) + 0.5,
+            ],
+            source: m.id,
+            state: horizon_world::registry::BlockStateId(0),
         });
     }
 }
@@ -903,6 +924,55 @@ mod tests {
             let (dx, dz) = (hands[0].0[0] - 10.0, hands[0].0[2] + 5.0);
             assert!((dx.hypot(dz) - 0.6).abs() < 1e-6);
         }
+    }
+
+    #[test]
+    fn spellcasters_remember_an_unseen_player() {
+        use crate::mobs::world::{test_player, with_test_world};
+        let ran = with_test_world(&[], |w, types| {
+            let mut w = w.clone();
+            w.player = Some(test_player(Vec3::new(3.5, 64.0, 0.5)));
+            for name in [
+                "minecraft:evoker",
+                "minecraft:illusioner",
+                "minecraft:pillager",
+            ] {
+                let kind = Arc::new(types.types[name].clone());
+                let mut mob = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+                let mut goals = std::mem::take(&mut mob.ai.targets);
+                let mut events = Vec::new();
+                let mut lr = horizon_core::random::LegacyRandom::new(0);
+                let mut cx = Cx {
+                    w: &w,
+                    lr: &mut lr,
+                    events: &mut events,
+                };
+                for _ in 0..100 {
+                    mob.ai.seen_cache.clear();
+                    goals.tick(&mut mob, &mut cx);
+                    if mob.ai.target.is_some() {
+                        break;
+                    }
+                }
+                assert_eq!(mob.ai.target, Some(Who::Player), "{name} acquired player");
+                let limit = if name == "minecraft:pillager" {
+                    30
+                } else {
+                    150
+                };
+                for _ in 0..limit {
+                    mob.ai.seen_cache = vec![(Who::Player, false)];
+                    goals.tick(&mut mob, &mut cx);
+                    assert_eq!(mob.ai.target, Some(Who::Player), "{name} lost player early");
+                }
+                mob.ai.seen_cache = vec![(Who::Player, false)];
+                goals.tick(&mut mob, &mut cx);
+                assert_eq!(mob.ai.target, None, "{name} should forget player");
+            }
+        });
+        // Without the vanilla data under .local/horizon-client the world
+        // cannot be built: the test has nothing to check.
+        let _ = ran;
     }
 
     fn pillager() -> Mob {

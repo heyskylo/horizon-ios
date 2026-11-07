@@ -10,8 +10,20 @@ use std::time::Instant;
 /// Play, the version and the big icons are this tall (`h-14`).
 const TALL: f32 = 56.;
 /// The window width from which Home's head is laid out as the mockup's `xl` (1280 px); under it
-/// Play and the version are narrower and the invite code takes what is left of their row.
-const WIDE: f32 = 1280.;
+/// Play and the version are narrower and the invite code takes what is left of their row. The
+/// account page and the theme editor also put their two columns side by side from it.
+pub(super) const WIDE: f32 = 1280.;
+/// The window width from which the top bar's pages show at full size.
+pub(super) const TOP_BAR_WIDE: f32 = 1380.;
+/// The window width from which pages put their head and cards side by side (Overview, Mods,
+/// Versions, Settings' About); under it they stack, and Home's tabs drop their icons.
+pub(super) const SIDE_BY_SIDE: f32 = 1200.;
+/// Under this window width the top bar's tabs tighten and Settings' sections go above the page.
+pub(super) const COMPACT: f32 = 1180.;
+/// Under this window width Home's tabs tighten further.
+pub(super) const NARROW: f32 = 960.;
+/// Under this window width Home's tabs are as tight as they go.
+pub(super) const NARROWEST: f32 = 750.;
 
 /// Which of Home's menus is open.
 #[derive(Clone, Copy, PartialEq, Default)]
@@ -49,19 +61,37 @@ impl Launcher {
                 cx.notify();
             },
         ));
-        let actions = div()
-            .mt(px(32.))
-            .flex()
-            // One line, unlike the mockup's `flex-wrap`: at 1280 px the folder's ⋯ would wrap the
-            // row away from under the pointer, which hides it again.
-            .items_center()
-            .gap(px(10.))
-            .child(self.play_group(tag, prepared || java.is_some(), cx))
-            .children(java.is_none().then(|| self.glass_picker(cx)))
-            .children(wide.then_some(mods))
-            .children(self.folder_group(java.is_none(), cx))
-            .when(wide, |d| d.child(div().flex_1().min_w(px(22.))))
-            .child(self.glass_join_friend(tag, wide, cx));
+        let actions = if wide {
+            div()
+                .mt(px(32.))
+                .flex()
+                // One line, unlike the mockup's `flex-wrap`: at 1280 px the folder's ⋯ would wrap the
+                // row away from under the pointer, which hides it again.
+                .items_center()
+                .gap(px(10.))
+                .child(self.play_group(tag, prepared || java.is_some(), cx))
+                .children(java.is_none().then(|| self.glass_picker(cx)))
+                .children(Some(mods))
+                .children(self.folder_group(java.is_none(), cx))
+                .child(div().flex_1().min_w(px(22.)))
+                .child(self.glass_join_friend(tag, true, cx))
+        } else {
+            div()
+                .mt(px(32.))
+                .flex()
+                .flex_col()
+                .gap(px(12.))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(10.))
+                        .child(self.play_group(tag, prepared || java.is_some(), cx))
+                        .children(java.is_none().then(|| self.glass_picker(cx)))
+                        .children(self.folder_group(java.is_none(), cx)),
+                )
+                .child(self.glass_join_friend(tag, false, cx))
+        };
         div()
             .flex()
             .flex_col()
@@ -808,18 +838,26 @@ impl Launcher {
             .text_color(white(ink::FULL))
             .cursor_text()
             .overflow_hidden()
-            .child(line_edit::content(
-                &self.friend_code,
-                &t,
-                focused,
-                false,
-                false,
-                if wide {
-                    "Paste a friend's invite code"
-                } else {
-                    "Paste an invite code"
-                },
-            ))
+            .child(
+                div()
+                    .flex_1()
+                    .h_full()
+                    .flex()
+                    .items_center()
+                    .overflow_hidden()
+                    .child(line_edit::content(
+                        &self.friend_code,
+                        &t,
+                        focused,
+                        false,
+                        false,
+                        if wide {
+                            "Paste a friend's invite code"
+                        } else {
+                            "Paste an invite code"
+                        },
+                    )),
+            )
             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                 window.focus(&this.friend_focus, cx);
                 cx.notify();
@@ -850,7 +888,7 @@ impl Launcher {
         div()
             .relative()
             .when(wide, |d| d.flex_none().w(px(wide_w)))
-            .when(!wide, |d| d.flex_1().min_w(px(150.)))
+            .when(!wide, |d| d.w(px(wide_w)).max_w_full())
             .h(px(TALL))
             .child(field)
             .child(

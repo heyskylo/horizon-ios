@@ -1,0 +1,11 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "attribute", "target": "horizon_client::game::native_player_state::Game<'_>::native_attribute"},
+    {"name": "set_attribute_base", "target": "horizon_client::game::native_player_state::Game<'_>::native_set_attribute_base"},
+    {"name": "set_attributes", "target": "horizon_client::game::native_player_state::Game<'_>::native_set_attributes"}
+  ],
+  "rust_summary": "a player's attribute read, its base set, or a saved `attributes` list loaded (`native_attribute`, `native_set_attribute_base`, `native_set_attributes`), as Bukkit's `AttributeInstance` and vanilla's `AttributeMap.load`.",
+  "doc_summary": "`native_attribute(uuid, attribute)` gives an attribute's base and full value (Bukkit's `AttributeInstance.getBaseValue`/`getValue`); `native_set_attribute_base(uuid, attribute, base)` sets the base as `/attribute .. base set`; `native_set_attributes(uuid, saved)` loads a saved `attributes` list as `AttributeMap.load`. Bundles need \"hooks\": @API:player_attributes@.",
+  "comments": ["crates/horizon-client/src/game/native_player_state.rs"]
+}

@@ -2709,6 +2709,7 @@ dependencies = [
  "horizon-prepare",
  "horizon-protocol",
  "horizon-release-sign",
+ "horizon-shader-api",
  "horizon-telemetry",
  "horizon-theme",
  "horizon-world",
@@ -2717,6 +2718,7 @@ dependencies = [
  "libc",
  "objc2-app-kit 0.3.2",
  "oo7",
+ "png 0.18.1",
  "proc-macro2",
  "pulldown-cmark",
  "quote",
@@ -2733,6 +2735,7 @@ dependencies = [
  "toml 1.1.8+spec-1.1.0",
  "trash",
  "ureq",
+ "wgpu",
  "windows 0.62.2",
  "windows-sys 0.61.2",
  "winreg",
@@ -5009,9 +5012,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.45"
+version = "0.23.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
+checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "log",
  "once_cell",
@@ -5484,6 +5487,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "socks"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f0c3dbbd9ae980613c6dd8e28a9407b50509d3803b57624d5dfe8315218cd58b"
+dependencies = [
+ "byteorder",
+ "libc",
+ "winapi",
+]
+
+[[package]]
 name = "spake2"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5710,7 +5724,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
@@ -6134,6 +6148,7 @@ dependencies = [
  "rustls-pki-types",
  "serde",
  "serde_json",
+ "socks",
  "url",
  "webpki-roots 0.26.11",
 ]

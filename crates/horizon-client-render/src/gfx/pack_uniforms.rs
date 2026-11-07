@@ -94,17 +94,39 @@ pub struct PackInputs {
     /// `frameCounter`) instead of the wall clock and the frames drawn, and smoothed values
     /// (`wetness`, `eyeBrightnessSmooth`, `centerDepthSmooth`) at their targets.
     pub still_ticks: Option<u64>,
+    /// A scripted clock (`screenshot-sequence`): taken before `still_ticks` and the wall
+    /// clock, and smoothed values move by its `delta`.
+    pub frame_timing: Option<FrameTiming>,
 }
 
-/// The `cloudHeight` uniform. Vanilla reads `visual/cloud_height` only while the cloud color
-/// has alpha (`LevelExtractor`); a dimension without clouds has no height, which the uniform
-/// reports as NaN. NaN is not vanilla's own value: packs map it to "no clouds".
-pub fn cloud_height(cloud_color_alpha: f32, height: f32) -> f32 {
-    if crate::clouds::has_color(cloud_color_alpha) {
-        height
-    } else {
-        f32::NAN
+/// One frame of a scripted pack clock: the frame's number from 1, the seconds since frame 1,
+/// and the seconds since the frame before (0 on frame 1).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FrameTiming {
+    pub counter: u32,
+    pub elapsed: f32,
+    pub delta: f32,
+}
+
+impl FrameTiming {
+    /// Frame `n` (from 1) of frames `step_ms` milliseconds apart (`16.666667` for 60 fps). The
+    /// elapsed time is worked out in f64, so frame 10 000 is as exact as frame 2.
+    pub fn nth(n: u32, step_ms: f64) -> Self {
+        let step = step_ms / 1000.0;
+        Self {
+            counter: n,
+            elapsed: (f64::from(n.saturating_sub(1)) * step) as f32,
+            delta: if n <= 1 { 0.0 } else { step as f32 },
+        }
     }
+}
+
+/// The `cloudHeight` uniform: the dimension's `visual/cloud_height`
+/// (`EnvironmentAttributes.CLOUD_HEIGHT`, 192.33 where the dimension doesn't set it), whether or
+/// not it has clouds. ShaderDoc says NaN for a dimension without clouds, but Iris 1.11.7 reads
+/// 192.33 in the Nether and the End, in every program kind our probe packs read it from.
+pub fn cloud_height(sky: &crate::environment::Sky) -> f32 {
+    sky.cloud_height
 }
 
 /// The local player's state behind Iris's status uniforms (`currentPlayerHealth`,
@@ -352,8 +374,10 @@ pub struct FrameUniforms {
     start: std::time::Instant,
     last: Option<std::time::Instant>,
     frame: u32,
-    /// The last frame's `PackInputs::still_ticks`, for `eval_custom`.
-    still_ticks: Option<u64>,
+    /// The tick `eval_custom` restarts the custom uniforms at: every frame's under STILL; on a
+    /// scripted clock's frame 1 only 0 (where a freshly parsed pack starts), so its later frames
+    /// carry their smoothing and randoms.
+    custom_restart: Option<u64>,
     previous: Option<(glam::DVec3, Mat4, Mat4)>,
     wetness: f32,
     eye_smooth: [f32; 2],
@@ -372,7 +396,7 @@ impl Default for FrameUniforms {
             start: std::time::Instant::now(),
             last: None,
             frame: 0,
-            still_ticks: None,
+            custom_restart: None,
             previous: None,
             wetness: 0.0,
             eye_smooth: [0.0; 2],
@@ -390,6 +414,25 @@ fn body(angle: f32, tilt: f32) -> Vec3 {
         * Mat4::from_rotation_y((-90.0f32).to_radians())
         * Mat4::from_rotation_x(angle.to_radians()))
     .transform_vector3(Vec3::new(0.0, 100.0, 0.0))
+}
+
+/// `sunPosition` and `moonPosition` (`angle`: the body's sky angle in degrees) and `upPosition`
+/// (`angle` none) to the last bit, as Iris 1.11.7 gives them: our probes' readings (50: 25 ticks
+/// of day and night, `sunPathRotation` 0 and 30, four view directions) fit `(0, 100, 0, 0)`
+/// times `gbufferModelView` turned by JOML quaternions, in floats: `rotate(rotationY(-90°))`,
+/// then for a body `rotate(rotationZ(sunPathRotation))` and `rotate(rotationX(angle))`. Turned
+/// by matrices instead, as `body` and vanilla 26.3's sky do, 4e-6 stands where Iris has an exact
+/// 0, and the rest differs by 1 to 2 ulps (#8464).
+fn celestial(view: Mat4, tilt: f32, angle: Option<f32>) -> Vec3 {
+    use crate::camera::joml::{Mat4 as Joml, Quat};
+    use horizon_core::geometry::trig::DEG_TO_RAD;
+    let mut m = Joml::affine(view);
+    m.rotate_affine(Quat::rotation_y(-90.0 * DEG_TO_RAD));
+    if let Some(angle) = angle {
+        m.rotate_affine(Quat::rotation_z(tilt * DEG_TO_RAD));
+        m.rotate_affine(Quat::rotation_x(angle * DEG_TO_RAD));
+    }
+    Vec3::from_array(m.transform_affine([0.0, 100.0, 0.0, 0.0]))
 }
 
 /// `sunPathRotation`'s turn of the sky's bodies: `tilt` degrees about the world's X axis, so a
@@ -536,7 +579,12 @@ fn invert_generic(m: Mat4) -> Mat4 {
 
 /// `shadow_camera`'s view and projection in wgpu's clip space (depth 0..1), for culling.
 pub fn shadow_culling(frame: &Frame, shadow: &Shadow) -> Mat4 {
-    let (view, gl) = shadow_camera(shadow_light(frame, shadow), frame.camera, shadow);
+    shadow_culling_at(shadow_light(frame, shadow), frame.camera, shadow)
+}
+
+/// `shadow_culling` for the direction toward the light and the camera's position.
+pub fn shadow_culling_at(light: Vec3, camera: DVec3, shadow: &Shadow) -> Mat4 {
+    let (view, gl) = shadow_camera(light, camera, shadow);
     // GL's depth -w..w to wgpu's 0..w.
     let depth = Mat4::from_cols(
         Vec4::X,
@@ -666,9 +714,16 @@ impl FrameUniforms {
         let now = std::time::Instant::now();
         let measured = self.last.map_or(0.0, |l| (now - l).as_secs_f32());
         self.last = Some(now);
-        self.still_ticks = inputs.still_ticks;
+        self.custom_restart = match inputs.frame_timing {
+            Some(timing) => (timing.counter <= 1).then_some(0),
+            None => inputs.still_ticks,
+        };
         // Smoothing over an endless step lands on its target.
-        let dt = inputs.still_ticks.map_or(measured, |_| f32::INFINITY);
+        let dt = match (inputs.frame_timing, inputs.still_ticks) {
+            (Some(timing), _) => timing.delta,
+            (None, Some(_)) => f32::INFINITY,
+            (None, None) => measured,
+        };
         let aspect = size[0] as f32 / size[1].max(1) as f32;
         // Packs take gbufferProjection for a plain perspective (they invert only its perspective
         // terms): the view bob and the nausea spin belong to the model-view, as GL drew them.
@@ -708,8 +763,8 @@ impl FrameUniforms {
         let sun_angle = day_fraction(frame.sky.sun_angle);
         let day = sun_angle < 0.5;
         let tilt = self.shadow.sun_path_rotation;
-        let sun = to_view(body(frame.sky.sun_angle, tilt));
-        let moon = to_view(body(frame.sky.moon_angle, tilt));
+        let sun = celestial(view, tilt, Some(frame.sky.sun_angle));
+        let moon = celestial(view, tilt, Some(frame.sky.moon_angle));
         // Half-lives are given in ticks (7.2); smoothing runs per frame in seconds (OQ-26), at
         // a tenth of a second a tick: Iris 1.11.7 smooths that slowly (measured frame by frame
         // with a probe pack: wetness 60 s rising, 20 s falling; eyeBrightnessSmooth 1 s;
@@ -760,13 +815,14 @@ impl FrameUniforms {
         let (shadow_view, shadow_view_inverse) = shadow_model_view(frame, &self.shadow);
         let day_time = inputs.day_time.rem_euclid(24000) as i32;
         let world_day = inputs.day_time.div_euclid(24000);
-        let (seconds, frame_time, frame_counter) = match inputs.still_ticks {
-            Some(ticks) => (
+        let (seconds, frame_time, frame_counter) = match (inputs.frame_timing, inputs.still_ticks) {
+            (Some(timing), _) => (timing.elapsed, timing.delta, timing.counter as i32),
+            (None, Some(ticks)) => (
                 (ticks as f32 / 20.0) % 3600.0,
                 0.05,
                 (ticks % 720_720) as i32,
             ),
-            None => (
+            (None, None) => (
                 (now - self.start).as_secs_f32() % 3600.0,
                 measured,
                 self.frame as i32,
@@ -796,7 +852,7 @@ impl FrameUniforms {
                 "hasSkylight" => Value::i(&[i32::from(inputs.has_skylight)]),
                 "hasCeiling" => Value::i(&[i32::from(inputs.has_ceiling)]),
                 "eyeAltitude" => Value::f(&[frame.camera.y as f32]),
-                "upPosition" => v3(to_view(Vec3::new(0.0, 100.0, 0.0))),
+                "upPosition" => v3(celestial(view, tilt, None)),
                 "sunPosition" => v3(sun),
                 "endFlashPosition" => v3(to_view(inputs.end_flash_direction)),
                 "centerDepthSmooth" => Value::f(&[center_depth]),
@@ -908,7 +964,7 @@ impl FrameUniforms {
     /// Evaluates the pack's custom uniforms with this frame's values and puts them after
     /// `NAMES`' values, in `custom.uniforms()` order.
     pub fn eval_custom(&mut self, custom: &mut horizon_shaders::Custom) {
-        if let Some(tick) = self.still_ticks {
+        if let Some(tick) = self.custom_restart {
             custom.restart_at(tick);
         }
         self.values.truncate(NAMES.len());
@@ -1156,11 +1212,40 @@ mod tests {
         );
     }
 
+    /// A dimension type of `attributes` (JSON), loaded as the game loads one and sampled at noon.
+    fn sky_of(name: &str, attributes: &str) -> crate::environment::Sky {
+        let root = std::env::temp_dir().join(format!(
+            "horizon-cloud-height-{}-{name}",
+            std::process::id()
+        ));
+        let dir = root.join("data/minecraft/dimension_type");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(format!("{name}.json")),
+            format!(r#"{{"attributes": {attributes}}}"#),
+        )
+        .unwrap();
+        let environment =
+            crate::environment::Environment::load_dimension(&root, name, false).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+        environment.sample(6000, None, None)
+    }
+
     #[test]
-    fn cloud_height_needs_a_cloud_color() {
-        assert_eq!(cloud_height(0.8, 192.33), 192.33);
-        assert_eq!(cloud_height(0.8, 120.0), 120.0);
-        assert!(cloud_height(0.0, 192.33).is_nan());
+    fn cloud_height_is_the_dimensions_with_or_without_clouds() {
+        // Our probe packs read 192.33 in Iris 1.11.7's Nether and End, whose dimension types
+        // set neither a cloud colour nor a cloud height.
+        let nether = sky_of(
+            "nether_like",
+            r##"{"minecraft:visual/fog_start_distance": 10.0, "minecraft:visual/fog_end_distance": 96.0}"##,
+        );
+        assert_eq!(nether.cloud_color[3], 0.0, "no clouds");
+        assert_eq!(cloud_height(&nether), 192.33);
+        let cloudy = sky_of(
+            "cloudy",
+            r##"{"minecraft:visual/cloud_color": "#ccffffff", "minecraft:visual/cloud_height": 120.0}"##,
+        );
+        assert_eq!(cloud_height(&cloudy), 120.0);
     }
 
     #[test]
@@ -1248,7 +1333,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod initial_history_tests {
+pub(super) mod initial_history_tests {
     use super::*;
     use crate::hud::HudBatch;
     fn float(u: &FrameUniforms, name: &str) -> [f32; 16] {
@@ -1417,6 +1502,105 @@ mod initial_history_tests {
             ]
         );
         assert_eq!(float(&u, "sunAngle")[0].to_bits(), 0x3eb134f4);
+    }
+
+    /// `sunPosition`, `moonPosition`, `upPosition` and `shadowLightPosition` to the last bit, as
+    /// a probe pack of ours read them back in Iris 1.11.7: noon looking west, just after sunset
+    /// looking south (where Iris's sun is exactly 0 in z), and with `sunPathRotation = 30` at
+    /// 1000 ticks, at 13000 looking down 45° and at 12786 with yaw 200, pitch -30. The sky
+    /// angles are vanilla's timeline at those ticks.
+    #[test]
+    fn the_sun_moon_and_up_are_iris_s_to_the_last_bit() {
+        let hud = HudBatch::new([1280, 720]);
+        let mut f = frame(&hud);
+        let o = 0;
+        type Case = (f32, f32, f32, u32, u32, [[u32; 3]; 3], bool);
+        let cases: [Case; 5] = [
+            (
+                0.0,
+                90.0,
+                0.0,
+                0,
+                0x43340000,
+                [[o, 0x42c7fffe, o], [o, 0xc2c7fffe, o], [o, 0x42c7fffe, o]],
+                true,
+            ),
+            (
+                0.0,
+                0.0,
+                0.0,
+                0x42b420b1,
+                0x4387082c,
+                [
+                    [0x42c7fff7, 0xbde43dae, o],
+                    [0xc2c7fff7, 0x3de4376e, o],
+                    [o, 0x42c7ffff, o],
+                ],
+                false,
+            ),
+            (
+                30.0,
+                90.0,
+                0.0,
+                0x4394c5da,
+                0x43eec5da,
+                [
+                    [0x41b8fb81, 0x42203312, 0x42b15411],
+                    [0xc1b8fb8c, 0xc220331b, 0xc2b1540f],
+                    [o, 0x42c7fffe, o],
+                ],
+                true,
+            ),
+            (
+                30.0,
+                0.0,
+                45.0,
+                0x42bb0aec,
+                0x4388c2bb,
+                [
+                    [0x42c79f54, 0xbfcb7a52, 0xc0bdd8f1],
+                    [0xc2c79f54, 0x3fcb7a25, 0x40bdd8c7],
+                    [o, 0x428d6bdc, 0x428d6bde],
+                ],
+                false,
+            ),
+            (
+                30.0,
+                200.0,
+                -30.0,
+                0x42b420b1,
+                0x4387082c,
+                [
+                    [0xc2bbe678, 0x41885944, 0x41edb502],
+                    [0x42bbe677, 0xc1885947, 0xc1edb4fc],
+                    [o, 0x42ad347e, 0xc247fffe],
+                ],
+                false,
+            ),
+        ];
+        for (tilt, yaw, pitch, sun, moon, [sun_at, moon_at, up], day) in cases {
+            f.yaw = yaw;
+            f.pitch = pitch;
+            f.sky.sun_angle = f32::from_bits(sun);
+            f.sky.moon_angle = f32::from_bits(moon);
+            let mut u = FrameUniforms {
+                shadow: Shadow {
+                    sun_path_rotation: tilt,
+                    ..Shadow::default()
+                },
+                ..FrameUniforms::default()
+            };
+            u.update(&f, &PackInputs::default(), [1280, 720]);
+            let vector = |name: &str| -> [u32; 3] {
+                let v = bits(&u, name);
+                [v[0], v[1], v[2]]
+            };
+            assert_eq!(vector("sunPosition"), sun_at, "{sun:x}");
+            assert_eq!(vector("moonPosition"), moon_at, "{sun:x}");
+            assert_eq!(vector("upPosition"), up, "{sun:x}");
+            let light = if day { sun_at } else { moon_at };
+            assert_eq!(vector("shadowLightPosition"), light, "{sun:x}");
+        }
     }
 
     /// At night the moon casts the shadows, here with `sunPathRotation = 30`: Iris 1.11.7 at
@@ -2044,6 +2228,145 @@ mod initial_history_tests {
         assert_eq!(float(&u, "centerDepthSmooth")[0], 0.0);
     }
 
+    /// A scripted clock's values reach the pack as they are, before STILL's ticks.
+    #[test]
+    fn a_scripted_clock_comes_before_the_still_ticks() {
+        let hud = HudBatch::new([800, 450]);
+        let f = frame(&hud);
+        for still_ticks in [None, Some(47_811)] {
+            let mut u = FrameUniforms::default();
+            for (n, elapsed, delta) in [(1, 0.0, 0.0), (64, 3.15, 0.05)] {
+                let input = PackInputs {
+                    day_time: 6_001,
+                    still_ticks,
+                    frame_timing: Some(FrameTiming {
+                        counter: n,
+                        elapsed,
+                        delta,
+                    }),
+                    ..Default::default()
+                };
+                u.update(&f, &input, [800, 450]);
+                match u.values[index("frameCounter").unwrap()] {
+                    Value::I(v) => assert_eq!(v[0], n as i32),
+                    _ => panic!("integer uniform expected"),
+                }
+                assert_eq!(float(&u, "frameTimeCounter")[0], elapsed);
+                assert_eq!(float(&u, "frameTime")[0], delta);
+                match u.values[index("worldTime").unwrap()] {
+                    Value::I(v) => assert_eq!(v[0], 6_001),
+                    _ => panic!("integer uniform expected"),
+                }
+            }
+        }
+    }
+
+    /// Smoothed values move by a scripted clock's delta, also under STILL, which would
+    /// otherwise put them at their targets.
+    #[test]
+    fn a_scripted_clock_moves_smoothed_values_by_its_delta() {
+        let hud = HudBatch::new([800, 450]);
+        let f = frame(&hud);
+        let mut u = FrameUniforms::default();
+        let mut input = PackInputs {
+            rain: 1.0,
+            eye_light: [0, 15],
+            still_ticks: Some(47_811),
+            frame_timing: Some(FrameTiming::nth(1, 1000.0)),
+            ..Default::default()
+        };
+        u.center_depth_raw = Some(1.0);
+        u.update(&f, &input, [800, 450]);
+        input.rain = 0.0;
+        input.eye_light = [0, 0];
+        u.center_depth_raw = Some(0.0);
+        // A second each: eyeBrightnessSmooth halves (1 s half-life),
+        // centerDepthSmooth halves ten times (0.1 s), wetness falls by 0.5^(1/20) (20 s).
+        for (n, eye, depth, wetness) in [
+            (2, 120, 1.0 / 1_024.0, 0.965_936_3),
+            (3, 60, 1.0 / 1_048_576.0, 0.933_033),
+        ] {
+            input.frame_timing = Some(FrameTiming::nth(n, 1000.0));
+            u.update(&f, &input, [800, 450]);
+            match u.values[index("eyeBrightnessSmooth").unwrap()] {
+                Value::I(v) => assert_eq!(v[1], eye),
+                _ => panic!("integer uniform expected"),
+            }
+            assert_eq!(float(&u, "centerDepthSmooth")[0], depth);
+            assert!((float(&u, "wetness")[0] - wetness).abs() < 1e-6);
+        }
+    }
+
+    /// Custom uniforms start over on a scripted clock's frame 1 and carry their smoothing
+    /// and randoms through the frames after it, so a sequence drawn again repeats.
+    #[test]
+    fn custom_uniforms_start_over_on_a_scripted_frame_1() {
+        let properties = horizon_shaders::Properties::parse(
+            "uniform.float.s = smooth(rainStrength, 10.0)
+             uniform.float.r = random()
+",
+            &horizon_shaders::Macros::standard(),
+        );
+        let mut custom = horizon_shaders::Custom::parse(&properties);
+        let hud = HudBatch::new([800, 450]);
+        let f = frame(&hud);
+        let mut u = FrameUniforms::default();
+        let mut run = |u: &mut FrameUniforms| -> Vec<[u32; 2]> {
+            (1..=3)
+                .map(|n| {
+                    let input = PackInputs {
+                        rain: if n == 1 { 0.0 } else { 1.0 },
+                        still_ticks: Some(47_811),
+                        frame_timing: Some(FrameTiming::nth(n, 1000.0)),
+                        ..Default::default()
+                    };
+                    u.update(&f, &input, [800, 450]);
+                    u.eval_custom(&mut custom);
+                    std::array::from_fn(|i| match u.values[NAMES.len() + i] {
+                        Value::F(v) => v[0].to_bits(),
+                        _ => panic!("float uniform expected"),
+                    })
+                })
+                .collect()
+        };
+        let first = run(&mut u);
+        // The smoothed rain moves toward 1 over frames 2 and 3; the randoms differ
+        // each frame.
+        let s: Vec<f32> = first.iter().map(|v| f32::from_bits(v[0])).collect();
+        assert!(
+            s[0] == 0.0 && s[0] < s[1] && s[1] < s[2] && s[2] < 1.0,
+            "{s:?}"
+        );
+        assert!(first[0][1] != first[1][1] && first[1][1] != first[2][1]);
+        assert_eq!(run(&mut u), first);
+    }
+
+    #[test]
+    fn the_nth_scripted_frame_counts_from_1() {
+        assert_eq!(
+            FrameTiming::nth(1, 50.0),
+            FrameTiming {
+                counter: 1,
+                elapsed: 0.0,
+                delta: 0.0
+            }
+        );
+        assert_eq!(
+            FrameTiming::nth(2, 50.0),
+            FrameTiming {
+                counter: 2,
+                elapsed: 0.05,
+                delta: 0.05
+            }
+        );
+        assert_eq!(FrameTiming::nth(64, 50.0).elapsed, 3.15);
+        assert_eq!(FrameTiming::nth(10_000, 50.0).elapsed, 499.95);
+        assert_eq!(FrameTiming::nth(3, 1.0).elapsed, 0.002);
+        // 60 fps: frame 61 is one second in, not 61 × 16 ms or 61 × 17 ms.
+        let sixty = FrameTiming::nth(61, 1000.0 / 60.0);
+        assert_eq!((sixty.elapsed, sixty.delta), (1.0, 1.0 / 60.0));
+    }
+
     /// Iris 1.11.7 (probe pack): `ambientLight` is the dimension type's (0.1 in the Nether,
     /// 0.25 in the End), and `playerMood` and `constantMood` both the cave mood.
     #[test]
@@ -2061,7 +2384,7 @@ mod initial_history_tests {
         assert_eq!(float(&u, "constantMood")[0], 0.0235);
     }
 
-    fn frame(hud: &HudBatch) -> Frame<'_> {
+    pub(in crate::gfx) fn frame(hud: &HudBatch) -> Frame<'_> {
         Frame {
             eye: glam::DVec3::ZERO,
             eye_rotation: [0.0; 2],
@@ -2108,6 +2431,7 @@ mod initial_history_tests {
             visible_static_block_entity_sections: &[],
             static_block_entity_stats: crate::block_entity_render::StaticCacheFrameStats::default(),
             entity_motion: &[],
+            entity_motion_posed: &[],
             colored_lights: &[],
             emissive_layers: &[],
             shadow_only: &[],
@@ -2143,3 +2467,7 @@ mod initial_history_tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "pack_uniforms/ftransform_test.rs"]
+mod ftransform_test;

@@ -164,6 +164,9 @@ pub enum FallEvent {
     Broadcast(u8),
     Write {
         position: BlockPos,
+        /// The block it replaced, so a mod that cancels the change
+        /// (`native_entity_change_block_v2`) can have it put back.
+        from: BlockStateId,
         state: BlockStateId,
         flags: u32,
     },
@@ -241,6 +244,7 @@ impl FallEvent {
                 position,
                 state,
                 flags,
+                ..
             } => format!("write {} {} {}", p(position), state.0, flags),
             Self::Destroy {
                 position, drops, ..
@@ -508,6 +512,15 @@ impl BlockLandingWorld for MotionWorld<'_, '_, '_> {
     fn under_spawn_protection(&mut self, _: BlockPos) -> Result<bool> {
         Ok(false)
     }
+    fn trample_allowed(&mut self, position: BlockPos, distance: f64) -> Result<bool> {
+        let id = self.player.entity_id;
+        Ok(crate::block_contact::trample_allowed(
+            id,
+            "minecraft:player",
+            position,
+            distance,
+        ))
+    }
     fn mob_griefing(&mut self) -> Result<bool> {
         Ok(true)
     }
@@ -587,9 +600,11 @@ impl BlockLandingWorld for MotionWorld<'_, '_, '_> {
         Ok(true)
     }
     fn set_block(&mut self, position: BlockPos, state: BlockStateId, flags: u32) -> Result<bool> {
+        let from = self.scene.block(position.x, position.y, position.z);
         self.scene.set(position.x, position.y, position.z, state)?;
         self.fall_event(FallEvent::Write {
             position,
+            from,
             state,
             flags,
         });

@@ -1,0 +1,9 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "player_permission", "target": "horizon_client::game::native_server::Game<'_>::native_player_permission"}
+  ],
+  "rust_summary": "a player's permission level, also inside `native_player_login` (`native_player_permission`).",
+  "doc_summary": "`native_player_permission(player)` gives the permission level (0 to 4, `ops.json`'s for an operator) of a player who is on the server or joining it, also inside `native_player_login` for the player it hears, so a login gate needs no `ops.json` of its own; None for a player who isn't on. Bundles need \"hooks\": @API:player_permission@.",
+  "comments": ["crates/horizon-client/src/game/native_server.rs"]
+}

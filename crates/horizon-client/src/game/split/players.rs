@@ -1,7 +1,11 @@
 //! Players coming and going: joining (P1's world through memory, or P1's server) as a profile
 //! it picks (`split_profiles`), dropping out.
 use super::*;
-use horizon_client::{gamepad::PadState, options_ui::Page};
+use horizon_client::{
+    controller_notice::{Notice, NoticeId, Priority},
+    gamepad::PadState,
+    options_ui::Page,
+};
 
 /// Whether `game` shows its profile page now.
 fn on_profiles(game: &Game<'_>) -> bool {
@@ -332,6 +336,15 @@ impl Split<'_> {
             }
             return Err(e);
         }
+        // The seat plays P1's world, so mods keep its data with P1's.
+        let save = self
+            .host
+            .remote
+            .as_ref()
+            .and_then(|r| r.save_folder.clone());
+        if let Some(r) = self.guests[i].game.remote.as_mut() {
+            r.save_folder = save;
+        }
         self.guests[i].name = Some(name);
         self.guests[i].entered = false;
         Ok(())
@@ -450,12 +463,14 @@ impl Split<'_> {
         });
         let mut settings = settings;
         settings.extras.agent_control &= options.control.is_some();
-        let gui = UiResources::load(&options.resources, &options.resources)?;
+        // `options.resources` is P1's overlay when a pack is on: never the vanilla root, as a
+        // reload would rebuild that overlay out of itself.
+        let vanilla_root = host.vanilla_root();
+        let gui = UiResources::load(&options.resources, &vanilla_root)?;
         // P1's output, heard from this player's camera too (`Audio::share`).
         let audio = host.audio.share(seat as u8);
         let window = host.window.clone().ok_or("no window")?;
         let pack = host.pack.clone();
-        let resources = host.options.resources.clone();
         let mut guest = boxed(|| {
             start_game(
                 res,
@@ -464,10 +479,11 @@ impl Split<'_> {
                 options,
                 None,
                 audio,
-                resources,
+                vanilla_root,
                 Instant::now(),
                 None,
                 Some(settings),
+                None,
                 None,
             )
         })?;
@@ -508,7 +524,7 @@ impl Split<'_> {
             || (self.host.integrated.is_none() && self.host.remote.is_none());
         let before = self.guests.len();
         if p1_left {
-            self.host.split_hud.notice = None;
+            self.host.split_hud.notice.clear();
         }
         for k in (0..self.guests.len()).rev() {
             let g = &mut self.guests[k];
@@ -526,8 +542,12 @@ impl Split<'_> {
                 .then(|| turned_away(&g.game))
                 .flatten();
             if let (true, Some(name), Some(why)) = (g.entered, &g.name, &why) {
-                self.host.split_hud.notice =
-                    Some(Notice::new(format!("{name} could not stay"), why.clone()));
+                self.host.split_hud.notice.raise(Notice::new(
+                    NoticeId::PlayerLeft,
+                    Priority::Attention,
+                    format!("{name} could not stay"),
+                    why.clone(),
+                ));
             } else if let Some(why) = why {
                 let old = self.guests[k].name.take();
                 if let (Some(server), Some(old)) = (&self.host.integrated, &old) {

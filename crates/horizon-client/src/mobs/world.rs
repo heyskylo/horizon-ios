@@ -21,6 +21,8 @@ pub struct TargetInfo {
     pub position: Vec3,
     pub eye_y: f64,
     pub bounds: Aabb,
+    /// `LivingEntity.getHitbox`: `bounds` cut below the seat of a rider.
+    pub hitbox: Aabb,
     pub alive: bool,
     pub can_be_seen_as_enemy: bool,
     pub is_player: bool,
@@ -299,6 +301,15 @@ impl MobWorld<'_> {
                 position: p.position,
                 eye_y: p.eye[1],
                 bounds: p.bounds,
+                // A riding player's seat is `Avatar.DEFAULT_VEHICLE_ATTACHMENT`
+                // (0.6) above its feet.
+                hitbox: if p.passenger {
+                    let (lo, hi) = (p.bounds.min_position(), p.bounds.max_position());
+                    let y = (p.position.y + f64::from(0.6_f32)).max(lo.y);
+                    Aabb::new(Vec3::new(lo.x, y, lo.z), hi)
+                } else {
+                    p.bounds
+                },
                 alive: p.alive,
                 can_be_seen_as_enemy: true,
                 is_player: true,
@@ -309,6 +320,7 @@ impl MobWorld<'_> {
                 position: s.position,
                 eye_y: s.eye_y,
                 bounds: s.bounds,
+                hitbox: s.hitbox,
                 alive: s.alive,
                 can_be_seen_as_enemy: !s.playing_dead,
                 is_player: false,
@@ -431,20 +443,21 @@ pub(crate) fn with_built_test_world(
     build: impl FnOnce(&mut crate::world::World, &horizon_world::registry::BlockRegistry),
     f: impl FnOnce(&MobWorld<'_>, &super::MobTypes),
 ) -> bool {
-    with_built_test_world_rules(others, true, build, f)
+    with_built_test_world_rules(others, true, true, build, f)
 }
 /// `with_built_test_world` with the `mob_griefing` game rule the world reports.
 #[cfg(test)]
 pub(crate) fn with_built_test_world_rules(
     others: &[Seen],
     mob_griefing: bool,
+    mob_drops: bool,
     build: impl FnOnce(&mut crate::world::World, &horizon_world::registry::BlockRegistry),
     f: impl FnOnce(&MobWorld<'_>, &super::MobTypes),
 ) -> bool {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../.local/horizon-client")
         .join(horizon_core::VANILLA_VERSION);
-    with_resource_test_world(&root, others, mob_griefing, build, f)
+    with_resource_test_world(&root, others, mob_griefing, mob_drops, build, f)
 }
 /// The same mob world loaded from a content mod's resource root.
 #[cfg(test)]
@@ -452,6 +465,7 @@ pub(crate) fn with_resource_test_world(
     root: &std::path::Path,
     others: &[Seen],
     mob_griefing: bool,
+    mob_drops: bool,
     build: impl FnOnce(&mut crate::world::World, &horizon_world::registry::BlockRegistry),
     f: impl FnOnce(&MobWorld<'_>, &super::MobTypes),
 ) -> bool {
@@ -510,7 +524,7 @@ pub(crate) fn with_resource_test_world(
         biomes: &biomes,
         mob_griefing,
         universal_anger: false,
-        mob_drops: true,
+        mob_drops,
         max_entity_cramming: 24,
         difficulty: super::spawning::LocalDifficulty::new(2, 18000, 0, 0.0),
         end: false,

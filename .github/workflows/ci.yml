@@ -234,14 +234,15 @@ jobs:
         run: python ../tools/check_pe_arch.py arm64 target/aarch64-pc-windows-msvc/release/horizon-launcher.exe
       - name: Check launcher DLL imports and command-line startup
         working-directory: launcher
-        shell: pwsh
+        # bash, as launcher.yml's check on the same runner: the launcher is a GUI-subsystem program, and a pwsh
+        # `$output = & launcher --version` read no output from it (run 42217014588).
+        shell: bash
         run: |
-          $ErrorActionPreference = 'Stop'
-          $launcher = 'target/aarch64-pc-windows-msvc/release/horizon-launcher.exe'
-          python ../tools/check_imports.py $launcher
-          $output = & $launcher --version 2>&1
-          if ($LASTEXITCODE -ne 0 -or -not $output) { throw 'horizon-launcher --version failed' }
-          Write-Output ($output -join "`n")
+          launcher=target/aarch64-pc-windows-msvc/release/horizon-launcher.exe
+          python ../tools/check_imports.py "$launcher"
+          out=$("$launcher" --version)
+          echo "$out"
+          [[ "$out" == "horizon-launcher "* ]] || { echo "::error::horizon-launcher --version printed '$out'"; exit 1; }
       - name: Build a native-mod game with the launcher's managed toolchain
         working-directory: launcher
         shell: pwsh
@@ -276,7 +277,7 @@ jobs:
         run: |
           changed=$(git diff --name-only "$(git merge-base "$BASE_SHA" HEAD)" HEAD)
           harness=$(grep -E '^(tools/test_[a-z0-9_]+_parity\.py|tools/(parity[a-z_]*|lab)\.py|tools/parity_hosts\.json|mods/horizon/src/test/|crates/[^/]+/examples/|crates/horizon-client/src/game/[a-z_]*(fixture|harness)\.rs|\.github/workflows/parity[a-z-]*\.yml)' <<< "$changed" || true)
-          if [ -n "$harness" ] || [[ " $LABELS " == *" run-parity "* ]]; then
+          if [ -n "$harness" ] || [[ " $LABELS " == *" run-parity "* ]] || [[ " $LABELS " == *" frame-identity "* ]]; then
             echo "run=true" >> "$GITHUB_OUTPUT"
             echo "The pull request runs its harnesses: ${harness:-label run-parity}"
           else
@@ -291,6 +292,7 @@ jobs:
       base: ${{ github.event.pull_request.base.sha }}
       head: ${{ github.event.pull_request.head.sha }}
       full: ${{ contains(github.event.pull_request.labels.*.name, 'full-parity') }}
+      frame_identity: ${{ contains(github.event.pull_request.labels.*.name, 'frame-identity') }}
   # Horizon never downloads the game. These jobs need a self-hosted Linux runner
   # (label horizon-game) holding the maintainer's own copy: the official launcher's
   # game directory in HORIZON_MINECRAFT_DIR and the pinned server jar in

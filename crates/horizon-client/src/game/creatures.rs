@@ -9,6 +9,7 @@ use super::{
     native_mob_draw::NativePlayerRender, native_projectiles::Impact, view_vector,
 };
 use horizon_assets::item_model::DisplayContext;
+use horizon_client::actions::Action;
 use horizon_client::{
     Result,
     arrows::EntityHit,
@@ -104,6 +105,17 @@ pub(super) struct Creatures {
     pub lan_explosions: Vec<([f64; 3], bool, f32, usize, Vec<(u32, [f64; 3])>)>,
     /// Ticks left of the elder guardian's apparition (MobAppearanceParticle).
     pub elder_apparition: i32,
+    /// The snapshot's buffer between ticks, empty: ~400 bytes a mob, so
+    /// thousands of mobs would allocate and free megabytes every tick.
+    seen_buf: Vec<Seen>,
+    /// The targets the mobs had before their ticks, kept between ticks
+    /// (empty) as `seen_buf` is: `native_living_change_target` hears a change.
+    target_buf: Vec<Option<Who>>,
+    /// The mobs whose own tick ran in the last `tick_creature_entities`:
+    /// `ServerLevel.tick` ticks only the entities in entity-ticking range, so
+    /// what the passes after the loop do for a mob's `aiStep`, goals or brain
+    /// (pickups, item searches) is for these alone.
+    pub ticked: horizon_client::fast_hash::FxHashSet<u32>,
     /// The wandering trader spawner's clock.
     pub trader: super::wandering_trader::Spawner,
     /// When each player last put a parrot on a shoulder (`timeEntitySatOnShoulder`).
@@ -115,6 +127,17 @@ pub(super) struct Creatures {
     /// Particles from a guest's turn, waiting for it to end.
     pub lan_particles: Vec<super::lan_particles::QueuedParticle>,
 }
+/// Whether `p`'s next step goes from inside the world border (`bounds`: [minX, minZ, maxX,
+/// maxZ]) to outside it, as `clip_including_border` would stop it.
+fn border_crossing(p: &Projectile, bounds: Option<[f64; 4]>) -> bool {
+    let Some([min_x, min_z, max_x, max_z]) = bounds else {
+        return false;
+    };
+    let within = |x: f64, z: f64| x >= min_x && x < max_x && z >= min_z && z < max_z;
+    let (at, v) = (p.position, p.velocity);
+    within(at.x, at.z) && !within(at.x + v.x, at.z + v.z)
+}
+
 pub(super) struct ProjWorld<'a, 'w> {
     pub w: &'a MobWorld<'w>,
     pub targets: Vec<(Who, Aabb)>,
@@ -135,15 +158,18 @@ impl ProjectileWorld for ProjWorld<'_, '_> {
             binding: self.w.collision,
             subject: None,
         };
+        let context = horizon_world::collision_context::CollisionContext::position(from.y);
         let r = traverse_blocks(from, to, 256, |p: BlockPos| {
             let state = self.w.world.block(p.x, p.y, p.z);
             if self.w.facts.is_air(state) {
                 return None;
             }
+            // ClipContext hands CollisionContext.of(projectile): scaffolding
+            // is open for a projectile below it.
             let shape = self
                 .w
                 .collision
-                .collision_shape(&mut scene, state, [p.x, p.y, p.z])
+                .collision_shape_with_context(&mut scene, state, p, &context)
                 .ok()?;
             shape.clip(from, to, p)
         });
@@ -179,6 +205,16 @@ impl ProjectileWorld for ProjWorld<'_, '_> {
     fn empty(&self, p: [i32; 3]) -> bool {
         self.w.facts.is_air(self.w.world.block(p[0], p[1], p[2]))
     }
+    fn bubble_column(&self, p: [i32; 3]) -> Option<(bool, bool)> {
+        horizon_client::motion::bubble_column_at(
+            self.w.world,
+            self.w.registry,
+            self.w.facts,
+            self.w.collision,
+            BlockPos::new(p[0], p[1], p[2]),
+        )
+        .map(|c| (c.drag, c.surface))
+    }
     fn solid(&self, p: [i32; 3]) -> bool {
         self.w
             .facts
@@ -187,20 +223,21 @@ impl ProjectileWorld for ProjWorld<'_, '_> {
     }
 }
 
-/// `AbstractWindCharge` is pickable, so a thrown pearl's
-/// `ProjectileUtil.getEntityHitResult` can strike it (`ThrownEnderpearl.onHit`).
-/// `WIND_CHARGE_IDS + j` is `projectiles[j]` during `tick_projectiles`, below
-/// the dragon's reserved ids.
-const WIND_CHARGE_IDS: u32 = super::dragon::SPECIAL - 0x10000;
+/// `Projectile.isPickable`: a projectile in `#minecraft:redirectable_projectile`
+/// (a ghast's fireball and both wind charges) is pickable, so another
+/// projectile's `ProjectileUtil.getEntityHitResult` can strike it
+/// (`Projectile.onHit` then redirects it). `PICKABLE_PROJECTILE_IDS + j` is
+/// `projectiles[j]` during `tick_projectiles`, below the dragon's reserved ids.
+const PICKABLE_PROJECTILE_IDS: u32 = super::dragon::SPECIAL - 0x10000;
 
-/// The index of the wind charge a `wind_charge_hitboxes` id stands for.
-pub(super) fn wind_charge_hit(id: u32) -> Option<usize> {
-    (WIND_CHARGE_IDS..super::dragon::SPECIAL)
+/// The index of the projectile a `pickable_projectile_hitboxes` id stands for.
+pub(super) fn pickable_projectile_hit(id: u32) -> Option<usize> {
+    (PICKABLE_PROJECTILE_IDS..super::dragon::SPECIAL)
         .contains(&id)
-        .then(|| (id - WIND_CHARGE_IDS) as usize)
+        .then(|| (id - PICKABLE_PROJECTILE_IDS) as usize)
 }
 
-fn wind_charge_hitboxes(
+fn pickable_projectile_hitboxes(
     projectiles: &[Projectile],
     alive: &[bool],
     skip: usize,
@@ -208,16 +245,8 @@ fn wind_charge_hitboxes(
     projectiles
         .iter()
         .enumerate()
-        .filter(|(j, q)| {
-            *j != skip
-                && alive[*j]
-                && !q.stuck
-                && matches!(
-                    q.kind,
-                    ProjectileKind::WindCharge | ProjectileKind::BreezeWindCharge
-                )
-        })
-        .map(|(j, q)| (Who::Mob(WIND_CHARGE_IDS + j as u32), q.aabb()))
+        .filter(|(j, q)| *j != skip && alive[*j] && super::deflect::redirectable(q))
+        .map(|(j, q)| (Who::Mob(PICKABLE_PROJECTILE_IDS + j as u32), q.aabb()))
         .collect()
 }
 
@@ -281,6 +310,53 @@ fn flame_geometry(
 pub(super) fn seen(m: &Mob, player: Option<[i32; 4]>) -> Seen {
     m.seen(player)
 }
+/// A mob's target as `native_living_change_target` names it: a player's UUID
+/// or a mob's id, both None for no target; None for one it cannot name.
+/// `Who::Player` is the guest the mob sees (`seen`, a connection) or, with
+/// none, the host's own player (`host`); a guest's entity (`guest_ids`, by
+/// connection) is that guest.
+fn target_named(
+    target: Option<Who>,
+    seen: Option<u32>,
+    guests: &super::lan_mobs::GuestViews,
+    guest_ids: &[(u32, u32)],
+    host: Option<&PlayerView>,
+) -> Option<(Option<u128>, Option<u32>)> {
+    let uuid = |v: &PlayerView| horizon_client::lan::playerdata::ints_uuid(v.uuid);
+    let guest = |conn: u32| guests.iter().find(|g| g.0 == conn).map(|g| uuid(&g.1));
+    match target {
+        None => Some((None, None)),
+        Some(Who::Player) => {
+            let player = match seen {
+                Some(conn) => guest(conn),
+                None => host.map(uuid),
+            };
+            Some((Some(player?), None))
+        }
+        Some(Who::Mob(id)) => match guest_ids.iter().find(|g| g.1 == id) {
+            Some(&(conn, _)) => Some((Some(guest(conn)?), None)),
+            None => Some((None, Some(id))),
+        },
+    }
+}
+/// Whether `e`, from a mob's tick, is a hit it deals `target`: a melee hit
+/// (with its effect), a sting, a sonic boom.
+fn hits_target(e: &MobEvent, want: Who) -> bool {
+    match (e, want) {
+        (
+            MobEvent::AttackPlayer(..)
+            | MobEvent::AttackPlayerWithEffect { .. }
+            | MobEvent::StingPlayer { .. },
+            Who::Player,
+        ) => true,
+        (
+            MobEvent::AttackMob { target, .. } | MobEvent::AttackMobWithEffect { target, .. },
+            Who::Mob(id),
+        ) => *target == id,
+        (MobEvent::SonicBoom { target, .. }, _) => *target == want,
+        _ => false,
+    }
+}
 /// Whether a mob a packet named may take the click: `mob_hit` skips a mob in
 /// its death animation, the one the player rides (it shares the player's root
 /// vehicle) and the camera entity the pick starts from, so a packet that names
@@ -322,7 +398,7 @@ impl Game<'_> {
             alive: !p.health.dead_or_dying(),
             // EntitySelector.NO_CREATIVE_OR_SPECTATOR.
             creative: self.creative || self.spectator(),
-            sneaking: self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft),
+            sneaking: self.keys.held(Action::Sneak),
             swimming: p.swimming,
             look: view_vector(self.yaw, self.pitch),
             main_hand: self.held().map(|s| s.item.clone()),
@@ -422,6 +498,12 @@ impl Game<'_> {
     /// persistent: the despawn rule holds it like any other mob, and only
     /// its NBT can make it persistent.
     pub(super) fn spawn_mob_spawned(&mut self, kind: &str, at: [f64; 3]) -> Option<u32> {
+        // Ender Dragons have their own entity implementation rather than a
+        // `Mob` entry.  Spawn eggs still go through `SpawnEggItem.spawnMob`,
+        // so route this special entity through the same spawned-entity path.
+        if matches!(kind, "ender_dragon" | "minecraft:ender_dragon") {
+            return self.spawn_dragon_spawned(at);
+        }
         // The spawn is not a natural one (no jockeys, the patrol leader roll
         // stays), but the mob is not persistent.
         let id = self.spawn_mob_for(kind, at, true, false)?;
@@ -695,6 +777,9 @@ impl Game<'_> {
                 rider.extra.mount = Some(id);
             }
         }
+        if let Some(raw) = horizon_client::entity_nbt::conversion_tags(self.persist_raw(from.id)) {
+            self.persist.raw.insert(id, raw);
+        }
         self.mobs.push(mob);
         self.native_mobs_joined(self.mobs.len() - 1, false);
         let transformed_kind = self
@@ -957,6 +1042,8 @@ impl Game<'_> {
     /// The entity phase of `tick_creatures`: every mob's tick, deaths, and the
     /// projectiles and effects that follow from them.
     pub(super) fn tick_creature_entities(&mut self) -> Result<()> {
+        // Its steps as spans for `horizon-report` (nothing is read while spans are off).
+        let mut laps = horizon_client::spans::laps();
         // LivingEntity.die runs when the killing blow lands: mobs killed
         // since the last tick (by the player, explosions...) die first.
         let killed: Vec<Mob> = self
@@ -973,6 +1060,7 @@ impl Game<'_> {
         // waiting any more.
         self.combat.charged_exploders.clear();
         self.combat.exploded.clear();
+        self.combat.exploded_kinds.clear();
         // EntityTickEvent.Pre for the mobs about to tick, before the loop holds them.
         let mut round = self.native_tick_round();
         if round.listening() {
@@ -988,15 +1076,27 @@ impl Game<'_> {
             }
         }
         let uuid = self.level.player_uuid;
-        let mut snapshot: Vec<Seen> = self.mobs.iter().map(|m| seen(m, uuid)).collect();
+        let level_id = self.dim.id();
+        let mut snapshot = std::mem::take(&mut self.creatures.seen_buf);
+        snapshot.extend(self.mobs.iter().map(|m| seen(m, uuid)));
         let mut events = Vec::new();
         let mut mobs = std::mem::take(&mut self.mobs);
+        // Each mob's target as the mods last heard it, by its place in `mobs`
+        // (`native_living_change_target`).
+        let mut targets = std::mem::take(&mut self.creatures.target_buf);
+        targets.clear();
+        targets.extend(mobs.iter().map(|m| m.ai.target));
         let mut dead = Vec::new();
         let mut corpses = Vec::new();
         let mut died = std::mem::take(&mut self.died);
+        let mut ticked = std::mem::take(&mut self.creatures.ticked);
+        ticked.clear();
         let ticking = self.entity_ticking_area();
         // With guests on, each mob sees its nearest player (game/lan_mobs.rs).
-        let guests = self.lan_guest_views();
+        let mut guests = self.lan_guest_views();
+        // What stands in a guest's slot while a mob holds that guest's view for
+        // its tick (see `lent` below).
+        let mut spare = guests.first().map(|g| g.1.clone());
         let players = self.level_players();
         let nearest = super::natural_spawning::NearestPlayers::new(&players);
         let mut bindings = match self.lan.as_mut() {
@@ -1021,7 +1121,10 @@ impl Game<'_> {
             .path_writes
             .get_or_insert_with(Vec::new)
             .split_off(0);
-        // The mobs whose bodies go this tick: (id, feet, width, height).
+        // The mobs whose bodies go this tick: (id, feet, width, height, split).
+        // 🤖 Agent: the last field is the grown slime, magma cube or sulfur
+        // cube the body leaves behind (`AbstractCubeMob.remove`), captured as
+        // the body goes because it has left the list by the time it splits.
         let mut gone = Vec::new();
         let level_random;
         {
@@ -1051,6 +1154,7 @@ impl Game<'_> {
                     villager_slots.push(i as u32);
                 }
             }
+            laps.lap("creature_prepare");
             let mut cached_difficulty: Option<((i32, i32), spawning::LocalDifficulty)> = None;
             for i in 0..mobs.len() {
                 let m = &mut mobs[i];
@@ -1077,6 +1181,29 @@ impl Game<'_> {
                 let nearest_player = nearest
                     .nearest(m.position.x, m.position.y, m.position.z)
                     .map(|p| p.position);
+                // ServerLevel.tick: every loaded entity checks despawning, but
+                // only those in entity-ticking chunks (within the simulation
+                // distance) tick. The despawn check reads the nearest player
+                // and the difficulty, not the player the mob sees.
+                if !ticking(bx, bz) {
+                    let w = MobWorld {
+                        others: &snapshot,
+                        others_grid: Some(&grid),
+                        others_index: Some(&index),
+                        others_villagers: Some(&villager_slots),
+                        nearest_player,
+                        player: None,
+                        teams: std::sync::Arc::clone(&base.teams),
+                        ..base
+                    };
+                    let kept = horizon_client::mobs::ai::despawn_check(m, &w);
+                    if !kept {
+                        died.remove(&m.id);
+                        snapshot[i].alive = false;
+                    }
+                    keep.push(kept);
+                    continue;
+                }
                 let controlling_player_movement = horizon_client::mobs::equine::controlled(m)
                     .then(|| {
                         base.player
@@ -1091,36 +1218,6 @@ impl Game<'_> {
                             })
                     })
                     .flatten();
-                // ServerLevel.tick: every loaded entity checks despawning, but
-                // only those in entity-ticking chunks (within the simulation
-                // distance) tick.
-                if !ticking(bx, bz) {
-                    let active_player = match seen_guest {
-                        Some(conn) => guests.iter().find(|g| g.0 == conn).map(|g| g.1.clone()),
-                        None => base.player.take(),
-                    };
-                    let mut w = MobWorld {
-                        others: &snapshot,
-                        others_grid: Some(&grid),
-                        others_index: Some(&index),
-                        others_villagers: Some(&villager_slots),
-                        nearest_player,
-                        player: active_player,
-                        teams: std::sync::Arc::clone(&base.teams),
-                        ..base
-                    };
-                    w.controlling_player_movement = controlling_player_movement;
-                    let kept = horizon_client::mobs::ai::despawn_check(m, &w);
-                    if seen_guest.is_none() {
-                        base.player = w.player;
-                    }
-                    if !kept {
-                        died.remove(&m.id);
-                        snapshot[i].alive = false;
-                    }
-                    keep.push(kept);
-                    continue;
-                }
                 // A mod canceled its tick: it stays as it is.
                 if round.canceled(m.id) {
                     keep.push(true);
@@ -1141,9 +1238,16 @@ impl Game<'_> {
                 horizon_client::mobs::apply_mob_pushes(m, &mut pushes);
                 horizon_client::mobs::blocks_changed(m, &path_changes);
                 let from = events.len();
-                let active_player = match seen_guest {
-                    Some(conn) => guests.iter().find(|g| g.0 == conn).map(|g| g.1.clone()),
-                    None => base.player.take(),
+                // The guest's view is lent to the mob for its tick, not copied:
+                // the tick only reads it (`&MobWorld`), and it goes back to the
+                // guest's slot straight after.
+                let lent = seen_guest.and_then(|conn| guests.iter().position(|g| g.0 == conn));
+                let active_player = match (seen_guest, lent) {
+                    (None, _) => base.player.take(),
+                    (Some(_), Some(k)) => spare
+                        .take()
+                        .map(|stand_in| std::mem::replace(&mut guests[k].1, stand_in)),
+                    (Some(_), None) => None,
                 };
                 let mut w = MobWorld {
                     others: &snapshot,
@@ -1157,11 +1261,59 @@ impl Game<'_> {
                     ..base
                 };
                 w.controlling_player_movement = controlling_player_movement;
+                ticked.insert(mobs[i].id);
+                // `horizon-report`'s cost by mob type (tick_profile.rs).
+                let sampled = super::tick_profile::start().map(|t| (t, mobs[i].kind.clone()));
                 let kept =
                     horizon_client::mobs::riders::tick(&mut mobs, i, &w, &mut scratch, &mut events);
+                if let Some((started, kind)) = sampled {
+                    super::tick_profile::add(level_id, &kind, started);
+                }
                 let m = &mut mobs[i];
                 if seen_guest.is_none() {
                     base.player = w.player;
+                } else if let Some(k) = lent {
+                    spare = w.player.map(|v| std::mem::replace(&mut guests[k].1, v));
+                }
+                // Its tick changed its target: the mods may keep the one it had
+                // (`native_living_change_target`), and then what the tick did to
+                // the new one is not dealt.
+                if let Some(&before) = targets.get(i)
+                    && m.ai.target != before
+                {
+                    let named = target_named(
+                        m.ai.target,
+                        seen_guest,
+                        &guests,
+                        &guest_ids,
+                        base.player.as_ref(),
+                    );
+                    if let Some((player, mob)) = named {
+                        let kind = super::native_hooks::mob_kind(m);
+                        let mut cancel = false;
+                        Self::native_living_change_target(
+                            level_id,
+                            m.id,
+                            &kind,
+                            player,
+                            mob,
+                            &mut cancel,
+                        );
+                        if cancel {
+                            if let Some(new) = m.ai.target {
+                                let mut k = from;
+                                while k < events.len() {
+                                    if hits_target(&events[k], new) {
+                                        events.remove(k);
+                                    } else {
+                                        k += 1;
+                                    }
+                                }
+                            }
+                            m.ai.target = before;
+                        }
+                    }
+                    targets[i] = m.ai.target;
                 }
                 // A killed mob's body is removed: its effects that act on
                 // death run (`LivingEntity.remove` with KILLED).
@@ -1172,7 +1324,21 @@ impl Game<'_> {
                 // LivingEntity.tickDeath: after twenty ticks the body is removed.
                 if !kept && !m.removed && !m.alive() && m.death_time >= 20 {
                     let (width, height) = (f64::from(m.width()), f64::from(m.height()));
-                    gone.push((m.id, m.position, width, height));
+                    // 🤖 Agent: `AbstractCubeMob.remove` splits a grown cube into
+                    // its smaller halves when it is removed, twenty ticks after
+                    // the death. The parent leaves the list before the split
+                    // runs, so its size, position, kind and persistence are
+                    // captured here, as they are at the removal.
+                    let split = if matches!(
+                        m.species(),
+                        Species::Slime | Species::MagmaCube | Species::SulfurCube
+                    ) && m.extra.size > 1
+                    {
+                        Some(m.clone())
+                    } else {
+                        None
+                    };
+                    gone.push((m.id, m.position, width, height, split));
                 }
                 if let Some(conn) = seen_guest {
                     // ShulkerBullet.finalTarget is the guest's entity: the
@@ -1212,6 +1378,44 @@ impl Game<'_> {
                 grid.update(i, snapshot[i].bounds);
                 horizon_client::mobs::apply_brain_events(&mut mobs, &mut events, from);
             }
+            // Targets changed after the mob's own tick (another mob's alert):
+            // heard now, and a cancel puts the old one back before its next tick.
+            for (i, m) in mobs.iter_mut().enumerate() {
+                let Some(&before) = targets.get(i) else {
+                    break;
+                };
+                if m.ai.target == before {
+                    continue;
+                }
+                let seen_guest = if guests.is_empty() {
+                    None
+                } else {
+                    bindings.get(&m.id).copied()
+                };
+                let named = target_named(
+                    m.ai.target,
+                    seen_guest,
+                    &guests,
+                    &guest_ids,
+                    base.player.as_ref(),
+                );
+                if let Some((player, mob)) = named {
+                    let kind = super::native_hooks::mob_kind(m);
+                    let mut cancel = false;
+                    Self::native_living_change_target(
+                        level_id,
+                        m.id,
+                        &kind,
+                        player,
+                        mob,
+                        &mut cancel,
+                    );
+                    if cancel {
+                        m.ai.target = before;
+                    }
+                }
+            }
+            laps.lap("creature_loop");
             let mut flags = keep.into_iter();
             mobs.retain(|_| flags.next().unwrap_or(true));
             for m in &mut mobs {
@@ -1239,14 +1443,24 @@ impl Game<'_> {
             self.mobs.append(&mut mobs);
         }
         self.died = died;
+        snapshot.clear();
+        self.creatures.seen_buf = snapshot;
+        self.creatures.ticked = ticked;
+        targets.clear();
+        self.creatures.target_buf = targets;
         self.native_tick_post_batch(round);
         // ... and entity event 60 goes out as it is: the poof.
-        for (id, at, width, height) in gone {
+        // 🤖 Agent: the split follows the poof, as `LivingEntity.tickDeath`
+        // broadcasts event 60 before it calls `remove`.
+        for (id, at, width, height, split) in gone {
             let at = [at.x, at.y, at.z];
             self.lan_entity_event(id as i32, 60, at);
             self.death_poof(at, width, height);
+            if let Some(m) = split {
+                self.split_dead_cube(&m);
+            }
         }
-        self.tick_boarding();
+        laps.lap("creature_retain");
         self.sync_riders();
         self.tick_skeleton_traps();
         self.tick_apparition();
@@ -1254,6 +1468,7 @@ impl Game<'_> {
         self.villager_reputation_tick();
         self.villager_item_sense();
         self.villager_pickups();
+        laps.lap("creature_villagers");
         for m in dead {
             self.mob_died(&m);
         }
@@ -1269,9 +1484,11 @@ impl Game<'_> {
         }
         self.handle_mob_events(events)?;
         self.lan_guest_mob_events(guest_events);
+        laps.lap("creature_events");
         self.ordered_before(super::ordered_tick::Batch::Projectiles)?;
         self.tick_projectiles()?;
         self.tick_fangs();
+        laps.lap("creature_projectiles");
         self.tick_allays();
         self.tick_pandas();
         self.tick_foxes();
@@ -1282,12 +1499,14 @@ impl Game<'_> {
         self.piglin_pickups();
         self.sulfur_cube_pickups();
         self.sulfur_cube_power_priming();
+        laps.lap("creature_systems");
         // Hurt and death sounds of damage dealt outside the mob ticks.
         let mut queued = Vec::new();
         for m in &mut self.mobs {
             queued.append(&mut m.outbox);
         }
         self.handle_mob_events(queued)?;
+        laps.lap("creature_outbox");
         Ok(())
     }
     /// `LivingEntity.makePoofParticles` (entity event 60) about a mob's box.
@@ -1432,32 +1651,37 @@ impl Game<'_> {
             // CopperGolem.dropEquipment: the preserved equipment too.
             self.golem_drop_equipment(&mut dying);
         }
+    }
+    /// 🤖 Agent: `AbstractCubeMob.remove`'s split: a grown cube mob leaves its
+    /// smaller halves behind when its body goes, twenty ticks after the death
+    /// (`LivingEntity.tickDeath`), not when it dies.
+    fn split_dead_cube(&mut self, m: &Mob) {
         if m.species() == Species::SulfurCube {
             self.split_sulfur_cube(m);
+            return;
         }
-        if m.species() == Species::Slime || m.species() == Species::MagmaCube {
-            // Slime.remove: split into 2-4 smaller slimes.
-            let size = m.extra.size;
-            if size > 1 {
-                let mut n = 2 + self.world.random.next_int_bound(3).unwrap_or(0);
-                let mut cancel = false;
-                let mut count = n as u32;
-                let kind = super::native_hooks::mob_kind(m);
-                self.native_mob_split(m.id, &kind, size, size / 2, &mut count, &mut cancel);
-                n = if cancel { 0 } else { count.min(64) as _ };
-                for k in 0..n {
-                    let off = |kk: i32| (f64::from(kk % 2) - 0.5) * f64::from(size) / 4.0;
-                    let at = [
-                        m.position.x + off(k),
-                        m.position.y + 0.5,
-                        m.position.z + off(k / 2),
-                    ];
-                    if let Some(id) = self.spawn_mob(&m.kind.id, at, m.persistent)
-                        && let Some(c) = self.mobs.iter_mut().find(|c| c.id == id)
-                    {
-                        horizon_client::mobs::cube::set_size(c, size / 2);
-                    }
-                }
+        // 🤖 Agent: AbstractCubeMob.getSplitCount: two to four smaller slimes.
+        let size = m.extra.size;
+        if size <= 1 {
+            return;
+        }
+        let mut n = 2 + self.world.random.next_int_bound(3).unwrap_or(0);
+        let mut cancel = false;
+        let mut count = n as u32;
+        let kind = super::native_hooks::mob_kind(m);
+        self.native_mob_split(m.id, &kind, size, size / 2, &mut count, &mut cancel);
+        n = if cancel { 0 } else { count.min(64) as _ };
+        for k in 0..n {
+            let off = |kk: i32| (f64::from(kk % 2) - 0.5) * f64::from(size) / 4.0;
+            let at = [
+                m.position.x + off(k),
+                m.position.y + 0.5,
+                m.position.z + off(k / 2),
+            ];
+            if let Some(id) = self.spawn_mob(&m.kind.id, at, m.persistent)
+                && let Some(c) = self.mobs.iter_mut().find(|c| c.id == id)
+            {
+                horizon_client::mobs::cube::set_size(c, size / 2);
             }
         }
     }
@@ -2073,10 +2297,14 @@ impl Game<'_> {
                         None,
                     );
                 }
-                MobEvent::Sound(name, at, volume, pitch)
-                | MobEvent::LocalSound(name, at, volume, pitch) => {
+                MobEvent::Sound(name, at, volume, pitch) => {
                     self.audio
                         .play(&format!("minecraft:{name}"), Some(at), volume, pitch)
+                }
+                MobEvent::LocalSound(name, at, volume, pitch) => {
+                    // Level.playLocalSound: play locally without broadcasting.
+                    self.audio
+                        .play_unshared(&format!("minecraft:{name}"), Some(at), volume, pitch)
                 }
                 MobEvent::LevelEventSound {
                     sound,
@@ -2112,10 +2340,23 @@ impl Game<'_> {
                     let ctx = self.who_context(Some(Who::Mob(source)), None);
                     self.post_game_event(event, at, ctx);
                 }
-                // Armadillo.rollUp/rollOut: `gameEvent(ENTITY_ACTION)`.
+                // A mob's own `gameEvent(..)` calls: Armadillo.rollUp/rollOut's
+                // ENTITY_ACTION, Creeper.tick's PRIME_FUSE, Mob.ate's EAT, the
+                // shulker's lid (Shulker.setRawPeekAmount), an evoker's vexes
+                // (ENTITY_PLACE), Enderman.teleport's TELEPORT where it was.
                 MobEvent::GameEvent {
                     event, at, source, ..
-                } if event == "minecraft:entity_action" => {
+                } if matches!(
+                    event,
+                    "minecraft:entity_action"
+                        | "minecraft:prime_fuse"
+                        | "minecraft:eat"
+                        | "minecraft:container_open"
+                        | "minecraft:container_close"
+                        | "minecraft:entity_place"
+                        | "minecraft:teleport"
+                ) =>
+                {
                     let ctx = self.who_context(Some(Who::Mob(source)), None);
                     self.post_game_event(event, at, ctx);
                 }
@@ -2264,12 +2505,14 @@ impl Game<'_> {
                     charged,
                     name,
                     in_water,
+                    kind,
                 } => {
                     self.combat.explosion_source = Some(mob);
                     self.combat.explosion_in_water = in_water;
                     // The creeper causes the blast's damage, but it is out of
                     // the mob list already: its name comes with the event.
                     self.combat.exploded.push((mob, name));
+                    self.combat.exploded_kinds.push((mob, kind));
                     if charged {
                         self.combat.charged_exploders.push(mob);
                     }
@@ -2311,11 +2554,13 @@ impl Game<'_> {
                     });
                     // Only a creeper or a wither empties the hives it blows up.
                     // The creeper is already gone from the list, so the event
-                    // carries its kind.
-                    let result = if matches!(species, Species::Creeper | Species::Wither) {
-                        self.with_hive_emptying_blast(|g| g.explode(at, radius))
-                    } else {
-                        self.explode(at, radius)
+                    // carries its kind. A sulfur cube's blast is TNT's.
+                    let result = match species {
+                        Species::Creeper | Species::Wither => {
+                            self.with_hive_emptying_blast(|g| g.explode(at, radius))
+                        }
+                        Species::SulfurCube => self.explode_sulfur_cube(at, radius),
+                        _ => self.explode(at, radius),
                     };
                     self.combat.explosion_source = None;
                     self.combat.explosion_source_named = false;
@@ -2452,18 +2697,46 @@ impl Game<'_> {
                 MobEvent::Tamed { .. } | MobEvent::Buck { .. } | MobEvent::StabDismount { .. } => {
                     self.mount_event(&e)
                 }
-                MobEvent::Launch { target, up } => match target {
-                    Who::Player => {
-                        if let Some(p) = self.player.as_mut() {
-                            p.velocity.y += up;
+                MobEvent::IronGolemHit {
+                    target,
+                    amount,
+                    source,
+                } => {
+                    // IronGolem.doHurtTarget: the toss only follows a hit that
+                    // landed, scaled by the target's KNOCKBACK_RESISTANCE.
+                    let hurt = match target {
+                        Who::Player => {
+                            let from = source.from.unwrap_or_default();
+                            self.mob_hits_player(amount, from, "minecraft:mob_attack")
+                        }
+                        Who::Mob(id) => self.mob_hits_mob(id, amount, source),
+                    };
+                    if hurt {
+                        let resistance = match target {
+                            Who::Player => self.player.as_mut().map_or(0.0, |p| {
+                                p.attribute("minecraft:knockback_resistance").unwrap_or(0.0)
+                            }),
+                            Who::Mob(id) => self
+                                .mobs
+                                .iter()
+                                .find(|m| m.id == id)
+                                .map_or(0.0, |m| self.mob_knockback_resistance(m)),
+                        };
+                        let up = f64::from(0.4f32) * (1.0 - resistance).max(0.0);
+                        match target {
+                            Who::Player => {
+                                if let Some(p) = self.player.as_mut() {
+                                    p.velocity.y += up;
+                                }
+                            }
+                            Who::Mob(id) => {
+                                if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
+                                    m.velocity.y += up;
+                                }
+                            }
                         }
                     }
-                    Who::Mob(id) => {
-                        if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
-                            m.velocity.y += up;
-                        }
-                    }
-                },
+                }
                 MobEvent::Bonemeal { pos } => {
                     let at = BlockPos::new(pos[0], pos[1], pos[2]);
                     if self.with_level(|b, level, ticks| b.grow_crop(level, ticks, at)) {
@@ -2648,6 +2921,14 @@ impl Game<'_> {
                 // `Level.setBlockAndUpdate`: neighbour and shape updates, so a crop
                 // above trampled farmland breaks and drops.
                 MobEvent::SetBlock { pos, state } => self.level_set(pos, state)?,
+                MobEvent::EndermanPlaceBlock {
+                    mob,
+                    pos,
+                    carried,
+                    occupants,
+                } => {
+                    self.enderman_place_block(mob, pos, carried, &occupants)?;
+                }
                 MobEvent::CropRaided {
                     pos,
                     state,
@@ -2982,9 +3263,12 @@ impl Game<'_> {
                         horizon_client::mobs::happy_ghast::notify_leash_holder(m);
                     }
                 }
-                MobEvent::Vibration { from, to, ticks } => {
-                    self.mob_vibration_particle(from, to, ticks)
-                }
+                MobEvent::Vibration {
+                    from,
+                    to,
+                    ticks,
+                    source,
+                } => self.mob_vibration_particle(source, from, to, ticks),
                 MobEvent::DigParticles { at } => self.warden_dig_particles(at),
                 MobEvent::BlockBreakEffect { pos, block } => {
                     // Turtle.aiStep broadcasts LevelEvent 2001, not the
@@ -3436,8 +3720,7 @@ impl Game<'_> {
                     };
                 }
                 self.world.random = r;
-                let xp = 1 + self.world.random.next_int_bound(7).unwrap_or(0) as u32;
-                self.spawn_breeding_orb([p.position.x, p.position.y, p.position.z], xp);
+                self.breeding_orb(parent, [p.position.x, p.position.y, p.position.z]);
                 return;
             }
             if p.species() == Species::Cat {
@@ -3463,8 +3746,7 @@ impl Game<'_> {
                         c.extra.color = mixed;
                     }
                 }
-                let xp = 1 + self.world.random.next_int_bound(7).unwrap_or(0) as u32;
-                self.spawn_breeding_orb([p.position.x, p.position.y, p.position.z], xp);
+                self.breeding_orb(parent, [p.position.x, p.position.y, p.position.z]);
                 return;
             }
             if p.species() == Species::Wolf {
@@ -3491,23 +3773,20 @@ impl Game<'_> {
                         c.extra.color = mixed;
                     }
                 }
-                let xp = 1 + self.world.random.next_int_bound(7).unwrap_or(0) as u32;
-                self.spawn_breeding_orb([p.position.x, p.position.y, p.position.z], xp);
+                self.breeding_orb(parent, [p.position.x, p.position.y, p.position.z]);
                 return;
             }
             // Panda.getBreedOffspring: genes from both parents.
             if p.species() == Species::Panda {
                 horizon_client::mobs::panda::inherit(child, &p, q.as_ref().unwrap_or(&p));
-                let xp = 1 + self.world.random.next_int_bound(7).unwrap_or(0) as u32;
-                self.spawn_breeding_orb([p.position.x, p.position.y, p.position.z], xp);
+                self.breeding_orb(parent, [p.position.x, p.position.y, p.position.z]);
                 return;
             }
             // Axolotl.getBreedOffspring: the drawn variant, and the baby is persistent.
             if let Some(variant) = axolotl {
                 child.extra.variant = variant;
                 child.persistent = true;
-                let xp = 1 + self.world.random.next_int_bound(7).unwrap_or(0) as u32;
-                self.spawn_breeding_orb([p.position.x, p.position.y, p.position.z], xp);
+                self.breeding_orb(parent, [p.position.x, p.position.y, p.position.z]);
                 return;
             }
             // Nautilus.getBreedOffspring: a tame parent's baby is tame too.
@@ -3543,8 +3822,17 @@ impl Game<'_> {
                 }
             }
         }
-        let xp = 1 + self.world.random.next_int_bound(7).unwrap_or(0) as u32;
-        self.spawn_breeding_orb([p.position.x, p.position.y, p.position.z], xp);
+        self.breeding_orb(parent, [p.position.x, p.position.y, p.position.z]);
+    }
+    /// `Animal.finalizeSpawnChildFromBreeding`'s experience, from the breeding
+    /// parent's own random, and only when the `mob_drops` game rule is on.
+    fn breeding_orb(&mut self, parent: u32, at: [f64; 3]) {
+        if self.ui.rules.bool("mob_drops")
+            && let Some(m) = self.mobs.iter_mut().find(|m| m.id == parent)
+        {
+            let xp = 1 + m.random.next_int_bound(7).unwrap_or(0) as u32;
+            self.spawn_orbs(at, xp);
+        }
     }
     /// `MobEffectUtil.addEffectToPlayersAround` for an elder guardian:
     /// mining fatigue III for five minutes unless a stronger or longer one
@@ -3814,8 +4102,9 @@ impl Game<'_> {
             0 => credit,
             attacker => attacker,
         });
+        let legacy = self.legacy_rules();
         if let Some(p) = self.player.as_mut() {
-            knock_back(p, &mut self.world.random, power, (xd, zd), source);
+            knock_back(p, &mut self.world.random, power, (xd, zd), source, legacy);
         }
     }
     /// A status effect from a mob, arrow or splash potion (`addEffect`).
@@ -3969,6 +4258,7 @@ impl Game<'_> {
                 Vec::new()
             };
             let border = Some(self.border.bounds());
+            let dimension = self.dim.id();
             let pw = ProjWorld {
                 w: &w,
                 targets,
@@ -3995,12 +4285,13 @@ impl Game<'_> {
                     .collect()
             });
             for i in 0..projectiles.len() {
-                // A wind charge is pickable, so a pearl, an arrow or a trident can
-                // strike it (`Projectile.isPickable`, `Projectile.onHit`).
+                // A ghast's fireball or a wind charge is pickable, so a pearl, an
+                // arrow or a trident can strike it (`Projectile.isPickable`,
+                // `Projectile.onHit`).
                 let winds = if matches!(projectiles[i].kind, ProjectileKind::EnderPearl)
                     || projectiles[i].arrow.is_some()
                 {
-                    wind_charge_hitboxes(&projectiles, &keep_flags, i)
+                    pickable_projectile_hitboxes(&projectiles, &keep_flags, i)
                 } else {
                     Vec::new()
                 };
@@ -4013,6 +4304,23 @@ impl Game<'_> {
                     keep_flags[i] = false;
                     continue;
                 }
+                // MC-310476: the mods may let a thrown projectile through the world border.
+                let through = p.arrow.is_none() && !p.stuck && border_crossing(p, border) && {
+                    let (at, v) = (p.position, p.velocity);
+                    let (mut pos, mut velocity) = ([at.x, at.y, at.z], [v.x, v.y, v.z]);
+                    let mut collide = true;
+                    let kind = p.kind.id();
+                    let (vel, c) = (&mut velocity, &mut collide);
+                    Self::native_projectile_world_border(dimension, p.id, kind, &mut pos, vel, c);
+                    if pos.iter().chain(&velocity).all(|v| v.is_finite())
+                        && (pos != [at.x, at.y, at.z] || velocity != [v.x, v.y, v.z])
+                    {
+                        p.position = Vec3::new(pos[0], pos[1], pos[2]);
+                        p.velocity = Vec3::new(velocity[0], velocity[1], velocity[2]);
+                        p.needs_sync = true;
+                    }
+                    !collide
+                };
                 // The projectile as it was, to fly on if a mod cancels its impact.
                 let before = (hear && !p.stuck).then(|| p.clone());
                 let mob_shot = !matches!(p.owner, Some(Who::Player));
@@ -4043,6 +4351,16 @@ impl Game<'_> {
                         targets.extend(winds);
                         horizon_client::arrows::tick(p, &scene, &targets)
                     }
+                    // Through the border: this tick's ray does not stop on it.
+                    (false, with_guests, true) if through => p.tick(&ProjWorld {
+                        w: pw.w,
+                        targets: if with_guests {
+                            pw_guests.targets.clone()
+                        } else {
+                            pw.targets.clone()
+                        },
+                        border: None,
+                    }),
                     (false, false, true) => p.tick(&pw),
                     (false, true, true) => p.tick(&pw_guests),
                     (false, pvp_shot, false) => {
@@ -4055,7 +4373,7 @@ impl Game<'_> {
                         p.tick(&ProjWorld {
                             w: if pvp_shot { pw_guests.w } else { pw.w },
                             targets,
-                            border,
+                            border: border.filter(|_| !through),
                         })
                     }
                 };
@@ -4148,11 +4466,12 @@ impl Game<'_> {
                     hits.push((p.clone(), hit));
                 }
                 keep_flags[i] = keep;
-                // Projectile.onHit: the wind charge it hit turns before its own tick.
+                // Projectile.onHit: the redirectable projectile it hit (a ghast's
+                // fireball or a wind charge) turns before its own tick.
                 if let Hit::Entity {
                     who: Who::Mob(id), ..
                 } = hit
-                    && let Some(j) = wind_charge_hit(id)
+                    && let Some(j) = pickable_projectile_hit(id)
                 {
                     let (owner, owner_uuid, guest) = (p.owner, p.owner_uuid, p.guest);
                     let look = self.owner_look(owner, guest);
@@ -4387,10 +4706,11 @@ impl Game<'_> {
                 | ProjectileKind::WindCharge
                 | ProjectileKind::BreezeWindCharge
         );
+        use horizon_client::arrows::OwnerLookup;
         let shooter_may_break = match p.owner {
             Some(Who::Player) => self.mode != GameMode::Adventure,
             Some(Who::Mob(_)) => false,
-            None => true,
+            None => !p.owner_uuid.is_some_and(|u| self.non_player_entity(u)),
         };
         if !impact || !shooter_may_break || !self.ui.rules.bool("projectiles_can_break_blocks") {
             return;
@@ -4456,8 +4776,11 @@ impl Game<'_> {
                     ArrowSound::TridentHitGround => "minecraft:item.trident.hit_ground",
                     ArrowSound::TridentHit => "minecraft:item.trident.hit",
                 };
+                // Each one is the projectile's own `Entity.playSound`, on `getSoundSource()`:
+                // NEUTRAL, which neither AbstractArrow nor ThrownTrident overrides. The
+                // name-based guess would put `entity.arrow.*` and `item.*` on PLAYERS.
                 self.audio
-                    .play(name, Some([at.x, at.y, at.z]), volume, pitch);
+                    .play_on(6, name, Some([at.x, at.y, at.z]), volume, pitch);
             }
             ArrowEvent::BubbleColumnParticles { pos } => self.bubble_column_particles(pos),
             ArrowEvent::Block {
@@ -4536,6 +4859,7 @@ impl Game<'_> {
             raining: rain,
             mob_griefing: self.ui.rules.bool("mob_griefing"),
             tnt_explodes: self.ui.rules.bool("tnt_explodes"),
+            owners: self,
         }
     }
     /// The rest of the tick of an arrow that hit an entity
@@ -4595,6 +4919,12 @@ impl Game<'_> {
         }
     }
     pub(super) fn projectile_hit(&mut self, p: &Projectile, hit: Hit) -> Result<()> {
+        let result = self.projectile_hit_inner(p, hit);
+        // LivingEntity.actuallyHurt credits the shooter (a ServerPlayer) with the absorbed damage.
+        self.settle_dealt_absorbed(p.owner == Some(Who::Player));
+        result
+    }
+    fn projectile_hit_inner(&mut self, p: &Projectile, hit: Hit) -> Result<()> {
         let _attacker = self.knockback_scope_for(p.owner);
         // Projectile.onHitBlock: BlockState.onProjectileHit, for every
         // projectile (a wind charge out of the world's top has no face).
@@ -4807,15 +5137,16 @@ impl Game<'_> {
             }
             // AbstractArrow.onHitBlock plays its sound itself (ArrowEvent).
             (ProjectileKind::Trident, Hit::Block { .. }) => {}
-            // AbstractArrow.onHitEntity on a wind charge: `hurtOrSimulate` fails
-            // (the charge turned in `Projectile.onHit`, which already ran), so the
-            // arrow takes `deflect(REVERSE, 0.2)` instead of vanishing.
+            // AbstractArrow.onHitEntity on a ghast's fireball or a wind charge:
+            // `hurtOrSimulate` fails (`AbstractHurtingProjectile.hurtServer` is
+            // false; the projectile turned in `Projectile.onHit`, which already
+            // ran), so the arrow takes `deflect(REVERSE, 0.2)` instead of vanishing.
             (
                 ProjectileKind::Arrow { .. },
                 Hit::Entity {
                     who: Who::Mob(id), ..
                 },
-            ) if wind_charge_hit(id).is_some() => {
+            ) if pickable_projectile_hit(id).is_some() => {
                 let mut arrow = p.clone();
                 arrow_damage(&mut arrow, &mut self.world.random);
                 self.finish_arrow_hit(arrow, EntityHit::Refused);
@@ -5175,6 +5506,9 @@ impl Game<'_> {
                         pl.fall_distance = 0.0;
                         pl.teleported = true;
                     }
+                    if self.lan_acting.is_some() {
+                        horizon_client::lan::hub::teleport_cause(Some("ender_pearl"));
+                    }
                     self.previous_position = to;
                     if damage > 0.0 {
                         self.hurt_player_by("minecraft:ender_pearl", damage);
@@ -5489,11 +5823,10 @@ impl Game<'_> {
         };
         self.audio.play(sound, Some(at), 1.0, 1.0);
     }
-    /// Right click on a mob (Mob.interact / mobInteract), on the mob under the
-    /// crosshair or on the one a guest's interact packet named: returns true
-    /// when consumed.
-    pub(super) fn interact_mob(&mut self, target: Option<InteractTarget>) -> Result<bool> {
-        let Some((index, distance)) = (match target {
+    /// The mob a normal interaction can reach: a packet's exact validated ID,
+    /// or the crosshair's mob before its blocking shape.
+    pub(super) fn mob_interaction_target(&self, target: Option<InteractTarget>) -> Option<usize> {
+        let (index, distance, _) = (match target {
             // The id the packet named, under the filters the crosshair pick
             // applies (`mob_hit`): a mob in its death animation is not clicked
             // by either path, so naming one in a packet must not reach the
@@ -5503,11 +5836,9 @@ impl Game<'_> {
                     let m = &self.mobs[i];
                     named_mob_pickable(m.alive(), m.id, self.riding, self.remote_camera_id())
                 })
-                .map(|i| (i, 0.0)),
+                .map(|i| (i, 0.0, [0.0; 3])),
             None => self.mob_hit(),
-        }) else {
-            return Ok(false);
-        };
+        })?;
         // Only a client's own pick is stopped by a block: the range check passed.
         if target.is_none()
             && let Some(hit) = self.pick_unfiltered()
@@ -5518,10 +5849,25 @@ impl Game<'_> {
                 + (hit.point[2] - eye[2]).powi(2))
             .sqrt();
             if d < distance {
-                return Ok(false);
+                return None;
             }
         }
+        Some(index)
+    }
+    /// Right click on a mob (Mob.interact / mobInteract), on the mob under the
+    /// crosshair or on the one a guest's interact packet named: returns true
+    /// when consumed.
+    pub(super) fn interact_mob(&mut self, target: Option<InteractTarget>) -> Result<bool> {
+        let Some(index) = self.mob_interaction_target(target) else {
+            return Ok(false);
+        };
+        // PlayerInteractTrigger: the name tag as it was before it named the mob.
+        let used = self.held().cloned();
         if self.name_mob(index) {
+            if let Some(stack) = &used {
+                let target = self.mob_entity(&self.mobs[index]);
+                self.trigger_item_entity("minecraft:player_interacted_with_entity", stack, &target);
+            }
             return Ok(true);
         }
         if self
@@ -5656,6 +6002,11 @@ impl Game<'_> {
         if !self.mobs[index].kind.food.contains(&item)
             && self.interact_sheep_dye(index, self.hand, false)
         {
+            // PlayerInteractTrigger: the dye as it was before it coloured the sheep.
+            if let Some(stack) = &held {
+                let target = self.mob_entity(&self.mobs[index]);
+                self.trigger_item_entity("minecraft:player_interacted_with_entity", stack, &target);
+            }
             self.swing_arm();
             return Ok(true);
         }
@@ -5740,8 +6091,8 @@ impl Game<'_> {
             .as_ref()
             .map(|p| [p.position.x, p.position.y, p.position.z]);
         let acting = self.acting_player_uuid();
-        let sneaking = self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft)
-            || self.keys.contains(&winit::keyboard::KeyCode::ShiftRight);
+        let sneaking =
+            self.keys.held(Action::Sneak) || self.keys.raw(&winit::keyboard::KeyCode::ShiftRight);
         let held_damage = held.as_ref().map_or(0, |h| h.damage as i32);
         let held_extra = held.as_ref().and_then(|h| h.extra.clone());
         let m = &mut self.mobs[index];
@@ -6542,6 +6893,17 @@ impl Game<'_> {
         let Some(eye) = self.eye_position() else {
             return Ok(false);
         };
+        // The mods, before the projectile exists: a canceled throw is a
+        // failed use, and the guest's client gets back the item it took.
+        if let (Some(player), Some(name)) = (self.lan_acting_uuid, self.lan_acting_name.clone()) {
+            let mut cancel = false;
+            self.native_player_launch_projectile_v2(player, &name, stack, &mut cancel);
+            if cancel {
+                self.use_failed = true;
+                self.guest_inventory_resend = true;
+                return Ok(true);
+            }
+        }
         let Some(p) = self.player.as_ref() else {
             return Ok(false);
         };
@@ -7050,11 +7412,11 @@ impl Game<'_> {
             self.mark_motion(entity_start, (1 << 32) | u64::from(mob.id));
             self.mark_entity(entity_start, &mob.kind.id);
             self.rendered_mobs.set(self.rendered_mobs.get() + 1);
-            let light = self.world.light(
-                mob.position.x.floor() as i32,
-                (mob.position.y + mob.eye_height()).floor() as i32,
-                mob.position.z.floor() as i32,
-            );
+            // `EntityRenderer.getPackedLightCoords`: the block the mob's light
+            // probe (its eye) is in, at the position this frame draws rather
+            // than this tick's.
+            let probe = mob.light_probe(alpha);
+            let light = self.world.light(probe[0], probe[1], probe[2]);
             let mut packed = (u32::from(light >> 4) * 16) | ((u32::from(light & 15) * 16) << 8);
             // EntityRenderer.getBlockLightLevel: a burning mob has 15 block
             // light, and so do the Allay, Blaze, Magma Cube, Vex and Wither
@@ -7215,9 +7577,16 @@ impl Game<'_> {
                 let mark = self.skin_frame.borrow().mark();
                 let base = horizon_client::mobs::render::base_transform(mob, alpha as f32, camera);
                 let gpu = skinning;
-                if let Some((lo, hi)) =
-                    self.cosmetics_geometry(mob, false, base, alpha as f32, packed, gpu, out)
-                {
+                if let Some((lo, hi)) = self.cosmetics_geometry(
+                    mob,
+                    false,
+                    base,
+                    Some(camera),
+                    alpha as f32,
+                    packed,
+                    gpu,
+                    out,
+                ) {
                     skinned = Some(match skinned {
                         Some((first, Some((l, h)))) => (first, Some((l.min(lo), h.max(hi)))),
                         Some((first, None)) => (first, Some((lo, hi))),
@@ -7304,11 +7673,12 @@ impl Game<'_> {
             let p = glam::DVec3::from_array(at) - camera;
             let c = p.as_vec3();
             // EntityRenderer.getPackedLightCoords: the block its light probe
-            // (the eye) is in, not the one under its feet.
+            // (the eye) is in, at the position this frame draws rather than
+            // this tick's, and not the one under its feet.
             let light = self.world.light(
-                a.position.x.floor() as i32,
-                a.light_probe_y().floor() as i32,
-                a.position.z.floor() as i32,
+                at[0].floor() as i32,
+                a.light_probe_y(alpha).floor() as i32,
+                at[2].floor() as i32,
             );
             let mut packed = (u32::from(light >> 4) * 16) | ((u32::from(light & 15) * 16) << 8);
             // EntityRenderer.getBlockLightLevel: a shulker bullet and anything
@@ -7764,13 +8134,15 @@ impl Game<'_> {
         }
     }
 }
-/// `LivingEntity.knockback` on `p`: [`Game::knock_back_player`].
+/// `LivingEntity.knockback` on `p`: [`Game::knock_back_player`]; 1.8.9's
+/// `EntityLivingBase.knockBack` under `legacy` rules.
 fn knock_back(
     p: &mut horizon_client::motion::PlayerMotion,
     random: &mut horizon_core::random::LegacyRandom,
     power: f64,
     (xd, zd): (f64, f64),
     source: HurtSource<'_>,
+    legacy: bool,
 ) {
     let resistance = p.attribute("minecraft:knockback_resistance").unwrap_or(0.0);
     // The native hook runs first, on the raw strength (`LivingKnockBackEvent`), then the
@@ -7788,13 +8160,26 @@ fn knock_back(
         x: mut xd,
         z: mut zd,
     } = knock;
-    let power = power * (1.0 - resistance);
+    if legacy && horizon_client::legacy_combat::resists(resistance, random.next_double()) {
+        return;
+    }
+    let power = if legacy {
+        power
+    } else {
+        power * (1.0 - resistance)
+    };
     if power <= 0.0 {
         return;
     }
     while xd * xd + zd * zd < f64::from(1.0e-5_f32) {
         xd = (random.next_double() - random.next_double()) * 0.01;
         zd = (random.next_double() - random.next_double()) * 0.01;
+    }
+    if legacy {
+        let v = p.velocity;
+        let [x, y, z] = horizon_client::legacy_combat::knockback([v.x, v.y, v.z], power, (xd, zd));
+        p.velocity = Vec3::new(x, y, z);
+        return;
     }
     let l = (xd * xd + zd * zd).sqrt();
     let v = p.velocity;
@@ -7825,6 +8210,86 @@ fn mob_effect_instance(
     let mut instance = horizon_client::effects::EffectInstance::new(id, ticks, amplifier);
     instance.ambient = ambient;
     Some(instance)
+}
+
+#[cfg(test)]
+mod local_sound_event_tests {
+    use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+    use horizon_client::mobs::MobEvent;
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn local_mob_events_play_without_entering_the_shared_capture() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.game_dir =
+            Some(std::env::temp_dir().join(format!("horizon-h069-unit-{}", std::process::id())));
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.audio.capture = Some(Vec::new());
+        game.handle_mob_events(vec![
+            MobEvent::Sound("entity.cow.hurt", [1.0, 100.0, 2.0], 0.5, 1.0),
+            MobEvent::LocalSound("entity.breeze.whirl", [3.0, 100.0, 4.0], 0.8, 0.7),
+            MobEvent::Sound("entity.zombie.hurt", [5.0, 100.0, 6.0], 1.0, 0.9),
+        ])
+        .unwrap();
+        // A positive LocalSound must still take the playback path. An absent
+        // producer cannot satisfy this actual Game adapter regression.
+        assert_eq!(
+            game.audio.heard.get("minecraft:entity.breeze.whirl"),
+            Some(&1)
+        );
+        assert_eq!(game.audio.heard.get("minecraft:entity.cow.hurt"), Some(&1));
+        assert_eq!(
+            game.audio.heard.get("minecraft:entity.zombie.hurt"),
+            Some(&1)
+        );
+        let shared = game.audio.capture.as_ref().unwrap();
+        assert_eq!(shared.len(), 2, "LocalSound must not become a shared sound");
+        assert_eq!(shared[0].event, "minecraft:entity.cow.hurt");
+        assert_eq!(shared[1].event, "minecraft:entity.zombie.hurt");
+        assert_eq!(
+            (
+                shared[0].position,
+                shared[0].volume,
+                shared[0].pitch,
+                shared[0].source
+            ),
+            ([1.0, 100.0, 2.0], 0.5, 1.0, 6)
+        );
+        assert_eq!(
+            (
+                shared[1].position,
+                shared[1].volume,
+                shared[1].pitch,
+                shared[1].source
+            ),
+            ([5.0, 100.0, 6.0], 1.0, 0.9, 5)
+        );
+    }
 }
 
 #[cfg(test)]
@@ -8297,7 +8762,7 @@ mod knockback_tests {
                 let set = p.set_modifier(attribute, "horizon:test", resistance, "add_value", true);
                 set.unwrap();
             }
-            knock_back(&mut p, &mut random, 0.4, (0.0, 3.0), hit);
+            knock_back(&mut p, &mut random, 0.4, (0.0, 3.0), hit, false);
             (p.velocity.x, p.velocity.y, p.velocity.z)
         };
         // No mod in the way: vanilla's push, away from z = 3.
@@ -8376,5 +8841,205 @@ mod dye_mix_tests {
         assert_eq!(dye_color_mix_in_recipes(&recipes, orange, cyan), None);
         let kept = dye_mix(&recipes, &mut random, orange, cyan);
         assert!(kept == orange || kept == cyan, "kept {kept}");
+    }
+}
+
+impl horizon_client::arrows::OwnerLookup for Game<'_> {
+    fn non_player_entity(&self, uuid: [i32; 4]) -> bool {
+        let found = self.target_by_uuid(horizon_client::lan::playerdata::ints_uuid(uuid));
+        !matches!(
+            found,
+            None | Some(super::commands::Target::Player | super::commands::Target::Guest(_))
+        )
+    }
+}
+
+#[cfg(test)]
+mod conversion_tag_tests {
+    use super::*;
+    use crate::game::{Audio, Options, Progress, Settings, commands::Target, load_resources};
+    use horizon_world::nbt::Tag;
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn converted_mobs_keep_command_tags_at_the_new_id_and_on_save() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        for (number, (from, to)) in [
+            ("husk", "zombie"),
+            ("zombie", "drowned"),
+            ("skeleton", "stray"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let uuid = [10374, 1, 0, number as i32];
+            let tags = Tag::List(vec![
+                Tag::String("subject".into()),
+                Tag::String(from.into()),
+            ]);
+            let raw = Tag::compound([
+                (
+                    "id",
+                    Tag::String(format!("minecraft:{from}").as_str().into()),
+                ),
+                ("UUID", Tag::IntArray(uuid.to_vec())),
+                (
+                    "Pos",
+                    Tag::List(vec![
+                        Tag::Double(0.5_f64.to_bits()),
+                        Tag::Double(70.0_f64.to_bits()),
+                        Tag::Double(0.5_f64.to_bits()),
+                    ]),
+                ),
+                ("NoAI", Tag::Byte(1)),
+                ("NoGravity", Tag::Byte(1)),
+                ("Tags", tags.clone()),
+                ("horizon:old_entity_only", Tag::Byte(1)),
+            ]);
+            let old_id = game.load_mob(raw, None).unwrap();
+            assert_eq!(game.tags_of(Target::Mob(old_id)), ["subject", from]);
+            let source = game.mobs.iter().find(|m| m.id == old_id).unwrap().clone();
+            let new_id = game
+                .convert_to(
+                    &source,
+                    &format!("minecraft:{to}"),
+                    horizon_client::mobs::conversion::Params::KEEP_ALL,
+                )
+                .unwrap();
+            assert_ne!(old_id, new_id);
+            assert_eq!(
+                game.tags_of(Target::Mob(new_id)),
+                ["subject", from],
+                "converted ID must keep tags"
+            );
+            let index = game.mobs.iter().position(|m| m.id == new_id).unwrap();
+            let saved = game.mob_tree_nbt(index);
+            assert_eq!(saved.get("Tags"), Some(&tags));
+            assert_eq!(
+                horizon_client::entity_nbt::kind(&saved).as_deref(),
+                Some(format!("minecraft:{to}").as_str())
+            );
+            assert_ne!(horizon_client::entity_nbt::uuid(&saved), Some(uuid));
+            assert!(saved.get("horizon:old_entity_only").is_none());
+            game.mobs.remove(index);
+            let reloaded = game.load_mob(saved, None).unwrap();
+            assert_eq!(game.tags_of(Target::Mob(reloaded)), ["subject", from]);
+        }
+    }
+}
+
+#[cfg(test)]
+mod pickable_projectile_tests {
+    use super::{pickable_projectile_hit, pickable_projectile_hitboxes};
+    use horizon_client::mobs::Who;
+    use horizon_client::projectiles::{Hit, Projectile, ProjectileKind, ProjectileWorld};
+    use horizon_core::geometry::{Aabb, Vec3};
+
+    /// Open air with nothing in it but `.0`.
+    struct Open(Vec<(Who, Aabb)>);
+    impl ProjectileWorld for Open {
+        fn clip(&self, _: Vec3, _: Vec3) -> Option<(Vec3, [i32; 3], [i32; 3])> {
+            None
+        }
+        fn in_water(&self, _: Aabb) -> bool {
+            false
+        }
+        fn targets(&self) -> &[(Who, Aabb)] {
+            &self.0
+        }
+    }
+
+    /// Which of `list` another projectile (the one at 0) can strike.
+    fn struck(list: &[Projectile]) -> Vec<usize> {
+        let alive = vec![true; list.len()];
+        pickable_projectile_hitboxes(list, &alive, 0)
+            .iter()
+            .map(|(who, _)| match who {
+                Who::Mob(id) => pickable_projectile_hit(*id).expect("a pickable projectile id"),
+                Who::Player => panic!("not a projectile"),
+            })
+            .collect()
+    }
+
+    /// `Projectile.isPickable` is `#minecraft:redirectable_projectile`: a ghast's
+    /// fireball is in it, as both wind charges are, so another projectile's hit
+    /// test can strike it. A blaze's small fireball is not, and a projectile
+    /// that is stuck is no target.
+    #[test]
+    fn a_ghast_fireball_is_pickable_like_a_wind_charge() {
+        let at = Vec3::new(0.0, 100.0, 0.0);
+        let fired = |kind| Projectile::fireball(kind, at, None, [1.0, 0.0, 0.0]);
+        let mut stuck = fired(ProjectileKind::LargeFireball { power: 1 });
+        stuck.stuck = true;
+        let list = vec![
+            Projectile::new(ProjectileKind::EnderPearl, at, Some(Who::Player)),
+            fired(ProjectileKind::LargeFireball { power: 1 }),
+            fired(ProjectileKind::WindCharge),
+            fired(ProjectileKind::BreezeWindCharge),
+            fired(ProjectileKind::SmallFireball),
+            stuck,
+        ];
+        assert_eq!(struck(&list), vec![1, 2, 3]);
+    }
+
+    /// A pearl thrown through a ghast's fireball strikes it (`Projectile.onHit`
+    /// then turns the fireball), where it used to fly on through.
+    #[test]
+    fn a_pearl_thrown_through_a_ghast_fireball_strikes_it() {
+        let mut pearl = Projectile::new(
+            ProjectileKind::EnderPearl,
+            Vec3::new(0.0, 100.0, 0.0),
+            Some(Who::Player),
+        );
+        pearl.velocity = Vec3::new(1.5, 0.0, 0.0);
+        let fireball = Projectile::fireball(
+            ProjectileKind::LargeFireball { power: 1 },
+            Vec3::new(1.0, 99.5, 0.0),
+            None,
+            [0.0, 0.0, 1.0],
+        );
+        let list = vec![pearl, fireball];
+        let alive = vec![true; list.len()];
+        let world = Open(pickable_projectile_hitboxes(&list, &alive, 0));
+        let mut pearl = list[0].clone();
+        let (keep, hit) = pearl.tick(&world);
+        assert!(!keep, "the pearl is spent on the hit");
+        match hit {
+            Hit::Entity {
+                who: Who::Mob(id), ..
+            } => assert_eq!(
+                pickable_projectile_hit(id),
+                Some(1),
+                "it struck the fireball"
+            ),
+            other => panic!("the pearl flew through the fireball: {other:?}"),
+        }
     }
 }
