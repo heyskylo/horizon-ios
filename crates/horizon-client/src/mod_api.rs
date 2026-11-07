@@ -977,6 +977,8 @@ mod generated_host {
 }
 pub use generated_host::Host;
 
+pub use crate::game::native_client_services::HudMode;
+
 /// Result of accessing or decoding an attachment.
 pub type AttachmentResult<T> = std::result::Result<T, AttachmentError>;
 
