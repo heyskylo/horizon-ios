@@ -3179,3 +3179,211 @@ mod item_display_saved_transform_tests {
         });
     }
 }
+
+#[cfg(test)]
+mod attribute_instance_save_tests {
+    use super::*;
+    use crate::game::{Audio, Options, Progress, Settings, commands::Target, load_resources};
+    use horizon_client::motion::PlayerMotion;
+
+    fn with_game(test: impl FnOnce(&mut Game<'_>)) {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.game_dir = Some(
+            std::path::PathBuf::from(std::env::var_os("HORIZON_HOME").unwrap())
+                .join(format!("h105-{:?}", std::thread::current().id())),
+        );
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.world
+            .chunks
+            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        game.block_ticks
+            .add_empty_chunk(ChunkPos::new(0, 0))
+            .unwrap();
+        assert!(game.run_command("forceload add 0 0"));
+        game.player = Some(PlayerMotion::new(game.motion, Vec3::new(2.5, 200.0, 2.5)).unwrap());
+        game.creative = true;
+        test(&mut game);
+    }
+    fn mob(game: &Game<'_>, n: i32) -> usize {
+        let i: Vec<usize> = (0..game.mobs.len())
+            .filter(|&i| game.persist.uuid_of(game.mobs[i].id) == Some([105, 0, 0, n]))
+            .collect();
+        assert_eq!(i.len(), 1, "one live mob with UUID {n}");
+        i[0]
+    }
+    /// The ids of the attribute instances the mob's save holds, in order.
+    fn saved_ids(game: &mut Game<'_>, i: usize) -> Vec<String> {
+        let tag = game
+            .entity_nbt(Target::Mob(game.mobs[i].id))
+            .expect("saved mob");
+        match tag.get("attributes") {
+            Some(Tag::List(l)) => l.iter().filter_map(|t| text(t.get("id"))).collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Expected values from the official 26.3 server: a fresh mob has no
+    /// attribute instance (AttributeMap.pack saves []); its first tick makes
+    /// movement_speed (aiStep -> removeFrost -> getAttribute); an instance it
+    /// was loaded with stays.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and a scratch HORIZON_HOME"]
+    fn a_mob_saves_the_attribute_instances_it_has() {
+        with_game(|game| {
+            let speed = || vec!["minecraft:movement_speed".to_string()];
+            let mut failures = Vec::new();
+            for (kind, n) in [("pig", 1), ("allay", 2)] {
+                assert!(game.run_command(&format!(
+                    "summon minecraft:{kind} {}.5 200 4.5 {{UUID:[I;105,0,0,{n}],NoAI:1b,NoGravity:1b,PersistenceRequired:1b,Silent:1b}}",
+                    2 * n
+                )));
+            }
+            // Before any tick, without the load's compound.
+            for (kind, n) in [("pig", 1), ("allay", 2)] {
+                let i = mob(game, n);
+                game.persist.raw.remove(&game.mobs[i].id);
+                if !saved_ids(game, i).is_empty() {
+                    failures.push(format!("{kind} before a tick: {:?}", saved_ids(game, i)));
+                }
+            }
+            game.tick_world(true).unwrap();
+            for (kind, n) in [("pig", 1), ("allay", 2)] {
+                let i = mob(game, n);
+                game.persist.raw.remove(&game.mobs[i].id);
+                if saved_ids(game, i) != speed() {
+                    failures.push(format!("{kind} after a tick: {:?}", saved_ids(game, i)));
+                }
+            }
+            // A save of the ticked pig, loaded again: the loaded instance stays
+            // before the new pig's first tick.
+            let i = mob(game, 1);
+            let mut saved = game.entity_nbt(Target::Mob(game.mobs[i].id)).unwrap();
+            if let Tag::Compound(c) = &mut saved {
+                c.insert("UUID".into(), Tag::IntArray(vec![105, 0, 0, 3]));
+            }
+            game.load_mob(saved, None).unwrap();
+            let j = mob(game, 3);
+            if saved_ids(game, j) != speed() {
+                failures.push(format!(
+                    "reloaded pig before a tick: {:?}",
+                    saved_ids(game, j)
+                ));
+            }
+            assert!(failures.is_empty(), "attribute instances: {failures:#?}");
+        });
+    }
+
+    /// Added after the H105 baseline; expectations from the 26.3 source, not
+    /// a live Java run. Load-created instances stay (Zombie and Piglin
+    /// .setBaby the speed, Rabbit.setVariant the attack damage; an adult
+    /// Zoglin's setBaby touches nothing), an unticked mob saves an empty
+    /// list, and an instance the mob was loaded with stays before and after
+    /// its first tick. Ids are compared as sets: vanilla's order is its
+    /// map's.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and a scratch HORIZON_HOME"]
+    fn load_created_and_loaded_instances_stay_and_an_empty_list_is_saved() {
+        with_game(|game| {
+            // The hostile summons need a non-Peaceful difficulty.
+            assert!(game.run_command("difficulty normal"));
+            let set = |v: Vec<String>| {
+                let mut v = v;
+                v.sort();
+                v
+            };
+            let ids = |v: &[&str]| set(v.iter().map(|s| format!("minecraft:{s}")).collect());
+            let fields = "NoAI:1b,NoGravity:1b,PersistenceRequired:1b,Silent:1b";
+            let cases = [
+                ("pig", 11, "", ids(&[]), ids(&["movement_speed"])),
+                (
+                    "zombie",
+                    12,
+                    "",
+                    ids(&["movement_speed"]),
+                    ids(&["movement_speed"]),
+                ),
+                (
+                    "piglin",
+                    13,
+                    ",IsImmuneToZombification:1b",
+                    ids(&["movement_speed"]),
+                    ids(&["movement_speed"]),
+                ),
+                (
+                    "rabbit",
+                    14,
+                    "",
+                    ids(&["attack_damage"]),
+                    ids(&["attack_damage", "movement_speed"]),
+                ),
+                ("zoglin", 15, "", ids(&[]), ids(&["movement_speed"])),
+                (
+                    "pig",
+                    16,
+                    ",attributes:[{id:\"minecraft:scale\",base:1.0d}]",
+                    ids(&["scale"]),
+                    ids(&["movement_speed", "scale"]),
+                ),
+            ];
+            for (kind, n, extra, _, _) in &cases {
+                assert!(game.run_command(&format!(
+                    "summon minecraft:{kind} {}.5 200 8.5 {{UUID:[I;105,0,0,{n}],{fields}{extra}}}",
+                    n - 9
+                )));
+            }
+            let mut failures = Vec::new();
+            for (kind, n, _, before, _) in &cases {
+                let i = mob(game, *n);
+                // The load's compound stays (the loaded scale instance is in it).
+                let got = set(saved_ids(game, i));
+                if &got != before {
+                    failures.push(format!("{kind} {n} before a tick: {got:?}"));
+                }
+            }
+            let i = mob(game, 11);
+            let tag = game.entity_nbt(Target::Mob(game.mobs[i].id)).unwrap();
+            if tag.get("attributes") != Some(&Tag::List(Vec::new())) {
+                failures.push(format!(
+                    "pig before a tick: attributes {:?}",
+                    tag.get("attributes")
+                ));
+            }
+            game.tick_world(true).unwrap();
+            for (kind, n, _, _, after) in &cases {
+                let i = mob(game, *n);
+                let got = set(saved_ids(game, i));
+                if &got != after {
+                    failures.push(format!("{kind} {n} after a tick: {got:?}"));
+                }
+            }
+            assert!(failures.is_empty(), "attribute instances: {failures:#?}");
+        });
+    }
+}

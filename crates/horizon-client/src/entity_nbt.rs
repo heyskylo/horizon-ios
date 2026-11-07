@@ -1365,12 +1365,20 @@ pub fn mob_to_nbt(
     // the attack damage.
     use crate::mobs::finalize::Attr;
     // Every other living entity's first tick makes the movement_speed instance
-    // (LivingEntity.removeFrost reads it through getAttribute).
-    let made = if species == crate::mobs::Species::Rabbit {
-        vec![Attr::MovementSpeed, Attr::AttackDamage]
-    } else {
-        vec![Attr::MovementSpeed]
-    };
+    // (LivingEntity.removeFrost reads it through getAttribute); before it, the
+    // mob has only the instances it was loaded with (the kept list above).
+    let speed_at_load =
+        crate::mobs::doors::is_zombie(species) || species == crate::mobs::Species::Piglin;
+    let mut made = Vec::new();
+    if speed_at_load || m.age > 0 {
+        made.push(Attr::MovementSpeed);
+    }
+    if species == crate::mobs::Species::Rabbit {
+        made.push(Attr::AttackDamage);
+    }
+    // AttributeMap.pack writes the list even when no instance exists.
+    map.entry("attributes".into())
+        .or_insert_with(|| Tag::List(Vec::new()));
     for attr in made {
         let base = crate::mobs::finalize::base_value(m, attr);
         let mut list = match map.get(&"attributes".into()) {

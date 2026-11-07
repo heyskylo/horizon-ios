@@ -147,6 +147,8 @@ def main():
     parser.add_argument("--macro-source-type-fixture", action="store_true")
     parser.add_argument("--stand-fall-fixture", action="store_true")
     parser.add_argument('--orb-uuid-fixture', action='store_true')
+    parser.add_argument('--mob-attribute-save-fixture', action='store_true', help='which attribute instances a pig, allay and armor stand save before and after a tick')
+    parser.add_argument('--mob-attribute-save-raw-diagnostic', action='store_true', help='add the whole attributes lists and entity data')
     parser.add_argument("--mob-pickup-save-fixture", action="store_true")
     parser.add_argument('--merchant-crafted-fixture', action='store_true')
     parser.add_argument('--mob-name-presentation-diagnostic', action='store_true',
@@ -329,6 +331,9 @@ def main():
     if args.selector_bounds_fixture:
         from selector_bounds_corpus import selector_bounds
         groups = [("setup", corpus_module.group_setup()), ("selector entity bounds", selector_bounds())]
+    if args.mob_attribute_save_fixture:
+        from mob_attribute_save_corpus import mob_attribute_save
+        groups = [('setup', corpus_module.group_setup()), ('mob attribute save', mob_attribute_save(args.mob_attribute_save_raw_diagnostic))]
     if args.boat_leash_view_fixture:
         from boat_leash_view_corpus import cases as boat_leash_views
         groups = [('setup', corpus_module.group_setup()),
