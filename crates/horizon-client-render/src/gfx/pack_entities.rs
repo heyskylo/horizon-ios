@@ -463,11 +463,11 @@ impl PackEntities {
             // model in the same block-entity run. Do not corrupt either UV space.
             let whole: &[Vertex] = if whole
                 .chunks(4)
-                .any(|q| q[0].layer & 0xffff == super::FLUID_OVERLAY)
+                .any(|q| super::is_native_terrain(q[0].layer))
             {
                 without_fluids.clear();
                 for quad in whole.chunks(4) {
-                    if quad[0].layer & 0xffff == super::FLUID_OVERLAY {
+                    if super::is_native_terrain(quad[0].layer) {
                         if !span.hidden {
                             rest.extend_from_slice(quad);
                         }
@@ -1172,63 +1172,70 @@ mod gpu_span_tests {
             pollster::block_on(adapter.request_device(&Default::default())).unwrap();
         let layout = super::super::pack_draw::DrawUniforms::new(&device);
         let mut geometry = PackEntities::new(&device, &layout.layout);
-        let mut mixed = vec![
-            Vertex {
-                layer: 0,
-                ..bytemuck::Zeroable::zeroed()
-            };
-            8
-        ];
-        for v in &mut mixed[4..] {
-            v.layer = super::super::FLUID_OVERLAY;
-            v.uv = [0.25, 0.75];
-            v.glint_uv = [17.0, 0.0];
-        }
-        let mut rest = Vec::new();
-        for hidden in [false, true] {
-            geometry.prepare(
-                &device,
-                &queue,
-                &layout.layout,
-                &mixed,
-                &[EntitySpan {
-                    start: 0,
-                    id: 77,
-                    stage: render_stage("BLOCK_ENTITIES"),
-                    hidden,
-                    ..Default::default()
-                }],
-                [true; PROGRAMS],
-                ([0.; 4], [1; 2]),
-                Casters {
-                    blocks: true,
-                    ..Default::default()
-                },
-                &mut rest,
-                None,
-                (&[], &[]),
-            );
-            assert_eq!(
-                geometry.scratch.len(),
-                4,
-                "the model still uses the shader pack"
-            );
-            assert_eq!(geometry.draws.len(), 1);
-            assert_eq!(
-                (geometry.draws[0].pack, geometry.draws[0].shadow),
-                (!hidden, true)
-            );
-            if hidden {
-                assert!(
-                    rest.is_empty(),
-                    "hidden native fluid must not leak into the visible pass"
+        for overlay in [
+            super::super::FLUID_OVERLAY,
+            super::super::TERRAIN_MODEL_SOLID_OVERLAY,
+            super::super::TERRAIN_MODEL_CUTOUT_OVERLAY,
+            super::super::TERRAIN_MODEL_CUTOUT_MIPPED_OVERLAY,
+        ] {
+            let mut mixed = vec![
+                Vertex {
+                    layer: 0,
+                    ..bytemuck::Zeroable::zeroed()
+                };
+                8
+            ];
+            for v in &mut mixed[4..] {
+                v.layer = overlay | 279 << 16;
+                v.uv = [0.25, 0.75];
+                v.glint_uv = [17.0, 0.0];
+            }
+            let mut rest = Vec::new();
+            for hidden in [false, true] {
+                geometry.prepare(
+                    &device,
+                    &queue,
+                    &layout.layout,
+                    &mixed,
+                    &[EntitySpan {
+                        start: 0,
+                        id: 77,
+                        stage: render_stage("BLOCK_ENTITIES"),
+                        hidden,
+                        ..Default::default()
+                    }],
+                    [true; PROGRAMS],
+                    ([0.; 4], [1; 2]),
+                    Casters {
+                        blocks: true,
+                        ..Default::default()
+                    },
+                    &mut rest,
+                    None,
+                    (&[], &[]),
                 );
-            } else {
                 assert_eq!(
-                    bytemuck::cast_slice::<_, u8>(&rest),
-                    bytemuck::cast_slice::<_, u8>(&mixed[4..]),
-                    "fluid UV/layer payload cannot be sampled from the entity atlas"
+                    geometry.scratch.len(),
+                    4,
+                    "the model still uses the shader pack"
                 );
+                assert_eq!(geometry.draws.len(), 1);
+                assert_eq!(
+                    (geometry.draws[0].pack, geometry.draws[0].shadow),
+                    (!hidden, true)
+                );
+                if hidden {
+                    assert!(
+                        rest.is_empty(),
+                        "hidden native fluid must not leak into the visible pass"
+                    );
+                } else {
+                    assert_eq!(
+                        bytemuck::cast_slice::<_, u8>(&rest),
+                        bytemuck::cast_slice::<_, u8>(&mixed[4..]),
+                        "fluid UV/layer payload cannot be sampled from the entity atlas"
+                    );
+                }
             }
         }
     }
