@@ -910,6 +910,14 @@ impl Game<'_> {
             host.hub
                 .sound(&name, at, volume, pitch, players, Some(conn));
         }
+        // Level.playSound(player, ...) in the blocks' source: the same, but on its slider.
+        let blocks = horizon_client::settings::SOUND_SOURCES
+            .iter()
+            .position(|s| *s == "block")
+            .unwrap_or(0) as i32;
+        for (name, at, volume, pitch) in std::mem::take(&mut self.guest_block_sounds) {
+            host.hub.sound(&name, at, volume, pitch, blocks, Some(conn));
+        }
         // ServerItemCooldowns.onCooldownStarted: the guest's own cooldown.
         for (group, duration) in std::mem::take(&mut self.guest_cooldowns) {
             host.hub.send_to(
