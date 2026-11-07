@@ -401,7 +401,9 @@ impl Game<'_> {
                 x + arrow.0,
                 y + arrow.1,
             );
-            if let Some(enabled) = button {
+            if self.screen != super::Screen::Creative
+                && let Some(enabled) = button
+            {
                 let rect = [x + action.0, y + action.1, 12.0, 12.0];
                 let sprite = match (enabled, inside(cursor, rect)) {
                     (false, _) => "gui/sprites/widget/button_disabled",
@@ -569,7 +571,9 @@ impl Game<'_> {
         let action = self.recipes_shown(layout).into_iter().find(|&(i, (x, y))| {
             let r = &pages.recipes[i];
             let (_, _, (ax, ay)) = r.places(layout.width());
-            r.action.is_some() && inside(cursor, [x + ax, y + ay, 12.0, 12.0])
+            self.screen != super::Screen::Creative
+                && r.action.is_some()
+                && inside(cursor, [x + ax, y + ay, 12.0, 12.0])
         });
         if let Some((i, _)) = action {
             if pages.recipes[i].action == Some(true) {
