@@ -523,6 +523,11 @@ impl Game<'_> {
                 e[1].floor() as i32,
                 e[2].floor() as i32,
             ];
+            self.particles
+                .set_polytone(self.pack.polytone_particles.clone());
+            if let Some(registry) = &self.pack.polytone_particles {
+                registry.set_biomes(biomes);
+            }
             animate_tick(self.res.animate(), &mut self.particles, &ctx, block);
             // The Horizon Weather option off means no rain visuals or sounds at all.
             if rain > 0.0 && self.settings.horizon.weather {
@@ -637,6 +642,13 @@ impl Game<'_> {
                 .as_ref()
                 .map(|p| ([p.position.x, p.position.y, p.position.z], p.velocity.y)),
         };
+        // Resource packs' Polytone entity emitters on the player (#11486): fog, dust and
+        // weather around them; nothing without such a pack.
+        if let Some(p) = &self.player {
+            let feet = [p.position.x, p.position.y, p.position.z];
+            self.particles
+                .polytone_entity(&level, "minecraft:player", feet);
+        }
         self.particles.tick(&level);
         self.tick_pickups();
         let camera = self.particles.camera;

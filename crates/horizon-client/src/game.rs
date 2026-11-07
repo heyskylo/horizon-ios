@@ -2340,6 +2340,8 @@ pub struct PackResources {
     /// The overworld's, Nether's and End's attribute stacks with the packs' Polytone biome and
     /// dimension modifiers (#11486), when a pack has some: what the frame draws.
     environments: Option<Arc<[Environment; 3]>>,
+    /// The packs' Polytone custom particles and block emitters (#11486), when a pack has some.
+    polytone_particles: Option<Arc<horizon_client::particles::polytone::Registry>>,
 }
 /// A quick craft drag as the screen draws it: each dragged slot's count and
 /// whether the slot caps it (None: hidden), and what stays in hand.
@@ -14317,9 +14319,9 @@ impl Game<'_> {
         }
         let (rain, thunder) = self.view_weather(alpha as f32);
         // What the packs' attribute expressions read (only a pack's stack has any).
-        if self.pack.environments.is_some() {
+        if self.pack.environments.is_some() || self.pack.polytone_particles.is_some() {
             let light = self.world.light(block[0], block[1], block[2]);
-            environment.set_frame(horizon_client::environment::Frame {
+            let frame = horizon_client::environment::Frame {
                 rain,
                 thunder,
                 game_time: self.world.game_time,
@@ -14339,13 +14341,24 @@ impl Game<'_> {
                 player: self.player.as_ref().map_or(camera.to_array(), |p| {
                     [p.position.x, p.position.y, p.position.z]
                 }),
+                player_velocity: self
+                    .player
+                    .as_ref()
+                    .map_or([0.0; 3], |p| [p.velocity.x, p.velocity.y, p.velocity.z]),
+                player_on_ground: self.player.as_ref().is_some_and(|p| p.ground.on_ground),
                 in_water: underwater,
                 camera: camera.to_array(),
                 sky_light: i32::from(light >> 4),
                 block_light: i32::from(light & 15),
                 temperature: biomes.get(biome).temperature,
                 downfall: biomes.get(biome).downfall,
-            });
+            };
+            if let Some(particles) = &self.pack.polytone_particles
+                && let Ok(mut f) = particles.frame.write()
+            {
+                f.clone_from(&frame);
+            }
+            environment.set_frame(frame);
         }
         let mut sky = environment.sample(&horizon_client::environment::Sample {
             day_time: self.view_day_time(),

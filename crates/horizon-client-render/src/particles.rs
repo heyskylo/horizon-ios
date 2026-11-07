@@ -28,6 +28,7 @@ use std::{
 pub use horizon_client_core::particle_type::ParticleType;
 pub use horizon_items::firework::{DYE_FIREWORK_COLORS, FireworkExplosion, FireworkShape};
 mod native;
+pub mod polytone;
 pub use native::{ParticleController, ParticleUpdate};
 
 /// `ParticleOptions` with the parameters of the option classes used here.
@@ -64,6 +65,8 @@ pub struct ParticleOptions {
     /// `nextInt(40) + 10` after constructing the particle. Set by the client for an older
     /// server only, never read from the wire.
     pub legacy_trail_lifetime: bool,
+    /// What the Polytone emitter that spawned this custom particle sets on it.
+    pub polytone_seed: Option<std::sync::Arc<polytone::Seed>>,
 }
 impl ParticleOptions {
     pub fn simple(ty: ParticleType) -> Self {
@@ -80,6 +83,7 @@ impl ParticleOptions {
             mod_particle: None,
             legacy_entity_effect: None,
             legacy_trail_lifetime: false,
+            polytone_seed: None,
         }
     }
     /// A native mod's `SimpleParticleType`: the sprite set of
@@ -522,6 +526,8 @@ pub struct Particle {
     /// `Particle.random`: the particle's own generator (`RandomSource.create()`).
     random: LegacyRandom,
     controller: Option<Box<dyn native::Controller>>,
+    /// A resource pack's Polytone custom particle type, for its `limit`.
+    polytone_type: Option<std::sync::Arc<str>>,
 }
 fn aabb_at(p: [f64; 3], w: f32, h: f32) -> Aabb {
     let w = f64::from(w) / 2.0;
@@ -883,6 +889,7 @@ impl Particle {
             frame_ticks: 0,
             random: LegacyRandom::new(0),
             controller: None,
+            polytone_type: None,
         }
     }
     /// The normal age/removal test and previous pose, without vanilla motion.
@@ -1277,6 +1284,8 @@ pub struct ParticleEngine {
     /// A native mod's sprite sets, by namespaced particle name.
     mod_sets: HashMap<String, (u32, Option<ModBehaviour>)>,
     set_sprites: Vec<Vec<u32>>,
+    /// Resource packs' Polytone custom particle types (#11486).
+    polytone: Option<std::sync::Arc<polytone::Registry>>,
     /// `TrackingEmitter`s: particle type, entity feet position, width, height, ticks left.
     emitters: Vec<(ParticleOptions, [f64; 3], f64, f64, u32)>,
     /// Camera position for the 32-block spawn limiter.
@@ -1469,6 +1478,7 @@ impl ParticleEngine {
             sets: HashMap::new(),
             mod_sets: HashMap::new(),
             set_sprites: Vec::new(),
+            polytone: None,
             emitters: Vec::new(),
             starters: Vec::new(),
             tracked_explosions: Vec::new(),
@@ -1688,6 +1698,10 @@ impl ParticleEngine {
         particle.behaviour = Behaviour::Controlled { translucent };
         particle.controller = Some(Box::new(controller));
         Some(particle)
+    }
+    /// Sets (or clears) the resource packs' Polytone custom particle types.
+    pub fn set_polytone(&mut self, registry: Option<std::sync::Arc<polytone::Registry>>) {
+        self.polytone = registry.filter(|r| !r.is_empty());
     }
     /// Choose a frame from this particle's declared sprite set.
     pub fn set_sprite_frame(&self, particle: &mut Particle, frame: usize) {
@@ -2092,6 +2106,12 @@ impl ParticleEngine {
         let ty = o.ty;
         // A native mod's SimpleParticleType: vanilla's TextureSheetParticle with
         // the sprite set its particles/<name>.json names, no tint, 20..40 ticks.
+        if let Some(name) = &o.mod_particle
+            && let Some(registry) = &self.polytone
+            && let Some(def) = registry.get(name)
+        {
+            return polytone::make(self, &registry.clone(), name, &def.clone(), o, p, v, seed);
+        }
         if let Some(name) = &o.mod_particle {
             let (set, behaviour) = *self.mod_sets.get(name)?;
             let mut r = LegacyRandom::new(seed);
