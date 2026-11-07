@@ -9742,6 +9742,23 @@ impl Game<'_> {
             .own_attribute("minecraft:attack_knockback")
             .map_or(0.0, |v| v as f32);
         let sprinting = self.player.as_ref().is_some_and(|p| p.sprinting);
+        // attackVisualEffects: a RemotePlayer's hurtClient is true, so a
+        // critical hit (full strength, canCriticalAttack) with damage left
+        // after baseDamageScaleFactor runs LocalPlayer.crit, this client's
+        // own CRIT emitter beside the one the server's Animate brings.
+        // magicBoost is 0 on a client, so no ENCHANTED_HIT one.
+        if damage * (0.2 + strength * strength * 0.8) > 0.0 && self.critical_attack(strength) {
+            use horizon_client::particles::{ParticleOptions, ParticleType};
+            let m = &self.mobs[mob];
+            let feet = [m.position.x, m.position.y, m.position.z];
+            let (width, height) = (m.kind.width, m.kind.height);
+            self.particles.tracking_emitter(
+                ParticleOptions::simple(ParticleType::Crit),
+                feet,
+                width,
+                height,
+            );
+        }
         if !horizon_client::attack_strength::attacker_slows_after_hit(
             damage, knockback, strength, sprinting,
         ) {
