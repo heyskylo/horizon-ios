@@ -532,6 +532,8 @@ pub enum SubScreen {
         /// `createInviteCode` on a worker.
         job: Option<Job<Result<(), RealmsError>>>,
         error: Option<String>,
+        /// The highlighted row (`InviteCodeSelectionList`).
+        selected: Option<usize>,
     },
     /// `RealmsEditInviteCodeScreen`: one code's active flag and expiration.
     EditCode {
@@ -1456,6 +1458,7 @@ impl Screen {
             list_job: None,
             job: None,
             error: None,
+            selected: None,
         };
         self.start_invite_codes();
     }
@@ -1789,6 +1792,7 @@ impl Screen {
                         list_job: Some(spawn(move || client.invite_codes(id))),
                         job: None,
                         error: None,
+                        selected: None,
                     };
                 }
                 Outcome::None
@@ -2056,6 +2060,7 @@ impl Screen {
                     | SubScreen::EditCode { .. }
                     | SubScreen::SlotOptions { .. }
                     | SubScreen::CreateRealm { .. }
+                    | SubScreen::InviteCodes { .. }
             ) =>
             {
                 let (bar_x, tab_w) = tab_geometry(w);
@@ -2150,8 +2155,21 @@ impl Screen {
                         }
                     }
                 }
-                // RealmsPreferredRegionSelectionScreen: a row is the preference (the region
-                // rows are MANUAL + that region).
+                // `RealmsInviteCodesScreen`: a row takes the selection (`Entry
+                // .mouseClicked`), 28 high from the contents' top.
+                if let SubScreen::InviteCodes {
+                    codes, selected, ..
+                } = &mut self.subscreen
+                    && let Some(Ok(list)) = codes
+                {
+                    let top = 33.0;
+                    let rx = ((w - 308.0) / 2.0).floor();
+                    if x >= rx && x < rx + 308.0 && y >= top {
+                        let row = ((y - top - 2.0) / 28.0).floor() as usize;
+                        *selected = (row < list.len()).then_some(row);
+                    }
+                    return Outcome::None;
+                }
                 if let SubScreen::RegionPreference {
                     regions, selected, ..
                 } = &mut self.subscreen
@@ -2682,55 +2700,58 @@ impl Screen {
                 codes,
                 list_job,
                 job,
+                selected,
                 ..
             } => {
-                if let Some(Ok(list)) = codes {
-                    let rx = ((w - ROW_WIDTH) / 2.0).floor();
-                    for (i, _) in list.iter().enumerate().take(40) {
-                        let row_y = 36.0 + 22.0 + 2.0 + i as f32 * ROW_HEIGHT;
-                        if row_y + ROW_HEIGHT > h - 48.0 {
-                            break;
-                        }
-                        let id = 130 + i as u8 * 3;
-                        buttons.push((
-                            rx + ROW_WIDTH - 146.0,
-                            row_y + 8.0,
-                            46.0,
-                            t("mco.configure.world.invite_codes.copy"),
-                            true,
-                            id,
-                            None,
-                        ));
-                        buttons.push((
-                            rx + ROW_WIDTH - 98.0,
-                            row_y + 8.0,
-                            46.0,
-                            t("mco.configure.world.invite_codes.edit"),
-                            true,
-                            id + 1,
-                            None,
-                        ));
-                        buttons.push((
-                            rx + ROW_WIDTH - 50.0,
-                            row_y + 8.0,
-                            48.0,
-                            t("mco.configure.world.invite_codes.delete"),
-                            job.is_none(),
-                            id + 2,
-                            None,
-                        ));
-                    }
-                }
+                // `RealmsInviteCodesScreen`: a footer of two rows, Copy/Delete/Edit 97
+                // wide over Create/Back 150 wide, 8 apart (`FOOTER_HEIGHT` 64).
+                let fetched = matches!(codes, Some(Ok(_)));
+                let count = codes
+                    .as_ref()
+                    .and_then(|r| r.as_ref().ok())
+                    .map_or(0, |list| list.len());
+                let busy = list_job.is_some() || job.is_some();
+                let idle = |enabled: bool| enabled && !busy;
+                let row1 = h - 56.0;
+                let x0 = ((w - 307.0) / 2.0).floor();
                 buttons.push((
-                    cx - 100.0,
-                    h - 60.0,
-                    200.0,
+                    x0,
+                    row1,
+                    97.0,
+                    t("mco.configure.world.invite_codes.copy"),
+                    idle(selected.is_some()),
+                    180,
+                    None,
+                ));
+                buttons.push((
+                    x0 + 105.0,
+                    row1,
+                    97.0,
+                    t("mco.configure.world.invite_codes.delete"),
+                    idle(selected.is_some()),
+                    181,
+                    None,
+                ));
+                buttons.push((
+                    x0 + 210.0,
+                    row1,
+                    97.0,
+                    t("mco.configure.world.invite_codes.edit"),
+                    idle(selected.is_some()),
+                    182,
+                    None,
+                ));
+                let x = ((w - 308.0) / 2.0).floor();
+                buttons.push((
+                    x,
+                    h - 28.0,
+                    150.0,
                     t("mco.configure.world.invite_codes.create"),
-                    list_job.is_none() && job.is_none(),
+                    idle(fetched && count < 5),
                     160,
                     None,
                 ));
-                buttons.push((cx - 100.0, h - 36.0, 200.0, t("gui.back"), true, 161, None));
+                buttons.push((x + 158.0, h - 28.0, 150.0, t("gui.back"), true, 161, None));
             }
             SubScreen::EditCode { active, job, .. } => {
                 let on_off = if *active {
@@ -3556,60 +3577,77 @@ impl Screen {
                     }
                 }
             }
-            SubScreen::InviteCodes { codes, error, .. } => {
-                // `RealmsInviteCodesScreen`: the count in the title, the subtitle, a row
-                // per code with its expiration, then Create and Back.
-                let (count, max) = match codes {
-                    Some(Ok(list)) => (list.len(), 5usize),
-                    _ => (0, 5),
-                };
-                centered(
-                    batch,
-                    atlas,
-                    &crate::lang::tr(
+            SubScreen::InviteCodes {
+                codes,
+                error,
+                selected,
+                ..
+            } => {
+                // `RealmsInviteCodesScreen`: the count in the title once fetched (the
+                // subtitle only over an empty list), then a 28-high row per code whose
+                // selection is `extractSelection`'s, or the loading dots with no list.
+                let loaded = matches!(codes, Some(Ok(_)));
+                let count = codes
+                    .as_ref()
+                    .and_then(|r| r.as_ref().ok())
+                    .map_or(0, |list| list.len());
+                let title = if loaded {
+                    crate::lang::tr(
                         "mco.configure.world.invite_codes.title",
-                        &[&count as &dyn std::fmt::Display, &max],
-                    ),
-                    cx,
-                    14.0,
-                    u32::MAX,
-                );
-                centered(
-                    batch,
-                    atlas,
-                    &crate::lang::tr(
+                        &[&count as &dyn std::fmt::Display, &5usize],
+                    )
+                } else {
+                    t("mco.configure.world.buttons.invite_codes")
+                };
+                centered(batch, atlas, &title, cx, 12.0, u32::MAX);
+                let mut top = 33.0;
+                if loaded && count == 0 {
+                    let subtitle = crate::lang::tr(
                         "mco.configure.world.invite_codes.subtitle",
-                        &[&max as &dyn std::fmt::Display],
-                    ),
-                    cx,
-                    26.0,
-                    GREY,
-                );
+                        &[&5usize as &dyn std::fmt::Display],
+                    );
+                    for line in wrap_lines(&subtitle, atlas, 308.0) {
+                        centered(batch, atlas, &line, cx, top, GREY);
+                        top += 10.0;
+                    }
+                }
+                let bottom = h - 64.0;
                 match codes {
-                    Some(Ok(list)) if list.is_empty() => {}
                     Some(Ok(list)) => {
-                        let rx = ((w - ROW_WIDTH) / 2.0).floor();
+                        crate::ui::list_background(batch, atlas, top, bottom, false);
+                        let rx = ((w - 308.0) / 2.0).floor();
+                        let content = list.len() as f32 * 28.0;
+                        crate::ui::scrollbar(
+                            batch,
+                            atlas,
+                            rx + 308.0 + 2.0,
+                            top,
+                            bottom,
+                            content,
+                            0.0,
+                        );
                         for (i, code) in list.iter().enumerate() {
-                            let row_y = 36.0 + 22.0 + 2.0 + i as f32 * ROW_HEIGHT;
-                            if row_y + ROW_HEIGHT > h - 48.0 {
+                            let y = top + 2.0 + i as f32 * 28.0;
+                            if y + 28.0 > bottom {
                                 break;
                             }
-                            batch.text(
-                                atlas,
-                                &code.code,
-                                rx + 4.0,
-                                row_y + 4.0,
-                                if code.enabled { u32::MAX } else { GREY },
-                                true,
-                            );
-                            let expires = match code.expiration_date {
-                                Some(millis) => crate::lang::tr(
-                                    "mco.configure.world.invite_codes.edit.expires",
-                                    &[&start_date_text(millis) as &dyn std::fmt::Display],
-                                ),
-                                None => t("mco.configure.world.invite_codes.expiration.never"),
-                            };
-                            batch.text(atlas, &expires, rx + 4.0, row_y + 16.0, GREY, true);
+                            if *selected == Some(i) {
+                                batch.fill(
+                                    atlas,
+                                    rx + 2.0,
+                                    y + 2.0,
+                                    304.0,
+                                    24.0,
+                                    if list_focused {
+                                        0xFFFF_FFFF
+                                    } else {
+                                        0xFF80_8080
+                                    },
+                                );
+                                batch.fill(atlas, rx + 3.0, y + 3.0, 302.0, 22.0, 0xFF00_0000);
+                            }
+                            // `Entry.extractContent`: the code alone, centred in its row.
+                            batch.text(atlas, &code.code, rx + 10.0, y + 10.0, u32::MAX, true);
                         }
                     }
                     Some(Err(e)) => {
@@ -3617,14 +3655,18 @@ impl Screen {
                             centered(batch, atlas, line, cx, 60.0 + i as f32 * 10.0, RED);
                         }
                     }
-                    None => centered(
-                        batch,
-                        atlas,
-                        &t("mco.configure.world.invite_codes.loading"),
-                        cx,
-                        60.0,
-                        u32::MAX,
-                    ),
+                    // Loading: the dots over the plain background, no list behind them.
+                    None => {
+                        centered(
+                            batch,
+                            atlas,
+                            &t("mco.configure.world.invite_codes.loading"),
+                            cx,
+                            mid - 6.0,
+                            u32::MAX,
+                        );
+                        centered(batch, atlas, loading_dots(), cx, mid + 8.0, GREY);
+                    }
                 }
                 if let Some(e) = error {
                     for (i, line) in wrap_lines(e, atlas, w - 40.0).iter().enumerate() {
