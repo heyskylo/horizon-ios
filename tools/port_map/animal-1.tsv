@@ -148,3 +148,4 @@ MushroomCow.applyImplicitComponent	port	crates/horizon-client/src/entity_nbt.rs:
 MushroomCow.getBreedOffspring	port	crates/horizon-client/src/game/creatures.rs::Game::breed	see getOffspringVariant
 MushroomCow.getOffspringVariant	port	crates/horizon-client/src/game/creatures.rs::breed	ticked in #3512; `MushroomCow.getOffspringVariant` is cited at crates/horizon-client/src/game/creatures.rs:2566 (in a comment, so `where` names the enclosing fn)
 Tadpole.fromBucket	inline	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	saved FromBucket is always true
+CamelHusk.canBeABaby	port	crates/horizon-client/src/mobs/species.rs::can_be_a_baby	the false arm: a camel husk inherits Camel's age but never its baby box

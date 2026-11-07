@@ -32,6 +32,51 @@ const PAGE: &str = include_str!("../panel/index.html");
 const SCRIPT: &str = include_str!("../panel/panel.js");
 const STYLE: &str = include_str!("../panel/panel.css");
 
+/// The fonts and the mark the page uses, from horizon-theme (Geist and Bricolage Grotesque, SIL OFL).
+const ASSETS: [(&str, &str, &[u8]); 6] = [
+    (
+        "/mark.png",
+        "image/png",
+        include_bytes!("../../horizon-theme/icons/horizon-64.png"),
+    ),
+    (
+        "/fonts/Geist-Regular.ttf",
+        "font/ttf",
+        include_bytes!("../../horizon-theme/fonts/Geist-Regular.ttf"),
+    ),
+    (
+        "/fonts/Geist-Medium.ttf",
+        "font/ttf",
+        include_bytes!("../../horizon-theme/fonts/Geist-Medium.ttf"),
+    ),
+    (
+        "/fonts/Geist-SemiBold.ttf",
+        "font/ttf",
+        include_bytes!("../../horizon-theme/fonts/Geist-SemiBold.ttf"),
+    ),
+    (
+        "/fonts/GeistMono-Regular.ttf",
+        "font/ttf",
+        include_bytes!("../../horizon-theme/fonts/GeistMono-Regular.ttf"),
+    ),
+    (
+        "/fonts/BricolageGrotesqueHeading-SemiBold.ttf",
+        "font/ttf",
+        include_bytes!("../../horizon-theme/fonts/BricolageGrotesqueHeading-SemiBold.ttf"),
+    ),
+];
+
+/// A file built into the binary, written after the head.
+fn asset(content_type: &'static str, body: &'static [u8]) -> Response {
+    let mut response = Response::text(200, content_type, "")
+        .with("Content-Length", body.len().to_string())
+        .with("Cache-Control", "public, max-age=86400");
+    response.stream = Some(Box::new(move |mut stream: &std::net::TcpStream| {
+        let _ = std::io::Write::write_all(&mut stream, body);
+    }));
+    response
+}
+
 /// The panel's address, its pending login codes and its sessions.
 #[derive(Default)]
 pub struct Auth {
@@ -137,7 +182,7 @@ fn secure(response: Response) -> Response {
     response
         .with(
             "Content-Security-Policy",
-            "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; \
+            "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; \
              connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
         )
         .with("X-Content-Type-Options", "nosniff")
@@ -160,6 +205,9 @@ fn handle(shared: &Arc<Shared>, address: SocketAddr, request: &Request) -> Respo
             return Response::text(200, "text/javascript; charset=utf-8", SCRIPT);
         }
         ("GET", "/panel.css") => return Response::text(200, "text/css; charset=utf-8", STYLE),
+        ("GET", _) if let Some((_, kind, body)) = ASSETS.iter().find(|(p, _, _)| *p == path) => {
+            return asset(kind, body);
+        }
         ("GET", "/login") => {
             let code = request.param("code").unwrap_or_default();
             return match shared.panel.lock().unwrap().redeem(code) {

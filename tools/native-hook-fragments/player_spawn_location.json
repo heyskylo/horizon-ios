@@ -1,0 +1,15 @@
+{
+  "hooks": [
+    {
+      "name": "player_spawn_location",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_player_spawn_location",
+      "neoforge": "none (Spigot's PlayerSpawnLocationEvent)",
+      "side": "server",
+      "mod_api": {
+        "contract": "listen"
+      }
+    }
+  ],
+  "rust_summary": "where a joining player is about to be placed, which a mod may change (`native_player_spawn_location`).",
+  "doc_summary": "a joining player's spawn location: `native_player_spawn_location(player, name, dimension, position, rotation)` is heard once per join, after `native_player_login` let them in and before they are placed (Spigot's `PlayerSpawnLocationEvent`), with their saved or newly found dimension, feet position and yaw/pitch. Change them and the player is placed there, in that level, with no teleport afterwards; an unknown dimension or a non-finite value leaves that part unchanged. No state is swapped in. Bundles that use it need `\"hooks\": @API:player_spawn_location@`."
+}
