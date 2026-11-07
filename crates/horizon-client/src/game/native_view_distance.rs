@@ -4,7 +4,6 @@
 use super::Game;
 
 // Native mods use these; nothing in Horizon does.
-#[allow(dead_code)]
 impl Game<'_> {
     /// Limit the view distance of the player `uuid` to `distance` chunks (2
     /// to 32), or with None give it the server's again. The player's

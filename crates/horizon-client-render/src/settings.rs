@@ -830,6 +830,7 @@ pub enum Opt {
     /// Horizon's controller settings (`horizon-controller.txt`).
     PadEnabled,
     PadVibration,
+    PadPlayInBackground,
     PadAdaptiveTriggers,
     PadLightbar,
     PadLookSensitivity,
@@ -845,6 +846,7 @@ pub enum Opt {
     PadTriggerThreshold,
     PadGlyphs,
     PadKeyboard,
+    PadGameplayGuide,
     /// `options.modelPart.*`: one skin layer (index into `options_file::MODEL_PARTS`).
     ModelPart(usize),
     /// 3D skin layers: the player's outer layer as extruded slabs.

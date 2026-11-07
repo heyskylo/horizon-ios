@@ -502,6 +502,10 @@ impl Game<'_> {
         for (mob, target) in reinforcements {
             self.call_reinforcements(mob, target);
         }
+        // Enderman.hurtServer's teleport, refused hit or not, before the command returns.
+        if let Err(e) = self.settle_hurt_teleports() {
+            log::warn!("Horizon: /damage: enderman teleport: {e}");
+        }
         hurt
     }
 

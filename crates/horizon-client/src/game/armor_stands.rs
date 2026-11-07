@@ -856,6 +856,8 @@ impl Game<'_> {
             self.audio
                 .play("minecraft:entity.armor_stand.break", Some(at), 1.0, 1.0);
             self.show_breaking_particles(at, f64::from(width), f64::from(height));
+            // ArmorStand.kill(level, player).
+            self.entity_killed_event(at, true);
             return true;
         }
         if time - self.armor_stands[i].last_hit > 5 {
@@ -888,6 +890,8 @@ impl Game<'_> {
             ];
             self.spawn_item(stack, center, v, 10);
         }
+        // ArmorStand.kill(level, player), after the drops.
+        self.entity_killed_event(at, true);
         self.world
             .modified
             .insert(((at[0].floor() as i32) >> 4, (at[2].floor() as i32) >> 4));
@@ -1087,6 +1091,7 @@ impl Game<'_> {
         }
         self.audio
             .play("minecraft:entity.armor_stand.break", Some(at), 1.0, 1.0);
+        self.entity_killed_event(at, false);
         self.world.modified.insert((pos[0] >> 4, pos[2] >> 4));
     }
     /// ArmorStandRenderer: the stand with its default pose, then armor layers.

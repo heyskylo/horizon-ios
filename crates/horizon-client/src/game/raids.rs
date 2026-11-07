@@ -25,7 +25,7 @@ pub(super) struct Raiding {
     patrol: PatrolSpawner,
     siege: Siege,
     /// The raids of the dimension the player is in, and that dimension.
-    raids: Raids,
+    pub(super) raids: Raids,
     loaded: Option<Dim>,
     /// `ServerPlayer.raidOmenPosition` (`raid_omen_position`), read from the
     /// player data on first use.
@@ -103,8 +103,10 @@ impl RaidLevel for Lvl<'_, '_> {
     fn surface_height(&self, x: i32, z: i32) -> i32 {
         self.game.surface_height(x, z)
     }
+    /// `ServerLevel.isPositionEntityTicking`: a loaded chunk whose entities
+    /// tick (`canPositionTick`) in entity ticking range, not merely loaded.
     fn is_position_entity_ticking(&self, p: [i32; 3]) -> bool {
-        self.has_chunk_at(p)
+        self.has_chunk_at(p) && self.game.tickets.levels().entity_ticking_at(p[0], p[2])
     }
     fn ravager_can_spawn(&self, [x, y, z]: [i32; 3]) -> bool {
         let g = self.game;
@@ -448,9 +450,6 @@ impl Game<'_> {
     pub(super) fn raiding_nearby(&self, at: [i32; 3]) -> Option<i32> {
         self.raiding.raids.nearby(at).map(|(id, _)| id)
     }
-    pub(super) fn raid_started(&self, id: i32) -> bool {
-        self.raiding.raids.get(id).is_some_and(|r| r.started)
-    }
     /// `/raid start`: a raid in the local village at the given omen level.
     pub(super) fn raid_command_create(&mut self, at: [i32; 3], omen_level: i32) -> bool {
         self.load_raids();
@@ -490,13 +489,14 @@ impl Game<'_> {
         };
         let members: Vec<&Mob> = self.raid_members(id).collect();
         let health: f32 = members.iter().fold(0.0, |a, m| a + m.health);
+        // Java's string concatenation of the floats: `20.0`, not `20`.
         format!(
             "Num groups spawned: {} Raid omen level: {} Num mobs: {} Raid health: {} / {}",
             r.groups_spawned,
             r.omen_level,
             members.len(),
-            health,
-            r.total_health
+            horizon_client::snbt::java_float(health),
+            horizon_client::snbt::java_float(r.total_health)
         )
     }
     /// A raid's members (`groupRaiderMap`): the living raiders it counts.
@@ -1623,3 +1623,40 @@ impl Game<'_> {
 #[cfg(test)]
 #[path = "raids/tests/bed_loss.rs"]
 mod bed_loss_tests;
+
+#[cfg(test)]
+mod entity_ticking_tests {
+    use super::{Lvl, RaidLevel};
+    use crate::game::native_machines::tests::server_game;
+    use horizon_client::{chunk::Chunk, ticket_levels::Sources};
+    use std::{collections::HashSet, sync::Arc};
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_wave_spawns_only_where_entities_tick() {
+        let mut game = server_game();
+        game.world
+            .chunks
+            .insert((6, 0), Arc::new(Chunk::empty(6, 0)));
+        // A player in chunk (0, 0) with a simulation distance of 5: chunk
+        // (6, 0) is loaded but its entities do not tick.
+        game.tickets.update(Some(Sources {
+            players: vec![(0, 0)],
+            view_distance: 10,
+            simulation_distance: 5,
+            ..Sources::default()
+        }));
+        let centers = HashSet::new();
+        let level = Lvl {
+            game: &game,
+            difficulty: 2,
+            centers: &centers,
+        };
+        assert!(level.is_position_entity_ticking([8, 64, 8]));
+        assert!(!level.is_position_entity_ticking([6 * 16 + 8, 64, 8]));
+        assert!(
+            !level.is_position_entity_ticking([-40, 64, 8]),
+            "not loaded"
+        );
+    }
+}
