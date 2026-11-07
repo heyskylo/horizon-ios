@@ -30,11 +30,12 @@ impl PackImage {
     }
 }
 
-/// The images `image.*` declares.
-pub(super) fn images(defs: Vec<CustomImage>) -> Vec<PackImage> {
+/// The images `image.*` declares; `packed_float`: this device stores into `Rg11b10Ufloat`
+/// (`format`).
+pub(super) fn images(defs: Vec<CustomImage>, packed_float: bool) -> Vec<PackImage> {
     defs.into_iter()
         .map(|def| PackImage {
-            format: format(def.format),
+            format: format(def.format, packed_float),
             dimension: if def.is_1d() {
                 wgpu::TextureViewDimension::D1
             } else if def.is_3d() {
@@ -63,7 +64,10 @@ fn texture_dimension(view: wgpu::TextureViewDimension) -> wgpu::TextureDimension
 }
 
 /// The wgpu format of an image's internal format: a storage format of the same channels.
-pub(super) fn format(f: Format) -> wgpu::TextureFormat {
+/// `R11F_G11F_B10F` is itself where the device stores into it (`packed_float`): no alpha, so it
+/// reads 1 there, as Iris 1.11.7 read it with a probe pack of ours (#10490); elsewhere an
+/// `Rgba16Float` stand-in, which keeps an alpha.
+pub(super) fn format(f: Format, packed_float: bool) -> wgpu::TextureFormat {
     use wgpu::TextureFormat as T;
     let pick = |r, rg, rgba| match f.channels {
         1 => r,
@@ -78,6 +82,7 @@ pub(super) fn format(f: Format) -> wgpu::TextureFormat {
         (Kind::Uint, 16) => pick(T::R16Uint, T::Rg16Uint, T::Rgba16Uint),
         (Kind::Uint, _) => pick(T::R32Uint, T::Rg32Uint, T::Rgba32Uint),
         (Kind::Float, 32) => pick(T::R32Float, T::Rg32Float, T::Rgba32Float),
+        (Kind::Float, 11) if packed_float => T::Rg11b10Ufloat,
         (Kind::Float, _) => pick(T::R16Float, T::Rg16Float, T::Rgba16Float),
         (Kind::Snorm, _) => pick(T::R8Snorm, T::Rg8Snorm, T::Rgba8Snorm),
         (Kind::Unorm, 16) => pick(T::R16Unorm, T::Rg16Unorm, T::Rgba16Unorm),
@@ -87,8 +92,12 @@ pub(super) fn format(f: Format) -> wgpu::TextureFormat {
 
 /// Whether this device can make `def`: its format's features, and a size in pixels within the
 /// device's limits.
-pub(super) fn makeable(device: &wgpu::Device, def: &CustomImage) -> Result<(), String> {
-    let format = format(def.format);
+pub(super) fn makeable(
+    device: &wgpu::Device,
+    def: &CustomImage,
+    packed_float: bool,
+) -> Result<(), String> {
+    let format = format(def.format, packed_float);
     let missing = format.required_features() - device.features();
     if !missing.is_empty() {
         return Err(format!(

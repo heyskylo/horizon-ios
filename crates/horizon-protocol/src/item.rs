@@ -653,8 +653,15 @@ impl Component {
             }
             Self::TooltipDisplay { hide, hidden } => {
                 w.bool(*hide);
-                w.varint(hidden.len() as i32);
-                hidden.iter().for_each(|h| w.varint(ids::component(*h)));
+                // Without the components an older client being written for lacks.
+                let kept = || {
+                    hidden
+                        .iter()
+                        .map(|h| ids::component(*h))
+                        .filter(|h| *h >= 0)
+                };
+                w.varint(kept().count() as i32);
+                kept().for_each(|h| w.varint(h));
             }
             Self::Stacks(stacks) => {
                 w.varint(stacks.len() as i32);
@@ -974,21 +981,111 @@ impl Codec<Option<Stack>> for Slot {
         read_stack(r, false)
     }
     fn write(v: &Option<Stack>, w: &mut Writer) {
-        let Some(s) = v else {
+        // An item an older client has no stand-in for reaches it as nothing.
+        let item = v.as_ref().map_or(-1, |s| ids::item(s.item));
+        let Some(s) = v.as_ref().filter(|_| item >= 0) else {
             w.varint(0);
             return;
         };
         w.varint(s.count);
-        w.varint(ids::item(s.item));
-        w.varint(s.added.len() as i32);
-        w.varint(s.removed.len() as i32);
-        for (kind, c) in &s.added {
-            w.varint(ids::component(*kind));
-            c.write(*kind, w);
+        w.varint(item);
+        write_patch(s, w);
+    }
+}
+
+/// A component value as the version being written for reads it. Values kept as their pinned bytes that hold
+/// items (a pot's sides, a container's slots, a use remainder) are read again and written with that
+/// version's item ids, and a pot's sides as 26.2's item ids when it reads them so
+/// ([`ids::Quirks::pot_decorations_are_items`]). Written as they are when nothing is renumbered.
+fn write_value(kind: i32, c: &Component, w: &mut Writer) {
+    use component::*;
+    let quirks = ids::quirks_written();
+    let renumbered = matches!(ids::active(), Some((_, ids::Way::Down)));
+    let held = match kind {
+        POT_DECORATIONS => true,
+        // Before 26.1 these hold ItemStacks, written by another codec.
+        USE_REMAINDER | SULFUR_CUBE_CONTENT | CONTAINER => !quirks.stacks_in_components,
+        _ => false,
+    };
+    if !renumbered || !held {
+        return c.write(kind, w);
+    }
+    let pinned = {
+        let _pinned = ids::pinned();
+        let mut b = Writer::new();
+        c.write(kind, &mut b);
+        b.data
+    };
+    match value_down(kind, quirks, &pinned) {
+        Ok(bytes) => w.bytes(&bytes),
+        Err(_) => w.bytes(&pinned),
+    }
+}
+
+/// A stack template as the pinned version wrote it.
+fn read_pinned(r: &mut Reader) -> Result<Stack> {
+    let _pinned = ids::pinned();
+    Template::read(r)
+}
+
+/// The pinned bytes of an item-holding component (see [`write_value`]) in the numbering written now.
+fn value_down(kind: i32, quirks: ids::Quirks, pinned: &[u8]) -> Result<Vec<u8>> {
+    use component::*;
+    let mut r = Reader::new(pinned);
+    let mut w = Writer::new();
+    match kind {
+        // Back, left, right, front: each an optional template of one item.
+        POT_DECORATIONS => {
+            let mut sides = Vec::with_capacity(4);
+            for _ in 0..4 {
+                sides.push(if r.bool()? {
+                    Some(read_pinned(&mut r)?)
+                } else {
+                    None
+                });
+            }
+            if quirks.pot_decorations_are_items {
+                // ByteBufCodecs.registry(ITEM).apply(list(4)): a brick for an undecorated side.
+                w.varint(4);
+                for side in &sides {
+                    w.varint(ids::item(side.as_ref().map_or(BRICK, |s| s.item)));
+                }
+            } else {
+                for side in &sides {
+                    w.bool(side.is_some());
+                    if let Some(s) = side {
+                        Template::write(s, &mut w);
+                    }
+                }
+            }
         }
-        for kind in &s.removed {
-            w.varint(ids::component(*kind));
+        CONTAINER => {
+            let n = r.count(256)?;
+            w.varint(n as i32);
+            for _ in 0..n {
+                let slot = r.bool()?;
+                w.bool(slot);
+                if slot {
+                    Template::write(&read_pinned(&mut r)?, &mut w);
+                }
+            }
         }
+        _ => Template::write(&read_pinned(&mut r)?, &mut w),
+    }
+    Ok(w.data)
+}
+
+/// A stack's components, without those an older client being written for lacks.
+fn write_patch(s: &Stack, w: &mut Writer) {
+    let has = |kind: i32| ids::component(kind) >= 0;
+    w.varint(s.added.iter().filter(|(k, _)| has(*k)).count() as i32);
+    w.varint(s.removed.iter().filter(|k| has(**k)).count() as i32);
+    for (kind, c) in s.added.iter().filter(|(k, _)| has(*k)) {
+        w.varint(ids::component(*kind));
+        write_value(*kind, c, w);
+    }
+    for kind in s.removed.iter().filter(|k| has(**k)) {
+        w.varint(ids::component(*kind));
     }
 }
 
@@ -1074,7 +1171,7 @@ impl Codec<Option<Stack>> for DelimitedSlot {
         for (kind, c) in &s.added {
             w.varint(ids::component(*kind));
             let mut value = Writer::new();
-            c.write(*kind, &mut value);
+            write_value(*kind, c, &mut value);
             w.byte_array(&value.data);
         }
         for kind in &s.removed {
@@ -1110,15 +1207,7 @@ impl Codec<Stack> for Template {
     fn write(s: &Stack, w: &mut Writer) {
         w.varint(ids::item(s.item));
         w.varint(s.count);
-        w.varint(s.added.len() as i32);
-        w.varint(s.removed.len() as i32);
-        for (kind, c) in &s.added {
-            w.varint(ids::component(*kind));
-            c.write(*kind, w);
-        }
-        for kind in &s.removed {
-            w.varint(ids::component(*kind));
-        }
+        write_patch(s, w);
     }
 }
 
@@ -1553,6 +1642,47 @@ mod tests {
             let mut w = Writer::new();
             Slot::write(&stack, &mut w);
             assert_eq!(w.data, bytes, "component {kind}");
+        }
+    }
+
+    #[test]
+    fn negative_holder_ids_and_holder_set_sizes_are_refused() {
+        // Vanilla 26.3's ByteBufCodecs.holder looks a nonzero id up with
+        // `byIdOrThrow(id - 1)`, and holderSet sizes its list with `new ArrayList(size)`:
+        // neither takes a negative value. `1` is a valid value at the same place.
+        let slot = |kind: i32, component: &[u8]| {
+            // Count 1, item 1, one added component, none removed.
+            let mut w = Writer::new();
+            for v in [1, 1, 1, 0, kind] {
+                w.varint(v);
+            }
+            w.data.extend_from_slice(component);
+            let mut r = Reader::new(&w.data);
+            Slot::read(&mut r).map(|stack| (stack, r.remaining()))
+        };
+        for (value, valid) in [(1, true), (-1, false), (i32::MIN, false)] {
+            let mut v = Writer::new();
+            v.varint(value);
+            // kinetic_weapon: default fields, then a sound holder (`value`) and no hit sound.
+            let mut kinetic = vec![10, 0, 0, 0, 0, 0, 0, 0, 0, 0x3f, 0x80, 0, 0, 1];
+            kinetic.extend_from_slice(&v.data);
+            kinetic.push(0);
+            // can_break: one predicate whose blocks are a holder set (`value`, an empty
+            // list when 1), with no properties, NBT or component matchers.
+            let mut can_break = vec![1, 1];
+            can_break.extend_from_slice(&v.data);
+            can_break.extend([0, 0, 0, 0]);
+            for (kind, bytes) in [(39, kinetic), (component::CAN_BREAK, can_break)] {
+                let read = slot(kind, &bytes);
+                if valid {
+                    assert!(
+                        matches!(read, Ok((Some(_), 0))),
+                        "component {kind}: {read:?}"
+                    );
+                } else {
+                    assert!(read.is_err(), "component {kind} with {value}: {read:?}");
+                }
+            }
         }
     }
 

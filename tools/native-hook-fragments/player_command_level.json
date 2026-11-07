@@ -1,0 +1,15 @@
+{
+  "hooks": [
+    {
+      "name": "player_command_level",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_player_command_level",
+      "neoforge": "none (NeoForge has no such event; Paper's VanillaCommandWrapper checks a minecraft.command node)",
+      "side": "server",
+      "mod_api": {
+        "contract": "listen"
+      }
+    }
+  ],
+  "rust_summary": "the operator level one typed command of a player runs at, which a mod may raise or lower (`native_player_command_level`).",
+  "doc_summary": "`native_player_command_level(player, name, command, level)` sets the operator level one typed command of a player runs at, before the server checks it: a permissions mod raises it to grant `/gamemode` to a player of level 0, or lowers it to refuse a command (Paper's `VanillaCommandWrapper` node check). Bundles need \"hooks\": @API:player_command_level@."
+}
