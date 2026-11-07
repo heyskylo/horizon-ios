@@ -39,6 +39,7 @@ mod creative_mining_probe;
 mod creative_search_fixture;
 mod cushion_placement_probe;
 mod emitter_particles_probe;
+mod enchant_durability_fixture;
 mod enchanting_fixture;
 mod entity_anim_fixture;
 mod entity_components_probe;
@@ -153,6 +154,7 @@ probes! {
     conversion_tags_fixture,
     creative_search_fixture,
     emitter_particles_probe,
+    enchant_durability_fixture,
     enchanting_fixture,
     falling_block_fixture,
     entity_anim_fixture,
