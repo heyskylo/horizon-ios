@@ -873,6 +873,13 @@ impl Game<'_> {
             return out;
         }
         let (xo, yo) = self.book_origin(&batch);
+        if self.recipe_ui.overlay.is_none() {
+            // The search box is painted by hand: a field, for the pad's keyboard.
+            out.push(Target {
+                rect: [xo + 25.0, yo + 13.0, 81.0, 14.0],
+                kind: Kind::Field,
+            });
+        }
         if let Some(overlay) = &self.recipe_ui.overlay {
             // The alternatives overlay takes every click while open.
             let maxrow = if overlay.entries.len() <= 16 { 4 } else { 5 };

@@ -227,6 +227,19 @@ impl ModelNormals {
         }
         self
     }
+    fn part_rotated(mut self, pose: [f32; 9], rotation: glam::Mat3) -> Self {
+        self.matrix *= rotation;
+        let scale = glam::Vec3::new(pose[6], pose[7], pose[8]);
+        if scale.x.abs() == scale.y.abs() && scale.x.abs() == scale.z.abs() {
+            if scale.min_element() < 0.0 {
+                self.matrix *= glam::Mat3::from_diagonal(scale.signum());
+            }
+        } else {
+            self.matrix *= glam::Mat3::from_diagonal(scale.recip());
+            self.trusted = false;
+        }
+        self
+    }
 }
 
 #[derive(Clone, Debug)]
