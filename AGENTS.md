@@ -191,7 +191,7 @@ state stays separate from the library tests. This compiles gameplay twice for ex
   `levels.rs` swaps whole dimensions in the same way. Changes reach clients through the block log, level
   events and the entity tracker (`lan/tracking.rs`, `game/lan_entities.rs`).
 - Shared read-only data: `Resources` (`res`: blocks, items, recipes, mob types, biomes) and `PackResources`
-  (`pack`), both in game.rs.
+  (`pack`), both in game.rs, their methods in `game/resource_tables.rs`.
 
 ## Single player runs on a server thread
 
