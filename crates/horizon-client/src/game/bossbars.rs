@@ -26,6 +26,9 @@ pub(super) struct BossState {
     loaded: bool,
     /// What each viewer was last sent, so a change becomes one packet.
     sent: HashMap<u128, HashMap<u128, Offer>>,
+    /// The bars server mods show single players (`native_boss_bar`): by
+    /// player UUID, each bar's id and bar, in the order they were added.
+    pub(super) native: HashMap<u128, Vec<(u128, horizon_client::mod_api::NativeBossBar)>>,
 }
 
 impl BossState {
@@ -548,6 +551,20 @@ impl Game<'_> {
                 darken: b.darken,
                 music: b.music,
                 fog: b.fog,
+                scope: Scope::Global,
+            });
+        }
+        // Server mods' bars for this player alone (`native_boss_bar`).
+        for (id, bar) in self.bosses.native.get(&viewer.uuid).into_iter().flatten() {
+            out.push(Offer {
+                id: *id,
+                name: horizon_client::lan::data::component_nbt(&bar.name.component()),
+                progress: bar.progress,
+                color: bar.color,
+                overlay: bar.overlay,
+                darken: bar.darken,
+                music: bar.music,
+                fog: bar.fog,
                 scope: Scope::Global,
             });
         }

@@ -1,0 +1,16 @@
+{
+  "hooks": [
+    {
+      "name": "player_commands_sent_v2",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_player_commands_sent_v2",
+      "neoforge": "none (NeoForge has no such event; Paper's PlayerCommandSendEvent)",
+      "side": "server",
+      "mod_api": {
+        "contract": "collect",
+        "out": "names"
+      }
+    }
+  ],
+  "rust_summary": "the root commands a player's level hides from their command tree, which a mod may put back (`native_player_commands_sent_v2`), leaving `native_player_commands_sent` as it was.",
+  "doc_summary": "`native_player_commands_sent_v2(player, name, names, names_hidden)`: an additive version of `native_player_commands_sent`, heard right after v1, with the root commands the player's level hides in `names_hidden`; one a mod moves into `names` is sent with its subtree, so a granted command completes in the player's chat box. Bundles need \"hooks\": @API:player_commands_sent_v2@."
+}

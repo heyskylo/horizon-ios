@@ -462,7 +462,7 @@ impl Game<'_> {
     /// The synched data of a text, block or item display kept unsimulated,
     /// from its compound (`Display.readAdditionalSaveData`), with the
     /// defaults to send when a value goes back to one.
-    fn lan_display_data(&self, tag: &Tag, hub: &mut Hub, e: &mut EntityState) {
+    pub(super) fn lan_display_data(&self, tag: &Tag, hub: &mut Hub, e: &mut EntityState) {
         use horizon_client::text_display::{display_data, text_display_data};
         let empty = Tag::Compound(Default::default());
         let (meta, defaults) = match e.kind.as_str() {

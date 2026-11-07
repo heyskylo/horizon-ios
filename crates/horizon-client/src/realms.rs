@@ -12,9 +12,9 @@ pub mod client;
 use crate::hud::{HudAtlas, HudBatch, rgba};
 use crate::text::Text;
 use client::{
-    PendingInviteDto, PlayerInfo, RealmAddress, RealmServer, RealmSlot, RealmTierConfiguration,
-    RealmTierRange, RealmWorldOptions, RealmsClient, RealmsError, RegionDataDto,
-    RegionSelectionPreferenceDto, Subscription,
+    InviteCode, PendingInviteDto, PlayerInfo, RealmAddress, RealmServer, RealmSlot,
+    RealmTierConfiguration, RealmTierRange, RealmWorldOptions, RealmsClient, RealmsError,
+    RegionDataDto, RegionSelectionPreferenceDto, Subscription,
 };
 use horizon_client_render::auth::{self, AuthSession};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -58,6 +58,34 @@ const GAME_MODES: [&str; 3] = [
 ];
 const DIFFICULTY_DEFAULT: usize = 2;
 const GAME_MODE_DEFAULT: usize = 0;
+/// `InviteCodeExpiration`: the seven choices, the last one never expiring.
+const EXPIRATIONS: [(&str, Option<i64>); 7] = [
+    (
+        "mco.configure.world.invite_codes.expiration.30_minutes",
+        Some(30 * 60),
+    ),
+    (
+        "mco.configure.world.invite_codes.expiration.1_hour",
+        Some(60 * 60),
+    ),
+    (
+        "mco.configure.world.invite_codes.expiration.6_hours",
+        Some(6 * 60 * 60),
+    ),
+    (
+        "mco.configure.world.invite_codes.expiration.12_hours",
+        Some(12 * 60 * 60),
+    ),
+    (
+        "mco.configure.world.invite_codes.expiration.1_day",
+        Some(24 * 60 * 60),
+    ),
+    (
+        "mco.configure.world.invite_codes.expiration.7_days",
+        Some(7 * 24 * 60 * 60),
+    ),
+    ("mco.configure.world.invite_codes.expiration.never", None),
+];
 
 /// `CommonLinks.BUY_REALMS`.
 const BUY_REALMS: &str = "https://aka.ms/BuyJavaRealms";
@@ -338,6 +366,26 @@ fn slot_name(options: &RealmWorldOptions, slot: i32) -> String {
     crate::lang::tr("mco.configure.world.slot", &[&slot])
 }
 
+/// `InviteCodeExpiration.closestTo`: the choice nearest the time left on the code.
+fn closest_expiration(expiration_millis: i64) -> usize {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let left = (expiration_millis - now).max(0) / 1000;
+    let mut best = EXPIRATIONS.len() - 1;
+    let mut best_delta = i64::MAX;
+    for (i, (_, seconds)) in EXPIRATIONS.iter().enumerate() {
+        let Some(seconds) = seconds else { continue };
+        let delta = (left - seconds).abs();
+        if delta < best_delta {
+            best_delta = delta;
+            best = i;
+        }
+    }
+    best
+}
+
 /// `RealmsSubscriptionTab.daysLeftPresentation`: what the days-left line says, in the
 /// caller's language; empty when nothing is left to say.
 fn days_left_text(days_left: i32, expired: bool) -> String {
@@ -473,6 +521,25 @@ pub enum SubScreen {
         /// The highlighted row: `(preference, region)`.
         selected: Option<(i32, Option<String>)>,
     },
+    /// `RealmsInviteCodesScreen`: the Realm's shareable codes.
+    InviteCodes {
+        server: RealmServer,
+        codes: Option<Result<Vec<InviteCode>, RealmsError>>,
+        list_job: Option<Job<Result<Vec<InviteCode>, RealmsError>>>,
+        /// `createInviteCode` on a worker.
+        job: Option<Job<Result<(), RealmsError>>>,
+        error: Option<String>,
+    },
+    /// `RealmsEditInviteCodeScreen`: one code's active flag and expiration.
+    EditCode {
+        server: RealmServer,
+        code: InviteCode,
+        active: bool,
+        /// `EXPIRATIONS`' index.
+        expiration: usize,
+        job: Option<Job<Result<(), RealmsError>>>,
+        error: Option<String>,
+    },
     /// `RealmsInviteScreen`: a name to invite to the Realm.
     Invite {
         server: RealmServer,
@@ -517,6 +584,8 @@ pub enum Outcome {
     Back,
     Connect(String),
     OpenUri(String),
+    /// `KeyboardHandler.setClipboard` for the title's own clipboard.
+    Copy(String),
 }
 
 impl Default for Screen {
@@ -653,6 +722,8 @@ impl Screen {
         let mut refetch_detail = false;
         let mut slot_options_saved = false;
         let mut open_region_screen = false;
+        let mut saved_code = false;
+        let mut refetch_codes = false;
         match &mut self.subscreen {
             SubScreen::JoinCode { error, job, .. } => {
                 if let Some(result) = job.as_ref().and_then(take) {
@@ -835,8 +906,44 @@ impl Screen {
                     }
                 }
             }
+            SubScreen::InviteCodes {
+                codes,
+                list_job,
+                job,
+                error,
+                ..
+            } => {
+                if let Some(result) = list_job.as_ref().and_then(take) {
+                    *list_job = None;
+                    *codes = Some(result);
+                }
+                if let Some(result) = job.as_ref().and_then(take) {
+                    *job = None;
+                    match result {
+                        // A create or delete: the list reads again.
+                        Ok(()) => refetch_codes = true,
+                        Err(e) => *error = Some(e.text()),
+                    }
+                }
+            }
+            SubScreen::EditCode { job, error, .. } => {
+                if let Some(result) = job.as_ref().and_then(take) {
+                    *job = None;
+                    match result {
+                        // The update or delete is saved: back to the list, which reads again.
+                        Ok(()) => saved_code = true,
+                        Err(e) => *error = Some(e.text()),
+                    }
+                }
+            }
             SubScreen::Connecting { .. } => return self.poll_join(),
             _ => {}
+        }
+        if refetch_codes {
+            self.start_invite_codes();
+        }
+        if saved_code {
+            self.back_to_codes();
         }
         if open_region_screen {
             self.open_region_preference();
@@ -1300,6 +1407,70 @@ impl Screen {
         }
     }
 
+    /// `RealmsInviteCodesScreen.refreshInviteCodes`: the list reads again.
+    fn start_invite_codes(&mut self) {
+        let SubScreen::InviteCodes {
+            server, list_job, ..
+        } = &mut self.subscreen
+        else {
+            return;
+        };
+        if list_job.is_some() {
+            return;
+        }
+        if let Some(client) = client() {
+            let id = server.id;
+            *list_job = Some(spawn(move || client.invite_codes(id)));
+        }
+    }
+
+    /// `RealmsEditInviteCodeScreen`'s save or delete done: back to the codes list, which
+    /// reads again.
+    fn back_to_codes(&mut self) {
+        let SubScreen::EditCode { server, .. } = &self.subscreen else {
+            return;
+        };
+        let server = server.clone();
+        self.subscreen = SubScreen::InviteCodes {
+            server,
+            codes: None,
+            list_job: None,
+            job: None,
+            error: None,
+        };
+        self.start_invite_codes();
+    }
+
+    /// Back to the players tab from the codes screens.
+    fn back_to_players_tab(&mut self) {
+        let server = match &self.subscreen {
+            SubScreen::InviteCodes { server, .. } | SubScreen::EditCode { server, .. } => {
+                server.clone()
+            }
+            _ => return,
+        };
+        self.subscreen = SubScreen::Configure {
+            server,
+            tab: ConfigureTab::Players,
+            subscription: None,
+            subscription_job: None,
+            detail: None,
+            detail_job: None,
+            deleting: None,
+            member_job: None,
+            settings: None,
+            tier: None,
+            tier_job: None,
+            regions: None,
+            regions_job: None,
+            saving: None,
+            error: None,
+            job: None,
+        };
+        self.start_configure_subscription();
+        self.start_configure_detail();
+    }
+
     /// `RealmsInviteScreen.onClose`: back to the players tab.
     fn back_to_players(&mut self) {
         let SubScreen::Invite { server, .. } = &self.subscreen else {
@@ -1577,6 +1748,86 @@ impl Screen {
                 }
                 Outcome::None
             }
+            // RealmsInviteCodesScreen: the Players tab's second button.
+            Some(68) => {
+                if let SubScreen::Configure { server, .. } = &self.subscreen
+                    && let Some(client) = client()
+                {
+                    let id = server.id;
+                    self.subscreen = SubScreen::InviteCodes {
+                        server: server.clone(),
+                        codes: None,
+                        list_job: Some(spawn(move || client.invite_codes(id))),
+                        job: None,
+                        error: None,
+                    };
+                }
+                Outcome::None
+            }
+            // RealmsInviteCodesScreen: Create (160) and Back (161).
+            Some(160) => {
+                if let SubScreen::InviteCodes { server, job, .. } = &mut self.subscreen
+                    && job.is_none()
+                    && let Some(client) = client()
+                {
+                    let id = server.id;
+                    *job = Some(spawn(move || client.create_invite_code(id, true, None)));
+                }
+                Outcome::None
+            }
+            Some(161) => {
+                self.back_to_players_tab();
+                Outcome::None
+            }
+            // RealmsEditInviteCodeScreen: Active (162), Copy (163), Delete (164), Done
+            // (165) and Back (166).
+            Some(162) => {
+                if let SubScreen::EditCode { active, .. } = &mut self.subscreen {
+                    *active = !*active;
+                }
+                Outcome::None
+            }
+            Some(163) => {
+                if let SubScreen::EditCode { code, .. } = &self.subscreen {
+                    return Outcome::Copy(code.code.clone());
+                }
+                Outcome::None
+            }
+            Some(164) => {
+                if let SubScreen::EditCode { job, code, .. } = &mut self.subscreen
+                    && job.is_none()
+                    && let Some(client) = client()
+                {
+                    let code = code.code.clone();
+                    *job = Some(spawn(move || client.delete_invite_code(&code)));
+                }
+                Outcome::None
+            }
+            Some(165) => {
+                if let SubScreen::EditCode {
+                    server,
+                    code,
+                    active,
+                    expiration,
+                    job,
+                    ..
+                } = &mut self.subscreen
+                    && job.is_none()
+                    && let Some(client) = client()
+                {
+                    let (id, code_text) = (server.id, code.code.clone());
+                    let (enabled, index) = (*active, *expiration);
+                    *job = Some(spawn(move || {
+                        let seconds = EXPIRATIONS[index.min(EXPIRATIONS.len() - 1)].1;
+                        client.update_invite_code(id, &code_text, enabled, seconds)
+                    }));
+                }
+                Outcome::None
+            }
+            Some(166) => {
+                self.back_to_players_tab();
+                Outcome::None
+            }
             // RealmsSlotOptionsScreen: cycle, toggle, Done and Cancel.
             Some(95) => {
                 if let SubScreen::SlotOptions {
@@ -1645,6 +1896,9 @@ impl Screen {
                     Pending(bool, String),
                     Member(bool, i64, String),
                     Uninvite(RealmServer, PlayerInfo),
+                    Copy(String),
+                    Edit(InviteCode),
+                    DeleteCode(String),
                 }
                 let row = match &self.subscreen {
                     SubScreen::PendingInvites { invites, job } if job.is_none() => {
@@ -1656,6 +1910,20 @@ impl Screen {
                                 None => Row::Nothing,
                             },
                             None => Row::Nothing,
+                        }
+                    }
+                    SubScreen::InviteCodes {
+                        codes: Some(Ok(list)),
+                        job,
+                        ..
+                    } => {
+                        let index = usize::from((btn - 130) / 3);
+                        let which = (btn - 130) % 3;
+                        match list.get(index) {
+                            Some(code) if which == 0 => Row::Copy(code.code.clone()),
+                            Some(code) if which == 1 => Row::Edit(code.clone()),
+                            Some(code) if job.is_none() => Row::DeleteCode(code.code.clone()),
+                            _ => Row::Nothing,
                         }
                     }
                     SubScreen::Configure {
@@ -1717,6 +1985,33 @@ impl Screen {
                     }
                     Row::Uninvite(server, player) => {
                         self.subscreen = SubScreen::Popup(Popup::Uninvite { server, player });
+                    }
+                    Row::Copy(code) => return Outcome::Copy(code),
+                    Row::Edit(code) => {
+                        if let SubScreen::InviteCodes { server, .. } = &self.subscreen {
+                            let server = server.clone();
+                            let expiration = code
+                                .expiration_date
+                                .map(closest_expiration)
+                                .unwrap_or(EXPIRATIONS.len() - 1);
+                            let active = code.enabled;
+                            self.subscreen = SubScreen::EditCode {
+                                server,
+                                code,
+                                active,
+                                expiration,
+                                job: None,
+                                error: None,
+                            };
+                        }
+                    }
+                    Row::DeleteCode(code) => {
+                        if let SubScreen::InviteCodes { job, .. } = &mut self.subscreen
+                            && job.is_none()
+                            && let Some(client) = client()
+                        {
+                            *job = Some(spawn(move || client.delete_invite_code(&code)));
+                        }
                     }
                 }
                 Outcome::None
@@ -1831,6 +2126,20 @@ impl Screen {
                         *selected = Some(pick.clone());
                     }
                     return Outcome::None;
+                }
+                // RealmsEditInviteCodeScreen's expiration slider: a click picks the
+                // nearest of the seven choices.
+                if let SubScreen::EditCode {
+                    active, expiration, ..
+                } = &mut self.subscreen
+                    && *active
+                {
+                    let left = (w / 2.0).floor() - 154.0;
+                    if (72.0..92.0).contains(&y) && (left..left + 308.0).contains(&x) {
+                        let value = crate::ui::slider_value(left, 308.0, x);
+                        *expiration = (value * (EXPIRATIONS.len() - 1) as f32).round() as usize;
+                        return Outcome::None;
+                    }
                 }
                 // RealmsSlotOptionsScreen's spawn-protection slider: a click on the track
                 // sets the value (there is no drag event on this screen yet).
@@ -2237,12 +2546,21 @@ impl Screen {
                         }
                     }
                     buttons.push((
-                        cx - 100.0,
+                        cx - 102.0,
                         h - 60.0,
-                        200.0,
+                        100.0,
                         t("mco.configure.world.buttons.invite"),
                         true,
                         67,
+                        None,
+                    ));
+                    buttons.push((
+                        cx + 2.0,
+                        h - 60.0,
+                        100.0,
+                        t("mco.configure.world.buttons.invite_codes"),
+                        true,
+                        68,
                         None,
                     ));
                 }
@@ -2320,6 +2638,99 @@ impl Screen {
                     None,
                 ));
                 buttons.push((cx + 2.0, h - 36.0, 100.0, t("gui.cancel"), true, 99, None));
+            }
+            SubScreen::InviteCodes {
+                codes,
+                list_job,
+                job,
+                ..
+            } => {
+                if let Some(Ok(list)) = codes {
+                    let rx = ((w - ROW_WIDTH) / 2.0).floor();
+                    for (i, _) in list.iter().enumerate().take(40) {
+                        let row_y = 36.0 + 22.0 + 2.0 + i as f32 * ROW_HEIGHT;
+                        if row_y + ROW_HEIGHT > h - 48.0 {
+                            break;
+                        }
+                        let id = 130 + i as u8 * 3;
+                        buttons.push((
+                            rx + ROW_WIDTH - 146.0,
+                            row_y + 8.0,
+                            46.0,
+                            t("mco.configure.world.invite_codes.copy"),
+                            true,
+                            id,
+                            None,
+                        ));
+                        buttons.push((
+                            rx + ROW_WIDTH - 98.0,
+                            row_y + 8.0,
+                            46.0,
+                            t("mco.configure.world.invite_codes.edit"),
+                            true,
+                            id + 1,
+                            None,
+                        ));
+                        buttons.push((
+                            rx + ROW_WIDTH - 50.0,
+                            row_y + 8.0,
+                            48.0,
+                            t("mco.configure.world.invite_codes.delete"),
+                            job.is_none(),
+                            id + 2,
+                            None,
+                        ));
+                    }
+                }
+                buttons.push((
+                    cx - 100.0,
+                    h - 60.0,
+                    200.0,
+                    t("mco.configure.world.invite_codes.create"),
+                    list_job.is_none() && job.is_none(),
+                    160,
+                    None,
+                ));
+                buttons.push((cx - 100.0, h - 36.0, 200.0, t("gui.back"), true, 161, None));
+            }
+            SubScreen::EditCode { active, job, .. } => {
+                let on_off = if *active {
+                    t("options.on")
+                } else {
+                    t("options.off")
+                };
+                buttons.push((
+                    cx + 66.0,
+                    6.0,
+                    100.0,
+                    format!(
+                        "{}: {on_off}",
+                        t("mco.configure.world.invite_codes.edit.active")
+                    ),
+                    job.is_none(),
+                    162,
+                    None,
+                ));
+                buttons.push((
+                    cx - 152.0,
+                    h - 36.0,
+                    74.0,
+                    t("mco.configure.world.invite_codes.copy"),
+                    true,
+                    163,
+                    None,
+                ));
+                buttons.push((
+                    cx - 76.0,
+                    h - 36.0,
+                    74.0,
+                    t("mco.configure.world.invite_codes.delete"),
+                    job.is_none(),
+                    164,
+                    None,
+                ));
+                buttons.push((cx, h - 36.0, 74.0, t("gui.done"), job.is_none(), 165, None));
+                buttons.push((cx + 76.0, h - 36.0, 74.0, t("gui.back"), true, 166, None));
             }
             SubScreen::Invite { job, .. } => {
                 buttons.push((
@@ -3075,6 +3486,125 @@ impl Screen {
                     }
                 }
             }
+            SubScreen::InviteCodes { codes, error, .. } => {
+                // `RealmsInviteCodesScreen`: the count in the title, the subtitle, a row
+                // per code with its expiration, then Create and Back.
+                let (count, max) = match codes {
+                    Some(Ok(list)) => (list.len(), 5usize),
+                    _ => (0, 5),
+                };
+                centered(
+                    batch,
+                    atlas,
+                    &crate::lang::tr(
+                        "mco.configure.world.invite_codes.title",
+                        &[&count as &dyn std::fmt::Display, &max],
+                    ),
+                    cx,
+                    14.0,
+                    u32::MAX,
+                );
+                centered(
+                    batch,
+                    atlas,
+                    &crate::lang::tr(
+                        "mco.configure.world.invite_codes.subtitle",
+                        &[&max as &dyn std::fmt::Display],
+                    ),
+                    cx,
+                    26.0,
+                    GREY,
+                );
+                match codes {
+                    Some(Ok(list)) if list.is_empty() => {}
+                    Some(Ok(list)) => {
+                        let rx = ((w - ROW_WIDTH) / 2.0).floor();
+                        for (i, code) in list.iter().enumerate() {
+                            let row_y = 36.0 + 22.0 + 2.0 + i as f32 * ROW_HEIGHT;
+                            if row_y + ROW_HEIGHT > h - 48.0 {
+                                break;
+                            }
+                            batch.text(
+                                atlas,
+                                &code.code,
+                                rx + 4.0,
+                                row_y + 4.0,
+                                if code.enabled { u32::MAX } else { GREY },
+                                true,
+                            );
+                            let expires = match code.expiration_date {
+                                Some(millis) => crate::lang::tr(
+                                    "mco.configure.world.invite_codes.edit.expires",
+                                    &[&start_date_text(millis) as &dyn std::fmt::Display],
+                                ),
+                                None => t("mco.configure.world.invite_codes.expiration.never"),
+                            };
+                            batch.text(atlas, &expires, rx + 4.0, row_y + 16.0, GREY, true);
+                        }
+                    }
+                    Some(Err(e)) => {
+                        for (i, line) in wrap_lines(&e.text(), atlas, w - 40.0).iter().enumerate() {
+                            centered(batch, atlas, line, cx, 60.0 + i as f32 * 10.0, RED);
+                        }
+                    }
+                    None => centered(
+                        batch,
+                        atlas,
+                        &t("mco.configure.world.invite_codes.loading"),
+                        cx,
+                        60.0,
+                        u32::MAX,
+                    ),
+                }
+                if let Some(e) = error {
+                    for (i, line) in wrap_lines(e, atlas, w - 40.0).iter().enumerate() {
+                        centered(batch, atlas, line, cx, h - 76.0 + i as f32 * 10.0, RED);
+                    }
+                }
+            }
+            SubScreen::EditCode {
+                code,
+                active,
+                expiration,
+                error,
+                ..
+            } => {
+                // `RealmsEditInviteCodeScreen`: the code, its expiration line, Active, and
+                // the expiration slider.
+                centered(
+                    batch,
+                    atlas,
+                    &t("mco.configure.world.invite_codes.edit.title"),
+                    cx,
+                    14.0,
+                    u32::MAX,
+                );
+                batch.text(atlas, &code.code, cx - 154.0, 34.0, u32::MAX, true);
+                let (key, _) = EXPIRATIONS[*expiration];
+                let expires = crate::lang::tr(
+                    "mco.configure.world.invite_codes.edit.expires",
+                    &[&t(key) as &dyn std::fmt::Display],
+                );
+                batch.text(atlas, &expires, cx - 154.0, 48.0, GREY, true);
+                let value = *expiration as f32 / (EXPIRATIONS.len() - 1) as f32;
+                crate::ui::slider(
+                    batch,
+                    atlas,
+                    cx - 154.0,
+                    72.0,
+                    308.0,
+                    &Text::literal(t(EXPIRATIONS[*expiration].0)),
+                    value,
+                    crate::ui::hovered(cursor, cx - 154.0, 72.0, 308.0, 20.0),
+                    *active,
+                    false,
+                );
+                if let Some(e) = error {
+                    for (i, line) in wrap_lines(e, atlas, w - 40.0).iter().enumerate() {
+                        centered(batch, atlas, line, cx, 108.0 + i as f32 * 10.0, RED);
+                    }
+                }
+            }
             SubScreen::Invite {
                 name, job, error, ..
             } => {
@@ -3601,6 +4131,22 @@ mod tests {
         assert_eq!(enabled(15), Some(false), "invites");
     }
 
+    /// `InviteCodeExpiration.closestTo`: an existing expiration reads back as the choice
+    /// nearest to the time left.
+    #[test]
+    fn an_expiration_reads_back_as_the_closest_choice() {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        assert_eq!(closest_expiration(now + 30 * 60 * 1000), 0);
+        assert_eq!(closest_expiration(now + 60 * 60 * 1000), 1);
+        assert_eq!(closest_expiration(now + 6 * 24 * 60 * 60 * 1000), 5);
+        // A week is the longest timed choice: anything further reads back as it. (The
+        // "never" row is the fallback for a code with no expiration, not a nearest.)
+        assert_eq!(closest_expiration(now + 30 * 24 * 60 * 60 * 1000), 5);
+    }
+
     /// `RealmsSettingsTab.updateData`: the draft starts from the Realm's own name,
     /// description and region preference; a Realm without one is automatic by owner
     /// (`RegionSelectionPreferenceDto.DEFAULT`), and only a manual choice sends its region.
@@ -3786,6 +4332,26 @@ mod tests {
             return crate::lang::get("mco.configure.world.slot.empty");
         }
         crate::lang::tr("mco.configure.world.slot", &[&slot])
+    }
+
+    /// `InviteCodeExpiration.closestTo`: the choice nearest the time left on the code.
+    fn closest_expiration(expiration_millis: i64) -> usize {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let left = (expiration_millis - now).max(0) / 1000;
+        let mut best = EXPIRATIONS.len() - 1;
+        let mut best_delta = i64::MAX;
+        for (i, (_, seconds)) in EXPIRATIONS.iter().enumerate() {
+            let Some(seconds) = seconds else { continue };
+            let delta = (left - seconds).abs();
+            if delta < best_delta {
+                best_delta = delta;
+                best = i;
+            }
+        }
+        best
     }
 
     /// `RealmsSubscriptionTab.daysLeftPresentation`, compared with the same translations

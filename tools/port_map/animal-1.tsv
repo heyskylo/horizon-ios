@@ -2,6 +2,7 @@ AbstractFish.addAdditionalSaveData	inline	crates/horizon-client/src/entity_nbt.r
 AbstractFish.readAdditionalSaveData	inline	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	FromBucket via read_variant defaults false; tadpole ignores loaded input
 AgeableWaterCreature.handleAirSupply	inline	crates/horizon-client/src/mobs/ai.rs::base_tick	the needs_water branch of base_tick; dolphins override it to nothing and refill air in aquatic.rs
 AgeableWaterCreature.checkSurfaceAgeableWaterCreatureSpawnRules	port	crates/horizon-client/src/mobs/spawn_rules.rs::surface_water	
+Animal.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	Animal fields: modeled InLove and optional LoveCause, removing stale raw when absent; inherited Ageable writer separate; UUID admission gaps retained
 Animal.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	InLove through NumericTag.intValue; existing LoveCause UUID loading retained
 Animal.canMate	port	crates/horizon-client/src/mobs/animal_brain.rs::can_mate_with	brain breeding; the Breed goal in goals.rs does the same for goal-driven animals
 Animal.handleEntityEvent	port	crates/horizon-client-render/src/particles.rs::entity_event_burst	event 18 love hearts
