@@ -7,7 +7,10 @@ import os
 from pathlib import Path
 import subprocess
 import zipfile
-import lab
+if __package__:
+    from . import lab
+else:
+    import lab
 
 
 def parse_args(argv=None):
