@@ -395,6 +395,7 @@ impl Game<'_> {
         self.mining = d.active.then_some(Mining {
             pos: d.pos,
             progress: d.progress,
+            per_tick: 0.0,
             ticks: d.ticks as u32,
         });
         if let Some(mining) = &self.mining {
