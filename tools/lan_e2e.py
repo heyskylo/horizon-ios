@@ -30,6 +30,7 @@ address. The script then checks, from both sides, what a guest's game used to ge
              team without friendly fire, nothing;
 - kills:     a pig the guest kills counts in the guest's killed statistic, not the host's (#484);
 - leave:     a guest who leaves has leave_game in their saved statistics, and again after the next leave;
+- rider-look: a tick function teleporting the strider the guest rides doesn't turn the guest's view;
 
 - arrows:    the guest and the host shoot each other with a bow; with the pvp game rule off, nothing (#484);
 - flame-arrows: an arrow the host or the guest shoots from a Flame bow burns in flight on both sides
@@ -10622,6 +10623,59 @@ def check_boat_dismount_pose(host, guest, out):
 
 CHECKS += ['boat-dismount-pose']
 CHECK_FNS['boat-dismount-pose'] = check_boat_dismount_pose
+
+
+def check_rider_look(host, guest, out):
+    """A tick function teleporting the strider the guest rides, every tick and to a rotation of its own (as a map's
+    datapack does), leaves the guest's look where they turned it: vanilla's client applies no position packet to a
+    passenger (ClientPacketListener.handleMovePlayer), so the view doesn't snap to the vehicle 20 times a second."""
+    if dead(guest):
+        guest.raw('respawn')
+        guest.wait(40)
+    hx, hy, hz = pos_of(host)
+    x, y, z = math.floor(hx), math.floor(hy), math.floor(hz)
+    host('command', command=f'fill {x - 2} {y} {z - 2} {x + 4} {y + 3} {z + 2} minecraft:air')
+    host('command', command=f'fill {x - 2} {y - 1} {z - 2} {x + 4} {y - 1} {z + 2} minecraft:stone')
+    host('command', command=f'summon minecraft:strider {x + 2.5} {y} {z + 0.5} '
+         '{NoAI:1b,Tags:["e2e_look"],equipment:{saddle:{id:"minecraft:saddle",count:1}}}')
+    guest('command', command=f'tp @s {x + 2.5} {y} {z + 0.5}')
+    guest.wait(10)
+    guest('command', command='ride @s mount @e[tag=e2e_look,limit=1]')
+    guest.wait(20)
+    pack = host.work / 'saves' / 'Lan' / 'datapacks' / 'e2e_look'
+    tick = pack / 'data/minecraft/tags/function/tick.json'
+    look = lambda: [round(guest('state')['player'][k], 1) for k in ('yaw', 'pitch')]
+    # The same direction: a yaw of -150 is one of 210.
+    same = lambda a, b: abs((a[0] - b[0] + 180) % 360 - 180) < 1 and abs(a[1] - b[1]) < 1
+    seen = {}
+    try:
+        (pack / 'data/e2e/function').mkdir(parents=True, exist_ok=True)
+        tick.parent.mkdir(parents=True, exist_ok=True)
+        (pack / 'pack.mcmeta').write_text('{"pack":{"description":"look","min_format":[121,0],"max_format":[121,0]}}')
+        (pack / 'data/e2e/function/hold.mcfunction').write_text(
+            'execute as @e[tag=e2e_look] at @s run tp @s ~ ~ ~ 0 0\n')
+        tick.write_text('{"values":["e2e:hold"]}')
+        host('command', command='reload')
+        host.wait(20)
+        start = look()
+        guest.raw('turn', '120', '30')
+        seen['turned to'] = [start[0] + 120, start[1] + 30]
+        seen['looks'] = []
+        for _ in range(5):
+            guest.wait(2)
+            seen['looks'].append(look())
+        guest.shot(out, 'rider-look')
+    finally:
+        tick.unlink(missing_ok=True)
+        host('command', command='reload')
+        guest('command', command='ride @s dismount')
+        host('command', command='kill @e[tag=e2e_look]')
+    assert all(same(v, seen['turned to']) for v in seen['looks']), f'the strider\'s teleports turned its rider: {seen}'
+    return seen
+
+
+CHECKS += ['rider-look']
+CHECK_FNS['rider-look'] = check_rider_look
 
 
 def check_sprint_fov(host, guest, out):
