@@ -1,3 +1,4 @@
+mod diff;
 pub mod files;
 mod query;
 
@@ -12,13 +13,14 @@ use horizon_perf_format::v1::Side;
 
 use crate::follow::Follower;
 use crate::read::read_capture;
-use crate::summary::{DEFAULT_BUDGET, SummaryOptions, summarize};
+use crate::summary::{Baseline, DEFAULT_BUDGET, SummaryOptions, summarize};
 use crate::watch::Watcher;
 
 pub const USAGE: &str = "\
 usage:
-  horizon-perf summary [FILE|latest] [--budget TOKENS] [--side client|server] [--thread T] [--slow|--all] [--dir DIR]
+  horizon-perf summary [FILE|latest] [--baseline FILE] [--budget TOKENS] [--side client|server] [--thread T] [--slow|--all] [--dir DIR]
   horizon-perf query   OP [ARGS] [FILE...] [FILTERS]   JSON always
+  horizon-perf diff    A B [--min-ms X] [--side client|server] [--thread T] [--limit N] [--json] [--dir DIR]
   horizon-perf list    [DIR]
   horizon-perf follow  [FILE|latest] [--every S] [--json] [--dir DIR]
 
@@ -27,6 +29,7 @@ FILTERS: --side client|server --thread T --from T --to T (seconds; negative coun
   spans: --slow --names a,b   ticks: --worst N --over MS   series: FIELD... --every S (h:NAME, span:NAME, x:NAME)
   memory: --diff [LABEL_A LABEL_B] --min-mb X   world: --by dimension|entity|block_entity|cost [LABEL]
 
+diff compares B against A (A is the earlier run): two captures, or two benchmark reports (benchmarks/*.json). summary --baseline FILE compares against an earlier capture.
 FILE defaults to latest: the newest finished .hzperf in --dir, else in $HORIZON_HOME/reports, else in ./reports.
 follow's latest is the newest .hzperf, finished or not.";
 
@@ -77,6 +80,7 @@ pub fn run(args: &[String], env: &Env, out: &mut dyn Write) -> Result<(), CliErr
         "list" => list(rest, env, out),
         "follow" => follow(rest, env, out),
         "query" => query::query(rest, env, out),
+        "diff" => diff::run(rest, env, out),
         "help" | "--help" | "-h" => writeln!(out, "{USAGE}").map_err(failed),
         other => Err(CliError::Usage(format!("unknown command {other}"))),
     }
@@ -196,7 +200,11 @@ fn side_flag(parsed: &Parsed) -> Result<Option<Side>, CliError> {
 }
 
 fn summary(args: &[String], env: &Env, out: &mut dyn Write) -> Result<(), CliError> {
-    let parsed = parse(args, &["budget", "side", "thread", "dir"], &["slow", "all"])?;
+    let parsed = parse(
+        args,
+        &["budget", "side", "thread", "dir", "baseline"],
+        &["slow", "all"],
+    )?;
     if parsed.flags.contains_key("slow") && parsed.flags.contains_key("all") {
         return Err(CliError::Usage(
             "--slow and --all exclude each other".into(),
@@ -207,13 +215,31 @@ fn summary(args: &[String], env: &Env, out: &mut dyn Write) -> Result<(), CliErr
         side: side_flag(&parsed)?,
         thread: parsed.flags.get("thread").cloned(),
         slow: parsed.flags.contains_key("slow"),
+        baseline: None,
     };
-    let path = resolve(
-        parsed.one_file()?,
-        parsed.flags.get("dir").map(String::as_str),
-        env,
-        true,
-    )?;
+    let dir = parsed.flags.get("dir").map(String::as_str);
+    let baseline = parsed
+        .flags
+        .get("baseline")
+        .map(|file| -> Result<Baseline, CliError> {
+            let path = resolve(Some(file), dir, env, true)?;
+            match diff::load(&path)? {
+                diff::Report::Capture(capture) => Ok(Baseline {
+                    name: file_name(&path),
+                    capture: *capture,
+                }),
+                diff::Report::Bench(_) => Err(failed(format!(
+                    "{} is a benchmark report: summary --baseline needs a capture",
+                    path.display()
+                ))),
+            }
+        })
+        .transpose()?;
+    let options = SummaryOptions {
+        baseline,
+        ..options
+    };
+    let path = resolve(parsed.one_file()?, dir, env, true)?;
     let bytes =
         std::fs::read(&path).map_err(|e| failed(format!("cannot read {}: {e}", path.display())))?;
     let capture = read_capture(&bytes).map_err(failed)?;

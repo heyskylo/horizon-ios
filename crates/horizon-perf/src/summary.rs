@@ -1,5 +1,6 @@
 use horizon_perf_format::v1::{Capture, HealthSample, Kind, Side, Start, Stop};
 
+use crate::diff::{self, Diff, DiffOptions, signed};
 use crate::error::{Error, side_name};
 use crate::health::{live, max, mean, trailing_mean};
 use crate::view::View;
@@ -12,6 +13,13 @@ pub const DEFAULT_BUDGET: usize = 1500;
 const TARGET_TPS: f64 = 20.0;
 const TRAILING_WINDOWS: [(&str, f64); 3] = [("1m", 60.0), ("5m", 300.0), ("15m", 900.0)];
 
+/// An earlier capture the summary is compared against.
+#[derive(Clone, Debug)]
+pub struct Baseline {
+    pub name: String,
+    pub capture: Capture,
+}
+
 #[derive(Clone, Debug)]
 pub struct SummaryOptions {
     pub budget_tokens: usize,
@@ -20,6 +28,8 @@ pub struct SummaryOptions {
     pub thread: Option<String>,
     /// Phases of the slow ticks or frames only.
     pub slow: bool,
+    /// Numeric rows gain a delta and a verdict against this capture.
+    pub baseline: Option<Baseline>,
 }
 
 impl Default for SummaryOptions {
@@ -29,6 +39,7 @@ impl Default for SummaryOptions {
             side: None,
             thread: None,
             slow: false,
+            baseline: None,
         }
     }
 }
@@ -189,16 +200,77 @@ fn side_sections(
     let stop = capture.stop.iter().find(|s| s.side() == side);
     let samples = live(capture, side);
     parts.push(vec![Line::fixed(header(name, side, start, stop, &samples))]);
-    parts.push(
-        health_rows(view, side, start, stop, &samples)
-            .into_iter()
-            .map(Line::body)
-            .collect(),
-    );
-    let more = sections::all(view, side, options)?;
+    let compared = options.baseline.as_ref().map(|base| {
+        let wanted = DiffOptions {
+            side: Some(side),
+            thread: options.thread.clone(),
+            limit: usize::MAX,
+            ..Default::default()
+        };
+        (base, diff::diff(&base.capture, capture, &wanted))
+    });
+    if let Some((base, result)) = &compared {
+        parts.push(vec![Line::fixed(baseline_line(
+            base,
+            capture,
+            side,
+            options.slow,
+            result,
+        ))]);
+    }
+    let compared = compared.and_then(|(_, result)| result.ok());
+    let mut health: Vec<Line> = health_rows(view, side, start, stop, &samples)
+        .into_iter()
+        .map(Line::body)
+        .collect();
+    if let Some(text) = compared.as_ref().and_then(health_delta) {
+        health.push(Line::body(text));
+    }
+    parts.push(health);
+    let more = sections::all(view, side, options, compared.as_ref())?;
     let detail = !more.is_empty();
     parts.extend(more);
     Ok(detail)
+}
+
+fn baseline_line(
+    base: &Baseline,
+    capture: &Capture,
+    side: Side,
+    slow: bool,
+    result: &Result<Diff, Error>,
+) -> String {
+    let d = match result {
+        Ok(d) => d,
+        Err(e) => return format!("baseline: {}, cannot compare: {e}", base.name),
+    };
+    let kind = match diff::build_mismatch(&base.capture, capture, side) {
+        Some((was, now)) => format!("different build kind ({was} vs {now})"),
+        None => "same build kind".to_string(),
+    };
+    let mut text = format!("baseline: {}, {kind}, {}", base.name, d.blocks_text());
+    if slow {
+        text.push_str(" (slow phases are not compared)");
+    }
+    text
+}
+
+/// "vs base h:mspt_avg -25.3 faster · …": the health fields' shifts against the baseline.
+fn health_delta(d: &Diff) -> Option<String> {
+    let parts: Vec<String> = d
+        .rows
+        .iter()
+        .filter(|r| r.id.starts_with("h:"))
+        .filter_map(|r| {
+            Some(format!(
+                "{} {} {}",
+                r.id,
+                signed(r.effect?),
+                r.verdict.mark()
+            ))
+        })
+        .collect();
+    (!parts.is_empty()).then(|| format!("vs base {}", parts.join(" · ")))
 }
 
 fn header(
