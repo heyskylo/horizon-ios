@@ -10303,7 +10303,8 @@ impl Game<'_> {
                 .res
                 .end_environment()
                 .sample(self.world.day_time, None, None);
-            return (15.0 - 15.0 * sky.sky_light_level).round() as i32;
+            // Level.updateSkyBrightness truncates (`(int)`), see `environment::sky_darken`.
+            return (15.0 - 15.0 * sky.sky_light_level) as i32;
         }
         let (rain, thunder) = self.weather_levels(1.0);
         // Sampled once per (time, weather): every mob asks each tick.
