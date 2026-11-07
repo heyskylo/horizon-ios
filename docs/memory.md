@@ -2,7 +2,7 @@
 
 Where the game's memory goes, and the tools that say so. This page describes what exists today; each new tool adds its section when it lands.
 
-Start with `horizon-ctl memory` for what holds memory now, add the heap census to see who allocated it, and fall back to an external heap profiler only on small probes.
+Start with `horizon-ctl memory` for what holds memory now, count allocations to see how much a frame churns, add the heap census to see who allocated what is held, and fall back to an external heap profiler only on small probes.
 
 ## What the game holds now: `horizon-ctl memory`
 
@@ -37,9 +37,44 @@ Which number answers which question:
 
 F3 shows three vanilla memory lines on Linux and Windows, read every half second: `Mem:` and `Allocation rate:` come from the anonymous resident memory (on Windows the private working set), `Allocated:` from all resident memory. The allocation rate is the growth of that figure per second, so it is zero while memory shrinks and it does not count blocks that are allocated and freed within the interval.
 
+## How much a frame allocates: `alloc-count`
+
+`alloc-count` makes the game's allocator count blocks. Each thread owns a slot of four counters (allocations, bytes allocated, frees, bytes freed) that only it writes, so counting is two loads and stores per allocation and per free, with no atomic read-modify-write and no shared cache line. A `realloc` counts as a free of the old size and an allocation of the new one, so a growing `Vec` shows as churn. Slots are never reused: a finished thread's counts stay in the total. Beyond 1023 threads the rest share slot 0.
+
+```sh
+cargo build --profile fast -p horizon-client --features alloc-count
+```
+
+Without the feature `horizon_threads::GameAllocator` is plain mimalloc: nothing is counted and nothing is added to the allocation path. `alloc-census` includes `alloc-count`. With `system-allocator` nothing counts, and `alloc` is `null` as in a build without the feature.
+
+In a counting build `horizon-ctl stats`, `bench` and `fly` reply with an `alloc` object next to the frame times (`null` in other builds), over the rendered frames since the last reset:
+
+```json
+"alloc": {
+  "window_thread": { "allocs_per_frame": { "avg": 487.5, "p50": 340, "p95": 627, "max": 83317 },
+                     "kib_per_frame": { "avg": 247.8, "p50": 210.9, "p95": 449.4, "max": 9548.9 },
+                     "frees_per_frame_avg": 388.4 },
+  "process": { "allocs_per_s": 336733.2, "mib_per_s": 187.6, "frees_per_s": 319727.8, "net_mib": 83.8 }
+}
+```
+
+- `window_thread` is the thread that draws the frame, between two rendered frames. Work on other threads (chunk generation, meshing, the server thread) is not in it.
+- `process` is all threads together, from the first to the last frame since the reset (so it is missing with one frame), and `net_mib` is bytes allocated less bytes freed in that time: growth of the live heap, in the allocator's own accounting. The first rendered frame after the game starts has no entry, because it has nothing to subtract.
+- With `raw` (`stats raw`, `fly ... raw`) the reply also has `alloc_count` and `alloc_bytes`, one entry per frame beside `frame_ms`.
+- Counts are requested sizes, not the allocator's size classes, and they exclude the census header.
+
+Cost, measured with `cargo run --profile fast -p horizon-threads --example alloc_count_bench` (10 million allocate-and-free pairs of 64 bytes, per thread, on a machine shared with other builds, three runs):
+
+| | mimalloc | counting | added |
+| --- | --- | --- | --- |
+| 1 thread | 3.0 ns | 3.9 to 4.1 ns | 0.9 to 1.1 ns |
+| 8 threads | 5.4 ns | 7.4 to 7.7 ns | 2.0 to 2.3 ns |
+
+On the game, three alternating runs of `--benchmark standard` with and without the feature gave median `cpu_p50_ms` per scene of 0.217/0.156/0.186/0.192 (counting) against 0.215/0.166/0.169/0.220 (plain, village/forest/ocean/mountain) and `memory.rss_steady_mb` 1406 against 1399: inside the spread between runs of one build, so the cost on the game is not distinguishable from noise.
+
 ## Who allocated it: the heap census
 
-`alloc-census` replaces the global allocator with `horizon_threads::CensusAllocator`: mimalloc with a 16-byte header in front of each block (more for alignments above 16). The last four bytes of the header hold the block's tag, and `LIVE[tag]` is a relaxed atomic that every allocation adds to and every free subtracts from. `horizon-ctl memory` then lists `heap_by_tag_mb`, the 60 largest tags, as `["tag", mb]` rows.
+`alloc-census` replaces the global allocator with `horizon_threads::CensusAllocator`, which also counts like `alloc-count`: mimalloc with a 16-byte header in front of each block (more for alignments above 16). The last four bytes of the header hold the block's tag, and `LIVE[tag]` is a relaxed atomic that every allocation adds to and every free subtracts from. `horizon-ctl memory` then lists `heap_by_tag_mb`, the 60 largest tags, as `["tag", mb]` rows.
 
 Build it and read it:
 
@@ -84,7 +119,7 @@ The game times its work in named spans (`crates/horizon-client-render/src/spans.
 
 - `HORIZON_SPIKES=MS` logs the spans of every frame slower than MS milliseconds, with the render thread's CPU time in the frame.
 - `horizon-ctl trace FILE [SECONDS]` writes every span of every thread to FILE as Chrome trace events for the given time (or until `horizon-ctl trace stop`); `HORIZON_TRACE=FILE` writes one from the start, so startup is traced too. Open the file in [ui.perfetto.dev](https://ui.perfetto.dev).
-- `horizon-ctl stats [reset] [raw]`, `horizon-ctl bench SECONDS` and `horizon-ctl fly ... SECONDS [PITCH [raw]]` reply with the frame-time summary: frame, CPU and GPU time percentiles and the average of each phase of the frame. They carry no memory figures.
+- `horizon-ctl stats [reset] [raw]`, `horizon-ctl bench SECONDS` and `horizon-ctl fly ... SECONDS [PITCH [raw]]` reply with the frame-time summary: frame, CPU and GPU time percentiles and the average of each phase of the frame. They carry no memory figures, except `alloc` in an `alloc-count` build.
 
 See [Graphics](graphics.md) for how the spans are used to chase a slow frame.
 

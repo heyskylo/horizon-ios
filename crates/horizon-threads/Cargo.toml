@@ -24,8 +24,12 @@ rustc-demangle = "0.1"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_Console", "Win32_System_IO", "Win32_System_ProcessStatus", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_System_WindowsProgramming", "Win32_UI_WindowsAndMessaging"] }
 
 [features]
+# Set by horizon-client's `system-allocator`, which leaves nothing to count.
+system-allocator = []
+# Counts each thread's allocations and frees (`alloc_count`); the game allocator counts them.
+alloc-count = []
 # Counts live heap bytes by startup step and thread (`CensusAllocator`); for measuring only.
-alloc-census = []
+alloc-census = ["alloc-count"]
 
 [lints]
 workspace = true

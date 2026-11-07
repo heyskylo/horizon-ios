@@ -63,7 +63,7 @@ use winit::{
 // The game's allocator, so that `--memory`'s footprint is the game's: the system heap kept
 // gigabytes of the meshes `--world` frees dirty.
 #[global_allocator]
-static ALLOCATOR: horizon_threads::Allocator = horizon_threads::ALLOCATOR;
+static ALLOCATOR: horizon_threads::GameAllocator = horizon_threads::GAME_ALLOCATOR;
 
 /// Frames drawn with detail on, enough for a few timed frames of each kind.
 const DETAIL_FRAMES: usize = 60;

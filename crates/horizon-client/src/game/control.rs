@@ -126,7 +126,7 @@ impl Game<'_> {
             summary["tick_ms"] = (flight.tick_ms.iter().sum::<f32>() / n).into();
             summary["tick_ms_max"] = flight.tick_ms.iter().copied().fold(0.0, f32::max).into();
             if flight.raw {
-                self.frame_stats.add_series(&mut summary);
+                self.add_raw_series(&mut summary);
             }
             let _ = flight.reply.send(summary.to_string());
         }
@@ -184,6 +184,23 @@ impl Game<'_> {
         }
     }
 
+    /// Adds the allocations since the last rendered frame to the frame stats; the first frame has no mark.
+    pub(super) fn record_frame_allocs(&mut self) {
+        use horizon_threads::alloc_count::{here, process};
+        let now = (here(), process());
+        if let Some((window, all)) = self.alloc_mark.replace(now) {
+            self.frame_stats
+                .record_allocs(now.0.since(window), now.1.since(all), Instant::now());
+        }
+    }
+    /// Every frame's times, and its allocations in builds that count (`raw`).
+    fn add_raw_series(&self, summary: &mut Value) {
+        self.frame_stats.add_series(summary);
+        if horizon_threads::alloc_count::ON {
+            summary["alloc_count"] = self.frame_stats.alloc_counts().into();
+            summary["alloc_bytes"] = self.frame_stats.alloc_bytes().into();
+        }
+    }
     fn reset_frame_stats(&mut self) {
         self.frame_stats.reset();
         if let Some(culler) = &self.async_occlusion_culler {
@@ -195,7 +212,7 @@ impl Game<'_> {
             if Instant::now() >= deadline {
                 let mut summary = self.summary_with_passes();
                 if raw {
-                    self.frame_stats.add_series(&mut summary);
+                    self.add_raw_series(&mut summary);
                 }
                 let _ = reply.send(summary.to_string());
             } else {
@@ -1130,7 +1147,7 @@ impl Game<'_> {
             "stats" => {
                 let mut summary = self.summary_with_passes();
                 if words[1..].contains(&"raw") {
-                    self.frame_stats.add_series(&mut summary);
+                    self.add_raw_series(&mut summary);
                 }
                 if words[1..].contains(&"reset") {
                     self.reset_frame_stats();
