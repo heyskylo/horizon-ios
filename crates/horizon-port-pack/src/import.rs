@@ -6,7 +6,6 @@ use serde_json::Value;
 use std::{
     collections::BTreeMap,
     fs,
-    io::Read,
     path::{Path, PathBuf},
 };
 
@@ -120,12 +119,11 @@ fn names(zip: &zip::ZipArchive<fs::File>) -> Result<Vec<String>, String> {
 }
 
 fn read_json(zip: &mut zip::ZipArchive<fs::File>, name: &str) -> Result<Option<Value>, String> {
-    let Ok(mut entry) = zip.by_name(name) else {
+    let Ok(entry) = zip.by_name(name) else {
         return Ok(None);
     };
-    let mut text = String::new();
-    entry
-        .read_to_string(&mut text)
+    let declared = entry.size();
+    let text = crate::entry::read_text(entry, declared, crate::entry::MAX_TEXT)
         .map_err(|e| format!("{name}: {e}"))?;
     serde_json::from_str(text.trim_start_matches('\u{feff}'))
         .map(Some)
@@ -307,6 +305,13 @@ fn instance(dir: &Path) -> Result<Pack, String> {
             }
         }
     }
+    // A CurseForge app instance has no `mmc-pack.json`; fill only when that
+    // file gave no Minecraft version, so Prism behaviour is unchanged.
+    if pack.minecraft.is_empty()
+        && let Some((minecraft, loader, loader_version)) = curseforge_instance_target(dir)
+    {
+        (pack.minecraft, pack.loader, pack.loader_version) = (minecraft, loader, loader_version);
+    }
     let game = game_dir(dir)?;
     let mods = if game.join("mods").is_dir() {
         game.join("mods")
@@ -339,6 +344,41 @@ fn instance(dir: &Path) -> Result<Pack, String> {
         }
     }
     Ok(pack)
+}
+
+/// The Minecraft version, loader and loader version a CurseForge app
+/// instance records, or `None` when it has neither file or they are
+/// unreadable. `minecraftinstance.json` is the app's record of what the
+/// instance runs and wins over `manifest.json`, the pack author's copy,
+/// which goes stale when the player changes the game version or loader in the
+/// app (and which a custom profile never has). The triple comes from one
+/// file, never mixed.
+pub fn curseforge_instance_target(dir: &Path) -> Option<(String, String, String)> {
+    let read = |name: &str| -> Option<Value> {
+        let text = fs::read_to_string(dir.join(name)).ok()?;
+        serde_json::from_str(text.trim_start_matches('\u{feff}')).ok()
+    };
+    let from_instance = read("minecraftinstance.json").map(|v| {
+        let minecraft = str_of(&v, "gameVersion");
+        let id = str_of(&v["baseModLoader"], "name");
+        let (loader, version) = id.split_once('-').unwrap_or((&id, ""));
+        // Fabric and Quilt ids end in the Minecraft version
+        // (`fabric-0.16.14-1.21.5`); it is not part of the loader's own.
+        let version = version
+            .strip_suffix(minecraft.as_str())
+            .and_then(|v| v.strip_suffix('-'))
+            .unwrap_or(version);
+        (minecraft, loader.to_owned(), version.to_owned())
+    });
+    let from_manifest = || {
+        read("manifest.json").map(|m| {
+            let pack = curseforge(&m, &[]);
+            (pack.minecraft, pack.loader, pack.loader_version)
+        })
+    };
+    from_instance
+        .filter(|(minecraft, ..)| !minecraft.is_empty())
+        .or_else(|| from_manifest().filter(|(minecraft, ..)| !minecraft.is_empty()))
 }
 
 /// Resolve the game root for both mod and resource-pack instance imports.
@@ -448,6 +488,171 @@ mod tests {
         );
         assert_eq!(p.files[0].curseforge, Some((238222, 5101366)));
         assert_eq!(p.overrides["kubejs"], 1);
+    }
+
+    /// An instance folder holding the given files and an empty `mods/`.
+    fn instance_with(tag: &str, files: &[(&str, &str)]) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("horizon-cf-inst-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("mods")).unwrap();
+        for (name, text) in files {
+            fs::write(dir.join(name), text).unwrap();
+        }
+        dir
+    }
+
+    fn target(pack: &Pack) -> (&str, &str, &str) {
+        (&pack.minecraft, &pack.loader, &pack.loader_version)
+    }
+
+    #[test]
+    fn a_curseforge_instance_names_its_version_and_loader() {
+        let neo = instance_with(
+            "neo",
+            &[(
+                "minecraftinstance.json",
+                r#"{"gameVersion": "1.21.1", "baseModLoader": {"name": "neoforge-21.1.133"}}"#,
+            )],
+        );
+        // Fabric's id ends in the Minecraft version, which is not the loader's.
+        let fabric = instance_with(
+            "fabric",
+            &[(
+                "minecraftinstance.json",
+                r#"{"gameVersion": "1.21.5", "baseModLoader": {"name": "fabric-0.16.14-1.21.5"}}"#,
+            )],
+        );
+        // Only a manifest, with a byte order mark.
+        let manifest = instance_with(
+            "manifest",
+            &[(
+                "manifest.json",
+                "\u{feff}{\"minecraft\": {\"version\": \"1.20.1\", \"modLoaders\": [{\"id\": \"forge-47.2.0\", \"primary\": true}]}}",
+            )],
+        );
+        assert_eq!(
+            target(&import(&neo).unwrap()),
+            ("1.21.1", "neoforge", "21.1.133")
+        );
+        assert_eq!(
+            target(&import(&fabric).unwrap()),
+            ("1.21.5", "fabric", "0.16.14")
+        );
+        assert_eq!(
+            target(&import(&manifest).unwrap()),
+            ("1.20.1", "forge", "47.2.0")
+        );
+        for dir in [neo, fabric, manifest] {
+            fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[test]
+    fn loader_ids_without_a_minecraft_suffix_or_loader_are_kept_whole() {
+        let cases = [
+            (
+                "1.21.5",
+                r#"{"name": "fabric-0.16.14"}"#,
+                ("1.21.5", "fabric", "0.16.14"),
+            ),
+            (
+                "1.21.5",
+                r#"{"name": "quilt-0.26.0-1.21.5"}"#,
+                ("1.21.5", "quilt", "0.26.0"),
+            ),
+            ("1.21.5", "null", ("1.21.5", "", "")),
+        ];
+        for (i, (game, loader, expected)) in cases.into_iter().enumerate() {
+            let dir = instance_with(
+                &format!("edge{i}"),
+                &[(
+                    "minecraftinstance.json",
+                    &format!(r#"{{"gameVersion": "{game}", "baseModLoader": {loader}}}"#),
+                )],
+            );
+            assert_eq!(target(&import(&dir).unwrap()), expected);
+            fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[test]
+    fn minecraftinstance_wins_over_a_stale_manifest() {
+        let dir = instance_with(
+            "both",
+            &[
+                (
+                    "manifest.json",
+                    r#"{"minecraft": {"version": "1.20.1", "modLoaders": [{"id": "forge-47.2.0"}]}}"#,
+                ),
+                (
+                    "minecraftinstance.json",
+                    r#"{"gameVersion": "1.21.1", "baseModLoader": {"name": "neoforge-21.1.133"}}"#,
+                ),
+            ],
+        );
+        assert_eq!(
+            target(&import(&dir).unwrap()),
+            ("1.21.1", "neoforge", "21.1.133")
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn broken_curseforge_files_leave_the_import_working() {
+        // A broken minecraftinstance.json falls back to the manifest; a
+        // broken manifest too leaves the target empty but the jars imported.
+        let fallback = instance_with(
+            "fallback",
+            &[
+                ("minecraftinstance.json", "{not json"),
+                (
+                    "manifest.json",
+                    r#"{"minecraft": {"version": "1.21.1", "modLoaders": [{"id": "neoforge-21.1.133"}]}}"#,
+                ),
+            ],
+        );
+        let broken = instance_with(
+            "broken",
+            &[
+                ("minecraftinstance.json", "{not json"),
+                ("manifest.json", ""),
+            ],
+        );
+        fs::write(broken.join("mods/a.jar"), b"jar").unwrap();
+        assert_eq!(
+            target(&import(&fallback).unwrap()),
+            ("1.21.1", "neoforge", "21.1.133")
+        );
+        let pack = import(&broken).unwrap();
+        assert_eq!(target(&pack), ("", "", ""));
+        assert_eq!(pack.files.len(), 1);
+        for dir in [fallback, broken] {
+            fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[test]
+    fn mmc_pack_still_wins_over_curseforge_files() {
+        let dir = instance_with(
+            "mmc",
+            &[
+                (
+                    "mmc-pack.json",
+                    r#"{"components": [{"uid": "net.minecraft", "version": "1.20.4"},
+                        {"uid": "net.fabricmc.fabric-loader", "version": "0.15.0"}]}"#,
+                ),
+                (
+                    "minecraftinstance.json",
+                    r#"{"gameVersion": "1.21.1", "baseModLoader": {"name": "neoforge-21.1.133"}}"#,
+                ),
+            ],
+        );
+        assert_eq!(
+            target(&import(&dir).unwrap()),
+            ("1.20.4", "fabric", "0.15.0")
+        );
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

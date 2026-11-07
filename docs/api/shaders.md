@@ -71,6 +71,9 @@ file = "weather.wgsl"
 resolution = 2048          # its side in texels, 256 to 8192
 distance = 128.0           # half the side of the square it covers, in blocks, 32 to 512
 solid_materials = [10]     # optional: [[materials]] ids drawn into the map whole, cutouts ignored
+option = "shadows"         # optional: drawn while this option is not 0 (else always); off, there is no shadow pass
+resolution_option = "shadow_resolution"   # optional: an int, or a choice of numbers, whose value replaces resolution
+distance_option = "shadow_distance"       # optional: the same for distance
 
 [[post]]                   # full-screen passes, in the order they run (8 at most)
 file = "post/grade.wgsl"
@@ -149,16 +152,71 @@ value). The pack holds only the manifest, the `.wgsl` files it names (each used,
 `README.md`, `LICENSE` (`.md`, `.txt`) and `icon.png`, under plain paths, 8 MiB in all. A `.hshader` is built
 the same way every time (files in path order, fixed dates), so a pack's SHA-256 depends only on its files.
 
+Native selections are saved as `horizon:<id>`; option values live in
+`shaderpacks/.horizon-options/<id>.txt`. Updates and file renames keep both. Existing filename
+selections and sidecars are imported without deleting the originals; after an update has removed
+the old file, migration recognizes the launcher's `<id>-<version>.hshader` names. An arbitrary
+removed filename cannot be mapped back to an ID. If several installed packs share an ID, the first
+filename in lexical order is used and listed. The `HORIZON_SHADER_PACK` development override still
+names an exact filesystem path; `shaders/` packs still use filenames.
+
+## Shader API 0.2 (experimental)
+
+0.2 is the line for linear light and HDR ([hdr-linear-light.md](../design/hdr-linear-light.md)). A pack opts in with
+`api = "0.2"`. `horizon-shader check` and `pack` take it; **the game draws 0.2 packs only with
+`HORIZON_HDR_FRAME=float` set, and the registry doesn't list them**. With the switch, a renderer made with a 0.2 pack
+picked draws the world into a float frame where the device can (else the 8-bit one), and a 0.2 pack picked or
+dropped later runs on the frame there is. What it changes from 0.1:
+
+- **Linear light.** Every colour a stage reads or returns is linear light, 1.0 at paper white and more brighter. Horizon
+  decodes vanilla's values with a 2.2 power and encodes the results the frame stores. Depth, normals, light levels,
+  `emission`, the LabPBR maps and `[[textures]]` stay data. `[[lights]]` and `[[particle_lights]]` colours are still
+  written in vanilla's gamma, and Horizon decodes them. Alpha is coverage only, and a post pass's alpha is ignored.
+- **The display in `Frame`:** `hdr`, `headroom`, `paper_white`, `peak` and `black_level`, after `shadow_center_texel`.
+  Until HDR output is served for 0.2 packs (a later step), a 0.2 pack sees SDR values with HDR on too (`hdr` 0,
+  `headroom` 1, `paper_white` and `peak` 80, `black_level` 0), and its picture is shown at paper white with nothing
+  lifted.
+- **`[tonemap]`**, `fn tonemap(input: TonemapInput) -> vec3<f32>`: the post chain's picture in, the picture for the
+  display out, from 0 to `frame.headroom`, once per pixel of the window. Without it a pack gets Horizon's curve.
+- **`[frame] blend`**: `"gamma"` (the default) or `"linear"`, what the frame stores and so how see-through draws
+  blend. `"linear"` passes the check, but the game doesn't serve it yet.
+
+```toml
+api = "0.2"
+
+[tonemap]                  # optional: the pack's own tone curve
+file = "tonemap.wgsl"
+
+[frame]
+blend = "gamma"            # optional: gamma (default) or linear
+```
+
+0.1 is unchanged: the same prelude, entries and reference, and a 0.1 pack that names `[tonemap]` or `[frame]` is
+refused. The example's port is `crates/horizon-shader-api/packs/golden_hour_0_2`, a test pack of the SDK.
+
+## Testing a pack frame by frame
+
+`horizon-ctl screenshot-sequence FRAMES STEP_MS PATH`, under `HORIZON_STILL`, starts the running pack over and draws
+its first FRAMES frames on a set clock: frame n has `frame_index` n, `time` (n - 1) × STEP_MS / 1000 and `delta_time`
+STEP_MS / 1000 (0 on frame 1; STEP_MS may be a decimal, `16.666667` for 60 fps), and `history` and the eased values
+start as in a pack just loaded. The last frame is written as a PNG, the same bytes every run on the same build, GPU
+and driver. Packs in the `shaders/` format get the same (`frameCounter`, `frameTimeCounter`, `frameTime`). How to use
+it: [the guide](../shaders.md#testing-a-pack-frame-by-frame).
+
 ## Guide, reference and examples
 
 - [shaders-reference.md](shaders-reference.md): every stage's signature, input and output structs, resources and
   helpers, the frame's fields with their units, option types and limits, generated from `crates/horizon-shader-api`.
+  0.2's is [shaders-reference-0.2.md](shaders-reference-0.2.md).
 - [The guide](../shaders.md): making a pack with `horizon-shader new`, `check` and `pack`; the templates and the
   example pack (`crates/horizon-shader-api/packs/golden_hour`).
 
 ## Stability
 
-Experimental (API 0.1). The stages ship in the game behind pack selection; see [stability.md](stability.md).
+Experimental (API 0.1). The stages ship in the game behind pack selection; see [stability.md](stability.md). API
+0.2 is experimental too, and the game draws it only with `HORIZON_HDR_FRAME=float`.
+While the API is experimental, a line is served until the next one is on by default: 0.1 ends when 0.2 is
+([hdr-linear-light.md](../design/hdr-linear-light.md), step 5).
 
 ## Not there yet
 
@@ -167,8 +225,19 @@ and particles (the material stage covers terrain only).
 
 ## Changelog
 
+- 2026-11-05: API 0.2 (change, experimental): the game draws 0.2 packs with `HORIZON_HDR_FRAME=float` set, on a
+  float frame where the device can; `[frame] blend = "linear"` is still refused. API 0.1 is unchanged.
+- 2026-11-05: API 0.2 (new line, experimental): linear light, `Frame`'s display fields, `[tonemap]` and
+  `[frame] blend`, with its own reference. `horizon-shader` checks and packs it; the game and the registry refuse it
+  for now. API 0.1 is unchanged: the uploaded `Frame` buffer grows by 32 bytes after the fields 0.1 declares.
+- 2026-11-04: API 0.1 (change, experimental): the post stage's `scene_surface` is `texture_2d<u32>`, the bits of
+  the stored floats (RGBA32F is not renderable on OpenGL). Read it through `surface_at`, or
+  `bitcast<vec4<f32>>(textureLoad(scene_surface, p, 0))`; a `textureLoad` as `vec4<f32>` no longer validates.
 - 2026-11-03: API 0.1 (no change to packs): float and int `[[options]]` are sliders on the options page, on their
   `step`; the value is saved, and the pack rebuilt, when the slider is let go.
+- 2026-11-03: API 0.1 (additions): `[shadow] option`, `resolution_option` and `distance_option`: a pack's
+  options can turn its shadow map off (no map, no shadow pass, `has_shadow` 0) and pick its size, so
+  one pack offers its own quality levels. The options sizing the map need no `override`.
 - 2026-11-03: API 0.1 (additions): with `[shadow]`, `[displacement]`'s grid casts into the shadow map in
   the flat faces' place, so the relief shadows itself.
 - 2026-11-03: API 0.1 (additions): `[displacement]` draws: near the camera the faces with LabPBR relief are a

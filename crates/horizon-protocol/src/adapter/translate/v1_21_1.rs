@@ -110,8 +110,8 @@ pub(super) fn clientbound(
                 crate::adapter::v1_20_2_ids::ITEM_NAMES
             } else if session.version.at_most(ServerVersion::V1_20_3) {
                 crate::adapter::v1_20_3_ids::ITEM_NAMES
-            } else if session.version.at_most(ServerVersion::V1_20_5) {
-                crate::adapter::v1_20_5_ids::ITEM_NAMES
+            } else if session.version.at_most(ServerVersion::V1_20_6) {
+                crate::adapter::v1_20_6_ids::ITEM_NAMES
             } else {
                 crate::adapter::v1_21_1_ids::ITEM_NAMES
             };

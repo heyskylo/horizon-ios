@@ -467,6 +467,11 @@ impl Creative {
     pub fn tab(&self) -> &Tab {
         &self.tabs[self.selected.min(self.tabs.len() - 1)]
     }
+    /// The search tab's index (`CreativeModeTabs.searchTab`), the tab the chat
+    /// key opens while another one is shown.
+    pub fn search_tab(&self) -> Option<usize> {
+        self.tabs.iter().position(|t| t.search)
+    }
     /// selectTab: a different tab empties the search box; the scrollbar goes to the top.
     /// A tab on another page shows that page.
     pub fn select(&mut self, tab: usize) {
@@ -480,10 +485,13 @@ impl Creative {
             self.page = t.page;
         }
         self.scroll = 0.0;
-        if self.tab().search {
-            self.search.focused = true;
+        // The search box is shown, focused and impossible to unfocus only on
+        // its own tab; another tab hides it and takes the focus away.
+        let search = self.tab().search;
+        if search {
             self.search.reset_blink();
         }
+        self.search.focused = search;
     }
     /// How many pages of tabs there are (1 without mods' tabs).
     pub fn pages(&self) -> u32 {
@@ -1278,6 +1286,41 @@ mod tests {
         assert_eq!(c.search.value, "");
     }
 
+    #[test]
+    fn stepping_through_tabs_turns_their_pages() {
+        let stack = |id: &str| format!("{{count:1,id:\"minecraft:{id}\"}}");
+        let tab = |id: &str, column: u32, page: u32| {
+            serde_json::json!({"id": format!("minecraft:{id}"), "type": "CATEGORY", "row": "TOP",
+                "column": column, "page": page, "title": id, "icon": stack("stone"),
+                "visible": true, "items": [stack("stone")]})
+        };
+        let raw = serde_json::json!({"schema": 3, "tabs": [
+            tab("first", 0, 0), tab("second", 1, 0), tab("modded", 0, 1), tab("more", 1, 2),
+            tab("everywhere", 6, 0)
+        ]});
+        let mut c = Creative::from_json(&raw).unwrap();
+        assert_eq!(c.pages(), 3);
+        let count = c.tabs.len();
+        let mut pages = Vec::new();
+        for step in 1..=count {
+            let tab = (c.selected + 1) % count;
+            c.select(tab);
+            assert_eq!(c.selected, tab, "step {step}");
+            assert!(
+                c.on_page(&c.tabs[tab]),
+                "tab {tab} selected on another page"
+            );
+            pages.push(c.page);
+        }
+        // A tab every page shows keeps the page it was reached from; then it wraps.
+        assert_eq!(pages, [0, 1, 2, 2, 0]);
+        // Backwards off the first tab, across pages, the same way.
+        c.select((c.selected + count - 1) % count);
+        assert_eq!(c.page, 0);
+        c.select((c.selected + count - 1) % count);
+        assert_eq!(c.page, 2);
+    }
+
     /// An export built with permissions: the operator tab's stacks, and their
     /// place at the end of the search tab, only with them.
     fn with_operator_tab() -> Creative {
@@ -1403,6 +1446,22 @@ mod tests {
         }
     }
 
+    /// `CreativeModeInventoryScreen.keyPressed`: from a tab that is not the
+    /// search, the chat key selects `CreativeModeTabs.searchTab`, which focuses
+    /// the search box and empties the query the other tab left.
+    #[test]
+    fn the_chat_key_opens_the_search_tab() {
+        let mut c = creative(0);
+        c.search.set_value("anvil");
+        let tab = c.search_tab().expect("the fixture has a search tab");
+        assert!(c.tabs[tab].search);
+        assert!(!c.tab().search);
+        c.select(tab);
+        assert!(c.tab().search);
+        assert!(c.search.focused);
+        assert_eq!(c.search.value, "", "another tab empties the query");
+    }
+
     #[test]
     fn search_matches_vanilla_trees() {
         let c = creative(0);
@@ -1499,6 +1558,26 @@ mod tests {
         c.selected = 0;
         assert!(c.press_scrollbar(180.0, 60.0, &names));
         assert!(!c.scrolling);
+    }
+
+    /// `CreativeModeInventoryScreen.selectTab`: the search box is focused on
+    /// its own tab and loses the focus when another tab is shown (and, hidden,
+    /// is no longer the field a key types into).
+    #[test]
+    fn the_search_box_loses_the_focus_with_its_tab() {
+        let mut c = creative(0);
+        let search = c
+            .tabs
+            .iter()
+            .position(|t| t.search)
+            .expect("the fixture has a search tab");
+        c.select(search);
+        assert!(c.search.focused);
+        c.select(0);
+        assert!(!c.search.focused, "another tab takes the focus away");
+        assert!(!c.tab().search);
+        c.select(search);
+        assert!(c.search.focused, "and the search tab takes it back");
     }
 
     #[test]

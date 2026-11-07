@@ -4,80 +4,210 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="dark light">
 <title>Horizon server</title>
+<link rel="icon" href="/mark.png">
 <link rel="stylesheet" href="/panel.css">
 <script src="/panel.js" defer></script>
 </head>
 <body>
-<header>
-  <div class="title">
-    <h1>Horizon server</h1>
-    <span id="phase" class="pill">…</span>
-    <span id="summary" class="muted"></span>
-  </div>
-  <div class="actions">
-    <button id="restart" type="button">Restart</button>
-    <button id="stop" type="button" class="danger">Stop</button>
-  </div>
-</header>
+<!-- The Horizon sky, drawn once: a sunset and three pixel ridges (docs/design-system.md, Glass). -->
+<div class="scene" aria-hidden="true">
+  <svg class="ridges" viewBox="0 0 320 90" preserveAspectRatio="none" shape-rendering="crispEdges">
+    <path class="ridge far" d="M0 50h8V56h8V57h14V51h6V49h12V45h14V39h8V45h12V43h12V49h8V55h6V57h8V55h8V53h14V57h12V57h8V51h6V47h10V41h14V37h14V36h6V40h14V46h14V48h10V54h12V57h8V53h10V51h14V55h12V49h14V47h4V90H0z"/>
+    <path class="ridge mid" d="M0 62h8V58h10V52h16V58h8V54h14V52h32V52h28V58h14V52h38V52h8V52h18V54h12V52h18V58h14V60h16V64h16V67h18V63h8V61h16V57h8V90H0z"/>
+    <path class="ridge near" d="M0 74h12V68h48V68h10V74h10V77h32V75h12V77h14V73h12V68h32V68h10V70h24V72h22V68h28V72h16V74h16V72h22V76h10V90H0z"/>
+  </svg>
+</div>
 
-<p id="update" class="notice" role="status" hidden>
-  <span id="update-text"></span>
-  <button id="update-button" type="button" hidden>Update</button>
-</p>
+<svg class="sprite" aria-hidden="true">
+<!-- Hugeicons (MIT), from crates/horizon-theme/icons/glass -->
+<symbol id="i-play" viewBox="0 0 24 24" fill="none"><path d="M18.8906 12.846C18.5371 14.189 16.8667 15.138 13.5257 17.0361C10.296 18.8709 8.6812 19.7884 7.37983 19.4196C6.8418 19.2671 6.35159 18.9776 5.95624 18.5787C5 17.6139 5 15.7426 5 12C5 8.2574 5 6.3861 5.95624 5.42132C6.35159 5.02245 6.8418 4.73288 7.37983 4.58042C8.6812 4.21165 10.296 5.12907 13.5257 6.96393C16.8667 8.86197 18.5371 9.811 18.8906 11.154C19.0365 11.7084 19.0365 12.2916 18.8906 12.846Z" stroke="currentColor" stroke-linejoin="round" stroke-width="1.6"/></symbol>
+<symbol id="i-stop" viewBox="0 0 24 24" fill="none"><path d="M4 12C4 8.72077 4 7.08116 4.81382 5.91891C5.1149 5.48891 5.48891 5.1149 5.91891 4.81382C7.08116 4 8.72077 4 12 4C15.2792 4 16.9188 4 18.0811 4.81382C18.5111 5.1149 18.8851 5.48891 19.1862 5.91891C20 7.08116 20 8.72077 20 12C20 15.2792 20 16.9188 19.1862 18.0811C18.8851 18.5111 18.5111 18.8851 18.0811 19.1862C16.9188 20 15.2792 20 12 20C8.72077 20 7.08116 20 5.91891 19.1862C5.48891 18.8851 5.1149 18.5111 4.81382 18.0811C4 16.9188 4 15.2792 4 12Z" stroke="currentColor" stroke-width="1.6"/></symbol>
+<symbol id="i-refresh" viewBox="0 0 24 24" fill="none"><path d="M20.0092 2V5.13219C20.0092 5.42605 19.6418 5.55908 19.4537 5.33333C17.6226 3.2875 14.9617 2 12 2C6.47715 2 2 6.47715 2 12C2 17.5228 6.47715 22 12 22C17.5228 22 22 17.5228 22 12" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6"/></symbol>
+<symbol id="i-dashboard-square-01" viewBox="0 0 24 24" fill="none"><path d="M13.6903 19.4567C13.5 18.9973 13.5 18.4149 13.5 17.25C13.5 16.0851 13.5 15.5027 13.6903 15.0433C13.944 14.4307 14.4307 13.944 15.0433 13.6903C15.5027 13.5 16.0851 13.5 17.25 13.5C18.4149 13.5 18.9973 13.5 19.4567 13.6903C20.0693 13.944 20.556 14.4307 20.8097 15.0433C21 15.5027 21 16.0851 21 17.25C21 18.4149 21 18.9973 20.8097 19.4567C20.556 20.0693 20.0693 20.556 19.4567 20.8097C18.9973 21 18.4149 21 17.25 21C16.0851 21 15.5027 21 15.0433 20.8097C14.4307 20.556 13.944 20.0693 13.6903 19.4567Z" stroke="currentColor" stroke-linecap="square" stroke-linejoin="round" stroke-width="1.6"/><path d="M13.6903 8.95671C13.5 8.49728 13.5 7.91485 13.5 6.75C13.5 5.58515 13.5 5.00272 13.6903 4.54329C13.944 3.93072 14.4307 3.44404 15.0433 3.1903C15.5027 3 16.0851 3 17.25 3C18.4149 3 18.9973 3 19.4567 3.1903C20.0693 3.44404 20.556 3.93072 20.8097 4.54329C21 5.00272 21 5.58515 21 6.75C21 7.91485 21 8.49728 20.8097 8.95671C20.556 9.56928 20.0693 10.056 19.4567 10.3097C18.9973 10.5 18.4149 10.5 17.25 10.5C16.0851 10.5 15.5027 10.5 15.0433 10.3097C14.4307 10.056 13.944 9.56928 13.6903 8.95671Z" stroke="currentColor" stroke-linecap="square" stroke-linejoin="round" stroke-width="1.6"/><path d="M3.1903 19.4567C3 18.9973 3 18.4149 3 17.25C3 16.0851 3 15.5027 3.1903 15.0433C3.44404 14.4307 3.93072 13.944 4.54329 13.6903C5.00272 13.5 5.58515 13.5 6.75 13.5C7.91485 13.5 8.49728 13.5 8.95671 13.6903C9.56928 13.944 10.056 14.4307 10.3097 15.0433C10.5 15.5027 10.5 16.0851 10.5 17.25C10.5 18.4149 10.5 18.9973 10.3097 19.4567C10.056 20.0693 9.56928 20.556 8.95671 20.8097C8.49728 21 7.91485 21 6.75 21C5.58515 21 5.00272 21 4.54329 20.8097C3.93072 20.556 3.44404 20.0693 3.1903 19.4567Z" stroke="currentColor" stroke-linecap="square" stroke-linejoin="round" stroke-width="1.6"/><path d="M3.1903 8.95671C3 8.49728 3 7.91485 3 6.75C3 5.58515 3 5.00272 3.1903 4.54329C3.44404 3.93072 3.93072 3.44404 4.54329 3.1903C5.00272 3 5.58515 3 6.75 3C7.91485 3 8.49728 3 8.95671 3.1903C9.56928 3.44404 10.056 3.93072 10.3097 4.54329C10.5 5.00272 10.5 5.58515 10.5 6.75C10.5 7.91485 10.5 8.49728 10.3097 8.95671C10.056 9.56928 9.56928 10.056 8.95671 10.3097C8.49728 10.5 7.91485 10.5 6.75 10.5C5.58515 10.5 5.00272 10.5 4.54329 10.3097C3.93072 10.056 3.44404 9.56928 3.1903 8.95671Z" stroke="currentColor" stroke-linecap="square" stroke-linejoin="round" stroke-width="1.6"/></symbol>
+<symbol id="i-user-multiple-02" viewBox="0 0 24 24" fill="none"><path d="M18.5 7C18.5 9.20914 16.7091 11 14.5 11C12.2909 11 10.5 9.20914 10.5 7C10.5 4.79086 12.2909 3 14.5 3C16.7091 3 18.5 4.79086 18.5 7Z" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6"/><path d="M8 11C6.34315 11 5 9.65685 5 8C5 6.34315 6.34315 5 8 5" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6"/><path d="M14.5 14C9.8125 14 7 16.5 7 19C7 20.1046 7.83947 21 8.875 21H20.125C21.1605 21 22 20.1046 22 19C22 16.5 19.1875 14 14.5 14Z" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6"/><path d="M4 19.9992H3.5C2.67157 19.9992 2 19.2317 2 18.2849C2 16.673 3.27307 15.0612 5.5 14.3613" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6"/></symbol>
+<symbol id="i-computer-terminal-01" viewBox="0 0 24 24" fill="none"><path d="M7.5 7.5L8.72654 8.55719C9.24218 9.00163 9.5 9.22386 9.5 9.5C9.5 9.77614 9.24218 9.99836 8.72654 10.4428L7.5 11.5" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6"/><path d="M11.5 12.5H15.5" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6"/><path d="M12 21C15.7497 21 17.6246 21 18.9389 20.0451C19.3634 19.7367 19.7367 19.3634 20.0451 18.9389C21 17.6246 21 15.7497 21 12C21 8.25027 21 6.3754 20.0451 5.06107C19.7367 4.6366 19.3634 4.26331 18.9389 3.95491C17.6246 3 15.7497 3 12 3C8.25027 3 6.3754 3 5.06107 3.95491C4.6366 4.26331 4.26331 4.6366 3.95491 5.06107C3 6.3754 3 8.25027 3 12C3 15.7497 3 17.6246 3.95491 18.9389C4.26331 19.3634 4.6366 19.7367 5.06107 20.0451C6.3754 21 8.25027 21 12 21Z" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6"/></symbol>
+<symbol id="i-sliders-horizontal" viewBox="0 0 24 24" fill="none"><path d="M2.99982 12.0002H10.9998" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6"/><path d="M13.9998 5.00015L20.9998 5.00015" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6"/><path d="M11.9998 19.0002L20.9998 19.0002" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6"/><path d="M2.99982 5.00015H9.99982M9.99982 5.00015V3.00015M9.99982 5.00015V7.00015" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6"/><path d="M2.99982 19.0002H7.99982M7.99982 19.0002V17.0002M7.99982 19.0002V21.0002" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6"/><path d="M14.9998 12.0002L20.9998 12.0002M14.9998 12.0002V10.0002M14.9998 12.0002V14.0002" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6"/></symbol>
+<symbol id="i-folder-01" viewBox="0 0 24 24" fill="none"><path d="M13.6656 6.49446H16C18.8284 6.49446 20.2426 6.49446 21.1213 7.37314C22 8.25182 22 9.66603 22 12.4945V14.5C22 17.3284 22 18.7426 21.1213 19.6213C20.2426 20.5 18.8284 20.5 16 20.5H8C5.17157 20.5 3.75736 20.5 2.87868 19.6213C2 18.7426 2 17.3284 2 14.5V8.99183C2 6.65409 2 5.48521 2.61604 4.67881C2.7778 4.46706 2.96706 4.2778 3.17881 4.11604C3.98521 3.5 5.15409 3.5 7.49183 3.5C8.16633 3.5 8.50358 3.5 8.81392 3.60442C8.8976 3.63257 8.97932 3.66623 9.05854 3.70518C9.35239 3.84965 9.59179 4.08719 10.0706 4.56227L10.8483 5.33389C11.4254 5.9066 11.714 6.19295 12.08 6.3437C12.446 6.49446 12.8525 6.49446 13.6656 6.49446Z" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6"/></symbol>
+<symbol id="i-puzzle" viewBox="0 0 24 24" fill="none"><path d="M12.828 6.00096C12.9388 5.68791 12.999 5.35099 12.999 5C12.999 3.34315 11.6559 2 9.99904 2C8.34219 2 6.99904 3.34315 6.99904 5C6.99904 5.35099 7.05932 5.68791 7.17008 6.00096C4.88532 6.0093 3.66601 6.09039 2.87772 6.87868C2.08951 7.66689 2.00836 8.88603 2 11.1704C2.31251 11.06 2.64876 11 2.99904 11C4.6559 11 5.99904 12.3431 5.99904 14C5.99904 15.6569 4.6559 17 2.99904 17C2.64876 17 2.31251 16.94 2 16.8296C2.00836 19.114 2.08951 20.3331 2.87772 21.1213C3.66593 21.9095 4.88508 21.9907 7.16941 21.999C7.05908 21.6865 6.99904 21.3503 6.99904 21C6.99904 19.3431 8.34219 18 9.99904 18C11.6559 18 12.999 19.3431 12.999 21C12.999 21.3503 12.939 21.6865 12.8287 21.999C15.113 21.9907 16.3322 21.9095 17.1204 21.1213C17.9086 20.333 17.9897 19.1137 17.9981 16.829C18.3111 16.9397 18.648 17 18.999 17C20.6559 17 21.999 15.6569 21.999 14C21.999 12.3431 20.6559 11 18.999 11C18.648 11 18.3111 11.0603 17.9981 11.171C17.9897 8.88627 17.9086 7.66697 17.1204 6.87868C16.3321 6.09039 15.1128 6.0093 12.828 6.00096Z" stroke="currentColor" stroke-linejoin="round" stroke-width="1.6"/></symbol>
+<symbol id="i-information-circle" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6"/><path d="M12 16V12" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6"/><path d="M12.125 8.25H12M12.25 8.25C12.25 8.11193 12.1381 8 12 8C11.8619 8 11.75 8.11193 11.75 8.25C11.75 8.38807 11.8619 8.5 12 8.5C12.1381 8.5 12.25 8.38807 12.25 8.25Z" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6"/></symbol>
+<symbol id="i-download-04" viewBox="0 0 24 24" fill="none"><path d="M16.9504 12.1817C17.1981 12.814 16.5076 13.5726 15.1267 15.0899C13.6702 16.6902 12.9201 17.4904 12 17.5C11.0799 17.4904 10.3298 16.6902 8.87331 15.0899C7.49239 13.5726 6.80193 12.814 7.04964 12.1817C7.05868 12.1586 7.06851 12.1359 7.0791 12.1135C7.34928 11.542 8.24477 11.5029 10 11.5002V4.99998C10 4.53501 10 4.30253 10.0511 4.11179C10.1898 3.59414 10.5941 3.1898 11.1118 3.05111C11.3025 3 11.535 3 12 3C12.4649 3 12.6974 3 12.8882 3.05111C13.4058 3.1898 13.8102 3.59414 13.9489 4.11179C14 4.30253 14 4.53501 14 4.99998V11.5002C15.7552 11.5029 16.6507 11.542 16.9209 12.1135C16.9315 12.1359 16.9413 12.1586 16.9504 12.1817Z" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6"/><path d="M5.00006 21H19.0001" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6"/></symbol>
+<symbol id="i-delete-02" viewBox="0 0 24 24" fill="none"><path d="M18.8516 16.3743L19.5 6H4.5L5.14839 16.3743C5.315 19.0401 5.39831 20.373 6.26426 21.1865C7.13021 22 8.46571 22 11.1367 22H12.8633C15.5343 22 16.8698 22 17.7357 21.1865C18.6017 20.373 18.685 19.0401 18.8516 16.3743Z" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6"/><path d="M16 6H21M16 6L15.3778 4.34082C15.0007 3.33524 14.8122 2.83245 14.4402 2.50292C14.3213 2.39765 14.1904 2.3069 14.0501 2.2326C13.6109 2 13.074 2 12 2C10.926 2 10.3891 2 9.9499 2.2326C9.8096 2.3069 9.67865 2.39765 9.55982 2.50292C9.18783 2.83245 8.99928 3.33524 8.62219 4.34082L8 6M16 6H8M3 6H8" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6"/><path d="M9.5 11V17M14.5 11V17" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6"/></symbol>
+<symbol id="i-plus-sign" viewBox="0 0 24 24" fill="none"><path d="M12 4V20M20 12H4" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6"/></symbol>
+<symbol id="i-search-01" viewBox="0 0 24 24" fill="none"><path d="M17 17L21 21" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6"/><path d="M19 11C19 6.58172 15.4183 3 11 3C6.58172 3 3 6.58172 3 11C3 15.4183 6.58172 19 11 19C15.4183 19 19 15.4183 19 11Z" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6"/></symbol>
+<symbol id="i-cancel-01" viewBox="0 0 24 24" fill="none"><path d="M18.9991 19L5 5.00098" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6"/><path d="M19 5L5.00092 18.999" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6"/></symbol>
+<symbol id="i-tick-02" viewBox="0 0 24 24" fill="none"><path d="M5 14L8.5 17.5L19 6.5" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6"/></symbol>
+<symbol id="i-copy-01" viewBox="0 0 24 24" fill="none"><path d="M7.5 14.5C7.5 11.2002 7.5 9.55025 8.52513 8.52513C9.55025 7.5 11.2002 7.5 14.5 7.5C17.7998 7.5 19.4497 7.5 20.4749 8.52513C21.5 9.55025 21.5 11.2002 21.5 14.5C21.5 17.7998 21.5 19.4497 20.4749 20.4749C19.4497 21.5 17.7998 21.5 14.5 21.5C11.2002 21.5 9.55025 21.5 8.52513 20.4749C7.5 19.4497 7.5 17.7998 7.5 14.5Z" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6"/><path d="M7.5 16.5C6.10355 16.5 5.40533 16.5 4.84402 16.3036C3.83866 15.9518 3.0482 15.1613 2.69641 14.156C2.5 13.5947 2.5 12.8964 2.5 11.5V9.5C2.5 6.20017 2.5 4.55025 3.52513 3.52513C4.55025 2.5 6.20017 2.5 9.5 2.5H11.5C12.8964 2.5 13.5947 2.5 14.156 2.69641C15.1613 3.0482 15.9518 3.83866 16.3036 4.84402C16.5 5.40533 16.5 6.10355 16.5 7.5" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6"/></symbol>
+<symbol id="i-globe-02" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="1.6"/><path d="M8 12C8 18 12 22 12 22C12 22 16 18 16 12C16 6 12 2 12 2C12 2 8 6 8 12Z" stroke="currentColor" stroke-linejoin="round" stroke-width="1.6"/><path d="M21 15H3" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6"/><path d="M21 9H3" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6"/></symbol>
+<symbol id="i-arrow-down-01" viewBox="0 0 24 24" fill="none"><path d="M18 9.00005C18 9.00005 13.5811 15 12 15C10.4188 15 6 9 6 9" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6"/></symbol>
+<symbol id="i-user" viewBox="0 0 24 24" fill="none"><path d="M20 21.0001C19.713 17.269 16.7289 14.3151 12.995 14.0662L12 13.9999C11.6446 14.0096 11.3134 14.0225 11.0008 14.0378C7.3 14.2192 4.28417 17.3057 4 21.0001" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6"/><circle cx="12" cy="6.99988" r="4" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6"/></symbol>
+</svg>
 
-<main id="app" hidden>
-  <section class="charts" aria-label="Last 10 minutes">
-    <figure><figcaption>TPS <b id="tps-now">–</b></figcaption><canvas id="tps" width="320" height="96"></canvas></figure>
-    <figure><figcaption>MSPT <b id="mspt-now">–</b></figcaption><canvas id="mspt" width="320" height="96"></canvas></figure>
-    <figure><figcaption>RAM <b id="ram-now">–</b></figcaption><canvas id="ram" width="320" height="96"></canvas></figure>
-    <figure><figcaption>CPU <b id="cpu-now">–</b></figcaption><canvas id="cpu" width="320" height="96"></canvas></figure>
-  </section>
+<div class="shell" id="app" hidden>
+  <aside class="side">
+    <div class="brand">
+      <img src="/mark.png" alt="" width="28" height="28">
+      <span>Horizon <b>server</b></span>
+    </div>
 
-  <div class="columns">
-    <section>
-      <h2>Players <span id="player-count" class="muted"></span></h2>
-      <table>
-        <thead><tr><th>Name</th><th>Ping</th><th></th></tr></thead>
-        <tbody id="players"></tbody>
-      </table>
-      <p id="no-players" class="muted">Nobody is online.</p>
+    <div class="server-card plate">
+      <div class="server-name" id="server-name">Server</div>
+      <div class="server-address" id="server-address"></div>
+      <div class="server-state"><span id="phase" class="state">…</span><span id="uptime" class="faint"></span></div>
+    </div>
+
+    <nav class="nav" aria-label="Pages">
+      <a href="#overview" data-page="overview"><svg><use href="#i-dashboard-square-01"/></svg>Overview</a>
+      <a href="#players" data-page="players"><svg><use href="#i-user-multiple-02"/></svg>Players<span class="count" id="nav-players"></span></a>
+      <a href="#console" data-page="console"><svg><use href="#i-computer-terminal-01"/></svg>Console</a>
+      <a href="#backups" data-page="backups"><svg><use href="#i-folder-01"/></svg>Backups</a>
+      <a href="#reports" data-page="reports"><svg><use href="#i-information-circle"/></svg>Crash reports<span class="count warn" id="nav-reports"></span></a>
+    </nav>
+
+    <div class="side-foot">
+      <span id="version" class="faint"></span>
+      <button type="button" class="ghost small" id="sign-out">Sign out</button>
+    </div>
+  </aside>
+
+  <div class="content">
+    <header class="top">
+      <div>
+        <h1 id="page-title">Overview</h1>
+        <p id="page-lead" class="lead"></p>
+      </div>
+      <div class="power" role="group" aria-label="Server">
+        <button type="button" id="start" class="primary" hidden><svg><use href="#i-play"/></svg>Start</button>
+        <button type="button" id="restart"><svg><use href="#i-refresh"/></svg>Restart</button>
+        <button type="button" id="stop" class="destructive"><svg><use href="#i-stop"/></svg>Stop</button>
+      </div>
+    </header>
+
+    <div id="update" class="banner plate" role="status" hidden>
+      <span class="dot accent"></span>
+      <span id="update-text"></span>
+      <button id="update-button" type="button" class="primary small" hidden>Update now</button>
+    </div>
+
+    <!-- Overview -->
+    <section class="page" data-page="overview">
+      <div class="stats">
+        <article class="stat plate"><header><span>TPS</span><b id="tps-now">–</b></header><canvas id="tps"></canvas><footer id="tps-note" class="faint">target 20</footer></article>
+        <article class="stat plate"><header><span>Tick time</span><b id="mspt-now">–</b></header><canvas id="mspt"></canvas><footer id="mspt-note" class="faint">budget 50 ms</footer></article>
+        <article class="stat plate"><header><span>Players</span><b id="players-now">–</b></header><canvas id="players-chart"></canvas><footer id="players-note" class="faint"></footer></article>
+        <article class="stat plate"><header><span>Memory</span><b id="ram-now">–</b></header><canvas id="ram"></canvas><footer id="cpu-note" class="faint"></footer></article>
+      </div>
+
+      <div class="grid-2">
+        <article class="plate card">
+          <header class="card-head"><h2>Online now</h2><a href="#players" class="link">All players</a></header>
+          <ul class="rows" id="overview-players"></ul>
+          <p class="empty" id="overview-no-players">Nobody is online.</p>
+        </article>
+        <article class="plate card">
+          <header class="card-head"><h2>This server</h2></header>
+          <dl class="facts" id="facts"></dl>
+        </article>
+      </div>
+
+      <article class="plate card">
+        <header class="card-head"><h2>Latest in the console</h2><a href="#console" class="link">Open console</a></header>
+        <pre class="log short" id="log-tail"></pre>
+      </article>
     </section>
 
-    <section>
-      <h2>Backups</h2>
-      <form id="backup-form" class="row">
-        <input id="backup-name" placeholder="Name (optional)" maxlength="40" pattern="[A-Za-z0-9_.\-]*" autocomplete="off">
-        <button type="submit">Back up now</button>
-      </form>
-      <table>
-        <thead><tr><th>Backup</th><th>Size</th><th></th></tr></thead>
-        <tbody id="backups"></tbody>
-      </table>
-      <p id="no-backups" class="muted">No backups yet.</p>
+    <!-- Players -->
+    <section class="page" data-page="players" hidden>
+      <article class="plate card">
+        <header class="card-head"><h2>Online</h2></header>
+        <ul class="rows" id="players-online"></ul>
+        <p class="empty" id="players-none">Nobody is online. Players show up here as they join.</p>
+      </article>
+
+      <article class="plate card">
+        <header class="card-head"><h2>Banned players</h2></header>
+        <form class="inline-form" id="ban-form">
+          <input name="target" placeholder="Player name" maxlength="16" required autocomplete="off" spellcheck="false" aria-label="Player name">
+          <input name="reason" placeholder="Reason (optional)" maxlength="200" autocomplete="off" aria-label="Reason">
+          <button type="submit" class="destructive">Ban</button>
+        </form>
+        <ul class="rows" id="bans"></ul>
+        <p class="empty" id="bans-none">Nobody is banned.</p>
+      </article>
+    </section>
+
+    <!-- Console -->
+    <section class="page console-page" data-page="console" hidden>
+      <article class="plate console">
+        <pre class="log" id="log" tabindex="0" aria-live="off"></pre>
+        <button type="button" class="jump small" id="jump" hidden><svg><use href="#i-arrow-down-01"/></svg>Latest</button>
+        <form class="command" id="command-form">
+          <span class="prompt" aria-hidden="true">/</span>
+          <input id="command" placeholder="A command, like list or say Hello" autocomplete="off" spellcheck="false" aria-label="Console command">
+          <button type="submit" class="primary">Run</button>
+        </form>
+      </article>
+    </section>
+
+    <!-- Backups -->
+    <section class="page" data-page="backups" hidden>
+      <article class="plate card">
+        <form class="inline-form" id="backup-form">
+          <input id="backup-name" placeholder="Name (optional)" maxlength="40" pattern="[A-Za-z0-9_.\-]*" autocomplete="off" aria-label="Backup name">
+          <button type="submit" class="primary"><svg><use href="#i-folder-01"/></svg>Back up now</button>
+        </form>
+        <p class="faint note" id="backup-schedule"></p>
+        <ul class="rows" id="backups"></ul>
+        <p class="empty" id="no-backups">No backups yet.</p>
+      </article>
+    </section>
+
+    <!-- Crash reports -->
+    <section class="page" data-page="reports" hidden>
+      <div class="split">
+        <article class="plate card">
+          <ul class="rows" id="crashes"></ul>
+          <p class="empty" id="no-crashes">No crash reports.</p>
+        </article>
+        <article class="plate card viewer" id="crash-viewer" hidden>
+          <header class="card-head"><h2 id="crash-name"></h2><button type="button" class="ghost small" id="crash-copy"><svg><use href="#i-copy-01"/></svg>Copy</button></header>
+          <pre class="log" id="crash-text" tabindex="0"></pre>
+        </article>
+      </div>
     </section>
   </div>
+</div>
 
-  <section>
-    <h2>Console</h2>
-    <pre id="log" tabindex="0" aria-live="off"></pre>
-    <form id="command-form" class="row">
-      <input id="command" placeholder="A console command, like list or say Hello" autocomplete="off" spellcheck="false">
-      <button type="submit">Run</button>
-    </form>
-  </section>
+<main id="signed-out" class="gate" hidden>
+  <div class="plate gate-card">
+    <img src="/mark.png" alt="" width="48" height="48">
+    <h1>Sign in to your server</h1>
+    <p>Run <code>horizon-server panel</code> in the server's folder and open the link it prints.
+      A link works once, for 10 minutes.</p>
+  </div>
 </main>
 
-<main id="signed-out" class="message" hidden>
-  <p>Sign in with a link from the server: run <code>horizon-server panel</code> in the server's folder and open
-  the link it prints. Links work once, for 10 minutes.</p>
+<main id="gone" class="gate" hidden>
+  <div class="plate gate-card">
+    <img src="/mark.png" alt="" width="48" height="48">
+    <h1>The server isn't answering</h1>
+    <p>It may have stopped. Start it again with <code>horizon-server start</code>; this page reconnects by itself.</p>
+  </div>
 </main>
 
-<main id="gone" class="message" hidden>
-  <p>The server isn't answering. It may have stopped: start it again with <code>horizon-server start</code>,
-  then reload this page.</p>
-</main>
+<dialog id="dialog" class="plate">
+  <form method="dialog">
+    <h2 id="dialog-title"></h2>
+    <p id="dialog-text"></p>
+    <div id="dialog-fields"></div>
+    <div class="dialog-actions">
+      <button value="cancel" type="submit" class="ghost" formnovalidate>Cancel</button>
+      <button value="ok" type="submit" id="dialog-ok" class="primary">OK</button>
+    </div>
+  </form>
+</dialog>
 
-<div id="toast" role="status" hidden></div>
+<div id="toasts" class="toasts" role="status" aria-live="polite"></div>
 </body>
 </html>

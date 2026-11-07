@@ -44,6 +44,10 @@ pub(super) struct Internet {
 }
 
 impl Internet {
+    pub(super) fn location_busy(&self) -> bool {
+        self.busy
+    }
+
     pub(super) fn new() -> Self {
         let (tx, rx) = channel();
         Self {
@@ -768,7 +772,7 @@ impl Launcher {
                             .flex()
                             .items_center()
                             .gap(px(12.))
-                            .child(div().flex_none().size(px(6.)).rounded_full().bg(t.success))
+                            .child(div().flex_none().size(px(6.)).bg(t.success))
                             .child(
                                 text(theme::UI)
                                     .flex_1()

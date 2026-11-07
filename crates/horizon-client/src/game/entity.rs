@@ -13,7 +13,9 @@ use super::{FallingBlock, Game};
 use super::{
     boats::Boat, fireworks::Rocket, minecarts::Minecart, tnt::PrimedTnt, trident::ThrownTrident,
 };
-use horizon_client::entities::{ArmorStand, ExperienceOrb, ItemEntity};
+use horizon_client::entities::{
+    ArmorStand, Cushion, ExperienceOrb, ItemEntity, ItemFrame, Painting,
+};
 use horizon_client::entity_rules::EntityRules;
 use horizon_client::join_seq::JoinSeq;
 use horizon_client::join_seq::Joined as _;
@@ -62,6 +64,11 @@ pub(super) trait Entity: EntityRules {
     /// `Entity.getDeltaMovement`.
     fn velocity(&self) -> Vec3;
     fn velocity_mut(&mut self) -> &mut Vec3;
+    /// `Entity.getYRot` and `getXRot`: yaw, pitch.
+    fn rotation(&self) -> [f32; 2];
+    /// The rotation part of `Entity.teleportSetPosition`: `setYRot`, `setXRot`
+    /// (clamped to -90..90), then `setOldRot`.
+    fn set_rotation(&mut self, rotation: [f32; 2]);
     fn bounds(&self) -> Aabb;
     /// What a selector finds this entity as (`@e`), or `None` for one it cannot
     /// name yet. Required, so a new kind states which.
@@ -272,6 +279,272 @@ pub(super) trait Entity: EntityRules {
     }
 }
 
+/// Bounds and identity needed by the render occlusion culler. Moving renderers
+/// use interpolated entity bounds; attached entities use their own world bounds.
+pub(super) trait RenderEntityBounds {
+    fn render_id(&self) -> u32;
+    fn render_bounds(&self, alpha: f64) -> Aabb;
+    fn render_glowing(&self, game: &Game<'_>) -> bool {
+        game.entity_glowing(self.render_id())
+    }
+}
+
+impl RenderEntityBounds for Mob {
+    fn render_id(&self) -> u32 {
+        self.id
+    }
+
+    fn render_bounds(&self, alpha: f64) -> Aabb {
+        // Keep models with large independent appendages on the old envelope:
+        // their tentacles and wings can extend several blocks past the entity
+        // dimensions. Equipment and custom rendering bypass this pre-check at
+        // the call site.
+        let (width, height, _) = self.awake_dims();
+        let at = self.previous.lerp(self.position, f64::from(alpha as f32));
+        if matches!(
+            self.species(),
+            Species::Guardian | Species::ElderGuardian | Species::Phantom
+        ) {
+            let radius = width.max(height) * 2.5 + 3.0;
+            return Aabb::of_size(at, Vec3::new(radius * 2.0, radius * 2.0, radius * 2.0));
+        }
+
+        // Vanilla's ordinary models can rotate their head, limbs and death
+        // pose beyond the collision box. This envelope covers those poses while
+        // remaining close to the rendered mesh for the common upright mobs.
+        // A few quadruped death and riding poses reach several blocks past
+        // their standing width. Keep a bounded fallback radius for ordinary
+        // models while still shrinking the common pig/zombie envelope below
+        // the old five-block radius.
+        let horizontal = (width * 2.0).max(height * 1.5).max(3.5);
+        let vertical = height * 3.0 + 0.5;
+        Aabb::new(
+            at.subtract(Vec3::new(horizontal, vertical, horizontal)),
+            at.add_vector(Vec3::new(horizontal, vertical, horizontal)),
+        )
+    }
+
+    fn render_glowing(&self, _game: &Game<'_>) -> bool {
+        self.is_currently_glowing()
+    }
+}
+
+impl RenderEntityBounds for ArmorStand {
+    fn render_id(&self) -> u32 {
+        self.id
+    }
+
+    fn render_bounds(&self, alpha: f64) -> Aabb {
+        let at = self.previous.lerp(self.position, alpha);
+        // ArmorStandRenderer poses the limbs, then attaches hand items, head
+        // items, armour and folded elytra. Those can extend well beyond the
+        // 0.5 x 1.975 collision box (especially raised arms and head banners).
+        // This axis-aligned envelope contains every vanilla pose while staying
+        // independent of the stand's yaw and partial-tick rotation.
+        let scale = if self.small { 0.5 } else { 1.0 };
+        let equipped = self.equipment.iter().any(Option::is_some);
+        let horizontal = if equipped { 2.0 } else { 1.5 * scale };
+        let lower = if equipped { -1.0 } else { -0.5 * scale };
+        let upper = 3.5 * scale
+            + if self.equipment[5].is_some() {
+                1.5
+            } else {
+                0.0
+            };
+        Aabb::new(
+            at.subtract(Vec3::new(horizontal, -lower, horizontal)),
+            at.add_vector(Vec3::new(horizontal, upper, horizontal)),
+        )
+    }
+}
+
+impl RenderEntityBounds for ItemEntity {
+    fn render_id(&self) -> u32 {
+        self.id
+    }
+
+    fn render_bounds(&self, alpha: f64) -> Aabb {
+        let at = self.previous.lerp(self.position, alpha);
+        // DroppedItemRenderer bobs, spins, and fans out up to five item copies.
+        // The draw path uses the resolved model's exact posed extents; this
+        // fallback envelope also covers the largest vanilla ground item.
+        Aabb::new(
+            at.subtract(Vec3::new(0.75, 0.1, 0.75)),
+            at.add_vector(Vec3::new(0.75, 1.0, 0.75)),
+        )
+    }
+}
+
+impl RenderEntityBounds for Boat {
+    fn render_id(&self) -> u32 {
+        self.id
+    }
+
+    fn render_bounds(&self, alpha: f64) -> Aabb {
+        let at = self.previous.lerp(self.position, alpha);
+        // The boat model turns with yaw and its animated paddles sweep outside
+        // the sized collision box. Hurt and bubble-column rotations are covered
+        // by this orientation-independent model envelope.
+        Aabb::new(
+            at.subtract(Vec3::new(1.75, 0.75, 1.75)),
+            at.add_vector(Vec3::new(1.75, 1.5, 1.75)),
+        )
+    }
+}
+
+impl RenderEntityBounds for Minecart {
+    fn render_id(&self) -> u32 {
+        self.id
+    }
+
+    fn render_bounds(&self, alpha: f64) -> Aabb {
+        let at = self.previous.lerp(self.position, alpha);
+        let offset = self.custom_offset.map_or_else(
+            || {
+                if self.kind == super::minecarts::CartKind::Hopper {
+                    1.0
+                } else {
+                    6.0
+                }
+            },
+            f64::from,
+        );
+        let display_shift = 0.75 * (offset - 8.0) / 16.0;
+        let display_low = at.y + 0.375 - 0.4 + display_shift;
+        let display_high = at.y + 0.375 + 0.4 + display_shift + 0.9;
+        Aabb::new(
+            Vec3::new(at.x - 1.25, (at.y - 0.5).min(display_low), at.z - 1.25),
+            Vec3::new(at.x + 1.25, (at.y + 1.0).max(display_high), at.z + 1.25),
+        )
+    }
+}
+
+fn aabb_from_extents(bounds: ([f64; 3], [f64; 3])) -> Aabb {
+    Aabb::new(
+        Vec3::new(bounds.0[0], bounds.0[1], bounds.0[2]),
+        Vec3::new(bounds.1[0], bounds.1[1], bounds.1[2]),
+    )
+}
+
+impl RenderEntityBounds for Painting {
+    fn render_id(&self) -> u32 {
+        self.id
+    }
+
+    fn render_bounds(&self, _alpha: f64) -> Aabb {
+        aabb_from_extents(self.bounds())
+    }
+}
+
+impl RenderEntityBounds for ItemFrame {
+    fn render_id(&self) -> u32 {
+        self.id
+    }
+
+    fn render_bounds(&self, _alpha: f64) -> Aabb {
+        let (lo, hi) = self.bounds();
+        let step = self.step().map(f64::from);
+        let center: [f64; 3] = std::array::from_fn(|axis| (lo[axis] + hi[axis]) * 0.5);
+        // Maps fill a full block, while the held item projects toward the
+        // camera from the frame plane. Include both in the occlusion envelope.
+        let half: [f64; 3] = std::array::from_fn(|axis| if step[axis] != 0.0 { 0.75 } else { 0.5 });
+        aabb_from_extents((
+            std::array::from_fn(|axis| center[axis] - half[axis]),
+            std::array::from_fn(|axis| center[axis] + half[axis]),
+        ))
+    }
+}
+
+impl RenderEntityBounds for Cushion {
+    fn render_id(&self) -> u32 {
+        self.id
+    }
+
+    fn render_bounds(&self, _alpha: f64) -> Aabb {
+        aabb_from_extents(self.bounds())
+    }
+}
+
+#[cfg(test)]
+mod render_bounds_tests {
+    use super::*;
+
+    #[test]
+    fn armor_stand_bounds_include_raised_equipment_space() {
+        let mut stand = ArmorStand::new(1, Vec3::new(4.0, 64.0, -2.0), 90.0);
+        stand.show_arms = true;
+        stand.pose[2] = [180.0, 0.0, 45.0];
+        stand.equipment[0] = Some(horizon_client::items::ItemStack {
+            item: "minecraft:iron_sword".into(),
+            count: 1,
+            damage: 0,
+            extra: None,
+        });
+        stand.equipment[5] = Some(horizon_client::items::ItemStack {
+            item: "minecraft:banner".into(),
+            count: 1,
+            damage: 0,
+            extra: None,
+        });
+        let bounds = stand.render_bounds(0.5);
+        assert!(bounds.min_position().x <= 2.0);
+        assert!(bounds.max_position().x >= 6.0);
+        assert!(bounds.min_position().y <= 63.0);
+        assert!(bounds.max_position().y >= 69.0);
+        assert!(bounds.min_position().z <= -4.0);
+        assert!(bounds.max_position().z >= 0.0);
+    }
+
+    #[test]
+    fn boat_bounds_cover_the_rotated_paddle_sweep() {
+        let boat = Boat::new(2, "oak".into(), Vec3::new(0.0, 10.0, 0.0), 90.0);
+        let bounds = boat.render_bounds(0.5);
+        assert!(bounds.min_position().x <= -1.75);
+        assert!(bounds.max_position().x >= 1.75);
+        assert!(bounds.min_position().y <= 9.25);
+        assert!(bounds.max_position().y >= 11.5);
+        assert!(bounds.min_position().z <= -1.75);
+        assert!(bounds.max_position().z >= 1.75);
+    }
+
+    #[test]
+    fn item_frame_bounds_include_the_full_map_and_held_item_depth() {
+        let frame = ItemFrame {
+            id: 3,
+            pos: [0, 0, 0],
+            facing: 5,
+            glow: false,
+            item: None,
+            rotation: 0,
+            drop_chance: 1.0,
+            fixed: false,
+            invisible: false,
+            check_interval: 0,
+            custom_name: None,
+        };
+        let bounds = frame.render_bounds(1.0);
+        assert!(bounds.min_position().x <= -0.71875);
+        assert!(bounds.max_position().x >= 0.78125);
+        assert!(bounds.min_position().y <= 0.0);
+        assert!(bounds.max_position().y >= 1.0);
+        assert!(bounds.min_position().z <= 0.0);
+        assert!(bounds.max_position().z >= 1.0);
+    }
+
+    #[test]
+    fn minecart_bounds_follow_custom_display_offset() {
+        let mut cart = Minecart::new(
+            4,
+            super::super::minecarts::CartKind::Chest,
+            Vec3::new(0.0, 10.0, 0.0),
+        );
+        cart.custom_offset = Some(32);
+        let bounds = cart.render_bounds(1.0);
+        assert!(bounds.min_position().y <= 9.5);
+        assert!(bounds.max_position().y >= 12.8);
+    }
+}
+
 /// The fields every kind stores under the same names.
 macro_rules! stored_motion {
     () => {
@@ -293,40 +566,77 @@ macro_rules! stored_motion {
     };
 }
 
-/// One `ItemEntity.tick`, with the fluid push and the bubble column decided by
-/// the `Entity` defaults every kind shares: fluids, move, column, settle,
-/// fluids again. Returns false when the item should be removed.
-pub(super) fn tick_item(
-    item: &mut ItemEntity,
-    world: &horizon_client::world::World,
-    registry: &horizon_world::registry::BlockRegistry,
-    facts: &horizon_client::blocks::BlockFacts,
-    collision: &horizon_world::block_collision::BlockCollisionRegistry<'_>,
-    fluids: &horizon_client::motion::FluidResources,
-    no_physics: bool,
-    entity_boxes: &[Aabb],
-    border: Option<&horizon_core::geometry::border::BorderGeometry>,
-    splash: &mut impl FnMut(horizon_client::entities::ItemSplash),
-) -> bool {
-    let (water, _lava) = item.push_by_fluid(world, fluids);
-    // `Entity.baseTick` splashes before the item moves. The first tick does not.
-    item.water_entry(water > 0.0, item.ticks == 0, splash);
-    let step = item.tick_move(
-        world,
-        facts,
-        collision,
-        no_physics,
-        (water, _lava),
-        entity_boxes,
-        border,
-    );
-    item.push_by_bubble_column(world, registry, facts, collision);
-    let alive = item.tick_settle(world, facts, no_physics, step);
-    // `ItemEntity.tick` refreshes immersion after moving and splashes if that
-    // move is what entered the water.
-    let (water, _) = item.push_by_fluid(world, fluids);
-    item.water_entry(water > 0.0, false, splash);
-    alive
+impl Game<'_> {
+    /// Tick an item owned by the caller. The two results are ordinary survival
+    /// and explicit consumption by a block-contact handler.
+    pub(super) fn tick_item_with_block_contacts(
+        &mut self,
+        item: &mut ItemEntity,
+        no_physics: bool,
+        entity_boxes: &[Aabb],
+        client: bool,
+        splash: &mut impl FnMut(horizon_client::entities::ItemSplash),
+    ) -> (bool, bool) {
+        let heights = item.push_by_fluid(&self.world, &self.res.motion().fluids);
+        // Entity.baseTick splashes before moving, except on the first tick.
+        item.water_entry(heights.0 > 0.0, item.ticks == 0, splash);
+        let step = item.tick_move_before_block_effects(
+            &self.world,
+            self.res.facts(),
+            self.collision,
+            no_physics,
+            heights,
+            entity_boxes,
+            Some(self.border.geometry()),
+        );
+        if let Some(pos) =
+            item.vertical_contact(&self.world, self.collision, &self.res.motion().blocks, step)
+        {
+            let state = self.world.block(pos.x, pos.y, pos.z);
+            let position = item.position;
+            let mut discarded = false;
+            self.native_item_after_vertical_collision(
+                self.dim.id(),
+                client,
+                item.id,
+                state,
+                [pos.x, pos.y, pos.z],
+                [position.x, position.y, position.z],
+                &mut item.stack,
+                &mut discarded,
+            );
+            if discarded || item.stack.count == 0 {
+                return (false, true);
+            }
+        }
+        item.finish_move_block_effects(
+            &self.world,
+            self.res.facts(),
+            no_physics,
+            Some(&self.res.motion().blocks),
+            step,
+        );
+        item.push_by_bubble_column(
+            &self.world,
+            self.pack.assets.registry,
+            self.res.facts(),
+            self.collision,
+        );
+        let alive = item.tick_settle(&self.world, self.res.facts(), no_physics, step);
+        // ItemEntity.tick refreshes immersion and splashes on water entry.
+        let (water, _) = item.push_by_fluid(&self.world, &self.res.motion().fluids);
+        item.water_entry(water > 0.0, false, splash);
+        (alive, false)
+    }
+
+    /// Keep new joins after the active batch, so they tick next time.
+    pub(super) fn restore_item_batch(
+        &mut self,
+        mut items: horizon_client::join_seq::JoinList<ItemEntity>,
+    ) {
+        items.extend(std::mem::take(&mut self.dropped));
+        self.dropped = items;
+    }
 }
 
 /// The game's lists of entities, in the order systems walk them. Hands them to
@@ -379,7 +689,7 @@ macro_rules! define_entity_handles {
             /// cursor per list. Static dispatch and nothing allocated. Checked:
             /// a list out of join order, or an entity that never joined, stops
             /// the walk with the entity at fault.
-            #[allow(dead_code)] // read by the tick order slices that follow
+            #[allow(dead_code, reason = "the tick order work that reads this has not landed yet")]
             pub(super) fn walk_in_join_order(
                 self,
                 visit: impl FnMut(EntityHandle, JoinSeq),
@@ -447,7 +757,10 @@ pub(crate) use define_entity_handles;
 
 /// Why [`EntityLists::walk_in_join_order`] stopped.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)] // read by the tick order slices that follow
+#[allow(
+    dead_code,
+    reason = "the tick order work that reads this has not landed yet"
+)]
 pub(super) enum JoinOrderError {
     /// Never put in its list through the list's own `push`, so it has no
     /// join number.
@@ -461,7 +774,10 @@ pub(super) enum JoinOrderError {
 /// lengths, `seq(list, i)` the join number of entity `i` of a list, `handle`
 /// names it. Each step takes the lowest next number among the `N` cursors
 /// (a stack array; no allocation).
-#[allow(dead_code)] // read by the tick order slices that follow
+#[allow(
+    dead_code,
+    reason = "the tick order work that reads this has not landed yet"
+)]
 fn merge_in_join_order<const N: usize>(
     lens: [usize; N],
     seq: impl Fn(usize, usize) -> JoinSeq,
@@ -688,6 +1004,30 @@ impl Game<'_> {
 }
 
 impl Entity for Mob {
+    /// `Entity.move(MoverType.PISTON, ...)` ends in `setPos`, which `Shulker`
+    /// overrides to snap to the block centre.
+    fn move_by_piston(&mut self, movement: Vec3) {
+        let moved = self.position.add_vector(movement);
+        if self.species() == Species::Shulker {
+            crate::mobs::shulker::client_set_pos(self, moved.x, moved.y, moved.z);
+        } else {
+            self.position = moved;
+        }
+    }
+    fn rotation(&self) -> [f32; 2] {
+        [self.yaw, self.head_pitch]
+    }
+    fn set_rotation(&mut self, [yaw, pitch]: [f32; 2]) {
+        let previous = self.rotation();
+        let yaw = if yaw.is_finite() { yaw } else { previous[0] };
+        let pitch = if pitch.is_nan() { previous[1] } else { pitch };
+        self.yaw = yaw;
+        self.body_yaw = yaw;
+        self.head_yaw = yaw;
+        self.head_pitch = pitch.clamp(-90.0, 90.0);
+        self.previous_yaw = self.yaw;
+        self.previous_head_pitch = self.head_pitch;
+    }
     fn native_type(&self) -> Cow<'static, str> {
         super::native_hooks::mob_kind(self).into()
     }
@@ -718,8 +1058,10 @@ impl Entity for Mob {
     fn can_use_portal(&self, game: &Game<'_>) -> bool {
         game.mob_can_use_portal(self)
     }
+    /// `PersistentEntitySectionManager.Callback.onRemove`: discard stops
+    /// section enumeration immediately, before the entity list is swept.
     fn selector_target(&self) -> Option<Target> {
-        (self.death_time == 0).then_some(Target::Mob(self.id))
+        (!self.removed && self.death_time == 0).then_some(Target::Mob(self.id))
     }
     fn bounds(&self) -> Aabb {
         Mob::bounds(self)
@@ -786,6 +1128,15 @@ impl Entity for Mob {
 }
 
 impl Entity for ItemEntity {
+    fn rotation(&self) -> [f32; 2] {
+        self.rotation
+    }
+    fn set_rotation(&mut self, [yaw, pitch]: [f32; 2]) {
+        let previous = self.rotation();
+        let yaw = if yaw.is_finite() { yaw } else { previous[0] };
+        let pitch = if pitch.is_nan() { previous[1] } else { pitch };
+        self.rotation = [yaw, pitch.clamp(-90.0, 90.0)];
+    }
     fn fluid_eye_y(&self) -> f64 {
         ItemEntity::fluid_eye_y(self)
     }
@@ -847,6 +1198,15 @@ impl Entity for ItemEntity {
 }
 
 impl Entity for ExperienceOrb {
+    fn rotation(&self) -> [f32; 2] {
+        self.rotation
+    }
+    fn set_rotation(&mut self, [yaw, pitch]: [f32; 2]) {
+        let previous = self.rotation();
+        let yaw = if yaw.is_finite() { yaw } else { previous[0] };
+        let pitch = if pitch.is_nan() { previous[1] } else { pitch };
+        self.rotation = [yaw, pitch.clamp(-90.0, 90.0)];
+    }
     fn ticks_after_projectiles(&self) -> bool {
         true
     }
@@ -905,6 +1265,16 @@ impl Entity for ExperienceOrb {
 }
 
 impl Entity for Boat {
+    fn rotation(&self) -> [f32; 2] {
+        [self.yaw, self.pitch]
+    }
+    fn set_rotation(&mut self, [yaw, pitch]: [f32; 2]) {
+        let previous = self.rotation();
+        let yaw = if yaw.is_finite() { yaw } else { previous[0] };
+        let pitch = if pitch.is_nan() { previous[1] } else { pitch };
+        self.yaw = yaw;
+        self.pitch = pitch.clamp(-90.0, 90.0);
+    }
     fn native_type(&self) -> Cow<'static, str> {
         self.entity_type().into()
     }
@@ -966,6 +1336,16 @@ impl Entity for Boat {
 }
 
 impl Entity for Minecart {
+    fn rotation(&self) -> [f32; 2] {
+        [self.yaw, self.pitch]
+    }
+    fn set_rotation(&mut self, [yaw, pitch]: [f32; 2]) {
+        let previous = self.rotation();
+        let yaw = if yaw.is_finite() { yaw } else { previous[0] };
+        let pitch = if pitch.is_nan() { previous[1] } else { pitch };
+        self.yaw = yaw;
+        self.pitch = pitch.clamp(-90.0, 90.0);
+    }
     fn native_type(&self) -> Cow<'static, str> {
         self.kind.id().into()
     }
@@ -1035,6 +1415,17 @@ fn armor_stand_size(stand: &ArmorStand) -> (f64, f64) {
 }
 
 impl Entity for ArmorStand {
+    fn rotation(&self) -> [f32; 2] {
+        [self.yaw, self.pitch]
+    }
+    fn set_rotation(&mut self, [yaw, pitch]: [f32; 2]) {
+        let previous = self.rotation();
+        let yaw = if yaw.is_finite() { yaw } else { previous[0] };
+        let pitch = if pitch.is_nan() { previous[1] } else { pitch };
+        self.yaw = yaw;
+        self.previous_yaw = yaw;
+        self.pitch = pitch.clamp(-90.0, 90.0);
+    }
     fn fluid_eye_y(&self) -> f64 {
         ArmorStand::fluid_eye_y(self)
     }
@@ -1126,6 +1517,15 @@ impl Entity for ArmorStand {
 }
 
 impl Entity for PrimedTnt {
+    fn rotation(&self) -> [f32; 2] {
+        self.rotation
+    }
+    fn set_rotation(&mut self, [yaw, pitch]: [f32; 2]) {
+        let previous = self.rotation();
+        let yaw = if yaw.is_finite() { yaw } else { previous[0] };
+        let pitch = if pitch.is_nan() { previous[1] } else { pitch };
+        self.rotation = [yaw, pitch.clamp(-90.0, 90.0)];
+    }
     fn ticks_after_projectiles(&self) -> bool {
         true
     }
@@ -1186,6 +1586,15 @@ impl Entity for PrimedTnt {
 }
 
 impl Entity for FallingBlock {
+    fn rotation(&self) -> [f32; 2] {
+        self.rotation
+    }
+    fn set_rotation(&mut self, [yaw, pitch]: [f32; 2]) {
+        let previous = self.rotation();
+        let yaw = if yaw.is_finite() { yaw } else { previous[0] };
+        let pitch = if pitch.is_nan() { previous[1] } else { pitch };
+        self.rotation = [yaw, pitch.clamp(-90.0, 90.0)];
+    }
     fn ticks_after_projectiles(&self) -> bool {
         true
     }
@@ -1222,6 +1631,18 @@ impl Entity for FallingBlock {
 }
 
 impl Entity for Projectile {
+    fn rotation(&self) -> [f32; 2] {
+        [self.yaw, self.pitch]
+    }
+    fn set_rotation(&mut self, [yaw, pitch]: [f32; 2]) {
+        let previous = self.rotation();
+        let yaw = if yaw.is_finite() { yaw } else { previous[0] };
+        let pitch = if pitch.is_nan() { previous[1] } else { pitch };
+        self.yaw = yaw;
+        self.pitch = pitch.clamp(-90.0, 90.0);
+        self.previous_yaw = self.yaw;
+        self.previous_pitch = self.pitch;
+    }
     fn native_type(&self) -> Cow<'static, str> {
         self.kind.id().into()
     }
@@ -1249,7 +1670,8 @@ impl Entity for Projectile {
             "minecraft:fireball"
             | "minecraft:small_fireball"
             | "minecraft:wind_charge"
-            | "minecraft:breeze_wind_charge" => game.load_fireball(tag, uuid, player_uuid),
+            | "minecraft:breeze_wind_charge"
+            | "minecraft:wither_skull" => game.load_fireball(tag, uuid, player_uuid),
             id if horizon_client::entity_nbt::throwable_kind(id).is_some() => {
                 game.load_throwable(tag, uuid, player_uuid)
             }
@@ -1310,6 +1732,15 @@ impl Entity for Projectile {
 }
 
 impl Entity for Rocket {
+    fn rotation(&self) -> [f32; 2] {
+        self.rotation
+    }
+    fn set_rotation(&mut self, [yaw, pitch]: [f32; 2]) {
+        let previous = self.rotation();
+        let yaw = if yaw.is_finite() { yaw } else { previous[0] };
+        let pitch = if pitch.is_nan() { previous[1] } else { pitch };
+        self.rotation = [yaw, pitch.clamp(-90.0, 90.0)];
+    }
     fn native_type(&self) -> Cow<'static, str> {
         "minecraft:firework_rocket".into()
     }
@@ -1358,6 +1789,16 @@ impl Entity for Rocket {
 }
 
 impl Entity for ThrownTrident {
+    fn rotation(&self) -> [f32; 2] {
+        [self.yaw, self.pitch]
+    }
+    fn set_rotation(&mut self, [yaw, pitch]: [f32; 2]) {
+        let previous = self.rotation();
+        let yaw = if yaw.is_finite() { yaw } else { previous[0] };
+        let pitch = if pitch.is_nan() { previous[1] } else { pitch };
+        self.yaw = yaw;
+        self.pitch = pitch.clamp(-90.0, 90.0);
+    }
     fn native_type(&self) -> Cow<'static, str> {
         "minecraft:trident".into()
     }
@@ -1666,5 +2107,36 @@ mod join_order_tests {
             lists.walk(),
             Err(JoinOrderError::Unjoined(EntityHandle::ArmorStand(2)))
         );
+    }
+}
+
+#[cfg(test)]
+mod set_rotation_tests {
+    use super::Entity as _;
+    use horizon_client::entities::ExperienceOrb;
+
+    /// `Entity.teleportSetPosition`: yaw as given, pitch clamped to -90..90, on
+    /// every kind (the ones with no field of their own used to drop it).
+    #[test]
+    fn set_rotation_keeps_yaw_and_clamps_pitch_on_kinds_that_had_none() {
+        let mut orb = ExperienceOrb {
+            join: Default::default(),
+            no_gravity: false,
+            id: 0,
+            position: horizon_core::geometry::Vec3::ZERO,
+            previous: horizon_core::geometry::Vec3::ZERO,
+            velocity: horizon_core::geometry::Vec3::ZERO,
+            value: 1,
+            age: 0,
+            on_ground: false,
+            count: 1,
+            ticks: 0,
+            health: 5,
+            rotation: [0.0, 0.0],
+        };
+        orb.set_rotation([90.0, 10.0]);
+        assert_eq!(orb.rotation(), [90.0, 10.0]);
+        orb.set_rotation([0.0, 200.0]);
+        assert_eq!(orb.rotation(), [0.0, 90.0]);
     }
 }

@@ -1,6 +1,7 @@
 //! Commands from the control socket (`horizon-ctl`), run on the game thread.
 use super::event_loop::EventLoopCtl;
 use super::{Game, Screen};
+use horizon_client::held::Source;
 use horizon_client::{Result, items::ItemStack};
 use horizon_core::geometry::Vec3;
 use serde_json::{Value, json};
@@ -17,7 +18,7 @@ const PROTOCOL: &str = "0.1.0";
 /// The command groups the game serves, as `help` chains them: what `hello` reports as its features.
 const FEATURES: &[&str] = &[
     "game", "station", "blocks", "lan", "friends", "render", "sculk", "agent", "ui", "options",
-    "events", "saves", "pad",
+    "events", "saves", "pad", "studio",
 ];
 
 /// `hello`: the protocol the socket speaks, the game's release and the command groups it serves.
@@ -52,10 +53,11 @@ const HELP: &[&str] = &[
     "fill X1 Y1 Z1 X2 Y2 Z2 BLOCK   set a box of loaded blocks",
     "resume                         leave the pause menu",
     "screenshot PATH                write the next frame as PNG",
+    "screenshot-sequence FRAMES STEP_MS PATH|cancel  a shader pack's first frames on a set clock (HORIZON_STILL), the last as PNG",
     "chat TEXT                      send a chat line or /command as if typed",
     "type TEXT                      type into the open chat box (key enter tap sends)",
     "chat-log [N]                   the newest N chat messages (default 10)",
-    "options [PAGE]                 open the options (video sound controls keybinds mouse chat accessibility language font packs mods graphics graphics-advanced graphics-hdr)",
+    "options [PAGE]                 open the options (video sound controls keybinds mouse chat accessibility language font packs mods graphics graphics-advanced graphics-hdr video-vanilla)",
     "stats [reset] [raw]            frame-time summary since the last reset (raw: every frame time too)",
     "narration                      the narrator's status and the last messages it was asked to say",
     "bench SECONDS                  reset stats, wait, then reply with the summary",
@@ -118,6 +120,7 @@ impl Game<'_> {
             && let Some(flight) = self.flight.take()
         {
             let mut summary = self.frame_stats.summary();
+            self.add_async_occlusion_stats(&mut summary);
             let n = flight.tick_ms.len().max(1) as f32;
             summary["tick_ms"] = (flight.tick_ms.iter().sum::<f32>() / n).into();
             summary["tick_ms_max"] = flight.tick_ms.iter().copied().fold(0.0, f32::max).into();
@@ -164,7 +167,21 @@ impl Game<'_> {
                     .collect(),
             );
         }
+        self.add_async_occlusion_stats(&mut summary);
         summary
+    }
+
+    fn add_async_occlusion_stats(&self, summary: &mut Value) {
+        if let Some(culler) = &self.async_occlusion_culler {
+            summary["async_occlusion_culling"] = culler.stats_value();
+        }
+    }
+
+    fn reset_frame_stats(&mut self) {
+        self.frame_stats.reset();
+        if let Some(culler) = &self.async_occlusion_culler {
+            culler.reset_stats();
+        }
     }
     pub(super) fn poll_control(&mut self, event_loop: &dyn EventLoopCtl) {
         if let Some((deadline, reply)) = self.pending_bench.take() {
@@ -225,7 +242,7 @@ impl Game<'_> {
                     self.world_options_text(None);
                     return Ok(());
                 }
-                Screen::Inventory if self.mod_browser_typing() => {
+                Screen::Inventory | Screen::Creative if self.mod_browser_typing() => {
                     self.mod_browser_text(None, true);
                     return Ok(());
                 }
@@ -244,6 +261,21 @@ impl Game<'_> {
     /// Nothing here is a key — the caller drops control characters. `Err` when
     /// no text box of the screen takes them.
     pub(super) fn type_chars_into_screen(&mut self, text: &str) -> Result<()> {
+        // Overlays own the input even when a text box remains focused behind them.
+        if self.dialog_open() {
+            self.dialog_type(text);
+            return Ok(());
+        }
+        if self.prompt_open() {
+            return Ok(());
+        }
+        if let Some(result) = self.type_text_field_input(text) {
+            return result;
+        }
+        self.type_chars_unhooked(text)
+    }
+
+    pub(super) fn type_chars_unhooked(&mut self, text: &str) -> Result<()> {
         if self.book.is_some() {
             self.book_type(text);
             return Ok(());
@@ -269,7 +301,7 @@ impl Game<'_> {
             Screen::Options => self.ui.options.type_text(&self.gui.atlas, text),
             // The port, or the game rules' search and number boxes.
             Screen::WorldOptions => self.world_options_text(Some(text)),
-            Screen::Inventory if self.mod_browser_typing() => {
+            Screen::Inventory | Screen::Creative if self.mod_browser_typing() => {
                 self.mod_browser_text(Some(text), false)
             }
             Screen::Inventory if self.recipe_search_focused() => {
@@ -278,6 +310,11 @@ impl Game<'_> {
             // The anvil's rename box, while it has an input to name.
             Screen::Inventory if self.station_typing() => self.station_text(Some(text), false),
             Screen::Creative if self.creative_screen.tab().search => {
+                // CreativeModeInventoryScreen.charTyped: the chat key that
+                // opened the tab does not type its letter.
+                if std::mem::take(&mut self.creative_ignore_text) {
+                    return Ok(());
+                }
                 // As typed: replaces a selected query, keeps the length limit.
                 self.creative_search_edit(Some(text))
             }
@@ -323,6 +360,10 @@ impl Game<'_> {
         event_loop: &dyn EventLoopCtl,
     ) -> Result<Option<Value>> {
         let words: Vec<&str> = line.split_whitespace().collect();
+        self.screenshot_sequence_gate(words.first().copied())?;
+        if words.first() == Some(&"screenshot-sequence") {
+            return self.screenshot_sequence_command(line, reply);
+        }
         if self.pending_save.is_some() && words.first() != Some(&"quit") {
             return Err("a world save is in progress".into());
         }
@@ -362,6 +403,9 @@ impl Game<'_> {
         if let Some(value) = self.friends_control(&words)? {
             return Ok(Some(value));
         }
+        if let Some(value) = self.studio_control(&words)? {
+            return Ok(Some(value));
+        }
         match self.agent_command(&words, line, reply, event_loop)? {
             super::agent::Handled::Reply(value) => return Ok(Some(value)),
             super::agent::Handled::Deferred => return Ok(None),
@@ -384,6 +428,7 @@ impl Game<'_> {
                 .chain(super::pad::HELP)
                 .chain(super::input_trace::HELP)
                 .chain(super::repro::HELP)
+                .chain(super::studio::HELP)
                 .collect::<Vec<_>>() }))),
             "setblock" | "fill" | "particle" | "signedit" => self.render_command(&words),
             "section-draws" => {
@@ -415,6 +460,27 @@ impl Game<'_> {
                 }
                 Ok(Some(json!({ "ok": true, "gpu_passes": self.gpu_passes })))
             }
+            // Every thread's spans as a timeline Perfetto opens (`spans::trace`).
+            "trace" => match words.get(1).copied() {
+                None => Ok(Some(
+                    json!({ "ok": true, "tracing": horizon_client::spans::trace::on() }),
+                )),
+                Some("stop") => Ok(Some(
+                    json!({ "ok": true, "events": horizon_client::spans::trace::stop() }),
+                )),
+                Some(file) => {
+                    let seconds = match words.get(2) {
+                        None => None,
+                        Some(s) => Some(
+                            s.parse::<u32>()
+                                .map_err(|_| "trace [FILE [SECONDS] | stop]")?,
+                        ),
+                    };
+                    horizon_client::spans::trace::start(std::path::Path::new(file), seconds)
+                        .map_err(|e| format!("trace {file}: {e}"))?;
+                    Ok(Some(json!({ "ok": true, "tracing": true, "file": file })))
+                }
+            },
             "render-capture" => match words.get(1).copied() {
                 None => {
                     let r = self.renderer.as_ref().ok_or("no renderer")?;
@@ -476,8 +542,13 @@ impl Game<'_> {
                 let r = self.renderer.as_mut().ok_or("no renderer")?;
                 match words.get(1).copied() {
                     None => {}
-                    Some("on") => r.set_gpu_culling(true)?,
-                    Some("off") => r.set_gpu_culling(false)?,
+                    Some(mode @ ("on" | "off")) => {
+                        // Refused, with the reason, where it isn't offered.
+                        r.set_gpu_culling(mode == "on")?;
+                        // The setting, as its switch sets it; not saved here (as
+                        // `lod-distance`): settings changes and new renderers keep it.
+                        self.settings.horizon.gpu_culling = mode == "on";
+                    }
                     Some(other) => return Err(format!("unknown GPU culling mode {other}").into()),
                 }
                 Ok(Some(json!({ "ok": true, "gpu_culling": r.gpu_culling() })))
@@ -537,6 +608,9 @@ impl Game<'_> {
                     )
                     .into());
                 }
+                if arg(2)? != "up" {
+                    self.pad.keyboard_took_over = true;
+                }
                 // The command confirmation takes the keys; none go past it.
                 if self.command_prompt.is_some() {
                     if arg(2)? != "up" {
@@ -564,7 +638,7 @@ impl Game<'_> {
                 // A held edit modifier (`key super down`) and A/C/V/X: the
                 // open book's Select All, Copy, Paste or Cut.
                 if self.book.is_some() && arg(2)? != "up" {
-                    let held = |k: [KeyCode; 2]| k.iter().any(|k| self.keys.contains(k));
+                    let held = |k: [KeyCode; 2]| k.iter().any(|k| self.keys.raw(k));
                     let edit = if cfg!(target_os = "macos") {
                         held([KeyCode::SuperLeft, KeyCode::SuperRight])
                     } else {
@@ -638,14 +712,22 @@ impl Game<'_> {
                         Some(Ok(k)) => k,
                         Some(Err(button)) => {
                             let action = arg(2)?;
-                            if self.screen == Screen::Playing {
+                            if self.screen == Screen::Playing
+                                && self.shared_default_acts(
+                                    button,
+                                    horizon_client::keybinds::key_name(physical),
+                                )
+                            {
                                 if action != "up" {
-                                    self.play_mouse(button, true)?;
+                                    self.mouse_mapping(button, true, Source::Agent)?;
                                 }
                                 // A repeat keeps the key held, as the window's.
                                 if action == "up" || action == "tap" {
-                                    self.play_mouse(button, false)?;
+                                    self.mouse_mapping(button, false, Source::Agent)?;
                                 }
+                            }
+                            if action == "tap" {
+                                self.physical_keys.remove(&physical);
                             }
                             return ok();
                         }
@@ -655,23 +737,17 @@ impl Game<'_> {
                 match arg(2)? {
                     "down" => self.control_key_down(key, physical)?,
                     "up" => {
-                        self.keys.remove(&key);
+                        self.control_key_up(key);
                         self.physical_keys.remove(&key);
                     }
                     // The system's auto-repeat while the key is held.
                     "repeat" => {
                         self.physical_keys.insert(physical);
-                        self.mapped_key(
-                            key,
-                            true,
-                            true,
-                            key,
-                            horizon_client::held::Source::Keyboard,
-                        )?;
+                        self.mapped_key(key, true, true, key, Source::Agent)?;
                     }
                     "tap" => {
                         self.control_key_down(key, physical)?;
-                        self.keys.remove(&key);
+                        self.control_key_up(key);
                         self.physical_keys.remove(&physical);
                         self.debug_key(physical, horizon_client::debug_keys::KeyAction::Release);
                     }
@@ -721,17 +797,17 @@ impl Game<'_> {
                 match arg(2)? {
                     "down" => {
                         self.extras_mouse(button, true);
-                        self.play_mouse(button, true)?
+                        self.mouse_mapping(button, true, Source::Agent)?
                     }
                     "up" => {
                         self.extras_mouse(button, false);
-                        self.play_mouse(button, false)?
+                        self.mouse_mapping(button, false, Source::Agent)?
                     }
                     "click" => {
                         self.extras_mouse(button, true);
                         self.extras_mouse(button, false);
-                        self.play_mouse(button, true)?;
-                        self.play_mouse(button, false)?;
+                        self.mouse_mapping(button, true, Source::Agent)?;
+                        self.mouse_mapping(button, false, Source::Agent)?;
                     }
                     other => {
                         return Err(
@@ -762,6 +838,23 @@ impl Game<'_> {
                 self.previous_position = to;
                 ok()
             }
+            "emote" => match words.get(1).copied() {
+                None => {
+                    let owned: Vec<String> =
+                        self.owned_emotes().iter().map(|i| i.id.clone()).collect();
+                    Ok(Some(
+                        json!({ "owned": owned, "playing": self.emote_playing() }),
+                    ))
+                }
+                Some("stop") => {
+                    self.stop_emote();
+                    ok()
+                }
+                Some(id) if self.play_emote(id) => ok(),
+                Some(id) => {
+                    Err(format!("can't play emote {id} now (not owned, or not standing)").into())
+                }
+            },
             "hotbar" => {
                 let slot: usize = arg(1)?.parse()?;
                 if !(1..=9).contains(&slot) {
@@ -851,7 +944,24 @@ impl Game<'_> {
                 let baby = words.contains(&"baby");
                 let nums: Vec<f64> = words[2..].iter().filter_map(|w| w.parse().ok()).collect();
                 let at = (nums.len() >= 3).then(|| [nums[0], nums[1], nums[2]]);
-                let id = self.summon(arg(1)?, at, baby)?;
+                let kind = arg(1)?.to_owned();
+                // Single player on its server thread: spawn in the owner's level
+                // so the mob enters the server tick loop and is tracked to clients.
+                if let Some(server) = &self.integrated {
+                    let at = match at {
+                        Some(a) => a,
+                        None => self.default_summon_position()?,
+                    };
+                    let id = server
+                        .call(move |g| {
+                            g.in_owner_level(|g| {
+                                g.summon(&kind, Some(at), baby).map_err(|e| e.to_string())
+                            })
+                        })
+                        .ok_or(super::integrated::NO_ANSWER)??;
+                    return Ok(Some(json!({ "ok": true, "id": id })));
+                }
+                let id = self.summon(&kind, at, baby)?;
                 Ok(Some(json!({ "ok": true, "id": id })))
             }
             "mobs" => {
@@ -900,11 +1010,10 @@ impl Game<'_> {
             }
             "chat" => {
                 let text = line.trim_start().strip_prefix("chat").unwrap_or("").trim();
-                if self.remote.is_some() {
-                    self.send_chat(text);
-                    return ok();
-                }
                 self.require_world()?;
+                // As if typed: a client mod's command runs before the line
+                // reaches the server, and the Chat option's restrictions and
+                // the recent list apply to a connected server too.
                 self.handle_chat_input(text);
                 Ok(Some(
                     json!({ "ok": true, "chat": self.ui.chat.recent_lines(5) }),
@@ -929,6 +1038,12 @@ impl Game<'_> {
                 // key event fires it. A cancelled character is dropped, so
                 // `type` types the survivors only.
                 // `\b` is the socket's backspace sentinel, not two characters.
+                if text != "\\b"
+                    && let Some(result) = self.type_text_field_input(text)
+                {
+                    result?;
+                    return ok();
+                }
                 let typed = if text == "\\b" {
                     text.to_owned()
                 } else {
@@ -944,7 +1059,9 @@ impl Game<'_> {
                 use horizon_client::options_ui::Page;
                 let page = match words.get(1).copied().unwrap_or("main") {
                     "main" => Page::Main,
-                    "video" => Page::Video,
+                    // What Video Settings... opens; vanilla's own layout, which no menu opens.
+                    "video" => Page::Graphics,
+                    "video-vanilla" => Page::Video,
                     "sound" => Page::Sound,
                     "controls" => Page::Controls,
                     "keybinds" => Page::KeyBinds,
@@ -962,6 +1079,7 @@ impl Game<'_> {
                     "graphics-advanced" => Page::GraphicsAdvanced,
                     "graphics-hdr" => Page::GraphicsHdr,
                     "extras" => Page::Extras,
+                    "pvp" => Page::Pvp,
                     "credits" => Page::Credits,
                     "horizon" => Page::Horizon,
                     "agent" => Page::Agent,
@@ -975,6 +1093,7 @@ impl Game<'_> {
                 if page == Page::ShaderPacks {
                     self.settings.shader_packs =
                         horizon_client::shader_pack_list::scan(&Self::shader_packs_dir());
+                    self.open_shader_options();
                 }
                 ok()
             }
@@ -1002,7 +1121,7 @@ impl Game<'_> {
                     summary["gpu_ms"] = self.frame_stats.gpu_millis().into();
                 }
                 if words[1..].contains(&"reset") {
-                    self.frame_stats.reset();
+                    self.reset_frame_stats();
                 }
                 Ok(Some(summary))
             }
@@ -1011,7 +1130,7 @@ impl Game<'_> {
                 if self.pending_bench.is_some() {
                     return Err("a benchmark is already running".into());
                 }
-                self.frame_stats.reset();
+                self.reset_frame_stats();
                 self.pending_bench = Some((
                     Instant::now() + Duration::from_secs_f64(seconds),
                     reply.clone(),
@@ -1025,7 +1144,7 @@ impl Game<'_> {
                 }
                 let n = |i: usize| -> Result<f64> { Ok(arg(i)?.parse()?) };
                 let pitch = words.get(8).map_or(Ok(10.0), |p| p.parse::<f32>())?;
-                self.frame_stats.reset();
+                self.reset_frame_stats();
                 self.flight = Some(Flight {
                     from: Vec3::new(n(1)?, n(2)?, n(3)?),
                     to: Vec3::new(n(4)?, n(5)?, n(6)?),
@@ -1179,10 +1298,17 @@ impl Game<'_> {
             self.block_editor_key_code(key, None, None);
             return Ok(());
         }
-        if self.keys.insert(key) {
+        if self.keys.press(key, Source::Agent) {
             self.key_pressed(key, raw)?;
         }
         Ok(())
+    }
+
+    /// `key ... up`: the script lets go. What it pressed as the keyboard's stand-in goes with it
+    /// (a fixture's untagged press), and a controller's hold stays.
+    fn control_key_up(&mut self, key: KeyCode) {
+        self.keys.release(&key, Source::Agent);
+        self.keys.release(&key, Source::Keyboard);
     }
 
     fn screen_name(&self) -> &'static str {
@@ -1195,6 +1321,7 @@ impl Game<'_> {
         match self.screen {
             Screen::Playing => "playing",
             Screen::GameModeSwitcher => "gamemode-switcher",
+            Screen::EmoteWheel => "emote-wheel",
             Screen::Paused => "paused",
             Screen::Options => "options",
             Screen::Inventory => "inventory",
@@ -1214,6 +1341,7 @@ impl Game<'_> {
             Screen::Win => "win",
             Screen::DebugOptions => "debug-options",
             Screen::Mod => "mod",
+            Screen::HudEditor => "hud-editor",
         }
     }
 
@@ -1310,6 +1438,9 @@ impl Game<'_> {
                 "gpu_culling": r.gpu_culling(),
                 "gpu_frame": r.gpu_frame(),
                 "gpu_fading": r.gpu_fading(),
+                "gpu_culling_offer": format!("{:?}", r.gpu_culling_offer()),
+                "gpu_occluding": r.gpu_occluding(),
+                "stats_lag": r.stats_lag(),
                 "uploaded_bytes": r.uploaded_bytes,
                 "resident_sections": r.resident_sections(),
                 "arena_bytes": arena_bytes,

@@ -3,9 +3,10 @@
 //! the list follows the scroll and takes the pane to a section. The rows inside are the mockup's
 //! `SettingRow`s ([`glass_ui::flat_rows`]).
 //!
-//! Not in the mockup, kept in its patterns: the appearance, the Home background, the logs folder
-//! and the applications menu (rows under About's tiles), the AI clients, data collection (its own
-//! entry in the list) and the hidden developer options. The mockup's Native mods switch is the
+//! Not in the mockup, kept in its patterns: the appearance, the Home background, the data and
+//! logs folders and the applications menu (About's rows), the AI clients, data collection (its own
+//! entry in the list) and the hidden developer options. The mockup's About tiles for Horizon and
+//! the launcher open Updates here, beside the switches that decide how updates install. The mockup's Native mods switch is the
 //! native mods' build profile here: they are always on.
 
 use super::*;
@@ -45,14 +46,14 @@ fn card() -> Div {
         .p(px(8.))
 }
 
-/// An About tile (`rounded-[14px] bg-white/[0.045] p-5`): its lead, name, a line under it and
-/// what it does.
-fn about_tile(lead: AnyElement, title: String, note: String, action: AnyElement) -> Div {
+/// A tile (the mockup's `AboutTile`, `rounded-[14px] bg-white/[0.045] p-5`): its lead, name, a
+/// line under it and what it does.
+fn tile(lead: AnyElement, title: String, note: String, action: AnyElement) -> Div {
     div()
         .flex()
         .flex_col()
         .flex_1()
-        .min_w_0()
+        .min_w(px(140.))
         .rounded(px(radius::LARGE))
         .bg(white(0.045))
         .p(px(20.))
@@ -99,53 +100,72 @@ impl Launcher {
         let sections = ui::flat_rows(|| self.glass_settings_sections(b, cx));
         let active = self.settings_section(sections.len());
         self.settings_marked = active;
-        let nav =
+        let wide = self.window_width >= crate::glass_home::COMPACT;
+        let items: Vec<_> = SECTIONS
+            .iter()
+            .enumerate()
+            .map(|(i, &(label, icon))| {
+                let on = i == active;
+                keyboard(
+                    div()
+                        .id(SharedString::from(format!("settings-nav-{i}")))
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .gap(px(if wide { 12. } else { 8. }))
+                        .h(px(if wide { 40. } else { 34. }))
+                        .px(px(if wide { 12. } else { 10. }))
+                        .rounded(px(radius::ROW))
+                        .cursor_pointer()
+                        .font_family(horizon_theme::glass::FONT)
+                        .text_size(px(14.))
+                        .when(on, |d| {
+                            d.bg(white(fill::ACTIVE))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(white(ink::FULL))
+                        })
+                        .when(!on, |d| {
+                            d.text_color(white(0.65))
+                                .hover(|s| s.bg(white(0.05)).text_color(white(ink::FULL)))
+                        })
+                        .child(ui::icon(
+                            icon,
+                            17.,
+                            if on {
+                                ui::color(ui::look().accent_soft)
+                            } else {
+                                white(0.65)
+                            },
+                        ))
+                        .child(tr(label).to_string()),
+                    &t,
+                )
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.settings_pane.scroll_to_top_of_item(i);
+                    cx.notify();
+                }))
+            })
+            .collect();
+        let nav = if wide {
             card()
                 .flex_none()
                 .w(px(210.))
                 .gap(px(4.))
-                .children(SECTIONS.iter().enumerate().map(|(i, &(label, icon))| {
-                    let on = i == active;
-                    keyboard(
-                        div()
-                            .id(SharedString::from(format!("settings-nav-{i}")))
-                            .flex()
-                            .items_center()
-                            .gap(px(12.))
-                            .h(px(40.))
-                            .px(px(12.))
-                            .rounded(px(radius::ROW))
-                            .cursor_pointer()
-                            .font_family(horizon_theme::glass::FONT)
-                            .text_size(px(14.))
-                            .when(on, |d| {
-                                d.bg(white(fill::ACTIVE))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(white(ink::FULL))
-                            })
-                            .when(!on, |d| {
-                                d.text_color(white(0.65))
-                                    .hover(|s| s.bg(white(0.05)).text_color(white(ink::FULL)))
-                            })
-                            .child(ui::icon(
-                                icon,
-                                17.,
-                                if on {
-                                    ui::color(ui::look().accent_soft)
-                                } else {
-                                    white(0.65)
-                                },
-                            ))
-                            .child(tr(label).to_string()),
-                        &t,
-                    )
-                    .on_click(cx.listener(
-                        move |this, _: &ClickEvent, _, cx| {
-                            this.settings_pane.scroll_to_top_of_item(i);
-                            cx.notify();
-                        },
-                    ))
-                }));
+                .children(items)
+                .into_any_element()
+        } else {
+            crate::glass::plate(radius::PANEL)
+                .id("settings-nav-strip")
+                .flex_none()
+                .w_full()
+                .flex_row()
+                .overflow_x_scroll()
+                .on_scroll(|_, _, cx| cx.stop_propagation())
+                .gap(px(4.))
+                .p(px(6.))
+                .children(items)
+                .into_any_element()
+        };
         let pane = div()
             .id("settings-pane")
             .flex_1()
@@ -169,6 +189,26 @@ impl Launcher {
             .gap(px(16.))
             .pb(px(8.))
             .children(sections);
+        let content = if wide {
+            div()
+                .flex()
+                .flex_row()
+                .items_start()
+                .gap(px(12.))
+                .flex_1()
+                .min_h_0()
+                .child(nav)
+                .child(pane)
+        } else {
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(12.))
+                .flex_1()
+                .min_h_0()
+                .child(nav)
+                .child(pane)
+        };
         div()
             .flex()
             .flex_col()
@@ -178,16 +218,7 @@ impl Launcher {
                 tr("Settings"),
                 tr("Accounts, updates, and the launcher itself."),
             ))
-            .child(
-                div()
-                    .flex()
-                    .items_start()
-                    .gap(px(12.))
-                    .flex_1()
-                    .min_h_0()
-                    .child(nav)
-                    .child(pane),
-            )
+            .child(content)
     }
 
     /// The section the list marks, from where the pane's sections are now ([`spy`]). A section's
@@ -206,6 +237,31 @@ impl Launcher {
             f32::from(pane.size.height),
             f32::from(scrolled),
             f32::from(self.settings_pane.max_offset().y),
+        )
+    }
+
+    /// The Game card's switch for registry mods' automatic updates (`horizon::auto`).
+    fn mods_auto_update_row(&mut self, cx: &mut Context<Self>) -> Div {
+        let t = self.theme;
+        let on = self.settings.auto_updates_mods();
+        ui::setting_row(
+            tr("Update registry mods automatically"),
+            Some(
+                div()
+                    .child(tr(
+                        "At start and before you play, what you installed from Horizon's registry moves to its newest version for this game. Never inside a modpack, and an update that would remove blocks or items waits for you.",
+                    ))
+                    .into_any_element(),
+            ),
+            Some(
+                crate::switch("mods-auto-update", on, &t)
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.settings.mods_auto_update = Some(!this.settings.auto_updates_mods());
+                        this.save_settings();
+                        cx.notify();
+                    }))
+                    .into_any_element(),
+            ),
         )
     }
 
@@ -259,16 +315,15 @@ impl Launcher {
         )
     }
 
-    /// About's three tiles (the mockup's `AboutTile`s): Horizon and its update, the launcher and
-    /// its own, and the data folder.
-    fn about_tiles(
+    /// Updates' two tiles (the mockup's `AboutTile`s): Horizon and its update, the launcher and its
+    /// own.
+    fn update_tiles(
         &mut self,
         horizon: String,
         horizon_action: Option<AnyElement>,
         launcher: String,
         launcher_action: Option<AnyElement>,
     ) -> Div {
-        let t = self.theme;
         let installed = self
             .settings
             .selected
@@ -302,24 +357,22 @@ impl Launcher {
             .text_color(ink)
             .child(ui::dot(tone))
             .child(div().min_w_0().truncate().child(horizon));
-        let square = |icon: &'static str| {
-            div()
-                .flex()
-                .items_center()
-                .justify_center()
-                .size(px(42.))
-                .rounded(px(11.))
-                .bg(white(0.08))
-                .child(ui::icon(icon, 21., white(0.8)))
-                .into_any_element()
-        };
-        let open = ui::quiet("about-open-data", tr("Open"), 36., &t)
-            .on_click(|_, _, cx| crate::glass_toast::open(cx, &backend::data_dir()))
+        let launcher_mark = div()
+            .flex()
+            .items_center()
+            .justify_center()
+            .size(px(42.))
+            .rounded(px(11.))
+            .bg(white(0.08))
+            .child(ui::icon("computer", 21., white(0.8)))
             .into_any_element();
+        let wide = self.window_width >= crate::glass_home::SIDE_BY_SIDE;
         div()
             .flex()
+            .when(wide, |d| d.flex_row())
+            .when(!wide, |d| d.flex_col())
             .gap(px(8.))
-            .child(about_tile(
+            .child(tile(
                 self.horizon_mark(42.),
                 "Horizon".into(),
                 installed.unwrap_or_else(|| tr("Nightly").to_string()),
@@ -332,17 +385,11 @@ impl Launcher {
                     .children(horizon_action)
                     .into_any_element(),
             ))
-            .child(about_tile(
-                square("computer"),
+            .child(tile(
+                launcher_mark,
                 tr("Launcher").to_string(),
                 launcher,
                 div().children(launcher_action).into_any_element(),
-            ))
-            .child(about_tile(
-                square("folder-01"),
-                tr("Data folder").to_string(),
-                short(&backend::data_dir()),
-                open,
             ))
     }
 
@@ -352,6 +399,7 @@ impl Launcher {
         let n = 0;
         let account = card().child(self.glass_account(cx));
         let updates = card()
+            .child(self.update_tiles(b.horizon, b.horizon_action, b.launcher, b.launcher_action))
             .child(index_row(
                 0,
                 tr("Install new versions automatically"),
@@ -385,6 +433,7 @@ impl Launcher {
             .child(self.glass_accent_row(cx))
             .child(self.look_slider_row(themes_page::LookKnob::Glass, cx))
             .child(self.look_slider_row(themes_page::LookKnob::Blur, cx))
+            .child(self.performance_row(cx))
             .child(self.home_background_row(cx))
             .child(self.language_row(cx))
             .child(self.while_playing_row(n, cx))
@@ -398,7 +447,9 @@ impl Launcher {
             .child(self.reset_look_row(cx));
         let network = card().child(self.proxy_row(n, cx));
         let game = card()
-            .child(self.game_args_row(n, cx))
+            .child(self.game_architecture_row(n, cx))
+            .child(self.game_args_row(n + 1, cx))
+            .child(self.mods_auto_update_row(cx))
             .child(self.native_mods_row(cx));
         let ai = card()
             .child(self.no_ai_row(n, cx))
@@ -411,7 +462,17 @@ impl Launcher {
                 .into_any_element()
         };
         let about = card()
-            .child(self.about_tiles(b.horizon, b.horizon_action, b.launcher, b.launcher_action))
+            .child(index_row(
+                0,
+                tr("Data folder"),
+                Some(mono(short(&backend::data_dir()))),
+                Some(
+                    button("about-open-data", "Open", Kind::Secondary, &t)
+                        .on_click(|_, _, cx| crate::glass_toast::open(cx, &backend::data_dir()))
+                        .into_any_element(),
+                ),
+                &t,
+            ))
             .child(index_row(
                 0,
                 tr("Logs"),

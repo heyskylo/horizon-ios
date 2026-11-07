@@ -3,7 +3,9 @@
 use super::{Dim, Game};
 use horizon_client::assets::Properties;
 use horizon_client::camera::NearPlane;
-use horizon_client::fog::{FogData, FogInputs, FogType, fog_type, update_rain_fog};
+use horizon_client::fog::{
+    FogData, FogInputs, FogType, fog_type, settle_rain_fog, update_rain_fog,
+};
 use horizon_client::{
     animate_tick::{AnimateContext, animate_tick, campfire_particles, marker_particle_target},
     biome::Biomes,
@@ -109,7 +111,7 @@ impl Game<'_> {
         let forward = self.forward();
         let at = [camera.x, camera.y, camera.z];
         let fog_type = fog_type(&self.world, self.res.facts(), at, &self.near_plane());
-        let (rain, thunder) = self.weather_levels(self.clock.fraction() as f32);
+        let (rain, thunder) = self.view_weather(self.clock.fraction() as f32);
         let title_fog = horizon_client::fog::FogTables::default();
         let tables = if self.title.is_some() {
             &title_fog
@@ -142,7 +144,9 @@ impl Game<'_> {
                 .darken_amount(self.clock.fraction() as f32),
             boss_world_fog: self.boss_overlay.should_create_world_fog(),
             spectator: self.spectator(),
-            fire_resistance: self.potions.effects.get("fire_resistance").is_some(),
+            fire_resistance: self.potions.effects.get("fire_resistance").is_some()
+                || self.settings.extras.pvp.tweaks.clear_lava,
+            full_water_vision: self.settings.extras.pvp.tweaks.clear_water,
             night_vision: self.fog_night_vision(),
         };
         let mut fog = horizon_client::fog::setup_fog(tables, &self.fog, &input);
@@ -361,6 +365,7 @@ impl Game<'_> {
             on_fire: self.camera_type.first_person()
                 && !self.spectator()
                 && self.player.as_ref().is_some_and(|p| p.fire_ticks > 0),
+            fire_lower: f32::from(self.settings.extras.pvp.tweaks.fire_lower) / 100.0,
             gui_overlays: &gui_overlays,
         })
     }
@@ -376,8 +381,43 @@ impl Game<'_> {
         let raw = sky.max(i32::from(packed & 15)).clamp(0, 15) as u8;
         lightmap_brightness(if self.dim == Dim::Nether { 0.1 } else { 0.0 }, raw)
     }
+    /// What `Minecraft` ticks outside the level's own tick: `GameRenderer.tick` runs the light
+    /// flicker whenever the game is not paused, frozen or not, while `TextureManager.tick`
+    /// needs the level running normally. `HORIZON_STILL` keeps both with the world.
+    pub(super) fn tick_frame_visuals(&mut self, running: bool) {
+        if running || !self.clock.still() {
+            self.fog.tick_flicker();
+        }
+        if running {
+            self.texture_ticks += 1;
+        }
+    }
+    /// What `AtmosphericFogEnvironment.updateRainFogState` reads at the eye: the rain, the sky
+    /// light and whether the biome has precipitation.
+    fn rain_fog_inputs(&self, eye: [f64; 3]) -> (f32, u8, bool) {
+        let b = [
+            eye[0].floor() as i32,
+            eye[1].floor() as i32,
+            eye[2].floor() as i32,
+        ];
+        let rain = self.view_weather(1.0).0;
+        let biome = self
+            .world
+            .chunks
+            .get(&(b[0] >> 4, b[2] >> 4))
+            .map_or(0, |c| c.biome(b[0], b[1], b[2]));
+        let rains = world_biomes!(self).get(biome).precipitation;
+        (rain, self.world.light(b[0], b[1], b[2]) >> 4, rains)
+    }
+    /// Under `HORIZON_STILL` a frozen client's rain fog sits at its level, as the rain does: it
+    /// eases only in `tick_particles`, which waits for the world.
+    pub(super) fn settle_rain_fog(&mut self) {
+        if let Some(e) = self.eye_position() {
+            let (rain, sky_light, rains) = self.rain_fog_inputs(e);
+            settle_rain_fog(&mut self.fog, rain, sky_light, rains);
+        }
+    }
     pub(super) fn tick_particles(&mut self) {
-        self.fog.tick_flicker();
         let eye = self.eye_position();
         if let Some(e) = eye {
             let brightness = self.eye_brightness(e);
@@ -394,25 +434,8 @@ impl Game<'_> {
             let in_water =
                 fog_type(&self.world, self.res.facts(), e, &self.near_plane()) == FogType::Water;
             self.fog.tick(in_water);
-            let b = [
-                e[0].floor() as i32,
-                e[1].floor() as i32,
-                e[2].floor() as i32,
-            ];
-            let rain = self.weather_levels(1.0).0;
-            let biome = self
-                .world
-                .chunks
-                .get(&(b[0] >> 4, b[2] >> 4))
-                .map_or(0, |c| c.biome(b[0], b[1], b[2]));
-            let rains = world_biomes!(self).get(biome).precipitation;
-            update_rain_fog(
-                &mut self.fog,
-                rain,
-                self.world.light(b[0], b[1], b[2]) >> 4,
-                rains,
-                1.0,
-            );
+            let (rain, sky_light, rains) = self.rain_fog_inputs(e);
+            update_rain_fog(&mut self.fog, rain, sky_light, rains, 1.0);
         }
         self.particles.particle_level = self.settings.particles;
         if let Some(e) = eye {

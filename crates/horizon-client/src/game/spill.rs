@@ -288,6 +288,58 @@ pub(super) fn pop_position(
     ]
 }
 
+/// `Block.popResourceFromFace`'s position and motion: an item on the clicked
+/// face, moved off that face and jittered across the other two axes.
+pub(super) fn pop_position_from_face(
+    random: &mut impl horizon_core::random::RandomSource,
+    pos: [i32; 3],
+    face: [i32; 3],
+) -> ([f64; 3], [f64; 3]) {
+    fn jitter<R: horizon_core::random::RandomSource>(random: &mut R, min: f64, max: f64) -> f64 {
+        min + random.next_double() * (max - min)
+    }
+    // EntityTypes.ITEM is 0.25 wide and 0.25 high.
+    let (half_width, half_height) = (0.125, 0.125);
+    let x = f64::from(pos[0])
+        + 0.5
+        + if face[0] == 0 {
+            jitter(random, -0.25, 0.25)
+        } else {
+            f64::from(face[0]) * (0.5 + half_width)
+        };
+    let y = f64::from(pos[1])
+        + 0.5
+        + if face[1] == 0 {
+            jitter(random, -0.25, 0.25)
+        } else {
+            f64::from(face[1]) * (0.5 + half_height)
+        }
+        - half_height;
+    let z = f64::from(pos[2])
+        + 0.5
+        + if face[2] == 0 {
+            jitter(random, -0.25, 0.25)
+        } else {
+            f64::from(face[2]) * (0.5 + half_width)
+        };
+    let dx = if face[0] == 0 {
+        jitter(random, -0.1, 0.1)
+    } else {
+        f64::from(face[0]) * 0.1
+    };
+    let dy = if face[1] == 0 {
+        jitter(random, 0.0, 0.1)
+    } else {
+        f64::from(face[1]) * 0.1 + 0.1
+    };
+    let dz = if face[2] == 0 {
+        jitter(random, -0.1, 0.1)
+    } else {
+        f64::from(face[2]) * 0.1
+    };
+    ([x, y, z], [dx, dy, dz])
+}
+
 /// The block entity at `pos` Horizon keeps as it was loaded, if any
 /// (campfires, decorated pots, chiseled bookshelves, shelves).
 pub(super) fn saved_entity(
@@ -397,7 +449,10 @@ impl GameLevel<'_> {
     }
     /// `Block.dropResources(state, level, pos, blockEntity)`: the block's loot
     /// (from its random sequence, else the level random), with what its block
-    /// entity copies into it, popped at once.
+    /// entity copies into it, popped at once. While a mod's machine breaks
+    /// the block (`native_machine_destroy_block`), the loot is rolled with its
+    /// `drop_tool` (`dropResources(.., entity, tool)`) and, given `drop_into`,
+    /// kept there instead of popped.
     pub(super) fn drop_resources_now(&mut self, pos: BlockPos, state: BlockStateId) {
         let key = (pos.x, pos.y, pos.z);
         let at = [pos.x, pos.y, pos.z];
@@ -410,30 +465,54 @@ impl GameLevel<'_> {
             self.pending.record_saved(at, &tag);
         }
         let dynamic = self.pending.dynamic(at);
+        // Only the block a machine breaks: a neighbour that pops off with it
+        // drops as with no tool, and pops (`Level.destroyBlock` for it).
+        let machine = self
+            .drop_tool
+            .as_ref()
+            .is_some_and(|(target, _)| *target == key);
+        let tool = self
+            .drop_tool
+            .as_ref()
+            .filter(|_| machine)
+            .and_then(|(_, tool)| tool.as_ref());
+        let silk = tool.is_some_and(|t| t.enchantment_level("minecraft:silk_touch") > 0);
         let drops = match self.items.block_loot_sequence(self.registry, state) {
             Some(sequence) => {
                 let random = self.rand_sequences.get(&sequence, self.seed);
                 self.items
-                    .block_drops_with(self.registry, state, None, &dynamic, random)
+                    .block_drops_with(self.registry, state, tool, &dynamic, random)
             }
             None => self.items.block_drops_with(
                 self.registry,
                 state,
-                None,
+                tool,
                 &dynamic,
                 &mut self.world.random,
             ),
         };
-        for stack in drops {
-            if &*stack.item != "minecraft:air" && stack.count > 0 {
-                self.pop_resource(at, stack);
+        for mut stack in drops {
+            if &*stack.item == "minecraft:air" || stack.count == 0 {
+                continue;
+            }
+            match self.drop_into.as_mut().filter(|_| machine) {
+                Some(kept) => {
+                    self.pending.attach(at, &mut stack);
+                    kept.push(stack);
+                }
+                None => self.pop_resource(at, stack),
             }
         }
         self.pending.clear(at);
-        // BlockBehaviour.spawnAfterBreak with no tool: ores, sculk and spawners
-        // award experience at the block's centre.
+        // BlockBehaviour.spawnAfterBreak: ores, sculk and spawners award
+        // experience at the block's centre, except to a machine's silk touch
+        // tool (`processBlockExperience`; a spawner keeps its own), as the
+        // player's break does.
         let name = self.facts.get(state).name.clone();
-        if let Some(mut xp) = removal::break_experience(&mut self.world.random, &name)
+        // `xpRange.sample` draws before silk touch zeroes it.
+        let xp = removal::break_experience(&mut self.world.random, &name)
+            .filter(|_| !silk || &*name == "minecraft:spawner");
+        if let Some(mut xp) = xp
             && self.rules.block_drops
         {
             if self.native_authoritative {

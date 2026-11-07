@@ -1,7 +1,7 @@
 //! ResourceOrIdArgument and the data-fixer-upper decoding of inline values
 //! commands accept (loot predicates, item modifiers, slot sources, context
 //! providers, dialogs), reproducing the codec error messages vanilla reports.
-use super::args::{Registries, is_id_char, parse_identifier};
+use super::args::{Registries, is_id_char, parse_identifier, slot_ranges};
 use super::{CmdResult, CommandError, Reader};
 use horizon_world::nbt::{Compound, JavaString, Tag};
 
@@ -170,7 +170,39 @@ pub fn decode(registry: &str, t: &Tag, reg: &Registries) -> Result<(), String> {
             dispatch(x, reg, "minecraft:loot_function_type", &|_, _, _| Ok(()))
         }),
         "minecraft:slot_source" => element_or_list(t, &|x| {
-            dispatch(x, reg, "minecraft:slot_source_type", &|_, _, _| Ok(()))
+            dispatch(x, reg, "minecraft:slot_source_type", &|id, map, t| {
+                if id == "minecraft:contents" {
+                    require(map, t, &["component"])?;
+                    let value = get(map, "component").expect("required component");
+                    let name = as_string(value).ok_or_else(|| "Not a string".to_owned())?;
+                    let component = parse_identifier(&name)
+                        .ok_or_else(|| format!("Not a valid resource location: {name}"))?;
+                    let known = reg.ids("minecraft:data_component_type");
+                    if !known.is_empty() && !known.contains(&component) {
+                        return Err(format!(
+                            "Unknown registry key in ResourceKey[minecraft:root / minecraft:data_component_type]: {component}"
+                        ));
+                    }
+                    if !matches!(
+                        component.as_str(),
+                        "minecraft:container"
+                            | "minecraft:bundle_contents"
+                            | "minecraft:charged_projectiles"
+                    ) {
+                        return Err("No items in component".into());
+                    }
+                } else if id == "minecraft:slot_range" {
+                    // RangeSlotSource.MAP_CODEC uses the global SlotRanges.CODEC,
+                    // independently of the eventual target inventory's size.
+                    require(map, t, &["slots"])?;
+                    let value = get(map, "slots").expect("required slots");
+                    let name = as_string(value).ok_or_else(|| "Not a string".to_owned())?;
+                    if !slot_ranges().iter().any(|(known, _)| known == &name) {
+                        return Err(format!("Unknown element name:{name}"));
+                    }
+                }
+                Ok(())
+            })
         }),
         // Dialog types: CommonDialogData's title, then each type's own.
         "minecraft:dialog" => dispatch(t, reg, "minecraft:dialog_type", &|id, map, t| {
@@ -259,6 +291,77 @@ mod predicate_tests {
             r#"{type:"minecraft:inverted",term:{}}"#,
         ] {
             assert_eq!(decode_text(bad), Err("No key type in MapLike[{}]".into()));
+        }
+    }
+}
+
+#[cfg(test)]
+mod contents_component_tests {
+    use super::*;
+
+    #[test]
+    fn only_component_collections_are_admitted_for_contents_sources() {
+        let reg = Registries::default();
+        for component in [
+            "container",
+            "bundle_contents",
+            "charged_projectiles",
+            "damage",
+        ] {
+            let raw = Tag::compound([
+                ("type", Tag::String("contents".into())),
+                ("component", Tag::String(component.into())),
+                (
+                    "slot_source",
+                    Tag::compound([
+                        ("type", Tag::String("slot_range".into())),
+                        ("slots", Tag::String("container.0".into())),
+                    ]),
+                ),
+            ]);
+            let result = decode("minecraft:slot_source", &raw, &reg);
+            if component == "damage" {
+                // Exact outer codec error independently captured from Java.
+                assert_eq!(result, Err(r#"Failed to parse either. First: No items in component; Second: Failed to parse either. First: Not a string; Second: Failed to parse either. First: Not a list: {component:"damage",slot_source:{slots:"container.0",type:"slot_range"},type:"contents"}; Second: No items in component"#.into()));
+            } else {
+                assert_eq!(result, Ok(()));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod slot_range_tests {
+    use super::*;
+
+    #[test]
+    fn inline_range_names_use_the_global_slot_registry() {
+        let reg = Registries::default();
+        for name in ["container.0", "container.53", "container.*", "hotbar.8"] {
+            let input = format!(r#"{{type:"minecraft:slot_range",slots:"{name}"}}"#);
+            let mut reader = Reader::new(&input);
+            assert!(
+                resource_or_id(&mut reader, &reg, "minecraft:slot_source").is_ok(),
+                "{name}"
+            );
+            assert_eq!(reader.cursor, input.len());
+        }
+        for name in ["container.54", "container.99"] {
+            let input = format!(r#"{{type:"minecraft:slot_range",slots:"{name}"}}"#);
+            let mut reader = Reader::new(&input);
+            assert!(
+                resource_or_id(&mut reader, &reg, "minecraft:slot_source").is_err(),
+                "{name} crossed argument parsing"
+            );
+            let (raw, _) = horizon_world::nbt::parse_snbt(&input).unwrap();
+            let message = format!("Unknown element name:{name}");
+            assert_eq!(
+                decode("minecraft:slot_source", &raw, &reg),
+                Err(either(
+                    message.clone(),
+                    either("Not a string".into(), either(not_list(&raw), message))
+                ))
+            );
         }
     }
 }

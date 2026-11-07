@@ -1407,6 +1407,6 @@ pub const IDS: super::ids::Ids = super::ids::Ids {
         up: ATTRIBUTE_UP,
         down: ATTRIBUTE_DOWN,
     },
-    // Unchanged registries and block states were checked against v1_20_5_ids's reports.
-    ..super::v1_20_5_ids::IDS
+    // Unchanged registries and block states were checked against v1_20_6_ids's reports.
+    ..super::v1_20_6_ids::IDS
 };

@@ -621,7 +621,7 @@ mod tests {
         // The real vanilla EntityDataSerializers encode registry slot 2 as these bytes.
         // Painting changes in 1.21; wolf changes in 1.21 and back in 1.21.5. Cat/frog stay bare.
         for (version, painting, wolf) in [
-            (ServerVersion::V1_20_5, 2, 2),
+            (ServerVersion::V1_20_6, 2, 2),
             (ServerVersion::V1_21_1, 3, 3),
             (ServerVersion::V1_21_3, 3, 3),
             (ServerVersion::V1_21_4, 3, 3),
@@ -689,7 +689,7 @@ mod tests {
                 [0.25, 0.5, 0.75, 2.0, 1.0, 0.0, 0.5],
             ),
             (
-                ServerVersion::V1_20_5,
+                ServerVersion::V1_20_6,
                 14,
                 [0.25, 0.5, 0.75, 1.0, 0.0, 0.5, 2.0],
             ),
@@ -722,7 +722,7 @@ mod tests {
     fn older_simple_particle_defaults_do_not_consume_the_next_field() {
         use crate::adapter::{ServerVersion, ids::Way};
         for version in [
-            ServerVersion::V1_20_5,
+            ServerVersion::V1_20_6,
             ServerVersion::V1_21_1,
             ServerVersion::V1_21_3,
             ServerVersion::V1_21_4,

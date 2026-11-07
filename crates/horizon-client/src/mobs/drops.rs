@@ -176,57 +176,6 @@ fn is_raider(s: Species) -> bool {
         S::Pillager | S::Vindicator | S::Evoker | S::Illusioner | S::Witch | S::Ravager
     )
 }
-/// Whether `setBaby(true)` makes the species a baby (AgeableMob and the
-/// zombies, minus the species that are never babies).
-pub fn can_be_baby(s: Species) -> bool {
-    use Species as S;
-    matches!(
-        s,
-        S::Armadillo
-            | S::Axolotl
-            | S::Bee
-            | S::Camel
-            | S::Cat
-            | S::Chicken
-            | S::Cow
-            | S::Dolphin
-            | S::Donkey
-            | S::Drowned
-            | S::Fox
-            | S::HappyGhast
-            | S::GlowSquid
-            | S::Goat
-            | S::Hoglin
-            | S::Horse
-            | S::Husk
-            | S::Llama
-            | S::Mooshroom
-            | S::Mule
-            | S::Nautilus
-            | S::Ocelot
-            | S::Panda
-            | S::Pig
-            | S::Piglin
-            | S::PolarBear
-            | S::Rabbit
-            | S::Sheep
-            | S::SkeletonHorse
-            | S::Sniffer
-            | S::Squid
-            | S::Strider
-            | S::SulfurCube
-            | S::TraderLlama
-            | S::Turtle
-            | S::Villager
-            | S::WanderingTrader
-            | S::Wolf
-            | S::Zoglin
-            | S::Zombie
-            | S::ZombieHorse
-            | S::ZombieVillager
-            | S::ZombifiedPiglin
-    )
-}
 /// The species whose body item Horizon draws and handles as armour (and whose
 /// sun-protection slot is the body): the equines (a horse's armour, a llama's
 /// carpet, a camel's harness) and the wolf, happy ghast, nautilus and sulfur cube.
@@ -603,13 +552,14 @@ pub fn die(
 /// The loot table `die` rolls for `m` (`LivingEntity.getLootTable`), when it
 /// rolls one: none with `doMobLoot` off, nor for a baby that isn't a monster.
 pub fn death_loot_table(m: &Mob, mob_drops: bool) -> Option<String> {
-    // Mob.getLootTable: the mob's own `DeathLootTable`, else its type's.
+    // Mob.getLootTable: the mob's own `DeathLootTable`, else its type's
+    // (`EntityType.getDefaultLootTable`: `entities/` before the type's path,
+    // in its namespace, so a content mod's type rolls its own table).
     (mob_drops && (is_monster(m.species()) || !m.is_baby())).then(|| {
         m.extra.death_loot_table.clone().unwrap_or_else(|| {
-            format!(
-                "minecraft:entities/{}",
-                m.kind.id.trim_start_matches("minecraft:")
-            )
+            let id = m.kind.id.as_str();
+            let (namespace, path) = id.split_once(':').unwrap_or(("minecraft", id));
+            format!("{namespace}:entities/{path}")
         })
     })
 }

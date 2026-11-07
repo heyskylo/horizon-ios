@@ -234,6 +234,8 @@ pub struct ConnReader {
     pub counters: Arc<Counters>,
     /// Set for a server of an older release: what arrives is renumbered.
     adapter: Option<Arc<crate::adapter::Session>>,
+    /// Set on a server for a client of an older release: what arrives is renumbered.
+    older_client: Option<Arc<crate::adapter::ClientSession>>,
 }
 /// Closes a connection from another thread: a read or a write blocked on it fails.
 pub struct Closer(Stream);
@@ -250,6 +252,8 @@ pub struct ConnWriter {
     counters: Arc<Counters>,
     /// Set for a server of an older release: what is sent is renumbered.
     adapter: Option<Arc<crate::adapter::Session>>,
+    /// Set on a server for a client of an older release: what is sent is renumbered.
+    older_client: Option<Arc<crate::adapter::ClientSession>>,
 }
 /// `InetAddress.getByName` under Java's default `java.net.preferIPv6Addresses=false`: IPv4
 /// addresses first, whatever order the system resolver gives (macOS lists IPv6 first). Vanilla
@@ -266,6 +270,18 @@ pub struct Connection {
     pub reader: ConnReader,
     pub writer: ConnWriter,
 }
+fn configure_stream(stream: &TcpStream) -> Result<()> {
+    stream.set_nodelay(true)?;
+    let sock = socket2::SockRef::from(stream);
+    let keepalive = socket2::TcpKeepalive::new()
+        .with_time(Duration::from_secs(10))
+        .with_interval(Duration::from_secs(3));
+    #[cfg(not(any(target_os = "windows", target_os = "openbsd")))]
+    let keepalive = keepalive.with_retries(3);
+    let _ = sock.set_tcp_keepalive(&keepalive);
+    Ok(())
+}
+
 impl Connection {
     pub fn connect(host: &str, port: u16, timeout: Duration) -> Result<Self> {
         let addrs: Vec<_> = (host, port)
@@ -340,7 +356,7 @@ impl Connection {
         }
     }
     pub fn from_stream(stream: TcpStream) -> Result<Self> {
-        stream.set_nodelay(true)?;
+        configure_stream(&stream)?;
         Self::over(Stream::Tcp(stream))
     }
     /// A connection over one end of an in-memory [`Pipe`].
@@ -361,6 +377,7 @@ impl Connection {
                 threshold: None,
                 counters: counters.clone(),
                 adapter: None,
+                older_client: None,
             },
             writer: ConnWriter {
                 stream: write,
@@ -368,6 +385,7 @@ impl Connection {
                 threshold: None,
                 counters,
                 adapter: None,
+                older_client: None,
             },
         })
     }
@@ -378,6 +396,18 @@ impl Connection {
             .then(|| Arc::new(crate::adapter::Session::new(version)));
         self.reader.adapter = session.clone();
         self.writer.adapter = session;
+    }
+    /// Serve a client of `version` from now on (after its handshake): packets are renumbered both ways
+    /// (crate::adapter::ClientSession). The pinned version needs nothing.
+    pub fn serve_older(&mut self, version: crate::adapter::ServerVersion) {
+        let session = (version != crate::adapter::ServerVersion::Current)
+            .then(|| Arc::new(crate::adapter::ClientSession::new(version)));
+        self.reader.older_client = session.clone();
+        self.writer.older_client = session;
+    }
+    /// The older release this connection's client is on ([`Self::serve_older`]), `None` for the pinned one.
+    pub fn older_client(&self) -> Option<crate::adapter::ServerVersion> {
+        self.reader.older_client.as_ref().map(|s| s.version)
     }
     /// `Connection.isMemoryConnection`: through a [`Pipe`] rather than a socket.
     pub fn is_memory(&self) -> bool {
@@ -445,6 +475,12 @@ impl ConnReader {
         }
         loop {
             match self.next()? {
+                Next::Packet((id, payload)) if self.older_client.is_some() => {
+                    let client = self.older_client.as_ref().expect("checked");
+                    if let Some(packet) = client.serverbound(id, payload)? {
+                        return Ok(packet);
+                    }
+                }
                 Next::Packet(packet) => match &self.adapter {
                     None => return Ok(packet),
                     Some(a) => {
@@ -462,11 +498,17 @@ impl ConnReader {
         }
     }
     /// The next whole packet among the bytes already read, without reading
-    /// more: for a detached reader, after [`Self::read_from`]. No adapter
-    /// renumbers it (a server's connection has none).
+    /// more: for a detached reader, after [`Self::read_from`]. Only an older
+    /// client's renumbering applies (a server's connection has no other).
     pub fn buffered(&mut self) -> Result<Option<(i32, Vec<u8>)>> {
         loop {
             match self.next()? {
+                Next::Packet((id, payload)) if self.older_client.is_some() => {
+                    let client = self.older_client.as_ref().expect("checked");
+                    if let Some(packet) = client.serverbound(id, payload)? {
+                        return Ok(Some(packet));
+                    }
+                }
                 Next::Packet(packet) => return Ok(Some(packet)),
                 Next::Empty => {}
                 Next::Partial(_) => return Ok(None),
@@ -609,8 +651,22 @@ impl ConnWriter {
         self.stream.flush()?;
         Ok(())
     }
+    /// A packet body as this connection's client takes it: renumbered for a client of an older release
+    /// ([`Connection::serve_older`]), `None` when it has no such packet; as it is otherwise.
+    pub fn for_client<'a>(&self, body: &'a [u8]) -> Result<Option<std::borrow::Cow<'a, [u8]>>> {
+        match &self.older_client {
+            None => Ok(Some(std::borrow::Cow::Borrowed(body))),
+            Some(client) => Ok(client.clientbound(body)?.map(std::borrow::Cow::Owned)),
+        }
+    }
     /// Send one packet body (VarInt id + payload).
     pub fn send(&mut self, body: &[u8]) -> Result<()> {
+        if self.older_client.is_some() {
+            return match self.for_client(body)? {
+                Some(body) => self.send_contents(&frame::contents(&body, self.threshold)?),
+                None => Ok(()),
+            };
+        }
         if let Some(a) = self.adapter.clone() {
             if let Some(body) = a.serverbound(body)? {
                 self.send_contents(&frame::contents(&body, self.threshold)?)?;
@@ -926,5 +982,14 @@ mod tests {
         let (id, payload) = c.recv().unwrap();
         assert_eq!((id, payload.as_slice()), (3, &b"after"[..]));
         server.join().unwrap();
+    }
+
+    #[test]
+    fn tcp_stream_enables_nodelay_and_keepalive() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let _server = listener.accept().unwrap();
+        assert!(Connection::from_stream(stream).is_ok());
     }
 }

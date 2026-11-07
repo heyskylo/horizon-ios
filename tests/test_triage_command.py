@@ -8,11 +8,28 @@ from tools.ci import triage_command as tc
 ROOT = Path(__file__).resolve().parents[1]
 NOW = datetime(2026, 10, 28, 12, tzinfo=timezone.utc)
 URL = "https://github.com/horizon-rust/horizon/issues/5#issuecomment-1"
-LIST = ns.read_reviewers("kacpherek\nrdbtCVS\n")
+# Fixture accounts: the decision is by numeric ID, so each test login has one. Ludovic's real ID may not be filled in
+# yet (tools/ci/resolve_reviewer_ids.py), so tests use their own unless it is.
+LUDOVIC_ID = ns.OWNER_ID or 1
+ns.OWNER_ID = LUDOVIC_ID
+tc.ns.OWNER_ID = LUDOVIC_ID  # the script's own import of nightly_set
+IDS = {"ludovic111": LUDOVIC_ID, "kacpherek": 101, "rdbtcvs": 102, "levzzz5154": 104}
+
+
+def actor(login):
+    return ns.Actor(login, IDS.get(login.lower(), 9999))
+
+
+def listing(*lines):
+    """A reviewers file: `kacpherek` becomes `101 kacpherek`; other lines stay as written."""
+    return ns.read_reviewers("".join((f"{IDS[l.lower()]} {l}" if l.lower() in IDS else l) + "\n" for l in lines))
+
+
+LIST = listing("kacpherek", "rdbtCVS")
 
 
 def thread(state="open", user="dev", labels=("bug",), pr=False, merged=False, locked=False):
-    t = {"state": state, "user": {"login": user}, "labels": [{"name": n} for n in labels], "locked": locked}
+    t = {"state": state, "user": {"login": user, "id": IDS.get(user.lower(), 9999)}, "labels": [{"name": n} for n in labels], "locked": locked}
     if pr:
         t["pull_request"] = {"merged_at": "2026-10-27T00:00:00Z" if merged else None}
     return t
@@ -50,7 +67,7 @@ class Fake:
 
 def do(text, api=None, login="kacpherek", reviewers=LIST, n=5):
     api = api or Fake()
-    return tc.run(api, tc.parse(text), login, n, URL, reviewers, NOW), api
+    return tc.run(api, tc.parse(text), actor(login), n, URL, reviewers, NOW), api
 
 
 class ParseTests(unittest.TestCase):
@@ -96,16 +113,21 @@ class AllowTests(unittest.TestCase):
             do("/close", login="someone")
 
     def test_paused(self):
-        paused = ns.read_reviewers("kacpherek\npaused\n")
+        paused = listing("kacpherek", "paused")
         with self.assertRaisesRegex(tc.Refused, "paused"):
             do("/close", reviewers=paused)
         do("/close", reviewers=paused, login="ludovic111")
 
     def test_the_repos_list_is_the_nightlys(self):
         self.assertEqual(ns.REVIEWERS, ".github/trusted-reviewers.txt")
-        listed = ns.read_reviewers((ROOT / ns.REVIEWERS).read_text())
-        self.assertEqual(listed.logins, {"kacpherek", "rdbtcvs", "online5277", "levzzz5154", "qwerner88880"})
-        self.assertFalse(listed.paused)
+        self.assertEqual(Path(tc.ns.__file__).resolve(), Path(ns.__file__).resolve())  # one parser for all three
+
+    def test_a_reclaimed_login_is_nobody(self):
+        with self.assertRaisesRegex(tc.Refused, "Only Ludovic"):
+            tc.run(Fake(), tc.parse("/close"), ns.Actor("kacpherek", 555), 5, URL, LIST, NOW)
+        # Ludovic's threads are recognised by his ID, not by a login someone else may hold.
+        api = Fake({5: {"state": "open", "user": {"login": "ludovic111", "id": 555}, "labels": [], "locked": False}})
+        do("/close", api)
 
 
 class ActionTests(unittest.TestCase):

@@ -4,6 +4,7 @@
 //! `/fetchprofile`, `/publish`, `/unpublish`, `/debug`, `/jfr` and
 //! `/version`, with vanilla's feedback and failures.
 use super::{Arg, Context, Game, R, Target, err};
+use horizon_client::actions::Action;
 use horizon_client::{
     command::CommandError,
     skins::{NameOrId, Resolve, ResolvedProfile},
@@ -292,8 +293,7 @@ impl Game<'_> {
             self.set_camera(None);
             return;
         }
-        let sneaking = self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft)
-            && self.screen == super::Screen::Playing;
+        let sneaking = self.keys.held(Action::Sneak) && self.screen == super::Screen::Playing;
         match self.target_position(t) {
             Some(p) if !sneaking => {
                 let rot = self.target_rotation(t);
@@ -944,9 +944,16 @@ impl Game<'_> {
         let port = match ctx.get("port") {
             Some(Arg::Int(p)) => *p,
             // HttpUtil.getAvailablePort.
-            _ => std::net::TcpListener::bind(("0.0.0.0", 0))
-                .and_then(|l| l.local_addr())
-                .map_or(25564, |a| i32::from(a.port())),
+            _ => std::net::TcpListener::bind((
+                if std::env::var_os("HORIZON_TEST_LOOPBACK").is_some_and(|v| v == "1") {
+                    "127.0.0.1"
+                } else {
+                    "0.0.0.0"
+                },
+                0,
+            ))
+            .and_then(|l| l.local_addr())
+            .map_or(25564, |a| i32::from(a.port())),
         };
         let published = if self.serving() {
             self.published_port()

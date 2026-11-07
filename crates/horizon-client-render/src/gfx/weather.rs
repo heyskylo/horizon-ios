@@ -217,15 +217,19 @@ struct HorizonWeatherOut {
         textureDimensions(horizon_entity_atlas));
     let color = textureLoad(horizon_entity_atlas, texel, 0) * in.color;
     if color.a < 0.1 { discard; }
-    return weather(WeatherInput(color, in.light, in.position, in.snow != 0u));
+    let input = WeatherInput(vec4(horizon_line_in(color.rgb), color.a), in.light, in.position,
+        in.snow != 0u);
+    let out = weather(input);
+    return vec4(horizon_line_out(out.rgb), out.a);
 }
 ";
 
 /// The shader of a native pack's weather stage `source`.
-fn native_source(source: &str) -> String {
+fn native_source(source: &str, api: horizon_shader_api::Api) -> String {
     format!(
-        "{source}\n// Horizon's weather (entity.wgsl)\n{}{NATIVE_ENTRIES}",
-        super::wgsl_prefix::prefixed(&super::entity_shader(), "horizon_entity_")
+        "{source}\n// Horizon's weather (entity.wgsl)\n{}{}{NATIVE_ENTRIES}",
+        super::wgsl_prefix::prefixed(&super::entity_shader(), "horizon_entity_"),
+        super::native_post::line_helpers(api)
     )
 }
 
@@ -242,7 +246,7 @@ pub(super) fn native_pipeline(
     constants: &[(String, f64)],
 ) -> Result<wgpu::RenderPipeline, String> {
     use horizon_shader_api::stages::GROUP;
-    let text = native_source(&stage.source);
+    let text = native_source(&stage.source, frame.api);
     let module = naga::front::wgsl::parse_str(&text)
         .map_err(|e| format!("{}: {}", stage.file, e.emit_to_string(&text)))?;
     let present = super::native_post::present_constants(&module, constants);
@@ -318,19 +322,21 @@ mod tests {
 
     #[test]
     fn a_native_weather_stage_validates() {
-        use horizon_shader_api::stages::StageKind;
-        let source = StageKind::Weather.prelude()
-            + "fn weather(input: WeatherInput) -> vec4<f32> {\n    \
-               return input.color * vec4(input.light, input.position.x, f32(input.snow));\n}\n";
-        let text = native_source(&source);
-        let module = naga::front::wgsl::parse_str(&text)
+        use horizon_shader_api::{Api, stages::StageKind};
+        for api in [Api::V0_1, Api::V0_2] {
+            let source = StageKind::Weather.prelude(api)
+                + "fn weather(input: WeatherInput) -> vec4<f32> {\n    \
+                   return input.color * vec4(input.light, input.position.x, f32(input.snow));\n}\n";
+            let text = native_source(&source, api);
+            let module = naga::front::wgsl::parse_str(&text)
+                .unwrap_or_else(|e| panic!("{}", e.emit_to_string(&text)));
+            naga::valid::Validator::new(
+                naga::valid::ValidationFlags::all(),
+                naga::valid::Capabilities::all(),
+            )
+            .validate(&module)
             .unwrap_or_else(|e| panic!("{}", e.emit_to_string(&text)));
-        naga::valid::Validator::new(
-            naga::valid::ValidationFlags::all(),
-            naga::valid::Capabilities::all(),
-        )
-        .validate(&module)
-        .unwrap_or_else(|e| panic!("{}", e.emit_to_string(&text)));
+        }
     }
     use crate::weather::{Parameters, Time};
     use wgpu::util::DeviceExt;

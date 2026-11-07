@@ -64,20 +64,142 @@ pub struct Menu {
 
 /// What a guest did with a native mod's menu (`Slots::Native`), for the game
 /// to tell the mod once the hub is back in its hands.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum NativeMenuEvent {
     /// A click (`ServerboundContainerClickPacket`): the menu's slot (its own
-    /// first, then the player's 36; -999 outside), the button and the mode.
+    /// first, then the player's 36; -999 outside), the button and the mode,
+    /// and the stack the player had on the cursor as they clicked.
     Click {
         uuid: u128,
         window: i32,
         slot: i32,
         button: i32,
         mode: i32,
+        cursor: Option<ItemStack>,
     },
     /// The menu closed: by the player, by the server, another opened, or
     /// the player left.
     Closed { uuid: u128, window: i32 },
+}
+
+/// The slots of a native mod's menu that hold items, which clicks move by
+/// vanilla's rules (`AbstractContainerMenu.doClick`, as in a chest). The
+/// menu's other slots stay the mod's to show, and a click on them is still
+/// only the mod's (`NativeMenuEvent::Click`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum NativeStore {
+    /// The menu's slots in this range take items the player puts in and give
+    /// them back; when the menu closes, what is left goes to the mods and then
+    /// back to the player (`clearContainer`).
+    Input(std::ops::Range<usize>),
+    /// The menu shows another player's inventory, live: menu slot `k` is
+    /// slot `layout[k]` of it (`owner_slots`' numbering; None, or past the
+    /// layout, the mod's to show), and a click moves the owner's own items.
+    Inventory {
+        owner: NativeOwner,
+        /// The ender chest's 27 slots, else the inventory's 41.
+        ender: bool,
+        layout: Vec<Option<usize>>,
+    },
+}
+
+impl NativeStore {
+    /// Whether menu slot `slot` holds items the clicks move.
+    pub fn holds(&self, slot: usize) -> bool {
+        match self {
+            Self::Input(range) => range.contains(&slot),
+            Self::Inventory { layout, .. } => layout.get(slot).is_some_and(Option::is_some),
+        }
+    }
+}
+
+/// Whose inventory a native menu shows (`NativeStore::Inventory`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeOwner {
+    /// A player on the server, by connection: the hub reads their slots
+    /// before each click and sync, and writes a click's changes back.
+    Online(u32),
+    /// A player away, by UUID: the game reads and writes their file around
+    /// each click; the menu closes once they are back.
+    Away(u128),
+}
+
+/// A player's inventory as native mods number it (`native_inventory`): 41
+/// slots, 0..9 the hotbar, 9..36 the rest, 36..40 the armour (feet, legs,
+/// chest, head), 40 the off hand; or, `ender`, the ender chest's 27.
+pub fn owner_slots(g: &Guest, ender: bool) -> Vec<Option<ItemStack>> {
+    if ender {
+        let mut s = g.ender_items.clone();
+        s.resize(27, None);
+        return s;
+    }
+    let mut s = g.inventory.clone();
+    s.resize(36, None);
+    // `armor` is head first.
+    s.extend([3, 2, 1, 0].map(|i| g.armor[i].clone()));
+    s.push(g.offhand.clone());
+    s
+}
+
+/// Stores what `owner_slots` read, changed.
+pub fn set_owner_slots(g: &mut Guest, ender: bool, mut s: Vec<Option<ItemStack>>) {
+    if ender {
+        g.ender_items = s;
+        return;
+    }
+    s.resize(41, None);
+    g.offhand = s.pop().flatten();
+    for (k, i) in [3, 2, 1, 0].into_iter().enumerate() {
+        g.armor[i] = s[36 + k].take();
+    }
+    s.truncate(36);
+    g.inventory = s;
+}
+
+/// What a native menu with a store (`Guest::native_store`) leaves as it
+/// closes, for the game to hand the mods (`native_menu_input_closed`) and then
+/// the player (`AbstractContainerMenu.removed`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct NativeReturn {
+    pub conn: u32,
+    pub uuid: u128,
+    pub window: i32,
+    /// The input slots, in order, of a menu that had them.
+    pub slots: Option<Vec<Option<ItemStack>>>,
+    /// The stack on the cursor, when the hub closed the menu on its own
+    /// (the game's own closes put it back themselves).
+    pub cursor: Option<ItemStack>,
+    /// The mods have heard it; what is left waits for the player's level.
+    pub heard: bool,
+}
+
+impl NativeReturn {
+    /// The guest's native menu goes as it closes (`Guest::native_menu` and
+    /// `native_store` empty): what its input slots held, and the cursor's
+    /// stack when `cursor`, for a menu with a store; None for one without, or
+    /// with nothing to give back.
+    pub fn take(guest: &mut Guest, window: i32, cursor: bool) -> Option<Self> {
+        let store = guest.native_store.take();
+        let mut menu = std::mem::take(&mut guest.native_menu);
+        let store = store?;
+        let cursor = if cursor { guest.carried.take() } else { None };
+        let slots = match store {
+            NativeStore::Input(range) => Some(
+                range
+                    .map(|k| menu.get_mut(k).and_then(Option::take))
+                    .collect(),
+            ),
+            NativeStore::Inventory { .. } => None,
+        };
+        (slots.is_some() || cursor.is_some()).then_some(Self {
+            conn: guest.conn,
+            uuid: guest.uuid,
+            window,
+            slots,
+            cursor,
+            heard: false,
+        })
+    }
 }
 
 /// The y of the key a chest minecart's or chest boat's items are kept under
@@ -95,7 +217,8 @@ pub enum Slots {
     /// The player's own ender chest inventory (`PlayerEnderChestContainer`).
     Ender,
     /// A native mod's menu (`Guest::native_menu`): items to look at, which no
-    /// click moves; the clicks go to the mod.
+    /// click moves; the clicks go to the mod. Slots its `Guest::native_store`
+    /// holds take clicks as a chest's do.
     Native,
 }
 
@@ -168,7 +291,17 @@ impl Slots {
             return;
         }
         if self == Slots::Native {
-            // Only the mod changes what it shows.
+            // Only the mod changes what it shows; the slots that hold items
+            // (`Guest::native_store`) keep what the click left in them.
+            if let Some(store) = &guest.native_store {
+                for (k, stack) in items.into_iter().enumerate() {
+                    if store.holds(k)
+                        && let Some(slot) = guest.native_menu.get_mut(k)
+                    {
+                        *slot = stack;
+                    }
+                }
+            }
             return;
         }
         let mut rest = items.into_iter();
@@ -660,8 +793,9 @@ fn bundle_click(view: &mut View, i: usize, right: bool, rules: &dyn Rules) -> bo
     let Some(mut contents) = Contents::of(items, &bundle) else {
         return false;
     };
-    // Slot.allowModification: mayPickup and mayPlace of its item.
-    let allowed = view.may_place(i, &bundle, rules);
+    // `Slot.allowModification`: `mayPickup` and `mayPlace` of the stack it
+    // holds. A slot that withholds the bundle keeps what is inside it.
+    let allowed = view.may_pickup(i, rules) && view.may_place(i, &bundle, rules);
     match (view.guest.carried.take(), right) {
         (Some(mut carried), false) => {
             if allowed {
@@ -903,6 +1037,8 @@ mod tests {
                 sender: PlayerSender::new(tx, Arc::default()),
                 latency: Arc::new(AtomicI32::new(0)),
                 address: "127.0.0.1:25565".parse().unwrap(),
+                expected: false,
+                configured: Default::default(),
             },
             2,
             [0.0, 64.0, 0.0],
@@ -1028,6 +1164,64 @@ mod tests {
             Some(("minecraft:ender_pearl", 16))
         );
         assert_eq!(contents(&view.get(2)), []);
+    }
+
+    /// `Slot.allowModification`: `BundleItem.overrideOtherStackedOnMe` asks
+    /// for `mayPickup` and `mayPlace` of the bundle it holds before it
+    /// inserts or removes anything, so a slot whose rules refuse the pickup
+    /// keeps its bundle's contents.
+    #[test]
+    fn guest_bundle_keeps_its_contents_in_a_refusing_slot() {
+        /// The prepared catalog, with a menu that refuses one slot.
+        struct Refusing {
+            items: Items,
+        }
+        impl Rules for Refusing {
+            fn items(&self) -> &Items {
+                &self.items
+            }
+            fn max_stack(&self, item: &str) -> u32 {
+                self.items.get(item).map_or(64, |i| i.max_stack)
+            }
+            fn armor_index(&self, _: &str) -> Option<usize> {
+                None
+            }
+            fn may_pickup(&self, slot: usize, _: &ItemStack) -> bool {
+                slot != 1
+            }
+        }
+        let Some(ItemRules(items)) = rules() else {
+            return;
+        };
+        let rules = Refusing { items };
+        let mut g = guest();
+        let mut bundle = ItemStack::new("minecraft:bundle", 1);
+        bundle.data_mut().bundle_contents = vec![ItemStack::new("minecraft:apple", 16)];
+        let mut chest = vec![Some(ItemStack::new("minecraft:bundle", 1)), Some(bundle)];
+        let mut drag = None;
+        let mut view = View {
+            guest: &mut g,
+            container: Some(&mut chest),
+            shulker: false,
+            hidden: &[],
+        };
+        // Left click with stone in hand over the refused bundle: nothing goes in.
+        view.guest.carried = Some(ItemStack::new("minecraft:stone", 5));
+        let (_, changed) = click(&mut view, &mut drag, 1, 0, input::PICKUP, &rules);
+        assert!(changed.is_empty());
+        assert_eq!(view.guest.carried.as_ref().map(|s| s.count), Some(5));
+        assert_eq!(contents(&view.get(1)), [("minecraft:apple".into(), 16)]);
+        // A right click with an empty hand takes nothing out of it either.
+        view.guest.carried = None;
+        let (_, changed) = click(&mut view, &mut drag, 1, 1, input::PICKUP, &rules);
+        assert!(changed.is_empty());
+        assert!(view.guest.carried.is_none());
+        assert_eq!(contents(&view.get(1)), [("minecraft:apple".into(), 16)]);
+        // The empty bundle in the slot next to it does take the stone.
+        view.guest.carried = Some(ItemStack::new("minecraft:stone", 5));
+        click(&mut view, &mut drag, 0, 0, input::PICKUP, &rules);
+        assert_eq!(view.guest.carried, None);
+        assert_eq!(contents(&view.get(0)), [("minecraft:stone".into(), 5)]);
     }
 
     /// A mod container saved with more items than its menu has slots: the
@@ -1216,6 +1410,107 @@ mod tests {
         assert_eq!(view.get(0).map(|s| s.count), Some(64));
         assert_eq!(view.get(2).map(|s| s.count), Some(64));
         assert_eq!(view.guest.carried.as_ref().map(|s| s.count), Some(64));
+    }
+
+    /// A native menu's input slots take shift-clicks from the inventory as a
+    /// chest's do, the shown slots around them are never filled, and closing
+    /// hands back the input slots only.
+    #[test]
+    fn native_input_slots_fill_like_a_chest_and_come_back_on_close() {
+        let mut g = guest();
+        let store = NativeStore::Input(2..4);
+        let hidden: Vec<usize> = (0..9).filter(|&k| !store.holds(k)).collect();
+        let mut menu = vec![None; 9];
+        menu[0] = Some(ItemStack::new("minecraft:paper", 1));
+        g.inventory[9] = Some(ItemStack::new("minecraft:stone", 64));
+        g.inventory[10] = Some(ItemStack::new("minecraft:stone", 10));
+        let mut drag = None;
+        let mut view = View {
+            guest: &mut g,
+            container: Some(&mut menu),
+            shulker: false,
+            hidden: &hidden,
+        };
+        // Menu slots 9 and 10 are the inventory's 9 and 10, below the menu.
+        click(&mut view, &mut drag, 9, 0, input::QUICK_MOVE, &SwapRules);
+        click(&mut view, &mut drag, 10, 0, input::QUICK_MOVE, &SwapRules);
+        let count = |s: Option<ItemStack>| s.map(|s| (s.item.to_string(), s.count));
+        assert_eq!(count(view.get(0)), Some(("minecraft:paper".into(), 1)));
+        assert_eq!(count(view.get(1)), None);
+        assert_eq!(count(view.get(2)), Some(("minecraft:stone".into(), 64)));
+        assert_eq!(count(view.get(3)), Some(("minecraft:stone".into(), 10)));
+        assert!((4..11).all(|k| view.get(k).is_none()));
+        g.native_menu = menu;
+        g.native_store = Some(store);
+        g.carried = Some(ItemStack::new("minecraft:dirt", 3));
+        let back = NativeReturn::take(&mut g, 7, false).unwrap();
+        assert_eq!(
+            (back.conn, back.uuid, back.window, back.heard),
+            (2, 2, 7, false)
+        );
+        assert_eq!(
+            back.slots,
+            Some(vec![
+                Some(ItemStack::new("minecraft:stone", 64)),
+                Some(ItemStack::new("minecraft:stone", 10)),
+            ])
+        );
+        // The game's own closes put the cursor back themselves.
+        assert_eq!(back.cursor, None);
+        assert!(g.carried.is_some());
+        assert!(g.native_menu.is_empty() && g.native_store.is_none());
+        // A menu without input slots hands nothing back.
+        g.native_menu = vec![Some(ItemStack::new("minecraft:paper", 1))];
+        assert_eq!(NativeReturn::take(&mut g, 8, true), None);
+        assert!(g.carried.is_some());
+        assert!(g.native_menu.is_empty());
+    }
+
+    /// Another player's 41 slots read and stored back unchanged, and a
+    /// layout's gaps are the mod's to show.
+    #[test]
+    fn an_owners_slots_round_trip_and_a_layout_holds_only_its_slots() {
+        let mut g = guest();
+        g.inventory[0] = Some(ItemStack::new("minecraft:stone", 5));
+        g.armor[0] = Some(ItemStack::new("minecraft:iron_helmet", 1));
+        g.offhand = Some(ItemStack::new("minecraft:shield", 1));
+        let slots = owner_slots(&g, false);
+        assert_eq!(slots.len(), 41);
+        assert_eq!(slots[39], g.armor[0]);
+        assert_eq!(slots[40], g.offhand);
+        let mut moved = slots.clone();
+        moved.swap(0, 1);
+        set_owner_slots(&mut g, false, moved);
+        assert_eq!(g.inventory[0], None);
+        assert_eq!(g.inventory[1], Some(ItemStack::new("minecraft:stone", 5)));
+        assert_eq!(g.armor[0], Some(ItemStack::new("minecraft:iron_helmet", 1)));
+        assert_eq!(owner_slots(&g, true).len(), 27);
+        let store = NativeStore::Inventory {
+            owner: NativeOwner::Away(9),
+            ender: false,
+            layout: vec![Some(36), None, Some(0)],
+        };
+        assert_eq!(
+            (0..5).map(|k| store.holds(k)).collect::<Vec<_>>(),
+            [true, false, true, false, false]
+        );
+        // Its slots are the owner's: nothing comes back on closing.
+        g.native_store = Some(store);
+        g.native_menu = vec![Some(ItemStack::new("minecraft:stone", 5))];
+        assert_eq!(NativeReturn::take(&mut g, 3, false), None);
+        // The cursor comes back when the hub closes it on its own.
+        g.native_store = Some(NativeStore::Inventory {
+            owner: NativeOwner::Online(5),
+            ender: true,
+            layout: vec![Some(0)],
+        });
+        g.carried = Some(ItemStack::new("minecraft:dirt", 1));
+        let back = NativeReturn::take(&mut g, 3, true).unwrap();
+        assert_eq!(
+            (back.slots, back.cursor),
+            (None, Some(ItemStack::new("minecraft:dirt", 1)))
+        );
+        assert_eq!(g.carried, None);
     }
 
     struct SwapRules;

@@ -2,6 +2,7 @@
 //! block entity and storage data accessors over the game state.
 use super::{Arg, Context, Game, R, Target, err};
 use horizon_client::{
+    containers::BlockEntity,
     data_cmd::{self, Op, path_error},
     entity_nbt,
     nbt_path::NbtPath,
@@ -67,43 +68,47 @@ impl Game<'_> {
         self.in_target_level(t, |g| g.entity_nbt_in_level(t))
             .flatten()
     }
-    fn entity_nbt_in_level(&mut self, t: Target) -> Option<Tag> {
-        // The acting player's own UUID: a guest's turn (the window's player on
-        // the server thread) keeps the world owner's in `level`.
-        let player_uuid = self
-            .lan_acting_uuid
+    /// The acting player's own UUID: a guest's turn (the window's player on
+    /// the server thread) keeps the world owner's in `level`.
+    fn saved_player_uuid(&self) -> Option<[i32; 4]> {
+        self.lan_acting_uuid
             .map(horizon_client::lan::playerdata::uuid_ints)
-            .or(self.level.player_uuid);
+            .or(self.level.player_uuid)
+    }
+    /// [`Self::entity_nbt`] of the player whose turn it is.
+    pub(in crate::game) fn player_nbt(&mut self) -> Option<Tag> {
+        self.player.as_ref()?;
+        self.sync_level();
+        let mut tag = self.level.player_tag();
+        if let Some(u) = self.saved_player_uuid() {
+            set_key(&mut tag, "UUID", Tag::IntArray(u.to_vec()));
+        }
+        // NbtPredicate.getEntityTagToCompare: a player's held stack.
+        let selected = self.level.selected_slot;
+        let held = match tag.get("Inventory") {
+            Some(Tag::List(items)) => items
+                .iter()
+                .find(|i| matches!(i.get("Slot"), Some(Tag::Byte(b)) if i32::from(*b) == selected))
+                .cloned(),
+            _ => None,
+        };
+        if let Some(mut stack) = held {
+            if let Tag::Compound(c) = &mut stack {
+                c.remove(&"Slot".into());
+            }
+            set_key(&mut tag, "SelectedItem", stack);
+        }
+        Some(tag)
+    }
+    fn entity_nbt_in_level(&mut self, t: Target) -> Option<Tag> {
+        let player_uuid = self.saved_player_uuid();
         Some(match t {
             Target::Guest(_) => {
                 return self
                     .for_player(t, |g| g.entity_nbt(Target::Player))
                     .flatten();
             }
-            Target::Player => {
-                self.player.as_ref()?;
-                self.sync_level();
-                let mut tag = self.level.player_tag();
-                if let Some(u) = player_uuid {
-                    set_key(&mut tag, "UUID", Tag::IntArray(u.to_vec()));
-                }
-                // NbtPredicate.getEntityTagToCompare: a player's held stack.
-                let selected = self.level.selected_slot;
-                let held = match tag.get("Inventory") {
-                    Some(Tag::List(items)) => items
-                        .iter()
-                        .find(|i| matches!(i.get("Slot"), Some(Tag::Byte(b)) if i32::from(*b) == selected))
-                        .cloned(),
-                    _ => None,
-                };
-                if let Some(mut stack) = held {
-                    if let Tag::Compound(c) = &mut stack {
-                        c.remove(&"Slot".into());
-                    }
-                    set_key(&mut tag, "SelectedItem", stack);
-                }
-                tag
-            }
+            Target::Player => return self.player_nbt(),
             Target::Mob(id) => {
                 // `saveWithoutId` writes the entity as saved, riders under
                 // `Passengers`: `/data get` reads the same tree persistence does (#1519).
@@ -113,7 +118,12 @@ impl Game<'_> {
             Target::Item(id) => {
                 let uuid = self.uuid_for(id);
                 let e = self.dropped.iter().find(|e| e.id == id)?;
-                entity_nbt::item_entity_to_nbt(e, uuid, self.persist.raw.get(&id))
+                entity_nbt::item_entity_to_nbt_with_items(
+                    e,
+                    uuid,
+                    self.persist.raw.get(&id),
+                    self.items(),
+                )
             }
             Target::Stand(id) => {
                 let uuid = self.uuid_for(id);
@@ -132,16 +142,20 @@ impl Game<'_> {
             }
             Target::Boat(id) => {
                 let uuid = self.uuid_for(id);
-                let b = self.boats.iter().find(|b| b.id == id)?;
-                entity_nbt::boat_to_nbt(
+                let i = self.boats.iter().position(|b| b.id == id)?;
+                let b = &self.boats[i];
+                let mut tag = entity_nbt::boat_to_nbt(
                     &b.entity_type(),
                     b.position,
                     b.velocity,
-                    b.yaw,
+                    [b.yaw, b.pitch],
                     uuid,
                     self.persist.raw.get(&id),
                     b.chest.then_some(&b.items[..]),
-                )
+                );
+                // AbstractBoat.addAdditionalSaveData: the live or pending leash.
+                self.write_boat_leash(&mut tag, i);
+                tag
             }
             Target::Cart(id) => {
                 let uuid = self.uuid_for(id);
@@ -159,12 +173,27 @@ impl Game<'_> {
                 self.other_to_nbt(&o, uuid)
             }
             Target::Orb(id) => {
-                let tag =
-                    entity_nbt::orb_to_nbt(self.orbs.iter().find(|o| o.id == id)?, random_uuid());
+                let uuid = self.uuid_for(id);
+                let tag = entity_nbt::orb_to_nbt(self.orbs.iter().find(|o| o.id == id)?, uuid);
                 crate::game::persist::with_raw(tag, self.persist.raw.get(&id))
             }
             Target::Projectile(id) => {
                 let uuid = self.uuid_for(id);
+                // A homing bullet's `Target` is the entity's, not the raw
+                // compound's, as `save_projectile` writes it.
+                let who = self
+                    .creatures
+                    .projectiles
+                    .iter()
+                    .find(|p| p.id == id)
+                    .and_then(|p| match &p.kind {
+                        horizon_client::projectiles::ProjectileKind::ShulkerBullet {
+                            target: Some(who),
+                            ..
+                        } => Some(*who),
+                        _ => None,
+                    });
+                let target = who.and_then(|who| self.save_who_uuid(who));
                 let p = self.creatures.projectiles.iter().find(|p| p.id == id)?;
                 let owner = if p.owner == Some(horizon_client::mobs::Who::Player) {
                     player_uuid
@@ -177,10 +206,12 @@ impl Game<'_> {
                     .and_then(|a| a.last_state)
                     .map(|s| self.state_to_nbt(s));
                 let raw = self.persist.raw.get(&id);
-                entity_nbt::arrow_to_nbt(p, uuid, owner, in_block, raw)
+                // Projectile.addAdditionalSaveData stores the retained EntityReference,
+                // including an owner that is not currently resolved to a live entity.
+                entity_nbt::arrow_to_nbt(p, uuid, p.owner_uuid.or(owner), in_block, raw)
                     .or_else(|| entity_nbt::fireball_to_nbt(p, uuid, owner, raw))
                     .or_else(|| entity_nbt::throwable_to_nbt(p, uuid, owner, raw))
-                    .or_else(|| entity_nbt::spit_or_bullet_to_nbt(p, uuid, owner, raw))?
+                    .or_else(|| entity_nbt::spit_or_bullet_to_nbt(p, uuid, owner, target, raw))?
             }
             Target::Crystal(id) => {
                 let c = self.crystals.iter().find(|c| c.id == id)?;
@@ -197,18 +228,8 @@ impl Game<'_> {
                 crate::game::persist::with_raw(tag, self.persist.raw.get(&id))
             }
             Target::Tnt(id) => {
-                let uuid = self.uuid_for(id);
-                let t = self.tnts.iter().find(|t| t.id == id)?;
-                entity_nbt::tnt_to_nbt(
-                    t.position,
-                    t.velocity,
-                    t.on_ground,
-                    t.fuse,
-                    t.power,
-                    t.block_state_nbt(self.pack.assets.registry),
-                    uuid,
-                    self.persist.raw.get(&id),
-                )
+                let i = self.tnts.iter().position(|t| t.id == id)?;
+                self.tnt_nbt(i)
             }
             Target::Falling(id) => {
                 let f = self.falling.iter().find(|f| f.id == id)?.clone();
@@ -224,6 +245,7 @@ impl Game<'_> {
                     f.drop_item,
                     f.damage,
                     f.fall_distance,
+                    f.rotation,
                     uuid,
                 );
                 crate::game::persist::with_raw(tag, raw)
@@ -243,6 +265,7 @@ impl Game<'_> {
                     &super::OtherEntity {
                         id,
                         kind: "minecraft:area_effect_cloud".into(),
+                        item_transformation: None,
                         position: horizon_core::geometry::Vec3::new(x, y, z),
                         yaw: 0.0,
                         pitch: 0.0,
@@ -311,8 +334,12 @@ impl Game<'_> {
     pub(in crate::game) fn apply_entity_nbt(&mut self, t: Target, mut tag: Tag) -> R<()> {
         let stale = || err("commands.data.merge.failed", &[]);
         match t {
-            Target::Player => return Err(err("commands.data.entity.invalid", &[])),
+            // EntityDataAccessor.setData: players can't be modified, guests neither.
+            Target::Player | Target::Guest(_) => {
+                return Err(err("commands.data.entity.invalid", &[]));
+            }
             Target::Mob(id) => {
+                Self::normalize_loaded_mob_tags(&mut tag);
                 let uuid = self.uuid_for(id);
                 let kind = self
                     .mobs
@@ -345,10 +372,25 @@ impl Game<'_> {
                         slot.extra.tame = old.extra.tame;
                         slot.extra.owner = old.extra.owner;
                     }
+                    // Entity.load mutates the existing living entity; its damage
+                    // cooldown and previous-hit amount are not read from saved NBT.
+                    slot.invulnerable = old.invulnerable;
+                    slot.last_hurt = old.last_hurt;
                     slot.ai = old.ai;
+                    // Mob.readAdditionalSaveData updates persistent home fields,
+                    // while retaining the rest of the live AI/runtime state.
+                    entity_nbt::read_mob_home(slot, &tag);
                     slot.extra.armor_attributes = old.extra.armor_attributes;
                     slot.age = old.age;
                     slot.previous = slot.position;
+                    // Wolf.readAdditionalSaveData initializes persistent anger at
+                    // the live level clock, just as load_mob does on admission.
+                    if slot.species() == horizon_client::mobs::Species::Wolf {
+                        slot.extra.anger = horizon_client::mobs::anger_left(
+                            slot.extra.anger_end,
+                            self.world.game_time,
+                        );
+                    }
                 }
             }
             Target::Item(id) => {
@@ -370,16 +412,100 @@ impl Game<'_> {
                 }
             }
             Target::Stand(id) => {
-                let new = entity_nbt::armor_stand_from_nbt(&tag, id).ok_or_else(stale)?;
+                let mut new = entity_nbt::armor_stand_from_nbt(&tag, id).ok_or_else(stale)?;
                 if let Some(slot) = self.armor_stands.iter_mut().find(|a| a.id == id) {
+                    // Entity.load keeps the existing entity's firstTick state.
+                    new.first_tick = slot.first_tick;
                     *slot = new;
                 }
             }
             Target::Frame(id) => {
-                let new = entity_nbt::item_frame_from_nbt(&tag, id).ok_or_else(stale)?;
-                if let Some(slot) = self.item_frames.iter_mut().find(|f| f.id == id) {
-                    *slot = new;
+                let mut new = entity_nbt::item_frame_from_nbt(&tag, id).ok_or_else(stale)?;
+                if let Some(i) = self.item_frames.iter().position(|f| f.id == id) {
+                    let old = &self.item_frames[i];
+                    // Entity.load cannot change the runtime type; saveWithoutId
+                    // deliberately omitted the decoder's type discriminator.
+                    new.glow = old.glow;
+                    // ItemFrame.readAdditionalSaveData: ItemStack.matches includes
+                    // count, item and components, before adopting the new stack.
+                    if old.item.as_ref().is_some_and(|a| {
+                        new.item
+                            .as_ref()
+                            .is_none_or(|b| a.count != b.count || !a.same_item_same_components(b))
+                    }) {
+                        let old = old.clone();
+                        self.remove_framed_map(&old);
+                    }
+                    self.item_frames[i] = new;
                 }
+            }
+            Target::Boat(id) => {
+                // AbstractBoat.readAdditionalSaveData over Entity.load: the
+                // position, rotation, motion, NoGravity and a chest boat's items.
+                let (position, velocity, yaw) =
+                    entity_nbt::boat_from_nbt(&tag).ok_or_else(stale)?;
+                let uuid = self.uuid_for(id);
+                let b = self
+                    .boats
+                    .iter_mut()
+                    .find(|b| b.id == id)
+                    .ok_or_else(stale)?;
+                b.position = position;
+                b.previous = position;
+                b.velocity = velocity;
+                b.yaw = yaw;
+                b.previous_yaw = yaw;
+                b.pitch = entity_nbt::rotation(&tag)[1];
+                b.no_gravity = entity_nbt::flag(&tag, "NoGravity");
+                if b.chest {
+                    b.items = save::decode_items(tag.get("Items"), crate::game::boats::CHEST_SLOTS);
+                }
+                set_key(&mut tag, "UUID", Tag::IntArray(uuid.to_vec()));
+            }
+            Target::Tnt(id) => {
+                // Entity.load and PrimedTnt.readAdditionalSaveData mutate the
+                // resident instance; load_tnt would allocate another id/join.
+                let position = entity_nbt::position(&tag).ok_or_else(stale)?;
+                let uuid = self.uuid_for(id);
+                let block_state = tag
+                    .get("block_state")
+                    .and_then(|v| entity_nbt::state_from_nbt(self.pack.assets.registry, v));
+                let tnt = self
+                    .tnts
+                    .iter_mut()
+                    .find(|tnt| tnt.id == id)
+                    .ok_or_else(stale)?;
+                tnt.position = position;
+                tnt.previous = position;
+                tnt.velocity = entity_nbt::motion(&tag);
+                tnt.rotation = entity_nbt::rotation(&tag);
+                // Keep the existing loaded-fuse conversion policy (H090 is separate).
+                tnt.fuse = match tag.get("fuse") {
+                    Some(Tag::Short(fuse)) => i32::from(*fuse),
+                    _ => 80,
+                };
+                tnt.on_ground = matches!(tag.get("OnGround"), Some(Tag::Byte(1)));
+                tnt.no_gravity = entity_nbt::flag(&tag, "NoGravity");
+                tnt.power = entity_nbt::tnt_power(&tag);
+                tnt.block_state = block_state;
+                // Runtime id/join, owner binding and guest attribution stay live.
+                set_key(&mut tag, "UUID", Tag::IntArray(uuid.to_vec()));
+            }
+            Target::Cart(id) => {
+                let uuid = self.uuid_for(id);
+                let i = self
+                    .carts
+                    .iter()
+                    .position(|c| c.id == id)
+                    .ok_or_else(stale)?;
+                let mut cart = self.carts[i].clone();
+                cart.load(&tag).ok_or_else(stale)?;
+                crate::game::minecarts::forget_unreadable_display(&mut cart, |t| {
+                    self.state_from_nbt(t).is_some()
+                });
+                self.roll_cart_loot(&mut cart, &tag);
+                self.carts[i] = cart;
+                set_key(&mut tag, "UUID", Tag::IntArray(uuid.to_vec()));
             }
             Target::Other(id) => {
                 let uuid = self.uuid_for(id);
@@ -405,6 +531,9 @@ impl Game<'_> {
         | Target::Item(id)
         | Target::Stand(id)
         | Target::Frame(id)
+        | Target::Boat(id)
+        | Target::Cart(id)
+        | Target::Tnt(id)
         | Target::Other(id)
         | Target::Fangs(id) = t
         {
@@ -506,6 +635,19 @@ impl Game<'_> {
         let prefix = if role == 0 { "target" } else { "source" };
         self.data_ref_named(ctx, role, prefix)
     }
+    /// `PistonMovingBlockEntity.saveAdditional`, with full command metadata.
+    fn moving_piston_data(&self, p: [i32; 3]) -> Option<Tag> {
+        let pos = horizon_core::position::BlockPos::new(p[0], p[1], p[2]);
+        let (_, piston) = self
+            .block_ticks
+            .moving_pistons
+            .iter()
+            .find(|(at, _)| *at == pos)?;
+        let mut tag = self.moving_piston_to_nbt(pos, piston);
+        // BlockEntity.saveWithoutMetadata includes the component map.
+        set_key(&mut tag, "components", empty());
+        Some(tag)
+    }
     pub(in crate::game) fn data_ref_named(
         &mut self,
         ctx: &Context,
@@ -535,6 +677,7 @@ impl Game<'_> {
                 if !self.world.block_entities.contains_key(&(p[0], p[1], p[2]))
                     && self.comparator_data(p).is_none()
                     && self.pot_data(p).is_none()
+                    && self.moving_piston_data(p).is_none()
                 {
                     return Err(err("commands.data.block.invalid", &[]));
                 }
@@ -558,36 +701,43 @@ impl Game<'_> {
                 }
                 Ok(tag)
             }
-            DataRef::Block(p) => {
-                if let Some(tag) = self.comparator_data(*p).or_else(|| self.pot_data(*p)) {
-                    return Ok(tag);
-                }
-                let key = (p[0], p[1], p[2]);
-                let name = self.data_block_name(*p);
-                let e = self
-                    .world
-                    .block_entities
-                    .get(&key)
-                    .ok_or_else(|| err("commands.data.block.invalid", &[]))?;
-                // BlockEntity.saveWithFullMetadata: no chunk-only keepPacked,
-                // and the lock and custom name the model does not hold.
-                let mut tag = save::block_entity_data(key, e, &name, self.world.block_lock(key));
-                if let (Some(custom), Tag::Compound(map)) =
-                    (self.world.block_names.get(&key), &mut tag)
-                {
-                    map.entry("CustomName".into())
-                        .or_insert_with(|| Tag::String(custom.as_str().into()));
-                }
-                self.restore_loot_table(key, &mut tag);
-                Ok(tag)
-            }
+            DataRef::Block(p) => self
+                .block_entity_nbt(*p)
+                .ok_or_else(|| err("commands.data.block.invalid", &[])),
             DataRef::Storage(id) => Ok(self.score.storage.get(id)),
         }
+    }
+    /// `BlockEntity.saveWithFullMetadata` of the block entity at `p`: no
+    /// chunk-only keepPacked, and the lock and custom name the model does
+    /// not hold. `None` where there is no block entity.
+    pub(in crate::game) fn block_entity_nbt(&self, p: [i32; 3]) -> Option<Tag> {
+        // A live moving piston is the level's block entity there (#9617).
+        if let Some(tag) = self.moving_piston_data(p) {
+            return Some(tag);
+        }
+        if let Some(tag) = self.comparator_data(p).or_else(|| self.pot_data(p)) {
+            return Some(tag);
+        }
+        let key = (p[0], p[1], p[2]);
+        let name = self.data_block_name(p);
+        let e = self.world.block_entities.get(&key)?;
+        let mut tag = save::block_entity_data(key, e, &name, self.world.block_lock(key));
+        if let (Some(custom), Tag::Compound(map)) = (self.world.block_names.get(&key), &mut tag) {
+            map.entry("CustomName".into())
+                .or_insert_with(|| Tag::String(custom.as_str().into()));
+        }
+        self.restore_loot_table(key, &mut tag);
+        Some(tag)
     }
     pub(in crate::game) fn set_data_of(&mut self, r: &DataRef, tag: Tag) -> R<()> {
         match r {
             DataRef::Entity(t) => self.apply_entity_nbt(*t, tag),
             DataRef::Block(p) => {
+                // This view is read-only: never decode a live piston into a
+                // second, detached entry in world.block_entities.
+                if self.moving_piston_data(*p).is_some() {
+                    return Err(err("commands.data.block.invalid", &[]));
+                }
                 if self.set_pot_data(*p, &tag).is_some() {
                     return Ok(());
                 }
@@ -614,7 +764,18 @@ impl Game<'_> {
                 if let Some((_, mut new)) = save::decode_block_entity(&tag) {
                     self.take_loot_table(key, &tag, &mut new);
                     self.load_block_name(key, &new, &tag);
-                    self.world.block_entities.insert(key, new);
+                    if let (Some(BlockEntity::Mod(current)), BlockEntity::Mod(loaded)) =
+                        (self.world.block_entities.get_mut(&key), &mut new)
+                        && current.id == loaded.id
+                    {
+                        // BlockDataAccessor.setData loads the existing entity.
+                        // Replace its saved fields, preserving runtime data and
+                        // identity; DerefMut still invalidates content caches.
+                        current.nbt = std::mem::take(&mut loaded.nbt);
+                        current.items = std::mem::take(&mut loaded.items);
+                    } else {
+                        self.world.block_entities.insert(key, new);
+                    }
                     self.world.set_block_lock(key, &tag);
                     self.update_spawner_display(key);
                     // BlockDataAccessor.setData: setChanged and sendBlockUpdated(3),
@@ -658,8 +819,25 @@ impl Game<'_> {
             ),
         }
     }
-    fn query_text(&self, r: &DataRef, data: &Tag) -> Text {
-        let pretty = snbt::pretty(data);
+    fn query_text(&self, r: &DataRef, data: &Tag, path: Option<&NbtPath>) -> Text {
+        // Only the live piston writer supplies this provenance. The same
+        // compound in storage, an entity, or another block keeps default order.
+        let piston = if let DataRef::Block(p) = r
+            && self.moving_piston_data(*p).is_some()
+        {
+            match path {
+                None => Some(snbt::PistonPart::Entity),
+                Some(p) if p.is_field_path(&[]) => Some(snbt::PistonPart::Entity),
+                Some(p) if p.is_field_path(&["blockState"]) => Some(snbt::PistonPart::State),
+                Some(p) if p.is_field_path(&["blockState", "properties"]) => {
+                    Some(snbt::PistonPart::Properties)
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let pretty = piston.map_or_else(|| snbt::pretty(data), |p| snbt::pretty_piston(data, p));
         match r {
             DataRef::Entity(_) => {
                 Text::translate("commands.data.entity.query", &[self.data_name(r), pretty])
@@ -729,13 +907,15 @@ impl Game<'_> {
         }
         self.cmd_data_in(id, ctx, target)
     }
+    /// `DataCommands.mergeData`: literal values keep the modern argument
+    /// parser's decoded Tag contract through execution.
     fn cmd_data_in(&mut self, id: &str, ctx: &Context, target: DataRef) -> R<i32> {
         match id {
             "data.merge" => {
                 let Some(Arg::Str(nbt)) = ctx.get("nbt") else {
                     return Ok(0);
                 };
-                let (nbt, _) = parse_snbt(nbt).map_err(|e| err("argument.nbt.invalid", &[&e]))?;
+                let nbt = horizon_client::command::snbt::parse_fully(nbt)?;
                 let old = self.data_of(&target)?;
                 if horizon_client::nbt_path::too_deep(&nbt, 0) {
                     return Err(err("arguments.nbtpath.too_deep", &[]));
@@ -752,7 +932,7 @@ impl Game<'_> {
             "data.get" => {
                 let data = self.data_of(&target)?;
                 if ctx.get("path").is_none() {
-                    let message = self.query_text(&target, &data);
+                    let message = self.query_text(&target, &data, None);
                     self.system_feedback(message);
                     return Ok(1);
                 }
@@ -765,7 +945,7 @@ impl Game<'_> {
                     return Ok(value);
                 }
                 let value = data_cmd::get_value(&tag, &path)?;
-                let message = self.query_text(&target, &tag);
+                let message = self.query_text(&target, &tag, Some(&path));
                 self.system_feedback(message);
                 Ok(value)
             }
@@ -789,6 +969,8 @@ impl Game<'_> {
     fn system_feedback(&mut self, message: Text) {
         self.feedback(message);
     }
+    /// `DataCommands.manipulateData`: literal sources use the same SNBT
+    /// decode contract as command admission; stored sources are unchanged.
     fn cmd_data_modify(&mut self, ctx: &Context, target: DataRef) -> R<i32> {
         let target_path = self.path_arg(ctx, "targetPath")?;
         let after_modify: Vec<&String> = ctx
@@ -814,11 +996,7 @@ impl Game<'_> {
             let Some(Arg::Str(text)) = ctx.get("value") else {
                 return Ok(0);
             };
-            vec![
-                parse_snbt(text)
-                    .map_err(|e| err("argument.nbt.invalid", &[&e]))?
-                    .0,
-            ]
+            vec![horizon_client::command::snbt::parse_fully(text)?]
         } else {
             let source = self.data_ref(ctx, 1)?;
             let data = self.data_of(&source)?;
@@ -1088,5 +1266,550 @@ impl Game<'_> {
             return Err(err("commands.summon.failed.uuid", &[]));
         }
         Ok(target)
+    }
+}
+
+#[cfg(test)]
+mod orb_uuid_tests {
+    use super::Target;
+    use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+    use horizon_world::nbt::Tag;
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn saved_orb_uuid_comes_from_registered_identity_without_or_despite_raw() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        let uuid = [0, 0, 0, 2];
+        let tag = Tag::compound([
+            ("UUID", Tag::IntArray(uuid.to_vec())),
+            (
+                "Pos",
+                Tag::List(vec![
+                    Tag::Double(4.5_f64.to_bits()),
+                    Tag::Double(200.0_f64.to_bits()),
+                    Tag::Double(4.5_f64.to_bits()),
+                ]),
+            ),
+            ("Value", Tag::Short(1)),
+            ("Age", Tag::Short(0)),
+            ("Health", Tag::Short(5)),
+            ("NoGravity", Tag::Byte(1)),
+        ]);
+        game.load_orb(tag, Some(uuid));
+        assert_eq!(game.orbs.len(), 1);
+        let id = game.orbs[0].id;
+        assert_eq!(game.persist.uuids.get(&id), Some(&uuid));
+        let time = game.world.game_time;
+        for raw in [
+            None,
+            Some(Tag::compound([("UUID", Tag::IntArray(vec![9, 9, 9, 9]))])),
+        ] {
+            if let Some(raw) = &raw {
+                game.persist.raw.insert(id, raw.clone());
+            } else {
+                game.persist.raw.remove(&id);
+            }
+            for _ in 0..3 {
+                let saved = game.entity_nbt_in_level(Target::Orb(id)).unwrap();
+                assert_eq!(saved.get("UUID"), Some(&Tag::IntArray(uuid.to_vec())));
+                assert_eq!(game.persist.uuids.get(&id), Some(&uuid));
+                assert_eq!(game.persist.raw.get(&id), raw.as_ref());
+                assert_eq!(game.world.game_time, time);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod wolf_live_anger_tests {
+    use super::Target;
+    use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+    use horizon_world::nbt::Tag;
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn live_wolf_anger_writes_use_the_level_clock_and_keep_bee_state() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.world.game_time = 12_345;
+        // Bee's independently modeled end is the first control, before the Wolf regression.
+        for (kind, health, number) in [("bee", 10.0_f32, 1), ("wolf", 8.0, 2)] {
+            game.mobs.clear();
+            let tag = Tag::Compound(
+                [
+                    (
+                        "id".into(),
+                        Tag::String(format!("minecraft:{kind}").as_str().into()),
+                    ),
+                    ("UUID".into(), Tag::IntArray(vec![316, 1, 0, number])),
+                    (
+                        "Pos".into(),
+                        Tag::List(vec![
+                            Tag::Double(10.5_f64.to_bits()),
+                            Tag::Double(200.0_f64.to_bits()),
+                            Tag::Double(10.5_f64.to_bits()),
+                        ]),
+                    ),
+                    ("Health".into(), Tag::Float(health.to_bits())),
+                    ("NoAI".into(), Tag::Byte(1)),
+                    ("NoGravity".into(), Tag::Byte(1)),
+                    ("Silent".into(), Tag::Byte(1)),
+                    ("PersistenceRequired".into(), Tag::Byte(1)),
+                    ("anger_end_time".into(), Tag::Long(-1)),
+                ]
+                .into_iter()
+                .collect(),
+            );
+            let id = game.load_mob(tag, None).unwrap();
+            let i = game.mobs.iter().position(|m| m.id == id).unwrap();
+            game.mobs[i].invulnerable = 17;
+            game.mobs[i].last_hurt = 2.0;
+            game.mobs[i].age = 6;
+            for end in [12_395, 12_395, 12_420, -1] {
+                let mut tag = game.mob_tree_nbt(i);
+                let Tag::Compound(fields) = &mut tag else {
+                    panic!("mob compound")
+                };
+                fields.insert("anger_end_time".into(), Tag::Long(end));
+                game.apply_entity_nbt(Target::Mob(id), tag).unwrap();
+                let saved = game.mob_tree_nbt(i);
+                assert_eq!(
+                    saved.get("anger_end_time"),
+                    Some(&Tag::Long(end)),
+                    "{kind} end={end}"
+                );
+                assert_eq!(game.world.game_time, 12_345);
+                assert_eq!(game.persist.uuids.get(&id), Some(&[316, 1, 0, number]));
+                assert_eq!(game.mobs[i].health, health);
+                assert!(game.mobs[i].no_ai);
+                assert_eq!(
+                    (
+                        game.mobs[i].invulnerable,
+                        game.mobs[i].last_hurt,
+                        game.mobs[i].age
+                    ),
+                    (17, 2.0, 6)
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod loot_table_tests {
+    use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+    use horizon_client::{
+        chunk::Chunk,
+        containers::BlockEntity,
+        items::ItemStack,
+        save::{self, ChunkExtras, RolledLoot},
+    };
+    use horizon_world::nbt::Tag;
+    use std::sync::Arc;
+
+    const TABLE: &str = "minecraft:chests/simple_dungeon";
+
+    /// The chest as a chunk save writes it, and its slots when that save loads.
+    fn saved_and_reloaded(game: &Game<'_>, pos: (i32, i32, i32)) -> (Tag, Vec<Option<ItemStack>>) {
+        let live = game.world.chunks.get(&(0, 0)).unwrap().clone();
+        let chunk = game.with_entities([&live]).remove(0);
+        let registry = game.pack.assets.registry;
+        let encoded = save::encode(&chunk, registry, game.res.biomes());
+        let Some(Tag::List(list)) = encoded.tag.get("block_entities") else {
+            panic!("no block entities");
+        };
+        let saved = list
+            .iter()
+            .find(|t| save::number(t.get("x")) == Some(i64::from(pos.0)))
+            .unwrap()
+            .clone();
+        let reloaded = save::decode(&encoded, registry, game.res.biomes()).unwrap();
+        let (_, BlockEntity::Chest(slots)) = reloaded
+            .block_entities
+            .iter()
+            .find(|(p, _)| *p == pos)
+            .unwrap()
+        else {
+            panic!("chest");
+        };
+        (saved, slots.clone())
+    }
+
+    /// RandomizableContainer.tryLoadLootTable: a tag without a table loads an
+    /// empty chest that stays so, and one with a table keeps it.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn data_commands_on_an_unopened_loaded_chest_survive_a_save_and_reload() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+
+        // Two chests as a load leaves them: rolled, with the table in their source.
+        let removed = (1, 64, 2);
+        let merged = (2, 64, 2);
+        let chest = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:chest")
+            .unwrap();
+        let mut chunk = Chunk::empty(0, 0);
+        let mut extras = ChunkExtras::default();
+        for pos in [removed, merged] {
+            let mut slots = vec![None; 27];
+            slots[0] = Some(ItemStack::new("minecraft:gold_ingot", 2));
+            chunk.set(pos.0, pos.1, pos.2, chest.0);
+            extras.rolled_loot.push(RolledLoot {
+                pos,
+                table: TABLE.into(),
+                seed: Some(42),
+                items: save::encode_items(&slots),
+            });
+            extras.block_entity_sources.push((
+                pos,
+                Tag::compound([
+                    ("id", Tag::String("minecraft:chest".into())),
+                    ("x", Tag::Int(pos.0)),
+                    ("y", Tag::Int(pos.1)),
+                    ("z", Tag::Int(pos.2)),
+                    ("LootTable", Tag::String(TABLE.into())),
+                    ("LootTableSeed", Tag::Long(42)),
+                ]),
+            ));
+            game.world
+                .block_entities
+                .insert(pos, BlockEntity::Chest(slots));
+        }
+        chunk.saved = Some(Arc::new(extras));
+        game.world.chunks.insert((0, 0), Arc::new(chunk));
+
+        assert!(game.run_command("data remove block 1 64 2 LootTable"));
+        let (saved, slots) = saved_and_reloaded(&game, removed);
+        assert!(
+            saved.get("LootTable").is_none(),
+            "the emptied chest rolls again on load: {saved:?}"
+        );
+        assert!(saved.get("LootTableSeed").is_none());
+        assert!(slots.iter().all(Option::is_none));
+
+        assert!(game.run_command("data merge block 2 64 2 {LootTableSeed:7L}"));
+        let (saved, _) = saved_and_reloaded(&game, merged);
+        assert_eq!(save::text(saved.get("LootTable")).as_deref(), Some(TABLE));
+        assert_eq!(save::number(saved.get("LootTableSeed")), Some(7));
+        assert!(saved.get("Items").is_none());
+    }
+}
+
+#[cfg(test)]
+mod saved_tag_tests;
+
+#[cfg(test)]
+mod mod_block_entity_tests;
+
+#[cfg(test)]
+mod arrow_owner_tests {
+    use super::Target;
+    use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+    use horizon_world::nbt::Tag;
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn loaded_arrow_getter_uses_registered_owner_reference_without_raw() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+
+        let position = Tag::List(vec![
+            Tag::Double(8.5_f64.to_bits()),
+            Tag::Double(202.0_f64.to_bits()),
+            Tag::Double(4.5_f64.to_bits()),
+        ]);
+        let mob_uuid = [213, 1, 2, 3];
+        let mob = Tag::compound([
+            ("id", Tag::String("minecraft:pig".into())),
+            ("UUID", Tag::IntArray(mob_uuid.to_vec())),
+            ("Pos", position.clone()),
+            ("Health", Tag::Float(10.0_f32.to_bits())),
+            ("NoAI", Tag::Byte(1)),
+        ]);
+        game.load_mob(mob, None).unwrap();
+        assert!(game.mob_by_uuid(mob_uuid).is_some());
+        let time = game.world.game_time;
+        for (index, owner) in [Some(mob_uuid), Some([213, 91, 92, 93]), None]
+            .into_iter()
+            .enumerate()
+        {
+            let uuid = [213, 10, 0, index as i32 + 1];
+            let mut tag = Tag::compound([
+                ("id", Tag::String("minecraft:arrow".into())),
+                ("UUID", Tag::IntArray(uuid.to_vec())),
+                ("Pos", position.clone()),
+                ("NoGravity", Tag::Byte(1)),
+                ("CustomName", Tag::String("kept name".into())),
+                ("Tags", Tag::List(vec![Tag::String("kept_tag".into())])),
+            ]);
+            if let (Some(owner), Tag::Compound(fields)) = (owner, &mut tag) {
+                fields.insert("Owner".into(), Tag::IntArray(owner.to_vec()));
+            }
+            game.load_arrow(tag, Some(uuid), None);
+            let p = game.creatures.projectiles.last().unwrap();
+            // Prove actual loader adoption before reading any saved NBT.
+            assert_eq!(p.owner_uuid, owner);
+            let id = p.id;
+            assert_eq!(game.persist.uuids.get(&id), Some(&uuid));
+            let expected = owner.map(|u| Tag::IntArray(u.to_vec()));
+            let loaded_raw = game.persist.raw.get(&id).cloned();
+            let mut stale = loaded_raw.clone().unwrap();
+            if let Tag::Compound(fields) = &mut stale {
+                fields.insert("Owner".into(), Tag::IntArray(vec![99; 4]));
+            }
+            let mut raw_cases = vec![None, loaded_raw];
+            // A positive modeled reference must overwrite a conflicting raw UUID.
+            // Generic stale optional-key cleanup is outside this getter bridge.
+            if owner.is_some() {
+                raw_cases.push(Some(stale));
+            }
+            for raw in raw_cases {
+                if let Some(raw) = &raw {
+                    game.persist.raw.insert(id, raw.clone());
+                } else {
+                    game.persist.raw.remove(&id);
+                }
+                let saved = game.entity_nbt(Target::Projectile(id)).unwrap();
+                assert_eq!(saved.get("Owner"), expected.as_ref());
+                assert_eq!(saved.get("UUID"), Some(&Tag::IntArray(uuid.to_vec())));
+                if let Some(raw) = &raw {
+                    assert_eq!(saved.get("CustomName"), raw.get("CustomName"));
+                    assert_eq!(saved.get("Tags"), raw.get("Tags"));
+                }
+                assert_eq!(game.creatures.projectiles.last().unwrap().owner_uuid, owner);
+                assert_eq!(game.persist.raw.get(&id), raw.as_ref());
+                assert_eq!(game.world.game_time, time);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod modern_literal_tests {
+    use super::*;
+    use crate::game::commands::execute::ExecState;
+    use crate::game::{Audio, Options, Progress, Settings, load_resources};
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and scratch homes/cwd"]
+    fn admitted_modern_literals_reach_actual_storage_as_typed_tags() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        let run = |g: &mut Game<'_>, line: &str| {
+            g.exec = ExecState::default();
+            let source = g.player_source();
+            g.execute_line(line, source)
+        };
+        let cases = [
+            ("hex", "0x10", "16", Tag::Int(16)),
+            ("underscore", "1_000", "1000", Tag::Int(1000)),
+            ("unicode4", r#""\u0041""#, r#""A""#, Tag::String("A".into())),
+            ("hex2", r#""\x41""#, r#""A""#, Tag::String("A".into())),
+            (
+                "unicode8",
+                r#""\U00000041""#,
+                r#""A""#,
+                Tag::String("A".into()),
+            ),
+            (
+                "trailing",
+                "{n:3,}",
+                "{n:3}",
+                Tag::compound([("n", Tag::Int(3))]),
+            ),
+            ("plain", "plain", r#""plain""#, Tag::String("plain".into())),
+        ];
+        let clock = game.world.game_time;
+        let mut differences = Vec::new();
+        for (name, modern, plain, expected) in &cases {
+            for route in ["merge", "modify"] {
+                let target = format!("h189:{route}_{name}");
+                let reference = format!("h189:ref_{route}_{name}");
+                let seed = ["data merge storage ", &target, r#" {v:"seed"}"#].concat();
+                assert_eq!(run(&mut game, &seed).unwrap(), 1);
+                assert_eq!(
+                    game.score.storage.get(&target).get("v"),
+                    Some(&Tag::String("seed".into()))
+                );
+                let canonical = ["data merge storage ", &reference, " {v:", plain, "}"].concat();
+                assert_eq!(run(&mut game, &canonical).unwrap(), 1);
+                assert_eq!(game.score.storage.get(&reference).get("v"), Some(expected));
+                let command = if route == "merge" {
+                    ["data merge storage ", &target, " {v:", modern, "}"].concat()
+                } else {
+                    ["data modify storage ", &target, " v set value ", modern].concat()
+                };
+                let dispatcher = horizon_client::command::vanilla::game_dispatcher_with_features(
+                    &game.level.enabled_features,
+                );
+                assert!(
+                    dispatcher
+                        .parse(&command, &game.ui.registries)
+                        .executable()
+                        .is_ok(),
+                    "admission: {route}/{name}"
+                );
+                let result = run(&mut game, &command);
+                let actual = game.score.storage.get(&target).get("v").cloned();
+                if result.as_ref().ok() != Some(&1) || actual.as_ref() != Some(expected) {
+                    differences.push(format!("{route}/{name}: result={result:?}, stored={actual:?}, expected={expected:?}"));
+                }
+                // Copy actual canonical stored data back: equality is a real
+                // no-change failure, independent of a formatter or parser stub.
+                let copy = [
+                    "data modify storage ",
+                    &target,
+                    " v set from storage ",
+                    &reference,
+                    " v",
+                ]
+                .concat();
+                if run(&mut game, &copy).is_ok() {
+                    differences.push(format!(
+                        "{route}/{name}: canonical copy changed the stored Tag"
+                    ));
+                }
+                assert_eq!(game.score.storage.get(&target).get("v"), Some(expected));
+            }
+        }
+        assert_eq!(game.world.game_time, clock);
+        assert!(differences.is_empty(), "{}", differences.join("\n"));
     }
 }

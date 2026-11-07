@@ -9,6 +9,9 @@ use horizon_client::{
 };
 use horizon_core::{position::ChunkPos, random::RandomSource};
 
+/// How long `/forceload add` waits for its chunks, as the game tests' loads do.
+const FORCED_CHUNK_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
+
 fn num(n: impl std::fmt::Display) -> Text {
     Text::literal(n.to_string())
 }
@@ -41,6 +44,23 @@ impl Game<'_> {
             .ok_or_else(|| err("argument.pos2d.incomplete", &[]))?;
         let p = self.resolve_coords(&c);
         Ok([p[0].floor() as i32, p[2].floor() as i32])
+    }
+    /// `ServerLevel.setChunkForced`'s `getChunk`: a command right after
+    /// `/forceload add` (`/place`, `/setblock`) finds the chunks loaded.
+    fn wait_for_forced_chunks(&mut self, min: [i32; 2], max: [i32; 2]) {
+        let missing = |g: &Self| {
+            (min[0]..=max[0])
+                .any(|x| (min[1]..=max[1]).any(|z| !g.world.chunks.contains_key(&(x, z))))
+        };
+        let deadline = std::time::Instant::now() + FORCED_CHUNK_WAIT;
+        while missing(self) {
+            if std::time::Instant::now() >= deadline {
+                log::warn!("Horizon: /forceload: chunks {min:?}..{max:?} are not loaded yet");
+                return;
+            }
+            let _ = self.streaming.update(&mut self.world);
+            self.streaming.wait(std::time::Duration::from_millis(5));
+        }
     }
     pub(super) fn cmd_forceload(&mut self, id: &str, ctx: &Context) -> R<i32> {
         let dim = Text::literal(self.dim.id());
@@ -128,6 +148,7 @@ impl Game<'_> {
                 }
                 if add {
                     self.streaming.rank_forced(cx0, cz0, cx1, cz1);
+                    self.wait_for_forced_chunks([cx0, cz0], [cx1, cz1]);
                 }
                 let (lo, hi) = (chunk_text(cx0, cz0), chunk_text(cx1, cz1));
                 let verb = if add { "added" } else { "removed" };
@@ -278,7 +299,8 @@ impl Game<'_> {
         let now = horizon_client::lan::border::Sent::of(&self.border);
         if let Some(sent) = host.border_sent.replace(now) {
             for packet in sent.changes(&self.border) {
-                host.hub.broadcast(&packet);
+                // PlayerList$1: only the players of the border's own level.
+                host.hub.broadcast_level(&packet);
             }
         }
     }
@@ -506,7 +528,10 @@ impl Game<'_> {
             .first()
             .and_then(|s| self.slot_get(s)))
     }
+    /// `LootCommand.dropBlockLoot`: copy the actual block entity's components
+    /// into the mine result without removing the source block or its contents.
     pub(super) fn cmd_loot(&mut self, id: &str, ctx: &Context) -> R<i32> {
+        let keep_empty = ctx.literals.iter().any(|literal| literal == "replace");
         // The drops.
         let (drops, table): (Vec<ItemStack>, Option<String>) = match id {
             "loot.loot" | "loot.fish" => {
@@ -518,12 +543,30 @@ impl Game<'_> {
                     let (tag, _) = horizon_world::nbt::parse_snbt(&table)
                         .map_err(|e| err("argument.nbt.invalid", &[&e]))?;
                     let json = horizon_client::scoreboard::tag_to_json(&tag);
+                    // LootCommand's omitted fishing tool is EMPTY, not mainhand.
+                    let held = if id == "loot.fish"
+                        && (ctx.get("tool").is_some() || ctx.has("mainhand") || ctx.has("offhand"))
+                    {
+                        self.tool_stack(ctx)?
+                    } else {
+                        None
+                    };
                     let drops = match json["random_sequence"].as_str() {
                         Some(sequence) => {
                             let random = self.rand_sequences.get(sequence, self.level.seed);
-                            world_items!(self).inline_loot_table(&json, random)
+                            world_items!(self).inline_loot_table_for_command(
+                                &json,
+                                held.as_ref(),
+                                random,
+                                keep_empty,
+                            )
                         }
-                        None => world_items!(self).inline_loot_table(&json, &mut self.world.random),
+                        None => world_items!(self).inline_loot_table_for_command(
+                            &json,
+                            held.as_ref(),
+                            &mut self.world.random,
+                            keep_empty,
+                        ),
                     };
                     (drops, None)
                 } else {
@@ -538,13 +581,20 @@ impl Game<'_> {
                     let drops = match world_items!(self).loot_sequence(&table) {
                         Some(seq) => {
                             let random = self.rand_sequences.get(&seq, self.level.seed);
-                            world_items!(self).loot_table(&table, false, held.as_ref(), random)
+                            world_items!(self).loot_table_for_command(
+                                &table,
+                                false,
+                                held.as_ref(),
+                                random,
+                                keep_empty,
+                            )
                         }
-                        None => world_items!(self).loot_table(
+                        None => world_items!(self).loot_table_for_command(
                             &table,
                             false,
                             held.as_ref(),
                             &mut self.world.random,
+                            keep_empty,
                         ),
                     };
                     (drops, None)
@@ -556,7 +606,9 @@ impl Game<'_> {
                     return Ok(0);
                 };
                 let ty = self.target_type(t);
-                let table = format!("minecraft:entities/{}", ty.trim_start_matches("minecraft:"));
+                // `EntityType.getDefaultLootTable`, in the type's namespace.
+                let (namespace, path) = ty.split_once(':').unwrap_or(("minecraft", ty.as_str()));
+                let table = format!("{namespace}:entities/{path}");
                 if t == Target::Player || !world_items!(self).has_loot_table(&table) {
                     return Err(err(
                         "commands.drop.no_loot_table.entity",
@@ -571,13 +623,20 @@ impl Game<'_> {
                 let drops = match world_items!(self).loot_sequence(&table) {
                     Some(seq) => {
                         let random = self.rand_sequences.get(&seq, self.level.seed);
-                        world_items!(self).entity_drops(&ty, by_player, held.as_ref(), random)
+                        world_items!(self).entity_drops_for_command(
+                            &ty,
+                            by_player,
+                            held.as_ref(),
+                            random,
+                            keep_empty,
+                        )
                     }
-                    None => world_items!(self).entity_drops(
+                    None => world_items!(self).entity_drops_for_command(
                         &ty,
                         by_player,
                         held.as_ref(),
                         &mut self.world.random,
+                        keep_empty,
                     ),
                 };
                 (drops, Some(table))
@@ -593,27 +652,48 @@ impl Game<'_> {
                     return Err(err("commands.drop.no_loot_table.block", &[&name]));
                 };
                 let tool = self.tool_stack(ctx)?;
-                let drops = match world_items!(self).loot_sequence(&table) {
+                let mut pending = crate::game::spill::Pending::default();
+                let key = (p[0], p[1], p[2]);
+                let has_block_entity = if let Some(entity) = self.world.block_entities.get(&key) {
+                    pending.record(p, entity, &name, self.world.block_names.get(&key).cloned());
+                    true
+                } else if let Some(saved) = self.block_entity_nbt(p) {
+                    pending.record_saved(p, &saved);
+                    true
+                } else {
+                    false
+                };
+                let mut drops = match world_items!(self).loot_sequence(&table) {
                     Some(seq) => {
                         let random = self.rand_sequences.get(&seq, self.level.seed);
-                        world_items!(self).block_drops(
+                        world_items!(self).block_drops_for_command(
                             self.pack.assets.registry,
                             state,
                             tool.as_ref(),
                             random,
+                            keep_empty,
                         )
                     }
-                    None => world_items!(self).block_drops(
+                    None => world_items!(self).block_drops_for_command(
                         self.pack.assets.registry,
                         state,
                         tool.as_ref(),
                         &mut self.world.random,
+                        keep_empty,
                     ),
                 };
+                if has_block_entity {
+                    for drop in &mut drops {
+                        pending.attach(p, drop);
+                    }
+                }
                 (drops, Some(table))
             }
         };
-        let drops: Vec<ItemStack> = drops.into_iter().filter(|d| d.count > 0).collect();
+        let drops: Vec<ItemStack> = drops
+            .into_iter()
+            .filter(|d| keep_empty || d.count > 0)
+            .collect();
         // Where they go.
         let mut used: Vec<ItemStack> = Vec::new();
         let literals = &ctx.literals;
@@ -658,6 +738,9 @@ impl Game<'_> {
                 let mut left = d.clone();
                 let mut placed = false;
                 for s in &slots {
+                    if !self.slot_accepts(s, Some(&left)) {
+                        continue;
+                    }
                     match self.slot_get(s) {
                         None => {
                             self.slot_set(s, Some(left.clone()));
@@ -734,8 +817,9 @@ impl Game<'_> {
                         None => first.first().cloned().filter(|_| i == 0),
                     };
                     let Some(slot) = slot else { continue };
-                    let item = drops.get(i).cloned();
-                    if self.slot_set(&slot, item.clone()) {
+                    let item = drops.get(i).filter(|drop| drop.count > 0).cloned();
+                    if self.slot_accepts(&slot, item.as_ref()) && self.slot_set(&slot, item.clone())
+                    {
                         used.push(item.unwrap_or(ItemStack {
                             item: "minecraft:air".into(),
                             count: 0,
@@ -758,7 +842,7 @@ impl Game<'_> {
             false,
             None,
             |h, _| {
-                let n = counts.iter().copied().find(|c| *c > 0).unwrap_or(1);
+                let n = counts.iter().copied().find(|c| *c > 0).unwrap_or(0);
                 match &table {
                     Some(t) => Text::translate(
                         "commands.drop.success.single_with_table",
@@ -793,5 +877,317 @@ mod tests {
     fn the_too_big_message_names_the_limit_as_vanilla_prints_it() {
         assert_eq!(super::MAX_SIZE, 5.9999968E7);
         assert_eq!(super::size_limit_text(), "5.9999968E7");
+    }
+}
+
+#[cfg(test)]
+mod loot_mine_component_tests {
+    use super::*;
+    use crate::game::{Audio, Options, Progress, Settings, load_resources};
+    use horizon_client::{chunk::Chunk, containers::BlockEntity, save};
+    use horizon_world::nbt::{Compound, Tag};
+    use std::sync::Arc;
+
+    fn slot(game: &Game<'_>, index: usize) -> ItemStack {
+        let Some(BlockEntity::Chest(items)) = game.world.block_entities.get(&(12, 200, 4)) else {
+            panic!("actual command-created chest required");
+        };
+        items[index]
+            .clone()
+            .expect("actual inventory slot must be occupied")
+    }
+
+    fn decorations(stack: &ItemStack) -> Option<Tag> {
+        save::item_to_nbt(stack)
+            .get("components")?
+            .get("minecraft:pot_decorations")
+            .cloned()
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and scratch homes/cwd"]
+    fn loot_mine_copies_actual_empty_and_right_pot_components_into_the_chest() {
+        let root = std::path::PathBuf::from(
+            std::env::var_os("HORIZON_TEST_RESOURCES").expect("prepared resources required"),
+        );
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.world
+            .chunks
+            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        game.block_ticks
+            .add_empty_chunk(ChunkPos::new(0, 0))
+            .unwrap();
+        assert!(game.run_command("forceload add 0 0"));
+        assert!(game.run_command("fill 0 199 0 15 199 15 stone"));
+        assert!(game.run_command(
+            "setblock 12 200 4 chest[facing=north,type=single,waterlogged=false] strict"
+        ));
+        assert!(
+            game.run_command("item replace block 12 200 4 container.26 with minecraft:diamond 7")
+        );
+        assert!(game.run_command("item replace block 12 200 4 container.2 with minecraft:decorated_pot[minecraft:pot_decorations={}] 1"));
+        let empty = Tag::Compound(Compound::new());
+        assert_eq!(
+            (&*slot(&game, 26).item, slot(&game, 26).count),
+            ("minecraft:diamond", 7)
+        );
+        assert_eq!(
+            decorations(&slot(&game, 2)),
+            Some(empty.clone()),
+            "direct-item parser/encoder positive control"
+        );
+        assert!(
+            slot(&game, 2)
+                .extra
+                .as_ref()
+                .unwrap()
+                .pot_decorations
+                .is_some()
+        );
+        let start = game.world.game_time;
+        let right = "minecraft:angler_pottery_sherd";
+        let mut failures = Vec::new();
+        for (x, nbt, decorated) in [
+            (4, "", false),
+            (
+                7,
+                r#"{sherds:{right:{id:"minecraft:angler_pottery_sherd"}}}"#,
+                true,
+            ),
+        ] {
+            assert!(game.run_command(&format!(
+                "setblock {x} 200 4 decorated_pot[facing=north,cracked=false,waterlogged=false]{nbt} strict"
+            )));
+            let pos = [x, 200, 4];
+            let state = game.world.block(x, 200, 4);
+            let actual = game.pack.assets.registry.state(state).unwrap();
+            assert_eq!(&*actual.name, "minecraft:decorated_pot");
+            assert_eq!(
+                actual.properties.get("cracked").map(String::as_str),
+                Some("false")
+            );
+            assert_eq!(
+                game.world.block(x, 199, 4),
+                game.pack
+                    .assets
+                    .registry
+                    .default_state("minecraft:stone")
+                    .unwrap()
+            );
+            let before = game.pot_data(pos).expect("actual source block entity read");
+            assert_eq!(
+                before.get("id"),
+                Some(&Tag::String("minecraft:decorated_pot".into()))
+            );
+            for (key, value) in [("x", x), ("y", 200), ("z", 4)] {
+                assert_eq!(before.get(key), Some(&Tag::Int(value)));
+            }
+            if decorated {
+                assert_eq!(
+                    before
+                        .get("sherds")
+                        .and_then(|t| t.get("right"))
+                        .and_then(|t| t.get("id")),
+                    Some(&Tag::String(right.into())),
+                    "actual admitted source sherd"
+                );
+            } else {
+                assert!(before.get("sherds").is_none());
+            }
+            assert!(before.get("item").is_none() && before.get("LootTable").is_none());
+            assert!(
+                game.run_command("item replace block 12 200 4 container.0 with minecraft:stone 3")
+            );
+            let initial = slot(&game, 0);
+            assert_eq!((&*initial.item, initial.count), ("minecraft:stone", 3));
+            assert!(game.run_command(&format!(
+                "loot replace block 12 200 4 container.0 1 mine {x} 200 4"
+            )));
+            let out = slot(&game, 0);
+            assert_eq!(
+                (&*out.item, out.count),
+                ("minecraft:decorated_pot", 1),
+                "inventory is the count authority"
+            );
+            let expected = if decorated {
+                Tag::compound([("right", Tag::compound([("id", Tag::String(right.into()))]))])
+            } else {
+                empty.clone()
+            };
+            if decorations(&out) != Some(expected) {
+                failures.push(format!(
+                    "source {x}: actual saved output pot_decorations missing/wrong"
+                ));
+            }
+            let modeled = out.extra.as_ref().and_then(|d| d.pot_decorations.as_ref());
+            if modeled.is_none_or(|sides| {
+                sides.iter().enumerate().any(|(i, item)| {
+                    if decorated && i == 2 {
+                        item.as_ref()
+                            .is_none_or(|s| &*s.item != right || s.count != 1)
+                    } else {
+                        item.is_some()
+                    }
+                })
+            }) {
+                failures.push(format!(
+                    "source {x}: actual output component state missing/wrong"
+                ));
+            }
+            assert_eq!(
+                game.pot_data(pos),
+                Some(before),
+                "mine leaves the actual source unchanged"
+            );
+            assert_eq!(game.world.block(x, 200, 4), state);
+            assert_eq!(
+                (&*slot(&game, 26).item, slot(&game, 26).count),
+                ("minecraft:diamond", 7)
+            );
+            assert_eq!(decorations(&slot(&game, 2)), Some(empty.clone()));
+            assert_eq!(game.world.game_time, start);
+        }
+        assert!(game.run_command("setblock 10 200 4 dirt strict"));
+        assert!(game.run_command("loot replace block 12 200 4 container.0 1 mine 10 200 4"));
+        let plain = slot(&game, 0);
+        assert_eq!((&*plain.item, plain.count), ("minecraft:dirt", 1));
+        assert!(decorations(&plain).is_none());
+        assert_eq!(game.world.game_time, start);
+        assert!(
+            failures.is_empty(),
+            "actual loot-mine component-copy failures: {failures:#?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod loot_position_tests {
+    use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn actual_loot_replacement_retains_the_emitted_zero_slot() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+
+        game.set_allow_commands(true);
+        game.world.chunks.insert(
+            (0, 0),
+            std::sync::Arc::new(horizon_client::chunk::Chunk::empty(0, 0)),
+        );
+        game.block_ticks
+            .add_empty_chunk(horizon_core::position::ChunkPos::new(0, 0))
+            .unwrap();
+        assert!(game.run_command("forceload add 0 0"));
+        assert!(game.run_command("setblock 4 200 4 chest"));
+        let slot = |game: &mut Game<'_>, i| {
+            game.slot_get(&crate::game::commands::items::Slot::Block([4, 200, 4], i))
+        };
+        let reset = |game: &mut Game<'_>| {
+            assert!(game.run_command("item replace block 4 200 4 container.0 with diamond 3"));
+            assert!(game.run_command("item replace block 4 200 4 container.1 with emerald 4"));
+            assert!(game.run_command("item replace block 4 200 4 container.2 with gold_ingot 5"));
+            assert_eq!(
+                slot(game, 0).map(|s| (s.item.to_string(), s.count)),
+                Some(("minecraft:diamond".into(), 3))
+            );
+            assert_eq!(
+                slot(game, 1).map(|s| (s.item.to_string(), s.count)),
+                Some(("minecraft:emerald".into(), 4))
+            );
+        };
+        let table = |counts: &[i32]| {
+            serde_json::json!({"pools":counts.iter().map(|count| serde_json::json!({
+            "rolls":1,"entries":[{"type":"minecraft:item","name":"minecraft:iron_ingot",
+                "modifier":{"type":"minecraft:set_count","count":count}}]
+        })).collect::<Vec<_>>()})
+            .to_string()
+        };
+        let time = game.world.game_time;
+        reset(&mut game);
+        assert!(game.run_command(&format!(
+            "loot replace block 4 200 4 container.0 loot {}",
+            table(&[1])
+        )));
+        assert_eq!(
+            slot(&mut game, 0).map(|s| (s.item.to_string(), s.count)),
+            Some(("minecraft:iron_ingot".into(), 1))
+        );
+        reset(&mut game);
+        assert!(game.run_command(&format!(
+            "loot replace block 4 200 4 container.0 loot {}",
+            table(&[0, 1])
+        )));
+        assert!(
+            slot(&mut game, 0).is_none(),
+            "the emitted zero occupies and clears slot0"
+        );
+        assert_eq!(
+            slot(&mut game, 1).map(|s| (s.item.to_string(), s.count)),
+            Some(("minecraft:iron_ingot".into(), 1))
+        );
+        assert_eq!(slot(&mut game, 2).unwrap().count, 5);
+        reset(&mut game);
+        assert!(game.run_command(&format!(
+            "loot replace block 4 200 4 container.0 2 loot {}",
+            table(&[])
+        )));
+        assert!(slot(&mut game, 0).is_none());
+        assert!(slot(&mut game, 1).is_none());
+        assert_eq!(slot(&mut game, 2).unwrap().count, 5);
+        assert_eq!(game.world.game_time, time);
     }
 }

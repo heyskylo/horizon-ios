@@ -1,0 +1,14 @@
+{
+  "hooks": [],
+  "helpers": [
+    {
+      "name": "add_particle",
+      "target": "horizon_client::game::native_client_particles::Game<'_>::native_add_particle"
+    }
+  ],
+  "rust_summary": "one local client particle through Host::add_particle, retaining the existing provider and engine limits.",
+  "doc_summary": "`Host::add_particle(&ParticleOptions, position, velocity) -> bool` submits one particle to this client's loaded world. It preserves all option and velocity slots, including encoded color/size arguments, and uses the existing built-in and named-sprite providers with normal camera-distance, Particles-setting and population limits. True means submitted, not necessarily visible; missing providers/sprite sets draw nothing. It returns false on servers, without a client player/level, or for non-finite numeric input. Custom provider registration and new trigger hooks remain separate. Bundles need \"hooks\": @API:client_particles@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_client_particles.rs"
+  ]
+}

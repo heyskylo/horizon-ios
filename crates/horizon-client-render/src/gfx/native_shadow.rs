@@ -6,7 +6,7 @@
 //! draw lists (`ShadowView`) serve both; the map's texels are distorted toward the camera as the
 //! prelude's `shadow_position` undoes.
 
-use horizon_shader_api::{Frame as FrameInputs, manifest::Shadow as Settings, stages::GROUP};
+use horizon_shader_api::{Api, Frame as FrameInputs, manifest::Shadow as Settings, stages::GROUP};
 use horizon_shaders::Shadow;
 
 use super::native_material::TerrainShape;
@@ -75,7 +75,7 @@ fn horizon_shadow_cutout(in: HorizonShadowOut) {
 @fragment fn horizon_shadow_fs_translucent(in: HorizonShadowOut) -> @location(0) vec4<f32> {
     let color = horizon_terrain_sprite(in.uv, in.layer & 0x7fffu);
     if color.a < 0.01 { discard; }
-    return vec4(color.rgb * in.tint, select(min(color.a, 0.99), 1.0, in.fluid != 0u));
+    return vec4(horizon_line_in(color.rgb * in.tint), select(min(color.a, 0.99), 1.0, in.fluid != 0u));
 }
 ";
 
@@ -152,16 +152,21 @@ pub struct ShadowGrid<'a> {
     pub normals: &'a wgpu::TextureView,
 }
 
-/// `shadow_color`'s format.
-const SHADOW_COLOR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+/// `shadow_color`'s format: under 0.2 it holds linear light, which 8 bits would band.
+fn shadow_color(api: Api) -> wgpu::TextureFormat {
+    match api {
+        Api::V0_1 => wgpu::TextureFormat::Rgba8Unorm,
+        Api::V0_2 => super::native_post::INTERMEDIATE,
+    }
+}
 
 /// The shader pack's shadow camera for `settings`: orthographic over `distance` each side,
 /// staying put while the camera walks a `SNAP`-block cell. The map is distorted about its
 /// centre, so a centre that moves with the camera, even by a texel, resamples every shadow but
 /// the nearest each frame and they shimmer; a still one maps the world to the same texels until
-/// the next cell. Its depth starts 256 blocks further toward the light than `shaders/` packs'
-/// (the projection's near plane is at `-near`), so the ground over a deep cave still casts its
-/// shadow, and ends past the build height and the slant across the map below the camera.
+/// the next cell. Its depth starts 356 blocks toward the light (256 further than `shaders/`
+/// packs' default), so the ground over a deep cave still casts its shadow, and ends past the
+/// build height and the slant across the map below the camera.
 pub fn camera(settings: &Settings) -> Shadow {
     Shadow {
         resolution: settings.resolution,
@@ -169,8 +174,8 @@ pub fn camera(settings: &Settings) -> Shadow {
         render_mul: 1.0,
         interval: SNAP,
         euclidean_snap: true,
-        near: 256.0,
-        far: super::pack_uniforms::SHADOW_EYE + 2.0 * settings.distance + 384.0,
+        near: Some(-356.0),
+        far: Some(2.0 * settings.distance + 384.0),
         ..Shadow::default()
     }
 }
@@ -218,7 +223,7 @@ pub struct ShadowMap {
 }
 
 impl ShadowMap {
-    pub fn new(device: &wgpu::Device, settings: Option<&Settings>) -> Self {
+    pub fn new(device: &wgpu::Device, settings: Option<&Settings>, api: Api) -> Self {
         let size = settings.map_or(1, |s| s.resolution);
         let texture = |label, format, usage| {
             device.create_texture(&wgpu::TextureDescriptor {
@@ -250,7 +255,7 @@ impl ShadowMap {
         );
         let color = texture(
             "Native shader pack shadow colour",
-            SHADOW_COLOR,
+            shadow_color(api),
             wgpu::TextureUsages::empty(),
         );
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -474,6 +479,7 @@ fn shader_source(
     vertex: Option<&str>,
     materials: &[(u32, u32)],
     grid: Option<&str>,
+    api: Api,
 ) -> String {
     let table = super::native_material::layer_table("horizon_sprite_material", materials);
     let (head, displace) = match (grid, vertex) {
@@ -504,11 +510,12 @@ fn shader_source(
         ),
     };
     format!(
-        "{head}// Horizon's terrain (terrain.wgsl)\n{}{solid}{displace}{ENTRIES}",
+        "{head}// Horizon's terrain (terrain.wgsl)\n{}{solid}{}{displace}{ENTRIES}",
         prefixed(
             section(TERRAIN, "struct Globals {", "// Sky (SkyRenderer)"),
             PREFIX
-        )
+        ),
+        super::native_post::line_helpers(api)
     )
 }
 
@@ -527,6 +534,7 @@ impl NativeShadow {
             vertex.map(|s| s.source.as_str()),
             shape.sprite_materials,
             grid.as_ref().map(|g| g.material.source.as_str()),
+            frame.api,
         );
         let module = naga::front::wgsl::parse_str(&text)
             .map_err(|e| format!("shadow pass: {}", e.emit_to_string(&text)))?;
@@ -613,7 +621,7 @@ impl NativeShadow {
             attributes: &instance_attributes,
         };
         let color_target = [Some(wgpu::ColorTargetState {
-            format: SHADOW_COLOR,
+            format: shadow_color(frame.api),
             blend: None,
             write_mask: wgpu::ColorWrites::ALL,
         })];
@@ -731,8 +739,9 @@ mod tests {
 
     #[test]
     fn the_shadow_shader_validates() {
-        for materials in [&[][..], &[(3, 7), (4, 8), (9, 7)][..]] {
-            let text = shader_source(&shadow_solid(materials, &[7]), None, materials, None);
+        let lines = [Api::V0_1, Api::V0_2];
+        for (materials, api) in [&[][..], &[(3, 7), (4, 8), (9, 7)][..]].iter().zip(lines) {
+            let text = shader_source(&shadow_solid(materials, &[7]), None, materials, None, api);
             let module = naga::front::wgsl::parse_str(&text).unwrap();
             naga::valid::Validator::new(
                 naga::valid::ValidationFlags::all(),
@@ -767,6 +776,7 @@ mod tests {
             None,
             &materials,
             Some(&stage.source),
+            Api::V0_1,
         );
         let module = naga::front::wgsl::parse_str(&text)
             .unwrap_or_else(|e| panic!("{}", e.emit_to_string(&text)));
@@ -806,12 +816,7 @@ mod tests {
 
     #[test]
     fn what_the_camera_stands_on_is_inside_the_shadow_cameras_depth() {
-        let settings = Settings {
-            resolution: 2048,
-            distance: 128.0,
-            solid_materials: Vec::new(),
-        };
-        let shadow = camera(&settings);
+        let shadow = camera(&Settings::default());
         let (view, projection) = super::super::pack_uniforms::shadow_camera(
             glam::Vec3::new(0.3, 0.9, 0.0).normalize(),
             glam::DVec3::new(-2064.5, 246.0, -4304.5),
@@ -827,11 +832,7 @@ mod tests {
 
     #[test]
     fn the_centre_stays_near_the_player_on_both_sides_of_zero() {
-        let shadow = camera(&Settings {
-            resolution: 2048,
-            distance: 128.0,
-            solid_materials: Vec::new(),
-        });
+        let shadow = camera(&Settings::default());
         let light = glam::Vec3::Y;
         for x in [5.5, -5.5, -2064.5, 2064.5] {
             let camera = glam::DVec3::new(x, 64.0, x);

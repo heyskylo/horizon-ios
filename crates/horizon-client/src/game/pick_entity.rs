@@ -5,10 +5,8 @@ use super::Game;
 use horizon_client::{items::ItemStack, save::uuid_text};
 
 impl Game<'_> {
-    /// The entity the crosshair hits before any block, as `Entity.getId`; an
-    /// entity with nothing to pick (a projectile, a player, the dragon) is
-    /// `Some(None)`. `None` when the view hits a block or nothing.
-    pub(super) fn pick_entity_hit(&self) -> Option<Option<i32>> {
+    /// `pick_entity_hit` with the distance along the view to the hit.
+    pub(super) fn pick_entity_hit_at(&self) -> Option<(f64, Option<i32>)> {
         let mut best: Option<(f64, Option<i32>)> = None;
         let mut offer = |distance: f64, id: Option<i32>| {
             if self.before_block(distance) && best.is_none_or(|b| distance < b.0) {
@@ -20,7 +18,7 @@ impl Game<'_> {
             let id = (!self.interactions.contains_key(&hit.id)).then_some(hit.id);
             offer(hit.distance, id);
         }
-        if let Some((i, d)) = self.mob_hit() {
+        if let Some((i, d, _)) = self.mob_hit() {
             offer(d, Some(self.mobs[i].id as i32));
         }
         if let Some((_, d)) = self.redirectable_hit() {
@@ -29,7 +27,14 @@ impl Game<'_> {
         if let Some((_, d)) = self.dragon_hit() {
             offer(d, None);
         }
-        best.map(|b| b.1)
+        best
+    }
+
+    /// The entity the crosshair hits before any block, as `Entity.getId`; an
+    /// entity with nothing to pick (a projectile, a player, the dragon) is
+    /// `Some(None)`. `None` when the view hits a block or nothing.
+    pub(super) fn pick_entity_hit(&self) -> Option<Option<i32>> {
+        self.pick_entity_hit_at().map(|b| b.1)
     }
 
     /// `ClientSuggestionProvider.getSelectedEntities`: the UUID
@@ -48,7 +53,7 @@ impl Game<'_> {
         if let Some(hit) = self.remote_object_hit(true) {
             offer(hit.distance, uuid_of(hit.id as u32));
         }
-        if let Some((i, d)) = self.mob_hit() {
+        if let Some((i, d, _)) = self.mob_hit() {
             offer(d, uuid_of(self.mobs[i].id));
         }
         if let Some((i, d)) = self.redirectable_hit() {

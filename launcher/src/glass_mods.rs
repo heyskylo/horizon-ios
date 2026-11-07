@@ -9,7 +9,7 @@
 //! is by kind (mods, modpacks, resource packs, shader packs, data packs), each with its sources,
 //! so the tabs are the kinds and the sources are a switch under the search: Horizon's registry
 //! or Modrinth, CurseForge beside them as coming soon, on the kinds both serve (`switches`):
-//! shader packs are Horizon's registry's only, data packs Modrinth's only, and a Java
+//! shader packs are Horizon's registry's only, and a Java
 //! instance's files always Modrinth's. Modrinth's Java mods are offered to a Horizon instance
 //! too, each marked Works, Partly or Doesn't run in Horizon. Not in the mockup, kept in its
 //! patterns: Show everything, the filters, which instance or world installs go to (under the
@@ -79,24 +79,51 @@ impl Launcher {
                 })),
             );
         }
-        let header = div()
-            .flex()
-            .items_end()
-            .justify_between()
-            .gap(px(20.))
-            .pt(px(40. - crate::glass::CONTENT_INSET))
-            .mb(px(28.))
-            .child(head.min_w_0())
-            .child(tabs);
+        let wide = self.window_width >= crate::glass_home::SIDE_BY_SIDE;
+        let header = if wide {
+            div()
+                .flex()
+                .flex_row()
+                .items_end()
+                .justify_between()
+                .gap(px(20.))
+                .pt(px(40. - crate::glass::CONTENT_INSET))
+                .mb(px(28.))
+                .child(head.min_w_0())
+                .child(tabs)
+        } else {
+            div()
+                .flex()
+                .flex_col()
+                .items_start()
+                .gap(px(16.))
+                .pt(px(40. - crate::glass::CONTENT_INSET))
+                .mb(px(28.))
+                .child(head.w_full().min_w_0())
+                .child(
+                    tabs.id("mods-kind-tabs")
+                        .w_full()
+                        .overflow_x_scroll()
+                        .on_scroll(|_, _, cx| cx.stop_propagation()),
+                )
+        };
 
+        // Installation can pause for consent in either view. Keep the notice before
+        // the project or results, rather than below a potentially long detail card.
+        let notice = self.native_notice(cx).map(|notice| notice.mb(px(20.)));
         // A project's own page replaces the two cards, as before.
         if let Some(project) = self.mods_project_page(cx) {
-            return div().flex().flex_col().child(header).child(
-                crate::glass::plate(radius::PANEL)
-                    .p(px(20.))
-                    .children(self.mods_busy_plate())
-                    .child(project),
-            );
+            return div()
+                .flex()
+                .flex_col()
+                .child(header)
+                .children(notice)
+                .child(
+                    crate::glass::plate(radius::PANEL)
+                        .p(px(20.))
+                        .children(self.mods_busy_plate())
+                        .child(project),
+                );
         }
 
         let java = self.mods.java_for(self.mods.kind).is_some();
@@ -134,7 +161,7 @@ impl Launcher {
             .when(switches(self.mods.kind) && !java, |d| {
                 d.child(self.glass_source_switch(cx))
             })
-            .children((!registry).then(|| self.mods_filters(cx)))
+            .child(self.mods_filters(cx))
             .children(self.mods_target_line(cx));
         // The search, and the sort on its right.
         let search = div()
@@ -158,15 +185,15 @@ impl Launcher {
         let detail = self.glass_mod_detail(&instance, cx).map(|d| {
             let down = self.mods_sticky.offset(&self.content_scroll.handle);
             d.flex_none()
-                .w(px(DETAIL))
-                .top(px(down))
+                .when(wide, |d| d.w(px(DETAIL)).top(px(down)))
+                .when(!wide, |d| d.w_full())
                 .child(self.mods_sticky.panel())
         });
         let cards = div()
             .relative()
             .flex()
-            .items_start()
-            .gap(px(10.))
+            .when(wide, |d| d.flex_row().items_start().gap(px(10.)))
+            .when(!wide, |d| d.flex_col().gap(px(10.)))
             .child(self.mods_sticky.row(&self.content_scroll.handle))
             .child(list)
             .children(detail);
@@ -174,7 +201,6 @@ impl Launcher {
         // What the mockup doesn't have, as cards under the two.
         let card = |inner: Div| crate::glass::plate(radius::PANEL).p(px(20.)).child(inner);
         let mut more: Vec<Div> = Vec::new();
-        more.extend(self.native_notice(cx).map(card));
         more.extend(self.mods_busy_plate().into_iter().map(card));
         if self.mods.kind == PackKind::Modpack {
             more.push(card(self.imported_packs(cx)));
@@ -183,14 +209,20 @@ impl Launcher {
             more.push(card(self.github_panel(cx)));
         }
         more.extend(self.mods_installed_list(cx).map(card));
-        div().flex().flex_col().child(header).child(cards).child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(10.))
-                .mt(px(10.))
-                .children(more),
-        )
+        div()
+            .flex()
+            .flex_col()
+            .child(header)
+            .children(notice)
+            .child(cards)
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(10.))
+                    .mt(px(10.))
+                    .children(more),
+            )
     }
 
     /// The source switch (`switches`): Horizon's registry or Modrinth as small tabs, CurseForge
@@ -364,6 +396,42 @@ impl Launcher {
             let m = &self.mods;
             let installed = m.entry(&p).is_some();
             let busy = m.busy.as_ref().is_some_and(|b| b.0 == p.id);
+            let checking = m.checking(&p);
+            let can_install =
+                !installed && !checking && m.busy.is_none() && m.support(&p).installable();
+            let action: AnyElement = if installed || busy || checking || m.support(&p).installable()
+            {
+                let label = if installed {
+                    tr("Installed")
+                } else if checking {
+                    tr("Checking…")
+                } else if busy {
+                    tr("Installing…")
+                } else if p.kind == PackKind::Modpack {
+                    tr("Import as an instance")
+                } else {
+                    tr("Install")
+                };
+                let known = p.clone();
+                ui::quiet(
+                    SharedString::from(format!("mods-row-install-{}", p.id)),
+                    label,
+                    32.,
+                    &t,
+                )
+                .flex_none()
+                .when(!can_install, |d| d.opacity(0.5).cursor_default())
+                .when(can_install, |d| {
+                    d.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        cx.stop_propagation();
+                        this.mods_install(known.source, known.id.clone(), Some(known.clone()));
+                        cx.notify();
+                    }))
+                })
+                .into_any_element()
+            } else {
+                div().flex_none().w(px(20.)).into_any_element()
+            };
             // The registry's rows end with downloads, the others' with how they run (`compat`).
             let right = if p.source == SourceId::Horizon {
                 ui::text(13., FontWeight::NORMAL, 0.5).child(count(p.downloads).to_uppercase())
@@ -427,15 +495,7 @@ impl Launcher {
                         ),
                 )
                 .child(right.flex_none())
-                .child(
-                    div()
-                        .flex()
-                        .flex_none()
-                        .justify_center()
-                        .w(px(20.))
-                        .when(installed, |d| d.child(ui::icon("tick-02", 17., ui::live())))
-                        .when(busy && !installed, |d| d.child(ui::dot(ui::Tone::Busy))),
-                )
+                .child(action)
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                     this.mods.picked = Some(id.clone());
                     this.mods.confirm_remove = None;
@@ -499,7 +559,9 @@ impl Launcher {
         if !p.author.is_empty() {
             by.push(trf("by {author}", &[("author", &p.author)]));
         }
-        by.push(trf("from {source}", &[("source", p.source.label())]));
+        if let Some(source) = p.source.shown_for(&p.id) {
+            by.push(trf("from {source}", &[("source", source)]));
+        }
         if !p.license.is_empty() {
             by.push(p.license.clone());
         }

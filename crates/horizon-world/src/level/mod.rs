@@ -85,10 +85,12 @@
 //! behaviours.falling_block_landed(&mut level, &mut ticks, landing_pos, carried_state, false);
 //! ```
 use crate::{
+    dimension_type::DimensionFacts,
     fluid::{FluidBlockBindings, FluidKind, FluidState},
     registry::{BlockRegistry, BlockStateId},
 };
 use horizon_core::{
+    LevelKey,
     geometry::{Aabb, Direction, VoxelShape},
     position::{BlockPos, ChunkPos},
     random::LegacyRandom,
@@ -174,6 +176,35 @@ pub enum Dimension {
     End,
 }
 
+impl Dimension {
+    /// The level key of this dimension.
+    pub fn key(self) -> LevelKey {
+        match self {
+            Self::Overworld => LevelKey::OVERWORLD,
+            Self::Nether => LevelKey::NETHER,
+            Self::End => LevelKey::END,
+        }
+    }
+
+    /// The dimension of a level key; custom levels map to the Overworld.
+    pub fn of_level(key: LevelKey) -> Self {
+        match key {
+            LevelKey::NETHER => Self::Nether,
+            LevelKey::END => Self::End,
+            _ => Self::Overworld,
+        }
+    }
+}
+
+/// The sea level of a built-in level (a custom level gets the Overworld's).
+pub fn vanilla_sea_level(level: LevelKey) -> i32 {
+    match level {
+        LevelKey::NETHER => 32,
+        LevelKey::END => 0,
+        _ => 63,
+    }
+}
+
 /// Game rules consulted by block behaviour (vanilla defaults).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GameRules {
@@ -235,6 +266,10 @@ pub enum LevelEvent {
         volume: f32,
         pitch: f32,
     },
+    /// A placed template's container whose data has a `LootTable`
+    /// (`RandomizableContainer.tryLoadLootTable`): the caller keeps the table
+    /// and rolls it, as for a container a command gives one.
+    ContainerLootTable { pos: BlockPos, tag: crate::nbt::Tag },
     /// `Block.dropResources(state, level, pos)`: the caller evaluates the
     /// block's loot table (no tool, no breaker) and pops the items.
     DropResources { pos: BlockPos, state: BlockStateId },
@@ -406,6 +441,11 @@ pub trait LevelAccess {
         _moved: bool,
     ) {
     }
+    /// Bukkit's `BlockRedstoneEvent`: the button, lever or pressure plate at `pos` is about
+    /// to change its signal from `old` to `new` (0 to 15). The level may change `new`; the
+    /// component then takes that signal (one equal to `old` keeps it as it is). The
+    /// default leaves it.
+    fn redstone_change(&self, _pos: BlockPos, _old: i32, _new: &mut i32) {}
     /// `BlockState.randomTick` from `ServerLevel.tickChunk`, before the block
     /// handles it. The level may change the block (`Behaviours::set_block`
     /// with `ticks`); setting `handled` skips the block's own random tick. A
@@ -589,6 +629,14 @@ pub trait LevelAccess {
     fn dimension(&self) -> Dimension {
         Dimension::Overworld
     }
+    /// The level's key.
+    fn level_key(&self) -> LevelKey {
+        self.dimension().key()
+    }
+    /// The level's dimension type.
+    fn dimension_type(&self) -> &DimensionFacts {
+        DimensionFacts::of_builtin_level(self.level_key())
+    }
     fn game_rules(&self) -> GameRules {
         GameRules::default()
     }
@@ -631,6 +679,12 @@ pub trait LevelAccess {
     /// block entity at `pos`: recounts its openers and returns the previous
     /// and new counts (the caller plays open/close effects when they change),
     /// or None when there is no such block entity.
+    /// `ContainerOpenersCounter.getEntitiesWithContainerOpen` is not empty for
+    /// the container at `pos`: someone has it open (a double chest's menu
+    /// counts for both halves).
+    fn container_open(&self, _pos: BlockPos) -> bool {
+        false
+    }
     fn recheck_container_openers(&mut self, _pos: BlockPos) -> Option<(i32, i32)> {
         None
     }
@@ -726,6 +780,12 @@ pub trait LevelAccess {
     /// moves it, as for a template that has one.
     fn has_mod_block_entity(&self, _pos: BlockPos) -> bool {
         false
+    }
+    /// `ShulkerBoxBlockEntity.isClosed` at `pos`: whether the box's lid is
+    /// still shut. None when no shulker box block entity lives there, or the
+    /// level keeps none: vanilla then reads the box as closed, a full cube.
+    fn shulker_is_closed(&self, _pos: BlockPos) -> Option<bool> {
+        None
     }
     /// Load saved block-entity data into the block entity of the block just
     /// placed at `pos` (`BlockEntity.loadWithComponents`): a bee nest a grown
@@ -1156,7 +1216,7 @@ impl Behaviours {
         ticks: &mut Ticks,
         pos: BlockPos,
     ) {
-        if level.dimension() == Dimension::Nether || level.game_time() % 20 != 0 {
+        if !level.dimension_type().height.has_skylight || level.game_time() % 20 != 0 {
             return;
         }
         let mut sim = self.sim(level, ticks);
@@ -1277,5 +1337,26 @@ impl Behaviours {
             ticks,
             wire_signal_off: std::cell::Cell::new(false),
         }
+    }
+}
+
+#[cfg(test)]
+mod dimension_key_tests {
+    use super::*;
+
+    #[test]
+    fn dimension_and_key_round_trip_and_sea_levels() {
+        for (dim, key, sea) in [
+            (Dimension::Overworld, LevelKey::OVERWORLD, 63),
+            (Dimension::Nether, LevelKey::NETHER, 32),
+            (Dimension::End, LevelKey::END, 0),
+        ] {
+            assert_eq!(dim.key(), key);
+            assert_eq!(Dimension::of_level(key), dim);
+            assert_eq!(vanilla_sea_level(key), sea);
+        }
+        let custom = LevelKey::parse("example:sky").unwrap();
+        assert_eq!(Dimension::of_level(custom), Dimension::Overworld);
+        assert_eq!(vanilla_sea_level(custom), 63);
     }
 }

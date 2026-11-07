@@ -155,7 +155,7 @@ fn baby_turtle_on_land(s: &super::Seen) -> bool {
 /// `universal_anger` rule on and no anger target left, any player. Creative and
 /// spectator players are dropped first (`isValidPlayerTarget`), by the goal's
 /// `can_target_player`.
-fn angry_at_player(m: &Mob, w: &MobWorld) -> bool {
+pub(super) fn angry_at_player(m: &Mob, w: &MobWorld) -> bool {
     m.extra.angry_at == Some(Who::Player)
         || (w.universal_anger && m.extra.anger > 0 && m.extra.angry_at.is_none())
 }
@@ -606,13 +606,14 @@ pub fn forgive_dead_player(m: &mut Mob) {
         stop_being_angry(m);
     }
 }
-/// `NeutralMob.updatePersistentAnger(level, true)` from `Wolf.aiStep`: any
-/// target (the attacker, a pack-mate's attacker the `HurtByTargetGoal` alert
-/// gave it, prey, the owner's enemy) is the anger's target, and the 20 to 39
-/// seconds of `PERSISTENT_ANGER_TIME` start over every tick it is held.
+/// `NeutralMob.updatePersistentAnger(level, true)` from `Wolf.aiStep` and
+/// `IronGolem.aiStep`: any target (the attacker, a pack-mate's attacker the
+/// `HurtByTargetGoal` alert gave it, prey, the owner's enemy, a golem's
+/// monster) is the anger's target, and the 20 to 39 seconds of
+/// `PERSISTENT_ANGER_TIME` (the same for both) start over every tick it is held.
 /// Without a target the anger runs out (`extra.anger` counts down to the end
 /// time), and anger at a mob ends when that mob dies.
-fn update_persistent_anger(m: &mut Mob, w: &MobWorld) {
+pub(super) fn update_persistent_anger(m: &mut Mob, w: &MobWorld) {
     let angry_at = m.extra.angry_at;
     if let Some(target @ Who::Mob(id)) = m.ai.target
         && w.seen(id).is_none_or(|s| !s.alive)
@@ -746,6 +747,14 @@ fn shake_tick(m: &mut Mob, wet: bool, server: bool, events: &mut Vec<MobEvent>) 
             let pitch = (m.random.next_float() - m.random.next_float()) * 0.2 + 1.0;
             if server {
                 events.push(MobEvent::Sound("entity.wolf.shake", m.center(), 0.4, pitch));
+                // Wolf.tick: `gameEvent(GameEvent.ENTITY_ACTION)` with the sound (a client's
+                // level hears no game events).
+                events.push(MobEvent::GameEvent {
+                    event: "minecraft:entity_action",
+                    at: [m.position.x, m.position.y, m.position.z],
+                    source: m.id,
+                    state: horizon_world::registry::BlockStateId(0),
+                });
             }
         }
         m.anim.vo[SHAKE] = m.anim.v[SHAKE];
@@ -1693,6 +1702,32 @@ mod tests {
     use crate::mobs::{Damage, sensor_scan_tests::kind};
     use horizon_core::geometry::Vec3;
     use std::sync::Arc;
+
+    /// Wolf.tick: a shake starting posts ENTITY_ACTION with its sound, on the server only.
+    #[test]
+    fn a_shake_posts_entity_action_on_the_server() {
+        let shaking_wolf = || {
+            let mut kind = kind();
+            let k = Arc::make_mut(&mut kind);
+            k.id = "minecraft:wolf".into();
+            k.species = Species::Wolf;
+            let mut m = Mob::new(1, kind, Vec3::ZERO, 0.0);
+            m.extra.counter2 = 1;
+            m
+        };
+        let action = |events: &[MobEvent]| {
+            events.iter().any(|e| {
+                matches!(e, MobEvent::GameEvent { event, source: 1, .. }
+                    if *event == "minecraft:entity_action")
+            })
+        };
+        let mut events = Vec::new();
+        shake_tick(&mut shaking_wolf(), false, true, &mut events);
+        assert!(action(&events), "the server's wolf posts entity_action");
+        let mut events = Vec::new();
+        shake_tick(&mut shaking_wolf(), false, false, &mut events);
+        assert!(!action(&events), "a client's copy posts nothing");
+    }
 
     const WHITE: u32 = 0xFFFF_FFFF;
 

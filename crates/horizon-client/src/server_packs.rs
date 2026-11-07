@@ -882,6 +882,22 @@ mod tests {
     }
 
     #[test]
+    fn replacing_an_active_pack_settles_after_one_reload() {
+        let mut sp = ServerPacks::default();
+        sp.connect(Prompt::Allowed);
+        sp.push(1, "http://a/old.zip", None);
+        settle(&mut sp, &mut |r| ok(r[0].id), &mut |_| true);
+        // The server pushes the same id again while the first is active.
+        sp.push(1, "http://a/new.zip", None);
+        let mut reloads = Vec::new();
+        settle(&mut sp, &mut |r| ok(r[0].id), &mut |p| {
+            reloads.push(p.to_vec());
+            true
+        });
+        assert_eq!(reloads, [[(1, PathBuf::from("/p/1"))]]);
+    }
+
+    #[test]
     fn urls_and_hashes_are_read_as_vanilla_reads_them() {
         assert!(valid_url("https://example.com/p.zip"));
         assert!(valid_url("HTTP://example.com/p.zip"));

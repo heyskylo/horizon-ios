@@ -28,6 +28,48 @@ fn the_example_pack_passes() {
 }
 
 #[test]
+fn the_example_pack_s_0_2_port_passes() {
+    let dir = Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/packs/golden_hour_0_2"
+    ));
+    let report = check(&Pack::read(dir).unwrap()).unwrap();
+    assert_eq!(report.manifest.api, horizon_shader_api::Api::V0_2);
+    let labels: Vec<_> = report.stages.iter().map(|s| s.label.as_str()).collect();
+    assert_eq!(labels, ["Warm horizon", "Glow", "Colour grade"]);
+}
+
+#[test]
+fn the_tool_checks_a_0_2_pack() {
+    let dir = scratch("api-0-2");
+    let files = [
+        (
+            "horizon-shaders.toml",
+            "schema = 1\nid = \"linear\"\nname = \"Linear\"\nversion = \"1.0.0\"\napi = \"0.2\"\n\
+             [[post]]\nfile = \"post.wgsl\"\n[tonemap]\nfile = \"tonemap.wgsl\"\nname = \"Curve\"\n",
+        ),
+        (
+            "post.wgsl",
+            "fn post(input: PostInput) -> vec4<f32> { return input.color; }\n",
+        ),
+        (
+            "tonemap.wgsl",
+            "fn tonemap(input: TonemapInput) -> vec3<f32> { return input.color; }\n",
+        ),
+    ];
+    for (name, text) in files {
+        std::fs::write(dir.join(name), text).unwrap();
+    }
+    let (ok, text) = run(&["check", dir.to_str().unwrap()]);
+    assert!(
+        ok && text.contains("linear 1.0.0 (shader API 0.2): ok"),
+        "{text}"
+    );
+    assert!(text.contains("  tonemap   Curve"), "{text}");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn every_template_makes_a_pack_that_passes() {
     let root = scratch("templates");
     for template in ["post", "sky", "material"] {

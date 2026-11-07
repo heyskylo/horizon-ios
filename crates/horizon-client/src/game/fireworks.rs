@@ -29,6 +29,8 @@ enum RocketHit {
 }
 
 pub(super) struct Rocket {
+    /// `Entity.yRot` and `xRot` (`/tp`, `/data get ... Rotation`).
+    pub rotation: [f32; 2],
     /// When it joined its list (`horizon_client::join_seq`); set by the list.
     pub(super) join: horizon_client::join_seq::JoinSeq,
     /// Its entity id: from the entity counter on the server, the server's on
@@ -64,6 +66,7 @@ impl Rocket {
         let item = ItemStack::new("minecraft:firework_rocket", 1);
         let (_, explosions) = fireworks_of(&item);
         Self {
+            rotation: [0.0, 0.0],
             join: Default::default(),
             id,
             position,
@@ -90,6 +93,7 @@ impl Rocket {
     ) -> horizon_world::nbt::Tag {
         horizon_client::entity_nbt::firework_rocket_to_nbt(
             &horizon_client::entity_nbt::RocketSave {
+                rotation: self.rotation,
                 position: self.position,
                 motion: self.velocity,
                 life: self.life,
@@ -114,6 +118,7 @@ impl Rocket {
             .unwrap_or_else(|| ItemStack::new("minecraft:firework_rocket", 1));
         let (_, explosions) = fireworks_of(&item);
         Self {
+            rotation: [0.0, 0.0],
             join: Default::default(),
             id: 0,
             position: r.position,
@@ -231,6 +236,7 @@ impl Game<'_> {
         // Entity.<init>: the id comes from the one counter at construction.
         let id = self.take_entity_id();
         Rocket {
+            rotation: [0.0, 0.0],
             join: Default::default(),
             id,
             position: at,
@@ -308,16 +314,19 @@ impl Game<'_> {
     /// hand with the player's motion.
     pub(super) fn follow_own_player(&mut self, r: &mut Rocket) {
         let hand = self.rocket_hand_angle();
-        let look = view_vector(self.yaw, self.pitch);
+        // getLookAngle reads Mth's float sine table, as the server does; the
+        // f64 sin/cos of super::view_vector drift the boost off the server's
+        // path and trip the movement check while gliding under a rocket.
+        let look = horizon_world::view_direction::view_vector(self.pitch, self.yaw);
         let Some(p) = self.player.as_mut() else {
             return;
         };
         if p.fall_flying {
             let m = p.velocity;
             p.velocity = Vec3::new(
-                m.x + look[0] * 0.1 + (look[0] * 1.5 - m.x) * 0.5,
-                m.y + look[1] * 0.1 + (look[1] * 1.5 - m.y) * 0.5,
-                m.z + look[2] * 0.1 + (look[2] * 1.5 - m.z) * 0.5,
+                m.x + look.x * 0.1 + (look.x * 1.5 - m.x) * 0.5,
+                m.y + look.y * 0.1 + (look.y * 1.5 - m.y) * 0.5,
+                m.z + look.z * 0.1 + (look.z * 1.5 - m.z) * 0.5,
             );
         }
         r.position = p.position.add_vector(Vec3::new(hand[0], hand[1], hand[2]));
@@ -336,12 +345,20 @@ impl Game<'_> {
         self.particles
             .add(&ParticleOptions::simple(ParticleType::Firework), at, v);
     }
-    /// `FireworkRocketItem.use` while gliding: a rocket attached to the player.
+    /// `FireworkRocketItem.use` while gliding: drop the player's leads, then a
+    /// rocket attached to the player.
     pub(super) fn boost_firework(&mut self, stack: &ItemStack) -> bool {
         if &*stack.item != "minecraft:firework_rocket"
             || !self.player.as_ref().is_some_and(|p| p.fall_flying)
         {
             return false;
+        }
+        // Server path of `use`: `dropAllLeashConnections(null)`, and when that
+        // drops anything `playSound(null, player, LEAD_BREAK, NEUTRAL, 1, 1)`.
+        // The entity overload follows the player and excludes nobody, including
+        // the guest whose action is running while its hub is swapped out.
+        if self.drop_all_leash_connections() {
+            self.play_player_bound_sound("minecraft:item.lead.break", 6, 1.0, 1.0, false);
         }
         let at = self.player.as_ref().map_or(Vec3::ZERO, |p| p.position);
         let mut rocket = self.new_rocket(at, stack, true);
@@ -351,6 +368,7 @@ impl Game<'_> {
         if !self.creative {
             self.consume_held();
         }
+        self.award_stat("used", "minecraft:firework_rocket", 1);
         self.swing_arm();
         if let (Some(player), Some(name)) = (self.lan_acting_uuid, self.lan_acting_name.clone()) {
             self.native_player_elytra_boost(player, &name);
@@ -749,6 +767,122 @@ mod tests {
     fn use_on_passes_only_while_gliding() {
         assert!(super::use_on_passes(true));
         assert!(!super::use_on_passes(false));
+    }
+
+    /// `FireworkRocketItem.use` on the server, while fall-flying: a lead on a
+    /// mob within the 32-block box drops as an item and one
+    /// `minecraft:item.lead.break` follows the player on NEUTRAL, heard by the
+    /// acting player too. A lead outside that box, or held for another player,
+    /// stays. Standing still does neither.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_gliding_firework_drops_leads_and_plays_lead_break() {
+        use crate::game::{Audio, Options, Progress, Settings, load_resources};
+        use horizon_client::mobs::{Mob, leash::Holder};
+        use horizon_core::geometry::Vec3;
+
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let res: &'static _ = Box::leak(Box::new(loaded.resources));
+        let mut game = super::Game::new(
+            res,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.player = Some(
+            horizon_client::motion::PlayerMotion::new(game.motion, Vec3::new(10.5, 64.0, -3.25))
+                .unwrap(),
+        );
+        let feet = {
+            let p = game.player.as_ref().expect("a player").position;
+            [p.x, p.y, p.z]
+        };
+        let kind = game
+            .res
+            .mob_types()
+            .get("minecraft:cow")
+            .expect("cow")
+            .clone();
+        // A server action keeps the guest identity while its hub is swapped out.
+        game.lan_acting = Some(11);
+        game.lan_acting_entity = Some(37);
+        let me = game.acting_uuid();
+        let someone_else = [me[0].wrapping_add(1), me[1], me[2], me[3]];
+        let mut leashed = |id, at: Vec3, owner: [i32; 4]| {
+            let mut mob = Mob::new(id, kind.clone(), at, 0.0);
+            mob.extra.leash = Some(Holder::Player);
+            mob.extra.leash_player = Some(owner);
+            game.mobs.push(mob);
+        };
+        let here = Vec3::new(feet[0] + 1.0, feet[1], feet[2]);
+        leashed(1, here, me);
+        leashed(2, Vec3::new(feet[0] + 40.0, feet[1], feet[2]), me);
+        leashed(3, here, someone_else);
+        game.inventory[game.selected] = Some(super::ItemStack::new("minecraft:firework_rocket", 1));
+        let stack = game.inventory[game.selected].clone().unwrap();
+        game.audio.capture = Some(Vec::new());
+
+        assert!(!game.boost_firework(&stack));
+        assert_eq!(game.mobs[0].extra.leash, Some(Holder::Player));
+        assert!(game.dropped.is_empty());
+        assert!(game.audio.capture.as_ref().unwrap().is_empty());
+
+        game.player.as_mut().unwrap().fall_flying = true;
+        assert!(game.boost_firework(&stack));
+        assert!(
+            game.mobs[0].extra.leash.is_none(),
+            "the mob on the lead comes free"
+        );
+        assert_eq!(game.mobs[1].extra.leash, Some(Holder::Player));
+        assert_eq!(game.mobs[2].extra.leash, Some(Holder::Player));
+        let leads: Vec<_> = game
+            .dropped
+            .iter()
+            .filter(|d| &*d.stack.item == "minecraft:lead")
+            .collect();
+        assert_eq!(leads.len(), 1);
+        let heard = game.audio.capture.take().unwrap_or_default();
+        let snaps: Vec<_> = heard
+            .iter()
+            .filter(|s| s.event == "minecraft:item.lead.break")
+            .collect();
+        assert_eq!(snaps.len(), 1);
+        let snap = snaps[0];
+        assert_eq!((snap.position, snap.volume, snap.pitch), (feet, 1.0, 1.0));
+        assert_eq!(
+            snap.entity,
+            Some(37),
+            "the snap must follow the acting guest"
+        );
+        assert_eq!(snap.source, 6, "SoundSource.NEUTRAL");
+        assert_eq!(snap.except_entity, None, "vanilla excludes no player");
+        let (packet, range) =
+            horizon_client::lan::containers::captured_sound_packet(snap, None, 42);
+        let horizon_protocol::packets::play::Clientbound::SoundEntity(packet) = packet else {
+            panic!("a firework lead snap must use the entity-bound packet");
+        };
+        assert_eq!((packet.id, packet.source, range), (37, 6, 16.0));
+        assert_eq!(packet.sound.1.unwrap().0, "minecraft:item.lead.break");
     }
 }
 horizon_client::impl_joined!(Rocket);

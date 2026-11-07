@@ -180,6 +180,11 @@ pub const RECIPE_SERIALIZER_UP: &[(u16, u16, u16)] = &[
 pub const RECIPE_SERIALIZER_DOWN: &[(u16, u16, u16)] = &[
     (0, 0, 20), (21, 20, 1),
 ];
+/// Data components 26.1.2 has and the pinned version lacks, by their 26.1.2 id.
+pub const DROPPED_COMPONENTS: &[(u16, &str)] = &[
+    (40, "minecraft:swing_animation"),
+    (45, "minecraft:map_color"),
+];
 /// Every table above, as the adapter reads them.
 pub const IDS: super::ids::Ids = super::ids::Ids {
     quirks: super::ids::Quirks::NONE,
@@ -252,6 +257,8 @@ pub const IDS: super::ids::Ids = super::ids::Ids {
     position_source_type: super::ids::Remap::Same,
     consume_effect_type: super::ids::Remap::Same,
     enchantment_effect_component_type: super::ids::Remap::Same,
+    dropped_components: DROPPED_COMPONENTS,
     // Not a registry: set by hand where a version numbers EntityDataSerializers differently.
     entity_data_serializer: super::ids::Remap::Same,
+    substitutes: super::ids::Substitutes::NONE,
 };

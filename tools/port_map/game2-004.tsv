@@ -108,9 +108,9 @@ Spider.isClimbing	skip:other		getter; Horizon reads the mob's climbing field
 Spider.setClimbing	inline	crates/horizon-client/src/mobs/ai.rs::ai_step	climbing set from the horizontal collision each tick
 Spider.getVehicleAttachmentPoint	port	crates/horizon-client/src/mobs/riders.rs::passenger_attachment	gap: minor: always the spider's fixed seat; vanilla uses a lower seat for riders narrower than the spider
 Spider.SpiderEffectsGroupData.setRandomEffect	port	crates/horizon-client/src/mobs/finalize.rs::Ctx::spider	hard-difficulty effect: speed, strength, regeneration or invisibility
-AngerManagement.codec	missing		`entity_nbt.rs::persistent_anger` lists wolf, iron golem, polar bear, enderman and zombified piglin; a warden has none of it, so its anger is never written and never read
-AngerManagement.createUuidAngerPairs	missing		part of the warden's anger save, which `entity_nbt.rs` does not write (see AngerManagement.codec)
-AngerManagement.convertFromUuids	missing		part of the warden's anger load, which `entity_nbt.rs` does not read
+AngerManagement.codec	port	crates/horizon-client/src/entity_nbt.rs::warden_anger_to_nbt	the `anger` compound: `suspects` as {uuid, anger} pairs, read back by warden_anger_from_nbt; a warden writes no `angry_at` or `anger_end_time`, which are NeutralMob's
+AngerManagement.createUuidAngerPairs	port	crates/horizon-client/src/mobs/warden.rs::AngerManagement::unloaded	the suspects in the level by their UUID, then the ones that are away, which are kept by UUID already
+AngerManagement.convertFromUuids	port	crates/horizon-client/src/mobs/warden.rs::AngerManagement::convert_from_uuids	a suspect the level answers for rejoins the live map with the anger it kept; looked up every two anger ticks
 AngerManagement.getTopSuspect	port	crates/horizon-client/src/mobs/warden.rs::AngerManagement::active_entity	first suspect the filter accepts
 AngerManagement.Sorter.compare	port	crates/horizon-client/src/mobs/warden.rs::AngerManagement::sort_and_update_highest	angry first, then players, then the angriest
 Warden.<init>	port	crates/horizon-client/src/mobs/warden.rs::register	pathfinding maluses and can-float; the anger and vibration state start empty
@@ -120,8 +120,8 @@ Warden.createAttributes	skip:data		attribute defaults (health 500, speed 0.3, da
 Warden.handleEntityEvent	inline	crates/horizon-client/src/mobs/warden.rs::animate	gap: minor: could not confirm the attack animation (event 4) is started here; tendril and sonic boom are
 Warden.onSyncedDataUpdated	inline	crates/horizon-client/src/mobs/warden.rs::set_pose	starts the emerge, dig, roar or sniff animation on pose change
 Warden.updateDynamicGameEventListener	port	crates/horizon-client/src/mobs/warden.rs::listen	vibrations reach the warden through listen; there is no registration step
-Warden.addAdditionalSaveData	missing		a warden's anger is not saved: `persistent_anger` leaves the warden out, so `anger_end_time` and `angry_at` are never written for it
-Warden.readAdditionalSaveData	missing		a warden's anger is not read back, so a reloaded warden is calm
+Warden.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::warden_anger_to_nbt	the anger list and the vibration listener; `persistent_anger` still leaves the warden out, since it is no NeutralMob
+Warden.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::warden_anger_from_nbt	the saved suspects start in the UUID map; the anger ticks resolve the ones that are loaded by then
 Warden.playListeningSound	inline	crates/horizon-client/src/mobs/warden.rs::increase_anger	plays the listening sound for the anger level, unless roaring
 WardenAi.initCoreActivity	inline	crates/horizon-client/src/mobs/warden_brain.rs::activities	swim, look at target, look sink, move sink
 WardenAi.initDiggingActivity	inline	crates/horizon-client/src/mobs/warden_brain.rs::activities	force unmount and digging
@@ -150,3 +150,5 @@ Zombie.wantsToPickUp	port	crates/horizon-client/src/mobs/equip.rs::wants_to_pick
 Zombie.onOffspringSpawnedFromEgg	port	crates/horizon-client/src/mobs/finalize.rs::zombie	the 0.55 times the special multiplier roll sets pick_up_loot; Horizon runs it for every non-conversion zombie spawn
 Zombie.ZombieAttackTurtleEggGoal.playDestroyProgressSound	inline	crates/horizon-client/src/mobs/undead.rs::AttackTurtleEgg::tick	zombie.destroy_egg sound while the egg is trampled
 Zombie.ZombieAttackTurtleEggGoal.playBreakSound	inline	crates/horizon-client/src/mobs/undead.rs::AttackTurtleEgg::tick	turtle egg break sound when the egg breaks
+SpellcasterIllager.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	SpellTicks binds to the existing live counter, default zero
+SpellcasterIllager.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	SpellTicks saves the live Int counter including zero and negative values

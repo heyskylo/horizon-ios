@@ -17,6 +17,7 @@ use horizon_core::{
     geometry::{Aabb, Axis, Vec3, trig},
     random::{LegacyRandom, RandomSource},
 };
+use horizon_protocol::entity_data::PositionSource;
 use horizon_world::block_collision::BlockCollisionRegistry;
 use std::{
     array,
@@ -50,9 +51,10 @@ pub struct ParticleOptions {
     /// `GeyserParticleOptions.waterBlocks` and `GeyserBaseParticleOptions`'
     /// `waterBlocks` and `burstImpulseBase` (0 where the type has none).
     pub geyser: Option<(i32, f32)>,
-    /// `VibrationParticleOption`: the listener the signal flies to and its
-    /// arrival time in ticks (`ParticleEngine::vibration` is the same particle).
-    pub vibration: Option<([f64; 3], i32)>,
+    /// `VibrationParticleOption`: the listener's `PositionSource`, the point
+    /// the signal flies to and its arrival time in ticks
+    /// (`ParticleEngine::vibration` is the same particle).
+    pub vibration: Option<(PositionSource, [f64; 3], i32)>,
     /// A native mod's own particle type, by its namespaced name (`mymod:spark`):
     /// `SimpleParticleType` plus the provider `particles/<name>.json` names.
     pub mod_particle: Option<String>,
@@ -97,10 +99,11 @@ impl ParticleOptions {
             ..Self::simple(ty)
         }
     }
-    /// `VibrationParticleOption(destination, arrivalInTicks)`.
-    pub fn vibration(dest: [f64; 3], ticks: i32) -> Self {
+    /// `VibrationParticleOption(destination, arrivalInTicks)`: the listener's
+    /// position source and the point this engine flies the signal to.
+    pub fn vibration(source: PositionSource, dest: [f64; 3], ticks: i32) -> Self {
         Self {
-            vibration: Some((dest, ticks)),
+            vibration: Some((source, dest, ticks)),
             ..Self::simple(ParticleType::Vibration)
         }
     }
@@ -659,6 +662,30 @@ pub fn around_self(
             feet[2] + width * ((2.0 * random.next_double() - 1.0) * 1.0),
         ];
         emit(p, v);
+    }
+}
+
+/// `LivingEntity.handleEntityEvent(46)`: 128 `ParticleTypes.PORTAL` samples
+/// from the entity's old position (`xo`, `yo`, `zo`) to its current one,
+/// spread across the bounding box (`getBbWidth() * 2` on x and z, `getBbHeight`
+/// on y). The speeds are `(nextFloat() - 0.5) * 0.2`.
+pub fn living_teleport_particles(
+    random: &mut impl RandomSource,
+    from: [f64; 3],
+    to: [f64; 3],
+    width: f64,
+    height: f64,
+    mut emit: impl FnMut([f64; 3], [f64; 3]),
+) {
+    for i in 0..128 {
+        let d = i as f64 / 127.0;
+        let velocity = [0; 3].map(|_| f64::from((random.next_float() - 0.5) * 0.2));
+        let position = [
+            from[0] + d * (to[0] - from[0]) + (random.next_double() - 0.5) * width * 2.0,
+            from[1] + d * (to[1] - from[1]) + random.next_double() * height,
+            from[2] + d * (to[2] - from[2]) + (random.next_double() - 0.5) * width * 2.0,
+        ];
+        emit(position, velocity);
     }
 }
 
@@ -2967,8 +2994,8 @@ impl ParticleEngine {
             // the listener the signal flies to and its arrival time; the sprite
             // is the set's own draw from the engine's random.
             T::Vibration => {
-                let (dest, ticks) = o.vibration?;
-                let mut q = Self::vibration_particle(p, dest, ticks);
+                let (_, dest, ticks) = o.vibration.as_ref()?;
+                let mut q = Self::vibration_particle(p, *dest, *ticks);
                 q.set = set;
                 q.sprite = self.sprite_from_set(ty);
                 q
@@ -5472,6 +5499,47 @@ mod tests {
         ));
     }
 
+    /// `LivingEntity.handleEntityEvent(46)`: 128 samples, the first on the old
+    /// box and the last on the new one, with speeds inside ±0.1.
+    #[test]
+    fn living_teleport_particles_span_the_old_and_new_boxes() {
+        let mut random = LegacyRandom::new(1);
+        let mut samples = Vec::new();
+        living_teleport_particles(
+            &mut random,
+            [0.0, 1.0, 0.0],
+            [8.0, 1.0, 0.0],
+            0.6,
+            1.8,
+            |p, v| samples.push((p, v)),
+        );
+        assert_eq!(samples.len(), 128);
+        let first = samples[0].0;
+        let last = samples[127].0;
+        assert!(first[0].abs() <= 0.6, "{first:?}");
+        assert!((1.0..2.8).contains(&first[1]), "{first:?}");
+        assert!(first[2].abs() <= 0.6, "{first:?}");
+        assert!((7.4..8.6).contains(&last[0]), "{last:?}");
+        assert!((1.0..2.8).contains(&last[1]), "{last:?}");
+        assert!(last[2].abs() <= 0.6, "{last:?}");
+        // `(nextDouble - 0.5) * width * 2` reaches ±width. A spread of only
+        // `width` (the factor of 2 dropped) stays inside 0.3 of the line.
+        let edge = samples
+            .iter()
+            .enumerate()
+            .map(|(i, (p, _))| {
+                let along = (i as f64 / 127.0) * 8.0;
+                (p[0] - along).abs()
+            })
+            .fold(0.0_f64, f64::max);
+        assert!(edge > 0.45, "box spread reached only {edge}");
+        for (_, v) in &samples {
+            for c in v {
+                assert!((-0.1..0.1).contains(c), "{v:?}");
+            }
+        }
+    }
+
     #[test]
     fn egg_teleport_unpacks_offsets_and_preserves_seeded_draw_order() {
         let mut engine = ParticleEngine::new(Path::new(""), &HashMap::new(), &HashSet::new());
@@ -5640,7 +5708,8 @@ mod tests {
     #[test]
     fn a_vibration_option_makes_the_signal_its_provider_draws() {
         let mut engine = ParticleEngine::new(Path::new(""), &HashMap::new(), &HashSet::new());
-        let options = ParticleOptions::vibration([10.5, 70.5, -3.5], 20);
+        let options =
+            ParticleOptions::vibration(PositionSource::Block([10, 70, -4]), [10.5, 70.5, -3.5], 20);
         // Within the camera's 32 blocks, so only the provider decides.
         engine.add_with(&options, [0.5, 1.5, 0.5], [0.0; 3], false, false);
         assert_eq!(engine.made().get("vibration"), Some(&1));

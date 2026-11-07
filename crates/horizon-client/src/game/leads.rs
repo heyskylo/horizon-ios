@@ -3,6 +3,7 @@
 //! `LeashFenceKnotEntity.interact`), loading and saving who holds what,
 //! breaking, and drawing the rope (`LeashFeatureRenderer`) and the knot.
 use super::Game;
+use horizon_client::actions::Action;
 use horizon_client::{
     items::ItemStack,
     mesher::Vertex,
@@ -197,6 +198,38 @@ impl Game<'_> {
     pub(super) fn break_leash(&mut self, id: u32, drop: bool, sound: bool) {
         self.drop_leash(id, drop, sound, false);
     }
+    /// `Entity.dropAllLeashConnections`: every mob and boat leashed to the
+    /// acting player, inside the 32-block box around the player's centre,
+    /// drops its lead. Then `GameEvent.SHEAR`. Whether anything dropped.
+    /// The player is not `Leashable`, so there is no lead of their own.
+    pub(super) fn drop_all_leash_connections(&mut self) -> bool {
+        let center = self.player_center();
+        let mobs: Vec<u32> = self
+            .player_leashed(center)
+            .into_iter()
+            .map(|i| self.mobs[i].id)
+            .collect();
+        let boats = self.player_led_boats(center);
+        if mobs.is_empty() && boats.is_empty() {
+            return false;
+        }
+        for id in mobs {
+            // One snap is played by the caller (`SoundEvents.LEAD_BREAK`),
+            // not a break sound on each leashed entity.
+            self.break_leash(id, true, false);
+        }
+        self.drop_boat_leashes(&boats);
+        let at = self
+            .player
+            .as_ref()
+            .map_or([center.x, center.y, center.z], |p| {
+                [p.position.x, p.position.y, p.position.z]
+            });
+        // `gameEvent(GameEvent.SHEAR, null)`: the player is the position, not the source.
+        let ctx = self.who_context(None, None);
+        self.post_game_event("minecraft:shear", at, ctx);
+        true
+    }
     /// `break_leash` by the acting player's use (untying it, shears).
     fn break_leash_used(&mut self, id: u32, drop: bool) {
         self.drop_leash(id, drop, false, true);
@@ -325,7 +358,7 @@ impl Game<'_> {
     }
     /// `Entity.interact`'s leash part for a mob. Returns whether it was used.
     pub(super) fn interact_leash(&mut self, index: usize, item: &str) -> bool {
-        let sneaking = self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft);
+        let sneaking = self.keys.held(Action::Sneak);
         let id = self.mobs[index].id;
         let at = self.mobs[index].center();
         if !self.mobs[index].alive() {
@@ -397,8 +430,11 @@ impl Game<'_> {
                 self.mobs[index].extra.leash = Some(Holder::Player);
                 self.mobs[index].extra.leash_player = Some(holder);
                 self.lead_sound("tied", at);
-                // The lead is always used up.
-                if let Some(stack) = self.held_mut().as_mut() {
+                // `Player.interactOn` restores the count of a player with
+                // infinite materials (creative); others spend the lead.
+                if !self.creative
+                    && let Some(stack) = self.held_mut().as_mut()
+                {
                     stack.count -= 1;
                     if stack.count == 0 {
                         *self.held_mut() = None;
@@ -444,7 +480,7 @@ impl Game<'_> {
             .collect();
         let existing_boats = self.boats_on(Holder::Knot(knot_pos));
         let held_item = self.held().map(|s| s.item.to_string());
-        let sneaking = self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft);
+        let sneaking = self.keys.held(Action::Sneak);
         // Shears snip every lead on the knot.
         if knot_hit && held_item.as_deref() == Some("minecraft:shears") {
             for i in existing {
@@ -496,6 +532,12 @@ impl Game<'_> {
             attached |= self.take_knot_boats(knot_pos);
         }
         if attached {
+            let event_at = if knot_hit {
+                [knot.x, knot.y - 0.25, knot.z]
+            } else {
+                knot_pos.map(|v| f64::from(v) + 0.5)
+            };
+            self.lead_game_event("minecraft:block_attach", event_at);
             self.lead_sound("tied", at);
             self.swing_arm();
         }
@@ -726,7 +768,7 @@ impl Game<'_> {
             return rot_y(v, -yaw) + eye;
         }
         let yaw = f64::from(self.yaw.to_radians());
-        let crouching = self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft);
+        let crouching = self.keys.held(Action::Sneak);
         let v = glam::DVec3::new(
             0.22 * hand_dir,
             f64::from(p.dimensions.height) - 1.0,

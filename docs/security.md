@@ -66,6 +66,22 @@ and some are waiting for Ludovic:
   a secret of GitHub's `release` environment, which only real releases from main can use. The job that signs runs
   nothing from the repository but a short script calling OpenSSL, so no pull request can read the key by changing
   the code that gets built. Nobody, Ludovic included, ever needs to see it.
+- **Nightly signatures.** A Nightly carries two signatures over the same `SHA256SUMS`. `SHA256SUMS.sig` is signed
+  for the channel (`horizon release nightly`), for launchers and servers from before this change, which read only
+  that one. `SHA256SUMS.v2.sig` is signed for the Nightly's own version (`horizon release nightly-<date>-<commit>`),
+  which its release title names (`Nightly <date> · <commit>`). Current launchers, `horizon-server update` and
+  `install.sh` parse that title strictly, refuse a Nightly whose title doesn't parse, and install it only with a v2
+  signature for exactly that version. That way an older Nightly can't be served as tonight's: its signature names its own date. Installing
+  an older Nightly on purpose still works as a rollback, with a warning, and never happens as an automatic update.
+  **The changeover:** Nightlies published before this change have no `SHA256SUMS.v2.sig`, so they can't be installed
+  or picked with `--version` any more; they leave GitHub with the 7-day rotation. Until a v2 Nightly exists, a
+  launcher has nothing to update to, so the first Nightly is built right after this merges. A server can still go back
+  to a build it already has with `horizon-server rollback`, which checks nothing it hasn't already checked.
+  **When the old signature can go:** once every launcher and server still updating reads v2. That is, when the
+  telemetry live count shows no launcher (and the server update log no `horizon-server`) older than the first build
+  with this change, or at the latest 60 days after it shipped. Then drop `SHA256SUMS.sig` from nightly-build.yml's
+  publish step and the `--tag nightly` check before it, and remove `NIGHTLY` from horizon-release-sign. Releases (not
+  Nightlies) keep their single `SHA256SUMS.sig`, which is already signed for their tag.
 - **The release machinery needs Ludovic.** The workflows, the release and signing tools, the update-checking code
   and the installers are listed in `.github/CODEOWNERS`. Once main's protection requires code owners' reviews, a
   change to any of them waits for Ludovic's approval. Everything else still merges as soon as its checks pass.
@@ -99,10 +115,12 @@ and some are waiting for Ludovic:
   (#1024), which removes anything a pull request left in the work folder by accident, but
   not a deliberate attack. The protection is review: only agents and maintainers push to this repository, and a
   maintainer reads a fork's change before labelling it.
-- **The first install** with `install.sh` checks the signature when OpenSSL 3 is installed: it verifies
-  `SHA256SUMS.sig` against the release key built into the script, then the archive against `SHA256SUMS`. With
-  an older OpenSSL, LibreSSL (what macOS ships) or none, it says so and checks only the SHA-256 GitHub
-  publishes. `install.ps1` still checks only that SHA-256. Every update after that checks the signature.
+- **The first install** with `install.sh` or `install.ps1` checks the signature when OpenSSL 3 is installed: it
+  verifies `SHA256SUMS.sig` (a Nightly's `SHA256SUMS.v2.sig`, for its own version) against the release key built
+  into the script, then the archive against `SHA256SUMS`. `install.ps1` looks for OpenSSL on the PATH and in Git
+  for Windows, which ships it; Windows itself can't check Ed25519. With an older OpenSSL, LibreSSL (what macOS
+  ships) or none, the script says so and checks only the SHA-256 GitHub publishes. Every update after that checks
+  the signature.
 
 ## Reporting a security problem
 

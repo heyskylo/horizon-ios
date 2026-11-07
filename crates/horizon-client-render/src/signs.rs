@@ -1,7 +1,8 @@
 //! Sign block entities (`SignBlockEntity`, `SignText`): two four-line text
 //! sides with a dye colour and glow, saved in vanilla's `front_text` /
 //! `back_text` NBT layout.
-pub use crate::chunk::block_entity::{SignData, SignText};
+pub use crate::chunk::block_entity::{SavedLine, SignData, SignText};
+use crate::{scoreboard, text::Text};
 use horizon_world::nbt::Tag;
 
 /// `DyeColor` names and `getTextColor` values by id.
@@ -32,6 +33,7 @@ impl Default for SignText {
             color: BLACK,
             glowing: false,
             click: Default::default(),
+            saved: Default::default(),
         }
     }
 }
@@ -96,6 +98,38 @@ impl SignText {
             s(16) | s(8) | s(0)
         }
     }
+    /// The component a line is saved as (`SignText.CODEC`): the one it was
+    /// read as while its text is unchanged. A line edited since is a literal in
+    /// the old line's root style, as `SignBlockEntity.setMessages` makes it
+    /// (the style keeps its colour and click event, the siblings go).
+    pub fn message(&self, i: usize) -> Tag {
+        let line = &self.lines[i];
+        let saved = self.saved[i].as_ref();
+        if let Some(saved) = saved.filter(|s| s.text == *line) {
+            return saved.component.clone();
+        }
+        let mut style = match saved {
+            Some(saved) => root_style(&saved.component),
+            None => self.click[i]
+                .iter()
+                .map(|event| ("click_event", event.clone()))
+                .collect(),
+        };
+        if style.is_empty() {
+            return Tag::String(line.as_str().into());
+        }
+        style.insert(0, ("text", Tag::String(line.as_str().into())));
+        Tag::compound(style)
+    }
+    /// A line as the font draws it: its styled runs, `§` codes not yet applied.
+    pub fn line_text(&self, i: usize) -> Text {
+        // Signs are drawn every frame: a line read as plain text (most of them) skips the
+        // NBT -> JSON -> component round trip. Its click event does not change the drawing.
+        if self.saved[i].is_none() {
+            return Text::literal(self.lines[i].as_str());
+        }
+        scoreboard::comp_text(&scoreboard::tag_to_json(&self.message(i)))
+    }
 }
 
 impl SignData {
@@ -127,23 +161,7 @@ impl SignData {
             Tag::compound([
                 (
                     "messages",
-                    Tag::List(
-                        t.lines
-                            .iter()
-                            .zip(&t.click)
-                            .map(|(line, click)| {
-                                let text = Tag::String(line.as_str().into());
-                                match click {
-                                    // The line's style keeps its click event.
-                                    Some(event) => Tag::compound([
-                                        ("text", text),
-                                        ("click_event", event.clone()),
-                                    ]),
-                                    None => text,
-                                }
-                            })
-                            .collect(),
-                    ),
+                    Tag::List((0..t.lines.len()).map(|i| t.message(i)).collect()),
                 ),
                 (
                     "color",
@@ -168,9 +186,13 @@ impl SignData {
             let mut out = SignText::default();
             let Some(t) = t else { return out };
             if let Some(Tag::List(messages)) = t.get("messages") {
-                for ((line, click), m) in out.lines.iter_mut().zip(&mut out.click).zip(messages) {
-                    *line = component_text(m);
-                    *click = click_event(m);
+                for (i, m) in messages.iter().take(4).enumerate() {
+                    out.lines[i] = component_text(m);
+                    out.click[i] = click_event(m);
+                    out.saved[i] = is_styled(m).then(|| SavedLine {
+                        text: out.lines[i].clone(),
+                        component: m.clone(),
+                    });
                 }
             }
             if let Some(Tag::String(c)) = t.get("color") {
@@ -202,22 +224,47 @@ fn click_event(tag: &Tag) -> Option<Tag> {
         _ => None,
     }
 }
-/// Plain text of a stored text component (string, `{text: ...}` or JSON string).
+/// Whether a saved message is more than its text: a style, siblings, another
+/// kind of content, or a list. A string and a lone `{text: ...}` are not.
+fn is_styled(tag: &Tag) -> bool {
+    match tag {
+        Tag::List(_) => true,
+        Tag::Compound(c) => !(c.len() == 1 && matches!(tag.get("text"), Some(Tag::String(_)))),
+        _ => false,
+    }
+}
+/// The fields of a component's own style (`Style.CODEC`), the ones a literal
+/// made from it keeps. A list's style is its first element's.
+const STYLE_KEYS: [&str; 11] = [
+    "color",
+    "bold",
+    "italic",
+    "underlined",
+    "strikethrough",
+    "obfuscated",
+    "shadow_color",
+    "font",
+    "click_event",
+    "hover_event",
+    "insertion",
+];
+fn root_style(component: &Tag) -> Vec<(&'static str, Tag)> {
+    let root = match component {
+        Tag::List(list) => list.first(),
+        other => Some(other),
+    };
+    STYLE_KEYS
+        .iter()
+        .filter_map(|key| Some((*key, root?.get(key)?.clone())))
+        .collect()
+}
+/// `ComponentSerialization.CODEC`: modern NBT strings are literal text, not JSON.
 fn component_text(tag: &Tag) -> String {
     match tag {
-        Tag::String(s) => {
-            let s = s.to_string_lossy();
-            match serde_json::from_str::<serde_json::Value>(&s) {
-                Ok(serde_json::Value::String(text)) => text,
-                Ok(v) if v.get("text").is_some() => {
-                    v["text"].as_str().unwrap_or_default().to_owned()
-                }
-                _ => s,
-            }
-        }
+        Tag::String(s) => s.to_string_lossy(),
         // Component.getString: translations and key binds resolved.
-        Tag::Compound(_) => {
-            crate::scoreboard::comp_text(&crate::scoreboard::tag_to_json(tag)).plain()
+        Tag::Compound(_) | Tag::List(_) => {
+            scoreboard::comp_text(&scoreboard::tag_to_json(tag)).plain()
         }
         _ => String::new(),
     }
@@ -266,6 +313,161 @@ mod tests {
         let mut decoded = SignData::default();
         decoded.decode(&tag);
         assert_eq!(decoded, data);
+    }
+    #[test]
+    fn modern_string_messages_keep_literal_quotes_and_json_text() {
+        let lines = [
+            "plain text",
+            "\"quoted text\"",
+            r#"{"text":"literal object","bold":true}"#,
+            "",
+        ];
+        let mut saved = styled_sign();
+        let messages = Tag::List(lines.map(|line| Tag::String(line.into())).to_vec());
+        if let Tag::Compound(front) = saved.get_mut("front_text").unwrap() {
+            front.insert("messages".into(), messages.clone());
+        }
+        let mut data = SignData::default();
+        data.decode(&saved);
+        assert_eq!(data.front.lines, lines.map(str::to_owned));
+        let encoded = Tag::compound(data.encode());
+        assert_eq!(
+            encoded.get("front_text").unwrap().get("messages"),
+            Some(&messages)
+        );
+        let mut copied = SignData::default();
+        copied.decode(&encoded);
+        assert_eq!(copied.front.lines, data.front.lines);
+        assert_eq!(
+            front_messages(&Tag::compound(copied.encode())),
+            front_messages(&encoded)
+        );
+    }
+    /// A sign as a server sends it: a green "Online" and a plain line, the
+    /// way `ComponentSerialization.CODEC` writes them to NBT.
+    fn styled_sign() -> Tag {
+        let green = Tag::compound([
+            ("text", Tag::String("Online".into())),
+            ("color", Tag::String("green".into())),
+        ]);
+        let front = Tag::compound([(
+            "messages",
+            Tag::List(vec![
+                Tag::String("[KnockIT-1]".into()),
+                green,
+                Tag::String("".into()),
+                Tag::String("0 / 20".into()),
+            ]),
+        )]);
+        Tag::compound([("front_text", front)])
+    }
+    fn front_messages(tag: &Tag) -> &Vec<Tag> {
+        match tag.get("front_text").and_then(|t| t.get("messages")) {
+            Some(Tag::List(list)) => list,
+            other => panic!("no messages: {other:?}"),
+        }
+    }
+    fn run_colors(text: &SignText, line: usize) -> Vec<(String, Option<u32>)> {
+        text.line_text(line)
+            .spans
+            .into_iter()
+            .map(|s| (s.text, s.style.color))
+            .collect()
+    }
+    #[test]
+    fn a_lines_color_is_read_and_written_back() {
+        let saved = styled_sign();
+        let mut data = SignData::default();
+        data.decode(&saved);
+        assert_eq!(data.front.lines[1], "Online");
+        // Green is `ChatFormatting.GREEN`; the dye colour of the side is untouched.
+        assert_eq!(
+            run_colors(&data.front, 1),
+            [("Online".to_owned(), Some(0x55FF55))]
+        );
+        assert_eq!(
+            run_colors(&data.front, 0),
+            [("[KnockIT-1]".to_owned(), None)]
+        );
+        assert!(run_colors(&data.front, 2).is_empty());
+        // Saved and sent as it came: the coloured line keeps its component and
+        // the plain ones stay plain strings.
+        let encoded = Tag::compound(data.encode());
+        assert_eq!(front_messages(&encoded), front_messages(&saved));
+    }
+    #[test]
+    fn a_list_component_shows_all_its_parts_in_their_own_styles() {
+        let tag = Tag::compound([(
+            "front_text",
+            Tag::compound([(
+                "messages",
+                Tag::List(vec![Tag::List(vec![
+                    Tag::compound([
+                        ("text", Tag::String("Hi ".into())),
+                        ("color", Tag::String("red".into())),
+                    ]),
+                    Tag::compound([
+                        ("text", Tag::String("there".into())),
+                        ("color", Tag::String("#00FF00".into())),
+                    ]),
+                ])]),
+            )]),
+        )]);
+        let mut data = SignData::default();
+        data.decode(&tag);
+        assert_eq!(data.front.lines[0], "Hi there");
+        // The list's later parts take the first one's style unless they set their own.
+        assert_eq!(
+            run_colors(&data.front, 0),
+            [
+                ("Hi ".to_owned(), Some(0xFF5555)),
+                ("there".to_owned(), Some(0x00FF00))
+            ]
+        );
+    }
+    #[test]
+    fn an_edited_line_keeps_only_the_old_lines_style() {
+        let mut data = SignData::default();
+        data.decode(&styled_sign());
+        // `SignBlockEntity.setMessages`: a new literal with the old line's style.
+        data.front.lines[1] = "Full".into();
+        let encoded = Tag::compound(data.encode());
+        assert_eq!(
+            front_messages(&encoded),
+            &vec![
+                Tag::String("[KnockIT-1]".into()),
+                Tag::compound([
+                    ("text", Tag::String("Full".into())),
+                    ("color", Tag::String("green".into())),
+                ]),
+                Tag::String("".into()),
+                Tag::String("0 / 20".into()),
+            ]
+        );
+        assert_eq!(
+            run_colors(&data.front, 1),
+            [("Full".to_owned(), Some(0x55FF55))]
+        );
+        // A line that had no style stays plain.
+        data.front.lines[0] = "[KnockIT-2]".into();
+        assert!(matches!(data.front.message(0), Tag::String(_)));
+    }
+    #[test]
+    fn a_translated_line_is_not_flattened_by_a_round_trip() {
+        let tag = Tag::compound([(
+            "front_text",
+            Tag::compound([(
+                "messages",
+                Tag::List(vec![Tag::compound([(
+                    "translate",
+                    Tag::String("block.minecraft.stone".into()),
+                )])]),
+            )]),
+        )]);
+        let mut data = SignData::default();
+        data.decode(&tag);
+        let encoded = Tag::compound(data.encode());
+        assert_eq!(front_messages(&encoded)[0], front_messages(&tag)[0]);
     }
     #[test]
     fn a_mods_sign_like_name_does_not_make_it_a_sign() {

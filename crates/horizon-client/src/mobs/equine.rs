@@ -80,6 +80,11 @@ pub fn is_equine(s: Species) -> bool {
             | Species::TraderLlama
     )
 }
+/// `Entity.canSprint`: false everywhere but the camel (`Camel.canSprint`). A
+/// rider's `LocalPlayer.isSprintingPossible` asks its vehicle.
+pub fn can_sprint(s: Species) -> bool {
+    matches!(s, Species::Camel | Species::CamelHusk)
+}
 /// `AbstractHorse.getMaxTemper`: 100, 30 for llamas.
 pub fn max_temper(s: Species) -> i32 {
     if super::llama::is_llama(s) {
@@ -280,12 +285,12 @@ pub fn controlled(m: &Mob) -> bool {
         _ => m.extra.saddled,
     }
 }
-/// `AbstractHorse`s (camels too, not llamas, which no player steers): the
-/// player controlling one moves it on its own client
+/// Saddled equines (not llamas), pigs and striders: the controlling player
+/// moves the mount on their own client
 /// (`Entity.isLocalInstanceAuthoritative`, `LivingEntity.travelRidden`) and
 /// sends the moves (`ServerboundMoveVehiclePacket`).
 pub fn moved_by_rider(s: Species) -> bool {
-    is_equine(s) && !super::llama::is_llama(s)
+    matches!(s, Species::Pig | Species::Strider) || (is_equine(s) && !super::llama::is_llama(s))
 }
 /// A server's mount that its rider's client moves: `travelRidden` without
 /// `canSimulateMovement` turns it (`tickRidden`) and stops it there.
@@ -887,10 +892,20 @@ pub fn client_tick(m: &mut Mob) {
     m.anim.vo = m.anim.v;
     animate(m);
 }
+/// How long a client counts a rear the server's flags say is on. A client
+/// never runs `standCounter` (`standIfPossible` only sets it on the server);
+/// `isStanding` is just the synched flag. The mount a client drives does run
+/// `stand_tick`, so a counter of 1 would end the rear a tick after the flag
+/// arrived, long before the jump lands. The next flags without the bit end it.
+const CLIENT_STANDING: i32 = 1 << 20;
 /// `AbstractHorse.DATA_ID_FLAGS` on a client: eating 16 and standing 32.
 pub fn set_flags(m: &mut Mob, flags: u8) {
     m.extra.flag = flags & 16 != 0;
-    m.extra.counter = i32::from(flags & 32 != 0);
+    if flags & 32 == 0 {
+        m.extra.counter = 0;
+    } else if m.extra.counter == 0 {
+        m.extra.counter = CLIENT_STANDING;
+    }
 }
 /// Whether `ai_step` above runs this species' grazing and rearing, so that
 /// the server's flags 16 and 32 mean eating and standing.
@@ -1110,6 +1125,25 @@ mod tests {
         // AbstractHorse.hurtServer: nextInt(3) == 0 -> standIfPossible (#3432).
         let n = rears(Species::Horse, "minecraft:horse", 300);
         assert!((60..=140).contains(&n), "{n} of 300 hits reared");
+    }
+
+    #[test]
+    fn a_synched_rear_lasts_until_the_flag_goes() {
+        // The mount a client drives ticks `stand_tick` itself; the synched
+        // standing flag, not that counter, decides when the rear is over.
+        let mut m = equine(1, Species::Donkey, "minecraft:donkey");
+        set_flags(&mut m, 32);
+        for _ in 0..25 {
+            stand_tick(&mut m);
+            animate(&mut m);
+        }
+        assert!(m.extra.counter > 0, "still standing");
+        assert_eq!(m.anim.v[STAND], 1.0);
+        set_flags(&mut m, 4);
+        assert_eq!(m.extra.counter, 0);
+        stand_tick(&mut m);
+        animate(&mut m);
+        assert!(m.anim.v[STAND] < 1.0, "falls once the flag is gone");
     }
 
     #[test]

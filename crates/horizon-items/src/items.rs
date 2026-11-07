@@ -48,6 +48,8 @@ pub struct ConsumeEffectSpec {
     /// `MobEffectInstance`'s `ambient` (default false) and `show_particles` (default true).
     pub ambient: bool,
     pub show_particles: bool,
+    /// `show_icon`, which defaults to `show_particles`.
+    pub show_icon: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -365,6 +367,9 @@ thread_local! {
 }
 pub struct Items {
     pub items: HashMap<Arc<str>, ItemInfo>,
+    /// Default `minecraft:mob_visibility` by item id, with the `equippable`
+    /// slot it applies in (`LivingEntity.getVisibilityPercent`).
+    mob_visibility: HashMap<Arc<str>, (String, MobVisibility)>,
     pub order: Vec<Arc<str>>,
     /// The same items in item registry (network id) order, as vanilla lists
     /// them; sorted by name when the registry export is missing.
@@ -591,6 +596,56 @@ fn entity_spec(tags: &HashMap<String, HashSet<String>>, spec: &str) -> HashSet<S
         None => HashSet::from([spec.to_owned()]),
     }
 }
+/// `MobVisibility`: entity types a worn item hides its wearer from, and the
+/// factor `LivingEntity.getVisibilityPercent` multiplies by.
+#[derive(Clone, Debug)]
+pub struct MobVisibility {
+    pub targeting: HashSet<String>,
+    pub visibility: f32,
+}
+/// `minecraft:mob_visibility` (`targeting_entity_types` is one id, a `#tag`,
+/// or a list) when the object is present and names at least one type.
+fn parse_mob_visibility(
+    v: &Value,
+    tags: &HashMap<String, HashSet<String>>,
+) -> Option<MobVisibility> {
+    if !v.is_object() {
+        return None;
+    }
+    let visibility = v.get("visibility")?.as_f64()? as f32;
+    let targeting = match v.get("targeting_entity_types")? {
+        Value::String(spec) => entity_spec(tags, spec),
+        Value::Array(list) => list
+            .iter()
+            .filter_map(Value::as_str)
+            .flat_map(|spec| entity_spec(tags, spec))
+            .collect(),
+        _ => return None,
+    };
+    if targeting.is_empty() {
+        return None;
+    }
+    Some(MobVisibility {
+        targeting,
+        visibility,
+    })
+}
+/// The item's `equippable.slot` and `mob_visibility`, when both are set.
+/// `getVisibilityPercent` multiplies only when the stack is in that slot.
+fn worn_mob_visibility(
+    components: &Value,
+    tags: &HashMap<String, HashSet<String>>,
+) -> Option<(String, MobVisibility)> {
+    let slot = components
+        .get("minecraft:equippable")?
+        .get("slot")?
+        .as_str()?
+        .to_owned();
+    Some((
+        slot,
+        parse_mob_visibility(components.get("minecraft:mob_visibility")?, tags)?,
+    ))
+}
 /// Every item of the last item registry loaded with its `villager_food`
 /// nutrition (0 without the component): what the mobs' villagers read, since
 /// a mob does not hold the registry (`None` until one is loaded).
@@ -682,6 +737,40 @@ impl Items {
                     .or_insert(BlockStateId(i as u32));
             }
         }
+        // Block.getItem is not an inverse of BlockItem.getBlock: several items
+        // may place the same block. Read their normal compiled bindings too.
+        #[derive(Default, serde::Deserialize)]
+        struct Bindings {
+            #[serde(default)]
+            items: HashMap<String, Binding>,
+        }
+        #[derive(serde::Deserialize)]
+        struct Binding {
+            #[serde(default)]
+            class: Vec<String>,
+            #[serde(default)]
+            fields: Fields,
+        }
+        #[derive(Default, serde::Deserialize)]
+        struct Fields {
+            block: Option<String>,
+        }
+        let bindings = match fs::read(root.join("block-behaviours.json")) {
+            Ok(bytes) => serde_json::from_slice::<Bindings>(&bytes)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Bindings::default(),
+            Err(error) => return Err(error.into()),
+        };
+        for (item, binding) in &bindings.items {
+            if binding.class.iter().any(|name| name == "BlockItem")
+                && let Some(state) = binding
+                    .fields
+                    .block
+                    .as_deref()
+                    .and_then(|block| registry.default_state(block))
+            {
+                block_for_item.entry(item).or_insert(state);
+            }
+        }
         Self::load_with(root, &block_for_item, overlay)
     }
     /// Every item's default components and the tags, without the block <->
@@ -694,7 +783,7 @@ impl Items {
         block_for_item: &HashMap<&str, BlockStateId>,
         overlay: &PackOverlay,
     ) -> Result<Self> {
-        let raw = horizon_world::item_defaults::read(root)?;
+        let raw = horizon_world::item_defaults::shared(root)?;
         let entity_tags = load_tags(root, "entity_type", overlay)?;
         let path = root.join(MOD_CRAFT_REMAINDERS);
         let mod_remainders: HashMap<String, String> = match fs::read(&path) {
@@ -706,7 +795,8 @@ impl Items {
         };
         let mut items = HashMap::new();
         let mut order = Vec::new();
-        for (name, c) in &raw {
+        let mut mob_visibility = HashMap::new();
+        for (name, c) in raw.iter() {
             let id: Arc<str> = Arc::from(name.as_str());
             let tool = c["minecraft:tool"]["rules"]
                 .as_array()
@@ -911,6 +1001,9 @@ impl Items {
                     attack_speed: modifier("minecraft:attack_speed"),
                 },
             );
+            if let Some(parsed) = worn_mob_visibility(c, &entity_tags) {
+                mob_visibility.insert(id.clone(), parsed);
+            }
             order.push(id);
         }
         // Every loot table, keyed by its id (blocks/stone, entities/sheep/white,
@@ -922,6 +1015,7 @@ impl Items {
         set_villager_food(&items);
         Ok(Self {
             items,
+            mob_visibility,
             order,
             registry_order,
             block_tags: load_tags(root, "block", overlay)?,
@@ -935,6 +1029,25 @@ impl Items {
     }
     pub fn get(&self, id: &str) -> Option<&ItemInfo> {
         self.items.get(id)
+    }
+    /// `ItemStack.get(DataComponents.MOB_VISIBILITY).visibility()` when the
+    /// prototype's equippable slot is `slot` and `targeting` is in
+    /// `targetingEntityTypes`. None otherwise (`getVisibilityPercent` skips it).
+    pub fn worn_visibility(&self, item: &str, slot: &str, targeting: &str) -> Option<f32> {
+        let (equip, vis) = self.mob_visibility.get(item)?;
+        if equip == slot && vis.targeting.contains(targeting) {
+            Some(vis.visibility)
+        } else {
+            None
+        }
+    }
+    /// Record one prototype's `equippable` and `mob_visibility` the way `load`
+    /// reads them from the default-component report.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn insert_mob_visibility_component(&mut self, id: &str, components: &Value) {
+        if let Some(parsed) = worn_mob_visibility(components, &HashMap::new()) {
+            self.mob_visibility.insert(Arc::from(id), parsed);
+        }
     }
     /// The instrument a goat horn plays: its `instrument` component's
     /// registry entry or inline instrument.
@@ -952,6 +1065,7 @@ impl Items {
     pub fn tags_only(root: &Path, overlay: &PackOverlay) -> Result<Self> {
         Ok(Self {
             items: HashMap::new(),
+            mob_visibility: HashMap::new(),
             order: Vec::new(),
             registry_order: Vec::new(),
             block_tags: load_tags(root, "block", overlay)?,
@@ -968,6 +1082,7 @@ impl Items {
     pub fn for_tests(item_tags: HashMap<String, HashSet<String>>) -> Self {
         Self {
             items: HashMap::new(),
+            mob_visibility: HashMap::new(),
             order: Vec::new(),
             registry_order: Vec::new(),
             block_tags: HashMap::new(),
@@ -1058,15 +1173,35 @@ impl Items {
         table: &Value,
         random: &mut R,
     ) -> Vec<ItemStack> {
+        self.inline_loot_table_with_tool(table, None, random)
+    }
+    /// `LootCommand.dropFishingLoot`: evaluate an inline table with its TOOL.
+    pub fn inline_loot_table_with_tool<R: RandomSource>(
+        &self,
+        table: &Value,
+        held: Option<&ItemStack>,
+        random: &mut R,
+    ) -> Vec<ItemStack> {
+        self.inline_loot_table_for_command(table, held, random, false)
+    }
+    /// `LootCommand.dropFishingLoot`: output-list adapter; replacement keeps emitted empties.
+    pub fn inline_loot_table_for_command<R: RandomSource>(
+        &self,
+        table: &Value,
+        held: Option<&ItemStack>,
+        random: &mut R,
+        keep_empty: bool,
+    ) -> Vec<ItemStack> {
         let empty = horizon_world::chunk::BlockProperties::new();
         let ctx = LootContext {
             items: self,
             block: "",
             properties: &empty,
-            held: None,
+            held,
             killed_by_player: false,
             explosion_radius: None,
             this_entity: false,
+            keep_empty,
         };
         ctx.evaluate(table, random)
     }
@@ -1110,6 +1245,23 @@ impl Items {
         random: &mut R,
     ) -> Vec<ItemStack> {
         self.block_drops_in(registry, state, held, random, None)
+    }
+    /// `LootCommand.dropBlockLoot`: only replacement retains empty result positions.
+    pub fn block_drops_for_command<R: RandomSource>(
+        &self,
+        registry: &BlockRegistry,
+        state: BlockStateId,
+        held: Option<&ItemStack>,
+        random: &mut R,
+        keep_empty: bool,
+    ) -> Vec<ItemStack> {
+        if !keep_empty {
+            return self.block_drops(registry, state, held, random);
+        }
+        self.block_drops_raw(registry, state, held, random, None, None, false, true)
+            .into_iter()
+            .filter(|drop| !drop.item.starts_with(DYNAMIC))
+            .collect()
     }
     /// `block_drops` drawing from the table's random sequence when it has one
     /// (`sequences`: the world's sequences and seed), as BlockState.getDrops.
@@ -1177,8 +1329,9 @@ impl Items {
         explosion: Option<f32>,
         breaker: bool,
     ) -> Vec<ItemStack> {
-        let drops =
-            self.block_drops_raw(registry, state, held, random, sequences, explosion, breaker);
+        let drops = self.block_drops_raw(
+            registry, state, held, random, sequences, explosion, breaker, false,
+        );
         if !drops.iter().any(|d| d.item.starts_with(DYNAMIC)) {
             return drops;
         }
@@ -1203,6 +1356,7 @@ impl Items {
         sequences: Option<(&mut crate::random_sequences::RandomSequences, i64)>,
         explosion_radius: Option<f32>,
         breaker: bool,
+        keep_empty: bool,
     ) -> Vec<ItemStack> {
         let Some(block) = registry.state(state) else {
             return vec![];
@@ -1225,6 +1379,7 @@ impl Items {
                 killed_by_player: false,
                 explosion_radius,
                 this_entity: breaker,
+                keep_empty,
             };
             return ctx.evaluate(table, random);
         }
@@ -1236,6 +1391,7 @@ impl Items {
             killed_by_player: false,
             explosion_radius,
             this_entity: breaker,
+            keep_empty,
         };
         ctx.evaluate(table, random)
     }
@@ -1247,6 +1403,17 @@ impl Items {
         killed_by_player: bool,
         held: Option<&ItemStack>,
         random: &mut R,
+    ) -> Vec<ItemStack> {
+        self.loot_table_for_command(id, killed_by_player, held, random, false)
+    }
+    /// `LootCommand.dropChestLoot`: output-list adapter; replacement keeps emitted empties.
+    pub fn loot_table_for_command<R: RandomSource>(
+        &self,
+        id: &str,
+        killed_by_player: bool,
+        held: Option<&ItemStack>,
+        random: &mut R,
+        keep_empty: bool,
     ) -> Vec<ItemStack> {
         let Some(table) = self.loot.get(id) else {
             return vec![];
@@ -1260,6 +1427,7 @@ impl Items {
             killed_by_player,
             explosion_radius: None,
             this_entity: false,
+            keep_empty,
         };
         // LootTable.getRandomItemsRaw visits the table itself first.
         NESTED_ROLLS.with(|v| v.borrow_mut().push(id.to_owned()));
@@ -1297,6 +1465,7 @@ impl Items {
             killed_by_player: false,
             explosion_radius: None,
             this_entity: false,
+            keep_empty: false,
         };
         match table.get("random_sequence").and_then(Value::as_str) {
             Some(sequence) => ctx.evaluate(table, sequences.get(sequence, seed)),
@@ -1323,6 +1492,7 @@ impl Items {
             killed_by_player,
             explosion_radius: None,
             this_entity: false,
+            keep_empty: false,
         };
         ctx.evaluate(table, random)
     }
@@ -1332,6 +1502,17 @@ impl Items {
         killed_by_player: bool,
         held: Option<&ItemStack>,
         random: &mut R,
+    ) -> Vec<ItemStack> {
+        self.entity_drops_for_command(entity, killed_by_player, held, random, false)
+    }
+    /// `LootCommand.dropKillLoot`: output-list adapter; replacement keeps emitted empties.
+    pub fn entity_drops_for_command<R: RandomSource>(
+        &self,
+        entity: &str,
+        killed_by_player: bool,
+        held: Option<&ItemStack>,
+        random: &mut R,
+        keep_empty: bool,
     ) -> Vec<ItemStack> {
         let name = entity.trim_start_matches("minecraft:");
         let Some(table) = self.loot.get(&format!("minecraft:entities/{name}")) else {
@@ -1346,6 +1527,7 @@ impl Items {
             killed_by_player,
             explosion_radius: None,
             this_entity: false,
+            keep_empty,
         };
         ctx.evaluate(table, random)
     }
@@ -1369,10 +1551,10 @@ impl LootContext<'_> {
                     random,
                     &mut produced,
                 );
-                for mut stack in produced {
+                for (mut stack, emitted) in produced {
                     ctx.modifiers(&pool["modifier"], &mut stack, random);
                     ctx.modifiers(&table["modifier"], &mut stack, random);
-                    if stack.count > 0 {
+                    if stack.count > 0 || (ctx.keep_empty && emitted) {
                         out.push(stack);
                     }
                 }
@@ -1391,6 +1573,8 @@ struct LootContext<'a> {
     explosion_radius: Option<f32>,
     /// `LootContextParams.THIS_ENTITY` is set (a player broke the block).
     this_entity: bool,
+    /// Command replacement consumes the emitted list positions, including empty stacks.
+    keep_empty: bool,
 }
 impl LootContext<'_> {
     /// Level of an enchantment on the tool / killer's weapon.
@@ -1620,11 +1804,13 @@ impl LootContext<'_> {
             .all(|c| self.condition(c, random))
     }
     /// Expand entries; returns whether an entry succeeded (for alternatives).
+    /// The last candidate field distinguishes emitted items from empty/deferred
+    /// placeholders, without changing existing selection/modifier draws.
     fn expand<R: RandomSource>(
         &self,
         e: &Value,
         random: &mut R,
-        out: &mut Vec<(i32, ItemStack, Value)>,
+        out: &mut Vec<(i32, ItemStack, Value, bool)>,
     ) -> bool {
         if !self.conditions(e, random) {
             return false;
@@ -1640,6 +1826,7 @@ impl LootContext<'_> {
                         extra: None,
                     },
                     e["modifier"].clone(),
+                    true,
                 ));
                 true
             }
@@ -1677,6 +1864,7 @@ impl LootContext<'_> {
                         extra: None,
                     },
                     Value::Null,
+                    false,
                 ));
                 true
             }
@@ -1692,6 +1880,7 @@ impl LootContext<'_> {
                         extra: None,
                     },
                     e.clone(),
+                    true,
                 ));
                 true
             }
@@ -1705,6 +1894,7 @@ impl LootContext<'_> {
                         extra: None,
                     },
                     Value::Null,
+                    false,
                 ));
                 true
             }
@@ -1715,7 +1905,7 @@ impl LootContext<'_> {
         &self,
         entries: &[Value],
         random: &mut R,
-        produced: &mut Vec<ItemStack>,
+        produced: &mut Vec<(ItemStack, bool)>,
     ) {
         let mut candidates = Vec::new();
         for e in entries {
@@ -1739,13 +1929,13 @@ impl LootContext<'_> {
             }
             chosen
         };
-        let (_, mut stack, modifiers) = candidates.swap_remove(pick);
+        let (_, mut stack, modifiers, emitted) = candidates.swap_remove(pick);
         if &*stack.item == NESTED {
             self.nested(&modifiers, random, produced);
             return;
         }
         self.modifiers(&modifiers, &mut stack, random);
-        produced.push(stack);
+        produced.push((stack, emitted));
     }
     /// `NestedLootTable.createItemStack`: the entry's table rolls in full
     /// (its pools and its own functions), then the entry's functions apply to
@@ -1754,7 +1944,7 @@ impl LootContext<'_> {
         &self,
         entry: &Value,
         random: &mut R,
-        produced: &mut Vec<ItemStack>,
+        produced: &mut Vec<(ItemStack, bool)>,
     ) {
         let (name, table) = match &entry["value"] {
             Value::String(name) => (name.as_str(), self.items.loot.get(name.as_str())),
@@ -1777,7 +1967,7 @@ impl LootContext<'_> {
         NESTED_ROLLS.with(|v| v.borrow_mut().pop());
         for mut stack in stacks {
             self.modifiers(&entry["modifier"], &mut stack, random);
-            produced.push(stack);
+            produced.push((stack, true));
         }
     }
     /// An enchantment function's `options` (`HolderSet`): a tag, a list or
@@ -2184,6 +2374,62 @@ pub fn bucket_contents(
 }
 
 /// One `MobEffectInstance` of an `apply_effects` consume effect (its codec's defaults).
+/// `DeathProtection.CODEC`: the `death_effects` of a `minecraft:death_protection`
+/// component, in order (`applyEffects` runs each one). A missing or empty
+/// list, as in `death_protection={}`, has none.
+pub fn death_effects(component: &Value) -> Vec<ConsumeEffect> {
+    component
+        .get("death_effects")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(parse_consume_effect)
+        .collect()
+}
+
+#[cfg(test)]
+mod death_effects_tests {
+    use super::*;
+    #[test]
+    fn the_totems_component_reads_clear_then_three_effects() {
+        let totem = serde_json::json!({"death_effects": [
+            {"type": "minecraft:clear_all_effects"},
+            {"type": "minecraft:apply_effects", "effects": [
+                {"amplifier": 1, "duration": 900, "id": "minecraft:regeneration", "show_icon": true},
+                {"amplifier": 1, "duration": 100, "id": "minecraft:absorption", "show_icon": true},
+                {"duration": 800, "id": "minecraft:fire_resistance", "show_icon": true}
+            ]}
+        ]});
+        let effects = death_effects(&totem);
+        assert_eq!(effects.len(), 2);
+        assert_eq!(effects[0], ConsumeEffect::ClearAllEffects);
+        let ConsumeEffect::ApplyEffects {
+            effects,
+            probability,
+        } = &effects[1]
+        else {
+            panic!("second effect is apply_effects");
+        };
+        assert_eq!(*probability, 1.0);
+        let ids: Vec<_> = effects
+            .iter()
+            .map(|e| (e.id.as_str(), e.duration, e.amplifier))
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                ("minecraft:regeneration", 900, 1),
+                ("minecraft:absorption", 100, 1),
+                ("minecraft:fire_resistance", 800, 0)
+            ]
+        );
+    }
+    #[test]
+    fn an_empty_component_has_no_effects() {
+        assert!(death_effects(&serde_json::json!({})).is_empty());
+    }
+}
+
 fn consume_effect_spec(e: &Value) -> Option<ConsumeEffectSpec> {
     let flag = |key: &str, default: bool| e.get(key).and_then(|v| v.as_bool()).unwrap_or(default);
     Some(ConsumeEffectSpec {
@@ -2192,6 +2438,7 @@ fn consume_effect_spec(e: &Value) -> Option<ConsumeEffectSpec> {
         amplifier: e.get("amplifier").and_then(|a| a.as_i64()).unwrap_or(0) as i32,
         ambient: flag("ambient", false),
         show_particles: flag("show_particles", true),
+        show_icon: flag("show_icon", flag("show_particles", true)),
     })
 }
 
@@ -2296,6 +2543,189 @@ mod tests {
     use super::*;
     use horizon_core::random::LegacyRandom;
     use serde_json::json;
+
+    #[test]
+    fn command_loot_keeps_zero_positions_without_changing_filtered_rolls() {
+        let mut items = Items::for_tests(HashMap::new());
+        let zero = json!({"rolls":1,"entries":[{"type":"minecraft:item","name":"minecraft:iron_ingot",
+            "modifier":{"type":"minecraft:set_count","count":0}}]});
+        let positive =
+            json!({"rolls":1,"entries":[{"type":"minecraft:item","name":"minecraft:iron_ingot"}]});
+        let flat = json!({"pools":[zero, positive]});
+        let empty = json!({"pools":[{"rolls":1,"entries":[{"type":"minecraft:empty"}]}]});
+        let nested =
+            json!({"pools":[{"rolls":1,"entries":[{"type":"minecraft:loot_table","value":flat}]}]});
+        let random = json!({"pools":[zero, {"rolls":{"type":"minecraft:uniform","min":1,"max":3},
+            "entries":[{"type":"minecraft:item","name":"minecraft:iron_ingot"},
+                       {"type":"minecraft:item","name":"minecraft:gold_ingot"}]}]});
+        let summary = |stacks: Vec<ItemStack>| {
+            stacks
+                .into_iter()
+                .map(|s| (s.item.to_string(), s.count))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            summary(items.inline_loot_table_for_command(
+                &flat,
+                None,
+                &mut LegacyRandom::new(39),
+                true
+            )),
+            vec![
+                ("minecraft:iron_ingot".into(), 0),
+                ("minecraft:iron_ingot".into(), 1)
+            ]
+        );
+        assert!(
+            items
+                .inline_loot_table_for_command(&empty, None, &mut LegacyRandom::new(39), true)
+                .is_empty(),
+            "EmptyLootItem emits nothing, rather than an empty item position"
+        );
+        let deferred = json!({"pools":[{"rolls":1,"entries":[{"type":"minecraft:dynamic","name":"minecraft:contents"}],
+            "modifier":{"type":"minecraft:set_count","count":0}}]});
+        assert!(
+            items
+                .inline_loot_table_for_command(&deferred, None, &mut LegacyRandom::new(39), true)
+                .is_empty(),
+            "deferred dynamic placeholders are not emitted items"
+        );
+        for table in [flat, empty, nested, random, deferred] {
+            items.loot = Arc::new(
+                [
+                    ("test:table".into(), table.clone()),
+                    ("minecraft:entities/pig".into(), table.clone()),
+                ]
+                .into_iter()
+                .collect(),
+            );
+            for seed in 0..32 {
+                let mut natural_rng = LegacyRandom::new(seed);
+                let natural =
+                    summary(items.inline_loot_table_with_tool(&table, None, &mut natural_rng));
+                let continuation = natural_rng.next_long();
+                let mut command_rng = LegacyRandom::new(seed);
+                let command =
+                    items.inline_loot_table_for_command(&table, None, &mut command_rng, true);
+                assert_eq!(
+                    summary(command.into_iter().filter(|s| s.count > 0).collect()),
+                    natural
+                );
+                assert_eq!(
+                    command_rng.next_long(),
+                    continuation,
+                    "output policy consumes no randomness"
+                );
+                let mut named_rng = LegacyRandom::new(seed);
+                let named =
+                    items.loot_table_for_command("test:table", false, None, &mut named_rng, true);
+                assert_eq!(
+                    summary(named.into_iter().filter(|s| s.count > 0).collect()),
+                    natural
+                );
+                assert_eq!(named_rng.next_long(), continuation);
+                let mut entity_rng = LegacyRandom::new(seed);
+                let entity = items.entity_drops_for_command(
+                    "minecraft:pig",
+                    false,
+                    None,
+                    &mut entity_rng,
+                    true,
+                );
+                assert_eq!(
+                    summary(entity.into_iter().filter(|s| s.count > 0).collect()),
+                    natural
+                );
+                assert_eq!(entity_rng.next_long(), continuation);
+            }
+        }
+    }
+
+    /// `LootCommand.dropFishingLoot` carries TOOL even for an inline holder.
+    #[test]
+    fn inline_fishing_keeps_the_actual_tool_context() {
+        let mut items = Items::for_tests(HashMap::new());
+        let table = |tool| {
+            json!({"type":"minecraft:fishing","pools":[{"rolls":1,"entries":[{
+                "type":"minecraft:item","name":"minecraft:diamond",
+                "condition":{"type":"minecraft:match_tool","predicate":{"items":tool}}
+            }]}]})
+        };
+        let rod_table = table("minecraft:fishing_rod");
+        let stick_table = table("minecraft:stick");
+        let unconditioned = json!({"pools":[{"rolls":1,"entries":[{"type":"minecraft:item","name":"minecraft:diamond"}]}]});
+        items.loot = Arc::new(
+            [
+                ("test:rod".to_owned(), rod_table.clone()),
+                ("test:stick".to_owned(), stick_table.clone()),
+                ("test:plain".to_owned(), unconditioned.clone()),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let rod = ItemStack::new("minecraft:fishing_rod", 1);
+        let stick = ItemStack::new("minecraft:stick", 1);
+        let summary = |drops: Vec<ItemStack>| {
+            drops
+                .into_iter()
+                .map(|s| (s.item.to_string(), s.count))
+                .collect::<Vec<_>>()
+        };
+        for (id, table, matches) in [
+            ("test:rod", &rod_table, [false, true, false]),
+            ("test:stick", &stick_table, [false, false, true]),
+            ("test:plain", &unconditioned, [true, true, true]),
+        ] {
+            for (held, matches) in [None, Some(&rod), Some(&stick)].into_iter().zip(matches) {
+                let expected = if matches {
+                    vec![("minecraft:diamond".to_owned(), 1)]
+                } else {
+                    vec![]
+                };
+                let mut named_rng = LegacyRandom::new(41);
+                assert_eq!(
+                    summary(items.loot_table(id, false, held, &mut named_rng)),
+                    expected
+                );
+                let mut inline_rng = LegacyRandom::new(41);
+                assert_eq!(
+                    summary(items.inline_loot_table_with_tool(table, held, &mut inline_rng)),
+                    expected
+                );
+                let mut command_rng = LegacyRandom::new(41);
+                assert_eq!(
+                    summary(items.inline_loot_table_for_command(
+                        table,
+                        held,
+                        &mut command_rng,
+                        true
+                    )),
+                    expected
+                );
+                let continuation = named_rng.next_long();
+                assert_eq!(
+                    inline_rng.next_long(),
+                    continuation,
+                    "same evaluator draw order"
+                );
+                assert_eq!(
+                    command_rng.next_long(),
+                    continuation,
+                    "command output keeps TOOL and draw order"
+                );
+            }
+            let mut random = LegacyRandom::new(41);
+            let legacy = summary(items.inline_loot_table(table, &mut random));
+            assert_eq!(
+                legacy,
+                if matches[0] {
+                    vec![("minecraft:diamond".to_owned(), 1)]
+                } else {
+                    vec![]
+                }
+            );
+        }
+    }
 
     #[test]
     fn a_stacks_own_blocks_attacks_component_counts() {
@@ -2474,6 +2904,7 @@ mod tests {
             killed_by_player: block.is_empty(),
             explosion_radius: None,
             this_entity: false,
+            keep_empty: false,
         }
     }
 

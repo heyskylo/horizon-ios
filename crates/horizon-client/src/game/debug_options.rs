@@ -34,7 +34,7 @@ const HINT: u32 = 0xAA_AAAA;
 
 /// The open screen: its search box and the list's scroll.
 pub(super) struct DebugOptionsUi {
-    search: EditBox,
+    pub(super) search: EditBox,
     scroll: Scroll,
 }
 
@@ -98,22 +98,48 @@ const BUTTONS: [(Status, &str, u32); 3] = [
 
 impl Game<'_> {
     /// `KeyboardHandler`'s F3+F6: closes the screen if it is open, else opens
-    /// it over the game or the pause menu (`canInterruptScreen`).
+    /// it over whatever screen yields (`canInterruptScreen`), closing that
+    /// screen first.
     pub(super) fn toggle_debug_options(&mut self) {
+        if self.screen == Screen::DebugOptions {
+            self.close_debug_options();
+            return;
+        }
+        if !debug_options_interrupts(self.screen, self.screen_over_playing()) {
+            return;
+        }
+        self.close_screen_behind_debug_options();
+        let mut search = EditBox::new(0.0, 0.0, (ROW_WIDTH / 3.0).floor(), 20.0);
+        search.max_length = 32;
+        self.debug_options = Some(DebugOptionsUi {
+            search,
+            scroll: Scroll::default(),
+        });
+        self.screen = Screen::DebugOptions;
+        self.pause_menu = true;
+        self.capture(false);
+        self.mining = None;
+    }
+    /// The interrupted screen's own close (`Screen.onClose`): the containers
+    /// hand their state back and a mod's hooks hear of the screen going. A
+    /// screen whose close only swaps the screen (stats, links, the pause menu)
+    /// yields by being overwritten instead.
+    fn close_screen_behind_debug_options(&mut self) {
         match self.screen {
-            Screen::DebugOptions => self.close_debug_options(),
-            Screen::Playing | Screen::Paused if !self.screen_over_playing() => {
-                let mut search = EditBox::new(0.0, 0.0, (ROW_WIDTH / 3.0).floor(), 20.0);
-                search.max_length = 32;
-                self.debug_options = Some(DebugOptionsUi {
-                    search,
-                    scroll: Scroll::default(),
-                });
-                self.screen = Screen::DebugOptions;
+            Screen::Inventory => {
+                self.close_container();
+                self.pause_focus = None;
+                self.screen = Screen::Playing;
                 self.pause_menu = true;
-                self.capture(false);
-                self.mining = None;
+                self.capture(true);
             }
+            Screen::Creative => {
+                self.pad_clear_focus();
+                self.carried = None;
+                self.screen = Screen::Playing;
+                self.capture(true);
+            }
+            Screen::Mod => self.close_mod_screen(),
             _ => {}
         }
     }
@@ -289,6 +315,13 @@ impl Game<'_> {
         ];
         for (i, label) in labels.iter().enumerate() {
             let hover = ui::hovered(self.cursor, xs[i], fy, FOOTER_BUTTONS[i], 20.0);
+            if i == 3 {
+                horizon_client::widgets::declare_action(
+                    horizon_client::widgets::Action::Done,
+                    [xs[i], fy, FOOTER_BUTTONS[i], 20.0],
+                    true,
+                );
+            }
             ui::button(
                 batch,
                 atlas,
@@ -448,6 +481,14 @@ impl Game<'_> {
             self.debug_options_type(text);
         }
     }
+    /// One character off the search box, for the controller's on-screen keyboard.
+    pub(super) fn debug_options_backspace(&mut self) {
+        if let Some(s) = &mut self.debug_options
+            && s.search.focused
+        {
+            s.search.key(KeyCode::Backspace, false, false);
+        }
+    }
     /// Characters typed into the search box (`EditBox.charTyped`).
     pub(super) fn debug_options_type(&mut self, typed: &str) {
         let allowed: String = typed
@@ -460,6 +501,42 @@ impl Game<'_> {
         {
             s.search.insert_text(&allowed);
         }
+    }
+}
+
+/// `Minecraft.canInterruptScreen` (Gui): whether F3+F6 opens the debug
+/// options screen over `screen`, closing it first. `Screen
+/// .canInterruptWithAnotherScreen` defaults to `shouldCloseOnEsc`, so every
+/// screen Escape closes yields; the death screen and the level teardown keep
+/// theirs, and the title never reaches the debug keys. The text-box screens
+/// (chat, options, sign, book, the search tabs) do not reach it either: a
+/// focused box takes every key press first. A playing overlay (a dialog, a
+/// prompt) keeps its own Esc. The credits' close is fallible and this path is
+/// not, so it keeps its screen too (vanilla interrupts it).
+fn debug_options_interrupts(screen: Screen, playing_overlay: bool) -> bool {
+    match screen {
+        Screen::Playing | Screen::Paused => !playing_overlay,
+        Screen::Inventory
+        | Screen::Creative
+        | Screen::GameModeSwitcher
+        | Screen::EmoteWheel
+        | Screen::Stats
+        | Screen::Advancements
+        | Screen::Friends
+        | Screen::Social
+        | Screen::ServerLinks
+        | Screen::ConfirmLink
+        | Screen::DialogWarning
+        | Screen::Mod => true,
+        Screen::Chat
+        | Screen::Options
+        | Screen::WorldOptions
+        | Screen::CommandBlock
+        | Screen::BlockEditor
+        | Screen::Dead
+        | Screen::Win
+        | Screen::DebugOptions
+        | Screen::HudEditor => false,
     }
 }
 
@@ -489,5 +566,49 @@ mod tests {
         assert_eq!(row_left(427.0), 38.0);
         assert_eq!(button_xs(40.0), [206.0, 266.0, 326.0]);
         assert_eq!(footer(427.0, 240.0), ([2.0, 126.0, 250.0, 364.0], 213.0));
+    }
+
+    /// F3+F6 interrupts every screen whose Esc would close it
+    /// (`Minecraft.canInterruptScreen`), and none whose would not.
+    #[test]
+    fn the_debug_options_screen_interrupts_what_escape_would_close() {
+        assert!(debug_options_interrupts(Screen::Playing, false));
+        assert!(debug_options_interrupts(Screen::Paused, false));
+        assert!(!debug_options_interrupts(Screen::Playing, true));
+        assert!(!debug_options_interrupts(Screen::Paused, true));
+        for screen in [
+            Screen::Inventory,
+            Screen::Creative,
+            Screen::GameModeSwitcher,
+            Screen::Stats,
+            Screen::Advancements,
+            Screen::Friends,
+            Screen::Social,
+            Screen::ServerLinks,
+            Screen::ConfirmLink,
+            Screen::DialogWarning,
+            Screen::Mod,
+        ] {
+            assert!(
+                debug_options_interrupts(screen, false),
+                "{} yields",
+                screen.id()
+            );
+        }
+        for screen in [
+            Screen::Dead,
+            Screen::Chat,
+            Screen::Options,
+            Screen::WorldOptions,
+            Screen::CommandBlock,
+            Screen::BlockEditor,
+            Screen::Win,
+        ] {
+            assert!(
+                !debug_options_interrupts(screen, false),
+                "{} keeps its screen",
+                screen.id()
+            );
+        }
     }
 }

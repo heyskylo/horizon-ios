@@ -1,0 +1,15 @@
+{
+  "hooks": [
+    {
+      "name": "custom_payload_from_client",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_custom_payload_from_client",
+      "neoforge": "none (NeoForge registers payload handlers per type; Bukkit's PluginMessageListener)",
+      "side": "server",
+      "mod_api": {
+        "contract": "listen"
+      }
+    }
+  ],
+  "rust_summary": "a player's plugin channel message on a channel that isn't Horizon's own (`native_custom_payload_from_client`).",
+  "doc_summary": "`native_custom_payload_from_client(player, channel, data)` hears a player's `ServerboundCustomPayloadPacket` in play on any channel that isn't Horizon's own, which vanilla drops: in the tick after it arrives, with no player's state swapped in, from a dead player too. Bundles need \"hooks\": @API:custom_payload_from_client@."
+}

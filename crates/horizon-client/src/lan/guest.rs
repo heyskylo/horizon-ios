@@ -113,8 +113,17 @@ pub struct Guest {
     pub latency: Arc<AtomicI32>,
     pub info: ClientInformation,
     pub brand: String,
+    /// The plugin channels the client registered (`minecraft:register`), in configuration and
+    /// in play, in order (`super::apply_channels`).
+    pub channels: Vec<String>,
+    /// The client's answers to the server's resource pack during its configuration, not yet
+    /// told to the mods: pack id and action (`super::Configured`).
+    pub configuration_pack_answers: Vec<(u128, i32)>,
     /// The chunk radius this client is sent.
     pub view_distance: i32,
+    /// A native mod's limit on `view_distance` for this player alone
+    /// (`native_set_player_view_distance`); None: the server's.
+    pub view_limit: Option<i32>,
     pub position: [f64; 3],
     pub previous_position: [f64; 3],
     pub yaw: f32,
@@ -218,6 +227,10 @@ pub struct Guest {
     /// The players a native mod hid from it (`Hub::hidden`) that its player
     /// list no longer has.
     pub tab_hidden: crate::fast_hash::FxHashSet<u128>,
+    /// The entities a native mod showed this client alone
+    /// (`native_client_entity_spawn`), by id, with their types: no level
+    /// holds them, and they go with the guest.
+    pub client_entities: crate::fast_hash::FxHashMap<i32, String>,
     /// The client finished loading terrain (ServerboundPlayerLoadedPacket).
     pub loaded: bool,
     /// Since it joined or respawned, the client hasn't said it loaded the level
@@ -268,6 +281,9 @@ pub struct Guest {
     /// The 36 inventory slots (hotbar first), armor (head..feet) and off hand.
     pub inventory: Vec<Option<ItemStack>>,
     pub armor: [Option<ItemStack>; 4],
+    /// Armor as of this player's last `collectEquipmentChanges` look; swapped
+    /// with `armor` so each player compares against their own snapshot.
+    pub location_armor: [Option<ItemStack>; 4],
     pub offhand: Option<ItemStack>,
     pub selected: usize,
     pub carried: Option<ItemStack>,
@@ -279,6 +295,9 @@ pub struct Guest {
     pub ender_items: Vec<Option<ItemStack>>,
     /// What a native mod's menu shows (`Slots::Native`), while one is open.
     pub native_menu: Vec<Option<ItemStack>>,
+    /// The slots of that menu that hold items clicks move, when the mod gave
+    /// it any (`menu::NativeStore`).
+    pub native_store: Option<super::menu::NativeStore>,
     pub health: f32,
     /// The saved `AbsorptionAmount`, until the player's first body on the
     /// server takes it (the body holds the live amount).
@@ -336,12 +355,51 @@ pub struct Guest {
     pub death_time: u32,
     /// The join packets were sent (PlayerList.placeNewPlayer ran).
     pub placed: bool,
+    /// The hand-over a proxy started by exporting it with `freeze`
+    /// (`arrivals::Handover`): while it lasts, what it sends other than its
+    /// acknowledgements is not acted on, and every export answers with the
+    /// same record. It ends after `[transfer]`'s `max_freeze_seconds`.
+    pub handover: Option<super::arrivals::Handover>,
+    /// Its login started while a proxy said it would arrive from another
+    /// server, and used that expectation up (`player-expect`).
+    pub expected: bool,
+    /// A player arriving from another server (`arrivals`): connected and
+    /// receiving the world, but not placed, so no one else sees, hears or
+    /// hurts it until the hand-over finishes.
+    pub held: bool,
+    /// The hub tick at which it was held, to drop it if its hand-over never comes.
+    pub held_since: u64,
+    /// A held player whose record has been applied but that is not yet let into the world
+    /// (`player-import` with `"place": false`): `player-confirm` places it, `player-drop` removes it.
+    pub imported: bool,
+    /// Whether the others are told when it is placed, as the import asked.
+    pub arrival_announce: bool,
+    /// The hand-over its record came with (`player-import`): `player-confirm` and
+    /// `player-drop` name it, and another hand-over's record is not taken.
+    pub arrival_handover: Option<u128>,
+    /// The import of that hand-over moved the view to another chunk (`recentered` in its reply),
+    /// kept so a retried import or a confirm after it answers the same.
+    pub arrival_recentered: bool,
+    /// Leaving for another server (`player-release moved`) without the "left the
+    /// game" line.
+    pub quiet_leave: bool,
+    /// Taken out of the world because a proxy moved it to another server: the game
+    /// saves neither its player file nor its records, since the other server has the
+    /// player now.
+    pub released: bool,
     /// Root command names the mods took out of this player's command tree
     /// (`native_player_commands_sent`); their tree is sent without them.
     pub hidden_commands: Vec<String>,
+    /// Root commands above this player's level that the mods put back into
+    /// their tree (`native_player_commands_sent_v2`).
+    pub granted_commands: Vec<String>,
     /// `Abilities.flyingSpeed`: vanilla's 0.05, unless a server mod set
     /// another (`native_set_flying_speed`). Saved with the player.
     pub flying_speed: f32,
+    /// `Abilities.mayfly` in a mode that does not give it: a server mod let the
+    /// player fly (`native_set_flight`), until their game mode changes or they
+    /// respawn. Not saved.
+    pub allow_flight: bool,
     /// The level the player is in (`ServerPlayer.level().dimension()`): the
     /// hub's level passes only reach the players in theirs.
     pub dimension: String,
@@ -399,8 +457,11 @@ impl Guest {
             sender: j.sender,
             latency: j.latency,
             view_distance: i32::from(j.info.view_distance).max(2).min(view_distance),
+            view_limit: None,
             info: j.info,
             brand: j.brand,
+            channels: j.configured.channels,
+            configuration_pack_answers: j.configured.pack_answers,
             position,
             previous_position: position,
             yaw: 0.0,
@@ -451,6 +512,7 @@ impl Guest {
             changes: Default::default(),
             moved: false,
             tab_hidden: Default::default(),
+            client_entities: Default::default(),
             loaded: false,
             loading: true,
             load_timeout: CLIENT_LOADED_TIMEOUT,
@@ -471,6 +533,7 @@ impl Guest {
             logs_kept: None,
             inventory: vec![None; 36],
             armor: [None, None, None, None],
+            location_armor: [None, None, None, None],
             offhand: None,
             selected: 0,
             carried: None,
@@ -478,6 +541,7 @@ impl Guest {
             craft_result: None,
             ender_items: vec![None; 27],
             native_menu: Vec::new(),
+            native_store: None,
             health: 20.0,
             saved_absorption: None,
             food: 20,
@@ -509,8 +573,20 @@ impl Guest {
             dead: false,
             death_time: 0,
             placed: false,
+            handover: None,
+            expected: j.expected,
+            held: false,
+            held_since: 0,
+            imported: false,
+            arrival_announce: true,
+            arrival_handover: None,
+            arrival_recentered: false,
+            quiet_leave: false,
+            released: false,
             hidden_commands: Vec::new(),
+            granted_commands: Vec::new(),
             flying_speed: 0.05,
+            allow_flight: false,
             dimension: "minecraft:overworld".into(),
             menu: None,
             next_window: 0,
@@ -651,6 +727,8 @@ impl Guest {
         if mode != self.game_mode {
             self.previous_game_mode = Some(self.game_mode);
             self.game_mode = mode;
+            // GameType.updatePlayerAbilities sets mayfly for the new mode.
+            self.allow_flight = false;
         }
     }
     pub fn spectator(&self) -> bool {
@@ -665,7 +743,7 @@ impl Guest {
         if self.flying || self.spectator() {
             f |= 2;
         }
-        if self.creative() || self.spectator() {
+        if self.creative() || self.spectator() || self.allow_flight {
             f |= 4;
         }
         if self.creative() {
@@ -1274,6 +1352,23 @@ fn network_stack(
             .removed
             .push(horizon_protocol::item::component::RARITY);
     }
+    // `DataComponents.MAX_STACK_SIZE`: an int in 1..=99 on this stack, not the
+    // item's default. A removed component falls back to that default.
+    if s.data()
+        .is_some_and(|d| d.other("!minecraft:max_stack_size").is_some())
+    {
+        stack
+            .removed
+            .push(horizon_protocol::item::component::MAX_STACK_SIZE);
+    } else if let Some(horizon_world::nbt::Tag::Int(n)) =
+        s.data().and_then(|d| d.other("minecraft:max_stack_size"))
+        && (1..=99).contains(n)
+    {
+        stack.added.push((
+            horizon_protocol::item::component::MAX_STACK_SIZE,
+            horizon_protocol::item::Component::Int(*n),
+        ));
+    }
     // The component as loaded, so a translatable name stays one.
     if let Some(name) = s.data().and_then(|d| d.other("minecraft:item_name")) {
         stack.added.push((
@@ -1514,6 +1609,8 @@ mod tests {
                 sender: PlayerSender::new(tx, Arc::new(std::sync::atomic::AtomicUsize::new(0))),
                 latency: Arc::new(AtomicI32::new(0)),
                 address: "127.0.0.1:1".parse().unwrap(),
+                expected: false,
+                configured: Default::default(),
             },
             1,
             position,

@@ -1,0 +1,129 @@
+{
+  "status_stopped": {
+    "status": 200,
+    "content_type": "application/json",
+    "headers": [],
+    "body": {
+      "phase": "stopped",
+      "version": "0.1.0",
+      "pid": "<dynamic>",
+      "uptime_seconds": "<dynamic>",
+      "engine_pid": null,
+      "engine_uptime_seconds": null,
+      "crashes": 2,
+      "last_crash": "exit status: 1",
+      "sample": {
+        "t": 200,
+        "rss_bytes": 536870912,
+        "cpu_percent": 12.5,
+        "game": {
+          "tps": 19.9,
+          "target_tps": 20.0,
+          "mspt": { "average": 8.25, "p50": 7.0, "p95": 12.5, "p99": 18.0 },
+          "players": [{ "name": "Alex" }, { "name": "Steve" }],
+          "max_players": 20,
+          "chunks": 321
+        }
+      },
+      "update": null
+    }
+  },
+  "logs_all": {
+    "status": 200,
+    "content_type": "application/json",
+    "headers": [],
+    "body": { "next": 2, "lines": ["first line", "second line"] }
+  },
+  "logs_since": {
+    "status": 200,
+    "content_type": "application/json",
+    "headers": [],
+    "body": { "next": 2, "lines": ["second line"] }
+  },
+  "logs_invalid_since": {
+    "status": 200,
+    "content_type": "application/json",
+    "headers": [],
+    "body": { "next": 2, "lines": ["first line", "second line"] }
+  },
+  "metrics_all": {
+    "status": 200,
+    "content_type": "application/json",
+    "headers": [],
+    "body": {
+      "samples": [
+        { "t": 100, "game": { "tps": 20.0 } },
+        {
+          "t": 200,
+          "rss_bytes": 536870912,
+          "cpu_percent": 12.5,
+          "game": {
+            "tps": 19.9,
+            "target_tps": 20.0,
+            "mspt": { "average": 8.25, "p50": 7.0, "p95": 12.5, "p99": 18.0 },
+            "players": [{ "name": "Alex" }, { "name": "Steve" }],
+            "max_players": 20,
+            "chunks": 321
+          }
+        }
+      ]
+    }
+  },
+  "metrics_since": {
+    "status": 200,
+    "content_type": "application/json",
+    "headers": [],
+    "body": {
+      "samples": [
+        {
+          "t": 200,
+          "rss_bytes": 536870912,
+          "cpu_percent": 12.5,
+          "game": {
+            "tps": 19.9,
+            "target_tps": 20.0,
+            "mspt": { "average": 8.25, "p50": 7.0, "p95": 12.5, "p99": 18.0 },
+            "players": [{ "name": "Alex" }, { "name": "Steve" }],
+            "max_players": 20,
+            "chunks": 321
+          }
+        }
+      ]
+    }
+  },
+  "metrics_invalid_since": {
+    "status": 200,
+    "content_type": "application/json",
+    "headers": [],
+    "body": {
+      "samples": [
+        { "t": 100, "game": { "tps": 20.0 } },
+        {
+          "t": 200,
+          "rss_bytes": 536870912,
+          "cpu_percent": 12.5,
+          "game": {
+            "tps": 19.9,
+            "target_tps": 20.0,
+            "mspt": { "average": 8.25, "p50": 7.0, "p95": 12.5, "p99": 18.0 },
+            "players": [{ "name": "Alex" }, { "name": "Steve" }],
+            "max_players": 20,
+            "chunks": 321
+          }
+        }
+      ]
+    }
+  },
+  "prometheus_stopped": {
+    "status": 200,
+    "content_type": "text/plain; version=0.0.4",
+    "headers": [],
+    "body": "# HELP horizon_up 1 while the game runs and answers\n# TYPE horizon_up gauge\nhorizon_up 0\n# HELP horizon_supervisor_uptime_seconds Seconds since horizon-server started\n# TYPE horizon_supervisor_uptime_seconds gauge\nhorizon_supervisor_uptime_seconds <dynamic>\n# HELP horizon_crashes Game crashes since horizon-server started\n# TYPE horizon_crashes gauge\nhorizon_crashes 2\n# HELP horizon_tps Ticks per second over the last 5 seconds\n# TYPE horizon_tps gauge\nhorizon_tps 19.9\n# HELP horizon_tps_target The tick rate the game aims for (/tick rate)\n# TYPE horizon_tps_target gauge\nhorizon_tps_target 20\n# HELP horizon_mspt Milliseconds per tick: the average and the percentiles /tick query reports\n# TYPE horizon_mspt gauge\nhorizon_mspt{stat=\"average\"} 8.25\nhorizon_mspt{stat=\"p50\"} 7\nhorizon_mspt{stat=\"p95\"} 12.5\nhorizon_mspt{stat=\"p99\"} 18\n# HELP horizon_players_online Players online\n# TYPE horizon_players_online gauge\nhorizon_players_online 2\n# HELP horizon_players_max max-players\n# TYPE horizon_players_max gauge\nhorizon_players_max 20\n# HELP horizon_chunks_loaded Chunks loaded\n# TYPE horizon_chunks_loaded gauge\nhorizon_chunks_loaded 321\n# HELP horizon_memory_rss_bytes The game process's resident memory\n# TYPE horizon_memory_rss_bytes gauge\nhorizon_memory_rss_bytes 536870912\n# HELP horizon_cpu_percent The game process's CPU use (100 = one core)\n# TYPE horizon_cpu_percent gauge\nhorizon_cpu_percent 12.5\n"
+  },
+  "prometheus_running": {
+    "status": 200,
+    "content_type": "text/plain; version=0.0.4",
+    "headers": [],
+    "body": "# HELP horizon_up 1 while the game runs and answers\n# TYPE horizon_up gauge\nhorizon_up 1\n# HELP horizon_supervisor_uptime_seconds Seconds since horizon-server started\n# TYPE horizon_supervisor_uptime_seconds gauge\nhorizon_supervisor_uptime_seconds <dynamic>\n# HELP horizon_crashes Game crashes since horizon-server started\n# TYPE horizon_crashes gauge\nhorizon_crashes 2\n# HELP horizon_tps Ticks per second over the last 5 seconds\n# TYPE horizon_tps gauge\nhorizon_tps 19.9\n# HELP horizon_tps_target The tick rate the game aims for (/tick rate)\n# TYPE horizon_tps_target gauge\nhorizon_tps_target 20\n# HELP horizon_mspt Milliseconds per tick: the average and the percentiles /tick query reports\n# TYPE horizon_mspt gauge\nhorizon_mspt{stat=\"average\"} 8.25\nhorizon_mspt{stat=\"p50\"} 7\nhorizon_mspt{stat=\"p95\"} 12.5\nhorizon_mspt{stat=\"p99\"} 18\n# HELP horizon_players_online Players online\n# TYPE horizon_players_online gauge\nhorizon_players_online 2\n# HELP horizon_players_max max-players\n# TYPE horizon_players_max gauge\nhorizon_players_max 20\n# HELP horizon_chunks_loaded Chunks loaded\n# TYPE horizon_chunks_loaded gauge\nhorizon_chunks_loaded 321\n# HELP horizon_memory_rss_bytes The game process's resident memory\n# TYPE horizon_memory_rss_bytes gauge\nhorizon_memory_rss_bytes 536870912\n# HELP horizon_cpu_percent The game process's CPU use (100 = one core)\n# TYPE horizon_cpu_percent gauge\nhorizon_cpu_percent 12.5\n"
+  }
+}

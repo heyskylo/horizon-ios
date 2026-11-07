@@ -1,1312 +1,1100 @@
-//! The Wardrobe page's Shop tab: the founder set, free to claim while its window is open, then
-//! retired (`horizon_launcher::shop` holds the rules). It shows only once the cosmetics service
-//! has a window, or previews it for the account. The claim goes through a free (0 CHF) Paddle
-//! checkout when the cosmetics service asks for one: the browser opens Horizon's checkout page,
-//! and the set arrives once Paddle tells the service. Under the panel, the account's purchase
-//! history.
+//! The Shop page (top bar, beside the Wardrobe, shown under the same rule: `shop::in_top_bar`),
+//! laid out as a game's item shop: the season's pack across the top, then rows of large tiles,
+//! each the thing itself drawn (`thumbs`), its name and its price. A tile opens it big on the
+//! account's own player in 3D (drag to turn), with its items for a look or the pack, Buy and
+//! Gift. Nothing here asks for attention: the tab has no badge, the page never opens by itself,
+//! and a catalogue that doesn't load says so in one quiet line. Buying starts Paddle's checkout on
+//! the service and opens playhorizon.dev/shop/pay in the browser (`horizon_launcher::shop::pay_url`);
+//! no card is typed here. The founder set is claimed the same way, or at once where Paddle
+//! doesn't sell (`Claim::here`).
 //!
-//! Signed in, it reads the Wardrobe's own trip to the service (the kept outfit first, then the
-//! answer); signed out, it asks for the catalogue alone, to know whether there is a Shop to show.
+//! It reads the Wardrobe's state (`Wardrobe`: the catalogue, the item files, what the account owns
+//! and wears); a visit refreshes it as a Wardrobe visit does. Prices, sets, collections and the
+//! Supporter badge all come from the catalogue: an item it doesn't price isn't sold.
 use super::*;
-use horizon_launcher::shop::{self as rules, Window};
-use horizon_launcher::wardrobe::{Entry, Me, Purchase};
-use horizon_theme::glass::{ink, radius};
+use gpui::Hsla;
+use horizon_cosmetics::viewer::BodyMotion;
+use horizon_cosmetics::{Part, Pose, BODY};
+use horizon_launcher::shop::{self as rules, FOUNDER_SET};
+use horizon_launcher::wardrobe::{words, Me, Order, Player, Set};
+use std::collections::{BTreeMap, HashSet};
 
-/// The founder panel's left column.
-const LEFT: f32 = 300.;
-/// A card's picture.
-const THUMB: f32 = 120.;
-/// How often the time left is drawn again.
-const TICK: Duration = Duration::from_secs(30);
-/// How often the service is asked whether a checkout is done, and for how long.
-const CHECKOUT_POLL: Duration = Duration::from_secs(3);
-const CHECKOUT_WAIT: Duration = Duration::from_secs(20 * 60);
+mod buy;
+mod thumbs;
+pub(crate) use thumbs::Thumbs;
+use thumbs::{Ask, Subject};
 
-/// The Shop tab's own state; the account's items are the Wardrobe's.
+/// A tile: its size, and its picture's height, in points.
+const TILE: (f32, f32) = (168., 228.);
+const TILE_PICTURE: f32 = 160.;
+/// A look's tile, larger: the whole player.
+const LOOK: (f32, f32) = (356., 396.);
+const LOOK_PICTURE: f32 = 336.;
+/// The hero's picture.
+const HERO: (f32, f32) = (560., 320.);
+/// A set's item in its big view.
+const PIECE: (f32, f32) = (104., 132.);
+const PIECE_PICTURE: f32 = 92.;
+/// The big view's player.
+const VIEW: (f32, f32) = (360., 470.);
+const GAP: f32 = 12.;
+
+/// The Shop's own state: what is open and what the player chose there.
 #[derive(Default)]
 pub(crate) struct Shop {
-    /// The Shop tab is the one shown (else the Wardrobe's).
-    pub(super) open: bool,
-    /// A claim on its way.
-    claiming: bool,
-    /// The claim went through on this visit: the panel says "Claimed".
-    claimed_now: bool,
-    /// The last claim's failure, in words, and the line to copy.
-    failed: Option<(String, String)>,
-    /// A Paddle checkout open in the browser, waited for: its link (to open it again).
-    checkout: Option<String>,
-    /// Signed out: the catalogue, asked without an account.
-    anon: Option<Catalogue>,
-    asking: bool,
-    /// Asked on this visit (a failure waits for the next one).
-    asked: bool,
-    /// A redraw for the time left is due.
-    ticking: bool,
-    /// Cards' pictures, baked at a window scale.
-    thumbs: HashMap<String, (f32, Arc<RenderImage>)>,
+    currency: Option<String>,
+    /// The offer open big: an item, a set, the Supporter badge or the founder set.
+    selected: Option<String>,
+    /// The Supporter badge's price, in cents.
+    amount: Option<u32>,
+    /// Buying for a friend.
+    gift: bool,
+    /// The gift's recipient, once found.
+    friend: Option<Player>,
+    /// Enter in the friend's field: look the name up on the next draw.
+    pub(crate) find_soon: bool,
+    busy: bool,
+    said: Option<String>,
+    /// The player in 3D, the Wardrobe's view (`viewer`) with a camera of its own.
+    viewer: Option<gpui::Entity<Viewer>>,
+    /// The outfit last handed to the view, and the emote it plays.
+    shown: Option<(Outfit, Option<String>)>,
+    /// The pointer is turning the view.
+    dragging: bool,
+    /// The tile under the pointer, lifted.
+    hover: Option<String>,
+    thumbs: Thumbs,
 }
 
-/// Below this window width the founder panel stacks: its words over its cards.
-const NARROW: f32 = 1280.;
+impl Shop {
+    /// The development preview's Shop (`wardrobe_preview`): `HORIZON_SHOP_OPEN=<id>` opens an
+    /// offer big.
+    pub(super) fn preview(&mut self) {
+        self.selected = std::env::var("HORIZON_SHOP_OPEN").ok();
+    }
 
-/// Text at `size` in Geist, in the glass look's ink at `a` (white in dark, ink in light).
-fn words(_t: &Theme, size: f32, weight: FontWeight, a: f32) -> Div {
-    glass_ui::text(size, weight, a)
+    pub(crate) fn free_replaced(&mut self, window: &mut gpui::Window) {
+        self.thumbs.free_replaced(window);
+    }
 }
 
-/// The glass look's ink at `a`.
-fn tone(_t: &Theme, a: f32) -> Hsla {
-    glass_ui::white(a)
+/// The item ids behind an id: a set's items, the founder set's, or the id itself.
+fn unpack<'a>(id: &'a str, c: &'a Catalogue, me: &'a Me) -> Vec<&'a str> {
+    if id == FOUNDER_SET {
+        return me.claim.items.iter().map(String::as_str).collect();
+    }
+    match c.sets.iter().find(|s| s.id == id) {
+        Some(s) => s.items.iter().map(String::as_str).collect(),
+        None => vec![id],
+    }
 }
 
-/// A small label (`chip`): 24 px, round at 8, 12 px medium.
-#[derive(Clone, Copy)]
-enum Chip {
-    /// The accent at 30 %: Free, Equipped.
-    Accent,
-    /// Green: Owned, Yours.
-    Live,
-    /// An outline only: dates.
-    Ghost,
-}
-
-fn chip(kind: Chip, label: impl Into<SharedString>, t: &Theme) -> Div {
-    let look = glass_ui::look();
-    let d = div()
-        .flex()
-        .flex_none()
-        .items_center()
-        .gap(px(6.))
-        .h(px(24.))
-        .px(px(9.))
-        .rounded(px(8.))
-        .font_family(horizon_theme::glass::FONT)
-        .text_size(px(12.))
-        .font_weight(FontWeight::MEDIUM)
-        .whitespace_nowrap();
-    let d = match kind {
-        Chip::Accent => d
-            .bg(glass_ui::color(look.accent).opacity(0.3))
-            .text_color(tone(t, ink::FULL)),
-        Chip::Live => d
-            .bg(glass_ui::live().opacity(0.16))
-            .text_color(if glass_ui::light() {
-                glass_ui::live()
-            } else {
-                glass_ui::color(0xb8f5cf)
-            }),
-        Chip::Ghost => d
-            .border_1()
-            .border_color(tone(t, 0.16))
-            .text_color(tone(t, ink::BODY)),
+/// An id's name and line: a set's, the founder set's or an item's.
+fn about(id: &str, c: &Catalogue, lang: &str) -> (String, Option<String>) {
+    if id == FOUNDER_SET {
+        let line = "For the players who were here first. Free to claim; once claimed, it's yours \
+                    to keep.";
+        return (tr("The founder set").into(), Some(tr(line).into()));
+    }
+    let set = c.sets.iter().find(|s| s.id == id);
+    let item = c.items.iter().find(|e| e.id == id);
+    let (names, lines) = match (set, item) {
+        (Some(s), _) => (&s.names, &s.lines),
+        (None, Some(e)) => (&e.names, &e.lines),
+        _ => return (id.to_owned(), None),
     };
-    d.child(label.into())
+    let name = words(names, lang).map_or_else(|| id.to_owned(), str::to_owned);
+    (name, words(lines, lang).map(str::to_owned))
 }
 
-/// A dot before a line: the accent's soft shade, green, amber or the danger colour.
-fn dot(c: u32) -> Div {
-    div()
-        .flex_none()
-        .size(px(7.))
-        .rounded_full()
-        .bg(glass_ui::color(c))
+/// The season's pack, the Shop's hero: the first collection's pack, else its largest set.
+fn hero(c: &Catalogue) -> Option<&Set> {
+    let sold = |s: &&Set| !s.prices.is_empty();
+    let pack = (c.collections.iter().filter_map(|g| g.pack.as_deref()))
+        .find_map(|id| c.sets.iter().filter(sold).find(|s| s.id == id));
+    pack.or_else(|| c.sets.iter().filter(sold).max_by_key(|s| s.items.len()))
 }
 
-/// A card's dark plate (`.item`): round at 16, 1 px violet edge; a 2 px ring in the accent's soft
-/// shade when the item is worn.
-fn card_plate(_t: &Theme, worn: bool) -> Div {
-    let look = glass_ui::look();
-    let d = div()
-        .flex()
-        .flex_col()
-        .flex_1()
-        .min_w_0()
-        .p(px(8.))
-        .pb(px(12.))
-        .rounded(px(16.));
-    let light = glass_ui::light();
-    d.bg(if light {
-        gpui::rgba(0xffffffb3).into()
+/// A tile's colour: one per kind of thing, so that a row reads at a glance.
+fn tint(slot: &str) -> u32 {
+    match slot {
+        "head" => 0xf2a13b,
+        "torso" => 0x3bb8c4,
+        "back" => 0x7cc46a,
+        "shoulder" | "companion" => 0xb07cff,
+        "trail" | "aura" => 0xff7aa8,
+        "emote" => 0x5b8cff,
+        "name_tag" => 0xc9c4d8,
+        // Sets and the pack.
+        _ => horizon_theme::glass::ACCENT,
+    }
+}
+
+/// A tile's ground: the page's colour nearly solid (the sky doesn't show through), `colour`
+/// washing down from the top at `top`.
+fn ground(colour: Hsla, top: f32) -> [Div; 2] {
+    let solid = if ui::light() {
+        gpui::white().opacity(0.86)
     } else {
-        Hsla::from(gpui::rgba(0x15112ed6))
-    })
-    .when(worn, |d| {
-        d.border_2().border_color(glass_ui::color(if light {
-            look.accent
-        } else {
-            look.accent_soft
-        }))
-    })
-    .when(!worn, |d| {
-        d.border_1().border_color(if light {
-            glass_ui::white(0.10)
-        } else {
-            gpui::rgba(0xb9acff1f).into()
-        })
-    })
-}
-
-/// The picture's dark slot in a card.
-fn slot_well(_t: &Theme) -> Div {
-    div()
-        .flex()
-        .items_center()
-        .justify_center()
-        .h(px(THUMB))
-        .w_full()
-        .overflow_hidden()
-        .rounded(px(radius::ROW))
-        // The founder set is navy and charcoal: light, a soft violet grey; dark, a lit violet grey,
-        // lighter at the top like a showcase, so the dark items keep their edges on both.
-        .bg(if glass_ui::light() {
-            Hsla::from(gpui::rgb(0xdcd8ea)).into()
-        } else {
-            gpui::linear_gradient(
-                180.,
-                gpui::linear_color_stop(Hsla::from(gpui::rgb(0x5d5688)), 0.),
-                gpui::linear_color_stop(Hsla::from(gpui::rgb(0x3a3459)), 1.),
-            )
-        })
-}
-
-/// The empty states' plate (`states.html`): a title line, then centred lines and actions.
-fn state_card(_t: &Theme) -> Div {
-    crate::glass::plate(radius::PANEL)
-        .flex()
-        .flex_col()
-        .items_center()
-        .justify_center()
-        .gap(px(14.))
-        .min_h(px(300.))
-        .p(px(28.))
-}
-
-/// A state's headline (16 px medium) and its explanation (14 px at 60 %, at most 46 characters).
-fn state_text(t: &Theme, title: String, note: String) -> [Div; 2] {
+        ui::color(horizon_theme::glass::PAGE).opacity(0.84)
+    };
     [
-        words(t, 16., FontWeight::MEDIUM, ink::FULL).child(title),
-        words(t, 14., FontWeight::NORMAL, ink::NOTE)
-            .max_w(px(420.))
-            .text_center()
-            .child(note),
+        div().absolute().top_0().left_0().size_full().bg(solid),
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .bg(gpui::linear_gradient(
+                180.,
+                gpui::linear_color_stop(colour.opacity(top), 0.),
+                gpui::linear_color_stop(colour.opacity(0.05), 0.9),
+            )),
     ]
 }
 
-/// A slot's name, as the Wardrobe's rows say it.
-fn slot_name(slot: &str) -> &'static str {
-    match slot {
-        "head" => tr("Head"),
-        "back" => tr("Back"),
-        "torso" => tr("Shirt"),
-        "shoulder" => tr("Shoulder pet"),
-        "name_tag" => tr("Name tag"),
-        _ => "",
+/// An emote played in the big view, as the viewer takes it.
+struct Played {
+    item: Arc<Item>,
+    rest: [Pose; 6],
+}
+
+impl Played {
+    fn motion(item: Arc<Item>) -> Option<Arc<dyn BodyMotion>> {
+        item.emote.as_ref()?;
+        let body = horizon_cosmetics::preview::player_model(false);
+        let rest = BODY.map(|b| {
+            (body.children.iter().find(|p: &&Part| p.name == b.part())).map_or([0.0; 9], |p| p.pose)
+        });
+        Some(Arc::new(Self { item, rest }))
     }
 }
 
-/// The drawn part of `rgba` (`w` × `h`), centred in a `side` square with a margin, each texel
-/// the mean of the ones it covers. `None` when nothing was drawn.
-fn fit(rgba: &[u8], w: usize, h: usize, side: usize) -> Option<Vec<[u8; 4]>> {
-    let drawn = |x: usize, y: usize| rgba[(y * w + x) * 4 + 3] > 0;
-    let (mut x0, mut y0, mut x1, mut y1) = (w, h, 0, 0);
-    for y in 0..h {
-        for x in 0..w {
-            if drawn(x, y) {
-                (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x + 1), y1.max(y + 1));
-            }
-        }
+impl BodyMotion for Played {
+    fn length(&self) -> f32 {
+        self.item.emote.as_ref().map_or(0., |e| e.length)
     }
-    if x1 <= x0 {
-        return None;
-    }
-    // A fifth of the well stays empty around the item.
-    let span = ((x1 - x0).max(y1 - y0) as f32 * 1.25).ceil();
-    let (cx, cy) = ((x0 + x1) as f32 / 2., (y0 + y1) as f32 / 2.);
-    let step = span / side as f32;
-    let mut out = vec![[0u8; 4]; side * side];
-    for (i, px) in out.iter_mut().enumerate() {
-        let (ox, oy) = ((i % side) as f32, (i / side) as f32);
-        let (sx, sy) = (cx - span / 2. + ox * step, cy - span / 2. + oy * step);
-        let (mut sum, mut n) = ([0f32; 4], 0f32);
-        for y in sy.floor() as i64..(sy + step).ceil() as i64 {
-            for x in sx.floor() as i64..(sx + step).ceil() as i64 {
-                n += 1.;
-                if x < 0 || y < 0 || x as usize >= w || y as usize >= h {
-                    continue;
-                }
-                let t = &rgba[(y as usize * w + x as usize) * 4..][..4];
-                let a = t[3] as f32 / 255.;
-                for c in 0..3 {
-                    sum[c] += t[c] as f32 * a;
-                }
-                sum[3] += a;
-            }
-        }
-        if sum[3] > 0. {
-            let rgb = |c: usize| (sum[c] / sum[3]).round() as u8;
-            *px = [rgb(0), rgb(1), rgb(2), (sum[3] / n * 255.).round() as u8];
-        }
-    }
-    Some(out)
-}
 
-/// `e`'s failure as the line to copy: host · what · when.
-fn details(e: &Error) -> String {
-    let code = match e {
-        Error::Service(c) => c.to_string(),
-        other => format!("{other:?}"),
-    };
-    let at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
-    format!("{} · {code} · {at}", Service::live().host())
-}
-
-fn now() -> i64 {
-    chrono::Utc::now().timestamp()
+    fn pose(&self, ticks: f32, set: &mut dyn FnMut(&str, Pose)) {
+        let Some(e) = &self.item.emote else {
+            return;
+        };
+        let mut poses = self.rest;
+        e.pose_body(ticks, e.weight(ticks), &self.rest, &mut poses);
+        for (bone, pose) in BODY.iter().zip(poses) {
+            set(bone.part(), pose);
+        }
+    }
 }
 
 impl Launcher {
-    /// Whether the Shop tab shows: the service's public answer, or the account's own (a preview,
-    /// a claim), gives it something to show (`shop::shown`), whatever the cosmetics switch says.
-    fn shop_shown(&self) -> bool {
-        let own = (self.wardrobe.as_ref())
-            .and_then(|w| w.saved.me.as_ref())
-            .map(|m| &m.claim)
-            .or(self.shop_kept.as_ref());
-        let anon = self.shop.anon.as_ref().map(|c| &c.claim);
-        [self.shop_status.as_ref(), anon, own]
-            .into_iter()
-            .flatten()
-            .any(rules::shown)
-    }
-
-    /// Each draw of the page: a new visit forgets the last claim's outcome; signed out, the
-    /// catalogue is asked once a visit.
-    pub(super) fn shop_visit(&mut self, new_visit: bool, signed_out: bool, cx: &mut Context<Self>) {
-        if new_visit {
-            self.shop.claimed_now = false;
-            self.shop.failed = None;
-            self.shop.asked = false;
+    pub(crate) fn shop_page(&mut self, cx: &mut Context<Self>) -> Div {
+        let page = div().flex().flex_col().gap(px(28.));
+        let title = ui::page_head(tr("Shop"), "").mb(px(0.));
+        if self.wardrobe.is_none() && self.wardrobe_account().is_none() {
+            return page.child(title).child(self.wardrobe_sign_in(cx));
         }
-        if signed_out && !self.shop.asked {
-            self.shop_ask(cx);
+        if std::mem::take(&mut self.wardrobe_reload) || self.wardrobe.is_none() {
+            self.open_wardrobe(cx);
         }
-    }
-
-    /// Signed out: ask for the catalogue alone (no account, nothing kept), to learn whether the
-    /// Shop shows.
-    pub(super) fn shop_ask(&mut self, cx: &mut Context<Self>) {
-        if self.shop.asking {
-            return;
+        if std::mem::take(&mut self.shop.find_soon) {
+            self.shop_find(cx);
         }
-        self.shop.asking = true;
-        self.shop.asked = true;
-        let task = cx
-            .background_executor()
-            .spawn(async { Service::live().catalogue() });
-        cx.spawn(async move |this, cx| {
-            let got = task.await;
-            let _ = this.update(cx, |this, cx| {
-                this.shop.asking = false;
-                if let Ok(c) = got {
-                    this.shop.anon = Some(c);
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    /// The Wardrobe | Shop tabs over the page, or None while there is no Shop (then the
-    /// Wardrobe is all the page shows). Offline, the Shop's tab is dimmed, not hidden.
-    pub(super) fn shop_tabs(&mut self, cx: &mut Context<Self>) -> Option<Div> {
-        if !self.shop_shown() {
-            self.shop.open = false;
-            return None;
-        }
-        let t = self.theme;
-        let offline = self
-            .wardrobe
-            .as_ref()
-            .is_some_and(|w| w.status == Status::Offline);
-        let owned = self
-            .wardrobe
-            .as_ref()
-            .and_then(|w| w.saved.me.as_ref())
-            .map(|m| m.owned.len());
-        let open = self.shop.open;
-        let tab = |id: &'static str, label: &str, count: Option<usize>, on: bool| {
-            glass_ui::tab(id, tr(label), on, &t)
-                .h(px(32.))
-                .px(px(12.))
-                .text_size(px(13.))
-                .children(count.map(|n| div().text_color(tone(&t, ink::DIM)).child(n.to_string())))
+        let viewer = self.shop_dress(cx);
+        let Some(w) = self.wardrobe.as_ref() else {
+            return page.child(title);
         };
-        let wardrobe = tab("wardrobe-tab", "Wardrobe", owned, !open).on_click(cx.listener(
+        let (me, c) = match (&w.saved.me, &w.saved.catalogue, &w.status) {
+            (_, _, Status::Offline | Status::Failed(_)) => {
+                return page.child(title).child(self.shop_failed(cx))
+            }
+            (Some(me), Some(c), _) => (me.clone(), c.clone()),
+            // The first answer is on its way.
+            _ => return page.child(title),
+        };
+        let offered = rules::currencies(&c);
+        if !(self.shop.currency.as_ref()).is_some_and(|x| offered.contains(x)) {
+            let locale = sys_locale::get_locale();
+            self.shop.currency = rules::guess_currency(&offered, locale.as_deref());
+        }
+        let currency = self.shop.currency.clone().unwrap_or_default();
+        let head = div()
+            .flex()
+            .items_end()
+            .justify_between()
+            .gap(px(24.))
+            .child(title)
+            .child(self.shop_currencies(&c, &currency, cx));
+        let body = match self.shop.selected.clone() {
+            Some(id) => self.shop_open(&id, &me, &c, &currency, viewer, cx),
+            None => self.shop_front(&me, &c, &currency, cx),
+        };
+        self.shop_draw_pictures(cx);
+        page.child(head).child(body)
+    }
+
+    /// The currencies, when there is a choice.
+    fn shop_currencies(&self, c: &Catalogue, currency: &str, cx: &mut Context<Self>) -> Div {
+        let t = self.theme;
+        let mut chips = div().flex().gap(px(4.));
+        for code in rules::currencies(c)
+            .into_iter()
+            .filter(|_| c.currencies.len() > 1)
+        {
+            let kind = if code == currency {
+                Kind::Secondary
+            } else {
+                Kind::Ghost
+            };
+            chips = chips.child(
+                button(format!("shop-currency-{code}"), code.clone(), kind, &t).on_click(
+                    cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.shop.currency = Some(code.clone());
+                        cx.notify();
+                    }),
+                ),
+            );
+        }
+        chips
+    }
+
+    /// The catalogue didn't load: say so, with a Retry.
+    fn shop_failed(&self, cx: &mut Context<Self>) -> Div {
+        let t = self.theme;
+        let retry = button("shop-retry", "Retry", Kind::Ghost, &t).on_click(cx.listener(
             |this, _: &ClickEvent, _, cx| {
-                this.shop.open = false;
+                this.wardrobe_reload = true;
                 cx.notify();
             },
         ));
-        let shop = tab("shop-tab", "Shop", None, open)
-            .when(offline && !open, |d| d.opacity(0.4))
-            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                this.shop.open = true;
-                cx.notify();
-            }));
-        Some(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(12.))
-                .pt(px(28.))
-                .child(
-                    crate::glass::plate(radius::LARGE)
-                        .flex()
-                        .gap(px(4.))
-                        .p(px(4.))
-                        .child(wardrobe)
-                        .child(shop),
-                )
-                .child(
-                    words(&t, 13., FontWeight::MEDIUM, ink::NOTE)
-                        .ml_auto()
-                        .text_right()
-                        .child(tr(
-                            "Cosmetics show only to Horizon players. Nothing changes how the game plays.",
-                        )),
-                ),
-        )
-    }
-
-    /// The Shop tab under `tabs`.
-    pub(super) fn shop_page(&mut self, tabs: Div, cx: &mut Context<Self>) -> Div {
-        let t = self.theme;
-        self.shop_bake();
-        let head = page_header(
-            "Shop",
-            "Things to wear for your player, seen by everyone who plays on Horizon.",
-            &t,
-        )
-        .pt(px(28.));
-        let body = self.shop_body(cx);
-        let toast = self
-            .wardrobe
-            .as_ref()
-            .and_then(|w| w.toast.as_ref())
-            .filter(|(_, at)| at.elapsed() < TOAST)
-            .map(|(s, _)| s.clone());
-        div()
+        glass::plate(radius::PANEL)
             .flex()
-            .flex_col()
-            .child(tabs)
-            .child(head)
-            .child(body)
-            .children(toast.map(|s| {
-                div().flex().justify_center().mt(px(16.)).child(
-                    crate::glass::float(radius::POPOVER)
-                        .flex()
-                        .items_center()
-                        .gap(px(10.))
-                        .px(px(16.))
-                        .py(px(12.))
-                        .child(dot(horizon_theme::glass::LIVE).relative())
-                        .child(
-                            words(&t, 13., FontWeight::NORMAL, ink::FULL)
-                                .relative()
-                                .child(s),
-                        ),
-                )
-            }))
-    }
-
-    /// What the tab shows for where the account and the service stand.
-    fn shop_body(&mut self, cx: &mut Context<Self>) -> Div {
-        let t = self.theme;
-        let Some(w) = self.wardrobe.as_ref() else {
-            // Signed out: the set, with Microsoft's button where the claim goes.
-            let Some(c) = self.shop.anon.clone() else {
-                return self.shop_loading();
-            };
-            return self.founder_panel(&c, None, cx);
-        };
-        match w.status.clone() {
-            Status::Offline => {
-                let waiting = w.saved.pending.len();
-                let [a, b] = state_text(
-                    &t,
-                    tr("You're offline.").into(),
-                    tr(
-                        "The shop needs a connection. You can still change what you wear in the \
-                        Wardrobe: it saves on this computer and syncs when you're back online.",
-                    )
-                    .into(),
-                );
-                return state_card(&t).child(a).child(b).when(waiting > 0, |d| {
-                    d.child(
-                        chip(
-                            Chip::Ghost,
-                            trf(
-                                "Changes waiting to sync: {n}",
-                                &[("n", &waiting.to_string())],
-                            ),
-                            &t,
-                        )
-                        .child(dot(horizon_theme::glass::WARN)),
-                    )
-                });
-            }
-            Status::Failed(line) => {
-                let [a, b] = state_text(
-                    &t,
-                    tr("The shop didn't load.").into(),
-                    tr(
-                        "What you wear still shows in the game: the launcher kept your last \
-                        outfit. Try again in a moment.",
-                    )
-                    .into(),
-                );
-                let copy = line.clone();
-                return state_card(&t)
-                    .child(dot(horizon_theme::glass::DANGER).size(px(9.)))
-                    .child(a)
-                    .child(b)
-                    .child(
-                        div()
-                            .flex()
-                            .gap(px(8.))
-                            .child(self.wardrobe_retry(cx))
-                            .child(
-                                button("shop-details", "Copy details", Kind::Ghost, &t).on_click(
-                                    move |_: &ClickEvent, _, cx| {
-                                        copy_to_clipboard(
-                                            cx,
-                                            gpui::ClipboardItem::new_string(copy.clone()),
-                                        )
-                                    },
-                                ),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .font_family(theme::MONO)
-                            .text_size(px(11.))
-                            .text_color(tone(&t, ink::PLACEHOLDER))
-                            .child(line),
-                    );
-            }
-            Status::Account(said) => {
-                let [a, b] = state_text(&t, tr("The shop didn't load.").into(), said);
-                return state_card(&t)
-                    .child(dot(horizon_theme::glass::DANGER).size(px(9.)))
-                    .child(a)
-                    .child(b)
-                    .child(self.wardrobe_retry(cx));
-            }
-            Status::Loading | Status::Ready => {}
-        }
-        let (Some(c), Some(me)) = (w.saved.catalogue.clone(), w.saved.me.clone()) else {
-            return self.shop_loading();
-        };
-        let purchases = self.purchase_history(&c, &me);
-        self.founder_panel(&c, Some(me), cx).children(purchases)
-    }
-
-    /// The account's orders through Paddle, newest first: date, item, price, state, order
-    /// number. Nothing when there are none.
-    fn purchase_history(&self, c: &Catalogue, me: &Me) -> Option<Div> {
-        let t = self.theme;
-        if me.purchases.is_empty() {
-            return None;
-        }
-        let lang = game_language();
-        let rows = me.purchases.iter().map(|p| {
-            let item = if p.item == "founder_set" {
-                tr("The founder set").to_string()
-            } else {
-                c.items
-                    .iter()
-                    .find(|e| e.id == p.item)
-                    .map_or_else(|| p.item.clone(), |e| e.name(lang).to_string())
-            };
-            let price = p.price().unwrap_or_else(|| tr("Free").to_string());
-            div()
-                .flex()
-                .flex_wrap()
-                .items_center()
-                .gap(px(12.))
-                .py(px(10.))
-                .child(words(&t, 13., FontWeight::NORMAL, ink::NOTE).child(day(p.at)))
-                .child(
-                    words(&t, 14., FontWeight::MEDIUM, ink::FULL)
-                        .flex_1()
-                        .child(item),
-                )
-                .child(words(&t, 14., FontWeight::NORMAL, ink::BODY).child(price))
-                .child(chip(purchase_chip(p), purchase_state(p), &t))
-                .child(
-                    words(&t, 12., FontWeight::NORMAL, ink::NOTE)
-                        .child(trf("Order {id}", &[("id", &p.transaction_id)])),
-                )
-        });
-        Some(
-            crate::glass::plate(radius::PANEL)
-                .mt(px(16.))
-                .p(px(24.))
-                .flex()
-                .flex_col()
-                .child(words(&t, 17., FontWeight::SEMIBOLD, ink::FULL).child(tr("Your purchases")))
-                .children(rows),
-        )
-    }
-
-    /// Before the first answer: placeholders at the panel's size, no spinner.
-    fn shop_loading(&self) -> Div {
-        let t = self.theme;
-        let narrow = self.window_width < NARROW;
-        let bar =
-            |w: f32, h: f32, a: f32| div().w(px(w)).h(px(h)).rounded(px(h / 2.)).bg(tone(&t, a));
-        let card = || {
-            card_plate(&t, false)
-                .child(slot_well(&t).bg(tone(&t, 0.06)))
-                .child(bar(84., 12., 0.1).mt(px(12.)).mx(px(4.)))
-                .child(bar(56., 10., 0.07).mt(px(8.)).mx(px(4.)))
-        };
-        crate::glass::plate(radius::PANEL)
-            .flex()
-            .when(narrow, |d| d.flex_col())
-            .gap(px(24.))
-            .p(px(24.))
-            .child(
-                div()
-                    .relative()
-                    .flex()
-                    .flex_col()
-                    .gap(px(14.))
-                    .w(px(LEFT))
-                    .flex_none()
-                    .child(bar(52., 24., 0.1))
-                    .child(bar(220., 30., 0.1))
-                    .child(bar(260., 12., 0.07))
-                    .child(bar(200., 12., 0.07)),
-            )
-            .child(
-                div()
-                    .relative()
-                    .flex()
-                    .flex_1()
-                    .gap(px(12.))
-                    .children((0..4).map(|_| card())),
-            )
-    }
-
-    /// The founder set: what it is, until when, the one action, and its items. `me` is None
-    /// signed out.
-    fn founder_panel(&mut self, c: &Catalogue, me: Option<Me>, cx: &mut Context<Self>) -> Div {
-        let t = self.theme;
-        let lang = game_language();
-        let claim = me.as_ref().map_or(&c.claim, |m| &m.claim);
-        let window = rules::window(claim, now());
-        let owned = me.as_ref().is_some_and(rules::owns_set);
-        // In the catalogue's order, so the cards don't move when the account's answer changes.
-        let set = if c.claim.items.is_empty() {
-            &claim.items
-        } else {
-            &c.claim.items
-        };
-        let entries: Vec<Entry> = set
-            .iter()
-            .filter_map(|id| c.items.iter().find(|e| &e.id == id).cloned())
-            .collect();
-        // Over, and never claimed: the items are gone.
-        if let (Window::Closed { ended_at }, false) = (window, owned) {
-            let title = match ended_at {
-                Some(end) => trf(
-                    "The founder set was free to claim until {date}.",
-                    &[("date", &rules::until(end))],
-                ),
-                None => tr("The founder set isn't offered any more.").into(),
-            };
-            let [a, b] = state_text(
-                &t,
-                title,
-                tr("It isn't offered any more, and it won't be sold. Players who claimed it keep it.")
-                    .into(),
-            );
-            return state_card(&t).child(a).child(b).child(
-                button("shop-back", "Back to the wardrobe", Kind::Ghost, &t).on_click(cx.listener(
-                    |this, _: &ClickEvent, _, cx| {
-                        this.shop.open = false;
-                        cx.notify();
-                    },
-                )),
-            );
-        }
-        let look = glass_ui::look();
-        // The chip over the title, the paragraph, and the line with the time.
-        let (badge, said, clock) = match (window, owned) {
-            (_, true) => (
-                chip(Chip::Live, tr("Yours"), &t),
-                match window {
-                    Window::Closed {
-                        ended_at: Some(end),
-                    } => trf(
-                        "It was free to claim until {date}. It isn't offered any more and won't \
-                         be sold; yours stays yours.",
-                        &[("date", &rules::until(end))],
-                    ),
-                    _ => tr("It's in your wardrobe, yours to keep. Wear it from the Wardrobe tab.")
-                        .into(),
-                },
-                None,
-            ),
-            (Window::Open { ends_at: None }, false) => (
-                chip(Chip::Accent, tr("Free for founders"), &t),
-                tr(
-                    "For the players who were here first. Free to claim; once claimed, it's \
-                    yours to keep.",
-                )
-                .into(),
-                None,
-            ),
-            (
-                Window::Open {
-                    ends_at: Some(ends_at),
-                },
-                false,
-            ) => (
-                chip(
-                    Chip::Accent,
-                    trf(
-                        "Free for founders, until {date}",
-                        &[("date", &rules::until(ends_at))],
-                    ),
-                    &t,
-                ),
-                trf(
-                    "For the players who were here first. Free to claim until {date}; once \
-                     claimed, it's yours to keep.",
-                    &[("date", &rules::until(ends_at))],
-                ),
-                Some(trf(
-                    "{time} left to claim it",
-                    &[("time", &rules::span(now(), ends_at))],
-                )),
-            ),
-            (
-                Window::NotYet {
-                    starts_at: Some(start),
-                },
-                false,
-            ) => (
-                chip(
-                    Chip::Ghost,
-                    trf("Opens {date}", &[("date", &rules::from(start))]),
-                    &t,
-                ),
-                trf(
-                    "For the players who were here first. Free to claim from {date}; once \
-                     claimed, it's yours to keep.",
-                    &[("date", &rules::from(start))],
-                ),
-                Some(trf(
-                    "Opens in {time}",
-                    &[("time", &rules::span(now(), start))],
-                )),
-            ),
-            (_, false) => (
-                chip(Chip::Ghost, tr("Not open yet"), &t),
-                tr("For the players who were here first. The dates to claim it aren't set yet.")
-                    .into(),
-                None,
-            ),
-        };
-        if clock.is_some() {
-            self.shop_tick(cx);
-        }
-        // Open for this account only, ahead of everyone: say so.
-        let preview = claim.preview.then(|| chip(Chip::Ghost, tr("Preview"), &t));
-        let action = self.founder_action(window, owned, me.is_some(), cx);
-        let note = match (me.is_some(), owned) {
-            (false, _) => tr(
-                "Sign in to claim it. Cosmetics belong to the Microsoft account that owns \
-                 Minecraft: Java Edition, so they follow you to every computer.",
-            ),
-            (true, true) => {
-                tr("Bound to your Minecraft account, on every computer you sign in on.")
-            }
-            (true, false) if self.shop.checkout.is_some() => {
-                tr("Finish the free checkout in your browser. The set lands here a moment later.")
-            }
-            (true, false) => tr(
-                "Bound to your Minecraft account. Free: a 0 CHF checkout through Paddle records \
-                 your claim.",
-            ),
-        };
-        let again = self.shop.checkout.clone().filter(|_| !owned).map(|url| {
-            glass_ui::link("shop-checkout-again", tr("Open the checkout again"))
-                .mt(px(8.))
-                .text_size(px(13.))
-                .text_color(tone(&t, ink::FULL))
-                .on_click(move |_: &ClickEvent, _, cx| cx.open_url(&url))
-        });
-        let failed = self.shop.failed.clone().map(|(said, line)| {
-            div()
-                .flex()
-                .items_center()
-                .gap(px(8.))
-                .mt(px(10.))
-                .child(dot(horizon_theme::glass::DANGER))
-                .child(
-                    words(&t, 13., FontWeight::NORMAL, ink::BODY)
-                        .flex_1()
-                        .min_w_0()
-                        .child(said),
-                )
-                .child(
-                    glass_ui::link("shop-claim-details", tr("Copy details"))
-                        .text_size(px(13.))
-                        .text_color(tone(&t, ink::FULL))
-                        .on_click(move |_: &ClickEvent, _, cx| {
-                            copy_to_clipboard(cx, gpui::ClipboardItem::new_string(line.clone()))
-                        }),
-                )
-        });
-        let narrow = self.window_width < NARROW;
-        let left = div()
-            .relative()
-            .flex()
-            .flex_col()
+            .items_center()
             .justify_between()
             .gap(px(16.))
-            .flex_none()
-            .when(narrow, |d| d.w_full())
-            .when(!narrow, |d| d.w(px(LEFT)))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .child(div().flex().gap(px(8.)).child(badge).children(preview))
-                    .child(
-                        div()
-                            .mt(px(14.))
-                            .font_family(horizon_theme::glass::DISPLAY_FONT)
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_size(px(34.))
-                            .line_height(px(36.))
-                            .text_color(tone(&t, ink::FULL))
-                            .child(tr("The founder set")),
-                    )
-                    .child(
-                        words(&t, 14., FontWeight::NORMAL, ink::NOTE)
-                            .mt(px(8.))
-                            .line_height(px(21.7))
-                            .child(said),
-                    )
-                    .children(clock.map(|c| {
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(8.))
-                            .mt(px(12.))
-                            .child(dot(look.accent_soft))
-                            .child(words(&t, 13., FontWeight::MEDIUM, ink::SOFT).child(c))
-                    })),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .child(action)
-                    .child(
-                        words(&t, 13., FontWeight::NORMAL, ink::NOTE)
-                            .mt(px(8.))
-                            .child(note),
-                    )
-                    .children(again)
-                    .children(failed),
-            );
-        let cards = entries
-            .iter()
-            .map(|e| self.founder_card(e, &window, me.as_ref(), lang))
-            .collect::<Vec<_>>();
-        crate::glass::plate(radius::PANEL)
-            .flex()
-            .when(narrow, |d| d.flex_col())
-            .gap(px(24.))
-            .p(px(24.))
-            .child(left)
-            .child(
-                div()
-                    .relative()
-                    .flex()
-                    .flex_1()
-                    .min_w_0()
-                    .gap(px(12.))
-                    .children(cards),
-            )
+            .p(px(16.))
+            .child(ui::text(14., FontWeight::NORMAL, ink::BODY).child(tr("The shop didn't load.")))
+            .child(retry)
     }
 
-    /// The panel's one action: Claim (the screen's accent), Claiming, Open the wardrobe once
-    /// the set is the account's, Microsoft's button signed out.
-    fn founder_action(
-        &self,
-        window: Window,
-        owned: bool,
-        signed_in: bool,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let t = self.theme;
-        if !signed_in {
-            return microsoft::sign_in_button("shop-sign-in", &t)
-                .justify_center()
-                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                    this.go(Page::Settings);
-                    this.start_sign_in();
-                    cx.notify();
-                }))
-                .into_any_element();
-        }
-        let wide = |b: Stateful<Div>| b.w_full().h(px(48.)).rounded(px(radius::LARGE));
-        if owned {
-            let label = if self.shop.claimed_now {
-                "Claimed · Open the wardrobe"
-            } else {
-                "Open the wardrobe"
-            };
-            return wide(button("shop-wardrobe", label, Kind::Secondary, &t))
-                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                    this.shop.open = false;
-                    cx.notify();
-                }))
-                .into_any_element();
-        }
-        let ready = self
-            .wardrobe
-            .as_ref()
-            .is_some_and(|w| !w.busy && w.session.as_ref().is_some_and(|s| s.live()));
-        let label = if self.shop.checkout.is_some() {
-            "Waiting for the checkout…"
-        } else if self.shop.claiming {
-            "Claiming…"
-        } else {
-            "Claim the founder set"
+    /// The item files behind an id, in the catalogue's order of slots.
+    fn shop_items(&self, id: &str, c: &Catalogue, me: &Me) -> Vec<Arc<Item>> {
+        let Some(w) = self.wardrobe.as_ref() else {
+            return Vec::new();
         };
-        let b = wide(button("shop-claim", label, Kind::Primary, &t)).text_size(px(16.));
-        let waiting = self.shop.claiming || self.shop.checkout.is_some();
-        if !matches!(window, Window::Open { .. }) || !ready || waiting {
-            return disabled(b).into_any_element();
-        }
-        b.on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-            this.shop_claim(cx);
-            cx.notify();
-        }))
-        .into_any_element()
+        unpack(id, c, me)
+            .into_iter()
+            .filter_map(|i| w.items.get(i).cloned())
+            .collect()
     }
 
-    /// One founder item: its picture, name, slot and where it stands for the account.
-    fn founder_card(&self, e: &Entry, window: &Window, me: Option<&Me>, lang: &str) -> Div {
-        let t = self.theme;
-        let worn = me.is_some_and(|m| m.equipped.get(&e.slot) == Some(&e.id));
-        let owned = me.is_some_and(|m| m.owned.contains(&e.id));
-        let state = if worn {
-            Some(chip(Chip::Accent, tr("Equipped"), &t))
-        } else if owned {
-            Some(chip(Chip::Live, tr("Owned"), &t))
-        } else {
-            match window {
-                Window::Open { .. } => Some(chip(Chip::Accent, tr("Free"), &t)),
-                Window::NotYet { .. } => Some(chip(Chip::Ghost, tr("Soon"), &t)),
-                Window::Closed { .. } => None,
+    /// What `id`'s picture shows, and the hash of what it is drawn from (the item files', and the
+    /// skin's when the player is in it).
+    fn shop_subject(&self, id: &str, c: &Catalogue, me: &Me) -> Option<(Subject, String)> {
+        let items = self.shop_items(id, c, me);
+        let hashes: Vec<&str> = (unpack(id, c, me).into_iter())
+            .filter_map(|i| c.items.iter().find(|e| e.id == i))
+            .map(|e| e.hash.as_str())
+            .collect();
+        let skin = (self.wardrobe.as_ref().and_then(|w| w.skin.as_ref()))
+            .map_or(0, |(s, slim)| Arc::as_ptr(s) as usize + usize::from(*slim));
+        let hash = format!("{}|{skin:x}", hashes.join(","));
+        if let Some(set) = c.sets.iter().find(|s| s.id == id) {
+            // The pack: its looks side by side, else its items worn together.
+            let looks: Vec<Vec<Arc<Item>>> = (c.sets.iter())
+                .filter(|s| s.id != set.id && s.items.iter().all(|i| set.items.contains(i)))
+                .map(|s| self.shop_items(&s.id, c, me))
+                .collect();
+            if looks.len() > 1 {
+                return Some((Subject::Pack(looks), hash));
             }
-        };
-        let picture: AnyElement = if e.slot == "name_tag" {
-            self.tag_preview(e, me)
-        } else if let Some((_, image)) = self.shop.thumbs.get(&e.id) {
-            gpui::img(image.clone())
-                .w(px(THUMB))
-                .h(px(THUMB))
-                .into_any_element()
-        } else {
-            div().into_any_element()
-        };
-        card_plate(&t, worn)
-            .child(slot_well(&t).child(picture))
-            .child(
-                words(&t, 14., FontWeight::SEMIBOLD, ink::FULL)
-                    .mt(px(10.))
-                    .mx(px(4.))
-                    .line_height(px(18.))
-                    .child(e.name(lang).to_owned()),
-            )
-            .child(
-                // The slot, then the chip under it at the card's foot: a narrow card has no room
-                // for both on one line.
-                words(&t, 12., FontWeight::NORMAL, ink::QUIET)
-                    .mt(px(2.))
-                    .mx(px(4.))
-                    .child(slot_name(&e.slot)),
-            )
-            .child(div().flex().mt_auto().pt(px(8.)).mx(px(4.)).children(state))
+            return Some((Subject::Look(items), hash));
+        }
+        if id == FOUNDER_SET {
+            return Some((Subject::Look(items), hash));
+        }
+        let item = items.into_iter().next()?;
+        (item.slot != Slot::NameTag).then_some((Subject::Item(item), hash))
     }
 
-    /// A name tag style on the account's name: its mark, the name, its line under them.
-    fn tag_preview(&self, e: &Entry, me: Option<&Me>) -> AnyElement {
+    /// `id`'s picture `size` points large, drawn on a background thread the first time.
+    fn shop_picture(
+        &mut self,
+        id: &str,
+        size: (f32, f32),
+        c: &Catalogue,
+        me: &Me,
+    ) -> Option<Arc<RenderImage>> {
+        let (subject, hash) = self.shop_subject(id, c, me)?;
+        let key = format!("{id}@{}x{}", size.0, size.1);
+        let ask = Ask {
+            key,
+            hash,
+            subject,
+            size,
+        };
+        self.shop.thumbs.get(ask, self.scale)
+    }
+
+    /// Draws the pictures this frame asked for, each on a background thread, and shows each as
+    /// it comes.
+    fn shop_draw_pictures(&mut self, cx: &mut Context<Self>) {
+        let asks = self.shop.thumbs.take_asks();
+        if asks.is_empty() {
+            return;
+        }
+        let (skin, slim) = (self.wardrobe.as_ref().and_then(|w| w.skin.clone()))
+            .unwrap_or_else(|| (stand_in_skin(), false));
+        let scale = self.scale;
+        for ask in asks {
+            let skin = skin.clone();
+            let task = cx.background_executor().spawn(async move {
+                let image = thumbs::bake(&ask.subject, &skin, slim, ask.size, scale);
+                (ask.key, ask.hash, image)
+            });
+            cx.spawn(async move |this, cx| {
+                let (key, hash, image) = task.await;
+                let _ = this.update(cx, |this, cx| {
+                    this.shop.thumbs.put(key, hash, scale, image);
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
+    }
+
+    /// What each slot shows now: what the account wears, then the open offer's items.
+    fn shop_tried(&self, me: &Me, c: &Catalogue) -> BTreeMap<String, String> {
+        let items: Vec<&str> = (self.shop.selected.iter())
+            .flat_map(|id| unpack(id, c, me))
+            .collect();
+        let tried = items.into_iter().filter_map(|id| {
+            let e = c.items.iter().find(|e| e.id == id)?;
+            Some((e.slot.as_str(), e.id.as_str()))
+        });
+        rules::try_on(&me.equipped, tried)
+    }
+
+    /// The player in 3D wearing what is tried on, handed to the view when that changed (after
+    /// this frame, as the Wardrobe does: the page never reads the view while it renders). An
+    /// emote tried on plays, again each time it ends.
+    fn shop_dress(&mut self, cx: &mut Context<Self>) -> Option<gpui::Entity<Viewer>> {
+        let w = self.wardrobe.as_ref()?;
+        let (me, c) = (w.saved.me.as_ref()?, w.saved.catalogue.as_ref()?);
+        let worn = self.shop_tried(me, c);
+        let (skin, slim) = w.skin.clone().unwrap_or_else(|| (stand_in_skin(), false));
+        let emote = worn.get("emote").cloned();
+        let outfit = Outfit {
+            skin,
+            slim,
+            items: (worn.values().filter_map(|id| w.items.get(id)))
+                .filter(|i| !matches!(i.slot, Slot::NameTag | Slot::Emote))
+                .cloned()
+                .collect(),
+        };
+        let motion = (emote.as_ref().and_then(|id| w.items.get(id).cloned()))
+            .filter(|_| crate::sky::motion() != crate::sky::Motion::Still)
+            .and_then(Played::motion);
+        let viewer = (self.shop.viewer)
+            .get_or_insert_with(|| cx.new(|_| Viewer::sized(VIEW.0, VIEW.1)))
+            .clone();
+        let now = (outfit.clone(), emote);
+        if self.shop.shown.as_ref() != Some(&now) {
+            let played = self.shop.shown.as_ref().map(|(_, e)| e.clone()) != Some(now.1.clone());
+            self.shop.shown = Some(now);
+            let animate = crate::sky::motion() != crate::sky::Motion::Still;
+            let to = viewer.clone();
+            cx.defer(move |cx| {
+                to.update(cx, |v, cx| {
+                    v.dress(outfit, animate, cx);
+                    if played {
+                        v.play_again(motion, cx);
+                    }
+                })
+            });
+        }
+        Some(viewer)
+    }
+
+    /// Sets whether the pointer turns the Shop's view, for its hand.
+    fn shop_drag(cx: &mut Context<Self>) -> impl Fn(bool, &mut App) + Clone + 'static {
+        let page = cx.entity().downgrade();
+        move |on, cx: &mut App| {
+            let _ = page.update(cx, |this, cx| {
+                if this.shop.dragging != on {
+                    this.shop.dragging = on;
+                    cx.notify();
+                }
+            });
+        }
+    }
+
+    /// What an offer costs whoever gets it, or "Owned".
+    fn shop_price(
+        &self,
+        id: &str,
+        c: &Catalogue,
+        owned: &HashSet<String>,
+        currency: &str,
+    ) -> String {
+        if id == FOUNDER_SET {
+            return String::new();
+        }
+        if let Some(s) = c.supporter.as_ref().filter(|s| s.item == id) {
+            if owned.contains(id) {
+                return tr("Owned").into();
+            }
+            let min = s.min.get(currency).copied().unwrap_or(0);
+            return format!("{}+", rules::format_price(min, currency));
+        }
+        if let Some(s) = c.sets.iter().find(|s| s.id == id) {
+            return match rules::set_price(s, c, owned, currency) {
+                (_, mine) if mine == s.items.len() => tr("Owned").into(),
+                (amount, _) => rules::format_price(amount, currency),
+            };
+        }
+        if owned.contains(id) {
+            return tr("Owned").into();
+        }
+        (c.items.iter().find(|e| e.id == id))
+            .and_then(|e| e.prices.get(currency))
+            .map_or_else(String::new, |p| rules::format_price(*p, currency))
+    }
+
+    /// A name tag style as the game draws it: the name, the style's mark after it, its line
+    /// under it, `size` times the game's.
+    fn shop_name_tag(&mut self, id: &str, c: &Catalogue, me: &Me, size: f32) -> Div {
+        let scale = self.scale;
         let item = self
             .wardrobe
             .as_ref()
-            .and_then(|w| w.items.get(&e.id))
-            .filter(|i| i.tag.is_some())
-            .cloned();
-        let line = item
-            .as_ref()
-            .and_then(|i| i.tag)
+            .and_then(|w| w.items.get(id).cloned());
+        let hash = c
+            .items
+            .iter()
+            .find(|e| e.id == id)
+            .map_or("", |e| e.hash.as_str());
+        let line = (item.as_ref().and_then(|i| i.tag))
             .map(|g| gpui::rgb(u32::from_be_bytes([0, g.line[0], g.line[1], g.line[2]])));
-        let mark = item.as_ref().map(|i| self.wardrobe_mark(i));
-        let name = me.map_or_else(|| tr("Your name").to_owned(), |m| m.name.clone());
-        // Small enough for a 16-character name in a narrow card; a longer one ends in "…".
+        let mark = item.map(|i| {
+            let key = format!("{id}@shop{size}");
+            (self.wardrobe_marks)
+                .get_or_bake(&key, hash, scale, || {
+                    let t = &i.texture;
+                    let texels: Vec<[u8; 4]> = t.rgba.as_chunks::<4>().0.to_vec();
+                    art::bake(
+                        &texels,
+                        t.width as usize,
+                        t.height as usize,
+                        size * 2.,
+                        scale,
+                    )
+                })
+                .clone()
+        });
         div()
             .flex()
             .items_center()
-            .gap(px(4.))
-            .max_w(px(THUMB - 16.))
-            .px(px(5.))
-            .py(px(3.))
+            .gap(px(6. * size))
+            .px(px(8. * size))
+            .py(px(3. * size))
             .bg(gpui::rgba(0x0000_0066))
-            .children(mark.map(|m| gpui::img(m).flex_none().size(px(12.))))
             .child(
                 div()
-                    .min_w_0()
-                    .truncate()
                     .font_family(theme::MONO)
-                    .text_size(px(10.))
+                    .text_size(px(13. * size))
                     .text_color(gpui::white())
+                    .child(me.name.clone()),
+            )
+            .children(mark.map(|m| gpui::img(m).size(px(16. * size))))
+            .when_some(line, |d, c| d.border_b_2().border_color(c))
+    }
+
+    /// A tile: the thing drawn on its colour, its name, its price; lifted under the pointer.
+    #[allow(clippy::too_many_arguments)]
+    fn shop_tile(
+        &mut self,
+        id: &str,
+        (w, h): (f32, f32),
+        picture_h: f32,
+        slot: &str,
+        c: &Catalogue,
+        me: &Me,
+        price: String,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let t = self.theme;
+        let lang = game_language();
+        let (name, _) = about(id, c, lang);
+        let up = self.shop.hover.as_deref() == Some(id);
+        let colour: Hsla = ui::color(tint(slot));
+        let picture: Div = if slot == "name_tag" {
+            div().child(self.shop_name_tag(id, c, me, 1.6))
+        } else {
+            let image = self.shop_picture(id, (w, picture_h), c, me);
+            div().children(image.map(|i| gpui::img(i).w(px(w)).h(px(picture_h))))
+        };
+        let (hovered, chosen) = (id.to_owned(), id.to_owned());
+        div().w(px(w)).h(px(h)).child(
+            keyboard(div().id(SharedString::from(format!("shop-tile-{id}"))), &t)
+                .relative()
+                .when(up, |d| d.top(px(-6.)))
+                .flex()
+                .flex_col()
+                .w(px(w))
+                .h(px(h))
+                .overflow_hidden()
+                .rounded(px(radius::PANEL))
+                .cursor_pointer()
+                .children(ground(colour, if up { 0.5 } else { 0.36 }))
+                .border_1()
+                .border_color(if up {
+                    colour.opacity(0.9)
+                } else {
+                    ui::white(0.10)
+                })
+                .when(up, |d| d.shadow_lg())
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .w(px(w))
+                        .h(px(picture_h))
+                        .flex_none()
+                        .child(picture),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.))
+                        .px(px(14.))
+                        .pb(px(12.))
+                        .child(
+                            ui::text(15., FontWeight::SEMIBOLD, ink::FULL)
+                                .truncate()
+                                .child(name),
+                        )
+                        .child(ui::text(14., FontWeight::MEDIUM, ink::BODY).child(price)),
+                )
+                .on_hover(cx.listener(move |this, on: &bool, _, cx| {
+                    let next = on.then(|| hovered.clone());
+                    let mine = this.shop.hover.as_deref() == Some(hovered.as_str());
+                    if (*on || mine) && this.shop.hover != next {
+                        this.shop.hover = next;
+                        cx.notify();
+                    }
+                }))
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.shop.selected = Some(chosen.clone());
+                    this.shop.hover = None;
+                    this.shop.said = None;
+                    cx.notify();
+                })),
+        )
+    }
+
+    /// A row of tiles under its heading (none for the last row).
+    fn shop_row(title: Option<String>, tiles: Vec<Div>) -> Option<Div> {
+        (!tiles.is_empty()).then(|| {
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(12.))
+                .children(title.map(|s| {
+                    div()
+                        .font_family(horizon_theme::glass::HEADING_FONT)
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_size(px(22.))
+                        .text_color(ui::white(ink::FULL))
+                        .child(s)
+                }))
+                .child(div().flex().flex_wrap().gap(px(GAP)).children(tiles))
+        })
+    }
+
+    /// The shop's front: the pack across the top, then the looks, each collection's items, and
+    /// the founder set and the Supporter badge.
+    fn shop_front(
+        &mut self,
+        me: &Me,
+        c: &Catalogue,
+        currency: &str,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let lang = game_language();
+        let owned: HashSet<String> = me.owned.iter().cloned().collect();
+        let hero_id = hero(c).map(|s| s.id.clone());
+        let mut out = div().flex().flex_col().gap(px(32.));
+        if let Some(id) = &hero_id {
+            out = out.child(self.shop_hero(id, me, c, currency, &owned, cx));
+        }
+        // The looks: every other set on sale.
+        let looks: Vec<String> = (c.sets.iter())
+            .filter(|s| !s.prices.is_empty() && Some(&s.id) != hero_id.as_ref())
+            .map(|s| s.id.clone())
+            .collect();
+        let tiles = (looks.iter())
+            .map(|id| {
+                let price = self.shop_price(id, c, &owned, currency);
+                self.shop_tile(id, LOOK, LOOK_PICTURE, "set", c, me, price, cx)
+            })
+            .collect();
+        out = out.children(Self::shop_row(Some(tr("Looks").into()), tiles));
+        // Each collection's items, then those of none.
+        let badge = c.supporter.as_ref().map(|s| s.item.as_str());
+        let known: HashSet<&str> = c.collections.iter().map(|g| g.id.as_str()).collect();
+        let mut groups: Vec<(Option<&str>, Option<String>)> = (c.collections.iter())
+            .map(|g| {
+                (
+                    Some(g.id.as_str()),
+                    words(&g.names, lang).map(str::to_owned),
+                )
+            })
+            .collect();
+        groups.push((None, None));
+        for (group, name) in groups {
+            let entries: Vec<(String, String)> = (c.items.iter())
+                .filter(|e| !e.prices.is_empty() && Some(e.id.as_str()) != badge)
+                .filter(|e| match (group, e.collection.as_deref()) {
+                    (Some(g), Some(of)) => g == of,
+                    (None, of) => of.is_none_or(|of| !known.contains(of)),
+                    _ => false,
+                })
+                .map(|e| (e.id.clone(), e.slot.clone()))
+                .collect();
+            let tiles = (entries.iter())
+                .map(|(id, slot)| {
+                    let price = self.shop_price(id, c, &owned, currency);
+                    self.shop_tile(id, TILE, TILE_PICTURE, slot, c, me, price, cx)
+                })
+                .collect();
+            out = out.children(Self::shop_row(name, tiles));
+        }
+        // The founder set while it can be claimed (or is owned), and the Supporter badge.
+        let mut last = Vec::new();
+        if me.claim.open || me.claim.claimed == Some(true) {
+            let under = if me.claim.claimed == Some(true) {
+                tr("Owned")
+            } else {
+                tr("Free for founders")
+            };
+            last.push(self.shop_tile(
+                FOUNDER_SET,
+                LOOK,
+                LOOK_PICTURE,
+                "set",
+                c,
+                me,
+                under.into(),
+                cx,
+            ));
+        }
+        if let Some(s) = &c.supporter {
+            let price = self.shop_price(&s.item, c, &owned, currency);
+            last.push(self.shop_tile(&s.item, TILE, TILE_PICTURE, "name_tag", c, me, price, cx));
+        }
+        let any_sold = hero_id.is_some() || c.items.iter().any(|e| !e.prices.is_empty());
+        if !any_sold && last.is_empty() {
+            return out.child(
+                ui::text(14., FontWeight::NORMAL, ink::BODY)
+                    .child(tr("Nothing is on sale right now.")),
+            );
+        }
+        out.children(Self::shop_row(None, last))
+    }
+
+    /// The pack, across the page: its looks drawn large, its name, what it holds, its price and
+    /// one button, which opens it.
+    fn shop_hero(
+        &mut self,
+        id: &str,
+        me: &Me,
+        c: &Catalogue,
+        currency: &str,
+        owned: &HashSet<String>,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let t = self.theme;
+        let (name, _) = about(id, c, game_language());
+        let n = unpack(id, c, me).len().to_string();
+        let price = self.shop_price(id, c, owned, currency);
+        let picture = self.shop_picture(id, HERO, c, me);
+        let accent = ui::color(horizon_theme::glass::ACCENT);
+        let warm = ui::color(tint("head"));
+        let open = id.to_owned();
+        let opened = id.to_owned();
+        let buy = button("shop-hero-buy", "Buy", Kind::Primary, &t).on_click(cx.listener(
+            move |this, _: &ClickEvent, _, cx| {
+                this.shop.selected = Some(open.clone());
+                this.shop.said = None;
+                cx.notify();
+            },
+        ));
+        div()
+            .id("shop-hero")
+            .relative()
+            .flex()
+            .items_center()
+            .w_full()
+            .h(px(HERO.1))
+            .overflow_hidden()
+            .rounded(px(radius::MODAL))
+            .cursor_pointer()
+            .children(ground(accent, 0.0).into_iter().take(1))
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .bg(gpui::linear_gradient(
+                        100.,
+                        gpui::linear_color_stop(warm.opacity(0.38), 0.),
+                        gpui::linear_color_stop(accent.opacity(0.34), 1.),
+                    )),
+            )
+            .border_1()
+            .border_color(ui::white(0.12))
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(HERO.0))
+                    .h(px(HERO.1))
+                    .children(picture.map(|i| gpui::img(i).w(px(HERO.0)).h(px(HERO.1)))),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(10.))
+                    .flex_1()
+                    .min_w_0()
+                    .pr(px(36.))
+                    .child(
+                        div()
+                            .font_family(horizon_theme::glass::DISPLAY_FONT)
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_size(px(40.))
+                            .line_height(px(44.))
+                            .text_color(ui::white(ink::FULL))
+                            .child(name),
+                    )
+                    .child(
+                        ui::text(15., FontWeight::MEDIUM, ink::BODY)
+                            .child(trf("{n} items", &[("n", &n)])),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(18.))
+                            .pt(px(10.))
+                            .child(ui::text(26., FontWeight::SEMIBOLD, ink::FULL).child(price))
+                            .child(buy),
+                    ),
+            )
+            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                this.shop.selected = Some(opened.clone());
+                this.shop.said = None;
+                cx.notify();
+            }))
+    }
+
+    /// An offer open big: the player wearing it in 3D, its name, line and price, Buy and Gift,
+    /// and for a set, its items.
+    fn shop_open(
+        &mut self,
+        id: &str,
+        me: &Me,
+        c: &Catalogue,
+        currency: &str,
+        viewer: Option<gpui::Entity<Viewer>>,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let t = self.theme;
+        let lang = game_language();
+        let (name, line) = about(id, c, lang);
+        let back = button("shop-back", "←", Kind::Ghost, &t).on_click(cx.listener(
+            |this, _: &ClickEvent, _, cx| {
+                this.shop.selected = None;
+                this.shop.said = None;
+                cx.notify();
+            },
+        ));
+        // The player, with the name tag tried on over the head.
+        let tag = self.shop_tried(me, c).remove("name_tag");
+        let name_tag = match tag {
+            Some(tag) => self.shop_name_tag(&tag, c, me, 1.),
+            None => self.shop_name_tag("", c, me, 1.),
+        };
+        let reset = button("shop-reset", "Reset view", Kind::Ghost, &t).on_click(cx.listener(
+            |this, _: &ClickEvent, _, cx| {
+                if let Some(v) = this.shop.viewer.clone() {
+                    v.update(cx, |v, cx| v.reset(cx));
+                }
+            },
+        ));
+        let slot = (c.items.iter().find(|e| e.id == id)).map_or("set", |e| e.slot.as_str());
+        let colour = ui::color(tint(slot));
+        let player = div()
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(px(10.))
+            .flex_none()
+            .p(px(20.))
+            .relative()
+            .overflow_hidden()
+            .rounded(px(radius::MODAL))
+            .children(ground(colour, 0.36))
+            .border_1()
+            .border_color(ui::white(0.10))
+            .child(name_tag)
+            .child(div().w(px(VIEW.0)).h(px(VIEW.1)).children(
+                viewer.map(|v| viewer::frame(v, VIEW, self.shop.dragging, Self::shop_drag(cx))),
+            ))
+            .child(reset);
+        let owned: HashSet<String> = me.owned.iter().cloned().collect();
+        let price = self.shop_price(id, c, &owned, currency);
+        let mut about_it = div()
+            .flex()
+            .flex_col()
+            .gap(px(14.))
+            .flex_1()
+            .min_w_0()
+            .child(
+                div()
+                    .font_family(horizon_theme::glass::DISPLAY_FONT)
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_size(px(38.))
+                    .line_height(px(42.))
+                    .text_color(ui::white(ink::FULL))
                     .child(name),
             )
-            .when_some(line, |d, c| d.border_b_2().border_color(c))
-            .into_any_element()
-    }
-
-    /// Bake the cards' pictures the Wardrobe has the items for: the item alone, three-quarter on
-    /// (back items from behind), framed to fill the card's well.
-    fn shop_bake(&mut self) {
-        let scale = self.scale;
-        let Some(w) = self.wardrobe.as_ref() else {
-            return;
+            .children(
+                (!price.is_empty() && c.supporter.as_ref().is_none_or(|s| s.item != id))
+                    .then(|| ui::text(24., FontWeight::SEMIBOLD, ink::FULL).child(price)),
+            )
+            .children(line.map(|l| {
+                ui::text(14., FontWeight::NORMAL, ink::BODY)
+                    .max_w(px(460.))
+                    .line_height(px(21.))
+                    .child(l)
+            }));
+        about_it = match id {
+            FOUNDER_SET => about_it.children(self.shop_founder(me, cx)),
+            _ => about_it.child(self.shop_buy(id, me, c, currency, cx)),
         };
-        let body = preview::player_model(false);
-        let side = (THUMB * scale) as u32;
-        // Drawn where it sits on a whole body, four times finer than the card, then cut to it.
-        let (wide, tall) = (side * 6, side * 10);
-        let mut baked = Vec::new();
-        for (id, item) in &w.items {
-            if self.shop.thumbs.get(id).is_some_and(|(s, _)| *s == scale) {
-                continue;
+        // A look's or the pack's items.
+        let pieces = unpack(id, c, me);
+        if pieces.len() > 1 {
+            let mut grid = div()
+                .flex()
+                .flex_wrap()
+                .gap(px(8.))
+                .pt(px(8.))
+                .max_w(px(560.));
+            for piece in pieces.iter().map(|p| p.to_string()) {
+                let slot =
+                    (c.items.iter().find(|e| e.id == piece)).map_or("set", |e| e.slot.as_str());
+                let tile = self.shop_piece(&piece, slot, c, me);
+                grid = grid.child(tile);
             }
-            let draws = preview::Draw::item(item, &body, 0.0);
-            if draws.is_empty() {
-                continue;
-            }
-            let yaw = if item.slot == horizon_cosmetics::Slot::Back {
-                210.
-            } else {
-                -30.
-            };
-            let image = preview::render(&draws, wide, tall, yaw, 12.);
-            let Some(texels) = fit(&image.rgba, wide as usize, tall as usize, side as usize) else {
-                continue;
-            };
-            let pic = art::bake(&texels, side as usize, side as usize, 1. / scale, scale);
-            baked.push((id.clone(), (scale, pic)));
+            about_it = about_it.child(grid);
         }
-        self.shop.thumbs.extend(baked);
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(12.))
+            .child(div().flex().child(back))
+            .child(
+                div()
+                    .flex()
+                    .items_start()
+                    .gap(px(32.))
+                    .child(player)
+                    .child(about_it),
+            )
     }
 
-    /// Draw the time left again in a while, while it shows.
-    fn shop_tick(&mut self, cx: &mut Context<Self>) {
-        if self.shop.ticking {
-            return;
+    /// One of a set's items in its big view: its picture and name.
+    fn shop_piece(&mut self, id: &str, slot: &str, c: &Catalogue, me: &Me) -> Div {
+        let (name, _) = about(id, c, game_language());
+        let colour = ui::color(tint(slot));
+        let picture: Div = if slot == "name_tag" {
+            div().child(self.shop_name_tag(id, c, me, 0.8))
+        } else {
+            let image = self.shop_picture(id, (PIECE.0, PIECE_PICTURE), c, me);
+            div().children(image.map(|i| gpui::img(i).w(px(PIECE.0)).h(px(PIECE_PICTURE))))
+        };
+        div()
+            .flex()
+            .flex_col()
+            .w(px(PIECE.0))
+            .h(px(PIECE.1))
+            .overflow_hidden()
+            .relative()
+            .rounded(px(radius::LARGE))
+            .children(ground(colour, 0.3))
+            .border_1()
+            .border_color(ui::white(0.08))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .w(px(PIECE.0))
+                    .h(px(PIECE_PICTURE))
+                    .flex_none()
+                    .child(picture),
+            )
+            .child(
+                ui::text(11., FontWeight::MEDIUM, ink::BODY)
+                    .px(px(8.))
+                    .truncate()
+                    .child(name),
+            )
+    }
+
+    /// The founder set: owned, or claimed here with one click where Paddle doesn't sell, else
+    /// through Paddle's free checkout in the browser.
+    fn shop_founder(&self, me: &Me, cx: &mut Context<Self>) -> Option<Div> {
+        let t = self.theme;
+        if me.claim.claimed == Some(true) {
+            return Some(ui::text(15., FontWeight::MEDIUM, ink::FULL).child(tr("Owned")));
         }
-        self.shop.ticking = true;
-        cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(TICK).await;
-            let _ = this.update(cx, |this, cx| {
-                this.shop.ticking = false;
-                if this.page == Page::Wardrobe && this.shop.open {
-                    cx.notify();
-                }
-            });
-        })
-        .detach();
-    }
-
-    /// Claim the founder set from the Shop: the button says "Claiming…" until the service
-    /// answers. The window closing meanwhile, or the session ending, asks the service again.
-    pub(super) fn shop_claim(&mut self, cx: &mut Context<Self>) {
-        let Some(w) = self.wardrobe.as_mut().filter(|w| !w.busy) else {
-            return;
+        if !me.claim.open {
+            return None;
+        }
+        let busy = self.shop.busy || self.wardrobe.as_ref().is_some_and(|w| w.busy);
+        let label = match (busy, me.claim.here()) {
+            (true, _) => "Claiming…",
+            (false, true) => "Claim for free",
+            (false, false) => "Claim the founder set",
         };
-        let Some(session) = w.session.clone().filter(|s| s.live()) else {
-            return;
-        };
-        w.busy = true;
-        self.shop.claiming = true;
-        self.shop.failed = None;
-        let (uuid, mut saved) = (w.uuid.clone(), w.saved.clone());
-        let task = cx.background_executor().spawn(async move {
-            let result = Service::live()
-                .claim(&session)
-                .map(|me| saved.me = Some(me));
-            if result.is_ok() {
-                let _ = saved.save(&dir(), &uuid);
-            }
-            (saved, result)
-        });
-        cx.spawn(async move |this, cx| {
-            let (saved, result) = task.await;
-            let _ = this.update(cx, |this, cx| {
-                this.shop.claiming = false;
-                let checkout = saved.me.as_ref().and_then(|m| m.checkout.clone());
-                match result {
-                    // The service asks for a free Paddle checkout: open Horizon's checkout page,
-                    // then wait for Paddle's word to reach the service.
-                    Ok(()) if checkout.is_some() => {
-                        let trip = Trip {
-                            saved,
-                            items: HashMap::new(),
-                            session: None,
-                            result: Ok(()),
-                        };
-                        this.wardrobe_back(trip, None);
-                        match checkout.as_ref().and_then(|c| c.url()) {
-                            Some(url) => {
-                                cx.open_url(url);
-                                this.shop.checkout = Some(url.to_owned());
-                                this.shop_wait_checkout(cx);
-                            }
-                            None => {
-                                this.shop.failed = Some((
-                                    tr("The claim didn't go through: the checkout's address isn't Horizon's.")
-                                        .into(),
-                                    "checkout url".into(),
-                                ));
-                            }
-                        }
-                    }
-                    Ok(()) => {
-                        this.shop.claimed_now = true;
-                        let trip = Trip {
-                            saved,
-                            items: HashMap::new(),
-                            session: None,
-                            result: Ok(()),
-                        };
-                        let done = tr("Founder set claimed. It's in your wardrobe.").into();
-                        this.wardrobe_back(trip, Some(done));
-                    }
-                    Err(e @ (Error::ClaimClosed | Error::SignedOut)) => {
-                        // The window moved or the session ended: ask the service where it
-                        // stands now.
-                        this.open_wardrobe(cx);
-                        if let Some(w) = this.wardrobe.as_mut() {
-                            w.toast = Some((e.message(), Instant::now()));
-                        }
-                    }
-                    Err(e) => {
-                        if let Some(w) = this.wardrobe.as_mut() {
-                            w.busy = false;
-                        }
-                        this.shop.failed = Some((
-                            trf(
-                                "The claim didn't go through: {why}",
-                                &[("why", &e.message())],
-                            ),
-                            details(&e),
-                        ));
-                    }
-                }
+        let claim = button("shop-claim", label, Kind::Primary, &t).on_click(cx.listener(
+            |this, _: &ClickEvent, _, cx| {
+                this.shop_claim(cx);
                 cx.notify();
-            });
-            cx.background_executor().timer(TOAST).await;
-            let _ = this.update(cx, |_, cx| cx.notify());
-        })
-        .detach();
+            },
+        ));
+        let said = self
+            .shop
+            .said
+            .clone()
+            .map(|s| ui::text(13., FontWeight::NORMAL, ink::NOTE).child(s));
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .child(div().flex().child(claim))
+                .children(said),
+        )
     }
-    /// Asks the service every `CHECKOUT_POLL` whether Paddle's checkout reached it, for
-    /// `CHECKOUT_WAIT` at most: the set claimed, the panel says so.
-    fn shop_wait_checkout(&mut self, cx: &mut Context<Self>) {
-        let Some(w) = self.wardrobe.as_ref() else {
+
+    fn shop_claim(&mut self, cx: &mut Context<Self>) {
+        let Some(me) = self.wardrobe.as_ref().and_then(|w| w.saved.me.clone()) else {
             return;
         };
-        let Some(session) = w.session.clone().filter(|s| s.live()) else {
+        if me.claim.here() {
+            self.wardrobe_claim(cx);
             return;
+        }
+        let order = Order {
+            name: me.name,
+            items: vec![FOUNDER_SET.to_owned()],
+            currency: "USD".into(),
+            amount: None,
+            gift: false,
         };
-        let (uuid, saved) = (w.uuid.clone(), w.saved.clone());
+        let done = "Finish the free checkout in your browser. The set lands here a moment later.";
+        self.shop_checkout(order, me.uuid, tr(done).into(), cx);
+    }
+
+    /// Starts Paddle's checkout on the service for `order` (for the account `uuid`), then opens
+    /// the website's pay page in the browser and says `done`.
+    fn shop_checkout(&mut self, order: Order, uuid: String, done: String, cx: &mut Context<Self>) {
+        if self.shop.busy {
+            return;
+        }
+        self.shop.busy = true;
+        self.shop.said = None;
+        let task =
+            (cx.background_executor()).spawn(async move { Service::live().checkout(&order) });
         cx.spawn(async move |this, cx| {
-            let started = Instant::now();
-            let mut saved = saved;
-            while started.elapsed() < CHECKOUT_WAIT && session.live() {
-                cx.background_executor().timer(CHECKOUT_POLL).await;
-                let waiting = this
-                    .update(cx, |this, _| this.shop.checkout.is_some())
-                    .unwrap_or(false);
-                if !waiting {
-                    return;
-                }
-                let s = session.clone();
-                let me = cx
-                    .background_executor()
-                    .spawn(async move { Service::live().me(&s) })
-                    .await;
-                let Ok(me) = me else { continue };
-                if me.claim.claimed != Some(true) {
-                    continue;
-                }
-                saved.me = Some(me);
-                let _ = saved.save(&dir(), &uuid);
-                let trip = Trip {
-                    saved,
-                    items: HashMap::new(),
-                    session: None,
-                    result: Ok(()),
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| {
+                this.shop.busy = false;
+                let url = match result {
+                    Ok(c) if c.uuid == uuid => {
+                        rules::pay_url(&c.transaction_id).ok_or(Error::Service(200))
+                    }
+                    Ok(_) => Err(Error::Service(200)),
+                    Err(e) => Err(e),
                 };
-                let _ = this.update(cx, |this, cx| {
-                    this.shop.checkout = None;
-                    this.shop.claimed_now = true;
-                    let done = tr("Founder set claimed. It's in your wardrobe.").into();
-                    this.wardrobe_back(trip, Some(done));
-                    cx.notify();
+                this.shop.said = Some(match url {
+                    Ok(url) => {
+                        cx.open_url(&url);
+                        done
+                    }
+                    Err(e) => e.message(),
                 });
-                return;
-            }
-            // Given up: the button comes back; the claim can be started again.
-            let _ = this.update(cx, |this, cx| {
-                this.shop.checkout = None;
                 cx.notify();
             });
         })
         .detach();
     }
+}
 
-    /// The Wardrobe's screenshot preview (`wardrobe_preview`) on the Shop tab, in `state`:
-    /// `open`, `claiming`, `claimed`, `owned`, `error` (the claim failed), `not-yet`, `preview`
-    /// (open for this account only, no dates), `closed`, `closed-owned`, `loading`, `offline`,
-    /// `failed`, `account`, `signed-out`. Development builds only; nothing reaches the service.
-    pub(super) fn shop_preview(&mut self, state: &str) {
-        use horizon_launcher::wardrobe::ClaimState;
-        // On the hour, as the service's dates are.
-        let at = now() / 3600 * 3600;
-        const DAY: i64 = 86_400;
-        self.shop = Shop {
-            open: true,
-            asked: true,
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use horizon_launcher::wardrobe::Collection;
+
+    fn set(id: &str, items: &[&str], priced: bool) -> Set {
+        Set {
+            id: id.into(),
+            items: items.iter().map(|s| s.to_string()).collect(),
+            prices: if priced {
+                [("USD".to_owned(), 999)].into()
+            } else {
+                Default::default()
+            },
             ..Default::default()
-        };
-        let Some(w) = self.wardrobe.as_mut() else {
-            return;
-        };
-        w.status = Status::Ready;
-        let (Some(c), Some(me)) = (w.saved.catalogue.as_mut(), w.saved.me.as_mut()) else {
-            return;
-        };
-        let all = c.claim.items.clone();
-        me.name = "Player46008".into();
-        // The founder set's window is 7 days (Ludovic, 2026-11-04).
-        const WEEK: i64 = 7 * DAY;
-        let (claim_state, starts, ends) = match state {
-            "not-yet" => {
-                let start = at + 3 * DAY + 4 * 3600;
-                (ClaimState::NotYet, Some(start), Some(start + WEEK))
-            }
-            "preview" => (ClaimState::Open, None, None),
-            "closed" | "closed-owned" => {
-                (ClaimState::Closed, Some(at - DAY - WEEK), Some(at - DAY))
-            }
-            _ => (ClaimState::Open, Some(at - DAY), Some(at - DAY + WEEK)),
-        };
-        let owns = matches!(state, "claimed" | "owned" | "closed-owned");
-        for claim in [&mut c.claim, &mut me.claim] {
-            claim.state = claim_state;
-            claim.starts_at = starts;
-            claim.ends_at = ends;
-        }
-        me.claim.claimed = Some(owns);
-        for claim in [&mut c.claim, &mut me.claim] {
-            claim.open = matches!(claim_state, ClaimState::Open);
-            claim.preview = state == "preview";
-        }
-        // The public answer keeps no window in a preview.
-        if state == "preview" {
-            c.claim.open = false;
-        }
-        // What `GET /v1/shop` would say: the page shows while the account's answer loads.
-        self.shop_status = Some(c.claim.clone());
-        me.owned = if owns { all } else { Vec::new() };
-        me.equipped.clear();
-        if state == "owned" {
-            me.equipped.insert("head".into(), "founder_visor".into());
-        }
-        match state {
-            "claiming" => self.shop.claiming = true,
-            "claimed" => {
-                self.shop.claimed_now = true;
-                w.toast = Some((
-                    tr("Founder set claimed. It's in your wardrobe.").into(),
-                    Instant::now() + Duration::from_secs(3600),
-                ));
-            }
-            "error" => {
-                self.shop.failed = Some((
-                    trf(
-                        "The claim didn't go through: {why}",
-                        &[("why", &Error::Service(503).message())],
-                    ),
-                    "cosmetics.playhorizon.dev · 503 · 2026-11-03 20:41:07".into(),
-                ))
-            }
-            "loading" => {
-                w.status = Status::Loading;
-                w.saved.me = None;
-            }
-            "offline" => {
-                w.status = Status::Offline;
-                w.saved.change(Change::Equip {
-                    slot: "head".into(),
-                    item: None,
-                });
-            }
-            "failed" => {
-                w.status =
-                    Status::Failed("cosmetics.playhorizon.dev · 503 · 2026-11-03 20:41".into())
-            }
-            "account" => {
-                w.status = Status::Account(
-                    tr("Mojang could not confirm your account. Sign in again and retry.").into(),
-                )
-            }
-            "signed-out" => {
-                let uuid = w.uuid.clone();
-                self.shop.anon = w.saved.catalogue.clone();
-                self.wardrobe = None;
-                self.accounts.accounts.retain(|a| a.uuid != uuid);
-            }
-            _ => {}
         }
     }
-}
 
-/// A purchase's state, in words.
-fn purchase_state(p: &Purchase) -> &'static str {
-    match p.status.as_str() {
-        "refunded" => tr("Refunded"),
-        "partly_refunded" => tr("Partly refunded"),
-        "charged_back" => tr("Charged back"),
-        _ => tr("Paid"),
+    fn catalogue(sets: Vec<Set>, pack: Option<&str>) -> Catalogue {
+        let mut c: Catalogue = serde_json::from_str(
+            r#"{"items": [], "claim": {"state": "closed", "items": [], "open": false}}"#,
+        )
+        .unwrap();
+        c.sets = sets;
+        c.collections = vec![Collection {
+            id: "autumn".into(),
+            pack: pack.map(str::to_owned),
+            ..Default::default()
+        }];
+        c
     }
-}
 
-fn purchase_chip(p: &Purchase) -> Chip {
-    match p.status.as_str() {
-        "paid" | "partly_refunded" => Chip::Live,
-        _ => Chip::Ghost,
+    #[test]
+    fn the_hero_is_the_collections_pack_else_the_largest_set_on_sale() {
+        let look = set("look", &["a", "b"], true);
+        let pack = set("pack", &["a", "b", "c"], true);
+        let c = catalogue(vec![look.clone(), pack.clone()], Some("pack"));
+        assert_eq!(hero(&c).map(|s| s.id.as_str()), Some("pack"));
+        // The pack named isn't sold: the largest set that is.
+        let c = catalogue(
+            vec![look.clone(), set("pack", &["a", "b", "c"], false)],
+            Some("pack"),
+        );
+        assert_eq!(hero(&c).map(|s| s.id.as_str()), Some("look"));
+        let c = catalogue(vec![look, pack], None);
+        assert_eq!(hero(&c).map(|s| s.id.as_str()), Some("pack"));
+        assert!(hero(&catalogue(Vec::new(), Some("pack"))).is_none());
     }
 }

@@ -2,7 +2,10 @@
 //! paddling controls, collisions, riding (`positionRider`, `clampRotation`,
 //! dismounting), `BoatItem` placement, `VehicleEntity.hurtServer` breaking,
 //! saving and `AbstractBoatRenderer` with animated paddles.
+mod placement;
+
 use super::{Game, InteractTarget, entity::Entity, entity_culling::at, view_vector};
+use horizon_client::actions::Action;
 use horizon_client::entity_rules::EntityRules;
 use horizon_client::{
     blocks::Fluid,
@@ -35,6 +38,8 @@ pub(super) enum Status {
 }
 #[derive(Clone, Debug)]
 pub(super) struct Boat {
+    /// `Entity.xRot`: kept for `/tp` and `Rotation`; the kind turns only in yaw.
+    pub pitch: f32,
     /// When it joined its list (`horizon_client::join_seq`); set by the list.
     pub(super) join: horizon_client::join_seq::JoinSeq,
     pub id: u32,
@@ -52,7 +57,7 @@ pub(super) struct Boat {
     status_known: bool,
     water_level: f64,
     land_friction: f32,
-    out_of_control: f32,
+    pub(super) out_of_control: f32,
     /// `AbstractBoat.DATA_ID_BUBBLE_TIME` (synched): the ticks of `BUBBLE_TIME`
     /// left before a bubble column lifts or drags the boat; 0 when it is not
     /// over one.
@@ -79,6 +84,8 @@ pub(super) struct Boat {
     pub no_gravity: bool,
     pub paddles: [f32; 2],
     pub paddling: [bool; 2],
+    /// Whether this boat has a player controlling its paddles.
+    pub paddle_controller: bool,
     /// left, right, up, down
     pub input: [bool; 4],
     pub on_ground: bool,
@@ -157,6 +164,7 @@ impl Boat {
 
     pub fn new(id: u32, wood: Arc<str>, position: Vec3, yaw: f32) -> Self {
         Self {
+            pitch: 0.0,
             join: Default::default(),
             id,
             wood,
@@ -186,6 +194,7 @@ impl Boat {
             no_gravity: false,
             paddles: [0.0; 2],
             paddling: [false; 2],
+            paddle_controller: false,
             input: [false; 4],
             on_ground: false,
             stuck: Vec3::ZERO,
@@ -318,9 +327,14 @@ impl Boat {
         fired
     }
     /// `getRowingTime`.
+    pub fn paddle_state(&self, side: usize) -> bool {
+        self.paddling[side] && self.paddle_controller
+    }
     pub fn rowing_time(&self, side: usize, a: f32) -> f32 {
-        if self.paddling[side] {
-            self.paddles[side] - PI / 8.0 + a * PI / 8.0
+        if self.paddle_state(side) {
+            let current = self.paddles[side];
+            let previous = current - PI / 8.0;
+            previous + a.clamp(0.0, 1.0) * (current - previous)
         } else {
             0.0
         }
@@ -636,6 +650,11 @@ impl Game<'_> {
         b.tick_submersion();
         b.hurt_time = (b.hurt_time - 1).max(0);
         b.damage = (b.damage - 1.0).max(0.0);
+        // A remote client gets the controller from the passenger packet, even when
+        // this window occupies the second seat. Local worlds derive it here.
+        if self.remote.is_none() {
+            b.paddle_controller = controlled;
+        }
         if !controlled {
             b.paddling = [false; 2];
             b.input = [false; 4];
@@ -770,9 +789,18 @@ impl Game<'_> {
             None,
         );
         b.velocity = horizon_world::entity_move::scale_by_block_speed(b.velocity, factor);
+        Self::tick_boat_paddles(&mut b, &mut self.audio, &mut self.world.random);
+        b
+    }
+    /// `AbstractBoat.tick` advances the oars even when this client does not move the hull.
+    pub(super) fn tick_boat_paddles(
+        b: &mut Boat,
+        audio: &mut super::Audio,
+        random: &mut horizon_core::random::LegacyRandom,
+    ) {
         // Paddle sounds at the top of each stroke.
         for i in 0..2 {
-            if b.paddling[i] {
+            if b.paddle_state(i) {
                 let p = b.paddles[i] % (2.0 * PI);
                 if p <= PI / 4.0 && (b.paddles[i] + PI / 8.0) % (2.0 * PI) >= PI / 4.0 {
                     let sound = match b.status {
@@ -785,8 +813,8 @@ impl Game<'_> {
                     if let Some(sound) = sound {
                         let v = view_vector(b.yaw, 0.0);
                         let (dx, dz) = if i == 1 { (-v[2], v[0]) } else { (v[2], -v[0]) };
-                        let pitch = 0.8 + 0.4 * self.world.random.next_float();
-                        self.audio.play(
+                        let pitch = 0.8 + 0.4 * random.next_float();
+                        audio.play(
                             sound,
                             Some([b.position.x + dx, b.position.y, b.position.z + dz]),
                             1.0,
@@ -799,10 +827,14 @@ impl Game<'_> {
                 b.paddles[i] = 0.0;
             }
         }
-        b
     }
     /// Every boat but the ridden one (which ticks with its rider).
     pub(super) fn tick_boats(&mut self) {
+        self.vehicles_ticking(true);
+        self.tick_boats_now();
+        self.vehicles_ticking(false);
+    }
+    fn tick_boats_now(&mut self) {
         // ServerLevel.tick: only entities in entity-ticking chunks tick.
         let ticking = self.entity_ticking_area();
         let mut round = self.native_tick_round();
@@ -902,7 +934,7 @@ impl Game<'_> {
     /// client moves only the boat its player drives.
     fn boat_can_simulate_movement(&self, id: u32) -> bool {
         if self.remote.is_some() {
-            self.riding == Some(id)
+            self.controls_boat(id)
         } else {
             !self.guest_vehicles().contains(&id)
         }
@@ -1235,9 +1267,19 @@ impl Game<'_> {
                 ],
             );
         }
+        // BoatItem.use: ENTITY_PLACE at the hit (the boat's position), by the player.
+        let at = self
+            .boats
+            .last()
+            .map(|b| [b.position.x, b.position.y, b.position.z]);
+        if let Some(at) = at {
+            let ctx = self.player_context(None);
+            self.post_game_event("minecraft:entity_place", at, ctx);
+        }
         if !self.creative {
             self.consume_held();
         }
+        self.award_stat("used", &stack.item, 1);
         self.swing_arm();
         true
     }
@@ -1248,48 +1290,7 @@ impl Game<'_> {
         if !self.boat_models.has(wood, chest) {
             return None;
         }
-        let (eye, dir) = self.aim()?;
-        let reach = self.reach();
-        // ClipContext.Fluid.ANY: the first fluid surface (water or lava) or
-        // block along the ray.
-        let block = self.pick().map(|h| {
-            (
-                h.point,
-                (0..3)
-                    .map(|a| (h.point[a] - eye[a]).powi(2))
-                    .sum::<f64>()
-                    .sqrt(),
-            )
-        });
-        let mut fluid = None;
-        let mut t = 0.0;
-        while t < reach {
-            let p: [f64; 3] = std::array::from_fn(|a| eye[a] + dir[a] * t);
-            let (x, y, z) = (
-                p[0].floor() as i32,
-                p[1].floor() as i32,
-                p[2].floor() as i32,
-            );
-            if let Some((h, _)) = self.fluid_height_of(x, y, z, None)
-                && p[1] <= f64::from(y) + f64::from(h)
-            {
-                fluid = Some((fluid_hit_point(p, y, h), t));
-                break;
-            }
-            t += 0.05;
-        }
-        let hit = match (block, fluid) {
-            (Some(b), Some(w)) => {
-                if w.1 < b.1 {
-                    w.0
-                } else {
-                    b.0
-                }
-            }
-            (Some(b), None) => b.0,
-            (None, Some(w)) => w.0,
-            (None, None) => return None,
-        };
+        let hit = self.boat_item_hit()?;
         let mut boat = Boat::new(
             self.next_entity + 1,
             Arc::from(wood),
@@ -1356,7 +1357,7 @@ impl Game<'_> {
         }) else {
             return false;
         };
-        let sneaking = self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft);
+        let sneaking = self.keys.held(Action::Sneak);
         // Only a client's own pick is stopped by a block: the range check passed.
         if target.is_none() && !self.before_block(d) {
             return false;
@@ -1383,10 +1384,10 @@ impl Game<'_> {
         if !self.native_may_board(self.boats[i].id) {
             return true;
         }
-        self.riding = Some(self.boats[i].id);
+        let id = self.boats[i].id;
         self.yaw = self.boats[i].yaw;
-        // ServerPlayer.startRiding.
-        self.trigger_player("minecraft:started_riding");
+        // Entity.startRiding (ServerPlayer.startRiding fires the trigger).
+        self.start_riding(id);
         true
     }
     /// `ContainerEntity.interactWithContainerVehicle` (`AbstractChestBoat`):
@@ -1442,16 +1443,40 @@ impl Game<'_> {
         if !self.before_block(d) || self.mob_hit().is_some_and(|m| m.1 < d) {
             return false;
         }
+        self.strike_boat(i);
+        self.swing_arm();
+        true
+    }
+    /// The accepted boat target, shared by aimed attacks and headless parity.
+    pub(super) fn strike_boat(&mut self, i: usize) {
         let area = self.boats[i].bounds();
         // Player.attack's full damage against the boat's entity type.
         let (kind, id) = (self.boats[i].entity_type(), self.boats[i].id as i32);
-        let (damage, _, _, magic) = self.melee_damage(&kind, false);
-        self.hurt_boat(i, damage, self.creative);
+        let (damage, scale, _, magic) = self.melee_damage(&kind, false);
+        let hurt = self.hurt_boat_result(i, damage, self.creative);
         self.vehicle_attack_sounds(area, magic.then_some(id));
+        if damage > 0.0
+            && let Some(destroyed) = hurt
+        {
+            let (knockback, _) = self.extra_knockback(&kind, scale);
+            if knockback > 0.0 {
+                // Player.causeExtraKnockback uses Entity.push for a boat,
+                // not LivingEntity.knockback (no resistance or velocity halving).
+                if !destroyed {
+                    let (x, z) = self.extra_knockback_direction();
+                    self.boats[i].velocity.x += f64::from(-(x as f32) * knockback);
+                    self.boats[i].velocity.y += 0.1;
+                    self.boats[i].velocity.z += f64::from(-(z as f32) * knockback);
+                }
+                if let Some(player) = self.player.as_mut() {
+                    player.velocity.x *= horizon_client::attack_strength::ATTACKER_SLOWDOWN;
+                    player.velocity.z *= horizon_client::attack_strength::ATTACKER_SLOWDOWN;
+                }
+                self.stop_sprint_after_extra_knockback();
+            }
+        }
         // Player.onAttack: the hit starts the attack strength again.
         self.attack_ticks = 0;
-        self.swing_arm();
-        true
     }
     /// `VehicleEntity.hurtServer`: wobble, add the damage and break past 40
     /// (`creative`: a creative player's hit discards it straight away).
@@ -1459,11 +1484,20 @@ impl Game<'_> {
     /// reason that destroys the boat (DISCARDED included), while the boat item
     /// itself only drops on the death path (`VehicleEntity.destroy`), not when
     /// a creative hit discards it. True when the boat was removed.
-    pub(super) fn hurt_boat(&mut self, i: usize, mut damage: f32, creative: bool) -> bool {
+    pub(super) fn hurt_boat(&mut self, i: usize, damage: f32, creative: bool) -> bool {
+        self.hurt_boat_result(i, damage, creative).unwrap_or(false)
+    }
+    /// None means a canceled hit; Some records whether an accepted hit destroyed it.
+    pub(super) fn hurt_boat_result(
+        &mut self,
+        i: usize,
+        mut damage: f32,
+        creative: bool,
+    ) -> Option<bool> {
         let mut cancel = false;
         self.native_vehicle_damage("boat", &mut damage, &mut cancel);
         if cancel {
-            return false;
+            return None;
         }
         let b = &mut self.boats[i];
         b.hurt_dir = -b.hurt_dir;
@@ -1485,8 +1519,12 @@ impl Game<'_> {
             for stack in b.items.iter().flatten() {
                 self.spawn_item(stack.clone(), at, super::dispenser::new_item_motion(), 10);
             }
-            // `VehicleEntity.destroy(level, dropItem)` drops the boat item on
-            // the death path only, and only with `entity_drops` on.
+            // `VehicleEntity.destroy(level, dropItem)`: `kill` (the boat's own
+            // ENTITY_DIE), then the boat item on the death path only, and only
+            // with `entity_drops` on.
+            if !creative {
+                self.entity_killed_event(at, false);
+            }
             if !creative && self.ui.rules.bool("entity_drops") {
                 let item = b.entity_type();
                 self.spawn_item(
@@ -1502,7 +1540,7 @@ impl Game<'_> {
                 );
             }
         }
-        destroyed
+        Some(destroyed)
     }
     /// AbstractBoatRenderer.
     pub(super) fn boat_geometry(&self, camera: glam::DVec3, alpha: f64, out: &mut Vec<Vertex>) {
@@ -1512,7 +1550,6 @@ impl Game<'_> {
             self.view_scale(),
         );
         for b in &self.boats {
-            let entity_start = out.len();
             // EntityRenderer.shouldRender.
             let (previous, position) = (at(b.previous), at(b.position));
             if !self.standing_entity_in_view(
@@ -1520,6 +1557,11 @@ impl Game<'_> {
             ) {
                 continue;
             }
+            let culling = self.entity_cull_decision(b, alpha);
+            if culling.hides_entity() {
+                continue;
+            }
+            let entity_start = out.len();
             let models = if b.chest {
                 &self.boat_models.chest_models
             } else {
@@ -1614,40 +1656,14 @@ impl Game<'_> {
                     out,
                 );
             }
-            self.cull_entity_vertices(out, entity_start);
+            self.finish_entity_occlusion(culling, b, out, entity_start);
         }
-    }
-}
-
-/// Where a fluid pick lands in the cell the ray sample `p` is in. Vanilla's
-/// `ClipContext.Fluid.ANY` clips against the fluid shape: a full-height cell
-/// (the same fluid above it) is a full cube, so the hit is the ray's own
-/// point and a boat placed under water stays at the eye; a partial cell is
-/// clipped to its surface.
-fn fluid_hit_point(p: [f64; 3], y: i32, h: f32) -> [f64; 3] {
-    if h >= 1.0 {
-        p
-    } else {
-        [p[0], f64::from(y) + f64::from(h), p[2]]
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// `VoxelShape.clip` on a full-cube fluid cell keeps the true hit point
-    /// (a ray starting inside hits at `from + delta * 0.001`); only a partial
-    /// cell is clipped to its surface.
-    #[test]
-    fn a_full_height_fluid_cell_keeps_the_ray_point_and_a_partial_one_snaps_to_its_surface() {
-        let eye = [0.5, 3.62, 0.5];
-        assert_eq!(fluid_hit_point(eye, 3, 1.0), eye);
-        assert_eq!(
-            fluid_hit_point(eye, 3, 8.0 / 9.0),
-            [0.5, 3.0 + f64::from(8.0f32 / 9.0), 0.5]
-        );
-    }
 
     fn boat() -> Boat {
         Boat::new(1, Arc::from("oak"), Vec3::ZERO, 0.0)

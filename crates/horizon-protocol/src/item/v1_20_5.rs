@@ -387,7 +387,7 @@ mod tests {
             let pinned = bytes(pinned);
             let mut r = Reader::new(&old);
             let stack = {
-                let _up = ids::renumbering(ServerVersion::V1_20_5.ids().unwrap(), Way::Up);
+                let _up = ids::renumbering(ServerVersion::V1_20_6.ids().unwrap(), Way::Up);
                 Slot::read(&mut r).unwrap_or_else(|e| panic!("{label}: {e}"))
             };
             assert_eq!(r.remaining(), 0, "{label}");
@@ -396,7 +396,7 @@ mod tests {
             assert_eq!(canonical(stack.clone()), canonical(expected), "{label}");
             let mut w = Writer::new();
             {
-                let _down = ids::renumbering(ServerVersion::V1_20_5.ids().unwrap(), Way::Down);
+                let _down = ids::renumbering(ServerVersion::V1_20_6.ids().unwrap(), Way::Down);
                 Slot::write(&stack, &mut w);
             }
             // Arbitrary old names and name-based UUIDs are discarded by vanilla's identity
@@ -409,7 +409,7 @@ mod tests {
             }
             let mut r = Reader::new(&w.data);
             let returned = {
-                let _up = ids::renumbering(ServerVersion::V1_20_5.ids().unwrap(), Way::Up);
+                let _up = ids::renumbering(ServerVersion::V1_20_6.ids().unwrap(), Way::Up);
                 Slot::read(&mut r).unwrap_or_else(|e| panic!("{label} returned: {e}"))
             };
             assert_eq!(r.remaining(), 0, "{label}");
@@ -434,7 +434,7 @@ mod tests {
         ] {
             let old = bytes(fixture);
             let stack = {
-                let _up = ids::renumbering(ServerVersion::V1_20_5.ids().unwrap(), Way::Up);
+                let _up = ids::renumbering(ServerVersion::V1_20_6.ids().unwrap(), Way::Up);
                 Slot::read(&mut Reader::new(&old)).unwrap().unwrap()
             };
             let mut levels = match stack.component(component::ENCHANTMENTS).unwrap() {
@@ -450,7 +450,7 @@ mod tests {
             assert_eq!(stack.damage(), 17);
             let mut w = Writer::new();
             {
-                let _down = ids::renumbering(ServerVersion::V1_20_5.ids().unwrap(), Way::Down);
+                let _down = ids::renumbering(ServerVersion::V1_20_6.ids().unwrap(), Way::Down);
                 Slot::write(&Some(stack), &mut w);
             }
             assert_eq!(w.data, old);

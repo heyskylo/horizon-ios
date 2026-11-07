@@ -131,7 +131,7 @@ mod tests {
         // Actual STREAM_CODEC output from both 1.20.5/1.20.6 and 1.21.1. The attack-damage
         // attribute has registry id 2 in both; this step leaves it for the common remapper.
         use packet_ids::play::clientbound as cb;
-        let session = Session::new(ServerVersion::V1_20_5);
+        let session = Session::new(ServerVersion::V1_20_6);
         for (id, old, newer) in [
             (cb::MOUNT_SCREEN_OPEN, "c8010000002a", "c8000000002a"),
             (cb::MOUNT_SCREEN_OPEN, "c8100000002a", "c8050000002a"),
@@ -185,7 +185,7 @@ mod tests {
                 "00".repeat(256),
             )
         };
-        let session = Session::new(ServerVersion::V1_20_5);
+        let session = Session::new(ServerVersion::V1_20_6);
         let mut global = 0;
         for (id, old, newer, chat_type, is_complex) in [
             (

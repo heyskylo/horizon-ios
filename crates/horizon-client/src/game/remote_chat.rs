@@ -390,6 +390,7 @@ impl Game<'_> {
         let Some(prompt) = &self.command_prompt else {
             return;
         };
+        horizon_client::widgets::cover_frame();
         horizon_client::widgets::begin_screen(|| {
             super::screen_info::confirm(
                 "multiplayer/confirm_command",
@@ -418,8 +419,9 @@ impl Game<'_> {
                 &[],
             ),
         ];
-        self.command_prompt_layout(prompt, (w, h))
-            .draw(batch, atlas, self.cursor, &labels);
+        let mut layout = self.command_prompt_layout(prompt, (w, h));
+        layout.declare_no(1);
+        layout.draw(batch, atlas, self.cursor, &labels);
     }
 
     /// The confirmation's answer; on no, what was behind it is back.
@@ -436,7 +438,9 @@ impl Game<'_> {
                 }
             }
             // Gui.openChatAndAddText.
-            (true, CommandAccept::Suggest, _) => self.open_chat(&format!("/{}", prompt.command)),
+            (true, CommandAccept::Suggest, _) => {
+                self.open_chat(&format!("/{}", prompt.command), false)
+            }
             (true, CommandAccept::Copy, _) => {
                 use horizon_client::clipboard::Clipboard;
                 self.clipboard.set(&format!("/{}", prompt.command));

@@ -52,6 +52,9 @@ pub(super) enum Event {
     About(HashMap<String, Vec<String>>),
     /// Registry files taken down that the launcher turned off.
     TakenDown(Vec<String>),
+    /// What the automatic updates did (`horizon::auto`), and the instances (ids) whose native
+    /// mods moved on: their game is built again before it plays.
+    AutoUpdated(Vec<String>, Vec<String>),
     /// A project page's part, an image or a filter's values (`mods_project`).
     Loaded(super::mods_project::Loaded),
     /// The palette's registry mods for its search of that number.
@@ -99,6 +102,10 @@ pub(super) struct Mods {
     pub(super) message: Option<Result<String, String>>,
     pub(super) updates: HashMap<(SourceId, String), String>,
     confirm_remove: Option<String>,
+    /// Instances (ids) whose native mods the automatic update moved on: Play builds their game
+    /// first (`build_native`), then plays it when `play_after_build` is set.
+    pub(super) rebuild: Vec<String>,
+    pub(super) play_after_build: bool,
     /// The project the glass look's detail card shows; the first result when none is.
     pub(super) picked: Option<String>,
     /// The project the glass detail card showed last.
@@ -194,6 +201,8 @@ impl Mods {
             native_files: Default::default(),
             updates: HashMap::new(),
             confirm_remove: None,
+            rebuild: Vec::new(),
+            play_after_build: false,
             picked: None,
             shown: None,
             checks: HashMap::new(),
@@ -391,6 +400,14 @@ impl Launcher {
                     m.about.extend(about);
                     m.results_list.reset();
                 }
+                Event::AutoUpdated(lines, rebuild) => {
+                    m.rebuild.extend(rebuild);
+                    if !lines.is_empty() {
+                        m.message = Some(Ok(lines.join("\n")));
+                        m.installed = installed::Installed::load(&m.home()).entries;
+                        m.installed_list.reset();
+                    }
+                }
                 Event::TakenDown(lines) => {
                     m.message = Some(Ok(lines.join("\n")));
                     m.installed = installed::Installed::load(&m.home()).entries;
@@ -399,8 +416,14 @@ impl Launcher {
             }
         }
         // `HORIZON_LAUNCHER_PROJECT=<slug>` (with `HORIZON_LAUNCHER_PAGE=mods`): opens that
-        // project's page once a search finds it, for screenshots.
-        if self.mods.browse.open.is_none() {
+        // project's page once a search finds it, for screenshots. Once per run, kept in a flag
+        // rather than by removing the variable: `remove_var` races `getenv` on the download, check
+        // and keyring threads running by now (unsound, and `unsafe` from edition 2024).
+        static PROJECT_OPENED: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        if self.mods.browse.open.is_none()
+            && !PROJECT_OPENED.load(std::sync::atomic::Ordering::Relaxed)
+        {
             if let Ok(want) = std::env::var("HORIZON_LAUNCHER_PROJECT") {
                 if let Some(p) = self
                     .mods
@@ -409,7 +432,7 @@ impl Launcher {
                     .find(|p| p.id == want || p.slug == want)
                     .cloned()
                 {
-                    std::env::remove_var("HORIZON_LAUNCHER_PROJECT");
+                    PROJECT_OPENED.store(true, std::sync::atomic::Ordering::Relaxed);
                     self.mods_open(p);
                 }
             }
@@ -465,13 +488,19 @@ impl Launcher {
         let (tx, search) = (m.tx.clone(), m.search);
         std::thread::spawn(move || {
             let result = browser::source(source)
-                .ok_or_else(|| format!("{} isn't set up.", source.label()))
+                .ok_or_else(|| trf("{source} isn't set up.", &[("source", source.label())]))
                 .and_then(|s| s.search(&query));
             let about: HashMap<String, Vec<String>> = match (&result, source) {
-                (Ok(found), SourceId::Horizon) => found
-                    .iter()
-                    .map(|p| (p.id.clone(), horizon::trust_and_capabilities(&p.id)))
-                    .collect(),
+                (Ok(found), SourceId::Horizon) => {
+                    let instance = horizon_launcher::instances::selected();
+                    found
+                        .iter()
+                        .map(|p| {
+                            let lines = horizon::trust_and_capabilities(&p.id, Some(&instance));
+                            (p.id.clone(), lines)
+                        })
+                        .collect()
+                }
                 _ => HashMap::new(),
             };
             let _ = tx.send(Event::Found(search, offset, result));
@@ -505,10 +534,40 @@ impl Launcher {
         });
     }
 
+    /// At start, with the setting on: every Horizon instance's registry projects update on a
+    /// thread ([`auto_update`]), the selected instance's list read again after.
+    pub(super) fn mods_auto_update(&mut self) {
+        if !self.settings.auto_updates_mods() {
+            return;
+        }
+        let list: Vec<AutoTarget> = self
+            .instances
+            .list
+            .iter()
+            .map(|i| AutoTarget {
+                level: self.version_of(i).map(|tag| backend::mod_api_level(tag)),
+                natives: !pinned_to_nightly(i),
+                instance: i.clone(),
+            })
+            .collect();
+        let tx = self.mods.tx.clone();
+        std::thread::spawn(move || {
+            let (lines, rebuild) = auto_update(&list);
+            if !lines.is_empty() || !rebuild.is_empty() {
+                let _ = tx.send(Event::AutoUpdated(lines, rebuild));
+            }
+        });
+    }
+
     /// Turns a Horizon mod the browser installed on or off, as the game's Options > Mods does;
     /// in a Java instance, renames its file.
     pub(super) fn mods_switch(&mut self, e: &installed::Entry) {
         let home = self.mods.home();
+        // An update holds the folder: the window doesn't wait for it.
+        let Some(_lock) = browser::try_lock_home(&home) else {
+            self.mods.message = Some(Err(tr("Wait for the current operation to finish.").into()));
+            return;
+        };
         if self.mods.java.is_some() {
             let on = !java_instance::is_on(&home, e);
             self.mods.message = Some(java_instance::set_on(&home, e, on).map(|()| {
@@ -571,7 +630,9 @@ impl Launcher {
                     s.spawn(|| {
                         while let Some(p) = queue.lock().ok().and_then(|mut q| q.next()) {
                             let result = browser::source(p.source)
-                                .ok_or_else(|| format!("{} isn't set up.", p.source.label()))
+                                .ok_or_else(|| {
+                                    trf("{source} isn't set up.", &[("source", p.source.label())])
+                                })
                                 .and_then(|source| {
                                     java::check_project(&home, &*source, &p, everything, &|_| {})
                                 });
@@ -656,7 +717,7 @@ impl Launcher {
                     ));
                 };
                 let updated = browser::source(source_id)
-                    .ok_or_else(|| format!("{} isn't set up", source_id.label()))
+                    .ok_or_else(|| trf("{source} isn't set up.", &[("source", source_id.label())]))
                     .and_then(|source| {
                         let p = source.project(&id)?;
                         match &java {
@@ -702,6 +763,9 @@ impl Launcher {
             && horizon::is_native_mod(&id);
         if first_native {
             self.mods.native_notice = Some((source, id, known));
+            self.content_scroll
+                .handle
+                .set_offset(gpui::point(px(0.), px(0.)));
             return;
         }
         self.mods.native_notice = None;
@@ -734,7 +798,7 @@ impl Launcher {
             };
             let mut modpack = false;
             let result = browser::source(source)
-                .ok_or_else(|| format!("{} isn't set up.", source.label()))
+                .ok_or_else(|| trf("{source} isn't set up.", &[("source", source.label())]))
                 .and_then(|source| {
                     let p = match known {
                         Some(p) => p,
@@ -746,24 +810,28 @@ impl Launcher {
                             .iter()
                             .map(|e| format!("{} {}", e.title, e.number))
                             .collect();
-                        return Ok(format!(
-                            "Installed {}, checksums checked.",
-                            names.join(", ")
+                        return Ok(trf(
+                            "Installed {mods}, checksums checked.",
+                            &[("mods", &names.join(", "))],
                         ));
                     }
                     if p.kind == PackKind::DataPack {
-                        let (world, name) =
-                            world.ok_or("Pick the world the data pack goes into first.")?;
+                        let (world, name) = world.ok_or_else(|| {
+                            tr("Pick the world the data pack goes into first.").to_string()
+                        })?;
                         let done =
                             installed::install_datapack(&*source, &p, everything, &world, &|f| {
                                 progress(&p.title, f)
                             })?;
-                        return Ok(format!(
-                            "Put {} {} in {name}'s data packs, checksum checked: the game turns \
-                             it on when the world opens. {}",
-                            p.title,
-                            done.number,
-                            done.coverage.summary()
+                        return Ok(trf(
+                            "Put {pack} {version} in {world}'s data packs, checksum checked: the \
+                             game turns it on when the world opens. {coverage}",
+                            &[
+                                ("pack", &p.title),
+                                ("version", &done.number),
+                                ("world", &name),
+                                ("coverage", &done.coverage.summary()),
+                            ],
                         ));
                     }
                     modpack = p.kind == PackKind::Modpack;
@@ -775,12 +843,14 @@ impl Launcher {
                                 url,
                             );
                         }
-                        return Ok(format!(
-                            "Installed {} {} as its own profile with {}, each checked. Play it \
-                             from the list above.",
-                            pack.name,
-                            pack.version,
-                            pack.mods.join(", ")
+                        return Ok(trf(
+                            "Installed {pack} {version} as its own profile with {mods}, each \
+                             checked. Play it from the list above.",
+                            &[
+                                ("pack", &pack.name),
+                                ("version", &pack.version),
+                                ("mods", &pack.mods.join(", ")),
+                            ],
                         ));
                     }
                     if modpack {
@@ -797,8 +867,9 @@ impl Launcher {
                             );
                         }
                         return Ok(format!(
-                            "{} Play it from the list above.",
-                            modpacks::outcome(&pack)
+                            "{} {}",
+                            modpacks::outcome(&pack),
+                            tr("Play it from the list above.")
                         ));
                     }
                     let done = installed::install(&*source, &p, everything, &home, &progress)?;
@@ -806,36 +877,40 @@ impl Launcher {
                         .iter()
                         .map(|e| format!("{} {}", e.title, e.number))
                         .collect();
+                    let mods = names.join(", ");
                     if done.iter().any(|e| native_status::is_native_file(&e.file)) {
-                        return Ok(format!(
-                            "Installed {} into {instance}. Build to play with it.",
-                            names.join(", ")
+                        return Ok(trf(
+                            "Installed {mods} into {instance}. Build to play with it.",
+                            &[("mods", &mods), ("instance", &instance)],
                         ));
                     }
                     if p.source == SourceId::Horizon && p.kind == PackKind::Mod {
-                        return Ok(format!(
-                            "Installed {} into horizon-mods and turned it on, checksum checked \
-                             (Options > Mods in the game).",
-                            names.join(", ")
+                        return Ok(trf(
+                            "Installed {mods} into horizon-mods and turned it on, checksum \
+                             checked (Options > Mods in the game).",
+                            &[("mods", &mods)],
                         ));
                     }
                     if p.kind == PackKind::Mod {
                         let skipped = done.last().map_or(0, |e| e.skipped.len());
-                        return Ok(format!(
-                            "Ported {} into horizon-mods and turned on (Options > Mods in the \
-                             game).{}",
-                            names.join(", "),
-                            if skipped > 0 {
-                                " What didn't port is listed under Installed."
-                            } else {
-                                ""
-                            }
-                        ));
+                        let ported = trf(
+                            "Ported {mods} into horizon-mods and turned on (Options > Mods in \
+                             the game).",
+                            &[("mods", &mods)],
+                        );
+                        return Ok(if skipped > 0 {
+                            format!(
+                                "{ported} {}",
+                                tr("What didn't port is listed under Installed.")
+                            )
+                        } else {
+                            ported
+                        });
                     }
-                    Ok(format!(
-                        "Installed {}, checksums checked. Turn it on in the game: Options > \
-                         Resource Packs.",
-                        names.join(", ")
+                    Ok(trf(
+                        "Installed {mods}, checksums checked. Turn it on in the game: Options \
+                         > Resource Packs.",
+                        &[("mods", &mods)],
                     ))
                 });
             let _ = tx.send(Event::Done(result, modpack));
@@ -968,6 +1043,12 @@ impl Launcher {
     /// The project `id` leaves the selected instance now; what happened, for the page's notice.
     pub(super) fn mods_remove(&mut self, id: &str) -> Result<String, String> {
         let home = self.mods.home();
+        let Some(_lock) = browser::try_lock_home(&home) else {
+            let busy: Result<String, String> =
+                Err(tr("Wait for the current operation to finish.").into());
+            self.mods.message = Some(busy.clone());
+            return busy;
+        };
         let removed = match self.mods.java {
             Some(_) => java_instance::remove(&home, id),
             None => installed::remove(&home, id),
@@ -1061,10 +1142,10 @@ impl Launcher {
         let java = self.mods.java_for(self.mods.kind).is_some();
         let source_note = (switches(self.mods.kind) && !java)
             .then(|| div().flex().child(self.mods_source_switch(cx)));
-        // The registry lists only what was made for Horizon: no "everything", no Modrinth filters,
-        // only its sort.
+        // The registry lists only what was made for Horizon: no "everything", and of the filters
+        // only its categories.
         let registry = self.mods.source == SourceId::Horizon && !java;
-        let filters = (!registry).then(|| self.mods_filters(cx));
+        let filters = self.mods_filters(cx);
         // The registry's sort sits below the GitHub row, above the list it orders.
         let registry_sort = registry.then(|| self.mods_sort_bar(cx));
         let controls = div()
@@ -1081,7 +1162,7 @@ impl Launcher {
                     .when(!registry && !java, |d| d.child(toggle)),
             )
             .children(source_note)
-            .children(filters)
+            .child(filters)
             .children(self.mods_target_line(cx));
         // The kinds are inventory tabs on the panel that holds the open one.
         let body = blocks::panel(&t).flex().flex_col().gap(px(24.)).p(px(20.));
@@ -1411,21 +1492,24 @@ impl Launcher {
             let detail = div()
                 .flex()
                 .flex_col()
-                .child(format!(
-                    "{}{} · {}{} · {}",
+                .child({
+                    let from = e
+                        .source
+                        .shown_for(&e.project)
+                        .map(|s| trf("from {source}", &[("source", s)]));
+                    let needed = e
+                        .dependency
+                        .then(|| tr("needed by another pack").to_string());
+                    let origin: Vec<String> = from.into_iter().chain(needed).collect();
                     e.verdict
-                        .as_ref()
-                        .map(|v| format!("{} · ", tr(v)))
-                        .unwrap_or_default(),
-                    e.number,
-                    trf("from {source}", &[("source", e.source.label())]),
-                    if e.dependency {
-                        format!(", {}", tr("needed by another pack"))
-                    } else {
-                        String::new()
-                    },
-                    e.file
-                ))
+                        .iter()
+                        .map(|v| tr(v).to_string())
+                        .chain([e.number.clone()])
+                        .chain((!origin.is_empty()).then(|| origin.join(", ")))
+                        .chain([e.file.clone()])
+                        .collect::<Vec<_>>()
+                        .join(" · ")
+                })
                 .children(instance.as_ref().filter(|_| is_native).map(|name| {
                     div()
                         .text_color(t.ink)
@@ -1601,6 +1685,9 @@ impl Launcher {
                 ),
             };
             detail = detail.child(div().text_color(t.muted).child(said));
+            for left in &build.left_out {
+                detail = detail.child(div().text_color(t.warn).child(left.label()));
+            }
         }
         if self.native_step.is_some() && !mine {
             let other = self
@@ -1803,7 +1890,9 @@ impl Launcher {
                 by.push(trf("by {author}", &[("author", &p.author)]));
             }
             by.push(trf("{count} downloads", &[("count", &count(p.downloads))]));
-            by.push(trf("from {source}", &[("source", p.source.label())]));
+            if let Some(source) = p.source.shown_for(&p.id) {
+                by.push(trf("from {source}", &[("source", source)]));
+            }
             if !p.license.is_empty() {
                 by.push(p.license.clone());
             }
@@ -1869,8 +1958,52 @@ impl Launcher {
     }
 }
 
+/// An instance whose registry projects may update: the mod API level of the game it plays, and
+/// whether its native mods may (`horizon::auto::Context`).
+pub(super) struct AutoTarget {
+    pub(super) instance: instances::Instance,
+    pub(super) level: Option<u32>,
+    pub(super) natives: bool,
+}
+
+/// Whether `instance` keeps a Nightly, or a native build made on one: its native mods stay as
+/// they are, built for that Horizon.
+pub(super) fn pinned_to_nightly(instance: &instances::Instance) -> bool {
+    let nightly = |v: &str| v.starts_with("nightly-");
+    instance
+        .version
+        .as_deref()
+        .is_some_and(|v| nightly(v) || native_mods::about(v).is_some_and(|a| nightly(&a.base)))
+}
+
+/// Updates the registry projects of `targets`: Horizon's own instances only, never a modpack's
+/// profile, whose pack pins its mods. What happened, for the page's notice, and the instances
+/// whose native mods were updated.
+pub(super) fn auto_update(targets: &[AutoTarget]) -> (Vec<String>, Vec<String>) {
+    let (mut lines, mut rebuild) = (Vec::new(), Vec::new());
+    for t in targets {
+        let i = &t.instance;
+        let pack = i.id.starts_with("pack:") || i.id.starts_with("port:");
+        let (false, None, Some(level)) = (pack, &i.java, t.level) else {
+            continue;
+        };
+        let ctx = horizon::auto::Context {
+            in_pack: horizon::auto::in_pack(&i.home),
+            level,
+            natives: t.natives,
+        };
+        if let Some(report) = horizon::auto::run(&i.home, &ctx, &|_, _| {}) {
+            lines.extend(report.lines());
+            if report.rebuild {
+                rebuild.push(i.id.clone());
+            }
+        }
+    }
+    (lines, rebuild)
+}
+
 /// Where a kind's tab searches first: Horizon's registry for mods and shader packs, Modrinth for
-/// the rest (data packs are only there).
+/// the rest.
 fn source_for(kind: PackKind) -> SourceId {
     match kind {
         PackKind::Mod | PackKind::Shader => SourceId::Horizon,
@@ -1878,14 +2011,10 @@ fn source_for(kind: PackKind) -> SourceId {
     }
 }
 
-/// Whether a kind's tab picks its source: mods, modpacks and resource packs are on both Horizon's
-/// registry and Modrinth; Horizon's shader packs are on its registry only, data packs on Modrinth
-/// only.
+/// Whether a kind's tab picks its source: mods, modpacks, resource packs and data packs are on
+/// both Horizon's registry and Modrinth; Horizon's shader packs are on its registry only.
 pub(super) fn switches(kind: PackKind) -> bool {
-    matches!(
-        kind,
-        PackKind::Mod | PackKind::ResourcePack | PackKind::Modpack
-    )
+    kind != PackKind::Shader
 }
 
 impl Launcher {

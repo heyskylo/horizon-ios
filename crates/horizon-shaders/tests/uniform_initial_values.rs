@@ -38,8 +38,10 @@ fn words(p: &horizon_shaders::Program, name: &str, n: usize) -> Vec<u32> {
         .unwrap()
         .offset as usize;
     p.interface.initial_values[offset..offset + n * 4]
-        .chunks_exact(4)
-        .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|b| u32::from_le_bytes(*b))
         .collect()
 }
 #[test]
@@ -164,4 +166,27 @@ fn compute_programs_receive_initial_contents_and_nonconstant_uniform_initializer
             .collect::<Vec<_>>()
     );
     assert!(translate_composite(&source(VERTEX), &source("uniform float runtime; uniform float value = runtime; out vec4 c; void main(){ c=vec4(value); }"), Target::Buffers).is_err());
+}
+
+#[test]
+fn unsupported_double_defaults_keep_programs_and_supported_neighbors() {
+    let p = program("uniform double unknown = double(2.0); uniform float kept = 0.625;");
+    assert_eq!(words(&p, "unknown", 2), [0, 0]);
+    assert_eq!(words(&p, "kept", 1), [0.625f32.to_bits()]);
+    assert_eq!(p.notes.len(), 1);
+    let note = &p.notes[0];
+    assert_eq!((&*note.file, note.line), ("original.glsl", 1));
+    assert!(note.message.contains("unknown") && note.message.contains("using zero"));
+    let p = translate_compute(&source("layout(local_size_x=1) in; uniform double unknown = double(2.0); uniform float kept = 0.625; void main() {}" )).unwrap();
+    assert_eq!(p.notes.len(), 1);
+    let u = p
+        .interface
+        .uniforms
+        .iter()
+        .find(|u| u.name == "unknown")
+        .unwrap();
+    assert_eq!(
+        &p.interface.initial_values[u.offset as usize..u.offset as usize + 8],
+        &[0; 8]
+    );
 }

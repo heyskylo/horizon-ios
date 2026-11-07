@@ -6,13 +6,7 @@ use horizon_world::{
     worldgen::{tags::TagDefinitions, terrain::TerrainBlockStates},
 };
 use serde_json::Value;
-use std::{
-    collections::BTreeSet,
-    fs::File,
-    io::{self, BufReader},
-    path::Path,
-    sync::Arc,
-};
+use std::{collections::BTreeSet, io, path::Path, sync::Arc};
 
 pub const MATERIALS: [&str; 6] = ["bedrock", "dirt", "stone", "sand", "oak_planks", "bricks"];
 #[derive(Clone, Copy)]
@@ -84,7 +78,9 @@ pub struct Assets {
 pub struct RenderAssets {
     pub sprite_size: u32,
     pub sprite_minimum_size: u32,
-    pub pixels: Vec<u8>,
+    /// The block sprites' RGBA, layer by layer: as built until a renderer has
+    /// them, then kept compressed ([`SpritePixels`]).
+    pub pixels: SpritePixels,
     pub texture_layers: u32,
     pub model_catalog: crate::models::StateModels,
     /// Shared parsed resources; item-only validation errors surface at item preparation.
@@ -111,6 +107,76 @@ pub struct RenderAssets {
     /// sprites are when it changes (`native_block_sprites_version`).
     pub generation: u64,
 }
+/// The block sprites' pixels for a renderer to upload. Once a renderer has
+/// them ([`Self::pack`]) they are kept lz4-compressed: the GPU holds the
+/// texture array, and the copy only serves a renderer made again (another
+/// window, a lost device, another graphics API), which waits for
+/// [`Self::get`] to uncompress them. Shared by the window and the workers'
+/// `RenderAssets`, so the compressed form replaces the raw one in place.
+pub struct SpritePixels(Arc<PixelStore>);
+struct PixelStore {
+    len: usize,
+    /// Set by the first `pack`: later calls cost one atomic read.
+    packing: std::sync::atomic::AtomicBool,
+    /// As built; dropped once `packed` holds them.
+    raw: std::sync::Mutex<Option<Arc<Vec<u8>>>>,
+    packed: std::sync::OnceLock<Vec<u8>>,
+}
+impl SpritePixels {
+    pub fn new(pixels: Vec<u8>) -> Self {
+        Self(Arc::new(PixelStore {
+            len: pixels.len(),
+            packing: std::sync::atomic::AtomicBool::new(false),
+            raw: std::sync::Mutex::new(Some(Arc::new(pixels))),
+            packed: std::sync::OnceLock::new(),
+        }))
+    }
+    /// Their size in bytes, uncompressed.
+    pub fn len(&self) -> usize {
+        self.0.len
+    }
+    pub fn is_empty(&self) -> bool {
+        self.0.len == 0
+    }
+    /// The pixels as built, uncompressed again once packed.
+    pub fn get(&self) -> Arc<Vec<u8>> {
+        let raw = self.0.raw.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        raw.unwrap_or_else(|| {
+            let packed = self.0.packed.get().map(Vec::as_slice).unwrap_or_default();
+            Arc::new(
+                lz4_flex::decompress_size_prepended(packed)
+                    .ok()
+                    .filter(|p| p.len() == self.0.len)
+                    .unwrap_or_else(|| vec![0; self.0.len]),
+            )
+        })
+    }
+    /// Keep them compressed from now on, once a renderer has uploaded them:
+    /// compressed on a thread of their own, the raw copy dropped after.
+    pub fn pack(&self) {
+        use std::sync::atomic::Ordering;
+        if self.0.len == 0 || self.0.packing.swap(true, Ordering::Relaxed) {
+            return;
+        }
+        let store = self.0.clone();
+        let job = move || {
+            let raw = store.raw.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            if let Some(raw) = raw {
+                let _ = store.packed.set(lz4_flex::compress_prepend_size(&raw));
+                // `get` reads the compressed copy from here on.
+                *store.raw.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            }
+        };
+        let fallback = job.clone();
+        if std::thread::Builder::new()
+            .name("Sprite packing".into())
+            .spawn(job)
+            .is_err()
+        {
+            fallback();
+        }
+    }
+}
 /// The last `RenderAssets::generation` handed out.
 static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 fn invalid(message: &str) -> io::Error {
@@ -118,15 +184,12 @@ fn invalid(message: &str) -> io::Error {
 }
 impl Assets {
     pub fn load(root: &Path) -> Result<Self> {
-        let manifest: Value = serde_json::from_reader(BufReader::new(File::open(
-            root.join("horizon-resources.json"),
-        )?))?;
+        let manifest: Value = horizon_world::json_file::read(&root.join("horizon-resources.json"))?;
         if manifest["data_version"].as_i64() != Some(i64::from(DATA_VERSION)) {
             return Err(invalid("resources do not match Horizon's pinned data version").into());
         }
         let (registry, flags) = horizon_world::level::data::load_registry_with_flags(root)?;
-        let bundle: Value =
-            serde_json::from_reader(BufReader::new(File::open(root.join("block-tags.json"))?))?;
+        let bundle: Value = horizon_world::json_file::read(&root.join("block-tags.json"))?;
         let mut definitions = TagDefinitions::default();
         for (name, text) in bundle
             .as_object()
@@ -280,6 +343,7 @@ impl RenderAssets {
         }
         for stage in 0..10 {
             sprites.insert(root, &format!("minecraft:block/destroy_stage_{stage}"))?;
+            sprites.insert(root, &format!("minecraft:block/destroy_oit_stage_{stage}"))?;
         }
         let fusion = if draws {
             let _step = crate::spans::startup::step("core.fusion");
@@ -333,7 +397,7 @@ impl RenderAssets {
             sprite_size: sprites.size,
             sprite_minimum_size: sprites.minimum_size,
             texture_layers: u32::try_from(sprites.count())?,
-            pixels: sprites.pixels,
+            pixels: SpritePixels::new(sprites.pixels),
             model_catalog: models.catalog,
             model_library,
             model_placements: models.placements,
@@ -430,5 +494,30 @@ mod tests {
             chicken.consumable.as_ref().unwrap().effects[..],
             [ConsumeEffect::ApplyEffects { probability, .. }] if probability == 0.3
         ));
+    }
+
+    #[test]
+    fn sprite_pixels_come_back_the_same_once_packed() {
+        // Two layers of 16x16 RGBA with some structure, as sprites have.
+        let pixels: Vec<u8> = (0..2 * 16 * 16 * 4).map(|i| (i * 7 % 251) as u8).collect();
+        let stored = super::SpritePixels::new(pixels.clone());
+        assert_eq!(*stored.get(), pixels);
+        stored.pack();
+        stored.pack();
+        // The packing thread drops the raw copy once the compressed one is set.
+        let started = std::time::Instant::now();
+        while stored.0.raw.lock().unwrap().is_some() {
+            assert!(started.elapsed().as_secs() < 10, "packing never finished");
+            std::thread::yield_now();
+        }
+        assert!(
+            stored
+                .0
+                .packed
+                .get()
+                .is_some_and(|p| p.len() < pixels.len())
+        );
+        assert_eq!(*stored.get(), pixels);
+        assert_eq!(stored.len(), pixels.len());
     }
 }

@@ -1520,6 +1520,46 @@ fn read_argument_properties(r: &mut Reader, id: i32) -> Result<()> {
     ArgumentProperties::read(r, id).map(|_| ())
 }
 
+/// Whether following `edges` from any node never comes back to it. An index
+/// outside the nodes leads nowhere (the dispatcher drops it).
+fn acyclic(nodes: &[CommandNode], edges: impl Fn(&CommandNode) -> &[i32]) -> bool {
+    const NEW: u8 = 0;
+    const ON_PATH: u8 = 1;
+    const DONE: u8 = 2;
+    let mut state = vec![NEW; nodes.len()];
+    // Depth first without recursion: a node and how many of its edges are followed.
+    let mut path: Vec<(usize, usize)> = Vec::new();
+    for start in 0..nodes.len() {
+        if state[start] != NEW {
+            continue;
+        }
+        state[start] = ON_PATH;
+        path.push((start, 0));
+        while let Some(&(node, followed)) = path.last() {
+            let Some(&edge) = edges(&nodes[node]).get(followed) else {
+                state[node] = DONE;
+                path.pop();
+                continue;
+            };
+            if let Some(top) = path.last_mut() {
+                top.1 += 1;
+            }
+            let Some(next) = usize::try_from(edge).ok().filter(|&e| e < nodes.len()) else {
+                continue;
+            };
+            match state[next] {
+                ON_PATH => return false,
+                NEW => {
+                    state[next] = ON_PATH;
+                    path.push((next, 0));
+                }
+                _ => {}
+            }
+        }
+    }
+    true
+}
+
 /// The command tree: nodes and the index of the root.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Commands {
@@ -1563,6 +1603,12 @@ impl Codec<Commands> for Commands {
                 parser,
                 suggestions,
             });
+        }
+        // ClientboundCommandsPacket.validateEntries: every node's redirect builds
+        // first (canBuild), then its children (canResolve). A cycle in either never
+        // does, and walking it would recurse without end.
+        if !acyclic(&nodes, |n| n.redirect.as_slice()) || !acyclic(&nodes, |n| &n.children) {
+            return Err(crate::Error::new("Server sent an impossible command tree"));
         }
         Ok(Self {
             nodes,
@@ -2688,6 +2734,54 @@ mod tests {
         packets::{recipes::RecipeBookSeenRecipe, round_trip},
         text::literal,
     };
+
+    #[test]
+    fn a_command_tree_with_a_cycle_is_refused() {
+        let node = |kind: u8, name: &str, children: Vec<i32>, redirect: Option<i32>| CommandNode {
+            kind,
+            executable: false,
+            restricted: false,
+            children,
+            redirect,
+            name: name.into(),
+            parser: None,
+            suggestions: None,
+        };
+        let read = |nodes: Vec<CommandNode>| {
+            let mut w = Writer::new();
+            Commands::write(&Commands { nodes, root: 0 }, &mut w);
+            Commands::read(&mut Reader::new(&w.data))
+        };
+        // `execute` with `run` redirecting back to the root, as vanilla's tree has it.
+        let execute = vec![
+            node(0, "", vec![1], None),
+            node(1, "execute", vec![2], None),
+            node(1, "run", vec![], Some(0)),
+        ];
+        assert!(read(execute).is_ok());
+        // root -> a -> b -> a
+        let children = vec![
+            node(0, "", vec![1], None),
+            node(1, "a", vec![2], None),
+            node(1, "b", vec![1], None),
+        ];
+        assert!(read(children).is_err());
+        assert!(read(vec![node(0, "", vec![0], None)]).is_err());
+        // a redirects to b, b to a
+        let redirects = vec![
+            node(0, "", vec![1, 2], None),
+            node(1, "a", vec![], Some(2)),
+            node(1, "b", vec![], Some(1)),
+        ];
+        assert!(read(redirects).is_err());
+        // A long chain is fine and checked without recursing.
+        let mut chain: Vec<_> = (1..=100_000).map(|i| node(1, "x", vec![i], None)).collect();
+        chain[0].kind = 0;
+        chain.push(node(1, "x", vec![], None));
+        assert!(read(chain.clone()).is_ok());
+        chain.last_mut().unwrap().children.push(50_000);
+        assert!(read(chain).is_err());
+    }
 
     #[test]
     fn vec_delta_quantizes_the_base_like_math_round() {

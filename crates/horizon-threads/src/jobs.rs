@@ -166,10 +166,11 @@ static CONFIGURED: AtomicUsize = AtomicUsize::new(0);
 static POOL: OnceLock<Pool> = OnceLock::new();
 
 /// The number of workers the machine gets by default: one thread per core
-/// but one, which the render and server threads share with them (they run
-/// ahead of the workers: [`crate::favour_current`], [`crate::behind_server`]).
+/// but one ([`crate::default_workers`]: per performance core on Apple silicon), which the
+/// render and server threads share with them (they run ahead of the workers:
+/// [`crate::favour_current`], [`crate::behind_server`]).
 pub fn default_threads() -> usize {
-    crate::worker_count().saturating_sub(1).max(1)
+    crate::default_workers()
 }
 
 /// Size the process's pool before its first use (later calls change
@@ -775,7 +776,17 @@ mod tests {
             hold: Some(gate.clone()),
         });
         let reg = pool.register(held.clone());
-        std::thread::sleep(Duration::from_millis(100));
+        // A worker takes the job off the queue before holding it on the gate: wait for
+        // that take, not a fixed sleep past it (a busy runner may start it later), so
+        // `drop(reg)` below always has a running job to wait for.
+        let picked = Instant::now();
+        while lock(&held.jobs).len() > 1 {
+            assert!(
+                picked.elapsed() < Duration::from_secs(10),
+                "no worker picked the job up"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
         let opener = {
             let gate = gate.clone();
             std::thread::spawn(move || {

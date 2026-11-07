@@ -6,6 +6,7 @@
 use super::Game;
 use horizon_client::lan::{
     entity::{EntityState, Riding, States},
+    guest::Guest,
     hub::Hub,
     playerdata::ints_uuid,
 };
@@ -50,6 +51,8 @@ fn state(id: u32, kind: &str, position: [f64; 3], yaw: f32, on_ground: bool) -> 
         vertical_collision: false,
         horizontal_collision: false,
         needs_sync: false,
+        idle: false,
+        bare: false,
         leash: None,
         spectator: false,
         watching: false,
@@ -71,6 +74,28 @@ fn vehicle_meta(hurt_time: i32, hurt_dir: i32, damage: f32) -> Vec<(u8, i32, Val
         meta.push((10, serializer::FLOAT, Value::Float(damage)));
     }
     meta
+}
+
+/// `AbstractMinecart`'s DATA_ID_CUSTOM_DISPLAY_BLOCK (entry 11, an optional
+/// block state, empty by default) and DATA_ID_DISPLAY_OFFSET (entry 12, the
+/// kind's `getDefaultDisplayOffset` by default).
+fn cart_display_data(
+    e: &mut EntityState,
+    shown: Option<BlockStateId>,
+    offset: Option<i32>,
+    default_offset: i32,
+) {
+    e.defaults
+        .push((11, serializer::OPTIONAL_BLOCK_STATE, Value::Id(0)));
+    e.defaults
+        .push((12, serializer::INT, Value::Int(default_offset)));
+    if let Some(s) = shown {
+        e.meta
+            .push((11, serializer::OPTIONAL_BLOCK_STATE, Value::Id(s.0 as i32)));
+    }
+    if let Some(o) = offset.filter(|&o| o != default_offset) {
+        e.meta.push((12, serializer::INT, Value::Int(o)));
+    }
 }
 
 /// An armor stand's pose (`ArmorStandPose`), each part that differs from the
@@ -133,15 +158,35 @@ impl Game<'_> {
 
     /// Who rides what (`Entity.getPassengers`): the players in their vehicles and
     /// mobs on mobs.
-    pub(super) fn lan_riding(&self, guests: &[(u32, i32)], riding: &mut Riding) {
+    pub(super) fn lan_riding(&self, guests: &[Guest], riding: &mut Riding) {
         riding.clear();
-        // The server's players in their boats and minecarts.
-        for &(vehicle, guest) in guests {
+        // The server's players in their boats and minecarts, in the order they
+        // got in: the first one drives (`getControllingPassenger`), and its
+        // client is the one that moves the vehicle.
+        let mut seated: Vec<(u64, u32, i32)> = guests
+            .iter()
+            .filter_map(|g| Some((g.vehicle_order, g.vehicle?, g.entity_id)))
+            .collect();
+        seated.sort_by_key(|&(order, ..)| order);
+        for (_, vehicle, guest) in seated {
             riding.add(vehicle as i32, guest);
         }
         for m in self.mobs.iter().filter(|m| !m.removed) {
             if let Some(vehicle) = m.extra.mount {
                 riding.add(vehicle as i32, m.id as i32);
+            }
+        }
+        for (&vehicle, pass) in &mut riding.passengers {
+            if let Some(driver) = self
+                .mobs
+                .iter()
+                .find(|m| m.id as i32 == vehicle)
+                .and_then(|m| m.extra.rider)
+                && let Some(pos) = pass.iter().position(|&p| p == driver as i32)
+                && pos != 0
+            {
+                let d = pass.remove(pos);
+                pass.insert(0, d);
             }
         }
     }
@@ -204,6 +249,11 @@ impl Game<'_> {
                 });
             }
             e.meta = vehicle_meta(c.hurt_time, c.hurt_dir, c.damage);
+            let shown = c.custom_display.as_ref().and_then(|t| {
+                horizon_client::entity_nbt::state_from_nbt(self.pack.assets.registry, t)
+            });
+            let default = super::minecarts::default_display_offset(c.kind) as i32;
+            cart_display_data(&mut e, shown, c.custom_offset, default);
             match c.kind {
                 // MinecartFurnace.DATA_ID_FUEL.
                 super::minecarts::CartKind::Furnace => {
@@ -420,7 +470,7 @@ impl Game<'_> {
     /// The synched data of a text, block or item display kept unsimulated,
     /// from its compound (`Display.readAdditionalSaveData`), with the
     /// defaults to send when a value goes back to one.
-    fn lan_display_data(&self, tag: &Tag, hub: &mut Hub, e: &mut EntityState) {
+    pub(super) fn lan_display_data(&self, tag: &Tag, hub: &mut Hub, e: &mut EntityState) {
         use horizon_client::text_display::{display_data, text_display_data};
         let empty = Tag::Compound(Default::default());
         let (meta, defaults) = match e.kind.as_str() {
@@ -485,7 +535,8 @@ impl Game<'_> {
     /// selectors use, so a client can name it back (the crosshair UUID that
     /// `ClientSuggestionProvider.getSelectedEntities` suggests).
     pub(super) fn lan_entity_uuids(&mut self, states: &mut States) {
-        for e in states.as_mut_slice() {
+        // A bare state is never paired: its UUID is never read.
+        for e in states.as_mut_slice().iter_mut().filter(|e| !e.bare) {
             e.uuid = ints_uuid(self.uuid_for(e.id as u32));
         }
     }
@@ -906,5 +957,31 @@ mod tests {
         );
         let plain = horizon_client::entities::ArmorStand::new(1, Default::default(), 0.0);
         assert!(stand_poses(&plain).is_empty());
+    }
+
+    /// Issue #8050: a cart's custom display block and offset reach clients
+    /// as entries 11 and 12, the offset only off the kind's default.
+    #[test]
+    fn cart_display_block_and_offset_are_synched() {
+        let mut e = state(1, "minecraft:minecart", [0.0; 3], 0.0, false);
+        cart_display_data(&mut e, Some(BlockStateId(42)), Some(14), 6);
+        assert_eq!(
+            e.meta,
+            vec![
+                (11, serializer::OPTIONAL_BLOCK_STATE, Value::Id(42)),
+                (12, serializer::INT, Value::Int(14)),
+            ]
+        );
+        assert_eq!(
+            e.defaults,
+            vec![
+                (11, serializer::OPTIONAL_BLOCK_STATE, Value::Id(0)),
+                (12, serializer::INT, Value::Int(6)),
+            ]
+        );
+        let mut plain = state(2, "minecraft:hopper_minecart", [0.0; 3], 0.0, false);
+        cart_display_data(&mut plain, None, Some(1), 1);
+        assert!(plain.meta.is_empty());
+        assert_eq!(plain.defaults[1], (12, serializer::INT, Value::Int(1)));
     }
 }

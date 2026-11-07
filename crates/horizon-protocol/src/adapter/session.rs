@@ -322,17 +322,17 @@ mod tests {
     #[test]
     fn legacy_logins_preserve_the_encryption_requests_authentication_signal() {
         use crate::packets::{login, play};
-        for version in [ServerVersion::V1_20_3, ServerVersion::V1_20_5] {
+        for version in [ServerVersion::V1_20_3, ServerVersion::V1_20_6] {
             for authenticated in [false, true] {
                 let s = Session::new(version);
                 s.set_reading(State::Login);
                 // 765 had no opt-out bit: offline login omitted the encryption request.
-                if authenticated || version == ServerVersion::V1_20_5 {
+                if authenticated || version == ServerVersion::V1_20_6 {
                     let mut hello = Writer::new();
                     hello.string("");
                     hello.byte_array(&[1, 2]);
                     hello.byte_array(&[3, 4]);
-                    if version == ServerVersion::V1_20_5 {
+                    if version == ServerVersion::V1_20_6 {
                         hello.bool(authenticated);
                     }
                     let (id, payload) = s.clientbound(1, hello.data).unwrap().unwrap();
@@ -366,7 +366,7 @@ mod tests {
                 assert_eq!(login.online_mode, authenticated, "{}", version.name());
                 assert_eq!(
                     login.enforces_secure_chat,
-                    version == ServerVersion::V1_20_5
+                    version == ServerVersion::V1_20_6
                 );
             }
         }

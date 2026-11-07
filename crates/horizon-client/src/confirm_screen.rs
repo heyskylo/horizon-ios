@@ -14,6 +14,8 @@ pub struct Confirm {
     /// The yes and no buttons' corners.
     pub buttons: [(f32, f32); 2],
     pub focus: Option<usize>,
+    /// `declare_no` was called.
+    declares_no: bool,
 }
 impl Confirm {
     pub fn new(font: &Font, size: (f32, f32), title: &Text, message: &Text) -> Self {
@@ -22,6 +24,7 @@ impl Confirm {
             lines,
             buttons: [buttons[0], buttons[1]],
             focus: None,
+            declares_no: false,
         }
     }
     /// Tab cycles focus between yes (0) and no (1).
@@ -67,6 +70,10 @@ impl Confirm {
     ) {
         self.draw_active(batch, atlas, cursor, labels, true);
     }
+    /// The second button answers no, as Escape does (`widgets::Action`), once drawn.
+    pub fn declare_no(&mut self) {
+        self.declares_no = true;
+    }
     /// `draw` with the buttons greyed out while `setDelay` runs (`active` false).
     pub fn draw_active(
         &self,
@@ -82,7 +89,14 @@ impl Confirm {
         for (i, ((bx, by), label)) in self.buttons.into_iter().zip(labels).enumerate() {
             let is_focused = self.focus == Some(i);
             let hover = active && (ui::hovered(cursor, bx, by, 150.0, 20.0) || is_focused);
-            ui::button(batch, atlas, bx, by, 150.0, 20.0, label, active, hover);
+            if self.declares_no && i == 1 {
+                let action = crate::widgets::Action::Cancel;
+                ui::action_button(
+                    batch, atlas, action, bx, by, 150.0, 20.0, label, active, hover,
+                );
+            } else {
+                ui::button(batch, atlas, bx, by, 150.0, 20.0, label, active, hover);
+            }
         }
     }
 }
@@ -96,6 +110,8 @@ pub struct Choice {
     pub buttons: Vec<(f32, f32)>,
     pub width: f32,
     pub focus: Option<usize>,
+    /// The button `declare_no` named.
+    no_button: Option<usize>,
 }
 impl Choice {
     pub fn new(
@@ -137,6 +153,7 @@ impl Choice {
                 .collect(),
             width,
             focus: None,
+            no_button: None,
         }
     }
     /// Tab cycles focus across the buttons.
@@ -183,6 +200,10 @@ impl Choice {
             .iter()
             .position(|&(x, y)| ui::hovered(cursor, x, y, self.width, 20.0))
     }
+    /// Button `i` answers no, as Escape does (`widgets::Action`), once drawn.
+    pub fn declare_no(&mut self, i: usize) {
+        self.no_button = Some(i);
+    }
     /// The lines and the buttons, over whatever is behind.
     pub fn draw(
         &self,
@@ -197,7 +218,14 @@ impl Choice {
         for (i, (&(bx, by), label)) in self.buttons.iter().zip(labels).enumerate() {
             let is_focused = self.focus == Some(i);
             let hover = ui::hovered(cursor, bx, by, self.width, 20.0) || is_focused;
-            ui::button(batch, atlas, bx, by, self.width, 20.0, label, true, hover);
+            if self.no_button == Some(i) {
+                let action = crate::widgets::Action::Cancel;
+                ui::action_button(
+                    batch, atlas, action, bx, by, self.width, 20.0, label, true, hover,
+                );
+            } else {
+                ui::button(batch, atlas, bx, by, self.width, 20.0, label, true, hover);
+            }
         }
     }
 }
@@ -241,6 +269,55 @@ mod tests {
         let two = Confirm::new(&font(), (480.0, 270.0), &title, &message);
         assert_eq!(two.buttons[0].0, 88.0);
         assert_eq!(two.buttons[1].0, 242.0);
+    }
+
+    #[test]
+    fn only_the_button_declared_no_gets_its_job() {
+        use crate::widgets::{self, Action, DeclaredAction};
+        let atlas = HudAtlas::build(Path::new("/nonexistent/horizon-test-assets")).unwrap();
+        let (title, message) = (Text::literal("Title"), Text::literal("Message"));
+        let labels = [
+            Text::literal("Yes"),
+            Text::literal("Copy"),
+            Text::literal("No"),
+        ];
+        let drawn = |frame: u64, draw: &dyn Fn(&mut HudBatch)| {
+            widgets::set_action_screen(7);
+            draw(&mut HudBatch::new([480, 270]));
+            widgets::end_frame(frame);
+            widgets::last_actions(7)
+        };
+        let no = |rect| {
+            vec![DeclaredAction {
+                action: Action::Cancel,
+                rect,
+                enabled: true,
+            }]
+        };
+
+        let mut confirm = Confirm::new(&font(), (480.0, 270.0), &title, &message);
+        let draw_confirm = |confirm: &Confirm, batch: &mut HudBatch| {
+            confirm.draw(batch, &atlas, (0.0, 0.0), [&labels[0], &labels[2]]);
+        };
+        assert!(drawn(1, &|b| draw_confirm(&confirm, b)).is_empty());
+        confirm.declare_no();
+        let (x, y) = confirm.buttons[1];
+        assert_eq!(
+            drawn(2, &|b| draw_confirm(&confirm, b)),
+            no([x, y, 150.0, 20.0])
+        );
+
+        let mut choice = Choice::new(&font(), (480.0, 270.0), &title, &message, 3, 100.0);
+        let draw_choice = |choice: &Choice, batch: &mut HudBatch| {
+            choice.draw(batch, &atlas, (0.0, 0.0), &labels);
+        };
+        assert!(drawn(3, &|b| draw_choice(&choice, b)).is_empty());
+        choice.declare_no(2);
+        let (x, y) = choice.buttons[2];
+        assert_eq!(
+            drawn(4, &|b| draw_choice(&choice, b)),
+            no([x, y, 100.0, 20.0])
+        );
     }
 
     #[test]

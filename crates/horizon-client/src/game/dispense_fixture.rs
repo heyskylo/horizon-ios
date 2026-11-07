@@ -62,6 +62,22 @@ pub(super) fn record_events(events: &[horizon_world::level::LevelEvent]) {
     }
 }
 
+/// The `S` line for a level event whose sound `LevelEventHandler` plays on the
+/// client (`playLocalSound`), so Horizon plays it unshared and never captures
+/// it: the lava fizz (1501, #7652) and `ComposterBlock.handleFill` (1500,
+/// `data > 0` = success, #9069).
+fn event_sound(line: &str) -> Option<String> {
+    let mut parts = line.strip_prefix("L ")?.split(' ');
+    let (id, pos, data) = (parts.next()?, parts.next()?, parts.next()?);
+    let sound = match id {
+        "1501" => "minecraft:block.lava.extinguish",
+        "1500" if data.parse::<i32>().ok()? > 0 => "minecraft:block.composter.fill_success",
+        "1500" => "minecraft:block.composter.fill",
+        _ => return None,
+    };
+    Some(format!("S {pos} {sound}"))
+}
+
 /// Java's `String.format("%.6f")`: the exact value rounded half up (away
 /// from zero) where Rust rounds a tie to even.
 fn num(v: f64) -> String {
@@ -140,12 +156,16 @@ impl Game<'_> {
         self.tick_chunks.clear();
         self.sync_tick_chunks();
         self.mobs.clear();
+        self.dragon = None;
         self.dropped.clear();
         self.creatures.projectiles.clear();
         self.tnts.clear();
         self.boats.clear();
         self.carts.clear();
         self.armor_stands.clear();
+        self.crystals.clear();
+        self.paintings.clear();
+        self.item_frames.clear();
         self.rockets.clear();
         self.potions.clear_thrown();
         self.level_events.clear();
@@ -292,7 +312,21 @@ impl Game<'_> {
         );
         let state = self.world.block(origin.x, origin.y, origin.z);
         let mut used = Vec::new();
-        if let Some(op) = case.get("remove") {
+        if let Some(op) = case.get("wind_burst") {
+            let center = [
+                op["center"][0].as_f64().ok_or("wind center x")?,
+                op["center"][1].as_f64().ok_or("wind center y")?,
+                op["center"][2].as_f64().ok_or("wind center z")?,
+            ];
+            let breeze = op["breeze"].as_bool().unwrap_or(false);
+            self.wind_burst(
+                center,
+                op["radius"].as_f64().unwrap_or(3.0) as f32,
+                1.0,
+                breeze,
+                !breeze,
+            )?;
+        } else if let Some(op) = case.get("remove") {
             used = self.fixture_remove(origin, op)?;
         } else if let Some(op) = case.get("use") {
             used = self.fixture_use(origin, op)?;
@@ -318,6 +352,8 @@ impl Game<'_> {
                 ),
                 None => "respawn none".to_owned(),
             });
+        } else if let Some(op) = case.get("wake") {
+            used.push(self.fixture_wake(origin, op)?);
         } else if let Some(op) = case.get("attack") {
             used = self.fixture_attack(op, &targets)?;
         } else if case.get("hopper").is_some() {
@@ -431,18 +467,11 @@ impl Game<'_> {
             out.push(self.fixture_describe(i, t));
         }
         let log = LOG.with(|log| log.borrow_mut().take()).unwrap_or_default();
-        // LevelEventHandler's lava fizz (1501): the client plays it from the
-        // level event, so it is not captured as a shared sound (#7652).
-        let fizzes: Vec<String> = log
-            .iter()
-            .filter_map(|line| line.strip_prefix("L 1501 "))
-            .filter_map(|rest| rest.split(' ').next())
-            .map(|pos| format!("S {pos} minecraft:block.lava.extinguish"))
-            .collect();
+        let event_sounds: Vec<String> = log.iter().filter_map(|l| event_sound(l)).collect();
         out.extend(log);
-        out.extend(fizzes);
-        for (sound, at, _, _) in self.audio.capture.take().unwrap_or_default() {
-            out.push(format!("S {} {sound}", floor_pos(at)));
+        out.extend(event_sounds);
+        for sound in self.audio.capture.take().unwrap_or_default() {
+            out.push(format!("S {} {}", floor_pos(sound.position), sound.event));
         }
         out.extend(used);
         out.push(format!("rng {}", self.world.random.next_long()));
@@ -542,6 +571,8 @@ impl Game<'_> {
             self.keys.insert(KeyCode::ShiftLeft);
         }
         self.using = None;
+        // The oracle's player wears nothing: no armor left on from an earlier case.
+        self.armor = Default::default();
         self.inventory[self.selected] = stack.clone();
         self.offhand = parse_stack(op["offhand"].as_str().unwrap_or("-"))?;
         // The used statistic of each item held, once.
@@ -638,6 +669,8 @@ impl Game<'_> {
                 v[2].as_f64().unwrap_or(0.0),
             )
         };
+        // A new player: no combat of an earlier case's.
+        self.combat = Default::default();
         let mut player = PlayerMotion::new(self.motion, v3(&op["player"]))?;
         player.velocity = v3(&op["motion"]);
         player.fall_distance = op["fall"].as_f64().unwrap_or(0.0);
@@ -653,6 +686,7 @@ impl Game<'_> {
         let used_before = stack
             .as_ref()
             .map_or(0, |s| self.stats.get("used", &s.item));
+        let taken_before = self.stats.get("custom", "minecraft:damage_taken");
         let base = op["base"].as_f64().unwrap_or(0.0) as f32;
         let source = self.attack_source(feet);
         let (bonus, hurt) = match targets.first() {
@@ -690,11 +724,38 @@ impl Game<'_> {
         };
         self.process_level_events()?;
         let mut out = Vec::new();
+        // What the player's tick makes of its own hurt (the victim's Thorns):
+        // the combat record with its statistic, the hurt sound where it
+        // stands and the damage game event of the health it lost.
+        let events = self
+            .player
+            .as_mut()
+            .map(|p| std::mem::take(&mut p.events))
+            .unwrap_or_default();
+        self.record_combat(&events);
+        for event in &events {
+            if let horizon_client::motion::MotionEvent::HurtSound(sound) = event {
+                out.push(format!("S {} {sound}", floor_pos(feet)));
+            }
+        }
+        if self
+            .player
+            .as_ref()
+            .is_some_and(|p| p.health.health() < 20.0)
+        {
+            self.post_entity_event("minecraft:entity_damage", horizon_client::mobs::Who::Player);
+        }
         if let Some(s) = &stack {
             let used = self.stats.get("used", &s.item) - used_before;
             if used != 0 {
                 out.push(format!("stat {} minecraft:used {used}", s.item));
             }
+        }
+        let taken = self.stats.get("custom", "minecraft:damage_taken") - taken_before;
+        if taken != 0 {
+            out.push(format!(
+                "stat minecraft:damage_taken minecraft:custom {taken}"
+            ));
         }
         let source = match source.kind {
             horizon_client::mobs::DamageKind::MaceSmash => "minecraft:mace_smash",
@@ -725,6 +786,25 @@ impl Game<'_> {
                 num(v.y),
                 num(v.z)
             ));
+        }
+        // What the first target wears, worn by its Thorns.
+        if let Some(&Target::Mob(id)) = targets.first()
+            && let Some(m) = self.mobs.iter().find(|m| m.id == id)
+        {
+            use horizon_client::mobs::finalize as f;
+            for (slot, name) in [
+                (f::FEET, "feet"),
+                (f::LEGS, "legs"),
+                (f::CHEST, "chest"),
+                (f::HEAD, "head"),
+            ] {
+                if let Some(s) = f::item_stack(m, slot) {
+                    out.push(format!("W {name} {}", canon_stack(Some(&s))));
+                }
+            }
+        }
+        if let Some(p) = self.player.as_ref() {
+            out.push(format!("H {}", num(f64::from(p.health.health()))));
         }
         if let Some(p) = self.player.take() {
             let impact = p.impulse.impact_position.map_or("-".to_owned(), |i| {
@@ -861,14 +941,19 @@ impl Game<'_> {
         Ok(Vec::new())
     }
 
-    /// A survival player three blocks south of `pos` mines it holding the
-    /// case's item (`break_block`, which every player's mining goes through):
-    /// the statistics and the held stack, as `VanillaDispenserOracle.mine`
-    /// prints them.
+    /// A player three blocks south of `pos` mines it holding the case's item
+    /// (`break_block`, which every player's mining goes through), in survival
+    /// or in creative, where the block and its contents never drop: the
+    /// statistics and the held stack, as `VanillaDispenserOracle.mine` prints
+    /// them.
     fn fixture_mine(&mut self, pos: BlockPos, op: &Value) -> Result<Vec<String>> {
         let stack = parse_stack(op["item"].as_str().unwrap_or("-"))?;
-        self.mode = GameMode::Survival;
-        self.creative = false;
+        self.mode = if op["creative"].as_bool().unwrap_or(false) {
+            GameMode::Creative
+        } else {
+            GameMode::Survival
+        };
+        self.creative = self.mode == GameMode::Creative;
         self.player = Some(PlayerMotion::new(
             self.motion,
             horizon_core::geometry::Vec3::new(
@@ -909,6 +994,37 @@ impl Game<'_> {
             canon_stack(self.inventory[self.selected].as_ref())
         ));
         Ok(out)
+    }
+
+    /// A villager lying in the bed at `origin` with `yaw` wakes up
+    /// (`Villager.stopSleeping`): where it stands and the yaw it turns to.
+    fn fixture_wake(&mut self, origin: BlockPos, op: &Value) -> Result<String> {
+        let kind = self
+            .res
+            .mob_types()
+            .get("minecraft:villager")
+            .cloned()
+            .ok_or("no mob type minecraft:villager")?;
+        let bed = [origin.x, origin.y, origin.z];
+        let lying = horizon_core::geometry::Vec3::new(
+            f64::from(bed[0]) + 0.5,
+            f64::from(bed[1]) + 0.6875,
+            f64::from(bed[2]) + 0.5,
+        );
+        let yaw = op["yaw"].as_f64().unwrap_or(0.0) as f32;
+        let mut villager = Mob::new(1, kind, lying, yaw);
+        horizon_client::mobs::villager::ext_mut(&mut villager).sleeping_pos = Some(bed);
+        let mut events = Vec::new();
+        let w = self.mob_world_base(&[]);
+        horizon_client::mobs::villager::stop_sleeping(&mut villager, &w, &mut events);
+        let p = villager.position;
+        Ok(format!(
+            "wake {} {} {} {}",
+            num(p.x),
+            num(p.y),
+            num(p.z),
+            villager.yaw.to_bits() as i32
+        ))
     }
 
     /// `EntityType.create` and `snapTo` for one target: no spawn finalization.
@@ -991,12 +1107,20 @@ impl Game<'_> {
         if flag("brown") && s == Species::Mooshroom {
             mob.extra.variant = 1;
         }
-        for (slot, snbt) in e["equip"].as_object().into_iter().flatten() {
+        for (name, snbt) in e["equip"].as_object().into_iter().flatten() {
             if let (Some(slot), Some(stack)) = (
-                Slot::from_name(slot),
+                Slot::from_name(name),
                 parse_stack(snbt.as_str().unwrap_or("-"))?,
             ) {
-                mob_set_slot(&mut mob, slot, stack);
+                // `setItemSlot` keeps the whole stack: a piece's enchantments and damage.
+                let kept = ["mainhand", "offhand", "feet", "legs", "chest", "head"]
+                    .iter()
+                    .position(|s| s == name)
+                    .filter(|_| stack.extra.is_some() || stack.damage > 0);
+                match kept {
+                    Some(at) => horizon_client::mobs::finalize::set_item_stack(&mut mob, at, stack),
+                    None => mob_set_slot(&mut mob, slot, stack),
+                }
             }
         }
         self.mobs.push(mob);
@@ -1102,6 +1226,15 @@ impl Game<'_> {
             let (p, v) = (m.position, m.velocity);
             out.push(line(&m.kind.id, [p.x, p.y, p.z], [v.x, v.y, v.z], ""));
         }
+        if let Some(d) = &self.dragon {
+            let p = d.position;
+            out.push(line(
+                "minecraft:ender_dragon",
+                [p.x, p.y, p.z],
+                [0.0; 3],
+                "",
+            ));
+        }
         for s in self
             .armor_stands
             .iter()
@@ -1181,6 +1314,24 @@ impl Game<'_> {
         for c in &self.carts {
             let (p, v) = (c.position, c.velocity);
             out.push(line(c.kind.id(), [p.x, p.y, p.z], [v.x, v.y, v.z], ""));
+        }
+        for c in &self.crystals {
+            let p = c.position;
+            out.push(line("minecraft:end_crystal", [p.x, p.y, p.z], [0.0; 3], ""));
+        }
+        // A hanging entity's position is its box's centre (HangingEntity.recalculateBoundingBox).
+        let centre =
+            |(lo, hi): ([f64; 3], [f64; 3])| std::array::from_fn(|i| (lo[i] + hi[i]) / 2.0);
+        for p in &self.paintings {
+            out.push(line("minecraft:painting", centre(p.bounds()), [0.0; 3], ""));
+        }
+        for f in &self.item_frames {
+            let kind = if f.glow {
+                "minecraft:glow_item_frame"
+            } else {
+                "minecraft:item_frame"
+            };
+            out.push(line(kind, centre(f.bounds()), [0.0; 3], ""));
         }
     }
 }

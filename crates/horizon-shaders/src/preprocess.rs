@@ -126,7 +126,7 @@ impl Run<'_> {
                 while n < lines.len()
                     && n - first < MAX_CALL_LINES
                     && !lines[n].trim_start().starts_with('#')
-                    && self.macros.unfinished_call(&line)
+                    && self.macros.unfinished_call(&line, &lines[n..])
                 {
                     line.push(' ');
                     line.push_str(lines[n]);
@@ -379,6 +379,21 @@ mod tests {
             ]
         );
         assert_eq!(p.lines.len(), p.code.split('\n').count());
+    }
+
+    #[test]
+    fn a_paste_with_a_parenthesis_leaves_a_name_that_calls_a_macro() {
+        // Alpha Piscium: `colors2_colorspaces_ ## a ## _to_ ## b ##(x)` makes the name of a
+        // function-like macro and its `(`, which is then rescanned as a call.
+        let p = run(&[(
+            "program/final.fsh",
+            "#define conv_6_to_8(x) aces_to_mc(x)\n\
+             #define _convert(a, b, x) conv_ ## a ## _to_ ## b ##(x)\n\
+             #define convert(a, b, x) _convert(a, b, x)\n\
+             vec3 v = convert(6, 8, c);\n",
+        )]);
+        let lines: Vec<&str> = code_lines(&p).into_iter().map(|(l, _)| l).collect();
+        assert_eq!(lines, ["vec3 v = aces_to_mc(c);"]);
     }
 
     #[test]

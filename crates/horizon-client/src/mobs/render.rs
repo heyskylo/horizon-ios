@@ -1088,7 +1088,8 @@ pub fn base_transform(m: &Mob, alpha: f32, camera: glam::DVec3) -> glam::Mat4 {
         m.previous.y + (m.position.y - m.previous.y) * a,
         m.previous.z + (m.position.z - m.previous.z) * a,
     ) - camera
-        + enderman_render_offset(m, alpha);
+        + enderman_render_offset(m, alpha)
+        + super::shulker::render_offset(m, alpha);
     base_transform_at(m, alpha, glam::Mat4::from_translation(p.as_vec3()))
 }
 /// `EndermanRenderer.getRenderOffset`: a creepy (angry) enderman is moved by
@@ -1455,6 +1456,13 @@ pub(super) fn posed(base: glam::Mat4, p: [f32; 9]) -> glam::Mat4 {
             p[4],
             p[3],
         ))
+        * glam::Mat4::from_scale(glam::Vec3::new(p[6], p[7], p[8]))
+}
+
+/// Keeps the original multiplication order when the local rotation was reused.
+pub(super) fn posed_rotated(base: glam::Mat4, p: [f32; 9], rotation: glam::Mat4) -> glam::Mat4 {
+    base * glam::Mat4::from_translation(glam::Vec3::new(p[0], p[1], p[2]) / 16.0)
+        * rotation
         * glam::Mat4::from_scale(glam::Vec3::new(p[6], p[7], p[8]))
 }
 /// `draw_scrolled` through the GPU path when the mob takes it (`skin`), on

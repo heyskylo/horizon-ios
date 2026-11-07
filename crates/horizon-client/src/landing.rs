@@ -97,10 +97,20 @@ impl SceneSound {
     /// (`TurtleEggBlock.decreaseEggs`), a shelf mushroom bouncing.
     pub fn block_sound(self) -> Option<&'static str> {
         match self {
-            Self::Block(LandingSound::TurtleEggBreak) => Some("minecraft:block.turtle_egg.break"),
+            Self::Block(LandingSound::TurtleEggBreak) => Some("minecraft:entity.turtle.egg_break"),
             Self::Block(LandingSound::ShelfMushroomBounce) => {
                 Some("minecraft:block.shelf_mushroom.bounce")
             }
+            _ => None,
+        }
+    }
+    /// `HoneyBlock.fallOn`: `entity.playSound` of the slide, and of the block's
+    /// own fall sound when the landing still hurts. A player's `playSound`
+    /// skips that player; their client plays the same event itself.
+    pub fn honey_landing_sound(self) -> Option<&'static str> {
+        match self {
+            Self::Block(LandingSound::HoneySlide) => Some("minecraft:block.honey_block.slide"),
+            Self::Block(LandingSound::HoneyFall) => Some("minecraft:block.honey_block.fall"),
             _ => None,
         }
     }
@@ -117,6 +127,16 @@ impl SceneSound {
         }
     }
 }
+/// `HoneyBlock.showParticles`: a slide (entity event 53) sheds 5 honey-block
+/// crumbs, a landing (entity event 54) sheds 10.
+pub fn honey_particle_count(event: i8) -> Option<u32> {
+    match event {
+        53 => Some(5),
+        54 => Some(10),
+        _ => None,
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum FallEvent {
     Particles {
@@ -144,6 +164,9 @@ pub enum FallEvent {
     Broadcast(u8),
     Write {
         position: BlockPos,
+        /// The block it replaced, so a mod that cancels the change
+        /// (`native_entity_change_block_v2`) can have it put back.
+        from: BlockStateId,
         state: BlockStateId,
         flags: u32,
     },
@@ -221,6 +244,7 @@ impl FallEvent {
                 position,
                 state,
                 flags,
+                ..
             } => format!("write {} {} {}", p(position), state.0, flags),
             Self::Destroy {
                 position, drops, ..
@@ -488,6 +512,15 @@ impl BlockLandingWorld for MotionWorld<'_, '_, '_> {
     fn under_spawn_protection(&mut self, _: BlockPos) -> Result<bool> {
         Ok(false)
     }
+    fn trample_allowed(&mut self, position: BlockPos, distance: f64) -> Result<bool> {
+        let id = self.player.entity_id;
+        Ok(crate::block_contact::trample_allowed(
+            id,
+            "minecraft:player",
+            position,
+            distance,
+        ))
+    }
     fn mob_griefing(&mut self) -> Result<bool> {
         Ok(true)
     }
@@ -567,9 +600,11 @@ impl BlockLandingWorld for MotionWorld<'_, '_, '_> {
         Ok(true)
     }
     fn set_block(&mut self, position: BlockPos, state: BlockStateId, flags: u32) -> Result<bool> {
+        let from = self.scene.block(position.x, position.y, position.z);
         self.scene.set(position.x, position.y, position.z, state)?;
         self.fall_event(FallEvent::Write {
             position,
+            from,
             state,
             flags,
         });
@@ -655,7 +690,7 @@ impl LivingFallWorld for FallCall<'_, '_, '_, '_> {
             source: self.source,
             amount,
         });
-        let resources = &self.world.resources.health;
+        let resources = self.world.health;
         self.world.player.hurt(
             resources,
             self.world.scene.health_rules,
@@ -668,6 +703,86 @@ impl LivingFallWorld for FallCall<'_, '_, '_, '_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Both landing sources use the world's frozen definitions and current
+    /// damage tags, including a tag-only reload with no pack definitions left.
+    #[test]
+    #[ignore = "requires prepared vanilla resources"]
+    fn datapack_damage_landing_uses_world_armor_tags_and_exhaustion() {
+        use crate::{assets::Assets, motion::MotionResources, world::World};
+        use horizon_world::loot::PackOverlay;
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        let assets = Assets::load(&root).unwrap();
+        let render = assets.reload(&root).unwrap();
+        let collision = crate::collisions::load(&root, assets.registry).unwrap();
+        let resources = MotionResources::load(&root, &assets).unwrap();
+        let files = vec![
+            (
+                "damage_type/minecraft:fall".into(),
+                vec![br#"{"message_id":"fall","scaling":"never","exhaustion":0.75}"#.to_vec()],
+            ),
+            (
+                "damage_type/minecraft:stalagmite".into(),
+                vec![br#"{"message_id":"stalagmite","scaling":"never","exhaustion":0.5}"#.to_vec()],
+            ),
+            (
+                "tags/minecraft:damage_type/bypasses_armor".into(),
+                vec![br#"{"replace":true,"values":[]}"#.to_vec()],
+            ),
+        ];
+        let open = resources
+            .health
+            .with_packs(&root, &PackOverlay { files: &files }, false)
+            .unwrap();
+        let reloaded = open.with_packs(&root, &PackOverlay::NONE, true).unwrap();
+        let mut scene = World::test_scene(&assets, &render, 1).unwrap();
+        for (source, exhaustion, name) in [
+            (LandingDamage::Fall, 0.75, "minecraft:fall"),
+            (LandingDamage::Stalagmite, 0.5, "minecraft:stalagmite"),
+        ] {
+            for (health, bypass) in [(&resources.health, true), (&open, false), (&reloaded, true)] {
+                let mut player = crate::motion::PlayerMotion::new(&resources, Vec3::ZERO).unwrap();
+                let key = player.attributes.key("minecraft:armor").unwrap();
+                let armor = player.attributes.get_instance(Some(key)).unwrap().unwrap();
+                player
+                    .attributes
+                    .edit(&armor, |a, o| a.set_base_value(20.0, o))
+                    .unwrap();
+                BlockLandingWorld::cause_fall_damage(
+                    &mut MotionWorld {
+                        entities: &[],
+                        player: &mut player,
+                        scene: &mut scene,
+                        assets: &assets,
+                        collision_binding: &collision,
+                        resources: &resources,
+                        health,
+                    },
+                    7.0,
+                    1.0,
+                    source,
+                )
+                .unwrap();
+                if bypass {
+                    assert_eq!(player.health.health(), 16.0, "{name}");
+                } else {
+                    assert!(
+                        player.health.health() > 16.0 && player.health.health() < 20.0,
+                        "{name}"
+                    );
+                }
+                assert_eq!(player.hurt_log.last().unwrap().source, name);
+                let expected = if std::ptr::eq(health, &resources.health) {
+                    0.0
+                } else {
+                    exhaustion
+                };
+                assert_eq!(player.health.food.exhaustion, expected, "{name}");
+            }
+        }
+    }
 
     #[test]
     fn fall_sounds_map_to_player_events() {
@@ -691,7 +806,7 @@ mod tests {
     fn block_sounds_map_to_block_events() {
         assert_eq!(
             SceneSound::Block(LandingSound::TurtleEggBreak).block_sound(),
-            Some("minecraft:block.turtle_egg.break")
+            Some("minecraft:entity.turtle.egg_break")
         );
         assert_eq!(
             SceneSound::Block(LandingSound::ShelfMushroomBounce).block_sound(),
@@ -702,5 +817,24 @@ mod tests {
             None
         );
         assert_eq!(SceneSound::BigFall.block_sound(), None);
+    }
+
+    /// `HoneyBlock.fallOn` plays the slide, then the block's fall sound when
+    /// the landing hurts. `showSlideParticles` is entity event 53 (5 crumbs);
+    /// `showJumpParticles` is entity event 54 (10).
+    #[test]
+    fn a_honey_landing_names_its_sounds_and_particle_counts() {
+        assert_eq!(
+            SceneSound::Block(LandingSound::HoneySlide).honey_landing_sound(),
+            Some("minecraft:block.honey_block.slide")
+        );
+        assert_eq!(
+            SceneSound::Block(LandingSound::HoneyFall).honey_landing_sound(),
+            Some("minecraft:block.honey_block.fall")
+        );
+        assert_eq!(SceneSound::SmallFall.honey_landing_sound(), None);
+        assert_eq!(honey_particle_count(53), Some(5));
+        assert_eq!(honey_particle_count(54), Some(10));
+        assert_eq!(honey_particle_count(46), None);
     }
 }

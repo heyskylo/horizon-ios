@@ -66,7 +66,7 @@ Usage: horizon-server [--dir DIR] <command>
   players [--json]
               Who is online, the operators, the whitelist and the bans
   kick NAME [REASON], ban NAME [REASON], pardon NAME, ban-ip ADDRESS|NAME [REASON], pardon-ip ADDRESS
-              Moderate the running server (vanilla's commands, as from its console)
+              Moderate the running server, or edit ban files while it is stopped
 
   --dir DIR   The server folder (default: the current folder)
 
@@ -92,6 +92,7 @@ Horizon server settings (docs/server.md). The server writes them into server.pro
 | `simulation_distance` | `10` | `simulation-distance` | chunks around each player where mobs, crops and redstone tick |
 | `max_view_distance` | `0` | `horizon-max-view-distance` | past view_distance, saved chunks only, up to this (never generated; 0: off) |
 | `admin_feedback_to_ops` | `true` | `horizon-admin-feedback-to-ops` | operators see each other's commands ([name: ...], vanilla); false: only the log |
+| `accept_older_clients` | `false` | `horizon-accept-older-clients` | true: 26.2 clients join too, their packets translated (docs/hosting.md) |
 
 ### `[world]`
 
@@ -144,6 +145,19 @@ Any other server.properties key, spelled as vanilla spells it, for example: spaw
 | `token` | `""` |  | its token (16 characters or more); "" a new random one at every start |
 | `allow_public` | `false` |  | true lets bind be any address; the token is then all that guards the server |
 
+### `[transfer]`
+
+A proxy handing players over between servers (docs/server.md). Not vanilla's accepts-transfers (the transfer packet).
+
+| Key | Default | In `server.properties` | What it does |
+| --- | --- | --- | --- |
+| `enabled` | `false` |  | true: take a proxy's player-* requests; needs Velocity forwarding (forwarding.secret) |
+| `expect_seconds` | `10` |  | how long a player the proxy announced is waited for, when it names no time |
+| `max_expect_seconds` | `60` |  | the longest the proxy may ask for |
+| `max_expected` | `64` |  | players waited for at once |
+| `max_freeze_seconds` | `30` |  | the longest a player stays frozen while it is handed over |
+| `max_hold_seconds` | `60` |  | the longest a player arriving from another server is held before it is dropped |
+
 ### `[discord]`
 
 Post the chat, joins, leaves and deaths to a Discord channel, drawn like the in-game chat (docs/hosting.md)
@@ -172,10 +186,12 @@ HTTP and JSON on 127.0.0.1. A running server writes its address and a random tok
 | `POST` | `/api/v1/backups` | `{"name": "..."}` (optional) | `{"name": "<file>"}` | Back up now (a running game saves first and stays up) |
 | `DELETE` | `/api/v1/backups` | `?name=<file>` (the full name `backups` lists) | `{"name": "<file>"}` | Delete a backup |
 | `GET` | `/api/v1/backups/download` | `?name=<file>` | the zip | Download a backup |
+| `GET` | `/api/v1/crash-reports` | nothing | `{"reports": [{"name", "bytes"}]}`, newest first (the `.txt` files in `crash-reports/`) | List the game's crash reports |
+| `GET` | `/api/v1/crash-reports/read` | `?name=<file>` (a name `crash-reports` lists) | the report's text (`text/plain`) | Read one crash report |
 | `POST` | `/api/v1/restore` | `{"name": "<backup>", "dimension": "minecraft:the_nether"}` (`dimension` optional) | `{"name": "<backup>", "dimension": "<id>" or null}` | Restart the game with that backup's world, or only one dimension of it (what it replaces is kept in backups/) |
 | `POST` | `/api/v1/update` | `{"tag": "...", "timeout": seconds}` (both optional) | `{"ok": true}`; `status` says how it went (`update`) | Restart on that installed release, or download the newest first; goes back if the game isn't up within the timeout |
 | `GET` | `/api/v1/metrics/prometheus` | nothing | the latest sample as Prometheus text: `horizon_up`, `horizon_tps`, `horizon_mspt{stat}`, `horizon_players_online`, `horizon_memory_rss_bytes`, `horizon_loaded_chunks{dimension}` and `horizon_entities{dimension}` (players and block entities apart)... | Metrics for a monitoring tool to scrape |
-| `GET` | `/api/v1/players` | nothing | `online` (name, uuid, address, ping_ms, position, op_level), `max_players`, `ops`, `whitelist` (`enabled`, `players`), `bans`, `ip_bans` (with reason, source, created, expires) | Who is online, and vanilla's lists |
+| `GET` | `/api/v1/players` | nothing | `online` (name, uuid, address, ping_ms, dimension, position, op_level), `max_players`, `ops`, `whitelist` (`enabled`, `players`), `bans`, `ip_bans` (with reason, source, created, expires) | Who is online, and vanilla's lists |
 | `GET` | `/api/v1/mods` | nothing | `engine` (`found`, `target`, `base`, `horizon`, `hooks`) and `native` (id, version, sha256), from the `native-mods.json` the launcher wrote beside the game program | The native mods the server's game program was built with |
 | `POST` | `/api/v1/players/kick` | `{"name", "reason"}` (reason optional) | `{"changed": bool, "output": [...]}`: whether the list (or who is online) changed, and the console's lines | Kick an online player |
 | `POST` | `/api/v1/players/ban` | `{"name", "reason"}` (reason optional) | `{"changed": bool, "output": [...]}`: whether the list (or who is online) changed, and the console's lines | Ban a player (kicked if online) |

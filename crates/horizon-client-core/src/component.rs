@@ -111,7 +111,15 @@ impl Parser<'_> {
             map.insert(key, self.value()?);
             self.ws();
             match self.peek() {
-                Some(b',') => self.i += 1,
+                // SnbtGrammar: an entry may be followed by a comma before the brace.
+                Some(b',') => {
+                    self.i += 1;
+                    self.ws();
+                    if self.peek() == Some(b'}') {
+                        self.i += 1;
+                        return Ok(Value::Object(map));
+                    }
+                }
                 Some(b'}') => {
                     self.i += 1;
                     return Ok(Value::Object(map));
@@ -140,7 +148,15 @@ impl Parser<'_> {
             list.push(self.value()?);
             self.ws();
             match self.peek() {
-                Some(b',') => self.i += 1,
+                // SnbtGrammar: a list or array may end with a comma.
+                Some(b',') => {
+                    self.i += 1;
+                    self.ws();
+                    if self.peek() == Some(b']') {
+                        self.i += 1;
+                        return Ok(Value::Array(list));
+                    }
+                }
                 Some(b']') => {
                     self.i += 1;
                     return Ok(Value::Array(list));
@@ -207,9 +223,11 @@ fn style_flag(v: Option<&Value>) -> Option<bool> {
     }
 }
 
-fn untrusted_http_url(url: &str) -> bool {
-    // ExtraCodecs.UNTRUSTED_URI / Util.parseAndValidateUntrustedUri: http and
-    // https only, scheme case-insensitive.
+/// ExtraCodecs.UNTRUSTED_URI / Util.parseAndValidateUntrustedUri: http and
+/// https only, scheme case-insensitive. Every `open_url` a server sends must
+/// pass it: anything else (`file:`, a UNC path, a custom protocol handler)
+/// could start a program through the system's URL handler.
+pub fn untrusted_http_url(url: &str) -> bool {
     url.split_once(':').is_some_and(|(scheme, _)| {
         scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https")
     })
@@ -495,6 +513,22 @@ pub fn name_text(tag: &Tag) -> Text {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// SnbtGrammar: a compound or list may end with one comma; two in a row
+    /// stay an error.
+    #[test]
+    fn a_component_takes_one_trailing_comma() {
+        let parse = |s: &str| parse_snbt(s).map(|(v, _)| v);
+        assert_eq!(
+            parse("{text:\"a\",color:\"red\",}"),
+            parse("{text:\"a\",color:\"red\"}")
+        );
+        assert_eq!(
+            parse("[\"a\", {text:\"b\",} ,]"),
+            parse("[\"a\",{text:\"b\"}]")
+        );
+        assert!(parse("{text:\"a\",,}").is_err());
+        assert!(parse("[\"a\",,]").is_err());
+    }
 
     #[test]
     fn hex_color_follows_text_color_parse_color() {

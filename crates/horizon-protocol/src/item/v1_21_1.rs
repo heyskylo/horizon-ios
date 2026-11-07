@@ -16,6 +16,7 @@ pub(super) fn writing() -> bool {
 }
 
 pub(super) fn read_stack(r: &mut Reader) -> Result<Option<Stack>> {
+    let _nested = Nested::enter()?;
     let count = r.varint()?;
     if count <= 0 {
         return Ok(None);
@@ -52,7 +53,10 @@ pub(super) fn read_stack(r: &mut Reader) -> Result<Option<Stack>> {
             16 if v1_20_5::active() => Component::Raw(v1_20_5::read_attributes(r)?),
             component::POTION_CONTENTS => read_potion(r)?,
             component::INSTRUMENT => read_instrument(r)?,
-            _ => v1_21_4::read_component(kind, r)?,
+            _ => match v1_21_4::read_added_legacy(old, r)? {
+                Some((_, component)) => component,
+                None => continue,
+            },
         };
         if v1_21_4::TOOLTIP_FLAGS.contains(&kind) && !r.bool()? {
             hidden.push(kind);

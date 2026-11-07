@@ -81,7 +81,7 @@ fn elements(tag: &Tag) -> Option<Vec<Tag>> {
 }
 /// `DoubleTag.intValue` / `FloatTag.intValue` floor before the i32 conversion;
 /// integral tags use their intValue narrowing. Byte arrays then keep the low byte.
-fn int_value(t: &Tag) -> Option<i32> {
+pub fn int_value(t: &Tag) -> Option<i32> {
     Some(match t {
         Tag::Byte(v) => i32::from(*v),
         Tag::Short(v) => i32::from(*v),
@@ -193,6 +193,20 @@ impl NbtPath {
     }
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty()
+    }
+    /// Whether this selects a compound-field chain, including filtered or quoted fields.
+    /// Matching a root or child does not change that subtree's writer provenance.
+    pub fn is_field_path(&self, fields: &[&str]) -> bool {
+        let mut fields = fields.iter();
+        for node in &self.nodes {
+            match node {
+                Node::MatchRoot(_) => {}
+                Node::Child(name) | Node::MatchChild(name, _)
+                    if fields.next().copied() == Some(name.as_str()) => {}
+                _ => return false,
+            }
+        }
+        fields.next().is_none()
     }
     fn not_found(&self, node: usize) -> PathError {
         let end = self.ends[node];
@@ -712,11 +726,16 @@ fn parse_node(text: &str, i: usize, first: bool) -> Result<(Node, usize), PathEr
                 Some(b']') => Ok((Node::AllElements, j + 1)),
                 _ => {
                     let start = j;
-                    if b.get(j) == Some(&b'-') {
+                    // StringReader.readInt scans all allowed number characters
+                    // before parsing, including malformed signs and decimal points.
+                    while b
+                        .get(j)
+                        .is_some_and(|c| c.is_ascii_digit() || matches!(c, b'-' | b'.'))
+                    {
                         j += 1;
                     }
-                    while b.get(j).is_some_and(u8::is_ascii_digit) {
-                        j += 1;
+                    if start == j {
+                        return Err(PathError::new("parsing.int.expected", vec![], start));
                     }
                     let n: i32 = text[start..j].parse().map_err(|_| {
                         PathError::new(
@@ -778,6 +797,13 @@ fn read_quoted(text: &str, i: usize) -> Result<(String, usize), PathError> {
     let mut escaped = false;
     for (o, c) in text[i + 1..].char_indices() {
         if escaped {
+            if c != quote && c != '\\' {
+                return Err(PathError::new(
+                    "parsing.quote.escape",
+                    vec![c.to_string()],
+                    i + 1 + o,
+                ));
+            }
             out.push(c);
             escaped = false;
         } else if c == '\\' {
@@ -826,6 +852,59 @@ fn parse_compound(text: &str, i: usize) -> Result<(Tag, usize), PathError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn quoted_escapes_and_index_tokens_match_brigadier() {
+        let cases = [
+            (r#""a\q""#, "parsing.quote.escape", vec!["q"], 3),
+            (r#"'a\x'"#, "parsing.quote.escape", vec!["x"], 3),
+            ("[1.0]", "parsing.int.invalid", vec!["1.0"], 1),
+            ("[.]", "parsing.int.invalid", vec!["."], 1),
+            ("[--1]", "parsing.int.invalid", vec!["--1"], 1),
+            ("[2147483648]", "parsing.int.invalid", vec!["2147483648"], 1),
+            ("[+1]", "parsing.int.expected", vec![], 1),
+            (r#""é\q""#, "parsing.quote.escape", vec!["q"], 4),
+            (r#""é"[1.0]"#, "parsing.int.invalid", vec!["1.0"], 5),
+        ];
+        let mut failures = Vec::new();
+        for (text, key, args, cursor) in cases {
+            match NbtPath::parse_prefix(text) {
+                Err(error) if error.key == key && error.args == args && error.cursor == cursor => {}
+                other => failures.push(format!("{text:?}: {other:?}")),
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn valid_quoted_escapes_still_select_the_exact_field() {
+        let root = Tag::compound([("a\"b", Tag::Int(7)), ("a\\b", Tag::Int(8))]);
+        for (path, value) in [(r#""a\"b""#, 7), (r#""a\\b""#, 8)] {
+            assert_eq!(
+                NbtPath::parse(path).unwrap().get(&root).unwrap(),
+                vec![Tag::Int(value)]
+            );
+        }
+    }
+
+    #[test]
+    fn field_provenance_handles_quotes_and_filters_without_matching_lists() {
+        for text in [
+            "blockState.properties",
+            "\"blockState\".\"properties\"",
+            "{source:1b}.blockState.properties",
+            "blockState{id:\"minecraft:piston_head\"}.properties",
+        ] {
+            let path = NbtPath::parse(text).unwrap();
+            assert!(path.is_field_path(&["blockState", "properties"]));
+            assert!(!path.is_field_path(&["blockState"]));
+        }
+        assert!(NbtPath::parse("{source:1b}").unwrap().is_field_path(&[]));
+        assert!(
+            !NbtPath::parse("blockState[].properties")
+                .unwrap()
+                .is_field_path(&["blockState", "properties"])
+        );
+    }
 
     fn tag(s: &str) -> Tag {
         parse_snbt(s).unwrap().0

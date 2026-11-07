@@ -1,4 +1,6 @@
 use super::*;
+use crate::wardrobe::ClaimState;
+use std::collections::{BTreeMap, HashSet};
 
 /// The service's answer.
 fn claim(state: ClaimState, open: bool, starts_at: Option<i64>, ends_at: Option<i64>) -> Claim {
@@ -10,6 +12,7 @@ fn claim(state: ClaimState, open: bool, starts_at: Option<i64>, ends_at: Option<
         claimed: None,
         open,
         preview: false,
+        one_click: false,
     }
 }
 
@@ -58,88 +61,171 @@ fn the_wardrobe_entry_follows_the_service_not_the_cosmetics_switch() {
     assert!(in_top_bar(true, Some(&unset), None));
 }
 
-fn me(claim: Claim, owned: &[&str]) -> Me {
-    Me {
-        uuid: "u".into(),
-        name: "Notch".into(),
-        owned: owned.iter().map(|s| s.to_string()).collect(),
-        equipped: Default::default(),
-        visible: true,
-        claim,
-        purchases: Vec::new(),
-        checkout: None,
+/// A catalogue in the service's words: three items in dollars and francs, a set of the first
+/// two, the Supporter badge.
+fn catalogue() -> Catalogue {
+    serde_json::from_value(serde_json::json!({
+        "claim": { "state": "closed", "items": [] },
+        "currencies": ["USD", "EUR", "CHF"],
+        "items": [
+            { "id": "lantern", "hash": "1", "slot": "head", "names": {}, "prices": { "USD": 499, "CHF": 490 } },
+            { "id": "scarf", "hash": "2", "slot": "torso", "names": {}, "prices": { "USD": 299, "CHF": 290 } },
+            { "id": "moth", "hash": "3", "slot": "shoulder", "names": {}, "prices": { "USD": 199, "CHF": 190 } },
+            { "id": "supporter_tag", "hash": "4", "slot": "name_tag", "names": {} },
+            { "id": "old_hat", "hash": "5", "slot": "head", "names": {} }
+        ],
+        "sets": [{ "id": "hearth", "names": {}, "items": ["lantern", "scarf"], "prices": { "USD": 599, "CHF": 590 } }],
+        "supporter": { "item": "supporter_tag", "min": { "USD": 499, "CHF": 490 }, "max": { "USD": 10000, "CHF": 9800 } }
+    }))
+    .unwrap()
+}
+
+fn owns(ids: &[&str]) -> HashSet<String> {
+    ids.iter().map(|s| s.to_string()).collect()
+}
+
+fn basket(ids: &[&str]) -> Basket {
+    Basket {
+        items: ids.iter().map(|s| s.to_string()).collect(),
+        supporter: None,
     }
 }
 
 #[test]
-fn the_window_follows_the_clock_between_answers() {
-    let c = claim(ClaimState::NotYet, false, Some(100), Some(200));
-    assert_eq!(
-        window(&c, 50),
-        Window::NotYet {
-            starts_at: Some(100)
-        }
+fn an_item_inside_a_set_in_the_basket_is_not_charged_twice() {
+    let (got, total) = lines(
+        &basket(&["lantern", "hearth", "moth"]),
+        &catalogue(),
+        &owns(&[]),
+        "USD",
     );
-    // Opened since the service said "not yet".
-    assert_eq!(window(&c, 100), Window::Open { ends_at: Some(200) });
-    let c = claim(ClaimState::Open, true, Some(100), Some(200));
-    assert_eq!(window(&c, 199), Window::Open { ends_at: Some(200) });
-    // The end is excluded: no claim button at the very second it ends.
+    let dropped: Vec<_> = got.iter().map(|l| (l.id.as_str(), l.dropped)).collect();
     assert_eq!(
-        window(&c, 200),
-        Window::Closed {
-            ended_at: Some(200)
-        }
+        dropped,
+        [
+            ("lantern", Some(Dropped::InSet)),
+            ("hearth", None),
+            ("moth", None)
+        ]
     );
-    // The service's "closed" stands even if this computer's clock is behind.
-    let c = claim(ClaimState::Closed, false, Some(100), Some(200));
-    assert_eq!(
-        window(&c, 150),
-        Window::Closed {
-            ended_at: Some(200)
-        }
-    );
-    // A preview: open with no dates, so no time left to count.
-    let c = claim(ClaimState::Open, true, None, None);
-    assert_eq!(window(&c, 150), Window::Open { ends_at: None });
-    // Nothing set and not open: not yet, no date to show.
-    let c = claim(ClaimState::NotYet, false, None, None);
-    assert_eq!(window(&c, 150), Window::NotYet { starts_at: None });
+    // The set's 5.99 and the moth's 1.99.
+    assert_eq!(total, 798);
 }
 
 #[test]
-fn the_set_is_owned_once_claimed_or_every_item_is_owned() {
-    let open = claim(ClaimState::Open, true, Some(100), Some(200));
-    assert!(!owns_set(&me(open.clone(), &[])));
-    assert!(!owns_set(&me(open.clone(), &["visor"])));
-    assert!(owns_set(&me(open.clone(), &["visor", "sunlet"])));
-    let mut claimed = open;
-    claimed.claimed = Some(true);
-    assert!(owns_set(&me(claimed, &[])));
+fn a_set_partly_owned_costs_its_share_of_what_is_not_owned() {
+    // Owning the scarf (2.99 of the 7.98 apart): 5.99 × 4.99 / 7.98 = 3.7456 → 3.75.
+    let (got, total) = lines(&basket(&["hearth"]), &catalogue(), &owns(&["scarf"]), "USD");
+    assert_eq!(
+        (got[0].amount, got[0].owned, got[0].dropped),
+        (375, 1, None)
+    );
+    assert_eq!(total, 375);
+    // In francs: 5.90 × 4.90 / 7.80 = 3.7064 → 3.71.
+    assert_eq!(lines_total(&["hearth"], &["scarf"], "CHF"), 371);
+    // All of it owned: nothing to pay.
+    let all = owns(&["scarf", "lantern"]);
+    let (got, total) = lines(&basket(&["hearth"]), &catalogue(), &all, "USD");
+    assert_eq!((got[0].dropped, total), (Some(Dropped::Owned), 0));
+}
+
+fn lines_total(ids: &[&str], owned: &[&str], currency: &str) -> u32 {
+    lines(&basket(ids), &catalogue(), &owns(owned), currency).1
 }
 
 #[test]
-fn time_left_reads_in_its_two_largest_units() {
-    const M: i64 = 60;
-    const H: i64 = 3600;
-    const D: i64 = 86_400;
-    assert_eq!(span(0, 30), "less than a minute");
-    assert_eq!(span(0, 8 * M + 59), "8 min");
-    assert_eq!(span(0, 3 * H + 20 * M), "3 h 20 min");
-    assert_eq!(span(0, D), "1 day");
-    assert_eq!(span(0, D + 4 * H + 5 * M), "1 day 4 h");
-    assert_eq!(span(0, 2 * D + 5 * H), "2 days 5 h");
-    assert_eq!(span(0, 2 * D), "2 days");
-    assert_eq!(span(0, 12 * D + 11 * H), "12 days");
-    // From three days up, whole days to the nearest: a seven-day window a minute after it opened.
-    assert_eq!(span(0, 7 * D - M), "7 days");
-    assert_eq!(span(0, 3 * D + 13 * H), "4 days");
-    // Past the end: nothing left, never a negative count.
-    assert_eq!(span(500, 100), "less than a minute");
+fn owned_items_and_items_not_on_sale_cost_nothing() {
+    assert_eq!(lines_total(&["moth", "lantern"], &["moth"], "USD"), 499);
+    // Not priced: not sold, so not in the basket's lines at all.
+    let (got, total) = lines(&basket(&["old_hat"]), &catalogue(), &owns(&[]), "USD");
+    assert_eq!((got.len(), total), (0, 0));
 }
 
 #[test]
-fn a_date_reads_day_month_year() {
-    assert_eq!(date(2027, 3, 31), "31 March 2027");
-    assert_eq!(date(2026, 12, 1), "1 December 2026");
+fn the_supporter_badge_costs_what_the_player_chose_once() {
+    let c = catalogue();
+    let mut b = basket(&["moth"]);
+    b.supporter = Some(1200);
+    assert_eq!(lines(&b, &c, &owns(&[]), "USD").1, 1399);
+    assert_eq!(b.ids(&c), ["moth", "supporter_tag"]);
+    // Already a supporter: the badge isn't charged again.
+    assert_eq!(lines(&b, &c, &owns(&["supporter_tag"]), "USD").1, 199);
+}
+
+#[test]
+fn a_basket_toggles_its_items() {
+    let mut b = Basket::default();
+    b.toggle("moth");
+    b.toggle("hearth");
+    b.toggle("moth");
+    assert_eq!(b.items, ["hearth"]);
+    assert!(!b.is_empty());
+}
+
+#[test]
+fn only_currencies_every_price_has_are_offered() {
+    // No item, set or badge has euros.
+    assert_eq!(currencies(&catalogue()), ["USD", "CHF"]);
+}
+
+#[test]
+fn the_currency_follows_the_system_locale() {
+    let all: Vec<String> = ["USD", "EUR", "CHF", "GBP"].map(String::from).into();
+    let guess = |l: Option<&str>| guess_currency(&all, l).unwrap();
+    assert_eq!(guess(Some("fr-CH")), "CHF");
+    assert_eq!(guess(Some("en_GB.UTF-8")), "GBP");
+    assert_eq!(guess(Some("de-AT")), "EUR");
+    assert_eq!(guess(Some("en-US")), "USD");
+    assert_eq!(guess(Some("fr")), "USD");
+    assert_eq!(guess(None), "USD");
+    // Francs not offered: dollars.
+    let some: Vec<String> = ["USD", "EUR"].map(String::from).into();
+    assert_eq!(guess_currency(&some, Some("de-CH")).unwrap(), "USD");
+    assert_eq!(guess_currency(&[], Some("de-CH")), None);
+}
+
+#[test]
+fn prices_read_as_the_website_writes_them() {
+    assert_eq!(format_price(499, "USD"), "$4.99");
+    assert_eq!(format_price(490, "CHF"), "CHF 4.90");
+    assert_eq!(format_price(5, "EUR"), "€0.05");
+    assert_eq!(format_price(1200, "GBP"), "£12.00");
+}
+
+#[test]
+fn only_a_paddle_transaction_id_goes_into_the_pay_link() {
+    assert_eq!(
+        pay_url("txn_01k9abc").as_deref(),
+        Some("https://playhorizon.dev/shop/pay?_ptxn=txn_01k9abc")
+    );
+    assert_eq!(pay_url("txn_"), None);
+    assert_eq!(pay_url("txn_01&next=evil"), None);
+    assert_eq!(pay_url("ctm_01k9abc"), None);
+}
+
+#[test]
+fn trying_an_item_on_changes_its_slot_only() {
+    let worn: BTreeMap<String, String> = [("head", "visor"), ("back", "pack")]
+        .map(|(a, b)| (a.into(), b.into()))
+        .into();
+    let tried = try_on(&worn, [("head", "lantern"), ("shoulder", "moth")]);
+    let tried: Vec<_> = tried
+        .iter()
+        .map(|(a, b)| (a.as_str(), b.as_str()))
+        .collect();
+    assert_eq!(
+        tried,
+        [("back", "pack"), ("head", "lantern"), ("shoulder", "moth")]
+    );
+}
+
+#[test]
+fn a_catalogue_from_before_the_shop_still_reads() {
+    let old: Catalogue = serde_json::from_value(serde_json::json!({
+        "claim": { "state": "open", "items": ["visor"], "open": true },
+        "items": [{ "id": "visor", "hash": "1", "slot": "head", "names": {} }]
+    }))
+    .unwrap();
+    assert!(old.sets.is_empty() && old.supporter.is_none() && old.items[0].prices.is_empty());
+    assert_eq!(currencies(&old), Vec::<String>::new());
 }

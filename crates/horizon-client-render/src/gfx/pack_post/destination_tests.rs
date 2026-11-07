@@ -199,8 +199,33 @@ impl Fixture {
     }
 
     pub(super) fn build(&self, post: Post) -> PackPost {
+        let post = self.try_build(post).expect("the pack runs");
+        assert!(
+            post.notes.iter().all(|n| n.starts_with("shadow map ")),
+            "{:?}",
+            post.notes
+        );
+        post
+    }
+
+    /// [`Self::build`] for a pack that may be refused.
+    pub(super) fn try_build(&self, post: Post) -> Result<PackPost, Refused> {
+        self.try_build_with_terrain(post, None)
+    }
+
+    /// `build`, with the game's terrain geometry handed to the pack.
+    pub(super) fn build_with_terrain(&self, post: Post, terrain: Option<Geometry<'_>>) -> PackPost {
+        self.try_build_with_terrain(post, terrain)
+            .expect("the pack runs")
+    }
+
+    fn try_build_with_terrain(
+        &self,
+        post: Post,
+        terrain: Option<Geometry<'_>>,
+    ) -> Result<PackPost, Refused> {
         let lightmap = self.texture([1, 1], T::Rgba8Unorm);
-        let post = PackPost::new(
+        PackPost::new(
             &self.device,
             &self.queue,
             &self.adapter,
@@ -210,24 +235,30 @@ impl Fixture {
                 atlas: None,
                 material_maps: None,
                 lightmap,
-                terrain: None,
+                terrain,
                 block_ids: &[],
+                sprite_rects: &[],
                 celestial: None,
                 gui_size: [16, 16],
                 clouds: None,
                 weather: false,
                 hand: false,
             },
-        );
-        assert!(
-            post.notes.iter().all(|n| n.starts_with("shadow map ")),
-            "{:?}",
-            post.notes
-        );
-        post
+            &Default::default(),
+        )
     }
 
     pub(super) fn render(&self, post: &mut PackPost, size: [u32; 2]) -> Vec<[u8; 4]> {
+        self.render_with_terrain(post, size, &mut |_, _, _, _| {})
+    }
+
+    /// `render`, with `terrain` drawing the game's terrain lists.
+    pub(super) fn render_with_terrain(
+        &self,
+        post: &mut PackPost,
+        size: [u32; 2],
+        terrain: &mut TerrainDraw<'_>,
+    ) -> Vec<[u8; 4]> {
         let world = self.texture(size, T::Rgba8Unorm);
         let depth = self.texture(size, T::Depth32Float);
         let screen = self.texture(size, T::Rgba8Unorm);
@@ -252,7 +283,7 @@ impl Fixture {
             size,
             size,
             &[],
-            &mut |_, _, _, _| {},
+            terrain,
         );
         encoder.copy_texture_to_buffer(
             screen.texture().as_image_copy(),
@@ -401,6 +432,7 @@ fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
         skybox: false,
         end_sky: false,
         end_sky_sprite: None,
+        boss_world_fog: false,
         environment_fog: None,
         water_fog: [0.0; 3],
         fog: None,
@@ -408,6 +440,7 @@ fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
         outline: Vec::new(),
         outline_after_terrain: false,
         outline_high_contrast: false,
+        pvp: Default::default(),
         debug_lines: &[],
         debug_lines_on_top: &[],
         debug_crosshair: &[],
@@ -420,6 +453,7 @@ fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
         visible_static_block_entity_sections: &[],
         static_block_entity_stats: crate::block_entity_render::StaticCacheFrameStats::default(),
         entity_motion: &[],
+        entity_motion_posed: &[],
         colored_lights: &[],
         emissive_layers: &[],
         shadow_only: &[],
@@ -431,6 +465,7 @@ fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
         lightning: Default::default(),
         additive: &[],
         see_through: &[],
+        world_primitives: Default::default(),
         celestial: &[],
         stars: None,
         hand: &[],

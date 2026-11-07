@@ -43,9 +43,7 @@ struct TaaUniform {
     jitter: [f32; 4],
 }
 
-/// TAA's GPU resources, absent when the device cannot compile the shader
-/// (the OpenGL backend's naga GLSL emitter does not support `textureLoad`
-/// from depth textures).
+/// TAA's GPU resources, absent when the device cannot compile the shader.
 struct TaaResources {
     layout: wgpu::BindGroupLayout,
     pipeline: wgpu::RenderPipeline,
@@ -146,9 +144,6 @@ impl Post {
                 cache: None,
             })
         };
-        // The OpenGL backend's GLSL translator does not support textureLoad
-        // from depth textures: on devices running through OpenGL (such as older
-        // Intel GPUs on Linux), TAA cannot compile its pipeline.
         let taa_resources = {
             let taa_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("Horizon TAA bindings"),
@@ -161,7 +156,9 @@ impl Post {
                         count: None,
                     },
                     texture(2, float),
-                    texture(3, wgpu::TextureSampleType::Depth),
+                    // A depth view through an unfilterable float binding: the
+                    // texel is the same, and the GLSL backend can read it.
+                    texture(3, wgpu::TextureSampleType::Float { filterable: false }),
                     wgpu::BindGroupLayoutEntry {
                         binding: 4,
                         visibility: wgpu::ShaderStages::FRAGMENT,
@@ -260,12 +257,21 @@ impl Post {
 
     /// The world's rendered size and the size it is shown at (TAA's history).
     fn sizes(&self, window: [u32; 2]) -> ([u32; 2], [u32; 2]) {
-        let output = window.map(|v| ((v as f32 * self.scale).round() as u32).clamp(1, 8192));
         let upscale = if self.taa_on { self.upscale } else { 1.0 };
+        self.sizes_with_upscale(window, upscale)
+    }
+
+    fn sizes_with_upscale(&self, window: [u32; 2], upscale: f32) -> ([u32; 2], [u32; 2]) {
+        let output = window.map(|v| ((v as f32 * self.scale).round() as u32).clamp(1, 8192));
         (
             output.map(|v| ((v as f32 / upscale).round() as u32).max(1)),
             output,
         )
+    }
+
+    /// The next TAA frame's input size, even before its first jitter or resize.
+    pub(super) fn taa_render_size(&self, window: [u32; 2]) -> [u32; 2] {
+        self.sizes_with_upscale(window, self.upscale).0
     }
 
     /// TAA's sub-pixel jitter this frame, as a clip-space matrix to multiply into the
@@ -607,7 +613,7 @@ mod tests {
 
     #[test]
     fn jitter_stays_inside_the_pixel() {
-        for i in 1..=8 {
+        for i in 1..=128 {
             let (x, y) = (halton(i, 2), halton(i, 3));
             assert!((0.0..1.0).contains(&x) && (0.0..1.0).contains(&y));
         }
@@ -615,6 +621,30 @@ mod tests {
             [halton(1, 2), halton(2, 2), halton(3, 2)],
             [0.5, 0.25, 0.75]
         );
+    }
+
+    #[test]
+    fn culling_uses_the_next_taa_size_before_the_first_jitter_or_resize() {
+        let Some((device, _)) = test_device() else {
+            return;
+        };
+        let mut post = Post::new(&device, wgpu::TextureFormat::Rgba8Unorm);
+        assert!(!post.taa_on);
+        assert!(post.size().is_none());
+        for (window, scale, upscale, expected) in [
+            ([1280, 720], 1.0, 1.0, [1280, 720]),
+            ([1281, 721], 0.5, 2.0, [321, 181]),
+            ([3840, 2160], 0.25, 4.0, [240, 135]),
+            ([10000, 10000], 2.0, 4.0, [2048, 2048]),
+            ([0, 0], 0.5, 4.0, [1, 1]),
+        ] {
+            post.scale = scale;
+            post.upscale = upscale;
+            post.taa_on = false;
+            assert_eq!(post.taa_render_size(window), expected);
+            post.taa_on = true;
+            assert_eq!(post.sizes(window).0, expected);
+        }
     }
 
     fn test_device() -> Option<(wgpu::Device, wgpu::Queue)> {

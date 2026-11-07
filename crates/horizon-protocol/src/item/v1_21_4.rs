@@ -24,6 +24,7 @@ pub(super) fn tooltip_ids() -> (i32, i32) {
 }
 
 pub(super) fn read_stack(r: &mut Reader) -> Result<Option<Stack>> {
+    let _nested = Nested::enter()?;
     let count = r.varint()?;
     if count <= 0 {
         return Ok(None);
@@ -45,8 +46,9 @@ pub(super) fn read_stack(r: &mut Reader) -> Result<Option<Stack>> {
             hide = true;
             continue;
         }
-        let kind = ids::component(old);
-        let component = read_component(kind, r)?;
+        let Some((kind, component)) = read_added_legacy(old, r)? else {
+            continue;
+        };
         if TOOLTIP_FLAGS.contains(&kind) && !r.bool()? {
             hidden.push(kind);
         }
@@ -81,6 +83,26 @@ pub(super) fn read_stack(r: &mut Reader) -> Result<Option<Stack>> {
         }
     }
     Ok(Some(stack))
+}
+
+/// Apply shared older-layout changes before this era's tooltip and component codecs.
+/// This path also serves pre-1.21.2 stacks after their food and fire-resistance cases.
+pub(super) fn read_added_legacy(raw: i32, r: &mut Reader) -> Result<Option<(i32, Component)>> {
+    let _nested = Nested::enter()?;
+    if let Some(name) = ids::dropped_component(raw) {
+        skip_dropped(name, r)?;
+        return Ok(None);
+    }
+    let kind = ids::component(raw);
+    let component = match older_layout(kind, r)? {
+        Older::Dropped => return Ok(None),
+        Older::Rewritten(bytes) => {
+            let _pinned = ids::pinned();
+            Component::read(kind, &mut Reader::new(&bytes))?
+        }
+        Older::Pinned => read_component(kind, r)?,
+    };
+    Ok(Some((kind, component)))
 }
 
 pub(super) fn read_component(kind: i32, r: &mut Reader) -> Result<Component> {
@@ -239,6 +261,77 @@ pub(super) fn rewrite(kind: i32, r: &mut Reader, up: bool) -> Result<Vec<u8>> {
 mod tests {
     use super::*;
     use crate::adapter::{ServerVersion, ids::Way};
+
+    #[test]
+    fn legacy_pots_and_removed_map_colors_keep_the_following_component_aligned() {
+        // Raw ids from each official registry report. PotDecorations writes four item ids;
+        // MapItemColor writes an INT and has no pinned counterpart. Stone is item 1 throughout.
+        for (version, pot, map_color, sherd, brick) in [
+            (ServerVersion::V1_20_6, 50, 25, 1285, 921),
+            (ServerVersion::V1_21_1, 51, 25, 1288, 921),
+            (ServerVersion::V1_21_4, 61, 35, 1341, 954),
+        ] {
+            let mut old = Writer::new();
+            old.varint(1);
+            old.varint(1);
+            old.varint(3);
+            old.varint(1);
+            old.varint(map_color);
+            old.i32(0x12345678);
+            old.varint(pot);
+            old.varint(4);
+            for item in [sherd, brick, brick, brick] {
+                old.varint(item);
+            }
+            old.varint(3); // Damage follows the rewritten and discarded values.
+            old.varint(17);
+            old.varint(map_color);
+
+            let mut r = Reader::new(&old.data);
+            let stack = {
+                let _up = ids::renumbering(version.ids().unwrap(), Way::Up);
+                Slot::read(&mut r).unwrap()
+            };
+            assert_eq!(r.remaining(), 0, "{version:?}");
+            let mut expected = Writer::new();
+            expected.bytes(&[1, 1, 2, 0, 76, 1]);
+            expected.varint(1598); // Pinned angler_pottery_sherd.
+            expected.bytes(&[1, 0, 0, 0, 0, 0, 3, 17]);
+            let expected = Slot::read(&mut Reader::new(&expected.data)).unwrap();
+            assert_eq!(stack, expected, "{version:?}");
+
+            // No old ids may remain in a cached patch or be renumbered a second time.
+            let mut wire = Writer::new();
+            DelimitedSlot::write(&stack, &mut wire);
+            assert_eq!(
+                DelimitedSlot::read(&mut Reader::new(&wire.data)).unwrap(),
+                expected,
+                "{version:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn deeply_nested_legacy_container_stacks_are_rejected() {
+        for (version, container) in [
+            (ServerVersion::V1_20_6, 51),
+            (ServerVersion::V1_21_1, 52),
+            (ServerVersion::V1_21_4, 62),
+        ] {
+            let mut old = Writer::new();
+            for _ in 0..100 {
+                old.bytes(&[1, 1, 1, 0]);
+                old.varint(container);
+                old.varint(1);
+            }
+            old.bytes(&[1, 1, 0, 0]);
+            let _up = ids::renumbering(version.ids().unwrap(), Way::Up);
+            assert!(
+                Slot::read(&mut Reader::new(&old.data)).is_err(),
+                "{version:?}"
+            );
+        }
+    }
 
     fn bytes(hex: &str) -> Vec<u8> {
         (0..hex.len())

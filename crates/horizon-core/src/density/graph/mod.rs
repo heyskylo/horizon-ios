@@ -415,10 +415,9 @@ impl DensityGraph {
             input,
             holder: Some(holder),
         } = node
+            && self.holders.get(holder.0) != Some(&input)
         {
-            if self.holders.get(holder.0) != Some(&input) {
-                return Err(CompileError::UnknownHolder);
-            }
+            return Err(CompileError::UnknownHolder);
         }
         if let GraphNode::Noise { noise, .. } | GraphNode::OffsetNoise { noise, .. } = node {
             self.noise_entry(noise)?;
@@ -428,10 +427,9 @@ impl DensityGraph {
             branches,
             ..
         } = &node
+            && (branches.len() != thresholds.len().saturating_add(1) || branches.len() > 256)
         {
-            if branches.len() != thresholds.len().saturating_add(1) || branches.len() > 256 {
-                return Err(CompileError::InvalidIntervals);
-            }
+            return Err(CompileError::InvalidIntervals);
         }
         // Fastutil threshold lists compare zeros numerically but hash their
         // signed bits. Among equal definitions, the only possible hash delta
@@ -708,5 +706,75 @@ impl DensityGraph {
                 super::arithmetic::java_max(lower as f32, self.range(upper)?.max()),
             )?,
         })
+    }
+    /// Inclusive `y` bounds outside which `id` is never positive, at any x
+    /// and z, read from its shape: through registry references, a range
+    /// choice whose input is a clamped `y` gradient and whose out-of-range
+    /// branch is a constant `<= 0` (as vanilla's ore vein densities are).
+    /// A side the gradient stays in range on is unbounded (`i32::MIN` or
+    /// `i32::MAX`); `low > high` when the input is never in range. `None` for
+    /// any other shape.
+    pub fn positive_y_bounds(&self, id: FunctionId) -> Result<Option<[i32; 2]>, CompileError> {
+        let Some(&GraphNode::Choice {
+            input,
+            min,
+            max,
+            outside,
+            ..
+        }) = self.resolve_references(id)?
+        else {
+            return Ok(None);
+        };
+        if !matches!(self.resolve_references(outside)?, Some(&GraphNode::Constant(value)) if value <= 0.0)
+        {
+            return Ok(None);
+        }
+        let Some(&GraphNode::Gradient {
+            axis: Axis::Y,
+            tiling: TilingMode::ClampToEdge,
+            from,
+            to,
+            low,
+            high,
+        }) = self.resolve_references(input)?
+        else {
+            return Ok(None);
+        };
+        let (first, last) = (from.min(to), from.max(to));
+        if i64::from(last) - i64::from(first) > 1 << 16 {
+            return Ok(None);
+        }
+        // The compiled sampler's own arithmetic, at every y it varies over;
+        // beyond them the clamped value is that of the nearer end.
+        let gradient = GradientSampler::new(Axis::Y, TilingMode::ClampToEdge, from, to, low, high);
+        let inside = |y| -> Result<bool, CompileError> {
+            let value = gradient.compute(y)?;
+            Ok(value >= min && value < max)
+        };
+        let mut bounds = [i32::MAX, i32::MIN];
+        for y in first..=last {
+            if inside(y)? {
+                bounds[0] = bounds[0].min(y);
+                bounds[1] = y;
+            }
+        }
+        if inside(first)? {
+            bounds[0] = i32::MIN;
+        }
+        if inside(last)? {
+            bounds[1] = i32::MAX;
+        }
+        Ok(Some(bounds))
+    }
+    /// The node `id` names, past registry and direct references; `None` for
+    /// a bound sampler.
+    fn resolve_references(&self, mut id: FunctionId) -> Result<Option<&GraphNode>, CompileError> {
+        loop {
+            match &self.entry(id)?.definition {
+                Definition::Node(GraphNode::Reference { input, .. }) => id = *input,
+                Definition::Node(node) => return Ok(Some(node)),
+                Definition::Bound { .. } => return Ok(None),
+            }
+        }
     }
 }

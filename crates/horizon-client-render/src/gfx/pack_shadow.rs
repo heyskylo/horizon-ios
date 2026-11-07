@@ -35,14 +35,8 @@ pub(super) struct ShadowTargets {
     pub depth: (wgpu::Texture, wgpu::TextureView),
     /// `shadowtex1`: a copy of `shadowtex0` taken before translucent terrain, when read.
     pub depth1: Option<(wgpu::Texture, wgpu::TextureView)>,
-    /// `shadowtex0`/`1` as a plain sampler filters them: Iris 1.11.7 reads them linearly unless
-    /// a pack asks for the nearest texel (measured). wgpu filters a depth format only for a
-    /// comparison, so these are `R32Float` copies of the final depths, when read that way.
-    pub linear: [Option<wgpu::TextureView>; 2],
-    /// The rows a depth copy goes through to `linear` (a depth format copies only to a buffer),
-    /// and their stride in bytes.
-    staging: Option<(wgpu::Buffer, u32)>,
-    /// Both sides of each shadowcolor buffer used.
+    /// Both sides of each shadowcolor buffer used; one texture for both when no `shadowcomp`
+    /// program draws into or flips the buffer.
     pub color: [Option<[wgpu::TextureView; 2]>; SHADOW_COLORS],
     /// The clear colour of each buffer cleared every frame.
     pub clears: [Option<[f32; 4]>; SHADOW_COLORS],
@@ -82,17 +76,60 @@ fn target(
     (texture, view)
 }
 
+/// The depth stand-in is initialized to no shadow on the next pack render.
+pub(super) fn stand_in(device: &wgpu::Device) -> wgpu::TextureView {
+    device
+        .create_texture(&wgpu::TextureDescriptor {
+            label: Some("Shader pack shadow stand-in"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Depth32Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        })
+        .create_view(&Default::default())
+}
+
 impl ShadowTargets {
+    pub fn reset_history(&mut self, device: &wgpu::Device, shadow: &horizon_shaders::Shadow) {
+        let mut colors = 0;
+        let mut doubled = 0;
+        let formats = std::array::from_fn(|n| match &self.color[n] {
+            Some([a, b]) => {
+                colors |= 1 << n;
+                if a.texture() != b.texture() {
+                    doubled |= 1 << n;
+                }
+                a.texture().format()
+            }
+            None => wgpu::TextureFormat::Rgba8Unorm,
+        });
+        *self = Self::new(
+            device,
+            shadow,
+            formats,
+            colors,
+            doubled,
+            self.depth1.is_some(),
+        );
+    }
+
     /// The buffers of `shadow` the pack uses: `colors` (bit n: shadowcolor n), `depth1` when
-    /// some program reads `shadowtex1`, `linear` (bit n: shadowtex n read through a filtering
-    /// sampler). The resolution is kept within the device's limit.
+    /// some program reads `shadowtex1`, `doubled` (bit n: shadowcolor n needs a B texture). The
+    /// resolution is kept within the device's limit.
     pub fn new(
         device: &wgpu::Device,
         shadow: &horizon_shaders::Shadow,
         formats: [wgpu::TextureFormat; SHADOW_COLORS],
         colors: u16,
+        doubled: u16,
         depth1: bool,
-        linear: u8,
     ) -> Self {
         let size = shadow
             .resolution
@@ -101,8 +138,8 @@ impl ShadowTargets {
         let depth = wgpu::TextureFormat::Depth32Float;
         let color = std::array::from_fn(|n| {
             (colors & 1 << n != 0).then(|| {
-                [0, 1].map(|side| {
-                    let label = format!("Shader pack shadowcolor{n} {}", ["A", "B"][side]);
+                let side = |side: &str| {
+                    let label = format!("Shader pack shadowcolor{n} {side}");
                     target(
                         device,
                         &label,
@@ -111,46 +148,20 @@ impl ShadowTargets {
                         wgpu::TextureUsages::empty(),
                     )
                     .1
-                })
+                };
+                let a = side("A");
+                let b = if doubled & 1 << n != 0 {
+                    side("B")
+                } else {
+                    a.clone()
+                };
+                [a, b]
             })
-        });
-        let linear = [0, 1].map(|n| {
-            (linear & 1 << n != 0).then(|| {
-                let label = format!("Shader pack shadowtex{n} (filtered)");
-                device
-                    .create_texture(&wgpu::TextureDescriptor {
-                        label: Some(&label),
-                        size: wgpu::Extent3d {
-                            width: size,
-                            height: size,
-                            depth_or_array_layers: 1,
-                        },
-                        mip_level_count: 1,
-                        sample_count: 1,
-                        dimension: wgpu::TextureDimension::D2,
-                        format: wgpu::TextureFormat::R32Float,
-                        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                        view_formats: &[],
-                    })
-                    .create_view(&Default::default())
-            })
-        });
-        let staging = linear.iter().any(Option::is_some).then(|| {
-            let stride = (size * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
-            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("Shader pack shadow depth rows"),
-                size: u64::from(stride) * u64::from(size),
-                usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            (buffer, stride)
         });
         Self {
             size,
             depth: target(device, "Shader pack shadowtex0", size, depth, copy),
             depth1: depth1.then(|| target(device, "Shader pack shadowtex1", size, depth, copy)),
-            linear,
-            staging,
             color,
             clears: std::array::from_fn(|n| {
                 let b = &shadow.colors[n];
@@ -254,40 +265,6 @@ impl ShadowTargets {
                 copy.as_image_copy(),
                 self.depth.0.size(),
             );
-        }
-    }
-
-    /// `linear`: the filtered copies of the depths the shadow pass left (`shadowtex1` from its
-    /// copy before translucent geometry).
-    pub fn copy_linear(&self, encoder: &mut wgpu::CommandEncoder) {
-        let Some((buffer, stride)) = &self.staging else {
-            return;
-        };
-        for (n, linear) in self.linear.iter().enumerate() {
-            let Some(linear) = linear else {
-                continue;
-            };
-            let depth = match (n, &self.depth1) {
-                (1, Some(d)) => &d.0,
-                _ => &self.depth.0,
-            };
-            let rows = wgpu::TexelCopyBufferInfo {
-                buffer,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(*stride),
-                    rows_per_image: None,
-                },
-            };
-            encoder.copy_texture_to_buffer(
-                wgpu::TexelCopyTextureInfo {
-                    aspect: wgpu::TextureAspect::DepthOnly,
-                    ..depth.as_image_copy()
-                },
-                rows,
-                depth.size(),
-            );
-            encoder.copy_buffer_to_texture(rows, linear.texture().as_image_copy(), depth.size());
         }
     }
 }

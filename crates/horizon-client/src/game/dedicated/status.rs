@@ -3,6 +3,9 @@
 //! (including their positions) and the loaded chunks; `console <line>` runs a console command and answers with the lines it logged;
 //! `server-events <since>` answers the typed events after that number (events.rs); `management <connection>
 //! <json>` edits the lists as vanilla's management protocol does (management.rs).
+//! `player-expect <uuid> [seconds]`, `player-drop <uuid>`, `player-export <uuid> [freeze]`,
+//! `player-release <uuid> ...`, `player-import <uuid> <json>` and `player-confirm <uuid> ...` are a proxy's,
+//! for a player it moves between two servers, and `transfer-status` the counts it reads first (transfer.rs).
 use super::{ServerState, capture_log};
 use crate::game::Game;
 use serde_json::{Value, json};
@@ -41,12 +44,20 @@ impl Game<'_> {
     /// Answers the requests waiting on the control endpoint.
     pub(super) fn poll_server_control(&mut self, state: &mut ServerState) {
         while let Some(request) = self.control.as_ref().and_then(|c| c.try_recv()) {
+            // A `console stop` just before stops this server for the next request too.
+            self.note_stopping(state.lists.lock().unwrap().stop);
             let reply = match request.line.trim().split_once(' ') {
                 _ if request.line.trim() == "server-status" => self.server_status(state),
+                // A proxy reading whether it may send players here (transfer.rs).
+                _ if request.line.trim() == "transfer-status" => self.transfer_status(),
                 Some(("server-events", since)) => {
                     super::events::since(since.trim().parse().unwrap_or(0))
                 }
                 Some(("management", rest)) => self.management(state, rest),
+                // A proxy moving a player here or away (transfer.rs, lan/arrivals.rs).
+                Some((verb, rest)) if verb.starts_with("player-") => {
+                    self.player_request(verb, rest)
+                }
                 Some(("console", line)) => {
                     // Command feedback is logged as system chat; the reply carries the text alone.
                     let output: Vec<String> = capture_log(|| self.console_command(state, line))
@@ -137,6 +148,7 @@ impl Game<'_> {
                         g.uuid,
                         &g.address.ip().to_string(),
                         g.latency.load(Ordering::Relaxed),
+                        &g.dimension,
                         g.position,
                     )
                 })
@@ -161,12 +173,20 @@ impl Game<'_> {
     }
 }
 
-fn player_status(name: &str, uuid: u128, address: &str, ping_ms: i32, position: [f64; 3]) -> Value {
+fn player_status(
+    name: &str,
+    uuid: u128,
+    address: &str,
+    ping_ms: i32,
+    dimension: &str,
+    position: [f64; 3],
+) -> Value {
     json!({
         "name": name,
         "uuid": horizon_protocol::crypto::uuid_string(uuid),
         "address": address,
         "ping_ms": ping_ms,
+        "dimension": dimension,
         "position": position,
     })
 }
@@ -179,12 +199,20 @@ mod tests {
     #[test]
     fn player_status_includes_coordinates() {
         assert_eq!(
-            player_status("Alex", 1, "203.0.113.7", 42, [1.5, 64.0, -2.25]),
+            player_status(
+                "Alex",
+                1,
+                "203.0.113.7",
+                42,
+                "minecraft:the_nether",
+                [1.5, 64.0, -2.25]
+            ),
             json!({
                 "name": "Alex",
                 "uuid": "00000000-0000-0000-0000-000000000001",
                 "address": "203.0.113.7",
                 "ping_ms": 42,
+                "dimension": "minecraft:the_nether",
                 "position": [1.5, 64.0, -2.25],
             })
         );

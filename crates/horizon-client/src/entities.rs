@@ -90,10 +90,120 @@ fn slime_at(world: &World, facts: &BlockFacts, x: i32, y: i32, z: i32) -> bool {
 }
 
 mod fluids;
-pub use fluids::update_entity_fluids;
+pub use fluids::{fluid_flow, update_entity_fluids};
+
+#[cfg(test)]
+mod drop_motion_tests {
+    use super::drop_motion;
+    use horizon_core::random::{LegacyRandom, RandomSource};
+
+    /// Vanilla's own `Mth` and `LegacyRandomSource(7)` running
+    /// `createItemStackToDrop`'s arithmetic: three throws along the view,
+    /// then two scattered drops, bit for bit, then the random's next int.
+    #[test]
+    fn drops_match_vanillas_motion_bit_for_bit() {
+        let mut r = LegacyRandom::new(7);
+        let bits = |v: [f64; 3]| v.map(|c| c.to_bits() as i64);
+        let thrown = [
+            (
+                0.0,
+                0.0,
+                [
+                    -4658604453255681268,
+                    4595435376155295744,
+                    4598847571894135436,
+                ],
+            ),
+            (
+                37.5,
+                -21.25,
+                [
+                    -4627867408251048793,
+                    4597245257657090048,
+                    // Vanilla's `Math.sin` is HotSpot's intrinsic, which rounds this
+                    // one a bit lower on AArch64 than on x86-64 (`jmath`).
+                    if cfg!(target_arch = "aarch64") {
+                        4597448471913462162
+                    } else {
+                        4597448471913462163
+                    },
+                ],
+            ),
+            (
+                -123.4,
+                60.0,
+                [
+                    4593476083220988603,
+                    -4626282285467959296,
+                    -4631965182103987462,
+                ],
+            ),
+        ];
+        for (yaw, pitch, want) in thrown {
+            assert_eq!(
+                bits(drop_motion(&mut r, yaw, pitch, false)),
+                want,
+                "{yaw} {pitch}"
+            );
+        }
+        let scattered = [
+            [
+                -4634512480041697280,
+                4596373779801702400,
+                -4661085178024689664,
+            ],
+            [
+                4600899508711194624,
+                4596373779801702400,
+                -4629159495333838848,
+            ],
+        ];
+        for want in scattered {
+            assert_eq!(bits(drop_motion(&mut r, 0.0, 0.0, true)), want);
+        }
+        assert_eq!(r.next_int(), 357425922);
+    }
+}
+
+/// `LivingEntity.createItemStackToDrop`'s motion for a stack thrown by an
+/// entity facing `yaw` and `pitch` (degrees), from that entity's random:
+/// `randomly` scatters it in any direction (a death's drops), else it goes
+/// along the view (the drop key).
+pub fn drop_motion(
+    r: &mut impl horizon_core::random::RandomSource,
+    yaw: f32,
+    pitch: f32,
+    randomly: bool,
+) -> [f64; 3] {
+    use horizon_core::{
+        geometry::trig::{DEG_TO_RAD, cos, sin},
+        jmath,
+    };
+    let tau = std::f32::consts::TAU;
+    if randomly {
+        let pow = r.next_float() * 0.5;
+        let dir = f64::from(r.next_float() * tau);
+        return [
+            f64::from(-sin(dir) * pow),
+            f64::from(0.2f32),
+            f64::from(cos(dir) * pow),
+        ];
+    }
+    let (x, y) = (f64::from(pitch * DEG_TO_RAD), f64::from(yaw * DEG_TO_RAD));
+    let (sin_x, cos_x, sin_y, cos_y) = (sin(x), cos(x), sin(y), cos(y));
+    let dir = f64::from(r.next_float() * tau);
+    let pow = f64::from(0.02 * r.next_float());
+    [
+        f64::from(-sin_y * cos_x * 0.3) + jmath::cos(dir) * pow,
+        f64::from(-sin_x * 0.3 + 0.1 + (r.next_float() - r.next_float()) * 0.1),
+        f64::from(cos_y * cos_x * 0.3) + jmath::sin(dir) * pow,
+    ]
+}
 
 #[derive(Clone, Debug)]
 pub struct ItemEntity {
+    /// `Entity.yRot` and `xRot` (`/tp`, `/data get ... Rotation`).
+    pub rotation: [f32; 2],
     /// When it joined its list ([`crate::join_seq`]); set by the list, not by the spawn site.
     pub join: crate::join_seq::JoinSeq,
     pub health: i32,
@@ -259,7 +369,8 @@ impl crate::entity_rules::EntityRules for ArmorStand {
 #[derive(Clone, Copy)]
 pub struct ItemStep {
     old_velocity: Vec3,
-    moved: bool,
+    movement: Option<Vec3>,
+    clipped_vertical: bool,
 }
 #[cfg(test)]
 impl ItemEntity {
@@ -275,6 +386,7 @@ impl ItemEntity {
         fluids: &crate::motion::FluidResources,
         entity_boxes: &[Aabb],
         border: Option<&BorderGeometry>,
+        blocks: Option<&horizon_world::movement_properties::BoundMovementProperties>,
     ) -> bool {
         let (water, lava) = self.update_fluids(world, fluids);
         self.water_entry(water > 0.0, self.ticks == 0, &mut |_| {});
@@ -286,6 +398,7 @@ impl ItemEntity {
             (water, lava),
             entity_boxes,
             border,
+            blocks,
         );
         crate::motion::bubble_column_push(
             world,
@@ -303,6 +416,29 @@ impl ItemEntity {
 }
 impl ItemEntity {
     pub const WIDTH: f64 = 0.25;
+    /// `EntityType.ITEM` declares `eyeHeight(0.2125)`: an item is lit from the
+    /// block its eye is in, most of a block above the one its base rests in.
+    pub const EYE_HEIGHT: f64 = 0.2125;
+    /// `Entity.getLightProbePosition(partialTick)` for a dropped item: the eye
+    /// position (`getEyePosition`) over the position drawn this frame
+    /// (`getPosition(partialTick)`), not this tick's own.
+    pub fn light_probe(&self, partial: f64) -> [f64; 3] {
+        [
+            self.previous.x + (self.position.x - self.previous.x) * partial,
+            self.previous.y + (self.position.y - self.previous.y) * partial + Self::EYE_HEIGHT,
+            self.previous.z + (self.position.z - self.previous.z) * partial,
+        ]
+    }
+    /// `EntityRenderer.getPackedLightCoords` for a dropped item: the level's
+    /// sky light over the block light of the cell it is lit from, which
+    /// `EntityRenderer.getBlockLightLevel` puts at 15 while the item
+    /// `isOnFire`. `light` is the level's packed light (sky high, block low);
+    /// `environment_tick` clears the fire ticks of a fire-immune stack, as
+    /// `ItemEntity.fireImmune` makes it never on fire.
+    pub fn render_light(&self, light: u8) -> u32 {
+        let block = if self.fire_ticks > 0 { 15 } else { light & 15 };
+        (u32::from(light >> 4) * 16) | ((u32::from(block) * 16) << 8)
+    }
     pub fn bounds(&self) -> Aabb {
         let h = Self::WIDTH / 2.0;
         Aabb::new(
@@ -450,6 +586,32 @@ impl ItemEntity {
         facts: &BlockFacts,
         collision: &BlockCollisionRegistry<'_>,
         no_physics: bool,
+        heights: (f64, f64),
+        entity_boxes: &[Aabb],
+        border: Option<&BorderGeometry>,
+        blocks: Option<&horizon_world::movement_properties::BoundMovementProperties>,
+    ) -> ItemStep {
+        let step = self.tick_move_before_block_effects(
+            world,
+            facts,
+            collision,
+            no_physics,
+            heights,
+            entity_boxes,
+            border,
+        );
+        self.finish_move_block_effects(world, facts, no_physics, blocks, step);
+        step
+    }
+
+    /// Resolve the item's move before the owner handles block contact and
+    /// resumes the normal block effects.
+    pub fn tick_move_before_block_effects(
+        &mut self,
+        world: &World,
+        facts: &BlockFacts,
+        collision: &BlockCollisionRegistry<'_>,
+        no_physics: bool,
         (water_height, lava_height): (f64, f64),
         entity_boxes: &[Aabb],
         border: Option<&BorderGeometry>,
@@ -504,7 +666,7 @@ impl ItemEntity {
                 wanted
             } else {
                 // `Entity.collide`: the entities that `canBeCollidedWith` the item stop it
-                // too (a boat, a minecart, a shulker, a happy ghast held still), and
+                // too (a boat, a shulker, a happy ghast held still; not a minecart), and
                 // so does the world border (`Entity.collectColliders`).
                 crate::collisions::EntityCollisions {
                     blocks: scene,
@@ -550,13 +712,10 @@ impl ItemEntity {
                     slime,
                 );
             }
-            // Entity.move -> applyEffectsFromBlocks: honey then bubble columns
-            // (before air drag), matching ItemEntity.tick.
-            self.apply_honey_slide(world, facts);
-            self.stuck = self.stuck_multiplier(world, facts).unwrap_or(Vec3::ZERO);
             return ItemStep {
                 old_velocity,
-                moved: true,
+                movement: Some(moved),
+                clipped_vertical: !no_physics && moved.y != wanted.y,
             };
         }
         // applyEffectsFromBlocksForLastMovements: still lift/drag while idle.
@@ -565,7 +724,67 @@ impl ItemEntity {
         }
         ItemStep {
             old_velocity,
-            moved: false,
+            movement: None,
+            clipped_vertical: false,
+        }
+    }
+
+    /// The block at `Entity.getOnPosLegacy` for this tick's clipped move.
+    /// Idle ticks retain the entity's collision flags but have no contact.
+    pub fn vertical_contact(
+        &self,
+        world: &World,
+        collision: &BlockCollisionRegistry<'_>,
+        blocks: &horizon_world::movement_properties::BoundMovementProperties,
+        step: ItemStep,
+    ) -> Option<BlockPos> {
+        if !step.clipped_vertical {
+            return None;
+        }
+        let mut scene = SceneCollisions {
+            world,
+            binding: collision,
+            subject: None,
+        };
+        let mut ground = horizon_world::ground_support::GroundState::default();
+        ground
+            .check_support(self.on_ground, self.bounds(), step.movement, |bounds| {
+                horizon_world::ground_support::find_supporting_block(
+                    &mut scene,
+                    horizon_world::collision_context::CollisionContext::empty(false),
+                    self.position,
+                    bounds,
+                    1_000_000,
+                )
+            })
+            .ok()?;
+        Some(crate::motion::legacy_block_support_at(
+            world,
+            blocks,
+            self.position,
+            ground.supporting_block,
+        ))
+    }
+
+    /// Resume the normal block effects after the collision response.
+    pub fn finish_move_block_effects(
+        &mut self,
+        world: &World,
+        facts: &BlockFacts,
+        no_physics: bool,
+        blocks: Option<&horizon_world::movement_properties::BoundMovementProperties>,
+        step: ItemStep,
+    ) {
+        if step.movement.is_some() {
+            // Entity.move applies the block's speed factor before block effects.
+            if !no_physics && let Some(blocks) = blocks {
+                let factor =
+                    crate::motion::block_speed_factor_at(world, blocks, self.position, None);
+                self.velocity =
+                    horizon_world::entity_move::scale_by_block_speed(self.velocity, factor);
+            }
+            self.apply_honey_slide(world, facts);
+            self.stuck = self.stuck_multiplier(world, facts).unwrap_or(Vec3::ZERO);
         }
     }
     /// The rest of `ItemEntity.tick`, after the bubble column's push: slime,
@@ -579,7 +798,7 @@ impl ItemEntity {
         no_physics: bool,
         step: ItemStep,
     ) -> bool {
-        if step.moved {
+        if step.movement.is_some() {
             // Entity.applyEffectsFromBlocks -> SlimeBlock.stepOn, with the
             // vertical speed the bounce just left (before the air drag).
             if !no_physics {
@@ -922,10 +1141,13 @@ pub fn merge_with_neighbours(
             (j, i)
         };
         // ItemEntity.merge(toStack, fromStack, 64).
-        let room = max_stack(&items[to].stack).min(64) - items[to].stack.count;
-        let moved = room.min(items[from].stack.count);
-        items[to].stack.count += moved;
-        items[from].stack.count -= moved;
+        // A component limit above 64 permits an overstacked target. Vanilla's
+        // signed room then moves the excess back into the source stack.
+        let room =
+            i64::from(max_stack(&items[to].stack).min(64)) - i64::from(items[to].stack.count);
+        let moved = room.min(i64::from(items[from].stack.count));
+        items[to].stack.count = (i64::from(items[to].stack.count) + moved) as u32;
+        items[from].stack.count = (i64::from(items[from].stack.count) - moved) as u32;
         let (delay, from_age, to_age) =
             (items[from].pickup_delay, age(items, from), age(items, to));
         let to_item = &mut items[to];
@@ -951,6 +1173,8 @@ pub const ORB_QUAD_SCALE: f32 = 0.3;
 /// ExperienceOrb: gravity 0.03, homing towards the player within 8 blocks.
 #[derive(Clone, Debug)]
 pub struct ExperienceOrb {
+    /// `Entity.yRot` and `xRot` (`/tp`, `/data get ... Rotation`).
+    pub rotation: [f32; 2],
     /// When it joined its list ([`crate::join_seq`]); set by the list, not by the spawn site.
     pub join: crate::join_seq::JoinSeq,
     /// The entity id servers track it by.
@@ -1069,6 +1293,15 @@ impl ExperienceOrb {
         let sky = light >> 4;
         (u32::try_from(sky).unwrap_or(0) * 16) | ((u32::try_from(block).unwrap_or(15) * 16) << 8)
     }
+    /// `ExperienceOrb.setUnderwaterMovement`: buoyancy and drag before moving.
+    fn set_underwater_movement(&mut self) {
+        // Vanilla widens float constants before applying double arithmetic.
+        self.velocity = Vec3::new(
+            self.velocity.x * f64::from(0.99_f32),
+            (self.velocity.y + f64::from(5.0e-4_f32)).min(f64::from(0.06_f32)),
+            self.velocity.z * f64::from(0.99_f32),
+        );
+    }
     pub fn tick(
         &mut self,
         world: &World,
@@ -1079,6 +1312,36 @@ impl ExperienceOrb {
         next_float: &mut dyn FnMut() -> f32,
         border: Option<&BorderGeometry>,
         fluids: &crate::motion::FluidResources,
+        on_sound: &mut dyn FnMut([f64; 3], f32),
+    ) -> bool {
+        self.tick_among(
+            world,
+            facts,
+            collision,
+            player,
+            server,
+            next_float,
+            border,
+            fluids,
+            on_sound,
+            &[],
+        )
+    }
+    /// [`Self::tick`], its move also stopped by `entities`: the boxes of the
+    /// entities that `canBeCollidedWith` it (`EntityGetter.getEntityCollisions`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn tick_among(
+        &mut self,
+        world: &World,
+        facts: &BlockFacts,
+        collision: &BlockCollisionRegistry<'_>,
+        player: Option<[f64; 3]>,
+        server: bool,
+        next_float: &mut dyn FnMut() -> f32,
+        border: Option<&BorderGeometry>,
+        fluids: &crate::motion::FluidResources,
+        on_sound: &mut dyn FnMut([f64; 3], f32),
+        entities: &[Aabb],
     ) -> bool {
         self.ticks += 1;
         self.previous = self.position;
@@ -1098,11 +1361,7 @@ impl ExperienceOrb {
         // inside blocks takes no gravity until it is pushed out below.
         let colliding = !crate::collisions::no_collision_empty(&mut scene, bounds);
         if facts.get(block).fluid == Fluid::Water {
-            self.velocity = Vec3::new(
-                self.velocity.x * 0.99,
-                (self.velocity.y + 5.0e-4).min(0.06),
-                self.velocity.z * 0.99,
-            );
+            self.set_underwater_movement();
         } else if !colliding {
             self.velocity.y -= self.get_gravity();
         }
@@ -1144,10 +1403,11 @@ impl ExperienceOrb {
         // `double fallSpeed = getDeltaMovement().y`, taken after the stuck
         // push and before the move.
         let wanted = self.velocity;
-        // Entity.collide: the world border's walls stop the orb too.
+        // Entity.collide: the world border's walls and the entities that
+        // `canBeCollidedWith` it (a boat, a shulker) stop the orb too.
         let border = border.map(|b| (b, [self.position.x, self.position.z]));
         let moved = scene
-            .resolve_in_border(bounds, wanted, 0.0, self.on_ground, border)
+            .resolve_in_border_with(bounds, wanted, 0.0, self.on_ground, border, entities)
             .unwrap_or(Vec3::ZERO);
         self.position = Vec3::new(
             self.position.x + moved.x,
@@ -1167,6 +1427,9 @@ impl ExperienceOrb {
         if moved.y != wanted.y {
             self.velocity.y = 0.0;
         }
+        // ExperienceOrb.tick applies block effects after moving, before drag.
+        let discarded =
+            server && self.apply_lava_contact_damage(world, fluids, wanted, next_float, on_sound);
         // `float friction = getAirDrag()` (0.98F), the ground's block
         // friction multiplied in as a float, widened once for the scale.
         let mut friction = 0.98_f32;
@@ -1193,7 +1456,47 @@ impl ExperienceOrb {
             self.velocity.y = -wanted.y * 0.4;
         }
         self.age += 1;
-        self.age < 6000
+        !discarded && self.age < 6000
+    }
+    /// `LavaFluid.entityInside` -> `Entity.lavaHurt`: four damage on the
+    /// server, through the orb's existing hurt/discard policy, playing the generic
+    /// burn sound (`minecraft:entity.generic.burn`, volume 0.4, pitch 2.0 + random * 0.4)
+    /// on each hurt contact. This is separate from the lava impulse at the start of the tick.
+    pub fn apply_lava_contact_damage(
+        &mut self,
+        world: &World,
+        fluids: &crate::motion::FluidResources,
+        wanted: Vec3,
+        next_float: &mut dyn FnMut() -> f32,
+        on_sound: &mut dyn FnMut([f64; 3], f32),
+    ) -> bool {
+        if self.health <= 0 {
+            return true;
+        }
+        let contacts = orb_lava_contacts(self.previous, self.position, wanted, |p| {
+            let fluid = fluids.fluid(world.block(p.x, p.y, p.z));
+            if !fluid
+                .kind()
+                .same_family(horizon_world::fluid::FluidKind::Lava)
+            {
+                return None;
+            }
+            let above = fluids.fluid(world.block(p.x, p.y + 1, p.z));
+            Some(if fluid.kind().same_family(above.kind()) {
+                1.0
+            } else {
+                f64::from(fluid.own_height())
+            })
+        });
+        for _ in 0..contacts {
+            let dead = self.hurt(4.0);
+            let pitch = 2.0 + next_float() * 0.4;
+            on_sound([self.position.x, self.position.y, self.position.z], pitch);
+            if dead {
+                return true;
+            }
+        }
+        false
     }
     /// `Entity.moveTowardsClosestSpace` from the middle of the orb's box:
     /// towards the nearest side of its block (north, south, west, east or
@@ -1210,6 +1513,7 @@ impl ExperienceOrb {
         );
     }
 }
+
 /// `Entity.moveTowardsClosestSpace` from the middle of an entity's box
 /// (`bounds`, its feet at `position`): the velocity pushed towards the
 /// nearest side of its block (north, south, west, east or up) without a full
@@ -1312,6 +1616,68 @@ impl Experience {
         sound_level
     }
 }
+
+/// A player's `Entity.tickCount` and `Player.lastLevelUpTime`. This state belongs
+/// to the player entity, not the level or the server's clock.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LevelUpSound {
+    ticks: i32,
+    last: i32,
+}
+
+impl LevelUpSound {
+    /// `Entity.commonTick`: called once for this player, including spectators.
+    pub fn tick(&mut self) {
+        self.ticks = self.ticks.wrapping_add(1);
+    }
+
+    /// `Player.giveExperienceLevels`: return the sound's volume and start its
+    /// cooldown when a positive change lands on a fifth level.
+    pub fn give_levels(&mut self, amount: i32, level: i32) -> Option<f32> {
+        if amount > 0 && level % 5 == 0 && (self.last as f32) < self.ticks as f32 - 100.0 {
+            self.last = self.ticks;
+            Some((if level > 30 { 1.0 } else { level as f32 / 30.0 }) * 0.75)
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+mod level_up_sound {
+    use super::LevelUpSound;
+
+    #[test]
+    fn players_have_independent_ages_and_cooldowns() {
+        let mut a = LevelUpSound::default();
+        let mut b = LevelUpSound::default();
+        for _ in 0..100 {
+            a.tick();
+            b.tick();
+        }
+        assert_eq!(a.give_levels(1, 5), None);
+        a.tick();
+        b.tick();
+        assert_eq!(a.give_levels(1, 5), Some(0.125));
+        assert_eq!(b.give_levels(1, 10), Some(0.25));
+        assert_eq!(a.give_levels(1, 10), None);
+        for _ in 0..100 {
+            a.tick();
+        }
+        assert_eq!(a.give_levels(1, 30), None);
+        a.tick();
+        assert_eq!(a.give_levels(1, 30), Some(0.75));
+        let mut respawned = LevelUpSound::default();
+        assert_eq!(respawned.give_levels(1, 35), None);
+        for _ in 0..101 {
+            respawned.tick();
+        }
+        assert_eq!(respawned.give_levels(-1, 35), None);
+        assert_eq!(respawned.give_levels(1, 34), None);
+        assert_eq!(respawned.give_levels(1, 35), Some(0.75));
+    }
+}
+
 /// A painting (`Painting`, a `HangingEntity`): the block it hangs in, the
 /// 2D data value of the direction it faces, and its variant.
 #[derive(Clone, Debug)]
@@ -1388,6 +1754,8 @@ pub struct Cushion {
     pub color: u8,
     /// BlockAttachedEntity.ticksSinceLastCheck.
     pub check_interval: u32,
+    /// `Entity.getCustomName` (`CustomName`), copied onto the dropped cushion.
+    pub custom_name: Option<horizon_world::nbt::Tag>,
 }
 impl Cushion {
     /// `Entity.makeBoundingBox`: x and z half a block out, y to y + 0.25.
@@ -1405,6 +1773,16 @@ impl Cushion {
     /// `Cushion.getCushionItemStackWithData`: the matching coloured item.
     pub fn item(&self) -> String {
         format!("minecraft:{}_cushion", self.color_name())
+    }
+    /// `Cushion.getCushionItemStackWithData`: the coloured item with
+    /// `DataComponents.CUSTOM_NAME` from `getCustomName`, as the item frame
+    /// beside it does.
+    pub fn item_stack_with_data(&self) -> ItemStack {
+        let mut stack = ItemStack::new(&self.item(), 1);
+        if let Some(name) = &self.custom_name {
+            stack.data_mut().custom_name = Some(name.clone());
+        }
+        stack
     }
     /// `Cushion.interact`'s seat: the vehicle's PASSENGER attachment
     /// `(0, 0.25, 0)` less the player's `(0, 0.6, 0)`.
@@ -1431,6 +1809,8 @@ pub struct ItemFrame {
     pub fixed: bool,
     pub invisible: bool,
     pub check_interval: u32,
+    /// `Entity.getCustomName` (`CustomName`), copied onto the dropped frame.
+    pub custom_name: Option<horizon_world::nbt::Tag>,
 }
 impl ItemFrame {
     pub fn step(&self) -> [i32; 3] {
@@ -1460,10 +1840,24 @@ impl ItemFrame {
             std::array::from_fn(|i| c[i] + size[i] / 2.0),
         )
     }
+    /// `ItemFrame.getFrameItemStackWithData`: `getFrameItemStack` (a glow
+    /// frame's own item), then `DataComponents.CUSTOM_NAME` from
+    /// `getCustomName`.
+    pub fn item_stack_with_data(&self) -> ItemStack {
+        let mut item_stack = ItemStack::new(self.kind(), 1);
+        if let Some(name) = &self.custom_name {
+            item_stack.data_mut().custom_name = Some(name.clone());
+        }
+        item_stack
+    }
 }
 /// An armor stand (`ArmorStand`).
 #[derive(Clone, Debug)]
 pub struct ArmorStand {
+    /// `Entity.firstTick`: command equipment events wait for an actual entity tick.
+    pub first_tick: bool,
+    /// `Entity.xRot`: kept for `/tp` and `Rotation`; the kind turns only in yaw.
+    pub pitch: f32,
     /// When it joined its list ([`crate::join_seq`]); set by the list, not by the spawn site.
     pub join: crate::join_seq::JoinSeq,
     pub fire_ticks: i32,
@@ -1508,7 +1902,8 @@ pub struct ArmorStand {
     pub disabled_slots: i32,
     /// Server-only `LivingEntity.lastPos` for location-based enchantments.
     pub enchantment_block: Option<BlockPos>,
-    /// Travel accumulated for `LivingEntity.checkFallDamage`'s landing callback.
+    /// `Entity.fallDistance`, also used by `LivingEntity.checkFallDamage`'s landing callback.
+    /// Each downward movement is narrowed to float before adding to this double.
     pub enchantment_fall_distance: f64,
     /// Last equipment seen by `collectEquipmentChanges`; not saved to NBT.
     pub enchantment_equipment: [Option<ItemStack>; 6],
@@ -1598,6 +1993,7 @@ impl ArmorStand {
             };
             self.tick_settle(medium, step);
         }
+        self.apply_honey_slide(scene.world, facts);
     }
 }
 impl ArmorStand {
@@ -1633,6 +2029,84 @@ impl ArmorStand {
     pub fn render_position(&self, alpha: f64) -> Vec3 {
         self.previous.lerp(self.position, alpha)
     }
+    /// `ArmorStand.getDimensionsMarker(false)`: the width, height and eye
+    /// height of the box a stand has without the marker flag, which is the box
+    /// a marker's light probe walks (`MARKER_DIMENSIONS` itself is empty, and
+    /// `isBaby()` is `isSmall()`).
+    pub fn probe_dimensions(&self) -> (f64, f64, f64) {
+        if self.small {
+            (0.25, 0.9875, 0.9875)
+        } else {
+            (0.5, 1.975, 1.7775)
+        }
+    }
+    /// `ArmorStand.getLightProbePosition` as the cell the renderer reads
+    /// (`BlockPos.containing` of the position it returns): a marker walks
+    /// `BlockPos.betweenClosed` of its non-marker box at `position()` - it
+    /// takes no partial tick - and returns the first cell whose brightness
+    /// `max(block, sky)` is 15, else the brightest, ties going to the first
+    /// cell walked; every other stand is lit from its eye
+    /// (`Entity.getLightProbePosition` is `getEyePosition(partialTick)`).
+    /// `light` is the level's packed light.
+    pub fn light_probe(
+        &self,
+        partial: f64,
+        mut light: impl FnMut(i32, i32, i32) -> u8,
+    ) -> [i32; 3] {
+        let (width, height, eye) = self.probe_dimensions();
+        if !self.marker {
+            let at = self.render_position(partial);
+            return [
+                at.x.floor() as i32,
+                (at.y + eye).floor() as i32,
+                at.z.floor() as i32,
+            ];
+        }
+        let half = width / 2.0;
+        let (lo_x, hi_x) = (
+            (self.position.x - half).floor() as i32,
+            (self.position.x + half).floor() as i32,
+        );
+        let (lo_z, hi_z) = (
+            (self.position.z - half).floor() as i32,
+            (self.position.z + half).floor() as i32,
+        );
+        let (lo_y, hi_y) = (
+            self.position.y.floor() as i32,
+            (self.position.y + height).floor() as i32,
+        );
+        // `BlockPos.betweenClosed` walks x fastest, then y, then z; the stand's
+        // own cell is what it falls back to when the box is empty.
+        let mut best = [
+            self.position.x.floor() as i32,
+            self.position.y.floor() as i32,
+            self.position.z.floor() as i32,
+        ];
+        let mut brightest = i32::MIN;
+        for cell_z in lo_z..=hi_z {
+            for cell_y in lo_y..=hi_y {
+                for cell_x in lo_x..=hi_x {
+                    let level = light(cell_x, cell_y, cell_z);
+                    let brightness = i32::from((level & 15).max(level >> 4));
+                    if brightness == 15 {
+                        return [cell_x, cell_y, cell_z];
+                    }
+                    if brightness > brightest {
+                        brightest = brightness;
+                        best = [cell_x, cell_y, cell_z];
+                    }
+                }
+            }
+        }
+        best
+    }
+    /// `EntityRenderer.getPackedLightCoords` for the cell `light_probe` chose:
+    /// the level's sky light over the cell's block light, at 15 block light
+    /// while the stand `isOnFire`. `light` is the level's packed light.
+    pub fn render_light(&self, light: u8) -> u32 {
+        let block = if self.fire_ticks > 0 { 15 } else { light & 15 };
+        (u32::from(light >> 4) * 16) | ((u32::from(block) * 16) << 8)
+    }
     /// The body's yaw `alpha` of the way through the tick
     /// (`LivingEntityRenderer.solveBodyRot`: `Mth.rotLerp(partialTick,
     /// yBodyRotO, yBodyRot)`).
@@ -1663,6 +2137,8 @@ impl ArmorStand {
     }
     pub fn new(id: u32, position: Vec3, yaw: f32) -> Self {
         Self {
+            first_tick: true,
+            pitch: 0.0,
             join: Default::default(),
             fire_ticks: 0,
             health: 20.0,
@@ -1927,6 +2403,49 @@ impl ArmorStand {
         self.velocity = velocity;
         Some(StandStep { falling, friction })
     }
+    /// `HoneyBlock.entityInside`: side-slide movement after the stand's travel.
+    /// `ArmorStand.hasPhysics` / `Entity.isAffectedByBlocks` exclude markers
+    /// and NoGravity stands. Slide effects are separate from this movement.
+    pub fn apply_honey_slide(&mut self, world: &World, facts: &BlockFacts) {
+        let old_delta_y = |dy: f64| dy / f64::from(0.98_f32) + 0.08;
+        if self.marker || self.no_gravity || self.on_ground || old_delta_y(self.velocity.y) >= -0.08
+        {
+            return;
+        }
+        // Entity.checkInsideBlocks: test the deflated body against block cells,
+        // not their inset collision shape (the stand slides beside that shape).
+        let bounds = self.bounds().deflate(Vec3::new(1e-5, 1e-5, 1e-5));
+        let (lo, hi) = (bounds.min_position(), bounds.max_position());
+        let overlap = 0.4375 + if self.small { 0.125 } else { 0.25 };
+        for x in lo.x.floor() as i32..=hi.x.floor() as i32 {
+            for y in lo.y.floor() as i32..=hi.y.floor() as i32 {
+                for z in lo.z.floor() as i32..=hi.z.floor() as i32 {
+                    if &*facts.get(world.block(x, y, z)).name != "minecraft:honey_block"
+                        || self.position.y > f64::from(y) + 0.9375 - 1.0e-7
+                    {
+                        continue;
+                    }
+                    let dx = (f64::from(x) + 0.5 - self.position.x).abs();
+                    let dz = (f64::from(z) + 0.5 - self.position.z).abs();
+                    if dx + 1.0e-7 <= overlap && dz + 1.0e-7 <= overlap {
+                        continue;
+                    }
+                    // HoneyBlock.doSlideMovement, including its float-widened
+                    // getOldDeltaY/getNewDeltaY conversion around air travel.
+                    let old = old_delta_y(self.velocity.y);
+                    if old < -0.13 {
+                        let factor = -0.05 / old;
+                        self.velocity.x *= factor;
+                        self.velocity.z *= factor;
+                    }
+                    self.velocity.y = (-0.05 - 0.08) * f64::from(0.98_f32);
+                    self.enchantment_fall_distance = 0.0;
+                    // The new oldDeltaY is -0.05, so another honey cell cannot slide again.
+                    return;
+                }
+            }
+        }
+    }
     /// The rest of the stand's travel: the water slowdown, the lava slowdown
     /// and sink, or the air drag and gravity. The blocks' push (a bubble
     /// column) comes after this, as `LivingEntity.aiStep` applies the block
@@ -2037,6 +2556,7 @@ mod fire_environment_tests {
             )
             .unwrap();
         let make = |id: &str| ItemEntity {
+            rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
             id: 1,
@@ -2171,6 +2691,7 @@ mod destroyed_bundle_environment_tests {
             ItemStack::new("minecraft:diamond", 1),
         ];
         let mut bundle = ItemEntity {
+            rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
             id: 1,
@@ -2263,12 +2784,120 @@ mod armor_stand_render_tests {
     }
 }
 #[cfg(test)]
+mod armor_stand_light_tests {
+    use super::*;
+
+    fn stand(x: f64, y: f64, z: f64) -> ArmorStand {
+        ArmorStand::new(1, Vec3::new(x, y, z), 0.0)
+    }
+
+    /// `ArmorStand.getLightProbePosition` for a stand that is not a marker is
+    /// `Entity.getEyePosition`: `EntityType.ARMOR_STAND` declares
+    /// `eyeHeight(1.7775)`, and a small stand (`isBaby()`) is the same type
+    /// scaled by 0.5 with `withEyeHeight(0.9875)`. Horizon read
+    /// `floor(base + 0.5)` for every stand, so a stand standing on a lit floor
+    /// took the floor's light instead of the light at its head.
+    #[test]
+    fn a_stand_is_lit_from_the_block_its_eye_is_in() {
+        let dark = |_: i32, _: i32, _: i32| 0u8;
+        // Full stand on y = 64: eye 65.7775, cell 65 (the old 64.5 was 64).
+        assert_eq!(stand(0.5, 64.0, 0.5).light_probe(1.0, dark), [0, 65, 0]);
+        assert_eq!((64.0_f64 + 0.5).floor() as i32, 64);
+        // Small stand: eye 0.9875 above its base, so y = 64.2 is 65.1875.
+        let mut small = stand(0.5, 64.2, 0.5);
+        small.small = true;
+        assert_eq!(small.light_probe(1.0, dark), [0, 65, 0]);
+        assert_eq!((64.2_f64 + 0.5).floor() as i32, 64);
+        // A small stand at y = 64.0 stays in its own cell: eye 64.9875.
+        let mut low = stand(0.5, 64.0, 0.5);
+        low.small = true;
+        assert_eq!(low.light_probe(1.0, dark), [0, 64, 0]);
+    }
+
+    /// `getEyePosition(partialTick)` interpolates: a stand falling from 70 to
+    /// 69 is probed 0.5 down at the middle of the frame, 69.5 + 1.7775 in the
+    /// cell at 71, while its feet's cell is 69.
+    #[test]
+    fn a_stand_probe_follows_the_frame() {
+        let dark = |_: i32, _: i32, _: i32| 0u8;
+        let mut falling = stand(0.5, 70.0, 0.5);
+        falling.interpolate(Some((Vec3::new(0.5, 69.0, 0.5), 0.0)));
+        assert_eq!(falling.light_probe(0.0, dark), [0, 71, 0]);
+        assert_eq!(falling.light_probe(0.5, dark), [0, 71, 0]);
+        assert_eq!(falling.light_probe(1.0, dark), [0, 70, 0]);
+        assert_eq!(falling.position.y.floor() as i32, 69);
+    }
+
+    /// A marker walks `BlockPos.betweenClosed` of its own box - the size it has
+    /// without the marker flag, 0.5 by 1.975 - from `position()`, taking the
+    /// first cell at brightness 15 and else the brightest. Horizon used the
+    /// stand's own cell, so a marker (a hologram on a dark ceiling) was lit by
+    /// its feet's block.
+    #[test]
+    fn a_marker_scans_the_cells_of_its_own_box() {
+        let at = |want: [i32; 3], level: u8| {
+            move |x: i32, y: i32, z: i32| {
+                if [x, y, z] == want { level } else { 0 }
+            }
+        };
+        let mut marker = stand(0.5, 64.0, 0.5);
+        marker.marker = true;
+        // The box is x/z 0.25..0.75 - the cell at 0 - and y 64..65.975.
+        assert_eq!(marker.light_probe(1.0, at([0, 65, 0], 15)), [0, 65, 0]);
+        assert_eq!(marker.light_probe(1.0, at([0, 65, 0], 9)), [0, 65, 0]);
+        // Nothing lit: the first cell walked, x fastest then y then z.
+        assert_eq!(marker.light_probe(1.0, |_, _, _| 0u8), [0, 64, 0]);
+        // The cell above the box is not scanned, so its 15 does not win.
+        assert_eq!(marker.light_probe(1.0, at([0, 66, 0], 15)), [0, 64, 0]);
+        // 15 wins over a brighter-looking neighbour, and y is walked before z:
+        // (0, 65, 0) comes before (0, 64, 1) though both are at 15.
+        let mut wide = stand(0.5, 64.0, 0.9);
+        wide.marker = true;
+        let two = |x: i32, y: i32, z: i32| {
+            if (x, y, z) == (0, 65, 0) || (x, y, z) == (0, 64, 1) {
+                15
+            } else {
+                0
+            }
+        };
+        assert_eq!(wide.light_probe(1.0, two), [0, 65, 0]);
+        // `getLightProbePosition`'s marker branch reads `position()`, not the
+        // partial-tick position: falling does not move the scan.
+        let mut moving = stand(0.5, 64.0, 0.5);
+        moving.marker = true;
+        moving.interpolate(Some((Vec3::new(0.5, 70.0, 0.5), 0.0)));
+        assert_eq!(moving.light_probe(0.0, |_, _, _| 0u8), [0, 70, 0]);
+        assert_eq!(moving.light_probe(0.5, |_, _, _| 0u8), [0, 70, 0]);
+    }
+
+    /// `EntityRenderer.getBlockLightLevel`: a stand `isOnFire` is drawn at 15
+    /// block light whatever the level says, and the sky light is the probe
+    /// cell's own.
+    #[test]
+    fn a_burning_stand_is_drawn_at_full_block_light() {
+        let light = |sky: u8, block: u8| (sky << 4) | block;
+        let cold = stand(0.5, 64.0, 0.5);
+        assert_eq!(cold.render_light(light(15, 0)), (15 * 16) as u32);
+        assert_eq!(cold.render_light(light(0, 9)), ((9 * 16) << 8) as u32);
+        let burning = ArmorStand {
+            fire_ticks: 100,
+            ..stand(0.5, 64.0, 0.5)
+        };
+        assert_eq!(
+            burning.render_light(light(15, 0)),
+            ((15 * 16) | ((15 * 16) << 8)) as u32
+        );
+        assert_eq!(burning.render_light(light(0, 0)), ((15 * 16) << 8) as u32);
+    }
+}
+#[cfg(test)]
 mod merge_tests {
     use super::*;
 
     fn item(id: &str, count: u32, x: f64, age: i32) -> ItemEntity {
         let at = Vec3::new(x, 64.0, 0.5);
         ItemEntity {
+            rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
             id: 0,
@@ -2332,6 +2961,35 @@ mod merge_tests {
         ];
         assert_eq!(merge(&mut items, 0), [Some(8), None]);
         assert_eq!(items[0].age, 8, "age 7, plus the rest of this tick");
+    }
+
+    /// ItemEntity.merge uses signed room, including zero and negative transfers.
+    #[test]
+    fn overstacked_items_transfer_back_without_losing_merge_metadata() {
+        for (counts, expected) in [([80, 10], [64, 26]), ([64, 26], [64, 26])] {
+            let mut items = [
+                item("minecraft:stone", counts[0], 0.5, 41),
+                item("minecraft:stone", counts[1], 0.6, 7),
+            ];
+            for item in &mut items {
+                item.stack.data_mut().set_other(
+                    "minecraft:max_stack_size",
+                    Some(horizon_world::nbt::Tag::Int(99)),
+                );
+            }
+            let before = [items[0].stack.clone(), items[1].stack.clone()];
+            items[1].pickup_delay = 30;
+            let mut removed = [false; 2];
+            let mut cells = ItemCells::new(&items);
+            merge_with_neighbours(&mut items, &mut removed, &mut cells, 0, &|_| 99);
+            assert_eq!([items[0].stack.count, items[1].stack.count], expected);
+            assert_eq!(removed, [false, false]);
+            assert_eq!(items[0].pickup_delay, 30);
+            assert_eq!(items[0].age, 8, "younger age 7, then this tick ends");
+            for (item, stack) in items.iter().zip(&before) {
+                assert!(item.stack.same_item_same_components(stack));
+            }
+        }
     }
 
     #[test]
@@ -2453,6 +3111,64 @@ mod merge_tests {
 mod world_border_tests {
     use super::*;
 
+    /// `Entity.move`'s last step, `getBlockSpeedFactor`: a dropped item sliding
+    /// over soul sand or honey keeps 40% of the horizontal speed it keeps over
+    /// stone, in the same tick. Skips quietly without the vanilla data (CI has none).
+    #[test]
+    fn a_dropped_item_on_soul_sand_or_honey_is_slowed_by_the_move() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("movement-properties.nbt").exists() {
+            return;
+        }
+        let assets = crate::assets::Assets::load(&root).unwrap();
+        let render = assets.reload(&root).unwrap();
+        let facts = crate::blocks::BlockFacts::load(&root, assets.registry).unwrap();
+        let fluids = crate::motion::FluidResources::new(&assets, &facts).unwrap();
+        let collision = crate::collisions::load(&root, assets.registry).unwrap();
+        let motion = crate::motion::MotionResources::load(&root, &assets).unwrap();
+        let mut after = Vec::new();
+        // The tops of the blocks: stone 1, soul sand 7/8, honey 15/16.
+        for (block, top) in [
+            ("minecraft:stone", 4.0),
+            ("minecraft:soul_sand", 3.875),
+            ("minecraft:honey_block", 3.9375),
+        ] {
+            let mut world = World::test_scene(&assets, &render, 3).unwrap();
+            let id = assets.registry.default_state(block).unwrap();
+            for x in 18..=23 {
+                for z in 19..=21 {
+                    world.set(x, 3, z, id).unwrap();
+                }
+            }
+            let mut item = super::honey_slide_tests::falling_item(19.5, top, 20.5, 0.2, 0.0, 0.0);
+            item.on_ground = true;
+            item.tick(
+                &world,
+                assets.registry,
+                &facts,
+                &collision,
+                false,
+                &fluids,
+                &[],
+                None,
+                Some(&motion.blocks),
+            );
+            after.push(item.velocity.x);
+        }
+        let (stone, soul, honey) = (after[0], after[1], after[2]);
+        assert!(stone > 0.0);
+        assert!(
+            (soul - stone * f64::from(0.4_f32)).abs() < 1.0e-9,
+            "soul sand {soul} vs stone {stone}"
+        );
+        assert!(
+            (honey - stone * f64::from(0.4_f32)).abs() < 1.0e-9,
+            "honey {honey} vs stone {stone}"
+        );
+    }
+
     /// `Entity.collectColliders` (#7080): the world border's wall stops an
     /// item and an experience orb as it stops the player. A border of size
     /// 10 around (20, 20) has its east wall at x = 25; each body starts at
@@ -2484,8 +3200,10 @@ mod world_border_tests {
                 &fluids,
                 &[],
                 border,
+                None,
             );
             let mut orb = ExperienceOrb {
+                rotation: [0.0, 0.0],
                 join: Default::default(),
                 no_gravity: false,
                 id: 2,
@@ -2508,6 +3226,7 @@ mod world_border_tests {
                 &mut || 0.0,
                 border,
                 &fluids,
+                &mut |_, _| {},
             );
             for (what, east) in [
                 ("item", item.bounds().max_position().x),
@@ -2568,6 +3287,7 @@ mod honey_slide_tests {
                 false,
                 &fluids,
                 &[],
+                None,
                 None,
             );
             ys.push(item.velocity.y);
@@ -2634,6 +3354,7 @@ mod honey_slide_tests {
                 &fluids,
                 &[],
                 None,
+                None,
             );
         }
         assert!(
@@ -2694,6 +3415,7 @@ mod honey_slide_tests {
     pub(super) fn falling_item(x: f64, y: f64, z: f64, vx: f64, vy: f64, vz: f64) -> ItemEntity {
         let at = Vec3::new(x, y, z);
         ItemEntity {
+            rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
             id: 1,
@@ -2844,6 +3566,7 @@ mod slime_bounce_tests {
     fn grounded_item() -> ItemEntity {
         let at = Vec3::new(0.5, 2.0, 0.5);
         ItemEntity {
+            rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
             id: 1,
@@ -2935,6 +3658,7 @@ mod slime_bounce_tests {
             &fluids,
             &[],
             None,
+            None,
         );
         assert_eq!(falling.position.y, 4.0);
         assert!(falling.velocity.y > 0.0);
@@ -2953,6 +3677,7 @@ mod slime_bounce_tests {
             false,
             &fluids,
             &[],
+            None,
             None,
         );
         assert!(!falling.needs_sync);
@@ -3047,6 +3772,7 @@ mod entity_collision_tests {
                     &fluids,
                     boxes,
                     None,
+                    None,
                 );
             }
             item.position.y
@@ -3095,6 +3821,7 @@ mod entity_collision_tests {
                     false,
                     &fluids,
                     &[],
+                    None,
                     None,
                 );
             }
@@ -3179,6 +3906,67 @@ mod entity_collision_tests {
 #[cfg(test)]
 mod armor_stand_motion_tests {
     use super::*;
+
+    #[test]
+    fn honey_slide_runs_after_stand_travel_and_preserves_no_physics_controls() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("movement-properties.nbt").exists() {
+            return;
+        }
+        let assets = crate::assets::Assets::load(&root).unwrap();
+        let facts = BlockFacts::load(&root, assets.registry).unwrap();
+        let collision = crate::collisions::load(&root, assets.registry).unwrap();
+        let motion = crate::motion::MotionResources::load(&root, &assets).unwrap();
+        let mut world = World::new(assets.registry.default_state("minecraft:air").unwrap(), 3);
+        world.chunks.insert(
+            (0, 0),
+            std::sync::Arc::new(crate::chunk::Chunk::empty(0, 0)),
+        );
+        for (z, name) in [(4, "minecraft:honey_block"), (10, "minecraft:stone")] {
+            for y in 100..=120 {
+                world
+                    .set(6, y, z, assets.registry.default_state(name).unwrap())
+                    .unwrap();
+            }
+        }
+        // Independently captured Java values after five actual ticks.
+        for (z, no_gravity, marker, y, vy, grounded) in [
+            (
+                4.5,
+                false,
+                false,
+                117.51156798899842,
+                -0.12740000247955321,
+                false,
+            ),
+            (10.5, false, false, 118.0, -0.0784000015258789, true),
+            (4.5, true, false, 118.0, 0.0, false),
+            (4.5, false, true, 118.0, 0.0, false),
+        ] {
+            let mut stand = ArmorStand::new(1, Vec3::new(5.78, 118.0, z), 0.0);
+            // Match the freshly summoned entity rather than the placement constructor.
+            stand.on_ground = false;
+            stand.no_gravity = no_gravity;
+            stand.marker = marker;
+            let mut scene = SceneCollisions {
+                world: &world,
+                binding: &collision,
+                subject: None,
+            };
+            for _ in 0..5 {
+                stand.tick(&mut scene, &facts, &motion.climbing, false, None);
+            }
+            assert_eq!(
+                stand.position,
+                Vec3::new(5.78, y, z),
+                "NoGravity={no_gravity}, Marker={marker}"
+            );
+            assert_eq!(stand.velocity, Vec3::new(0.0, vy, 0.0));
+            assert_eq!(stand.on_ground, grounded);
+        }
+    }
 
     #[test]
     fn a_name_tag_names_a_live_stand_and_unnamed_tags_pass() {
@@ -3551,6 +4339,7 @@ mod item_destroyed_tests {
             .map(|(id, count)| ItemStack::new(id, *count))
             .collect();
         ItemEntity {
+            rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
             id: 1,
@@ -3639,11 +4428,78 @@ mod item_destroyed_tests {
     }
 }
 #[cfg(test)]
+mod orb_underwater_tests {
+    use super::*;
+
+    #[test]
+    fn matches_the_executed_java_private_method() {
+        // Actual 26.3 setUnderwaterMovement calls on server-level orbs,
+        // captured by test_orb_water_parity.py (orb-water-reference.json).
+        // Cover both horizontal signs, falling/rising, and the vertical cap.
+        let cases: [([f64; 3], [u64; 3]); 6] = [
+            (
+                [0.0, 0.0, 0.0],
+                [0x0000000000000000, 0x3f40624de0000000, 0x0000000000000000],
+            ),
+            (
+                [0.1, 0.01, -0.2],
+                [0x3fb9581066666667, 0x3f85810625ae147b, 0xbfc9581066666667],
+            ),
+            (
+                [-0.25, -0.03, 0.125],
+                [0xbfcfae1480000000, 0xbf9e353f7c851eb8, 0x3fbfae1480000000],
+            ),
+            (
+                [0.0, 0.059, 0.0],
+                [0x0000000000000000, 0x3fae76c8b46d9168, 0x0000000000000000],
+            ),
+            (
+                [0.5, 0.0595, -0.5],
+                [0x3fdfae1480000000, 0x3faeb851e0000000, 0xbfdfae1480000000],
+            ),
+            (
+                [-1.0, 0.2, 1.0],
+                [0xbfefae1480000000, 0x3faeb851e0000000, 0x3fefae1480000000],
+            ),
+        ];
+        let actual: Vec<_> = cases
+            .iter()
+            .map(|(v, _)| {
+                let mut orb = ExperienceOrb {
+                    rotation: [0.0, 0.0],
+                    join: Default::default(),
+                    no_gravity: false,
+                    id: 1,
+                    position: Vec3::ZERO,
+                    previous: Vec3::ZERO,
+                    velocity: Vec3::new(v[0], v[1], v[2]),
+                    value: 1,
+                    age: 0,
+                    on_ground: false,
+                    count: 1,
+                    ticks: 0,
+                    health: 5,
+                };
+                orb.set_underwater_movement();
+                [
+                    orb.velocity.x.to_bits(),
+                    orb.velocity.y.to_bits(),
+                    orb.velocity.z.to_bits(),
+                ]
+            })
+            .collect();
+        let expected: Vec<_> = cases.into_iter().map(|(_, bits)| bits).collect();
+        assert_eq!(actual, expected);
+    }
+}
+
+#[cfg(test)]
 mod render_light_tests {
     use super::*;
 
     fn orb(y: f64) -> ExperienceOrb {
         ExperienceOrb {
+            rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
             id: 1,
@@ -3709,4 +4565,543 @@ mod render_light_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod dropped_item_light_tests {
+    use super::*;
+
+    fn item(previous_y: f64, y: f64) -> ItemEntity {
+        ItemEntity {
+            rotation: [0.0, 0.0],
+            join: Default::default(),
+            no_gravity: false,
+            id: 1,
+            thrower: None,
+            target: None,
+            stack: ItemStack {
+                item: std::sync::Arc::from("minecraft:stone"),
+                count: 1,
+                damage: 0,
+                extra: None,
+            },
+            health: 5,
+            fire_ticks: 0,
+            position: Vec3::new(0.5, y, 0.5),
+            previous: Vec3::new(0.5, previous_y, 0.5),
+            velocity: Vec3::ZERO,
+            on_ground: false,
+            vertical_collision: false,
+            horizontal_collision: false,
+            age: 0,
+            pickup_delay: 0,
+            bob_offset: 0.0,
+            ticks: 0,
+            needs_sync: false,
+            stuck: Vec3::ZERO,
+            was_touching_water: false,
+        }
+    }
+
+    /// `Entity.getLightProbePosition` is the eye position, and `EntityType.ITEM`
+    /// declares `eyeHeight(0.2125)`. The item used to be lit from the cell of
+    /// `base + 0.1`, so a falling item at y = 64.85 read the cell at 64 (block
+    /// light of the floor) while its eye at 65.0625 is in the cell at 65.
+    #[test]
+    fn a_dropped_item_is_lit_from_the_block_its_eye_is_in() {
+        let falling = item(64.85, 64.85);
+        let probe = falling.light_probe(1.0);
+        assert!((probe[1] - 65.062_5).abs() < 1e-9);
+        assert_eq!(probe[1].floor(), 65.0);
+        // The old probe, `(y + 0.1).floor()`, and the base cell itself.
+        assert_eq!((64.85_f64 + 0.1).floor(), 64.0);
+        assert_eq!(64.85_f64.floor(), 64.0);
+        // Resting on a block top the two agree: the eye is 0.2125 up.
+        let resting = item(64.0, 64.0);
+        assert_eq!(resting.light_probe(1.0)[1].floor(), 64.0);
+        assert!((resting.light_probe(1.0)[1] - 64.212_5).abs() < 1e-9);
+    }
+
+    /// `Entity.getLightProbePosition(partialTick)` follows `getPosition(partialTick)`:
+    /// an item falling a block in one tick is probed halfway between the two
+    /// positions in the middle of the frame. The old code read the tick's own
+    /// position, so the light jumped a frame early.
+    #[test]
+    fn an_item_probe_follows_the_frame() {
+        let falling = item(64.0, 65.0);
+        let mid = falling.light_probe(0.5);
+        assert!((mid[1] - 64.712_5).abs() < 1e-9);
+        assert_eq!(mid[1].floor(), 64.0);
+        assert_eq!(falling.light_probe(1.0)[1].floor(), 65.0);
+        // Across x and z too, not just down.
+        let sliding = ItemEntity {
+            position: Vec3::new(1.5, 64.0, 0.5),
+            previous: Vec3::new(0.5, 64.0, 0.5),
+            ..item(64.0, 64.0)
+        };
+        assert!((sliding.light_probe(0.5)[0] - 1.0).abs() < 1e-9);
+    }
+
+    /// `EntityRenderer.getBlockLightLevel` is `isOnFire() ? 15 : the level's
+    /// block light`, and the sky light is never overridden. A dropped item was
+    /// drawn at the level's block light while it burned.
+    #[test]
+    fn a_burning_item_is_drawn_at_full_block_light() {
+        let light = |sky: u8, block: u8| (sky << 4) | block;
+        let cold = item(64.0, 64.0);
+        assert_eq!(cold.render_light(light(15, 0)), (15 * 16) as u32);
+        assert_eq!(cold.render_light(light(0, 9)), ((9 * 16) << 8) as u32);
+        let burning = ItemEntity {
+            fire_ticks: 160,
+            ..item(64.0, 64.0)
+        };
+        // Daylight, dark block: the block light goes to 15, the sky stays.
+        assert_eq!(
+            burning.render_light(light(15, 0)),
+            ((15 * 16) | ((15 * 16) << 8)) as u32
+        );
+        // A dark cave: 15 block light, still no invented sky light.
+        assert_eq!(burning.render_light(light(0, 0)), ((15 * 16) << 8) as u32);
+    }
+}
 crate::impl_joined!(ItemEntity, ExperienceOrb, ArmorStand);
+#[cfg(test)]
+mod orb_lava_tests {
+    use super::*;
+
+    fn with_fixture(
+        mut f: impl FnMut(
+            &mut World,
+            &BlockFacts,
+            &BlockCollisionRegistry<'_>,
+            &crate::motion::FluidResources,
+            &crate::assets::Assets,
+        ),
+    ) {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("movement-properties.nbt").exists() {
+            eprintln!("orb lava fixture unavailable: prepared resources missing");
+            return;
+        }
+        let assets = crate::assets::Assets::load(&root).unwrap();
+        let render = assets.reload(&root).unwrap();
+        let facts = BlockFacts::load(&root, assets.registry).unwrap();
+        let fluids = crate::motion::FluidResources::new(&assets, &facts).unwrap();
+        let collision = crate::collisions::load(&root, assets.registry).unwrap();
+        let mut world = World::test_scene(&assets, &render, 3).unwrap();
+        f(&mut world, &facts, &collision, &fluids, &assets);
+    }
+
+    fn sample_orb(at: Vec3, health: i32) -> ExperienceOrb {
+        ExperienceOrb {
+            rotation: [0.0, 0.0],
+            join: Default::default(),
+            no_gravity: false,
+            id: 1,
+            position: at,
+            previous: at,
+            velocity: Vec3::ZERO,
+            value: 1,
+            age: 0,
+            on_ground: false,
+            count: 1,
+            ticks: 0,
+            health,
+        }
+    }
+
+    #[test]
+    fn a_server_orb_takes_lava_damage_after_moving_and_discards_at_zero() {
+        with_fixture(|world, facts, collision, fluids, assets| {
+            let lava = assets.registry.default_state("minecraft:lava").unwrap();
+            world.set(20, 4, 20, lava).unwrap();
+            let at = Vec3::new(20.5, 4.1, 20.5);
+            let mut orb = sample_orb(at, 5);
+            let mut client = orb.clone();
+            for expected_age in 1..=2 {
+                assert!(client.tick(
+                    world,
+                    facts,
+                    collision,
+                    None,
+                    false,
+                    &mut || 0.0,
+                    None,
+                    fluids,
+                    &mut |_, _| {}
+                ));
+                assert_eq!((client.health, client.age), (5, expected_age));
+            }
+            let mut sounds = Vec::new();
+            assert!(orb.tick(
+                world,
+                facts,
+                collision,
+                None,
+                true,
+                &mut || 0.0,
+                None,
+                fluids,
+                &mut |pos, pitch| sounds.push((pos, pitch)),
+            ));
+            assert_eq!((orb.health, orb.age), (1, 1));
+            assert_eq!(sounds.len(), 1);
+            sounds.clear();
+            assert!(!orb.tick(
+                world,
+                facts,
+                collision,
+                None,
+                true,
+                &mut || 0.0,
+                None,
+                fluids,
+                &mut |pos, pitch| sounds.push((pos, pitch)),
+            ));
+            assert_eq!((orb.health, orb.age), (-3, 2));
+            assert_eq!(sounds.len(), 1);
+        });
+    }
+
+    #[test]
+    fn legacy_orb_in_air_or_water_or_non_lava_does_not_play_sound_or_consume_random() {
+        with_fixture(|world, facts, collision, fluids, assets| {
+            // Air scenario
+            {
+                let mut orb_air = sample_orb(Vec3::new(20.5, 6.0, 20.5), 5);
+                let mut draws = 0;
+                let mut next_float = || {
+                    draws += 1;
+                    0.5
+                };
+                let mut sounds = Vec::new();
+                assert!(orb_air.tick(
+                    world,
+                    facts,
+                    collision,
+                    None,
+                    true,
+                    &mut next_float,
+                    None,
+                    fluids,
+                    &mut |pos, pitch| sounds.push((pos, pitch)),
+                ));
+                assert!(sounds.is_empty(), "orb in air must not play burn sound");
+                assert_eq!(
+                    draws, 0,
+                    "orb in air must not consume random float for lava"
+                );
+                assert_eq!(orb_air.health, 5);
+            }
+
+            // Water scenario
+            {
+                let water = assets.registry.default_state("minecraft:water").unwrap();
+                world.set(20, 4, 20, water).unwrap();
+                let mut orb_water = sample_orb(Vec3::new(20.5, 4.1, 20.5), 5);
+                let mut draws = 0;
+                let mut next_float = || {
+                    draws += 1;
+                    0.5
+                };
+                let mut sounds = Vec::new();
+                assert!(orb_water.tick(
+                    world,
+                    facts,
+                    collision,
+                    None,
+                    true,
+                    &mut next_float,
+                    None,
+                    fluids,
+                    &mut |pos, pitch| sounds.push((pos, pitch)),
+                ));
+                assert!(sounds.is_empty(), "orb in water must not play burn sound");
+                assert_eq!(
+                    draws, 0,
+                    "orb in water must not consume random float for lava"
+                );
+                assert_eq!(orb_water.health, 5);
+            }
+        });
+    }
+
+    #[test]
+    fn negative_case_non_contact_or_client_orb_does_not_play_burn_sound() {
+        with_fixture(|world, facts, collision, fluids, assets| {
+            let lava = assets.registry.default_state("minecraft:lava").unwrap();
+            world.set(20, 4, 20, lava).unwrap();
+
+            // Distant orb (no contact)
+            let mut orb_away = sample_orb(Vec3::new(22.5, 4.1, 22.5), 5);
+            let mut draws = 0;
+            let mut next_float = || {
+                draws += 1;
+                0.5
+            };
+            let mut sounds = Vec::new();
+            assert!(orb_away.tick(
+                world,
+                facts,
+                collision,
+                None,
+                true,
+                &mut next_float,
+                None,
+                fluids,
+                &mut |pos, pitch| sounds.push((pos, pitch)),
+            ));
+            assert!(
+                sounds.is_empty(),
+                "non-contact orb must not play burn sound"
+            );
+            assert_eq!(draws, 0, "non-contact orb must not consume random float");
+            assert_eq!(orb_away.health, 5);
+
+            // Client orb in lava (server = false)
+            let mut client_orb = sample_orb(Vec3::new(20.5, 4.1, 20.5), 5);
+            sounds.clear();
+            assert!(client_orb.tick(
+                world,
+                facts,
+                collision,
+                None,
+                false,
+                &mut || 0.5,
+                None,
+                fluids,
+                &mut |pos, pitch| sounds.push((pos, pitch)),
+            ));
+            assert!(
+                sounds.is_empty(),
+                "client orb in lava must not play burn sound"
+            );
+            assert_eq!(client_orb.health, 5);
+
+            // Dead orb (health <= 0) takes no contact damage and emits no sound
+            let mut dead_orb = sample_orb(Vec3::new(20.5, 4.1, 20.5), 0);
+            sounds.clear();
+            let mut dead_draws = 0;
+            let discarded = dead_orb.apply_lava_contact_damage(
+                world,
+                fluids,
+                Vec3::ZERO,
+                &mut || {
+                    dead_draws += 1;
+                    0.5
+                },
+                &mut |pos, pitch| sounds.push((pos, pitch)),
+            );
+            assert!(discarded, "dead orb remains discarded");
+            assert!(sounds.is_empty(), "dead orb must not play burn sound");
+            assert_eq!(dead_draws, 0, "dead orb must not consume random float");
+        });
+    }
+
+    #[test]
+    fn positive_case_server_orb_in_lava_plays_generic_burn_sound() {
+        with_fixture(|world, facts, collision, fluids, assets| {
+            let lava = assets.registry.default_state("minecraft:lava").unwrap();
+            world.set(20, 4, 20, lava).unwrap();
+
+            let at = Vec3::new(20.5, 4.1, 20.5);
+            let mut orb = sample_orb(at, 5);
+            let mut sounds = Vec::new();
+            let float_val = 0.35_f32;
+            let stays = orb.tick(
+                world,
+                facts,
+                collision,
+                None,
+                true,
+                &mut || float_val,
+                None,
+                fluids,
+                &mut |pos, pitch| sounds.push((pos, pitch)),
+            );
+            assert!(stays, "orb survives first contact with 1 HP");
+            assert_eq!(orb.health, 1);
+            assert_eq!(sounds.len(), 1, "exactly one burn sound played");
+            let expected_pitch = 2.0_f32 + float_val * 0.4_f32;
+            assert!((sounds[0].1 - expected_pitch).abs() < 1e-6);
+            assert_eq!(
+                sounds[0].0,
+                [orb.position.x, orb.position.y, orb.position.z]
+            );
+        });
+    }
+
+    #[test]
+    fn boundary_case_surviving_and_discarding_and_multi_contact_in_one_tick() {
+        with_fixture(|world, facts, collision, fluids, assets| {
+            let lava = assets.registry.default_state("minecraft:lava").unwrap();
+            world.set(20, 4, 20, lava).unwrap();
+
+            // 1. Surviving at 1 HP vs discarding at <= 0 HP
+            let mut orb = sample_orb(Vec3::new(20.5, 4.1, 20.5), 5);
+            let mut sounds = Vec::new();
+
+            // Tick 1: 5 HP -> 1 HP (survives)
+            assert!(orb.tick(
+                world,
+                facts,
+                collision,
+                None,
+                true,
+                &mut || 0.1,
+                None,
+                fluids,
+                &mut |pos, pitch| sounds.push((pos, pitch)),
+            ));
+            assert_eq!(orb.health, 1);
+            assert_eq!(sounds.len(), 1);
+            assert!((sounds[0].1 - (2.0 + 0.1 * 0.4)).abs() < 1e-6);
+
+            // Tick 2: 1 HP -> -3 HP (discarded)
+            sounds.clear();
+            assert!(!orb.tick(
+                world,
+                facts,
+                collision,
+                None,
+                true,
+                &mut || 0.9,
+                None,
+                fluids,
+                &mut |pos, pitch| sounds.push((pos, pitch)),
+            ));
+            assert_eq!(orb.health, -3);
+            assert_eq!(sounds.len(), 1);
+            assert!((sounds[0].1 - (2.0 + 0.9 * 0.4)).abs() < 1e-6);
+
+            // 2. Multiple lava contacts in a single tick
+            world.set(21, 4, 20, lava).unwrap();
+            let mut multi_orb = sample_orb(Vec3::new(21.5, 4.1, 20.5), 5);
+            multi_orb.previous = Vec3::new(19.8, 4.1, 20.5);
+            let wanted = Vec3::new(1.7, 0.0, 0.0);
+            let mut float_draws = vec![0.2_f32, 0.8_f32];
+            let mut multi_sounds = Vec::new();
+            let discarded = multi_orb.apply_lava_contact_damage(
+                world,
+                fluids,
+                wanted,
+                &mut || float_draws.remove(0),
+                &mut |pos, pitch| multi_sounds.push((pos, pitch)),
+            );
+            assert!(discarded, "orb is discarded after two contacts");
+            assert_eq!(multi_orb.health, -3);
+            assert_eq!(multi_sounds.len(), 2, "both contacts triggered burn sound");
+            assert!((multi_sounds[0].1 - (2.0 + 0.2 * 0.4)).abs() < 1e-6);
+            assert!((multi_sounds[1].1 - (2.0 + 0.8 * 0.4)).abs() < 1e-6);
+        });
+    }
+}
+
+/// `Entity.checkInsideBlocks` and `collidedWithFluid`: fluid AABB contacts
+/// along Entity.move's axis-ordered path, each block visited once.
+fn orb_lava_contacts(
+    from: Vec3,
+    to: Vec3,
+    wanted: Vec3,
+    mut lava_height: impl FnMut(BlockPos) -> Option<f64>,
+) -> usize {
+    let delta = to.subtract(from);
+    let mut visited = std::collections::HashSet::new();
+    let mut contacts = 0;
+    let mut remaining = 16;
+    let mut segment = |start: Vec3, end: Vec3, budget: i32| {
+        let mut iterations = 0;
+        let epsilon = f64::from(1.0e-5_f32);
+        let target = ExperienceOrb::box_at(end).deflate(Vec3::new(epsilon, epsilon, epsilon));
+        let _ = horizon_core::geometry::sweep_intersected_blocks(
+            start,
+            end,
+            target,
+            1_000_000,
+            |p, step| {
+                if step >= budget {
+                    return false;
+                }
+                iterations = step;
+                if visited.contains(&p) {
+                    return true;
+                }
+                if let Some(height) = lava_height(p) {
+                    let min = Vec3::new(f64::from(p.x), f64::from(p.y), f64::from(p.z));
+                    let fluid = Aabb::new(min, min.add_vector(Vec3::new(1.0, height, 1.0)));
+                    if ExperienceOrb::box_at(start)
+                        .collided_along_vector(end.subtract(start), &[fluid])
+                    {
+                        visited.insert(p);
+                        contacts += 1;
+                    }
+                }
+                true
+            },
+        );
+        iterations + 1
+    };
+    if delta.length_squared() > 0.0 {
+        // Direction.axisStepOrder uses the original, uncollided movement.
+        let order = if wanted.x.abs() < wanted.z.abs() {
+            [1, 2, 0]
+        } else {
+            [1, 0, 2]
+        };
+        let components = delta.components();
+        let mut start = from;
+        for axis in order {
+            if components[axis] != 0.0 {
+                let mut end = start.components();
+                end[axis] += components[axis];
+                let end = Vec3::new(end[0], end[1], end[2]);
+                remaining -= segment(start, end, remaining);
+                start = end;
+            }
+        }
+    } else {
+        remaining -= segment(from, to, remaining);
+    }
+    if remaining <= 0 {
+        segment(to, to, 1);
+    }
+    contacts
+}
+
+#[cfg(test)]
+mod orb_lava_shape_tests {
+    use super::*;
+
+    fn contacts(from: Vec3, to: Vec3) -> usize {
+        orb_lava_contacts(from, to, to.subtract(from), |p| {
+            (p == BlockPos::new(0, 0, 0)).then_some(f64::from(8.0_f32 / 9.0))
+        })
+    }
+
+    #[test]
+    fn lava_uses_the_swept_box_and_fluid_height_not_the_feet_block() {
+        let side = Vec3::new(-0.2, 0.1, 0.5);
+        assert_eq!(contacts(side, side), 1);
+        let above = Vec3::new(0.5, 0.95, 0.5);
+        assert_eq!(contacts(above, above), 0);
+        let through = Vec3::new(-1.0, 0.1, 0.5);
+        let end = Vec3::new(2.0, 0.1, 0.5);
+        assert_eq!(contacts(through, end), 1);
+        let away = Vec3::new(-1.0, 0.1, -1.0);
+        assert_eq!(contacts(away, away), 0);
+    }
+
+    #[test]
+    fn axis_segments_do_not_damage_twice_for_the_same_lava_cell() {
+        let from = Vec3::new(0.1, 0.1, 0.1);
+        let to = Vec3::new(0.7, 0.2, 0.7);
+        assert_eq!(contacts(from, to), 1);
+        assert_eq!(
+            orb_lava_contacts(from, to, Vec3::new(0.1, 0.1, 0.9), |p| {
+                (p == BlockPos::new(0, 0, 0)).then_some(1.0)
+            }),
+            1
+        );
+    }
+}

@@ -161,19 +161,26 @@ Settings, all optional:
 | `PORT` | 7000 | the TCP port (also answers `GET /health` and `GET /whoami`) |
 | `RELAY_BIND` | all addresses | listen on one address only (e.g. a tailnet address) |
 | `RELAY_MAX_HOSTS` | 1000 | short codes at once |
+| `RELAY_MAX_HOSTS_PER_ADDRESS` | 4 | short codes one client address holds at once (IPv6 by /64; a /48 holds 4 times as many); with `RELAY_PER_ADDRESS_LIMITS` |
+| `RELAY_MAX_OPEN_PER_ADDRESS` | 64 | connections of any kind one client address holds open at once (IPv6 by /64; a /48 holds 4 times as many); past it a connection is closed at once; with `RELAY_PER_ADDRESS_LIMITS` |
 | `RELAY_MAX_BRIDGES` | 200 | relayed streams at once |
 | `RELAY_MAX_PENDING_PER_HOST` | 8 | guests joining one host at the same time |
 | `RELAY_MAX_CONNECTIONS` | 4096 | connections open at once, of every kind (more are closed unanswered) |
 | `RELAY_SESSION_KBPS` | 1024 | KiB/s each way per relayed stream |
 | `RELAY_TOTAL_MBPS` | 100 | Mbit/s for everything relayed |
-| `RELAY_GLOBAL_UNKNOWN_PER_MIN` | 120 | unknown short codes a minute, all clients together |
+| `RELAY_GLOBAL_UNKNOWN_PER_MIN` | 120 | unknown short codes a minute, all clients together; each IPv4 /24 or IPv6 /48 also has its own budget, 24 a minute (burst 6), checked first |
 | `RELAY_PER_ADDRESS_LIMITS` | 1 | per-address rate limits (see below) |
 | `RELAY_PROXY_PROTOCOL` | 0 | read the client address from a PROXY protocol v1 line |
+| `RELAY_PROXY_FROM` | none | with `RELAY_PROXY_PROTOCOL=1`, required: the load balancers' addresses or CIDR ranges (`10.0.0.0/8,fd00::/8`). Connections from anywhere else are closed unanswered; the relay refuses to start with the protocol on and this empty |
 
 Fixed limits: per client address (IPv6 by /64), 6 host registrations a minute (burst 3), 12 joins a
 minute (burst 6), 5 unknown short codes in 10 minutes block joins for 10 minutes; a relayed stream idle
 for 120 s is closed (the game's keep-alive sends every 15 s); the first line must be complete within 10 s;
-hosts answer pings within 60 s; five wrong secrets on a short code and the host retires it for a new one.
+hosts answer pings within 60 s; five wrong secrets on a short code and the host retires it for a new one,
+waiting 1 s before registering again, then twice as long for each code it retires (at most 5 minutes);
+after 50 wrong secrets in one sharing session it leaves the relay (the full code still works directly).
+A relayed key exchange that ends without the guest's confirmation counts as a wrong secret, and only as
+many run at once as wrong secrets are left, so a relay gets at most 50 guesses at 20-bit secrets.
 
 ### The relay protocol
 

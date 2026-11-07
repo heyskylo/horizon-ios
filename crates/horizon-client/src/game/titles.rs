@@ -11,15 +11,28 @@ use horizon_client::{
 };
 
 impl Game<'_> {
+    /// `ServerPlayer.sendOverlayMessage`: the steady player sees it on this
+    /// game's HUD; a server client receives it as a packet.
+    pub(super) fn send_overlay_message(&mut self, message: Text) {
+        if self.lan_acting.is_some() {
+            self.guest_packets
+                .push(horizon_protocol::packets::play::Clientbound::SystemChat(
+                    horizon_protocol::packets::play::SystemChat {
+                        content: horizon_client::lan::data::component_nbt(&message.component()),
+                        overlay: true,
+                    },
+                ));
+        } else if self.options.dedicated.is_none() {
+            self.titles.set_overlay(message, false);
+        }
+    }
     /// `Hud.extractOverlayMessage`: the action bar.
-    pub(super) fn draw_overlay_message(&self, batch: &mut HudBatch, bar_height: i32) {
+    pub(super) fn draw_overlay_message(&self, batch: &mut HudBatch) {
         let (w, h) = (batch.width as i32, batch.height as i32);
         let partial = self.clock.fraction() as f32;
         let background = self.settings.text_background(0.0);
         let font = &self.gui.atlas.font;
-        let draws = self
-            .titles
-            .overlay_message(w, h, bar_height, partial, font, background);
+        let draws = self.titles.overlay_message(w, h, partial, font, background);
         hud_layout::paint(batch, &self.gui.atlas, &draws);
     }
     /// `Hud.extractTitle`.
@@ -82,11 +95,10 @@ impl Game<'_> {
             .tick(held, f64::from(self.settings.notification_display_time));
     }
     /// `Hud.extractSelectedItemName`.
-    pub(super) fn draw_selected_name(&self, batch: &mut HudBatch, bar_height: i32, can_hurt: bool) {
+    pub(super) fn draw_selected_name(&self, batch: &mut HudBatch, can_hurt: bool) {
         let draws = self.tool_highlight.draw(
             batch.width as i32,
             batch.height as i32,
-            bar_height,
             can_hurt,
             &self.gui.atlas.font,
             self.settings.text_background(0.0),

@@ -805,6 +805,37 @@ mod tests {
     }
 
     #[test]
+    fn an_owned_content_recipe_reaches_the_client_book() {
+        let recipe = r#"{"type":"minecraft:crafting_shapeless","ingredients":["minecraft:raw_copper"],"result":{"id":"minecraft:copper_ingot","count":2}}"#;
+        let root = resources("content_namespace", &[("control", recipe)]);
+        let dir = root.join("data/recipe_pilot/recipe");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("press.json"), recipe).unwrap();
+        for marker in [
+            horizon_items::content_namespaces::MARKER,
+            horizon_items::content_namespaces::MOD_IDS_MARKER,
+        ] {
+            std::fs::write(root.join(marker), br#"["recipe_pilot"]"#).unwrap();
+        }
+        let (sync, e) = entry(&root, "recipe_pilot:press");
+        assert_eq!(
+            e.id,
+            sync.advancements
+                .displays
+                .first_display("recipe_pilot:press")
+                .unwrap()
+        );
+        match e.display {
+            RecipeDisplay::Shapeless { result, .. } => {
+                assert_eq!(result, SlotDisplay::ItemStack(Stack::new(1, 2)));
+            }
+            other => panic!("not a shapeless content recipe: {other:?}"),
+        }
+        let _ = entry(&root, "minecraft:control");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn a_recipe_with_an_unknown_ingredient_kind_stays_out_of_the_book() {
         let root = resources(
             "mymod_kind",
@@ -881,6 +912,53 @@ mod tests {
         assert!(len >= 2, "an item list, not empty ({len}) nor a tag");
         assert_eq!(len - 1, 1, "the compound's one item");
         assert_eq!(r.varint().unwrap(), raw);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The stonecutter's recipes go out in registration order (path, then
+    /// namespace): a guest's button picks by position in the host's list,
+    /// which keeps that order too.
+    #[test]
+    fn update_recipes_lists_the_stonecutter_in_registration_order() {
+        let cut = |input: &str| {
+            format!(
+                r#"{{"type":"minecraft:stonecutting","ingredient":"{input}",
+                "result":{{"id":"minecraft:copper_ingot"}}}}"#
+            )
+        };
+        let vanilla = cut("minecraft:raw_copper");
+        let root = resources("stonecutter_order", &[("z_cut", vanilla.as_str())]);
+        let packs = [(
+            "recipe/pack:a_cut".to_owned(),
+            vec![cut("minecraft:redstone").into_bytes()],
+        )];
+        let sync =
+            SyncData::load(&root, &horizon_world::loot::PackOverlay { files: &packs }).unwrap();
+        let item = |n: &str| sync.id("minecraft:item", n).unwrap();
+        let mut r = Reader::new(&sync.recipes);
+        for _ in 0..r.varint().unwrap() {
+            r.string(64).unwrap();
+            for _ in 0..r.varint().unwrap() {
+                r.varint().unwrap();
+            }
+        }
+        let mut inputs = Vec::new();
+        for _ in 0..r.varint().unwrap() {
+            // An item list (its length plus one), then the result's slot
+            // display: its type, item, count and two empty component lists.
+            let len = r.varint().unwrap();
+            inputs.push((1..len).map(|_| r.varint().unwrap()).collect::<Vec<_>>());
+            for _ in 0..5 {
+                r.varint().unwrap();
+            }
+        }
+        assert_eq!(
+            inputs,
+            [
+                vec![item("minecraft:redstone")],
+                vec![item("minecraft:raw_copper")]
+            ]
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

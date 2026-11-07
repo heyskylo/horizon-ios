@@ -417,6 +417,18 @@ impl Station {
     }
 }
 
+/// `at` is on one of a list's `rows`, with no row further that way.
+fn off_visible_rows(rows: &[[f32; 4]], at: (f32, f32), up: bool) -> bool {
+    let inside =
+        |r: &[f32; 4]| at.0 >= r[0] && at.0 < r[0] + r[2] && at.1 >= r[1] && at.1 < r[1] + r[3];
+    let Some(on) = rows.iter().find(|r| inside(r)) else {
+        return false;
+    };
+    !rows
+        .iter()
+        .any(|r| r[0] == on[0] && if up { r[1] < on[1] } else { r[1] > on[1] })
+}
+
 /// `StonecutterScreen.getOffscreenRows`: the recipe rows below the 4x3 grid.
 fn stonecutter_offscreen_rows(recipes: usize) -> i32 {
     recipes.div_ceil(4) as i32 - 3
@@ -683,6 +695,38 @@ impl Game<'_> {
             None => String::new(),
         }
     }
+    /// NeoForge's `AnvilUpdateEvent` (`CommonHooks.onAnvilUpdate`) about
+    /// `result`, vanilla's for `left`, `right` and the rename box's
+    /// `item_name`: the mods' answer takes its place. `player` (`name`) is
+    /// who uses the anvil: the window's own player, or a host's guest.
+    pub(super) fn anvil_update(
+        &mut self,
+        player: u128,
+        name: &str,
+        left: &ItemStack,
+        right: Option<&ItemStack>,
+        item_name: Option<&str>,
+        result: &mut AnvilResult,
+    ) {
+        let material = i32::try_from(result.repair_item_count_cost).unwrap_or(i32::MAX);
+        let mut output = result.result.clone();
+        let (mut xp_cost, mut material_cost, mut canceled) = (result.cost, material, false);
+        self.native_anvil_update(
+            player,
+            name,
+            left,
+            right,
+            item_name,
+            result.result.as_ref(),
+            result.cost,
+            material,
+            &mut output,
+            &mut xp_cost,
+            &mut material_cost,
+            &mut canceled,
+        );
+        result.answer_update(canceled, output, xp_cost, material_cost);
+    }
     /// `slotsChanged` / `createResult` for the open station.
     pub(super) fn station_changed(&mut self) {
         let Some(mut s) = self.station.take() else {
@@ -727,6 +771,13 @@ impl Game<'_> {
                     &hover,
                     creative,
                 );
+                // NeoForge's AnvilUpdateEvent, where the client menu's createResult ends.
+                // The player is the one the server knows, as its own call names it.
+                if let Some(left) = s.inputs[0].as_ref() {
+                    let (player, player_name) = (self.own_uuid(), self.own_profile_name());
+                    let right = s.inputs[1].as_ref();
+                    self.anvil_update(player, &player_name, left, right, Some(&name), &mut s.anvil);
+                }
                 s.result = s.anvil.result.clone();
             }
             Kind::Grindstone => {
@@ -987,7 +1038,20 @@ impl Game<'_> {
             xp.progress = 0.0;
             xp.total = 0;
         }
+        let level = xp.level;
+        self.play_level_up(levels, level);
         self.native_player_level_changed(old_level);
+    }
+    /// `Player.giveExperienceLevels`: all players near its feet hear the sound.
+    pub(super) fn play_level_up(&mut self, amount: i32, level: i32) {
+        if let Some(volume) = self.level_up_sound.give_levels(amount, level) {
+            let at = self
+                .player
+                .as_ref()
+                .map(|p| [p.position.x, p.position.y, p.position.z]);
+            self.audio
+                .play("minecraft:entity.player.levelup", at, volume, 1.0);
+        }
     }
     /// Whether the result slot may be taken (`mayPickup`).
     fn may_take_result(&self) -> bool {
@@ -1211,6 +1275,28 @@ impl Game<'_> {
             }
         }
         false
+    }
+    /// A D-pad step off the visible rows of a station's list, from the row
+    /// under the cursor: the list scrolls a row, if it can, and the cursor
+    /// stays. False leaves the step to go on to whatever is that way.
+    pub(super) fn station_list_step(&mut self, up: bool) -> bool {
+        let Some(batch) = self.gui_scale() else {
+            return false;
+        };
+        let (ox, oy) = self.inventory_origin(&batch);
+        let local = (self.cursor.0 - ox, self.cursor.1 - oy);
+        if !off_visible_rows(&self.station_targets(), local, up) {
+            return false;
+        }
+        let shown = |g: &Self| {
+            g.station.as_ref().map(|s| {
+                let merchant = s.merchant.as_ref().map(|m| m.scroll);
+                (s.start, s.loom.start_row, merchant)
+            })
+        };
+        let before = shown(self);
+        self.station_scroll(if up { 1.0 } else { -1.0 });
+        shown(self) != before
     }
     /// `StonecutterScreen.mouseScrolled`.
     pub(super) fn station_scroll(&mut self, d: f32) {
@@ -1441,7 +1527,7 @@ impl Game<'_> {
             return false;
         }
         // `SmithingScreen.containerTick`: the icons of the empty slots follow the template.
-        let (now, partial) = (self.ticks, self.clock.camera_fraction() as f32);
+        let (now, partial) = (self.visual_ticks(), self.clock.camera_fraction() as f32);
         if let Some(s) = self.station.as_mut().filter(|s| s.kind == Kind::Smithing) {
             let template = s.inputs[0].as_ref().map(|t| t.item.clone());
             let (base, base_len, additions, additions_len) =
@@ -1463,15 +1549,7 @@ impl Game<'_> {
         // bundle contents component (including in the player's inventory).
         let mut tooltip_stack: Option<ItemStack> = None;
         {
-            let atlas = &self.gui.atlas;
-            batch.fill(
-                atlas,
-                0.0,
-                0.0,
-                batch.width,
-                batch.height,
-                rgba(16, 16, 16, 160),
-            );
+            self.render_transparent_background("station", batch);
         }
         let inventory_label = self.translate("container.inventory", "Inventory");
         if brewing {
@@ -1720,7 +1798,7 @@ impl Game<'_> {
                         if inside(local, bx, by, bw, 17.0)
                             && let Some((id, l)) = &offers.clues[i]
                         {
-                            let e = &self.stations().enchantments;
+                            let e = self.enchantments();
                             let (name, _) = e.full_name(id, *l);
                             let clue = self
                                 .translate("container.enchant.clue", "%s . . . ?")
@@ -2121,7 +2199,7 @@ impl Game<'_> {
         nested: bool,
         creative: bool,
     ) -> Vec<(horizon_client::text::Text, u32)> {
-        let e: &Enchantments = &self.stations().enchantments;
+        let e: &Enchantments = self.enchantments();
         let color = self.rarity_color(stack);
         let advanced = !nested && self.options_advanced_tooltips();
         let display = horizon_client::item_tooltip::TooltipDisplay::for_stack(stack);
@@ -2685,6 +2763,11 @@ impl Game<'_> {
         y: f32,
         after_name: Vec<(horizon_client::text::Text, u32)>,
     ) {
+        let mut cancel = false;
+        self.native_tooltip_render_pre(stack, batch, x, y, &mut cancel);
+        if cancel {
+            return;
+        }
         let mut lines = self.stack_tooltip_lines(stack, false, creative);
         if lines.is_empty() {
             return;
@@ -2693,7 +2776,8 @@ impl Game<'_> {
         let lines = Self::resolved(&lines);
         // The component's height does not depend on where it is drawn, so a
         // probe at the origin gives the box its extra height.
-        let probe = horizon_client::bundle::tooltip_layout(self.items(), stack, 0.0, 0.0, 96.0);
+        let probe =
+            horizon_client::item_tooltip::bundle_tooltip(self.items(), stack, 0.0, 0.0, 96.0);
         let bundle_extra = probe.as_ref().map_or(0.0, |l| l.height + 2.0);
         let mut component = None;
         self.native_tooltip_component(stack, &mut component);
@@ -2712,9 +2796,13 @@ impl Game<'_> {
         self.tooltip_box(batch, Some(stack), x, y, w, h);
         let text_h = h - extra;
         Self::tooltip_text(batch, atlas, &lines, x, y);
-        if let Some(layout) =
-            horizon_client::bundle::tooltip_layout(self.items(), stack, x, y + text_h + 2.0, w)
-        {
+        if let Some(layout) = horizon_client::item_tooltip::bundle_tooltip(
+            self.items(),
+            stack,
+            x,
+            y + text_h + 2.0,
+            w,
+        ) {
             self.draw_bundle_tooltip(batch, &layout);
             self.draw_bundle_selected_name(batch, &layout, x, y + text_h + 2.0, w);
         }
@@ -2957,6 +3045,10 @@ impl Game<'_> {
                 }
             }
         }
+        if matches!(self.world.block_entities.get(&pos), Some(BlockEntity::Brewing(b)) if b.idle())
+        {
+            self.world.block_entities.sleep(pos);
+        }
         Ok(())
     }
 }
@@ -3045,6 +3137,16 @@ mod tests {
         assert_ne!(book.flip_t, target);
         let (open, _) = book.at(0.5);
         assert!(open < 1e-6);
+    }
+
+    #[test]
+    fn a_step_leaves_the_visible_rows_only_from_the_end_one() {
+        let rows = [[10.0, 0.0, 10.0, 10.0], [10.0, 10.0, 10.0, 10.0]];
+        assert!(off_visible_rows(&rows, (15.0, 15.0), false));
+        assert!(!off_visible_rows(&rows, (15.0, 15.0), true));
+        assert!(off_visible_rows(&rows, (15.0, 5.0), true));
+        assert!(!off_visible_rows(&rows, (15.0, 5.0), false));
+        assert!(!off_visible_rows(&rows, (50.0, 5.0), false));
     }
 
     #[test]

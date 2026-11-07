@@ -241,6 +241,27 @@ impl ItemRenderState {
             (lo, hi)
         }
     }
+    /// Bounds of the actual submitted item geometry under each world pose.
+    /// Used for dropped-item occlusion because its collision box omits the
+    /// render bob, model size, and copies in a stacked item cluster.
+    pub fn posed_bounds(&self, poses: &[Mat4]) -> Option<(Vec3, Vec3)> {
+        let mut lo = Vec3::splat(f32::INFINITY);
+        let mut hi = Vec3::splat(f32::NEG_INFINITY);
+        for &pose in poses {
+            for layer in &self.layers {
+                let transform = pose * layer.matrix;
+                for &point in layer.extents.iter() {
+                    let point = transform.transform_point3(point);
+                    if !point.is_finite() {
+                        return None;
+                    }
+                    lo = lo.min(point);
+                    hi = hi.max(point);
+                }
+            }
+        }
+        (lo.x <= hi.x && lo.y <= hi.y && lo.z <= hi.z).then_some((lo, hi))
+    }
     /// `ItemStackRenderState.submit` under `pose`.
     pub fn submit(
         &self,
@@ -729,9 +750,11 @@ impl ItemRenderer {
         library: std::result::Result<Arc<ModelLibrary>, String>,
         drawn: bool,
     ) -> crate::Result<Self> {
-        let prototypes: BTreeMap<String, Components> = horizon_world::item_defaults::read(root)?
-            .into_iter()
-            .map(|(item, components)| Ok((item, serde_json::from_value(components)?)))
+        let prototypes: BTreeMap<String, Components> = horizon_world::item_defaults::shared(root)?
+            .iter()
+            .map(|(item, components)| {
+                Ok((item.clone(), serde::Deserialize::deserialize(components)?))
+            })
             .collect::<serde_json::Result<_>>()?;
         let models = ItemModels {
             definitions: if drawn {
@@ -741,7 +764,13 @@ impl ItemRenderer {
             },
             prototypes,
         };
-        let (library, cit) = cit::load(root, library?);
+        // CIT models and glint textures only affect drawing. A server still
+        // needs item prototypes and ids, but never these resource-pack assets.
+        let (library, cit) = if drawn {
+            cit::load(root, library?)
+        } else {
+            (library?, None)
+        };
         let permutations = PalettedPermutations::from_atlas(
             &fs::read_to_string(root.join("assets/minecraft/atlases/items.json"))
                 .unwrap_or_default(),
@@ -1007,6 +1036,34 @@ pub fn tag_json(tag: &Tag) -> Value {
         Tag::LongArray(a) => Value::Array(a.iter().map(|v| Value::from(*v)).collect()),
     }
 }
+/// Custom model flags use Codec.BOOL even though NBT stores them as numbers.
+/// Keep the other custom-model fields, and generic NBT JSON, numeric.
+fn custom_model_data_json(tag: &Tag) -> Value {
+    let mut value = tag_json(tag);
+    let flags: Option<Vec<Value>> = match tag.get("flags") {
+        Some(Tag::List(flags)) => flags
+            .iter()
+            .map(|flag| crate::item_data::component_bool(flag).map(Value::Bool))
+            .collect(),
+        Some(Tag::ByteArray(flags)) => flags
+            .iter()
+            .map(|flag| crate::item_data::component_bool(&Tag::Byte(*flag as i8)).map(Value::Bool))
+            .collect(),
+        Some(Tag::IntArray(flags)) => flags
+            .iter()
+            .map(|flag| crate::item_data::component_bool(&Tag::Int(*flag)).map(Value::Bool))
+            .collect(),
+        Some(Tag::LongArray(flags)) => flags
+            .iter()
+            .map(|flag| crate::item_data::component_bool(&Tag::Long(*flag)).map(Value::Bool))
+            .collect(),
+        _ => None,
+    };
+    if let (Some(flags), Some(object)) = (flags, value.as_object_mut()) {
+        object.insert("flags".into(), Value::Array(flags));
+    }
+    value
+}
 /// The resolver's view of a client stack: its item, count and component patch.
 pub fn stack_view(stack: &crate::items::ItemStack) -> StackView {
     let mut view = StackView::new(&stack.item, stack.count as i32);
@@ -1016,7 +1073,20 @@ pub fn stack_view(stack: &crate::items::ItemStack) -> StackView {
             let key = k.to_string_lossy();
             match key.strip_prefix('!') {
                 Some(removed) => view.patch.insert(removed.to_owned(), None),
-                None => view.patch.insert(key, Some(tag_json(v))),
+                None => {
+                    // The component codec turns NBT numeric booleans into JSON booleans.
+                    // Generic NBT conversion must keep unrelated bytes numeric.
+                    let value = if key == "minecraft:enchantment_glint_override" {
+                        crate::item_data::component_bool(v)
+                            .map(Value::Bool)
+                            .unwrap_or_else(|| tag_json(v))
+                    } else if key == "minecraft:custom_model_data" {
+                        custom_model_data_json(v)
+                    } else {
+                        tag_json(v)
+                    };
+                    view.patch.insert(key, Some(value))
+                }
             };
         }
     }
@@ -1109,14 +1179,22 @@ pub fn rendered_amount(count: u32) -> u32 {
 /// `ItemEntityRenderer.submitMultipleFromCount`: the poses of each copy of
 /// a stack (`seed` is `ItemClusterRenderState.getSeedForItemStack`).
 pub fn cluster_poses(state: &ItemRenderState, pose: Mat4, amount: u32, seed: i64) -> Vec<Mat4> {
+    if amount == 0 {
+        return Vec::new();
+    }
+    let (lo, hi) = state.bounding_box();
+    cluster_poses_with_depth(pose, amount, seed, hi.z - lo.z)
+}
+
+/// [`cluster_poses`] with the depth of the resolved model's bounding box
+/// already computed for this draw (also used to place the stack's bob).
+pub fn cluster_poses_with_depth(pose: Mat4, amount: u32, seed: i64, depth: f32) -> Vec<Mat4> {
     use horizon_core::random::{LegacyRandom, RandomSource};
     let mut out = Vec::new();
     if amount == 0 {
         return out;
     }
     let mut random = LegacyRandom::new(seed);
-    let (lo, hi) = state.bounding_box();
-    let depth = hi.z - lo.z;
     let mut next = || random.next_float() * 2.0 - 1.0;
     if depth > 0.0625 {
         out.push(pose);
@@ -1142,6 +1220,138 @@ pub fn cluster_poses(state: &ItemRenderState, pose: Mat4, amount: u32, seed: i64
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn custom_model_flags_select_their_model_after_stack_nbt_decoding() {
+        let mut actual = Vec::new();
+        for flags in [
+            Tag::List(vec![Tag::Byte(1), Tag::Byte(0)]),
+            Tag::ByteArray(vec![1, 0]),
+        ] {
+            let mut stack = crate::items::ItemStack::new("minecraft:diamond", 1);
+            let component = Tag::compound([
+                ("flags", flags),
+                ("floats", Tag::List(vec![Tag::Float(1.25f32.to_bits())])),
+                ("colors", Tag::List(vec![Tag::Int(0x12_34_56)])),
+                ("strings", Tag::List(vec![Tag::String("keep".into())])),
+            ]);
+            (stack.damage, stack.extra) = crate::item_data::decode_components(Some(
+                &Tag::compound([("minecraft:custom_model_data", component)]),
+            ));
+            let view = stack_view(&stack);
+            for index in 0..3 {
+                let mut models = ItemModels::default();
+                models.prototypes.insert(
+                    "minecraft:diamond".into(),
+                    BTreeMap::from([(
+                        "minecraft:item_model".into(),
+                        serde_json::json!("minecraft:diamond"),
+                    )]),
+                );
+                models.definitions.insert("minecraft:diamond".into(), ClientItem::decode(&serde_json::json!({
+                    "model": {"type": "minecraft:condition", "property": "minecraft:custom_model_data", "index": index,
+                        "on_true": {"type": "minecraft:model", "model": "horizon:item/yes"},
+                        "on_false": {"type": "minecraft:model", "model": "horizon:item/no"}}
+                })).unwrap());
+                let resolved = models.resolve(
+                    &view,
+                    &Context {
+                        display: DisplayContext::Gui,
+                        owner: None,
+                        level: None,
+                        seed: 0,
+                    },
+                    &horizon_assets::item_model::NoEnv,
+                );
+                assert_eq!(resolved.layers.len(), 1);
+                actual.push(
+                    resolved.layers[0].content
+                        == LayerContent::Model {
+                            model: "horizon:item/yes".into(),
+                        },
+                );
+            }
+            // Non-boolean fields must retain their codec's numeric/string values.
+            let component = view.patch["minecraft:custom_model_data"].as_ref().unwrap();
+            assert_eq!(component["floats"], serde_json::json!([1.25]));
+            assert_eq!(component["colors"], serde_json::json!([0x12_34_56]));
+            assert_eq!(component["strings"], serde_json::json!(["keep"]));
+        }
+        assert_eq!(actual, [true, false, false, true, false, false]);
+    }
+
+    #[test]
+    fn posed_item_bounds_include_each_cluster_transform() {
+        let state = ItemRenderState {
+            display: DisplayContext::Ground,
+            layers: vec![LayerRender {
+                geometry: LayerGeometry::Special {
+                    model: SpecialModel {
+                        kind: horizon_assets::item_model::SpecialKind::Trident,
+                    },
+                    argument: Value::Null,
+                },
+                tints: Vec::new(),
+                foil: FoilType::None,
+                matrix: Mat4::from_translation(Vec3::new(0.0, 2.0, 0.0)),
+                particle: String::new(),
+                uses_block_light: false,
+                extents: Arc::new(vec![
+                    Vec3::new(-1.0, -0.5, -0.25),
+                    Vec3::new(0.5, 1.0, 0.25),
+                ]),
+            }],
+            oversized_in_gui: false,
+            animated: false,
+            cit_glint: None,
+            hdr_tier: 0,
+            hdr_light: 0,
+        };
+        let poses = [
+            Mat4::from_translation(Vec3::new(2.0, 0.0, 0.0)),
+            Mat4::from_translation(Vec3::new(-1.0, 0.0, 0.0)),
+        ];
+        let (lo, hi) = state.posed_bounds(&poses).expect("item model has vertices");
+        assert_eq!(lo, Vec3::new(-2.0, 1.5, -0.25));
+        assert_eq!(hi, Vec3::new(2.5, 3.0, 0.25));
+    }
+
+    #[test]
+    fn stack_copy_positions_keep_the_flat_and_solid_random_sequences() {
+        // Captured from the original cluster renderer with seed 7, three
+        // copies and an identity pose. Flat items draw two random values
+        // per extra copy; solid items draw three.
+        for (depth, expected) in [
+            (
+                0.03125,
+                [
+                    [0, 0, 3_175_088_128],
+                    [1_024_310_737, 1_017_789_485, 0],
+                    [1_025_054_461, 3_180_766_298, 1_027_604_480],
+                ],
+            ),
+            (
+                0.25,
+                [
+                    [0, 0, 0],
+                    [1_032_699_345, 1_026_178_093, 1_033_443_069],
+                    [3_189_154_906, 3_174_720_933, 3_141_056_154],
+                ],
+            ),
+        ] {
+            let copies = cluster_poses_with_depth(Mat4::IDENTITY, 3, 7, depth);
+            assert_eq!(copies.len(), expected.len());
+            for (pose, position) in copies.iter().zip(expected) {
+                let expected =
+                    Mat4::from_translation(Vec3::from_array(position.map(f32::from_bits)));
+                assert_eq!(
+                    pose.to_cols_array().map(f32::to_bits),
+                    expected.to_cols_array().map(f32::to_bits)
+                );
+            }
+        }
+        assert!(cluster_poses_with_depth(Mat4::IDENTITY, 0, 7, 0.25).is_empty());
+    }
 
     /// One frame's glint is read once and shared: every item drawn from the
     /// same `GlintFrame` scrolls by the same phase, and without the atlas
@@ -1238,12 +1448,17 @@ mod tests {
             root.join("items.json"),
             r#"{"horizon:top":{"minecraft:max_stack_size":16}}"#,
         )?;
+        let cit = root.join("assets/minecraft/optifine");
+        fs::create_dir_all(&cit)?;
+        fs::write(cit.join("cit.properties"), "useGlint=false\n")?;
         let library = crate::model_library::ParsedModels::load(&root).into_item_library();
         let client = ItemRenderer::load_with_library(&root, library.clone())?;
         let server = ItemRenderer::load_for_server(&root, library)?;
         let _ = fs::remove_dir_all(&root);
         assert!(client.models.definitions.contains_key("horizon:top"));
         assert!(server.models.definitions.is_empty());
+        assert!(client.cit.is_some());
+        assert!(server.cit.is_none());
         assert_eq!(server.models.prototypes, client.models.prototypes);
         Ok(())
     }
@@ -1262,12 +1477,85 @@ mod tests {
             ("a", Tag::Int(3)),
             ("b", Tag::List(vec![Tag::String("x".into())])),
             ("c", Tag::Float(1.5f32.to_bits())),
+            ("d", Tag::Byte(1)),
         ]);
         assert_eq!(
             tag_json(&tag),
-            serde_json::json!({"a": 3, "b": ["x"], "c": 1.5})
+            serde_json::json!({"a": 3, "b": ["x"], "c": 1.5, "d": 1})
         );
     }
+    #[test]
+    fn stack_glint_override_reaches_the_resolved_item_layers() {
+        use horizon_assets::item_model::NoEnv;
+        let mut models = ItemModels::default();
+        models.definitions.insert(
+            "horizon:fixture".into(),
+            ClientItem::from_json(
+                r#"{"model":{"type":"minecraft:model","model":"horizon:item/fixture"}}"#,
+            )
+            .unwrap(),
+        );
+        for default in [false, true] {
+            models.prototypes.insert(
+                "minecraft:diamond".into(),
+                BTreeMap::from([
+                    (
+                        "minecraft:item_model".into(),
+                        serde_json::json!("horizon:fixture"),
+                    ),
+                    (
+                        "minecraft:enchantment_glint_override".into(),
+                        Value::Bool(default),
+                    ),
+                ]),
+            );
+            for (tag, flag) in [
+                (Tag::Byte(1), true),
+                (Tag::Byte(0), false),
+                (Tag::Byte(-1), true),
+                (Tag::Short(256), true),
+                (Tag::Int(1), true),
+                (Tag::Long(1 << 40), true),
+                (Tag::Float(0.5_f32.to_bits()), true),
+                (Tag::Float((-0.0_f32).to_bits()), false),
+                (Tag::Double(0.5_f64.to_bits()), true),
+                (Tag::Double((-0.0_f64).to_bits()), false),
+                (Tag::Float(f32::NAN.to_bits()), true),
+                (Tag::Double(f64::INFINITY.to_bits()), true),
+            ] {
+                let mut stack = crate::items::ItemStack::new("minecraft:diamond", 1);
+                (stack.damage, stack.extra) = crate::item_data::decode_components(Some(
+                    &Tag::compound([("minecraft:enchantment_glint_override", tag)]),
+                ));
+                assert_eq!(stack.has_foil(default), flag);
+                let view = stack_view(&stack);
+                assert_eq!(
+                    view.patch["minecraft:enchantment_glint_override"],
+                    Some(Value::Bool(flag))
+                );
+                let resolved = models.resolve(
+                    &view,
+                    &Context {
+                        display: DisplayContext::Gui,
+                        owner: None,
+                        level: None,
+                        seed: 0,
+                    },
+                    &NoEnv,
+                );
+                assert_eq!(resolved.layers.len(), 1);
+                assert_eq!(
+                    resolved.layers[0].foil,
+                    if flag {
+                        FoilType::Standard
+                    } else {
+                        FoilType::None
+                    }
+                );
+            }
+        }
+    }
+
     #[test]
     fn palette_trns_partial_alpha_counts_as_translucent() {
         // Slime/honey (and ice) are indexed PNGs with a tRNS chunk. Decode must

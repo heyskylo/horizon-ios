@@ -220,6 +220,7 @@ fn goal_name(m: &Mob, name: &str) -> String {
         "RandomSwimming" => "RandomSwimmingGoal",
         "LookAtPlayer" => "LookAtPlayerGoal",
         "RandomLookAround" => "RandomLookAroundGoal",
+        "SpearUse" => "SpearUseGoal",
         "HurtByTarget" => "HurtByTargetGoal",
         "NearestTarget" => "NearestAttackableTargetGoal",
         "Panic" => "PanicGoal",
@@ -606,7 +607,12 @@ fn player_damage(e: &MobEvent) -> f32 {
         | MobEvent::CubeHurtPlayer { amount, .. }
         | MobEvent::StingPlayer { amount, .. }
         | MobEvent::AttackPlayerWithEffect { amount, .. }
-        | MobEvent::DamagePlayer { amount, .. } => *amount,
+        | MobEvent::DamagePlayer { amount, .. }
+        | MobEvent::IronGolemHit {
+            target: Who::Player,
+            amount,
+            ..
+        } => *amount,
         MobEvent::SonicBoom {
             target: Who::Player,
             ..
@@ -625,7 +631,12 @@ fn player_hurt(player: Option<&PlayerView>, e: &MobEvent) -> bool {
         | MobEvent::CubeHurtPlayer { amount, .. }
         | MobEvent::StingPlayer { amount, .. }
         | MobEvent::AttackPlayerWithEffect { amount, .. }
-        | MobEvent::DamagePlayer { amount, .. } => *amount > 0.0,
+        | MobEvent::DamagePlayer { amount, .. }
+        | MobEvent::IronGolemHit {
+            target: Who::Player,
+            amount,
+            ..
+        } => *amount > 0.0,
         MobEvent::SonicBoom {
             target: Who::Player,
             ..
@@ -1130,6 +1141,9 @@ pub fn main() -> horizon_client::Result<()> {
                 main_hand: s.hand.as_deref().map(Into::into),
                 off_hand: None,
                 head: None,
+                chest: None,
+                legs: None,
+                feet: None,
                 armor_cover: 0.0,
                 invisible: false,
                 spectator: false,
@@ -1183,9 +1197,11 @@ pub fn main() -> horizon_client::Result<()> {
                     others: $snapshot,
                     dragon: None,
                     leash_boats: &[],
+                    who_lookup: None,
                     others_grid: $grid,
                     others_index: None,
                     others_villagers: None,
+                    others_solid: None,
                     daylight: (world.day_time.rem_euclid(24000)) < 12000,
                     monsters_burn: !(12542..23460).contains(&world.day_time.rem_euclid(24000)),
                     game_time: world.game_time,
@@ -1387,14 +1403,28 @@ pub fn main() -> horizon_client::Result<()> {
                 // (LivingEntity.hurtServer), with the sounds they raise.
                 let mut k = from;
                 while k < events.len() {
-                    if let MobEvent::AttackMob {
-                        target,
-                        amount,
-                        source,
-                    } = events[k]
+                    let (hit, toss) = match events[k] {
+                        MobEvent::AttackMob {
+                            target,
+                            amount,
+                            source,
+                        } => (Some((target, amount, source)), false),
+                        // IronGolem.doHurtTarget: thrown up only if the hit landed.
+                        MobEvent::IronGolemHit {
+                            target: Who::Mob(target),
+                            amount,
+                            source,
+                        } => (Some((target, amount, source)), true),
+                        _ => (None, false),
+                    };
+                    if let Some((target, amount, source)) = hit
                         && let Some(t) = mobs.iter_mut().find(|m| m.id == target)
                         && t.damage(amount, source)
                     {
+                        if toss {
+                            t.velocity.y +=
+                                f64::from(0.4f32) * (1.0 - t.knockback_resistance()).max(0.0);
+                        }
                         let raised = std::mem::take(&mut t.outbox);
                         let n = raised.len();
                         events.splice(k + 1..k + 1, raised);
@@ -1446,7 +1476,13 @@ pub fn main() -> horizon_client::Result<()> {
                     else {
                         continue;
                     };
-                    let tag = horizon_client::entity_nbt::mob_to_nbt(&mobs[i], [0; 4], None, None);
+                    let tag = horizon_client::entity_nbt::mob_to_nbt(
+                        &mobs[i],
+                        [0; 4],
+                        None,
+                        None,
+                        |_| None,
+                    );
                     let flower = horizon_client::mobs::bee::get(&mobs[i]).and_then(|b| b.flower);
                     let mut honey = Vec::new();
                     let stored = {
@@ -1611,7 +1647,14 @@ pub fn main() -> horizon_client::Result<()> {
                 let _ = writeln!(out, "{t} leads {dropped_leads}");
             }
             for e in &events {
-                if let MobEvent::Sound(name, _, volume, pitch) = e {
+                if let MobEvent::Sound(name, _, volume, pitch)
+                | MobEvent::EntitySound {
+                    name,
+                    volume,
+                    pitch,
+                    ..
+                } = e
+                {
                     let _ = writeln!(
                         out,
                         "{t} sound minecraft:{name} {} {}",

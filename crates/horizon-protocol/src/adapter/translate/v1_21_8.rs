@@ -1,6 +1,8 @@
 //! 1.21.8 to 1.21.9, from vanilla's packet codecs and EntityDataSerializers registrations.
 use super::*;
 
+pub(crate) const VELOCITY_UNIT: f64 = 8000.0;
+
 /// Changed packet layouts, before the later release steps and registry renumbering.
 pub(super) fn clientbound(
     session: &Session,

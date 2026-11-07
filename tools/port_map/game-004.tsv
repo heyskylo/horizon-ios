@@ -44,7 +44,9 @@ AbstractInterpolationHandler.setLastPositionAndRotation	skip:other		only feeds t
 AgeableMob.defineSynchedData	port	crates/horizon-client/src/game/lan.rs::mob_meta	the baby flag (baby_index) and AGE_LOCKED after it; a kind outside baby_index (sulfur cube, nautilus, happy ghast) sends neither
 AgeableMob.getAge	inline	crates/horizon-client/src/game/remote_mob_data.rs::apply	m.extra.age on the host; a remote client only learns baby or not (-1 or 0)
 AgeableMob.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	modeled Age, ForcedAge and AgeLocked for baby-capable creatures; zombie nautiluses omit ignored raw age keys
-AgeableMob.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	Age, ForcedAge and AgeLocked
+AgeableMob.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	Age/ForcedAge through NumericTag.intValue; AgeLocked unchanged
+AgeableMob.canBeABaby	port	crates/horizon-client/src/mobs/species.rs::can_be_a_baby	false for the frog, parrot, zombie nautilus, camel husk, slime and magma cube, true for the rest of the ageable tree and for the zombie/piglin/zoglin synced flag
+AgeableMob.isBaby	port	crates/horizon-client/src/mobs/living.rs::Mob::is_baby	canBeABaby && getAge() < 0: a negative Age alone is not a baby, so the box, voice, breeding, growth and loot stay an adult's
 AnimationState.getTimeInMillis	port	crates/horizon-client/src/mobs/keyframes.rs::AnimationState::millis	
 AreaEffectCloud.defineSynchedData	port	crates/horizon-client/src/game/lan_entities.rs::Game::lan_projectile_states	radius, waiting and particle for dragon breath and lingering clouds; read back in remote_projectiles.rs::remote_projectile_data
 AreaEffectCloud.setRadius	inline	crates/horizon-client/src/game/potions.rs::Game::tick_potion_cloud	loaded radius and nonzero per-tick/per-use changes clamp to 0..32

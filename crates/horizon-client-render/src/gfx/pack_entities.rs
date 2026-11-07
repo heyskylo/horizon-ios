@@ -32,13 +32,28 @@ pub fn buffers() -> [Option<wgpu::VertexBufferLayout<'static>>; 1] {
 /// normal. The quad's corners, read from the same vertices at set 1, give the face normal where
 /// the vertex has none (block entities) and `at_tangent` along the texture's u, as for terrain.
 pub fn inputs() -> horizon_shaders::GbuffersInputs {
-    let declarations = "layout(location = 0) in vec3 hz_v_pos;\nlayout(location = 1) in vec2 hz_v_uv;\n\
+    let words = std::mem::size_of::<Vertex>() / 4;
+    let mut declarations = "layout(location = 0) in vec3 hz_v_pos;\nlayout(location = 1) in vec2 hz_v_uv;\n\
          layout(location = 2) in uint hz_v_overlay;\nlayout(location = 3) in vec4 hz_v_color;\n\
          layout(location = 4) in uvec4 hz_v_light;\nlayout(location = 5) in vec4 hz_v_normal;\n\
          layout(set = 1, binding = 0) readonly buffer HzEntityVertices { uint hz_entity_vertices[]; };\n\
          vec4 hz_tangent; vec2 hz_mid;\n"
         .to_owned();
-    let words = std::mem::size_of::<Vertex>() / 4;
+    // `at_velocity`: the vertex's offset from last frame in view space, this frame's view
+    // position less last frame's. Last frame's vertices stay at binding 2, relative to last
+    // frame's camera, and binding 3 gives each vertex its index there (none: no velocity).
+    declarations.push_str(&format!(
+        "layout(set = 1, binding = 2) readonly buffer HzEntityPrevious {{ uint hz_entity_previous[]; }};\n\
+         layout(set = 1, binding = 3) readonly buffer HzEntityPreviousIndex {{ uint hz_previous_index[]; }};\n\
+         uint hz_vi;\n\
+         vec3 hz_velocity(mat4 view, mat4 previous_view) {{\n    \
+             uint p = hz_previous_index[hz_vi];\n    \
+             if (p == 0xffffffffu) return vec3(0.0);\n    \
+             uint w = p * {words}u;\n    \
+             vec3 then = uintBitsToFloat(uvec3(hz_entity_previous[w], hz_entity_previous[w + 1u], hz_entity_previous[w + 2u]));\n    \
+             return (view * vec4(hz_v_pos, 1.0)).xyz - (previous_view * vec4(then, 1.0)).xyz;\n\
+         }}\n"
+    ));
     let corner = |k: usize, field: &str| {
         let at = |o: usize| format!("hz_entity_vertices[hz_q + {}u]", k * words + o);
         match field {
@@ -47,7 +62,8 @@ pub fn inputs() -> horizon_shaders::GbuffersInputs {
         }
     };
     let body = format!(
-        "    uint hz_q = (uint(gl_VertexIndex) & ~3u) * {words}u;\n    \
+        "    hz_vi = uint(gl_VertexIndex);\n    \
+         uint hz_q = (uint(gl_VertexIndex) & ~3u) * {words}u;\n    \
          vec3 hz_e1 = {p1} - {p0};\n    \
          vec3 hz_e2 = {p2} - {p0};\n    \
          vec2 hz_t0 = {t0};\n    \
@@ -87,6 +103,10 @@ pub fn inputs() -> horizon_shaders::GbuffersInputs {
         ("vaUV2", "ivec2(hz_MultiTexCoord1.xy)"),
         ("vaColor", "hz_Color"),
         ("vaNormal", "hz_Normal"),
+        (
+            "at_velocity",
+            "hz_velocity(gbufferModelView, gbufferPreviousModelView)",
+        ),
     ];
     horizon_shaders::GbuffersInputs {
         declarations,
@@ -102,6 +122,7 @@ pub fn inputs() -> horizon_shaders::GbuffersInputs {
             reference: 0.1,
         }),
         item_id_declared: false,
+        far_depth: false,
     }
 }
 
@@ -164,6 +185,7 @@ pub fn cloud_inputs() -> horizon_shaders::GbuffersInputs {
         after: String::new(),
         alpha_test: None,
         item_id_declared: false,
+        far_depth: false,
     }
 }
 
@@ -227,7 +249,15 @@ impl Casters {
 /// The vertices and per-draw uniforms of the runs a pack draws, rebuilt each frame.
 pub(super) struct PackEntities {
     vertices: wgpu::Buffer,
-    /// Set 1: the vertices again, for the quads' corners.
+    /// Last frame's `vertices` (the two swap each frame), for `at_velocity`.
+    previous: wgpu::Buffer,
+    /// For each of `vertices`, its index in `previous` (`NO_PREVIOUS`: none).
+    previous_index: wgpu::Buffer,
+    /// This frame's entities (`Frame::entity_motion`) and last frame's.
+    motion: Motion,
+    previous_motion: Motion,
+    index_scratch: Vec<u32>,
+    /// Set 1: the vertices again, for the quads' corners; last frame's and the indices into them.
     pub table: wgpu::BindGroupLayout,
     pub table_group: wgpu::BindGroup,
     slots: wgpu::Buffer,
@@ -246,23 +276,32 @@ impl PackEntities {
         let stride = SLOT.max(u64::from(
             device.limits().min_uniform_buffer_offset_alignment,
         ));
+        let entry = |binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::VERTEX,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        };
         let table = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Shader pack entity vertices"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: true },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
+            entries: &[entry(0), entry(2), entry(3)],
         });
-        let (vertices, table_group) = Self::vertex_buffer(device, &table, 4096);
+        let vertices = Self::vertex_buffer(device, 4096);
+        let previous = Self::vertex_buffer(device, 4096);
+        let previous_index = Self::index_buffer(device, 4096);
+        let table_group = Self::table_group(device, &table, &vertices, &previous, &previous_index);
         let (slots, group) = Self::slot_buffer(device, layout, 64, stride);
         Self {
             vertices,
+            previous,
+            previous_index,
+            motion: Motion::default(),
+            previous_motion: Motion::default(),
+            index_scratch: Vec::new(),
             table,
             table_group,
             slots,
@@ -276,28 +315,51 @@ impl PackEntities {
         }
     }
 
-    fn vertex_buffer(
-        device: &wgpu::Device,
-        table: &wgpu::BindGroupLayout,
-        vertices: u64,
-    ) -> (wgpu::Buffer, wgpu::BindGroup) {
-        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+    fn vertex_buffer(device: &wgpu::Device, vertices: u64) -> wgpu::Buffer {
+        device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Shader pack entity vertices"),
             size: vertices * std::mem::size_of::<Vertex>() as u64,
             usage: wgpu::BufferUsages::VERTEX
                 | wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
-        });
-        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        })
+    }
+
+    fn index_buffer(device: &wgpu::Device, vertices: u64) -> wgpu::Buffer {
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Shader pack entity previous indices"),
+            size: vertices * 4,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
+    }
+
+    fn table_group(
+        device: &wgpu::Device,
+        table: &wgpu::BindGroupLayout,
+        vertices: &wgpu::Buffer,
+        previous: &wgpu::Buffer,
+        index: &wgpu::Buffer,
+    ) -> wgpu::BindGroup {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Shader pack entity vertices"),
             layout: table,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: buffer.as_entire_binding(),
-            }],
-        });
-        (buffer, group)
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: vertices.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: previous.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: index.as_entire_binding(),
+                },
+            ],
+        })
     }
 
     fn slot_buffer(
@@ -357,11 +419,17 @@ impl PackEntities {
         shadow: Casters,
         rest: &mut Vec<Vertex>,
         skin: Option<&super::entity_skin::SkinFrame>,
+        motion: (&[(u32, u64)], &[u32]),
     ) {
         self.draws.clear();
         self.scratch.clear();
         self.uniforms.clear();
         rest.clear();
+        // Last frame's vertices stay for `at_velocity`; this frame's go to the other buffer.
+        std::mem::swap(&mut self.vertices, &mut self.previous);
+        std::mem::swap(&mut self.motion, &mut self.previous_motion);
+        self.motion.clear();
+        let mut copied = Vec::new();
         let posed = skin.map_or(0, |s| s.vertices);
         if let Some(skin) = skin {
             for (span, range, overlay) in skin_runs(skin) {
@@ -386,8 +454,31 @@ impl PackEntities {
         let first = spans.first().map_or(entities.len(), |s| s.start as usize);
         extend_without_portals(rest, &entities[..first.min(entities.len())]);
         let (mut other, mut portal_faces, mut beam_faces) = (Vec::new(), Vec::new(), Vec::new());
+        let mut without_fluids = Vec::new();
         for (span, range) in runs(entities.len(), spans) {
+            let run_start = range.start as u32;
             let whole = &entities[range];
+            // A native fluid carries sprite-array UVs, not shared-atlas UVs.
+            // Keep it in its own material even when a shader pack draws the
+            // model in the same block-entity run. Do not corrupt either UV space.
+            let whole: &[Vertex] = if whole
+                .chunks(4)
+                .any(|q| super::is_native_terrain(q[0].layer))
+            {
+                without_fluids.clear();
+                for quad in whole.chunks(4) {
+                    if super::is_native_terrain(quad[0].layer) {
+                        if !span.hidden {
+                            rest.extend_from_slice(quad);
+                        }
+                    } else {
+                        without_fluids.extend_from_slice(quad);
+                    }
+                }
+                &without_fluids
+            } else {
+                whole
+            };
             // A block entity's run can hold End portal faces and beams beside plain parts (an End
             // gateway: its cube and its beam): each goes to its own program.
             // Beacon beams come in a run of their own, at stage NONE (game.rs: no stage of 5.4
@@ -442,6 +533,10 @@ impl PackEntities {
                     Part::Beam => beam_segments(run, &mut self.scratch),
                     _ => self.scratch.extend_from_slice(run),
                 }
+                // A run copied whole: its vertices keep their order, for `at_velocity`.
+                if !split {
+                    copied.push((run_start, posed + start, run.len() as u32));
+                }
                 if program == DESTROY {
                     project_cracks(&mut self.scratch[start as usize..], crack.0, crack.1);
                 }
@@ -466,6 +561,14 @@ impl PackEntities {
         if self.draws.is_empty() && posed == 0 {
             return;
         }
+        let total = posed + self.scratch.len() as u32;
+        let posed_marks = if skin.is_some() { motion.1 } else { &[] };
+        self.motion
+            .collect(motion.0, posed_marks, entities.len() as u32, posed, &copied);
+        self.index_scratch.clear();
+        self.index_scratch.resize(total as usize, NO_PREVIOUS);
+        self.motion
+            .link(&self.previous_motion, &mut self.index_scratch);
         let vertex_size = std::mem::size_of::<Vertex>() as u64;
         let (need_vertices, need_slots) = (
             u64::from(posed) + self.scratch.len() as u64,
@@ -474,9 +577,23 @@ impl PackEntities {
         let have_vertices = self.vertices.size() / vertex_size;
         let have_slots = self.slots.size() / self.stride;
         if need_vertices > have_vertices {
-            (self.vertices, self.table_group) =
-                Self::vertex_buffer(device, &self.table, need_vertices.next_power_of_two());
+            self.vertices = Self::vertex_buffer(device, need_vertices.next_power_of_two());
         }
+        if need_vertices * 4 > self.previous_index.size() {
+            self.previous_index = Self::index_buffer(device, need_vertices.next_power_of_two());
+        }
+        queue.write_buffer(
+            &self.previous_index,
+            0,
+            bytemuck::cast_slice(&self.index_scratch),
+        );
+        self.table_group = Self::table_group(
+            device,
+            &self.table,
+            &self.vertices,
+            &self.previous,
+            &self.previous_index,
+        );
         if need_slots > have_slots {
             (self.slots, self.group) =
                 Self::slot_buffer(device, layout, need_slots.next_power_of_two(), self.stride);
@@ -668,6 +785,87 @@ fn drawn_by_pack(span: &EntitySpan, drawn: [bool; PROGRAMS]) -> Option<usize> {
 }
 
 /// The kind of program that draws `span`'s run, when a pack may.
+/// A vertex with no copy last frame: `at_velocity` reads zero.
+const NO_PREVIOUS: u32 = u32::MAX;
+
+/// Where each entity's vertices are in a frame's pack buffer, to match them with last frame's
+/// (`at_velocity`): the indices of each one's GPU-posed vertices, then of its CPU ones.
+#[derive(Default)]
+struct Motion {
+    /// Entity id (`Frame::entity_motion`) → (first index in `indices`, posed count, CPU count).
+    entities: std::collections::HashMap<u64, (u32, u32, u32)>,
+    indices: Vec<u32>,
+}
+
+impl Motion {
+    fn clear(&mut self) {
+        self.entities.clear();
+        self.indices.clear();
+    }
+
+    /// Records each marked entity (`marks`: first CPU vertex and id, each run up to the next;
+    /// `posed_marks`: the posed count at each mark, empty without posing). A CPU vertex is in
+    /// the pack buffer where `copied` (first vertex in `Frame::entities`, first index in the
+    /// buffer, count, in order) has it, else `NO_PREVIOUS`.
+    fn collect(
+        &mut self,
+        marks: &[(u32, u64)],
+        posed_marks: &[u32],
+        cpu_total: u32,
+        posed_total: u32,
+        copied: &[(u32, u32, u32)],
+    ) {
+        let at = |e: u32| {
+            let i = copied.partition_point(|c| c.0 <= e);
+            match i.checked_sub(1).map(|i| copied[i]) {
+                Some((first, index, n)) if e < first + n => index + (e - first),
+                _ => NO_PREVIOUS,
+            }
+        };
+        for (i, &(cpu, id)) in marks.iter().enumerate() {
+            if id == 0 {
+                continue;
+            }
+            let cpu_end = marks.get(i + 1).map_or(cpu_total, |m| m.0).max(cpu);
+            let posed = posed_marks.get(i).copied().unwrap_or(0).min(posed_total);
+            let posed_end = posed_marks
+                .get(i + 1)
+                .copied()
+                .unwrap_or(posed_total)
+                .clamp(posed, posed_total);
+            let first = self.indices.len() as u32;
+            self.indices.extend(posed..posed_end);
+            self.indices.extend((cpu..cpu_end).map(at));
+            self.entities
+                .insert(id, (first, posed_end - posed, cpu_end - cpu));
+        }
+    }
+
+    /// For each entity drawn last frame with the same posed and CPU counts, each vertex's index
+    /// last frame, written into `out` (indexed by this frame's buffer).
+    fn link(&self, previous: &Motion, out: &mut [u32]) {
+        for (id, &(first, posed, cpu)) in &self.entities {
+            let Some(&(then, p, c)) = previous.entities.get(id) else {
+                continue;
+            };
+            if (p, c) != (posed, cpu) {
+                continue;
+            }
+            let n = (posed + cpu) as usize;
+            let now = &self.indices[first as usize..][..n];
+            let before = &previous.indices[then as usize..][..n];
+            for (&now, &before) in now.iter().zip(before) {
+                if now != NO_PREVIOUS
+                    && before != NO_PREVIOUS
+                    && let Some(slot) = out.get_mut(now as usize)
+                {
+                    *slot = before;
+                }
+            }
+        }
+    }
+}
+
 pub fn program_of(span: &EntitySpan) -> Option<usize> {
     Some(if span.stage == render_stage("ENTITIES") {
         if span.translucent {
@@ -966,6 +1164,83 @@ mod gpu_span_tests {
     use super::*;
     use crate::gfx::entity_skin::{SkinFrame, SkinJob};
     #[test]
+    #[ignore = "requires a Vulkan/Metal/DX12 adapter"]
+    fn native_fluid_stays_native_while_model_uses_pack() {
+        let instance = crate::gfx::test_gpu::instance();
+        let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+        let layout = super::super::pack_draw::DrawUniforms::new(&device);
+        let mut geometry = PackEntities::new(&device, &layout.layout);
+        for overlay in [
+            super::super::FLUID_OVERLAY,
+            super::super::TERRAIN_MODEL_SOLID_OVERLAY,
+            super::super::TERRAIN_MODEL_CUTOUT_OVERLAY,
+            super::super::TERRAIN_MODEL_CUTOUT_MIPPED_OVERLAY,
+        ] {
+            let mut mixed = vec![
+                Vertex {
+                    layer: 0,
+                    ..bytemuck::Zeroable::zeroed()
+                };
+                8
+            ];
+            for v in &mut mixed[4..] {
+                v.layer = overlay | 279 << 16;
+                v.uv = [0.25, 0.75];
+                v.glint_uv = [17.0, 0.0];
+            }
+            let mut rest = Vec::new();
+            for hidden in [false, true] {
+                geometry.prepare(
+                    &device,
+                    &queue,
+                    &layout.layout,
+                    &mixed,
+                    &[EntitySpan {
+                        start: 0,
+                        id: 77,
+                        stage: render_stage("BLOCK_ENTITIES"),
+                        hidden,
+                        ..Default::default()
+                    }],
+                    [true; PROGRAMS],
+                    ([0.; 4], [1; 2]),
+                    Casters {
+                        blocks: true,
+                        ..Default::default()
+                    },
+                    &mut rest,
+                    None,
+                    (&[], &[]),
+                );
+                assert_eq!(
+                    geometry.scratch.len(),
+                    4,
+                    "the model still uses the shader pack"
+                );
+                assert_eq!(geometry.draws.len(), 1);
+                assert_eq!(
+                    (geometry.draws[0].pack, geometry.draws[0].shadow),
+                    (!hidden, true)
+                );
+                if hidden {
+                    assert!(
+                        rest.is_empty(),
+                        "hidden native fluid must not leak into the visible pass"
+                    );
+                } else {
+                    assert_eq!(
+                        bytemuck::cast_slice::<_, u8>(&rest),
+                        bytemuck::cast_slice::<_, u8>(&mixed[4..]),
+                        "fluid UV/layer payload cannot be sampled from the entity atlas"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn posed_draws_preserve_subject_ids_overlays_and_hidden_shadow_casters() {
         let mut skin = SkinFrame {
             vertices: 24,
@@ -1077,6 +1352,7 @@ mod gpu_span_tests {
             },
             &mut rest,
             None,
+            (&[], &[]),
         );
         assert_eq!(
             (geometry.draws.iter())
@@ -1158,6 +1434,7 @@ mod gpu_span_tests {
             shadows,
             &mut rest,
             Some(&skin),
+            (&[], &[]),
         );
         assert_eq!(rest.len(), 4, "untagged CPU prefix stays in Horizon's draw");
         assert_eq!(geometry.scratch.len(), 4, "only CPU geometry is uploaded");
@@ -1201,6 +1478,7 @@ mod gpu_span_tests {
             shadows,
             &mut rest,
             None,
+            (&[], &[]),
         );
         assert!(geometry.draws.is_empty());
         assert_eq!(
@@ -1228,8 +1506,125 @@ mod gpu_span_tests {
             Casters::default(),
             &mut rest,
             Some(&skin),
+            (&[], &[]),
         );
         assert!(geometry.draws.is_empty());
         assert!(geometry.skin_target().size() >= 5000 * 44);
+    }
+}
+
+#[cfg(test)]
+mod velocity_tests {
+    use super::{Motion, NO_PREVIOUS};
+
+    /// Two mobs (ids 7 and 9) and a run of unmarked geometry (id 0); `copied` places CPU
+    /// vertices `first..first + n` at buffer index `at`.
+    fn frame(order: [(u64, u32); 2], copied: &[(u32, u32, u32)]) -> Motion {
+        let mut marks = Vec::new();
+        let mut cpu = 0;
+        for (id, n) in order {
+            marks.push((cpu, id));
+            cpu += n;
+        }
+        marks.push((cpu, 0));
+        let mut m = Motion::default();
+        m.collect(&marks, &[], cpu + 2, 0, copied);
+        m
+    }
+
+    /// The same mob's vertices find themselves however the frame's order and the buffer's
+    /// layout moved between frames; geometry of no entity, and vertices not in the buffer,
+    /// find nothing.
+    #[test]
+    fn each_vertex_finds_its_copy_from_last_frame() {
+        // Last frame: mob 7 (4 vertices) then mob 9 (2), copied whole from buffer index 10.
+        let before = frame([(7, 4), (9, 2)], &[(0, 10, 8)]);
+        // This frame: mob 9 first, then mob 7, at buffer index 0; 9's last vertex not drawn.
+        let now = frame([(9, 2), (7, 4)], &[(0, 0, 1), (2, 1, 6)]);
+        let mut out = vec![NO_PREVIOUS; 8];
+        now.link(&before, &mut out);
+        // 9's first vertex (buffer 0) was 10 + 4; 7's four (buffer 1..5) were 10..14.
+        assert_eq!(
+            out,
+            [14, 10, 11, 12, 13, NO_PREVIOUS, NO_PREVIOUS, NO_PREVIOUS]
+        );
+    }
+
+    /// A mob whose vertex count changed (armor put on, an item picked up) gets no velocity
+    /// this frame rather than the wrong vertices'.
+    #[test]
+    fn a_changed_model_gets_none() {
+        let before = frame([(7, 4), (9, 2)], &[(0, 0, 8)]);
+        let now = frame([(7, 6), (9, 2)], &[(0, 0, 10)]);
+        let mut out = vec![NO_PREVIOUS; 10];
+        now.link(&before, &mut out);
+        assert!(out[..6].iter().all(|&i| i == NO_PREVIOUS));
+        assert_eq!(out[6..8], [4, 5]);
+    }
+
+    /// GPU-posed vertices come first in the buffer: each mob's posed part is matched by its
+    /// own posed count, then its CPU part.
+    #[test]
+    fn posed_and_cpu_parts_match_separately() {
+        let marks = [(0, 7), (2, 9), (2, 0)];
+        let mut before = Motion::default();
+        // Mob 7: 3 posed (0..3) and 2 CPU; mob 9: 1 posed (3), no CPU.
+        before.collect(&marks, &[0, 3, 4], 2, 4, &[(0, 4, 2)]);
+        let mut now = Motion::default();
+        // Mob 9 posed first this frame (0), then mob 7 (1..4).
+        now.collect(&[(0, 9), (0, 7), (2, 0)], &[0, 1, 4], 2, 4, &[(0, 4, 2)]);
+        let mut out = vec![NO_PREVIOUS; 6];
+        now.link(&before, &mut out);
+        assert_eq!(out, [3, 0, 1, 2, 4, 5]);
+    }
+}
+
+#[cfg(test)]
+mod velocity_translate_tests {
+    /// A pack that reads `at_velocity` translates with the entity inputs (which read the
+    /// previous view and last frame's vertices) and with the hand's (which read zero).
+    #[test]
+    fn a_pack_reading_at_velocity_translates_for_entities_and_the_hand() {
+        let dir = std::env::temp_dir().join(format!("hz-at-velocity-{}", std::process::id()));
+        let shaders = dir.join("shaders");
+        std::fs::create_dir_all(&shaders).unwrap();
+        std::fs::write(
+            shaders.join("gbuffers_entities.vsh"),
+            "#version 120\nattribute vec3 at_velocity;\nvarying vec3 v;\n\
+             void main() {\n    gl_Position = ftransform();\n    v = at_velocity;\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            shaders.join("gbuffers_entities.fsh"),
+            "#version 120\nvarying vec3 v;\nvoid main() {\n    gl_FragData[0] = vec4(v, 1.0);\n}\n",
+        )
+        .unwrap();
+        let pack = horizon_shaders::Pack::open(&dir).unwrap();
+        let m = horizon_shaders::Macros::standard();
+        let vsh = horizon_shaders::preprocess(&pack, "gbuffers_entities.vsh", &m);
+        let fsh = horizon_shaders::preprocess(&pack, "gbuffers_entities.fsh", &m);
+        for (who, inputs) in [
+            ("entities", super::inputs()),
+            ("hand", super::super::pack_hand::inputs()),
+        ] {
+            let p = horizon_shaders::translate_gbuffers(
+                &vsh,
+                &fsh,
+                horizon_shaders::Target::Buffers,
+                &inputs,
+            )
+            .unwrap_or_else(|e| panic!("{who}: {e:?}"));
+            let previous = p
+                .interface
+                .uniforms
+                .iter()
+                .any(|u| u.name == "gbufferPreviousModelView");
+            assert_eq!(
+                previous,
+                who == "entities",
+                "{who}: previous view in the block"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

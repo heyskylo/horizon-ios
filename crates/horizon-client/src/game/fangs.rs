@@ -2,7 +2,9 @@
 //! biting what stands on them for 6 damage, sinking back after 22 ticks.
 use super::Game;
 use horizon_client::mobs::{Part, Species, anim::Poses};
+use horizon_client::particles::{ParticleOptions, ParticleType};
 use horizon_core::geometry::Vec3;
+use horizon_core::random::{LegacyRandom, RandomSource};
 use std::sync::Arc;
 
 #[derive(Clone, Debug)]
@@ -14,6 +16,24 @@ pub(super) struct Fangs {
     pub life: i32,
     pub owner: u32,
     pub started: bool,
+    /// `Entity.random`. The attack sound's pitch is its first draw.
+    random: LegacyRandom,
+}
+/// `EvokerFangs.handleEntityEvent`: `nextFloat() * 0.2 + 0.85`.
+pub(super) fn fang_attack_pitch(random: &mut impl RandomSource) -> f32 {
+    random.next_float() * 0.2 + 0.85
+}
+/// One of the twelve `crit` particles `EvokerFangs.tick` spawns on a client
+/// when `lifeTicks` hits 14. The box is 0.5 wide (`getBbWidth() * 0.5`).
+pub(super) fn fang_crit(random: &mut impl RandomSource, pos: [f64; 3]) -> ([f64; 3], [f64; 3]) {
+    let half = 0.5 * 0.5;
+    let x = pos[0] + (random.next_double() * 2.0 - 1.0) * half;
+    let y = pos[1] + 0.05 + random.next_double();
+    let z = pos[2] + (random.next_double() * 2.0 - 1.0) * half;
+    let xd = (random.next_double() * 2.0 - 1.0) * 0.3;
+    let yd = 0.3 + random.next_double() * 0.3;
+    let zd = (random.next_double() * 2.0 - 1.0) * 0.3;
+    ([x, y + 1.0, z], [xd, yd, zd])
 }
 #[derive(Default)]
 pub(super) struct FangState {
@@ -38,6 +58,7 @@ impl Game<'_> {
             life: 22,
             owner,
             started: false,
+            random: horizon_client::mobs::entity_random(id, Vec3::new(at[0], at[1], at[2])),
         });
     }
     pub(super) fn fangs_to_nbt(&self, f: &Fangs, uuid: [i32; 4]) -> horizon_world::nbt::Tag {
@@ -59,25 +80,52 @@ impl Game<'_> {
         .unwrap_or(0)
     }
     /// `EvokerFangs.handleEntityEvent`: only event 4 starts a client attack.
+    /// `playLocalSound` at `nextFloat() * 0.2 + 0.85`. The fangs this client
+    /// tracks carry no Silent flag, so the sound always plays.
     pub(super) fn remote_fangs_event(&mut self, id: u32, event: i8) {
-        if event == 4
-            && let Some(f) = self.fangs.list.iter_mut().find(|f| f.id == id)
-        {
-            f.started = true;
+        let sound = self
+            .fangs
+            .list
+            .iter_mut()
+            .find(|f| f.id == id)
+            .and_then(|f| {
+                if event != 4 {
+                    return None;
+                }
+                f.started = true;
+                let pitch = fang_attack_pitch(&mut f.random);
+                Some((f.pos, pitch))
+            });
+        if let Some((pos, pitch)) = sound {
             self.audio.play_unshared(
                 "minecraft:entity.evoker_fangs.attack",
-                Some(f.pos),
+                Some(pos),
                 1.0,
-                1.0,
+                pitch,
             );
         }
     }
 
     /// `EvokerFangs.tick`: clients only advance animation, never damage or discard.
+    /// At life 14, twelve `crit` particles (`ATTACK_TRIGGER_TICKS`).
     pub(super) fn tick_remote_fangs(&mut self) {
+        let mut bursts = Vec::new();
         for f in &mut self.fangs.list {
             if f.started {
                 f.life -= 1;
+                if f.life == 14 {
+                    let mut crits = Vec::with_capacity(12);
+                    for _ in 0..12 {
+                        crits.push(fang_crit(&mut f.random, f.pos));
+                    }
+                    bursts.push(crits);
+                }
+            }
+        }
+        let crit = ParticleOptions::simple(ParticleType::Crit);
+        for crits in bursts {
+            for (at, velocity) in crits {
+                self.particles.add(&crit, at, velocity);
             }
         }
     }
@@ -96,11 +144,12 @@ impl Game<'_> {
             if !f.started {
                 f.started = true;
                 self.lan_entity_event(f.id as i32, 4, f.pos);
+                let pitch = fang_attack_pitch(&mut f.random);
                 self.audio.play_unshared(
                     "minecraft:entity.evoker_fangs.attack",
                     Some(f.pos),
                     1.0,
-                    1.0,
+                    pitch,
                 );
             }
             f.life -= 1;
@@ -138,28 +187,51 @@ impl Game<'_> {
         };
         bite(self);
         self.each_guest_hit(bite);
-        // `AbstractIllager.considersEntityAsAlly`: with no teams, the illager
-        // tag is allied; `Evoker.considersEntityAsAlly` adds a vex whose
-        // owner is allied (itself or another illager). Teams are not modelled.
-        let illager = |s: Species| {
-            matches!(
-                s,
-                Species::Evoker | Species::Illusioner | Species::Pillager | Species::Vindicator
-            )
-        };
+        // `Entity.isAlliedTo`: the owner's or the target's
+        // `considersEntityAsAlly`, teams included.
+        let teams = self.mob_teams();
         let illagers: Vec<u32> = self
             .mobs
             .iter()
-            .filter(|m| illager(m.species()))
+            .filter(|m| is_illager(m.species()))
             .map(|m| m.id)
             .collect();
         // A missing owner hurts everyone (`currentOwner == null`).
         let owner_known = illagers.contains(&f.owner);
+        let team_of = |id: u32| teams.of(horizon_client::mobs::Who::Mob(id));
+        let allies: Vec<u32> = if owner_known {
+            self.mobs
+                .iter()
+                .filter(|m| {
+                    let other = Party {
+                        illager: is_illager(m.species()),
+                        team: team_of(m.id),
+                    };
+                    let root = (m.species() == Species::Vex)
+                        .then_some(m.extra.counter2 as u32)
+                        .filter(|r| illagers.contains(r))
+                        .map(|r| {
+                            (
+                                r == f.owner,
+                                Party {
+                                    illager: true,
+                                    team: team_of(r),
+                                },
+                            )
+                        });
+                    let owner = Party {
+                        illager: true,
+                        team: team_of(f.owner),
+                    };
+                    fangs_allied(owner, other, root)
+                })
+                .map(|m| m.id)
+                .collect()
+        } else {
+            Vec::new()
+        };
         for m in &mut self.mobs {
-            let ally = owner_known
-                && (illager(m.species())
-                    || m.species() == Species::Vex
-                        && illagers.contains(&(m.extra.counter2 as u32)));
+            let ally = allies.contains(&m.id);
             if m.id != f.owner && !ally && m.alive() && m.bounds().intersects(b) {
                 m.damage(
                     6.0,
@@ -167,6 +239,7 @@ impl Game<'_> {
                         kind: horizon_client::mobs::DamageKind::Magic,
                         attacker: owner.map(horizon_client::mobs::Who::Mob),
                         from: Some(f.pos),
+                        attacker_species: None,
                     },
                 );
             }
@@ -243,6 +316,116 @@ impl Game<'_> {
         }
     }
 }
+/// `EntityTypeTags.ILLAGER` members, the types of `ILLAGER_FRIENDS`.
+fn is_illager(s: Species) -> bool {
+    matches!(
+        s,
+        Species::Evoker | Species::Illusioner | Species::Pillager | Species::Vindicator
+    )
+}
+/// One side of an ally check: whether it is an illager and its team.
+#[derive(Clone, Copy)]
+struct Party<'a> {
+    illager: bool,
+    team: Option<&'a horizon_client::scoreboard::Team>,
+}
+/// `AbstractIllager.considersEntityAsAlly(other)`: the base rule (the teams
+/// are allied), or an illager friend while both have no team.
+fn illager_considers(me: Party, other: Party) -> bool {
+    horizon_client::scoreboard::teams_allied(me.team, other.team)
+        || other.illager && me.team.is_none() && other.team.is_none()
+}
+/// `owner.isAlliedTo(other)` for an evoker owner: `Evoker.considersEntityAsAlly`
+/// either way round. `vex_root` is the root owner of a vex target (whether it
+/// is the owner itself, and its party); the owner treats such a vex as an ally
+/// when its root owner is.
+fn fangs_allied(owner: Party, other: Party, vex_root: Option<(bool, Party)>) -> bool {
+    illager_considers(owner, other)
+        || other.illager && illager_considers(other, owner)
+        || !other.illager && horizon_client::scoreboard::teams_allied(other.team, owner.team)
+        || vex_root.is_some_and(|(is_owner, root)| is_owner || illager_considers(owner, root))
+}
 fn p_zrot(p: &mut Poses, part: &str, v: f32) {
     p.zrot(part, v);
+}
+#[cfg(test)]
+mod tests {
+    use super::{Party, fang_attack_pitch, fang_crit, fangs_allied};
+    use horizon_core::random::LegacyRandom;
+
+    #[test]
+    fn fang_attack_pitch_matches_the_vanilla_span() {
+        // Java Random seed 1, first nextFloat() * 0.2 + 0.85, in f32.
+        let mut random = LegacyRandom::new(1);
+        let pitch = fang_attack_pitch(&mut random);
+        assert!((pitch - 0.996_175_65).abs() < 1.0e-6, "{pitch}");
+        assert!((0.85..1.05).contains(&pitch));
+    }
+
+    #[test]
+    fn fang_crit_sits_above_the_jaws() {
+        // Java Random seed 1, the first crit of the twelve. The y is
+        // getY() + 0.05 + nextDouble(), then addParticle adds 1.
+        let mut random = LegacyRandom::new(1);
+        let (at, velocity) = fang_crit(&mut random, [2.0, 70.0, -4.0]);
+        let expected_at = [
+            2.115_439_095_351_645_5,
+            71.460_080_811_492_2,
+            -4.146_142_579_345_142,
+        ];
+        let expected_velocity = [
+            -0.100_369_766_424_293_3,
+            0.590_326_772_827_236_1,
+            -0.296_329_690_640_543_2,
+        ];
+        for i in 0..3 {
+            assert!((at[i] - expected_at[i]).abs() < 1.0e-12, "{at:?}");
+            assert!(
+                (velocity[i] - expected_velocity[i]).abs() < 1.0e-12,
+                "{velocity:?}"
+            );
+        }
+    }
+
+    fn party(illager: bool, team: Option<&horizon_client::scoreboard::Team>) -> Party<'_> {
+        Party { illager, team }
+    }
+
+    #[test]
+    fn fangs_allies_follow_teams_and_the_illager_tag() {
+        let mut board = horizon_client::scoreboard::Scoreboard::default();
+        board.add_team("red");
+        board.add_team("blue");
+        let red = board.team("red").unwrap();
+        let blue = board.team("blue").unwrap();
+        let evoker = |t| party(true, t);
+        // Teamless illagers are friends.
+        assert!(fangs_allied(evoker(None), party(true, None), None));
+        // Different teams: the illager tag no longer applies.
+        assert!(!fangs_allied(
+            evoker(Some(red)),
+            party(true, Some(blue)),
+            None
+        ));
+        // One side with a team: still not allied.
+        assert!(!fangs_allied(evoker(Some(red)), party(true, None), None));
+        // The same team allies a non-illager mob.
+        assert!(fangs_allied(
+            evoker(Some(red)),
+            party(false, Some(red)),
+            None
+        ));
+        assert!(!fangs_allied(evoker(None), party(false, None), None));
+        // A vex follows its root owner.
+        assert!(fangs_allied(
+            evoker(None),
+            party(false, None),
+            Some((true, evoker(None)))
+        ));
+        assert!(!fangs_allied(
+            evoker(Some(red)),
+            party(false, None),
+            Some((false, party(true, Some(blue))))
+        ));
+    }
 }

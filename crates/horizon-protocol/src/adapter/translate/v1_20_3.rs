@@ -635,7 +635,7 @@ mod tests {
         use horizon_world::{datafix::dynamic as d, nbt::Tag};
         let (_, _, old, _) = block_entity_oracles().remove(0);
         for version in [
-            ServerVersion::V1_20_5,
+            ServerVersion::V1_20_6,
             ServerVersion::V1_21_1,
             ServerVersion::Current,
         ] {
@@ -877,7 +877,7 @@ mod tests {
         ] {
             assert_eq!(
                 particle(ServerVersion::V1_20_3, old),
-                particle(ServerVersion::V1_20_5, new)
+                particle(ServerVersion::V1_20_6, new)
             );
         }
         // The old effect providers took RGB from their velocity arguments. Preserve that
@@ -899,7 +899,7 @@ mod tests {
                 }
             );
             assert_eq!(
-                particle(ServerVersion::V1_20_5, new),
+                particle(ServerVersion::V1_20_6, new),
                 Particle {
                     id: 28,
                     data: Some(ParticleData::Color(color))
@@ -926,7 +926,7 @@ mod tests {
         };
         assert_eq!(
             decode(ServerVersion::V1_20_3, &old),
-            decode(ServerVersion::V1_20_5, &new)
+            decode(ServerVersion::V1_20_6, &new)
         );
     }
 
@@ -971,7 +971,7 @@ mod tests {
             for (old, new) in pairs {
                 let mut old = metadata(ServerVersion::V1_20_3, old);
                 entity_data(&session, &mut old);
-                let mut expected = metadata(ServerVersion::V1_20_5, new);
+                let mut expected = metadata(ServerVersion::V1_20_6, new);
                 old.values.sort_by_key(|v| v.0);
                 expected.values.sort_by_key(|v| v.0);
                 assert_eq!(old, expected);

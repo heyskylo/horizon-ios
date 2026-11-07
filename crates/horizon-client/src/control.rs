@@ -114,32 +114,17 @@ pub fn connect(path: &Path) -> io::Result<Stream> {
     Ok(Stream::Tcp(stream))
 }
 
-/// 128 random bits as hex, from the standard library's OS-seeded hasher keys.
+/// 128 random bits from the OS's random generator, as 32 hex digits: the TCP endpoint's token, which
+/// gates full control of the running game.
 fn random_token() -> String {
-    use std::hash::{BuildHasher, Hasher};
-    (0..2)
-        .map(|i| {
-            let mut h = std::collections::hash_map::RandomState::new().build_hasher();
-            h.write_u64(i);
-            h.write_u128(
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |d| d.as_nanos()),
-            );
-            h.write_u32(std::process::id());
-            format!("{:016x}", h.finish())
-        })
-        .collect()
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes).expect("OS random generator");
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Write the endpoint file so that only this user can read it.
-fn write_private(path: &Path, text: &str) -> io::Result<()> {
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    options.open(path)?.write_all(text.as_bytes())
-}
+/// Writes the endpoint file so that only this user can read it, even over an older file
+/// (`horizon_server_files::private_file`).
+use horizon_server_files::private_file::write_private;
 
 /// Constant-time comparison of the presented token.
 fn same_token(a: &str, b: &str) -> bool {
@@ -177,8 +162,28 @@ pub fn default_path() -> PathBuf {
     dir.join("horizon-control.sock")
 }
 
+/// Whether `path` can be an endpoint at all, without touching it: a Unix socket's path has a
+/// length limit (`sockaddr_un`); a TCP endpoint is an ordinary file and has none.
+pub fn check_path(path: &Path) -> io::Result<()> {
+    if uses_tcp(path) {
+        return Ok(());
+    }
+    #[cfg(unix)]
+    std::os::unix::net::SocketAddr::from_pathname(path).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "{} bytes is too long for a Unix socket path; use a shorter one",
+                path.as_os_str().len()
+            ),
+        )
+    })?;
+    Ok(())
+}
+
 impl Server {
     pub fn start(path: &Path) -> io::Result<Self> {
+        check_path(path)?;
         // An endpoint left by a crashed game refuses connections; replace it.
         if path.exists() && connect(path).is_err() {
             std::fs::remove_file(path)?;
@@ -196,8 +201,7 @@ impl Server {
             tcp_port = Some(port);
             write_private(
                 path,
-                &serde_json::json!({ "transport": "tcp", "port": port, "token": token })
-                    .to_string(),
+                serde_json::json!({ "transport": "tcp", "port": port, "token": token }).to_string(),
             )?;
             spawn_listener(
                 move || listener.accept().map(|(s, _)| s),
@@ -342,12 +346,33 @@ impl Drop for Server {
     }
 }
 
+/// The longest request line a connection may send. The game reads and parses a request on its
+/// own thread between two ticks, so one without bound could stall the server (a proxy's
+/// `player-import` carries a whole player, a few hundred kilobytes at most).
+const MAX_LINE: u64 = 16 << 20;
+
 fn serve(stream: Stream, sender: &mpsc::Sender<Request>) {
     let Ok(mut writer) = stream.try_clone() else {
         return;
     };
-    for line in BufReader::new(stream).lines() {
-        let Ok(line) = line else { return };
+    let mut reader = BufReader::new(stream);
+    loop {
+        let mut bytes = Vec::new();
+        match (&mut reader)
+            .take(MAX_LINE + 1)
+            .read_until(b'\n', &mut bytes)
+        {
+            Ok(0) | Err(_) => return,
+            Ok(_) => {}
+        }
+        if bytes.len() as u64 > MAX_LINE {
+            let _ = writeln!(writer, r#"{{"error":"the request is longer than 16 MiB"}}"#);
+            return;
+        }
+        let Ok(line) = String::from_utf8(bytes) else {
+            return;
+        };
+        let line = line.trim_end_matches(['\n', '\r']).to_owned();
         if line.trim().is_empty() {
             continue;
         }
@@ -368,6 +393,37 @@ fn serve(stream: Stream, sender: &mpsc::Sender<Request>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The check agrees with the system at every length around its limit.
+    #[cfg(unix)]
+    #[test]
+    fn check_path_says_what_bind_does() {
+        let dir = std::env::temp_dir().join(format!("hz-sock-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (mut fits, mut too_long) = (false, false);
+        for len in 1..=150 {
+            let path = dir.join("x".repeat(len));
+            let bound = UnixListener::bind(&path).is_ok();
+            assert_eq!(check_path(&path).is_ok(), bound, "{}", path.display());
+            let _ = std::fs::remove_file(&path);
+            fits |= bound;
+            too_long |= !bound;
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(fits && too_long, "the lengths tried must cross the limit");
+    }
+
+    /// A `.json` endpoint is a file and TCP: the socket limit is not its limit.
+    #[test]
+    fn long_tcp_endpoint_opens() {
+        let dir = std::env::temp_dir().join(format!("hz-long-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("{}.json", "x".repeat(150)));
+        let server = Server::start(&path);
+        assert!(server.is_ok(), "{:?}", server.err());
+        drop(server);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn tcp_endpoint_round_trip() {
@@ -391,6 +447,35 @@ mod tests {
         assert_eq!(reply.trim(), r#"{"ok":true}"#);
         drop(server);
         assert!(!path.exists());
+    }
+
+    /// A request past the limit is answered with an error and never reaches the game.
+    #[test]
+    fn a_request_longer_than_the_limit_is_refused() {
+        let path =
+            std::env::temp_dir().join(format!("horizon-ctl-long-{}.json", std::process::id()));
+        let server = Server::start(&path).unwrap();
+        let client = connect(&path).unwrap();
+        let mut writing = client.try_clone().unwrap();
+        // The server stops reading at the limit and closes: the rest may not be taken.
+        let writer = thread::spawn(move || {
+            let chunk = vec![b'x'; 1 << 20];
+            for _ in 0..=(MAX_LINE >> 20) {
+                if writing.write_all(&chunk).is_err() {
+                    return;
+                }
+            }
+            let _ = writing.write_all(b"\n");
+        });
+        let mut reply = String::new();
+        BufReader::new(client).read_line(&mut reply).unwrap();
+        assert!(reply.contains("longer than"), "{reply}");
+        let _ = writer.join();
+        assert!(
+            server.try_recv().is_none(),
+            "the game was handed the request"
+        );
+        drop(server);
     }
 
     #[test]

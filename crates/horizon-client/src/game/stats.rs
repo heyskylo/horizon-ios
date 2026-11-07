@@ -110,15 +110,17 @@ impl Stats {
     }
     /// `ServerStatsCounter.parseLocal`: the counters of a stats file.
     pub(super) fn read(path: &Path) -> Self {
+        let json = std::fs::read_to_string(path)
+            .ok()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+            .unwrap_or_default();
+        Self::from_json(&json)
+    }
+    /// The counters of a stats file's JSON, or of a hand-over's record (`player-import`).
+    pub(super) fn from_json(json: &serde_json::Value) -> Self {
         let mut stats = Self {
             loaded: true,
             ..Self::default()
-        };
-        let Some(json) = std::fs::read_to_string(path)
-            .ok()
-            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
-        else {
-            return stats;
         };
         if let Some(all) = json.get("stats").and_then(|s| s.as_object()) {
             for (ty, entries) in all {
@@ -135,8 +137,9 @@ impl Stats {
         }
         stats
     }
-    /// `ServerStatsCounter.save`.
-    pub(super) fn write(&self, path: &Path) {
+    /// `ServerStatsCounter.toJson`: what `write` puts in the file, and what a
+    /// hand-over's record carries (`player-export`).
+    pub(super) fn to_json(&self) -> serde_json::Value {
         let stats: serde_json::Map<String, serde_json::Value> = self
             .values
             .iter()
@@ -147,10 +150,14 @@ impl Stats {
                 (ty.clone(), serde_json::Value::Object(entries))
             })
             .collect();
-        let json = serde_json::json!({
+        serde_json::json!({
             "stats": stats,
             "DataVersion": horizon_world::DATA_VERSION,
-        });
+        })
+    }
+    /// `ServerStatsCounter.save`.
+    pub(super) fn write(&self, path: &Path) {
+        let json = self.to_json();
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }

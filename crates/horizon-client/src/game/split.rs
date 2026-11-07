@@ -363,7 +363,7 @@ impl<'a> Split<'a> {
         old.release_surface();
         let api = self.host.settings.horizon.api;
         let batching = self.host.settings.horizon.translucent_batching;
-        let shader_pack = super::shader_packs::picked_pack_draws_flat(&self.host.settings);
+        let shader_pack = super::shader_packs::picked_pack_shape(&self.host.settings);
         let built = build_renderer(
             window.clone(),
             true,
@@ -399,6 +399,7 @@ impl<'a> Split<'a> {
             }
         };
         self.host.renderer = Some(renderer);
+        self.host.forget_atlas_slots();
         self.host.split_window = !self.host.options.offscreen;
         self.host.options.offscreen = true;
         self.host.options.paced_by_split = true;
@@ -445,7 +446,7 @@ impl<'a> Split<'a> {
         old.take_back(main.compositor);
         let api = self.host.settings.horizon.api;
         let batching = self.host.settings.horizon.translucent_batching;
-        let shader_pack = super::shader_packs::picked_pack_draws_flat(&self.host.settings);
+        let shader_pack = super::shader_packs::picked_pack_shape(&self.host.settings);
         let built = build_renderer(
             window.clone(),
             false,
@@ -474,6 +475,7 @@ impl<'a> Split<'a> {
         };
         drop(old);
         self.host.renderer = Some(renderer);
+        self.host.forget_atlas_slots();
         self.host.options.offscreen = false;
         self.host.split_window = false;
         self.host.options.paced_by_split = false;
@@ -545,11 +547,16 @@ impl<'a> Split<'a> {
     /// When the windows had presented (before the GPU wait), for the frame-time readout.
     fn present(&mut self) -> Instant {
         let views = self.views();
+        let vsync = self.host.settings.vsync;
+        let paced = windows::paced_surface(self.window1_shown, self.surfaces.len());
+        // A present mode switch reconfigures a surface, and an Outdated or Lost texture
+        // may: a reconfigure waits for the GPU to come idle and reports an error when a
+        // frame is submitted while it waits. Land this turn's frames on the submit
+        // threads first (the compositor then copies views already submitted, too).
+        self.wait_queues();
         let renderers: Vec<_> = std::iter::once(&self.host.renderer)
             .chain(self.guests.iter().map(|g| &g.game.renderer))
             .collect();
-        let vsync = self.host.settings.vsync;
-        let paced = windows::paced_surface(self.window1_shown, self.surfaces.len());
         for (k, surface) in self.surfaces.iter_mut().enumerate() {
             let frames: Vec<_> = renderers
                 .iter()
@@ -569,6 +576,16 @@ impl<'a> Split<'a> {
             renderer.wait_in_flight();
         }
         presented
+    }
+    /// Every player's frame submitted by its submit thread, no device wait: before
+    /// anything reconfigures a surface, whose wait for the GPU breaks on a submission
+    /// made while it waits.
+    fn wait_queues(&mut self) {
+        let renderers = std::iter::once(&mut self.host.renderer)
+            .chain(self.guests.iter_mut().map(|g| &mut g.game.renderer));
+        for renderer in renderers.flatten() {
+            renderer.wait_submissions();
+        }
     }
 }
 
@@ -806,6 +823,11 @@ impl ApplicationHandler for Split<'_> {
                 }
             }
         }
+        self.pads
+            .play_rumbles(&mut self.host.pad, self.p1_pad.owner);
+        for g in &mut self.guests {
+            self.pads.play_rumbles(&mut g.game.pad, g.pad);
+        }
         self.turn(0);
         let rendered = Instant::now();
         let presented = self.present();
@@ -856,11 +878,16 @@ impl Game<'_> {
         for key in std::mem::take(&mut self.physical_keys) {
             self.native_key_event(key, false, false);
         }
-        // Only what the keyboard held: this player's pad keeps its presses.
-        for key in self
+        // Only what the keyboard held, and a script acting as it: this player's pad keeps its
+        // presses.
+        let mut released = self
             .keys
-            .release_source(horizon_client::held::Source::Keyboard)
-        {
+            .release_source(horizon_client::held::Source::Keyboard);
+        released.extend(
+            self.keys
+                .release_source(horizon_client::held::Source::Agent),
+        );
+        for key in released {
             if let Err(e) = self.mapped_key(
                 key,
                 false,
@@ -876,8 +903,11 @@ impl Game<'_> {
         }
         self.drag_button = None;
         self.modifiers = Default::default();
-        self.left = false;
-        self.right = false;
+        // A press this player's pad holds goes on, as for its keys.
+        self.left = self
+            .pad
+            .holds_action(&self.settings.controller, "key.attack");
+        self.right = self.pad.holds_action(&self.settings.controller, "key.use");
         self.inventory_mouse_release(false);
         self.inventory_mouse_release(true);
         self.inventory_pick_release();

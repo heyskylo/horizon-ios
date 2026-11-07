@@ -268,6 +268,7 @@ const PAGES: Ty = Ty::Enum(&[
     "extras",
     "horizon",
     "agent",
+    "video-vanilla",
 ]);
 
 /// `--confirm`, required by destructive commands: the player agreed.
@@ -436,6 +437,10 @@ pub const COMMANDS: &[Cmd] = &[
     cmd!("look-at-entity", Move, "look-at-entity ID [--over S]", "face an entity (same as look-at entity)", "",
         ["horizon-ctl look-at-entity 42"], &[p("id", Ty::Int, "entity id from entities"), OVER], mcp: true, local: false, wire: "look-at entity"),
     cmd!("tp", Move, "tp X Y Z", "teleport the player", "", ["horizon-ctl tp 0 80 0"], &XYZ, mcp: true, local: false),
+    cmd!("emote", Act, "emote [ID|stop]", "play one of the player's emotes, stop it, or list them",
+        "Without an argument: the emotes the player owns (the wheel's) and the one playing. With an ID it plays that emote as the emote wheel does (the player must stand still: moving, attacking or using an item cancels it); stop fades it out. Visual only: nothing is sent to the game server (docs/cosmetics.md).",
+        ["horizon-ctl emote", "horizon-ctl emote wave_hello", "horizon-ctl emote stop"],
+        &[opt("id", Ty::Str, "an owned emote's id, or stop")], mcp: true, local: false),
     // Act
     cmd!("break", Act, "break X Y Z [--timeout S]", "mine a block, holding the attack button until it breaks",
         "Aims at a visible face (the block must be within reach: use goto --near 2 first), mines with the held item, then waits up to a second for the drops. Replies with block_before, block, ticks, drops and picked_up (inventory change).",
@@ -465,10 +470,10 @@ pub const COMMANDS: &[Cmd] = &[
     cmd!("interact-entity", Act, "interact-entity ID", "right-click an entity: trade with a villager, mount a horse, ride a boat, shear a sheep",
         "Faces the entity (from entities), right-clicks it with the held item, waits two ticks and replies with the screen.",
         ["horizon-ctl interact-entity 42"], &[p("id", Ty::Int, "entity id from entities")], mcp: true, local: true),
-    cmd!("pad", Act, "pad BUTTON down|up|tap | pad stick left|right X Y | pad trigger left|right V | pad release | pad status", "a virtual controller: buttons, sticks and triggers as a real pad would send them",
+    cmd!("pad", Act, "pad BUTTON down|up|tap | pad stick left|right X Y | pad trigger left|right V | pad release | pad status | pad connection connected|disconnected", "a virtual controller: buttons, sticks and triggers as a real pad would send them",
         "Buttons by position: south east west north lb rb lt rt select start ls rs up down left right (south is Xbox A / PlayStation cross). Sticks run -1..1 with up positive and stay tilted until centred; triggers 0..1. Merged with any real controller; status lists the connected ones and what is held.",
         ["horizon-ctl pad south tap", "horizon-ctl pad stick left 0 1", "horizon-ctl pad trigger right 1", "horizon-ctl pad status"],
-        &[p("what", Ty::Str, "a button name, stick, trigger, release or status"), opt("a", Ty::Str, "down|up|tap, or left|right"), opt("b", Ty::Num, "stick X or trigger value"), opt("c", Ty::Num, "stick Y")], mcp: true, local: false),
+        &[p("what", Ty::Str, "a button name, stick, trigger, release, status or connection"), opt("a", Ty::Str, "down|up|tap, left|right, or connected|disconnected"), opt("b", Ty::Num, "stick X or trigger value"), opt("c", Ty::Num, "stick Y")], mcp: true, local: false),
     cmd!("release", Act, "release", "release every key and mouse button", "", ["horizon-ctl release"], &[], mcp: true, local: false),
     cmd!("stop", Act, "stop", "cancel the running action (goto, break...) and release every key", "", ["horizon-ctl stop"], &[], mcp: true, local: false),
     // Screens
@@ -579,6 +584,13 @@ pub const COMMANDS: &[Cmd] = &[
     cmd!("bench", Scripting, "bench SECONDS", "reset frame stats, wait, reply with the summary", "", ["horizon-ctl bench 10"], &[p("seconds", Ty::Num, "how long to measure")], mcp: true, local: false),
     cmd!("stats", Scripting, "stats [reset] [raw]", "frame-time summary since the last reset", "", ["horizon-ctl stats"], &[opt("reset", Ty::Bool, "start counting again"), opt("raw", Ty::Bool, "every frame time too (frame_ms, cpu_ms, gpu_ms)")], mcp: true, local: false),
     cmd!("gpu-passes", Scripting, "gpu-passes [on|off]", "time Horizon's own render passes on the GPU, shown in F3 and in stats and bench", "", ["horizon-ctl gpu-passes on"], &[opt("mode", Ty::Enum(&["on", "off"]), "on or off; without it, only reports")], mcp: false, local: false),
+    cmd!("trace", Scripting, "trace [FILE [SECONDS] | stop]", "write every thread's timed spans to FILE as a timeline that ui.perfetto.dev opens, for SECONDS or until stop",
+        "Each span (ticks by system, streaming, uploads, far terrain, lighting, the renderer) shows on the thread that ran it, nested by time. Without arguments, only reports whether a trace is being written. HORIZON_TRACE=FILE writes one from the start; horizon-trace on a dedicated server's console writes one to reports/. See docs/graphics.md.",
+        ["horizon-ctl trace /tmp/frame.json 10", "horizon-ctl trace stop"], &[], mcp: false, local: false),
+    cmd!("screenshot-sequence", Scripting, "screenshot-sequence FRAMES STEP_MS PATH|cancel", "draw a shader pack's first FRAMES frames on a set clock and write the last as a PNG",
+        "Needs HORIZON_STILL and a frozen world (docs/agent-control.md). The pack starts over, frame n's clock is n frames and (n - 1) × STEP_MS milliseconds, the PNG is written as screenshot PATH writes it, and the reply comes once it is. Relative paths are taken from horizon-ctl's directory. cancel stops a running sequence.",
+        ["horizon-ctl screenshot-sequence 64 50 frame64.png", "horizon-ctl screenshot-sequence 64 16.666667 frame64.png", "horizon-ctl screenshot-sequence cancel"],
+        &[p("frames", Ty::Str, "frames to draw, 1 to 10000, or cancel"), opt("step_ms", Ty::Num, "milliseconds between frames on the pack's clock, more than 0 (16.666667 for 60 fps)"), opt("path", Ty::Rest, "the PNG to write")], mcp: false, local: false),
     cmd!("render-capture", Scripting, "render-capture on|off|DIR", "keep CPU copies of the meshes the renderer draws (on), or write the next frame's scene to DIR for the scene_replay example",
         "on meshes every section and far tile again so the copies are complete (HORIZON_RENDER_CAPTURE=1 keeps them from the start). DIR gets the camera, frame inputs, settings and every resident near section and far tile mesh; entities, particles, weather, the hand and the HUD are left out. See docs/graphics.md.",
         ["horizon-ctl render-capture on", "horizon-ctl render-capture /tmp/scene"], &[], mcp: false, local: false),

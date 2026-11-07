@@ -194,11 +194,33 @@ impl Game<'_> {
         let duration = swing_duration(animation, dig_speed, fatigue);
         if self.swing.start_if_able(hand, animation, duration) {
             self.swings_started += 1;
+            if let Some(r) = self.remote.as_ref()
+                && r.session.is_recording()
+            {
+                let pkt = horizon_protocol::packets::play::Clientbound::SwingAnimation(
+                    horizon_protocol::packets::play::SwingAnimation {
+                        id: r.entity_id,
+                        hand: if hand == Hand::Off { 1 } else { 0 },
+                        kind: animation.kind as i32,
+                        duration,
+                    },
+                );
+                r.session.record_clientbound(&pkt);
+            }
         }
     }
     /// `swing(hand)` for the hand that acts, with the default animation.
     pub(super) fn swing_arm(&mut self) {
         self.swing_hand(self.hand, SwingAnimation::DEFAULT);
+    }
+    /// `swing_arm` for a use whose result is `SwingSource.PREDICTED`: the
+    /// player's client swings by itself, so a server keeps it to the others.
+    pub(super) fn swing_arm_predicted(&mut self) {
+        let before = self.swings_started;
+        self.swing_arm();
+        if self.swings_started != before {
+            self.predicted_swings += 1;
+        }
     }
     /// `Player.resetAttackStrengthTicker`.
     pub(super) fn reset_attack_strength(&mut self) {
@@ -263,7 +285,10 @@ impl Game<'_> {
     /// block within the block reach (`getHitEntitiesAlong`'s block result,
     /// kept by `filterHitResult`); `None` on a miss, where the plain pick
     /// decides.
-    fn attack_range_pick(&self, range: &serde_json::Value) -> Option<Option<(usize, f64)>> {
+    fn attack_range_pick(
+        &self,
+        range: &serde_json::Value,
+    ) -> Option<Option<(usize, f64, [f64; 3])>> {
         let eye = v3(self.eye_position()?);
         let look = v3(super::view_vector(self.yaw, self.pitch));
         let reach = attack_reach(range, self.creative);
@@ -283,7 +308,14 @@ impl Game<'_> {
         let movement = self.known_player_movement();
         let nearest = super::spear::hits_in_reach(&boxes, eye, look, movement, reach, clip)
             .into_iter()
-            .map(|(i, at)| (i, eye.distance_squared(at).sqrt()))
+            .map(|(i, at)| {
+                let feet = self.mobs[i].position;
+                (
+                    i,
+                    eye.distance_squared(at).sqrt(),
+                    super::interact_location(at, feet),
+                )
+            })
             .reduce(|a, b| if b.1 < a.1 { b } else { a });
         if nearest.is_some() {
             return Some(nearest);
@@ -373,7 +405,9 @@ impl Game<'_> {
         }
         Ok(())
     }
-    /// `BlockBehaviour.getDestroyProgress` with `Player.getDestroySpeed`.
+    /// `BlockBehaviour.getDestroyProgress` with `Player.getDestroySpeed`, whose
+    /// end asks the mods' `native_break_speed`. Every dig's progress comes from
+    /// here: single player's, a host's for each guest, a remote client's own.
     pub(super) fn destroy_progress(&mut self, pos: [i32; 3]) -> f32 {
         let block_break_speed = self.block_break_speed();
         let state = self.world.block(pos[0], pos[1], pos[2]);
@@ -404,6 +438,8 @@ impl Game<'_> {
         if self.player.as_ref().is_some_and(|p| !p.ground.on_ground) {
             speed /= 5.0;
         }
+        // NeoForge's PlayerEvent.BreakSpeed, where Player.getDestroySpeed ends.
+        self.native_break_speed(pos, state, speed, &mut speed);
         speed / hardness / if harvest { 30.0 } else { 100.0 }
     }
     /// A key for the main-hand stack (`destroyingItem`): its item and components.
@@ -429,7 +465,7 @@ impl Game<'_> {
     /// `LocalPlayer.isHandsBusy`: paddling a boat.
     pub(super) fn hands_busy(&self) -> bool {
         self.riding
-            .is_some_and(|id| self.boats.iter().any(|b| b.id == id))
+            .is_some_and(|id| self.controls_boat(id) && self.boats.iter().any(|b| b.id == id))
             && [
                 winit::keyboard::KeyCode::KeyW,
                 winit::keyboard::KeyCode::KeyS,
@@ -437,7 +473,7 @@ impl Game<'_> {
                 winit::keyboard::KeyCode::KeyD,
             ]
             .iter()
-            .any(|k| self.keys.contains(k))
+            .any(|k| self.movement_key_held(*k))
     }
     /// `MultiPlayerGameMode.startUseItem`'s bookkeeping around the game's
     /// use: nothing starts while a block is being broken or the hands are
@@ -500,10 +536,11 @@ impl Game<'_> {
             changed[h] = !same;
         }
         let speed = self.main_hand_attack_speed();
-        let replace = self.heights.tick(
+        let replace = self.heights.tick_with(
             self.hands_busy(),
             self.hand_strength.swap_scale(1.0, speed),
             changed,
+            self.settings.extras.pvp.combat.legacy,
         );
         for h in 0..2 {
             if replace[h] {
@@ -512,6 +549,24 @@ impl Game<'_> {
             }
         }
     }
+
+    /// A replay owns its held-item and equip animation state. Reset it when a
+    /// standalone replay closes so a later world cannot inherit lowered hands
+    /// or the replay player's visible stacks.
+    pub(super) fn reset_studio_hand_state(&mut self) {
+        let main = self.inventory.get(self.selected).cloned().flatten();
+        self.visible_hands = [(self.selected, main), (OFFHAND, self.offhand.clone())];
+        self.hands_replaced = [false; 2];
+        self.heights = horizon_client::first_person::HandHeights {
+            main: 1.0,
+            old_main: 1.0,
+            off: 1.0,
+            old_off: 1.0,
+        };
+        self.swing = Default::default();
+        self.sway = Default::default();
+    }
+
     /// `Minecraft.crosshairPickEntity` when it is a `LivingEntity`: whether
     /// it is alive (the nearest entity under the crosshair, before any block).
     pub(super) fn crosshair_living(&self) -> Option<bool> {
@@ -597,9 +652,34 @@ impl Game<'_> {
         {
             return menu;
         }
-        let Some(hit) = self.pick() else {
+        self.pick()
+            .is_some_and(|hit| self.block_interactable_for_spectator(&hit))
+    }
+    /// `BlockBehaviour.showAsInteractableInSpectatorMode`: a block with a menu, or a portal.
+    fn block_interactable_for_spectator(&self, hit: &super::Hit) -> bool {
+        let block = self.world.block(hit.pos[0], hit.pos[1], hit.pos[2]);
+        matches!(
+            &*self.res.facts().get(block).name,
+            "minecraft:nether_portal" | "minecraft:end_portal" | "minecraft:end_gateway"
+        ) || self.block_opens_menu(hit)
+    }
+    /// A lectern with no book (`LecternBlock.useWithoutItem` consumes the click and does nothing).
+    pub(super) fn block_is_empty_lectern(&self, hit: &super::Hit) -> bool {
+        let state = self.world.block(hit.pos[0], hit.pos[1], hit.pos[2]);
+        &*self.res.facts().get(state).name == "minecraft:lectern"
+            && self
+                .pack
+                .assets
+                .registry
+                .state(state)
+                .and_then(|s| s.properties.get("has_book"))
+                .is_none_or(|v| v != "true")
+    }
+    /// `BlockState.getMenuProvider`: the block's use opens a screen.
+    pub(super) fn block_opens_menu(&self, hit: &super::Hit) -> bool {
+        if self.block_is_empty_lectern(hit) {
             return false;
-        };
+        }
         let id = &*self
             .res
             .facts()
@@ -607,12 +687,11 @@ impl Game<'_> {
             .name;
         let name = id.trim_start_matches("minecraft:");
         match name {
-            // BlockBehaviour.getMenuProvider and `instanceof Portal`.
+            // BlockBehaviour.getMenuProvider.
             "crafting_table" | "enchanting_table" | "anvil" | "chipped_anvil" | "damaged_anvil"
             | "stonecutter" | "loom" | "cartography_table" | "grindstone" | "smithing_table"
             | "barrel" | "furnace" | "blast_furnace" | "smoker" | "brewing_stand" | "hopper"
-            | "dispenser" | "dropper" | "crafter" | "lectern" | "beacon" | "nether_portal"
-            | "end_portal" | "end_gateway" => true,
+            | "dispenser" | "dropper" | "crafter" | "lectern" | "beacon" => true,
             // ChestBlock.getMenuProvider: none while a redstone conductor
             // sits on top of either half (a sitting cat aside). Copper
             // chests are `ChestBlock`s too.

@@ -100,6 +100,100 @@ impl Drop for Fixture {
     }
 }
 
+mod multiplayer_parent_navigation {
+    use super::*;
+    use crate::multiplayer::{Outcome, Screen};
+
+    #[test]
+    fn friend_cancel_returns_to_title() {
+        let mut f = Fixture::new();
+        f.click("Friends");
+        assert!(matches!(
+            f.title.mode,
+            Mode::Multiplayer(Screen::Friend { .. })
+        ));
+        assert_eq!(f.click("Cancel"), Action::None);
+        assert!(matches!(f.title.mode, Mode::Main));
+    }
+
+    #[test]
+    fn friend_escape_returns_to_title() {
+        let mut f = Fixture::new();
+        f.click("Friends");
+        assert!(matches!(
+            f.title.mode,
+            Mode::Multiplayer(Screen::Friend { .. })
+        ));
+        f.title.escape();
+        assert!(matches!(f.title.mode, Mode::Main));
+    }
+
+    #[test]
+    fn friend_from_server_list_cancel_and_escape_return_to_list() {
+        for escape in [false, true] {
+            let mut f = Fixture::new();
+            f.click("Multiplayer");
+            f.click("Proceed");
+            // The legacy entry has a click handler but no visible button.
+            assert!(matches!(
+                f.title
+                    .multiplayer_click(Some(47), 0.0, 0.0, (480.0, 262.0)),
+                Outcome::None
+            ));
+            assert!(matches!(
+                f.title.mode,
+                Mode::Multiplayer(Screen::Friend { .. })
+            ));
+            if escape {
+                f.title.escape();
+            } else {
+                assert_eq!(f.click("Cancel"), Action::None);
+            }
+            assert!(matches!(
+                f.title.mode,
+                Mode::Multiplayer(Screen::List { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn direct_and_add_edit_cancel_and_escape_return_to_list() {
+        for screen in [
+            Screen::Direct {
+                address: String::new(),
+            },
+            Screen::Edit {
+                index: None,
+                name: String::new(),
+                address: String::new(),
+                focus: 0,
+                packs: None,
+            },
+            Screen::Edit {
+                index: Some(0),
+                name: String::new(),
+                address: String::new(),
+                focus: 0,
+                packs: None,
+            },
+        ] {
+            for escape in [false, true] {
+                let mut f = Fixture::new();
+                f.title.mode = Mode::Multiplayer(screen.clone());
+                if escape {
+                    f.title.escape();
+                } else {
+                    assert_eq!(f.click("Cancel"), Action::None);
+                }
+                assert!(matches!(
+                    f.title.mode,
+                    Mode::Multiplayer(Screen::List { .. })
+                ));
+            }
+        }
+    }
+}
+
 #[test]
 fn direct_connection_remembers_the_address_on_cancel_escape_and_join() {
     let mut f = Fixture::new();
@@ -620,6 +714,62 @@ fn recreate_uses_existing_name_seed_and_mode_and_scroll_reaches_later_rows() {
 }
 
 #[test]
+fn only_the_vertical_wheel_cycles_a_create_world_button() {
+    let mut f = Fixture::new();
+    f.enter_create_world_for_packs();
+    let size = (480.0, 262.0);
+    let labels = |f: &Fixture| {
+        let Mode::Create {
+            creative, options, ..
+        } = &f.title.mode
+        else {
+            panic!("not on Create World");
+        };
+        create_world::buttons(size.0, size.1, *creative, options)
+    };
+    let button = labels(&f)
+        .into_iter()
+        .find(|b| b.enabled)
+        .expect("an enabled button");
+    // What the buttons cycle: their labels read the same without a language loaded.
+    let state = |f: &Fixture| {
+        let Mode::Create {
+            creative, options, ..
+        } = &f.title.mode
+        else {
+            panic!("not on Create World");
+        };
+        (*creative, options.clone())
+    };
+    let at = (button.x + 1.0, button.y + 1.0);
+    let before = state(&f);
+    // A horizontal notch arrives with no vertical part.
+    f.title.scroll_worlds(0.0, at, size);
+    assert_eq!(state(&f), before);
+    f.title.scroll_worlds(-1.0, at, size);
+    assert_ne!(state(&f), before);
+}
+
+#[test]
+fn stick_scroll_moves_the_world_list_with_the_pointer_outside_it() {
+    let mut f = Fixture::new();
+    for i in 0..10 {
+        f.world(&format!("World{i}"), &format!("World {i}"));
+    }
+    f.select();
+    let (outside, size) = ((10.0, 2.0), (480.0, 262.0));
+    f.title.scroll_worlds(-1.0, outside, size);
+    assert_eq!(f.title.scroll.get().amount, 0.0);
+    f.title.step_scroll(-1.0, outside, size);
+    assert_eq!(f.title.scroll.get().amount, 0.0);
+    // The stick goes by the list the last frame drew.
+    crate::widgets::scroll_area([0.0, 32.0, 400.0, 166.0], 0.0, 100.0);
+    crate::widgets::end_frame(u64::MAX);
+    f.title.stick_scroll(-1.0, outside, size);
+    assert_eq!(f.title.scroll.get().amount, 18.0);
+}
+
+#[test]
 fn classic_navigation_buttons_sound_even_without_a_game_action() {
     let mut f = Fixture::new();
     f.world("World", "World");
@@ -627,9 +777,11 @@ fn classic_navigation_buttons_sound_even_without_a_game_action() {
         f.title.click(0.0, 0.0, (480.0, 262.0)),
         (Action::None, false)
     );
+    assert_eq!(f.click_with_sound("Minecraft Realms"), (Action::None, true));
+    // The Realms screen's Back, as the loaded language names it.
     assert_eq!(
-        f.click_with_sound("Minecraft Realms"),
-        (Action::None, false)
+        f.click_with_sound(&crate::lang::get("gui.back")),
+        (Action::None, true)
     );
     assert_eq!(f.click_with_sound("Singleplayer"), (Action::None, true));
     assert_eq!(
@@ -1924,6 +2076,13 @@ fn optimizing_without_a_backup_upgrades_chunks_and_returns_to_the_list() {
     ));
     f.click("I Know What I'm Doing!");
     assert!(matches!(f.title.mode, Mode::Optimize { .. }));
+    // Nothing but a press stops it: no pad button either.
+    assert!(
+        f.title
+            .buttons(427.0, 240.0)
+            .iter()
+            .all(|b| b.action.is_none())
+    );
     // OptimizeWorldScreen ignores Escape.
     f.title.escape();
     wait_while_optimizing(&mut f);
@@ -2027,6 +2186,7 @@ fn a_button_label_wider_than_its_button_stays_inside_it() {
         id: 40,
         icon: None,
         trailing: None,
+        action: None,
     };
     assert!(HudBatch::text_width(&atlas, &b.label) > b.w - 4.0);
     let mut batch = HudBatch::new([640, 480]);
@@ -2237,6 +2397,7 @@ mod text_and_icon {
             id: 0,
             icon: None,
             trailing: icon,
+            action: None,
         }
     }
     /// The x of every vertex of the label's text.
@@ -2419,6 +2580,7 @@ fn the_multiplayer_screens_have_their_own_ids() {
     );
     assert_eq!(
         M::Friend {
+            from_title: false,
             code: String::new(),
             relay: String::new(),
             focus: 0,
@@ -2430,8 +2592,35 @@ fn the_multiplayer_screens_have_their_own_ids() {
         M::Disconnected {
             reason: String::new(),
             retry: None,
+            lines: std::cell::Cell::new(1),
         }
         .id(),
         "disconnected"
+    );
+}
+
+#[test]
+fn native_field_visitor_excludes_preparing_and_game_rule_editors() {
+    let mut f = Fixture::new();
+    f.title.mode = Mode::Multiplayer(crate::multiplayer::Screen::Direct {
+        address: "safe".into(),
+    });
+    f.title.preparing = true;
+    assert!(
+        !f.title
+            .edit_focused_text_field(|_| panic!("preparing has no editable native field"))
+    );
+    f.title.preparing = false;
+    *f.title.rules.get_mut() = Some(RulesScreen::for_creation(
+        &crate::gamerules::GameRules::default(),
+    ));
+    assert!(
+        !f.title
+            .edit_focused_text_field(|_| panic!("rule editors retain their own validation"))
+    );
+    *f.title.rules.get_mut() = None;
+    assert!(
+        f.title
+            .edit_focused_text_field(|field| assert_eq!(field.value, "safe"))
     );
 }

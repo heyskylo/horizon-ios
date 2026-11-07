@@ -4,10 +4,9 @@
 /// The game window's boot screen, before wgpu's first frame paints over it.
 #[cfg(target_os = "windows")]
 pub mod boot_paint;
-pub mod capped;
 pub mod heap_census;
 pub mod jobs;
-pub mod memory_limit;
+pub mod process_memory;
 
 use std::sync::{
     OnceLock,
@@ -28,6 +27,48 @@ pub fn worker_count() -> usize {
         parse_worker_count(std::env::var("HORIZON_WORKER_THREADS").ok())
             .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()))
     })
+}
+
+/// The chunk worker pool's automatic size (`jobs::default_threads`, Graphics > Worker
+/// threads on Auto): every core but one, as vanilla's `Util.maxAllowedExecutorThreads`,
+/// counting on Apple silicon only its performance cores. Its efficiency cores are slower,
+/// and workers there kept the render and server threads waiting for a performance core: on
+/// a base M4 (4 performance and 6 efficiency cores) a fast flight's p99 frame went from
+/// 20 ms with 9 workers to 7 ms with 3 (#11294).
+pub fn default_workers() -> usize {
+    workers_for(worker_count(), performance_cores)
+}
+
+/// [`default_workers`] for `cores` cores, of which `performance` (asked only here, the
+/// sysctl) are performance cores where the machine tells them apart (`None` elsewhere):
+/// one less than the smaller count, at least 1.
+fn workers_for(cores: usize, performance: impl FnOnce() -> Option<usize>) -> usize {
+    let fast = performance().filter(|&n| n > 0).unwrap_or(cores);
+    cores.min(fast).saturating_sub(1).max(1)
+}
+
+/// The machine's performance cores (`hw.perflevel0.physicalcpu`), where it has more than one
+/// kind of core: Apple silicon. `None` where the OS doesn't say (an Intel Mac).
+#[cfg(target_vendor = "apple")]
+fn performance_cores() -> Option<usize> {
+    let mut count: libc::c_int = 0;
+    let mut size = std::mem::size_of::<libc::c_int>();
+    // SAFETY: a NUL-terminated name; `count` and `size` are live locals of the size passed.
+    let read = unsafe {
+        libc::sysctlbyname(
+            c"hw.perflevel0.physicalcpu".as_ptr(),
+            (&raw mut count).cast(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    (read == 0 && count > 0).then_some(count as usize)
+}
+
+#[cfg(not(target_vendor = "apple"))]
+fn performance_cores() -> Option<usize> {
+    None
 }
 
 /// `Some(n)` when `value` names a positive count (`" 4 "` counts; `"0"`,
@@ -300,10 +341,9 @@ pub fn catch_stop_signals() {}
 /// World generation, meshing and the tick allocate and free small blocks on
 /// every worker at once; the system heaps serialise them (Windows' heap was
 /// 16% of a chunk's generation time), mimalloc keeps a heap per thread.
-///
-/// It sits behind [`capped`]'s hard ceiling: with none set, every request is
-/// passed on unchanged and only the byte counter moves.
-pub use capped::{ALLOCATOR, Allocator};
+pub type Allocator = mimalloc::MiMalloc;
+/// The game's mimalloc allocator.
+pub const ALLOCATOR: Allocator = mimalloc::MiMalloc;
 
 /// The global allocator of a build with the `alloc-census` feature: live
 /// heap bytes by startup step and thread, for `horizon-ctl memory`.
@@ -508,6 +548,36 @@ mod tests {
         }
         let machine = std::thread::available_parallelism().map_or(1, |n| n.get());
         assert_eq!(super::worker_count(), machine);
+    }
+
+    /// The pool leaves a core, counting only the performance cores where the machine has them.
+    #[test]
+    fn default_workers_count_performance_cores() {
+        use super::workers_for;
+        // Apple silicon: base M4 (4 + 6), M1 (4 + 4), M4 Pro (10 + 4).
+        assert_eq!(workers_for(10, || Some(4)), 3);
+        assert_eq!(workers_for(8, || Some(4)), 3);
+        assert_eq!(workers_for(14, || Some(10)), 9);
+        // HORIZON_WORKER_THREADS below the performance cores still caps the pool.
+        assert_eq!(workers_for(4, || Some(10)), 3);
+        // Everywhere else (and a sysctl that answers nothing): every core but one, as before.
+        assert_eq!(workers_for(12, || None), 11);
+        assert_eq!(workers_for(14, || Some(0)), 13);
+        // Never fewer than one worker.
+        assert_eq!(workers_for(1, || None), 1);
+        assert_eq!(workers_for(2, || Some(1)), 1);
+    }
+
+    /// Off Apple the machine is never asked: the count is the one the pool always had.
+    #[test]
+    fn default_workers_are_unchanged_off_apple() {
+        let before = super::worker_count().saturating_sub(1).max(1);
+        if cfg!(target_vendor = "apple") {
+            assert!((1..=before).contains(&super::default_workers()));
+        } else {
+            assert_eq!(super::performance_cores(), None);
+            assert_eq!(super::default_workers(), before);
+        }
     }
 
     /// Only a positive number overrides the machine's count.
