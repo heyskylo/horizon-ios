@@ -617,6 +617,12 @@ impl Game<'_> {
     /// `Level.gameEvent`: tell the listeners within reach.
     pub(super) fn post_game_event(&mut self, event: &'static str, pos: [f64; 3], ctx: Context) {
         #[cfg(test)]
+        TEST_POSTED_EVENTS.with(|events| {
+            if let Some(events) = events.borrow_mut().as_mut() {
+                events.push((event, pos, ctx.source));
+            }
+        });
+        #[cfg(test)]
         super::item_use::interact_vibration_tests::record_event(event, pos, ctx.source);
         self.post_game_event_with(event, pos, |_| ctx);
     }
@@ -2406,6 +2412,11 @@ mod tests {
         assert_eq!(block_of([1.5, 2.5, -0.5]), [1, 2, -1]);
         assert_eq!(dist_sqr([0, 0, 0], (3, 4, 0)), 25);
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(super) static TEST_POSTED_EVENTS: std::cell::RefCell<Option<Vec<(&'static str, [f64; 3], Option<Who>)>>> = const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]

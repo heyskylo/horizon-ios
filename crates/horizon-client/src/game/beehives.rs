@@ -151,6 +151,13 @@ impl Game<'_> {
             .block_entities
             .put(key, BlockEntity::Beehive(hive));
         if stored {
+            let state = self.world.block(at[0], at[1], at[2]);
+            self.post_block_game_event(
+                "minecraft:block_change",
+                at,
+                Some(Who::Mob(mob)),
+                Some(state),
+            );
             let kind = self.mobs[i].kind.id.clone();
             let block = self
                 .res
