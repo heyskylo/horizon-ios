@@ -1437,9 +1437,11 @@ impl Game<'_> {
         {
             return;
         }
-        let mut effect =
-            horizon_client::effects::EffectInstance::new("darkness", warden::DARKNESS_DURATION, 0);
-        effect.visible = false;
+        // `new MobEffectInstance(DARKNESS, 260, 0, false, false)`: no
+        // particles and no icon (#11385).
+        let effect =
+            horizon_client::effects::EffectInstance::new("darkness", warden::DARKNESS_DURATION, 0)
+                .with_flags(false, false);
         self.potions.effects.add(effect);
     }
 
