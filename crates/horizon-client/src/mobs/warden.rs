@@ -839,17 +839,19 @@ pub(super) fn tick_sonic_boom(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEve
         direction: normal,
     });
 }
-/// `Warden.tick` on the client: the heartbeat (pitched by the client's copy
-/// of the warden: a level event sound here), the tendril and heart
-/// animations, digging crumbs, and keyframes that ended.
+/// `Warden.tick` on the client: the heartbeat (`playLocalSound`, so a server
+/// never sends it: on the server thread the local sound is not shared and the
+/// window's own `client_tick` plays it), the tendril and heart animations,
+/// digging crumbs, and keyframes that ended.
 pub fn ai_step(m: &mut Mob, events: &mut Vec<MobEvent>) {
-    if heartbeat(m) {
-        events.push(MobEvent::LevelEventSound {
-            sound: "entity.warden.heartbeat",
-            at: at(m),
-            volume: 5.0,
-            spread: 0.2,
-        });
+    if heartbeat(m) && !m.silent {
+        let pitch = voice_pitch(m);
+        events.push(MobEvent::LocalSound(
+            "entity.warden.heartbeat",
+            at(m),
+            5.0,
+            pitch,
+        ));
     }
     animate(m, events);
 }
