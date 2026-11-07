@@ -2368,6 +2368,25 @@ pub fn mob_from_nbt(
 
 /// `ItemEntity`: Health, Age, PickupDelay, Item, Thrower.
 pub fn item_entity_to_nbt(e: &ItemEntity, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
+    item_entity_to_nbt_saved(e, uuid, raw, item_to_nbt(&e.stack))
+}
+
+/// ItemEntity saved with the actual loaded item prototype, including transfers.
+pub fn item_entity_to_nbt_with_items(
+    e: &ItemEntity,
+    uuid: [i32; 4],
+    raw: Option<&Tag>,
+    items: &crate::items::Items,
+) -> Tag {
+    item_entity_to_nbt_saved(
+        e,
+        uuid,
+        raw,
+        horizon_items::item_nbt::item_to_nbt_with_items(&e.stack, items),
+    )
+}
+
+fn item_entity_to_nbt_saved(e: &ItemEntity, uuid: [i32; 4], raw: Option<&Tag>, item: Tag) -> Tag {
     let base = Base {
         id: "minecraft:item",
         uuid,
@@ -2379,7 +2398,7 @@ pub fn item_entity_to_nbt(e: &ItemEntity, uuid: [i32; 4], raw: Option<&Tag>) -> 
     };
     let mut tag = base.non_mob_tag(raw);
     for (key, value) in [
-        ("Item", item_to_nbt(&e.stack)),
+        ("Item", item),
         ("Health", Tag::Short(e.health as i16)),
         ("Fire", Tag::Short(e.fire_ticks as i16)),
         (
