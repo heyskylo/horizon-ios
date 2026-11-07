@@ -2112,6 +2112,71 @@ mod namespace_tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    /// `SetCustomModelDataFunction`: each of the model data's four lists goes
+    /// through its `ListOperation` over the component the stack already has -
+    /// floats appended, flags and strings replaced, a colour inserted first -
+    /// and the lists no operation names are left as the earlier function wrote
+    /// them.
+    #[test]
+    fn set_custom_model_data_applies_each_list_operation() {
+        let root = std::env::temp_dir().join(format!("horizon-loot-cmd-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let table = r#"{"pools": [{"rolls": 1, "entries": [{"type": "minecraft:item", "name": "minecraft:stick",
+            "modifier": [
+                {"type": "minecraft:set_components", "components": {"minecraft:custom_model_data": {"floats": [1.0], "strings": ["old"]}}},
+                {"type": "minecraft:set_custom_model_data",
+                 "floats": {"mode": "append", "values": [{"type": "minecraft:constant", "value": 2.0}]},
+                 "flags": {"mode": "replace_all", "values": [true]},
+                 "strings": {"mode": "replace_all", "values": ["new"]},
+                 "colors": {"mode": "insert", "offset": 0, "values": [{"type": "minecraft:constant", "value": 16711680}]}}
+            ]}]}]}"#;
+        let files = [
+            ("items.json", r#"{"minecraft:stick": {}}"#),
+            ("data/minecraft/loot_table/chests/model.json", table),
+        ];
+        for (name, text) in files {
+            let path = root.join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
+        }
+        let data = LootData::load(&root, &PackOverlay::NONE).unwrap();
+        let filled = data.fill("minecraft:chests/model", 3, 27, None);
+        let stack = filled.iter().flatten().next().expect("a stick");
+        let component: Vec<_> = stack
+            .components
+            .iter()
+            .filter(|(k, _)| k == "minecraft:custom_model_data")
+            .collect();
+        assert_eq!(component.len(), 1, "{:?}", stack.components);
+        let component = &component[0].1;
+        assert_eq!(component["floats"], serde_json::json!([1.0, 2.0]));
+        assert_eq!(component["flags"], serde_json::json!([true]));
+        assert_eq!(component["strings"], serde_json::json!(["new"]));
+        assert_eq!(component["colors"], serde_json::json!([16711680]));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// The edges `ListOperation` names but a table rarely reaches: a section
+    /// replacement of a known size, and an offset past the end, which vanilla
+    /// logs and ignores instead of failing the roll.
+    #[test]
+    fn list_operations_replace_a_section_and_ignore_a_far_offset() {
+        let int = |v: &Value| v.as_i64().unwrap() as i32;
+        let section = serde_json::json!({
+            "mode": "replace_section", "offset": 1, "size": 1, "values": [9],
+        });
+        assert_eq!(list_operation(&section, vec![1, 2, 3], int), [1, 9, 3]);
+        // No size: the new values' own length.
+        let section = serde_json::json!({"mode": "replace_section", "offset": 0, "values": [7, 8]});
+        assert_eq!(list_operation(&section, vec![1, 2, 3], int), [7, 8, 3]);
+        // Past the end: nothing changes.
+        let past = serde_json::json!({"mode": "insert", "offset": 9, "values": [4]});
+        assert_eq!(list_operation(&past, vec![1, 2], int), [1, 2]);
+        // A mode the codec would refuse reads as a replacement.
+        let unknown = serde_json::json!({"mode": "sideways", "values": [5]});
+        assert_eq!(list_operation(&unknown, vec![1, 2], int), [5]);
+    }
+
     /// `SetInstrumentFunction`: a goat horn from a loot table gets one of the options as its instrument.
     #[test]
     fn set_instrument_picks_one_of_its_options() {
