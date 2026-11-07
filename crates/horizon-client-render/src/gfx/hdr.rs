@@ -73,6 +73,7 @@ struct Targets {
     size: [u32; 2],
     frame: wgpu::Texture,
     world: wgpu::Texture,
+    coverage: Option<wgpu::Texture>,
     group: wgpu::BindGroup,
 }
 
@@ -155,6 +156,8 @@ pub struct Hdr {
     targets: Option<Targets>,
     /// `HORIZON_HDR_DEBUG=1`: grey what isn't expanded, tint what is magenta.
     debug: bool,
+    coverage: bool,
+    coverage_debug: bool,
     /// Paper white and peak brightness, in nits.
     pub paper_white: f32,
     pub peak: f32,
@@ -181,10 +184,45 @@ impl Hdr {
         queue: &wgpu::Queue,
         format: wgpu::TextureFormat,
         output: Output,
+        coverage: bool,
     ) -> Self {
+        let debug = std::env::var("HORIZON_HDR_DEBUG").ok();
+        Self::with_debug(device, queue, format, output, coverage, debug.as_deref())
+    }
+
+    fn with_debug(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        format: wgpu::TextureFormat,
+        output: Output,
+        coverage: bool,
+        debug: Option<&str>,
+    ) -> Self {
+        let coverage_debug = coverage && debug == Some("coverage");
+        let mut source = include_str!("../hdr.wgsl").to_owned();
+        if coverage_debug {
+            // The debug view wraps the last pass as it is, so the picture under the tint is
+            // exactly the one without it.
+            let entry =
+                "@fragment fn fs_hdr(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32>";
+            assert!(
+                source.contains(entry),
+                "hdr.wgsl's fs_hdr changed its signature"
+            );
+            source = source.replace(entry, "fn picture_hdr(pos: vec4<f32>) -> vec4<f32>");
+            source.push_str(r#"
+@group(0) @binding(4) var coverage: texture_2d<f32>;
+@fragment fn fs_hdr(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
+    let picture = picture_hdr(pos);
+    let c = textureLoad(coverage, vec2<i32>(pos.xy), 0).r;
+    let magenta = select(vec3(params.paper, 0.0, params.paper), vec3(1.0, 0.0, 1.0), params.pq > 0.5);
+    return vec4(mix(picture.rgb, magenta, c), picture.a);
+}
+"#);
+        }
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Horizon HDR"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("../hdr.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(source.into()),
         });
         let texture = |binding| wgpu::BindGroupLayoutEntry {
             binding,
@@ -196,23 +234,27 @@ impl Hdr {
             },
             count: None,
         };
+        let mut entries = vec![
+            texture(0),
+            texture(1),
+            texture(3),
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+        ];
+        if coverage_debug {
+            entries.push(texture(4));
+        }
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Horizon HDR bindings"),
-            entries: &[
-                texture(0),
-                texture(1),
-                texture(3),
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-            ],
+            entries: &entries,
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Horizon HDR"),
@@ -308,7 +350,9 @@ impl Hdr {
             output,
             format,
             targets: None,
-            debug: std::env::var_os("HORIZON_HDR_DEBUG").is_some_and(|v| v == "1"),
+            debug: debug == Some("1"),
+            coverage,
+            coverage_debug,
             paper_white: 200.0,
             peak: 1000.0,
             black: 0.0,
@@ -324,7 +368,7 @@ impl Hdr {
     /// The frame every pass draws into this frame, sized like the window.
     pub fn frame(&mut self, device: &wgpu::Device, size: [u32; 2]) -> wgpu::Texture {
         if self.targets.as_ref().is_none_or(|t| t.size != size) {
-            let texture = |label, usage| {
+            let texture = |label, format, usage| {
                 device.create_texture(&wgpu::TextureDescriptor {
                     label: Some(label),
                     size: wgpu::Extent3d {
@@ -335,50 +379,48 @@ impl Hdr {
                     mip_level_count: 1,
                     sample_count: 1,
                     dimension: wgpu::TextureDimension::D2,
-                    format: self.format,
+                    format,
                     usage: usage | wgpu::TextureUsages::TEXTURE_BINDING,
                     view_formats: &[],
                 })
             };
             let frame = texture(
                 "Horizon HDR frame",
+                self.format,
                 wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             );
             let world = texture(
                 "Horizon HDR world",
+                self.format,
                 wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::RENDER_ATTACHMENT,
             );
-            let view = |t: &wgpu::Texture| t.create_view(&Default::default());
-            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("Horizon HDR bindings"),
-                layout: &self.layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&view(&frame)),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(&view(&world)),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: self.params.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: wgpu::BindingResource::TextureView(&self.logo),
-                    },
-                ],
+            let coverage = self.coverage.then(|| {
+                texture(
+                    "HUD coverage",
+                    super::hud_coverage::FORMAT,
+                    wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                )
             });
+            let group = self.group(device, &frame, &world, coverage.as_ref(), &self.params);
             self.targets = Some(Targets {
                 size,
                 frame,
                 world,
+                coverage,
                 group,
             });
         }
         self.targets.as_ref().unwrap().frame.clone()
+    }
+
+    pub fn coverage_view(&self) -> Option<wgpu::TextureView> {
+        Some(
+            self.targets
+                .as_ref()?
+                .coverage
+                .as_ref()?
+                .create_view(&Default::default()),
+        )
     }
 
     /// The peak the HDR metadata gives: while calibration's peak step runs, PQ's own
@@ -517,29 +559,13 @@ impl Hdr {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
-        let view = |t: &wgpu::Texture| t.create_view(&Default::default());
-        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Horizon HDR screenshot bindings"),
-            layout: &self.layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&view(&t.frame)),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&view(&t.world)),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: self.capture_params.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::TextureView(&self.logo),
-                },
-            ],
-        });
+        let group = self.group(
+            device,
+            &t.frame,
+            &t.world,
+            t.coverage.as_ref(),
+            &self.capture_params,
+        );
         queue.write_buffer(
             &self.capture_params,
             0,
@@ -547,6 +573,40 @@ impl Hdr {
         );
         Self::draw(encoder, &self.capture_pipeline, &group, &texture, None);
         Some(texture)
+    }
+
+    fn group(
+        &self,
+        device: &wgpu::Device,
+        frame: &wgpu::Texture,
+        world: &wgpu::Texture,
+        coverage: Option<&wgpu::Texture>,
+        params: &wgpu::Buffer,
+    ) -> wgpu::BindGroup {
+        let frame = frame.create_view(&Default::default());
+        let world = world.create_view(&Default::default());
+        let coverage = coverage.map(|t| t.create_view(&Default::default()));
+        let texture = |binding, view| wgpu::BindGroupEntry {
+            binding,
+            resource: wgpu::BindingResource::TextureView(view),
+        };
+        let mut entries = vec![
+            texture(0, &frame),
+            texture(1, &world),
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: params.as_entire_binding(),
+            },
+            texture(3, &self.logo),
+        ];
+        if self.coverage_debug {
+            entries.push(texture(4, coverage.as_ref().unwrap()));
+        }
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Horizon HDR bindings"),
+            layout: &self.layout,
+            entries: &entries,
+        })
     }
 
     /// hdr.wgsl's `Params`.
@@ -655,8 +715,93 @@ fn scene_gain(peak: f32, paper_white: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{Output, named, pick};
+    use super::{Hdr, Output, named, pick};
     use wgpu::{SurfaceColorSpaces as S, TextureFormat as F};
+
+    #[test]
+    fn coverage_target_resizes_resets_and_is_sampled_only_by_the_debug_view() {
+        let instance = crate::gfx::test_gpu::instance();
+        let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+            return;
+        };
+        let Ok((device, queue)) = pollster::block_on(adapter.request_device(&Default::default()))
+        else {
+            return;
+        };
+        for enabled in [false, true] {
+            for debug in [None, Some("coverage")] {
+                let mut hdr =
+                    Hdr::with_debug(&device, &queue, F::Rgba16Float, Output::Pq, enabled, debug);
+                hdr.frame(&device, [2, 1]);
+                assert_eq!(hdr.coverage_view().is_some(), enabled);
+                hdr.frame(&device, [4, 2]);
+                let t = hdr.targets.as_ref().unwrap();
+                if let Some(coverage) = &t.coverage {
+                    assert_eq!(coverage.size(), t.frame.size());
+                }
+                let mut encoder = device.create_command_encoder(&Default::default());
+                let frame_view = t.frame.create_view(&Default::default());
+                let mut color = super::super::hud_coverage::attachment(&frame_view);
+                color.ops.load = wgpu::LoadOp::Clear(wgpu::Color::BLACK);
+                encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    color_attachments: &[Some(color)],
+                    ..Default::default()
+                });
+                hdr.keep_world(&mut encoder, None);
+                if let Some(view) = hdr.coverage_view() {
+                    super::super::hud_coverage::clear(&mut encoder, &view);
+                    let mut color = super::super::hud_coverage::attachment(&view);
+                    color.ops.load = wgpu::LoadOp::Clear(wgpu::Color::WHITE);
+                    encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        color_attachments: &[Some(color)],
+                        ..Default::default()
+                    });
+                }
+                let capture = hdr.capture(&device, &queue, &mut encoder, false).unwrap();
+                let buffer = super::super::copy_frame(&device, &mut encoder, &capture, [4, 2]);
+                queue.submit([encoder.finish()]);
+                buffer.map_async(wgpu::MapMode::Read, .., |r| r.unwrap());
+                device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+                let bytes = buffer.get_mapped_range(..).unwrap();
+                let pixel = u32::from_le_bytes(bytes[..4].try_into().unwrap());
+                assert_eq!(
+                    pixel,
+                    if enabled && debug.is_some() {
+                        0xfff003ff
+                    } else {
+                        0xc0000000
+                    }
+                );
+                if let Some(view) = hdr.coverage_view() {
+                    let mut encoder = device.create_command_encoder(&Default::default());
+                    super::super::hud_coverage::clear(&mut encoder, &view);
+                    let coverage = hdr.targets.as_ref().unwrap().coverage.as_ref().unwrap();
+                    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                        label: None,
+                        size: 512,
+                        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                        mapped_at_creation: false,
+                    });
+                    encoder.copy_texture_to_buffer(
+                        coverage.as_image_copy(),
+                        wgpu::TexelCopyBufferInfo {
+                            buffer: &buffer,
+                            layout: wgpu::TexelCopyBufferLayout {
+                                offset: 0,
+                                bytes_per_row: Some(256),
+                                rows_per_image: None,
+                            },
+                        },
+                        coverage.size(),
+                    );
+                    queue.submit([encoder.finish()]);
+                    buffer.map_async(wgpu::MapMode::Read, .., |r| r.unwrap());
+                    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+                    assert_eq!(&buffer.get_mapped_range(..).unwrap()[..4], &[0; 4]);
+                }
+            }
+        }
+    }
 
     #[test]
     fn hdr_shaders_validate() {

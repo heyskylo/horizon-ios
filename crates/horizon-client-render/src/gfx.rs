@@ -171,6 +171,7 @@ mod gpu_culling;
 mod hdr;
 mod hdr_icc;
 mod hdr_stats;
+pub(crate) mod hud_coverage;
 pub use hdr::Calibration as HdrCalibration;
 pub mod block_light;
 mod custom_sky;
@@ -1171,6 +1172,7 @@ pub struct Renderer {
     debug_lines_opaque: wgpu::RenderPipeline,
     debug_lines: wgpu::RenderPipeline,
     debug_lines_on_top: wgpu::RenderPipeline,
+    debug_crosshair: Option<wgpu::RenderPipeline>,
     debug_line_buffer: wgpu::Buffer,
     debug_line_capacity: u64,
     /// The terrain resources with the debug crosshair's projection
@@ -1424,6 +1426,8 @@ pub struct Renderer {
     /// device draws and blends into it, or `LINEAR_FRAME` (`frame_format`). A 16-bit frame
     /// with HDR off since reaches the swapchain through `readback`.
     frame_format: wgpu::TextureFormat,
+    /// The no-pack float HDR lane, with independent blending and an R8 coverage target.
+    hud_coverage: bool,
     /// Whether a pack picked or dropped since the renderer was made has been told it runs on
     /// the frame that exists (`set_native_shader_pack`).
     frame_kept_logged: bool,
@@ -2693,6 +2697,13 @@ impl Renderer {
             config.format,
             linear,
         );
+        let hud_coverage = hud_coverage::supported(
+            linear,
+            hdr_output.is_some(),
+            device.limits().max_color_attachments,
+            adapter.get_downlevel_capabilities().flags,
+            adapter.get_texture_format_features(hud_coverage::FORMAT),
+        );
         if previous.is_none() {
             startup_step(format_args!("creating the pipelines"));
         }
@@ -2843,8 +2854,9 @@ impl Renderer {
                              cull: Option<wgpu::Face>,
                              depth_write: bool,
                              depth_test: bool,
-                             blend: Option<wgpu::BlendState>| {
-            kept.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                             blend: Option<wgpu::BlendState>,
+                             coverage: bool| {
+            let desc = wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(layout),
                 vertex: wgpu::VertexState {
@@ -2885,7 +2897,17 @@ impl Renderer {
                 }),
                 multiview_mask: None,
                 cache: None,
-            })
+            };
+            if coverage {
+                hud_coverage::pipeline(
+                    &device,
+                    &desc,
+                    wgpu::ShaderSource::Wgsl(include_str!("terrain.wgsl").into()),
+                )
+                .expect("the debug crosshair's coverage")
+            } else {
+                kept.create_render_pipeline(&desc)
+            }
         };
         let pipeline_in = |layout: &wgpu::PipelineLayout,
                            label: &str,
@@ -2909,6 +2931,7 @@ impl Renderer {
                 depth_write,
                 depth_test,
                 blend,
+                false,
             )
         };
         // A solid terrain pipeline (back faces culled, depth written, no blend) without HDR
@@ -2931,6 +2954,7 @@ impl Renderer {
                     true,
                     true,
                     None,
+                    false,
                 )
             };
             SolidPipeline {
@@ -3175,6 +3199,22 @@ impl Renderer {
             false,
             Some(alpha_blend),
         );
+        let debug_crosshair = hud_coverage.then(|| {
+            pipeline_with(
+                &sprite_constants,
+                &layout,
+                "3d crosshair coverage",
+                "vs_debug_line",
+                "fs_debug_line",
+                &debug_line_buffers,
+                wgpu::PrimitiveTopology::TriangleStrip,
+                None,
+                false,
+                false,
+                Some(alpha_blend),
+                true,
+            )
+        });
         drop(terrain_step);
         let globals = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Horizon globals"),
@@ -3528,6 +3568,7 @@ impl Renderer {
             &atlas_view,
             &glint_view,
             &glint_sampler,
+            hud_coverage,
         )?;
         hud.atlas_texture = Some(atlas.clone());
         let entity_step = crate::spans::startup::step("renderer.entity_pipelines");
@@ -4746,6 +4787,7 @@ impl Renderer {
             debug_lines_opaque,
             debug_lines,
             debug_lines_on_top,
+            debug_crosshair,
             debug_line_buffer,
             debug_line_capacity: 4096,
             crosshair_group,
@@ -4905,6 +4947,7 @@ impl Renderer {
             emission_stats,
             hdr_output,
             frame_format,
+            hud_coverage,
             frame_kept_logged: false,
             hdr_marker: None,
             pack_post: None,
@@ -6497,8 +6540,9 @@ impl Renderer {
                 DisplayWatch::default()
             };
             let format = self.frame_format;
-            self.hdr =
-                output.map(|output| hdr::Hdr::new(&self.device, &self.queue, format, output));
+            self.hdr = output.map(|output| {
+                hdr::Hdr::new(&self.device, &self.queue, format, output, self.hud_coverage)
+            });
             if let Some(hdr) = &mut self.hdr {
                 hdr.look = self.hdr_lighting_setting;
             }
@@ -11538,10 +11582,14 @@ impl Renderer {
                 }
             }
         }
+        let coverage = self.hdr.as_ref().and_then(|h| h.coverage_view());
+        if let Some(view) = &coverage {
+            hud_coverage::clear(encoder, view);
+        }
         // GameRenderer.render3dHud: the debug crosshair after the hand and
         // the screen effects.
         if overlay.crosshair > 0 {
-            let attachments = [Some(wgpu::RenderPassColorAttachment {
+            let mut attachments = vec![Some(wgpu::RenderPassColorAttachment {
                 view: view_target,
                 resolve_target: None,
                 depth_slice: None,
@@ -11550,6 +11598,9 @@ impl Renderer {
                     store: wgpu::StoreOp::Store,
                 },
             })];
+            if let Some(view) = &coverage {
+                attachments.push(Some(hud_coverage::attachment(view)));
+            }
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("3d crosshair"),
                 timestamp_writes: timing.as_mut().and_then(|t| t.writes("Crosshair")),
@@ -11564,7 +11615,11 @@ impl Renderer {
                 }),
                 ..Default::default()
             });
-            pass.set_pipeline(&self.debug_lines_on_top);
+            pass.set_pipeline(if coverage.is_some() {
+                self.debug_crosshair.as_ref().unwrap()
+            } else {
+                &self.debug_lines_on_top
+            });
             pass.set_bind_group(0, &self.crosshair_group, &[]);
             pass.set_vertex_buffer(0, self.debug_line_buffer.slice(..));
             let first = overlay.first_crosshair;
@@ -11577,6 +11632,7 @@ impl Renderer {
         self.hud.draw_range(
             encoder,
             view_target,
+            coverage.as_ref(),
             &self.depth,
             frame.hud,
             [self.config.width, self.config.height],
@@ -11599,12 +11655,16 @@ impl Renderer {
                     radius,
                     timing.as_mut(),
                 );
+            if let Some(view) = &coverage {
+                hud_coverage::clear(encoder, view);
+            }
         } else if let Some(blur) = &mut self.menu_blur {
             blur.release();
         }
         self.hud.draw_range(
             encoder,
             view_target,
+            coverage.as_ref(),
             &self.depth,
             frame.hud,
             [self.config.width, self.config.height],
