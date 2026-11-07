@@ -1763,7 +1763,16 @@ mod tests {
         };
         let hud = crate::hud::HudBatch::new([4, 4]);
         let mut frame = crate::gfx::pack_uniforms::initial_history_tests::frame(&hud);
-        let new = || NativeFrame::new(&device, None, Vec::new(), Default::default(), None);
+        let new = || {
+            NativeFrame::new(
+                &device,
+                None,
+                Vec::new(),
+                Default::default(),
+                None,
+                Api::V0_1,
+            )
+        };
         let (mut used, mut fresh) = (new(), new());
         frame.pack.rain = 1.0;
         frame.pack.eye_light = [12, 3];
@@ -1821,7 +1830,14 @@ file = \"c.wgsl\"
         .into();
         let report = check(&Pack::from_files(files).unwrap()).unwrap();
         let format = wgpu::TextureFormat::Rgba8Unorm;
-        let frame = NativeFrame::new(&device, None, Vec::new(), Default::default(), None);
+        let frame = NativeFrame::new(
+            &device,
+            None,
+            Vec::new(),
+            Default::default(),
+            None,
+            Api::V0_1,
+        );
         let mut post = NativePost::new(
             &device,
             report.stages,
@@ -1829,6 +1845,7 @@ file = \"c.wgsl\"
             &[],
             format,
             &frame,
+            None,
         )
         .unwrap();
         let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
