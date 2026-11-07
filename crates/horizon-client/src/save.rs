@@ -3712,8 +3712,9 @@ pub struct Level {
     pub post_effects: Vec<String>,
     /// Player.lastDeathLocation: the dimension and block of the last death.
     pub last_death: Option<(String, [i32; 3])>,
-    /// Player.active_effects: (id, duration, amplifier, ambient, show_particles).
-    pub active_effects: Vec<(String, i32, i32, bool, bool)>,
+    /// Player.active_effects: (id, duration, amplifier, ambient,
+    /// show_particles, show_icon).
+    pub active_effects: Vec<crate::effects::SavedEffect>,
     /// Player.EnderItems: the ender chest inventory (27 slots).
     pub ender_items: Vec<Option<crate::items::ItemStack>>,
     /// The `recipeBook` compound: open/filter settings and unlocked recipes.
@@ -4098,12 +4099,15 @@ impl Level {
                         Some(Tag::Byte(v)) => i32::from(*v as u8),
                         other => number(other).unwrap_or(0) as i32,
                     };
+                    let particles = get("show_particles").is_none_or(|v| v != 0);
                     Some((
                         id,
                         get("duration").unwrap_or(0) as i32,
                         amplifier,
                         get("ambient").unwrap_or(0) != 0,
-                        get("show_particles").is_none_or(|v| v != 0),
+                        particles,
+                        // Details.CODEC: `show_icon` defaults to `show_particles`.
+                        get("show_icon").map_or(particles, |v| v != 0),
                     ))
                 })
                 .collect(),
@@ -4219,7 +4223,7 @@ impl Level {
                 Tag::List(
                     self.active_effects
                         .iter()
-                        .map(|(id, duration, amplifier, ambient, particles)| {
+                        .map(|(id, duration, amplifier, ambient, particles, icon)| {
                             let mut effect =
                                 vec![("id", string(id)), ("duration", Tag::Int(*duration))];
                             // MobEffectInstance.Details: amplifier defaults to zero.
@@ -4240,7 +4244,7 @@ impl Level {
                             if !*particles {
                                 effect.push(("show_particles", Tag::Byte(0)));
                             }
-                            effect.push(("show_icon", Tag::Byte(i8::from(*particles))));
+                            effect.push(("show_icon", Tag::Byte(i8::from(*icon))));
                             Tag::compound(effect)
                         })
                         .collect(),
@@ -7153,11 +7157,36 @@ mod tests {
     }
 
     #[test]
+    fn a_saved_effect_without_show_icon_takes_show_particles() {
+        // MobEffectInstance.Details.CODEC: `show_icon` defaults to
+        // `show_particles`; an explicit one is kept apart from it.
+        let effect = |extra: Vec<(&'static str, Tag)>| {
+            let mut e = vec![
+                ("id", string("minecraft:darkness")),
+                ("duration", Tag::Int(260)),
+            ];
+            e.extend(extra);
+            Tag::compound(e)
+        };
+        let mut level = Level::default();
+        level.read_player(&Tag::compound([(
+            "active_effects",
+            Tag::List(vec![
+                effect(vec![("show_particles", Tag::Byte(0))]),
+                effect(vec![]),
+                effect(vec![("show_icon", Tag::Byte(0))]),
+            ]),
+        )]));
+        let flags: Vec<_> = level.active_effects.iter().map(|e| (e.4, e.5)).collect();
+        assert_eq!(flags, [(false, false), (true, true), (true, false)]);
+    }
+
+    #[test]
     fn effects_that_ended_are_not_saved_again() {
         // A player loaded with an effect that has since run out: the loaded
         // compound still holds it, but the save writes only what is active.
         let mut level = Level {
-            active_effects: vec![("minecraft:speed".into(), 200, 1, false, true)],
+            active_effects: vec![("minecraft:speed".into(), 200, 1, false, true, true)],
             ..Level::default()
         };
         let loaded = level.player_tag();
@@ -7170,10 +7199,10 @@ mod tests {
     #[test]
     fn effect_amplifier_default_is_omitted_from_saved_players() {
         let effects = vec![
-            ("minecraft:luck".into(), -1, 0, false, false),
-            ("minecraft:speed".into(), 200, 1, true, false),
-            ("minecraft:regeneration".into(), 40, 128, false, true),
-            ("minecraft:strength".into(), -1, 255, false, true),
+            ("minecraft:luck".into(), -1, 0, false, false, false),
+            ("minecraft:speed".into(), 200, 1, true, false, true),
+            ("minecraft:regeneration".into(), 40, 128, false, true, false),
+            ("minecraft:strength".into(), -1, 255, false, true, true),
         ];
         for raw in [
             None,
@@ -7210,7 +7239,8 @@ mod tests {
                     Some(Tag::Byte(-1))
                 ],
             );
-            for (entry, (id, duration, _, ambient, particles)) in entries.iter().zip(&effects) {
+            for (entry, (id, duration, _, ambient, particles, icon)) in entries.iter().zip(&effects)
+            {
                 assert_eq!(entry.get("id"), Some(&string(id)));
                 assert_eq!(entry.get("duration"), Some(&Tag::Int(*duration)));
                 // MobEffectInstance.Details.MAP_CODEC leaves out ambient false
@@ -7219,10 +7249,7 @@ mod tests {
                 assert_eq!(entry.get("ambient"), ambient_tag.as_ref());
                 let particles_tag = (!*particles).then_some(Tag::Byte(0));
                 assert_eq!(entry.get("show_particles"), particles_tag.as_ref());
-                assert_eq!(
-                    entry.get("show_icon"),
-                    Some(&Tag::Byte(i8::from(*particles)))
-                );
+                assert_eq!(entry.get("show_icon"), Some(&Tag::Byte(i8::from(*icon))));
             }
             assert_eq!(
                 level.active_effects, effects,
@@ -7241,9 +7268,9 @@ mod tests {
         // it with `ExtraCodecs.UNSIGNED_BYTE`: `255.byteValue()` is -1 and
         // `128.byteValue()` is -128; `UnsignedBytes.toInt` restores both.
         let effects = vec![
-            ("minecraft:strength".into(), -1, 255, false, true),
-            ("minecraft:regeneration".into(), -1, 128, false, true),
-            ("minecraft:speed".into(), 40, 1, false, true),
+            ("minecraft:strength".into(), -1, 255, false, true, true),
+            ("minecraft:regeneration".into(), -1, 128, false, true, true),
+            ("minecraft:speed".into(), 40, 1, false, true, true),
         ];
         let level = Level {
             active_effects: effects.clone(),

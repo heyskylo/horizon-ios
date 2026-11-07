@@ -40,7 +40,7 @@ plan are in [server.md](server.md).
 
 ## 1. Install
 
-Linux (x86-64) and macOS (Apple Silicon; Intel from the next Nightly):
+Linux (x86-64) and macOS (Apple Silicon or Intel):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/horizon-rust/horizon/main/packaging/server/install.sh | sh
