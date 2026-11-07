@@ -62,6 +62,9 @@ pub use crate::recipe_book::RecipeBookCategory;
 pub use crate::sound_engine::SoundPlayback;
 /// A named step of the server tick and its wall and CPU milliseconds (`native_server_tick_timed`).
 pub use crate::spans::Span as TickSpan;
+pub use crate::terrain_model::{
+    NativeModelMaterial, NativeModelRenderOptions, NativeModelShade, NativeModelUvShift,
+};
 pub use crate::text::Text;
 pub use crate::world_primitives::{PrimitiveShape, WorldPrimitive, WorldPrimitives};
 pub use horizon_assets::item_model::{DisplayContext, StackView};
