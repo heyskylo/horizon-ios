@@ -1,0 +1,9 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "player_compound", "target": "horizon_client::game::native_player_state::Game<'_>::native_player_compound"}
+  ],
+  "rust_summary": "a player's compound as the server would save it now (`native_player_compound`), as vanilla's `ServerPlayer.saveWithoutId`.",
+  "doc_summary": "`native_player_compound(uuid)` gives a player's compound as the server would save it now (`players/data/<uuid>.dat`, vanilla's `ServerPlayer.saveWithoutId`); None inside a player's turn and for a player not on. Bundles need \"hooks\": @API:player_compound@.",
+  "comments": ["crates/horizon-client/src/game/native_player_state.rs"]
+}

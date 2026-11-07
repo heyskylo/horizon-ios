@@ -798,6 +798,23 @@ impl Game<'_> {
             self.persist.unknown.entry(key).or_default().push(tag);
         }
     }
+    /// `Entity.load`: adopt the bounded TAG_LIST_CODEC input as a set.
+    /// Keep that adopted Mob state in the retained compound for commands and saves.
+    pub(in crate::game) fn normalize_loaded_mob_tags(tag: &mut Tag) {
+        let Tag::Compound(raw) = tag else {
+            return;
+        };
+        let Some(Tag::List(mut tags)) = raw.remove(&"Tags".into()) else {
+            return;
+        };
+        tags.retain(|tag| matches!(tag, Tag::String(_)));
+        tags.truncate(1024);
+        let mut seen = HashSet::new();
+        tags.retain(|tag| seen.insert(tag.clone()));
+        if !tags.is_empty() {
+            raw.insert("Tags".into(), Tag::List(tags));
+        }
+    }
     /// A saved mob and, under `Passengers`, the mobs riding it.
     pub(super) fn load_mob(&mut self, tag: Tag, mount: Option<u32>) -> Option<u32> {
         let uuid = entity_nbt::uuid(&tag);
@@ -808,6 +825,7 @@ impl Game<'_> {
         // Structure mobs that generation left to finish: saves from before
         // they were finalized at placement, or a placement that could not.
         let mut tag = tag;
+        Self::normalize_loaded_mob_tags(&mut tag);
         let mut finalize = false;
         if let Tag::Compound(c) = &mut tag {
             finalize = c.remove(&"horizon:finalize".into()).is_some();
@@ -2542,5 +2560,246 @@ mod interaction_saved_defaults_tests {
         assert_eq!(fresh.get("height"), Some(&Tag::Float(1.0f32.to_bits())));
         assert_eq!(fresh.get("response"), Some(&Tag::Byte(0)));
         assert_eq!(game.world.game_time, time);
+    }
+}
+
+#[cfg(test)]
+mod loaded_tag_tests {
+    use super::*;
+    use crate::game::{Audio, Options, Progress, Settings, commands::Target, load_resources};
+    use horizon_client::mobs::Species;
+
+    fn check(
+        game: &mut Game<'_>,
+        target: Target,
+        expected: &[String],
+        phase: &str,
+        failures: &mut Vec<String>,
+    ) {
+        let live = game.tags_of(target);
+        if live.len() != expected.len() || expected.iter().any(|t| !live.contains(t)) {
+            failures.push(format!(
+                "{phase}: live count {} expected {}",
+                live.len(),
+                expected.len()
+            ));
+        }
+        let saved = game.entity_nbt(target).expect("actual entity save view");
+        assert_eq!(saved.get("Health"), Some(&Tag::Float(10.0_f32.to_bits())));
+        assert_eq!(saved.get("NoAI"), Some(&Tag::Byte(1)));
+        assert_eq!(saved.get("NoGravity"), Some(&Tag::Byte(1)));
+        assert_eq!(saved.get("PortalCooldown"), Some(&Tag::Int(17)));
+        let valid = match saved.get("Tags") {
+            None => expected.is_empty(),
+            Some(Tag::List(tags)) => {
+                !expected.is_empty()
+                    && tags.len() == expected.len()
+                    && tags.iter().all(|t| matches!(t, Tag::String(_)))
+                    && expected
+                        .iter()
+                        .all(|s| tags.contains(&Tag::String(s.as_str().into())))
+            }
+            _ => false,
+        };
+        if !valid {
+            failures.push(format!(
+                "{phase}: saved Tags count/type/membership mismatch"
+            ));
+        }
+    }
+
+    fn action(game: &mut Game<'_>, command: &str, expected: bool, failures: &mut Vec<String>) {
+        if game.run_command(command) != expected {
+            failures.push(format!("command result: {command}"));
+        }
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and scratch homes/cwd"]
+    fn loaded_pig_tags_cap_before_dedup_and_live_rewrites_adopt_the_set() {
+        let root = std::path::PathBuf::from(
+            std::env::var_os("HORIZON_TEST_RESOURCES").expect("prepared resources required"),
+        );
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.world
+            .chunks
+            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        game.block_ticks
+            .add_empty_chunk(ChunkPos::new(0, 0))
+            .unwrap();
+        assert!(game.run_command("forceload add 0 0"));
+        assert!(game.run_command("fill 0 199 0 15 199 15 stone"));
+        assert_eq!(
+            game.world.block(4, 199, 4),
+            game.pack
+                .assets
+                .registry
+                .default_state("minecraft:stone")
+                .unwrap()
+        );
+        let start = game.world.game_time;
+        let unique: Vec<String> = (0..1025).map(|i| format!("h252_{i:04}")).collect();
+        let mut duplicates = vec!["h252_repeat".to_string(); 1024];
+        duplicates.push("h252_late".into());
+        let small = vec![
+            "h252_beta".to_string(),
+            "h252_alpha".into(),
+            "h252_beta".into(),
+        ];
+        let encode = |tags: &[String]| {
+            format!(
+                "[{}]",
+                tags.iter()
+                    .map(|s| format!("\"{s}\""))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+        };
+        let mut failures = Vec::new();
+        for (index, (input, expected)) in [
+            (Some(encode(&unique)), unique[..1024].to_vec()),
+            (Some(encode(&duplicates)), vec!["h252_repeat".to_string()]),
+            (
+                Some(encode(&small)),
+                vec!["h252_alpha".to_string(), "h252_beta".into()],
+            ),
+            (Some("\"h252_scalar\"".into()), vec![]),
+            (None, vec![]),
+            (Some("[]".into()), vec![]),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let n = index + 1;
+            let uuid = format!("000000fc-0000-0000-0000-{n:012x}");
+            let x = 4.5 + index as f64 * 2.0;
+            let tags = input.map_or_else(String::new, |s| format!(",Tags:{s}"));
+            assert!(game.run_command(&format!(
+                "summon pig {x} 200 4.5 {{UUID:[I;252,0,0,{n}],Health:10f,NoAI:1b,NoGravity:1b,Motion:[0d,0d,0d],PortalCooldown:17{tags}}}"
+            )));
+            let target = game.target_with_uuid([252, 0, 0, n as i32]).unwrap();
+            let Target::Mob(id) = target else {
+                panic!("actual pig target");
+            };
+            let mob = game.mobs.iter().find(|m| m.id == id).unwrap();
+            assert_eq!(mob.species(), Species::Pig);
+            assert_eq!(mob.position, Vec3::new(x, 200.0, 4.5));
+            assert_eq!(mob.health, 10.0);
+            assert!(mob.no_ai && mob.no_gravity);
+            assert_eq!(game.uuid_for(id), [252, 0, 0, n as i32]);
+            check(
+                &mut game,
+                target,
+                &expected,
+                &format!("load {index}"),
+                &mut failures,
+            );
+            if index == 0 {
+                action(
+                    &mut game,
+                    &format!("tag {uuid} add h252_extra"),
+                    false,
+                    &mut failures,
+                );
+                action(
+                    &mut game,
+                    &format!("tag {uuid} remove h252_0000"),
+                    true,
+                    &mut failures,
+                );
+                action(
+                    &mut game,
+                    &format!("tag {uuid} add h252_extra"),
+                    true,
+                    &mut failures,
+                );
+                let mut after = unique[1..1024].to_vec();
+                after.push("h252_extra".into());
+                check(&mut game, target, &after, "full remove/add", &mut failures);
+            } else if index == 1 {
+                action(
+                    &mut game,
+                    &format!("tag {uuid} add h252_added"),
+                    true,
+                    &mut failures,
+                );
+                let after = vec!["h252_repeat".to_string(), "h252_added".into()];
+                check(
+                    &mut game,
+                    target,
+                    &after,
+                    "duplicate load then add",
+                    &mut failures,
+                );
+                action(
+                    &mut game,
+                    &format!("tag {uuid} remove h252_added"),
+                    true,
+                    &mut failures,
+                );
+                check(
+                    &mut game,
+                    target,
+                    &expected,
+                    "remove added tag",
+                    &mut failures,
+                );
+            } else if index == 2 {
+                action(
+                    &mut game,
+                    &format!("tag {uuid} add h252_alpha"),
+                    false,
+                    &mut failures,
+                );
+                assert!(game.run_command(&format!(
+                    "data modify entity {uuid} Tags set value {}",
+                    encode(&duplicates)
+                )));
+                check(
+                    &mut game,
+                    target,
+                    &["h252_repeat".into()],
+                    "live rewrite",
+                    &mut failures,
+                );
+            }
+            assert_eq!(
+                game.mobs.iter().find(|m| m.id == id).unwrap().position,
+                Vec3::new(x, 200.0, 4.5)
+            );
+            assert_eq!(game.uuid_for(id), [252, 0, 0, n as i32]);
+            assert_eq!(game.world.game_time, start);
+        }
+        assert!(
+            failures.is_empty(),
+            "actual load/getter/save/mutation failures: {failures:#?}"
+        );
     }
 }

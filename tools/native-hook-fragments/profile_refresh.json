@@ -1,0 +1,10 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "set_profile_property", "target": "horizon_client::game::native_profiles::Game<'_>::native_set_profile_property"},
+    {"name": "refresh_player", "target": "horizon_client::game::native_profiles::Game<'_>::native_refresh_player"}
+  ],
+  "rust_summary": "an online player's profile property set (`native_set_profile_property`) and the player shown again with it (`native_refresh_player`).",
+  "doc_summary": "`native_set_profile_property(player, name, value)` sets or removes a property (a skin's `textures`) of an online player's profile, and `native_refresh_player(player)` shows them again with it: everyone who sees them gets their list entry and entity anew, and the player is respawned in place so their own client draws it too. Both work from any server hook. Bundles need \"hooks\": @API:profile_refresh@.",
+  "comments": ["crates/horizon-client/src/game/native_profiles.rs"]
+}
