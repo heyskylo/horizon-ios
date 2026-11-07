@@ -1198,8 +1198,13 @@ fn armor_changes(
     snapshot: &mut [Option<ItemStack>; 4],
     armor: &[Option<ItemStack>; 4],
 ) -> [bool; 4] {
-    let changed = std::array::from_fn(|i| armor[i] != snapshot[i]);
-    snapshot.clone_from(armor);
+    let changed: [bool; 4] = std::array::from_fn(|i| armor[i] != snapshot[i]);
+    // Only a changed slot is copied: the check runs every tick for every player.
+    for ((kept, worn), changed) in snapshot.iter_mut().zip(armor).zip(changed) {
+        if changed {
+            kept.clone_from(worn);
+        }
+    }
     changed
 }
 
