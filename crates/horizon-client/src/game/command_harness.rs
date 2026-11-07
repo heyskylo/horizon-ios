@@ -166,7 +166,7 @@ impl Game<'_> {
         // its hub record, which leave_guest would otherwise overwrite.
         self.in_owner_level(|g| {
             let mut host = g.lan.take().ok_or("command harness: no hub")?;
-            g.start_server_trip(&mut host, conn, plan.dim, Some(plan));
+            g.start_server_trip(&mut host, conn, plan.dim, Some(plan), false);
             g.lan = Some(host);
             Ok(())
         })
