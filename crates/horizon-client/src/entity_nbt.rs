@@ -1250,9 +1250,19 @@ pub fn mob_to_nbt(
                 Tag::Int(crate::mobs::aquatic::dark_ticks(m)),
             );
         }
-        // Phantom.addAdditionalSaveData.
+        // Phantom.addAdditionalSaveData: the size, and the circling anchor.
+        // `storeNullable` writes nothing for a phantom that has none, so its
+        // save carries no `anchor_pos` at all.
         "minecraft:phantom" => {
             map.insert("size".into(), Tag::Int(m.extra.size));
+            match m.extra.home {
+                Some(anchor) => {
+                    map.insert("anchor_pos".into(), Tag::IntArray(anchor.to_vec()));
+                }
+                None => {
+                    map.remove(&"anchor_pos".into());
+                }
+            }
         }
         "minecraft:slime" | "minecraft:magma_cube" => {
             map.insert("Size".into(), Tag::Int(m.extra.size.max(1) - 1));
@@ -2395,8 +2405,11 @@ pub fn mob_from_nbt(
         m.extra.flag2 = flag(tag, "wasOnGround");
     }
     if m.species() == crate::mobs::Species::Phantom {
-        // Phantom.readAdditionalSaveData: setPhantomSize(size).
+        // Phantom.readAdditionalSaveData: setPhantomSize(size), and the circling
+        // anchor, absent or unreadable when the save has no anchor at all
+        // (`input.read("anchor_pos", BlockPos.CODEC).orElse(null)`).
         crate::mobs::phantom::set_size(&mut m, number(tag.get("size")).unwrap_or(0) as i32);
+        m.extra.home = home_block_pos(tag.get("anchor_pos"));
     }
     // Zombie, Piglin and Zoglin.readAdditionalSaveData: IsBaby (the baby
     // zombies of trial spawners).
