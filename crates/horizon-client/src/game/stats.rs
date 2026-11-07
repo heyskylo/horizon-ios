@@ -515,6 +515,50 @@ fn phantom_group_size(random: &mut impl RandomSource, difficulty_id: i32) -> i32
 mod tests {
     use super::*;
 
+    /// `PlayerList.locateStatsFile`: a stats file an older version named after the player is moved
+    /// to the uuid file the first time it is asked for; a uuid file that is already there wins, and
+    /// a name vanilla would not write as a path segment is not looked for at all.
+    #[test]
+    fn an_old_stats_file_named_after_the_player_moves_to_its_uuid() {
+        let world = std::env::temp_dir().join(format!(
+            "horizon-stats-file-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let stats = world.join("players").join("stats");
+        std::fs::create_dir_all(&stats).unwrap();
+        let uuid = [1, 2, 3, 4];
+        let located = player_json(&world, "stats", uuid);
+        // Nothing to move: the uuid name is the answer, and looking writes nothing.
+        assert_eq!(locate_player_json(&world, "stats", uuid, "notch"), located);
+        assert!(!located.exists(), "looking for the file writes none");
+        // The old name-based file is moved onto the uuid name, and not left behind.
+        let old = stats.join("notch.json");
+        std::fs::write(&old, "{}").unwrap();
+        assert_eq!(locate_player_json(&world, "stats", uuid, "notch"), located);
+        assert!(located.is_file(), "the old file landed on the uuid name");
+        assert!(!old.exists(), "and is not left behind");
+        // A uuid file that exists is the answer, whether or not an old one does.
+        std::fs::write(&old, "{}").unwrap();
+        assert_eq!(locate_player_json(&world, "stats", uuid, "notch"), located);
+        assert!(old.is_file(), "the old file is left alone");
+        // FileUtil.isValidPathSegment on the file name: capitals and separators are not a segment,
+        // while a lowercase name with dashes, dots or digits is.
+        for name in ["Notch", "no/tch", "no tch"] {
+            assert!(
+                !valid_path_segment(&format!("{name}.json")),
+                "{name:?} is not a path segment"
+            );
+        }
+        for name in ["notch", "a-b_c.1", "jeb_"] {
+            assert!(
+                valid_path_segment(&format!("{name}.json")),
+                "{name:?} is a path segment"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&world);
+    }
+
     /// ServerPlayer.die zeroes the two timers (and only them) and sends the new zero.
     #[test]
     fn death_resets_the_timers_since_death_and_rest() {
