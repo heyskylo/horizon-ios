@@ -2,9 +2,10 @@
 
 ## Code removed for its license
 
-Horizon once shipped two pieces of code under MIT that came from projects whose licenses don't allow that. Both are
-gone from main. They are listed here for anyone who holds an older commit, tag or release: in those versions, that
-code is not covered by Horizon's MIT license. It stays under its authors' copyright and its original license.
+Horizon once shipped three pieces of code under MIT that came from projects whose licenses don't allow that. All
+three are gone from main. They are listed here for anyone who holds an older commit, tag or release: in those
+versions, that code is not covered by Horizon's MIT license. It stays under its authors' copyright and its original
+license.
 
 - **Shader packs written from Iris's source.** `crates/horizon-shaderpack` and the render stages that used it were
   written from the source of [Iris](https://github.com/IrisShaders/Iris) (LGPL-3.0, copyright the Iris contributors).
@@ -22,6 +23,13 @@ code is not covered by Horizon's MIT license. It stays under its authors' copyri
   [#11944](https://github.com/horizon-rust/horizon/pull/11944) by code written without OpenJDK's sources, from Sun's
   fdlibm C sources, the Java SE API documentation and a description of the behaviour, and checked against a JVM
   ([#6741](https://github.com/horizon-rust/horizon/issues/6741)).
+- **Java's `HashMap` translated from OpenJDK.** `crates/horizon-world/src/java_hash_map.rs`, which reproduces the
+  iteration order of `java.util.HashMap`, was translated from OpenJDK's `java/util/HashMap.java` (GPL-2.0 with the
+  Classpath Exception; copyright Oracle and/or its affiliates). It was added on 7 October 2026 (`118e93ea51` and
+  `194db0dbb4`, first released in `v2026.10.12`). It was replaced in
+  [#12043](https://github.com/horizon-rust/horizon/pull/12043) by code written without OpenJDK's sources, from a
+  description of the behaviour, the Java SE API documentation and the textbook red-black tree, and checked against a
+  JVM ([#6741](https://github.com/horizon-rust/horizon/issues/6741)).
 
 ## Catnip / Ponder
 
