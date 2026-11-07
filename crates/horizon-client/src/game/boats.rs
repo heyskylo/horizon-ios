@@ -1214,6 +1214,9 @@ impl Game<'_> {
         // of coasting on the velocity of the ride that just ended.
         self.boats[i].velocity = Vec3::ZERO;
         self.boats[i].delta_rotation = 0.0;
+        if self.dismount_in_portal(self.boats[i].position) {
+            return;
+        }
         let target = self.boat_dismount_target(i, 0.6, self.yaw);
         if let Some(p) = self.player.as_mut() {
             p.position = target;

@@ -694,6 +694,9 @@ impl Game<'_> {
             height: m.height(),
             yaw: m.yaw,
         };
+        if self.dismount_in_portal(mount.position) {
+            return;
+        }
         let Some(p) = self.player.as_ref() else {
             return;
         };
