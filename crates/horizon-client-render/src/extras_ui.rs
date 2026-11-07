@@ -16,7 +16,7 @@ const ZOOM: &str = "horizon.extras.zoom";
 const ZOOM_INSTALL: &str = "horizon.extras.zoom_mod_install";
 const MOD_SETTINGS: &str = "horizon.mods.settings";
 /// Its descriptions run long, as tooltips they were: most need more than two lines.
-const NOTE_LINES: usize = 4;
+const NOTE_LINES: usize = 5;
 /// The official native mod that took over from the Zoom extra (#8713).
 const ZOOM_ID: &str = "zoom";
 

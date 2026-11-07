@@ -2007,6 +2007,9 @@ impl OptionsUi {
         if !self.focus_from_keyboard {
             self.focus = None;
         }
+        if let Some(shell) = self.shell_mut() {
+            shell.blur_search();
+        }
     }
     /// A switch of `horizon-extras.txt` as the Extras page draws it: "Caption: On".
     fn extra_button(&self, s: &Settings, item: crate::extras::Item) -> Widget {
@@ -4381,6 +4384,9 @@ impl OptionsUi {
     ) -> Vec<Event> {
         self.size = size;
         self.framebuffer = framebuffer;
+        if self.resource_error.is_some() {
+            return Vec::new();
+        }
         if let Some(shell) = self.shell_mut() {
             let outputs = shell.wheel(s, size, cursor, amount);
             return self.shell_events(s, outputs);

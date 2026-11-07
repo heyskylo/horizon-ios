@@ -592,6 +592,11 @@ pub(crate) fn scroller(
     style::scroller(batch, atlas, track, [x, y, style::SCROLLER_W, bar]);
 }
 
+/// The last line that fits of a description with more to say: it doesn't just stop.
+fn cut_off(line: &str) -> String {
+    format!("{}…", line.trim_end())
+}
+
 /// The strip's text under its first line.
 pub(crate) fn dock_note(
     batch: &mut HudBatch,
@@ -602,10 +607,13 @@ pub(crate) fn dock_note(
 ) {
     let [x, y, w, _] = cols.dock;
     let lines = atlas.font.split(&Text::literal(text), w - 24.0);
+    let cut = lines.len() > cols.note_lines;
     for (i, line) in lines.iter().take(cols.note_lines).enumerate() {
+        let marked =
+            (cut && i + 1 == cols.note_lines).then(|| Text::literal(cut_off(&line.plain())));
         batch.text_styled(
             atlas,
-            line,
+            marked.as_ref().unwrap_or(line),
             x + 12.0,
             y + 20.0 + i as f32 * NOTE_LINE_H,
             color,
@@ -921,6 +929,8 @@ pub(crate) trait Hosted {
     ) -> Vec<Output>;
     /// Whether the search field takes the keys.
     fn typing(&self) -> bool;
+    /// A key or the pad moved the focus away: the search field stops taking the keys.
+    fn blur_search(&mut self);
     /// Text typed into the search field (the keyboard, a controller's on-screen keyboard).
     fn type_text(&mut self, text: &str);
     /// Ctrl+A/C/V/X in the search field.
@@ -1437,7 +1447,6 @@ impl<S: Screen + Default> Hosted for Shell<S> {
             self.can_change_value = false;
             return vec![Output::Done];
         }
-        self.keyed = true;
         if self.typing() && !matches!(key, K::Tab | K::ArrowDown | K::Enter | K::NumpadEnter) {
             let before = self.search.value.clone();
             if !self.search.key(key, false, shift)
@@ -1458,6 +1467,7 @@ impl<S: Screen + Default> Hosted for Shell<S> {
             .and_then(|f| focusables.iter().position(|&(t, _)| t == f));
         if key == K::Tab {
             let next = tab_step(focusables.len(), current, shift);
+            self.keyed = true;
             self.focus_on(focusables[next], &view);
             return Vec::new();
         }
@@ -1468,6 +1478,7 @@ impl<S: Screen + Default> Hosted for Shell<S> {
         if matches!(key, K::ArrowLeft | K::ArrowRight)
             && self.can_change_value
             && let Some(row) = focused
+            && row.live
             && let Value::Slider {
                 position, steps, ..
             } = row.value
@@ -1483,6 +1494,7 @@ impl<S: Screen + Default> Hosted for Shell<S> {
         ) {
             let is_row = |t| matches!(t, Target::Row(_));
             if let Some(next) = arrow_step(&focusables, current, key, &view.cols, is_row) {
+                self.keyed = true;
                 self.focus_on(focusables[next], &view);
                 self.can_change_value = false;
             }
@@ -1497,6 +1509,8 @@ impl<S: Screen + Default> Hosted for Shell<S> {
                 vec![CLICK]
             }
             Some(Target::Row(_)) => match focused {
+                // A row greyed out while focused does nothing.
+                Some(row) if !row.live => Vec::new(),
                 Some(Row {
                     value: Value::Slider { .. },
                     ..
@@ -1513,6 +1527,11 @@ impl<S: Screen + Default> Hosted for Shell<S> {
     }
     fn typing(&self) -> bool {
         self.focus == Some(Target::Search)
+    }
+    fn blur_search(&mut self) {
+        if self.typing() {
+            self.focus = None;
+        }
     }
     fn type_text(&mut self, text: &str) {
         if !text.is_empty() {
@@ -1773,6 +1792,46 @@ mod tests {
     }
 
     /// A controller presses with a click, then moves its own focus: only keys show this one.
+    #[test]
+    fn leaving_the_search_field_gives_the_keys_back() {
+        let mut s = Settings::default();
+        let mut shell = Shell::<Probe>::default();
+        let view = shell.view(&s, SIZE);
+        let [x, y, w, h] = view.cols.search();
+        shell.click(
+            &mut s,
+            (x + w / 2.0, y + h / 2.0),
+            SIZE,
+            false,
+            false,
+            false,
+        );
+        assert!(shell.typing());
+        Hosted::blur_search(&mut shell);
+        assert!(!shell.typing());
+        // Another focus isn't dropped.
+        let at = middle_of(&mut shell, FIRST_FILLER, SIZE);
+        shell.click(&mut s, at, SIZE, false, false, false);
+        Hosted::blur_search(&mut shell);
+        shell.key(&mut s, K::ArrowDown, None, false, SIZE);
+        assert!(shell.shows_focus(Target::Row(FIRST_FILLER + 1)));
+    }
+
+    #[test]
+    fn a_key_that_moves_nothing_shows_no_focus() {
+        let mut s = Settings::default();
+        let mut shell = Shell::<Probe>::default();
+        let at = middle_of(&mut shell, FIRST_FILLER, SIZE);
+        shell.click(&mut s, at, SIZE, false, false, false);
+        shell.key(&mut s, K::ShiftLeft, None, false, SIZE);
+        assert!(!shell.shows_focus(Target::Row(FIRST_FILLER)));
+    }
+
+    #[test]
+    fn a_cut_description_says_so() {
+        assert_eq!(cut_off("off, it never "), "off, it never…");
+    }
+
     #[test]
     fn a_click_leaves_no_focus_showing_until_a_key_moves_it() {
         let mut s = Settings::default();
