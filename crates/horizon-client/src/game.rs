@@ -1616,6 +1616,9 @@ impl LevelAccess for GameLevel<'_> {
     /// the count a recount of the players with that container open finds, and
     /// the count it replaces. Only the block entities that keep a counter and
     /// a scheduled recheck answer; anything else is `None`.
+    fn container_open(&self, pos: BlockPos) -> bool {
+        self.open_containers.contains(&(pos.x, pos.y, pos.z))
+    }
     fn recheck_container_openers(&mut self, pos: BlockPos) -> Option<(i32, i32)> {
         use horizon_world::level::classes::Class;
         let data = self.behaviours.data(self.world.block(pos.x, pos.y, pos.z));
@@ -5678,9 +5681,10 @@ impl Game<'_> {
                 LevelEvent::LevelEvent { id: 2009, pos, .. } => {
                     self.puffs_above_block(pos, horizon_client::particles::ParticleType::Cloud)
                 }
-                // LevelEventHandler 2012: a turtle egg laid.
+                // LevelEventHandler 2011 and 2012: a bee growing a crop, a
+                // turtle egg laid.
                 LevelEvent::LevelEvent {
-                    id: 2012,
+                    id: 2011 | 2012,
                     pos,
                     data,
                 } => self.turtle_egg_particles(pos, data),
@@ -7546,6 +7550,7 @@ impl Game<'_> {
                                 );
                                 instance.ambient = eff.ambient;
                                 instance.visible = eff.show_particles;
+                                instance.show_icon = eff.show_icon;
                                 self.add_player_effect(instance);
                             }
                         }
@@ -10679,6 +10684,9 @@ impl Game<'_> {
         let predicting = self.remote.is_some();
         if !predicting {
             self.register_exploration_maps(made);
+            for (item, count) in std::mem::take(&mut menu.crafted_counts) {
+                self.award_stat("crafted", &item, count);
+            }
         }
         if let Some(s) = menu.merchant.take() {
             self.merchant_sync_out(s);
@@ -13928,6 +13936,9 @@ impl Game<'_> {
             && let Ok(new) = registry.resolve(&block)
         {
             self.level_set(pos, new)?;
+            if result.lower_fill_level {
+                self.post_block_game_event("minecraft:block_change", pos, None, Some(new));
+            }
         }
         if let Some(sound) = result.sound {
             self.audio.play(
@@ -24353,3 +24364,6 @@ fn write_level_for_role(
         level.write_without_player(dir)
     }
 }
+
+#[cfg(test)]
+mod vibration_tests;

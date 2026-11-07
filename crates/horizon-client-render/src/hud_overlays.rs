@@ -115,8 +115,7 @@ impl From<&crate::effects::EffectInstance> for EffectIcon {
             color: def.map_or(0, |d| d.color as i32),
             ambient: effect.ambient,
             duration: effect.duration,
-            // Horizon keeps no showIcon flag: every effect shows its icon.
-            show_icon: true,
+            show_icon: effect.show_icon,
         }
     }
 }

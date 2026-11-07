@@ -2360,6 +2360,15 @@ impl Game<'_> {
                     let ctx = self.who_context(Some(Who::Mob(source)), None);
                     self.post_game_event(event, at, ctx);
                 }
+                MobEvent::GameEvent {
+                    event: "minecraft:block_place",
+                    at,
+                    source,
+                    state,
+                } => {
+                    let ctx = self.who_context(Some(Who::Mob(source)), Some(state));
+                    self.post_game_event("minecraft:block_place", at, ctx);
+                }
                 // The sculk layer tracks steps and bee/bat flaps itself
                 // (`entity_motion_events`, `tick_mob_sculk_events`). Birds
                 // above use their movement's flyDist/nextFlap threshold.

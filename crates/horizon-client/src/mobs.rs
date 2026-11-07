@@ -1370,6 +1370,7 @@ fn totem_death_effects() -> Vec<crate::items::ConsumeEffect> {
         amplifier,
         ambient: false,
         show_particles: true,
+        show_icon: true,
     };
     vec![
         ConsumeEffect::ClearAllEffects,
