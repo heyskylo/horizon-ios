@@ -93,10 +93,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     assert!(InteractionShapes::from_nbt(&bad, &registry).is_err());
     let mut bad = data.clone();
-    if let Some(Tag::List(shapes)) = bad.get_mut("shapes") {
-        if let Tag::Compound(first) = &mut shapes[0] {
-            first.remove(&"canonical".into());
-        }
+    if let Some(Tag::List(shapes)) = bad.get_mut("shapes")
+        && let Tag::Compound(first) = &mut shapes[0]
+    {
+        first.remove(&"canonical".into());
     }
     assert!(InteractionShapes::from_nbt(&bad, &registry).is_err());
     let mut bad = data.clone();

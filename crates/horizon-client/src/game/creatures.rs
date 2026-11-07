@@ -927,6 +927,7 @@ impl Game<'_> {
             others_grid: None,
             others_index: None,
             others_villagers: None,
+            others_solid: None,
             daylight: self.dim != Dim::Nether && self.sky_darken() < 4,
             // day.json: false from tick 12542, true from 23460 (a step track).
             monsters_burn: self.dim == Dim::Overworld
@@ -1148,10 +1149,14 @@ impl Game<'_> {
             // id answers, as a scan would.
             let mut index = horizon_client::fast_hash::FxHashMap::<u32, u32>::default();
             let mut villager_slots = Vec::new();
+            let mut solid_slots = Vec::new();
             for (i, s) in snapshot.iter().enumerate() {
                 index.entry(s.id).or_insert(i as u32);
                 if s.species == horizon_client::mobs::Species::Villager {
                     villager_slots.push(i as u32);
+                }
+                if s.may_block_mobs() {
+                    solid_slots.push(i as u32);
                 }
             }
             laps.lap("creature_prepare");
@@ -1191,6 +1196,7 @@ impl Game<'_> {
                         others_grid: Some(&grid),
                         others_index: Some(&index),
                         others_villagers: Some(&villager_slots),
+                        others_solid: Some(&solid_slots),
                         nearest_player,
                         player: None,
                         teams: std::sync::Arc::clone(&base.teams),
@@ -1254,6 +1260,7 @@ impl Game<'_> {
                     others_grid: Some(&grid),
                     others_index: Some(&index),
                     others_villagers: Some(&villager_slots),
+                    others_solid: Some(&solid_slots),
                     difficulty,
                     nearest_player,
                     player: active_player,
@@ -2360,6 +2367,15 @@ impl Game<'_> {
                     let ctx = self.who_context(Some(Who::Mob(source)), None);
                     self.post_game_event(event, at, ctx);
                 }
+                MobEvent::GameEvent {
+                    event: "minecraft:block_place",
+                    at,
+                    source,
+                    state,
+                } => {
+                    let ctx = self.who_context(Some(Who::Mob(source)), Some(state));
+                    self.post_game_event("minecraft:block_place", at, ctx);
+                }
                 // The sculk layer tracks steps and bee/bat flaps itself
                 // (`entity_motion_events`, `tick_mob_sculk_events`). Birds
                 // above use their movement's flyDist/nextFlap threshold.
@@ -3461,10 +3477,11 @@ impl Game<'_> {
         }
     }
     /// `Animal.finalizeSpawnChildFromBreeding`'s experience orb: only when the
-    /// `mob_drops` game rule is on.
+    /// `mob_drops` game rule is on, and one `new ExperienceOrb` of the whole
+    /// value (not split or merged as `ExperienceOrb.award` does).
     fn spawn_breeding_orb(&mut self, at: [f64; 3], amount: u32) {
         if self.ui.rules.bool("mob_drops") {
-            self.spawn_orbs(at, amount);
+            self.add_orb(at, amount);
         }
     }
     /// `ServerPlayer.tellNeutralMobsThatIDied`: the mobs within 32 blocks
@@ -3825,13 +3842,14 @@ impl Game<'_> {
         self.breeding_orb(parent, [p.position.x, p.position.y, p.position.z]);
     }
     /// `Animal.finalizeSpawnChildFromBreeding`'s experience, from the breeding
-    /// parent's own random, and only when the `mob_drops` game rule is on.
+    /// parent's own random, and only when the `mob_drops` game rule is on: one
+    /// fresh orb of 1 to 7 (#11388).
     fn breeding_orb(&mut self, parent: u32, at: [f64; 3]) {
         if self.ui.rules.bool("mob_drops")
             && let Some(m) = self.mobs.iter_mut().find(|m| m.id == parent)
         {
             let xp = 1 + m.random.next_int_bound(7).unwrap_or(0) as u32;
-            self.spawn_orbs(at, xp);
+            self.add_orb(at, xp);
         }
     }
     /// `MobEffectUtil.addEffectToPlayersAround` for an elder guardian:
@@ -5710,7 +5728,7 @@ impl Game<'_> {
                     _ => None,
                 };
                 let owner = self.potion_owner(p.owner);
-                self.splash(stack, at, mob, block, p.age, &owner);
+                self.splash(stack, at, mob, block, p.age, &owner, p.velocity);
                 if stack.item.as_ref() != "minecraft:experience_bottle" {
                     let item = stack.item.to_string();
                     self.native_potion_splash(&item, [at.x, at.y, at.z]);
@@ -7013,7 +7031,7 @@ impl Game<'_> {
         let parent = &self.mobs[index];
         if !parent.alive()
             || !horizon_client::mobs::finalize::spawn_egg_is_for(&stack.item, &parent.kind.id)
-            || !horizon_client::mobs::drops::can_be_baby(parent.species())
+            || !horizon_client::mobs::species::can_be_a_baby(parent.species())
             // WanderingTrader.getBreedOffspring returns null: no offspring, the
             // click carries on to trading.
             || parent.species() == Species::WanderingTrader
@@ -8674,6 +8692,7 @@ mod pearl_tests {
             others_grid: None,
             others_index: None,
             others_villagers: None,
+            others_solid: None,
             daylight: true,
             monsters_burn: false,
             game_time: 1000,
@@ -9091,5 +9110,34 @@ mod pickable_projectile_tests {
             ),
             other => panic!("the pearl flew through the fireball: {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod breeding_orb_tests {
+    use super::*;
+
+    /// `Animal.finalizeSpawnChildFromBreeding`: one fresh orb of the parent's
+    /// 1-to-7 roll, never split (4 is not 3 + 1) or merged (#11388).
+    #[test]
+    #[ignore = "needs prepared resources (HORIZON_TEST_RESOURCES)"]
+    fn breeding_drops_one_orb_of_the_whole_roll() {
+        let mut game = super::super::native_machines::tests::server_game();
+        let kind = game.res.mob_types().get("minecraft:cow").unwrap().clone();
+        game.mobs
+            .push(Mob::new(7, kind, Vec3::new(8.5, 64.0, 8.5), 0.0));
+        let mut values = std::collections::BTreeSet::new();
+        for _ in 0..40 {
+            let roll = 1 + game.mobs[0].random.clone().next_int_bound(7).unwrap() as u32;
+            let orbs = game.orbs.len();
+            game.breeding_orb(7, [8.5, 64.0, 8.5]);
+            assert_eq!(game.orbs.len(), orbs + 1, "a fresh orb, not merged");
+            assert_eq!(
+                game.orbs.last().map(|o| (o.value, o.count)),
+                Some((roll, 1))
+            );
+            values.insert(roll);
+        }
+        assert!(values.iter().any(|v| matches!(v, 4..=6)), "{values:?}");
     }
 }

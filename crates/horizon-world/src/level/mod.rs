@@ -636,17 +636,18 @@ pub trait LevelAccess {
     fn item_frame_analog_output(&self, _pos: BlockPos, _facing: Direction) -> Option<i32> {
         None
     }
+    /// `ContainerOpenersCounter.getEntitiesWithContainerOpen` is not empty for
+    /// the container at `pos`: someone has it open (a double chest's menu
+    /// counts for both halves; a copper golem's open chest too).
+    fn container_open(&self, _pos: BlockPos) -> bool {
+        false
+    }
     /// `ContainerOpenersCounter.recheckOpenCount` for the chest or ender chest
     /// block entity at `pos`: recounts its openers and returns the previous
     /// and new counts (the caller plays open/close effects when they change),
     /// or None when there is no such block entity.
     fn recheck_container_openers(&mut self, _pos: BlockPos) -> Option<(i32, i32)> {
         None
-    }
-    /// `ContainerOpenersCounter.getEntitiesWithContainerOpen` is not empty for
-    /// the container at `pos`.
-    fn container_has_viewers(&self, _pos: BlockPos) -> bool {
-        false
     }
     /// `CommandBlockEntity.setPowered` for the command block entity at `pos`:
     /// stores `powered` and returns the previous flag and `isAutomatic`, or

@@ -71,8 +71,8 @@ pub(crate) struct TestLevel {
     /// `ShulkerBoxBlockEntity.isClosed` at a position: `true` for a shut lid,
     /// `false` for an open box. Positions not listed have no block entity.
     pub shulker_closed: HashMap<BlockPos, bool>,
-    /// The containers `container_has_viewers` says someone has open.
-    pub viewed: HashSet<BlockPos>,
+    /// The containers `container_open` reports as open.
+    pub opened: HashSet<BlockPos>,
 }
 impl TestLevel {
     fn new(b: &Behaviours) -> Self {
@@ -94,13 +94,13 @@ impl TestLevel {
             openers: HashMap::new(),
             opener_rechecks: Vec::new(),
             shulker_closed: HashMap::new(),
-            viewed: HashSet::new(),
+            opened: HashSet::new(),
         }
     }
 }
 impl LevelAccess for TestLevel {
-    fn container_has_viewers(&self, pos: BlockPos) -> bool {
-        self.viewed.contains(&pos)
+    fn container_open(&self, pos: BlockPos) -> bool {
+        self.opened.contains(&pos)
     }
     fn recheck_container_openers(&mut self, pos: BlockPos) -> Option<(i32, i32)> {
         self.opener_rechecks.push(pos);
@@ -505,26 +505,23 @@ fn neighbor_observation_follows_dispatch_order() {
     );
 }
 
-/// `WeatheringCopperChestBlock.randomTick`: an open copper chest does not weather and draws
-/// nothing from the random; closed, it draws.
+/// `WeatheringCopperChestBlock.randomTick`: a copper chest someone has open
+/// skips `changeOverTime` and its draws; a closed one draws (#11378).
 #[test]
-fn an_open_copper_chest_skips_its_weathering_draw() {
+fn a_viewed_copper_chest_does_not_weather() {
     let Some(f) = fixture() else { return };
-    let b = &f.behaviours;
-    let chest = f.registry.default_state("minecraft:copper_chest").unwrap();
-    let pos = BlockPos::new(0, 1, 0);
-    let mut level = TestLevel::new(b);
-    level.set_raw(pos, chest);
-    level.viewed.insert(pos);
-    let mut ticks = Ticks::new(0);
-    let draw = |level: &TestLevel| level.random.clone().next_long();
-    let before = draw(&level);
-    b.random_tick(&mut level, &mut ticks, pos);
-    assert_eq!(draw(&level), before);
-    assert_eq!(level.block_state(pos), chest);
-    level.viewed.clear();
-    b.random_tick(&mut level, &mut ticks, pos);
-    assert_ne!(draw(&level), before);
+    let mut w = World::new(f);
+    let pos = BlockPos::new(0, 64, 0);
+    let chest = w.id("copper_chest", &[("type", "single")]);
+    w.put(pos, chest);
+    let draw = |w: &World| w.level.random.clone().next_long();
+    w.level.opened.insert(pos);
+    let before = draw(&w);
+    f.behaviours.random_tick(&mut w.level, &mut w.ticks, pos);
+    assert_eq!(draw(&w), before, "an open chest draws nothing");
+    w.level.opened.clear();
+    f.behaviours.random_tick(&mut w.level, &mut w.ticks, pos);
+    assert_ne!(draw(&w), before, "a closed one rolls changeOverTime");
 }
 
 #[test]
