@@ -6206,10 +6206,25 @@ impl Game<'_> {
             .find(|p| p.id == id as u32)
         {
             p.velocity = v;
+            // AbstractArrow.lerpMotion: the stuck timer restarts, and an
+            // arrow the server set moving leaves the block it was stuck in.
+            if let Some(st) = p.arrow.as_mut() {
+                st.life = 0;
+                if st.in_ground && v.length_squared() > 0.0 {
+                    st.in_ground = false;
+                    p.stuck = false;
+                }
+            }
         } else if let Some(b) = self.dragon_fireballs.iter_mut().find(|b| b.id == id as u32) {
             b.velocity = v;
         } else if let Some(t) = self.tridents.iter_mut().find(|t| t.id == id as u32) {
             t.velocity = v;
+            // AbstractArrow.lerpMotion (ThrownTrident keeps it): `life`
+            // restarts, and a trident set moving leaves its block.
+            t.in_ground_time = 0;
+            if t.in_ground && v.length_squared() > 0.0 {
+                t.in_ground = false;
+            }
         } else if let Some(r) = self.rockets.iter_mut().find(|r| r.id == id as u32) {
             r.velocity = v;
         } else if self.remote_hook_motion(id as u32, v) {
