@@ -1159,7 +1159,7 @@ mod injection_tests;
 /// Generate a dispatch fixture without preventing xtask from filling placeholders.
 #[doc(hidden)]
 pub fn generate_test_hooks(root: &Path, out_dir: &Path) -> Result<(), String> {
-    build::track(root)?;
+    build::track(root, Target::Client)?;
     let code = sources(root, FillMode::Ignore)?.hooks;
     fs::write(out_dir.join("mod_api_generated.rs"), code).map_err(|e| e.to_string())
 }

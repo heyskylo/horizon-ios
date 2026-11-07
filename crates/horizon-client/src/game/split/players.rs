@@ -303,9 +303,14 @@ impl Split<'_> {
             horizon_client::settings::Settings::load(&options)
         } else {
             std::fs::create_dir_all(&profile)?;
-            self.host.settings.save(&options);
-            self.host.settings.clone()
+            let mut new = self.host.settings.clone();
+            // The Controller setting is P1's, as on the profile page (`join`).
+            new.controller.enabled |= self.guests[i].pad.is_some();
+            new.save(&options);
+            new
         };
+        // A profile an earlier join saved with P1's off, or the player's pad would be dead.
+        settings.controller.enabled |= self.guests[i].pad.is_some();
         // P1's own world through memory (`Ok`), else P1's server over the network (`Err`).
         let via = match &self.host.integrated {
             Some(server) => Ok(server

@@ -1,5 +1,5 @@
 //! The Versions page in the glass look: the mockup's `VersionsView`. Each Nightly on its own glass
-//! card (its name, Newest on the first, when it came out and which instances play it), Install
+//! card (its name, Latest on the first, when it came out and which instances play it), Install
 //! or a bin on the right, and Install new versions automatically by the page's title.
 //!
 //! Not in the mockup, kept in its patterns: Use and In use (the version instances without their
@@ -39,7 +39,7 @@ pub(super) fn published(date: &str, time: &str) -> String {
     }
 }
 
-/// A version's state beside its name: a dot and a word, 13 px at 70 % (`Newest`).
+/// A version's state beside its name: a dot and a word, 13 px at 70 % (`Latest`).
 fn badge(tone: Tone, label: &str) -> Div {
     div()
         .flex()
@@ -48,6 +48,25 @@ fn badge(tone: Tone, label: &str) -> Div {
         .gap(px(6.))
         .child(ui::dot(tone))
         .child(ui::text(13., FontWeight::NORMAL, ink::BODY).child(tr(label).to_string()))
+}
+
+/// The compact title and commit line for a published Nightly.
+///
+/// The release title from GitHub is an implementation-facing ISO date and commit. Players need
+/// the date first, with the short commit kept as the secondary detail so the newest build is easy
+/// to recognize at a glance.
+fn nightly_card_text(release: &Release) -> Option<(String, String)> {
+    release.nightly.as_ref()?;
+    let date = published(&release.date, "");
+    let title = format!("{} · {date}", tr("Nightly"));
+    let commit = horizon_launcher::nightly::label(&release.tag)
+        .and_then(|label| {
+            label
+                .split_once(" · ")
+                .map(|(_, commit)| commit.chars().take(7).collect())
+        })
+        .unwrap_or_default();
+    Some((title, commit))
 }
 
 impl Launcher {
@@ -220,34 +239,53 @@ impl Launcher {
             keep,
             |i| {
                 let release = releases[i].clone();
-                let title = release
-                    .name
-                    .split_once(": ")
-                    .map(|(_, rest)| rest.to_string())
-                    .unwrap_or_else(|| release.name.clone());
-                let title = if title.is_empty() {
-                    release.tag.clone()
-                } else {
-                    title
-                };
-                let mut line = published(&release.date, &release.time);
+                let (title, mut line) = nightly_card_text(&release).unwrap_or_else(|| {
+                    let title = release
+                        .name
+                        .split_once(": ")
+                        .map(|(_, rest)| rest.to_string())
+                        .unwrap_or_else(|| release.name.clone());
+                    let title = if title.is_empty() {
+                        release.tag.clone()
+                    } else {
+                        title
+                    };
+                    (title, published(&release.date, &release.time))
+                });
+                if line.is_empty() {
+                    line = published(&release.date, &release.time);
+                }
                 let right = self.glass_release_action(&release, cx);
                 let notes = self.notes_section(&release, cx);
-                self.glass_version_card(&release.tag, title, &mut line, i == 0, on_disk, right)
-                    .child(notes)
+                let card = self
+                    .glass_version_card(&release.tag, title, &mut line, i == 0, on_disk, right)
+                    .child(notes);
+                if i == 1 {
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(10.))
+                        .child(
+                            ui::text(13., FontWeight::NORMAL, ink::QUIET)
+                                .child(tr("Older versions kept")),
+                        )
+                        .child(card)
+                } else {
+                    card
+                }
             },
         );
         page.child(list)
     }
 
-    /// One version's card: its name (Newest on the first, In use on the one in use), `line`
+    /// One version's card: its name (Latest on the first, In use on the one in use), `line`
     /// with who plays it, and `right`.
     fn glass_version_card(
         &self,
         tag: &str,
         title: String,
         line: &mut String,
-        newest: bool,
+        latest: bool,
         on_disk: &dyn Fn(&String) -> Option<u64>,
         right: AnyElement,
     ) -> Div {
@@ -310,8 +348,8 @@ impl Launcher {
                                             .truncate()
                                             .child(title),
                                     )
-                                    .when(newest, |d| {
-                                        d.child(badge(Tone::Accent(look.accent_soft), "Newest"))
+                                    .when(latest, |d| {
+                                        d.child(badge(Tone::Accent(look.accent_soft), "Latest"))
                                     })
                                     .when(in_use, |d| d.child(badge(Tone::Live, "In use"))),
                             )
@@ -580,5 +618,29 @@ impl Launcher {
             .gap(px(12.))
             .child(toggle)
             .children(body)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nightly_cards_put_plain_date_before_commit() {
+        let release = Release {
+            tag: "nightly-2026-11-07-4aa6854".into(),
+            name: "Nightly 2026-11-07 · 4aa6854".into(),
+            body: String::new(),
+            date: "2026-11-07".into(),
+            time: "14:32".into(),
+            asset: None,
+            prerelease: true,
+            nightly: Some("nightly".into()),
+        };
+
+        let (title, commit) = nightly_card_text(&release).expect("nightlies have card text");
+        assert!(title.contains("Nightly"));
+        assert!(title.contains("Nov 7"));
+        assert_eq!(commit, "4aa6854");
     }
 }

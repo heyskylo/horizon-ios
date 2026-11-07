@@ -4454,6 +4454,13 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
             self.last_server.clone_from(address);
         }
     }
+    /// The selected server, a row up or down, if the server list is open with one selected.
+    pub fn multiplayer_move_selected(&mut self, down: bool) -> bool {
+        let Mode::Multiplayer(screen) = &mut self.mode else {
+            return false;
+        };
+        screen.move_selected(down, &self.saves)
+    }
     pub(crate) fn multiplayer_click(
         &mut self,
         hit: Option<u8>,
