@@ -561,11 +561,17 @@ pub fn mob_to_nbt(
         put(
             &mut tag,
             "anger_end_time",
-            Tag::Long(if m.extra.anger_end > 0 {
-                m.extra.anger_end
-            } else {
-                -1
-            }),
+            Tag::Long(
+                if (m.species() == crate::mobs::Species::Enderman && m.no_ai)
+                    || m.extra.anger_end > 0
+                {
+                    // NeutralMob saves the actual absolute value, including zero
+                    // and past values, while this Enderman's AI is disabled.
+                    m.extra.anger_end
+                } else {
+                    -1
+                },
+            ),
         );
         // `angry_at` only while there is an anger target: the UUID of the one
         // the level has (`uuid_of`). A mob target read from the save that is
