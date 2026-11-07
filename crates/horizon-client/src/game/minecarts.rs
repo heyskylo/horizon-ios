@@ -1279,24 +1279,40 @@ impl Game<'_> {
         }
     }
     /// Runs `push_from_cart` for the cart being ticked (`c` is a copy of the
-    /// stored one): the stored cart is replaced by `c` for the push and `c`
-    /// takes back what the push changed. The rolled loot stays with `c`: the
-    /// stored cart is without it for the whole tick (`tick_carts_now`), and
-    /// a mineshaft's chest cart carries its whole roll as NBT.
-    fn push_from_ticked_cart(&mut self, c: &mut Minecart) {
-        let Some(i) = self.carts.iter().position(|x| x.id == c.id) else {
+    /// stored one, kept at `slot`): the stored cart is replaced by `c` for the
+    /// push and `c` takes back what the push changed. The rolled loot stays
+    /// with `c`: the stored cart is without it for the whole tick
+    /// (`tick_carts_now`), and a mineshaft's chest cart carries its whole roll
+    /// as NBT.
+    fn push_from_ticked_cart(&mut self, c: &mut Minecart, slot: usize) {
+        let Some(i) = cart_at(&self.carts, c.id, slot) else {
             return;
         };
         let loot = c.loot.take();
-        self.carts[i] = c.clone();
-        self.push_from_cart(i);
-        if let Some(i) = self.carts.iter().position(|x| x.id == c.id) {
-            *c = self.carts[i].clone();
+        if !horizon_client::mod_api::mods().is_empty() {
+            // A mod's mount hook can change the list during the push: the
+            // cart is found again by id after it.
+            self.carts[i] = c.clone();
+            self.push_from_cart(i);
+            if let Some(i) = self.carts.iter().position(|x| x.id == c.id) {
+                *c = self.carts[i].clone();
+            }
+            c.loot = loot;
+            return;
         }
+        // Without mods, pushing and boarding change velocities and riders,
+        // never the list: the ticked cart moves into its slot, and the copy it
+        // replaces takes back the pushed cart (reusing its buffers), instead
+        // of two searches and two whole copies.
+        std::mem::swap(&mut self.carts[i], c);
+        self.push_from_cart(i);
+        debug_assert_eq!(self.carts[i].id, c.id, "a push moved the cart list");
+        c.clone_from(&self.carts[i]);
         c.loot = loot;
     }
     /// `AbstractMinecart.tick` for one cart; returns false once it is gone.
-    fn tick_cart(&mut self, c: &mut Minecart, intent: [f64; 2]) -> bool {
+    /// `slot` is where the cart is stored (where to look first).
+    fn tick_cart(&mut self, c: &mut Minecart, intent: [f64; 2], slot: usize) -> bool {
         c.tick_count += 1;
         c.previous = c.position;
         c.previous_yaw = c.yaw;
@@ -1350,7 +1366,7 @@ impl Game<'_> {
         // OldMinecartBehavior.tick ends with pushAndPickupEntities, before
         // AbstractMinecart.tick's updateFluidInteraction. The experiment still
         // uses this fallback until its per-move pickup/push retry is ported.
-        self.push_from_ticked_cart(c);
+        self.push_from_ticked_cart(c, slot);
         // AbstractMinecart.tick: updateFluidInteraction, a stream pushes the cart.
         c.in_water = c.push_by_fluid(&self.world, &self.res.motion().fluids).0 > 0.0;
         // updateFluidInteraction: being in water resets the fall distance.
@@ -1839,7 +1855,7 @@ impl Game<'_> {
             let loot = self.carts[i].loot.take();
             let mut c = self.carts[i].clone();
             c.loot = loot;
-            let alive = self.tick_cart(&mut c, [0.0; 2]);
+            let alive = self.tick_cart(&mut c, [0.0; 2], i);
             if c.kind == CartKind::Hopper && c.enabled {
                 self.hopper_cart_suck(&mut c);
             }
@@ -1871,7 +1887,7 @@ impl Game<'_> {
                 hint = i + 1;
                 let p = self.carts[i].position;
                 if ticking(p.x.floor() as i32, p.z.floor() as i32) {
-                    self.cart_lava_tick(id);
+                    self.cart_lava_tick(id, i);
                 }
             }
         }
@@ -1881,9 +1897,9 @@ impl Game<'_> {
     /// own `isInLava`. The second breaks the cart, or primes a TNT minecart
     /// (`MinecartTNT.destroy` for a fire source). A cart has no `baseTick`,
     /// so the fire `lavaIgnite` lights never burns it.
-    fn cart_lava_tick(&mut self, id: u32) {
+    fn cart_lava_tick(&mut self, id: u32, slot: usize) {
         for _ in 0..2 {
-            let Some(i) = self.carts.iter().position(|c| c.id == id) else {
+            let Some(i) = cart_at(&self.carts, id, slot) else {
                 return;
             };
             if !self.in_lava(self.carts[i].bounds()) {
@@ -1963,7 +1979,7 @@ impl Game<'_> {
         let (s, co) = (f64::from(r.sin()), f64::from(r.cos()));
         let intent = [left * co - forward * s, forward * co + left * s];
         let mut c = self.carts[i].clone();
-        let alive = self.tick_cart(&mut c, intent);
+        let alive = self.tick_cart(&mut c, intent, i);
         if let Some(p) = self.player.as_mut() {
             self.previous_position = p.position;
             p.position = Vec3::new(c.position.x, c.position.y + SEAT, c.position.z);
@@ -3452,7 +3468,7 @@ mod tnt_impact_tests {
         let mut cart = Minecart::new(1, CartKind::Tnt, at);
         cart.velocity = velocity;
         for _ in 0..40 {
-            if !game.tick_cart(&mut cart, [0.0; 2]) {
+            if !game.tick_cart(&mut cart, [0.0; 2], 0) {
                 return true;
             }
         }
