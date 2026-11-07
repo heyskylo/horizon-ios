@@ -1072,6 +1072,16 @@ impl Game<'_> {
         let new = self.potions.effects.get(id).is_none();
         let changed = self.potions.effects.add(effect);
         self.apply_effect_status();
+        // MobEffect.onEffectAdded: an omen's sound when it is new, at the
+        // player's feet (#11373).
+        if new
+            && changed
+            && let Some(sound) = sound_on_added(id)
+            && let Some(p) = self.player.as_ref()
+        {
+            let at = [p.position.x, p.position.y, p.position.z];
+            self.audio.play(sound, Some(at), 1.0, 1.0);
+        }
         if id == "absorption"
             && let Some(p) = self.player.as_mut()
         {
@@ -1351,6 +1361,7 @@ impl Game<'_> {
                     t.age,
                     t.owner.clone(),
                     t.guest,
+                    t.velocity,
                 ));
                 return false;
             }
@@ -1378,7 +1389,7 @@ impl Game<'_> {
                 );
             }
         }
-        for (stack, at, mob, block, age, owner, guest) in landed {
+        for (stack, at, mob, block, age, owner, guest, motion) in landed {
             // Projectile.onHit (super.onHit of AbstractThrownPotion): a block
             // is heard at its centre, an entity at the hit.
             let heard = if mob.is_some() {
@@ -1396,7 +1407,7 @@ impl Game<'_> {
                 attacker: None,
                 guest,
             };
-            self.splash(&stack, at, mob, block, age, &owner);
+            self.splash(&stack, at, mob, block, age, &owner, motion);
             if item != "minecraft:experience_bottle" {
                 self.native_potion_splash(&item, [at.x, at.y, at.z]);
             }
@@ -1900,7 +1911,7 @@ impl Game<'_> {
     /// `AbstractThrownPotion.onHit` with `ThrownSplashPotion.onHitAsPotion`, or
     /// `ThrownLingeringPotion.onHitAsPotion` for a lingering potion, read from
     /// the stack's `potion_contents`; `mob` is where it hit a mob, `hit` the
-    /// block and face it hit, `age` its age.
+    /// block and face it hit, `age` its age, `motion` its motion as it hit.
     pub(super) fn splash(
         &mut self,
         stack: &ItemStack,
@@ -1909,6 +1920,7 @@ impl Game<'_> {
         hit: Option<([i32; 3], Direction)>,
         age: u32,
         owner: &PotionOwner,
+        motion: Vec3,
     ) {
         let block = [at.x, at.y, at.z].map(|v| v.floor() as i32);
         if &*stack.item == "minecraft:experience_bottle" {
@@ -1918,7 +1930,13 @@ impl Game<'_> {
             self.level_event_at(1053, block, 0);
             let r = &mut self.world.random;
             let value = 3 + r.next_int_bound(5).unwrap_or(0) + r.next_int_bound(5).unwrap_or(0);
-            self.spawn_orbs([at.x, at.y, at.z], value as u32);
+            // awardWithDirection: away from the face it hit, or back along
+            // its own motion when it hit an entity (#11388).
+            let roughly = match hit {
+                Some((_, face)) => face.normal().map(f64::from),
+                None => [-motion.x, -motion.y, -motion.z],
+            };
+            self.spawn_orbs_toward([at.x, at.y, at.z], roughly, value as u32);
             self.native_exp_bottle([at.x, at.y, at.z], value as u32);
             return;
         }
@@ -2398,5 +2416,128 @@ mod tests {
         }];
         assert!(!collect_dragon_breath(high_player, &mut ground_cloud));
         assert_eq!(ground_cloud[0].radius, 1.0);
+    }
+}
+
+/// `MobEffect.withSoundOnAdded`: the sound `onEffectAdded` plays when the
+/// effect is new on an entity (`MobEffects`: the three omens).
+pub(super) fn sound_on_added(effect: &str) -> Option<&'static str> {
+    match effect.strip_prefix("minecraft:").unwrap_or(effect) {
+        "bad_omen" => Some("minecraft:event.mob_effect.bad_omen"),
+        "trial_omen" => Some("minecraft:event.mob_effect.trial_omen"),
+        "raid_omen" => Some("minecraft:event.mob_effect.raid_omen"),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod sound_on_added_tests {
+    use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+    use horizon_client::effects::EffectInstance;
+
+    /// `LivingEntity.addEffect` → `MobEffect.onEffectAdded`: Bad Omen, Trial
+    /// Omen and Raid Omen sound once when they are new on the player, at its
+    /// feet; a renewal and any other effect are silent (#11373).
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_new_omen_sounds_once_at_the_feet() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.player = Some(
+            horizon_client::motion::PlayerMotion::new(
+                game.motion,
+                horizon_core::geometry::Vec3::new(10.5, 64.0, -3.25),
+            )
+            .unwrap(),
+        );
+        game.audio.capture = Some(Vec::new());
+        for (id, amplifier) in [
+            ("bad_omen", 0),
+            ("bad_omen", 1),
+            ("speed", 0),
+            ("trial_omen", 0),
+            ("raid_omen", 0),
+        ] {
+            game.add_player_effect(EffectInstance::new(id, 2400, amplifier));
+        }
+        let played: Vec<(String, [f64; 3])> = game
+            .audio
+            .capture
+            .take()
+            .unwrap()
+            .into_iter()
+            .map(|s| (s.event, s.position))
+            .collect();
+        let feet = [10.5, 64.0, -3.25];
+        assert_eq!(
+            played,
+            [
+                ("minecraft:event.mob_effect.bad_omen".to_owned(), feet),
+                ("minecraft:event.mob_effect.trial_omen".to_owned(), feet),
+                ("minecraft:event.mob_effect.raid_omen".to_owned(), feet),
+            ]
+        );
+    }
+}
+
+#[cfg(test)]
+mod xp_bottle_tests {
+    use super::*;
+
+    /// `ThrownExperienceBottle.onHit` uses `awardWithDirection`: every fresh
+    /// orb starts 0.25 out from the face it hit, or back along the bottle's
+    /// motion after an entity hit, moving that way (#11388).
+    #[test]
+    #[ignore = "needs prepared resources (HORIZON_TEST_RESOURCES)"]
+    fn bottle_orbs_start_away_from_what_it_hit() {
+        let mut game = super::super::native_machines::tests::server_game();
+        let bottle = ItemStack::new("minecraft:experience_bottle", 1);
+        let at = Vec3::new(8.5, 70.5, 8.5);
+        // (hit face, the bottle's motion, the axis and sign the orbs leave by)
+        for (face, motion, axis, sign) in [
+            (
+                Some(([9, 70, 8], Direction::West)),
+                Vec3::new(1.0, 0.0, 0.0),
+                0,
+                -1.0,
+            ),
+            (None, Vec3::new(0.0, 0.0, 1.0), 2, -1.0),
+        ] {
+            game.orbs.clear();
+            game.splash(&bottle, at, None, face, 0, &PotionOwner::default(), motion);
+            assert!(!game.orbs.is_empty());
+            let at = [at.x, at.y, at.z];
+            for o in game.orbs.iter() {
+                let p = [o.position.x, o.position.y, o.position.z];
+                let v = [o.velocity.x, o.velocity.y, o.velocity.z];
+                assert!((p[axis] - (at[axis] + sign * 0.25)).abs() < 1e-9, "{p:?}");
+                assert!(v[axis] * sign >= 0.0, "{v:?}");
+            }
+        }
     }
 }

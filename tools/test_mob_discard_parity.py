@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import zipfile
@@ -12,7 +13,7 @@ import lab
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--game-dir', type=Path, default=lab.GAME)
-    parser.add_argument('--resources', type=Path, required=True)
+    parser.add_argument('--resources', type=Path, default=lab.RESOURCES)
     parser.add_argument('--java-home', type=Path)
     args = parser.parse_args()
     build = lab.LOCAL / 'rust-mob-discard-parity'
