@@ -453,6 +453,46 @@ fn int_bounds(v: &Value, value: i32) -> bool {
     }
 }
 
+/// `ListOperation`: the list a `set_*` function's `values` and `mode` ask
+/// for over the list the component already had - `replace_all`,
+/// `replace_section` (`offset` and an optional `size`, default the new
+/// values'), `insert` at `offset`, or `append`. An offset past the end is
+/// logged and changes nothing in vanilla; it does the same here.
+fn list_operation<T: Clone>(
+    spec: &Value,
+    existing: Vec<T>,
+    mut draw: impl FnMut(&Value) -> T,
+) -> Vec<T> {
+    let values: Vec<T> = (spec["values"].as_array().into_iter().flatten())
+        .map(&mut draw)
+        .collect();
+    let offset = spec["offset"].as_i64().unwrap_or(0).max(0) as usize;
+    // A section replacement or an insertion past the end is logged and ignored.
+    let fits = offset <= existing.len();
+    match spec["mode"].as_str().unwrap_or("replace_all") {
+        "append" => existing.into_iter().chain(values).collect(),
+        "insert" if fits => {
+            let mut out = existing;
+            let tail = out.split_off(offset);
+            out.extend(values);
+            out.extend(tail);
+            out
+        }
+        "replace_section" if fits => {
+            let mut out = existing;
+            let size = (spec["size"].as_i64()).map_or(values.len(), |s| s.max(0) as usize);
+            let tail = out.split_off((offset + size).min(out.len()));
+            out.truncate(offset);
+            out.extend(values);
+            out.extend(tail);
+            out
+        }
+        "insert" | "replace_section" => existing,
+        // `replace_all`, and a mode the codec refuses
+        _ => values,
+    }
+}
+
 /// A JSON number read by an int codec (`Number.intValue`): `3.0`, which
 /// 1.21.1 mods write for rolls and counts, is 3.
 fn int_value(v: &Value) -> Option<i64> {
@@ -1627,6 +1667,52 @@ impl<R: RandomSource> Context<'_, R> {
                 let id = format!("minecraft:{target}");
                 stack.names.retain(|(k, _)| *k != id);
                 stack.names.push((id, f["name"].clone()));
+            }
+            // SetCustomModelDataFunction: the model data's four lists, each
+            // by a `ListOperation` over the component the stack already has.
+            // Floats and colours come from number providers (drawn with the
+            // loot random), flags and strings as they are written.
+            "minecraft:set_custom_model_data" => {
+                let id = "minecraft:custom_model_data";
+                let content = stack.components.iter().find(|(k, _)| k == id);
+                let mut content = content
+                    .map(|(_, v)| v.clone())
+                    .filter(Value::is_object)
+                    .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
+                let old = |key: &str| -> Vec<Value> {
+                    content[key].as_array().cloned().unwrap_or_default()
+                };
+                let mut replaced: Vec<(&str, Vec<Value>)> = Vec::new();
+                if f["floats"].is_object() {
+                    let list =
+                        list_operation(&f["floats"], old("floats"), |v| Value::from(self.float(v)));
+                    replaced.push(("floats", list));
+                }
+                if f["flags"].is_object() {
+                    let list = list_operation(&f["flags"], old("flags"), |v| {
+                        Value::Bool(v.as_bool().unwrap_or(false))
+                    });
+                    replaced.push(("flags", list));
+                }
+                if f["strings"].is_object() {
+                    let list = list_operation(&f["strings"], old("strings"), |v| {
+                        Value::String(v.as_str().unwrap_or_default().to_owned())
+                    });
+                    replaced.push(("strings", list));
+                }
+                if f["colors"].is_object() {
+                    let list =
+                        list_operation(&f["colors"], old("colors"), |v| Value::from(self.int(v)));
+                    replaced.push(("colors", list));
+                }
+                let Value::Object(map) = &mut content else {
+                    unreachable!("an object above")
+                };
+                for (key, list) in replaced {
+                    map.insert(key.to_owned(), Value::Array(list));
+                }
+                stack.components.retain(|(k, _)| k != id);
+                stack.components.push((id.to_owned(), content));
             }
             // SetComponentsFunction: the patch's components, applied when the
             // stack becomes an item (trim on worn armour, see `mobs::finalize`).
