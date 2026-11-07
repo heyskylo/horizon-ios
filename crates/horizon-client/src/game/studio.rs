@@ -591,6 +591,7 @@ impl Game<'_> {
             self.camera_type = camera_type;
         }
         self.last_replay_tick = None;
+        self.studio_virtual_tick_ms = 0.0;
         self.capture(false);
         if self.studio_replay_standalone {
             self.studio_replay_standalone = false;
