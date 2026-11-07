@@ -43,6 +43,7 @@
   "horizon.studio.replay.seek.usage": "Verwendung: /studio replay seek <MILLISEKUNDEN>",
   "horizon.studio.replay.seeked": "Studio-Wiedergabe auf %s ms (%s s) gesetzt",
   "horizon.studio.replay.seek.error": "Wiedergabe konnte nicht verschoben werden: %s",
+  "horizon.studio.replay.seek.backward_requires_standalone": "Zurückspulen ist nur bei einer eigenständigen Wiedergabe verfügbar.",
   "horizon.studio.replay.seek.invalid": "Ungültige Wiedergabeposition",
   "horizon.studio.replay.status": "Studio-Wiedergabe: %s / %s ms (%s%%), Geschwindigkeit %s×, pausiert %s, beendet %s",
   "horizon.studio.replay.closed": "Studio-Wiedergabe geschlossen",

@@ -147,6 +147,54 @@ impl ReplayDriver {
         Ok(())
     }
 
+    /// Seek from the beginning and return all packets needed to reconstruct the
+    /// replay state at `target_ms`. The first packet after the target remains
+    /// cached for normal playback.
+    pub fn seek_and_collect(&mut self, target_ms: u32) -> io::Result<Vec<TimestampedPacket>> {
+        let target_ms = target_ms.min(self.metadata.duration);
+        self.reader.seek_to_timestamp(0)?;
+        self.next_packet_cache = self.reader.next_packet()?;
+
+        let mut packets = Vec::new();
+        while self
+            .next_packet_cache
+            .as_ref()
+            .is_some_and(|packet| packet.timestamp_ms <= target_ms)
+        {
+            packets.push(self.next_packet_cache.take().expect("checked above"));
+            self.next_packet_cache = self.reader.next_packet()?;
+        }
+
+        self.cursor_ms = target_ms as f64;
+        self.finished = false;
+        Ok(packets)
+    }
+
+    /// Move forward from the current cursor and return the newly crossed packets.
+    pub fn seek_forward(&mut self, target_ms: u32) -> io::Result<Vec<TimestampedPacket>> {
+        let target_ms = target_ms.min(self.metadata.duration);
+        if (target_ms as f64) < self.cursor_ms {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "cannot seek backwards without rebuilding replay state",
+            ));
+        }
+
+        let mut packets = Vec::new();
+        while self
+            .next_packet_cache
+            .as_ref()
+            .is_some_and(|packet| packet.timestamp_ms <= target_ms)
+        {
+            packets.push(self.next_packet_cache.take().expect("checked above"));
+            self.next_packet_cache = self.reader.next_packet()?;
+        }
+
+        self.cursor_ms = target_ms as f64;
+        self.finished = false;
+        Ok(packets)
+    }
+
     /// Rewind playback to the beginning.
     pub fn restart(&mut self) -> io::Result<()> {
         self.seek(0)
@@ -341,6 +389,43 @@ mod tests {
         // Seek back to 0
         driver.seek(0).unwrap();
         assert_eq!(driver.position_ms(), 0);
+
+        let _ = fs::remove_file(mcpr_path);
+        let _ = fs::remove_dir(temp_dir);
+    }
+
+    #[test]
+    fn seek_reconstructs_packets_and_forward_seek_skips_consumed_packets() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("replay_driver_seek_test_{}", std::process::id()));
+        let _ = fs::create_dir_all(&temp_dir);
+        let mcpr_path = temp_dir.join("seek_test.mcpr");
+        let meta = Metadata {
+            duration: 1000,
+            ..Default::default()
+        };
+        let mut writer = McprWriter::new(mcpr_path.clone(), meta).unwrap();
+        let (login_id, login_payload) = play_login_packet();
+        writer.write_packet(0, login_id, &login_payload).unwrap();
+        for (timestamp, id) in [(0, 1), (100, 2), (200, 3), (500, 4)] {
+            writer.write_packet(timestamp, id, &[id as u8]).unwrap();
+        }
+        writer.finish(1000).unwrap();
+
+        let mut driver = ReplayDriver::open(&mcpr_path).unwrap();
+        let at_200 = driver.seek_and_collect(200).unwrap();
+        assert_eq!(
+            at_200.iter().map(|packet| packet.id).collect::<Vec<_>>(),
+            [login_id, 1, 2, 3]
+        );
+        assert_eq!(driver.position_ms(), 200);
+
+        let forward = driver.seek_forward(500).unwrap();
+        assert_eq!(
+            forward.iter().map(|packet| packet.id).collect::<Vec<_>>(),
+            [4]
+        );
+        assert_eq!(driver.position_ms(), 500);
 
         let _ = fs::remove_file(mcpr_path);
         let _ = fs::remove_dir(temp_dir);

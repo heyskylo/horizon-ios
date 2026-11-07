@@ -191,23 +191,33 @@ impl Game<'_> {
                         return true;
                     };
                     if let Ok(ms) = ms_str.parse::<u32>() {
-                        if let Some(r) = self.studio_replay.as_mut() {
-                            match r.seek(ms) {
+                        if self.studio_replay.is_some() {
+                            match self.seek_studio_replay(ms) {
                                 Ok(()) => {
-                                    self.reset_studio_playback_ticks();
-                                    let ms_text = ms.to_string();
-                                    let seconds = format!("{:.1}", ms as f32 / 1000.0);
+                                    let actual_ms = self
+                                        .studio_replay
+                                        .as_ref()
+                                        .map_or(ms, |replay| ms.min(replay.duration_ms()));
+                                    let ms_text = actual_ms.to_string();
+                                    let seconds = format!("{:.1}", actual_ms as f32 / 1000.0);
                                     self.system_message(Text::tr(
                                         "horizon.studio.replay.seeked",
                                         &[&ms_text, &seconds],
                                     ));
                                 }
                                 Err(e) => {
-                                    let error = e.to_string();
-                                    self.system_message(Text::tr(
-                                        "horizon.studio.replay.seek.error",
-                                        &[&error],
-                                    ));
+                                    if e.kind() == std::io::ErrorKind::Unsupported {
+                                        self.system_message(Text::translate(
+                                            "horizon.studio.replay.seek.backward_requires_standalone",
+                                            &[],
+                                        ));
+                                    } else {
+                                        let error = e.to_string();
+                                        self.system_message(Text::tr(
+                                            "horizon.studio.replay.seek.error",
+                                            &[&error],
+                                        ));
+                                    }
                                 }
                             }
                         } else {
@@ -271,6 +281,67 @@ impl Game<'_> {
         }
     }
 
+    /// Reconstruct replay state at a target timestamp. Standalone replays can
+    /// safely reset their synthetic remote; an in-world replay can only seek
+    /// forward because its pre-replay world must remain intact.
+    fn seek_studio_replay(&mut self, target_ms: u32) -> std::io::Result<()> {
+        let current_ms = self
+            .studio_replay
+            .as_ref()
+            .map_or(0, ReplayDriver::position_ms);
+        let packets = if self.studio_replay_standalone {
+            let packets = self
+                .studio_replay
+                .as_mut()
+                .expect("replay checked by caller")
+                .seek_and_collect(target_ms)?;
+            self.init_remote_for_replay()
+                .map_err(|error| std::io::Error::other(error.to_string()))?;
+            packets
+        } else {
+            if target_ms < current_ms {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "backward seek requires a standalone replay",
+                ));
+            }
+            self.studio_replay
+                .as_mut()
+                .expect("replay checked by caller")
+                .seek_forward(target_ms)?
+        };
+
+        self.dispatch_studio_replay_packets(packets);
+        self.reset_studio_playback_ticks();
+        self.last_replay_tick = Some(std::time::Instant::now());
+        Ok(())
+    }
+
+    fn dispatch_studio_replay_packets(
+        &mut self,
+        packets: Vec<horizon_client::studio::mcpr::TimestampedPacket>,
+    ) {
+        for pkt in packets {
+            match horizon_protocol::packets::play::Clientbound::decode(pkt.id, &pkt.payload) {
+                Ok(packet) => {
+                    let _ = self.handle_packet(packet);
+                }
+                Err(e) => {
+                    let name = horizon_protocol::ids::name(
+                        horizon_protocol::State::Play,
+                        horizon_protocol::Direction::Clientbound,
+                        pkt.id,
+                    )
+                    .unwrap_or("?");
+                    log::debug!(
+                        "Studio replay skipped packet {name} (id {:#x}): {e}",
+                        pkt.id
+                    );
+                }
+            }
+        }
+    }
+
     /// Advance active replay playback by elapsed frame time and dispatch ready packets.
     pub(super) fn advance_studio_replay(&mut self) -> Result<()> {
         let Some(driver) = self.studio_replay.as_mut() else {
@@ -295,25 +366,7 @@ impl Game<'_> {
             }
         };
 
-        for pkt in ready_packets {
-            match horizon_protocol::packets::play::Clientbound::decode(pkt.id, &pkt.payload) {
-                Ok(packet) => {
-                    let _ = self.handle_packet(packet);
-                }
-                Err(e) => {
-                    let name = horizon_protocol::ids::name(
-                        horizon_protocol::State::Play,
-                        horizon_protocol::Direction::Clientbound,
-                        pkt.id,
-                    )
-                    .unwrap_or("?");
-                    log::debug!(
-                        "Studio replay skipped packet {name} (id {:#x}): {e}",
-                        pkt.id
-                    );
-                }
-            }
-        }
+        self.dispatch_studio_replay_packets(ready_packets);
         let paused = self
             .studio_replay
             .as_ref()
@@ -506,11 +559,12 @@ impl Game<'_> {
             is_singleplayer,
             horizon_core::release::VERSION.into(),
         );
-        match r.session.start_recording(&path, meta) {
-            Ok(()) => {
-                self.dump_world_snapshot_to_recorder();
-                Ok(json!({ "ok": true, "path": path.display().to_string() }))
-            }
+        match r
+            .session
+            .start_recording_with_init(&path, meta, |recorder| {
+                self.dump_world_snapshot_to_recorder(recorder);
+            }) {
+            Ok(()) => Ok(json!({ "ok": true, "path": path.display().to_string() })),
             Err(e) => Ok(json!({ "ok": false, "error": e.to_string() })),
         }
     }
@@ -612,20 +666,19 @@ impl Game<'_> {
     }
     /// Dump current player pose, dimension login, center chunk, and resident loaded chunks
     /// into the recording stream at timestamp 0ms so replays accurately reconstruct the world.
-    pub(super) fn dump_world_snapshot_to_recorder(&self) {
+    pub(super) fn dump_world_snapshot_to_recorder(
+        &self,
+        recorder: &horizon_client::studio::StudioRecorder,
+    ) {
         let Some(r) = self.remote.as_ref() else {
             return;
         };
-        if !r.session.is_recording() {
-            return;
-        }
-
         let record_cb = |pkt: horizon_protocol::packets::play::Clientbound| {
             let encoded = pkt.encode();
             let mut reader = horizon_protocol::buf::Reader::new(&encoded);
             if let Ok(id) = reader.varint() {
                 let payload = reader.rest();
-                r.session.record_packet_at(0, id, payload);
+                recorder.record_packet_at(0, id, payload);
             }
         };
 

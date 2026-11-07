@@ -47,6 +47,7 @@
   "horizon.studio.replay.seek.usage": "Usage: /studio replay seek <MILLISECONDS>",
   "horizon.studio.replay.seeked": "Studio replay seeked to %s ms (%s s)",
   "horizon.studio.replay.seek.error": "Could not seek replay: %s",
+  "horizon.studio.replay.seek.backward_requires_standalone": "Rewind is only available for a standalone replay.",
   "horizon.studio.replay.seek.invalid": "Invalid replay position",
   "horizon.studio.replay.status": "Studio replay: %s / %s ms (%s%%), speed %s×, paused %s, finished %s",
   "horizon.studio.replay.closed": "Studio replay closed",

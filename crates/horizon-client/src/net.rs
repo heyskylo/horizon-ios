@@ -292,8 +292,24 @@ impl Session {
         path: impl Into<PathBuf>,
         metadata: Metadata,
     ) -> std::io::Result<()> {
+        self.start_recording_with_init(path, metadata, |_| {})
+    }
+
+    /// Start recording and initialize the stream while live packet recording is
+    /// excluded. This lets callers write the initial snapshot before packets
+    /// arriving on the network thread.
+    pub fn start_recording_with_init(
+        &self,
+        path: impl Into<PathBuf>,
+        metadata: Metadata,
+        initialize: impl FnOnce(&StudioRecorder),
+    ) -> std::io::Result<()> {
         let rec = StudioRecorder::start(path.into(), metadata)?;
-        *self.recorder.lock().unwrap() = Some(rec);
+        let mut recorder = self.recorder.lock().unwrap();
+        *recorder = Some(rec);
+        if let Some(recorder) = recorder.as_ref() {
+            initialize(recorder);
+        }
         Ok(())
     }
     /// Stop recording and finalize the `.mcpr` archive.
