@@ -1627,23 +1627,23 @@ impl Game<'_> {
     pub(super) fn toggle_hide_gui(&mut self) {
         self.ui.hide_gui = !self.ui.hide_gui;
     }
-    /// F2: ScreenShot.grab into `screenshots/` with vanilla's file name.
-    pub(super) fn take_screenshot(&mut self) {
+    /// F2: ScreenShot.grab into `screenshots/` with vanilla's file name. The
+    /// file it will write, `None` without a window to draw.
+    pub(super) fn take_screenshot(&mut self) -> Option<std::path::PathBuf> {
         let dir = horizon_client::logging::player_dir().join("screenshots");
         if std::fs::create_dir_all(&dir).is_err() {
-            return;
+            return None;
         }
         let name = screenshot_name(&dir);
-        let Some(renderer) = self.renderer.as_mut() else {
-            return;
-        };
+        let renderer = self.renderer.as_mut()?;
         let path = dir.join(name);
         renderer.screenshot = Some(horizon_client::gfx::ScreenshotRequest {
             path: path.clone(),
             size: None,
             scaled: true,
         });
-        self.ui.screenshot_message = Some(path);
+        self.ui.screenshot_message = Some(path.clone());
+        Some(path)
     }
     /// `Minecraft.handleGlobalKeyPress`'s screenshot branch: the
     /// `key.screenshot` mapping (F2 by default) takes the picture before a

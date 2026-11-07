@@ -4212,6 +4212,15 @@ chat) is the mod's to get right. It is an error when the player isn't in a serve
 joined yet or being reconfigured), and for a custom payload over the limit. Mod messages between the halves of one
 Horizon mod stay with `native_net_send_to_server`. Bundles need `"hooks": 409`.
 
+### Screenshots a client mod takes
+
+API @API:take_screenshot@, `crates/horizon-client/src/game/native_client_services.rs`: `native_take_screenshot()` takes a
+screenshot as F2 does (`ScreenShot.grab`): of the next frame, at the game's resolution times Screenshot Quality, into
+`screenshots/` with vanilla's file name, with the same "Saved screenshot as" line in chat. It returns the path (a string) of the file it will
+write, which exists once that frame is drawn. It is an error without a window to draw (a server, an offscreen run with
+no renderer), and while another screenshot waits for the frame (F2's, an agent's or the world icon's): call it again
+next frame. A timed or repeated screenshot mod calls it from its tick. Bundles need `"hooks": @API:take_screenshot@`.
+
 ### Server menus
 
 API 10, `crates/horizon-client/src/game/native_menus.rs`: menus a server mod builds from ordinary items, which a
