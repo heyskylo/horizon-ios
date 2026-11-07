@@ -6257,6 +6257,34 @@ mod tests {
     }
 
     #[test]
+    fn an_image_is_made_in_its_layout_qualifiers_format() {
+        // `image.x = … RGB10_A2 …` read through `layout(rgb10_a2) image2D x`.
+        for q in [
+            "rgba32f",
+            "rgba16f",
+            "rg16f",
+            "r11f_g11f_b10f",
+            "r32f",
+            "rgba16",
+            "rgb10_a2",
+            "rgba8",
+            "rg8",
+            "r16",
+            "rgba16_snorm",
+            "rgba8_snorm",
+            "r8_snorm",
+            "rgba32i",
+            "r16i",
+            "rgb10_a2ui",
+            "rgba8ui",
+            "r32ui",
+        ] {
+            let def = Format::parse(q).unwrap();
+            assert_eq!(Some(pack_images::format(def, true)), image_format(q), "{q}");
+        }
+    }
+
+    #[test]
     fn samplers_read_custom_textures_of_their_type() {
         use wgpu::TextureSampleType as T;
         let float = T::Float { filterable: true };
