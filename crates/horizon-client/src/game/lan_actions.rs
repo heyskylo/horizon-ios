@@ -5741,8 +5741,6 @@ fn swing_packet(id: i32, hand: Hand, animation: SwingAnimation) -> C {
     })
 }
 
-/// The block columns `Entity.isInWall` looks at: `AABB.ofSize` around the
-/// eyes, 0.8 of the body's width across (`BlockPos.betweenClosedStream`).
 /// `Entity.touchingUnloadedChunk`: the box at `at` inflated by one block
 /// reaches a chunk that is not loaded (`Level.hasChunksAt` over the floor of
 /// its minimum and the ceiling of its maximum, as section coordinates).
@@ -5764,6 +5762,8 @@ fn touching_unloaded_chunk(
     !(x0..=x1).all(|x| (z0..=z1).all(|z| loaded(x, z)))
 }
 
+/// The block columns `Entity.isInWall` looks at: `AABB.ofSize` around the
+/// eyes, 0.8 of the body's width across (`BlockPos.betweenClosedStream`).
 fn eye_columns(at: [f64; 3], body: Dimensions) -> [std::ops::RangeInclusive<i32>; 2] {
     let half = f64::from(body.width * 0.8) / 2.0;
     let range = |v: f64| (v - half).floor() as i32..=(v + half).floor() as i32;
