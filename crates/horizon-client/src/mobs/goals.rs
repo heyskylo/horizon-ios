@@ -659,20 +659,28 @@ impl Mob {
     /// for an active item with `attack_range` (the spears) by its
     /// `effectiveMaxRange` for a mob (`max_reach * mob_factor`), and not
     /// within its `effectiveMinRange` (`min_reach * mob_factor`).
-    pub fn within_melee_range(&self, t: &TargetInfo) -> bool {
-        self.melee_reaches(t.bounds)
+    pub fn within_melee_range(&self, w: &MobWorld, t: &TargetInfo) -> bool {
+        self.melee_reaches(w, t.hitbox)
     }
     /// [`Self::within_melee_range`] for a target's box (`getHitbox`).
-    pub fn melee_reaches(&self, target: Aabb) -> bool {
+    pub fn melee_reaches(&self, w: &MobWorld, target: Aabb) -> bool {
+        // getVehicle().getBoundingBox() now: a mob vehicle's box as the
+        // snapshot has it after its own tick, else the box positionRider
+        // left for this same vehicle (a boat, a minecart, primed TNT).
+        let vehicle = self.extra.mount.and_then(|v| {
+            w.seen(v)
+                .map(|s| s.bounds)
+                .or_else(|| self.extra.seat.filter(|s| s.0 == v).map(|s| s.2))
+        });
+        self.melee_reaches_beside(vehicle, target)
+    }
+    /// [`Self::melee_reaches`] with the vehicle's box given.
+    pub fn melee_reaches_beside(&self, vehicle: Option<Aabb>, target: Aabb) -> bool {
         let (max, min) = match self.active_attack_range() {
             Some((max, min)) => (f64::from(max), f64::from(min)),
             None => (2.04f32.sqrt() as f64 - 0.6, 0.0),
         };
-        let reaches = |range: f64| {
-            self.bounds()
-                .inflate(Vec3::new(range, 0.0, range))
-                .intersects(target)
-        };
+        let reaches = |range: f64| self.attack_box(range, vehicle).intersects(target);
         reaches(max) && (min <= 0.0 || !reaches(min))
     }
     /// The active item's `attack_range` for a mob: `effectiveMaxRange` and
@@ -1399,7 +1407,7 @@ impl Goal for MeleeAttack {
             return false;
         }
         let path = m.create_path_to_entity(cx.w, [t.position.x, t.position.y, t.position.z], 0);
-        let ok = path.is_some() || m.within_melee_range(&t);
+        let ok = path.is_some() || m.within_melee_range(cx.w, &t);
         m.ai.pending_path = path;
         ok
     }
@@ -1478,7 +1486,7 @@ impl Goal for MeleeAttack {
                 &t,
                 cx,
             );
-        } else if self.until_attack <= 0 && m.within_melee_range(&t) && m.sees(cx.w, who) {
+        } else if self.until_attack <= 0 && m.within_melee_range(cx.w, &t) && m.sees(cx.w, who) {
             let interval = match self.baby_interval {
                 Some(baby) if m.is_baby() => baby,
                 _ => self.interval,
@@ -1618,6 +1626,11 @@ impl NearestTarget {
     }
     pub fn interval(mut self, i: i32) -> Self {
         self.interval = reduced(i);
+        self
+    }
+    /// `TargetGoal.setUnseenMemoryTicks`.
+    pub fn unseen_memory(mut self, ticks: i32) -> Self {
+        self.target_goal.unseen_memory = ticks;
         self
     }
     /// Scale the follow distance (llamas hunt wolves within a quarter of it).
@@ -3400,34 +3413,67 @@ mod melee_range_tests {
     #[test]
     fn the_active_items_attack_range_sets_the_reach() {
         let sword = mob_holding("minecraft:iron_sword", None);
-        assert!(sword.melee_reaches(target(&sword, 0.8)));
-        assert!(!sword.melee_reaches(target(&sword, 0.9)));
+        assert!(sword.melee_reaches_beside(None, target(&sword, 0.8)));
+        assert!(!sword.melee_reaches_beside(None, target(&sword, 0.9)));
 
         let spear = mob_holding("minecraft:iron_spear", None);
-        assert!(spear.melee_reaches(target(&spear, 2.2)));
-        assert!(!spear.melee_reaches(target(&spear, 2.3)));
+        assert!(spear.melee_reaches_beside(None, target(&spear, 2.2)));
+        assert!(!spear.melee_reaches_beside(None, target(&spear, 2.3)));
         assert!(
-            !spear.melee_reaches(target(&spear, 0.5)),
+            !spear.melee_reaches_beside(None, target(&spear, 0.5)),
             "inside the minimum range"
         );
-        assert!(spear.melee_reaches(target(&spear, 1.1)));
+        assert!(spear.melee_reaches_beside(None, target(&spear, 1.1)));
 
         let long = mob_holding(
             "minecraft:iron_sword",
             Some(r#"{"minecraft:attack_range":{max_reach:6.0f}}"#),
         );
-        assert!(long.melee_reaches(target(&long, 5.9)));
+        assert!(long.melee_reaches_beside(None, target(&long, 5.9)));
         assert!(
-            long.melee_reaches(target(&long, 0.0)),
+            long.melee_reaches_beside(None, target(&long, 0.0)),
             "no minimum by default"
         );
-        assert!(!long.melee_reaches(target(&long, 6.1)));
+        assert!(!long.melee_reaches_beside(None, target(&long, 6.1)));
 
         let blunt = mob_holding(
             "minecraft:iron_spear",
             Some(r#"{"!minecraft:attack_range":{}}"#),
         );
-        assert!(blunt.melee_reaches(target(&blunt, 0.5)));
-        assert!(!blunt.melee_reaches(target(&blunt, 2.0)));
+        assert!(blunt.melee_reaches_beside(None, target(&blunt, 0.5)));
+        assert!(!blunt.melee_reaches_beside(None, target(&blunt, 2.0)));
+    }
+
+    /// `Mob.getAttackBoundingBox`: a rider's box widened on x and z to its
+    /// vehicle's (a 1.4 wide horse under a 0.6 wide zombie) before the reach
+    /// is added; `LivingEntity.getHitbox`: a rider is hit from its seat up.
+    #[test]
+    fn a_riders_attack_box_takes_its_vehicles_width() {
+        let mut rider = mob_holding("minecraft:iron_sword", None);
+        let at = rider.position;
+        let horse = Aabb::new(
+            Vec3::new(at.x - 0.7, at.y - 1.0, at.z - 0.7),
+            Vec3::new(at.x + 0.7, at.y + 0.6, at.z + 0.7),
+        );
+        // Its near face 0.9 past the zombie's box: past the default reach of
+        // the zombie alone (about 0.83), within it from the horse's side.
+        let target = target(&rider, 0.9);
+        assert!(!rider.melee_reaches_beside(None, target));
+        rider.extra.mount = Some(9);
+        rider.seated(9, 0.7, horse);
+        assert!(rider.melee_reaches_beside(Some(horse), target));
+        // Its own box keeps its height: the horse's lower box adds nothing.
+        let below = Aabb::new(
+            Vec3::new(at.x + 0.9, at.y - 1.0, at.z),
+            Vec3::new(at.x + 1.1, at.y - 0.5, at.z + 1.0),
+        );
+        assert!(!rider.melee_reaches_beside(Some(horse), below));
+
+        assert_eq!(rider.hitbox().min_position().y, at.y + 0.7);
+        // A seat left from another vehicle is not this one's.
+        rider.extra.mount = Some(10);
+        assert_eq!(rider.hitbox().min_position().y, at.y);
+        rider.extra.mount = None;
+        assert_eq!(rider.hitbox().min_position().y, at.y);
     }
 }
