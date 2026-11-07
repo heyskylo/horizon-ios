@@ -55,13 +55,10 @@ impl Game<'_> {
         let Some(t) = self.native_entity_target(entity) else {
             return false;
         };
-        let Some(pos) = self.target_position(t) else {
-            return false;
-        };
-        if !yaw.is_finite() || !pitch.is_finite() {
+        if self.target_position(t).is_none() || !yaw.is_finite() || !pitch.is_finite() {
             return false;
         }
-        self.teleport_to(t, pos, Some([yaw, pitch]), true);
+        self.set_rotation(t, [yaw, pitch]);
         true
     }
     /// The yaw of the entity's head (`Entity.getYHeadRot`): a mob's or a
