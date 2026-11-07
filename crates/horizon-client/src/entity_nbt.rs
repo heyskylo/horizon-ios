@@ -2514,7 +2514,8 @@ fn item_uuid_from_tag(tag: Option<&Tag>) -> Option<[i32; 4]> {
     values.get(..4)?.try_into().ok()
 }
 
-/// `ItemEntity.readAdditionalSaveData`: Owner and Thrower use the numeric UUID codec.
+/// `ItemEntity.readAdditionalSaveData`: Health uses NumericTag's short conversion;
+/// Owner and Thrower use the numeric UUID codec.
 pub fn item_entity_from_nbt(tag: &Tag, id: u32, bob_offset: f32) -> Option<ItemEntity> {
     let stack = item_from_nbt(tag.get("Item")?)?;
     let position = position(tag)?;
@@ -2522,7 +2523,12 @@ pub fn item_entity_from_nbt(tag: &Tag, id: u32, bob_offset: f32) -> Option<ItemE
         rotation: rotation(tag),
         join: Default::default(),
         no_gravity: flag(tag, "NoGravity"),
-        health: number(tag.get("Health")).unwrap_or(5) as i32,
+        // getShortOr floors floating values to int before short narrowing.
+        health: i32::from(match tag.get("Health") {
+            Some(Tag::Float(v)) => f32::from_bits(*v).floor() as i32 as i16,
+            Some(Tag::Double(v)) => f64::from_bits(*v).floor() as i32 as i16,
+            other => number(other).unwrap_or(5) as i16,
+        }),
         fire_ticks: number(tag.get("Fire")).unwrap_or(0) as i32,
         id,
         stack,
@@ -4724,6 +4730,50 @@ mod tests {
         legacy.pickup_delay = i64::from(u32::MAX);
         assert!(tick(&mut legacy));
         assert_eq!(legacy.pickup_delay, i64::from(u32::MAX));
+    }
+
+    #[test]
+    fn item_health_uses_floor_then_short_narrowing() {
+        let cases = [
+            (None, 5),
+            (Some(Tag::Short(5)), 5),
+            (Some(Tag::Int(5)), 5),
+            (Some(Tag::Long(5)), 5),
+            (Some(Tag::Byte(5)), 5),
+            (Some(Tag::Float((-1.5_f32).to_bits())), -2),
+            (Some(Tag::Double((-1.5_f64).to_bits())), -2),
+            (Some(Tag::Float(1.5_f32.to_bits())), 1),
+            (Some(Tag::Double(1.5_f64.to_bits())), 1),
+            (Some(Tag::Double((-40000.5_f64).to_bits())), 25535),
+            (Some(Tag::Int(32767)), 32767),
+            (Some(Tag::Int(32768)), -32768),
+            (Some(Tag::Int(-32768)), -32768),
+            (Some(Tag::Int(-32769)), 32767),
+            (Some(Tag::Long(65535)), -1),
+            (Some(Tag::Long(65536)), 0),
+            (Some(Tag::Long(-65537)), -1),
+            (Some(Tag::Long(i64::MAX)), -1),
+            (Some(string("not_numeric")), 5),
+            (Some(Tag::Compound(Compound::new())), 5),
+        ];
+        for (input, expected) in cases {
+            let mut tag = Tag::compound([
+                ("id", string("minecraft:item")),
+                ("Pos", doubles(&[4.5, 200.0, 4.5])),
+                ("NoGravity", Tag::Byte(1)),
+                (
+                    "Item",
+                    Tag::compound([("id", string("minecraft:diamond")), ("count", Tag::Int(1))]),
+                ),
+            ]);
+            if let Some(input) = input {
+                put(&mut tag, "Health", input);
+            }
+            let item = item_entity_from_nbt(&tag, 9, 0.0).unwrap();
+            assert_eq!(item.health, expected, "input {tag:?}");
+            let saved = item_entity_to_nbt(&item, [1, 2, 3, 4], None);
+            assert_eq!(saved.get("Health"), Some(&Tag::Short(expected as i16)));
+        }
     }
 
     #[test]
