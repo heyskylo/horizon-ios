@@ -2382,7 +2382,10 @@ impl Game<'_> {
             push(&mut lines, text, gray);
         }
         if display.shows("minecraft:trim")
-            && let Some((material, pattern)) = stack.data().and_then(|d| d.trim.clone())
+            && let Some((material, pattern)) = stack
+                .data()
+                .and_then(|d| d.trim.as_ref())
+                .and_then(horizon_client::item_data::trim::named)
         {
             push(
                 &mut lines,
@@ -2391,10 +2394,10 @@ impl Game<'_> {
                 rgba(170, 170, 170, 255),
             );
             let short = |s: &str| s.trim_start_matches("minecraft:").to_owned();
-            let p = translate(&format!("trim_pattern.minecraft.{}", short(&pattern)))
-                .unwrap_or_else(|| short(&pattern));
-            let m = translate(&format!("trim_material.minecraft.{}", short(&material)))
-                .unwrap_or_else(|| short(&material));
+            let p = translate(&format!("trim_pattern.minecraft.{}", short(pattern)))
+                .unwrap_or_else(|| short(pattern));
+            let m = translate(&format!("trim_material.minecraft.{}", short(material)))
+                .unwrap_or_else(|| short(material));
             push(&mut lines, format!(" {p}"), rgba(170, 170, 170, 255));
             push(&mut lines, format!(" {m}"), rgba(170, 170, 170, 255));
         }

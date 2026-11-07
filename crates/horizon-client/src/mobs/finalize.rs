@@ -1109,10 +1109,7 @@ pub fn equip_stack(
             .iter()
             .find(|(id, _)| id == "minecraft:trim")
             .and_then(|(_, v)| {
-                Some((
-                    Arc::from(v["material"].as_str()?),
-                    Arc::from(v["pattern"].as_str()?),
-                ))
+                crate::item_data::trim::from_nbt(&horizon_client_core::scoreboard::json_to_tag(v))
             });
         gear::set_trim(m, gear_slot(slot), trim);
     }

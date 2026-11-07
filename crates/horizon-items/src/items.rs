@@ -2133,10 +2133,10 @@ fn loot_of(stack: &ItemStack) -> horizon_world::loot::LootStack {
                 horizon_client_core::scoreboard::tag_to_json(name),
             ));
         }
-        if let Some((material, pattern)) = &data.trim {
+        if let Some(trim) = &data.trim {
             components.push((
                 "minecraft:trim".to_owned(),
-                serde_json::json!({"material": &**material, "pattern": &**pattern}),
+                horizon_client_core::scoreboard::tag_to_json(&crate::item_data::trim::to_nbt(trim)),
             ));
         }
     }

@@ -759,7 +759,7 @@ fn apply_trim(
     pattern: &str,
 ) -> Option<ItemStack> {
     let material = e.props(&material.item)?.trim_material.clone()?;
-    let trim = (Arc::from(material.as_str()), Arc::from(pattern));
+    let trim: crate::item_data::Trim = (material.as_str().into(), pattern.into());
     if base.data().and_then(|d| d.trim.as_ref()) == Some(&trim) {
         return None;
     }
