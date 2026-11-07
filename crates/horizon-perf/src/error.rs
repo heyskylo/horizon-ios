@@ -1,0 +1,45 @@
+use std::fmt;
+
+use horizon_perf_format::v1::Side;
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Error {
+    NotGzip,
+    Corrupt(String),
+    FormatTooNew { found: u32, supported: u32 },
+    Unfinished { side: Side },
+    Empty,
+    NoSuchSide { side: Side },
+}
+
+pub fn side_name(side: Side) -> &'static str {
+    match side {
+        Side::Server => "server",
+        Side::Client => "client",
+        Side::Unspecified => "unknown",
+    }
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Error::NotGzip => write!(f, "this file is not a .hzperf capture: it is not gzip data"),
+            Error::Corrupt(detail) => write!(f, "this capture is damaged: {detail}"),
+            Error::FormatTooNew { found, supported } => write!(
+                f,
+                "this capture is format {found}; this horizon-perf reads up to {supported}: update it"
+            ),
+            Error::Unfinished { side } => write!(
+                f,
+                "this capture has no end for its {} side: it is still being written or the game stopped",
+                side_name(*side)
+            ),
+            Error::Empty => write!(f, "this capture has no data yet: it is still being written"),
+            Error::NoSuchSide { side } => {
+                write!(f, "this capture has no {} side", side_name(*side))
+            }
+        }
+    }
+}
+
+impl std::error::Error for Error {}

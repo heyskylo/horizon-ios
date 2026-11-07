@@ -1,0 +1,21 @@
+[package]
+name = "horizon-perf"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Dev tool that reads .hzperf captures (docs/perf-platform.md §2.2): readers, summary, list and follow"
+
+[dependencies]
+horizon-perf-format = { path = "../horizon-perf-format" }
+prost = "0.14"
+flate2 = { version = "1.1.10", default-features = false, features = ["rust_backend"] }
+serde_json = "1"
+
+[[bin]]
+name = "horizon-perf"
+path = "src/main.rs"
+
+[lints]
+workspace = true

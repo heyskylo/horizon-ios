@@ -1,0 +1,284 @@
+use horizon_perf_format::v1::{Capture, HealthSample, Kind, Side, Start, Stop};
+
+use crate::error::{Error, side_name};
+use crate::health::{live, max, mean, trailing_mean};
+
+/// Default size of a summary in tokens, measured as bytes / 4.
+pub const DEFAULT_BUDGET: usize = 1500;
+
+const TARGET_TPS: f64 = 20.0;
+const TRAILING_WINDOWS: [(&str, f64); 3] = [("1m", 60.0), ("5m", 300.0), ("15m", 900.0)];
+
+#[derive(Clone, Debug)]
+pub struct SummaryOptions {
+    pub budget_tokens: usize,
+    pub side: Option<Side>,
+}
+
+impl Default for SummaryOptions {
+    fn default() -> Self {
+        Self {
+            budget_tokens: DEFAULT_BUDGET,
+            side: None,
+        }
+    }
+}
+
+/// The agent report with a header and the health verdict per side, server first.
+pub fn summarize(capture: &Capture, name: &str, options: &SummaryOptions) -> Result<String, Error> {
+    let present = |side: Side| {
+        capture.start.iter().any(|s| s.side() == side)
+            || capture.health.iter().any(|h| h.side() == side)
+            || capture.stop.iter().any(|s| s.side() == side)
+    };
+    if let Some(side) = options.side
+        && !present(side)
+    {
+        return Err(Error::NoSuchSide { side });
+    }
+    let sides: Vec<Side> = [Side::Server, Side::Client]
+        .into_iter()
+        .filter(|&side| options.side.is_none_or(|only| only == side) && present(side))
+        .collect();
+    if sides.is_empty() {
+        return Err(Error::Empty);
+    }
+    let sections = sides
+        .into_iter()
+        .map(|side| side_rows(capture, name, side))
+        .collect();
+    Ok(fit(sections, options.budget_tokens))
+}
+
+/// Cuts rows from the bottom of the lists, never a section's first row, until the text fits.
+fn fit(mut sections: Vec<Vec<String>>, budget_tokens: usize) -> String {
+    let size = |sections: &[Vec<String>]| -> usize {
+        sections
+            .iter()
+            .flatten()
+            .map(|row| row.len() + 1)
+            .sum::<usize>()
+            / 4
+    };
+    while size(&sections) > budget_tokens {
+        match sections.iter_mut().rev().find(|rows| rows.len() > 1) {
+            Some(rows) => {
+                rows.pop();
+            }
+            None => break,
+        }
+    }
+    let mut text = sections
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join("\n");
+    text.push('\n');
+    text
+}
+
+fn side_rows(capture: &Capture, name: &str, side: Side) -> Vec<String> {
+    let start = capture.start.iter().find(|s| s.side() == side);
+    let stop = capture.stop.iter().find(|s| s.side() == side);
+    let samples = live(capture, side);
+    let mut rows = vec![header(name, side, start, stop, &samples)];
+    rows.extend(health_rows(capture, side, start, stop, &samples));
+    rows
+}
+
+fn header(
+    name: &str,
+    side: Side,
+    start: Option<&Start>,
+    stop: Option<&Stop>,
+    samples: &[&HealthSample],
+) -> String {
+    let what = match start.map(|s| s.kind()) {
+        Some(Kind::Dedicated) => "dedicated server",
+        Some(Kind::Integrated) => "integrated server",
+        Some(Kind::Client) => "client",
+        _ => side_name(side),
+    };
+    let seconds = stop
+        .map(|s| s.t)
+        .or_else(|| max(samples.iter().map(|h| h.t)))
+        .unwrap_or(0.0);
+    let mut parts = vec![what.to_string(), format!("{seconds:.1} s")];
+    if let Some(build) = start.and_then(|s| s.build.as_ref()) {
+        let mut text = String::from("Horizon");
+        for piece in [
+            non_empty(&build.version).map(str::to_string),
+            non_empty(&build.commit).map(|c| format!("({c})")),
+            non_empty(&build.profile).map(str::to_string),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            text.push(' ');
+            text.push_str(&piece);
+        }
+        parts.push(text);
+    }
+    if let Some(machine) = start.and_then(|s| s.machine.as_ref()) {
+        let platform = [
+            non_empty(&machine.os).map(capitalize),
+            non_empty(&machine.arch).map(str::to_string),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" ");
+        if !platform.is_empty() {
+            parts.push(platform);
+        }
+        if machine.cpu_threads > 0 {
+            parts.push(format!("{} threads", machine.cpu_threads));
+        }
+    }
+    format!("{name}: {}", parts.join(", "))
+}
+
+fn health_rows(
+    capture: &Capture,
+    side: Side,
+    start: Option<&Start>,
+    stop: Option<&Stop>,
+    samples: &[&HealthSample],
+) -> Vec<String> {
+    if samples.is_empty() {
+        return vec!["health  no health samples in this capture".into()];
+    }
+    let field = |pick: fn(&HealthSample) -> Option<f32>| {
+        samples.iter().filter_map(move |h| pick(h)).map(f64::from)
+    };
+    let mut first = Vec::new();
+    if side == Side::Server {
+        if let Some(tps) = mean(field(|h| h.tps)) {
+            let mut text = format!("TPS {tps:.1}/{TARGET_TPS:.0}");
+            let end = stop.map_or_else(|| max(samples.iter().map(|h| h.t)).unwrap_or(0.0), |s| s.t);
+            let trailing: Vec<String> = TRAILING_WINDOWS
+                .iter()
+                .filter_map(|(label, window)| {
+                    trailing_mean(capture, side, end, *window, |h| h.tps)
+                        .map(|v| format!("{label} {v:.1}"))
+                })
+                .collect();
+            if !trailing.is_empty() {
+                text.push_str(&format!(" ({})", trailing.join(", ")));
+            }
+            first.push(text);
+        }
+        let mut mspt = Vec::new();
+        if let Some(v) = mean(field(|h| h.mspt_avg)) {
+            mspt.push(format!("avg {v:.1}"));
+        }
+        if let Some(v) = max(field(|h| h.mspt_p95)) {
+            mspt.push(format!("worst-second p95 {v:.1}"));
+        }
+        if let Some(v) = max(field(|h| h.mspt_max)) {
+            mspt.push(format!("max {v:.1}"));
+        }
+        if !mspt.is_empty() {
+            first.push(format!("MSPT {} ms", mspt.join(" · ")));
+        }
+    } else {
+        let mut fps = Vec::new();
+        if let Some(v) = mean(field(|h| h.fps)) {
+            fps.push(format!("FPS avg {v:.1}"));
+        }
+        let mut frame = Vec::new();
+        if let Some(v) = mean(field(|h| h.frame_ms_p50)) {
+            frame.push(format!("p50 {v:.1}"));
+        }
+        for (label, v) in [
+            ("worst-second p95", max(field(|h| h.frame_ms_p95))),
+            ("worst-second p99", max(field(|h| h.frame_ms_p99))),
+            ("max", max(field(|h| h.frame_ms_max))),
+        ] {
+            if let Some(v) = v {
+                frame.push(format!("{label} {v:.1}"));
+            }
+        }
+        first.extend(fps);
+        if !frame.is_empty() {
+            first.push(format!("frame {} ms", frame.join(" · ")));
+        }
+    }
+
+    let mut second = Vec::new();
+    let cpu = mean(samples.iter().map(|h| f64::from(h.cpu_process_cores)));
+    let system = mean(samples.iter().map(|h| f64::from(h.cpu_system_cores)));
+    if let Some(cpu) = cpu {
+        let mut text = format!("CPU {cpu:.1} cores");
+        if let Some(system) = system {
+            let threads = start
+                .and_then(|s| s.machine.as_ref())
+                .map_or(0, |m| m.cpu_threads);
+            if threads > 0 {
+                text.push_str(&format!(" (system {system:.1} of {threads})"));
+            } else {
+                text.push_str(&format!(" (system {system:.1})"));
+            }
+        }
+        second.push(text);
+    }
+    let (first_sample, last) = (samples[0], samples[samples.len() - 1]);
+    second.push(format!(
+        "RSS {} ({:+.0} MB over the window)",
+        megabytes(f64::from(last.rss_mb)),
+        f64::from(last.rss_mb) - f64::from(first_sample.rss_mb)
+    ));
+    if side == Side::Server {
+        second.push(format!("{} players", last.players));
+    }
+    if last.chunks > 0 {
+        second.push(format!("{} chunks", thousands(last.chunks)));
+    }
+    if last.entities > 0 {
+        second.push(format!("{} entities", thousands(last.entities)));
+    }
+
+    let mut rows = Vec::new();
+    if !first.is_empty() {
+        rows.push(format!("health  {}", first.join(" · ")));
+    }
+    let lead = if rows.is_empty() {
+        "health  "
+    } else {
+        "        "
+    };
+    rows.push(format!("{lead}{}", second.join(" · ")));
+    rows
+}
+
+fn non_empty(text: &str) -> Option<&str> {
+    (!text.is_empty()).then_some(text)
+}
+
+fn capitalize(text: &str) -> String {
+    let mut chars = text.chars();
+    chars
+        .next()
+        .map(|c| c.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
+}
+
+fn megabytes(mb: f64) -> String {
+    if mb >= 1024.0 {
+        format!("{:.1} GB", mb / 1024.0)
+    } else {
+        format!("{mb:.0} MB")
+    }
+}
+
+fn thousands(n: u32) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
