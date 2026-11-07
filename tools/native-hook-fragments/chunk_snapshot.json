@@ -1,0 +1,14 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "chunk_snapshot", "target": "horizon_client::game::native_chunk_snapshot::Game<'_>::native_chunk_snapshot"},
+    {"name": "block_map_color", "target": "horizon_client::game::native_chunk_snapshot::Game<'_>::native_block_map_color"},
+    {"name": "biome_name", "target": "horizon_client::game::native_chunk_snapshot::Game<'_>::native_biome_name"},
+    {"name": "biome_tint", "target": "horizon_client::game::native_chunk_snapshot::Game<'_>::native_biome_tint"}
+  ],
+  "rust_summary": "read-only chunk snapshots (`native_chunk_snapshot`) with block map colours and biome tints (`native_block_map_color`, `native_biome_name`, `native_biome_tint`).",
+  "doc_summary": "`native_chunk_snapshot(dimension, chunk)`, a read-only `NativeChunkSnapshot` of a loaded chunk (block states, surface heights, biomes) that can be read on another thread, with `native_block_map_color(state)`, `native_biome_name(biome)` and `native_biome_tint(biome, x, z)` to draw it. Bundles need \"hooks\": @API:chunk_snapshot@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_chunk_snapshot.rs"
+  ]
+}

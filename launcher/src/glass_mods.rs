@@ -79,7 +79,7 @@ impl Launcher {
                 })),
             );
         }
-        let wide = self.window_width >= 1200.;
+        let wide = self.window_width >= crate::glass_home::SIDE_BY_SIDE;
         let header = if wide {
             div()
                 .flex()
