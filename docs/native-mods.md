@@ -1202,6 +1202,18 @@ API 144 adds a player's or mob's breathing, on the single player server thread a
 
 API 145 adds blocks and items a native mod declares in code, as NeoForge's `DeferredRegister.Blocks` and `.Items` drained by `RegisterEvent`, instead of one content file each: `native_blocks(blocks)` and `native_items(items)`, asked once at start on every side, take `horizon_mods::content::Block` and `Item`, the declarations a content mod's `data/<id>/horizon/block/` and `item/` files hold (a vanilla template and what differs; `item: true` gives a block its item). Ids are in the mod's namespace. They join the content mods' blocks and items, inside the content mod whose id is that namespace when it is on (its models, textures, loot and recipes), else on their own with the template's look, so their network ids, saves and the joining client's content check are the files' (docs/mods.md). They pass the files' checks; a namespace whose declarations don't is logged and left out. Bundles that use them need `"hooks": 145`.
 
+`Item.place_block: Option<String>` binds an item to an ordinary `BlockItem` placement of a vanilla
+block or a block in the item's namespace, including blocks with `item: false`. It uses the same
+[content field](mods.md) on clients and servers. Components still come from the item template;
+the placement context, consumption and statistics retain the alias item's ID. It does not inherit
+specialized placement-item behavior from the component template.
+
+Prepared-resource regression tests explicitly exercise this boundary:
+`cargo test -p horizon-client-lib --lib place_block_aliases_keep_ -- --ignored` checks both level
+contexts; `HORIZON_TEST_RESOURCES=<prepared-root> cargo test -p horizon-client --lib
+place_block_alias_survival_ -- --ignored` checks ordinary survival consumption, adventure refusal
+and dry client prediction. These native tests do not require a renderer or game window.
+
 API 146 adds entities ticking, through `native_entity_tick_pre` (NeoForge's `EntityTickEvent.Pre`) and `native_entity_tick_post` (`EntityTickEvent.Post`), with the entity's id and type (`minecraft:zombie`, `minecraft:item`) and the level. Set `canceled` in the Pre and the entity doesn't tick this tick (and its Post isn't told). Told for the mobs, item entities, minecarts and boats that tick in an entity-ticking chunk, on the single player server thread and on a dedicated server; not for a player's own boat or minecart, projectiles, orbs, primed TNT, falling blocks or armor stands yet (check `kind`: later APIs add kinds). Mobs and items hear every Pre before the family's first tick and every Post after its last; minecarts and boats hear theirs around each one's tick. A mod that hooks them also hooks `native_entity_tick_listened(listened)` and sets `*listened = true`: otherwise no entity's tick is told. It runs each tick for every ticking entity, so keep it cheap. Bundles that use them need "hooks": 146.
 
 API 147 adds a fluid handler on items (`Capabilities.FluidHandler.ITEM`). `native_item_fluid_tank(item, capacity)` makes a mod item a container with a capacity in millibuckets; what it holds lives in the stack's `minecraft:custom_data` under `horizon_fluid` (`Fluid`, `Amount`), so it is saved, sent to Horizon clients and stacks only with equal contents. `native_item_fluid(stack)` reads one item of a stack (vanilla's buckets are built in: empty, water and lava, a whole bucket or nothing); `native_item_fluid_fill(stack, fluid, amount)` and `native_item_fluid_drain(stack, max)` answer how much one item takes or gives and the single item it becomes, as `IFluidHandler.fill`/`drain` through an `ItemAccess`; the stack given is not changed, so the caller shrinks it by one and hands out the result. They work on any side. Bundles need "hooks": 147.
@@ -1786,7 +1798,7 @@ trusting native code is the player's decision, never an agent's.
 1. **Rust.** The launcher's own toolchain ([`rust_toolchain`](../launcher/src/rust_toolchain.rs)): Rust 1.99.1's
    official `rustc`, `cargo` and `rust-std` (and `rust-mingw` on Windows), each pinned by SHA-256, downloaded once
    from static.rust-lang.org into `<launcher data>/rust/`, with its own Cargo home `<launcher data>/cargo/`. No
-   rustup, nothing on the system; the player's own Rust is never used. It ships for macOS on Apple Silicon, Linux
+   rustup, nothing on the system; the player's own Rust is never used. It ships for macOS (Apple Silicon and Intel), Linux
    x86-64, Windows x64 and Windows ARM64. The managed compiler follows the launcher's process architecture. An x64
    launcher running under ARM64 emulation keeps the existing x64 Rust and MinGW toolchain. The game architecture
    setting does not switch the compiler or enable cross-compilation. Windows x64 uses `x86_64-pc-windows-gnu` and
@@ -1809,8 +1821,7 @@ trusting native code is the player's decision, never an agent's.
    including when it runs under ARM64 emulation. A selection that does not match the launcher's process architecture
    is rejected, and an ARM64 selection that has only installed the x64 fallback is rejected by the PE check. Install
    a matching game build before building native mods. ARM64EC executables are unsupported. ARM64 Cargo artifacts
-   and build records have their own cache namespace; the existing x64 cache layout is unchanged. An Intel Mac has
-   no bundled compiler either, so native builds there stop with "the launcher has none for macos x86_64". The linker
+   and build records have their own cache namespace; the existing x64 cache layout is unchanged. The linker
    is the system's on macOS (the Command Line Tools: the launcher asks for `xcode-select --install`) and Linux (`cc`).
    On Linux the game also builds against the system's ALSA (`alsa-sys`) and libudev (`libudev-sys`, `hidapi`), found
    with `pkg-config`, whose development files desktop distributions don't install. Before downloading anything the
@@ -2159,6 +2170,13 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   `number`, `boolean`, `player`, `item`, `block_pos`. The usages of one command merge into one tree, which every
   player receives after vanilla's (filtered by their level, as vanilla's is), so their chat box completes and colours
   it. A name vanilla has, or a usage that doesn't parse, is left out with a warning in the log.
+- **`native_refresh_commands()`** (`host.refresh_commands()` for trait mods, API @API:refresh_commands@): a helper for
+  a mod whose commands change while the server runs (a plugin host that reloads a plugin, a mod turned on at run time).
+  At the start of the next server tick every mod's `native_register_commands` is asked again, the commands players may
+  run (`native_perform_command`, with their levels) are rebuilt, and every player on the server is sent their tree
+  again, after `native_player_commands_sent`, as vanilla sends `Commands.sendCommands` to each player after `/reload`.
+  Call it after you change what you register; nothing happens where no world is open to players, and a server whose
+  mods never call it is unchanged.
 - **`native_armor_stand_manipulate(player, name, stand_id, slot, cancel)`**: a player takes an item from an armor stand or
   puts one on it, heard after the stand's disabled-slot checks and before anything moves. `slot` is `mainhand`,
   `offhand`, `feet`, `legs`, `chest` or `head`. Set `cancel` and nothing changes (the click is spent). The player's
@@ -2445,6 +2463,7 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
 - **`native_enchant_item(player, name, pos, item, levels)`**: a player applied an enchantment at `pos`; `item` is the finished item and `levels` the levels charged. Guest state is not swapped in.
 - **`native_prepare_item_enchant(player, name, pos, costs)`**: enchanting offers were calculated at `pos`; change the three offer costs before they are sent to the player's menu. Guest state is not swapped in.
 - **`native_prepare_anvil(player, name, pos, result, cost)`**: an anvil result was prepared for a player at `pos`; change the result or level cost before it is sent to their menu. Guest state is not swapped in.
+- **`native_anvil_update(player, name, left, right, item_name, vanilla_output, vanilla_xp_cost, vanilla_material_cost, output, xp_cost, material_cost, canceled)`**: NeoForge's `AnvilUpdateEvent`, where `AnvilMenu.createResult` ends, each time the inputs or the rename box's `item_name` change while the left slot holds an item. `right` is none when that slot is empty, and `item_name` is none until the client sent one (empty clears a custom name). `vanilla_output`, `vanilla_xp_cost` and `vanilla_material_cost` are vanilla's result. `output`, `xp_cost` (the level cost) and `material_cost` (how many of `right` the take uses) start as vanilla's, and every mod in turn may change them. Set `canceled` to leave no result, with both costs at 0; later mods aren't called. A negative level cost becomes 0, and a result that costs 0 levels can't be taken. A material cost of 0 or less, or above what `right` holds, takes the whole stack (none when the anvil only renames). It fires on both sides: on a host (single player's server thread, a LAN or dedicated host) for each player's menu, before `native_prepare_anvil`, and in the window's own menu, whose predicted take then charges what the station shows. The window works its result out again after each click in the menu, so it may ask about the same inputs again: a mod should answer from what it is told. Guest state is not swapped in.
 - **`native_anvil_craft_pre(player, name, pos, craft, cancel)`**: a player took an anvil's result at `pos` (NeoForge's `AnvilCraftEvent.Pre`), before the levels are charged, the inputs used up and the anvil worn. `craft` has the left and right inputs and the result as they were before. Set `cancel` to refuse the take and skip `native_anvil_craft_post`: the result stays in its slot and the inputs, levels, inventory and cursor are as before the click. Fires on the server only; the window's predicted take does not call it.
 - **`native_anvil_craft_post(player, name, pos, craft)`**: the levels, inputs and anvil wear of that take are done (NeoForge's `AnvilCraftEvent.Post`); a broken anvil is already air. `craft` is the same as in `native_anvil_craft_pre`. Not called when it cancelled.
 - **`native_prepare_grindstone(player, name, pos, result)`**: a grindstone result was prepared for a player at `pos`; change it before it is sent to their menu. Guest state is not swapped in.
@@ -2632,6 +2651,30 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   does nothing and the blow does no harm. A fluid or mob bucket also asks about the block beside the clicked face
   whenever that block is not its target, since a block that refuses the fluid passes it there; the fluid may still
   stay in the target.
+
+#### Server hooks for plugin ports: player bots
+
+Helpers for server mods whose bots are server players driven by the mod (a fake client that sends its own moves, as a
+PvP bot plugin's), in `crates/horizon-client/src/game/native_bots.rs`, on a server only. Nothing runs unless a mod
+calls them, and neither changes the player or the level. API @API:player_bots@.
+
+- **`native_simulate_player_move(uuid, NativePlayerInput) -> Option<NativeSimulatedMove>`** plays one tick of the
+  server player's own movement from a bot's keys, with the client movement code the server's movement prediction
+  replays a client tick with (`LocalPlayer.aiStep` and `Player.travel`): `forward` and `strafe` (-1..1; a value in
+  between is a stick's partial push), `jump`, `sneak` (slower, held at edges), `sprint` (only with a forward input),
+  `yaw` and `pitch` in degrees. Gravity, friction, block speed factors, stepping up, swimming and climbing follow. It
+  starts where the player is now, with `velocity` when given, else the server's copy: the server doesn't keep a bot's
+  momentum, so pass back the `velocity` of the last answer each tick. The answer is the `position`, `velocity`,
+  `on_ground`, `horizontal_collision` and `sprinting` after the tick; the player stays where they are until the mod
+  moves them (its bot's move packet, `native_teleport_player`). Entities don't block it (a boat, a shulker). None off
+  a server, for a player in another level than the one in place, a guest out of reach inside another player's hook
+  (the hub is taken out), dead, a spectator or riding, and for an input that is not a number.
+- **`native_collision_boxes(dimension, aabb) -> Vec<[f64; 6]>`** lists the block collision boxes that share volume
+  with `aabb` (`[min_x, min_y, min_z, max_x, max_y, max_z]`) in the level `dimension`, in world space, as
+  `Level.getBlockCollisions(null, aabb)` gives them under the empty collision context (a stair gives two boxes, a
+  fence its post): for a bot's own collision checks and pathfinding. Entities and the world border aren't in it.
+  Empty off a server, for another level than the one in place, a box whose corners are not numbers or out of order,
+  and a box over about a million blocks.
 
 ### Mobs
 
@@ -3150,6 +3193,37 @@ pieces.
   The tints are the biome's own at the column's top, not blended over the biome blend radius as the game draws them, so
   near a biome border they can differ from what players see by a few blocks.
 
+### Client world snapshots
+
+`crates/horizon-client/src/game/native_client_world.rs`: helpers for client mods that read the world in bulk on their
+own threads (a minimap baking tiles, a world map export, a shader pack's CPU side). They read the client world, what
+the window shows: on a client of a server, the chunks the server sent. API @API:client_world_snapshots@.
+
+- `native_client_chunks(from, to)` takes the loaded chunks from chunk `from` to chunk `to` (`[x, z]`, both included, in
+  either order) as `NativeClientChunks`, which is `Send` and `Sync`. It shares the chunks with the world, so taking or
+  cloning one copies no blocks. It reads by block position: `block(pos)` (a `BlockStateId`; air outside the world's
+  height and in columns not loaded), `biome(pos)` (a `NativeBiomeId`, one a 4 by 4 by 4 cell, `y` clamped to the build
+  height; none where not loaded), `loaded([x, z])`, `section_top([x, z])` (one above the highest 16-block section of the
+  column's chunk that isn't all air: the column is air from there up) and `height()` (the world's build height, from its
+  lowest y to one above its highest; `native_world_height` gives the lowest y and the height instead). `Err`, taking
+  nothing, on a server or for an area of more than 66,049 chunks (the square a render distance of 128 loads).
+- `native_client_chunks_changed(&snapshot)` names the chunks of the snapshot's area, in no set order, whose state in the
+  world differs from the snapshot's now: written to since it was taken (blocks, biomes or light, even a write that left
+  them the same), or loaded or unloaded where the snapshot had them the other way. Empty means the snapshot's blocks and
+  biomes are still the world's. A snapshot keeps its chunks as they were, so the world copies the section it edits in a
+  held chunk: drop snapshots you no longer read.
+- `native_client_biomes()` gives the biome table the terrain is drawn with (`NativeClientBiomes`, `Send` and `Sync`), a
+  mod's `native_biome_colors` included, none on a server. `name(id)` is the biome's name (`minecraft:plains`) and
+  `colors(id, [x, z])` its `BiomeColors` at a column: grass as drawn there (the dark forest's darkening, the swamp's
+  noise), foliage, dry foliage and water, before the biome blend the terrain smooths them with.
+  `native_client_biomes_changed(&biomes)` says when the terrain is drawn with another table (a mod recoloured the biomes
+  with `native_refresh_biome_colors`, the resources loaded again, another world opened): what was tinted from the old
+  one is out of date even where no chunk changed.
+
+A minimap takes a snapshot of the chunks a tile can see, bakes the tile from it on its worker, and keeps the snapshot
+and the biome table with the tile. Every so often it asks `native_client_chunks_changed` for the tiles in view and
+bakes again those with a changed chunk, and all of them when `native_client_biomes_changed` says so.
+
 ### Structure templates
 
 `crates/horizon-client/src/game/native_structures.rs`: a helper for server mods that reads a structure template without
@@ -3371,6 +3445,48 @@ as the terrain samples them. API 380.
   layers, and the arrays are new): ask again then.
 
 Look blocks up once and keep what you need (a few words a block for your own shader), not every frame.
+
+### Block states and resource files
+
+`crates/horizon-client/src/game/native_block_sprites.rs`, `horizon_client::block_states` and
+`horizon_client::client_resources`: for a client mod working out what every block looks like (a map's colours, a
+voxel renderer's table) or reading textures, on a thread of its own. `native_block_states()` returns a copy to keep,
+and `native_client_resources()` a handle that reads the files on disk at each call. Both are cheap to clone, `Send` and
+`Sync`: fetch them on the game's thread, then use them anywhere. Both follow the resources loaded at the time, so ask
+again when `native_block_sprites_version()` changes (`native_client_resources_reloaded` hears the same reloads, but not
+the first load). A reload rebuilds the tree's files in place, so while it runs a read can miss a file or get the new
+pack's before the version changes: read again after it does.
+
+- `native_block_states()` (`BlockStates`) holds every block state by its id (`BlockStateId`, as the world stores
+  blocks): `len()`, `get(id)` and `iter()` give each state's `BlockStateFacts`:
+  - `name`: its block, without properties (`minecraft:grass_block`);
+  - `air`: air, cave air or void air (`BlockState.isAir`);
+  - `invisible`: no model draws it (render shape `INVISIBLE`: air, barriers, light, and water and lava, which are drawn
+    as fluids);
+  - `fluid`: `BlockState.getFluidState` (`FluidState`, whose `kind()` is a `FluidKind`), a waterlogged block's water
+    and kelp's included;
+  - `waterlogged`: its `waterlogged` property is true;
+  - `emission`: the light it gives, 0 to 15;
+  - `outline`: `BlockState.getShape`, the outline the cursor picks, as block-local `[min_x, min_y, min_z, max_x,
+    max_y, max_z]` boxes (`[0, 0, 0, 1, 0.5, 1]` for a bottom slab, none for air), without flowers' random offset;
+  - `map_color`: `MapColor.col` as `0xRRGGBB`, its colour on a vanilla map, none for `MapColor.NONE`;
+  - `collides`: whether it can collide at all (false for a state whose collision shape is always empty: flowers,
+    water). `native_block_collision(pos)` gives a placed block's boxes.
+
+  `sprites(id)` says what the state's model draws on each side, as `native_block_sprites` does for a block by name,
+  and `texture(sprite)` names the texture behind any of its sprites (`block/grass_block_top`: vanilla's without their
+  namespace, a mod's with it), the name `native_texture_sprites` and `native_draw_cube` take.
+- `native_client_resources()` (`ClientResources`) reads the resources the game loaded as one tree: vanilla's, with the
+  resource packs turned on (a higher pack over a lower one) and the content mods' files over it. `read(path)` gives a
+  file's bytes by its path in the tree (`assets/minecraft/textures/entity/cow/cow_temperate.png`, a texture's
+  `.png.mcmeta`), only for plain names under `assets/`; `texture(name)` the decoded pixels of a texture by name
+  (`block/stone`, `entity/cow/cow_temperate`, `mymod:item/gear`), as `TexturePixels`: `width` by `height` RGBA, rows
+  top first, as its PNG stores them. An animated texture is its frames one under another. Both are none for a file
+  that isn't there.
+
+A face's colour on a map, say: `states.sprites(id)` for its top, `states.texture(face.sprite)` for its name, and
+`resources.texture(name)` for its pixels, averaged as the mod likes. Many states share a texture: decode each one
+once.
 
 ### Menu extra data
 
@@ -3706,6 +3822,26 @@ let mut claimed = false;
 dispatch_use_item_on(&mut Stone, &mods, &stack, [0, 64, 0], [0, 1, 0], &mut claimed);
 assert!(claimed);
 ```
+
+### Item fallback on native mobs
+
+`native_item_interact_mob(entity, kind, stack, swing)` is a pending fragment for
+an item's fallback after a native Mob's ordinary interaction passes. Existing
+`native_interact_entity` (API 29), the entity's own handlers and built-in item
+actions retain priority; errors propagate before the fallback. This is the
+`ItemStack.interactLivingEntity` part of `Player.interactOn`, currently limited
+to native Mob entries. Armor stands, other real players and dragon-part tables
+are not covered by this hook.
+
+The caller reuses normal mob selection: an already validated packet names its
+exact entity ID; a local crosshair must reach the mob before a blocking shape.
+The target must still be alive and not removed, and the acting hand must hold a
+nonempty item. `stack` is that hand's item snapshot; a hook changes inventories
+through ordinary Host helpers when needed. First `Some(true)` owns the turn and
+swings once, `Some(false)` owns it without a swing, and `None` passes to the next
+mod. An earlier mixin result also owns the output. No item count or world change
+is performed merely because a hook answers. The fragment is unstamped; it adds
+no manually assigned global API number.
 
 ### Adding a hook
 
