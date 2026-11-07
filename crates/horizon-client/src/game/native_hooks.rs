@@ -1001,6 +1001,7 @@ use super::{
 use crate::mod_api::NativeTextField;
 use horizon_assets::item_model::StackView;
 use horizon_client::mod_api::EntityDataValue;
+use horizon_client::mod_api::WorldHold;
 use horizon_client::mod_api::{
     self, BlockProperties, HudMode, NativeBossBar, NativeCamera, NativeCommand, NativeDispensed,
     NativeFluidAction, NativeFluidDrain, NativeFluidStack, NativeFluidTankView,
@@ -3198,6 +3199,15 @@ impl Game<'_> {
     /// 84.
     pub(super) fn native_shader_params(&self, partial: f32, params: &mut [[f32; 4]; 8]) {
         mod_api::dispatch_shader_params(self, mod_api::mods(), partial, params);
+    }
+    /// Whether native mods hold the terrain's picture this frame: call `hold.hold()` to keep
+    /// every section drawn as it is while the world changes under it, or `hold.hold_within(x, z,
+    /// radius)` for only the sections inside circles. Not asking lets go, and every change
+    /// shows on that frame. Asked once a frame while a world is shown, before the frame's
+    /// section uploads, by each player's game (splitscreen: each its own). Client only.
+    /// API @API:world_hold@.
+    pub(super) fn native_world_hold(&self, hold: &mut WorldHold) {
+        mod_api::dispatch_world_hold(self, mod_api::mods(), hold);
     }
     /// The minimap a native mod shows: set `minimap` when it is none yet.
     pub(super) fn native_minimap(&self, minimap: &mut Option<NativeMinimap>) {
@@ -12316,6 +12326,12 @@ impl Game<'_> {
         let mut params = [[0.0; 4]; 8];
         self.native_shader_params(partial, &mut params);
         finite_params(params)
+    }
+    /// What native mods ask of the terrain's picture this frame (`native_world_hold`).
+    pub(super) fn native_world_hold_now(&self) -> WorldHold {
+        let mut hold = WorldHold::default();
+        self.native_world_hold(&mut hold);
+        hold
     }
     /// The minimap a native mod shows.
     pub(super) fn native_minimap_now(&self) -> Option<NativeMinimap> {

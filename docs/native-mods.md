@@ -4444,6 +4444,45 @@ fn world_primitives(&self, _host: &dyn Host, event: &mut WorldPrimitivesEvent<'_
 }
 ```
 
+### Holding the world's picture
+
+`native_world_hold(hold)` (the trait's `Hooks::world_hold`) is asked once a frame while a world is shown, on the
+client, just before the frame's terrain uploads. A mod that calls `hold.hold()` keeps the terrain drawn as it stands
+while the world changes under it; one that stops asking lets go, and every change shows on that frame. Use it to make a
+change too big to go in at a stroke (thousands of sections) appear at once: the edits go in over seconds at whatever
+pace suits them, the game lights, meshes and uploads their sections as ever, and letting go only swaps which meshes are
+drawn, with nothing left to upload.
+
+`hold.hold_within(x, z, radius)` holds only the sections whose middle lies in that circle (block coordinates; call it
+again for more, at most 64 a frame). Smaller circles than last frame's let go of what they leave on that frame, and
+changes outside them show as ever from then on: shrink them over a few frames to let a change spread across the land.
+Several mods add up: `hold()` from any of them holds everything, and circles join. A circle that isn't finite or has a
+negative radius is left out.
+
+```rust,ignore
+fn world_hold(&self, _host: &dyn Host, event: &mut WorldHoldEvent<'_>) {
+    if self.crater_going_in() {
+        event.hold.hold_within(120.0, -40.0, 300.0);
+    }
+}
+```
+
+- Only the terrain's sections are held, and only those already on screen: terrain streaming in during a hold shows as
+  ever. In single player, far terrain waits too for the columns the server changes beyond the view inside the hold,
+  and takes them in when it lets go of them, so they show a moment after the sections (far terrain summarizes them
+  again). Far terrain a multiplayer server sends, entities, block entities drawn as entities, particles, light,
+  collisions and the blocks themselves change at once, so the land a player sees may not be the land they stand on.
+- Both the old and the new mesh of each waiting section are in memory. A hold is meant for seconds and is bounded: it
+  lets go by itself after 30 seconds, past 1 GiB of waiting meshes and when memory for meshes runs out, showing what
+  waited early rather than losing it; ended so, it stays off until no mod has asked for a frame. Leaving the world,
+  another dimension, a shader pack that lays terrain out again and chunks unloading drop what waits with the sections.
+- A section still being meshed when the hold lets go shows a frame or so later: give the game a moment between the
+  last edit and letting go.
+- Each player's game is asked for itself (splitscreen: one hold per player). The debug census lists
+  `held_section_vertices`.
+
+Bundles need `"hooks": @API:world_hold@`.
+
 ### Block textures
 
 `crates/horizon-client/src/game/native_block_sprites.rs` and `WorldDrawn::block_sprites`: for a client mod drawing
