@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import tempfile
 try:
     from . import lab, test_rust_parity as base
 except ImportError:
@@ -63,8 +64,10 @@ def main():
     cp = os.pathsep.join(map(str, [jars['server'], *libraries]))
     subprocess.run(['javac', '--release', str(lock['minecraft']['java_major']), '-proc:none', '-cp', cp,
                     '-d', str(classes), str(oracle)], check=True)
-    subprocess.run(['java', '-Xmx1G', '-cp', str(classes) + os.pathsep + cp,
-                    'dev.horizonlab.parity.VanillaTradeComponentsOracle', str(inputs), str(build / 'java.jsonl')], check=True)
+    with tempfile.TemporaryDirectory(prefix='horizon-trade-components-java-') as scratch:
+        subprocess.run(['java', '-Xmx1G', '-cp', str(classes) + os.pathsep + cp,
+                        'dev.horizonlab.parity.VanillaTradeComponentsOracle', str(inputs), str(build / 'java.jsonl')],
+                       check=True, cwd=scratch, env=lab.game_env())
     expected = [json.loads(s) for s in (build / 'java.jsonl').read_text(encoding='utf-8').splitlines()]
     if args.java_only:
         print(f'{len(expected)} headless vanilla cases')
@@ -72,7 +75,9 @@ def main():
     if not args.no_build:
         subprocess.run(['cargo', 'build', '--locked', '-p', 'horizon-client-lib', '--example', 'client_probe'], check=True)
     binary = lab.cargo_target() / 'debug/examples/client_probe'
-    subprocess.run([str(binary), 'trade_components_probe', str(args.resources), str(inputs), str(build / 'rust.jsonl')], check=True)
+    with tempfile.TemporaryDirectory(prefix='horizon-trade-components-rust-') as scratch:
+        subprocess.run([str(binary), 'trade_components_probe', str(args.resources.resolve()), str(inputs), str(build / 'rust.jsonl')],
+                       check=True, cwd=scratch, env=lab.game_env())
     actual = [json.loads(s) for s in (build / 'rust.jsonl').read_text(encoding='utf-8').splitlines()]
     bad = [(i, a, b) for i, (a, b) in enumerate(zip(expected, actual)) if a != b]
     if bad or len(actual) != len(expected):

@@ -787,7 +787,9 @@ impl Trades {
         if a.stack.count < 1 {
             return None;
         }
-        let b = t.get("additional_wants").map(|w| cost(ctx.items, w, 0, random));
+        let b = t
+            .get("additional_wants")
+            .map(|w| cost(ctx.items, w, 0, random));
         if b.as_ref().is_some_and(|b| b.stack.count < 1) {
             return None;
         }
@@ -847,11 +849,18 @@ impl Trades {
                 for (id, provider) in m["enchantments"].as_object().into_iter().flatten() {
                     let level = int_provider(provider, random);
                     let previous = if add {
-                        levels.iter().find(|(e, _)| &**e == id).map_or(0, |(_, l)| *l as i32)
+                        levels
+                            .iter()
+                            .find(|(e, _)| &**e == id)
+                            .map_or(0, |(_, l)| *l as i32)
                     } else {
                         0
                     };
-                    crate::item_data::set_level(&mut levels, id, previous.wrapping_add(level).clamp(0, 255) as u32);
+                    crate::item_data::set_level(
+                        &mut levels,
+                        id,
+                        previous.wrapping_add(level).clamp(0, 255) as u32,
+                    );
                 }
                 out.set_crafting_enchantments(levels);
                 Some((out, 0))
