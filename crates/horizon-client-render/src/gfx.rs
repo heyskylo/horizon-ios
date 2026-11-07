@@ -1241,6 +1241,8 @@ pub struct Renderer {
     static_entity_catalog_revision: u64,
     static_entity_frame_stats: StaticCacheFrameStats,
     hdr_mark_pipeline: wgpu::RenderPipeline,
+    /// `hdr_mark_pipeline` at `entity_pipeline`'s depth bias, for what that drew.
+    hdr_entity_mark_pipeline: wgpu::RenderPipeline,
     hdr_hand_unmark_pipeline: wgpu::RenderPipeline,
     hdr_mark_lightning_pipeline: wgpu::RenderPipeline,
     weather: weather::Weather,
@@ -4066,17 +4068,19 @@ impl Renderer {
         // paths here, so their fp32 depths of the same plane differ by a few dozen
         // ulps and the tie came out either way, as a jagged strip of the trapdoor
         // through the hull's floor. The same constant as the shadows' covers that
-        // spread; a model's feet sit 0.001 above the ground, far beyond it.
+        // spread; a model's feet sit 0.001 above the ground, far beyond it. HDR output's
+        // marks on what it draws take it too (`hdr_entity_mark_pipeline`).
+        let entity_bias = wgpu::DepthBiasState {
+            constant: 128,
+            slope_scale: 0.0,
+            clamp: 0.0,
+        };
         let entity_pipeline = entity_pipeline(
             "Entities",
             None,
             true,
             wgpu::CompareFunction::GreaterEqual,
-            wgpu::DepthBiasState {
-                constant: 128,
-                slope_scale: 0.0,
-                clamp: 0.0,
-            },
+            entity_bias,
             alpha_blend,
             false,
         );
@@ -4148,12 +4152,26 @@ impl Renderer {
             "fs_hdr_mark",
             wgpu::ColorWrites::ALPHA,
         );
+        // The same at `entity_pipeline`'s depth bias, for what it drew (entities, the hand,
+        // translucent particles): without it the marks test a hair behind the depth it left
+        // and never land.
+        let hdr_entity_mark_pipeline = entity_pipeline_with(
+            "HDR entity mark",
+            None,
+            false,
+            wgpu::CompareFunction::GreaterEqual,
+            entity_bias,
+            wgpu::BlendState::REPLACE,
+            false,
+            "fs_hdr_mark",
+            wgpu::ColorWrites::ALPHA,
+        );
         let hdr_hand_unmark_pipeline = entity_pipeline_with(
             "HDR hand unmark",
             None,
             false,
             wgpu::CompareFunction::GreaterEqual,
-            Default::default(),
+            entity_bias,
             wgpu::BlendState::REPLACE,
             false,
             "fs_hdr_hand_unmark",
@@ -4858,6 +4876,7 @@ impl Renderer {
             entity_pipeline,
             static_entity_pipeline,
             hdr_mark_pipeline,
+            hdr_entity_mark_pipeline,
             hdr_hand_unmark_pipeline,
             hdr_mark_lightning_pipeline,
             weather,
@@ -5066,7 +5085,7 @@ impl Renderer {
         pass.draw_indexed(0..quads * 6, (first * 4) as i32, 0..1);
         if self.hdr.is_some() {
             // Drawn into the world: the light sources it holds are marked as the world's are.
-            pass.set_pipeline(&self.hdr_mark_pipeline);
+            pass.set_pipeline(&self.hdr_entity_mark_pipeline);
             pass.draw_indexed(0..quads * 6, (first * 4) as i32, 0..1);
         }
     }
@@ -10539,7 +10558,7 @@ impl Renderer {
                 pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
                 pass.draw_indexed(0..entity_quads * 6, 0, 0..1);
                 if self.hdr.is_some() {
-                    pass.set_pipeline(&self.hdr_mark_pipeline);
+                    pass.set_pipeline(&self.hdr_entity_mark_pipeline);
                     pass.draw_indexed(0..entity_quads * 6, 0, 0..1);
                 }
                 pass.set_bind_group(0, &self.group, &[]);
@@ -11001,7 +11020,7 @@ impl Renderer {
                 );
                 if self.hdr.is_some() {
                     // Fireworks: their sparks are translucent-layer particles.
-                    pass.set_pipeline(&self.hdr_mark_pipeline);
+                    pass.set_pipeline(&self.hdr_entity_mark_pipeline);
                     pass.draw_indexed(
                         0..translucent_particle_quads * 6,
                         ((base_quads - translucent_item_quads - translucent_particle_quads) * 4)
@@ -11655,7 +11674,7 @@ impl Renderer {
                     let quads = 0..overlay.hand_quads * 6;
                     pass.set_pipeline(&self.hdr_hand_unmark_pipeline);
                     pass.draw_indexed(quads.clone(), overlay.first_hand_vertex, 0..1);
-                    pass.set_pipeline(&self.hdr_mark_pipeline);
+                    pass.set_pipeline(&self.hdr_entity_mark_pipeline);
                     pass.draw_indexed(quads, overlay.first_hand_vertex, 0..1);
                 }
             }
