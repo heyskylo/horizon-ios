@@ -635,6 +635,8 @@ impl Game<'_> {
                     v,
                     Some(self.player_display_text()),
                 );
+                // ThrowablePotionItem.use / ExperienceBottleItem.use: awardStat(ITEM_USED).
+                self.award_stat("used", &stack.item, 1);
                 self.swing_arm();
                 self.consume_held();
                 Ok(true)
