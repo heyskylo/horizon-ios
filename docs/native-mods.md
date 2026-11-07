@@ -4090,6 +4090,24 @@ something happened can time the sound to the distance, such as a blast heard whe
 `delay = distance / speed`. It answers false on a server and for a value out of range; an event the resources lack
 plays nothing.
 
+`native_muffle_sounds(amount, lowpass, ticks, exempt)` (client, `host.muffle_sounds`) muffles the game's sounds for a
+while, as ears ringing after a close blast hear them: `amount` (0 to 1) of every sound's volume is taken away and
+`lowpass` (0 to 1) dulls it, from untouched to a 300 Hz low-pass. Both start in full and fade back in a straight line
+over `ticks` client ticks, held while the game is paused. The sound events in `exempt` (`mymod:ear.ringing`, at most
+64) play clearly through it, those already playing too, so the mod's own ringing stays sharp; everything else is
+muffled, sounds that were already playing, music and the interface's clicks included. A new call replaces the muffle
+in place, and `ticks` 0 ends it at once. The muffle belongs to the sound output, so in splitscreen every player hears
+it. Nothing changes while no mod calls it. It answers false, changing nothing, on a server, for an amount or strength
+outside 0 to 1, and for an exempt event that isn't `namespace:path`.
+
+```rust,ignore
+// A close blast: half the volume gone and the world dulled, back to normal over 4 seconds.
+game.native_muffle_sounds(0.5, 0.9, 80, &["ironfall:ear.ringing"]);
+game.native_play_local_sound("ironfall:ear.ringing", eye, 1.0, 1.0, 0);
+```
+
+Bundles need `"hooks": @API:muffle_sounds@`.
+
 ### Fluid currents
 
 `native_fluid_flow(dimension, pos)` is `FluidState.getFlow(level, pos)`: the normalised current at a position, the

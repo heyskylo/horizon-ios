@@ -861,6 +861,9 @@ pub trait Backend {
     fn unpause(&mut self, channel: ChannelId);
     /// `Channel.stopped`.
     fn stopped(&mut self, channel: ChannelId) -> bool;
+    /// Whether the channel plays clearly through a mod's muffle (`Audio::muffle`): its sound
+    /// event is one the mod exempted. A backend without a muffle ignores it.
+    fn set_unmuffled(&mut self, _channel: ChannelId, _unmuffled: bool) {}
 }
 /// A `SoundEventListener.onPlaySound` call.
 #[derive(Clone, Debug, PartialEq)]
@@ -937,6 +940,9 @@ pub struct SoundEngine {
     /// listener: 0 as vanilla, `HEARD_RESERVE` with the `uiSoundReserve` extra.
     pub listener_reserve: usize,
     pub notifications: Vec<Notification>,
+    /// The sound events a mod's muffle leaves clear (`Audio::muffle`), normalized: their channels
+    /// are marked as they start, and those playing when the list changes are marked again.
+    unmuffled: Vec<String>,
 }
 fn handle_channel(h: &Handle) -> Option<ChannelId> {
     h.channel
@@ -966,6 +972,21 @@ impl SoundEngine {
             listening: false,
             listener_reserve: 0,
             notifications: Vec::new(),
+            unmuffled: Vec::new(),
+        }
+    }
+    /// The sound events that play clearly through a mod's muffle from now on, normalized
+    /// (`minecraft:ui.button.click`); the channels playing now follow the new list too.
+    pub fn set_unmuffled(&mut self, events: Vec<String>, backend: &mut impl Backend) {
+        self.unmuffled = events;
+        for (id, handle) in &self.instance_to_channel {
+            let (Some(instance), Some(channel)) = (
+                self.instances.get(id),
+                self.handles.get(handle).and_then(handle_channel),
+            ) else {
+                continue;
+            };
+            backend.set_unmuffled(channel, self.unmuffled.contains(&instance.identifier));
         }
     }
     /// Isolate a fixture's dispatch from process-wide native installation.
@@ -1315,6 +1336,7 @@ impl SoundEngine {
         }
         let position = instance.position;
         let looping = instance.looping && instance.delay <= 0;
+        let unmuffled = self.unmuffled.contains(&instance.identifier);
         let streaming = sound.stream;
         let pool = usize::from(streaming);
         // With the `uiSoundReserve` extra, sounds out in the world leave a few static channels free, so a flood of
@@ -1367,6 +1389,7 @@ impl SoundEngine {
         backend.set_looping(channel, looping && !streaming);
         backend.set_position(channel, position);
         backend.set_relative(channel, relative);
+        backend.set_unmuffled(channel, unmuffled);
         backend.start(channel, &sound, looping);
         if tickable {
             self.ticking.push(id);
