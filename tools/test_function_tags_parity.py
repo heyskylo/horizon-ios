@@ -3,6 +3,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import shutil
 import sys
 import uuid
 
@@ -86,10 +87,14 @@ def main():
     parser.add_argument('--reference-dir', type=Path)
     options, rest = parser.parse_known_args()
     sys.argv = [sys.argv[0], *rest]
-    if '--work-dir' not in sys.argv:
-        parser.error('--work-dir must name a fresh capture directory')
-    folder = Path(sys.argv[sys.argv.index('--work-dir') + 1]).resolve()
-    assert not folder.exists(), 'preserve every prior capture'
+    if '--work-dir' in sys.argv:
+        folder = Path(sys.argv[sys.argv.index('--work-dir') + 1]).resolve()
+        assert not folder.exists(), 'preserve every prior capture'
+    else:
+        # The parity runner passes no --work-dir: start from an empty scratch folder.
+        folder = driver.lab.LOCAL / 'function-tags-parity'
+        shutil.rmtree(folder, ignore_errors=True)
+        sys.argv += ['--work-dir', str(folder)]
     original = driver.install_datapack_fixtures
     def install(world, *args, **kwargs):
         original(world, *args, **kwargs)
