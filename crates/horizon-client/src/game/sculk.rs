@@ -2282,6 +2282,17 @@ impl Game<'_> {
             ctx,
         );
     }
+    /// `Entity.kill` for an entity that is no mob (`BlockAttachedEntity.kill`,
+    /// `ArmorStand.kill`, `VehicleEntity.destroy`): removed, then
+    /// `gameEvent(ENTITY_DIE, attributedTo != null ? attributedTo : this)` at
+    /// the entity's position. `by_player`: the player's hit killed it, so the
+    /// player is the source. Otherwise the source is the entity itself (or a
+    /// bolt), which no listener tells apart from none: it is not living,
+    /// sneaking, a spectator or a warden.
+    pub(super) fn entity_killed_event(&mut self, at: [f64; 3], by_player: bool) {
+        let ctx = self.who_context(by_player.then_some(Who::Player), None);
+        self.post_game_event("minecraft:entity_die", at, ctx);
+    }
 }
 
 /// `MobEffects.DARKNESS`'s `setBlendDuration(22)`: its fade in, its fade out,
