@@ -141,7 +141,7 @@ impl Game<'_> {
     /// `Entity.interact` / `Mob.canShearEquipment` / `Mob.attemptToShearEquipment`
     /// / `Mob.shearItem`: the saddle of a `#can_equip_saddle` mob comes off
     /// before its mobInteract can ride it, with the saddle's shearing sound.
-    /// An occupied mount consumes no equipment interaction and cannot be mounted.
+    /// An occupied mount is not sheared: its mobInteract runs instead.
     pub(super) fn shear_saddle(&mut self, index: usize, item: &str) -> Option<bool> {
         let m = &self.mobs[index];
         // EntityTypeTags.CAN_EQUIP_SADDLE.
@@ -171,7 +171,10 @@ impl Game<'_> {
                 .iter()
                 .any(|r| r.alive() && !r.removed && r.extra.mount == Some(id))
         {
-            return Some(false);
+            // !canShearEquipment (isVehicle): the click goes on to mobInteract. A
+            // ridden pig or strider has nothing more to give, but a camel takes a
+            // second rider and a horse or nautilus opens its inventory.
+            return matches!(m.species(), Species::Pig | Species::Strider).then_some(false);
         }
         if self.keys.held(Action::Sneak) {
             return None;
