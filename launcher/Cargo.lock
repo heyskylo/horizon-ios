@@ -2696,6 +2696,7 @@ dependencies = [
  "flate2",
  "futures-lite",
  "getrandom 0.3.4",
+ "glam",
  "gpui-fast",
  "gpui-fast-platform",
  "horizon-bench",

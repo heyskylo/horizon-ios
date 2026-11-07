@@ -490,6 +490,37 @@ impl GlyphStyle {
     }
 }
 
+/// How much the gameplay guide says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum GuideDetail {
+    #[default]
+    Full,
+    /// Only what can be done to what's in front of the player or under the crosshair.
+    Basic,
+    Off,
+}
+impl GuideDetail {
+    pub const ALL: [GuideDetail; 3] = [GuideDetail::Full, GuideDetail::Basic, GuideDetail::Off];
+
+    /// The name in `horizon-controller.txt`.
+    pub fn name(self) -> &'static str {
+        match self {
+            GuideDetail::Full => "full",
+            GuideDetail::Basic => "basic",
+            GuideDetail::Off => "off",
+        }
+    }
+
+    /// Reads a name, or the `true` and `false` this option first saved. Anything else is full.
+    pub fn parse(value: &str) -> Self {
+        match value {
+            "basic" => GuideDetail::Basic,
+            "off" | "false" => GuideDetail::Off,
+            _ => GuideDetail::Full,
+        }
+    }
+}
+
 /// The on-screen keyboard A opens on a text field in focus mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum TextKeyboard {
@@ -558,6 +589,8 @@ pub struct PadSettings {
     /// by default on the Switch only.
     pub nintendo_letters: bool,
     pub keyboard: TextKeyboard,
+    /// The gameplay guide: what the buttons do now, in the HUD's corners while the pad plays.
+    pub guide_detail: GuideDetail,
     /// Menu pointer multiplier, scroll lines/second, and repeat times in seconds.
     pub pointer_speed: f32,
     pub scroll_speed: f32,
@@ -584,6 +617,7 @@ impl Default for PadSettings {
             glyphs: GlyphStyle::Auto,
             nintendo_letters: cfg!(target_os = "horizon"),
             keyboard: TextKeyboard::Auto,
+            guide_detail: GuideDetail::Full,
             pointer_speed: 1.0,
             scroll_speed: 12.0,
             repeat_delay: 0.35,
@@ -653,6 +687,7 @@ impl PadSettings {
                 "glyphs" => s.glyphs = GlyphStyle::parse(value),
                 "nintendoLetters" => s.nintendo_letters = flag(s.nintendo_letters),
                 "keyboard" => s.keyboard = TextKeyboard::parse(value),
+                "gameplayGuide" => s.guide_detail = GuideDetail::parse(value),
                 "pointerSpeed" => s.pointer_speed = bounded(s.pointer_speed, 0.25, 3.0),
                 "scrollSpeed" => s.scroll_speed = bounded(s.scroll_speed, 1.0, 36.0),
                 "repeatDelay" => s.repeat_delay = bounded(s.repeat_delay, 0.1, 1.0),
@@ -710,7 +745,8 @@ impl PadSettings {
             self.keyboard.name(),
         );
         text.push_str(&format!(
-            "pointerSpeed:{}\nscrollSpeed:{}\nrepeatDelay:{}\nrepeatInterval:{}\n",
+            "gameplayGuide:{}\npointerSpeed:{}\nscrollSpeed:{}\nrepeatDelay:{}\nrepeatInterval:{}\n",
+            self.guide_detail.name(),
             self.pointer_speed, self.scroll_speed, self.repeat_delay, self.repeat_interval,
         ));
         for (action, button) in &self.bindings {
@@ -1811,6 +1847,7 @@ bind_key.hotbar.2:north
         s.look_sensitivity = 0.75;
         s.glyphs = GlyphStyle::PlayStation;
         s.nintendo_letters = !s.nintendo_letters;
+        s.guide_detail = GuideDetail::Basic;
         let text = s.serialize();
         assert!(text.contains(&format!("nintendoLetters:{}\n", s.nintendo_letters)));
         assert!(text.contains("bind_key.jump:east\n"));

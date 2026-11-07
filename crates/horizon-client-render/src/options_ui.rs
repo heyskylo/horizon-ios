@@ -310,6 +310,7 @@ impl Opt {
             Opt::PadTriggerThreshold => "horizon.options.trigger_threshold",
             Opt::PadGlyphs => "horizon.options.button_glyphs",
             Opt::PadKeyboard => "horizon.options.on_screen_keyboard",
+            Opt::PadGameplayGuide => "horizon.options.gameplay_guide",
             Opt::ModelPart(i) => [
                 "options.modelPart.cape",
                 "options.modelPart.jacket",
@@ -832,6 +833,11 @@ impl Opt {
             Opt::PadVibration => on_off(s.controller.vibration),
             Opt::PadPlayInBackground => on_off(s.controller.play_in_background),
             Opt::PadAdaptiveTriggers => on_off(s.controller.adaptive_triggers),
+            Opt::PadGameplayGuide => tr(match s.controller.guide_detail {
+                gamepad::GuideDetail::Full => "horizon.options.gameplay_guide.full",
+                gamepad::GuideDetail::Basic => "horizon.options.gameplay_guide.basic",
+                gamepad::GuideDetail::Off => "horizon.options.gameplay_guide.off",
+            }),
             Opt::PadInvertX => on_off(s.controller.invert_x),
             Opt::PadInvertY => on_off(s.controller.invert_y),
             Opt::PadToggleSneak => tr(if s.controller.toggle_sneak {
@@ -1151,6 +1157,14 @@ impl Opt {
                     .position(|g| *g == s.controller.glyphs)
                     .unwrap_or(0) as u8;
                 s.controller.glyphs = GlyphStyle::ALL[usize::from(next(i, 4))];
+            }
+            Opt::PadGameplayGuide => {
+                let all = gamepad::GuideDetail::ALL;
+                let i = all
+                    .iter()
+                    .position(|d| *d == s.controller.guide_detail)
+                    .unwrap_or(0) as u8;
+                s.controller.guide_detail = all[usize::from(next(i, 3))];
             }
             Opt::PadKeyboard => {
                 let all = gamepad::TextKeyboard::ALL;
