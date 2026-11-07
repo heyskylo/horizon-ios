@@ -564,10 +564,10 @@ pub fn grindstone_experience(
 pub enum Smithing {
     Transform {
         id: String,
-        template: Ingredient,
+        template: Option<Ingredient>,
         base: Ingredient,
-        addition: Ingredient,
-        result: String,
+        addition: Option<Ingredient>,
+        result: SmithingResult,
     },
     Trim {
         id: String,
@@ -576,6 +576,103 @@ pub enum Smithing {
         addition: Ingredient,
         pattern: String,
     },
+}
+/// A smithing transform's `ItemStackTemplate`, retaining the patch as well as
+/// its display stack so explicit zeroes and removals override the input.
+#[derive(Clone, Debug)]
+pub struct SmithingResult {
+    stack: ItemStack,
+    patch: horizon_world::nbt::Tag,
+    defaults: Value,
+}
+impl SmithingResult {
+    fn parse(v: &Value, defaults: &horizon_world::item_defaults::Defaults) -> Option<Self> {
+        let item = horizon_world::loot::recipe_result_id(v)?;
+        if item == "minecraft:air" {
+            return None;
+        }
+        let count = crate::crafting::template_count(v)?;
+        let patch =
+            crate::scoreboard::json_to_tag(v.get("components").unwrap_or(&serde_json::json!({})));
+        if !matches!(patch, horizon_world::nbt::Tag::Compound(_)) {
+            return None;
+        }
+        let (damage, extra) = item_data::decode_components(Some(&patch));
+        Some(Self {
+            stack: ItemStack {
+                item: Arc::from(item),
+                count,
+                damage,
+                extra,
+            },
+            patch,
+            defaults: defaults.get(item)?.clone(),
+        })
+    }
+    /// `ItemStackTemplate.create`, used by the native recipe display export.
+    pub fn create(&self) -> Option<ItemStack> {
+        self.assemble(&ItemStack::new("minecraft:air", 0))
+    }
+    /// `TransmuteRecipe.createWithOriginalComponents` and `ItemStackTemplate.apply`.
+    fn assemble(&self, base: &ItemStack) -> Option<ItemStack> {
+        use horizon_world::nbt::Tag;
+        let mut patch = match item_data::encode_components(base) {
+            Some(Tag::Compound(map)) => map,
+            _ => Default::default(),
+        };
+        if let Tag::Compound(over) = &self.patch {
+            for (key, value) in over {
+                let key = key.to_string_lossy();
+                if let Some(id) = key.strip_prefix('!') {
+                    patch.remove(&horizon_world::nbt::JavaString::from(id));
+                    if self.defaults.get(id).is_some() {
+                        patch.insert(key.as_str().into(), value.clone());
+                    }
+                } else {
+                    patch.remove(&horizon_world::nbt::JavaString::from(
+                        format!("!{key}").as_str(),
+                    ));
+                    patch.insert(key.as_str().into(), value.clone());
+                }
+            }
+        }
+        // Patches are relative to the result item's defaults, as on vanilla's
+        // PatchedDataComponentMap; don't retain an explicit default as a patch.
+        patch.retain(|key, value| {
+            let key = key.to_string_lossy();
+            if let Some(id) = key.strip_prefix('!') {
+                self.defaults.get(id).is_some()
+            } else {
+                self.defaults
+                    .get(key.as_str())
+                    .is_none_or(|default| crate::scoreboard::json_to_tag(default) != *value)
+            }
+        });
+        let components = Tag::Compound(patch);
+        let number = |id: &str, fallback: i64| {
+            if components.get(&format!("!{id}")).is_some() {
+                return fallback;
+            }
+            match components.get(id) {
+                Some(Tag::Int(n)) => i64::from(*n),
+                _ => self.defaults[id].as_i64().unwrap_or(fallback),
+            }
+        };
+        let max_stack = number("minecraft:max_stack_size", 1);
+        let damageable = components.get("!minecraft:max_damage").is_none()
+            && (components.get("minecraft:max_damage").is_some()
+                || self.defaults.get("minecraft:max_damage").is_some());
+        if i64::from(self.stack.count) > max_stack || (damageable && max_stack > 1) {
+            return None;
+        }
+        let (damage, extra) = item_data::decode_components(Some(&components));
+        Some(ItemStack {
+            item: self.stack.item.clone(),
+            count: self.stack.count,
+            damage,
+            extra,
+        })
+    }
 }
 #[derive(Clone, Debug)]
 pub struct Stonecutting {
@@ -645,19 +742,33 @@ impl StationRecipes {
         // Registration order, not the game's files before the packs': the
         // stonecutter lists its recipes in it and smithing takes the first match.
         sources.sort_by_cached_key(|(id, _)| crate::crafting::registration_key(id));
+        let defaults = horizon_world::item_defaults::shared(root).unwrap_or_default();
         let mut smithing = Vec::new();
         let mut stonecutting = Vec::new();
         for (id, v) in sources {
             match v["type"].as_str().unwrap_or("") {
-                "minecraft:smithing_transform" => smithing.push(Smithing::Transform {
-                    id,
-                    template: ingredient(&v["template"], items),
-                    base: ingredient(&v["base"], items),
-                    addition: ingredient(&v["addition"], items),
-                    result: horizon_world::loot::recipe_result_id(&v["result"])
-                        .unwrap_or("minecraft:air")
-                        .to_owned(),
-                }),
+                "minecraft:smithing_transform" => {
+                    // Only omitted optional ingredients mean an empty slot;
+                    // malformed present ingredients must not become optional.
+                    let parse_optional = |key: &str| match v.get(key) {
+                        None => Some(None),
+                        Some(value) => Ingredient::parse(value, items).map(Some),
+                    };
+                    if let (Some(template), Some(base), Some(addition), Some(result)) = (
+                        parse_optional("template"),
+                        Ingredient::parse(&v["base"], items),
+                        parse_optional("addition"),
+                        SmithingResult::parse(&v["result"], &defaults),
+                    ) {
+                        smithing.push(Smithing::Transform {
+                            id,
+                            template,
+                            base,
+                            addition,
+                            result,
+                        });
+                    }
+                }
                 "minecraft:smithing_trim" => smithing.push(Smithing::Trim {
                     id,
                     template: ingredient(&v["template"], items),
@@ -728,15 +839,15 @@ impl StationRecipes {
                     base,
                     addition,
                     ..
-                }
-                | Smithing::Trim {
+                } => (template.as_ref(), base, addition.as_ref()),
+                Smithing::Trim {
                     template,
                     base,
                     addition,
                     ..
-                } => (template, base, addition),
+                } => (Some(template), base, Some(addition)),
             };
-            [t, b, a][slot].test(stack)
+            [t, Some(b), a][slot].is_some_and(|ingredient| ingredient.test(stack))
         })
     }
     /// `RecipePropertySet` SMITHING_TEMPLATE / BASE / ADDITION.
@@ -762,7 +873,16 @@ impl StationRecipes {
         base: Option<&ItemStack>,
         addition: Option<&ItemStack>,
     ) -> Option<(&str, ItemStack)> {
-        let (template, base, addition) = (template?, base?, addition?);
+        let nonempty = |stack: &ItemStack| stack.count > 0 && &*stack.item != "minecraft:air";
+        let base = base.filter(|s| nonempty(s))?;
+        let optional_matches = |ingredient: &Option<Ingredient>, stack: Option<&ItemStack>| match (
+            ingredient,
+            stack.filter(|s| nonempty(s)),
+        ) {
+            (None, None) => true,
+            (Some(ingredient), Some(stack)) => ingredient.test(stack),
+            _ => false,
+        };
         for r in &self.smithing {
             match r {
                 Smithing::Transform {
@@ -772,9 +892,11 @@ impl StationRecipes {
                     addition: a,
                     result,
                 } => {
-                    if t.test(template) && b.test(base) && a.test(addition) {
-                        // SmithingTransformRecipe: transmute the base keeping its components.
-                        return Some((id.as_str(), base.transmute(result, 1)));
+                    if optional_matches(t, template)
+                        && b.test(base)
+                        && optional_matches(a, addition)
+                    {
+                        return result.assemble(base).map(|result| (id.as_str(), result));
                     }
                 }
                 Smithing::Trim {
@@ -785,7 +907,11 @@ impl StationRecipes {
                     pattern,
                     ..
                 } => {
-                    if t.test(template) && b.test(base) && a.test(addition) {
+                    if let (Some(template), Some(addition)) = (template, addition)
+                        && t.test(template)
+                        && b.test(base)
+                        && a.test(addition)
+                    {
                         return apply_trim(e, base, addition, pattern).map(|r| (id.as_str(), r));
                     }
                 }
@@ -1240,6 +1366,131 @@ mod tests {
         let xp = grindstone_experience(&e, &mut r, Some(&s), None);
         assert!((12..24).contains(&xp));
     }
+    #[test]
+    fn smithing_transform_overlay_matches_optional_inputs_and_takes_template_result() {
+        use crate::{banner::Banners, brewing::Brewing, crafting::Recipes, creative::Names, menu};
+        let root = std::env::temp_dir().join(format!("horizon-smithing-{}", std::process::id()));
+        fs::create_dir_all(root.join("data/minecraft/recipe")).unwrap();
+        fs::write(
+            root.join("items.json"),
+            r#"{
+            "minecraft:stick":{"minecraft:max_stack_size":64},
+            "minecraft:diamond":{"minecraft:max_stack_size":64},
+            "minecraft:emerald":{"minecraft:max_stack_size":64},
+            "minecraft:diamond_sword":{"minecraft:max_stack_size":1,"minecraft:max_damage":1561}
+        }"#,
+        )
+        .unwrap();
+        let items = Items::catalog(&root, &PackOverlay::NONE).unwrap();
+        let recipe = serde_json::json!({"type":"minecraft:smithing_transform",
+            "base":"minecraft:stick", "addition":"minecraft:diamond",
+            "result":{"id":"minecraft:emerald","count":3,
+                "components":{"minecraft:custom_name":"Upgraded","minecraft:repair_cost":0}}});
+        let files = vec![(
+            "recipe/test:upgrade".to_owned(),
+            vec![serde_json::to_vec(&recipe).unwrap()],
+        )];
+        let overlay = PackOverlay { files: &files };
+        let stations = StationRecipes::load(&root, &items, &overlay);
+        let e = sample();
+        let mut base = ItemStack::new("minecraft:stick", 2);
+        base.data_mut()
+            .set_loot_name("minecraft:custom_name", &serde_json::json!("Original"));
+        base.data_mut().repair_cost = 7;
+        base.data_mut()
+            .set_loot_component("minecraft:custom_data", &serde_json::json!({"kept":1}));
+        let addition = ItemStack::new("minecraft:diamond", 2);
+        let result = stations
+            .smithing_result(&e, None, Some(&base), Some(&addition))
+            .expect("omitted template accepts an empty slot");
+        assert_eq!(
+            (&*result.item, result.count, result.repair_cost()),
+            ("minecraft:emerald", 3, 0)
+        );
+        assert_eq!(
+            result.data().unwrap().custom_name,
+            Some(horizon_world::nbt::Tag::String("Upgraded".into()))
+        );
+        assert!(
+            result
+                .data()
+                .unwrap()
+                .other("minecraft:custom_data")
+                .is_some()
+        );
+        assert!(
+            stations
+                .smithing_result(&e, Some(&addition), Some(&base), Some(&addition))
+                .is_none()
+        );
+        assert!(
+            stations
+                .smithing_result(&e, None, Some(&base), None)
+                .is_none()
+        );
+        let recipes = Recipes::load(&root, &items, &PackOverlay::NONE).unwrap();
+        let brewing = Brewing::load(&root, &items, &PackOverlay::NONE);
+        let banners = Banners::load(&root);
+        let names = Names::default();
+        let env = menu::Env {
+            items: &items,
+            recipes: &recipes,
+            brewing: &brewing,
+            banners: &banners,
+            station_recipes: &stations,
+            enchantments: &e,
+            names: &names,
+            trade: None,
+            maps: None,
+            limited_crafting: false,
+            known_recipes: None,
+        };
+        let mut menu = menu::Menu::new(menu::Kind::Smithing);
+        menu.set_slot(&env, 1, Some(base));
+        menu.set_slot(&env, 2, Some(addition));
+        assert_eq!(menu.slot(3), Some(&result));
+        menu.click(&env, 3, 0, menu::Input::Pickup).unwrap();
+        assert_eq!(menu.carried.as_ref(), Some(&result));
+        assert!(menu.slot(0).is_none());
+        assert_eq!(menu.slot(1).unwrap().count, 1);
+        assert_eq!(menu.slot(2).unwrap().count, 1);
+        assert_eq!(menu.crafted[0].0, "test:upgrade");
+        for result in [
+            serde_json::json!({"id":"minecraft:emerald","count":0}),
+            serde_json::json!({"id":"minecraft:emerald","count":100}),
+            serde_json::json!({"id":"minecraft:diamond_sword","count":2}),
+            serde_json::json!({"id":"minecraft:emerald","components":{"minecraft:max_damage":10}}),
+        ] {
+            let mut invalid = recipe.clone();
+            invalid["result"] = result;
+            let files = vec![(
+                "recipe/test:invalid".to_owned(),
+                vec![serde_json::to_vec(&invalid).unwrap()],
+            )];
+            let stations = StationRecipes::load(&root, &items, &PackOverlay { files: &files });
+            assert!(
+                stations
+                    .smithing_result(&e, None, menu.slot(1), menu.slot(2))
+                    .is_none(),
+                "{invalid}"
+            );
+        }
+        for key in ["template", "base", "addition"] {
+            let mut invalid = recipe.clone();
+            invalid[key] = Value::Null;
+            let files = vec![(
+                "recipe/test:invalid".to_owned(),
+                vec![serde_json::to_vec(&invalid).unwrap()],
+            )];
+            let stations = StationRecipes::load(&root, &items, &PackOverlay { files: &files });
+            assert!(
+                stations.smithing.is_empty(),
+                "malformed {key} must not become optional"
+            );
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn smithing_ingredient_parses_holders() {
         let items = sample_items();
