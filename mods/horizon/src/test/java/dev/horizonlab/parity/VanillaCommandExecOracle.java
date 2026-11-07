@@ -639,6 +639,21 @@ public final class VanillaCommandExecOracle {
                             if (!op.has("record") || op.get("record").getAsBoolean()) out.append(gson.toJson(record)).append('\n');
                         }
                     }
+                    case "projectile_saved_type" -> {
+                        var entity=level.getEntity(UUID.fromString(op.get("uuid").getAsString()));
+                        if (!(entity instanceof net.minecraft.world.entity.projectile.arrow.AbstractArrow) || !entity.isAlive())
+                            throw new IllegalStateException("projectile type: missing actual arrow");
+                        var uuid=entity.getUUID();
+                        int[] words={(int)(uuid.getMostSignificantBits()>>32),(int)uuid.getMostSignificantBits(),
+                            (int)(uuid.getLeastSignificantBits()>>32),(int)uuid.getLeastSignificantBits()};
+                        JsonObject state=new JsonObject();state.add("uuid",gson.toJsonTree(words));
+                        state.addProperty("kind",net.minecraft.core.registries.BuiltInRegistries.ENTITY_TYPE.getKey(entity.getType()).toString());
+                        state.add("pos",gson.toJsonTree(new double[]{entity.getX(),entity.getY(),entity.getZ()}));
+                        state.addProperty("no_gravity",entity.isNoGravity());
+                        JsonObject record=new JsonObject();record.addProperty("cmd","#projectile_saved_type "+op.get("label").getAsString());
+                        record.add("messages",new JsonArray());record.add("results",new JsonArray());record.add("state",state);
+                        out.append(gson.toJson(record)).append('\n');
+                    }
                     case "raid_state" -> {
                         var raidLevel=player.level(); int id=op.get("id").getAsInt();
                         var raid=raidLevel.getRaids().get(id);
@@ -925,6 +940,17 @@ public final class VanillaCommandExecOracle {
                             throw new IllegalStateException(e);
                         }
                     }
+                    case "map_carried" -> {
+                        // The harness has no player network listener; invoke the
+                        // real map update normally reached from its player tick.
+                        for (int i = 0; i < player.getInventory().getContainerSize(); i++) {
+                            var stack = player.getInventory().getItem(i);
+                            var id = stack.get(net.minecraft.core.component.DataComponents.MAP_ID);
+                            if (id == null) continue;
+                            var map = net.minecraft.world.item.MapItem.getSavedData(id, player.level());
+                            if (map != null) map.tickCarriedBy(player, stack, null);
+                        }
+                    }
                     case "craft_menu_click" -> {
                         if (!(player.containerMenu instanceof net.minecraft.world.inventory.CraftingMenu))
                             throw new IllegalStateException("craft fixture: crafting menu not open");
@@ -977,6 +1003,12 @@ public final class VanillaCommandExecOracle {
                             new net.minecraft.world.level.saveddata.maps.MapId(id), player.level());
                         String value = map == null ? "missing" : "scale=" + map.scale + ",locked=" + map.locked
                             + ",center=" + map.centerX + "," + map.centerZ;
+                        if (map != null && op.has("red_x")) {
+                            int targets = 0;
+                            for (var decoration : map.getDecorations())
+                                if (decoration.type().is(net.minecraft.world.level.saveddata.maps.MapDecorationTypes.RED_X)) targets++;
+                            value += ",red_x=" + targets;
+                        }
                         JsonObject record = new JsonObject();
                         record.addProperty("cmd", "#map_state " + id);
                         JsonArray messages = new JsonArray();

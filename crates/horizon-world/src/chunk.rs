@@ -480,9 +480,30 @@ impl<'r> BlockSection<'r> {
         if state.0 as usize >= self.registry.len() {
             return Err(invalid("state ID outside registry"));
         }
+        // A uniform section has one palette slot, all 4,096 blocks and no free
+        // slots, so a write either matches it or grows it to two states.
+        let Some(storage) = self.storage.as_ref() else {
+            debug_assert!(self.palette.len() == 1 && self.counts == [4096] && self.free.is_empty());
+            let old = self.palette[0];
+            if old == state {
+                return Ok(old);
+            }
+            let bits = bits_for_palette(2, 4);
+            let mut storage = PackedStorage::new(bits, 4096).map_err(|e| invalid(e.to_string()))?;
+            storage.write(index, 1);
+            self.storage = Some(storage);
+            self.palette.push(state);
+            self.counts[0] = 4095;
+            self.counts.push(1);
+            self.last = Some((state, 1));
+            return Ok(old);
+        };
         // The slot at `index` is the old state's id, so no palette lookup is
-        // needed for it; only the new state has to be resolved.
-        let old_id = self.storage.as_ref().map_or(0, |s| s.read(index));
+        // needed for it; only the new state has to be resolved. Reading and
+        // writing that slot share one position computation; growing the palette
+        // re-packs the storage, which looks the position up again.
+        let mut slot = storage.slot_of(index);
+        let old_id = storage.read_at(slot);
         let old = self.palette[old_id as usize];
         if old == state {
             return Ok(old);
@@ -506,11 +527,10 @@ impl<'r> BlockSection<'r> {
                     if next_bits != self.bits() {
                         let mut storage = PackedStorage::new(next_bits, 4096)
                             .map_err(|e| invalid(e.to_string()))?;
-                        if let Some(old) = &self.storage {
-                            for i in 0..4096 {
-                                storage.write(i, old.read(i));
-                            }
+                        for i in 0..4096 {
+                            storage.write(i, self.storage.as_ref().unwrap().read(i));
                         }
+                        slot = storage.slot_of(index);
                         self.storage = Some(storage);
                     }
                     self.palette.push(state);
@@ -520,16 +540,20 @@ impl<'r> BlockSection<'r> {
                 }
             }
         };
-        self.storage.as_mut().unwrap().write(index, id);
-        self.counts[old_id as usize] -= 1;
-        self.counts[id as usize] += 1;
-        if self.counts[old_id as usize] == 0 {
+        self.storage.as_mut().unwrap().write_at(slot, id);
+        // Both counts are read once and written back once: the two checks below
+        // use the values this call produced.
+        let old_count = self.counts[old_id as usize] - 1;
+        self.counts[old_id as usize] = old_count;
+        let new_count = self.counts[id as usize] + 1;
+        self.counts[id as usize] = new_count;
+        if old_count == 0 {
             self.free.push(old_id);
             if self.last == Some((old, old_id)) {
                 self.last = None;
             }
         }
-        if self.counts[id as usize] == 4096 {
+        if new_count == 4096 {
             self.palette = vec![state];
             self.last = Some((state, 0));
             self.counts = vec![4096];
@@ -572,29 +596,68 @@ impl<'r> BlockSection<'r> {
         let Some(id) = id_in(&self.palette, &self.counts, &mut self.last, state) else {
             return Ok(added);
         };
-        let Some(storage) = self.storage.as_mut() else {
-            return Ok(added);
+        // Ids are unique among live palette slots, so a cell already holds
+        // `state` exactly when it holds `id`, and held `air` exactly when it
+        // held `air_id` (written as a sentinel: no slot is that large).
+        let air_id = id_in(&self.palette, &self.counts, &mut self.last, air).unwrap_or(u32::MAX);
+        let head = index(top);
+        // A run in one column moves 256 entries per Y. While a word holds a
+        // whole number of those steps (every width generation produces: 1, 2, 4,
+        // 8, 16 and 32 bits per entry) the bit shift stays put, so the run walks
+        // its words directly. Other widths step the shift as well and go one
+        // `set` per block: the palette edits and non-air counts are the same,
+        // and the run's state is already in the palette by now.
+        const STRIDE: usize = 1 << 8;
+        let fixed = match self.storage.as_ref() {
+            // No word array: every block already is what the first write wrote.
+            None => return Ok(added),
+            Some(storage) => storage.fixed_shift(STRIDE),
         };
-        for y in (y_start..top).rev() {
-            let i = index(y);
-            let old_id = storage.read(i);
-            let old_state = self.palette[old_id as usize];
-            if old_state == state {
+        if !fixed {
+            // A cell that already held the run's state is not counted, so a run
+            // of air over air adds nothing here; the top block above is counted
+            // either way.
+            for y in (y_start..top).rev() {
+                if self.set(index(y), state)? == air && state != air {
+                    added += 1;
+                }
+            }
+            return Ok(added);
+        }
+        let counts = &mut self.counts;
+        let free = &mut self.free;
+        let last = &mut self.last;
+        let palette = &self.palette;
+        // `counts[id]` is read nowhere in the loop, so its shares are added up.
+        let mut gained = 0u16;
+        let mut run = self
+            .storage
+            .as_mut()
+            .expect("the section is not uniform")
+            .word_run(head, STRIDE, id);
+        // Counted down rather than iterated over the Y range: the range's own
+        // bookkeeping was a sixth of the loop's instructions.
+        let mut left = top - y_start;
+        while left > 0 {
+            left -= 1;
+            let old_id = run.write_back();
+            if old_id == id {
                 continue;
             }
-            storage.write(i, id);
-            self.counts[old_id as usize] -= 1;
-            self.counts[id as usize] += 1;
-            if old_state == air {
+            gained += 1;
+            let old_count = counts[old_id as usize] - 1;
+            counts[old_id as usize] = old_count;
+            if old_id == air_id {
                 added += 1;
             }
-            if self.counts[old_id as usize] == 0 {
-                self.free.push(old_id);
-                if self.last == Some((old_state, old_id)) {
-                    self.last = None;
+            if old_count == 0 {
+                free.push(old_id);
+                if *last == Some((palette[old_id as usize], old_id)) {
+                    *last = None;
                 }
             }
         }
+        counts[id as usize] += gained;
         if self.counts[id as usize] == 4096 {
             self.palette = vec![state];
             self.last = Some((state, 0));
@@ -771,6 +834,177 @@ mod tests {
             section.storage = None;
         }
         Ok(old)
+    }
+
+    /// `main`'s `fill_run`, unchanged except that it writes through `set`
+    /// (checked against `baseline_set` above) instead of that file's own copy.
+    fn reference_fill_run(
+        section: &mut BlockSection<'_>,
+        x: i32,
+        y_start: i32,
+        z: i32,
+        len: i32,
+        state: BlockStateId,
+        air: BlockStateId,
+    ) -> io::Result<u16> {
+        if !(0..16).contains(&x)
+            || !(0..16).contains(&z)
+            || len <= 0
+            || y_start < 0
+            || y_start + len > 16
+        {
+            return Err(invalid("section fill outside its bounds"));
+        }
+        let index = |y: i32| ((y as usize) << 8) | ((z as usize) << 4) | x as usize;
+        let top = y_start + len - 1;
+        let mut added = 0u16;
+        let old = section.set(index(top), state)?;
+        if old == air {
+            added += 1;
+        }
+        let Some(id) = id_in(&section.palette, &section.counts, &mut section.last, state) else {
+            return Ok(added);
+        };
+        let Some(storage) = section.storage.as_mut() else {
+            return Ok(added);
+        };
+        for y in (y_start..top).rev() {
+            let i = index(y);
+            let old_id = storage.read(i);
+            let old_state = section.palette[old_id as usize];
+            if old_state == state {
+                continue;
+            }
+            storage.write(i, id);
+            section.counts[old_id as usize] -= 1;
+            section.counts[id as usize] += 1;
+            if old_state == air {
+                added += 1;
+            }
+            if section.counts[old_id as usize] == 0 {
+                section.free.push(old_id);
+                if section.last == Some((old_state, old_id)) {
+                    section.last = None;
+                }
+            }
+        }
+        if section.counts[id as usize] == 4096 {
+            section.palette = vec![state];
+            section.last = Some((state, 0));
+            section.counts = vec![4096];
+            section.free.clear();
+            section.storage = None;
+        }
+        Ok(added)
+    }
+
+    /// Palette order, counts, free slots, width and every packed word.
+    fn assert_fields(section: &BlockSection<'_>, reference: &BlockSection<'_>, what: &str) {
+        assert_eq!(section.palette, reference.palette, "{what}: palette");
+        assert_eq!(section.counts, reference.counts, "{what}: counts");
+        assert_eq!(section.free, reference.free, "{what}: free slots");
+        assert_eq!(section.bits(), reference.bits(), "{what}: bits");
+        assert_eq!(
+            section.storage.as_ref().map(|s| s.words()),
+            reference.storage.as_ref().map(|s| s.words()),
+            "{what}: packed words"
+        );
+    }
+
+    /// Every block, as `get` reads it.
+    fn assert_blocks(section: &BlockSection<'_>, reference: &BlockSection<'_>, what: &str) {
+        for index in 0..4096 {
+            assert_eq!(
+                section.state(index),
+                reference.state(index),
+                "{what}: block {index}"
+            );
+        }
+    }
+
+    /// `set` and `fill_run` against `main`'s implementations, over every width
+    /// the palette can pick: 1 state, 2..4, 5..16, 17..32, 33..64, 65..128,
+    /// 129..256 and the global ids past that (4 bits to 12). Runs cover whole
+    /// sections, single blocks and every length in between.
+    #[test]
+    fn fill_run_and_set_match_reference_across_palette_widths() {
+        let registry = benchmark_registry(4100);
+        let air = BlockStateId(0);
+        for &(distinct, seed) in &[
+            (1u64, 11u64),
+            (2, 12),
+            (3, 13),
+            (4, 14),
+            (5, 15),
+            (16, 16),
+            (17, 17),
+            (31, 18),
+            (32, 19),
+            (33, 20),
+            (64, 21),
+            (65, 22),
+            (128, 23),
+            (129, 24),
+            (200, 25),
+            (256, 26),
+            (257, 27),
+            (400, 28),
+            (4096, 29),
+        ] {
+            let mut section = BlockSection::uniform(air, &registry).unwrap();
+            let mut reference = BlockSection::uniform(air, &registry).unwrap();
+            let mut rng = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+            let mut next = || {
+                rng ^= rng << 13;
+                rng ^= rng >> 7;
+                rng ^= rng << 17;
+                rng
+            };
+            for step in 0..600u32 {
+                let state = BlockStateId((next() % distinct) as u32);
+                if step % 3 == 0 {
+                    let index = (next() % 4096) as usize;
+                    let what = format!("distinct {distinct} step {step} set {index}");
+                    assert_eq!(
+                        section.set(index, state).unwrap(),
+                        reference.set(index, state).unwrap(),
+                        "{what}"
+                    );
+                    assert_fields(&section, &reference, &what);
+                    continue;
+                }
+                let x = (next() % 16) as i32;
+                let z = (next() % 16) as i32;
+                let y_start = (next() % 16) as i32;
+                let len = 1 + (next() % (16 - y_start as u64)) as i32;
+                // Every section width, and fills that land on the section top
+                // and bottom.
+                let len = if step % 7 == 0 { 16 - y_start } else { len };
+                let what = format!("distinct {distinct} step {step} run {x},{y_start},{z}+{len}");
+                assert_eq!(
+                    section.fill_run(x, y_start, z, len, state, air).unwrap(),
+                    reference_fill_run(&mut reference, x, y_start, z, len, state, air).unwrap(),
+                    "{what}: air blocks added"
+                );
+                assert_fields(&section, &reference, &what);
+                if step % 16 == 0 {
+                    assert_blocks(&section, &reference, &what);
+                }
+            }
+            // One state over the whole section collapses it to a uniform one.
+            let state = BlockStateId((next() % distinct) as u32);
+            for x in 0..16 {
+                for z in 0..16 {
+                    assert_eq!(
+                        section.fill_run(x, 0, z, 16, state, air).unwrap(),
+                        reference_fill_run(&mut reference, x, 0, z, 16, state, air).unwrap()
+                    );
+                }
+            }
+            assert_fields(&section, &reference, "collapsed");
+            assert_blocks(&section, &reference, "collapsed");
+            assert_eq!(section.bits(), 0, "a uniform section has no words");
+        }
     }
 
     fn benchmark_registry(states: usize) -> BlockRegistry {

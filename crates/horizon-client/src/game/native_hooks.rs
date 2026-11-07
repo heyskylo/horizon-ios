@@ -998,7 +998,7 @@ use crate::mod_api::NativeTextField;
 use horizon_assets::item_model::StackView;
 use horizon_client::mod_api::EntityDataValue;
 use horizon_client::mod_api::{
-    self, NativeBossBar, NativeCamera, NativeCommand, NativeDispensed, NativeFluidAction,
+    self, HudMode, NativeBossBar, NativeCamera, NativeCommand, NativeDispensed, NativeFluidAction,
     NativeFluidDrain, NativeFluidStack, NativeFluidTankView, NativeLifecycleContext,
     NativeNoteBlockChange, NativeServerPlayer, RecipeBookCategory, ServerTickPhase, TickSpan,
     WorldPhase,
@@ -2627,7 +2627,7 @@ impl Game<'_> {
     /// debug overlays, the pad cursor and IME. Fires even with F1 or a menu open;
     /// file/world loading and resource-reload overlays do not fire it. The batch
     /// is in GUI pixels. `native_camera` is this frame's world camera (None on
-    /// the panorama). `gui_hidden` is the F1 setting; `focused` is window focus.
+    /// the panorama). `gui_hidden` is the effective HUD mode; `focused` is window focus.
     /// A mod decides whether its foreground indicator respects those flags.
     /// Client only; the host is read-only. API 410.
     pub(super) fn native_gui_render_post(
@@ -6480,6 +6480,32 @@ impl Game<'_> {
         );
     }
 
+    /// `CommandSuggestions.SuggestionsList.useSuggestion`: a suggestion was
+    /// applied in the chat by Tab or a click, after updating the input and caret.
+    /// `start..end` is a Java UTF-16 range in `original`, the list's original
+    /// input even when cycling. `suggestion` is the selected replacement;
+    /// `input` is the resulting field value after its length limit. Client-only,
+    /// read-only; previews, navigation and command-block editors do not fire it.
+    /// API @API:chat_suggestion_applied@.
+    pub(super) fn native_chat_suggestion_applied(
+        &self,
+        original: &str,
+        start: usize,
+        end: usize,
+        suggestion: &str,
+        input: &str,
+    ) {
+        mod_api::dispatch_chat_suggestion_applied(
+            self,
+            mod_api::mods(),
+            original,
+            start,
+            end,
+            suggestion,
+            input,
+        );
+    }
+
     /// NeoForge's `ToastAddEvent`: a new toast is about to be queued. `kind`
     /// is `advancement`, `recipe`, `tutorial`, `system` or `now_playing`;
     /// `id` is the advancement id, the first recipe id, the tutorial hint
@@ -8250,6 +8276,18 @@ impl Game<'_> {
     ) {
         mod_api::dispatch_right_click_block(self, mod_api::mods(), pos, face, canceled);
     }
+    /// A wind burst is about to interact with its shuffled block positions.
+    /// Remove positions to protect their blocks. Knockback and the vanilla
+    /// shuffle have already run; this does not change either. Server-side.
+    /// Pending API @API:wind_burst@.
+    pub(super) fn native_wind_burst(
+        &mut self,
+        dimension: &str,
+        center: [f64; 3],
+        blocks: &mut Vec<[i32; 3]>,
+    ) {
+        mod_api::dispatch_wind_burst(self, mod_api::mods(), dimension, center, blocks);
+    }
     /// An explosion at `center` in `dimension` (`minecraft:overworld`) is
     /// about to break `blocks`: `ServerExplosion.explode` with its `toBlow`,
     /// before any block is hit. Take out the positions to spare; they keep
@@ -9706,6 +9744,70 @@ fn mob_source(damage: &Damage) -> HurtSource<'static> {
 
 /// Whether `id` is a sound event's id, `namespace:path` as `Identifier`
 /// allows: the namespace of `[a-z0-9_.-]`, the path also with `/`.
+/// Whether a native mod's sound can be sent: a namespaced event, a sound
+/// source, a position inside the world's range and a finite, non-negative
+/// volume and pitch.
+pub(super) fn mod_sound_ok(
+    sound: &str,
+    at: [f64; 3],
+    source: usize,
+    volume: f32,
+    pitch: f32,
+) -> bool {
+    let position_ok = at
+        .into_iter()
+        .all(|v| v.is_finite() && v.abs() <= f64::from(i32::MAX) / 8.0);
+    let gain_ok = volume.is_finite() && volume >= 0.0 && pitch.is_finite() && pitch >= 0.0;
+    sound_id(sound)
+        && source < horizon_client::settings::SOUND_SOURCES.len()
+        && position_ok
+        && gain_ok
+}
+
+/// Whether a native mod's particles can be sent. Block particle types need
+/// a known state (`state_ok`); item, trail and vibration particles aren't
+/// supported by the network dispatch; a mod's own type must be namespaced.
+pub(super) fn mod_particles_ok(
+    options: &ParticleOptions,
+    state: Option<BlockStateId>,
+    state_ok: impl Fn(BlockStateId) -> bool,
+    at: [f64; 3],
+    spread: [f64; 3],
+    speed: f64,
+) -> bool {
+    use ParticleType as T;
+    // A native mod's own type: the name has to be namespaced, and a client
+    // draws it only when its pack has the sprite set.
+    if let Some(name) = &options.mod_particle {
+        let namespaced = name
+            .split_once(':')
+            .is_some_and(|(ns, path)| !ns.is_empty() && !path.is_empty());
+        if !namespaced {
+            return false;
+        }
+    }
+    let supported = match options.ty {
+        T::Block | T::BlockMarker | T::FallingDust | T::DustPillar | T::BlockCrumble => {
+            state.is_some_and(state_ok)
+        }
+        T::Item | T::Trail | T::Vibration => false,
+        T::Geyser | T::GeyserPlume | T::GeyserBase | T::GeyserPoof => options
+            .geyser
+            .is_some_and(|(_, impulse)| impulse.is_finite()),
+        _ => true,
+    };
+    supported
+        && at.into_iter().all(f64::is_finite)
+        && spread
+            .into_iter()
+            .all(|v| v.is_finite() && v.abs() <= f32::MAX as f64)
+        && speed.is_finite()
+        && speed.abs() <= f32::MAX as f64
+        && options.color.into_iter().all(f32::is_finite)
+        && options.to_color.into_iter().all(f32::is_finite)
+        && options.scale.is_finite()
+}
+
 fn sound_id(id: &str) -> bool {
     let Some((namespace, path)) = id.split_once(':') else {
         return false;
@@ -9773,17 +9875,7 @@ impl GameLevel<'_> {
         volume: f32,
         pitch: f32,
     ) -> bool {
-        if !self.native_authoritative || !sound_id(sound) {
-            return false;
-        }
-        if source >= horizon_client::settings::SOUND_SOURCES.len() {
-            return false;
-        }
-        let position_ok = at
-            .into_iter()
-            .all(|v| v.is_finite() && v.abs() <= f64::from(i32::MAX) / 8.0);
-        let gain_ok = volume.is_finite() && volume >= 0.0 && pitch.is_finite() && pitch >= 0.0;
-        if !position_ok || !gain_ok {
+        if !self.native_authoritative || !mod_sound_ok(sound, at, source, volume, pitch) {
             return false;
         }
         self.native_sounds.push(super::creatures::NativeSound {
@@ -9814,38 +9906,9 @@ impl GameLevel<'_> {
         speed: f64,
         count: i32,
     ) -> bool {
-        use ParticleType as T;
-        // A native mod's own type: the name has to be namespaced, and a client
-        // draws it only when its pack has the sprite set.
-        if let Some(name) = &options.mod_particle {
-            let namespaced = name
-                .split_once(':')
-                .is_some_and(|(ns, path)| !ns.is_empty() && !path.is_empty());
-            if !self.native_authoritative || !namespaced {
-                return false;
-            }
-        }
-        let supported = match options.ty {
-            T::Block | T::BlockMarker | T::FallingDust | T::DustPillar | T::BlockCrumble => {
-                state.is_some_and(|id| self.registry.state(id).is_some())
-            }
-            T::Item | T::Trail | T::Vibration => false,
-            T::Geyser | T::GeyserPlume | T::GeyserBase | T::GeyserPoof => options
-                .geyser
-                .is_some_and(|(_, impulse)| impulse.is_finite()),
-            _ => true,
-        };
+        let state_ok = |id| self.registry.state(id).is_some();
         if !self.native_authoritative
-            || !supported
-            || !at.into_iter().all(f64::is_finite)
-            || !spread
-                .into_iter()
-                .all(|v| v.is_finite() && v.abs() <= f32::MAX as f64)
-            || !speed.is_finite()
-            || speed.abs() > f32::MAX as f64
-            || !options.color.into_iter().all(f32::is_finite)
-            || !options.to_color.into_iter().all(f32::is_finite)
-            || !options.scale.is_finite()
+            || !mod_particles_ok(options, state, state_ok, at, spread, speed)
         {
             return false;
         }
@@ -10274,6 +10337,18 @@ impl Game<'_> {
         };
         map.paint(colors);
         true
+    }
+    /// Effective HUD mode. Pending API @API:hud_mode@.
+    pub(super) fn native_hud_mode(&self) -> HudMode {
+        self.ui.hud_mode()
+    }
+    /// Set HUD and hand visibility, including from the post-handling input notice.
+    /// Client only, outside a borrowed server guest's turn. This changes no
+    /// other restrictions on first-person rendering.
+    pub(super) fn native_set_hud_mode(&mut self, mode: HudMode) {
+        if self.native_window() && self.lan_acting.is_none() {
+            self.ui.set_hud_mode(mode);
+        }
     }
     /// Access a server-owned holder's attachment map. On a client it is the
     /// copy of what the server synced: `set` and `remove` change only the copy.

@@ -854,6 +854,59 @@ impl Game<'_> {
         self.audio
             .play("minecraft:ui.button.click", None, 0.25, 1.0);
     }
+    /// The crafting book's entry of the recipe button under the pointer, in its overlay if open.
+    pub(super) fn recipe_under_pointer(&self) -> Option<usize> {
+        let batch = self.batch_for_size()?;
+        let book_type = self.active_book()?;
+        if !self.book_open(book_type) || self.spectator() {
+            return None;
+        }
+        let cursor = self.cursor;
+        if let Some(overlay) = &self.recipe_ui.overlay {
+            let maxrow = if overlay.entries.len() <= 16 { 4 } else { 5 };
+            return overlay.entries.iter().enumerate().find_map(|(n, e)| {
+                let x = overlay.x + 4.0 + 25.0 * (n % maxrow) as f32;
+                let y = overlay.y + 5.0 + 25.0 * (n / maxrow) as f32;
+                inside(cursor, x, y, 24.0, 24.0).then_some(e.0)
+            });
+        }
+        let (xo, yo) = self.book_origin(&batch);
+        let first = self.recipe_ui.page * 20;
+        (0..20).find_map(|n| {
+            let button = self.recipe_ui.view.buttons.get(first + n)?;
+            let (x, y) = Self::button_pos(xo, yo, n);
+            inside(cursor, x, y, 25.0, 25.0)
+                .then(|| button.entries[self.swap_index() % button.entries.len()].0)
+        })
+    }
+    /// The recipe button under the pointer has others to show (`gui.recipebook.moreRecipes`).
+    pub(super) fn recipe_has_alternatives_under_pointer(&self) -> bool {
+        let Some(batch) = self.batch_for_size() else {
+            return false;
+        };
+        if self.recipe_ui.overlay.is_some() {
+            return false;
+        }
+        let (xo, yo) = self.book_origin(&batch);
+        let first = self.recipe_ui.page * 20;
+        (0..20).any(|n| {
+            let (x, y) = Self::button_pos(xo, yo, n);
+            inside(self.cursor, x, y, 25.0, 25.0)
+                && self
+                    .recipe_ui
+                    .view
+                    .buttons
+                    .get(first + n)
+                    .is_some_and(|button| button.entries.len() > 1)
+        })
+    }
+    /// The pointer is on one of the book's own controls, a recipe or not.
+    pub(super) fn recipe_book_under_pointer(&self) -> bool {
+        self.recipe_book_targets().iter().any(|t| {
+            let [x, y, w, h] = t.rect;
+            inside(self.cursor, x, y, w, h)
+        })
+    }
     /// The recipe book's buttons a controller can focus: the book button,
     /// recipes, page arrows, the craftable filter and the tabs (GUI pixels;
     /// the search box registers itself as a field).
@@ -873,6 +926,13 @@ impl Game<'_> {
             return out;
         }
         let (xo, yo) = self.book_origin(&batch);
+        if self.recipe_ui.overlay.is_none() {
+            // The search box is painted by hand: a field, for the pad's keyboard.
+            out.push(Target {
+                rect: [xo + 25.0, yo + 13.0, 81.0, 14.0],
+                kind: Kind::Field,
+            });
+        }
         if let Some(overlay) = &self.recipe_ui.overlay {
             // The alternatives overlay takes every click while open.
             let maxrow = if overlay.entries.len() <= 16 { 4 } else { 5 };
