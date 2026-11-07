@@ -633,6 +633,40 @@ impl Game<'_> {
             self.lan_entity_event(id as i32, if body { 65 } else { 49 }, at);
         }
     }
+    /// `LivingEntity.updateFallFlying`'s wear, `ItemStack.hurtAndBreak(1, this,
+    /// slot)` on the glider `MobEvent::GliderWear` picked: Unbreaking (from the
+    /// level's random, `Enchantment.modifyItemFilteredCount`) may save it, and
+    /// the rest goes on the stack where it is worn. A glider is only picked
+    /// while its next point of wear will not break it (`canGlideUsing`), so
+    /// this wear never breaks one.
+    fn wear_mob_glider(&mut self, id: u32, slot: horizon_world::player_inventory::EquipmentSlot) {
+        use horizon_client::mobs::finalize;
+        use horizon_world::player_inventory::EquipmentSlot as S;
+        let Some(stack) = self
+            .mobs
+            .iter()
+            .find(|m| m.id == id)
+            .and_then(|m| finalize::equipment_stack(m, slot))
+        else {
+            return;
+        };
+        if !horizon_client::stations::is_damageable(self.res.items(), &stack) {
+            return;
+        }
+        let loss = self.durability_loss(&stack, 1);
+        if loss == 0 {
+            return;
+        }
+        let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) else {
+            return;
+        };
+        let damage = stack.damage + loss;
+        match slot {
+            S::Body => m.extra.body_damage = damage as i32,
+            S::Saddle => m.set_saddle(Some(ItemStack { damage, ..stack })),
+            _ => finalize::set_slot_damage(m, slot as usize, damage),
+        }
+    }
     /// `LivingEntity.hurtArmor` -> `LivingEntity.doHurtEquipment`, from the hit
     /// `MobEvent::ArmorHurt` reported. Only `Horse` overrides `hurtArmor` for a
     /// mob, and its override asks for the BODY slot alone, so the body piece is
@@ -2267,6 +2301,7 @@ impl Game<'_> {
                 }
                 MobEvent::SunProtectionWear { mob } => self.wear_sun_protection(mob),
                 MobEvent::ArmorHurt { mob, amount, kind } => self.hurt_mob_armor(mob, amount, kind),
+                MobEvent::GliderWear { mob, slot } => self.wear_mob_glider(mob, slot),
                 MobEvent::EntityEvent { mob, event, at } => {
                     self.lan_entity_event(mob as i32, event, at)
                 }
