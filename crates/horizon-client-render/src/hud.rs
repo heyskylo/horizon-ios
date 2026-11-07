@@ -2435,17 +2435,19 @@ impl HudUniform {
         }
     }
 }
+use crate::gfx::hud_coverage::{self, Pipeline};
+
 pub struct HudRenderer {
     pub sprite_animations: Vec<(Rect, crate::sprites::SpriteAnimation, (usize, usize, u32))>,
     /// The shared atlas texture, for run-time glyph uploads.
     pub atlas_texture: Option<wgpu::Texture>,
-    pipeline: wgpu::RenderPipeline,
+    pipeline: Pipeline,
     /// `RenderPipelines.CROSSHAIR`.
-    invert_pipeline: wgpu::RenderPipeline,
-    additive_pipeline: wgpu::RenderPipeline,
-    depth_pipeline: wgpu::RenderPipeline,
-    vignette_pipeline: wgpu::RenderPipeline,
-    end_portal_pipeline: wgpu::RenderPipeline,
+    invert_pipeline: Pipeline,
+    additive_pipeline: Pipeline,
+    depth_pipeline: Pipeline,
+    vignette_pipeline: Pipeline,
+    end_portal_pipeline: Pipeline,
     /// The layout of `group`, which the CIT glint pipelines share.
     layout: wgpu::BindGroupLayout,
     group: wgpu::BindGroup,
@@ -2455,6 +2457,7 @@ pub struct HudRenderer {
     buffer: wgpu::Buffer,
     capacity: u64,
     format: wgpu::TextureFormat,
+    coverage: bool,
     atlas_view: wgpu::TextureView,
     /// The resource pack's text shader, when it has one that works.
     pack_text: Option<pack_text::PackText>,
@@ -2469,6 +2472,7 @@ impl HudRenderer {
         view: &wgpu::TextureView,
         glint_view: &wgpu::TextureView,
         glint_sampler: &wgpu::Sampler,
+        coverage: bool,
     ) -> Result<Self> {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Horizon HUD"),
@@ -2581,7 +2585,7 @@ impl HudRenderer {
         let attributes =
             wgpu::vertex_attr_array![0=>Float32x2,1=>Float32x2,2=>Unorm8x4,3=>Float32,4=>Float32x2];
         let create = |label, blend, fragment_entry, depth: bool| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            let desc = wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(&pipeline_layout),
                 vertex: wgpu::VertexState {
@@ -2615,7 +2619,9 @@ impl HudRenderer {
                 }),
                 multiview_mask: None,
                 cache: None,
-            })
+            };
+            let source = wgpu::ShaderSource::Wgsl(include_str!("hud.wgsl").into());
+            Pipeline::new(device, &desc, source, coverage).expect("the HUD's coverage")
         };
         let pipeline = create("HUD", wgpu::BlendState::ALPHA_BLENDING, "fs_main", false);
         let depth_pipeline = create(
@@ -2706,6 +2712,7 @@ impl HudRenderer {
             buffer,
             capacity,
             format,
+            coverage,
             atlas_view: view.clone(),
             pack_text: None,
             zoom: 1.0,
@@ -2720,7 +2727,7 @@ impl HudRenderer {
         textures: Option<&cit_glint::GlintTextures>,
     ) {
         self.cit_glint = textures.and_then(|t| {
-            cit_glint::CitGlintPass::new(device, queue, self.format, &self.layout, t)
+            cit_glint::CitGlintPass::new(device, queue, self.format, &self.layout, t, self.coverage)
         });
     }
     /// Draw the GUI's text with `shader` (`HudAtlas::text_shader`), or natively.
@@ -2730,7 +2737,7 @@ impl HudRenderer {
         shader: Option<&horizon_shaders::CoreProgram>,
     ) {
         self.pack_text = shader.and_then(|shader| {
-            pack_text::PackText::new(device, self.format, &self.atlas_view, shader)
+            pack_text::PackText::new(device, self.format, &self.atlas_view, shader, self.coverage)
         });
     }
     pub fn animate_sprites(
@@ -2879,6 +2886,7 @@ impl HudRenderer {
         self.draw_range(
             encoder,
             target,
+            None,
             depth,
             batch,
             size,
@@ -2892,6 +2900,7 @@ impl HudRenderer {
         &self,
         encoder: &mut wgpu::CommandEncoder,
         target: &wgpu::TextureView,
+        coverage: Option<&wgpu::TextureView>,
         depth: &wgpu::TextureView,
         batch: &HudBatch,
         size: [u32; 2],
@@ -2901,7 +2910,7 @@ impl HudRenderer {
         if vertices.is_empty() || size.contains(&0) {
             return;
         }
-        let attachments = [Some(wgpu::RenderPassColorAttachment {
+        let mut attachments = vec![Some(wgpu::RenderPassColorAttachment {
             view: target,
             resolve_target: None,
             depth_slice: None,
@@ -2910,6 +2919,9 @@ impl HudRenderer {
                 store: wgpu::StoreOp::Store,
             },
         })];
+        if let Some(view) = coverage {
+            attachments.push(Some(hud_coverage::attachment(view)));
+        }
         let runs = batch.runs_in(vertices);
         let mut at = 0;
         while at < runs.len() {
@@ -2961,16 +2973,17 @@ impl HudRenderer {
                     Blend::EndPortal => &self.end_portal_pipeline,
                     Blend::CitGlint(blend) => {
                         if let Some(cit) = &self.cit_glint {
-                            cit.draw(&mut pass, *blend, range.clone());
+                            cit.draw(&mut pass, *blend, range.clone(), coverage.is_some());
                         }
                         continue;
                     }
                 };
+                let pipeline = pipeline.get(coverage.is_some());
                 match &self.pack_text {
                     Some(pack_text) if *blend == Blend::Alpha => {
                         for (part, text) in pack_text::text_runs(&batch.vertices, range.clone()) {
                             if text {
-                                pack_text.draw(&mut pass, part);
+                                pack_text.draw(&mut pass, part, coverage.is_some());
                                 pass.set_bind_group(0, &self.group, &[]);
                             } else {
                                 pass.set_pipeline(pipeline);
@@ -2988,6 +3001,10 @@ impl HudRenderer {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "hud/coverage_tests.rs"]
+mod coverage_tests;
 
 #[cfg(test)]
 mod tests {
