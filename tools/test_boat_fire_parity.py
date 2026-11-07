@@ -4,7 +4,7 @@
 `Entity.baseTick` burns a boat down a tick at a time and hurts it every 20; the two
 `applyEffectsFromBlocks` of `AbstractBoat.tick` light it on fire blocks, hurt it once per
 fire block and pass, and water puts it out. Each case summons one boat, steps the frozen
-server a tick at a time and records whether the boat is there, its `Fire` and the dropped
+server a tick at a time (12 ticks) and records whether the boat is there, its `Fire` and the dropped
 items. All other arguments, including --binary, are the command-oracle runner's.
 """
 import sys
@@ -16,22 +16,26 @@ except ImportError:
     import command_exec_corpus as corpus
     import test_command_exec_parity as runner
 
-# name, kind, environment, saved fields, entity_drops, ridden by the player
+# name, kind, environment, saved fields, entity_drops, ridden by the player, damage dealt first
 CASES = [
-    ('air', 'oak_boat', None, '', True, False),
-    ('fire', 'oak_boat', 'fire', '', True, False),
-    ('soul_fire', 'oak_boat', 'soul_fire', '', True, False),
-    ('wide_fire', 'oak_boat', 'wide_fire', '', True, False),
-    ('invulnerable', 'oak_boat', 'fire', ',Invulnerable:1b', True, False),
-    ('burning_air', 'oak_boat', None, ',Fire:160s', True, False),
-    ('burning_water', 'oak_boat', 'water', ',Fire:160s', True, False),
-    ('cooldown_fire', 'oak_boat', 'fire', ',Fire:-3s', True, False),
-    ('no_drops', 'oak_boat', 'fire', '', False, False),
-    ('chest_fire', 'oak_chest_boat', 'fire', ',Items:[{Slot:0b,id:"minecraft:diamond",count:1}]', True, False),
-    ('ridden_burning', 'oak_boat', None, ',Fire:160s', True, True),
-    ('ridden_fire', 'oak_boat', 'fire', '', True, True),
+    ('air', 'oak_boat', None, '', True, False, 0),
+    ('fire', 'oak_boat', 'fire', '', True, False, 0),
+    ('soul_fire', 'oak_boat', 'soul_fire', '', True, False, 0),
+    ('wide_fire', 'oak_boat', 'wide_fire', '', True, False, 0),
+    ('invulnerable', 'oak_boat', 'fire', ',Invulnerable:1b', True, False, 0),
+    ('burning_air', 'oak_boat', None, ',Fire:160s', True, False, 0),
+    ('burning_water', 'oak_boat', 'water', ',Fire:160s', True, False, 0),
+    ('cooldown_fire', 'oak_boat', 'fire', ',Fire:-3s', True, False, 0),
+    ('no_drops', 'oak_boat', 'fire', '', False, False, 0),
+    ('chest_fire', 'oak_chest_boat', 'fire', ',Items:[{Slot:0b,id:"minecraft:diamond",count:1}]', True, False, 0),
+    ('ridden_burning', 'oak_boat', None, ',Fire:160s', True, True, 0),
+    ('ridden_fire', 'oak_boat', 'fire', '', True, True, 0),
+    # Leaving the water it started in puts it out.
+    ('burning_water_exit', 'oak_boat', 'water', ',Fire:160s,Motion:[0d,2d,0d]', True, False, 0),
+    # 40 damage wears off before Fire 20 burns it: it survives at 40.
+    ('ridden_damaged', 'oak_boat', None, ',Fire:29s', True, True, 4),
 ]
-TICKS = 8
+TICKS = 12
 
 
 def program(cmd, setup):
@@ -40,7 +44,7 @@ def program(cmd, setup):
            {'op': 'settle'},
            cmd('/execute if loaded 8 200 8', expect_result=1),
            cmd('/fill 0 199 0 15 199 15 soul_soil', expect_result=256)]
-    for n, (name, kind, environment, fields, drops, ridden) in enumerate(CASES, 1):
+    for n, (name, kind, environment, fields, drops, ridden, hit) in enumerate(CASES, 1):
         uuid = f'00000200-0000-0000-0000-{n:012x}'
         out += setup(f'/gamerule entity_drops {str(drops).lower()}', '/fill 4 200 4 12 202 12 air',
                      '/kill @e[type=item,x=8.5,y=200,z=8.5,distance=..8]')
@@ -52,6 +56,8 @@ def program(cmd, setup):
                        expect_result=1))
         if ridden:
             out.append(cmd(f'/ride @s mount {uuid}', expect_result=1))
+        if hit:
+            out.append(cmd(f'/damage {uuid} {hit} minecraft:generic', expect_result=1))
         for tick in range(TICKS):
             if tick:
                 out += [cmd('/tick step 1', expect_result=1), {'op': 'tick', 'n': 1}]

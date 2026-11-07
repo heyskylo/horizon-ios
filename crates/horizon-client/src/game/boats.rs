@@ -888,9 +888,15 @@ impl Game<'_> {
                     || driven.contains(&id)
                     || !ticking(p.x.floor() as i32, p.z.floor() as i32)
                 {
-                    // Its rider's client moves it, but the server still burns it.
-                    if ticking(p.x.floor() as i32, p.z.floor() as i32) && self.boat_fire_tick(i) {
-                        break 'boat;
+                    // Its rider's client moves it, but the server still wears
+                    // off its damage and then burns it.
+                    if ticking(p.x.floor() as i32, p.z.floor() as i32) {
+                        if driven.contains(&id) {
+                            self.boats[i].wear_off_hurt();
+                        }
+                        if self.boat_fire_tick(i) {
+                            break 'boat;
+                        }
                     }
                     // The lead still ticks too.
                     if ticking(p.x.floor() as i32, p.z.floor() as i32) && self.remote.is_none() {
@@ -1177,7 +1183,12 @@ impl Game<'_> {
     }
     /// `BaseFireBlock.fireDamage` of a fire block at `p`.
     fn fire_damage_at(&self, p: [i32; 3]) -> Option<f32> {
-        match &*self.res.facts().get(self.world.block(p[0], p[1], p[2])).name {
+        match &*self
+            .res
+            .facts()
+            .get(self.world.block(p[0], p[1], p[2]))
+            .name
+        {
             "minecraft:fire" => Some(1.0),
             "minecraft:soul_fire" => Some(2.0),
             _ => None,
@@ -1207,7 +1218,9 @@ impl Game<'_> {
             .into_iter()
             .filter_map(|p| self.fire_damage_at(p))
             .collect();
-        let water = self.in_fluid(b.bounds(), Fluid::Water);
+        // Water along the move puts it out, where it started too.
+        let water = self.in_fluid(b.bounds(), Fluid::Water)
+            || self.in_fluid(Boat::bounds_at(b.previous), Fluid::Water);
         let (at, top) = (b.position, b.bounds().max_position().y);
         let rain = self.in_rain(at, top);
         for _ in 0..2 {
