@@ -26,7 +26,7 @@ Font.PreparedTextBuilder.getTextColor	inline	crates/horizon-client-render/src/hu
 Font.PreparedTextBuilder.getShadowColor	inline	crates/horizon-client-render/src/hud.rs::HudBatch::text_styled	gap: minor: style shadow colour is ignored; shadow is always 0.25 of the text colour
 Font.PreparedTextBuilder.bounds	skip:other		bounds of prepared text for vanilla hit tests; Horizon hit-tests by advance
 Gui.update	inline	crates/horizon-client/src/game/narrator.rs::Game::narrate_screen	once a turn after the frame's widgets were read: ScreenNarrator::frame runs the narration handleDelayedNarration makes due and a new screen's
-Gui.isPausing	port	crates/horizon-client/src/game.rs::Game::pauses_game	gap: minor: checks the open screen only, not the overlay part
+Gui.isPausing	port	crates/horizon-client/src/game/pointer_capture.rs::Game::pauses_game	gap: minor: checks the open screen only, not the overlay part
 Gui.addSocialInteractionsToast	skip:service		social interactions are not offered by Horizon
 Gui.handleKeybinds	port	crates/horizon-client/src/game.rs::Game::key_pressed	gap: minor: the social interactions key has no port (see addSocialInteractionsToast)
 Gui.openChatScreen	port	crates/horizon-client/src/game/chat.rs::Game::open_chat	
