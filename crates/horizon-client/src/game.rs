@@ -148,6 +148,8 @@ mod frames;
 #[cfg(feature = "friends")]
 mod friends;
 // Without Play with Friends: nothing shared, no Friends button (game/friends_off.rs).
+#[cfg(test)]
+mod entity_inside_tests;
 #[cfg(not(feature = "friends"))]
 #[path = "game/friends_off.rs"]
 mod friends;
@@ -5371,6 +5373,10 @@ impl Game<'_> {
                 }
             }
         }
+        // ServerLevel.tick ticks only the entities in entity-ticking chunks, and
+        // applyEffectsFromBlocks runs in their tick: a mob or item past the
+        // simulation distance presses, burns and slows on nothing.
+        let entity_ticking = self.entity_ticking_area();
         self.with_level(|b, level, ticks| {
             // LilyPadBlock.entityInside: a boat inside a lily pad breaks it.
             let mut boat_cells: Vec<BlockPos> = Vec::new();
@@ -5402,7 +5408,10 @@ impl Game<'_> {
             };
             for_each_entity!(level.entities, entity => {
                 if entity.triggers_blocks() && entity.sweeps_blocks_inside() {
-                    touch(entity.bounds());
+                    let at = entity.position();
+                    if entity_ticking(at.x.floor() as i32, at.z.floor() as i32) {
+                        touch(entity.bounds());
+                    }
                 }
             });
             for crystal in level.crystals {
