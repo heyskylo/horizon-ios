@@ -462,10 +462,7 @@ impl Game<'_> {
             if boat.chest && (sneaking || self.riding.is_some() || !room) {
                 return Some(Verb::Open);
             }
-            let rideable = !sneaking
-                && boat.out_of_control < 60.0
-                && self.riding.is_none()
-                && room;
+            let rideable = !sneaking && boat.out_of_control < 60.0 && self.riding.is_none() && room;
             return rideable.then_some(Verb::Ride);
         }
         if self
